@@ -21,11 +21,12 @@ use hang::catalog::AudioConfig;
 use tokio::sync::{mpsc, mpsc::error::TryRecvError, oneshot};
 use tracing::{error, info, warn};
 
-mod decoder;
-mod encoder;
+// Keep the FFmpeg-based modules available for re-export under `crate::ffmpeg`
+pub mod decoder;
+pub mod encoder;
 
-pub use decoder::*;
-pub use encoder::*;
+// Native (non-FFmpeg) audio codecs
+pub use crate::native::audio::*;
 
 pub type OutputStreamHandle = Arc<Mutex<StreamWriterState>>;
 pub type InputStreamHandle = Arc<Mutex<StreamReaderState>>;
