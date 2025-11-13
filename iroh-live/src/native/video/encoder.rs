@@ -47,8 +47,11 @@ impl Av1Encoder {
         Ok(Self { ctx, width, height, framerate, frame_count: 0, y, u, v })
     }
 
-    pub fn with_preset(width: u32, height: u32, framerate: u32, _preset: VideoPreset) -> Result<Self> {
-        // For now presets map to the same encoder; future: adjust quantizer/bitrate per preset
+    pub fn with_preset(preset: VideoPreset) -> Result<Self> {
+        let (width, height) = preset.dimensions();
+        let framerate = preset.fps();
+        // For now reuse `new`; quantizer tuning can be applied via EncoderConfig if needed
+        let _q = match preset { VideoPreset::P1080 => 140, VideoPreset::P720 => 160, VideoPreset::P360 => 200, VideoPreset::P180 => 240 };
         Self::new(width, height, framerate)
     }
 
@@ -63,15 +66,25 @@ impl Av1Encoder {
             u_stride: w / 2,
             v_plane: BufferStoreMut::Borrowed(&mut self.v),
             v_stride: w / 2,
-            width: w,
-            height: h,
+            width: self.width,
+            height: self.height,
         };
-        let stride = (w as u32) * 4;
         let mode = yuv::YuvConversionMode::Balanced;
-        match format.pixel_format {
-            lav::PixelFormat::Rgba => rgba_to_yuv420(&mut planar, &frame.raw, stride, range, matrix, mode)?,
-            lav::PixelFormat::Bgra => bgra_to_yuv420(&mut planar, &frame.raw, stride, range, matrix, mode)?,
+        // Build RGBA buffer (convert BGRA if needed) and resize to target
+        let mut rgba = if matches!(format.pixel_format, lav::PixelFormat::Bgra) {
+            // Convert BGRA→RGBA in-place clone
+            let mut tmp = frame.raw.clone();
+            for p in tmp.chunks_exact_mut(4) { p.swap(0, 2); }
+            tmp
+        } else { frame.raw.clone() };
+        if w != self.width || h != self.height {
+            // Resize via image crate
+            let img = image::RgbaImage::from_raw(w, h, rgba).expect("valid rgba");
+            let resized = image::imageops::resize(&img, self.width, self.height, image::imageops::FilterType::Triangle);
+            rgba = resized.into_raw();
         }
+        let stride = (self.width as u32) * 4;
+        rgba_to_yuv420(&mut planar, &rgba, stride, range, matrix, mode)?;
         Ok(())
     }
 }

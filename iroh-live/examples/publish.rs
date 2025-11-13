@@ -3,9 +3,9 @@ use iroh::{Endpoint, SecretKey, protocol::Router};
 use iroh_live::{
     Live, PublishBroadcast,
     audio::AudioBackend,
-    av::{VideoSource, Backend, VideoPreset, AudioPreset},
+    av::{VideoSource, Backend, VideoPreset, AudioPreset, VideoCodec},
     native::video::Av1Encoder,
-    video::{CameraCapturer, Av1FfmpegEncoder},
+    video::{CameraCapturer, Av1FfmpegEncoder, H264Encoder},
 };
 use n0_error::StdResultExt;
 
@@ -43,20 +43,25 @@ async fn main() -> n0_error::Result {
     // Video: camera capture + encoders by backend (fps 30)
     let camera = CameraCapturer::new()?;
     let [w, h] = camera.format().dimensions;
-    match cli.backend.into() {
-        Backend::Native => {
-            let renditions: Vec<_> = cli.video_presets.iter().map(|p| {
-                let enc = Av1Encoder::with_preset(w, h, 30, (*p).into()).unwrap();
-                (enc, (*p).into())
-            }).collect();
-            broadcast.set_video(camera, renditions)?;
+    let renditions: Vec<_> = cli.video_presets.iter().map(|p| (*p).into()).collect();
+    let backend: Backend = cli.backend.into();
+    let codec: VideoCodec = cli.codec.into();
+    match (backend, codec) {
+        (Backend::Native, VideoCodec::Av1) => {
+            let encs: Vec<_> = renditions.iter().map(|&p| (Av1Encoder::with_preset(p).unwrap(), p)).collect();
+            broadcast.set_video(camera, encs)?;
         }
-        Backend::Ffmpeg => {
-            let renditions: Vec<_> = cli.video_presets.iter().map(|p| {
-                let enc = Av1FfmpegEncoder::new(w, h, 30).unwrap();
-                (enc, (*p).into())
+        (Backend::Ffmpeg, VideoCodec::Av1) => {
+            let encs: Vec<_> = renditions.iter().map(|&p| (Av1FfmpegEncoder::with_preset(p).unwrap(), p)).collect();
+            broadcast.set_video(camera, encs)?;
+        }
+        (_, VideoCodec::H264) => {
+            // Use ffmpeg H264 for both backends for now
+            let encs: Vec<_> = renditions.iter().map(|&p| {
+                let enc = H264Encoder::for_source(&camera, p.fps()).unwrap();
+                (enc, p)
             }).collect();
-            broadcast.set_video(camera, renditions)?;
+            broadcast.set_video(camera, encs)?;
         }
     }
     let ticket = live.publish(&broadcast).await?;
@@ -85,8 +90,13 @@ impl From<CliBackend> for Backend { fn from(v: CliBackend) -> Self { match v { C
 struct Cli {
     #[arg(long, value_enum, default_value_t=CliBackend::Native)]
     backend: CliBackend,
+    #[arg(long, value_enum, default_value_t=CliCodec::Av1)]
+    codec: CliCodec,
     #[arg(long, value_enum, value_delimiter=',', default_values_t=[CliVideoPreset::P720])]
     video_presets: Vec<CliVideoPreset>,
     #[arg(long, value_enum, default_value_t=CliAudioPreset::Hq)]
     audio_preset: CliAudioPreset,
 }
+#[derive(Copy, Clone, ValueEnum, Debug)]
+enum CliCodec { Av1, H264 }
+impl From<CliCodec> for VideoCodec { fn from(v: CliCodec) -> Self { match v { CliCodec::Av1 => VideoCodec::Av1, CliCodec::H264 => VideoCodec::H264 }}}

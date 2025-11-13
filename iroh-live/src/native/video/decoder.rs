@@ -12,17 +12,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::av::PixelFormat;
 
-pub type FrameReceiver = mpsc::Receiver<DecodedFrame>;
+pub type FrameReceiver = mpsc::Receiver<crate::video::decoder::DecodedFrame>;
 pub type ResizeSender = mpsc::UnboundedSender<(u32, u32)>;
 
-pub struct DecodedFrame {
-    pub frame: image::Frame,
-    pub timestamp: Duration,
-}
-
-impl DecodedFrame {
-    pub fn img(&self) -> &RgbaImage { self.frame.buffer() }
-}
+// Use the shared DecodedFrame from the ffmpeg decoder module to avoid adapters
+pub use crate::video::decoder::DecodedFrame;
 
 pub struct DecoderContext {
     target_pixel_format: PixelFormat,

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use strum::{Display, EnumString, EnumVariantNames};
+use strum::{Display, EnumString, VariantNames};
 
 #[derive(Copy, Clone, Debug)]
 pub struct AudioFormat {
@@ -50,19 +50,19 @@ pub trait VideoEncoder {
     fn pop_packet(&mut self) -> Result<Option<hang::Frame>>;
 }
 
-#[derive(Debug, Clone, Copy, Display, EnumString, EnumVariantNames)]
+#[derive(Debug, Clone, Copy, Display, EnumString, VariantNames)]
 #[strum(serialize_all = "kebab-case")]
 pub enum AudioCodec { Opus }
 
-#[derive(Debug, Clone, Copy, Display, EnumString, EnumVariantNames)]
+#[derive(Debug, Clone, Copy, Display, EnumString, VariantNames)]
 #[strum(serialize_all = "kebab-case")]
 pub enum VideoCodec { H264, Av1 }
 
-#[derive(Debug, Clone, Copy, Display, EnumString, EnumVariantNames)]
+#[derive(Debug, Clone, Copy, Display, EnumString, VariantNames)]
 #[strum(serialize_all = "lowercase")]
 pub enum Backend { Native, Ffmpeg }
 
-#[derive(Debug, Clone, Copy, Display, EnumString, EnumVariantNames)]
+#[derive(Debug, Clone, Copy, Display, EnumString, VariantNames)]
 #[strum(serialize_all = "lowercase")]
 pub enum VideoPreset { P180, P360, P720, P1080 }
 
@@ -70,8 +70,19 @@ impl VideoPreset {
     pub fn as_name(&self) -> &'static str {
         match self { Self::P180 => "180p", Self::P360 => "360p", Self::P720 => "720p", Self::P1080 => "1080p" }
     }
+
+    pub fn dimensions(&self) -> (u32, u32) {
+        match self {
+            Self::P180 => (320, 180),
+            Self::P360 => (640, 360),
+            Self::P720 => (1280, 720),
+            Self::P1080 => (1920, 1080),
+        }
+    }
+
+    pub fn fps(&self) -> u32 { 30 }
 }
 
-#[derive(Debug, Clone, Copy, Display, EnumString, EnumVariantNames)]
+#[derive(Debug, Clone, Copy, Display, EnumString, VariantNames)]
 #[strum(serialize_all = "lowercase")]
 pub enum AudioPreset { Hq, Lq }

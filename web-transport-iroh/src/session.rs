@@ -10,6 +10,7 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use n0_future::{FuturesUnordered, Stream, StreamExt};
+use quinn::ConnectionStats;
 use url::Url;
 use web_transport_proto::{Frame, StreamUni, VarInt};
 
@@ -44,6 +45,10 @@ pub struct Session {
 }
 
 impl Session {
+    pub fn stats(&self) -> ConnectionStats {
+        self.conn.stats()
+    }
+
     /// Accept a new unidirectional stream. See [`iroh::endpoint::Connection::accept_uni`].
     pub async fn accept_uni(&self) -> Result<RecvStream, SessionError> {
         if let Some(accept) = &self.accept {

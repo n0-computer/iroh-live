@@ -386,6 +386,11 @@ impl Av1FfmpegEncoder {
         let rescaler = Rescaler::new(Pixel::YUV420P, Some((width, height)))?;
         Ok(Self { encoder, rescaler, opts, frame_count: 0 })
     }
+    pub fn with_preset(preset: crate::av::VideoPreset) -> Result<Self> {
+        let (w,h) = preset.dimensions();
+        let fps = preset.fps();
+        Self::new(w,h,fps)
+    }
 }
 
 impl lav::VideoEncoder for Av1FfmpegEncoder {
