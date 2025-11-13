@@ -7,7 +7,7 @@ use ffmpeg_next::{
     util::{format::pixel::Pixel, frame::video::Video as FfmpegFrame},
 };
 
-pub(crate) struct Rescaler {
+pub struct Rescaler {
     pub(crate) target_format: Pixel,
     pub(crate) target_width_height: Option<(u32, u32)>,
     pub(crate) ctx: Option<scaling::Context>,
@@ -67,7 +67,7 @@ impl Rescaler {
 }
 
 #[derive(Default, Debug)]
-pub(crate) struct StreamClock {
+pub struct StreamClock {
     pub(crate) last_timestamp: Option<Duration>,
 }
 

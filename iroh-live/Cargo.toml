@@ -27,13 +27,20 @@ nokhwa = { version = "0.10", features = [
     "output-threaded",
 ] }
 postcard = "1.1.3"
+rav1d = { git = "https://github.com/leo030303/rav1d", branch = "add-rust-api", version = "1.1.0", default-features = false, features = ["bitdepth_8"] }
+rav1e = { version = "0.8.1", default-features = false, features = ["threading"] }
 serde = { version = "1.0.228", features = ["derive"] }
+strum = { version = "0.26", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"] }
 tokio = { version = "1.48.0", features = ["sync"] }
 tokio-util = "0.7.17"
 tracing = "0.1.41"
+opus = "0.3"
 url = "2.5.7"
 web-transport-iroh = { version = "0.1.0", path = "../web-transport-iroh" }
 xcap = "0.7.1"
+yuv = "0.8.8"
+## removed duplicate strum
 
 [dev-dependencies]
 eframe = "0.33.0"
