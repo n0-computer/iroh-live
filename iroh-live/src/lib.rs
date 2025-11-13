@@ -16,17 +16,18 @@ use web_transport_iroh::Request;
 
 use crate::{
     audio::{AudioBackend, OutputControl},
-    av::{AudioEncoder, AudioSource, VideoEncoder, VideoSource},
-    video::{DecodedFrame, PixelFormat},
+    av::{AudioEncoder, AudioSource, PixelFormat, VideoEncoder, VideoSource},
+    video::DecodedFrame,
 };
 
 pub mod audio;
 pub mod av;
+pub mod ffmpeg;
+pub mod native;
 mod ffmpeg_ext;
 mod ticket;
 pub mod video;
 
-pub use ffmpeg_ext::ffmpeg_log_init;
 pub use ticket::LiveTicket;
 
 pub const ALPN: &[u8] = b"iroh-live/1";
@@ -286,67 +287,89 @@ impl PublishBroadcast {
         }
     }
 
-    pub fn set_video(
-        &mut self,
-        source: impl VideoSource,
-        encoder: impl VideoEncoder,
-    ) -> Result<()> {
+    pub fn set_video<I, E>(&mut self, source: impl VideoSource + Send + 'static, renditions: I) -> Result<()>
+    where
+        I: IntoIterator<Item = (E, crate::av::VideoPreset)>,
+        E: VideoEncoder + Send + 'static,
+    {
         let priority = 1u8;
-        let name = "video".to_owned();
-
-        let mut renditions = HashMap::new();
-        renditions.insert(name.clone(), encoder.config());
-        let video = hang::catalog::Video {
-            renditions,
-            priority,
-            display: None,
-            rotation: None,
-            flip: None,
-            detection: None,
-        };
+        let mut encoders: Vec<(String, E, hang::TrackProducer)> = Vec::new();
+        let mut renditions_cfg = HashMap::new();
+        for (enc, preset) in renditions.into_iter() {
+            let name = preset.as_name().to_owned();
+            renditions_cfg.insert(name.clone(), enc.config());
+            let track = self.broadcast.create_track(Track { name: name.clone(), priority });
+            encoders.push((name, enc, hang::TrackProducer::new(track)));
+        }
+        let video = hang::catalog::Video { renditions: renditions_cfg, priority, display: None, rotation: None, flip: None, detection: None };
         self.catalog.set_video(Some(video.clone()));
         self.catalog.publish();
-
-        let producer = self.broadcast.create_track(Track { name, priority });
-        let mut producer = hang::TrackProducer::new(producer);
         let mut catalog = self.catalog.clone();
         let shutdown = self.shutdown.child_token();
         let _handle = std::thread::spawn(move || {
-            video_loop(source, encoder, &mut producer, shutdown);
-            producer.inner.close();
-            catalog.set_video(None);
-            catalog.publish();
+            // Fanout loop: read once, encode to all renditions
+            let mut src = source;
+            let format = src.format();
+            loop {
+                if shutdown.is_cancelled() { break; }
+                match src.pop_frame() {
+                    Ok(Some(frame)) => {
+                        for (_, enc, _) in encoders.iter_mut() {
+                            let _ = enc.push_frame(&format, crate::av::VideoFrame { raw: frame.raw.clone() });
+                        }
+                        for (_, enc, prod) in encoders.iter_mut() {
+                            while let Ok(Some(pkt)) = enc.pop_packet() { prod.write(pkt); }
+                        }
+                    }
+                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(5)),
+                    Err(err) => { tracing::error!("video source failed: {err:#}"); break; }
+                }
+            }
+            for (_, _, mut prod) in encoders.into_iter() { prod.inner.close(); }
+            catalog.set_video(None); catalog.publish();
         });
         Ok(())
     }
 
-    pub fn set_audio(
-        &mut self,
-        source: impl AudioSource,
-        encoder: impl AudioEncoder,
-    ) -> Result<()> {
+    pub fn set_audio<I, E>(&mut self, source: impl AudioSource + Send + 'static, renditions: I) -> Result<()>
+    where
+        I: IntoIterator<Item = (E, crate::av::AudioPreset)>,
+        E: AudioEncoder + Send + 'static,
+    {
         let priority = 2u8;
-        let name = "audio".to_owned();
-        let mut renditions = HashMap::new();
-        renditions.insert(name.clone(), encoder.config());
-        let audio = hang::catalog::Audio {
-            renditions,
-            priority,
-            captions: None,
-            speaking: None,
-        };
+        let mut encoders: Vec<(String, E, hang::TrackProducer)> = Vec::new();
+        let mut renditions_cfg = HashMap::new();
+        for (enc, preset) in renditions.into_iter() {
+            let name = format!("{:}", preset); // uses Display from strum
+            renditions_cfg.insert(name.clone(), enc.config());
+            let track = self.broadcast.create_track(Track { name: name.clone(), priority });
+            encoders.push((name, enc, hang::TrackProducer::new(track)));
+        }
+        let audio = hang::catalog::Audio { renditions: renditions_cfg, priority, captions: None, speaking: None };
         self.catalog.set_audio(Some(audio));
         self.catalog.publish();
-
-        let producer = self.broadcast.create_track(Track { name, priority });
-        let mut producer = hang::TrackProducer::new(producer);
-        let shutdown = self.shutdown.child_token();
         let mut catalog = self.catalog.clone();
+        let shutdown = self.shutdown.child_token();
         let _handle = std::thread::spawn(move || {
-            audio_loop(source, encoder, &mut producer, shutdown);
-            producer.inner.close();
-            catalog.set_audio(None);
-            catalog.publish();
+            const INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+            let mut src = source;
+            let fmt = src.format();
+            let samples_per_frame = (fmt.sample_rate / 1000) * INTERVAL.as_millis() as u32;
+            let mut buf = vec![0.0f32; samples_per_frame as usize * fmt.channel_count as usize];
+            loop {
+                if shutdown.is_cancelled() { break; }
+                match src.pop_samples(&mut buf) {
+                    Ok(Some(_)) => {
+                        for (_, enc, _) in encoders.iter_mut() { let _ = enc.push_samples(&buf); }
+                        for (_, enc, prod) in encoders.iter_mut() { while let Ok(Some(pkt)) = enc.pop_packet() { prod.write(pkt); } }
+                    }
+                    Ok(None) => std::thread::sleep(INTERVAL),
+                    Err(err) => { tracing::error!("audio source failed: {err:#}"); break; }
+                }
+                std::thread::sleep(INTERVAL);
+            }
+            for (_, _, mut prod) in encoders.into_iter() { prod.inner.close(); }
+            catalog.set_audio(None); catalog.publish();
         });
         Ok(())
     }
@@ -466,24 +489,55 @@ impl ConsumeBroadcast {
     }
 
     pub fn watch(&self, playback_config: &PlaybackConfig) -> Result<WatchTrack> {
+        self.watch_with(playback_config, Quality::Highest)
+    }
+
+    pub fn watch_with(&self, playback_config: &PlaybackConfig, quality: Quality) -> Result<WatchTrack> {
         let info = self.catalog.video.as_ref().context("no video published")?;
-        // TODO: Select
-        let (track_name, config) = info
-            .renditions
-            .iter()
-            .next()
-            .context("no renditions published")?;
+        let (track_name, config) = select_rendition(&info.renditions, quality)
+            .unwrap_or_else(|| info.renditions.iter().next().expect("no renditions"));
         let track = Track {
             name: track_name.to_string(),
             priority: info.priority,
         };
         let consumer = TrackConsumer::new(self.broadcast.subscribe_track(&track));
 
-        let (ctx, frame_rx, resize_tx, packet_tx) =
-            video::DecoderContext::new(self.shutdown.child_token(), playback_config.pixel_format);
-        let _decoder = video::Decoder::new(config, ctx)?;
-        let _task = n0_future::task::spawn(forward_frames(consumer, packet_tx));
-
+        // Select decoder based on codec
+        let (frame_rx, resize_tx) = match &config.codec {
+            hang::catalog::VideoCodec::AV1(_av1) => {
+                let (ctx, frame_rx, resize_tx, packet_tx) =
+                    crate::native::video::DecoderContext::new(
+                        self.shutdown.child_token(),
+                        playback_config.pixel_format,
+                    );
+                let _decoder = crate::native::video::Decoder::new(config, ctx)?;
+                let _task = n0_future::task::spawn(forward_frames(consumer, packet_tx.clone()));
+                // Adapt native frames to the FFmpeg DecodedFrame type used in WatchTrack
+                // Use capacity 1 and drop on overflow to always show the latest frame
+                let (compat_tx, compat_rx) = tokio::sync::mpsc::channel(1);
+                tokio::spawn(async move {
+                    let mut rx = frame_rx;
+                    while let Some(f) = rx.recv().await {
+                        let adapted = video::DecodedFrame { frame: f.frame, timestamp: f.timestamp };
+                        if compat_tx.try_send(adapted).is_err() {
+                            // drop if receiver is busy; keep only the latest frame semantics
+                        }
+                    }
+                });
+                (compat_rx, resize_tx)
+            }
+            _ => {
+                let (ctx, frame_rx, resize_tx, packet_tx) =
+                    crate::video::DecoderContext::new(
+                        self.shutdown.child_token(),
+                        playback_config.pixel_format,
+                    );
+                let _decoder = crate::video::Decoder::new(config, ctx)?;
+                let _task = n0_future::task::spawn(forward_frames(consumer, packet_tx.clone()));
+                (frame_rx, resize_tx)
+            }
+        };
+        
         let watch_track = WatchTrack {
             video_frames: frame_rx,
             resize_tx,
@@ -492,13 +546,13 @@ impl ConsumeBroadcast {
     }
 
     pub async fn listen(&self, audio_ctx: AudioBackend) -> Result<AudioTrack> {
+        self.listen_with(audio_ctx, Quality::Highest).await
+    }
+
+    pub async fn listen_with(&self, audio_ctx: AudioBackend, quality: Quality) -> Result<AudioTrack> {
         let info = self.catalog.audio.as_ref().context("no audio published")?;
-        // TODO: Select
-        let (track_name, config) = info
-            .renditions
-            .iter()
-            .next()
-            .context("no renditions published")?;
+        let (track_name, config) = select_rendition(&info.renditions, quality)
+            .unwrap_or_else(|| info.renditions.iter().next().expect("no renditions"));
         let track = Track {
             name: track_name.to_string(),
             priority: info.priority,
@@ -514,6 +568,25 @@ impl ConsumeBroadcast {
         };
         Ok(audio_track)
     }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum Quality { Highest, High, Mid, Low }
+
+fn select_rendition<'a, T>(r: &'a HashMap<String, T>, q: Quality) -> Option<(&'a String, &'a T)> {
+    let order = match q {
+        Quality::Highest => ["1080p","720p","360p","180p"],
+        Quality::High => ["720p","360p","180p","1080p"],
+        Quality::Mid => ["360p","180p","720p","1080p"],
+        Quality::Low => ["180p","360p","720p","1080p"],
+    };
+    for name in order {
+        if let Some(cfg) = r.get(name) {
+            let key = r.keys().find(|k| k.as_str() == name).unwrap();
+            return Some((key, cfg));
+        }
+    }
+    None
 }
 
 #[derive(Clone, Default)]

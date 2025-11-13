@@ -2,16 +2,14 @@ use std::time::Duration;
 
 use eframe::egui::{self, Color32, Vec2};
 use iroh::Endpoint;
-use iroh_live::{Live, LiveTicket, WatchTrack, audio::AudioBackend, ffmpeg_log_init};
+use clap::{Parser, ValueEnum};
+use iroh_live::{Live, LiveTicket, WatchTrack, audio::AudioBackend};
 use n0_error::{Result, StackResultExt, anyerr};
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
-    ffmpeg_log_init();
-    let ticket_str = std::env::args()
-        .into_iter()
-        .nth(1)
-        .context("missing ticket")?;
+    let cli = Cli::parse();
+    let ticket_str = cli.ticket;
     let ticket = LiveTicket::deserialize(&ticket_str)?;
 
     let audio_ctx = AudioBackend::new();
@@ -29,8 +27,8 @@ fn main() -> Result<()> {
             let mut session = live.connect(ticket.endpoint_id).await?;
             println!("connected!");
             let broadcast = session.consume(&ticket.broadcast_name).await?;
-            let _audio = broadcast.listen(audio_ctx).await?;
-            let video = broadcast.watch(&Default::default())?;
+            let _audio = broadcast.listen_with(audio_ctx, cli.quality.into()).await?;
+            let video = broadcast.watch_with(&Default::default(), cli.quality.into())?;
             n0_error::Ok((endpoint, broadcast, video))
         }
     })?;
@@ -48,6 +46,18 @@ fn main() -> Result<()> {
         }),
     )
     .map_err(|err| anyerr!("eframe failed: {err:#}"))
+}
+
+#[derive(Copy, Clone, ValueEnum, Debug)]
+enum CliQuality { Highest, High, Mid, Low }
+
+impl From<CliQuality> for Quality { fn from(v: CliQuality) -> Self { match v { CliQuality::Highest => Quality::Highest, CliQuality::High => Quality::High, CliQuality::Mid => Quality::Mid, CliQuality::Low => Quality::Low }}}
+
+#[derive(Parser, Debug)]
+struct Cli {
+    ticket: String,
+    #[arg(long, value_enum, default_value_t=CliQuality::Highest)]
+    quality: CliQuality,
 }
 
 struct App {

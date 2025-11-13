@@ -12,11 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::error;
 
-use crate::{
-    PacketSender,
-    ffmpeg_ext::CodecContextExt,
-    video::{Rescaler, StreamClock},
-};
+use crate::{PacketSender, video::Rescaler, video::StreamClock, ffmpeg_ext::CodecContextExt};
 
 pub use crate::av::PixelFormat;
 
@@ -97,8 +93,14 @@ impl Decoder {
                 // Open the decoder and get a typed Video decoder
                 ctx.decoder().video().unwrap()
             }
+            hang::catalog::VideoCodec::AV1(_meta) => {
+                let codec = codec::decoder::find(CodecId::AV1).context("AV1 decoder not found")?;
+                let mut ctx = codec::context::Context::new_with_codec(codec);
+                if let Some(description) = &config.description { ctx.set_extradata(&description)?; }
+                ctx.decoder().video().unwrap()
+            }
             _ => anyhow::bail!(
-                "Unsupported codec {} (only h264 is supported)",
+                "Unsupported codec {} (only h264 and av1 are supported)",
                 config.codec
             ),
         };

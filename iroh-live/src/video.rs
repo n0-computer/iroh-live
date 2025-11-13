@@ -1,11 +1,11 @@
 mod capture;
-mod decoder;
-mod encoder;
-mod util;
+pub mod decoder;
+pub mod encoder;
+pub mod util;
 
 pub use capture::*;
 pub use decoder::*;
 pub use encoder::*;
-pub(crate) use util::*;
+pub use util::{Rescaler, StreamClock};
 
 mod base {}
