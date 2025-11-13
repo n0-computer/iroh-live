@@ -63,6 +63,58 @@ impl OutputControl {
     }
 }
 
+// Generic A/V trait integrations
+use crate::av as lav;
+
+/// A simple AudioSource that reads from the default microphone via Firewheel.
+pub struct MicrophoneSource {
+    handle: InputStreamHandle,
+    format: lav::AudioFormat,
+}
+
+impl MicrophoneSource {
+    pub(crate) fn new(handle: InputStreamHandle, sample_rate: u32, channel_count: u32) -> Self {
+        Self {
+            handle,
+            format: lav::AudioFormat {
+                sample_rate,
+                channel_count,
+            },
+        }
+    }
+}
+
+impl lav::AudioSource for MicrophoneSource {
+    fn format(&self) -> lav::AudioFormat {
+        self.format
+    }
+
+    fn pop_samples(&mut self, buf: &mut [f32]) -> anyhow::Result<Option<usize>> {
+        use firewheel::nodes::stream::ReadStatus;
+        let mut handle = self.handle.lock().expect("poisoned");
+        match handle.read_interleaved(buf) {
+            Some(ReadStatus::Ok) => Ok(Some(buf.len())),
+            Some(ReadStatus::InputNotReady) => {
+                tracing::warn!("audio input not ready");
+                // Maintain pacing; still return a frame-sized buffer
+                Ok(Some(buf.len()))
+            }
+            Some(ReadStatus::UnderflowOccurred { num_frames_read }) => {
+                tracing::warn!("audio input underflow: {num_frames_read} frames missing");
+                Ok(Some(buf.len()))
+            }
+            Some(ReadStatus::OverflowCorrected { num_frames_discarded }) => {
+                tracing::warn!("audio input overflow: {num_frames_discarded} frames discarded");
+                Ok(Some(buf.len()))
+            }
+            None => {
+                tracing::warn!("audio input stream is inactive");
+                Ok(None)
+            }
+        }
+    }
+}
+
 pub enum AudioCommand {
     OutputStream {
         config: AudioConfig,
@@ -310,6 +362,15 @@ impl AudioBackend {
         let (tx, rx) = mpsc::channel(32);
         let _handle = std::thread::spawn(move || AudioDriver::new(rx).run());
         Self { tx }
+    }
+
+    /// Convenience: produce a default microphone audio source (48kHz stereo).
+    /// Uses a blocking call to initialize the input stream synchronously.
+    pub async fn default_microphone(&self) -> anyhow::Result<MicrophoneSource> {
+        const SAMPLE_RATE: u32 = 48_000;
+        const CHANNELS: u32 = 2;
+        let handle = self.input_stream(SAMPLE_RATE, CHANNELS).await?;
+        Ok(MicrophoneSource::new(handle, SAMPLE_RATE, CHANNELS))
     }
 
     pub async fn output_stream(&self, config: AudioConfig) -> Result<OutputStreamHandle> {

@@ -21,7 +21,7 @@ fn main() -> Result<()> {
         .unwrap();
 
     println!("connecting to {ticket} ...");
-    let (_broadcast, video) = rt.block_on({
+    let (endpoint, _broadcast, video) = rt.block_on({
         let audio_ctx = audio_ctx.clone();
         async move {
             let endpoint = Endpoint::bind().await?;
@@ -31,7 +31,7 @@ fn main() -> Result<()> {
             let broadcast = session.consume(&ticket.broadcast_name).await?;
             let _audio = broadcast.listen(audio_ctx).await?;
             let video = broadcast.watch(&Default::default())?;
-            n0_error::Ok((broadcast, video))
+            n0_error::Ok((endpoint, broadcast, video))
         }
     })?;
 
@@ -39,7 +39,11 @@ fn main() -> Result<()> {
         "IrohLive",
         eframe::NativeOptions::default(),
         Box::new(|cc| {
-            let app = App::new(&cc.egui_ctx, video);
+            let app = App {
+                video: VideoView::new(&cc.egui_ctx, video),
+                endpoint,
+                rt,
+            };
             Ok(Box::new(app))
         }),
     )
@@ -48,22 +52,26 @@ fn main() -> Result<()> {
 
 struct App {
     video: VideoView,
-}
-
-impl App {
-    fn new(ctx: &egui::Context, track: WatchTrack) -> Self {
-        Self {
-            video: VideoView::new(ctx, track),
-        }
-    }
+    endpoint: Endpoint,
+    rt: tokio::runtime::Runtime,
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(30)); // min 30 fps
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let avail = ui.available_size();
-            ui.add_sized(avail, self.video.render(ctx, avail));
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().inner_margin(0.0).outer_margin(0.0))
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                let avail = ui.available_size();
+                ui.add_sized(avail, self.video.render(ctx, avail));
+            });
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        let endpoint = self.endpoint.clone();
+        self.rt.block_on(async move {
+            endpoint.close().await;
         });
     }
 }

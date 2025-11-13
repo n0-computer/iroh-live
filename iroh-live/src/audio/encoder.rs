@@ -10,7 +10,7 @@ use hang::catalog::AudioConfig;
 use tokio_util::sync::CancellationToken;
 use tracing::{trace, warn};
 
-use crate::{audio::AudioBackend, ffmpeg_ext::CodecContextExt};
+use crate::{audio::AudioBackend, av as lav, ffmpeg_ext::CodecContextExt};
 
 const SAMPLE_RATE: u32 = 48_000;
 const BITRATE: u64 = 128_000; // 128 kbps
@@ -140,6 +140,25 @@ impl AudioEncoder for OpusEncoder {
                 Ok(Poll::Pending)
             }
             Err(e) => Err(e.into()),
+        }
+    }
+}
+
+// Implement the generic av::AudioEncoder for OpusEncoder
+impl lav::AudioEncoder for OpusEncoder {
+    fn config(&self) -> hang::catalog::AudioConfig {
+        <Self as AudioEncoder>::config(self)
+    }
+
+    fn push_samples(&mut self, samples: &[f32]) -> anyhow::Result<()> {
+        <Self as AudioEncoder>::push_samples(self, samples)
+    }
+
+    fn pop_packet(&mut self) -> anyhow::Result<Option<hang::Frame>> {
+        // Try once; if Pending, return None to keep the caller simple.
+        match <Self as AudioEncoder>::poll_frame(self)? {
+            std::task::Poll::Ready(v) => Ok(v),
+            std::task::Poll::Pending => Ok(None),
         }
     }
 }
