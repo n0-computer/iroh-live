@@ -19,7 +19,7 @@ use firewheel::{
 };
 use hang::catalog::AudioConfig;
 use tokio::sync::{mpsc, mpsc::error::TryRecvError, oneshot};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 mod decoder;
 mod encoder;
@@ -129,10 +129,11 @@ impl AudioDriver {
         loop {
             let tick = Instant::now();
             if self.recv().is_err() {
+                info!("closing audio driver: command channel closed");
                 break;
             }
             if let Err(e) = self.cx.update() {
-                tracing::error!("audio backend error: {:?}", &e);
+                error!("audio backend error: {:?}", &e);
 
                 // if let UpdateError::StreamStoppedUnexpectedly(_) = e {
                 //     // Notify the stream node handles that the output stream has stopped.
@@ -209,13 +210,23 @@ impl AudioDriver {
             }),
         );
         let graph_out_node_id = self.cx.graph_out_node_id();
+        let graph_out_info = self
+            .cx
+            .node_info(graph_out_node_id)
+            .context("missing audio output node")?;
+        let layout: &[(PortIdx, PortIdx)] = match (
+            config.channel_count,
+            graph_out_info.info.channel_config.num_inputs.get(),
+        ) {
+            (_, 0) => anyhow::bail!("audio output has no channels"),
+            (0, _) => anyhow::bail!("audio stream has no channels"),
+            (1, 2) => &[(0, 0), (0, 1)],
+            (2, 2) => &[(0, 0), (1, 1)],
+            (_, 1) => &[(0, 0)],
+            _ => &[(0, 0), (1, 1)],
+        };
         self.cx
-            .connect(
-                stream_writer_id,
-                graph_out_node_id,
-                &[(0, 0), (1, 1)],
-                false,
-            )
+            .connect(stream_writer_id, graph_out_node_id, layout, false)
             .unwrap();
         let output_stream_sample_rate = self.cx.stream_info().unwrap().sample_rate;
         let event = self
@@ -231,6 +242,7 @@ impl AudioDriver {
                 },
             )
             .unwrap();
+        info!("started output stream");
         self.cx.queue_event_for(stream_writer_id, event.into());
         // Wrap the handles in an `Arc<Mutex<T>>>` so that we can send them to other threads.
         let handle = self
@@ -252,19 +264,21 @@ impl AudioDriver {
             }),
         );
         let graph_in_node_id = self.cx.graph_in_node_id();
-        let info = self
+        let graph_in_info = self
             .cx
             .node_info(graph_in_node_id)
             .context("missing audio input node")?;
 
-        let layout: &[(PortIdx, PortIdx)] =
-            match (info.info.channel_config.num_outputs.get(), channel_count) {
-                (0, _) => anyhow::bail!("audio input has no channels"),
-                (1, 2) => &[(0, 0), (0, 1)],
-                (2, 2) => &[(0, 0), (1, 1)],
-                (_, 1) => &[(0, 0)],
-                _ => &[(0, 0), (1, 1)],
-            };
+        let layout: &[(PortIdx, PortIdx)] = match (
+            graph_in_info.info.channel_config.num_outputs.get(),
+            channel_count,
+        ) {
+            (0, _) => anyhow::bail!("audio input has no channels"),
+            (1, 2) => &[(0, 0), (0, 1)],
+            (2, 2) => &[(0, 0), (1, 1)],
+            (_, 1) => &[(0, 0)],
+            _ => &[(0, 0), (1, 1)],
+        };
         self.cx
             .connect(graph_in_node_id, stream_reader_id, layout, false)
             .unwrap();

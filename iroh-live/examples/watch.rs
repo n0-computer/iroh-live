@@ -21,15 +21,18 @@ fn main() -> Result<()> {
         .unwrap();
 
     println!("connecting to {ticket} ...");
-    let (_broadcast, video) = rt.block_on(async move {
-        let endpoint = Endpoint::bind().await?;
-        let live = Live::new(endpoint.clone());
-        let mut session = live.connect(ticket.endpoint_id).await?;
-        println!("connected!");
-        let broadcast = session.consume(&ticket.broadcast_name).await?;
-        let _audio = broadcast.listen(audio_ctx).await?;
-        let video = broadcast.watch(&Default::default())?;
-        n0_error::Ok((broadcast, video))
+    let (_broadcast, video) = rt.block_on({
+        let audio_ctx = audio_ctx.clone();
+        async move {
+            let endpoint = Endpoint::bind().await?;
+            let live = Live::new(endpoint.clone());
+            let mut session = live.connect(ticket.endpoint_id).await?;
+            println!("connected!");
+            let broadcast = session.consume(&ticket.broadcast_name).await?;
+            let _audio = broadcast.listen(audio_ctx).await?;
+            let video = broadcast.watch(&Default::default())?;
+            n0_error::Ok((broadcast, video))
+        }
     })?;
 
     eframe::run_native(

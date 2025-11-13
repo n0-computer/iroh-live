@@ -11,7 +11,7 @@ use tracing::{Instrument, debug, error_span, info, instrument, warn};
 use web_transport_iroh::Request;
 
 use crate::{
-    audio::{AudioBackend, OpusEncoder, OutputControl},
+    audio::{AudioBackend, AudioEncoder, OpusEncoder, OutputControl},
     video::{CaptureEncoder, CaptureSource, DecodedFrame, PixelFormat},
 };
 

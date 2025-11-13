@@ -3488,6 +3488,7 @@ dependencies = [
  "n0-future",
  "nokhwa",
  "postcard",
+ "rand 0.9.2",
  "serde",
  "tokio",
  "tokio-util",

@@ -4,9 +4,15 @@ use anyhow::{Context, Result};
 use ffmpeg_next::{self as ffmpeg, util::channel_layout::ChannelLayout};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 use crate::{PacketSender, audio::OutputStreamHandle, ffmpeg_ext::CodecContextExt};
+
+// pub trait AudioDecoder {
+//     fn config(&self) -> AudioConfig;
+//     fn push_frame(&mut self, frame: hang::Frame) -> Result<()>;
+//     fn poll_samples(&mut self, buf: &mut [f32]) -> Result<usize>;
+// }
 
 pub fn new_decoder(
     config: &hang::catalog::AudioConfig,
@@ -82,6 +88,7 @@ fn decode_loop(
         if shutdown.is_cancelled() {
             break;
         }
+        trace!("recv frame {}", encoded_frame.payload.len());
         let packet = ffmpeg::Packet::borrow(&encoded_frame.payload);
         match codec.send_packet(&packet) {
             Ok(()) => {}
@@ -136,7 +143,9 @@ fn decode_loop(
                 let cpal_sample_data: &[f32] =
                     bytemuck::cast_slice(&frame.data(0)[..expected_bytes]);
                 handle.push_interleaved(cpal_sample_data);
-                tracing::debug!("pushed samples!");
+                debug!("pushed samples {}", cpal_sample_data.len());
+            } else {
+                warn!("output handle is inactive")
             }
         }
     }
