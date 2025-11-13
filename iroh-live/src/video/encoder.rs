@@ -10,7 +10,7 @@ use ffmpeg::codec;
 use ffmpeg_next::{self as ffmpeg, format::Pixel, frame::Video as VideoFrame};
 use tracing::{debug, info};
 
-use crate::{ffmpeg_ext::CodecContextExt, video::Rescaler};
+use crate::{av as lav, ffmpeg_ext::CodecContextExt, video::Rescaler};
 
 #[derive(Debug, Clone, Copy, Default)]
 // Allow unused because usage is cfg-gated on platform.
@@ -294,6 +294,54 @@ impl H264Encoder {
     pub fn flush(&mut self) -> Result<()> {
         self.encoder.send_eof()?;
         Ok(())
+    }
+}
+
+/// Convenience to build an encoder using a `VideoSource`'s format.
+impl H264Encoder {
+    pub fn for_source(source: &impl lav::VideoSource, fps: u32) -> Result<Self> {
+        let fmt = source.format();
+        let [w, h] = fmt.dimensions;
+        Self::new(w, h, fps)
+    }
+}
+
+impl lav::VideoEncoder for H264Encoder {
+    fn config(&self) -> hang::catalog::VideoConfig {
+        self.video_config().expect("video_config available")
+    }
+
+    fn push_frame(
+        &mut self,
+        format: &lav::VideoFormat,
+        frame: lav::VideoFrame,
+    ) -> anyhow::Result<()> {
+        use ffmpeg_next::util::frame::video::Video as FfFrame;
+        use ffmpeg_next::format::Pixel;
+
+        // Wrap raw RGBA/BGRA data into an ffmpeg frame and encode
+        let pixel = match format.pixel_format {
+            lav::PixelFormat::Rgba => Pixel::RGBA,
+            lav::PixelFormat::Bgra => Pixel::BGRA,
+        };
+        let [w, h] = format.dimensions;
+        let mut ff = FfFrame::new(pixel, w, h);
+        let stride = ff.stride(0) as usize;
+        let row_bytes = (w as usize) * 4;
+        for y in 0..(h as usize) {
+            let dst_off = y * stride;
+            let src_off = y * row_bytes;
+            ff.data_mut(0)[dst_off..dst_off + row_bytes]
+                .copy_from_slice(&frame.raw[src_off..src_off + row_bytes]);
+        }
+        self.encode_frame(ff)
+    }
+
+    fn pop_packet(&mut self) -> anyhow::Result<Option<hang::Frame>> {
+        match self.receive_packet()? {
+            std::task::Poll::Ready(v) => Ok(v),
+            std::task::Poll::Pending => Ok(None),
+        }
     }
 }
 

@@ -1,21 +1,27 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use hang::{Catalog, CatalogConsumer, CatalogProducer, TrackConsumer};
 use iroh::{Endpoint, EndpointAddr, EndpointId, endpoint::Connection, protocol::ProtocolHandler};
-use moq_lite::{BroadcastConsumer, BroadcastProducer, OriginConsumer, OriginProducer};
+use moq_lite::{BroadcastConsumer, BroadcastProducer, OriginConsumer, OriginProducer, Track};
 use n0_error::{Result, StackResultExt, StdResultExt, anyerr};
 use n0_future::task::{AbortOnDropHandle, JoinSet};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, error_span, info, instrument, warn};
+use tracing::{Instrument, debug, error, error_span, info, instrument, warn};
 use web_transport_iroh::Request;
 
 use crate::{
-    audio::{AudioBackend, AudioEncoder, OpusEncoder, OutputControl},
-    video::{CaptureEncoder, CaptureSource, DecodedFrame, PixelFormat},
+    audio::{AudioBackend, OutputControl},
+    av::{AudioEncoder, AudioSource, VideoEncoder, VideoSource},
+    video::{DecodedFrame, PixelFormat},
 };
 
 pub mod audio;
+pub mod av;
 mod ffmpeg_ext;
 mod ticket;
 pub mod video;
@@ -63,7 +69,7 @@ impl Live {
         self.tx
             .send(ActorMessage::PublishBroadcast(
                 broadcast.name.clone(),
-                broadcast.broadcast.consume(),
+                broadcast.broadcast.clone(),
             ))
             .await
             .std_context("live actor died")?;
@@ -174,7 +180,7 @@ impl LiveSession {
 
 enum ActorMessage {
     HandleSession(LiveSession),
-    PublishBroadcast(BroadcastName, BroadcastConsumer),
+    PublishBroadcast(BroadcastName, BroadcastProducer),
 }
 
 struct SessionState {
@@ -188,7 +194,7 @@ pub type PacketSender = mpsc::Sender<hang::Frame>;
 #[derive(Default)]
 struct Actor {
     shutdown_token: CancellationToken,
-    broadcasts: HashMap<BroadcastName, BroadcastConsumer>,
+    broadcasts: HashMap<BroadcastName, BroadcastProducer>,
     sessions: HashMap<EndpointId, SessionState>,
     session_tasks: JoinSet<(EndpointId, Result<(), moq_lite::Error>)>,
 }
@@ -215,8 +221,8 @@ impl Actor {
     fn handle_message(&mut self, msg: ActorMessage) {
         match msg {
             ActorMessage::HandleSession(msg) => self.handle_incoming_session(msg),
-            ActorMessage::PublishBroadcast(name, consumer) => {
-                self.handle_publish_broadcast(name, consumer)
+            ActorMessage::PublishBroadcast(name, producer) => {
+                self.handle_publish_broadcast(name, producer)
             }
         }
     }
@@ -229,8 +235,8 @@ impl Actor {
             publish,
             subscribe: _,
         } = session;
-        for (name, broadcast_consumer) in self.broadcasts.iter() {
-            publish.publish_broadcast(name.to_string(), broadcast_consumer.clone());
+        for (name, producer) in self.broadcasts.iter() {
+            publish.publish_broadcast(name.to_string(), producer.consume());
         }
         self.sessions.insert(remote, SessionState { publish });
 
@@ -247,13 +253,13 @@ impl Actor {
         });
     }
 
-    fn handle_publish_broadcast(&mut self, name: BroadcastName, consumer: BroadcastConsumer) {
+    fn handle_publish_broadcast(&mut self, name: BroadcastName, producer: BroadcastProducer) {
         for session in self.sessions.values_mut() {
             session
                 .publish
-                .publish_broadcast(name.clone(), consumer.clone());
+                .publish_broadcast(name.clone(), producer.consume());
         }
-        self.broadcasts.insert(name, consumer);
+        self.broadcasts.insert(name, producer);
     }
 }
 
@@ -267,27 +273,29 @@ pub struct PublishBroadcast {
 impl PublishBroadcast {
     pub fn new(name: &str) -> Self {
         let name = name.to_string();
-        let broadcast = moq_lite::Broadcast::produce();
-        let mut producer = broadcast.producer;
+        let mut broadcast = BroadcastProducer::default();
         let catalog = Catalog::default().produce();
-        producer.insert_track(catalog.consumer.track);
+        broadcast.insert_track(catalog.consumer.track);
         let catalog = catalog.producer;
+
         Self {
             name,
-            broadcast: producer,
+            broadcast,
             catalog,
             shutdown: CancellationToken::new(),
         }
     }
 
-    pub fn set_video(&mut self, source: CaptureSource) -> Result<()> {
+    pub fn set_video(
+        &mut self,
+        source: impl VideoSource,
+        encoder: impl VideoEncoder,
+    ) -> Result<()> {
         let priority = 1u8;
-        let track_name = "video";
-        let mut renditions = HashMap::new();
-        let mut encoder = CaptureEncoder::new(source, self.shutdown.clone())?;
-        let config = encoder.encoder.video_config()?;
-        renditions.insert(track_name.to_owned(), config);
+        let name = "video".to_owned();
 
+        let mut renditions = HashMap::new();
+        renditions.insert(name.clone(), encoder.config());
         let video = hang::catalog::Video {
             renditions,
             priority,
@@ -299,38 +307,28 @@ impl PublishBroadcast {
         self.catalog.set_video(Some(video.clone()));
         self.catalog.publish();
 
-        let track = moq_lite::Track {
-            name: track_name.to_owned(),
-            priority,
-        };
-        let track_produce = track.produce();
-        self.broadcast.insert_track(track_produce.consumer);
-        let mut producer = hang::TrackProducer::new(track_produce.producer);
-        // TODO: Use to create watch track.
-        let _consumer = producer.consume();
-        let _encoder_thread = std::thread::spawn({
-            let mut catalog = self.catalog.clone();
-            move || {
-                if let Err(err) = encoder.run(|frame| producer.write(frame)) {
-                    tracing::error!("video capture-and-encode thread failed: {err:?}");
-                }
-                producer.inner.close();
-                catalog.set_video(None);
-                catalog.publish();
-            }
+        let producer = self.broadcast.create_track(Track { name, priority });
+        let mut producer = hang::TrackProducer::new(producer);
+        let mut catalog = self.catalog.clone();
+        let shutdown = self.shutdown.child_token();
+        let _handle = std::thread::spawn(move || {
+            video_loop(source, encoder, &mut producer, shutdown);
+            producer.inner.close();
+            catalog.set_video(None);
+            catalog.publish();
         });
         Ok(())
     }
 
-    pub fn set_audio(&mut self, audio_ctx: AudioBackend) -> Result<()> {
-        let encoder = OpusEncoder::stereo()?;
-        let config = encoder.config();
-
+    pub fn set_audio(
+        &mut self,
+        source: impl AudioSource,
+        encoder: impl AudioEncoder,
+    ) -> Result<()> {
         let priority = 2u8;
-        let track_name = "audio";
+        let name = "audio".to_owned();
         let mut renditions = HashMap::new();
-        renditions.insert(track_name.to_string(), config.clone());
-
+        renditions.insert(name.clone(), encoder.config());
         let audio = hang::catalog::Audio {
             renditions,
             priority,
@@ -340,23 +338,12 @@ impl PublishBroadcast {
         self.catalog.set_audio(Some(audio));
         self.catalog.publish();
 
-        let track = moq_lite::Track {
-            name: track_name.to_owned(),
-            priority,
-        };
-        let track_produce = track.produce();
-        // Setup track producers
-        self.broadcast.insert_track(track_produce.consumer);
-        let mut producer = hang::TrackProducer::new(track_produce.producer);
-
-        let mut catalog = self.catalog.clone();
+        let producer = self.broadcast.create_track(Track { name, priority });
+        let mut producer = hang::TrackProducer::new(producer);
         let shutdown = self.shutdown.child_token();
-        let _encoder_thread = std::thread::spawn(move || {
-            if let Err(err) = audio::capture_and_encode(audio_ctx, encoder, shutdown, |frame| {
-                producer.write(frame)
-            }) {
-                tracing::warn!("audio capture-and-encode thread failed: {err:?}");
-            }
+        let mut catalog = self.catalog.clone();
+        let _handle = std::thread::spawn(move || {
+            audio_loop(source, encoder, &mut producer, shutdown);
             producer.inner.close();
             catalog.set_audio(None);
             catalog.publish();
@@ -365,9 +352,85 @@ impl PublishBroadcast {
     }
 }
 
+fn audio_loop(
+    mut source: impl AudioSource,
+    mut encoder: impl AudioEncoder,
+    producer: &mut hang::TrackProducer,
+    shutdown: CancellationToken,
+) {
+    // 20ms framing to align with typical Opus config (48kHz → 960 samples/ch)
+    const INTERVAL: Duration = Duration::from_millis(20);
+    let config = encoder.config();
+    let samples_per_frame = (config.sample_rate / 1000) * INTERVAL.as_millis() as u32;
+    let mut buf = vec![0.0f32; samples_per_frame as usize * config.channel_count as usize];
+    loop {
+        if shutdown.is_cancelled() {
+            break;
+        }
+        let start = Instant::now();
+        match source.pop_samples(&mut buf) {
+            Ok(Some(n)) => {
+                // Expect a full frame; if shorter, zero-pad via slice len
+                let n = n.min(buf.len());
+                if let Err(err) = encoder.push_samples(&buf[..n]) {
+                    error!("audio push_samples failed: {err:#}");
+                    break;
+                }
+                while let Ok(Some(pkt)) = encoder.pop_packet() {
+                    producer.write(pkt);
+                }
+            }
+            Ok(None) => {
+                // keep pacing
+            }
+            Err(err) => {
+                error!("audio source failed: {err:#}");
+                break;
+            }
+        }
+        let sleep = INTERVAL.saturating_sub(start.elapsed());
+        std::thread::sleep(sleep);
+    }
+    // drain
+    while let Ok(Some(pkt)) = encoder.pop_packet() {
+        producer.write(pkt);
+    }
+}
+
+fn video_loop(
+    mut source: impl VideoSource + Send + 'static,
+    mut encoder: impl VideoEncoder + Send + 'static,
+    producer: &mut hang::TrackProducer,
+    shutdown: CancellationToken,
+) {
+    let format = source.format();
+    loop {
+        if shutdown.is_cancelled() {
+            break;
+        }
+        match source.pop_frame() {
+            Ok(Some(frame)) => {
+                if let Err(err) = encoder.push_frame(&format, frame) {
+                    error!("video encoder failed: {err:#}");
+                    break;
+                }
+                while let Ok(Some(pkt)) = encoder.pop_packet() {
+                    producer.write(pkt);
+                }
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            Err(err) => {
+                error!("video source failed: {err:#}");
+                break;
+            }
+        }
+    }
+}
+
 impl Drop for PublishBroadcast {
     fn drop(&mut self) {
         self.shutdown.cancel();
+        self.broadcast.close();
     }
 }
 
@@ -410,7 +473,7 @@ impl ConsumeBroadcast {
             .iter()
             .next()
             .context("no renditions published")?;
-        let track = moq_lite::Track {
+        let track = Track {
             name: track_name.to_string(),
             priority: info.priority,
         };
@@ -436,7 +499,7 @@ impl ConsumeBroadcast {
             .iter()
             .next()
             .context("no renditions published")?;
-        let track = moq_lite::Track {
+        let track = Track {
             name: track_name.to_string(),
             priority: info.priority,
         };

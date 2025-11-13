@@ -1,6 +1,9 @@
 use iroh::{Endpoint, SecretKey, protocol::Router};
 use iroh_live::{
-    Live, PublishBroadcast, audio::AudioBackend, ffmpeg_log_init, video::CaptureSource,
+    Live, PublishBroadcast,
+    audio::{AudioBackend, OpusEncoder},
+    ffmpeg_log_init,
+    video::{CameraCapturer, H264Encoder},
 };
 use n0_error::StdResultExt;
 
@@ -29,8 +32,16 @@ async fn main() -> n0_error::Result {
         .spawn();
 
     let mut broadcast = PublishBroadcast::new("hello");
-    broadcast.set_audio(audio_ctx)?;
-    broadcast.set_video(CaptureSource::Camera)?;
+
+    // Audio: default microphone + Opus encoder
+    let mic = audio_ctx.default_microphone().await?;
+    let opus = OpusEncoder::stereo()?;
+    broadcast.set_audio(mic, opus)?;
+
+    // Video: camera capture + H264 encoder (fps 30)
+    let camera = CameraCapturer::new()?;
+    let h264 = H264Encoder::for_source(&camera, 30)?;
+    broadcast.set_video(camera, h264)?;
     let ticket = live.publish(&broadcast).await?;
     println!("publishing at {ticket}");
 

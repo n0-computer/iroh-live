@@ -1,63 +1,14 @@
-use std::{task::Poll, time::Instant};
-
 use anyhow::{Context, Result};
 use ffmpeg_next::{
     self as ffmpeg, Error, Packet, codec::Id, format::Pixel, frame::Video as VideoFrame,
 };
 use nokhwa::nokhwa_initialize;
-use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 use xcap::{Monitor, VideoRecorder};
 
-use crate::video::H264Encoder;
+use crate::{av as lav, video::Rescaler};
 
 // mod camera;
-
-#[derive(Debug, derive_more::Display, Clone, Copy, Eq, PartialEq, Hash)]
-pub enum CaptureSource {
-    Screen,
-    Camera,
-}
-
-pub enum Capturer {
-    Screen(ScreenCapturer),
-    Camera(CameraCapturer),
-}
-
-impl Capturer {
-    pub fn new(source: CaptureSource) -> Result<Self> {
-        Ok(match source {
-            CaptureSource::Screen => Self::Screen(ScreenCapturer::new()?),
-            CaptureSource::Camera => Self::Camera(CameraCapturer::new()?),
-        })
-    }
-
-    pub fn width(&mut self) -> u32 {
-        match self {
-            Capturer::Screen(inner) => inner.width,
-            Capturer::Camera(inner) => inner.width,
-        }
-    }
-
-    pub fn height(&mut self) -> u32 {
-        match self {
-            Capturer::Screen(inner) => inner.height,
-            Capturer::Camera(inner) => inner.height,
-        }
-    }
-
-    /// Capture image.
-    ///
-    /// Should be called in a loop, otherwise at least the screen capturer on linux/pipewire
-    /// amasses memory in a channel of frames.
-    pub fn capture(&mut self) -> Result<VideoFrame> {
-        let frame = match self {
-            Self::Screen(capturer) => capturer.capture()?,
-            Self::Camera(capturer) => capturer.capture()?,
-        };
-        Ok(frame)
-    }
-}
 
 pub struct ScreenCapturer {
     pub(crate) _monitor: Monitor,
@@ -129,6 +80,7 @@ pub struct CameraCapturer {
     pub(crate) width: u32,
     pub(crate) height: u32,
     decoder: MjpgDecoder,
+    rescaler: Rescaler,
 }
 
 impl CameraCapturer {
@@ -169,6 +121,7 @@ impl CameraCapturer {
             width: resolution.width(),
             height: resolution.height(),
             decoder: MjpgDecoder::new()?,
+            rescaler: Rescaler::new(ffmpeg::format::Pixel::RGBA, None)?,
         })
     }
 
@@ -186,81 +139,12 @@ impl CameraCapturer {
         // let mut frame = VideoFrame::new(Pixel::RGBA, image.width(), image.height());
         // frame.data_mut(0).copy_from_slice(&image.as_raw());
         let frame = self.decoder.decode_frame(&frame.buffer())?;
+        // Ensure RGBA for downstream consumers
+        let frame = self.rescaler.process(&frame)?.clone();
         // let t_decode = start.elapsed() - t_capture;
 
         // println!("camera frame {t_capture:?} {t_decode:?}",);
         Ok(frame)
-    }
-}
-
-pub struct CaptureEncoder {
-    pub source: CaptureSource,
-    pub capturer: Capturer,
-    pub encoder: H264Encoder,
-    shutdown: CancellationToken,
-    fps: u32,
-}
-
-impl CaptureEncoder {
-    pub fn new(source: CaptureSource, shutdown: CancellationToken) -> Result<Self> {
-        let fps = 30;
-        let mut capturer = Capturer::new(source).context("failed to open capture source")?;
-        let encoder = H264Encoder::new(capturer.width(), capturer.height(), fps)
-            .context("failed to create video encoder")?;
-        Ok(Self {
-            source,
-            capturer,
-            encoder,
-            shutdown,
-            fps,
-        })
-    }
-
-    pub fn run(&mut self, mut on_frame: impl FnMut(hang::Frame)) -> Result<()> {
-        let interval = std::time::Duration::from_secs(1) / self.fps; // ~30 FPS
-        let mut i = 0;
-        'run: loop {
-            let start = Instant::now();
-            // Check shutdown before each frame capture
-            if self.shutdown.is_cancelled() {
-                debug!("Video capture shutdown requested");
-                break;
-            }
-
-            let frame = self.capturer.capture()?;
-            let t_capture = start.elapsed();
-            self.encoder.encode_frame(frame)?;
-            let t_encode = start.elapsed() - t_capture;
-            while let Poll::Ready(frame) = self.encoder.receive_packet()? {
-                match frame {
-                    Some(frame) => on_frame(frame),
-                    None => break 'run,
-                }
-            }
-            let t_fwd = start.elapsed() - t_encode - t_capture;
-            let t_total = start.elapsed();
-            let t_sleep = interval.saturating_sub(start.elapsed());
-            if i % 20 == 0 {
-                tracing::trace!(
-                    ?t_capture,
-                    ?t_encode,
-                    ?t_fwd,
-                    ?t_total,
-                    ?t_sleep,
-                    "source {} frame {i}",
-                    self.source
-                );
-            }
-            std::thread::sleep(interval.saturating_sub(start.elapsed()));
-            i += 1;
-        }
-
-        // Flush remaining frames on shutdown
-        self.encoder.flush()?;
-        while let Poll::Ready(Some(frame)) = self.encoder.receive_packet()? {
-            on_frame(frame);
-        }
-        Ok(())
     }
 }
 
@@ -313,5 +197,51 @@ impl MjpgDecoder {
             _ => {}
         }
         Ok(frame)
+    }
+}
+
+// Copy plane 0 honoring stride into a tightly packed RGBA buffer
+fn rgba_bytes_from_frame(frame: &ffmpeg_next::frame::Video) -> Vec<u8> {
+    let width = frame.width();
+    let height = frame.height();
+    let stride = frame.stride(0) as usize;
+    let row_bytes = (width as usize) * 4;
+    let src = frame.data(0);
+    let mut out = vec![0u8; row_bytes * (height as usize)];
+    for y in 0..(height as usize) {
+        let src_off = y * stride;
+        let dst_off = y * row_bytes;
+        out[dst_off..dst_off + row_bytes].copy_from_slice(&src[src_off..src_off + row_bytes]);
+    }
+    out
+}
+
+impl lav::VideoSource for ScreenCapturer {
+    fn format(&self) -> lav::VideoFormat {
+        lav::VideoFormat {
+            pixel_format: lav::PixelFormat::Rgba,
+            dimensions: [self.width, self.height],
+        }
+    }
+
+    fn pop_frame(&mut self) -> anyhow::Result<Option<lav::VideoFrame>> {
+        let frame = self.capture()?; // already RGBA
+        let raw = rgba_bytes_from_frame(&frame);
+        Ok(Some(lav::VideoFrame { raw }))
+    }
+}
+
+impl lav::VideoSource for CameraCapturer {
+    fn format(&self) -> lav::VideoFormat {
+        lav::VideoFormat {
+            pixel_format: lav::PixelFormat::Rgba,
+            dimensions: [self.width, self.height],
+        }
+    }
+
+    fn pop_frame(&mut self) -> anyhow::Result<Option<lav::VideoFrame>> {
+        let frame = self.capture()?; // converted to RGBA via rescaler
+        let raw = rgba_bytes_from_frame(&frame);
+        Ok(Some(lav::VideoFrame { raw }))
     }
 }

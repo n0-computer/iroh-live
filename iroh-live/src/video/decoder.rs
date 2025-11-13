@@ -18,6 +18,8 @@ use crate::{
     video::{Rescaler, StreamClock},
 };
 
+pub use crate::av::PixelFormat;
+
 pub type FrameReceiver = mpsc::Receiver<DecodedFrame>;
 pub type ResizeSender = mpsc::UnboundedSender<(u32, u32)>;
 
@@ -30,13 +32,6 @@ impl DecodedFrame {
     pub fn img(&self) -> &RgbaImage {
         self.frame.buffer()
     }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub enum PixelFormat {
-    #[default]
-    Rgba,
-    Bgra,
 }
 
 impl From<PixelFormat> for Pixel {
