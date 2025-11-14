@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use ffmpeg::codec;
 use ffmpeg_next::{self as ffmpeg, format::Pixel, frame::Video as VideoFrame};
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 use crate::{av as lav, av::VideoEncoder, ffmpeg_ext::CodecContextExt, video::Rescaler};
 
@@ -314,6 +314,7 @@ impl VideoEncoder for H264Encoder {
         format: &lav::VideoFormat,
         frame: lav::VideoFrame,
     ) -> anyhow::Result<()> {
+        trace!(len = frame.raw.len(), ?format, "push frame");
         use ffmpeg_next::format::Pixel;
         use ffmpeg_next::frame::Video as FfFrame;
 

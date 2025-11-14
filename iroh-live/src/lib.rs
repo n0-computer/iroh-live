@@ -331,7 +331,7 @@ impl PublishBroadcast {
     {
         self.video_state = None;
         let priority = 1u8;
-        let (tx, rx) = tokio::sync::watch::channel(crate::av::VideoFrame { raw: Vec::new() });
+        let (tx, rx) = tokio::sync::watch::channel(None);
         let source_format = source.format();
         let shutdown = self.shutdown.child_token();
         // capture loop
@@ -345,7 +345,7 @@ impl PublishBroadcast {
                     }
                     match source.pop_frame() {
                         Ok(Some(frame)) => {
-                            let _ = tx.send(frame);
+                            let _ = tx.send(Some(frame));
                         }
                         Ok(None) => std::thread::sleep(std::time::Duration::from_millis(5)),
                         Err(_) => break,
@@ -481,8 +481,8 @@ impl ConsumeBroadcast {
         Ok(())
     }
 
-    pub fn watch(&self, playback_config: &PlaybackConfig) -> Result<WatchTrack> {
-        self.watch_with(playback_config, Quality::Highest, Backend::Native)
+    pub fn watch(&self) -> Result<WatchTrack> {
+        self.watch_with(&Default::default(), Quality::Highest, Backend::Native)
     }
 
     pub fn watch_with(
@@ -509,11 +509,13 @@ impl ConsumeBroadcast {
             name: name.to_string(),
             priority: video.priority,
         }));
+        let span = info_span!("videodec", %name);
         WatchTrack::spawn::<FfmpegVideoDecoder>(
             consumer,
             &config,
             playback_config,
             self.shutdown.child_token(),
+            span,
         )
     }
     pub fn listen(&self, output: impl AudioSink) -> Result<AudioTrack> {
@@ -521,6 +523,7 @@ impl ConsumeBroadcast {
     }
 
     pub fn listen_with(&self, quality: Quality, output: impl AudioSink) -> Result<AudioTrack> {
+        debug!(catalog=?self.catalog,"catalog");
         let info = self.catalog.audio.as_ref().context("no audio published")?;
         let track_name =
             select_audio_rendition(&info.renditions, quality).context("no audio renditions")?;
@@ -534,11 +537,13 @@ impl ConsumeBroadcast {
             name: name.to_string(),
             priority: audio.priority,
         }));
+        let span = info_span!("audiodec", %name);
         AudioTrack::spawn::<FfmpegAudioDecoder>(
             consumer,
-            config,
+            config.clone(),
             output,
             self.shutdown.child_token(),
+            span,
         )
     }
 
@@ -601,19 +606,25 @@ pub struct AudioTrack {
 impl AudioTrack {
     fn spawn<D: AudioDecoder>(
         consumer: TrackConsumer,
-        config: &AudioConfig,
+        config: AudioConfig,
         output: impl AudioSink,
         shutdown: CancellationToken,
+        span: Span,
     ) -> Result<Self> {
+        let _guard = span.enter();
         let (packet_tx, packet_rx) = mpsc::channel(32);
         let output_format = output.format()?;
-        let decoder = D::new(config, output_format)?;
+        info!(?config, "audio thread start");
+        let decoder = D::new(&config, output_format)?;
         let thread = std::thread::spawn({
             let shutdown = shutdown.clone();
+            let span = span.clone();
             move || {
+                let _guard = span.enter();
                 if let Err(err) = Self::run_loop(decoder, packet_rx, output, &shutdown) {
                     error!("audio decoder failed: {err:#}");
                 }
+                info!("audio decoder thread stop");
             }
         });
         let task = tokio::spawn(forward_frames(consumer, packet_tx));
@@ -632,17 +643,21 @@ impl AudioTrack {
     ) -> Result<()> {
         let mut last_timestamp = None;
         while let Some(packet) = packet_rx.blocking_recv() {
+            debug!(len = packet.payload.len(), ts=?packet.timestamp, "recv packet");
             let timestamp = packet.timestamp;
             if shutdown.is_cancelled() {
+                debug!("stop audio thread: cancelled");
                 break;
             }
             decoder.push_packet(packet)?;
             if let Some(samples) = decoder.pop_samples()? {
+                debug!("decoded {}", samples.len());
                 let delay = match last_timestamp {
                     None => Duration::default(),
                     Some(last_timestamp) => timestamp.saturating_sub(last_timestamp),
                 };
                 if delay > Duration::ZERO {
+                    debug!("sleep {delay:?}");
                     std::thread::sleep(delay);
                 }
                 sink.push_samples(samples)?;
@@ -685,17 +700,22 @@ impl WatchTrack {
         config: &hang::catalog::VideoConfig,
         playback_config: &PlaybackConfig,
         shutdown: CancellationToken,
+        span: Span,
     ) -> Result<Self> {
         let (packet_tx, packet_rx) = mpsc::channel(32);
         let (frame_tx, frame_rx) = mpsc::channel(32);
         let viewport = n0_watcher::Watchable::new((1u32, 1u32));
         let viewport_watcher = viewport.watch();
 
+        let _guard = span.enter();
         // TODO: support native.
+        debug!(?config, "video decoder start");
         let decoder = D::new(config, playback_config)?;
         let thread = std::thread::spawn({
             let shutdown = shutdown.clone();
+            let span = span.clone();
             move || {
+                let _guard = span.enter();
                 if let Err(err) =
                     Self::run_loop(&shutdown, packet_rx, frame_tx, viewport_watcher, decoder)
                 {
@@ -732,8 +752,10 @@ impl WatchTrack {
                 let (w, h) = viewport_watcher.peek();
                 decoder.set_viewport(*w, *h);
             }
-            decoder.push_packet(packet)?;
-            while let Some(frame) = decoder.pop_frame()? {
+            decoder
+                .push_packet(packet)
+                .context("failed to push packet")?;
+            while let Some(frame) = decoder.pop_frame().context("failed to pop frame")? {
                 if frame_tx.blocking_send(frame).is_err() {
                     break;
                 }
@@ -796,38 +818,44 @@ pub struct EncoderThread {
 
 impl EncoderThread {
     pub fn spawn_video(
-        mut frames_rx: tokio::sync::watch::Receiver<crate::av::VideoFrame>,
+        mut frames_rx: tokio::sync::watch::Receiver<Option<crate::av::VideoFrame>>,
         mut encoder: impl VideoEncoder + Send + 'static,
         mut producer: hang::TrackProducer,
         format: crate::av::VideoFormat,
         shutdown: CancellationToken,
         span: Span,
     ) -> Self {
-        let sd = shutdown.clone();
-        let handle = std::thread::spawn(move || {
-            let _guard = span.enter();
-            tracing::debug!(
-                src_format = ?format,
-                dst_config = ?encoder.config(),
-                "video encoder thread start"
-            );
-            let framerate = encoder.config().framerate.unwrap_or(30.0);
-            let interval = Duration::from_secs_f64(1. / framerate);
-            loop {
-                let start = Instant::now();
-                if sd.is_cancelled() {
-                    break;
+        let handle = std::thread::spawn({
+            let shutdown = shutdown.clone();
+            move || {
+                let _guard = span.enter();
+                tracing::debug!(
+                    src_format = ?format,
+                    dst_config = ?encoder.config(),
+                    "video encoder thread start"
+                );
+                let framerate = encoder.config().framerate.unwrap_or(30.0);
+                let interval = Duration::from_secs_f64(1. / framerate);
+                loop {
+                    let start = Instant::now();
+                    if shutdown.is_cancelled() {
+                        debug!("stop video encoder: cancelled");
+                        break;
+                    }
+                    let frame = frames_rx.borrow_and_update().clone();
+                    if let Some(frame) = frame {
+                        if let Err(err) = encoder.push_frame(&format, frame) {
+                            warn!("video encoder failed: {err:#}");
+                            break;
+                        };
+                        while let Ok(Some(pkt)) = encoder.pop_packet() {
+                            producer.write(pkt);
+                        }
+                    }
+                    std::thread::sleep(interval.saturating_sub(start.elapsed()));
                 }
-                let frame = frames_rx.borrow_and_update().clone();
-                if encoder.push_frame(&format, frame).is_err() {
-                    break;
-                }
-                while let Ok(Some(pkt)) = encoder.pop_packet() {
-                    producer.write(pkt);
-                }
-                std::thread::sleep(interval.saturating_sub(start.elapsed()));
+                tracing::debug!("video encoder thread stop");
             }
-            tracing::debug!("video encoder thread stop");
         });
         Self {
             _thread_handle: handle,
