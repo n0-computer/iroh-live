@@ -19,21 +19,67 @@ use firewheel::{
 };
 use hang::catalog::AudioConfig;
 use tokio::sync::{mpsc, mpsc::error::TryRecvError, oneshot};
-use tracing::{error, info, warn};
+use tracing::{error, info, trace, warn};
 
 // Keep the FFmpeg-based modules available for re-export under `crate::ffmpeg`
 pub mod decoder;
 pub mod encoder;
 
-// Native (non-FFmpeg) audio codecs
-pub use crate::native::audio::*;
+// Generic A/V trait integrations
+use crate::av::{self as lav, AudioFormat, AudioSink};
 
 pub type OutputStreamHandle = Arc<Mutex<StreamWriterState>>;
 pub type InputStreamHandle = Arc<Mutex<StreamReaderState>>;
 
+#[derive(Clone)]
 pub struct OutputControl {
     handle: OutputStreamHandle,
     paused: Arc<AtomicBool>,
+}
+
+impl AudioSink for OutputControl {
+    fn format(&self) -> Result<AudioFormat> {
+        let info = self.handle.lock().expect("poisoned");
+        let sample_rate = info
+            .sample_rate()
+            .context("output stream misses sample rate")?
+            .get();
+        let channel_count = info.num_channels().get().get();
+        Ok(AudioFormat {
+            sample_rate,
+            channel_count,
+        })
+    }
+
+    fn push_samples(&mut self, samples: &[f32]) -> Result<()> {
+        let mut handle = self.handle.lock().unwrap();
+
+        // If this happens excessively in Release mode, you may want to consider
+        // increasing [`StreamWriterConfig::channel_config.latency_seconds`].
+        if handle.underflow_occurred() {
+            warn!("Underflow occured in stream writer node!");
+        }
+
+        // If this happens excessively in Release mode, you may want to consider
+        // increasing [`StreamWriterConfig::channel_config.capacity_seconds`]. For
+        // example, if you are streaming data from a network, you may want to
+        // increase the capacity to several seconds.
+        if handle.overflow_occurred() {
+            warn!("Overflow occured in stream writer node!");
+        }
+
+        // Wait until the node's processor is ready to receive data.
+        if handle.is_ready() {
+            // let expected_bytes =
+            //     frame.samples() * frame.channels() as usize * core::mem::size_of::<f32>();
+            // let cpal_sample_data: &[f32] = bytemuck::cast_slice(&frame.data(0)[..expected_bytes]);
+            handle.push_interleaved(samples);
+            trace!("pushed samples {}", samples.len());
+        } else {
+            warn!("output handle is inactive")
+        }
+        Ok(())
+    }
 }
 
 impl OutputControl {
@@ -64,21 +110,18 @@ impl OutputControl {
     }
 }
 
-// Generic A/V trait integrations
-use crate::av as lav;
-
 /// A simple AudioSource that reads from the default microphone via Firewheel.
 #[derive(Clone)]
 pub struct MicrophoneSource {
     handle: InputStreamHandle,
-    format: lav::AudioFormat,
+    format: AudioFormat,
 }
 
 impl MicrophoneSource {
     pub(crate) fn new(handle: InputStreamHandle, sample_rate: u32, channel_count: u32) -> Self {
         Self {
             handle,
-            format: lav::AudioFormat {
+            format: AudioFormat {
                 sample_rate,
                 channel_count,
             },
@@ -87,7 +130,7 @@ impl MicrophoneSource {
 }
 
 impl lav::AudioSource for MicrophoneSource {
-    fn format(&self) -> lav::AudioFormat {
+    fn format(&self) -> AudioFormat {
         self.format
     }
 
@@ -105,7 +148,9 @@ impl lav::AudioSource for MicrophoneSource {
                 tracing::warn!("audio input underflow: {num_frames_read} frames missing");
                 Ok(Some(buf.len()))
             }
-            Some(ReadStatus::OverflowCorrected { num_frames_discarded }) => {
+            Some(ReadStatus::OverflowCorrected {
+                num_frames_discarded,
+            }) => {
                 tracing::warn!("audio input overflow: {num_frames_discarded} frames discarded");
                 Ok(Some(buf.len()))
             }
@@ -119,7 +164,7 @@ impl lav::AudioSource for MicrophoneSource {
 
 pub enum AudioCommand {
     OutputStream {
-        config: AudioConfig,
+        config: Option<AudioConfig>,
         reply: oneshot::Sender<OutputStreamHandle>,
     },
     InputStream {
@@ -232,14 +277,16 @@ impl AudioDriver {
 
     fn handle(&mut self, command: AudioCommand) {
         match command {
-            AudioCommand::OutputStream { config, reply } => match self.output_stream(&config) {
-                Err(err) => {
-                    warn!("failed to create audio output stream: {err:#}")
+            AudioCommand::OutputStream { config, reply } => {
+                match self.output_stream(config.as_ref()) {
+                    Err(err) => {
+                        warn!("failed to create audio output stream: {err:#}")
+                    }
+                    Ok(stream) => {
+                        reply.send(stream).ok();
+                    }
                 }
-                Ok(stream) => {
-                    reply.send(stream).ok();
-                }
-            },
+            }
             AudioCommand::InputStream {
                 sample_rate,
                 channel_count,
@@ -253,12 +300,17 @@ impl AudioDriver {
         }
     }
 
-    fn output_stream(&mut self, config: &hang::catalog::AudioConfig) -> Result<OutputStreamHandle> {
+    fn output_stream(
+        &mut self,
+        config: Option<&hang::catalog::AudioConfig>,
+    ) -> Result<OutputStreamHandle> {
+        let channel_count = config.map(|c| c.channel_count).unwrap_or(2);
+        let sample_rate = config.map(|c| c.sample_rate).unwrap_or(48_000);
         // setup stream
         let stream_writer_id = self.cx.add_node(
             StreamWriterNode,
             Some(StreamWriterConfig {
-                channels: NonZeroChannelCount::new(config.channel_count)
+                channels: NonZeroChannelCount::new(channel_count)
                     .context("channel count may not be zero")?,
                 ..Default::default()
             }),
@@ -269,7 +321,7 @@ impl AudioDriver {
             .node_info(graph_out_node_id)
             .context("missing audio output node")?;
         let layout: &[(PortIdx, PortIdx)] = match (
-            config.channel_count,
+            channel_count,
             graph_out_info.info.channel_config.num_inputs.get(),
         ) {
             (_, 0) => anyhow::bail!("audio output has no channels"),
@@ -288,7 +340,7 @@ impl AudioDriver {
             .node_state_mut::<StreamWriterState>(stream_writer_id)
             .unwrap()
             .start_stream(
-                config.sample_rate.try_into().unwrap(),
+                sample_rate.try_into().unwrap(),
                 output_stream_sample_rate,
                 ResamplingChannelConfig {
                     capacity_seconds: 3.,
@@ -375,10 +427,25 @@ impl AudioBackend {
         Ok(MicrophoneSource::new(handle, SAMPLE_RATE, CHANNELS))
     }
 
+    pub async fn default_speaker(&self) -> anyhow::Result<OutputControl> {
+        let (reply, reply_rx) = oneshot::channel();
+        self.tx
+            .send(AudioCommand::OutputStream {
+                config: None,
+                reply,
+            })
+            .await?;
+        let handle = reply_rx.await?;
+        Ok(OutputControl::new(handle))
+    }
+
     pub async fn output_stream(&self, config: AudioConfig) -> Result<OutputStreamHandle> {
         let (reply, reply_rx) = oneshot::channel();
         self.tx
-            .send(AudioCommand::OutputStream { config, reply })
+            .send(AudioCommand::OutputStream {
+                config: Some(config),
+                reply,
+            })
             .await?;
         let handle = reply_rx.await?;
         Ok(handle)
@@ -387,8 +454,10 @@ impl AudioBackend {
     #[allow(unused)]
     pub fn blocking_output_stream(&self, config: AudioConfig) -> Result<OutputStreamHandle> {
         let (reply, reply_rx) = oneshot::channel();
-        self.tx
-            .blocking_send(AudioCommand::OutputStream { config, reply })?;
+        self.tx.blocking_send(AudioCommand::OutputStream {
+            config: Some(config),
+            reply,
+        })?;
         let handle = reply_rx.blocking_recv()?;
         Ok(handle)
     }

@@ -1,13 +1,12 @@
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use iroh::{Endpoint, SecretKey, protocol::Router};
 use iroh_live::{
     Live, PublishBroadcast,
     audio::AudioBackend,
-    av::{AudioEncoder, AudioPreset, Backend, VideoCodec, VideoEncoder, VideoPreset, VideoSource},
-    native::video::Av1Encoder,
+    av::{AudioEncoder, AudioPreset, Backend, VideoCodec, VideoEncoder, VideoPreset},
     video::{Av1FfmpegEncoder, CameraCapturer, H264Encoder},
 };
-use n0_error::StdResultExt;
+use n0_error::{StdResultExt, bail_any};
 
 #[tokio::main]
 async fn main() -> n0_error::Result {
@@ -37,20 +36,21 @@ async fn main() -> n0_error::Result {
 
     // Audio: default microphone + Opus encoder with preset
     let mic = audio_ctx.default_microphone().await?;
-    let opus = iroh_live::native::audio::OpusEncoder::with_preset(cli.audio_preset)?;
-    broadcast.set_audio(mic, [(opus, cli.audio_preset)])?;
 
     // Video: camera capture + encoders by backend (fps 30)
     let camera = CameraCapturer::new()?;
     let renditions = cli.video_presets.into_iter();
     match (cli.backend, cli.codec) {
-        (Backend::Native, VideoCodec::Av1) => {
-            let encs = renditions.map(|p| (Av1Encoder::with_preset(p).unwrap(), p));
-            broadcast.set_video(camera, encs)?;
-        }
+        (Backend::Native, _) => bail_any!("native backend is unsupported"),
+        // (Backend::Native, VideoCodec::Av1) => {
+        //     let encs = renditions.map(|p| (Av1Encoder::with_preset(p).unwrap(), p));
+        //     broadcast.set_video(camera, encs)?;
+        // }
         (Backend::Ffmpeg, VideoCodec::Av1) => {
-            let encs = renditions.map(|p| (Av1FfmpegEncoder::with_preset(p).unwrap(), p));
-            broadcast.set_video(camera, encs)?;
+            let renditions = renditions.map(|p| (Av1FfmpegEncoder::with_preset(p).unwrap(), p));
+            broadcast.set_video(camera, renditions)?;
+            let opus = iroh_live::ffmpeg::audio::OpusEncoder::with_preset(cli.audio_preset)?;
+            broadcast.set_audio(mic, [(opus, cli.audio_preset)])?;
         }
         (_, VideoCodec::H264) => {
             // Use ffmpeg H264 for both backends for now
@@ -70,9 +70,9 @@ async fn main() -> n0_error::Result {
 
 #[derive(Parser, Debug)]
 struct Cli {
-    #[arg(long, default_value_t=Backend::Native)]
+    #[arg(long, default_value_t=Backend::Ffmpeg)]
     backend: Backend,
-    #[arg(long, default_value_t=VideoCodec::Av1)]
+    #[arg(long, default_value_t=VideoCodec::H264)]
     codec: VideoCodec,
     #[arg(long, value_delimiter=',', default_values_t=[VideoPreset::P720])]
     video_presets: Vec<VideoPreset>,
