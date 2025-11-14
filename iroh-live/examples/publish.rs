@@ -4,9 +4,9 @@ use iroh_live::{
     Live, PublishBroadcast,
     audio::AudioBackend,
     av::{AudioEncoder, AudioPreset, Backend, VideoCodec, VideoEncoder, VideoPreset},
-    video::{Av1FfmpegEncoder, CameraCapturer, H264Encoder},
+    video::{CameraCapturer, H264Encoder},
 };
-use n0_error::{StdResultExt, bail_any};
+use n0_error::StdResultExt;
 
 #[tokio::main]
 async fn main() -> n0_error::Result {

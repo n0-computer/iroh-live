@@ -1,4 +1,3 @@
-use std::str::FromStr;
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -511,6 +510,7 @@ impl ConsumeBroadcast {
         }));
         let span = info_span!("videodec", %name);
         WatchTrack::spawn::<FfmpegVideoDecoder>(
+            name.to_string(),
             consumer,
             &config,
             playback_config,
@@ -539,6 +539,7 @@ impl ConsumeBroadcast {
         }));
         let span = info_span!("audiodec", %name);
         AudioTrack::spawn::<FfmpegAudioDecoder>(
+            name.to_string(),
             consumer,
             config.clone(),
             output,
@@ -547,15 +548,24 @@ impl ConsumeBroadcast {
         )
     }
 
-    pub fn video_renditions(&self) -> Vec<VideoRendition> {
-        let Some(video) = self.catalog.video.as_ref() else {
-            return Vec::new();
-        };
-        video
-            .renditions
-            .iter()
-            .flat_map(|(name, config)| VideoRendition::from_parts(name, config))
-            .collect()
+    pub fn video_renditions(&self) -> impl Iterator<Item = &str> {
+        self.catalog
+            .video
+            .as_ref()
+            .into_iter()
+            .map(|v| v.renditions.iter())
+            .flatten()
+            .map(|(name, _config)| name.as_str())
+    }
+
+    pub fn audio_renditions(&self) -> impl Iterator<Item = &str> {
+        self.catalog
+            .audio
+            .as_ref()
+            .into_iter()
+            .map(|v| v.renditions.iter())
+            .flatten()
+            .map(|(name, _config)| name.as_str())
     }
 }
 
@@ -597,6 +607,7 @@ pub struct PlaybackConfig {
 }
 
 pub struct AudioTrack {
+    name: String,
     // pub handle: audio::OutputControl,
     shutdown: CancellationToken,
     _task_handle: AbortOnDropHandle<()>,
@@ -605,6 +616,7 @@ pub struct AudioTrack {
 
 impl AudioTrack {
     fn spawn<D: AudioDecoder>(
+        name: String,
         consumer: TrackConsumer,
         config: AudioConfig,
         output: impl AudioSink,
@@ -629,10 +641,15 @@ impl AudioTrack {
         });
         let task = tokio::spawn(forward_frames(consumer, packet_tx));
         Ok(Self {
+            name,
             _task_handle: AbortOnDropHandle::new(task),
             _thread_handle: thread,
             shutdown,
         })
+    }
+
+    pub fn rendition(&self) -> &str {
+        &self.name
     }
 
     fn run_loop(
@@ -675,6 +692,7 @@ impl Drop for AudioTrack {
 }
 
 pub struct WatchTrack {
+    rendition: String,
     video_frames: mpsc::Receiver<DecodedFrame>,
     viewport: n0_watcher::Watchable<(u32, u32)>,
     shutdown: CancellationToken,
@@ -687,6 +705,10 @@ impl WatchTrack {
         self.viewport.set((w, h)).ok();
     }
 
+    pub fn rendition(&self) -> &str {
+        &self.rendition
+    }
+
     pub fn current_frame(&mut self) -> Option<DecodedFrame> {
         let mut out = None;
         while let Ok(item) = self.video_frames.try_recv() {
@@ -696,8 +718,9 @@ impl WatchTrack {
     }
 
     fn spawn<D: VideoDecoder>(
+        name: String,
         consumer: TrackConsumer,
-        config: &hang::catalog::VideoConfig,
+        config: &VideoConfig,
         playback_config: &PlaybackConfig,
         shutdown: CancellationToken,
         span: Span,
@@ -726,6 +749,7 @@ impl WatchTrack {
         });
         let task = tokio::task::spawn(forward_frames(consumer, packet_tx));
         Ok(WatchTrack {
+            rendition: name,
             video_frames: frame_rx,
             viewport,
             _task_handle: AbortOnDropHandle::new(task),
@@ -786,28 +810,6 @@ async fn forward_frames(mut track: hang::TrackConsumer, sender: mpsc::Sender<han
                 break;
             }
         }
-    }
-}
-#[derive(Clone, Debug)]
-pub struct VideoRendition {
-    pub name: String,
-    pub codec: crate::av::VideoCodec,
-    pub preset: crate::av::VideoPreset,
-}
-
-impl VideoRendition {
-    fn from_parts(name: &str, config: &VideoConfig) -> Option<Self> {
-        let codec = match config.codec {
-            hang::catalog::VideoCodec::H264(_) => Some(crate::av::VideoCodec::H264),
-            hang::catalog::VideoCodec::AV1(_) => Some(crate::av::VideoCodec::Av1),
-            _ => None,
-        }?;
-        let preset = crate::av::VideoPreset::from_str(name).ok()?;
-        Some(Self {
-            name: name.to_owned(),
-            codec,
-            preset,
-        })
     }
 }
 
@@ -929,3 +931,26 @@ impl Drop for EncoderThread {
         self.shutdown.cancel();
     }
 }
+
+// #[derive(Clone, Debug)]
+// pub struct VideoRendition {
+//     pub name: String,
+//     pub codec: crate::av::VideoCodec,
+//     pub preset: crate::av::VideoPreset,
+// }
+
+// impl VideoRendition {
+//     fn from_parts(name: &str, config: &VideoConfig) -> Option<Self> {
+//         let codec = match config.codec {
+//             hang::catalog::VideoCodec::H264(_) => Some(crate::av::VideoCodec::H264),
+//             hang::catalog::VideoCodec::AV1(_) => Some(crate::av::VideoCodec::Av1),
+//             _ => None,
+//         }?;
+//         let preset = crate::av::VideoPreset::from_str(name).ok()?;
+//         Some(Self {
+//             name: name.to_owned(),
+//             codec,
+//             preset,
+//         })
+//     }
+// }
