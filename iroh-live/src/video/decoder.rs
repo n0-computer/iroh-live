@@ -102,9 +102,7 @@ impl VideoDecoder for FfmpegVideoDecoder {
                     self.rescaler.target_width_height = Some((width, height));
                 }
 
-                // Convert to BGRA
                 let frame = self.rescaler.process(&mut self.decoded)?;
-                // Allocate into a vec.
                 let image = into_image_frame(frame);
                 // Compute interframe delay from provided timestamps
                 let last_packet = self.last_packet.as_ref().context("missing last packet")?;
@@ -116,7 +114,12 @@ impl VideoDecoder for FfmpegVideoDecoder {
                 Ok(Some(frame))
             }
             Err(ffmpeg::util::error::Error::BufferTooSmall) => Ok(None),
-            Err(err) => Err(err.into()),
+            Err(ffmpeg::Error::Other { errno }) if errno == ffmpeg::util::error::EAGAIN => Ok(None),
+            Err(err) => {
+                // tracing::warn!("decoder error: {err} {err:?} {err:#?}");
+                // Ok(None)
+                Err(err.into())
+            }
         }
     }
 }
@@ -134,6 +137,15 @@ fn calculate_resized_size(decoded: &FfmpegFrame, max_width: u32, max_height: u32
     let scale = scale_w.min(scale_h).min(1.0).max(0.0);
     let target_width = ((src_w as f32) * scale).floor().max(1.0) as u32;
     let target_height = ((src_h as f32) * scale).floor().max(1.0) as u32;
+    tracing::debug!(
+        src_w,
+        src_h,
+        max_w,
+        max_h,
+        target_width,
+        target_height,
+        "scale"
+    );
     (target_width, target_height)
 }
 
