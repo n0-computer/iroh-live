@@ -1,14 +1,13 @@
 use anyhow::{Context, Result};
 use ffmpeg_next::{
-    self as ffmpeg, Error, Packet, codec::Id, format::Pixel, frame::Video as VideoFrame,
+    self as ffmpeg, Error, Packet, codec::Id, format::Pixel, frame::Video as FfmpegVideoFrame,
 };
+use iroh_moq::av::{PixelFormat, VideoFormat, VideoFrame, VideoSource};
 use nokhwa::nokhwa_initialize;
 use tracing::{debug, info};
 use xcap::{Monitor, VideoRecorder};
 
-use crate::{av as lav, video::Rescaler};
-
-// mod camera;
+use crate::ffmpeg::util::Rescaler;
 
 pub struct ScreenCapturer {
     pub(crate) _monitor: Monitor,
@@ -55,7 +54,7 @@ impl ScreenCapturer {
         })
     }
 
-    pub fn capture(&mut self) -> Result<VideoFrame> {
+    pub fn capture(&mut self) -> Result<FfmpegVideoFrame> {
         let mut raw_frame = None;
         // We are only interested in the latest frame.
         // Drain the channel to not build up memory.
@@ -69,7 +68,7 @@ impl ScreenCapturer {
                 .recv()
                 .context("video recorder did not produce new frame")?,
         };
-        let mut frame = VideoFrame::new(Pixel::RGBA, raw_frame.width, raw_frame.height);
+        let mut frame = FfmpegVideoFrame::new(Pixel::RGBA, raw_frame.width, raw_frame.height);
         frame.data_mut(0).copy_from_slice(&raw_frame.raw);
         Ok(frame)
     }
@@ -125,7 +124,7 @@ impl CameraCapturer {
         })
     }
 
-    pub fn capture(&mut self) -> Result<VideoFrame> {
+    pub fn capture(&mut self) -> Result<FfmpegVideoFrame> {
         // let start = Instant::now();
         let frame = self
             .camera
@@ -169,12 +168,12 @@ impl MjpgDecoder {
     }
 
     /// Decode one complete MJPEG/JPEG frame from `mjpg_frame`.
-    pub fn decode_frame(&mut self, mjpg_frame: &[u8]) -> Result<VideoFrame, Error> {
+    pub fn decode_frame(&mut self, mjpg_frame: &[u8]) -> Result<FfmpegVideoFrame, Error> {
         // Make a packet that borrows/copies the data.
         let packet = Packet::borrow(mjpg_frame);
         // Feed & drain once — MJPEG is intra-only (one picture per packet).
         self.dec.send_packet(&packet)?;
-        let mut frame = VideoFrame::empty();
+        let mut frame = FfmpegVideoFrame::empty();
         self.dec.receive_frame(&mut frame)?;
 
         // MJPEG may output deprecated YUVJ* formats. Replace them with
@@ -216,32 +215,32 @@ fn rgba_bytes_from_frame(frame: &ffmpeg_next::frame::Video) -> Vec<u8> {
     out
 }
 
-impl lav::VideoSource for ScreenCapturer {
-    fn format(&self) -> lav::VideoFormat {
-        lav::VideoFormat {
-            pixel_format: lav::PixelFormat::Rgba,
+impl VideoSource for ScreenCapturer {
+    fn format(&self) -> VideoFormat {
+        VideoFormat {
+            pixel_format: PixelFormat::Rgba,
             dimensions: [self.width, self.height],
         }
     }
 
-    fn pop_frame(&mut self) -> anyhow::Result<Option<lav::VideoFrame>> {
+    fn pop_frame(&mut self) -> anyhow::Result<Option<VideoFrame>> {
         let frame = self.capture()?; // already RGBA
         let raw = rgba_bytes_from_frame(&frame);
-        Ok(Some(lav::VideoFrame { raw }))
+        Ok(Some(VideoFrame { raw }))
     }
 }
 
-impl lav::VideoSource for CameraCapturer {
-    fn format(&self) -> lav::VideoFormat {
-        lav::VideoFormat {
-            pixel_format: lav::PixelFormat::Rgba,
+impl VideoSource for CameraCapturer {
+    fn format(&self) -> VideoFormat {
+        VideoFormat {
+            pixel_format: PixelFormat::Rgba,
             dimensions: [self.width, self.height],
         }
     }
 
-    fn pop_frame(&mut self) -> anyhow::Result<Option<lav::VideoFrame>> {
+    fn pop_frame(&mut self) -> anyhow::Result<Option<VideoFrame>> {
         let frame = self.capture()?; // converted to RGBA via rescaler
         let raw = rgba_bytes_from_frame(&frame);
-        Ok(Some(lav::VideoFrame { raw }))
+        Ok(Some(VideoFrame { raw }))
     }
 }

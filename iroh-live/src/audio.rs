@@ -18,15 +18,9 @@ use firewheel::{
     },
 };
 use hang::catalog::AudioConfig;
+use iroh_moq::av::{AudioFormat, AudioSink, AudioSource};
 use tokio::sync::{mpsc, mpsc::error::TryRecvError, oneshot};
 use tracing::{error, info, trace, warn};
-
-// Keep the FFmpeg-based modules available for re-export under `crate::ffmpeg`
-pub mod decoder;
-pub mod encoder;
-
-// Generic A/V trait integrations
-use crate::av::{self as lav, AudioFormat, AudioSink};
 
 pub type OutputStreamHandle = Arc<Mutex<StreamWriterState>>;
 pub type InputStreamHandle = Arc<Mutex<StreamReaderState>>;
@@ -129,7 +123,7 @@ impl MicrophoneSource {
     }
 }
 
-impl lav::AudioSource for MicrophoneSource {
+impl AudioSource for MicrophoneSource {
     fn format(&self) -> AudioFormat {
         self.format
     }
@@ -145,7 +139,10 @@ impl lav::AudioSource for MicrophoneSource {
                 Ok(Some(buf.len()))
             }
             Some(ReadStatus::UnderflowOccurred { num_frames_read }) => {
-                tracing::warn!("audio input underflow: {num_frames_read} frames missing");
+                tracing::warn!(
+                    "audio input underflow: {} frames missing",
+                    buf.len() - num_frames_read
+                );
                 Ok(Some(buf.len()))
             }
             Some(ReadStatus::OverflowCorrected {

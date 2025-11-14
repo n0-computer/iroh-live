@@ -1,10 +1,9 @@
 use clap::Parser;
 use iroh::{Endpoint, SecretKey, protocol::Router};
-use iroh_live::{
+use iroh_live::{audio::AudioBackend, capture::CameraCapturer, ffmpeg::H264Encoder};
+use iroh_moq::{
     Live, PublishBroadcast,
-    audio::AudioBackend,
-    av::{AudioEncoder, AudioPreset, Backend, VideoCodec, VideoEncoder, VideoPreset},
-    video::{CameraCapturer, H264Encoder},
+    av::{AudioEncoder, AudioPreset, VideoCodec, VideoEncoder, VideoPreset},
 };
 use n0_error::StdResultExt;
 
@@ -29,14 +28,14 @@ async fn main() -> n0_error::Result {
     let endpoint = Endpoint::builder().secret_key(secret_key).bind().await?;
     let live = Live::new(endpoint.clone());
     let router = Router::builder(endpoint)
-        .accept(iroh_live::ALPN, live.protocol_handler())
+        .accept(iroh_moq::ALPN, live.protocol_handler())
         .spawn();
 
     let mut broadcast = PublishBroadcast::new("hello");
 
     // Audio: default microphone + Opus encoder with preset
     let mic = audio_ctx.default_microphone().await?;
-    let opus = iroh_live::ffmpeg::audio::OpusEncoder::with_preset(cli.audio_preset)?;
+    let opus = iroh_live::ffmpeg::OpusEncoder::with_preset(cli.audio_preset)?;
     broadcast.set_audio(mic, [(opus, cli.audio_preset)])?;
 
     // Video: camera capture + encoders by backend (fps 30)
@@ -77,8 +76,8 @@ async fn main() -> n0_error::Result {
 
 #[derive(Parser, Debug)]
 struct Cli {
-    #[arg(long, default_value_t=Backend::Ffmpeg)]
-    backend: Backend,
+    // #[arg(long, default_value_t=Backend::Ffmpeg)]
+    // backend: Backend,
     #[arg(long, default_value_t=VideoCodec::H264)]
     codec: VideoCodec,
     #[arg(long, value_delimiter=',', default_values_t=[VideoPreset::P720])]

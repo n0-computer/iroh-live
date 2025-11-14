@@ -6,11 +6,11 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-use ffmpeg::codec;
-use ffmpeg_next::{self as ffmpeg, format::Pixel, frame::Video as VideoFrame};
+use ffmpeg_next::{self as ffmpeg, codec, format::Pixel, frame::Video as VideoFrame};
+use iroh_moq::av;
 use tracing::{debug, info, trace};
 
-use crate::{av as lav, av::VideoEncoder, ffmpeg_ext::CodecContextExt, video::Rescaler};
+use crate::ffmpeg::{ext::CodecContextExt, util::Rescaler};
 
 #[derive(Debug, Clone, Copy, Default)]
 // Allow unused because usage is cfg-gated on platform.
@@ -297,8 +297,8 @@ impl H264Encoder {
     }
 }
 
-impl VideoEncoder for H264Encoder {
-    fn with_preset(preset: lav::VideoPreset) -> Result<Self>
+impl av::VideoEncoder for H264Encoder {
+    fn with_preset(preset: av::VideoPreset) -> Result<Self>
     where
         Self: Sized,
     {
@@ -311,8 +311,8 @@ impl VideoEncoder for H264Encoder {
 
     fn push_frame(
         &mut self,
-        format: &lav::VideoFormat,
-        frame: lav::VideoFrame,
+        format: &av::VideoFormat,
+        frame: av::VideoFrame,
     ) -> anyhow::Result<()> {
         trace!(len = frame.raw.len(), ?format, "push frame");
         use ffmpeg_next::format::Pixel;
@@ -320,8 +320,8 @@ impl VideoEncoder for H264Encoder {
 
         // Wrap raw RGBA/BGRA data into an ffmpeg frame and encode
         let pixel = match format.pixel_format {
-            lav::PixelFormat::Rgba => Pixel::RGBA,
-            lav::PixelFormat::Bgra => Pixel::BGRA,
+            av::PixelFormat::Rgba => Pixel::RGBA,
+            av::PixelFormat::Bgra => Pixel::BGRA,
         };
         let [w, h] = format.dimensions;
         let mut ff = FfFrame::new(pixel, w, h);
@@ -340,132 +340,6 @@ impl VideoEncoder for H264Encoder {
         match self.receive_packet()? {
             std::task::Poll::Ready(v) => Ok(v),
             std::task::Poll::Pending => Ok(None),
-        }
-    }
-}
-
-pub struct Av1FfmpegEncoder {
-    encoder: ffmpeg::encoder::video::Encoder,
-    rescaler: Rescaler,
-    opts: EncoderOpts,
-    frame_count: u64,
-}
-
-impl Av1FfmpegEncoder {
-    pub fn new(width: u32, height: u32, framerate: u32) -> Result<Self> {
-        info!("Initializing AV1 (FFmpeg) encoder: {width}x{height} @ {framerate}fps");
-        ffmpeg::init()?;
-
-        let pixels = width * height;
-        let framerate_factor = 30.0 + (framerate as f32 - 30.) / 2.;
-        let bitrate = (pixels as f32 * 0.05 * framerate_factor).round() as u64;
-        let opts = EncoderOpts {
-            width,
-            height,
-            framerate,
-            bitrate,
-        };
-
-        let codec = ffmpeg::encoder::find(ffmpeg::codec::Id::AV1).context("AV1 codec not found")?;
-        let mut ctx = codec::context::Context::new_with_codec(codec);
-        unsafe {
-            let ctx_mut = ctx.as_mut_ptr();
-            (*ctx_mut).width = width as i32;
-            (*ctx_mut).height = height as i32;
-            (*ctx_mut).time_base.num = 1;
-            (*ctx_mut).time_base.den = framerate as i32;
-            (*ctx_mut).framerate.num = framerate as i32;
-            (*ctx_mut).framerate.den = 1;
-            (*ctx_mut).gop_size = framerate as i32;
-            (*ctx_mut).bit_rate = bitrate as i64;
-            (*ctx_mut).pix_fmt = Pixel::YUV420P.into();
-        }
-        // libaom options for realtime
-        let enc_opts =
-            ffmpeg::Dictionary::from_iter([("cpu-used", "8"), ("row-mt", "1"), ("tiles", "2x2")]);
-        let encoder = ctx.encoder().video()?.open_as_with(
-            ffmpeg::encoder::find(ffmpeg::codec::Id::AV1).unwrap(),
-            enc_opts,
-        )?;
-        let rescaler = Rescaler::new(Pixel::YUV420P, Some((width, height)))?;
-        Ok(Self {
-            encoder,
-            rescaler,
-            opts,
-            frame_count: 0,
-        })
-    }
-}
-
-impl VideoEncoder for Av1FfmpegEncoder {
-    fn with_preset(preset: lav::VideoPreset) -> Result<Self>
-    where
-        Self: Sized,
-    {
-        Self::new(preset.width(), preset.height(), preset.fps())
-    }
-    fn config(&self) -> hang::catalog::VideoConfig {
-        hang::catalog::VideoConfig {
-            codec: hang::catalog::VideoCodec::AV1(Default::default()),
-            description: None,
-            coded_width: Some(self.opts.width),
-            coded_height: Some(self.opts.height),
-            display_ratio_width: None,
-            display_ratio_height: None,
-            bitrate: Some(self.opts.bitrate),
-            framerate: Some(self.opts.framerate as f64),
-            optimize_for_latency: Some(true),
-        }
-    }
-    fn push_frame(
-        &mut self,
-        format: &lav::VideoFormat,
-        frame: lav::VideoFrame,
-    ) -> anyhow::Result<()> {
-        use ffmpeg_next::frame::Video as FfFrame;
-        let pixel = match format.pixel_format {
-            lav::PixelFormat::Rgba => Pixel::RGBA,
-            lav::PixelFormat::Bgra => Pixel::BGRA,
-        };
-        let [w, h] = format.dimensions;
-        let mut ff = FfFrame::new(pixel, w, h);
-        let stride = ff.stride(0) as usize;
-        let row_bytes = (w as usize) * 4;
-        for y in 0..(h as usize) {
-            let dst_off = y * stride;
-            let src_off = y * row_bytes;
-            ff.data_mut(0)[dst_off..dst_off + row_bytes]
-                .copy_from_slice(&frame.raw[src_off..src_off + row_bytes]);
-        }
-        let sw = self
-            .rescaler
-            .process(&ff)
-            .context("failed to color-convert frame")?
-            .clone();
-        let mut enc_frame = sw;
-        enc_frame.set_pts(Some(self.frame_count as i64));
-        self.frame_count += 1;
-        self.encoder.send_frame(&enc_frame)?;
-        Ok(())
-    }
-    fn pop_packet(&mut self) -> anyhow::Result<Option<hang::Frame>> {
-        let mut packet = ffmpeg::packet::Packet::empty();
-        match self.encoder.receive_packet(&mut packet) {
-            Ok(()) => {
-                let payload = packet.data().unwrap_or(&[]).to_vec();
-                let hang_frame = hang::Frame {
-                    payload: payload.into(),
-                    timestamp: std::time::Duration::from_nanos(
-                        self.frame_count.saturating_sub(1) * 1_000_000_000
-                            / self.opts.framerate as u64,
-                    ),
-                    keyframe: packet.is_key(),
-                };
-                Ok(Some(hang_frame))
-            }
-            Err(ffmpeg::Error::Eof) => Ok(None),
-            Err(ffmpeg::Error::Other { errno }) if errno == ffmpeg::util::error::EAGAIN => Ok(None),
-            Err(e) => Err(e.into()),
         }
     }
 }
@@ -570,3 +444,129 @@ impl Drop for VaapiState {
         }
     }
 }
+
+// pub struct Av1FfmpegEncoder {
+//     encoder: ffmpeg::encoder::video::Encoder,
+//     rescaler: Rescaler,
+//     opts: EncoderOpts,
+//     frame_count: u64,
+// }
+
+// impl Av1FfmpegEncoder {
+//     pub fn new(width: u32, height: u32, framerate: u32) -> Result<Self> {
+//         info!("Initializing AV1 (FFmpeg) encoder: {width}x{height} @ {framerate}fps");
+//         ffmpeg::init()?;
+
+//         let pixels = width * height;
+//         let framerate_factor = 30.0 + (framerate as f32 - 30.) / 2.;
+//         let bitrate = (pixels as f32 * 0.05 * framerate_factor).round() as u64;
+//         let opts = EncoderOpts {
+//             width,
+//             height,
+//             framerate,
+//             bitrate,
+//         };
+
+//         let codec = ffmpeg::encoder::find(ffmpeg::codec::Id::AV1).context("AV1 codec not found")?;
+//         let mut ctx = codec::context::Context::new_with_codec(codec);
+//         unsafe {
+//             let ctx_mut = ctx.as_mut_ptr();
+//             (*ctx_mut).width = width as i32;
+//             (*ctx_mut).height = height as i32;
+//             (*ctx_mut).time_base.num = 1;
+//             (*ctx_mut).time_base.den = framerate as i32;
+//             (*ctx_mut).framerate.num = framerate as i32;
+//             (*ctx_mut).framerate.den = 1;
+//             (*ctx_mut).gop_size = framerate as i32;
+//             (*ctx_mut).bit_rate = bitrate as i64;
+//             (*ctx_mut).pix_fmt = Pixel::YUV420P.into();
+//         }
+//         // libaom options for realtime
+//         let enc_opts =
+//             ffmpeg::Dictionary::from_iter([("cpu-used", "8"), ("row-mt", "1"), ("tiles", "2x2")]);
+//         let encoder = ctx.encoder().video()?.open_as_with(
+//             ffmpeg::encoder::find(ffmpeg::codec::Id::AV1).unwrap(),
+//             enc_opts,
+//         )?;
+//         let rescaler = Rescaler::new(Pixel::YUV420P, Some((width, height)))?;
+//         Ok(Self {
+//             encoder,
+//             rescaler,
+//             opts,
+//             frame_count: 0,
+//         })
+//     }
+// }
+
+// impl av::VideoEncoder for Av1FfmpegEncoder {
+//     fn with_preset(preset: av::VideoPreset) -> Result<Self>
+//     where
+//         Self: Sized,
+//     {
+//         Self::new(preset.width(), preset.height(), preset.fps())
+//     }
+//     fn config(&self) -> hang::catalog::VideoConfig {
+//         hang::catalog::VideoConfig {
+//             codec: hang::catalog::VideoCodec::AV1(Default::default()),
+//             description: None,
+//             coded_width: Some(self.opts.width),
+//             coded_height: Some(self.opts.height),
+//             display_ratio_width: None,
+//             display_ratio_height: None,
+//             bitrate: Some(self.opts.bitrate),
+//             framerate: Some(self.opts.framerate as f64),
+//             optimize_for_latency: Some(true),
+//         }
+//     }
+//     fn push_frame(
+//         &mut self,
+//         format: &av::VideoFormat,
+//         frame: av::VideoFrame,
+//     ) -> anyhow::Result<()> {
+//         use ffmpeg_next::frame::Video as FfFrame;
+//         let pixel = match format.pixel_format {
+//             av::PixelFormat::Rgba => Pixel::RGBA,
+//             av::PixelFormat::Bgra => Pixel::BGRA,
+//         };
+//         let [w, h] = format.dimensions;
+//         let mut ff = FfFrame::new(pixel, w, h);
+//         let stride = ff.stride(0) as usize;
+//         let row_bytes = (w as usize) * 4;
+//         for y in 0..(h as usize) {
+//             let dst_off = y * stride;
+//             let src_off = y * row_bytes;
+//             ff.data_mut(0)[dst_off..dst_off + row_bytes]
+//                 .copy_from_slice(&frame.raw[src_off..src_off + row_bytes]);
+//         }
+//         let sw = self
+//             .rescaler
+//             .process(&ff)
+//             .context("failed to color-convert frame")?
+//             .clone();
+//         let mut enc_frame = sw;
+//         enc_frame.set_pts(Some(self.frame_count as i64));
+//         self.frame_count += 1;
+//         self.encoder.send_frame(&enc_frame)?;
+//         Ok(())
+//     }
+//     fn pop_packet(&mut self) -> anyhow::Result<Option<hang::Frame>> {
+//         let mut packet = ffmpeg::packet::Packet::empty();
+//         match self.encoder.receive_packet(&mut packet) {
+//             Ok(()) => {
+//                 let payload = packet.data().unwrap_or(&[]).to_vec();
+//                 let hang_frame = hang::Frame {
+//                     payload: payload.into(),
+//                     timestamp: std::time::Duration::from_nanos(
+//                         self.frame_count.saturating_sub(1) * 1_000_000_000
+//                             / self.opts.framerate as u64,
+//                     ),
+//                     keyframe: packet.is_key(),
+//                 };
+//                 Ok(Some(hang_frame))
+//             }
+//             Err(ffmpeg::Error::Eof) => Ok(None),
+//             Err(ffmpeg::Error::Other { errno }) if errno == ffmpeg::util::error::EAGAIN => Ok(None),
+//             Err(e) => Err(e.into()),
+//         }
+//     }
+// }

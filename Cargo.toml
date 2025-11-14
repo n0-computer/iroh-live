@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "iroh-live",
+    "iroh-moq",
     "web-transport-iroh",
 ]
 resolver = "2"

@@ -1,11 +1,9 @@
 use anyhow::Result;
 use ffmpeg_next::{self as ffmpeg, util::channel_layout::ChannelLayout};
 use hang::catalog::AudioConfig;
+use iroh_moq::av::{AudioDecoder, AudioFormat};
 
-use crate::{
-    av::{AudioDecoder, AudioFormat},
-    ffmpeg_ext::CodecContextExt,
-};
+use crate::ffmpeg::ext::CodecContextExt;
 
 pub struct FfmpegAudioDecoder {
     codec: ffmpeg::decoder::Audio,
@@ -41,7 +39,7 @@ impl AudioDecoder for FfmpegAudioDecoder {
                 ctx
             }
             _ => anyhow::bail!(
-                "Unsupported codec {} (only aac and opus are supported)",
+                "Unsupported codec {} (only opus is supported)",
                 config.codec
             ),
         };

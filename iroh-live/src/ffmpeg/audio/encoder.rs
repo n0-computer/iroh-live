@@ -3,12 +3,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use ffmpeg_next::{self as ffmpeg, Rational};
 use hang::catalog::AudioConfig;
+use iroh_moq::av::{AudioEncoder, AudioPreset};
 use tracing::trace;
 
-use crate::{
-    av::{AudioEncoder, AudioPreset},
-    ffmpeg_ext::CodecContextExt,
-};
+use crate::ffmpeg::ext::CodecContextExt;
 
 const SAMPLE_RATE: u32 = 48_000;
 const BITRATE: u64 = 128_000; // 128 kbps

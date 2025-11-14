@@ -4,8 +4,6 @@ use anyhow::Result;
 use image::RgbaImage;
 use strum::{Display, EnumString, VariantNames};
 
-use crate::PlaybackConfig;
-
 #[derive(Copy, Clone, Debug)]
 pub struct AudioFormat {
     pub sample_rate: u32,
@@ -109,13 +107,6 @@ pub enum VideoCodec {
     Av1,
 }
 
-#[derive(Debug, Clone, Copy, Display, EnumString, VariantNames, PartialEq, Eq)]
-#[strum(serialize_all = "lowercase")]
-pub enum Backend {
-    Native,
-    Ffmpeg,
-}
-
 #[derive(Debug, Clone, Copy, Display, EnumString, VariantNames, Eq, PartialEq)]
 pub enum VideoPreset {
     #[strum(serialize = "180p")]
@@ -165,4 +156,9 @@ pub enum Quality {
     High,
     Mid,
     Low,
+}
+
+#[derive(Clone, Default)]
+pub struct PlaybackConfig {
+    pub pixel_format: PixelFormat,
 }

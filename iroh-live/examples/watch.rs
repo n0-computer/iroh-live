@@ -1,12 +1,12 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use byte_unit::{Bit, UnitType};
 use eframe::egui::{self, Color32, Id, Vec2};
 use iroh::Endpoint;
 use iroh_live::{
-    AudioTrack, ConsumeBroadcast, Live, LiveSession, LiveTicket, WatchTrack, audio::AudioBackend,
-    ffmpeg::ffmpeg_log_init,
+    audio::AudioBackend,
+    ffmpeg::{FfmpegAudioDecoder, FfmpegVideoDecoder, ffmpeg_log_init},
 };
+use iroh_moq::{AudioTrack, ConsumeBroadcast, Live, LiveSession, LiveTicket, WatchTrack};
 use n0_error::{Result, StackResultExt, anyerr};
 
 fn main() -> Result<()> {
@@ -34,8 +34,8 @@ fn main() -> Result<()> {
             println!("connected!");
             let broadcast = session.consume(&ticket.broadcast_name).await?;
             let audio_out = audio_ctx.default_speaker().await?;
-            let audio = broadcast.listen(audio_out)?;
-            let video = broadcast.watch()?;
+            let audio = broadcast.listen::<FfmpegAudioDecoder>(audio_out)?;
+            let video = broadcast.watch::<FfmpegVideoDecoder>()?;
             n0_error::Ok((endpoint, session, broadcast, video, audio))
         }
     })?;
@@ -50,7 +50,7 @@ fn main() -> Result<()> {
                 _audio_ctx: audio_ctx,
                 _audio: audio,
                 broadcast,
-                bw: BwSmoother::new(),
+                stats: util::StatsSmoother::new(),
                 endpoint,
                 session,
                 rt,
@@ -68,14 +68,13 @@ struct App {
     endpoint: Endpoint,
     session: LiveSession,
     broadcast: ConsumeBroadcast,
-    bw: BwSmoother,
+    stats: util::StatsSmoother,
     rt: tokio::runtime::Runtime,
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(30)); // min 30 fps
-        self.bw.set_total(self.session.stats().udp_rx.bytes as u32);
         egui::CentralPanel::default()
             .frame(egui::Frame::new().inner_margin(0.0).outer_margin(0.0))
             .show(ctx, |ui| {
@@ -118,44 +117,19 @@ impl App {
                 .show_ui(ui, |ui| {
                     for name in self.broadcast.video_renditions() {
                         if ui.selectable_label(&selected == name, name).clicked() {
-                            if let Ok(track) = self.broadcast.watch_rendition(
-                                &Default::default(),
-                                &name,
-                                iroh_live::av::Backend::Ffmpeg,
-                            ) {
+                            if let Ok(track) = self
+                                .broadcast
+                                .watch_rendition::<FfmpegVideoDecoder>(&Default::default(), &name)
+                            {
                                 self.video = VideoView::new(ctx, track);
                             }
                         }
                     }
                 });
 
-            // let selected = self
-            //     .audio
-            //     .as_ref()
-            //     .map(|a| a.rendition().to_owned())
-            //     .unwrap_or_else(|| "none".to_owned());
-            // egui::ComboBox::from_label("audio")
-            //     .selected_text(selected.clone())
-            //     .show_ui(ui, |ui| {
-            //         if ui.selectable_label(&selected == "none", "none").clicked() {
-            //             self.audio = None;
-            //         }
-            //         for name in self.broadcast.audio_renditions() {
-            //             if ui.selectable_label(&selected == name, name).clicked() {
-            //                 self.rt
-            //                     .block_on(async {
-            //                         let audio_out = self.audio_ctx.default_speaker().await?;
-            //                         let track = self.broadcast.listen_rendition(name, audio_out)?;
-            //                         self.audio = Some(track);
-            //                         n0_error::Ok(())
-            //                     })
-            //                     .ok();
-            //             }
-            //         }
-            //     });
-
-            let bw = self.bw.get_rate();
-            ui.label(format!("BW: {bw}"));
+            let (rtt, bw) = self.stats.smoothed(|| self.session.stats());
+            ui.label(format!("BW:  {bw}"));
+            ui.label(format!("RTT: {}ms", rtt.as_millis()));
         });
     }
 }
@@ -200,80 +174,48 @@ impl VideoView {
     }
 }
 
-struct BwSmoother {
-    // Last total byte counter we used when we updated the rate
-    last_bytes_for_rate: u64,
-    // Most recent total byte counter provided via set_total()
-    total_bytes: u64,
-    // When we last updated `cached_rate`
-    last_rate_update: Instant,
-    // Cached human-readable rate string
-    cached_rate: String,
-    // Have we ever seen data yet?
-    initialized: bool,
-}
+mod util {
+    use byte_unit::{Bit, UnitType};
+    use iroh::endpoint::ConnectionStats;
+    use std::time::{Duration, Instant};
 
-impl BwSmoother {
-    pub fn new() -> Self {
-        Self {
-            last_bytes_for_rate: 0,
-            total_bytes: 0,
-            last_rate_update: Instant::now(),
-            cached_rate: "0.00 bit/s".to_string(),
-            initialized: false,
-        }
+    pub struct StatsSmoother {
+        last_bytes: u64,
+        last_update: Instant,
+        rate: String,
+        rtt: Duration,
     }
 
-    /// Update the total number of bytes received so far.
-    /// (Your counter, e.g. from the NIC / connection.)
-    pub fn set_total(&mut self, bytes: u32) {
-        self.total_bytes = bytes as u64;
-    }
-
-    /// Get a smoothed bandwidth string, e.g. "8.32 Mbit/s".
-    /// The value is only recomputed at most ~once per second.
-    pub fn get_rate(&mut self) -> String {
-        let now = Instant::now();
-
-        // First call: just initialise timing and return the default string.
-        if !self.initialized {
-            self.initialized = true;
-            self.last_rate_update = now;
-            self.last_bytes_for_rate = self.total_bytes;
-            return self.cached_rate.clone();
+    impl StatsSmoother {
+        pub fn new() -> Self {
+            Self {
+                last_bytes: 0,
+                last_update: Instant::now(),
+                rate: "0.00 bit/s".into(),
+                rtt: Duration::from_secs(0),
+            }
         }
-
-        let elapsed = now.duration_since(self.last_rate_update);
-
-        // Only recompute if >= 1 second has passed
-        if elapsed >= Duration::from_secs(1) {
-            let elapsed_secs = elapsed.as_secs_f64();
-            let delta_bytes = self.total_bytes.saturating_sub(self.last_bytes_for_rate);
-
-            // Handle wraparound or no progress
-            let bits_per_sec = if elapsed_secs <= 0.0 || delta_bytes == 0 {
-                0.0
-            } else {
-                (delta_bytes as f64 * 8.0) / elapsed_secs
-            };
-
-            let bit = Bit::from_f64(bits_per_sec).unwrap();
-            let adjusted = bit.get_appropriate_unit(UnitType::Decimal); // Kbit, Mbit, Gbit, ...
-
-            // Example output: "8.32 Mbit/s"
-            self.cached_rate = format!("{adjusted:.2}/s");
-
-            // Update state for next round
-            self.last_rate_update = now;
-            self.last_bytes_for_rate = self.total_bytes;
+        pub fn smoothed(&mut self, total: impl FnOnce() -> ConnectionStats) -> (Duration, &str) {
+            let now = Instant::now();
+            let elapsed = now.duration_since(self.last_update);
+            if elapsed >= Duration::from_secs(1) {
+                let stats = (total)();
+                let total = stats.udp_rx.bytes;
+                let delta = total.saturating_sub(self.last_bytes);
+                let secs = elapsed.as_secs_f64();
+                let bps = if secs > 0.0 && delta > 0 {
+                    (delta as f64 * 8.0) / secs
+                } else {
+                    0.0
+                };
+                let bit = Bit::from_f64(bps).unwrap();
+                let adjusted = bit.get_appropriate_unit(UnitType::Decimal);
+                self.rate = format!("{adjusted:.2}/s");
+                self.last_update = now;
+                self.last_bytes = total;
+                self.rtt = stats.path.rtt;
+            }
+            (self.rtt, &self.rate)
         }
-
-        self.cached_rate.clone()
-    }
-}
-
-impl Default for BwSmoother {
-    fn default() -> Self {
-        Self::new()
     }
 }

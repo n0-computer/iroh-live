@@ -7,23 +7,12 @@ use ffmpeg_next::{
 };
 use image::{Delay, RgbaImage};
 
-use crate::{
-    PlaybackConfig,
-    av::{DecodedFrame, VideoDecoder},
-    ffmpeg_ext::CodecContextExt,
-    video::{Rescaler, StreamClock},
+use iroh_moq::av::{self, DecodedFrame, PixelFormat, PlaybackConfig, VideoDecoder};
+
+use crate::ffmpeg::{
+    ext::CodecContextExt,
+    video::util::{Rescaler, StreamClock},
 };
-
-pub use crate::av::PixelFormat;
-
-impl From<PixelFormat> for Pixel {
-    fn from(value: PixelFormat) -> Self {
-        match value {
-            PixelFormat::Rgba => Pixel::RGBA,
-            PixelFormat::Bgra => Pixel::BGRA,
-        }
-    }
-}
 
 pub struct FfmpegVideoDecoder {
     codec: ffmpeg::decoder::Video,
@@ -65,7 +54,7 @@ impl VideoDecoder for FfmpegVideoDecoder {
                 config.codec
             ),
         };
-        let rescaler = Rescaler::new(Pixel::from(playback_config.pixel_format), None)?;
+        let rescaler = Rescaler::new(pixel_to_ffmpeg(playback_config.pixel_format), None)?;
         let clock = StreamClock::default();
         let decoded = FfmpegFrame::empty();
         Ok(Self {
@@ -91,7 +80,7 @@ impl VideoDecoder for FfmpegVideoDecoder {
         Ok(())
     }
 
-    fn pop_frame(&mut self) -> Result<Option<crate::av::DecodedFrame>> {
+    fn pop_frame(&mut self) -> Result<Option<av::DecodedFrame>> {
         // Pull all available decoded frames
         match self.codec.receive_frame(&mut self.decoded) {
             Ok(()) => {
@@ -169,4 +158,11 @@ fn into_image_frame(frame: &ffmpeg_next::util::frame::Video) -> image::RgbaImage
         out[dst_off..dst_off + row_bytes].copy_from_slice(&src[src_off..src_off + row_bytes]);
     }
     RgbaImage::from_raw(width, height, out).expect("valid image buffer")
+}
+
+fn pixel_to_ffmpeg(value: PixelFormat) -> Pixel {
+    match value {
+        PixelFormat::Rgba => Pixel::RGBA,
+        PixelFormat::Bgra => Pixel::BGRA,
+    }
 }
