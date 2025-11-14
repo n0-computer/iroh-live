@@ -1,5 +1,7 @@
 use anyhow::Result;
 use strum::{Display, EnumString, VariantNames};
+use tokio::sync::{mpsc, mpsc::UnboundedReceiver, mpsc::UnboundedSender};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Copy, Clone, Debug)]
 pub struct AudioFormat {
@@ -13,6 +15,9 @@ pub trait AudioSource {
 }
 
 pub trait AudioEncoder {
+    fn with_preset(preset: AudioPreset) -> Result<Self>
+    where
+        Self: Sized;
     fn config(&self) -> hang::catalog::AudioConfig;
     fn push_samples(&mut self, samples: &[f32]) -> Result<()>;
     fn pop_packet(&mut self) -> Result<Option<hang::Frame>>;
@@ -25,7 +30,9 @@ pub enum PixelFormat {
 }
 
 impl Default for PixelFormat {
-    fn default() -> Self { PixelFormat::Rgba }
+    fn default() -> Self {
+        PixelFormat::Rgba
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -45,32 +52,79 @@ pub trait VideoSource {
 }
 
 pub trait VideoEncoder {
+    fn with_preset(preset: VideoPreset) -> Result<Self>
+    where
+        Self: Sized;
     fn config(&self) -> hang::catalog::VideoConfig;
     fn push_frame(&mut self, format: &VideoFormat, frame: VideoFrame) -> Result<()>;
     fn pop_packet(&mut self) -> Result<Option<hang::Frame>>;
 }
 
-#[derive(Debug, Clone, Copy, Display, EnumString, VariantNames)]
-#[strum(serialize_all = "kebab-case")]
-pub enum AudioCodec { Opus }
+// Shared video decoder context used by native and FFmpeg decoders
+pub type FrameReceiver = mpsc::Receiver<crate::video::decoder::DecodedFrame>;
+pub type ResizeSender = UnboundedSender<(u32, u32)>;
+pub type PacketSender = mpsc::Sender<hang::Frame>;
 
-#[derive(Debug, Clone, Copy, Display, EnumString, VariantNames)]
-#[strum(serialize_all = "kebab-case")]
-pub enum VideoCodec { H264, Av1 }
+pub struct DecoderContext {
+    pub(crate) target_pixel_format: PixelFormat,
+    pub(crate) packet_rx: mpsc::Receiver<hang::Frame>,
+    pub(crate) frame_tx: mpsc::Sender<crate::video::decoder::DecodedFrame>,
+    pub(crate) resize_rx: UnboundedReceiver<(u32, u32)>,
+    pub(crate) shutdown: CancellationToken,
+}
+
+impl DecoderContext {
+    pub fn new(
+        shutdown: CancellationToken,
+        target_pixel_format: PixelFormat,
+    ) -> (Self, FrameReceiver, ResizeSender, PacketSender) {
+        let (packet_tx, packet_rx) = mpsc::channel(32);
+        let (frame_tx, frame_rx) = mpsc::channel(32);
+        let (resize_tx, resize_rx) = mpsc::unbounded_channel();
+        let ctx = DecoderContext {
+            target_pixel_format,
+            packet_rx,
+            frame_tx,
+            resize_rx,
+            shutdown,
+        };
+        (ctx, frame_rx, resize_tx, packet_tx)
+    }
+}
 
 #[derive(Debug, Clone, Copy, Display, EnumString, VariantNames)]
 #[strum(serialize_all = "lowercase")]
-pub enum Backend { Native, Ffmpeg }
+pub enum AudioCodec {
+    Opus,
+}
 
 #[derive(Debug, Clone, Copy, Display, EnumString, VariantNames)]
 #[strum(serialize_all = "lowercase")]
-pub enum VideoPreset { P180, P360, P720, P1080 }
+pub enum VideoCodec {
+    H264,
+    Av1,
+}
+
+#[derive(Debug, Clone, Copy, Display, EnumString, VariantNames, PartialEq, Eq)]
+#[strum(serialize_all = "lowercase")]
+pub enum Backend {
+    Native,
+    Ffmpeg,
+}
+
+#[derive(Debug, Clone, Copy, Display, EnumString, VariantNames, Eq, PartialEq)]
+pub enum VideoPreset {
+    #[strum(serialize = "180p")]
+    P180,
+    #[strum(serialize = "360p")]
+    P360,
+    #[strum(serialize = "720p")]
+    P720,
+    #[strum(serialize = "1080p")]
+    P1080,
+}
 
 impl VideoPreset {
-    pub fn as_name(&self) -> &'static str {
-        match self { Self::P180 => "180p", Self::P360 => "360p", Self::P720 => "720p", Self::P1080 => "1080p" }
-    }
-
     pub fn dimensions(&self) -> (u32, u32) {
         match self {
             Self::P180 => (320, 180),
@@ -80,9 +134,22 @@ impl VideoPreset {
         }
     }
 
-    pub fn fps(&self) -> u32 { 30 }
+    pub fn width(&self) -> u32 {
+        self.dimensions().0
+    }
+
+    pub fn height(&self) -> u32 {
+        self.dimensions().1
+    }
+
+    pub fn fps(&self) -> u32 {
+        30
+    }
 }
 
-#[derive(Debug, Clone, Copy, Display, EnumString, VariantNames)]
+#[derive(Debug, Clone, Copy, Display, EnumString, VariantNames, Eq, PartialEq)]
 #[strum(serialize_all = "lowercase")]
-pub enum AudioPreset { Hq, Lq }
+pub enum AudioPreset {
+    Hq,
+    Lq,
+}

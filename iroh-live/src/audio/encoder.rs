@@ -10,35 +10,34 @@ use hang::catalog::AudioConfig;
 use tokio_util::sync::CancellationToken;
 use tracing::{trace, warn};
 
-use crate::{audio::AudioBackend, av as lav, ffmpeg_ext::CodecContextExt};
+use crate::{
+    audio::AudioBackend,
+    av::{AudioEncoder, AudioPreset},
+    ffmpeg_ext::CodecContextExt,
+};
 
 const SAMPLE_RATE: u32 = 48_000;
 const BITRATE: u64 = 128_000; // 128 kbps
-
-pub trait AudioEncoder {
-    fn config(&self) -> AudioConfig;
-    fn push_samples(&mut self, samples: &[f32]) -> Result<()>;
-    fn poll_frame(&mut self) -> Result<Poll<Option<hang::Frame>>>;
-}
 
 pub struct OpusEncoder {
     encoder: ffmpeg::encoder::Audio,
     frame_count: u64,
     sample_rate: u32,
+    bitrate: u64,
     channel_count: u32,
     extradata: Vec<u8>,
 }
 
 impl OpusEncoder {
     pub fn stereo() -> Result<Self> {
-        Self::new(SAMPLE_RATE, 2)
+        Self::new(SAMPLE_RATE, 2, BITRATE)
     }
 
     pub fn mono() -> Result<Self> {
-        Self::new(SAMPLE_RATE, 1)
+        Self::new(SAMPLE_RATE, 1, BITRATE)
     }
 
-    pub fn new(sample_rate: u32, channel_count: u32) -> Result<Self> {
+    pub fn new(sample_rate: u32, channel_count: u32, bitrate: u64) -> Result<Self> {
         tracing::info!(
             "Initializing Opus encoder: {}Hz, {} channels",
             sample_rate,
@@ -55,7 +54,7 @@ impl OpusEncoder {
 
         let sample_rate = sample_rate as i32;
         ctx.set_rate(sample_rate);
-        ctx.set_bit_rate(BITRATE as usize);
+        ctx.set_bit_rate(bitrate as usize);
         ctx.set_format(ffmpeg::format::Sample::F32(
             ffmpeg_next::format::sample::Type::Packed,
         ));
@@ -77,16 +76,31 @@ impl OpusEncoder {
             sample_rate: sample_rate as u32,
             channel_count,
             extradata,
+            bitrate,
         })
     }
 }
 impl AudioEncoder for OpusEncoder {
+    fn with_preset(preset: AudioPreset) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        let channels = match preset {
+            AudioPreset::Hq => 2,
+            AudioPreset::Lq => 1,
+        };
+        let bitrate = match preset {
+            AudioPreset::Hq => BITRATE,
+            AudioPreset::Lq => 32_000,
+        };
+        Self::new(SAMPLE_RATE, channels, bitrate)
+    }
     fn config(&self) -> AudioConfig {
         hang::catalog::AudioConfig {
             codec: hang::catalog::AudioCodec::Opus,
             sample_rate: self.sample_rate,
             channel_count: self.channel_count,
-            bitrate: Some(BITRATE),
+            bitrate: Some(self.bitrate),
             description: Some(self.extradata.clone().into()),
         }
     }
@@ -120,7 +134,7 @@ impl AudioEncoder for OpusEncoder {
         Ok(())
     }
 
-    fn poll_frame(&mut self) -> Result<Poll<Option<hang::Frame>>> {
+    fn pop_packet(&mut self) -> Result<Option<hang::Frame>> {
         let mut packet = ffmpeg::packet::Packet::empty();
         match self.encoder.receive_packet(&mut packet) {
             Ok(()) => {
@@ -133,103 +147,82 @@ impl AudioEncoder for OpusEncoder {
                     keyframe: true, // Audio frames are generally independent
                 };
                 trace!("poll frame {}", hang_frame.payload.len());
-                Ok(Poll::Ready(Some(hang_frame)))
+                Ok(Some(hang_frame))
             }
-            Err(ffmpeg::Error::Eof) => Ok(Poll::Ready(None)),
-            Err(ffmpeg::Error::Other { errno }) if errno == ffmpeg::util::error::EAGAIN => {
-                Ok(Poll::Pending)
-            }
+            Err(ffmpeg::Error::Eof) => Ok(None),
+            Err(ffmpeg::Error::Other { errno }) if errno == ffmpeg::util::error::EAGAIN => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
 }
 
-// Implement the generic av::AudioEncoder for OpusEncoder
-impl lav::AudioEncoder for OpusEncoder {
-    fn config(&self) -> hang::catalog::AudioConfig {
-        <Self as AudioEncoder>::config(self)
-    }
+// pub fn capture_and_encode(
+//     audio_ctx: AudioBackend,
+//     mut encoder: impl AudioEncoder,
+//     shutdown: CancellationToken,
+//     mut on_frame: impl FnMut(hang::Frame),
+// ) -> Result<()> {
+//     const UPDATE_INTERVAL: Duration = Duration::from_millis(20);
 
-    fn push_samples(&mut self, samples: &[f32]) -> anyhow::Result<()> {
-        <Self as AudioEncoder>::push_samples(self, samples)
-    }
+//     let config = encoder.config();
+//     let sample_rate = config.sample_rate;
+//     let channel_count = config.channel_count;
+//     let interval = UPDATE_INTERVAL;
 
-    fn pop_packet(&mut self) -> anyhow::Result<Option<hang::Frame>> {
-        // Try once; if Pending, return None to keep the caller simple.
-        match <Self as AudioEncoder>::poll_frame(self)? {
-            std::task::Poll::Ready(v) => Ok(v),
-            std::task::Poll::Pending => Ok(None),
-        }
-    }
-}
+//     let audio_input = audio_ctx
+//         .blocking_input_stream(sample_rate, channel_count)
+//         .context("failed to create audio input stream")?;
+//     let samples_per_frame = sample_rate / 1000 * interval.as_millis() as u32;
+//     let mut buf = vec![0.0f32; samples_per_frame as usize * channel_count as usize];
 
-pub fn capture_and_encode(
-    audio_ctx: AudioBackend,
-    mut encoder: impl AudioEncoder,
-    shutdown: CancellationToken,
-    mut on_frame: impl FnMut(hang::Frame),
-) -> Result<()> {
-    const UPDATE_INTERVAL: Duration = Duration::from_millis(20);
+//     tracing::info!(
+//         buf_len = buf.len(),
+//         channel_count,
+//         sample_rate,
+//         ?interval,
+//         "Starting audio capture"
+//     );
+//     'run: loop {
+//         let mut stream = audio_input.lock().expect("poisoned");
+//         let start = Instant::now();
+//         // Check shutdown before each audio frame capture
+//         if shutdown.is_cancelled() {
+//             tracing::debug!("Audio capture shutdown requested");
+//             stream.stop_stream();
+//             break;
+//         }
 
-    let config = encoder.config();
-    let sample_rate = config.sample_rate;
-    let channel_count = config.channel_count;
-    let interval = UPDATE_INTERVAL;
+//         match stream.read_interleaved(&mut buf) {
+//             Some(status) => {
+//                 // drop(stream);
+//                 match status {
+//                     ReadStatus::Ok => {}
+//                     ReadStatus::InputNotReady => warn!("audio input not ready"),
+//                     ReadStatus::UnderflowOccurred { num_frames_read } => {
+//                         warn!("audio input underflow: {num_frames_read} frames missing")
+//                     }
+//                     ReadStatus::OverflowCorrected {
+//                         num_frames_discarded,
+//                     } => warn!("audio input overflow: {num_frames_discarded} frames discarded"),
+//                 }
+//                 encoder.push_samples(&buf)?;
+//                 while let Poll::Ready(frame) = encoder.poll_frame()? {
+//                     match frame {
+//                         Some(frame) => on_frame(frame),
+//                         None => break 'run,
+//                     }
+//                 }
+//             }
+//             None => warn!("audio input stream is inactive"),
+//         }
+//         drop(stream);
+//         std::thread::sleep(interval.saturating_sub(start.elapsed()));
+//     }
 
-    let audio_input = audio_ctx
-        .blocking_input_stream(sample_rate, channel_count)
-        .context("failed to create audio input stream")?;
-    let samples_per_frame = sample_rate / 1000 * interval.as_millis() as u32;
-    let mut buf = vec![0.0f32; samples_per_frame as usize * channel_count as usize];
+//     // Flush any remaining encoded audio packets on shutdown
+//     while let Poll::Ready(Some(frame)) = encoder.poll_frame()? {
+//         on_frame(frame);
+//     }
 
-    tracing::info!(
-        buf_len = buf.len(),
-        channel_count,
-        sample_rate,
-        ?interval,
-        "Starting audio capture"
-    );
-    'run: loop {
-        let mut stream = audio_input.lock().expect("poisoned");
-        let start = Instant::now();
-        // Check shutdown before each audio frame capture
-        if shutdown.is_cancelled() {
-            tracing::debug!("Audio capture shutdown requested");
-            stream.stop_stream();
-            break;
-        }
-
-        match stream.read_interleaved(&mut buf) {
-            Some(status) => {
-                // drop(stream);
-                match status {
-                    ReadStatus::Ok => {}
-                    ReadStatus::InputNotReady => warn!("audio input not ready"),
-                    ReadStatus::UnderflowOccurred { num_frames_read } => {
-                        warn!("audio input underflow: {num_frames_read} frames missing")
-                    }
-                    ReadStatus::OverflowCorrected {
-                        num_frames_discarded,
-                    } => warn!("audio input overflow: {num_frames_discarded} frames discarded"),
-                }
-                encoder.push_samples(&buf)?;
-                while let Poll::Ready(frame) = encoder.poll_frame()? {
-                    match frame {
-                        Some(frame) => on_frame(frame),
-                        None => break 'run,
-                    }
-                }
-            }
-            None => warn!("audio input stream is inactive"),
-        }
-        drop(stream);
-        std::thread::sleep(interval.saturating_sub(start.elapsed()));
-    }
-
-    // Flush any remaining encoded audio packets on shutdown
-    while let Poll::Ready(Some(frame)) = encoder.poll_frame()? {
-        on_frame(frame);
-    }
-
-    Ok(())
-}
+//     Ok(())
+// }

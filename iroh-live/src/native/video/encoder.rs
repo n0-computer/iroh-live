@@ -1,13 +1,13 @@
 //
 
+use crate::av::VideoPreset;
 use anyhow::Result;
 use rav1e::prelude::*;
-use crate::av::VideoPreset;
 
 use crate::av as lav;
 use yuv::{
-    bgra_to_yuv420, rgba_to_yuv420, BufferStoreMut, YuvChromaSubsampling, YuvPlanarImageMut,
-    YuvRange as YRange, YuvStandardMatrix as YMatrix,
+    BufferStoreMut, YuvChromaSubsampling, YuvPlanarImageMut, YuvRange as YRange,
+    YuvStandardMatrix as YMatrix, bgra_to_yuv420, rgba_to_yuv420,
 };
 
 pub struct Av1Encoder {
@@ -44,18 +44,23 @@ impl Av1Encoder {
         let u = vec![0u8; (width as usize / 2) * (height as usize / 2)];
         let v = vec![0u8; (width as usize / 2) * (height as usize / 2)];
 
-        Ok(Self { ctx, width, height, framerate, frame_count: 0, y, u, v })
+        Ok(Self {
+            ctx,
+            width,
+            height,
+            framerate,
+            frame_count: 0,
+            y,
+            u,
+            v,
+        })
     }
 
-    pub fn with_preset(preset: VideoPreset) -> Result<Self> {
-        let (width, height) = preset.dimensions();
-        let framerate = preset.fps();
-        // For now reuse `new`; quantizer tuning can be applied via EncoderConfig if needed
-        let _q = match preset { VideoPreset::P1080 => 140, VideoPreset::P720 => 160, VideoPreset::P360 => 200, VideoPreset::P180 => 240 };
-        Self::new(width, height, framerate)
-    }
-
-    fn rgba_to_i420(&mut self, format: &lav::VideoFormat, frame: &lav::VideoFrame) -> anyhow::Result<()> {
+    fn rgba_to_i420(
+        &mut self,
+        format: &lav::VideoFormat,
+        frame: &lav::VideoFrame,
+    ) -> anyhow::Result<()> {
         let [w, h] = format.dimensions;
         let range = YRange::Full;
         let matrix = YMatrix::Bt709;
@@ -74,13 +79,22 @@ impl Av1Encoder {
         let mut rgba = if matches!(format.pixel_format, lav::PixelFormat::Bgra) {
             // Convert BGRA→RGBA in-place clone
             let mut tmp = frame.raw.clone();
-            for p in tmp.chunks_exact_mut(4) { p.swap(0, 2); }
+            for p in tmp.chunks_exact_mut(4) {
+                p.swap(0, 2);
+            }
             tmp
-        } else { frame.raw.clone() };
+        } else {
+            frame.raw.clone()
+        };
         if w != self.width || h != self.height {
             // Resize via image crate
             let img = image::RgbaImage::from_raw(w, h, rgba).expect("valid rgba");
-            let resized = image::imageops::resize(&img, self.width, self.height, image::imageops::FilterType::Triangle);
+            let resized = image::imageops::resize(
+                &img,
+                self.width,
+                self.height,
+                image::imageops::FilterType::Triangle,
+            );
             rgba = resized.into_raw();
         }
         let stride = (self.width as u32) * 4;
@@ -90,6 +104,17 @@ impl Av1Encoder {
 }
 
 impl lav::VideoEncoder for Av1Encoder {
+    fn with_preset(preset: VideoPreset) -> Result<Self> {
+        // For now reuse `new`; quantizer tuning can be applied via EncoderConfig if needed
+        // let _q = match preset {
+        //     VideoPreset::P1080 => 140,
+        //     VideoPreset::P720 => 160,
+        //     VideoPreset::P360 => 200,
+        //     VideoPreset::P180 => 240,
+        // };
+        Self::new(preset.width(), preset.height(), preset.fps())
+    }
+
     fn config(&self) -> hang::catalog::VideoConfig {
         hang::catalog::VideoConfig {
             codec: hang::catalog::VideoCodec::AV1(hang::catalog::AV1::default()),
@@ -104,7 +129,11 @@ impl lav::VideoEncoder for Av1Encoder {
         }
     }
 
-    fn push_frame(&mut self, format: &lav::VideoFormat, frame: lav::VideoFrame) -> anyhow::Result<()> {
+    fn push_frame(
+        &mut self,
+        format: &lav::VideoFormat,
+        frame: lav::VideoFrame,
+    ) -> anyhow::Result<()> {
         self.rgba_to_i420(format, &frame)?;
         let mut rav1e_frame = self.ctx.new_frame();
         // Copy into rav1e planes
@@ -121,10 +150,14 @@ impl lav::VideoEncoder for Av1Encoder {
         match self.ctx.receive_packet() {
             Ok(pkt) => {
                 let ts = std::time::Duration::from_nanos(
-                    (pkt.input_frameno as u64) * 1_000_000_000u64 / (self.framerate as u64)
+                    (pkt.input_frameno as u64) * 1_000_000_000u64 / (self.framerate as u64),
                 );
                 let key = matches!(pkt.frame_type, FrameType::KEY);
-                Ok(Some(hang::Frame { payload: pkt.data.into(), timestamp: ts, keyframe: key }))
+                Ok(Some(hang::Frame {
+                    payload: pkt.data.into(),
+                    timestamp: ts,
+                    keyframe: key,
+                }))
             }
             Err(EncoderStatus::Encoded) => Ok(None),
             Err(EncoderStatus::LimitReached) => Ok(None),

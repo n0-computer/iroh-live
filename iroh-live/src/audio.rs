@@ -68,6 +68,7 @@ impl OutputControl {
 use crate::av as lav;
 
 /// A simple AudioSource that reads from the default microphone via Firewheel.
+#[derive(Clone)]
 pub struct MicrophoneSource {
     handle: InputStreamHandle,
     format: lav::AudioFormat,
