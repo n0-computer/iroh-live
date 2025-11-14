@@ -3791,6 +3791,7 @@ dependencies = [
  "rand 0.9.2",
  "rav1d",
  "rav1e",
+ "running-average",
  "serde",
  "strum 0.26.3",
  "tokio",
@@ -6414,6 +6415,12 @@ dependencies = [
  "num-traits",
  "realfft",
 ]
+
+[[package]]
+name = "running-average"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ca70d55297ff92004f0e417bbe0268f59fbabce1ebc234f67794f837fb366e5"
 
 [[package]]
 name = "rust_decimal"

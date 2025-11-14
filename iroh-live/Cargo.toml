@@ -40,8 +40,9 @@ url = "2.5.7"
 web-transport-iroh = { version = "0.1.0", path = "../web-transport-iroh" }
 xcap = "0.7.1"
 yuv = "0.8.8"
-byte-unit = "5.1"
+byte-unit = { version = "5.1", features = ["bit"] }
 n0-watcher = "0.6.0"
+running-average = "0.1.0"
 ## removed duplicate strum
 
 [dev-dependencies]
