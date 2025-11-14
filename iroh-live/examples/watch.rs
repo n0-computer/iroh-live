@@ -4,8 +4,8 @@ use clap::{Parser, ValueEnum};
 use eframe::egui::{self, Color32, Id, Vec2};
 use iroh::Endpoint;
 use iroh_live::{
-    av::Backend,
     Live, LiveSession, LiveTicket, Quality, VideoRendition, WatchTrack, audio::AudioBackend,
+    av::Backend,
 };
 use n0_error::{Result, StackResultExt, anyerr};
 
@@ -31,7 +31,8 @@ fn main() -> Result<()> {
             println!("connected!");
             let broadcast = session.consume(&ticket.broadcast_name).await?;
             let _audio = broadcast.listen_with(audio_ctx, cli.quality.into()).await?;
-            let video = broadcast.watch_with(&Default::default(), cli.quality.into(), Backend::Native)?;
+            let video =
+                broadcast.watch_with(&Default::default(), cli.quality.into(), Backend::Native)?;
             let renditions = broadcast.video_renditions();
             n0_error::Ok((endpoint, session, broadcast, video, renditions))
         }
@@ -49,7 +50,7 @@ fn main() -> Result<()> {
                 rt,
                 renditions,
                 selected: 0,
-                jitter_ms: 0,
+                backend: Backend::Native,
                 prev_bytes: 0,
                 prev_instant: std::time::Instant::now(),
                 bitrate_mbps: 0.0,
@@ -95,7 +96,7 @@ struct App {
     rt: tokio::runtime::Runtime,
     renditions: Vec<VideoRendition>,
     selected: usize,
-    jitter_ms: u32,
+    backend: Backend,
     prev_bytes: u64,
     prev_instant: std::time::Instant,
     bitrate_mbps: f32,
@@ -111,7 +112,7 @@ impl eframe::App for App {
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
                 let avail = ui.available_size();
                 ui.add_sized(avail, self.video.render(ctx, avail));
-                // Overlay: rendition selector
+                // Overlay: rendition + backend selector
                 egui::Area::new(Id::new("rendition_overlay"))
                     .anchor(egui::Align2::LEFT_BOTTOM, [8.0, -8.0])
                     .show(ctx, |ui| {
@@ -134,8 +135,58 @@ impl eframe::App for App {
                                                 self.selected = i;
                                                 let name = name.to_string();
                                                 if let Ok(new_track) = self.rt.block_on(async {
-                                                    self.broadcast
-                                                        .watch_rendition(&Default::default(), &name, Backend::Native)
+                                                    self.broadcast.watch_rendition(
+                                                        &Default::default(),
+                                                        &name,
+                                                        self.backend,
+                                                    )
+                                                }) {
+                                                    self.video = VideoView::new(ctx, new_track);
+                                                }
+                                            }
+                                        }
+                                    });
+                                ui.separator();
+                                egui::ComboBox::from_label("Backend")
+                                    .selected_text(match self.backend {
+                                        Backend::Native => "Native",
+                                        Backend::Ffmpeg => "FFmpeg",
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        let mut change = None;
+                                        if ui
+                                            .selectable_label(
+                                                matches!(self.backend, Backend::Native),
+                                                "Native",
+                                            )
+                                            .clicked()
+                                        {
+                                            change = Some(Backend::Native);
+                                        }
+                                        if ui
+                                            .selectable_label(
+                                                matches!(self.backend, Backend::Ffmpeg),
+                                                "FFmpeg",
+                                            )
+                                            .clicked()
+                                        {
+                                            change = Some(Backend::Ffmpeg);
+                                        }
+                                        if let Some(new_backend) = change {
+                                            if new_backend != self.backend {
+                                                self.backend = new_backend;
+                                                // Re-subscribe current rendition with new backend
+                                                let name = names
+                                                    .get(self.selected)
+                                                    .copied()
+                                                    .unwrap_or("720p")
+                                                    .to_string();
+                                                if let Ok(new_track) = self.rt.block_on(async {
+                                                    self.broadcast.watch_rendition(
+                                                        &Default::default(),
+                                                        &name,
+                                                        self.backend,
+                                                    )
                                                 }) {
                                                     self.video = VideoView::new(ctx, new_track);
                                                 }
@@ -167,16 +218,7 @@ impl eframe::App for App {
                                     "Latency: {:.0} ms",
                                     self.video.last_latency_ms()
                                 ));
-                                ui.add(
-                                    egui::Slider::new(&mut self.jitter_ms, 0..=3000)
-                                        .text("Jitter (ms)"),
-                                );
-                                self.video.set_jitter(self.jitter_ms);
-                                // apply same jitter to audio
-                                self.broadcast
-                                    .set_audio_jitter(std::time::Duration::from_millis(
-                                        self.jitter_ms as u64,
-                                    ));
+                                // jitter controls removed
                             });
                     });
             });
@@ -195,11 +237,11 @@ struct VideoView {
     texture: egui::TextureHandle,
     size: egui::Vec2,
     buffer: std::collections::VecDeque<iroh_live::video::DecodedFrame>,
-    jitter: std::time::Duration,
     last_present: Option<SystemTime>,
     frame_counter: u32,
     fps_value: f32,
     last_latency_ms: f32,
+    start_origin: Option<SystemTime>,
 }
 
 impl VideoView {
@@ -213,11 +255,11 @@ impl VideoView {
             texture,
             track,
             buffer: Default::default(),
-            jitter: std::time::Duration::from_millis(0),
             last_present: None,
             frame_counter: 0,
             fps_value: 0.0,
             last_latency_ms: 0.0,
+            start_origin: None,
         }
     }
 
@@ -236,7 +278,7 @@ impl VideoView {
         let now = std::time::SystemTime::now();
         let mut display: Option<iroh_live::video::DecodedFrame> = None;
         while let Some(f) = self.buffer.front() {
-            let intended = std::time::UNIX_EPOCH + f.timestamp + self.jitter;
+            let intended = std::time::UNIX_EPOCH + f.timestamp;
             if now >= intended {
                 display = self.buffer.pop_front();
             } else {
@@ -262,17 +304,14 @@ impl VideoView {
                 self.last_present = Some(now);
             }
             // Estimate sender/receiver clock offset from first frame arrival
-            static mut START_ORIGIN: Option<SystemTime> = None;
-            unsafe {
-                if START_ORIGIN.is_none() {
-                    START_ORIGIN = Some(now - frame.timestamp);
-                }
-                if let Some(origin) = START_ORIGIN {
-                    if let Ok(intended) = origin.checked_add(frame.timestamp).ok_or(()) {
-                        if let Ok(lat) = now.duration_since(intended) {
-                            // round to full ms
-                            self.last_latency_ms = (lat.as_millis() as f32).round();
-                        }
+            if self.start_origin.is_none() {
+                self.start_origin = Some(now - frame.timestamp);
+            }
+            if let Some(origin) = self.start_origin {
+                if let Ok(intended) = origin.checked_add(frame.timestamp).ok_or(()) {
+                    if let Ok(lat) = now.duration_since(intended) {
+                        // round to full ms
+                        self.last_latency_ms = (lat.as_millis() as f32).round();
                     }
                 }
             }
@@ -280,9 +319,6 @@ impl VideoView {
         egui::Image::from_texture(&self.texture).shrink_to_fit()
     }
 
-    fn set_jitter(&mut self, ms: u32) {
-        self.jitter = std::time::Duration::from_millis(ms as u64);
-    }
     fn fps(&self) -> f32 {
         self.fps_value
     }

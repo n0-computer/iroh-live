@@ -12,38 +12,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::av::PixelFormat;
 
-pub type FrameReceiver = mpsc::Receiver<crate::video::decoder::DecodedFrame>;
-pub type ResizeSender = mpsc::UnboundedSender<(u32, u32)>;
+pub type FrameReceiver = crate::av::FrameReceiver;
+pub type ResizeSender = crate::av::ResizeSender;
 
 // Use the shared DecodedFrame from the ffmpeg decoder module to avoid adapters
 pub use crate::video::decoder::DecodedFrame;
 
-pub struct DecoderContext {
-    target_pixel_format: PixelFormat,
-    packet_rx: mpsc::Receiver<hang::Frame>,
-    frame_tx: mpsc::Sender<DecodedFrame>,
-    resize_rx: mpsc::UnboundedReceiver<(u32, u32)>,
-    shutdown: CancellationToken,
-}
-
-impl DecoderContext {
-    pub fn new(
-        shutdown: CancellationToken,
-        target_pixel_format: PixelFormat,
-    ) -> (Self, FrameReceiver, ResizeSender, mpsc::Sender<hang::Frame>) {
-        let (packet_tx, packet_rx) = mpsc::channel(32);
-        let (frame_tx, frame_rx) = mpsc::channel(32);
-        let (resize_tx, resize_rx) = mpsc::unbounded_channel();
-        let ctx = DecoderContext {
-            target_pixel_format,
-            packet_rx,
-            frame_tx,
-            resize_rx,
-            shutdown,
-        };
-        (ctx, frame_rx, resize_tx, packet_tx)
-    }
-}
+pub type DecoderContext = crate::av::DecoderContext;
 
 pub struct Decoder {
     finished: oneshot::Receiver<(DecoderContext, anyhow::Result<()>)>,

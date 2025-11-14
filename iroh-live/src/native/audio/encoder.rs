@@ -1,11 +1,8 @@
-use std::{
-    collections::VecDeque,
-    time::Duration,
-};
+use std::{collections::VecDeque, time::Duration};
 
+use crate::av::AudioPreset;
 use anyhow::Result;
 use hang::catalog::{AudioCodec, AudioConfig};
-use crate::av::AudioPreset;
 
 use crate::av as lav;
 
@@ -21,8 +18,12 @@ pub struct OpusEncoder {
 }
 
 impl OpusEncoder {
-    pub fn stereo() -> Result<Self> { Self::new(48_000, 2) }
-    pub fn mono() -> Result<Self> { Self::new(48_000, 1) }
+    pub fn stereo() -> Result<Self> {
+        Self::new(48_000, 2)
+    }
+    pub fn mono() -> Result<Self> {
+        Self::new(48_000, 1)
+    }
 
     pub fn new(sample_rate: u32, channel_count: u32) -> Result<Self> {
         let channels = match channel_count {
@@ -41,16 +42,26 @@ impl OpusEncoder {
             frame_count: 0,
         })
     }
-
-    pub fn with_preset(p: AudioPreset) -> Result<Self> {
-        let mut enc = Self::new(48_000, 2)?;
-        enc.bitrate = match p { AudioPreset::Hq => 160_000, AudioPreset::Lq => 32_000 };
-        enc.enc.set_bitrate(opus::Bitrate::Bits(enc.bitrate as i32))?;
-        Ok(enc)
-    }
 }
 
 impl lav::AudioEncoder for OpusEncoder {
+    fn with_preset(preset: AudioPreset) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        let channels = match preset {
+            AudioPreset::Hq => 2,
+            AudioPreset::Lq => 1,
+        };
+        let mut enc = Self::new(48_000, channels)?;
+        enc.bitrate = match preset {
+            AudioPreset::Hq => 160_000,
+            AudioPreset::Lq => 32_000,
+        };
+        enc.enc
+            .set_bitrate(opus::Bitrate::Bits(enc.bitrate as i32))?;
+        Ok(enc)
+    }
     fn config(&self) -> AudioConfig {
         AudioConfig {
             codec: AudioCodec::Opus,
@@ -62,7 +73,9 @@ impl lav::AudioEncoder for OpusEncoder {
     }
 
     fn push_samples(&mut self, samples: &[f32]) -> anyhow::Result<()> {
-        if samples.is_empty() { return Ok(()); }
+        if samples.is_empty() {
+            return Ok(());
+        }
 
         // frame_size = samples per channel
         let frame_size = (samples.len() / self.channel_count as usize) as i32;
@@ -72,11 +85,15 @@ impl lav::AudioEncoder for OpusEncoder {
         out.truncate(n);
 
         let ts = Duration::from_nanos(
-            (self.frame_count as u64) * 1_000_000_000u64 / (self.sample_rate as u64)
+            (self.frame_count as u64) * 1_000_000_000u64 / (self.sample_rate as u64),
         );
         self.frame_count += frame_size as u64;
 
-        self.queued.push_back(hang::Frame { payload: out.into(), timestamp: ts, keyframe: true });
+        self.queued.push_back(hang::Frame {
+            payload: out.into(),
+            timestamp: ts,
+            keyframe: true,
+        });
         Ok(())
     }
 

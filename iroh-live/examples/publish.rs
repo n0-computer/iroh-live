@@ -3,9 +3,9 @@ use iroh::{Endpoint, SecretKey, protocol::Router};
 use iroh_live::{
     Live, PublishBroadcast,
     audio::AudioBackend,
-    av::{VideoSource, Backend, VideoPreset, AudioPreset, VideoCodec},
+    av::{AudioEncoder, AudioPreset, Backend, VideoCodec, VideoEncoder, VideoPreset, VideoSource},
     native::video::Av1Encoder,
-    video::{CameraCapturer, Av1FfmpegEncoder, H264Encoder},
+    video::{Av1FfmpegEncoder, CameraCapturer, H264Encoder},
 };
 use n0_error::StdResultExt;
 
@@ -37,30 +37,24 @@ async fn main() -> n0_error::Result {
 
     // Audio: default microphone + Opus encoder with preset
     let mic = audio_ctx.default_microphone().await?;
-    let opus = iroh_live::native::audio::OpusEncoder::with_preset(cli.audio_preset.into())?;
-    broadcast.set_audio(mic, [(opus, cli.audio_preset.into())])?;
+    let opus = iroh_live::native::audio::OpusEncoder::with_preset(cli.audio_preset)?;
+    broadcast.set_audio(mic, [(opus, cli.audio_preset)])?;
 
     // Video: camera capture + encoders by backend (fps 30)
     let camera = CameraCapturer::new()?;
-    let [w, h] = camera.format().dimensions;
-    let renditions: Vec<_> = cli.video_presets.iter().map(|p| (*p).into()).collect();
-    let backend: Backend = cli.backend.into();
-    let codec: VideoCodec = cli.codec.into();
-    match (backend, codec) {
+    let renditions = cli.video_presets.into_iter();
+    match (cli.backend, cli.codec) {
         (Backend::Native, VideoCodec::Av1) => {
-            let encs: Vec<_> = renditions.iter().map(|&p| (Av1Encoder::with_preset(p).unwrap(), p)).collect();
+            let encs = renditions.map(|p| (Av1Encoder::with_preset(p).unwrap(), p));
             broadcast.set_video(camera, encs)?;
         }
         (Backend::Ffmpeg, VideoCodec::Av1) => {
-            let encs: Vec<_> = renditions.iter().map(|&p| (Av1FfmpegEncoder::with_preset(p).unwrap(), p)).collect();
+            let encs = renditions.map(|p| (Av1FfmpegEncoder::with_preset(p).unwrap(), p));
             broadcast.set_video(camera, encs)?;
         }
         (_, VideoCodec::H264) => {
             // Use ffmpeg H264 for both backends for now
-            let encs: Vec<_> = renditions.iter().map(|&p| {
-                let enc = H264Encoder::for_source(&camera, p.fps()).unwrap();
-                (enc, p)
-            }).collect();
+            let encs = renditions.map(|p| (H264Encoder::with_preset(p).unwrap(), p));
             broadcast.set_video(camera, encs)?;
         }
     }
@@ -74,29 +68,14 @@ async fn main() -> n0_error::Result {
     Ok(())
 }
 
-#[derive(Copy, Clone, ValueEnum, Debug)]
-enum CliVideoPreset { P180, P360, P720, P1080 }
-impl From<CliVideoPreset> for VideoPreset { fn from(v: CliVideoPreset) -> Self { match v { CliVideoPreset::P180 => VideoPreset::P180, CliVideoPreset::P360 => VideoPreset::P360, CliVideoPreset::P720 => VideoPreset::P720, CliVideoPreset::P1080 => VideoPreset::P1080 } } }
-
-#[derive(Copy, Clone, ValueEnum, Debug)]
-enum CliAudioPreset { Hq, Lq }
-impl From<CliAudioPreset> for AudioPreset { fn from(v: CliAudioPreset) -> Self { match v { CliAudioPreset::Hq => AudioPreset::Hq, CliAudioPreset::Lq => AudioPreset::Lq } } }
-
-#[derive(Copy, Clone, ValueEnum, Debug)]
-enum CliBackend { Native, Ffmpeg }
-impl From<CliBackend> for Backend { fn from(v: CliBackend) -> Self { match v { CliBackend::Native => Backend::Native, CliBackend::Ffmpeg => Backend::Ffmpeg } } }
-
 #[derive(Parser, Debug)]
 struct Cli {
-    #[arg(long, value_enum, default_value_t=CliBackend::Native)]
-    backend: CliBackend,
-    #[arg(long, value_enum, default_value_t=CliCodec::Av1)]
-    codec: CliCodec,
-    #[arg(long, value_enum, value_delimiter=',', default_values_t=[CliVideoPreset::P720])]
-    video_presets: Vec<CliVideoPreset>,
-    #[arg(long, value_enum, default_value_t=CliAudioPreset::Hq)]
-    audio_preset: CliAudioPreset,
+    #[arg(long, default_value_t=Backend::Native)]
+    backend: Backend,
+    #[arg(long, default_value_t=VideoCodec::Av1)]
+    codec: VideoCodec,
+    #[arg(long, value_delimiter=',', default_values_t=[VideoPreset::P720])]
+    video_presets: Vec<VideoPreset>,
+    #[arg(long, default_value_t=AudioPreset::Hq)]
+    audio_preset: AudioPreset,
 }
-#[derive(Copy, Clone, ValueEnum, Debug)]
-enum CliCodec { Av1, H264 }
-impl From<CliCodec> for VideoCodec { fn from(v: CliCodec) -> Self { match v { CliCodec::Av1 => VideoCodec::Av1, CliCodec::H264 => VideoCodec::H264 }}}
