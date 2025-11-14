@@ -1,13 +1,14 @@
 use std::time::{Duration, SystemTime};
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use eframe::egui::{self, Color32, Id, Vec2};
 use iroh::Endpoint;
 use iroh_live::{
-    Live, LiveSession, LiveTicket, Quality, VideoRendition, WatchTrack, audio::AudioBackend,
-    av::Backend,
+    Live, LiveSession, LiveTicket, VideoRendition, WatchTrack,
+    audio::AudioBackend,
+    av::{Backend, Quality},
 };
-use n0_error::{Result, StackResultExt, anyerr};
+use n0_error::{Result, anyerr};
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
@@ -30,9 +31,9 @@ fn main() -> Result<()> {
             let mut session = live.connect(ticket.endpoint_id).await?;
             println!("connected!");
             let broadcast = session.consume(&ticket.broadcast_name).await?;
-            let _audio = broadcast.listen_with(audio_ctx, cli.quality.into()).await?;
-            let video =
-                broadcast.watch_with(&Default::default(), cli.quality.into(), Backend::Native)?;
+            let audio_out = audio_ctx.default_speaker().await?;
+            let _audio = broadcast.listen_with(cli.quality, audio_out)?;
+            let video = broadcast.watch_with(&Default::default(), cli.quality, Backend::Ffmpeg)?;
             let renditions = broadcast.video_renditions();
             n0_error::Ok((endpoint, session, broadcast, video, renditions))
         }
@@ -62,30 +63,11 @@ fn main() -> Result<()> {
     .map_err(|err| anyerr!("eframe failed: {err:#}"))
 }
 
-#[derive(Copy, Clone, ValueEnum, Debug)]
-enum CliQuality {
-    Highest,
-    High,
-    Mid,
-    Low,
-}
-
-impl From<CliQuality> for Quality {
-    fn from(v: CliQuality) -> Self {
-        match v {
-            CliQuality::Highest => Quality::Highest,
-            CliQuality::High => Quality::High,
-            CliQuality::Mid => Quality::Mid,
-            CliQuality::Low => Quality::Low,
-        }
-    }
-}
-
 #[derive(Parser, Debug)]
 struct Cli {
     ticket: String,
-    #[arg(long, value_enum, default_value_t=CliQuality::Highest)]
-    quality: CliQuality,
+    #[arg(long, default_value_t=Quality::Highest)]
+    quality: Quality,
 }
 
 struct App {
@@ -236,7 +218,6 @@ struct VideoView {
     track: WatchTrack,
     texture: egui::TextureHandle,
     size: egui::Vec2,
-    buffer: std::collections::VecDeque<iroh_live::video::DecodedFrame>,
     last_present: Option<SystemTime>,
     frame_counter: u32,
     fps_value: f32,
@@ -254,7 +235,6 @@ impl VideoView {
             size,
             texture,
             track,
-            buffer: Default::default(),
             last_present: None,
             frame_counter: 0,
             fps_value: 0.0,
@@ -272,20 +252,20 @@ impl VideoView {
             let h = (available_size.y * ppp) as u32;
             self.track.set_viewport(w, h);
         }
-        if let Some(frame) = self.track.current_frame() {
-            self.buffer.push_back(frame);
-        }
+        // if let Some(frame) = self.track.current_frame() {
+        //     self.buffer.push_back(frame);
+        // }
         let now = std::time::SystemTime::now();
-        let mut display: Option<iroh_live::video::DecodedFrame> = None;
-        while let Some(f) = self.buffer.front() {
-            let intended = std::time::UNIX_EPOCH + f.timestamp;
-            if now >= intended {
-                display = self.buffer.pop_front();
-            } else {
-                break;
-            }
-        }
-        if let Some(frame) = display {
+        // let mut display: Option<iroh_live::av::DecodedFrame> = None;
+        // while let Some(f) = self.buffer.front() {
+        //     let intended = std::time::UNIX_EPOCH + f.timestamp;
+        //     if now >= intended {
+        //         display = self.buffer.pop_front();
+        //     } else {
+        //         break;
+        //     }
+        // }
+        if let Some(frame) = self.track.current_frame() {
             let (w, h) = frame.img().dimensions();
             let image = egui::ColorImage::from_rgba_unmultiplied(
                 [w as usize, h as usize],

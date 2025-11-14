@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use anyhow::{Context, Result};
 use ffmpeg_next::{
     self as ffmpeg, codec,
@@ -8,27 +6,15 @@ use ffmpeg_next::{
     util::{format::pixel::Pixel, frame::video::Video as FfmpegFrame},
 };
 use image::{Delay, RgbaImage};
-use tokio::sync::{mpsc, oneshot};
-use tokio_util::sync::CancellationToken;
-use tracing::error;
 
-use crate::{PacketSender, video::Rescaler, video::StreamClock, ffmpeg_ext::CodecContextExt};
+use crate::{
+    PlaybackConfig,
+    av::{DecodedFrame, VideoDecoder},
+    ffmpeg_ext::CodecContextExt,
+    video::{Rescaler, StreamClock},
+};
 
 pub use crate::av::PixelFormat;
-
-pub type FrameReceiver = crate::av::FrameReceiver;
-pub type ResizeSender = crate::av::ResizeSender;
-
-pub struct DecodedFrame {
-    pub frame: image::Frame,
-    pub timestamp: Duration,
-}
-
-impl DecodedFrame {
-    pub fn img(&self) -> &RgbaImage {
-        self.frame.buffer()
-    }
-}
 
 impl From<PixelFormat> for Pixel {
     fn from(value: PixelFormat) -> Self {
@@ -39,39 +25,39 @@ impl From<PixelFormat> for Pixel {
     }
 }
 
-pub type DecoderContext = crate::av::DecoderContext;
-
-pub struct Decoder {
-    finished: oneshot::Receiver<(DecoderContext, anyhow::Result<()>)>,
+pub struct FfmpegVideoDecoder {
+    codec: ffmpeg::decoder::Video,
+    rescaler: Rescaler,
+    clock: StreamClock,
+    decoded: FfmpegFrame,
+    viewport_changed: Option<(u32, u32)>,
+    last_packet: Option<hang::Frame>,
 }
 
-impl Decoder {
-    pub fn new(config: &hang::catalog::VideoConfig, mut ctx: DecoderContext) -> Result<Self> {
+impl VideoDecoder for FfmpegVideoDecoder {
+    fn new(config: &hang::catalog::VideoConfig, playback_config: &PlaybackConfig) -> Result<Self>
+    where
+        Self: Sized,
+    {
         ffmpeg::init()?;
 
-        // let (packet_tx, packet_rx) = mpsc::channel(32);
-        // let (frame_tx, frame_rx) = mpsc::channel(32);
-        // let (resize_tx, resize_rx) = mpsc::unbounded_channel();
-
         // Build a decoder context for H.264 and attach extradata (e.g., avcC)
-        let mut codec = match &config.codec {
+        let codec = match &config.codec {
             hang::catalog::VideoCodec::H264(_meta) => {
                 let codec =
                     codec::decoder::find(CodecId::H264).context("H.264 decoder not found")?;
                 let mut ctx = codec::context::Context::new_with_codec(codec);
-
-                // Attach extradata if present (via your ext trait)
                 if let Some(description) = &config.description {
                     ctx.set_extradata(&description)?;
                 }
-
-                // Open the decoder and get a typed Video decoder
                 ctx.decoder().video().unwrap()
             }
             hang::catalog::VideoCodec::AV1(_meta) => {
                 let codec = codec::decoder::find(CodecId::AV1).context("AV1 decoder not found")?;
                 let mut ctx = codec::context::Context::new_with_codec(codec);
-                if let Some(description) = &config.description { ctx.set_extradata(&description)?; }
+                if let Some(description) = &config.description {
+                    ctx.set_extradata(&description)?;
+                }
                 ctx.decoder().video().unwrap()
             }
             _ => anyhow::bail!(
@@ -79,105 +65,60 @@ impl Decoder {
                 config.codec
             ),
         };
-
-        let (finished_tx, finished) = oneshot::channel();
-        std::thread::spawn(move || {
-            let res = decode_loop(&mut codec, &mut ctx);
-            let res = res.inspect_err(|err| error!("Decoder failed: {err:#}"));
-            finished_tx.send((ctx, res)).ok();
-        });
-
-        let this = Decoder { finished };
-
-        Ok(this)
+        let rescaler = Rescaler::new(Pixel::from(playback_config.pixel_format), None)?;
+        let clock = StreamClock::default();
+        let decoded = FfmpegFrame::empty();
+        Ok(Self {
+            codec,
+            rescaler,
+            clock,
+            decoded,
+            viewport_changed: None,
+            last_packet: None,
+        })
     }
 
-    pub async fn closed(self) -> Result<DecoderContext> {
-        let (ctx, _res) = self.finished.await?;
-        Ok(ctx)
+    fn set_viewport(&mut self, w: u32, h: u32) {
+        self.viewport_changed = Some((w, h));
     }
-}
 
-fn decode_loop(codec: &mut ffmpeg::decoder::Video, ctx: &mut DecoderContext) -> Result<()> {
-    let DecoderContext {
-        packet_rx,
-        frame_tx,
-        resize_rx,
-        shutdown,
-        target_pixel_format,
-    } = ctx;
-    let mut rescaler = Rescaler::new(Pixel::from(*target_pixel_format), None)?;
-    let mut clock = StreamClock::default();
-    let mut decoded = FfmpegFrame::empty();
-    let mut requested_target: Option<(u32, u32)> = None;
-
-    let mut i = 0;
-    while let Some(encoded_frame) = packet_rx.blocking_recv() {
-        if shutdown.is_cancelled() {
-            break;
+    fn push_packet(&mut self, packet: hang::Frame) -> Result<()> {
+        {
+            let pkt = Packet::borrow(&packet.payload);
+            self.codec.send_packet(&pkt)?;
         }
+        self.last_packet = Some(packet);
+        Ok(())
+    }
 
-        // Apply any pending resize requests (drain queue keeping last)
-        while let Ok((w, h)) = resize_rx.try_recv() {
-            if w > 0 && h > 0 {
-                requested_target = Some((w, h));
-            }
-        }
-        // Wrap incoming payload as an FFmpeg packet and send to decoder
-        let pkt = Packet::borrow(&encoded_frame.payload);
-        if let Err(err) = codec.send_packet(&pkt) {
-            error!("Failed to import packet: {err}");
-            continue;
-        }
-
+    fn pop_frame(&mut self) -> Result<Option<crate::av::DecodedFrame>> {
         // Pull all available decoded frames
-        while codec.receive_frame(&mut decoded).is_ok() {
-            i += 1;
-            // Apply clamped target size and convert to BGRA
-            if let Some((max_width, max_height)) = requested_target {
-                let (width, height) = calculate_resized_size(&decoded, max_width, max_height);
-                rescaler.target_width_height = Some((width, height));
-            } else {
-                rescaler.target_width_height = None;
+        match self.codec.receive_frame(&mut self.decoded) {
+            Ok(()) => {
+                // Apply clamped target size.
+                if let Some((max_width, max_height)) = self.viewport_changed.take() {
+                    let (width, height) =
+                        calculate_resized_size(&self.decoded, max_width, max_height);
+                    self.rescaler.target_width_height = Some((width, height));
+                }
+
+                // Convert to BGRA
+                let frame = self.rescaler.process(&mut self.decoded)?;
+                // Allocate into a vec.
+                let image = into_image_frame(frame);
+                // Compute interframe delay from provided timestamps
+                let last_packet = self.last_packet.as_ref().context("missing last packet")?;
+                let delay = Delay::from_saturating_duration(self.clock.frame_delay(&last_packet));
+                let frame = DecodedFrame {
+                    frame: image::Frame::from_parts(image, 0, 0, delay),
+                    timestamp: last_packet.timestamp,
+                };
+                Ok(Some(frame))
             }
-            // Convert to BGRA
-            // Note: This is specific to GPUI: It takes an image::RgbaImage but actually
-            // expects it to be in BGRA format.
-            // (Yes, I did find out about this because everything looked wrong initially).
-            let frame = rescaler.process(&decoded)?;
-            if i % 20 == 0 {
-                tracing::trace!(
-                    src_w = decoded.width(),
-                    src_h = decoded.height(),
-                    w = frame.width(),
-                    h = frame.height(),
-                    "decoded frame"
-                );
-            }
-
-            // Allocate into a vec.
-            let image = into_image_frame(frame);
-
-            // Compute interframe delay from provided timestamps
-            let delay = Delay::from_saturating_duration(clock.frame_delay(&encoded_frame));
-            let frame = DecodedFrame {
-                frame: image::Frame::from_parts(image, 0, 0, delay),
-                timestamp: encoded_frame.timestamp,
-            };
-
-            // Send out.
-            frame_tx
-                .blocking_send(frame)
-                .context("Receiver for decoded frames dropped")?;
+            Err(ffmpeg::util::error::Error::BufferTooSmall) => Ok(None),
+            Err(err) => Err(err.into()),
         }
     }
-
-    // Flush decoder
-    if let Err(err) = codec.send_eof() {
-        error!("Failed to send EOF: {err}");
-    }
-
-    Ok(())
 }
 
 /// Calculates the target frame size to fit into the requested bounds while preserving aspect ratio.

@@ -1,7 +1,10 @@
+use std::time::Duration;
+
 use anyhow::Result;
+use image::RgbaImage;
 use strum::{Display, EnumString, VariantNames};
-use tokio::sync::{mpsc, mpsc::UnboundedReceiver, mpsc::UnboundedSender};
-use tokio_util::sync::CancellationToken;
+
+use crate::PlaybackConfig;
 
 #[derive(Copy, Clone, Debug)]
 pub struct AudioFormat {
@@ -9,9 +12,14 @@ pub struct AudioFormat {
     pub channel_count: u32,
 }
 
-pub trait AudioSource {
+pub trait AudioSource: Send + Clone + 'static {
     fn format(&self) -> AudioFormat;
     fn pop_samples(&mut self, buf: &mut [f32]) -> Result<Option<usize>>;
+}
+
+pub trait AudioSink: Send + 'static {
+    fn format(&self) -> Result<AudioFormat>;
+    fn push_samples(&mut self, buf: &[f32]) -> Result<()>;
 }
 
 pub trait AudioEncoder {
@@ -21,6 +29,14 @@ pub trait AudioEncoder {
     fn config(&self) -> hang::catalog::AudioConfig;
     fn push_samples(&mut self, samples: &[f32]) -> Result<()>;
     fn pop_packet(&mut self) -> Result<Option<hang::Frame>>;
+}
+
+pub trait AudioDecoder: Send + 'static {
+    fn new(config: &hang::catalog::AudioConfig, target_format: AudioFormat) -> Result<Self>
+    where
+        Self: Sized;
+    fn push_packet(&mut self, packet: hang::Frame) -> Result<()>;
+    fn pop_samples(&mut self) -> Result<Option<&[f32]>>;
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -60,35 +76,23 @@ pub trait VideoEncoder {
     fn pop_packet(&mut self) -> Result<Option<hang::Frame>>;
 }
 
-// Shared video decoder context used by native and FFmpeg decoders
-pub type FrameReceiver = mpsc::Receiver<crate::video::decoder::DecodedFrame>;
-pub type ResizeSender = UnboundedSender<(u32, u32)>;
-pub type PacketSender = mpsc::Sender<hang::Frame>;
-
-pub struct DecoderContext {
-    pub(crate) target_pixel_format: PixelFormat,
-    pub(crate) packet_rx: mpsc::Receiver<hang::Frame>,
-    pub(crate) frame_tx: mpsc::Sender<crate::video::decoder::DecodedFrame>,
-    pub(crate) resize_rx: UnboundedReceiver<(u32, u32)>,
-    pub(crate) shutdown: CancellationToken,
+pub trait VideoDecoder: Send + 'static {
+    fn new(config: &hang::catalog::VideoConfig, playback_config: &PlaybackConfig) -> Result<Self>
+    where
+        Self: Sized;
+    fn pop_frame(&mut self) -> Result<Option<DecodedFrame>>;
+    fn push_packet(&mut self, packet: hang::Frame) -> Result<()>;
+    fn set_viewport(&mut self, w: u32, h: u32);
 }
 
-impl DecoderContext {
-    pub fn new(
-        shutdown: CancellationToken,
-        target_pixel_format: PixelFormat,
-    ) -> (Self, FrameReceiver, ResizeSender, PacketSender) {
-        let (packet_tx, packet_rx) = mpsc::channel(32);
-        let (frame_tx, frame_rx) = mpsc::channel(32);
-        let (resize_tx, resize_rx) = mpsc::unbounded_channel();
-        let ctx = DecoderContext {
-            target_pixel_format,
-            packet_rx,
-            frame_tx,
-            resize_rx,
-            shutdown,
-        };
-        (ctx, frame_rx, resize_tx, packet_tx)
+pub struct DecodedFrame {
+    pub frame: image::Frame,
+    pub timestamp: Duration,
+}
+
+impl DecodedFrame {
+    pub fn img(&self) -> &RgbaImage {
+        self.frame.buffer()
     }
 }
 
@@ -152,4 +156,13 @@ impl VideoPreset {
 pub enum AudioPreset {
     Hq,
     Lq,
+}
+
+#[derive(Debug, Clone, Copy, Display, EnumString, VariantNames, Eq, PartialEq)]
+#[strum(serialize_all = "lowercase")]
+pub enum Quality {
+    Highest,
+    High,
+    Mid,
+    Low,
 }

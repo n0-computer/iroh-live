@@ -62,6 +62,7 @@ impl lav::AudioEncoder for OpusEncoder {
             .set_bitrate(opus::Bitrate::Bits(enc.bitrate as i32))?;
         Ok(enc)
     }
+
     fn config(&self) -> AudioConfig {
         AudioConfig {
             codec: AudioCodec::Opus,

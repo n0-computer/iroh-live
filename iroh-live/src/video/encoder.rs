@@ -10,7 +10,7 @@ use ffmpeg::codec;
 use ffmpeg_next::{self as ffmpeg, format::Pixel, frame::Video as VideoFrame};
 use tracing::{debug, info};
 
-use crate::{av as lav, ffmpeg_ext::CodecContextExt, video::Rescaler};
+use crate::{av as lav, av::VideoEncoder, ffmpeg_ext::CodecContextExt, video::Rescaler};
 
 #[derive(Debug, Clone, Copy, Default)]
 // Allow unused because usage is cfg-gated on platform.
@@ -297,16 +297,7 @@ impl H264Encoder {
     }
 }
 
-/// Convenience to build an encoder using a `VideoSource`'s format.
-impl H264Encoder {
-    pub fn for_source(source: &impl lav::VideoSource, fps: u32) -> Result<Self> {
-        let fmt = source.format();
-        let [w, h] = fmt.dimensions;
-        Self::new(w, h, fps)
-    }
-}
-
-impl lav::VideoEncoder for H264Encoder {
+impl VideoEncoder for H264Encoder {
     fn with_preset(preset: lav::VideoPreset) -> Result<Self>
     where
         Self: Sized,
@@ -324,7 +315,7 @@ impl lav::VideoEncoder for H264Encoder {
         frame: lav::VideoFrame,
     ) -> anyhow::Result<()> {
         use ffmpeg_next::format::Pixel;
-        use ffmpeg_next::util::frame::video::Video as FfFrame;
+        use ffmpeg_next::frame::Video as FfFrame;
 
         // Wrap raw RGBA/BGRA data into an ffmpeg frame and encode
         let pixel = match format.pixel_format {
@@ -405,7 +396,7 @@ impl Av1FfmpegEncoder {
     }
 }
 
-impl lav::VideoEncoder for Av1FfmpegEncoder {
+impl VideoEncoder for Av1FfmpegEncoder {
     fn with_preset(preset: lav::VideoPreset) -> Result<Self>
     where
         Self: Sized,
@@ -430,7 +421,7 @@ impl lav::VideoEncoder for Av1FfmpegEncoder {
         format: &lav::VideoFormat,
         frame: lav::VideoFrame,
     ) -> anyhow::Result<()> {
-        use ffmpeg_next::util::frame::video::Video as FfFrame;
+        use ffmpeg_next::frame::Video as FfFrame;
         let pixel = match format.pixel_format {
             lav::PixelFormat::Rgba => Pixel::RGBA,
             lav::PixelFormat::Bgra => Pixel::BGRA,
