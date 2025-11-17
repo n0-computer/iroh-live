@@ -2,8 +2,9 @@ use clap::Parser;
 use iroh::{Endpoint, SecretKey, protocol::Router};
 use iroh_live::{audio::AudioBackend, capture::CameraCapturer, ffmpeg::H264Encoder};
 use iroh_moq::{
-    Live, PublishBroadcast,
+    Live,
     av::{AudioEncoder, AudioPreset, VideoCodec, VideoEncoder, VideoPreset},
+    publish::PublishBroadcast,
 };
 use n0_error::StdResultExt;
 
