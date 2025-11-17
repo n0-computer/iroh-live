@@ -6,7 +6,10 @@ use iroh_live::{
     audio::AudioBackend,
     ffmpeg::{FfmpegAudioDecoder, FfmpegVideoDecoder, ffmpeg_log_init},
 };
-use iroh_moq::{AudioTrack, ConsumeBroadcast, Live, LiveSession, LiveTicket, WatchTrack};
+use iroh_moq::{
+    Live, LiveSession, LiveTicket,
+    subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
+};
 use n0_error::{Result, StackResultExt, anyerr};
 
 fn main() -> Result<()> {
@@ -32,7 +35,7 @@ fn main() -> Result<()> {
             let live = Live::new(endpoint.clone());
             let mut session = live.connect(ticket.endpoint_id).await?;
             println!("connected!");
-            let broadcast = session.consume(&ticket.broadcast_name).await?;
+            let broadcast = session.subscribe(&ticket.broadcast_name).await?;
             let audio_out = audio_ctx.default_speaker().await?;
             let audio = broadcast.listen::<FfmpegAudioDecoder>(audio_out)?;
             let video = broadcast.watch::<FfmpegVideoDecoder>()?;
@@ -67,7 +70,7 @@ struct App {
     _audio_ctx: AudioBackend,
     endpoint: Endpoint,
     session: LiveSession,
-    broadcast: ConsumeBroadcast,
+    broadcast: SubscribeBroadcast,
     stats: util::StatsSmoother,
     rt: tokio::runtime::Runtime,
 }
