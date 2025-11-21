@@ -180,6 +180,10 @@ impl LiveSession {
         })
     }
 
+    pub fn conn(&self) -> &iroh::endpoint::Connection {
+        self.wt_session.conn()
+    }
+
     pub fn stats(&self) -> ConnectionStats {
         self.wt_session.stats()
     }

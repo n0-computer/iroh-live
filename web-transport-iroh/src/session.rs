@@ -181,6 +181,10 @@ impl Session {
         self.conn.closed().await.into()
     }
 
+    pub fn conn(&self) -> &iroh::endpoint::Connection {
+        &self.conn
+    }
+
     /// Return why the session was closed, or None if it's not closed. See [`iroh::endpoint::Connection::close_reason`].
     pub fn close_reason(&self) -> Option<SessionError> {
         self.conn.close_reason().map(Into::into)

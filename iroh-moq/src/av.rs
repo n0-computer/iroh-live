@@ -154,6 +154,10 @@ pub enum VideoPreset {
 }
 
 impl VideoPreset {
+    pub fn all() -> [VideoPreset; 4] {
+        [Self::P180, Self::P360, Self::P720, Self::P1080]
+    }
+
     pub fn dimensions(&self) -> (u32, u32) {
         match self {
             Self::P180 => (320, 180),
