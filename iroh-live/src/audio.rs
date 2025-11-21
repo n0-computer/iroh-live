@@ -124,6 +124,10 @@ impl MicrophoneSource {
 }
 
 impl AudioSource for MicrophoneSource {
+    fn cloned_boxed(&self) -> Box<dyn AudioSource> {
+        Box::new(self.clone())
+    }
+
     fn format(&self) -> AudioFormat {
         self.format
     }

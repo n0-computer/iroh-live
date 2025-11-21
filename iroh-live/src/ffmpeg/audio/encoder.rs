@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use ffmpeg_next::{self as ffmpeg, Rational};
 use hang::catalog::AudioConfig;
-use iroh_moq::av::{AudioEncoder, AudioPreset};
+use iroh_moq::av::{AudioEncoder, AudioEncoderInner, AudioPreset};
 use tracing::trace;
 
 use crate::ffmpeg::ext::CodecContextExt;
@@ -87,6 +87,9 @@ impl AudioEncoder for OpusEncoder {
         };
         Self::new(SAMPLE_RATE, channels, bitrate)
     }
+}
+
+impl AudioEncoderInner for OpusEncoder {
     fn config(&self) -> AudioConfig {
         hang::catalog::AudioConfig {
             codec: hang::catalog::AudioCodec::Opus,

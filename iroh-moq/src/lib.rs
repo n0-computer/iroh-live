@@ -197,6 +197,9 @@ impl LiveSession {
     }
 
     async fn wait_for_broadcast(&mut self, name: &str) -> Result<BroadcastConsumer, Error> {
+        if let Some(consumer) = self.subscribe.consume_broadcast(name) {
+            return Ok(consumer);
+        }
         loop {
             let (path, consumer) = self
                 .subscribe
