@@ -398,7 +398,10 @@ impl AudioDriver {
             .start_stream(
                 sample_rate.try_into().unwrap(),
                 input_stream_sample_rate,
-                Default::default(),
+                ResamplingChannelConfig {
+                    capacity_seconds: 3.0,
+                    ..Default::default()
+                },
             )
             .unwrap();
         self.cx.queue_event_for(stream_reader_id, event.into());
