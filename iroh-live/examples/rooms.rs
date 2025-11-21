@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use clap::Parser;
-use eframe::egui::{self, Color32, Id, Vec2};
+use eframe::egui::{self, Color32, Vec2};
 use iroh::{Endpoint, EndpointId, protocol::Router};
 use iroh_gossip::{Gossip, TopicId};
 use iroh_live::{
@@ -283,7 +283,8 @@ impl eframe::App for App {
         match self.track_rx.try_recv() {
             Ok(track) => {
                 info!("adding new track");
-                self.videos.push(VideoView::new(ctx, track));
+                self.videos
+                    .push(VideoView::new(ctx, track, self.videos.len()));
             }
             Err(TryRecvError::Disconnected) => warn!("track receiver disconnected!"),
             Err(TryRecvError::Empty) => {}
@@ -309,6 +310,7 @@ impl eframe::App for App {
 impl App {}
 
 struct VideoView {
+    id: usize,
     track: Track,
     stats: StatsSmoother,
     texture: egui::TextureHandle,
@@ -316,16 +318,21 @@ struct VideoView {
 }
 
 impl VideoView {
-    fn new(ctx: &egui::Context, track: Track) -> Self {
+    fn new(ctx: &egui::Context, track: Track, id: usize) -> Self {
         let size = egui::vec2(100., 100.);
         let color_image =
             egui::ColorImage::filled([size.x as usize, size.y as usize], Color32::BLACK);
-        let texture = ctx.load_texture("video", color_image, egui::TextureOptions::default());
+        let texture = ctx.load_texture(
+            format!("video-texture-{}", id),
+            color_image,
+            egui::TextureOptions::default(),
+        );
         Self {
             size,
             texture,
             track,
             stats: StatsSmoother::new(),
+            id,
         }
     }
 
@@ -346,14 +353,26 @@ impl VideoView {
             );
             self.texture = ctx.load_texture("video", image, Default::default());
         }
-        self.render_overlay_area(ctx);
         egui::Image::from_texture(&self.texture).shrink_to_fit()
     }
 
-    fn render_overlay_area(&mut self, ctx: &egui::Context) {
-        egui::Area::new(Id::new("overlay"))
-            .anchor(egui::Align2::LEFT_BOTTOM, [8.0, -8.0])
-            .show(ctx, |ui| {
+    fn render_overlay_in_rect(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        // Add a bit of padding from the video edges
+        // let inner = rect.shrink2(egui::vec2(8.0, 8.0));
+        // // Create a child UI constrained to the tile, bottom-left aligned
+        // let mut child = ui.new_child(
+        //     egui::UiBuilder::new()
+        //         .max_rect(inner)
+        //         .layout(egui::Layout::bottom_up(egui::Align::LEFT)),
+        // );
+        // child.set_clip_rect(rect);
+        let pos = rect.left_bottom() + egui::vec2(8.0, -8.0);
+        let overlay_id = egui::Id::new(("overlay", self.id));
+
+        egui::Area::new(overlay_id)
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos)
+            .show(ui.ctx(), |ui| {
                 egui::Frame::new()
                     .fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 128))
                     .corner_radius(3.0)
@@ -361,14 +380,14 @@ impl VideoView {
                         ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
                         ui.set_min_width(100.);
                         self.render_overlay(ui);
-                    })
+                    });
             });
     }
 
     fn render_overlay(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             let selected = self.track.video.rendition().to_owned();
-            egui::ComboBox::from_label("")
+            egui::ComboBox::from_id_salt(format!("video{}", self.id))
                 .selected_text(selected.clone())
                 .show_ui(ui, |ui| {
                     for name in self.track.broadcast.video_renditions() {
@@ -385,6 +404,10 @@ impl VideoView {
                 });
 
             let (rtt, bw) = self.stats.smoothed(|| self.track.session.stats());
+            ui.label(format!(
+                "peer:  {}",
+                self.track.session.conn().remote_id().fmt_short()
+            ));
             ui.label(format!("BW:  {bw}"));
             ui.label(format!("RTT: {}ms", rtt.as_millis()));
         });
@@ -429,7 +452,12 @@ fn show_video_grid(ctx: &egui::Context, ui: &mut egui::Ui, videos: &mut [VideoVi
                     for _c in 0..cols {
                         if i < n {
                             // Force exact square size for each image
-                            ui.add_sized(cell_size, videos[i].render_image(ctx, cell_size.into()));
+                            let response = ui.add_sized(
+                                cell_size,
+                                videos[i].render_image(ctx, cell_size.into()),
+                            );
+                            let rect = response.rect;
+                            videos[i].render_overlay_in_rect(ui, rect);
                             i += 1;
                         } else {
                             // Keep the grid rectangular when N isn’t a multiple of cols
