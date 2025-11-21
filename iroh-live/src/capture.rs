@@ -17,6 +17,8 @@ pub struct ScreenCapturer {
     pub(crate) rx: std::sync::mpsc::Receiver<xcap::Frame>,
 }
 
+unsafe impl Send for ScreenCapturer {}
+
 impl Drop for ScreenCapturer {
     fn drop(&mut self) {
         self.video_recorder.stop().ok();
