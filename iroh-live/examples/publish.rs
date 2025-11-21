@@ -54,7 +54,7 @@ struct Cli {
     // backend: Backend,
     #[arg(long, default_value_t=VideoCodec::H264)]
     codec: VideoCodec,
-    #[arg(long, value_delimiter=',', default_values_t=[VideoPreset::P720])]
+    #[arg(long, value_delimiter=',', default_values_t=[VideoPreset::P180, VideoPreset::P360, VideoPreset::P720, VideoPreset::P1080])]
     video_presets: Vec<VideoPreset>,
     #[arg(long, default_value_t=AudioPreset::Hq)]
     audio_preset: AudioPreset,
