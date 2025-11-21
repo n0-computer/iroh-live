@@ -304,7 +304,9 @@ impl av::VideoEncoder for H264Encoder {
     {
         Self::new(preset.width(), preset.height(), preset.fps())
     }
+}
 
+impl av::VideoEncoderInner for H264Encoder {
     fn config(&self) -> hang::catalog::VideoConfig {
         self.video_config().expect("video_config available")
     }

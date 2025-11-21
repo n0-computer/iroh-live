@@ -10,7 +10,8 @@ pub struct AudioFormat {
     pub channel_count: u32,
 }
 
-pub trait AudioSource: Send + Clone + 'static {
+pub trait AudioSource: Send + 'static {
+    fn cloned_boxed(&self) -> Box<dyn AudioSource>;
     fn format(&self) -> AudioFormat;
     fn pop_samples(&mut self, buf: &mut [f32]) -> Result<Option<usize>>;
 }
@@ -20,13 +21,29 @@ pub trait AudioSink: Send + 'static {
     fn push_samples(&mut self, buf: &[f32]) -> Result<()>;
 }
 
-pub trait AudioEncoder {
+pub trait AudioEncoder: AudioEncoderInner {
     fn with_preset(preset: AudioPreset) -> Result<Self>
     where
         Self: Sized;
+}
+pub trait AudioEncoderInner: Send + 'static {
     fn config(&self) -> hang::catalog::AudioConfig;
     fn push_samples(&mut self, samples: &[f32]) -> Result<()>;
     fn pop_packet(&mut self) -> Result<Option<hang::Frame>>;
+}
+
+impl AudioEncoderInner for Box<dyn AudioEncoder> {
+    fn config(&self) -> hang::catalog::AudioConfig {
+        (&**self).config()
+    }
+
+    fn push_samples(&mut self, samples: &[f32]) -> Result<()> {
+        (&mut **self).push_samples(samples)
+    }
+
+    fn pop_packet(&mut self) -> Result<Option<hang::Frame>> {
+        (&mut **self).pop_packet()
+    }
 }
 
 pub trait AudioDecoder: Send + 'static {
@@ -60,18 +77,35 @@ pub struct VideoFrame {
     pub raw: Vec<u8>,
 }
 
-pub trait VideoSource {
+pub trait VideoSource: Send + 'static {
     fn format(&self) -> VideoFormat;
     fn pop_frame(&mut self) -> Result<Option<VideoFrame>>;
 }
 
-pub trait VideoEncoder {
+pub trait VideoEncoder: VideoEncoderInner {
     fn with_preset(preset: VideoPreset) -> Result<Self>
     where
         Self: Sized;
+}
+
+pub trait VideoEncoderInner: Send + 'static {
     fn config(&self) -> hang::catalog::VideoConfig;
     fn push_frame(&mut self, format: &VideoFormat, frame: VideoFrame) -> Result<()>;
     fn pop_packet(&mut self) -> Result<Option<hang::Frame>>;
+}
+
+impl VideoEncoderInner for Box<dyn VideoEncoder> {
+    fn config(&self) -> hang::catalog::VideoConfig {
+        (&**self).config()
+    }
+
+    fn push_frame(&mut self, format: &VideoFormat, frame: VideoFrame) -> Result<()> {
+        (&mut **self).push_frame(format, frame)
+    }
+
+    fn pop_packet(&mut self) -> Result<Option<hang::Frame>> {
+        (&mut **self).pop_packet()
+    }
 }
 
 pub trait VideoDecoder: Send + 'static {
