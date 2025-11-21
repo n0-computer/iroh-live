@@ -1,8 +1,7 @@
 use std::time::Duration;
 
 use clap::Parser;
-use ed25519_dalek::SecretKey;
-use eframe::egui::{self, Color32, Id, Vec2};
+use eframe::egui::{self, Color32, Vec2};
 use iroh::{Endpoint, EndpointId, protocol::Router};
 use iroh_gossip::{Gossip, TopicId};
 use iroh_live::{
@@ -11,13 +10,12 @@ use iroh_live::{
     ffmpeg::{FfmpegAudioDecoder, FfmpegVideoDecoder, H264Encoder, OpusEncoder, ffmpeg_log_init},
 };
 use iroh_moq::{
-    Live, LiveSession, LiveTicket,
+    Live, LiveSession,
     av::{AudioPreset, VideoPreset},
     publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
     subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
 };
-use moq_lite::ietf::Subscribe;
-use n0_error::{Result, StackResultExt, anyerr};
+use n0_error::{Result, anyerr};
 use n0_future::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{self, error::TryRecvError};
@@ -62,8 +60,8 @@ enum Message {
 struct Track {
     video: WatchTrack,
     session: LiveSession,
-    audio: AudioTrack,
-    broadcast: SubscribeBroadcast,
+    _audio: AudioTrack,
+    _broadcast: SubscribeBroadcast,
 }
 
 impl Track {
@@ -83,8 +81,8 @@ impl Track {
         Ok(Track {
             video,
             session,
-            audio,
-            broadcast,
+            _audio: audio,
+            _broadcast: broadcast,
         })
     }
 }
@@ -252,13 +250,13 @@ fn main() -> Result<()> {
     eframe::run_native(
         "IrohLive",
         eframe::NativeOptions::default(),
-        Box::new(|cc| {
+        Box::new(|_cc| {
             let app = App {
                 rt,
                 track_rx,
                 videos: vec![],
                 router,
-                broadcast,
+                _broadcast: broadcast,
                 _audio_ctx,
             };
             Ok(Box::new(app))
@@ -271,7 +269,7 @@ struct App {
     track_rx: mpsc::Receiver<Track>,
     videos: Vec<VideoView>,
     router: Router,
-    broadcast: PublishBroadcast,
+    _broadcast: PublishBroadcast,
     _audio_ctx: AudioBackend,
     rt: tokio::runtime::Runtime,
 }
@@ -442,51 +440,51 @@ fn show_video_grid(ctx: &egui::Context, ui: &mut egui::Ui, videos: &mut [VideoVi
     });
 }
 
-mod util {
-    use byte_unit::{Bit, UnitType};
-    use iroh::endpoint::ConnectionStats;
-    use std::time::{Duration, Instant};
+// mod util {
+//     use byte_unit::{Bit, UnitType};
+//     use iroh::endpoint::ConnectionStats;
+//     use std::time::{Duration, Instant};
 
-    pub struct StatsSmoother {
-        last_bytes: u64,
-        last_update: Instant,
-        rate: String,
-        rtt: Duration,
-    }
+//     pub struct StatsSmoother {
+//         last_bytes: u64,
+//         last_update: Instant,
+//         rate: String,
+//         rtt: Duration,
+//     }
 
-    impl StatsSmoother {
-        pub fn new() -> Self {
-            Self {
-                last_bytes: 0,
-                last_update: Instant::now(),
-                rate: "0.00 bit/s".into(),
-                rtt: Duration::from_secs(0),
-            }
-        }
-        pub fn smoothed(&mut self, total: impl FnOnce() -> ConnectionStats) -> (Duration, &str) {
-            let now = Instant::now();
-            let elapsed = now.duration_since(self.last_update);
-            if elapsed >= Duration::from_secs(1) {
-                let stats = (total)();
-                let total = stats.udp_rx.bytes;
-                let delta = total.saturating_sub(self.last_bytes);
-                let secs = elapsed.as_secs_f64();
-                let bps = if secs > 0.0 && delta > 0 {
-                    (delta as f64 * 8.0) / secs
-                } else {
-                    0.0
-                };
-                let bit = Bit::from_f64(bps).unwrap();
-                let adjusted = bit.get_appropriate_unit(UnitType::Decimal);
-                self.rate = format!("{adjusted:.2}/s");
-                self.last_update = now;
-                self.last_bytes = total;
-                self.rtt = stats.path.rtt;
-            }
-            (self.rtt, &self.rate)
-        }
-    }
-}
+//     impl StatsSmoother {
+//         pub fn new() -> Self {
+//             Self {
+//                 last_bytes: 0,
+//                 last_update: Instant::now(),
+//                 rate: "0.00 bit/s".into(),
+//                 rtt: Duration::from_secs(0),
+//             }
+//         }
+//         pub fn smoothed(&mut self, total: impl FnOnce() -> ConnectionStats) -> (Duration, &str) {
+//             let now = Instant::now();
+//             let elapsed = now.duration_since(self.last_update);
+//             if elapsed >= Duration::from_secs(1) {
+//                 let stats = (total)();
+//                 let total = stats.udp_rx.bytes;
+//                 let delta = total.saturating_sub(self.last_bytes);
+//                 let secs = elapsed.as_secs_f64();
+//                 let bps = if secs > 0.0 && delta > 0 {
+//                     (delta as f64 * 8.0) / secs
+//                 } else {
+//                     0.0
+//                 };
+//                 let bit = Bit::from_f64(bps).unwrap();
+//                 let adjusted = bit.get_appropriate_unit(UnitType::Decimal);
+//                 self.rate = format!("{adjusted:.2}/s");
+//                 self.last_update = now;
+//                 self.last_bytes = total;
+//                 self.rtt = stats.path.rtt;
+//             }
+//             (self.rtt, &self.rate)
+//         }
+//     }
+// }
 
 fn secret_key_from_env() -> n0_error::Result<iroh::SecretKey> {
     Ok(match std::env::var("IROH_SECRET") {
