@@ -78,7 +78,7 @@ pub struct CameraCapturer {
     pub(crate) camera: nokhwa::Camera,
     pub(crate) width: u32,
     pub(crate) height: u32,
-    decoder: MjpgDecoder,
+    // decoder: MjpgDecoder,
     rescaler: Rescaler,
 }
 
@@ -119,7 +119,7 @@ impl CameraCapturer {
             camera,
             width: resolution.width(),
             height: resolution.height(),
-            decoder: MjpgDecoder::new()?,
+            // decoder: MjpgDecoder::new()?,
             rescaler: Rescaler::new(ffmpeg::format::Pixel::RGBA, None)?,
         })
     }
@@ -132,12 +132,12 @@ impl CameraCapturer {
             .context("Failed to capture camera frame")?;
         // let t_capture = start.elapsed();
         // TODO: Don't decode here but in ffmpeg?
-        // let image = frame
-        //     .decode_image::<nokhwa::pixel_format::RgbAFormat>()
-        //     .context("Failed to decode camera frame")?;
-        // let mut frame = VideoFrame::new(Pixel::RGBA, image.width(), image.height());
-        // frame.data_mut(0).copy_from_slice(&image.as_raw());
-        let frame = self.decoder.decode_frame(&frame.buffer())?;
+        let image = frame
+            .decode_image::<nokhwa::pixel_format::RgbAFormat>()
+            .context("Failed to decode camera frame")?;
+        let mut frame = FfmpegVideoFrame::new(Pixel::RGBA, image.width(), image.height());
+        frame.data_mut(0).copy_from_slice(&image.as_raw());
+        // let frame = self.decoder.decode_frame(&frame.buffer())?;
         // Ensure RGBA for downstream consumers
         let frame = self.rescaler.process(&frame)?.clone();
         // let t_decode = start.elapsed() - t_capture;
