@@ -9,7 +9,7 @@ use n0_error::{Result, StackResultExt, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher;
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
+use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{Span, debug, error, info, info_span, warn};
 
 use crate::av::{AudioDecoder, AudioSink, DecodedFrame, PlaybackConfig, Quality, VideoDecoder};
@@ -180,8 +180,7 @@ pub(crate) fn select_audio_rendition<'a, T>(
 
 pub struct AudioTrack {
     pub(crate) name: String,
-    // pub handle: audio::OutputControl,
-    pub(crate) shutdown: CancellationToken,
+    pub(crate) _shutdown_token_guard: DropGuard,
     pub(crate) _task_handle: AbortOnDropHandle<()>,
     pub(crate) _thread_handle: std::thread::JoinHandle<()>,
 }
@@ -216,7 +215,7 @@ impl AudioTrack {
             name,
             _task_handle: AbortOnDropHandle::new(task),
             _thread_handle: thread,
-            shutdown,
+            _shutdown_token_guard: shutdown.drop_guard(),
         })
     }
 
@@ -257,17 +256,11 @@ impl AudioTrack {
     }
 }
 
-impl Drop for AudioTrack {
-    fn drop(&mut self) {
-        self.shutdown.cancel();
-    }
-}
-
 pub struct WatchTrack {
     pub(crate) rendition: String,
     pub(crate) video_frames: mpsc::Receiver<DecodedFrame>,
     pub(crate) viewport: n0_watcher::Watchable<(u32, u32)>,
-    pub(crate) shutdown: CancellationToken,
+    pub(crate) _shutdown_token_guard: DropGuard,
     pub(crate) _task_handle: AbortOnDropHandle<()>,
     pub(crate) _thread_handle: std::thread::JoinHandle<()>,
 }
@@ -324,9 +317,9 @@ impl WatchTrack {
             rendition: name,
             video_frames: frame_rx,
             viewport,
+            _shutdown_token_guard: shutdown.drop_guard(),
             _task_handle: AbortOnDropHandle::new(task),
             _thread_handle: thread,
-            shutdown,
         })
     }
 
@@ -361,16 +354,7 @@ impl WatchTrack {
     }
 }
 
-impl Drop for WatchTrack {
-    fn drop(&mut self) {
-        self.shutdown.cancel();
-    }
-}
-
-pub(crate) async fn forward_frames(
-    mut track: hang::TrackConsumer,
-    sender: mpsc::Sender<hang::Frame>,
-) {
+async fn forward_frames(mut track: hang::TrackConsumer, sender: mpsc::Sender<hang::Frame>) {
     loop {
         let frame = track.read().await;
         match frame {

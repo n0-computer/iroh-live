@@ -1,71 +1,276 @@
+use hang::catalog::{AudioConfig, VideoConfig};
 use hang::{Catalog, CatalogProducer};
-use moq_lite::{BroadcastProducer, Track};
+use moq_lite::BroadcastProducer;
 use n0_error::Result;
+use n0_future::task::AbortOnDropHandle;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{collections::HashMap, time::Instant};
-use tokio_util::sync::CancellationToken;
+use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{Span, debug, error, info_span, trace, warn};
 
 use super::BroadcastName;
-use crate::av::{AudioEncoder, AudioSource, VideoEncoder, VideoSource};
+use crate::av::{
+    AudioEncoder, AudioEncoderInner, AudioPreset, AudioSource, VideoEncoder, VideoEncoderInner,
+    VideoPreset, VideoSource,
+};
 
 pub struct PublishBroadcast {
     pub(crate) name: BroadcastName,
     pub(crate) producer: BroadcastProducer,
-    pub(crate) catalog: CatalogProducer,
-    pub(crate) shutdown: CancellationToken,
-    pub(crate) encoder: Encoder,
+    catalog: CatalogProducer,
+    inner: Arc<Mutex<Inner>>,
+    _task: AbortOnDropHandle<()>,
 }
 
 #[derive(Default)]
-pub struct Encoder {
-    pub(crate) video: Option<EncoderState>,
-    pub(crate) audio: Option<EncoderState>,
+struct Inner {
+    shutdown_token: CancellationToken,
+    video: Option<VideoRenditions>,
+    audio: Option<AudioRenditions>,
+    active: HashMap<String, EncoderThread>,
 }
 
-pub(crate) struct EncoderState {
-    pub(crate) shutdown: CancellationToken,
-    pub(crate) _threads: Vec<EncoderThread>,
-}
+impl Inner {
+    fn stop_track(&mut self, name: &str) {
+        if let Some(thread) = self.active.remove(name) {
+            thread.shutdown.cancel();
+        }
+    }
 
-impl Drop for EncoderState {
-    fn drop(&mut self) {
-        self.shutdown.cancel();
+    fn start_track(&mut self, track: moq_lite::TrackProducer) -> bool {
+        let name = track.info.name.clone();
+        let track = hang::TrackProducer::new(track);
+        let shutdown_token = self.shutdown_token.child_token();
+        if name.starts_with("video-")
+            && let Some(video) = self.video.as_mut()
+        {
+            if let Some(encoder_thread) = video.start_encoder(&name, track, shutdown_token) {
+                self.active.insert(name, encoder_thread);
+            }
+            true
+        } else if name.starts_with("audio-")
+            && let Some(audio) = self.audio.as_mut()
+        {
+            if let Some(encoder_thread) = audio.start_encoder(&name, track, shutdown_token) {
+                self.active.insert(name, encoder_thread);
+            }
+            true
+        } else {
+            false
+        }
     }
 }
 
 impl PublishBroadcast {
     pub fn new(name: &str) -> Self {
         let name = name.to_string();
-        let mut broadcast = BroadcastProducer::default();
+        let mut producer = BroadcastProducer::default();
         let catalog = Catalog::default().produce();
-        broadcast.insert_track(catalog.consumer.track);
+        producer.insert_track(catalog.consumer.track);
         let catalog = catalog.producer;
+
+        let inner = Arc::new(Mutex::new(Inner::default()));
+        let task_handle = tokio::spawn(Self::run(inner.clone(), producer.clone()));
 
         Self {
             name,
-            producer: broadcast,
+            producer,
             catalog,
-            shutdown: CancellationToken::new(),
-            encoder: Default::default(),
+            inner,
+            _task: AbortOnDropHandle::new(task_handle),
         }
     }
 
-    pub fn set_video<I, E>(
-        &mut self,
-        mut source: impl VideoSource + Send + 'static,
-        renditions: I,
-    ) -> Result<()>
-    where
-        I: IntoIterator<Item = (E, crate::av::VideoPreset)>,
-        E: VideoEncoder + Send + 'static,
-    {
-        self.encoder.video = None;
+    async fn run(inner: Arc<Mutex<Inner>>, mut producer: BroadcastProducer) {
+        while let Some(track) = producer.requested_track().await {
+            let name = track.info.name.clone();
+            if inner.lock().expect("poisoned").start_track(track.clone()) {
+                tokio::spawn({
+                    let inner = inner.clone();
+                    async move {
+                        track.unused().await;
+                        inner.lock().expect("poisoned").stop_track(&name);
+                    }
+                });
+            }
+        }
+    }
+
+    pub fn set_video(&mut self, renditions: VideoRenditions) -> Result<()> {
         let priority = 1u8;
+        let configs = renditions.available_renditions()?;
+        let video = hang::catalog::Video {
+            renditions: configs,
+            priority,
+            display: None,
+            rotation: None,
+            flip: None,
+            detection: None,
+        };
+        self.catalog.set_video(Some(video));
+        self.catalog.publish();
+        self.inner.lock().expect("poisoned").video = Some(renditions);
+        Ok(())
+    }
+
+    pub fn set_audio(&mut self, renditions: AudioRenditions) -> Result<()> {
+        let priority = 2u8;
+        let configs = renditions.available_renditions()?;
+        let audio = hang::catalog::Audio {
+            renditions: configs,
+            priority,
+            captions: None,
+            speaking: None,
+        };
+        self.catalog.set_audio(Some(audio));
+        self.catalog.publish();
+        self.inner.lock().expect("poisoned").audio = Some(renditions);
+        Ok(())
+    }
+}
+
+impl Drop for PublishBroadcast {
+    fn drop(&mut self) {
+        self.inner.lock().expect("poisoned").shutdown_token.cancel();
+        self.producer.close();
+    }
+}
+
+pub struct AudioRenditions {
+    make_encoder: Box<dyn Fn(AudioPreset) -> Result<Box<dyn AudioEncoder>> + Send>,
+    source: Box<dyn AudioSource>,
+    renditions: HashMap<String, AudioPreset>,
+}
+
+impl AudioRenditions {
+    pub fn new<E: AudioEncoder>(
+        source: impl AudioSource,
+        presets: impl IntoIterator<Item = AudioPreset>,
+    ) -> Self {
+        let renditions = presets
+            .into_iter()
+            .map(|preset| (format!("audio-{preset}"), preset))
+            .collect();
+        Self {
+            make_encoder: Box::new(|preset| Ok(Box::new(E::with_preset(preset)?))),
+            renditions,
+            source: Box::new(source),
+        }
+    }
+
+    pub fn available_renditions(&self) -> Result<HashMap<String, AudioConfig>> {
+        let mut renditions = HashMap::new();
+        for (name, preset) in self.renditions.iter() {
+            // We need to create the encoder to get the config, even though we drop it
+            // again (it will be created on deman). Not ideal, but works for now.
+            let config = (self.make_encoder)(*preset)?.config();
+            renditions.insert(name.clone(), config);
+        }
+        Ok(renditions)
+    }
+
+    pub fn encoder(&mut self, name: &str) -> Option<Result<Box<dyn AudioEncoder>>> {
+        let preset = self.renditions.get(name)?;
+        Some((self.make_encoder)(*preset))
+    }
+
+    pub fn start_encoder(
+        &mut self,
+        name: &str,
+        producer: hang::TrackProducer,
+        shutdown_token: CancellationToken,
+    ) -> Option<EncoderThread> {
+        let encoder = self
+            .encoder(name)?
+            .inspect_err(|err| error!("failed to create audio encoder: {err:#?}"))
+            .ok()?;
+        let span = info_span!("audioenc", %name);
+        let thread = EncoderThread::spawn_audio(
+            self.source.cloned_boxed(),
+            encoder,
+            producer,
+            shutdown_token,
+            span,
+        );
+        Some(thread)
+    }
+}
+
+pub struct VideoRenditions {
+    make_encoder: Box<dyn Fn(VideoPreset) -> Result<Box<dyn VideoEncoder>> + Send>,
+    source: SharedVideoSource,
+    renditions: HashMap<String, VideoPreset>,
+    _shared_source_cancel_guard: DropGuard,
+}
+
+impl VideoRenditions {
+    pub fn new<E: VideoEncoder>(
+        source: impl VideoSource,
+        presets: impl IntoIterator<Item = VideoPreset>,
+    ) -> Self {
+        let shutdown_token = CancellationToken::new();
+        let source = SharedVideoSource::new(source, shutdown_token.clone());
+        let renditions = presets
+            .into_iter()
+            .map(|preset| (format!("video-{preset}"), preset))
+            .collect();
+        Self {
+            make_encoder: Box::new(|preset| Ok(Box::new(E::with_preset(preset)?))),
+            renditions,
+            source,
+            _shared_source_cancel_guard: shutdown_token.drop_guard(),
+        }
+    }
+
+    pub fn available_renditions(&self) -> Result<HashMap<String, VideoConfig>> {
+        let mut renditions = HashMap::new();
+        for (name, preset) in self.renditions.iter() {
+            // We need to create the encoder to get the config, even though we drop it
+            // again (it will be created on deman). Not ideal, but works for now.
+            let config = (self.make_encoder)(*preset)?.config();
+            renditions.insert(name.clone(), config);
+        }
+        Ok(renditions)
+    }
+
+    pub fn encoder(&mut self, name: &str) -> Option<Result<Box<dyn VideoEncoder>>> {
+        let preset = self.renditions.get(name)?;
+        Some((self.make_encoder)(*preset))
+    }
+
+    pub fn start_encoder(
+        &mut self,
+        name: &str,
+        producer: hang::TrackProducer,
+        shutdown_token: CancellationToken,
+    ) -> Option<EncoderThread> {
+        let encoder = self
+            .encoder(name)?
+            .inspect_err(|err| error!("failed to create video encoder: {err:#?}"))
+            .ok()?;
+        let span = info_span!("videoenc", %name);
+        let thread = EncoderThread::spawn_video(
+            self.source.clone(),
+            encoder,
+            producer,
+            shutdown_token,
+            span,
+        );
+        Some(thread)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SharedVideoSource {
+    frames_rx: tokio::sync::watch::Receiver<Option<crate::av::VideoFrame>>,
+    format: crate::av::VideoFormat,
+}
+
+impl SharedVideoSource {
+    fn new(mut source: impl VideoSource, shutdown: CancellationToken) -> Self {
+        let format = source.format();
         let (tx, rx) = tokio::sync::watch::channel(None);
-        let source_format = source.format();
-        let shutdown = self.shutdown.child_token();
-        // capture loop
         std::thread::spawn({
             let shutdown = shutdown.clone();
             move || {
@@ -83,100 +288,21 @@ impl PublishBroadcast {
                 }
             }
         });
-        let (threads, renditions): (Vec<_>, HashMap<_, _>) = renditions
-            .into_iter()
-            .map(|(encoder, preset)| {
-                let name = format!("video-{}", preset);
-                let span = info_span!("videoenc", %name);
-                let rendition = (name.clone(), encoder.config());
-                let track = self.producer.create_track(Track {
-                    name: name.clone(),
-                    priority,
-                });
-                let producer = hang::TrackProducer::new(track);
-                let thread = EncoderThread::spawn_video(
-                    rx.clone(),
-                    encoder,
-                    producer,
-                    source_format.clone(),
-                    shutdown.child_token(),
-                    span,
-                );
-                (thread, rendition)
-            })
-            .unzip();
-        let video = hang::catalog::Video {
-            renditions,
-            priority,
-            display: None,
-            rotation: None,
-            flip: None,
-            detection: None,
-        };
-        self.catalog.set_video(Some(video));
-        self.catalog.publish();
-        self.encoder.video = Some(EncoderState {
-            shutdown,
-            _threads: threads,
-        });
-        Ok(())
-    }
-
-    pub fn set_audio<I, E>(
-        &mut self,
-        source: impl AudioSource + Clone + Send + 'static,
-        renditions: I,
-    ) -> Result<()>
-    where
-        I: IntoIterator<Item = (E, crate::av::AudioPreset)>,
-        E: AudioEncoder + Send + 'static,
-    {
-        let priority = 2u8;
-
-        let shutdown = self.shutdown.child_token();
-        let (threads, renditions): (Vec<_>, HashMap<_, _>) = renditions
-            .into_iter()
-            .map(|(encoder, preset)| {
-                let name = format!("{preset}");
-                let span = info_span!("audioenc", %name);
-                let rendition = (name.clone(), encoder.config());
-                let track = self.producer.create_track(Track {
-                    name: name.clone(),
-                    priority,
-                });
-                let producer = hang::TrackProducer::new(track);
-                // Clone source per encoder thread
-                let thread = EncoderThread::spawn_audio(
-                    source.clone(),
-                    encoder,
-                    producer,
-                    shutdown.clone(),
-                    span,
-                );
-                (thread, rendition)
-            })
-            .unzip();
-
-        let audio = hang::catalog::Audio {
-            renditions,
-            priority,
-            captions: None,
-            speaking: None,
-        };
-        self.catalog.set_audio(Some(audio));
-        self.catalog.publish();
-        self.encoder.audio = Some(EncoderState {
-            shutdown,
-            _threads: threads,
-        });
-        Ok(())
+        Self {
+            format,
+            frames_rx: rx,
+        }
     }
 }
 
-impl Drop for PublishBroadcast {
-    fn drop(&mut self) {
-        self.shutdown.cancel();
-        self.producer.close();
+impl VideoSource for SharedVideoSource {
+    fn format(&self) -> crate::av::VideoFormat {
+        self.format.clone()
+    }
+
+    fn pop_frame(&mut self) -> anyhow::Result<Option<crate::av::VideoFrame>> {
+        let frame = self.frames_rx.borrow_and_update().clone();
+        Ok(frame)
     }
 }
 
@@ -187,10 +313,9 @@ pub struct EncoderThread {
 
 impl EncoderThread {
     pub fn spawn_video(
-        mut frames_rx: tokio::sync::watch::Receiver<Option<crate::av::VideoFrame>>,
-        mut encoder: impl VideoEncoder + Send + 'static,
+        mut source: impl VideoSource,
+        mut encoder: impl VideoEncoderInner,
         mut producer: hang::TrackProducer,
-        format: crate::av::VideoFormat,
         shutdown: CancellationToken,
         span: Span,
     ) -> Self {
@@ -198,6 +323,7 @@ impl EncoderThread {
             let shutdown = shutdown.clone();
             move || {
                 let _guard = span.enter();
+                let format = source.format();
                 tracing::debug!(
                     src_format = ?format,
                     dst_config = ?encoder.config(),
@@ -211,7 +337,13 @@ impl EncoderThread {
                         debug!("stop video encoder: cancelled");
                         break;
                     }
-                    let frame = frames_rx.borrow_and_update().clone();
+                    let frame = match source.pop_frame() {
+                        Ok(frame) => frame,
+                        Err(err) => {
+                            warn!("video encoder failed: {err:#}");
+                            break;
+                        }
+                    };
                     if let Some(frame) = frame {
                         if let Err(err) = encoder.push_frame(&format, frame) {
                             warn!("video encoder failed: {err:#}");
@@ -233,8 +365,8 @@ impl EncoderThread {
     }
 
     pub fn spawn_audio(
-        mut source: impl AudioSource + Send + 'static,
-        mut encoder: impl AudioEncoder + Send + 'static,
+        mut source: Box<dyn AudioSource>,
+        mut encoder: impl AudioEncoderInner,
         mut producer: hang::TrackProducer,
         shutdown: CancellationToken,
         span: tracing::Span,
