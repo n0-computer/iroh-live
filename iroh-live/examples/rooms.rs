@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use clap::Parser;
-use eframe::egui::{self, Color32, Vec2};
+use eframe::egui::{self, Color32, Id, Vec2};
 use iroh::{Endpoint, EndpointId, protocol::Router};
 use iroh_gossip::{Gossip, TopicId};
 use iroh_live::{
@@ -15,11 +15,13 @@ use iroh_moq::{
     publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
     subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
 };
-use n0_error::{Result, anyerr};
+use n0_error::{Result, StdResultExt, anyerr};
 use n0_future::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{self, error::TryRecvError};
 use tracing::{info, warn};
+
+use crate::util::StatsSmoother;
 
 const BROADCAST_NAME: &str = "cam";
 
@@ -60,8 +62,8 @@ enum Message {
 struct Track {
     video: WatchTrack,
     session: LiveSession,
-    _audio: AudioTrack,
-    _broadcast: SubscribeBroadcast,
+    _audio: Option<AudioTrack>,
+    broadcast: SubscribeBroadcast,
 }
 
 impl Track {
@@ -75,14 +77,14 @@ impl Track {
         let broadcast = session.subscribe(BROADCAST_NAME).await?;
         info!(id=%session.conn().remote_id(), "subscribed");
         let audio_out = audio_ctx.default_speaker().await?;
-        let audio = broadcast.listen::<FfmpegAudioDecoder>(audio_out)?;
+        let audio = broadcast.listen::<FfmpegAudioDecoder>(audio_out).ok();
         let video = broadcast.watch::<FfmpegVideoDecoder>()?;
 
         Ok(Track {
             video,
             session,
             _audio: audio,
-            _broadcast: broadcast,
+            broadcast,
         })
     }
 }
@@ -158,7 +160,7 @@ fn main() -> Result<()> {
                 Some(ticket) => Some(iroh_tickets::Ticket::deserialize(&ticket)?),
             };
             let topic_id = match &ticket {
-                None => TopicId::from_bytes(rand::random()),
+                None => topic_id_from_env()?,
                 Some(ticket) => ticket.topic,
             };
             let bootstrap = match &ticket {
@@ -290,26 +292,7 @@ impl eframe::App for App {
             .frame(egui::Frame::new().inner_margin(0.0).outer_margin(0.0))
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-
-                ui.label(format!("videos: {}", self.videos.len()));
-                // render video
-                // let avail = ui.available_size();
                 show_video_grid(ctx, ui, &mut self.videos);
-                // ui.add_sized(avail, self.video.render(ctx, avail));
-
-                // render overlay.
-                // egui::Area::new(Id::new("overlay"))
-                //     .anchor(egui::Align2::LEFT_BOTTOM, [8.0, -8.0])
-                //     .show(ctx, |ui| {
-                //         egui::Frame::new()
-                //             .fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 128))
-                //             .corner_radius(3.0)
-                //             .show(ui, |ui| {
-                //                 ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-                //                 ui.set_min_width(100.);
-                //                 self.render_overlay(ctx, ui);
-                //             })
-                //     })
             });
     }
 
@@ -323,34 +306,11 @@ impl eframe::App for App {
     }
 }
 
-impl App {
-    // fn render_overlay(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-    //     ui.vertical(|ui| {
-    //         let selected = self.video.track.rendition().to_owned();
-    //         egui::ComboBox::from_label("")
-    //             .selected_text(selected.clone())
-    //             .show_ui(ui, |ui| {
-    //                 for name in self.broadcast.video_renditions() {
-    //                     if ui.selectable_label(&selected == name, name).clicked() {
-    //                         if let Ok(track) = self
-    //                             .broadcast
-    //                             .watch_rendition::<FfmpegVideoDecoder>(&Default::default(), &name)
-    //                         {
-    //                             self.video = VideoView::new(ctx, track);
-    //                         }
-    //                     }
-    //                 }
-    //             });
-
-    //         let (rtt, bw) = self.stats.smoothed(|| self.session.stats());
-    //         ui.label(format!("BW:  {bw}"));
-    //         ui.label(format!("RTT: {}ms", rtt.as_millis()));
-    //     });
-    // }
-}
+impl App {}
 
 struct VideoView {
     track: Track,
+    stats: StatsSmoother,
     texture: egui::TextureHandle,
     size: egui::Vec2,
 }
@@ -365,10 +325,11 @@ impl VideoView {
             size,
             texture,
             track,
+            stats: StatsSmoother::new(),
         }
     }
 
-    fn render(&mut self, ctx: &egui::Context, available_size: Vec2) -> egui::Image<'_> {
+    fn render_image(&mut self, ctx: &egui::Context, available_size: Vec2) -> egui::Image<'_> {
         let available_size = available_size.into();
         if available_size != self.size {
             self.size = available_size;
@@ -385,7 +346,48 @@ impl VideoView {
             );
             self.texture = ctx.load_texture("video", image, Default::default());
         }
+        self.render_overlay_area(ctx);
         egui::Image::from_texture(&self.texture).shrink_to_fit()
+    }
+
+    fn render_overlay_area(&mut self, ctx: &egui::Context) {
+        egui::Area::new(Id::new("overlay"))
+            .anchor(egui::Align2::LEFT_BOTTOM, [8.0, -8.0])
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 128))
+                    .corner_radius(3.0)
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                        ui.set_min_width(100.);
+                        self.render_overlay(ui);
+                    })
+            });
+    }
+
+    fn render_overlay(&mut self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            let selected = self.track.video.rendition().to_owned();
+            egui::ComboBox::from_label("")
+                .selected_text(selected.clone())
+                .show_ui(ui, |ui| {
+                    for name in self.track.broadcast.video_renditions() {
+                        if ui.selectable_label(&selected == name, name).clicked() {
+                            if let Ok(track) = self
+                                .track
+                                .broadcast
+                                .watch_rendition::<FfmpegVideoDecoder>(&Default::default(), &name)
+                            {
+                                self.track.video = track;
+                            }
+                        }
+                    }
+                });
+
+            let (rtt, bw) = self.stats.smoothed(|| self.track.session.stats());
+            ui.label(format!("BW:  {bw}"));
+            ui.label(format!("RTT: {}ms", rtt.as_millis()));
+        });
     }
 }
 
@@ -427,7 +429,7 @@ fn show_video_grid(ctx: &egui::Context, ui: &mut egui::Ui, videos: &mut [VideoVi
                     for _c in 0..cols {
                         if i < n {
                             // Force exact square size for each image
-                            ui.add_sized(cell_size, videos[i].render(ctx, cell_size.into()));
+                            ui.add_sized(cell_size, videos[i].render_image(ctx, cell_size.into()));
                             i += 1;
                         } else {
                             // Keep the grid rectangular when N isn’t a multiple of cols
@@ -440,51 +442,51 @@ fn show_video_grid(ctx: &egui::Context, ui: &mut egui::Ui, videos: &mut [VideoVi
     });
 }
 
-// mod util {
-//     use byte_unit::{Bit, UnitType};
-//     use iroh::endpoint::ConnectionStats;
-//     use std::time::{Duration, Instant};
+mod util {
+    use byte_unit::{Bit, UnitType};
+    use iroh::endpoint::ConnectionStats;
+    use std::time::{Duration, Instant};
 
-//     pub struct StatsSmoother {
-//         last_bytes: u64,
-//         last_update: Instant,
-//         rate: String,
-//         rtt: Duration,
-//     }
+    pub struct StatsSmoother {
+        last_bytes: u64,
+        last_update: Instant,
+        rate: String,
+        rtt: Duration,
+    }
 
-//     impl StatsSmoother {
-//         pub fn new() -> Self {
-//             Self {
-//                 last_bytes: 0,
-//                 last_update: Instant::now(),
-//                 rate: "0.00 bit/s".into(),
-//                 rtt: Duration::from_secs(0),
-//             }
-//         }
-//         pub fn smoothed(&mut self, total: impl FnOnce() -> ConnectionStats) -> (Duration, &str) {
-//             let now = Instant::now();
-//             let elapsed = now.duration_since(self.last_update);
-//             if elapsed >= Duration::from_secs(1) {
-//                 let stats = (total)();
-//                 let total = stats.udp_rx.bytes;
-//                 let delta = total.saturating_sub(self.last_bytes);
-//                 let secs = elapsed.as_secs_f64();
-//                 let bps = if secs > 0.0 && delta > 0 {
-//                     (delta as f64 * 8.0) / secs
-//                 } else {
-//                     0.0
-//                 };
-//                 let bit = Bit::from_f64(bps).unwrap();
-//                 let adjusted = bit.get_appropriate_unit(UnitType::Decimal);
-//                 self.rate = format!("{adjusted:.2}/s");
-//                 self.last_update = now;
-//                 self.last_bytes = total;
-//                 self.rtt = stats.path.rtt;
-//             }
-//             (self.rtt, &self.rate)
-//         }
-//     }
-// }
+    impl StatsSmoother {
+        pub fn new() -> Self {
+            Self {
+                last_bytes: 0,
+                last_update: Instant::now(),
+                rate: "0.00 bit/s".into(),
+                rtt: Duration::from_secs(0),
+            }
+        }
+        pub fn smoothed(&mut self, total: impl FnOnce() -> ConnectionStats) -> (Duration, &str) {
+            let now = Instant::now();
+            let elapsed = now.duration_since(self.last_update);
+            if elapsed >= Duration::from_secs(1) {
+                let stats = (total)();
+                let total = stats.udp_rx.bytes;
+                let delta = total.saturating_sub(self.last_bytes);
+                let secs = elapsed.as_secs_f64();
+                let bps = if secs > 0.0 && delta > 0 {
+                    (delta as f64 * 8.0) / secs
+                } else {
+                    0.0
+                };
+                let bit = Bit::from_f64(bps).unwrap();
+                let adjusted = bit.get_appropriate_unit(UnitType::Decimal);
+                self.rate = format!("{adjusted:.2}/s");
+                self.last_update = now;
+                self.last_bytes = total;
+                self.rtt = stats.path.rtt;
+            }
+            (self.rtt, &self.rate)
+        }
+    }
+}
 
 fn secret_key_from_env() -> n0_error::Result<iroh::SecretKey> {
     Ok(match std::env::var("IROH_SECRET") {
@@ -496,6 +498,27 @@ fn secret_key_from_env() -> n0_error::Result<iroh::SecretKey> {
                 data_encoding::HEXLOWER.encode(&key.to_bytes())
             );
             key
+        }
+    })
+}
+
+fn topic_id_from_env() -> n0_error::Result<TopicId> {
+    Ok(match std::env::var("IROH_TOPIC") {
+        Ok(topic) => TopicId::from_bytes(
+            data_encoding::HEXLOWER
+                .decode(topic.as_bytes())
+                .std_context("invalid hex")?
+                .as_slice()
+                .try_into()
+                .std_context("invalid length")?,
+        ),
+        Err(_) => {
+            let topic = TopicId::from_bytes(rand::random());
+            println!(
+                "Created new secret. Reuse with IROH_TOPIC={}",
+                data_encoding::HEXLOWER.encode(topic.as_bytes())
+            );
+            topic
         }
     })
 }
