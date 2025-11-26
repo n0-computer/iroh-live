@@ -25,8 +25,8 @@ const BROADCAST_NAME: &str = "cam";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct RoomTicket {
-    endpoint: EndpointId,
-    topic: TopicId,
+    endpoint_id: EndpointId,
+    topic_id: TopicId,
 }
 
 impl FromStr for RoomTicket {
@@ -113,136 +113,7 @@ fn main() -> Result<()> {
         .build()
         .unwrap();
 
-    let (router, track_rx, broadcast, tasks) = rt.block_on({
-        let audio_ctx = audio_ctx.clone();
-        async move {
-            let mut tasks = vec![];
-            let secret_key = secret_key_from_env()?;
-            let endpoint = Endpoint::builder().secret_key(secret_key).bind().await?;
-            info!(endpoint_id=%endpoint.id(), "endpoint bound");
-            let gossip = Gossip::builder().spawn(endpoint.clone());
-            let live = Live::new(endpoint.clone());
-            // let signing_key =
-            //     ed25519_dalek::SigningKey::from_bytes(&endpoint.secret_key().to_bytes());
-            let router = Router::builder(endpoint)
-                .accept(iroh_gossip::ALPN, gossip.clone())
-                .accept(iroh_moq::ALPN, live.protocol_handler())
-                .spawn();
-
-            let mut broadcast = PublishBroadcast::new();
-
-            // Audio: default microphone + Opus encoder with preset
-            if !cli.no_audio {
-                let mic = audio_ctx.default_microphone().await?;
-                let audio = AudioRenditions::new::<OpusEncoder>(mic, [AudioPreset::Hq]);
-                broadcast.set_audio(Some(audio))?;
-            }
-
-            // Video: camera capture + encoders by backend (fps 30)
-            let video = if cli.screen {
-                let screen = ScreenCapturer::new()?;
-                VideoRenditions::new::<H264Encoder>(screen, VideoPreset::all())
-            } else {
-                let camera = CameraCapturer::new()?;
-                VideoRenditions::new::<H264Encoder>(camera, VideoPreset::all())
-            };
-            broadcast.set_video(Some(video))?;
-
-            live.publish(BROADCAST_NAME, broadcast.producer()).await?;
-
-            let (topic_id, bootstrap) = match &cli.join {
-                None => (topic_id_from_env()?, vec![]),
-                Some(ticket) => (ticket.topic, vec![ticket.endpoint]),
-            };
-
-            let new_ticket = RoomTicket {
-                topic: topic_id,
-                endpoint: router.endpoint().id(),
-            };
-
-            println!(
-                "room ticket: {}",
-                iroh_tickets::Ticket::serialize(&new_ticket)
-            );
-
-            let (gossip_sender, mut gossip_receiver) =
-                gossip.subscribe(topic_id, bootstrap).await?.split();
-
-            let my_id = router.endpoint().id();
-
-            // Announce ourselves in the gossip swarm every second.
-            let task = tokio::task::spawn(async move {
-                loop {
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    // TODO: sign
-                    let message = Message::Announce(my_id);
-                    let message = postcard::to_stdvec(&message).anyerr()?;
-                    if let Err(err) = gossip_sender.broadcast(message.into()).await {
-                        warn!("failed to broadcast on gossip: {err:?}");
-                        break;
-                    }
-                }
-                n0_error::Ok(())
-            });
-            tasks.push(AbortOnDropHandle::new(task));
-
-            // Collect announcements from the gossip swarm.
-            let (announce_tx, mut announce_rx) = mpsc::channel(16);
-            let task = tokio::task::spawn(async move {
-                while let Some(event) = gossip_receiver.next().await {
-                    let event = event?;
-                    match event {
-                        iroh_gossip::api::Event::Received(message) => {
-                            let Ok(message) = postcard::from_bytes::<Message>(&message.content)
-                            else {
-                                continue;
-                            };
-                            match message {
-                                Message::Announce(endpoint_id) => {
-                                    if let Err(_) = announce_tx.send(endpoint_id).await {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        iroh_gossip::api::Event::NeighborUp(neighbor) => {
-                            info!("gossip neighbor up: {neighbor}")
-                        }
-                        iroh_gossip::api::Event::NeighborDown(neighbor) => {
-                            info!("gossip neighbor down: {neighbor}")
-                        }
-                        _ => {}
-                    }
-                }
-                n0_error::Ok(())
-            });
-            tasks.push(AbortOnDropHandle::new(task));
-
-            // Connect to peers that announced themselves.
-            let (track_tx, track_rx) = mpsc::channel(16);
-            let task = tokio::task::spawn(async move {
-                while let Some(endpoint_id) = announce_rx.recv().await {
-                    match Track::connect(&live, &audio_ctx, endpoint_id).await {
-                        Err(err) => {
-                            warn!(endpoint=%endpoint_id.fmt_short(), ?err, "failed to connect");
-                        }
-                        Ok(track) => {
-                            if let Err(err) = track_tx.send(track).await {
-                                warn!(?err, "failed to forward track, abort conect loop");
-                                break;
-                            } else {
-                                info!("forwarded track");
-                            }
-                        }
-                    }
-                }
-                n0_error::Ok(())
-            });
-            tasks.push(AbortOnDropHandle::new(task));
-
-            n0_error::Ok((router, track_rx, broadcast, tasks))
-        }
-    })?;
+    let (router, track_rx, broadcast, tasks) = rt.block_on(setup(cli, audio_ctx.clone()))?;
 
     let _guard = rt.enter();
     let self_watch = broadcast.watch_local();
@@ -253,7 +124,7 @@ fn main() -> Result<()> {
             let app = App {
                 rt,
                 track_rx,
-                videos: vec![],
+                peers: vec![],
                 self_video: self_watch
                     .map(|track| SimpleVideoView::new(&cc.egui_ctx, track, usize::MAX)),
                 router,
@@ -267,9 +138,139 @@ fn main() -> Result<()> {
     .map_err(|err| anyerr!("eframe failed: {err:#}"))
 }
 
+async fn setup(
+    cli: Cli,
+    audio_ctx: AudioBackend,
+) -> Result<(
+    Router,
+    mpsc::Receiver<Track>,
+    PublishBroadcast,
+    Vec<AbortOnDropHandle<Result<()>>>,
+)> {
+    let mut tasks = vec![];
+
+    let endpoint = Endpoint::builder()
+        .secret_key(secret_key_from_env()?)
+        .bind()
+        .await?;
+    info!(endpoint_id=%endpoint.id(), "endpoint bound");
+
+    let gossip = Gossip::builder().spawn(endpoint.clone());
+    let live = Live::new(endpoint.clone());
+
+    let router = Router::builder(endpoint)
+        .accept(iroh_gossip::ALPN, gossip.clone())
+        .accept(iroh_moq::ALPN, live.protocol_handler())
+        .spawn();
+
+    let broadcast = {
+        let mut broadcast = PublishBroadcast::new();
+        if !cli.no_audio {
+            let mic = audio_ctx.default_microphone().await?;
+            let audio = AudioRenditions::new::<OpusEncoder>(mic, [AudioPreset::Hq]);
+            broadcast.set_audio(Some(audio))?;
+        }
+        let video = if cli.screen {
+            let screen = ScreenCapturer::new()?;
+            VideoRenditions::new::<H264Encoder>(screen, VideoPreset::all())
+        } else {
+            let camera = CameraCapturer::new()?;
+            VideoRenditions::new::<H264Encoder>(camera, VideoPreset::all())
+        };
+        broadcast.set_video(Some(video))?;
+        broadcast
+    };
+    live.publish(BROADCAST_NAME, broadcast.producer()).await?;
+
+    let endpoint_id = router.endpoint().id();
+
+    let (topic_id, bootstrap) = match &cli.join {
+        None => (topic_id_from_env()?, vec![]),
+        Some(ticket) => (ticket.topic_id, vec![ticket.endpoint_id]),
+    };
+    let ticket = RoomTicket {
+        endpoint_id,
+        topic_id,
+    };
+    println!("room ticket: {}", iroh_tickets::Ticket::serialize(&ticket));
+
+    let (gossip_sender, mut gossip_receiver) = gossip.subscribe(topic_id, bootstrap).await?.split();
+
+    // Announce ourselves on the gossip topic every other second.
+    let task = tokio::task::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            // TODO: sign
+            let message = Message::Announce(endpoint_id);
+            let message = postcard::to_stdvec(&message).anyerr()?;
+            if let Err(err) = gossip_sender.broadcast(message.into()).await {
+                warn!("failed to broadcast on gossip: {err:?}");
+                break;
+            }
+        }
+        n0_error::Ok(())
+    });
+    tasks.push(AbortOnDropHandle::new(task));
+
+    // Listen for announcements on the gossip topic.
+    let (announce_tx, mut announce_rx) = mpsc::channel(16);
+    let task = tokio::task::spawn(async move {
+        while let Some(event) = gossip_receiver.next().await {
+            let event = event?;
+            match event {
+                iroh_gossip::api::Event::Received(message) => {
+                    let Ok(message) = postcard::from_bytes::<Message>(&message.content) else {
+                        continue;
+                    };
+                    match message {
+                        Message::Announce(endpoint_id) => {
+                            if let Err(_) = announce_tx.send(endpoint_id).await {
+                                break;
+                            }
+                        }
+                    }
+                }
+                iroh_gossip::api::Event::NeighborUp(neighbor) => {
+                    info!("gossip neighbor up: {neighbor}")
+                }
+                iroh_gossip::api::Event::NeighborDown(neighbor) => {
+                    info!("gossip neighbor down: {neighbor}")
+                }
+                _ => {}
+            }
+        }
+        n0_error::Ok(())
+    });
+    tasks.push(AbortOnDropHandle::new(task));
+
+    // Connect and subscribe to all peers that announced themselves.
+    let (track_tx, track_rx) = mpsc::channel(16);
+    let task = tokio::task::spawn(async move {
+        while let Some(endpoint_id) = announce_rx.recv().await {
+            match Track::connect(&live, &audio_ctx, endpoint_id).await {
+                Err(err) => {
+                    warn!(endpoint=%endpoint_id.fmt_short(), ?err, "failed to connect");
+                }
+                Ok(track) => {
+                    if let Err(err) = track_tx.send(track).await {
+                        warn!(?err, "failed to forward track, abort conect loop");
+                        break;
+                    } else {
+                        info!("forwarded track");
+                    }
+                }
+            }
+        }
+        n0_error::Ok(())
+    });
+    tasks.push(AbortOnDropHandle::new(task));
+
+    Ok((router, track_rx, broadcast, tasks))
+}
+
 struct App {
     track_rx: mpsc::Receiver<Track>,
-    videos: Vec<VideoView>,
+    peers: Vec<VideoView>,
     self_video: Option<SimpleVideoView>,
     router: Router,
     _broadcast: PublishBroadcast,
@@ -281,21 +282,26 @@ struct App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(30)); // min 30 fps
-        self.videos.retain(|v| !v.track.closed());
+
+        // Remove closed peers.
+        self.peers.retain(|v| !v.track.closed());
+
+        // Add newly subscribes peers.
         match self.track_rx.try_recv() {
             Ok(track) => {
                 info!("adding new track");
-                self.videos
-                    .push(VideoView::new(ctx, track, self.videos.len()));
+                self.peers
+                    .push(VideoView::new(ctx, track, self.peers.len()));
             }
             Err(TryRecvError::Disconnected) => warn!("track receiver disconnected!"),
             Err(TryRecvError::Empty) => {}
         }
+
         egui::CentralPanel::default()
             .frame(egui::Frame::new().inner_margin(0.0).outer_margin(0.0))
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-                show_video_grid(ctx, ui, &mut self.videos);
+                show_video_grid(ctx, ui, &mut self.peers);
 
                 // Render video preview of self
                 if let Some(self_view) = self.self_video.as_mut() {
@@ -318,7 +324,10 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Abort all tasks.
         self.tasks.clear();
+
+        // Shutdown router and endpoint.
         let router = self.router.clone();
         self.rt.block_on(async move {
             if let Err(err) = router.shutdown().await {
