@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{str::FromStr, time::Duration};
 
 use clap::Parser;
 use eframe::egui::{self, Color32, Id, Vec2};
@@ -29,6 +29,14 @@ struct RoomTicket {
     topic: TopicId,
 }
 
+impl FromStr for RoomTicket {
+    type Err = iroh_tickets::ParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        iroh_tickets::Ticket::deserialize(s)
+    }
+}
+
 impl iroh_tickets::Ticket for RoomTicket {
     const KIND: &'static str = "room";
 
@@ -44,8 +52,7 @@ impl iroh_tickets::Ticket for RoomTicket {
 
 #[derive(Debug, Parser)]
 struct Cli {
-    // room: String,
-    join: Option<String>,
+    join: Option<RoomTicket>,
     #[clap(long)]
     screen: bool,
     #[clap(long)]
@@ -122,7 +129,7 @@ fn main() -> Result<()> {
                 .accept(iroh_moq::ALPN, live.protocol_handler())
                 .spawn();
 
-            let mut broadcast = PublishBroadcast::new(BROADCAST_NAME);
+            let mut broadcast = PublishBroadcast::new();
 
             // Audio: default microphone + Opus encoder with preset
             if !cli.no_audio {
@@ -140,23 +147,13 @@ fn main() -> Result<()> {
                 VideoRenditions::new::<H264Encoder>(camera, VideoPreset::all())
             };
             broadcast.set_video(Some(video))?;
-            live.publish(broadcast.name(), broadcast.producer()).await?;
 
-            let ticket: Option<RoomTicket> = match cli.join {
-                None => None,
-                Some(ticket) => Some(iroh_tickets::Ticket::deserialize(&ticket)?),
+            live.publish(BROADCAST_NAME, broadcast.producer()).await?;
+
+            let (topic_id, bootstrap) = match &cli.join {
+                None => (topic_id_from_env()?, vec![]),
+                Some(ticket) => (ticket.topic, vec![ticket.endpoint]),
             };
-            let topic_id = match &ticket {
-                None => topic_id_from_env()?,
-                Some(ticket) => ticket.topic,
-            };
-            let bootstrap = match &ticket {
-                None => vec![],
-                Some(ticket) => vec![ticket.endpoint],
-            };
-            let topic = gossip.subscribe(topic_id, bootstrap).await?;
-            info!("subscribed");
-            let (gossip_send, mut gossip_recv) = topic.split();
 
             let new_ticket = RoomTicket {
                 topic: topic_id,
@@ -168,14 +165,19 @@ fn main() -> Result<()> {
                 iroh_tickets::Ticket::serialize(&new_ticket)
             );
 
+            let (gossip_sender, mut gossip_receiver) =
+                gossip.subscribe(topic_id, bootstrap).await?.split();
+
             let my_id = router.endpoint().id();
+
+            // Announce ourselves in the gossip swarm every second.
             let task = tokio::task::spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     // TODO: sign
                     let message = Message::Announce(my_id);
                     let message = postcard::to_stdvec(&message).anyerr()?;
-                    if let Err(err) = gossip_send.broadcast(message.into()).await {
+                    if let Err(err) = gossip_sender.broadcast(message.into()).await {
                         warn!("failed to broadcast on gossip: {err:?}");
                         break;
                     }
@@ -184,9 +186,10 @@ fn main() -> Result<()> {
             });
             tasks.push(AbortOnDropHandle::new(task));
 
+            // Collect announcements from the gossip swarm.
             let (announce_tx, mut announce_rx) = mpsc::channel(16);
             let task = tokio::task::spawn(async move {
-                while let Some(event) = gossip_recv.next().await {
+                while let Some(event) = gossip_receiver.next().await {
                     let event = event?;
                     match event {
                         iroh_gossip::api::Event::Received(message) => {
@@ -215,6 +218,7 @@ fn main() -> Result<()> {
             });
             tasks.push(AbortOnDropHandle::new(task));
 
+            // Connect to peers that announced themselves.
             let (track_tx, track_rx) = mpsc::channel(16);
             let task = tokio::task::spawn(async move {
                 while let Some(endpoint_id) = announce_rx.recv().await {
