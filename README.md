@@ -11,15 +11,15 @@ It uses [moq-rs](https://github.com/kixelated/moq) to transfer audio and video s
 
 * [**`web-transport-rs`**](web-transport-rs): Implements the [web-transport](https://github.com/kixelated/web-transport) traits for iroh connections
 * [**`iroh-moq`**](iroh-moq): Adapters to create and accept [moq-lite](https://github.com/kixelated/moq/tree/main/rs/moq) sessions over iroh
-* [**`iroh-live`**]: Native capture, encoding and decoding of audio and video. This is an early preview of a high-level live streaming toolkit for iroh. Currently, it has these features, all subject to change:
-  * Adds support for [hang](https://github.com/kixelated/moq/blob/main/rs/hang/) catalogs in MoQ sessions
+* [**`iroh-live`**](iroh-live): Native capture, encoding and decoding of audio and video. This is an early preview of a high-level live streaming toolkit for iroh. Currently, it has these features, all subject to change:
+  * Support for [hang](https://github.com/kixelated/moq/blob/main/rs/hang/) catalogs in MoQ sessions
   * Capture and playout audio (with [firewheel](https://github.com/BillyDM/Firewheel/))
   * Capture camera (with [nokwha](https://github.com/l1npengtul/nokhwa/))
   * Capture screens (with [xcap](https://github.com/nashaofu/xcap/))
   * Encode and decode video (h264) and audio (Opus) using [ffmpeg](https://docs.rs/ffmpeg-next/latest/ffmpeg_next/). Video encoding is hardware accelerated on supported platforms.
   * Support multiple renditions and on-demand switching of the encoding
   
-There's still some bugs, and a lot of missing optimizations. This is an early, work-in-progress preview!
+There's still bugs and a lot of missing optimizations. This is an early, work-in-progress preview!
 
 ## Demo and examples
 
