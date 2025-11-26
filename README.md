@@ -23,7 +23,7 @@ There's still bugs and a lot of missing optimizations. This is an early, work-in
 
 ## Demo and examples
 
-Check out the `rooms` example:
+Check out the [`rooms`](iroh-live/examples/rooms.rs) example:
 
 ```
 cargo run --release --example rooms
@@ -36,6 +36,6 @@ cargo run --release --example rooms -- <TICKET>
 
 Now you're chatting! With video and audio! Over iroh!
 
-There's also a `publish` example (publish only, no GUI), and a `watch` example (watch a stream from the publish example).
+There's also a [`publish`](iroh-live/examples/publish.rs) example (publish only, no GUI), and a [`watch`](iroh-live/examples/watch.rs) example (watch a stream from the publish example).
 
 The examples use [`egui`](https://github.com/emilk/egui), however `iroh-live` is not coupled to any GUI framework and should work with anything that can render raw images to the screen.
