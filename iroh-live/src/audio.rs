@@ -18,9 +18,10 @@ use firewheel::{
     },
 };
 use hang::catalog::AudioConfig;
-use iroh_moq::av::{AudioFormat, AudioSink, AudioSource};
 use tokio::sync::{mpsc, mpsc::error::TryRecvError, oneshot};
 use tracing::{error, info, trace, warn};
+
+use crate::av::{AudioFormat, AudioSink, AudioSource};
 
 pub type OutputStreamHandle = Arc<Mutex<StreamWriterState>>;
 pub type InputStreamHandle = Arc<Mutex<StreamReaderState>>;

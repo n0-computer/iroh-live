@@ -7,11 +7,12 @@ use ffmpeg_next::{
 };
 use image::{Delay, RgbaImage};
 
-use iroh_moq::av::{self, DecodedFrame, PixelFormat, PlaybackConfig, VideoDecoder};
-
-use crate::ffmpeg::{
-    ext::CodecContextExt,
-    video::util::{Rescaler, StreamClock},
+use crate::{
+    av::{self, DecodedFrame, PixelFormat, PlaybackConfig, VideoDecoder},
+    ffmpeg::{
+        ext::CodecContextExt,
+        video::util::{Rescaler, StreamClock},
+    },
 };
 
 pub struct FfmpegVideoDecoder {

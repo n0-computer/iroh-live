@@ -3,12 +3,11 @@ use std::time::Duration;
 use eframe::egui::{self, Color32, Id, Vec2};
 use iroh::Endpoint;
 use iroh_live::{
+    Live, LiveSession,
     audio::AudioBackend,
     ffmpeg::{FfmpegAudioDecoder, FfmpegVideoDecoder, ffmpeg_log_init},
-};
-use iroh_moq::{
-    Live, LiveSession, LiveTicket,
     subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
+    ticket::LiveTicket,
 };
 use n0_error::{Result, StackResultExt, anyerr};
 
@@ -35,7 +34,8 @@ fn main() -> Result<()> {
             let live = Live::new(endpoint.clone());
             let mut session = live.connect(ticket.endpoint_id).await?;
             println!("connected!");
-            let broadcast = session.subscribe(&ticket.broadcast_name).await?;
+            let consumer = session.subscribe(&ticket.broadcast_name).await?;
+            let broadcast = SubscribeBroadcast::new(consumer).await?;
             let audio_out = audio_ctx.default_speaker().await?;
             let audio = broadcast.listen::<FfmpegAudioDecoder>(audio_out)?;
             let video = broadcast.watch::<FfmpegVideoDecoder>()?;
@@ -130,7 +130,7 @@ impl App {
                     }
                 });
 
-            let (rtt, bw) = self.stats.smoothed(|| self.session.stats());
+            let (rtt, bw) = self.stats.smoothed(|| self.session.conn().stats());
             ui.label(format!("BW:  {bw}"));
             ui.label(format!("RTT: {}ms", rtt.as_millis()));
         });

@@ -5,13 +5,11 @@ use eframe::egui::{self, Color32, Id, Vec2};
 use iroh::{Endpoint, EndpointId, protocol::Router};
 use iroh_gossip::{Gossip, TopicId};
 use iroh_live::{
+    Live, LiveSession,
     audio::AudioBackend,
+    av::{AudioPreset, VideoPreset},
     capture::{CameraCapturer, ScreenCapturer},
     ffmpeg::{FfmpegAudioDecoder, FfmpegVideoDecoder, H264Encoder, OpusEncoder, ffmpeg_log_init},
-};
-use iroh_moq::{
-    Live, LiveSession,
-    av::{AudioPreset, VideoPreset},
     publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
     subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
 };
@@ -75,6 +73,7 @@ impl Track {
         let mut session = live.connect(endpoint_id).await?;
         info!(id=%session.conn().remote_id(), "new peer connected");
         let broadcast = session.subscribe(BROADCAST_NAME).await?;
+        let broadcast = SubscribeBroadcast::new(broadcast).await?;
         info!(id=%session.conn().remote_id(), "subscribed");
         let audio_out = audio_ctx.default_speaker().await?;
         let audio = broadcast.listen::<FfmpegAudioDecoder>(audio_out).ok();
@@ -141,21 +140,8 @@ fn main() -> Result<()> {
                 VideoRenditions::new::<H264Encoder>(camera, VideoPreset::all())
             };
             broadcast.set_video(Some(video))?;
-            live.publish(&broadcast).await?;
+            live.publish(broadcast.name(), broadcast.producer()).await?;
 
-            // let initial_secret = b"my-initial-secret".to_vec();
-            // let record_publisher = distributed_topic_tracker::RecordPublisher::new(
-            //     topic_id.clone(),
-            //     signing_key.verifying_key(),
-            //     signing_key.clone(),
-            //     None,
-            //     initial_secret,
-            // );
-
-            // let topic = gossip
-            //     .subscribe_and_join_with_auto_discovery_no_wait(record_publisher)
-            //     .await?;
-            //
             let ticket: Option<RoomTicket> = match cli.join {
                 None => None,
                 Some(ticket) => Some(iroh_tickets::Ticket::deserialize(&ticket)?),
@@ -398,7 +384,7 @@ impl VideoView {
                     }
                 });
 
-            let (rtt, bw) = self.stats.smoothed(|| self.track.session.stats());
+            let (rtt, bw) = self.stats.smoothed(|| self.track.session.conn().stats());
             ui.label(format!(
                 "peer:  {}",
                 self.track.session.conn().remote_id().fmt_short()

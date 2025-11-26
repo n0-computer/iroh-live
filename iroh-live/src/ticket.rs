@@ -12,6 +12,13 @@ pub struct LiveTicket {
 }
 
 impl LiveTicket {
+    pub fn new(endpoint_id: EndpointId, broadcast_name: impl ToString) -> Self {
+        Self {
+            endpoint_id,
+            broadcast_name: broadcast_name.to_string(),
+        }
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         postcard::to_stdvec(self).unwrap()
     }

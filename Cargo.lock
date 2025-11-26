@@ -3671,20 +3671,10 @@ dependencies = [
 name = "iroh-moq"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "data-encoding",
- "derive_more 2.0.1",
- "hang",
- "image",
  "iroh",
- "iroh-tickets",
  "moq-lite",
  "n0-error",
  "n0-future",
- "n0-watcher 0.6.0",
- "postcard",
- "serde",
- "strum 0.26.3",
  "tokio",
  "tokio-util",
  "tracing",
@@ -7941,7 +7931,6 @@ dependencies = [
  "http",
  "iroh",
  "iroh-quinn",
- "iroh-quinn-proto",
  "n0-error",
  "n0-future",
  "thiserror 2.0.17",

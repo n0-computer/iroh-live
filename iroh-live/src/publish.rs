@@ -23,71 +23,6 @@ pub struct PublishBroadcast {
     _task: AbortOnDropHandle<()>,
 }
 
-#[derive(Default)]
-struct Inner {
-    shutdown_token: CancellationToken,
-    available_video: Option<VideoRenditions>,
-    available_audio: Option<AudioRenditions>,
-    active_video: HashMap<String, EncoderThread>,
-    active_audio: HashMap<String, EncoderThread>,
-}
-
-impl Inner {
-    fn stop_track(&mut self, name: &str) {
-        let thread = self
-            .active_video
-            .remove(name)
-            .or_else(|| self.active_audio.remove(name));
-        if let Some(thread) = thread {
-            thread.shutdown.cancel();
-        }
-    }
-
-    fn remove_audio(&mut self) {
-        for (_name, thread) in self.active_audio.drain() {
-            thread.shutdown.cancel();
-        }
-        self.available_audio = None;
-    }
-
-    fn remove_video(&mut self) {
-        for (_name, thread) in self.active_video.drain() {
-            thread.shutdown.cancel();
-        }
-        self.available_video = None;
-    }
-
-    fn start_track(&mut self, kind: TrackKind, track: moq_lite::TrackProducer) -> bool {
-        let name = track.info.name.clone();
-        let track = hang::TrackProducer::new(track);
-        let shutdown_token = self.shutdown_token.child_token();
-        match kind {
-            TrackKind::Video => {
-                if let Some(video) = self.available_video.as_mut()
-                    && let Some(encoder_thread) = video.start_encoder(&name, track, shutdown_token)
-                {
-                    self.active_video.insert(name, encoder_thread);
-                    true
-                } else {
-                    info!("ignoring video track request {name}: rendition not available");
-                    false
-                }
-            }
-            TrackKind::Audio => {
-                if let Some(audio) = self.available_audio.as_mut()
-                    && let Some(encoder_thread) = audio.start_encoder(&name, track, shutdown_token)
-                {
-                    self.active_audio.insert(name, encoder_thread);
-                    true
-                } else {
-                    info!("ignoring audio track request {name}: rendition not available");
-                    false
-                }
-            }
-        }
-    }
-}
-
 impl PublishBroadcast {
     pub fn new(name: &str) -> Self {
         let name = name.to_string();
@@ -106,6 +41,14 @@ impl PublishBroadcast {
             inner,
             _task: AbortOnDropHandle::new(task_handle),
         }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn producer(&self) -> BroadcastProducer {
+        self.producer.clone()
     }
 
     async fn run(inner: Arc<Mutex<Inner>>, mut producer: BroadcastProducer) {
@@ -205,6 +148,71 @@ impl Drop for PublishBroadcast {
     fn drop(&mut self) {
         self.inner.lock().expect("poisoned").shutdown_token.cancel();
         self.producer.close();
+    }
+}
+
+#[derive(Default)]
+struct Inner {
+    shutdown_token: CancellationToken,
+    available_video: Option<VideoRenditions>,
+    available_audio: Option<AudioRenditions>,
+    active_video: HashMap<String, EncoderThread>,
+    active_audio: HashMap<String, EncoderThread>,
+}
+
+impl Inner {
+    fn stop_track(&mut self, name: &str) {
+        let thread = self
+            .active_video
+            .remove(name)
+            .or_else(|| self.active_audio.remove(name));
+        if let Some(thread) = thread {
+            thread.shutdown.cancel();
+        }
+    }
+
+    fn remove_audio(&mut self) {
+        for (_name, thread) in self.active_audio.drain() {
+            thread.shutdown.cancel();
+        }
+        self.available_audio = None;
+    }
+
+    fn remove_video(&mut self) {
+        for (_name, thread) in self.active_video.drain() {
+            thread.shutdown.cancel();
+        }
+        self.available_video = None;
+    }
+
+    fn start_track(&mut self, kind: TrackKind, track: moq_lite::TrackProducer) -> bool {
+        let name = track.info.name.clone();
+        let track = hang::TrackProducer::new(track);
+        let shutdown_token = self.shutdown_token.child_token();
+        match kind {
+            TrackKind::Video => {
+                if let Some(video) = self.available_video.as_mut()
+                    && let Some(encoder_thread) = video.start_encoder(&name, track, shutdown_token)
+                {
+                    self.active_video.insert(name, encoder_thread);
+                    true
+                } else {
+                    info!("ignoring video track request {name}: rendition not available");
+                    false
+                }
+            }
+            TrackKind::Audio => {
+                if let Some(audio) = self.available_audio.as_mut()
+                    && let Some(encoder_thread) = audio.start_encoder(&name, track, shutdown_token)
+                {
+                    self.active_audio.insert(name, encoder_thread);
+                    true
+                } else {
+                    info!("ignoring audio track request {name}: rendition not available");
+                    false
+                }
+            }
+        }
     }
 }
 

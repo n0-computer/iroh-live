@@ -160,7 +160,7 @@ pub enum VideoCodec {
     Av1,
 }
 
-#[derive(Debug, Clone, Copy, Display, EnumString, VariantNames, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Display, EnumString, VariantNames, Eq, PartialEq, Ord, PartialOrd)]
 pub enum VideoPreset {
     #[strum(serialize = "180p")]
     P180,

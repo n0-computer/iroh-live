@@ -125,13 +125,17 @@ impl SubscribeBroadcast {
     }
 
     pub fn video_renditions(&self) -> impl Iterator<Item = &str> {
-        self.catalog
+        let mut renditions: Vec<_> = self
+            .catalog
             .video
             .as_ref()
             .into_iter()
             .map(|v| v.renditions.iter())
             .flatten()
-            .map(|(name, _config)| name.as_str())
+            .map(|(name, config)| (name.as_str(), config.coded_width))
+            .collect();
+        renditions.sort_by(|a, b| a.1.cmp(&b.1));
+        renditions.into_iter().map(|(name, _w)| name)
     }
 
     pub fn audio_renditions(&self) -> impl Iterator<Item = &str> {
@@ -283,7 +287,6 @@ impl WatchTrack {
             let shutdown = shutdown.clone();
             move || {
                 let mut last_ts = std::time::Instant::now();
-                // let format = source.format();
                 loop {
                     if shutdown.is_cancelled() {
                         break;
@@ -297,10 +300,8 @@ impl WatchTrack {
                             //         px.swap(0, 2);
                             //     }
                             // }
-                            warn!("pop self view {w}x{h} len {}", buf.len());
                             if let Some(img) = image::ImageBuffer::from_raw(w, h, buf) {
                                 let frame_img = image::Frame::new(img);
-                                warn!("pushed len {}", frame_img.buffer().len());
                                 let ts = last_ts.elapsed();
                                 last_ts = std::time::Instant::now();
                                 let _ = frame_tx.blocking_send(DecodedFrame {

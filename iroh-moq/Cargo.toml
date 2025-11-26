@@ -8,22 +8,12 @@ repository = "https://github.com/n0-computer/iroh-live"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-anyhow = "1.0.100"
-data-encoding = "2.9.0"
-derive_more = { version = "2.0.1", features = ["display", "debug"] }
-hang = "0.6.1"
-image = { version = "0.25.8", default-features = false }
 iroh = "0.95.1"
-iroh-tickets = "0.2.0"
 moq-lite = "0.9.6"
 n0-error = { version = "0.1.2", features = ["anyhow"] }
 n0-future = "0.3.1"
-postcard = "1.1.3"
-serde = { version = "1.0.228", features = ["derive"] }
-strum = { version = "0.26", features = ["derive"] }
 tokio = { version = "1.48.0", features = ["sync"] }
 tokio-util = "0.7.17"
 tracing = "0.1.41"
 url = "2.5.7"
 web-transport-iroh = { version = "0.1.0", path = "../web-transport-iroh" }
-n0-watcher = "0.6.0"

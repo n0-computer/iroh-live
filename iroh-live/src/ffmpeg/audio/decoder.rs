@@ -1,9 +1,11 @@
 use anyhow::Result;
 use ffmpeg_next::{self as ffmpeg, util::channel_layout::ChannelLayout};
 use hang::catalog::AudioConfig;
-use iroh_moq::av::{AudioDecoder, AudioFormat};
 
-use crate::ffmpeg::ext::CodecContextExt;
+use crate::{
+    av::{AudioDecoder, AudioFormat},
+    ffmpeg::ext::CodecContextExt,
+};
 
 pub struct FfmpegAudioDecoder {
     codec: ffmpeg::decoder::Audio,

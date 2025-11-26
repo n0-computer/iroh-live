@@ -1,14 +1,13 @@
 use clap::Parser;
 use iroh::{Endpoint, SecretKey, protocol::Router};
 use iroh_live::{
+    Live,
     audio::AudioBackend,
+    av::{AudioPreset, VideoCodec, VideoPreset},
     capture::CameraCapturer,
     ffmpeg::{H264Encoder, OpusEncoder},
-};
-use iroh_moq::{
-    Live,
-    av::{AudioPreset, VideoCodec, VideoPreset},
     publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
+    ticket::LiveTicket,
 };
 use n0_error::StdResultExt;
 
@@ -38,7 +37,8 @@ async fn main() -> n0_error::Result {
     let video = VideoRenditions::new::<H264Encoder>(camera, cli.video_presets);
     broadcast.set_video(Some(video))?;
 
-    let ticket = live.publish(&broadcast).await?;
+    live.publish(broadcast.name(), broadcast.producer()).await?;
+    let ticket = LiveTicket::new(router.endpoint().id(), broadcast.name());
     println!("publishing at {ticket}");
 
     tokio::signal::ctrl_c().await?;
