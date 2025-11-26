@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 anyhow = "1.0.100"
 bytemuck = "1.24.0"
+byte-unit = { version = "5.1", features = ["bit"] }
 data-encoding = "2.9.0"
 derive_more = { version = "2.0.1", features = ["display", "debug"] }
 ffmpeg-next = { version = "8.0.0", features = ["device", "format"] }
@@ -38,7 +39,6 @@ xcap = "0.7.1"
 
 
 [dev-dependencies]
-byte-unit = { version = "5.1", features = ["bit"] }
 clap = { version = "4.5", features = ["derive"] }
 eframe = "0.33.0"
 iroh-gossip = "0.95.0"

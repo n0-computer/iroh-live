@@ -2,13 +2,11 @@ use iroh::EndpointId;
 use n0_error::{Result, StdResultExt};
 use serde::{Deserialize, Serialize};
 
-use super::BroadcastName;
-
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, Serialize, Deserialize)]
 #[display("{}", self.serialize())]
 pub struct LiveTicket {
     pub endpoint_id: EndpointId,
-    pub broadcast_name: BroadcastName,
+    pub broadcast_name: String,
 }
 
 impl LiveTicket {

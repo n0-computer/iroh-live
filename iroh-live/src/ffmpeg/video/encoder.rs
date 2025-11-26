@@ -315,8 +315,7 @@ impl av::VideoEncoderInner for H264Encoder {
 
     fn push_frame(&mut self, frame: av::VideoFrame) -> anyhow::Result<()> {
         trace!(len = frame.raw.len(), format=?frame.format, "push frame");
-        use ffmpeg_next::format::Pixel;
-        use ffmpeg_next::frame::Video as FfFrame;
+        use ffmpeg_next::{format::Pixel, frame::Video as FfFrame};
 
         // Wrap raw RGBA/BGRA data into an ffmpeg frame and encode
         let pixel = match frame.format.pixel_format {

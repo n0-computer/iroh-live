@@ -12,43 +12,15 @@ use iroh_live::{
     ffmpeg::{FfmpegAudioDecoder, FfmpegVideoDecoder, H264Encoder, OpusEncoder, ffmpeg_log_init},
     publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
     subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
+    util::StatsSmoother,
 };
 use n0_error::{Result, StdResultExt, anyerr};
 use n0_future::{StreamExt, task::AbortOnDropHandle};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc::{self, error::TryRecvError};
+use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::util::StatsSmoother;
-
 const BROADCAST_NAME: &str = "cam";
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct RoomTicket {
-    endpoint_id: EndpointId,
-    topic_id: TopicId,
-}
-
-impl FromStr for RoomTicket {
-    type Err = iroh_tickets::ParseError;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        iroh_tickets::Ticket::deserialize(s)
-    }
-}
-
-impl iroh_tickets::Ticket for RoomTicket {
-    const KIND: &'static str = "room";
-
-    fn to_bytes(&self) -> Vec<u8> {
-        postcard::to_stdvec(self).unwrap()
-    }
-
-    fn from_bytes(bytes: &[u8]) -> std::result::Result<Self, iroh_tickets::ParseError> {
-        let ticket = postcard::from_bytes(bytes)?;
-        Ok(ticket)
-    }
-}
 
 #[derive(Debug, Parser)]
 struct Cli {
@@ -255,8 +227,6 @@ async fn setup(
                     if let Err(err) = track_tx.send(track).await {
                         warn!(?err, "failed to forward track, abort conect loop");
                         break;
-                    } else {
-                        info!("forwarded track");
                     }
                 }
             }
@@ -287,14 +257,10 @@ impl eframe::App for App {
         self.peers.retain(|v| !v.track.closed());
 
         // Add newly subscribes peers.
-        match self.track_rx.try_recv() {
-            Ok(track) => {
-                info!("adding new track");
-                self.peers
-                    .push(VideoView::new(ctx, track, self.peers.len()));
-            }
-            Err(TryRecvError::Disconnected) => warn!("track receiver disconnected!"),
-            Err(TryRecvError::Empty) => {}
+        while let Ok(track) = self.track_rx.try_recv() {
+            info!("adding new track");
+            self.peers
+                .push(VideoView::new(ctx, track, self.peers.len()));
         }
 
         egui::CentralPanel::default()
@@ -524,49 +490,30 @@ fn show_video_grid(ctx: &egui::Context, ui: &mut egui::Ui, videos: &mut [VideoVi
     });
 }
 
-mod util {
-    use byte_unit::{Bit, UnitType};
-    use iroh::endpoint::ConnectionStats;
-    use std::time::{Duration, Instant};
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct RoomTicket {
+    endpoint_id: EndpointId,
+    topic_id: TopicId,
+}
 
-    pub struct StatsSmoother {
-        last_bytes: u64,
-        last_update: Instant,
-        rate: String,
-        rtt: Duration,
+impl FromStr for RoomTicket {
+    type Err = iroh_tickets::ParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        iroh_tickets::Ticket::deserialize(s)
+    }
+}
+
+impl iroh_tickets::Ticket for RoomTicket {
+    const KIND: &'static str = "room";
+
+    fn to_bytes(&self) -> Vec<u8> {
+        postcard::to_stdvec(self).unwrap()
     }
 
-    impl StatsSmoother {
-        pub fn new() -> Self {
-            Self {
-                last_bytes: 0,
-                last_update: Instant::now(),
-                rate: "0.00 bit/s".into(),
-                rtt: Duration::from_secs(0),
-            }
-        }
-        pub fn smoothed(&mut self, total: impl FnOnce() -> ConnectionStats) -> (Duration, &str) {
-            let now = Instant::now();
-            let elapsed = now.duration_since(self.last_update);
-            if elapsed >= Duration::from_secs(1) {
-                let stats = (total)();
-                let total = stats.udp_rx.bytes;
-                let delta = total.saturating_sub(self.last_bytes);
-                let secs = elapsed.as_secs_f64();
-                let bps = if secs > 0.0 && delta > 0 {
-                    (delta as f64 * 8.0) / secs
-                } else {
-                    0.0
-                };
-                let bit = Bit::from_f64(bps).unwrap();
-                let adjusted = bit.get_appropriate_unit(UnitType::Decimal);
-                self.rate = format!("{adjusted:.2}/s");
-                self.last_update = now;
-                self.last_bytes = total;
-                self.rtt = stats.path.rtt;
-            }
-            (self.rtt, &self.rate)
-        }
+    fn from_bytes(bytes: &[u8]) -> std::result::Result<Self, iroh_tickets::ParseError> {
+        let ticket = postcard::from_bytes(bytes)?;
+        Ok(ticket)
     }
 }
 
