@@ -1,31 +1,33 @@
-use hang::catalog::{AudioConfig, VideoConfig};
-use hang::{Catalog, CatalogProducer};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+
+use hang::{
+    Catalog, CatalogProducer,
+    catalog::{AudioConfig, VideoConfig},
+};
 use moq_lite::BroadcastProducer;
 use n0_error::Result;
 use n0_future::task::AbortOnDropHandle;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use std::{collections::HashMap, time::Instant};
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{Span, debug, error, info, info_span, trace, warn};
 
-use super::BroadcastName;
 use crate::av::{
     AudioEncoder, AudioEncoderInner, AudioPreset, AudioSource, TrackKind, VideoEncoder,
     VideoEncoderInner, VideoPreset, VideoSource,
 };
 
 pub struct PublishBroadcast {
-    pub(crate) name: BroadcastName,
-    pub(crate) producer: BroadcastProducer,
+    producer: BroadcastProducer,
     catalog: CatalogProducer,
     inner: Arc<Mutex<Inner>>,
     _task: AbortOnDropHandle<()>,
 }
 
 impl PublishBroadcast {
-    pub fn new(name: &str) -> Self {
-        let name = name.to_string();
+    pub fn new() -> Self {
         let mut producer = BroadcastProducer::default();
         let catalog = Catalog::default().produce();
         producer.insert_track(catalog.consumer.track);
@@ -35,16 +37,11 @@ impl PublishBroadcast {
         let task_handle = tokio::spawn(Self::run(inner.clone(), producer.clone()));
 
         Self {
-            name,
             producer,
             catalog,
             inner,
             _task: AbortOnDropHandle::new(task_handle),
         }
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
     }
 
     pub fn producer(&self) -> BroadcastProducer {

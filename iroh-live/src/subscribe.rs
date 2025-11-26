@@ -20,10 +20,10 @@ use crate::{
 };
 
 pub struct SubscribeBroadcast {
-    pub(crate) broadcast: BroadcastConsumer,
-    pub(crate) catalog_consumer: CatalogConsumer,
-    pub(crate) catalog: Catalog,
-    pub(crate) shutdown: CancellationToken,
+    broadcast: BroadcastConsumer,
+    catalog_consumer: CatalogConsumer,
+    catalog: Catalog,
+    shutdown: CancellationToken,
 }
 
 impl SubscribeBroadcast {

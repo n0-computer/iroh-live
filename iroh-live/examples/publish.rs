@@ -16,31 +16,41 @@ async fn main() -> n0_error::Result {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
 
+    // Setup audio backend.
     let audio_ctx = AudioBackend::new();
 
-    let secret_key = secret_key_from_env()?;
-    let endpoint = Endpoint::builder().secret_key(secret_key).bind().await?;
+    // Setup iroh and iroh-live.
+    let endpoint = Endpoint::builder()
+        .secret_key(secret_key_from_env()?)
+        .bind()
+        .await?;
     let live = Live::new(endpoint.clone());
     let router = Router::builder(endpoint)
-        .accept(iroh_moq::ALPN, live.protocol_handler())
+        .accept(iroh_live::ALPN, live.protocol_handler())
         .spawn();
 
-    let mut broadcast = PublishBroadcast::new("hello");
+    // Create a publish broadcast.
+    let mut broadcast = PublishBroadcast::new();
 
-    // Audio: default microphone + Opus encoder with preset
+    // Capture audio, and encode with the cli-provided preset.
     let mic = audio_ctx.default_microphone().await?;
     let audio = AudioRenditions::new::<OpusEncoder>(mic, [cli.audio_preset]);
     broadcast.set_audio(Some(audio))?;
 
-    // Video: camera capture + encoders by backend (fps 30)
+    // Capture camera, and encode with the cli-provided presets.
     let camera = CameraCapturer::new()?;
     let video = VideoRenditions::new::<H264Encoder>(camera, cli.video_presets);
     broadcast.set_video(Some(video))?;
 
-    live.publish(broadcast.name(), broadcast.producer()).await?;
-    let ticket = LiveTicket::new(router.endpoint().id(), broadcast.name());
+    // Publish under the name "hello".
+    let name = "hello";
+    live.publish(name, broadcast.producer()).await?;
+
+    // Create a ticket string and print
+    let ticket = LiveTicket::new(router.endpoint().id(), name);
     println!("publishing at {ticket}");
 
+    // Wait for ctrl-c and then shutdown.
     tokio::signal::ctrl_c().await?;
     live.shutdown();
     router.shutdown().await.std_context("router shutdown")?;
@@ -50,8 +60,6 @@ async fn main() -> n0_error::Result {
 
 #[derive(Parser, Debug)]
 struct Cli {
-    // #[arg(long, default_value_t=Backend::Ffmpeg)]
-    // backend: Backend,
     #[arg(long, default_value_t=VideoCodec::H264)]
     codec: VideoCodec,
     #[arg(long, value_delimiter=',', default_values_t=[VideoPreset::P180, VideoPreset::P360, VideoPreset::P720, VideoPreset::P1080])]

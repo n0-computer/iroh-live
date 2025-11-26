@@ -13,6 +13,7 @@ pub struct ScreenCapturer {
     pub(crate) rx: std::sync::mpsc::Receiver<xcap::Frame>,
 }
 
+// TODO: Review if sound.
 unsafe impl Send for ScreenCapturer {}
 
 impl Drop for ScreenCapturer {
@@ -51,8 +52,17 @@ impl ScreenCapturer {
             height,
         })
     }
+}
 
-    pub fn capture(&mut self) -> Result<VideoFrame> {
+impl VideoSource for ScreenCapturer {
+    fn format(&self) -> VideoFormat {
+        VideoFormat {
+            pixel_format: PixelFormat::Rgba,
+            dimensions: [self.width, self.height],
+        }
+    }
+
+    fn pop_frame(&mut self) -> anyhow::Result<Option<VideoFrame>> {
         let mut raw_frame = None;
         // We are only interested in the latest frame.
         // Drain the channel to not build up memory.
@@ -66,28 +76,13 @@ impl ScreenCapturer {
                 .recv()
                 .context("video recorder did not produce new frame")?,
         };
-        let frame = VideoFrame {
+        Ok(Some(VideoFrame {
             format: VideoFormat {
                 pixel_format: PixelFormat::Rgba,
                 dimensions: [raw_frame.width, raw_frame.height],
             },
             raw: raw_frame.raw,
-        };
-        Ok(frame)
-    }
-}
-
-impl VideoSource for ScreenCapturer {
-    fn format(&self) -> VideoFormat {
-        VideoFormat {
-            pixel_format: PixelFormat::Rgba,
-            dimensions: [self.width, self.height],
-        }
-    }
-
-    fn pop_frame(&mut self) -> anyhow::Result<Option<VideoFrame>> {
-        let frame = self.capture()?;
-        Ok(Some(frame))
+        }))
     }
 }
 
@@ -135,20 +130,6 @@ impl CameraCapturer {
             height: resolution.height(),
         })
     }
-
-    pub fn capture(&mut self) -> Result<VideoFrame> {
-        let frame = self
-            .camera
-            .frame()
-            .context("Failed to capture camera frame")?;
-        let image = frame
-            .decode_image::<nokhwa::pixel_format::RgbAFormat>()
-            .context("Failed to decode camera frame")?;
-        Ok(VideoFrame {
-            format: self.format(),
-            raw: image.into_raw().into(),
-        })
-    }
 }
 
 impl VideoSource for CameraCapturer {
@@ -160,7 +141,16 @@ impl VideoSource for CameraCapturer {
     }
 
     fn pop_frame(&mut self) -> anyhow::Result<Option<VideoFrame>> {
-        let frame = self.capture()?;
-        Ok(Some(frame))
+        let frame = self
+            .camera
+            .frame()
+            .context("Failed to capture camera frame")?;
+        let image = frame
+            .decode_image::<nokhwa::pixel_format::RgbAFormat>()
+            .context("Failed to decode camera frame")?;
+        Ok(Some(VideoFrame {
+            format: self.format(),
+            raw: image.into_raw().into(),
+        }))
     }
 }
