@@ -311,21 +311,17 @@ impl av::VideoEncoderInner for H264Encoder {
         self.video_config().expect("video_config available")
     }
 
-    fn push_frame(
-        &mut self,
-        format: &av::VideoFormat,
-        frame: av::VideoFrame,
-    ) -> anyhow::Result<()> {
-        trace!(len = frame.raw.len(), ?format, "push frame");
+    fn push_frame(&mut self, frame: av::VideoFrame) -> anyhow::Result<()> {
+        trace!(len = frame.raw.len(), format=?frame.format, "push frame");
         use ffmpeg_next::format::Pixel;
         use ffmpeg_next::frame::Video as FfFrame;
 
         // Wrap raw RGBA/BGRA data into an ffmpeg frame and encode
-        let pixel = match format.pixel_format {
+        let pixel = match frame.format.pixel_format {
             av::PixelFormat::Rgba => Pixel::RGBA,
             av::PixelFormat::Bgra => Pixel::BGRA,
         };
-        let [w, h] = format.dimensions;
+        let [w, h] = frame.format.dimensions;
         let mut ff = FfFrame::new(pixel, w, h);
         let stride = ff.stride(0) as usize;
         let row_bytes = (w as usize) * 4;

@@ -7,12 +7,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{collections::HashMap, time::Instant};
 use tokio_util::sync::{CancellationToken, DropGuard};
-use tracing::{Span, debug, error, info_span, trace, warn};
+use tracing::{Span, debug, error, info, info_span, trace, warn};
 
 use super::BroadcastName;
 use crate::av::{
-    AudioEncoder, AudioEncoderInner, AudioPreset, AudioSource, VideoEncoder, VideoEncoderInner,
-    VideoPreset, VideoSource,
+    AudioEncoder, AudioEncoderInner, AudioPreset, AudioSource, TrackKind, VideoEncoder,
+    VideoEncoderInner, VideoPreset, VideoSource,
 };
 
 pub struct PublishBroadcast {
@@ -26,38 +26,64 @@ pub struct PublishBroadcast {
 #[derive(Default)]
 struct Inner {
     shutdown_token: CancellationToken,
-    video: Option<VideoRenditions>,
-    audio: Option<AudioRenditions>,
-    active: HashMap<String, EncoderThread>,
+    available_video: Option<VideoRenditions>,
+    available_audio: Option<AudioRenditions>,
+    active_video: HashMap<String, EncoderThread>,
+    active_audio: HashMap<String, EncoderThread>,
 }
 
 impl Inner {
     fn stop_track(&mut self, name: &str) {
-        if let Some(thread) = self.active.remove(name) {
+        let thread = self
+            .active_video
+            .remove(name)
+            .or_else(|| self.active_audio.remove(name));
+        if let Some(thread) = thread {
             thread.shutdown.cancel();
         }
     }
 
-    fn start_track(&mut self, track: moq_lite::TrackProducer) -> bool {
+    fn remove_audio(&mut self) {
+        for (_name, thread) in self.active_audio.drain() {
+            thread.shutdown.cancel();
+        }
+        self.available_audio = None;
+    }
+
+    fn remove_video(&mut self) {
+        for (_name, thread) in self.active_video.drain() {
+            thread.shutdown.cancel();
+        }
+        self.available_video = None;
+    }
+
+    fn start_track(&mut self, kind: TrackKind, track: moq_lite::TrackProducer) -> bool {
         let name = track.info.name.clone();
         let track = hang::TrackProducer::new(track);
         let shutdown_token = self.shutdown_token.child_token();
-        if name.starts_with("video-")
-            && let Some(video) = self.video.as_mut()
-        {
-            if let Some(encoder_thread) = video.start_encoder(&name, track, shutdown_token) {
-                self.active.insert(name, encoder_thread);
+        match kind {
+            TrackKind::Video => {
+                if let Some(video) = self.available_video.as_mut()
+                    && let Some(encoder_thread) = video.start_encoder(&name, track, shutdown_token)
+                {
+                    self.active_video.insert(name, encoder_thread);
+                    true
+                } else {
+                    info!("ignoring video track request {name}: rendition not available");
+                    false
+                }
             }
-            true
-        } else if name.starts_with("audio-")
-            && let Some(audio) = self.audio.as_mut()
-        {
-            if let Some(encoder_thread) = audio.start_encoder(&name, track, shutdown_token) {
-                self.active.insert(name, encoder_thread);
+            TrackKind::Audio => {
+                if let Some(audio) = self.available_audio.as_mut()
+                    && let Some(encoder_thread) = audio.start_encoder(&name, track, shutdown_token)
+                {
+                    self.active_audio.insert(name, encoder_thread);
+                    true
+                } else {
+                    info!("ignoring audio track request {name}: rendition not available");
+                    false
+                }
             }
-            true
-        } else {
-            false
         }
     }
 }
@@ -85,7 +111,15 @@ impl PublishBroadcast {
     async fn run(inner: Arc<Mutex<Inner>>, mut producer: BroadcastProducer) {
         while let Some(track) = producer.requested_track().await {
             let name = track.info.name.clone();
-            if inner.lock().expect("poisoned").start_track(track.clone()) {
+            let Some(kind) = TrackKind::from_name(&name) else {
+                info!("ignoring unsupported track: {name}");
+                continue;
+            };
+            if inner
+                .lock()
+                .expect("poisoned")
+                .start_track(kind, track.clone())
+            {
                 tokio::spawn({
                     let inner = inner.clone();
                     async move {
@@ -97,35 +131,72 @@ impl PublishBroadcast {
         }
     }
 
-    pub fn set_video(&mut self, renditions: VideoRenditions) -> Result<()> {
-        let priority = 1u8;
-        let configs = renditions.available_renditions()?;
-        let video = hang::catalog::Video {
-            renditions: configs,
-            priority,
-            display: None,
-            rotation: None,
-            flip: None,
-            detection: None,
-        };
-        self.catalog.set_video(Some(video));
-        self.catalog.publish();
-        self.inner.lock().expect("poisoned").video = Some(renditions);
+    /// Create a local WatchTrack from the current video source, if present.
+    pub fn watch_local(&self) -> Option<crate::subscribe::WatchTrack> {
+        let (source, shutdown) = {
+            let inner = self.inner.lock().expect("poisoned");
+            let source = inner
+                .available_video
+                .as_ref()
+                .map(|video| video.source.clone())?;
+            Some((source, inner.shutdown_token.child_token()))
+        }?;
+        Some(crate::subscribe::WatchTrack::from_shared_source(
+            "local".to_string(),
+            shutdown,
+            source,
+        ))
+    }
+
+    pub fn set_video(&mut self, renditions: Option<VideoRenditions>) -> Result<()> {
+        match renditions {
+            Some(renditions) => {
+                let priority = 1u8;
+                let configs = renditions.available_renditions()?;
+                let video = hang::catalog::Video {
+                    renditions: configs,
+                    priority,
+                    display: None,
+                    rotation: None,
+                    flip: None,
+                    detection: None,
+                };
+                self.catalog.set_video(Some(video));
+                self.catalog.publish();
+                self.inner.lock().expect("poisoned").available_video = Some(renditions);
+            }
+            None => {
+                // Clear catalog and stop any active video encoders
+                self.inner.lock().expect("poisoned").remove_video();
+                self.catalog.set_video(None);
+                self.catalog.publish();
+            }
+        }
         Ok(())
     }
 
-    pub fn set_audio(&mut self, renditions: AudioRenditions) -> Result<()> {
-        let priority = 2u8;
-        let configs = renditions.available_renditions()?;
-        let audio = hang::catalog::Audio {
-            renditions: configs,
-            priority,
-            captions: None,
-            speaking: None,
-        };
-        self.catalog.set_audio(Some(audio));
-        self.catalog.publish();
-        self.inner.lock().expect("poisoned").audio = Some(renditions);
+    pub fn set_audio(&mut self, renditions: Option<AudioRenditions>) -> Result<()> {
+        match renditions {
+            Some(renditions) => {
+                let priority = 2u8;
+                let configs = renditions.available_renditions()?;
+                let audio = hang::catalog::Audio {
+                    renditions: configs,
+                    priority,
+                    captions: None,
+                    speaking: None,
+                };
+                self.catalog.set_audio(Some(audio));
+                self.catalog.publish();
+                self.inner.lock().expect("poisoned").available_audio = Some(renditions);
+            }
+            None => {
+                // Clear catalog and stop any active audio encoders
+                self.inner.lock().expect("poisoned").remove_audio();
+                self.catalog.set_audio(None);
+                self.catalog.publish();
+            }
+        }
         Ok(())
     }
 }
@@ -262,7 +333,7 @@ impl VideoRenditions {
 }
 
 #[derive(Debug, Clone)]
-struct SharedVideoSource {
+pub(crate) struct SharedVideoSource {
     frames_rx: tokio::sync::watch::Receiver<Option<crate::av::VideoFrame>>,
     format: crate::av::VideoFormat,
 }
@@ -345,7 +416,7 @@ impl EncoderThread {
                         }
                     };
                     if let Some(frame) = frame {
-                        if let Err(err) = encoder.push_frame(&format, frame) {
+                        if let Err(err) = encoder.push_frame(frame) {
                             warn!("video encoder failed: {err:#}");
                             break;
                         };

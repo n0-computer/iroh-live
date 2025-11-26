@@ -12,7 +12,12 @@ use tokio::sync::mpsc;
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{Span, debug, error, info, info_span, warn};
 
-use crate::av::{AudioDecoder, AudioSink, DecodedFrame, PlaybackConfig, Quality, VideoDecoder};
+use crate::{
+    av::{
+        AudioDecoder, AudioSink, DecodedFrame, PlaybackConfig, Quality, VideoDecoder, VideoSource,
+    },
+    publish::SharedVideoSource,
+};
 
 pub struct SubscribeBroadcast {
     pub(crate) broadcast: BroadcastConsumer,
@@ -266,6 +271,60 @@ pub struct WatchTrack {
 }
 
 impl WatchTrack {
+    pub(crate) fn from_shared_source(
+        name: String,
+        shutdown: CancellationToken,
+        mut source: SharedVideoSource,
+    ) -> Self {
+        let viewport = n0_watcher::Watchable::new((1u32, 1u32));
+        let dummy_handle = tokio::task::spawn(async {});
+        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<DecodedFrame>(2);
+        let thread = std::thread::spawn({
+            let shutdown = shutdown.clone();
+            move || {
+                let mut last_ts = std::time::Instant::now();
+                // let format = source.format();
+                loop {
+                    if shutdown.is_cancelled() {
+                        break;
+                    }
+                    match source.pop_frame() {
+                        Ok(Some(frame)) => {
+                            let (w, h) = (frame.format.dimensions[0], frame.format.dimensions[1]);
+                            let buf = frame.raw;
+                            // if format.pixel_format == PixelFormat::Bgra {
+                            //     for px in buf.chunks_exact_mut(4) {
+                            //         px.swap(0, 2);
+                            //     }
+                            // }
+                            warn!("pop self view {w}x{h} len {}", buf.len());
+                            if let Some(img) = image::ImageBuffer::from_raw(w, h, buf) {
+                                let frame_img = image::Frame::new(img);
+                                warn!("pushed len {}", frame_img.buffer().len());
+                                let ts = last_ts.elapsed();
+                                last_ts = std::time::Instant::now();
+                                let _ = frame_tx.blocking_send(DecodedFrame {
+                                    frame: frame_img,
+                                    timestamp: ts,
+                                });
+                            }
+                        }
+                        Ok(None) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                        Err(_) => break,
+                    }
+                }
+            }
+        });
+        WatchTrack {
+            rendition: name,
+            video_frames: frame_rx,
+            viewport,
+            _shutdown_token_guard: shutdown.drop_guard(),
+            _task_handle: AbortOnDropHandle::new(dummy_handle),
+            _thread_handle: thread,
+        }
+    }
+
     pub fn set_viewport(&self, w: u32, h: u32) {
         self.viewport.set((w, h)).ok();
     }

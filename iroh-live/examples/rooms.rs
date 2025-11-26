@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use clap::Parser;
-use eframe::egui::{self, Color32, Vec2};
+use eframe::egui::{self, Color32, Id, Vec2};
 use iroh::{Endpoint, EndpointId, protocol::Router};
 use iroh_gossip::{Gossip, TopicId};
 use iroh_live::{
@@ -16,7 +16,7 @@ use iroh_moq::{
     subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
 };
 use n0_error::{Result, StdResultExt, anyerr};
-use n0_future::StreamExt;
+use n0_future::{StreamExt, task::AbortOnDropHandle};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{self, error::TryRecvError};
 use tracing::{info, warn};
@@ -107,9 +107,10 @@ fn main() -> Result<()> {
         .build()
         .unwrap();
 
-    let (router, track_rx, broadcast) = rt.block_on({
+    let (router, track_rx, broadcast, tasks) = rt.block_on({
         let audio_ctx = audio_ctx.clone();
         async move {
+            let mut tasks = vec![];
             let secret_key = secret_key_from_env()?;
             let endpoint = Endpoint::builder().secret_key(secret_key).bind().await?;
             info!(endpoint_id=%endpoint.id(), "endpoint bound");
@@ -128,7 +129,7 @@ fn main() -> Result<()> {
             if !cli.no_audio {
                 let mic = audio_ctx.default_microphone().await?;
                 let audio = AudioRenditions::new::<OpusEncoder>(mic, [AudioPreset::Hq]);
-                broadcast.set_audio(audio)?;
+                broadcast.set_audio(Some(audio))?;
             }
 
             // Video: camera capture + encoders by backend (fps 30)
@@ -139,7 +140,7 @@ fn main() -> Result<()> {
                 let camera = CameraCapturer::new()?;
                 VideoRenditions::new::<H264Encoder>(camera, VideoPreset::all())
             };
-            broadcast.set_video(video)?;
+            broadcast.set_video(Some(video))?;
             live.publish(&broadcast).await?;
 
             // let initial_secret = b"my-initial-secret".to_vec();
@@ -182,21 +183,23 @@ fn main() -> Result<()> {
             );
 
             let my_id = router.endpoint().id();
-            tokio::task::spawn(async move {
+            let task = tokio::task::spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     // TODO: sign
                     let message = Message::Announce(my_id);
-                    let message = postcard::to_stdvec(&message).unwrap();
+                    let message = postcard::to_stdvec(&message).anyerr()?;
                     if let Err(err) = gossip_send.broadcast(message.into()).await {
                         warn!("failed to broadcast on gossip: {err:?}");
                         break;
                     }
                 }
+                n0_error::Ok(())
             });
+            tasks.push(AbortOnDropHandle::new(task));
 
             let (announce_tx, mut announce_rx) = mpsc::channel(16);
-            tokio::task::spawn(async move {
+            let task = tokio::task::spawn(async move {
                 while let Some(event) = gossip_recv.next().await {
                     let event = event?;
                     match event {
@@ -224,9 +227,10 @@ fn main() -> Result<()> {
                 }
                 n0_error::Ok(())
             });
+            tasks.push(AbortOnDropHandle::new(task));
 
             let (track_tx, track_rx) = mpsc::channel(16);
-            tokio::task::spawn(async move {
+            let task = tokio::task::spawn(async move {
                 while let Some(endpoint_id) = announce_rx.recv().await {
                     match Track::connect(&live, &audio_ctx, endpoint_id).await {
                         Err(err) => {
@@ -242,24 +246,30 @@ fn main() -> Result<()> {
                         }
                     }
                 }
+                n0_error::Ok(())
             });
+            tasks.push(AbortOnDropHandle::new(task));
 
-            n0_error::Ok((router, track_rx, broadcast))
+            n0_error::Ok((router, track_rx, broadcast, tasks))
         }
     })?;
 
     let _guard = rt.enter();
+    let self_watch = broadcast.watch_local();
     eframe::run_native(
         "IrohLive",
         eframe::NativeOptions::default(),
-        Box::new(|_cc| {
+        Box::new(|cc| {
             let app = App {
                 rt,
                 track_rx,
                 videos: vec![],
+                self_video: self_watch
+                    .map(|track| SimpleVideoView::new(&cc.egui_ctx, track, usize::MAX)),
                 router,
                 _broadcast: broadcast,
                 _audio_ctx,
+                tasks,
             };
             Ok(Box::new(app))
         }),
@@ -270,10 +280,12 @@ fn main() -> Result<()> {
 struct App {
     track_rx: mpsc::Receiver<Track>,
     videos: Vec<VideoView>,
+    self_video: Option<SimpleVideoView>,
     router: Router,
     _broadcast: PublishBroadcast,
     _audio_ctx: AudioBackend,
     rt: tokio::runtime::Runtime,
+    tasks: Vec<AbortOnDropHandle<Result<()>>>,
 }
 
 impl eframe::App for App {
@@ -294,10 +306,29 @@ impl eframe::App for App {
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
                 show_video_grid(ctx, ui, &mut self.videos);
+
+                // Render video preview of self
+                if let Some(self_view) = self.self_video.as_mut() {
+                    let size = (200., 200.);
+                    egui::Area::new(Id::new("self-video"))
+                        .anchor(egui::Align2::RIGHT_BOTTOM, [-10.0, -10.0]) // 10px from the bottom-right edge
+                        .order(egui::Order::Foreground)
+                        .show(ui.ctx(), |ui| {
+                            egui::Frame::new()
+                                .fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 128))
+                                .corner_radius(8.0)
+                                .show(ui, |ui| {
+                                    ui.set_width(size.0);
+                                    ui.set_height(size.1);
+                                    ui.add_sized(size, self_view.render_image(ctx, size.into()));
+                                });
+                        });
+                }
             });
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.tasks.clear();
         let router = self.router.clone();
         self.rt.block_on(async move {
             if let Err(err) = router.shutdown().await {
@@ -307,29 +338,17 @@ impl eframe::App for App {
     }
 }
 
-impl App {}
-
 struct VideoView {
     id: usize,
     track: Track,
     stats: StatsSmoother,
-    texture: egui::TextureHandle,
-    size: egui::Vec2,
+    texture: VideoTexture,
 }
 
 impl VideoView {
     fn new(ctx: &egui::Context, track: Track, id: usize) -> Self {
-        let size = egui::vec2(100., 100.);
-        let color_image =
-            egui::ColorImage::filled([size.x as usize, size.y as usize], Color32::BLACK);
-        let texture = ctx.load_texture(
-            format!("video-texture-{}", id),
-            color_image,
-            egui::TextureOptions::default(),
-        );
         Self {
-            size,
-            texture,
+            texture: VideoTexture::new(ctx, id),
             track,
             stats: StatsSmoother::new(),
             id,
@@ -337,35 +356,11 @@ impl VideoView {
     }
 
     fn render_image(&mut self, ctx: &egui::Context, available_size: Vec2) -> egui::Image<'_> {
-        let available_size = available_size.into();
-        if available_size != self.size {
-            self.size = available_size;
-            let ppp = ctx.pixels_per_point();
-            let w = (available_size.x * ppp) as u32;
-            let h = (available_size.y * ppp) as u32;
-            self.track.video.set_viewport(w, h);
-        }
-        if let Some(frame) = self.track.video.current_frame() {
-            let (w, h) = frame.img().dimensions();
-            let image = egui::ColorImage::from_rgba_unmultiplied(
-                [w as usize, h as usize],
-                frame.img().as_raw(),
-            );
-            self.texture = ctx.load_texture("video", image, Default::default());
-        }
-        egui::Image::from_texture(&self.texture).shrink_to_fit()
+        self.texture
+            .render_image(ctx, available_size, &mut self.track.video)
     }
 
     fn render_overlay_in_rect(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
-        // Add a bit of padding from the video edges
-        // let inner = rect.shrink2(egui::vec2(8.0, 8.0));
-        // // Create a child UI constrained to the tile, bottom-left aligned
-        // let mut child = ui.new_child(
-        //     egui::UiBuilder::new()
-        //         .max_rect(inner)
-        //         .layout(egui::Layout::bottom_up(egui::Align::LEFT)),
-        // );
-        // child.set_clip_rect(rect);
         let pos = rect.left_bottom() + egui::vec2(8.0, -8.0);
         let overlay_id = egui::Id::new(("overlay", self.id));
 
@@ -411,6 +406,66 @@ impl VideoView {
             ui.label(format!("BW:  {bw}"));
             ui.label(format!("RTT: {}ms", rtt.as_millis()));
         });
+    }
+}
+
+struct SimpleVideoView {
+    texture: VideoTexture,
+    track: WatchTrack,
+}
+
+impl SimpleVideoView {
+    fn new(ctx: &egui::Context, track: WatchTrack, id: usize) -> Self {
+        Self {
+            texture: VideoTexture::new(ctx, id),
+            track,
+        }
+    }
+
+    fn render_image(&mut self, ctx: &egui::Context, available_size: Vec2) -> egui::Image<'_> {
+        self.texture
+            .render_image(ctx, available_size, &mut self.track)
+    }
+}
+
+struct VideoTexture {
+    size: egui::Vec2,
+    texture: egui::TextureHandle,
+}
+
+impl VideoTexture {
+    fn new(ctx: &egui::Context, id: usize) -> Self {
+        let texture_name = format!("video-texture-{}", id);
+        let size = egui::vec2(100., 100.);
+        let color_image =
+            egui::ColorImage::filled([size.x as usize, size.y as usize], Color32::BLACK);
+        let texture = ctx.load_texture(&texture_name, color_image, egui::TextureOptions::default());
+        Self { size, texture }
+    }
+
+    fn render_image(
+        &mut self,
+        ctx: &egui::Context,
+        available_size: Vec2,
+        track: &mut WatchTrack,
+    ) -> egui::Image<'_> {
+        let available_size = available_size.into();
+        if available_size != self.size {
+            self.size = available_size;
+            let ppp = ctx.pixels_per_point();
+            let w = (available_size.x * ppp) as u32;
+            let h = (available_size.y * ppp) as u32;
+            track.set_viewport(w, h);
+        }
+        if let Some(frame) = track.current_frame() {
+            let (w, h) = frame.img().dimensions();
+            let image = egui::ColorImage::from_rgba_unmultiplied(
+                [w as usize, h as usize],
+                frame.img().as_raw(),
+            );
+            self.texture.set(image, Default::default());
+        }
+        egui::Image::from_texture(&self.texture).shrink_to_fit()
     }
 }
 

@@ -31,12 +31,12 @@ async fn main() -> n0_error::Result {
     // Audio: default microphone + Opus encoder with preset
     let mic = audio_ctx.default_microphone().await?;
     let audio = AudioRenditions::new::<OpusEncoder>(mic, [cli.audio_preset]);
-    broadcast.set_audio(audio)?;
+    broadcast.set_audio(Some(audio))?;
 
     // Video: camera capture + encoders by backend (fps 30)
     let camera = CameraCapturer::new()?;
     let video = VideoRenditions::new::<H264Encoder>(camera, cli.video_presets);
-    broadcast.set_video(video)?;
+    broadcast.set_video(Some(video))?;
 
     let ticket = live.publish(&broadcast).await?;
     println!("publishing at {ticket}");

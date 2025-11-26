@@ -1,75 +1,10 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::sync::Arc;
 
-use iroh::{Endpoint, EndpointId, endpoint};
+use iroh::EndpointId;
 use n0_future::{StreamExt, boxed::BoxFuture};
-use quinn::TransportConfig;
 use url::Url;
 
-use crate::{CongestionControl, ServerError, Session};
-
-/// Construct a WebTransport [Server] using sane defaults.
-///
-/// This is optional; advanced users may use [Server::new] directly.
-pub struct ServerBuilder {
-    builder: endpoint::Builder,
-    transport_config: TransportConfig,
-}
-
-impl Default for ServerBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ServerBuilder {
-    /// Create a server builder with sane defaults.
-    pub fn new() -> Self {
-        let mut transport_config = iroh::endpoint::TransportConfig::default();
-        transport_config.keep_alive_interval(Some(Duration::from_secs(1)));
-        Self {
-            builder: Endpoint::builder(),
-            transport_config,
-        }
-    }
-
-    /// Listen on the specified address.
-    pub fn with_addr(mut self, addr: SocketAddr) -> Self {
-        self.builder = match addr {
-            SocketAddr::V4(addr) => self.builder.bind_addr_v4(addr),
-            SocketAddr::V6(addr) => self.builder.bind_addr_v6(addr),
-        };
-        self
-    }
-
-    /// Enable the specified congestion controller.
-    pub fn with_congestion_control(mut self, algorithm: CongestionControl) -> Self {
-        match algorithm {
-            CongestionControl::LowLatency => {
-                let cc = Arc::new(quinn::congestion::BbrConfig::default());
-                self.transport_config.congestion_controller_factory(cc);
-            }
-            // TODO BBR is also higher throughput in theory.
-            CongestionControl::Throughput => {
-                let cc = Arc::new(quinn::congestion::CubicConfig::default());
-                self.transport_config.congestion_controller_factory(cc);
-            }
-            CongestionControl::Default => {}
-        };
-        self
-    }
-
-    pub async fn build(self, secret_key: iroh::SecretKey) -> Result<Server, ServerError> {
-        let endpoint = self
-            .builder
-            .alpns(vec![crate::ALPN.as_bytes().to_vec()])
-            .secret_key(secret_key)
-            .bind()
-            .await
-            .map_err(Arc::new)?;
-
-        Ok(Server::new(endpoint))
-    }
-}
+use crate::{ServerError, Session};
 
 /// A WebTransport server that accepts new sessions.
 pub struct Server {

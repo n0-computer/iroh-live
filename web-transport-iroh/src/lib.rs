@@ -39,7 +39,7 @@ pub use server::*;
 pub use session::*;
 
 /// The HTTP/3 ALPN is required when negotiating a QUIC connection.
-pub const ALPN: &str = "h3";
+pub const ALPN: &str = "iroh-moq";
 
 /// Re-export the http crate because it's in the public API.
 pub use http;

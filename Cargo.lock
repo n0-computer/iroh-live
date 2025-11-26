@@ -1275,14 +1275,15 @@ dependencies = [
 
 [[package]]
 name = "cocoa-foundation"
-version = "0.2.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81411967c50ee9a1fc11365f8c585f863a22a9697c89239c452292c40ba79b0d"
+checksum = "e14045fb83be07b5acf1c0884b2180461635b433455fa35d1cd6f17f1450679d"
 dependencies = [
  "bitflags 2.10.0",
  "block",
- "core-foundation 0.10.1",
+ "core-foundation 0.10.0",
  "core-graphics-types 0.2.0",
+ "libc",
  "objc",
 ]
 
@@ -1385,9 +1386,9 @@ dependencies = [
 
 [[package]]
 name = "core-foundation"
-version = "0.10.1"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6"
+checksum = "b55271e5c8c478ad3f38ad24ef34923091e0548492a266d19b3c0b4d82574c63"
 dependencies = [
  "core-foundation-sys 0.8.7",
  "libc",
@@ -1448,7 +1449,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d44a101f213f6c4cdc1853d4b78aef6db6bdfa3468798cc1d9912f4735013eb"
 dependencies = [
  "bitflags 2.10.0",
- "core-foundation 0.10.1",
+ "core-foundation 0.10.0",
  "libc",
 ]
 
@@ -4595,7 +4596,7 @@ checksum = "de78eb4a2d47a68f490899aa0516070d7a972f853ec2bb374ab53be0bd39b60f"
 dependencies = [
  "block",
  "cocoa-foundation",
- "core-foundation 0.10.1",
+ "core-foundation 0.10.0",
  "core-media-sys",
  "core-video-sys",
  "flume",
@@ -6259,7 +6260,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19787cda76408ec5404443dc8b31795c87cd8fec49762dc75fa727740d34acc1"
 dependencies = [
- "core-foundation 0.10.1",
+ "core-foundation 0.10.0",
  "core-foundation-sys 0.8.7",
  "jni",
  "log",
@@ -6393,7 +6394,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b3297343eaf830f66ede390ea39da1d462b6b0c1b000f420d0a83f898bbbe6ef"
 dependencies = [
  "bitflags 2.10.0",
- "core-foundation 0.10.1",
+ "core-foundation 0.10.0",
  "core-foundation-sys 0.8.7",
  "libc",
  "security-framework-sys",
@@ -7978,7 +7979,7 @@ version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00f1243ef785213e3a32fa0396093424a3a6ea566f9948497e5a2309261a4c97"
 dependencies = [
- "core-foundation 0.10.1",
+ "core-foundation 0.10.0",
  "jni",
  "log",
  "ndk-context",

@@ -54,7 +54,7 @@ pub trait AudioDecoder: Send + 'static {
     fn pop_samples(&mut self) -> Result<Option<&[f32]>>;
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum PixelFormat {
     Rgba,
     Bgra,
@@ -74,6 +74,7 @@ pub struct VideoFormat {
 
 #[derive(Clone, Debug)]
 pub struct VideoFrame {
+    pub format: VideoFormat,
     pub raw: Vec<u8>,
 }
 
@@ -90,7 +91,7 @@ pub trait VideoEncoder: VideoEncoderInner {
 
 pub trait VideoEncoderInner: Send + 'static {
     fn config(&self) -> hang::catalog::VideoConfig;
-    fn push_frame(&mut self, format: &VideoFormat, frame: VideoFrame) -> Result<()>;
+    fn push_frame(&mut self, frame: VideoFrame) -> Result<()>;
     fn pop_packet(&mut self) -> Result<Option<hang::Frame>>;
 }
 
@@ -99,8 +100,8 @@ impl VideoEncoderInner for Box<dyn VideoEncoder> {
         (&**self).config()
     }
 
-    fn push_frame(&mut self, format: &VideoFormat, frame: VideoFrame) -> Result<()> {
-        (&mut **self).push_frame(format, frame)
+    fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
+        (&mut **self).push_frame(frame)
     }
 
     fn pop_packet(&mut self) -> Result<Option<hang::Frame>> {
@@ -125,6 +126,24 @@ pub struct DecodedFrame {
 impl DecodedFrame {
     pub fn img(&self) -> &RgbaImage {
         self.frame.buffer()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
+pub enum TrackKind {
+    Audio,
+    Video,
+}
+
+impl TrackKind {
+    pub fn from_name(name: &str) -> Option<Self> {
+        if name.starts_with("audio-") {
+            Some(Self::Audio)
+        } else if name.starts_with("video-") {
+            Some(Self::Video)
+        } else {
+            None
+        }
     }
 }
 
