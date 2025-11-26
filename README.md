@@ -39,3 +39,20 @@ Now you're chatting! With video and audio! Over iroh!
 There's also a [`publish`](iroh-live/examples/publish.rs) example (publish only, no GUI), and a [`watch`](iroh-live/examples/watch.rs) example (watch a stream from the publish example).
 
 The examples use [`egui`](https://github.com/emilk/egui), however `iroh-live` is not coupled to any GUI framework and should work with anything that can render raw images to the screen.
+
+## License
+
+Copyright 2025 N0, INC.
+
+This project is licensed under either of
+
+ * Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or
+   http://www.apache.org/licenses/LICENSE-2.0)
+ * MIT license ([LICENSE-MIT](LICENSE-MIT) or
+   http://opensource.org/licenses/MIT)
+
+at your option.
+
+## Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this project by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

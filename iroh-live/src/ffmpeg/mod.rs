@@ -1,6 +1,4 @@
-pub use self::audio::*;
-pub use self::ext::ffmpeg_log_init;
-pub use self::video::*;
+pub use self::{audio::*, ext::ffmpeg_log_init, video::*};
 
 mod audio {
     mod decoder;
