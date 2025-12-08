@@ -1,15 +1,10 @@
 use std::{str::FromStr, time::Duration};
 
-use crate::{
-    Live, LiveSession,
-    audio::AudioBackend,
-    av::{Decoders, Quality},
-    subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
-};
+use crate::{Live, live::RemoteTrack};
 use iroh::{Endpoint, EndpointId};
 use iroh_gossip::{Gossip, TopicId};
 use n0_error::{Result, StdResultExt};
-use n0_future::{StreamExt, task::AbortOnDropHandle};
+use n0_future::{FuturesUnordered, StreamExt, task::AbortOnDropHandle};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{self, error::TryRecvError};
 use tracing::{info, warn};
@@ -97,15 +92,24 @@ impl Room {
         // Connect and subscribe to all peers that announced themselves.
         let (track_tx, track_rx) = mpsc::channel(16);
         let task = tokio::task::spawn(async move {
-            while let Some(endpoint_id) = announce_rx.recv().await {
-                match RemoteTrack::connect(&live, endpoint_id, &broadcast_name).await {
-                    Err(err) => {
-                        warn!(endpoint=%endpoint_id.fmt_short(), ?err, "failed to connect");
-                    }
-                    Ok(track) => {
-                        if let Err(err) = track_tx.send(track).await {
-                            warn!(?err, "failed to forward track, abort conect loop");
+            let mut connect_futs = FuturesUnordered::new();
+            loop {
+                tokio::select! {
+                    res = announce_rx.recv() => {
+                        let Some(endpoint_id) = res else {
                             break;
+                        };
+                        connect_futs.push(live.connect_and_subscribe(endpoint_id, &broadcast_name));
+                    }
+                    Some(res) = connect_futs.next(), if !connect_futs.is_empty() => {
+                        match res {
+                            Err(err) => warn!(endpoint=%endpoint_id.fmt_short(), ?err, "failed to connect"),
+                            Ok(track) => {
+                                if let Err(err) = track_tx.send(track).await {
+                                    warn!(?err, "failed to forward track, abort conect loop");
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
@@ -134,67 +138,6 @@ impl Room {
         let mut ticket = self.ticket.clone();
         ticket.bootstrap = vec![self.me];
         ticket
-    }
-}
-
-pub struct RemoteTrack {
-    pub broadcast: SubscribeBroadcast,
-    pub session: LiveSession,
-}
-
-impl RemoteTrack {
-    pub async fn connect(
-        live: &Live,
-        endpoint_id: EndpointId,
-        broadcast_name: &str,
-    ) -> Result<Self> {
-        let mut session = live.connect(endpoint_id).await?;
-        info!(id=%session.conn().remote_id(), "new peer connected");
-        let broadcast = session.subscribe(broadcast_name).await?;
-        let broadcast = SubscribeBroadcast::new(broadcast).await?;
-        info!(id=%session.conn().remote_id(), "subscribed");
-        Ok(RemoteTrack { session, broadcast })
-    }
-
-    pub async fn start<D: Decoders>(
-        self,
-        audio_ctx: &AudioBackend,
-        quality: Quality,
-    ) -> Result<AvRemoteTrack> {
-        AvRemoteTrack::new::<D>(self, audio_ctx, quality).await
-    }
-}
-
-pub struct AvRemoteTrack {
-    pub broadcast: SubscribeBroadcast,
-    pub session: LiveSession,
-    pub video: Option<WatchTrack>,
-    pub audio: Option<AudioTrack>,
-}
-
-impl AvRemoteTrack {
-    pub async fn new<D: Decoders>(
-        track: RemoteTrack,
-        audio_ctx: &AudioBackend,
-        quality: Quality,
-    ) -> Result<Self> {
-        let audio_out = audio_ctx.default_output().await?;
-        let audio = track
-            .broadcast
-            .listen_with::<D::Audio>(quality, audio_out)
-            .inspect_err(|err| tracing::warn!("no audio track: {err}"))
-            .ok();
-        let video = track
-            .broadcast
-            .watch_with::<D::Video>(&Default::default(), quality)
-            .inspect_err(|err| tracing::warn!("no video track: {err}"))
-            .ok();
-        Ok(Self {
-            broadcast: track.broadcast,
-            session: track.session,
-            audio,
-            video,
-        })
     }
 }
 
