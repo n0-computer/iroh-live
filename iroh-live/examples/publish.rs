@@ -33,7 +33,7 @@ async fn main() -> n0_error::Result {
     let mut broadcast = PublishBroadcast::new();
 
     // Capture audio, and encode with the cli-provided preset.
-    let mic = audio_ctx.default_microphone().await?;
+    let mic = audio_ctx.default_input().await?;
     let audio = AudioRenditions::new::<OpusEncoder>(mic, [cli.audio_preset]);
     broadcast.set_audio(Some(audio))?;
 

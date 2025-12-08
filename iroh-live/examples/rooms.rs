@@ -1,23 +1,21 @@
-use std::{str::FromStr, time::Duration};
+use std::time::Duration;
 
 use clap::Parser;
 use eframe::egui::{self, Color32, Id, Vec2};
-use iroh::{Endpoint, EndpointId, protocol::Router};
+use iroh::{Endpoint, protocol::Router};
 use iroh_gossip::{Gossip, TopicId};
 use iroh_live::{
     Live, LiveSession,
     audio::AudioBackend,
-    av::{AudioPreset, VideoPreset},
+    av::{AudioPreset, Quality, VideoPreset},
     capture::{CameraCapturer, ScreenCapturer},
-    ffmpeg::{FfmpegAudioDecoder, FfmpegVideoDecoder, H264Encoder, OpusEncoder, ffmpeg_log_init},
+    ffmpeg::{FfmpegDecoders, FfmpegVideoDecoder, H264Encoder, OpusEncoder, ffmpeg_log_init},
     publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
+    rooms::{AvRemoteTrack, Room, RoomTicket},
     subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
     util::StatsSmoother,
 };
 use n0_error::{Result, StdResultExt, anyerr};
-use n0_future::{StreamExt, task::AbortOnDropHandle};
-use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 const BROADCAST_NAME: &str = "cam";
@@ -31,78 +29,34 @@ struct Cli {
     no_audio: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-enum Message {
-    Announce(EndpointId),
-}
-
-struct Track {
-    video: WatchTrack,
-    session: LiveSession,
-    _audio: Option<AudioTrack>,
-    broadcast: SubscribeBroadcast,
-}
-
-impl Track {
-    pub async fn connect(
-        live: &Live,
-        audio_ctx: &AudioBackend,
-        endpoint_id: EndpointId,
-    ) -> Result<Self> {
-        let mut session = live.connect(endpoint_id).await?;
-        info!(id=%session.conn().remote_id(), "new peer connected");
-        let broadcast = session.subscribe(BROADCAST_NAME).await?;
-        let broadcast = SubscribeBroadcast::new(broadcast).await?;
-        info!(id=%session.conn().remote_id(), "subscribed");
-        let audio_out = audio_ctx.default_speaker().await?;
-        let audio = broadcast.listen::<FfmpegAudioDecoder>(audio_out).ok();
-        let video = broadcast.watch::<FfmpegVideoDecoder>()?;
-
-        Ok(Track {
-            video,
-            session,
-            _audio: audio,
-            broadcast,
-        })
-    }
-}
-
-impl Track {
-    fn closed(&self) -> bool {
-        self.session.conn().close_reason().is_some()
-    }
-}
-
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     ffmpeg_log_init();
     let cli = Cli::parse();
 
-    let audio_ctx = AudioBackend::new();
-    let _audio_ctx = audio_ctx.clone();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
 
-    let (router, track_rx, broadcast, tasks) = rt.block_on(setup(cli, audio_ctx.clone()))?;
+    let audio_ctx = AudioBackend::new();
+    let (router, broadcast, room) = rt.block_on(setup(cli, audio_ctx.clone()))?;
 
     let _guard = rt.enter();
-    let self_watch = broadcast.watch_local();
     eframe::run_native(
         "IrohLive",
         eframe::NativeOptions::default(),
         Box::new(|cc| {
             let app = App {
                 rt,
-                track_rx,
+                room,
                 peers: vec![],
-                self_video: self_watch
-                    .map(|track| SimpleVideoView::new(&cc.egui_ctx, track, usize::MAX)),
+                self_video: broadcast
+                    .watch_local()
+                    .map(|track| VideoView::new(&cc.egui_ctx, track, usize::MAX)),
                 router,
                 _broadcast: broadcast,
-                _audio_ctx,
-                tasks,
+                audio_ctx,
             };
             Ok(Box::new(app))
         }),
@@ -110,17 +64,7 @@ fn main() -> Result<()> {
     .map_err(|err| anyerr!("eframe failed: {err:#}"))
 }
 
-async fn setup(
-    cli: Cli,
-    audio_ctx: AudioBackend,
-) -> Result<(
-    Router,
-    mpsc::Receiver<Track>,
-    PublishBroadcast,
-    Vec<AbortOnDropHandle<Result<()>>>,
-)> {
-    let mut tasks = vec![];
-
+async fn setup(cli: Cli, audio_ctx: AudioBackend) -> Result<(Router, PublishBroadcast, Room)> {
     let endpoint = Endpoint::builder()
         .secret_key(secret_key_from_env()?)
         .bind()
@@ -135,10 +79,11 @@ async fn setup(
         .accept(iroh_moq::ALPN, live.protocol_handler())
         .spawn();
 
+    // Publish ourselves.
     let broadcast = {
         let mut broadcast = PublishBroadcast::new();
         if !cli.no_audio {
-            let mic = audio_ctx.default_microphone().await?;
+            let mic = audio_ctx.default_input().await?;
             let audio = AudioRenditions::new::<OpusEncoder>(mic, [AudioPreset::Hq]);
             broadcast.set_audio(Some(audio))?;
         }
@@ -154,99 +99,26 @@ async fn setup(
     };
     live.publish(BROADCAST_NAME, broadcast.producer()).await?;
 
-    let endpoint_id = router.endpoint().id();
-
-    let (topic_id, bootstrap) = match &cli.join {
-        None => (topic_id_from_env()?, vec![]),
-        Some(ticket) => (ticket.topic_id, vec![ticket.endpoint_id]),
+    let ticket = match cli.join {
+        None => RoomTicket::new(topic_id_from_env()?, vec![], BROADCAST_NAME),
+        Some(ticket) => ticket,
     };
-    let ticket = RoomTicket {
-        endpoint_id,
-        topic_id,
-    };
-    println!("room ticket: {}", iroh_tickets::Ticket::serialize(&ticket));
 
-    let (gossip_sender, mut gossip_receiver) = gossip.subscribe(topic_id, bootstrap).await?.split();
+    let room = Room::new(router.endpoint(), gossip, live, ticket).await?;
 
-    // Announce ourselves on the gossip topic every other second.
-    let task = tokio::task::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            // TODO: sign
-            let message = Message::Announce(endpoint_id);
-            let message = postcard::to_stdvec(&message).anyerr()?;
-            if let Err(err) = gossip_sender.broadcast(message.into()).await {
-                warn!("failed to broadcast on gossip: {err:?}");
-                break;
-            }
-        }
-        n0_error::Ok(())
-    });
-    tasks.push(AbortOnDropHandle::new(task));
+    println!("room ticket: {}", room.ticket());
 
-    // Listen for announcements on the gossip topic.
-    let (announce_tx, mut announce_rx) = mpsc::channel(16);
-    let task = tokio::task::spawn(async move {
-        while let Some(event) = gossip_receiver.next().await {
-            let event = event?;
-            match event {
-                iroh_gossip::api::Event::Received(message) => {
-                    let Ok(message) = postcard::from_bytes::<Message>(&message.content) else {
-                        continue;
-                    };
-                    match message {
-                        Message::Announce(endpoint_id) => {
-                            if let Err(_) = announce_tx.send(endpoint_id).await {
-                                break;
-                            }
-                        }
-                    }
-                }
-                iroh_gossip::api::Event::NeighborUp(neighbor) => {
-                    info!("gossip neighbor up: {neighbor}")
-                }
-                iroh_gossip::api::Event::NeighborDown(neighbor) => {
-                    info!("gossip neighbor down: {neighbor}")
-                }
-                _ => {}
-            }
-        }
-        n0_error::Ok(())
-    });
-    tasks.push(AbortOnDropHandle::new(task));
-
-    // Connect and subscribe to all peers that announced themselves.
-    let (track_tx, track_rx) = mpsc::channel(16);
-    let task = tokio::task::spawn(async move {
-        while let Some(endpoint_id) = announce_rx.recv().await {
-            match Track::connect(&live, &audio_ctx, endpoint_id).await {
-                Err(err) => {
-                    warn!(endpoint=%endpoint_id.fmt_short(), ?err, "failed to connect");
-                }
-                Ok(track) => {
-                    if let Err(err) = track_tx.send(track).await {
-                        warn!(?err, "failed to forward track, abort conect loop");
-                        break;
-                    }
-                }
-            }
-        }
-        n0_error::Ok(())
-    });
-    tasks.push(AbortOnDropHandle::new(task));
-
-    Ok((router, track_rx, broadcast, tasks))
+    Ok((router, broadcast, room))
 }
 
 struct App {
-    track_rx: mpsc::Receiver<Track>,
-    peers: Vec<VideoView>,
-    self_video: Option<SimpleVideoView>,
+    room: Room,
+    peers: Vec<RemoteTrackView>,
+    self_video: Option<VideoView>,
     router: Router,
     _broadcast: PublishBroadcast,
-    _audio_ctx: AudioBackend,
+    audio_ctx: AudioBackend,
     rt: tokio::runtime::Runtime,
-    tasks: Vec<AbortOnDropHandle<Result<()>>>,
 }
 
 impl eframe::App for App {
@@ -254,13 +126,25 @@ impl eframe::App for App {
         ctx.request_repaint_after(Duration::from_millis(30)); // min 30 fps
 
         // Remove closed peers.
-        self.peers.retain(|v| !v.track.closed());
+        self.peers.retain(|track| !track.closed());
 
         // Add newly subscribes peers.
-        while let Ok(track) = self.track_rx.try_recv() {
+        while let Ok(track) = self.room.try_recv() {
             info!("adding new track");
+            let track = match self.rt.block_on(async {
+                track
+                    .start::<FfmpegDecoders>(&self.audio_ctx, Quality::Highest)
+                    .await
+            }) {
+                Ok(track) => track,
+                Err(err) => {
+                    warn!("failed to add track: {err}");
+                    continue;
+                }
+            };
+
             self.peers
-                .push(VideoView::new(ctx, track, self.peers.len()));
+                .push(RemoteTrackView::new(ctx, track, self.peers.len()));
         }
 
         egui::CentralPanel::default()
@@ -290,10 +174,7 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // Abort all tasks.
-        self.tasks.clear();
-
-        // Shutdown router and endpoint.
+        self.room.shutdown();
         let router = self.router.clone();
         self.rt.block_on(async move {
             if let Err(err) = router.shutdown().await {
@@ -303,26 +184,39 @@ impl eframe::App for App {
     }
 }
 
-struct VideoView {
+struct RemoteTrackView {
     id: usize,
-    track: Track,
+    video: Option<VideoView>,
+    _audio_track: Option<AudioTrack>,
+    session: LiveSession,
+    broadcast: SubscribeBroadcast,
     stats: StatsSmoother,
-    texture: VideoTexture,
 }
 
-impl VideoView {
-    fn new(ctx: &egui::Context, track: Track, id: usize) -> Self {
+impl RemoteTrackView {
+    fn new(ctx: &egui::Context, track: AvRemoteTrack, id: usize) -> Self {
         Self {
-            texture: VideoTexture::new(ctx, id),
-            track,
+            video: track.video.map(|video| VideoView::new(ctx, video, id)),
             stats: StatsSmoother::new(),
+            broadcast: track.broadcast,
             id,
+            _audio_track: track.audio,
+            session: track.session,
         }
     }
 
-    fn render_image(&mut self, ctx: &egui::Context, available_size: Vec2) -> egui::Image<'_> {
-        self.texture
-            .render_image(ctx, available_size, &mut self.track.video)
+    fn closed(&self) -> bool {
+        self.session.conn().close_reason().is_some()
+    }
+
+    fn render_image(
+        &mut self,
+        ctx: &egui::Context,
+        available_size: Vec2,
+    ) -> Option<egui::Image<'_>> {
+        self.video
+            .as_mut()
+            .map(|video| video.render_image(ctx, available_size))
     }
 
     fn render_overlay_in_rect(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
@@ -346,27 +240,33 @@ impl VideoView {
 
     fn render_overlay(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
-            let selected = self.track.video.rendition().to_owned();
+            let selected = self.video.as_ref().map(|v| v.track.rendition().to_owned());
             egui::ComboBox::from_id_salt(format!("video{}", self.id))
-                .selected_text(selected.clone())
+                .selected_text(selected.clone().unwrap_or_default())
                 .show_ui(ui, |ui| {
-                    for name in self.track.broadcast.video_renditions() {
-                        if ui.selectable_label(&selected == name, name).clicked() {
+                    for name in self.broadcast.video_renditions() {
+                        if ui
+                            .selectable_label(selected.as_deref() == Some(name), name)
+                            .clicked()
+                        {
                             if let Ok(track) = self
-                                .track
                                 .broadcast
                                 .watch_rendition::<FfmpegVideoDecoder>(&Default::default(), &name)
                             {
-                                self.track.video = track;
+                                if let Some(video) = self.video.as_mut() {
+                                    video.set_track(track);
+                                } else {
+                                    self.video = Some(VideoView::new(ui.ctx(), track, self.id))
+                                }
                             }
                         }
                     }
                 });
 
-            let (rtt, bw) = self.stats.smoothed(|| self.track.session.conn().stats());
+            let (rtt, bw) = self.stats.smoothed(|| self.session.conn().stats());
             ui.label(format!(
                 "peer:  {}",
-                self.track.session.conn().remote_id().fmt_short()
+                self.session.conn().remote_id().fmt_short()
             ));
             ui.label(format!("BW:  {bw}"));
             ui.label(format!("RTT: {}ms", rtt.as_millis()));
@@ -374,55 +274,40 @@ impl VideoView {
     }
 }
 
-struct SimpleVideoView {
-    texture: VideoTexture,
+struct VideoView {
     track: WatchTrack,
-}
-
-impl SimpleVideoView {
-    fn new(ctx: &egui::Context, track: WatchTrack, id: usize) -> Self {
-        Self {
-            texture: VideoTexture::new(ctx, id),
-            track,
-        }
-    }
-
-    fn render_image(&mut self, ctx: &egui::Context, available_size: Vec2) -> egui::Image<'_> {
-        self.texture
-            .render_image(ctx, available_size, &mut self.track)
-    }
-}
-
-struct VideoTexture {
     size: egui::Vec2,
     texture: egui::TextureHandle,
 }
 
-impl VideoTexture {
-    fn new(ctx: &egui::Context, id: usize) -> Self {
+impl VideoView {
+    fn new(ctx: &egui::Context, track: WatchTrack, id: usize) -> Self {
         let texture_name = format!("video-texture-{}", id);
         let size = egui::vec2(100., 100.);
         let color_image =
             egui::ColorImage::filled([size.x as usize, size.y as usize], Color32::BLACK);
         let texture = ctx.load_texture(&texture_name, color_image, egui::TextureOptions::default());
-        Self { size, texture }
+        Self {
+            size,
+            texture,
+            track,
+        }
     }
 
-    fn render_image(
-        &mut self,
-        ctx: &egui::Context,
-        available_size: Vec2,
-        track: &mut WatchTrack,
-    ) -> egui::Image<'_> {
+    fn set_track(&mut self, track: WatchTrack) {
+        self.track = track;
+    }
+
+    fn render_image(&mut self, ctx: &egui::Context, available_size: Vec2) -> egui::Image<'_> {
         let available_size = available_size.into();
         if available_size != self.size {
             self.size = available_size;
             let ppp = ctx.pixels_per_point();
             let w = (available_size.x * ppp) as u32;
             let h = (available_size.y * ppp) as u32;
-            track.set_viewport(w, h);
+            self.track.set_viewport(w, h);
         }
-        if let Some(frame) = track.current_frame() {
+        if let Some(frame) = self.track.current_frame() {
             let (w, h) = frame.img().dimensions();
             let image = egui::ColorImage::from_rgba_unmultiplied(
                 [w as usize, h as usize],
@@ -436,7 +321,7 @@ impl VideoTexture {
 
 /// Show `textures` as squares in a compact auto grid that fills the parent as much as
 /// possible without breaking square aspect.
-fn show_video_grid(ctx: &egui::Context, ui: &mut egui::Ui, videos: &mut [VideoView]) {
+fn show_video_grid(ctx: &egui::Context, ui: &mut egui::Ui, videos: &mut [RemoteTrackView]) {
     let n = videos.len();
     if n == 0 {
         return;
@@ -472,12 +357,11 @@ fn show_video_grid(ctx: &egui::Context, ui: &mut egui::Ui, videos: &mut [VideoVi
                     for _c in 0..cols {
                         if i < n {
                             // Force exact square size for each image
-                            let response = ui.add_sized(
-                                cell_size,
-                                videos[i].render_image(ctx, cell_size.into()),
-                            );
-                            let rect = response.rect;
-                            videos[i].render_overlay_in_rect(ui, rect);
+                            if let Some(image) = videos[i].render_image(ctx, cell_size.into()) {
+                                let response = ui.add_sized(cell_size, image);
+                                let rect = response.rect;
+                                videos[i].render_overlay_in_rect(ui, rect);
+                            }
                             i += 1;
                         } else {
                             // Keep the grid rectangular when N isn’t a multiple of cols
@@ -488,33 +372,6 @@ fn show_video_grid(ctx: &egui::Context, ui: &mut egui::Ui, videos: &mut [VideoVi
                 }
             });
     });
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct RoomTicket {
-    endpoint_id: EndpointId,
-    topic_id: TopicId,
-}
-
-impl FromStr for RoomTicket {
-    type Err = iroh_tickets::ParseError;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        iroh_tickets::Ticket::deserialize(s)
-    }
-}
-
-impl iroh_tickets::Ticket for RoomTicket {
-    const KIND: &'static str = "room";
-
-    fn to_bytes(&self) -> Vec<u8> {
-        postcard::to_stdvec(self).unwrap()
-    }
-
-    fn from_bytes(bytes: &[u8]) -> std::result::Result<Self, iroh_tickets::ParseError> {
-        let ticket = postcard::from_bytes(bytes)?;
-        Ok(ticket)
-    }
 }
 
 fn secret_key_from_env() -> n0_error::Result<iroh::SecretKey> {

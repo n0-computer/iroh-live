@@ -423,16 +423,21 @@ impl AudioBackend {
         Self { tx }
     }
 
-    /// Convenience: produce a default microphone audio source (48kHz stereo).
-    /// Uses a blocking call to initialize the input stream synchronously.
-    pub async fn default_microphone(&self) -> anyhow::Result<MicrophoneSource> {
+    pub async fn default_input(&self) -> anyhow::Result<MicrophoneSource> {
         const SAMPLE_RATE: u32 = 48_000;
         const CHANNELS: u32 = 2;
         let handle = self.input_stream(SAMPLE_RATE, CHANNELS).await?;
         Ok(MicrophoneSource::new(handle, SAMPLE_RATE, CHANNELS))
     }
 
-    pub async fn default_speaker(&self) -> anyhow::Result<OutputControl> {
+    pub fn blocking_default_input(&self) -> anyhow::Result<MicrophoneSource> {
+        const SAMPLE_RATE: u32 = 48_000;
+        const CHANNELS: u32 = 2;
+        let handle = self.blocking_input_stream(SAMPLE_RATE, CHANNELS)?;
+        Ok(MicrophoneSource::new(handle, SAMPLE_RATE, CHANNELS))
+    }
+
+    pub async fn default_output(&self) -> anyhow::Result<OutputControl> {
         let (reply, reply_rx) = oneshot::channel();
         self.tx
             .send(AudioCommand::OutputStream {

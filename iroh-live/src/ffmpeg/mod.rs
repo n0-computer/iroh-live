@@ -1,4 +1,14 @@
+use crate::av::Decoders;
+
 pub use self::{audio::*, ext::ffmpeg_log_init, video::*};
+
+#[derive(Debug, Clone, Copy)]
+pub struct FfmpegDecoders;
+
+impl Decoders for FfmpegDecoders {
+    type Audio = FfmpegAudioDecoder;
+    type Video = FfmpegVideoDecoder;
+}
 
 mod audio {
     mod decoder;

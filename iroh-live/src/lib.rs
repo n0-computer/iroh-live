@@ -3,6 +3,7 @@ pub mod av;
 pub mod capture;
 pub mod ffmpeg;
 pub mod publish;
+pub mod rooms;
 pub mod subscribe;
 pub mod ticket;
 pub mod util;

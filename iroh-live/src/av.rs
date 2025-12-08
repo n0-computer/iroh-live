@@ -10,6 +10,11 @@ pub struct AudioFormat {
     pub channel_count: u32,
 }
 
+pub trait Decoders {
+    type Audio: AudioDecoder;
+    type Video: VideoDecoder;
+}
+
 pub trait AudioSource: Send + 'static {
     fn cloned_boxed(&self) -> Box<dyn AudioSource>;
     fn format(&self) -> AudioFormat;

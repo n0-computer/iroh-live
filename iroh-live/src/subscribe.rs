@@ -271,10 +271,27 @@ pub struct WatchTrack {
     pub(crate) viewport: n0_watcher::Watchable<(u32, u32)>,
     pub(crate) _shutdown_token_guard: DropGuard,
     pub(crate) _task_handle: AbortOnDropHandle<()>,
-    pub(crate) _thread_handle: std::thread::JoinHandle<()>,
+    pub(crate) _thread_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl WatchTrack {
+    pub fn empty(rendition: impl ToString) -> Self {
+        let (tx, rx) = mpsc::channel(1);
+        let task = tokio::task::spawn(async move {
+            std::future::pending::<()>().await;
+            let _ = tx;
+        });
+        let guard = CancellationToken::new();
+        Self {
+            rendition: rendition.to_string(),
+            video_frames: rx,
+            viewport: Default::default(),
+            _shutdown_token_guard: guard.drop_guard(),
+            _task_handle: AbortOnDropHandle::new(task),
+            _thread_handle: None,
+        }
+    }
+
     pub(crate) fn from_shared_source(
         name: String,
         shutdown: CancellationToken,
@@ -322,7 +339,7 @@ impl WatchTrack {
             viewport,
             _shutdown_token_guard: shutdown.drop_guard(),
             _task_handle: AbortOnDropHandle::new(dummy_handle),
-            _thread_handle: thread,
+            _thread_handle: Some(thread),
         }
     }
 
@@ -379,7 +396,7 @@ impl WatchTrack {
             viewport,
             _shutdown_token_guard: shutdown.drop_guard(),
             _task_handle: AbortOnDropHandle::new(task),
-            _thread_handle: thread,
+            _thread_handle: Some(thread),
         })
     }
 

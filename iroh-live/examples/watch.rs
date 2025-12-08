@@ -37,7 +37,7 @@ fn main() -> Result<()> {
             println!("connected!");
             let consumer = session.subscribe(&ticket.broadcast_name).await?;
             let broadcast = SubscribeBroadcast::new(consumer).await?;
-            let audio_out = audio_ctx.default_speaker().await?;
+            let audio_out = audio_ctx.default_output().await?;
             let audio = broadcast.listen::<FfmpegAudioDecoder>(audio_out)?;
             let video = broadcast.watch::<FfmpegVideoDecoder>()?;
             n0_error::Ok((endpoint, session, broadcast, video, audio))
