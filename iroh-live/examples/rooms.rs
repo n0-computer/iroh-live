@@ -5,13 +5,14 @@ use eframe::egui::{self, Color32, Id, Vec2};
 use iroh::{Endpoint, protocol::Router};
 use iroh_gossip::{Gossip, TopicId};
 use iroh_live::{
-    Live, LiveSession,
     audio::AudioBackend,
     av::{AudioPreset, Quality, VideoPreset},
     capture::{CameraCapturer, ScreenCapturer},
     ffmpeg::{FfmpegDecoders, FfmpegVideoDecoder, H264Encoder, OpusEncoder, ffmpeg_log_init},
+    live::{AvRemoteTrack, Live},
+    moq::MoqSession,
     publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
-    rooms::{AvRemoteTrack, Room, RoomTicket},
+    rooms::{Room, RoomTicket},
     subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
     util::StatsSmoother,
 };
@@ -188,7 +189,7 @@ struct RemoteTrackView {
     id: usize,
     video: Option<VideoView>,
     _audio_track: Option<AudioTrack>,
-    session: LiveSession,
+    session: MoqSession,
     broadcast: SubscribeBroadcast,
     stats: StatsSmoother,
 }
@@ -401,7 +402,7 @@ fn topic_id_from_env() -> n0_error::Result<TopicId> {
         Err(_) => {
             let topic = TopicId::from_bytes(rand::random());
             println!(
-                "Created new secret. Reuse with IROH_TOPIC={}",
+                "Created new topic. Reuse with IROH_TOPIC={}",
                 data_encoding::HEXLOWER.encode(topic.as_bytes())
             );
             topic

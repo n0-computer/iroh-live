@@ -46,14 +46,14 @@ impl From<mpsc::error::SendError<ActorMessage>> for LiveActorDiedError {
 }
 
 #[derive(Debug, Clone)]
-pub struct Live {
+pub struct Moq {
     endpoint: Endpoint,
     tx: mpsc::Sender<ActorMessage>,
     shutdown_token: CancellationToken,
     _actor_handle: Arc<AbortOnDropHandle<()>>,
 }
 
-impl Live {
+impl Moq {
     pub fn new(endpoint: Endpoint) -> Self {
         let (tx, rx) = mpsc::channel(16);
         let actor = Actor::default();
@@ -69,8 +69,8 @@ impl Live {
         }
     }
 
-    pub fn protocol_handler(&self) -> LiveProtocolHandler {
-        LiveProtocolHandler {
+    pub fn protocol_handler(&self) -> MoqProtocolHandler {
+        MoqProtocolHandler {
             tx: self.tx.clone(),
         }
     }
@@ -83,8 +83,8 @@ impl Live {
         Ok(())
     }
 
-    pub async fn connect(&self, addr: impl Into<EndpointAddr>) -> Result<LiveSession, Error> {
-        LiveSession::connect(&self.endpoint, addr).await
+    pub async fn connect(&self, addr: impl Into<EndpointAddr>) -> Result<MoqSession, Error> {
+        MoqSession::connect(&self.endpoint, addr).await
     }
 
     pub fn shutdown(&self) {
@@ -93,16 +93,16 @@ impl Live {
 }
 
 #[derive(Debug, Clone)]
-pub struct LiveProtocolHandler {
+pub struct MoqProtocolHandler {
     tx: mpsc::Sender<ActorMessage>,
 }
 
-impl LiveProtocolHandler {
+impl MoqProtocolHandler {
     async fn handle_connection(&self, connection: Connection) -> Result<(), Error> {
         let request = Request::accept(connection).await?;
         info!(url=%request.url(), "accepted");
         let session = request.ok().await?;
-        let session = LiveSession::session_accept(session).await?;
+        let session = MoqSession::session_accept(session).await?;
         self.tx
             .send(ActorMessage::HandleSession(session))
             .await
@@ -111,7 +111,7 @@ impl LiveProtocolHandler {
     }
 }
 
-impl ProtocolHandler for LiveProtocolHandler {
+impl ProtocolHandler for MoqProtocolHandler {
     async fn accept(&self, connection: Connection) -> Result<(), iroh::protocol::AcceptError> {
         self.handle_connection(connection)
             .await
@@ -120,7 +120,7 @@ impl ProtocolHandler for LiveProtocolHandler {
     }
 }
 
-pub struct LiveSession {
+pub struct MoqSession {
     remote: EndpointId,
     wt_session: web_transport_iroh::Session,
     moq_session: moq_lite::Session<web_transport_iroh::Session>,
@@ -128,7 +128,7 @@ pub struct LiveSession {
     subscribe: OriginConsumer,
 }
 
-impl LiveSession {
+impl MoqSession {
     #[instrument(skip_all, fields(remote=tracing::field::Empty))]
     pub async fn connect(
         endpoint: &Endpoint,
@@ -211,7 +211,7 @@ impl LiveSession {
 }
 
 enum ActorMessage {
-    HandleSession(LiveSession),
+    HandleSession(MoqSession),
     PublishBroadcast(BroadcastName, BroadcastProducer),
 }
 
@@ -257,9 +257,9 @@ impl Actor {
         }
     }
 
-    fn handle_incoming_session(&mut self, session: LiveSession) {
+    fn handle_incoming_session(&mut self, session: MoqSession) {
         tracing::info!("handle new incoming session");
-        let LiveSession {
+        let MoqSession {
             remote,
             moq_session,
             publish,

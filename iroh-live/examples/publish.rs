@@ -26,7 +26,7 @@ async fn main() -> n0_error::Result {
         .await?;
     let live = Live::new(endpoint.clone());
     let router = Router::builder(endpoint)
-        .accept(iroh_live::ALPN, live.protocol_handler())
+        .accept(iroh_live::ALPN, live.moq.protocol_handler())
         .spawn();
 
     // Create a publish broadcast.
