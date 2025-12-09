@@ -5,6 +5,7 @@ pub mod ffmpeg;
 pub mod live;
 pub mod publish;
 pub mod rooms;
+pub mod setup;
 pub mod subscribe;
 pub mod ticket;
 pub mod util;

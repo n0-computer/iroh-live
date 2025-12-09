@@ -7,7 +7,7 @@ use hang::{
 use moq_lite::{BroadcastConsumer, Track};
 use n0_error::{Result, StackResultExt, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
-use n0_watcher::Watcher;
+use n0_watcher::{Watchable, Watcher};
 use tokio::sync::mpsc;
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{Span, debug, error, info, info_span, warn};
@@ -266,12 +266,52 @@ impl AudioTrack {
 }
 
 pub struct WatchTrack {
-    pub(crate) rendition: String,
-    pub(crate) video_frames: mpsc::Receiver<DecodedFrame>,
-    pub(crate) viewport: n0_watcher::Watchable<(u32, u32)>,
-    pub(crate) _shutdown_token_guard: DropGuard,
-    pub(crate) _task_handle: AbortOnDropHandle<()>,
-    pub(crate) _thread_handle: Option<std::thread::JoinHandle<()>>,
+    video_frames: WatchTrackFrames,
+    handle: WatchTrackHandle,
+}
+
+pub struct WatchTrackHandle {
+    viewport: Watchable<(u32, u32)>,
+    guard: WatchTrackGuard,
+}
+
+impl WatchTrackHandle {
+    pub fn set_viewport(&self, w: u32, h: u32) {
+        self.viewport.set((w, h)).ok();
+    }
+
+    pub fn rendition(&self) -> &str {
+        &self.guard.rendition
+    }
+}
+
+pub struct WatchTrackFrames {
+    rx: mpsc::Receiver<DecodedFrame>,
+}
+
+impl WatchTrackFrames {
+    pub fn current_frame(&mut self) -> Option<DecodedFrame> {
+        let mut out = None;
+        while let Ok(item) = self.rx.try_recv() {
+            out = Some(item);
+        }
+        out
+    }
+
+    pub async fn next_frame(&mut self) -> Option<DecodedFrame> {
+        if let Some(frame) = self.current_frame() {
+            Some(frame)
+        } else {
+            self.rx.recv().await
+        }
+    }
+}
+
+struct WatchTrackGuard {
+    rendition: String,
+    _shutdown_token_guard: DropGuard,
+    _task_handle: Option<AbortOnDropHandle<()>>,
+    _thread_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl WatchTrack {
@@ -281,24 +321,27 @@ impl WatchTrack {
             std::future::pending::<()>().await;
             let _ = tx;
         });
-        let guard = CancellationToken::new();
-        Self {
+        let guard = WatchTrackGuard {
             rendition: rendition.to_string(),
-            video_frames: rx,
-            viewport: Default::default(),
-            _shutdown_token_guard: guard.drop_guard(),
-            _task_handle: AbortOnDropHandle::new(task),
+            _shutdown_token_guard: CancellationToken::new().drop_guard(),
+            _task_handle: Some(AbortOnDropHandle::new(task)),
             _thread_handle: None,
+        };
+        Self {
+            video_frames: WatchTrackFrames { rx },
+            handle: WatchTrackHandle {
+                viewport: Default::default(),
+                guard,
+            },
         }
     }
 
     pub(crate) fn from_shared_source(
-        name: String,
+        rendition: String,
         shutdown: CancellationToken,
         mut source: SharedVideoSource,
     ) -> Self {
-        let viewport = n0_watcher::Watchable::new((1u32, 1u32));
-        let dummy_handle = tokio::task::spawn(async {});
+        let viewport = Watchable::new((1u32, 1u32));
         let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<DecodedFrame>(2);
         let thread = std::thread::spawn({
             let shutdown = shutdown.clone();
@@ -333,34 +376,20 @@ impl WatchTrack {
                 }
             }
         });
-        WatchTrack {
-            rendition: name,
-            video_frames: frame_rx,
-            viewport,
+        let guard = WatchTrackGuard {
+            rendition,
             _shutdown_token_guard: shutdown.drop_guard(),
-            _task_handle: AbortOnDropHandle::new(dummy_handle),
+            _task_handle: None,
             _thread_handle: Some(thread),
+        };
+        WatchTrack {
+            video_frames: WatchTrackFrames { rx: frame_rx },
+            handle: WatchTrackHandle { viewport, guard },
         }
-    }
-
-    pub fn set_viewport(&self, w: u32, h: u32) {
-        self.viewport.set((w, h)).ok();
-    }
-
-    pub fn rendition(&self) -> &str {
-        &self.rendition
-    }
-
-    pub fn current_frame(&mut self) -> Option<DecodedFrame> {
-        let mut out = None;
-        while let Ok(item) = self.video_frames.try_recv() {
-            out = Some(item);
-        }
-        out
     }
 
     pub(crate) fn spawn<D: VideoDecoder>(
-        name: String,
+        rendition: String,
         consumer: TrackConsumer,
         config: &VideoConfig,
         playback_config: &PlaybackConfig,
@@ -369,11 +398,10 @@ impl WatchTrack {
     ) -> Result<Self> {
         let (packet_tx, packet_rx) = mpsc::channel(32);
         let (frame_tx, frame_rx) = mpsc::channel(32);
-        let viewport = n0_watcher::Watchable::new((1u32, 1u32));
+        let viewport = Watchable::new((1u32, 1u32));
         let viewport_watcher = viewport.watch();
 
         let _guard = span.enter();
-        // TODO: support native.
         debug!(?config, "video decoder start");
         let decoder = D::new(config, playback_config)?;
         let thread = std::thread::spawn({
@@ -390,14 +418,32 @@ impl WatchTrack {
             }
         });
         let task = tokio::task::spawn(forward_frames(consumer, packet_tx));
-        Ok(WatchTrack {
-            rendition: name,
-            video_frames: frame_rx,
-            viewport,
+        let guard = WatchTrackGuard {
+            rendition,
             _shutdown_token_guard: shutdown.drop_guard(),
-            _task_handle: AbortOnDropHandle::new(task),
+            _task_handle: Some(AbortOnDropHandle::new(task)),
             _thread_handle: Some(thread),
+        };
+        Ok(WatchTrack {
+            video_frames: WatchTrackFrames { rx: frame_rx },
+            handle: WatchTrackHandle { viewport, guard },
         })
+    }
+
+    pub fn split(self) -> (WatchTrackFrames, WatchTrackHandle) {
+        (self.video_frames, self.handle)
+    }
+
+    pub fn set_viewport(&self, w: u32, h: u32) {
+        self.handle.set_viewport(w, h);
+    }
+
+    pub fn rendition(&self) -> &str {
+        self.handle.rendition()
+    }
+
+    pub fn current_frame(&mut self) -> Option<DecodedFrame> {
+        self.video_frames.current_frame()
     }
 
     pub(crate) fn run_loop(
