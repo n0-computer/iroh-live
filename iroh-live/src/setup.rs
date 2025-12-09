@@ -13,19 +13,19 @@ use n0_error::Result;
 use tracing::info;
 
 #[derive(Debug, Clone)]
-pub struct Opts {
+pub struct RoomJoinOpts {
     pub audio: bool,
     pub video: Option<VideoSource>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, derive_more::FromStr, derive_more::Display)]
 pub enum VideoSource {
     #[default]
     Camera,
     Screen,
 }
 
-impl Default for Opts {
+impl Default for RoomJoinOpts {
     fn default() -> Self {
         Self {
             audio: true,
@@ -41,7 +41,11 @@ pub struct RoomState {
 }
 
 impl RoomState {
-    pub async fn join(audio_ctx: AudioBackend, ticket: RoomTicket, opts: Opts) -> Result<Self> {
+    pub async fn join(
+        audio_ctx: AudioBackend,
+        ticket: RoomTicket,
+        opts: RoomJoinOpts,
+    ) -> Result<Self> {
         let endpoint = Endpoint::builder()
             .secret_key(secret_key_from_env()?)
             .bind()
