@@ -21,9 +21,17 @@ pub trait AudioSource: Send + 'static {
     fn pop_samples(&mut self, buf: &mut [f32]) -> Result<Option<usize>>;
 }
 
-pub trait AudioSink: Send + 'static {
+pub trait AudioSink: AudioSinkHandle {
     fn format(&self) -> Result<AudioFormat>;
     fn push_samples(&mut self, buf: &[f32]) -> Result<()>;
+    fn handle(&self) -> Box<dyn AudioSinkHandle>;
+}
+
+pub trait AudioSinkHandle: Send + 'static {
+    fn pause(&self);
+    fn resume(&self);
+    fn is_paused(&self) -> bool;
+    fn toggle_pause(&self);
 }
 
 pub trait AudioEncoder: AudioEncoderInner {

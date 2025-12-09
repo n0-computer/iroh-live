@@ -21,7 +21,7 @@ use hang::catalog::AudioConfig;
 use tokio::sync::{mpsc, mpsc::error::TryRecvError, oneshot};
 use tracing::{error, info, trace, warn};
 
-use crate::av::{AudioFormat, AudioSink, AudioSource};
+use crate::av::{AudioFormat, AudioSink, AudioSinkHandle, AudioSource};
 
 pub type OutputStreamHandle = Arc<Mutex<StreamWriterState>>;
 pub type InputStreamHandle = Arc<Mutex<StreamReaderState>>;
@@ -32,7 +32,35 @@ pub struct OutputControl {
     paused: Arc<AtomicBool>,
 }
 
+impl AudioSinkHandle for OutputControl {
+    fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
+    }
+    fn pause(&self) {
+        self.paused.store(true, Ordering::Relaxed);
+        self.handle.lock().expect("poisoned").pause_stream();
+    }
+
+    fn resume(&self) {
+        self.paused.store(false, Ordering::Relaxed);
+        self.handle.lock().expect("poisoned").resume();
+    }
+
+    fn toggle_pause(&self) {
+        let was_paused = self.paused.fetch_xor(true, Ordering::Relaxed);
+        if was_paused {
+            self.handle.lock().expect("poisoned").resume();
+        } else {
+            self.handle.lock().expect("poisoned").pause_stream();
+        }
+    }
+}
+
 impl AudioSink for OutputControl {
+    fn handle(&self) -> Box<dyn AudioSinkHandle> {
+        Box::new(self.clone())
+    }
+
     fn format(&self) -> Result<AudioFormat> {
         let info = self.handle.lock().expect("poisoned");
         let sample_rate = info
@@ -85,23 +113,9 @@ impl OutputControl {
         }
     }
 
-    pub fn is_paused(&self) -> bool {
-        self.paused.load(Ordering::Relaxed)
-    }
-
     #[allow(unused)]
     pub fn is_active(&self) -> bool {
         self.handle.lock().expect("poisoned").is_active()
-    }
-
-    pub fn pause(&self) {
-        self.paused.store(true, Ordering::Relaxed);
-        self.handle.lock().expect("poisoned").pause_stream();
-    }
-
-    pub fn resume(&self) {
-        self.paused.store(false, Ordering::Relaxed);
-        self.handle.lock().expect("poisoned").resume();
     }
 }
 

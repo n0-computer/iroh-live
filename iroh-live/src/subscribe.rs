@@ -14,11 +14,13 @@ use tracing::{Span, debug, error, info, info_span, warn};
 
 use crate::{
     av::{
-        AudioDecoder, AudioSink, DecodedFrame, PlaybackConfig, Quality, VideoDecoder, VideoSource,
+        AudioDecoder, AudioSink, AudioSinkHandle, DecodedFrame, PlaybackConfig, Quality,
+        VideoDecoder, VideoSource,
     },
     publish::SharedVideoSource,
 };
 
+#[derive(Clone)]
 pub struct SubscribeBroadcast {
     broadcast: BroadcastConsumer,
     catalog_consumer: CatalogConsumer,
@@ -188,10 +190,11 @@ pub(crate) fn select_audio_rendition<'a, T>(
 }
 
 pub struct AudioTrack {
-    pub(crate) name: String,
-    pub(crate) _shutdown_token_guard: DropGuard,
-    pub(crate) _task_handle: AbortOnDropHandle<()>,
-    pub(crate) _thread_handle: std::thread::JoinHandle<()>,
+    name: String,
+    handle: Box<dyn AudioSinkHandle>,
+    _shutdown_token_guard: DropGuard,
+    _task_handle: AbortOnDropHandle<()>,
+    _thread_handle: std::thread::JoinHandle<()>,
 }
 
 impl AudioTrack {
@@ -208,6 +211,7 @@ impl AudioTrack {
         let output_format = output.format()?;
         info!(?config, "audio thread start");
         let decoder = D::new(&config, output_format)?;
+        let handle = output.handle();
         let thread = std::thread::spawn({
             let shutdown = shutdown.clone();
             let span = span.clone();
@@ -222,6 +226,7 @@ impl AudioTrack {
         let task = tokio::spawn(forward_frames(consumer, packet_tx));
         Ok(Self {
             name,
+            handle,
             _task_handle: AbortOnDropHandle::new(task),
             _thread_handle: thread,
             _shutdown_token_guard: shutdown.drop_guard(),
@@ -262,6 +267,10 @@ impl AudioTrack {
             last_timestamp = Some(timestamp);
         }
         Ok(())
+    }
+
+    pub fn handle(&self) -> &dyn AudioSinkHandle {
+        self.handle.as_ref()
     }
 }
 

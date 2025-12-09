@@ -19,11 +19,12 @@ use crate::av::{
     VideoEncoderInner, VideoPreset, VideoSource,
 };
 
+#[derive(Clone)]
 pub struct PublishBroadcast {
     producer: BroadcastProducer,
     catalog: CatalogProducer,
     inner: Arc<Mutex<Inner>>,
-    _task: AbortOnDropHandle<()>,
+    _task: Arc<AbortOnDropHandle<()>>,
 }
 
 impl PublishBroadcast {
@@ -40,7 +41,7 @@ impl PublishBroadcast {
             producer,
             catalog,
             inner,
-            _task: AbortOnDropHandle::new(task_handle),
+            _task: Arc::new(AbortOnDropHandle::new(task_handle)),
         }
     }
 
