@@ -15,17 +15,30 @@ enum Message {
 }
 
 pub struct Room {
-    ticket: RoomTicket,
-    me: EndpointId,
-    tasks: Vec<AbortOnDropHandle<Result<()>>>,
+    handle: RoomHandle,
     rx: mpsc::Receiver<RemoteTrack>,
 }
 
-impl Room {
+pub type RoomEvents = mpsc::Receiver<RemoteTrack>;
+
+pub struct RoomHandle {
+    me: EndpointId,
+    ticket: RoomTicket,
+    tasks: Vec<AbortOnDropHandle<Result<()>>>,
+}
+
+impl RoomHandle {
     pub fn shutdown(&mut self) {
         self.tasks.clear();
     }
+    pub fn ticket(&self) -> RoomTicket {
+        let mut ticket = self.ticket.clone();
+        ticket.bootstrap = vec![self.me];
+        ticket
+    }
+}
 
+impl Room {
     pub async fn new(
         endpoint: &Endpoint,
         gossip: Gossip,
@@ -119,10 +132,12 @@ impl Room {
         tasks.push(AbortOnDropHandle::new(task));
 
         Ok(Self {
-            ticket,
-            me: endpoint_id,
+            handle: RoomHandle {
+                ticket,
+                tasks,
+                me: endpoint_id,
+            },
             rx: track_rx,
-            tasks,
         })
     }
 
@@ -135,18 +150,24 @@ impl Room {
     }
 
     pub fn ticket(&self) -> RoomTicket {
-        let mut ticket = self.ticket.clone();
-        ticket.bootstrap = vec![self.me];
-        ticket
+        self.handle.ticket()
+    }
+
+    pub fn shutdown(&mut self) {
+        self.handle.shutdown();
+    }
+
+    pub fn split(self) -> (RoomEvents, RoomHandle) {
+        (self.rx, self.handle)
     }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, derive_more::Display)]
 #[display("{}", iroh_tickets::Ticket::serialize(self))]
 pub struct RoomTicket {
-    bootstrap: Vec<EndpointId>,
-    topic_id: TopicId,
-    broadcast_name: String,
+    pub bootstrap: Vec<EndpointId>,
+    pub topic_id: TopicId,
+    pub broadcast_name: String,
 }
 
 impl RoomTicket {
@@ -160,6 +181,36 @@ impl RoomTicket {
             topic_id,
             broadcast_name: broadcast_name.to_string(),
         }
+    }
+
+    pub fn generate(broadcast_name: impl ToString) -> Self {
+        Self {
+            bootstrap: vec![],
+            topic_id: TopicId::from_bytes(rand::random()),
+            broadcast_name: broadcast_name.to_string(),
+        }
+    }
+
+    pub fn new_from_env(broadcast_name: impl ToString) -> Result<Self> {
+        let topic_id = match std::env::var("IROH_TOPIC") {
+            Ok(topic) => TopicId::from_bytes(
+                data_encoding::HEXLOWER
+                    .decode(topic.as_bytes())
+                    .std_context("invalid hex")?
+                    .as_slice()
+                    .try_into()
+                    .std_context("invalid length")?,
+            ),
+            Err(_) => {
+                let topic = TopicId::from_bytes(rand::random());
+                println!(
+                    "Created new topic. Reuse with IROH_TOPIC={}",
+                    data_encoding::HEXLOWER.encode(topic.as_bytes())
+                );
+                topic
+            }
+        };
+        Ok(Self::new(topic_id, vec![], broadcast_name))
     }
 }
 
