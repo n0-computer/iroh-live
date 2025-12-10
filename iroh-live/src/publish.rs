@@ -458,9 +458,9 @@ impl EncoderThread {
             let format = source.format();
             let samples_per_frame = (format.sample_rate / 1000) * INTERVAL.as_millis() as u32;
             let mut buf = vec![0.0f32; samples_per_frame as usize * format.channel_count as usize];
-            loop {
+            let start = Instant::now();
+            for tick in 0.. {
                 trace!("tick");
-                let start = Instant::now();
                 if shutdown.is_cancelled() {
                     break;
                 }
@@ -471,7 +471,10 @@ impl EncoderThread {
                             error!("audio push_samples failed: {err:#}");
                             break;
                         }
-                        while let Ok(Some(pkt)) = encoder.pop_packet() {
+                        while let Ok(Some(pkt)) = encoder
+                            .pop_packet()
+                            .inspect_err(|err| warn!("encoder error: {err:#}"))
+                        {
                             producer.write(pkt);
                         }
                     }
@@ -483,15 +486,15 @@ impl EncoderThread {
                         break;
                     }
                 }
-                let elapsed = start.elapsed();
-                if elapsed > INTERVAL {
-                    warn!(
-                        "audio thread too slow: took {:?} for interval of {:?}",
-                        elapsed, INTERVAL
-                    );
+                let expected_time = (tick + 1) * INTERVAL;
+                let actual_time = start.elapsed();
+                if actual_time > expected_time {
+                    warn!("audio thread too slow by {:?}", actual_time - expected_time);
                 }
-                let sleep = INTERVAL.saturating_sub(start.elapsed());
-                std::thread::sleep(sleep);
+                let sleep = expected_time.saturating_sub(start.elapsed());
+                if sleep > Duration::ZERO {
+                    std::thread::sleep(sleep);
+                }
             }
             // drain
             while let Ok(Some(pkt)) = encoder.pop_packet() {

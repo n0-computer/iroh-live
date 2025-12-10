@@ -19,7 +19,7 @@ use firewheel::{
 };
 use hang::catalog::AudioConfig;
 use tokio::sync::{mpsc, mpsc::error::TryRecvError, oneshot};
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::av::{AudioFormat, AudioSink, AudioSinkHandle, AudioSource};
 
@@ -178,14 +178,17 @@ impl AudioSource for MicrophoneSource {
     }
 }
 
+#[derive(derive_more::Debug)]
 pub enum AudioCommand {
     OutputStream {
         config: Option<AudioConfig>,
+        #[debug("Sender")]
         reply: oneshot::Sender<OutputStreamHandle>,
     },
     InputStream {
         sample_rate: u32,
         channel_count: u32,
+        #[debug("Sender")]
         reply: oneshot::Sender<InputStreamHandle>,
     },
 }
@@ -213,15 +216,11 @@ impl AudioDriver {
             output: CpalOutputConfig {
                 #[cfg(target_os = "linux")]
                 device_name: Some("pipewire".to_string()),
-                #[cfg(not(target_os = "linux"))]
-                device_name: None,
                 ..Default::default()
             },
             input: Some(CpalInputConfig {
                 #[cfg(target_os = "linux")]
                 device_name: Some("pipewire".to_string()),
-                #[cfg(not(target_os = "linux"))]
-                device_name: None,
                 fail_on_no_input: true,
                 ..Default::default()
             }),
@@ -292,6 +291,7 @@ impl AudioDriver {
     }
 
     fn handle(&mut self, command: AudioCommand) {
+        debug!("handle {command:?}");
         match command {
             AudioCommand::OutputStream { config, reply } => {
                 match self.output_stream(config.as_ref()) {

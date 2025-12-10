@@ -8,9 +8,12 @@ use moq_lite::{BroadcastConsumer, Track};
 use n0_error::{Result, StackResultExt, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
-use tokio::sync::mpsc;
+use tokio::{
+    sync::mpsc::{self, error::TryRecvError},
+    time::Instant,
+};
 use tokio_util::sync::{CancellationToken, DropGuard};
-use tracing::{Span, debug, error, info, info_span, warn};
+use tracing::{Span, debug, error, info, info_span, trace, warn};
 
 use crate::{
     av::{
@@ -243,28 +246,52 @@ impl AudioTrack {
         mut sink: impl AudioSink,
         shutdown: &CancellationToken,
     ) -> Result<()> {
-        let mut last_timestamp = None;
-        while let Some(packet) = packet_rx.blocking_recv() {
-            debug!(len = packet.payload.len(), ts=?packet.timestamp, "recv packet");
-            let timestamp = packet.timestamp;
+        const INTERVAL: Duration = Duration::from_millis(10);
+        let mut remote_start = None;
+        let loop_start = Instant::now();
+
+        'outer: for i in 0.. {
+            let tick = Instant::now();
+
             if shutdown.is_cancelled() {
                 debug!("stop audio thread: cancelled");
                 break;
             }
-            decoder.push_packet(packet)?;
-            if let Some(samples) = decoder.pop_samples()? {
-                debug!("decoded {}", samples.len());
-                let delay = match last_timestamp {
-                    None => Duration::default(),
-                    Some(last_timestamp) => timestamp.saturating_sub(last_timestamp),
-                };
-                if delay > Duration::ZERO {
-                    debug!("sleep {delay:?}");
-                    std::thread::sleep(delay);
+
+            loop {
+                match packet_rx.try_recv() {
+                    Ok(packet) => {
+                        let remote_start = *remote_start.get_or_insert_with(|| packet.timestamp);
+
+                        let loop_elapsed = tick.duration_since(loop_start);
+                        let remote_elapsed = packet.timestamp.saturating_sub(remote_start);
+                        let diff_ms =
+                            (loop_elapsed.as_secs_f32() - remote_elapsed.as_secs_f32()) * 1000.;
+
+                        // TODO: Skip outdated packets?
+                        trace!(len = packet.payload.len(), ts=?packet.timestamp, ?loop_elapsed, ?remote_elapsed, ?diff_ms, "recv packet");
+                        decoder.push_packet(packet)?;
+                        if let Some(samples) = decoder.pop_samples()? {
+                            sink.push_samples(samples)?;
+                        }
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        debug!("stop audio thread: packet_rx disconnected");
+                        break 'outer;
+                    }
+                    Err(TryRecvError::Empty) => {
+                        trace!("no packet to recv");
+                        break;
+                    }
                 }
-                sink.push_samples(samples)?;
             }
-            last_timestamp = Some(timestamp);
+
+            let expected_time = i * INTERVAL;
+            let real_time = Instant::now().duration_since(loop_start);
+            let sleep = expected_time.saturating_sub(real_time);
+            if !sleep.is_zero() {
+                std::thread::sleep(sleep);
+            }
         }
         Ok(())
     }

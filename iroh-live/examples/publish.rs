@@ -33,14 +33,18 @@ async fn main() -> n0_error::Result {
     let mut broadcast = PublishBroadcast::new();
 
     // Capture audio, and encode with the cli-provided preset.
-    let mic = audio_ctx.default_input().await?;
-    let audio = AudioRenditions::new::<OpusEncoder>(mic, [cli.audio_preset]);
-    broadcast.set_audio(Some(audio))?;
+    if !cli.no_audio {
+        let mic = audio_ctx.default_input().await?;
+        let audio = AudioRenditions::new::<OpusEncoder>(mic, [cli.audio_preset]);
+        broadcast.set_audio(Some(audio))?;
+    }
 
     // Capture camera, and encode with the cli-provided presets.
-    let camera = CameraCapturer::new()?;
-    let video = VideoRenditions::new::<H264Encoder>(camera, cli.video_presets);
-    broadcast.set_video(Some(video))?;
+    if !cli.no_video {
+        let camera = CameraCapturer::new()?;
+        let video = VideoRenditions::new::<H264Encoder>(camera, cli.video_presets);
+        broadcast.set_video(Some(video))?;
+    }
 
     // Publish under the name "hello".
     let name = "hello";
@@ -66,6 +70,10 @@ struct Cli {
     video_presets: Vec<VideoPreset>,
     #[arg(long, default_value_t=AudioPreset::Hq)]
     audio_preset: AudioPreset,
+    #[arg(long)]
+    no_video: bool,
+    #[arg(long)]
+    no_audio: bool,
 }
 
 fn secret_key_from_env() -> n0_error::Result<SecretKey> {
