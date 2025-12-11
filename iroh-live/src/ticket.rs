@@ -1,18 +1,18 @@
-use iroh::EndpointId;
+use iroh::EndpointAddr;
 use n0_error::{Result, StdResultExt};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, Serialize, Deserialize)]
 #[display("{}", self.serialize())]
 pub struct LiveTicket {
-    pub endpoint_id: EndpointId,
+    pub endpoint: EndpointAddr,
     pub broadcast_name: String,
 }
 
 impl LiveTicket {
-    pub fn new(endpoint_id: EndpointId, broadcast_name: impl ToString) -> Self {
+    pub fn new(endpoint: impl Into<EndpointAddr>, broadcast_name: impl ToString) -> Self {
         Self {
-            endpoint_id,
+            endpoint: endpoint.into(),
             broadcast_name: broadcast_name.to_string(),
         }
     }
@@ -30,19 +30,25 @@ impl LiveTicket {
     pub fn serialize(&self) -> String {
         let mut out = self.broadcast_name.clone();
         out.push_str("@");
-        data_encoding::BASE32_NOPAD.encode_append(self.endpoint_id.as_bytes(), &mut out);
+        data_encoding::BASE32_NOPAD
+            .encode_append(&postcard::to_stdvec(&self.endpoint).unwrap(), &mut out);
         out.to_ascii_lowercase()
     }
 
     /// Deserialize from a string.
     pub fn deserialize(str: &str) -> Result<Self> {
-        let (broadcast_name, endpoint_id) = str
+        let (broadcast_name, encoded_addr) = str
             .split_once("@")
             .std_context("invalid ticket: missing @")?;
-        let endpoint_id: EndpointId = endpoint_id.parse()?;
+        let endpoint_addr: EndpointAddr = postcard::from_bytes(
+            &(data_encoding::BASE32_NOPAD_NOCASE
+                .decode(encoded_addr.as_bytes())
+                .std_context("invalid base32")?),
+        )
+        .std_context("failed to parse")?;
         Ok(Self {
             broadcast_name: broadcast_name.to_string(),
-            endpoint_id,
+            endpoint: endpoint_addr,
         })
     }
 }

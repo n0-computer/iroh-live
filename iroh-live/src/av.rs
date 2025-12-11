@@ -32,6 +32,9 @@ pub trait AudioSinkHandle: Send + 'static {
     fn resume(&self);
     fn is_paused(&self) -> bool;
     fn toggle_pause(&self);
+    fn smoothed_peak_normalized(&self) -> Option<f32> {
+        None
+    }
 }
 
 pub trait AudioEncoder: AudioEncoderInner {
@@ -123,7 +126,7 @@ impl VideoEncoderInner for Box<dyn VideoEncoder> {
 }
 
 pub trait VideoDecoder: Send + 'static {
-    fn new(config: &hang::catalog::VideoConfig, playback_config: &PlaybackConfig) -> Result<Self>
+    fn new(config: &hang::catalog::VideoConfig, playback_config: &DecodeConfig) -> Result<Self>
     where
         Self: Sized;
     fn pop_frame(&mut self) -> Result<Option<DecodedFrame>>;
@@ -219,16 +222,23 @@ pub enum AudioPreset {
     Lq,
 }
 
-#[derive(Debug, Clone, Copy, Display, EnumString, VariantNames, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Display, EnumString, VariantNames, Eq, PartialEq, Default)]
 #[strum(serialize_all = "lowercase")]
 pub enum Quality {
     Highest,
+    #[default]
     High,
     Mid,
     Low,
 }
 
 #[derive(Clone, Default)]
-pub struct PlaybackConfig {
+pub struct DecodeConfig {
     pub pixel_format: PixelFormat,
+}
+
+#[derive(Clone, Default)]
+pub struct PlaybackConfig {
+    pub playback: DecodeConfig,
+    pub quality: Quality,
 }

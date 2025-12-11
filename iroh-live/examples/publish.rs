@@ -53,6 +53,8 @@ async fn main() -> n0_error::Result {
     // Create a ticket string and print
     let ticket = LiveTicket::new(router.endpoint().id(), name);
     println!("publishing at {ticket}");
+    let long_ticket = LiveTicket::new(router.endpoint().addr(), name);
+    println!("\nticket with addrs: {long_ticket}");
 
     // Wait for ctrl-c and then shutdown.
     tokio::signal::ctrl_c().await?;

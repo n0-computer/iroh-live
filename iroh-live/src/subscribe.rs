@@ -17,7 +17,7 @@ use tracing::{Span, debug, error, info, info_span, trace, warn};
 
 use crate::{
     av::{
-        AudioDecoder, AudioSink, AudioSinkHandle, DecodedFrame, PlaybackConfig, Quality,
+        AudioDecoder, AudioSink, AudioSinkHandle, DecodeConfig, DecodedFrame, Quality,
         VideoDecoder, VideoSource,
     },
     publish::SharedVideoSource,
@@ -61,7 +61,7 @@ impl SubscribeBroadcast {
 
     pub fn watch_with<D: VideoDecoder>(
         &self,
-        playback_config: &PlaybackConfig,
+        playback_config: &DecodeConfig,
         quality: Quality,
     ) -> Result<WatchTrack> {
         let info = self.catalog.video.as_ref().context("no video published")?;
@@ -72,7 +72,7 @@ impl SubscribeBroadcast {
 
     pub fn watch_rendition<D: VideoDecoder>(
         &self,
-        playback_config: &PlaybackConfig,
+        playback_config: &DecodeConfig,
         name: &str,
     ) -> Result<WatchTrack> {
         let video = self.catalog.video.as_ref().context("no video published")?;
@@ -270,9 +270,11 @@ impl AudioTrack {
 
                         // TODO: Skip outdated packets?
                         trace!(len = packet.payload.len(), ts=?packet.timestamp, ?loop_elapsed, ?remote_elapsed, ?diff_ms, "recv packet");
-                        decoder.push_packet(packet)?;
-                        if let Some(samples) = decoder.pop_samples()? {
-                            sink.push_samples(samples)?;
+                        if !sink.is_paused() {
+                            decoder.push_packet(packet)?;
+                            if let Some(samples) = decoder.pop_samples()? {
+                                sink.push_samples(samples)?;
+                            }
                         }
                     }
                     Err(TryRecvError::Disconnected) => {
@@ -428,7 +430,7 @@ impl WatchTrack {
         rendition: String,
         consumer: TrackConsumer,
         config: &VideoConfig,
-        playback_config: &PlaybackConfig,
+        playback_config: &DecodeConfig,
         shutdown: CancellationToken,
         span: Span,
     ) -> Result<Self> {

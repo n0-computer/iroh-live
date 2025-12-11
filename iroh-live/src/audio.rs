@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -9,30 +10,40 @@ use std::{
 use anyhow::{Context, Result};
 use firewheel::{
     CpalConfig, CpalInputConfig, CpalOutputConfig, FirewheelConfig, FirewheelContext,
-    channel_config::{ChannelCount, NonZeroChannelCount},
+    channel_config::{ChannelConfig, ChannelCount, NonZeroChannelCount},
+    dsp::volume::{DEFAULT_DB_EPSILON, DbMeterNormalizer},
     graph::PortIdx,
-    nodes::stream::{
-        ResamplingChannelConfig,
-        reader::{StreamReaderConfig, StreamReaderNode, StreamReaderState},
-        writer::{StreamWriterConfig, StreamWriterNode, StreamWriterState},
+    node::NodeID,
+    nodes::{
+        peak_meter::{PeakMeterNode, PeakMeterSmoother, PeakMeterState},
+        stream::{
+            ResamplingChannelConfig,
+            reader::{StreamReaderConfig, StreamReaderNode, StreamReaderState},
+            writer::{StreamWriterConfig, StreamWriterNode, StreamWriterState},
+        },
     },
 };
 use hang::catalog::AudioConfig;
 use tokio::sync::{mpsc, mpsc::error::TryRecvError, oneshot};
 use tracing::{debug, error, info, trace, warn};
 
+use self::aec::{AecCaptureNode, AecProcessor, AecProcessorConfig, AecRenderNode};
 use crate::av::{AudioFormat, AudioSink, AudioSinkHandle, AudioSource};
 
-pub type OutputStreamHandle = Arc<Mutex<StreamWriterState>>;
-pub type InputStreamHandle = Arc<Mutex<StreamReaderState>>;
+mod aec;
+
+type StreamWriterHandle = Arc<Mutex<StreamWriterState>>;
+type StreamReaderHandle = Arc<Mutex<StreamReaderState>>;
 
 #[derive(Clone)]
-pub struct OutputControl {
-    handle: OutputStreamHandle,
+pub struct OutputStream {
+    handle: StreamWriterHandle,
     paused: Arc<AtomicBool>,
+    peaks: Arc<Mutex<PeakMeterSmoother<2>>>,
+    normalizer: DbMeterNormalizer,
 }
 
-impl AudioSinkHandle for OutputControl {
+impl AudioSinkHandle for OutputStream {
     fn is_paused(&self) -> bool {
         self.paused.load(Ordering::Relaxed)
     }
@@ -54,9 +65,18 @@ impl AudioSinkHandle for OutputControl {
             self.handle.lock().expect("poisoned").pause_stream();
         }
     }
+
+    fn smoothed_peak_normalized(&self) -> Option<f32> {
+        Some(
+            self.peaks
+                .lock()
+                .expect("poisoned")
+                .smoothed_peaks_normalized_mono(&self.normalizer),
+        )
+    }
 }
 
-impl AudioSink for OutputControl {
+impl AudioSink for OutputStream {
     fn handle(&self) -> Box<dyn AudioSinkHandle> {
         Box::new(self.clone())
     }
@@ -105,13 +125,13 @@ impl AudioSink for OutputControl {
     }
 }
 
-impl OutputControl {
-    pub fn new(handle: OutputStreamHandle) -> Self {
-        Self {
-            handle,
-            paused: Arc::new(AtomicBool::new(false)),
-        }
-    }
+impl OutputStream {
+    // pub fn new(handle: StreamWriterHandle) -> Self {
+    //     Self {
+    //         handle,
+    //         paused: Arc::new(AtomicBool::new(false)),
+    //     }
+    // }
 
     #[allow(unused)]
     pub fn is_active(&self) -> bool {
@@ -121,13 +141,13 @@ impl OutputControl {
 
 /// A simple AudioSource that reads from the default microphone via Firewheel.
 #[derive(Clone)]
-pub struct MicrophoneSource {
-    handle: InputStreamHandle,
+pub struct InputStream {
+    handle: StreamReaderHandle,
     format: AudioFormat,
 }
 
-impl MicrophoneSource {
-    pub(crate) fn new(handle: InputStreamHandle, sample_rate: u32, channel_count: u32) -> Self {
+impl InputStream {
+    pub(crate) fn new(handle: StreamReaderHandle, sample_rate: u32, channel_count: u32) -> Self {
         Self {
             handle,
             format: AudioFormat {
@@ -138,7 +158,7 @@ impl MicrophoneSource {
     }
 }
 
-impl AudioSource for MicrophoneSource {
+impl AudioSource for InputStream {
     fn cloned_boxed(&self) -> Box<dyn AudioSource> {
         Box::new(self.clone())
     }
@@ -183,13 +203,13 @@ pub enum AudioCommand {
     OutputStream {
         config: Option<AudioConfig>,
         #[debug("Sender")]
-        reply: oneshot::Sender<OutputStreamHandle>,
+        reply: oneshot::Sender<OutputStream>,
     },
     InputStream {
         sample_rate: u32,
         channel_count: u32,
         #[debug("Sender")]
-        reply: oneshot::Sender<InputStreamHandle>,
+        reply: oneshot::Sender<StreamReaderHandle>,
     },
 }
 
@@ -201,6 +221,10 @@ pub struct AudioBackend {
 struct AudioDriver {
     cx: FirewheelContext,
     rx: mpsc::Receiver<AudioCommand>,
+    aec_processor: AecProcessor,
+    aec_render_node: NodeID,
+    aec_capture_node: NodeID,
+    peak_meters: HashMap<NodeID, Arc<Mutex<PeakMeterSmoother<2>>>>,
 }
 
 impl AudioDriver {
@@ -216,6 +240,7 @@ impl AudioDriver {
             output: CpalOutputConfig {
                 #[cfg(target_os = "linux")]
                 device_name: Some("pipewire".to_string()),
+
                 ..Default::default()
             },
             input: Some(CpalInputConfig {
@@ -235,17 +260,46 @@ impl AudioDriver {
             cx.node_info(cx.graph_out_node_id()).map(|x| &x.info)
         );
 
-        Self { cx, rx }
+        cx.set_graph_channel_config(ChannelConfig {
+            num_inputs: ChannelCount::new(2).unwrap(),
+            num_outputs: ChannelCount::new(2).unwrap(),
+        });
+
+        let aec_processor = AecProcessor::new(AecProcessorConfig::stereo_in_out(), true)
+            .expect("failed to initialize AEC processor");
+        let aec_render_node = cx.add_node(AecRenderNode::default(), Some(aec_processor.clone()));
+        let aec_capture_node = cx.add_node(AecCaptureNode::default(), Some(aec_processor.clone()));
+
+        let layout = &[(0, 0), (1, 1)];
+
+        cx.connect(cx.graph_in_node_id(), aec_capture_node, layout, true)
+            .unwrap();
+        cx.connect(aec_render_node, cx.graph_out_node_id(), layout, true)
+            .unwrap();
+
+        Self {
+            cx,
+            rx,
+            aec_processor,
+            aec_render_node,
+            aec_capture_node,
+            peak_meters: Default::default(),
+        }
     }
 
     fn run(&mut self) {
         const INTERVAL: Duration = Duration::from_millis(10);
+        const PEAK_UPDATE_INTERVAL: Duration = Duration::from_millis(40);
+        let mut last_delay: f64 = 0.;
+        let mut last_peak_update = Instant::now();
+
         loop {
             let tick = Instant::now();
             if self.recv().is_err() {
                 info!("closing audio driver: command channel closed");
                 break;
             }
+
             if let Err(e) = self.cx.update() {
                 error!("audio backend error: {:?}", &e);
 
@@ -269,6 +323,31 @@ impl AudioDriver {
                 //     // In this example we just quit the application.
                 //     break;
                 // }
+            }
+
+            if let Some(info) = self.cx.stream_info() {
+                let delay = info.input_to_output_latency_seconds;
+                if (last_delay - delay).abs() > (1. / 1000.) {
+                    let delay_ms = (delay * 1000.) as u32;
+                    info!("update processor delay to {delay_ms}ms");
+                    self.aec_processor.set_stream_delay(delay_ms);
+                    last_delay = delay;
+                }
+            }
+
+            // Update peak meters
+            let delta = last_peak_update.elapsed();
+            if delta > PEAK_UPDATE_INTERVAL {
+                for (id, smoother) in self.peak_meters.iter_mut() {
+                    smoother.lock().expect("poisoned").update(
+                        self.cx
+                            .node_state::<PeakMeterState<2>>(*id)
+                            .unwrap()
+                            .peak_gain_db(DEFAULT_DB_EPSILON),
+                        delta.as_secs_f32(),
+                    );
+                }
+                last_peak_update = Instant::now();
             }
 
             std::thread::sleep(INTERVAL.saturating_sub(tick.elapsed()));
@@ -319,7 +398,7 @@ impl AudioDriver {
     fn output_stream(
         &mut self,
         config: Option<&hang::catalog::AudioConfig>,
-    ) -> Result<OutputStreamHandle> {
+    ) -> Result<OutputStream> {
         let channel_count = config.map(|c| c.channel_count).unwrap_or(2);
         let sample_rate = config.map(|c| c.sample_rate).unwrap_or(48_000);
         // setup stream
@@ -331,24 +410,29 @@ impl AudioDriver {
                 ..Default::default()
             }),
         );
-        let graph_out_node_id = self.cx.graph_out_node_id();
-        let graph_out_info = self
-            .cx
-            .node_info(graph_out_node_id)
-            .context("missing audio output node")?;
-        let layout: &[(PortIdx, PortIdx)] = match (
-            channel_count,
-            graph_out_info.info.channel_config.num_inputs.get(),
-        ) {
-            (_, 0) => anyhow::bail!("audio output has no channels"),
-            (0, _) => anyhow::bail!("audio stream has no channels"),
-            (1, 2) => &[(0, 0), (0, 1)],
-            (2, 2) => &[(0, 0), (1, 1)],
-            (_, 1) => &[(0, 0)],
+        let graph_out = self.aec_render_node;
+        // let graph_out_info = self
+        //     .cx
+        //     .node_info(graph_out)
+        //     .context("missing audio output node")?;
+
+        let peak_meter_node = PeakMeterNode::<2> { enabled: true };
+        let peak_meter_id = self.cx.add_node(peak_meter_node.clone(), None);
+        let peak_meter_smoother =
+            Arc::new(Mutex::new(PeakMeterSmoother::<2>::new(Default::default())));
+        self.peak_meters
+            .insert(peak_meter_id, peak_meter_smoother.clone());
+        self.cx
+            .connect(peak_meter_id, graph_out, &[(0, 0), (1, 1)], true)
+            .unwrap();
+
+        let layout: &[(PortIdx, PortIdx)] = match channel_count {
+            0 => anyhow::bail!("audio stream has no channels"),
+            1 => &[(0, 0), (0, 1)],
             _ => &[(0, 0), (1, 1)],
         };
         self.cx
-            .connect(stream_writer_id, graph_out_node_id, layout, false)
+            .connect(stream_writer_id, peak_meter_id, layout, false)
             .unwrap();
         let output_stream_sample_rate = self.cx.stream_info().unwrap().sample_rate;
         let event = self
@@ -372,10 +456,15 @@ impl AudioDriver {
             .node_state::<StreamWriterState>(stream_writer_id)
             .unwrap()
             .handle();
-        Ok(Arc::new(handle))
+        Ok(OutputStream {
+            handle: Arc::new(handle),
+            paused: Arc::new(AtomicBool::new(false)),
+            peaks: peak_meter_smoother,
+            normalizer: DbMeterNormalizer::new(-60., 0., -20.),
+        })
     }
 
-    fn input_stream(&mut self, sample_rate: u32, channel_count: u32) -> Result<InputStreamHandle> {
+    fn input_stream(&mut self, sample_rate: u32, channel_count: u32) -> Result<StreamReaderHandle> {
         // Setup stream reader node
         let stream_reader_id = self.cx.add_node(
             StreamReaderNode,
@@ -385,7 +474,7 @@ impl AudioDriver {
                 ..Default::default()
             }),
         );
-        let graph_in_node_id = self.cx.graph_in_node_id();
+        let graph_in_node_id = self.aec_capture_node;
         let graph_in_info = self
             .cx
             .node_info(graph_in_node_id)
@@ -437,21 +526,21 @@ impl AudioBackend {
         Self { tx }
     }
 
-    pub async fn default_input(&self) -> anyhow::Result<MicrophoneSource> {
+    pub async fn default_input(&self) -> anyhow::Result<InputStream> {
         const SAMPLE_RATE: u32 = 48_000;
         const CHANNELS: u32 = 2;
         let handle = self.input_stream(SAMPLE_RATE, CHANNELS).await?;
-        Ok(MicrophoneSource::new(handle, SAMPLE_RATE, CHANNELS))
+        Ok(InputStream::new(handle, SAMPLE_RATE, CHANNELS))
     }
 
-    pub fn blocking_default_input(&self) -> anyhow::Result<MicrophoneSource> {
+    pub fn blocking_default_input(&self) -> anyhow::Result<InputStream> {
         const SAMPLE_RATE: u32 = 48_000;
         const CHANNELS: u32 = 2;
         let handle = self.blocking_input_stream(SAMPLE_RATE, CHANNELS)?;
-        Ok(MicrophoneSource::new(handle, SAMPLE_RATE, CHANNELS))
+        Ok(InputStream::new(handle, SAMPLE_RATE, CHANNELS))
     }
 
-    pub async fn default_output(&self) -> anyhow::Result<OutputControl> {
+    pub async fn default_output(&self) -> anyhow::Result<OutputStream> {
         let (reply, reply_rx) = oneshot::channel();
         self.tx
             .send(AudioCommand::OutputStream {
@@ -460,10 +549,10 @@ impl AudioBackend {
             })
             .await?;
         let handle = reply_rx.await?;
-        Ok(OutputControl::new(handle))
+        Ok(handle)
     }
 
-    pub async fn output_stream(&self, config: AudioConfig) -> Result<OutputStreamHandle> {
+    pub async fn output_stream(&self, config: AudioConfig) -> Result<OutputStream> {
         let (reply, reply_rx) = oneshot::channel();
         self.tx
             .send(AudioCommand::OutputStream {
@@ -476,7 +565,7 @@ impl AudioBackend {
     }
 
     #[allow(unused)]
-    pub fn blocking_output_stream(&self, config: AudioConfig) -> Result<OutputStreamHandle> {
+    pub fn blocking_output_stream(&self, config: AudioConfig) -> Result<OutputStream> {
         let (reply, reply_rx) = oneshot::channel();
         self.tx.blocking_send(AudioCommand::OutputStream {
             config: Some(config),
@@ -487,7 +576,11 @@ impl AudioBackend {
     }
 
     #[allow(unused)]
-    pub async fn input_stream(&self, sample_rate: u32, channels: u32) -> Result<InputStreamHandle> {
+    pub async fn input_stream(
+        &self,
+        sample_rate: u32,
+        channels: u32,
+    ) -> Result<StreamReaderHandle> {
         let (reply, reply_rx) = oneshot::channel();
         self.tx
             .send(AudioCommand::InputStream {
@@ -504,7 +597,7 @@ impl AudioBackend {
         &self,
         sample_rate: u32,
         channels: u32,
-    ) -> Result<InputStreamHandle> {
+    ) -> Result<StreamReaderHandle> {
         let (reply, reply_rx) = oneshot::channel();
         self.tx.blocking_send(AudioCommand::InputStream {
             sample_rate,

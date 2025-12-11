@@ -5,7 +5,6 @@ use iroh::Endpoint;
 use iroh_live::{
     Live,
     audio::AudioBackend,
-    av::Quality,
     ffmpeg::{FfmpegDecoders, FfmpegVideoDecoder, ffmpeg_log_init},
     moq::MoqSession,
     subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
@@ -36,9 +35,9 @@ fn main() -> Result<()> {
             let endpoint = Endpoint::bind().await?;
             let live = Live::new(endpoint.clone());
             let track = live
-                .connect_and_subscribe(ticket.endpoint_id, &ticket.broadcast_name)
+                .connect_and_subscribe(ticket.endpoint, &ticket.broadcast_name)
                 .await?
-                .start::<FfmpegDecoders>(&audio_ctx, Quality::Highest)
+                .start::<FfmpegDecoders>(&audio_ctx, Default::default())
                 .await?;
             println!("connected!");
             n0_error::Ok((endpoint, track))

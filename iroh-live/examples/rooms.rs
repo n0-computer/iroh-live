@@ -6,7 +6,7 @@ use iroh::{Endpoint, protocol::Router};
 use iroh_gossip::{Gossip, TopicId};
 use iroh_live::{
     audio::AudioBackend,
-    av::{AudioPreset, Quality, VideoPreset},
+    av::{AudioPreset, VideoPreset},
     capture::{CameraCapturer, ScreenCapturer},
     ffmpeg::{FfmpegDecoders, FfmpegVideoDecoder, H264Encoder, OpusEncoder, ffmpeg_log_init},
     live::{AvRemoteTrack, Live},
@@ -134,7 +134,7 @@ impl eframe::App for App {
             info!("adding new track");
             let track = match self.rt.block_on(async {
                 track
-                    .start::<FfmpegDecoders>(&self.audio_ctx, Quality::Highest)
+                    .start::<FfmpegDecoders>(&self.audio_ctx, Default::default())
                     .await
             }) {
                 Ok(track) => track,

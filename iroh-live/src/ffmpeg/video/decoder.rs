@@ -8,7 +8,7 @@ use ffmpeg_next::{
 use image::{Delay, RgbaImage};
 
 use crate::{
-    av::{self, DecodedFrame, PixelFormat, PlaybackConfig, VideoDecoder},
+    av::{self, DecodeConfig, DecodedFrame, PixelFormat, VideoDecoder},
     ffmpeg::{
         ext::CodecContextExt,
         video::util::{Rescaler, StreamClock},
@@ -25,7 +25,7 @@ pub struct FfmpegVideoDecoder {
 }
 
 impl VideoDecoder for FfmpegVideoDecoder {
-    fn new(config: &hang::catalog::VideoConfig, playback_config: &PlaybackConfig) -> Result<Self>
+    fn new(config: &hang::catalog::VideoConfig, playback_config: &DecodeConfig) -> Result<Self>
     where
         Self: Sized,
     {

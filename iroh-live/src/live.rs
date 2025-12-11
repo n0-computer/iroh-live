@@ -1,4 +1,4 @@
-use iroh::{Endpoint, EndpointAddr, EndpointId};
+use iroh::{Endpoint, EndpointAddr};
 use iroh_moq::{Error, Moq, MoqProtocolHandler, MoqSession};
 use moq_lite::BroadcastProducer;
 use n0_error::Result;
@@ -6,7 +6,7 @@ use tracing::info;
 
 use crate::{
     audio::AudioBackend,
-    av::{Decoders, Quality},
+    av::{Decoders, PlaybackConfig},
     subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
 };
 
@@ -21,16 +21,16 @@ impl Live {
         }
     }
 
-    pub async fn connect(&self, addr: impl Into<EndpointAddr>) -> Result<MoqSession, Error> {
-        self.moq.connect(addr).await
+    pub async fn connect(&self, remote: impl Into<EndpointAddr>) -> Result<MoqSession, Error> {
+        self.moq.connect(remote).await
     }
 
     pub async fn connect_and_subscribe(
         &self,
-        endpoint_id: EndpointId,
+        remote: impl Into<EndpointAddr>,
         broadcast_name: &str,
     ) -> Result<RemoteTrack> {
-        RemoteTrack::connect(&self.moq, endpoint_id, broadcast_name).await
+        RemoteTrack::connect(&self.moq, remote, broadcast_name).await
     }
 
     pub fn protocol_handler(&self) -> MoqProtocolHandler {
@@ -52,8 +52,12 @@ pub struct RemoteTrack {
 }
 
 impl RemoteTrack {
-    pub async fn connect(moq: &Moq, endpoint_id: EndpointId, broadcast_name: &str) -> Result<Self> {
-        let mut session = moq.connect(endpoint_id).await?;
+    pub async fn connect(
+        moq: &Moq,
+        remote: impl Into<EndpointAddr>,
+        broadcast_name: &str,
+    ) -> Result<Self> {
+        let mut session = moq.connect(remote).await?;
         info!(id=%session.conn().remote_id(), "new peer connected");
         let broadcast = session.subscribe(broadcast_name).await?;
         let broadcast = SubscribeBroadcast::new(broadcast).await?;
@@ -64,9 +68,9 @@ impl RemoteTrack {
     pub async fn start<D: Decoders>(
         self,
         audio_ctx: &AudioBackend,
-        quality: Quality,
+        config: PlaybackConfig,
     ) -> Result<AvRemoteTrack> {
-        AvRemoteTrack::new::<D>(self, audio_ctx, quality).await
+        AvRemoteTrack::new::<D>(self, audio_ctx, config).await
     }
 }
 
@@ -81,17 +85,17 @@ impl AvRemoteTrack {
     pub async fn new<D: Decoders>(
         track: RemoteTrack,
         audio_ctx: &AudioBackend,
-        quality: Quality,
+        config: PlaybackConfig,
     ) -> Result<Self> {
         let audio_out = audio_ctx.default_output().await?;
         let audio = track
             .broadcast
-            .listen_with::<D::Audio>(quality, audio_out)
+            .listen_with::<D::Audio>(config.quality, audio_out)
             .inspect_err(|err| tracing::warn!("no audio track: {err}"))
             .ok();
         let video = track
             .broadcast
-            .watch_with::<D::Video>(&Default::default(), quality)
+            .watch_with::<D::Video>(&config.playback, config.quality)
             .inspect_err(|err| tracing::warn!("no video track: {err}"))
             .ok();
         Ok(Self {
