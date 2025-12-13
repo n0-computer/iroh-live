@@ -137,9 +137,14 @@ impl App {
                     }
                 });
 
-            let (rtt, bw) = self.stats.smoothed(|| self.session.conn().stats());
-            ui.label(format!("BW:  {bw}"));
-            ui.label(format!("RTT: {}ms", rtt.as_millis()));
+            let stats = self.stats.smoothed(|| self.session.conn().stats());
+            ui.label(format!(
+                "peer:   {}",
+                self.session.conn().remote_id().fmt_short()
+            ));
+            ui.label(format!("BW up:   {}", stats.up.rate_str));
+            ui.label(format!("BW down: {}", stats.down.rate_str));
+            ui.label(format!("RTT:     {}ms", stats.rtt.as_millis()));
         });
     }
 }
