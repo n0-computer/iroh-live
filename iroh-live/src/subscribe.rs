@@ -17,7 +17,7 @@ use tracing::{Span, debug, error, info, info_span, trace, warn};
 
 use crate::{
     av::{
-        AudioDecoder, AudioSink, AudioSinkHandle, DecodeConfig, DecodedFrame, Quality,
+        AudioDecoder, AudioSink, AudioSinkHandle, DecodeConfig, DecodedFrame, PixelFormat, Quality,
         VideoDecoder, VideoSource,
     },
     publish::SharedVideoSource,
@@ -151,6 +151,10 @@ impl SubscribeBroadcast {
             .map(|v| v.renditions.iter())
             .flatten()
             .map(|(name, _config)| name.as_str())
+    }
+
+    pub async fn closed(&self) {
+        self.broadcast.closed().await
     }
 }
 
@@ -378,6 +382,7 @@ impl WatchTrack {
         rendition: String,
         shutdown: CancellationToken,
         mut source: SharedVideoSource,
+        decode_config: DecodeConfig,
     ) -> Self {
         let viewport = Watchable::new((1u32, 1u32));
         let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<DecodedFrame>(2);
@@ -392,12 +397,18 @@ impl WatchTrack {
                     match source.pop_frame() {
                         Ok(Some(frame)) => {
                             let (w, h) = (frame.format.dimensions[0], frame.format.dimensions[1]);
-                            let buf = frame.raw;
-                            // if format.pixel_format == PixelFormat::Bgra {
-                            //     for px in buf.chunks_exact_mut(4) {
-                            //         px.swap(0, 2);
-                            //     }
-                            // }
+                            let mut buf = frame.raw;
+                            if frame.format.pixel_format != decode_config.pixel_format {
+                                match (frame.format.pixel_format, decode_config.pixel_format) {
+                                    (PixelFormat::Bgra, PixelFormat::Rgba)
+                                    | (PixelFormat::Rgba, PixelFormat::Bgra) => {
+                                        for px in buf.chunks_exact_mut(4) {
+                                            px.swap(0, 2);
+                                        }
+                                    }
+                                    _ => unreachable!(),
+                                }
+                            }
                             if let Some(img) = image::ImageBuffer::from_raw(w, h, buf) {
                                 let frame_img = image::Frame::new(img);
                                 let ts = last_ts.elapsed();

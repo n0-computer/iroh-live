@@ -53,7 +53,7 @@ fn main() -> Result<()> {
                 room,
                 peers: vec![],
                 self_video: broadcast
-                    .watch_local()
+                    .watch_local(Default::default())
                     .map(|track| VideoView::new(&cc.egui_ctx, track, usize::MAX)),
                 router,
                 _broadcast: broadcast,

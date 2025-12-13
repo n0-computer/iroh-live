@@ -15,8 +15,8 @@ use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{Span, debug, error, info, info_span, trace, warn};
 
 use crate::av::{
-    AudioEncoder, AudioEncoderInner, AudioPreset, AudioSource, TrackKind, VideoEncoder,
-    VideoEncoderInner, VideoPreset, VideoSource,
+    AudioEncoder, AudioEncoderInner, AudioPreset, AudioSource, DecodeConfig, TrackKind,
+    VideoEncoder, VideoEncoderInner, VideoPreset, VideoSource,
 };
 
 #[derive(Clone)]
@@ -73,7 +73,7 @@ impl PublishBroadcast {
     }
 
     /// Create a local WatchTrack from the current video source, if present.
-    pub fn watch_local(&self) -> Option<crate::subscribe::WatchTrack> {
+    pub fn watch_local(&self, decode_config: DecodeConfig) -> Option<crate::subscribe::WatchTrack> {
         let (source, shutdown) = {
             let inner = self.inner.lock().expect("poisoned");
             let source = inner
@@ -86,6 +86,7 @@ impl PublishBroadcast {
             "local".to_string(),
             shutdown,
             source,
+            decode_config,
         ))
     }
 
