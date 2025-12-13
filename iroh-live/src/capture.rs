@@ -1,9 +1,12 @@
 use anyhow::{Context, Result};
-use nokhwa::nokhwa_initialize;
+use nokhwa::{nokhwa_initialize, utils::FrameFormat};
 use tracing::{debug, info};
 use xcap::{Monitor, VideoRecorder};
 
-use crate::av::{PixelFormat, VideoFormat, VideoFrame, VideoSource};
+use crate::{
+    av::{PixelFormat, VideoFormat, VideoFrame, VideoSource},
+    ffmpeg::util::mjpg_decoder::MjpgDecoder,
+};
 
 pub struct ScreenCapturer {
     pub(crate) _monitor: Monitor,
@@ -24,13 +27,13 @@ impl Drop for ScreenCapturer {
 
 impl ScreenCapturer {
     pub fn new() -> Result<Self> {
-        info!("Initializing screen capturer with xcap");
+        info!("Initializing screen capturer (xcap)");
 
         let monitors = Monitor::all().context("Failed to get monitors")?;
         if monitors.is_empty() {
             return Err(anyhow::anyhow!("No monitors available"));
         }
-        debug!("Monitors: {monitors:?}");
+        info!("Available monitors: {monitors:?}");
 
         let monitor = monitors.into_iter().next().unwrap();
         let width = monitor.width()?;
@@ -39,7 +42,7 @@ impl ScreenCapturer {
             .name()
             .unwrap_or_else(|_| "Unknown Monitor".to_string());
 
-        info!("Using primary monitor: {} ({}x{})", name, width, height);
+        info!("Using monitor: {} ({}x{})", name, width, height);
 
         let (video_recorder, rx) = monitor.video_recorder()?;
         video_recorder.start()?;
@@ -74,7 +77,7 @@ impl VideoSource for ScreenCapturer {
             None => self
                 .rx
                 .recv()
-                .context("video recorder did not produce new frame")?,
+                .context("Screen recorder did not produce new frame")?,
         };
         Ok(Some(VideoFrame {
             format: VideoFormat {
@@ -88,22 +91,23 @@ impl VideoSource for ScreenCapturer {
 
 pub struct CameraCapturer {
     pub(crate) camera: nokhwa::Camera,
+    pub(crate) mjpg_decoder: MjpgDecoder,
     pub(crate) width: u32,
     pub(crate) height: u32,
 }
 
 impl CameraCapturer {
     pub fn new() -> Result<Self> {
-        info!("Initializing camera capturer");
+        info!("Initializing camera capturer (nokhwa)");
         nokhwa_initialize(|granted| {
-            debug!("User said {}", granted);
+            debug!("User selected camera access: {}", granted);
         });
 
         let cameras = nokhwa::query(nokhwa::utils::ApiBackend::Auto)?;
         if cameras.is_empty() {
             return Err(anyhow::anyhow!("No cameras available"));
         }
-        debug!("cameras: {cameras:?}");
+        info!("Available cameras: {cameras:?}");
 
         let first_camera = cameras.last().unwrap();
         info!("Using camera: {}", first_camera.human_name());
@@ -116,16 +120,18 @@ impl CameraCapturer {
         )?;
 
         camera.open_stream()?;
+        info!(
+            "Available formats: {:#?}",
+            camera.compatible_camera_formats()
+        );
+
+        info!("Using format: {:?}", camera.camera_format());
 
         let resolution = camera.resolution();
-        info!(
-            "Camera resolution: {}x{}",
-            resolution.width(),
-            resolution.height()
-        );
 
         Ok(Self {
             camera,
+            mjpg_decoder: MjpgDecoder::new()?,
             width: resolution.width(),
             height: resolution.height(),
         })
@@ -145,12 +151,18 @@ impl VideoSource for CameraCapturer {
             .camera
             .frame()
             .context("Failed to capture camera frame")?;
-        let image = frame
-            .decode_image::<nokhwa::pixel_format::RgbAFormat>()
-            .context("Failed to decode camera frame")?;
-        Ok(Some(VideoFrame {
-            format: self.format(),
-            raw: image.into_raw().into(),
-        }))
+        let frame = match frame.source_frame_format() {
+            FrameFormat::MJPEG => self.mjpg_decoder.decode_frame(frame.buffer())?,
+            _ => {
+                let image = frame
+                    .decode_image::<nokhwa::pixel_format::RgbAFormat>()
+                    .context("Failed to decode camera frame")?;
+                VideoFrame {
+                    format: self.format(),
+                    raw: image.into_raw().into(),
+                }
+            }
+        };
+        Ok(Some(frame))
     }
 }
