@@ -1,16 +1,15 @@
 use anyhow::{Context, Result};
 use ffmpeg_next::{
-    self as ffmpeg, codec,
-    codec::Id as CodecId,
-    packet::Packet,
-    util::{format::pixel::Pixel, frame::video::Video as FfmpegFrame},
+    self as ffmpeg, codec, codec::Id as CodecId, packet::Packet,
+    util::frame::video::Video as FfmpegFrame,
 };
-use image::{Delay, RgbaImage};
+use image::Delay;
 
 use crate::{
-    av::{self, DecodeConfig, DecodedFrame, PixelFormat, VideoDecoder},
+    av::{self, DecodeConfig, DecodedFrame, VideoDecoder},
     ffmpeg::{
         ext::CodecContextExt,
+        util::{ffmpeg_frame_to_image, pixel_to_ffmpeg},
         video::util::{Rescaler, StreamClock},
     },
 };
@@ -93,7 +92,7 @@ impl VideoDecoder for FfmpegVideoDecoder {
                 }
 
                 let frame = self.rescaler.process(&mut self.decoded)?;
-                let image = into_image_frame(frame);
+                let image = ffmpeg_frame_to_image(frame);
                 // Compute interframe delay from provided timestamps
                 let last_packet = self.last_packet.as_ref().context("missing last packet")?;
                 let delay = Delay::from_saturating_duration(self.clock.frame_delay(&last_packet));
@@ -137,33 +136,4 @@ fn calculate_resized_size(decoded: &FfmpegFrame, max_width: u32, max_height: u32
         "scale"
     );
     (target_width, target_height)
-}
-
-/// Convert the ffmpeg frame into an [image] frame.
-///
-/// Note: This does not do any color conversion. Make sure the frame is in the correct color format before.
-///
-/// This allocates the full frame into a vec, which we need anyway to cross the thread boundary.
-fn into_image_frame(frame: &ffmpeg_next::util::frame::Video) -> image::RgbaImage {
-    let width = frame.width();
-    let height = frame.height();
-    let bytes_per_pixel = 4usize; // BGRA
-    let src = frame.data(0);
-    // ffmpeg frames may have padding at end of each line; copy row-by-row.
-    let stride = frame.stride(0) as usize;
-    let row_bytes = (width as usize) * bytes_per_pixel;
-    let mut out = vec![0u8; row_bytes * (height as usize)];
-    for y in 0..(height as usize) {
-        let src_off = y * stride;
-        let dst_off = y * row_bytes;
-        out[dst_off..dst_off + row_bytes].copy_from_slice(&src[src_off..src_off + row_bytes]);
-    }
-    RgbaImage::from_raw(width, height, out).expect("valid image buffer")
-}
-
-fn pixel_to_ffmpeg(value: PixelFormat) -> Pixel {
-    match value {
-        PixelFormat::Rgba => Pixel::RGBA,
-        PixelFormat::Bgra => Pixel::BGRA,
-    }
 }
