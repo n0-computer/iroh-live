@@ -208,6 +208,10 @@ impl MoqSession {
             }
         }
     }
+
+    pub fn close(&self, error_code: u32, reason: &[u8]) {
+        self.wt_session.close(error_code, reason);
+    }
 }
 
 enum ActorMessage {

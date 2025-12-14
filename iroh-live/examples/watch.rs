@@ -12,6 +12,7 @@ use iroh_live::{
     util::StatsSmoother,
 };
 use n0_error::{Result, StackResultExt, anyerr};
+use tracing::info;
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
@@ -45,10 +46,17 @@ fn main() -> Result<()> {
     })?;
 
     let _guard = rt.enter();
+
     eframe::run_native(
         "IrohLive",
         eframe::NativeOptions::default(),
         Box::new(|cc| {
+            let egui_ctx = cc.egui_ctx.clone();
+            rt.spawn(async move {
+                let _ = tokio::signal::ctrl_c().await;
+                egui_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                egui_ctx.request_repaint();
+            });
             let app = App {
                 video: track.video.map(|video| VideoView::new(&cc.egui_ctx, video)),
                 _audio_ctx: audio_ctx,
@@ -105,9 +113,12 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        info!("exit");
+        self.session.close(0, b"bye");
         let endpoint = self.endpoint.clone();
         self.rt.block_on(async move {
             endpoint.close().await;
+            info!("endpoint closed");
         });
     }
 }
