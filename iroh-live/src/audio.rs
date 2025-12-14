@@ -28,7 +28,10 @@ use tokio::sync::{mpsc, mpsc::error::TryRecvError, oneshot};
 use tracing::{debug, error, info, trace, warn};
 
 use self::aec::{AecCaptureNode, AecProcessor, AecProcessorConfig, AecRenderNode};
-use crate::av::{AudioFormat, AudioSink, AudioSinkHandle, AudioSource};
+use crate::{
+    av::{AudioFormat, AudioSink, AudioSinkHandle, AudioSource},
+    util::spawn_thread,
+};
 
 mod aec;
 
@@ -522,7 +525,7 @@ impl AudioDriver {
 impl AudioBackend {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel(32);
-        let _handle = std::thread::spawn(move || AudioDriver::new(rx).run());
+        let _handle = spawn_thread("audio-driver", move || AudioDriver::new(rx).run());
         Self { tx }
     }
 

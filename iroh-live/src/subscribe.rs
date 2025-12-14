@@ -21,6 +21,7 @@ use crate::{
         VideoDecoder, VideoSource,
     },
     publish::SharedVideoSource,
+    util::spawn_thread,
 };
 
 #[derive(Clone)]
@@ -223,7 +224,8 @@ impl AudioTrack {
         info!(?config, "audio thread start");
         let decoder = D::new(&config, output_format)?;
         let handle = output.handle();
-        let thread = std::thread::spawn({
+        let thread_name = format!("audio-dec-{}", name);
+        let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             let span = span.clone();
             move || {
@@ -390,7 +392,8 @@ impl WatchTrack {
     ) -> Self {
         let viewport = Watchable::new((1u32, 1u32));
         let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<DecodedFrame>(2);
-        let thread = std::thread::spawn({
+        let thread_name = format!("video-src-{}", rendition);
+        let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             move || {
                 let mut last_ts = std::time::Instant::now();
@@ -465,7 +468,8 @@ impl WatchTrack {
         let _guard = span.enter();
         debug!(?config, "video decoder start");
         let decoder = D::new(config, playback_config)?;
-        let thread = std::thread::spawn({
+        let thread_name = format!("video-dec-{}", rendition);
+        let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             let span = span.clone();
             move || {

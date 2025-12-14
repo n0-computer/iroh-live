@@ -17,9 +17,12 @@ use n0_future::task::AbortOnDropHandle;
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{Span, debug, error, info, info_span, trace, warn};
 
-use crate::av::{
-    AudioEncoder, AudioEncoderInner, AudioPreset, AudioSource, DecodeConfig, TrackKind,
-    VideoEncoder, VideoEncoderInner, VideoPreset, VideoSource,
+use crate::{
+    av::{
+        AudioEncoder, AudioEncoderInner, AudioPreset, AudioSource, DecodeConfig, TrackKind,
+        VideoEncoder, VideoEncoderInner, VideoPreset, VideoSource,
+    },
+    util::spawn_thread,
 };
 
 #[derive(Clone)]
@@ -356,7 +359,7 @@ impl SharedVideoSource {
         let format = source.format();
         let (tx, rx) = tokio::sync::watch::channel(None);
         let running = Arc::new(AtomicBool::new(false));
-        let thread = std::thread::spawn({
+        let thread = spawn_thread("shared-video-src", {
             let shutdown = shutdown.clone();
             let running = running.clone();
             move || {
@@ -445,7 +448,7 @@ impl EncoderThread {
         shutdown: CancellationToken,
         span: Span,
     ) -> Self {
-        let handle = std::thread::spawn({
+        let handle = spawn_thread("video-enc", {
             let shutdown = shutdown.clone();
             move || {
                 let _guard = span.enter();
@@ -505,7 +508,7 @@ impl EncoderThread {
         span: tracing::Span,
     ) -> Self {
         let sd = shutdown.clone();
-        let handle = std::thread::spawn(move || {
+        let handle = spawn_thread("audio-enc", move || {
             let _guard = span.enter();
             tracing::debug!(config=?encoder.config(), "audio encoder thread start");
             let shutdown = sd;
