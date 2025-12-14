@@ -156,6 +156,10 @@ impl SubscribeBroadcast {
     pub async fn closed(&self) {
         self.broadcast.closed().await
     }
+
+    pub fn shutdown(&self) {
+        self.shutdown.cancel();
+    }
 }
 
 pub(crate) fn select_rendition<T, P: ToString>(
@@ -390,6 +394,10 @@ impl WatchTrack {
             let shutdown = shutdown.clone();
             move || {
                 let mut last_ts = std::time::Instant::now();
+                if let Err(err) = source.start() {
+                    warn!("Video source failed to start: {err:?}");
+                    return;
+                }
                 loop {
                     if shutdown.is_cancelled() {
                         break;
@@ -397,7 +405,7 @@ impl WatchTrack {
                     match source.pop_frame() {
                         Ok(Some(frame)) => {
                             let (w, h) = (frame.format.dimensions[0], frame.format.dimensions[1]);
-                            let mut buf = frame.raw;
+                            let mut buf = frame.raw.to_vec();
                             if frame.format.pixel_format != decode_config.pixel_format {
                                 match (frame.format.pixel_format, decode_config.pixel_format) {
                                     (PixelFormat::Bgra, PixelFormat::Rgba)
@@ -422,6 +430,10 @@ impl WatchTrack {
                         Ok(None) => std::thread::sleep(std::time::Duration::from_millis(10)),
                         Err(_) => break,
                     }
+                }
+                if let Err(err) = source.stop() {
+                    warn!("Video source failed to stop: {err:?}");
+                    return;
                 }
             }
         });

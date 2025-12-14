@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use bytes::{BufMut, BytesMut};
 use ffmpeg_next::{
     self as ffmpeg,
     software::scaling::{self, Flags},
@@ -141,17 +142,19 @@ pub(crate) fn ffmpeg_frame_to_video_frame(
     // ffmpeg frames may have padding at end of each line; copy row-by-row.
     let stride = frame.stride(0) as usize;
     let row_bytes = (width as usize) * bytes_per_pixel;
-    let mut out = vec![0u8; row_bytes * (height as usize)];
+    let mut out = BytesMut::with_capacity(row_bytes * (height as usize));
+    // let mut out = vec![0u8; row_bytes * (height as usize)];
     for y in 0..(height as usize) {
         let src_off = y * stride;
-        let dst_off = y * row_bytes;
-        out[dst_off..dst_off + row_bytes].copy_from_slice(&src[src_off..src_off + row_bytes]);
+        // let dst_off = y * row_bytes;
+        out.put(&src[src_off..src_off + row_bytes]);
+        // out[dst_off..dst_off + row_bytes].copy_from_slice(&src[src_off..src_off + row_bytes]);
     }
     Some(VideoFrame {
         format: VideoFormat {
             dimensions: [width, height],
             pixel_format,
         },
-        raw: out,
+        raw: out.freeze(),
     })
 }

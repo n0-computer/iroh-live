@@ -1,6 +1,9 @@
+use std::time::Instant;
+
 use ffmpeg_next::{
     self as ffmpeg, Error, Packet, codec::Id, format::Pixel, frame::Video as FfmpegVideoFrame,
 };
+use tracing::trace;
 
 use crate::{
     av::VideoFrame,
@@ -32,12 +35,15 @@ impl MjpgDecoder {
 
     /// Decode one complete MJPEG/JPEG frame from `mjpg_frame`.
     pub fn decode_frame(&mut self, mjpg_frame: &[u8]) -> Result<VideoFrame, Error> {
+        let now = Instant::now();
         // Make a packet that borrows/copies the data.
         let packet = Packet::borrow(mjpg_frame);
         // Feed & drain once — MJPEG is intra-only (one picture per packet).
         self.dec.send_packet(&packet)?;
+        trace!(t=?now.elapsed(), "decode ffmpeg: send packet");
         let mut frame = FfmpegVideoFrame::empty();
         self.dec.receive_frame(&mut frame)?;
+        trace!(t=?now.elapsed(), "decode ffmpeg: receive frame");
 
         // MJPEG may output deprecated YUVJ* formats. Replace them with
         // the non-deprecated equivalents and mark full range to keep semantics.
@@ -58,8 +64,11 @@ impl MjpgDecoder {
             }
             _ => {}
         }
+        trace!(t=?now.elapsed(), "decode ffmpeg: color");
         let frame = self.rescaler.process(&frame)?;
+        trace!(t=?now.elapsed(), "decode ffmpeg: rescale");
         let frame = ffmpeg_frame_to_video_frame(frame).expect("valid pixel format set in rescaler");
+        trace!(t=?now.elapsed(), "decode ffmpeg: convert");
         Ok(frame)
     }
 }

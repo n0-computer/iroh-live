@@ -1,6 +1,9 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -23,7 +26,7 @@ use crate::av::{
 pub struct PublishBroadcast {
     producer: BroadcastProducer,
     catalog: CatalogProducer,
-    inner: Arc<Mutex<Inner>>,
+    state: Arc<Mutex<State>>,
     _task: Arc<AbortOnDropHandle<()>>,
 }
 
@@ -34,13 +37,13 @@ impl PublishBroadcast {
         producer.insert_track(catalog.consumer.track);
         let catalog = catalog.producer;
 
-        let inner = Arc::new(Mutex::new(Inner::default()));
-        let task_handle = tokio::spawn(Self::run(inner.clone(), producer.clone()));
+        let state = Arc::new(Mutex::new(State::default()));
+        let task_handle = tokio::spawn(Self::run(state.clone(), producer.clone()));
 
         Self {
             producer,
             catalog,
-            inner,
+            state,
             _task: Arc::new(AbortOnDropHandle::new(task_handle)),
         }
     }
@@ -49,20 +52,20 @@ impl PublishBroadcast {
         self.producer.clone()
     }
 
-    async fn run(inner: Arc<Mutex<Inner>>, mut producer: BroadcastProducer) {
+    async fn run(state: Arc<Mutex<State>>, mut producer: BroadcastProducer) {
         while let Some(track) = producer.requested_track().await {
             let name = track.info.name.clone();
             let Some(kind) = TrackKind::from_name(&name) else {
                 info!("ignoring unsupported track: {name}");
                 continue;
             };
-            if inner
+            if state
                 .lock()
                 .expect("poisoned")
                 .start_track(kind, track.clone())
             {
                 tokio::spawn({
-                    let inner = inner.clone();
+                    let inner = state.clone();
                     async move {
                         track.unused().await;
                         inner.lock().expect("poisoned").stop_track(&name);
@@ -75,7 +78,7 @@ impl PublishBroadcast {
     /// Create a local WatchTrack from the current video source, if present.
     pub fn watch_local(&self, decode_config: DecodeConfig) -> Option<crate::subscribe::WatchTrack> {
         let (source, shutdown) = {
-            let inner = self.inner.lock().expect("poisoned");
+            let inner = self.state.lock().expect("poisoned");
             let source = inner
                 .available_video
                 .as_ref()
@@ -105,11 +108,11 @@ impl PublishBroadcast {
                 };
                 self.catalog.set_video(Some(video));
                 self.catalog.publish();
-                self.inner.lock().expect("poisoned").available_video = Some(renditions);
+                self.state.lock().expect("poisoned").available_video = Some(renditions);
             }
             None => {
                 // Clear catalog and stop any active video encoders
-                self.inner.lock().expect("poisoned").remove_video();
+                self.state.lock().expect("poisoned").remove_video();
                 self.catalog.set_video(None);
                 self.catalog.publish();
             }
@@ -130,11 +133,11 @@ impl PublishBroadcast {
                 };
                 self.catalog.set_audio(Some(audio));
                 self.catalog.publish();
-                self.inner.lock().expect("poisoned").available_audio = Some(renditions);
+                self.state.lock().expect("poisoned").available_audio = Some(renditions);
             }
             None => {
                 // Clear catalog and stop any active audio encoders
-                self.inner.lock().expect("poisoned").remove_audio();
+                self.state.lock().expect("poisoned").remove_audio();
                 self.catalog.set_audio(None);
                 self.catalog.publish();
             }
@@ -145,13 +148,13 @@ impl PublishBroadcast {
 
 impl Drop for PublishBroadcast {
     fn drop(&mut self) {
-        self.inner.lock().expect("poisoned").shutdown_token.cancel();
+        self.state.lock().expect("poisoned").shutdown_token.cancel();
         self.producer.close();
     }
 }
 
 #[derive(Default)]
-struct Inner {
+struct State {
     shutdown_token: CancellationToken,
     available_video: Option<VideoRenditions>,
     available_audio: Option<AudioRenditions>,
@@ -159,7 +162,7 @@ struct Inner {
     active_audio: HashMap<String, EncoderThread>,
 }
 
-impl Inner {
+impl State {
     fn stop_track(&mut self, name: &str) {
         let thread = self
             .active_video
@@ -343,19 +346,38 @@ impl VideoRenditions {
 pub(crate) struct SharedVideoSource {
     frames_rx: tokio::sync::watch::Receiver<Option<crate::av::VideoFrame>>,
     format: crate::av::VideoFormat,
+    running: Arc<AtomicBool>,
+    thread: Arc<std::thread::JoinHandle<()>>,
+    subscriber_count: Arc<AtomicU32>,
 }
 
 impl SharedVideoSource {
     fn new(mut source: impl VideoSource, shutdown: CancellationToken) -> Self {
         let format = source.format();
         let (tx, rx) = tokio::sync::watch::channel(None);
-        std::thread::spawn({
+        let running = Arc::new(AtomicBool::new(false));
+        let thread = std::thread::spawn({
             let shutdown = shutdown.clone();
+            let running = running.clone();
             move || {
                 loop {
                     if shutdown.is_cancelled() {
                         break;
                     }
+
+                    loop {
+                        if running.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        if let Err(err) = source.stop() {
+                            warn!("Failed to stop video source: {err:#}");
+                        }
+                        std::thread::park();
+                        if let Err(err) = source.start() {
+                            warn!("Failed to stop video source: {err:#}");
+                        }
+                    }
+
                     match source.pop_frame() {
                         Ok(Some(frame)) => {
                             let _ = tx.send(Some(frame));
@@ -369,6 +391,9 @@ impl SharedVideoSource {
         Self {
             format,
             frames_rx: rx,
+            thread: Arc::new(thread),
+            running,
+            subscriber_count: Default::default(),
         }
     }
 }
@@ -376,6 +401,29 @@ impl SharedVideoSource {
 impl VideoSource for SharedVideoSource {
     fn format(&self) -> crate::av::VideoFormat {
         self.format.clone()
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        let prev_count = self.subscriber_count.fetch_add(1, Ordering::Relaxed);
+        if prev_count == 0 {
+            self.running.store(true, Ordering::Relaxed);
+            self.thread.thread().unpark();
+        }
+        Ok(())
+    }
+
+    fn stop(&mut self) -> anyhow::Result<()> {
+        if self
+            .subscriber_count
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |val| {
+                Some(val.saturating_sub(1))
+            })
+            .expect("always returns Some")
+            == 1
+        {
+            self.running.store(false, Ordering::Relaxed);
+        }
+        Ok(())
     }
 
     fn pop_frame(&mut self) -> anyhow::Result<Option<crate::av::VideoFrame>> {
@@ -401,6 +449,10 @@ impl EncoderThread {
             let shutdown = shutdown.clone();
             move || {
                 let _guard = span.enter();
+                if let Err(err) = source.start() {
+                    warn!("video source failed to start: {err:#}");
+                    return;
+                }
                 let format = source.format();
                 tracing::debug!(
                     src_format = ?format,
@@ -432,6 +484,9 @@ impl EncoderThread {
                         }
                     }
                     std::thread::sleep(interval.saturating_sub(start.elapsed()));
+                }
+                if let Err(err) = source.stop() {
+                    warn!("video source failed to stop: {err:#}");
                 }
                 tracing::debug!("video encoder thread stop");
             }

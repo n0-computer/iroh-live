@@ -91,12 +91,14 @@ pub struct VideoFormat {
 #[derive(Clone, Debug)]
 pub struct VideoFrame {
     pub format: VideoFormat,
-    pub raw: Vec<u8>,
+    pub raw: bytes::Bytes,
 }
 
 pub trait VideoSource: Send + 'static {
     fn format(&self) -> VideoFormat;
     fn pop_frame(&mut self) -> Result<Option<VideoFrame>>;
+    fn start(&mut self) -> Result<()>;
+    fn stop(&mut self) -> Result<()>;
 }
 
 pub trait VideoEncoder: VideoEncoderInner {

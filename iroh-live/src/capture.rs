@@ -1,6 +1,11 @@
+use std::str::FromStr;
+
 use anyhow::{Context, Result};
-use nokhwa::{nokhwa_initialize, utils::FrameFormat};
-use tracing::{debug, info};
+use nokhwa::{
+    nokhwa_initialize,
+    utils::{CameraIndex, FrameFormat},
+};
+use tracing::{debug, info, trace};
 use xcap::{Monitor, VideoRecorder};
 
 use crate::{
@@ -45,7 +50,6 @@ impl ScreenCapturer {
         info!("Using monitor: {} ({}x{})", name, width, height);
 
         let (video_recorder, rx) = monitor.video_recorder()?;
-        video_recorder.start()?;
 
         Ok(Self {
             _monitor: monitor,
@@ -63,6 +67,16 @@ impl VideoSource for ScreenCapturer {
             pixel_format: PixelFormat::Rgba,
             dimensions: [self.width, self.height],
         }
+    }
+
+    fn start(&mut self) -> Result<()> {
+        self.video_recorder.start()?;
+        Ok(())
+    }
+
+    fn stop(&mut self) -> Result<()> {
+        self.video_recorder.stop()?;
+        Ok(())
     }
 
     fn pop_frame(&mut self) -> anyhow::Result<Option<VideoFrame>> {
@@ -84,7 +98,7 @@ impl VideoSource for ScreenCapturer {
                 pixel_format: PixelFormat::Rgba,
                 dimensions: [raw_frame.width, raw_frame.height],
             },
-            raw: raw_frame.raw,
+            raw: raw_frame.raw.into(),
         }))
     }
 }
@@ -109,24 +123,29 @@ impl CameraCapturer {
         }
         info!("Available cameras: {cameras:?}");
 
-        let first_camera = cameras.last().unwrap();
-        info!("Using camera: {}", first_camera.human_name());
-
+        let camera_index = match std::env::var("IROH_LIVE_CAMERA").ok() {
+            None => {
+                // Order of cameras in nokhwa is reversed from usual order (primary camera is last).
+                let first_camera = cameras.last().unwrap();
+                info!("Using camera: {}", first_camera.human_name());
+                first_camera.index().clone()
+            }
+            Some(camera_name) => match u32::from_str(&camera_name).ok() {
+                Some(num) => CameraIndex::Index(num),
+                None => CameraIndex::String(camera_name),
+            },
+        };
         let mut camera = nokhwa::Camera::new(
-            first_camera.index().clone(),
+            camera_index,
             nokhwa::utils::RequestedFormat::new::<nokhwa::pixel_format::RgbFormat>(
                 nokhwa::utils::RequestedFormatType::AbsoluteHighestFrameRate,
             ),
         )?;
-
-        camera.open_stream()?;
-        info!(
+        info!(format=?camera.camera_format(), "Using camera: {}", camera.info().human_name());
+        debug!(
             "Available formats: {:#?}",
             camera.compatible_camera_formats()
         );
-
-        info!("Using format: {:?}", camera.camera_format());
-
         let resolution = camera.resolution();
 
         Ok(Self {
@@ -146,13 +165,29 @@ impl VideoSource for CameraCapturer {
         }
     }
 
+    fn start(&mut self) -> Result<()> {
+        self.camera.open_stream()?;
+        Ok(())
+    }
+
+    fn stop(&mut self) -> Result<()> {
+        self.camera.stop_stream()?;
+        Ok(())
+    }
+
     fn pop_frame(&mut self) -> anyhow::Result<Option<VideoFrame>> {
+        let start = std::time::Instant::now();
         let frame = self
             .camera
             .frame()
             .context("Failed to capture camera frame")?;
+        trace!("pop frame: capture took {:?}", start.elapsed());
+        let start = std::time::Instant::now();
         let frame = match frame.source_frame_format() {
-            FrameFormat::MJPEG => self.mjpg_decoder.decode_frame(frame.buffer())?,
+            FrameFormat::MJPEG if std::env::var("IROH_LIVE_MJPEG_FFMPEG").is_ok() => {
+                trace!("decode ffmpeg");
+                self.mjpg_decoder.decode_frame(frame.buffer())?
+            }
             _ => {
                 let image = frame
                     .decode_image::<nokhwa::pixel_format::RgbAFormat>()
@@ -163,6 +198,7 @@ impl VideoSource for CameraCapturer {
                 }
             }
         };
+        trace!("pop frame: decode took {:?}", start.elapsed());
         Ok(Some(frame))
     }
 }
