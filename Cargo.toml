@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "iroh-live", 
+    "iroh-live",
     "iroh-moq",
     "web-transport-iroh",
 ]
