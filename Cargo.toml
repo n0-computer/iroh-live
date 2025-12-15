@@ -5,3 +5,6 @@ members = [
     "web-transport-iroh",
 ]
 resolver = "2"
+
+[profile.release]
+debug = true
