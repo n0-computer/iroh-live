@@ -55,6 +55,8 @@ fn main() -> Result<()> {
             rt.spawn(async move {
                 let _ = tokio::signal::ctrl_c().await;
                 egui_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                // TODO: When the app is not visible, this will not trigger `update` immediately.
+                // See https://github.com/emilk/egui/issues/5112
                 egui_ctx.request_repaint();
             });
             let app = App {
@@ -114,6 +116,7 @@ impl eframe::App for App {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         info!("exit");
+        self.broadcast.shutdown();
         self.session.close(0, b"bye");
         let endpoint = self.endpoint.clone();
         self.rt.block_on(async move {

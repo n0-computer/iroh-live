@@ -3,13 +3,11 @@ use ffmpeg_next::{
     self as ffmpeg, codec, codec::Id as CodecId, packet::Packet,
     util::frame::video::Video as FfmpegFrame,
 };
-use image::Delay;
 
 use crate::{
     av::{self, DecodeConfig, DecodedFrame, VideoDecoder},
     ffmpeg::{
         ext::CodecContextExt,
-        util::{ffmpeg_frame_to_image, pixel_to_ffmpeg},
         video::util::{Rescaler, StreamClock},
     },
 };
@@ -54,7 +52,7 @@ impl VideoDecoder for FfmpegVideoDecoder {
                 config.codec
             ),
         };
-        let rescaler = Rescaler::new(pixel_to_ffmpeg(playback_config.pixel_format), None)?;
+        let rescaler = Rescaler::new(playback_config.pixel_format.to_ffmpeg(), None)?;
         let clock = StreamClock::default();
         let decoded = FfmpegFrame::empty();
         Ok(Self {
@@ -88,18 +86,16 @@ impl VideoDecoder for FfmpegVideoDecoder {
                 if let Some((max_width, max_height)) = self.viewport_changed.take() {
                     let (width, height) =
                         calculate_resized_size(&self.decoded, max_width, max_height);
-                    self.rescaler.target_width_height = Some((width, height));
+                    self.rescaler.set_target_dimensions(width, height);
                 }
 
                 let frame = self.rescaler.process(&mut self.decoded)?;
-                let image = ffmpeg_frame_to_image(frame);
-                // Compute interframe delay from provided timestamps
                 let last_packet = self.last_packet.as_ref().context("missing last packet")?;
-                let delay = Delay::from_saturating_duration(self.clock.frame_delay(&last_packet));
-                let frame = DecodedFrame {
-                    frame: image::Frame::from_parts(image, 0, 0, delay),
-                    timestamp: last_packet.timestamp,
-                };
+                let frame = DecodedFrame::from_ffmpeg(
+                    frame,
+                    self.clock.frame_delay(&last_packet),
+                    last_packet.timestamp,
+                );
                 Ok(Some(frame))
             }
             Err(ffmpeg::util::error::Error::BufferTooSmall) => Ok(None),

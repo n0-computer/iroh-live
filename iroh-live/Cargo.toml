@@ -13,7 +13,7 @@ bytemuck = "1.24.0"
 byte-unit = { version = "5.1", features = ["bit"] }
 data-encoding = "2.9.0"
 derive_more = { version = "2.0.1", features = ["display", "debug"] }
-ffmpeg-next = { version = "8.0.0", features = ["device", "format"] }
+ffmpeg-next = { version = "8.0.0", features = ["device", "format", "filter"] }
 firewheel = { version = "0.9.1", features = ["cpal", "peak_meter_node", "std", "stream_nodes"] }
 hang = "0.6.1"
 image = { version = "0.25.8", default-features = false }

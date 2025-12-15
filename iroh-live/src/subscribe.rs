@@ -17,10 +17,10 @@ use tracing::{Span, debug, error, info, info_span, trace, warn};
 
 use crate::{
     av::{
-        AudioDecoder, AudioSink, AudioSinkHandle, DecodeConfig, DecodedFrame, PixelFormat, Quality,
+        AudioDecoder, AudioSink, AudioSinkHandle, DecodeConfig, DecodedFrame, Quality,
         VideoDecoder, VideoSource,
     },
-    publish::SharedVideoSource,
+    ffmpeg::util::Rescaler,
     util::spawn_thread,
 };
 
@@ -83,7 +83,7 @@ impl SubscribeBroadcast {
             priority: video.priority,
         }));
         let span = info_span!("videodec", %name);
-        WatchTrack::spawn::<D>(
+        WatchTrack::from_consumer::<D>(
             name.to_string(),
             consumer,
             &config,
@@ -384,54 +384,52 @@ impl WatchTrack {
         }
     }
 
-    pub(crate) fn from_shared_source(
+    pub(crate) fn from_video_source(
         rendition: String,
         shutdown: CancellationToken,
-        mut source: SharedVideoSource,
+        mut source: impl VideoSource,
         decode_config: DecodeConfig,
     ) -> Self {
         let viewport = Watchable::new((1u32, 1u32));
         let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<DecodedFrame>(2);
-        let thread_name = format!("video-src-{}", rendition);
+        let thread_name = format!("video-preview-{}", rendition);
         let thread = spawn_thread(thread_name, {
+            let mut viewport = viewport.watch();
             let shutdown = shutdown.clone();
             move || {
-                let mut last_ts = std::time::Instant::now();
+                let fps = 30;
+                let mut rescaler = Rescaler::new(decode_config.pixel_format.to_ffmpeg(), None)
+                    .expect("failed to create rescaler");
+                let frame_duration = Duration::from_secs_f32(1. / fps as f32);
                 if let Err(err) = source.start() {
                     warn!("Video source failed to start: {err:?}");
                     return;
                 }
-                loop {
+                let start = Instant::now();
+                for i in 0.. {
                     if shutdown.is_cancelled() {
                         break;
                     }
+                    if viewport.update() {
+                        let (w, h) = viewport.peek();
+                        rescaler.set_target_dimensions(*w, *h);
+                    }
                     match source.pop_frame() {
                         Ok(Some(frame)) => {
-                            let (w, h) = (frame.format.dimensions[0], frame.format.dimensions[1]);
-                            let mut buf = frame.raw.to_vec();
-                            if frame.format.pixel_format != decode_config.pixel_format {
-                                match (frame.format.pixel_format, decode_config.pixel_format) {
-                                    (PixelFormat::Bgra, PixelFormat::Rgba)
-                                    | (PixelFormat::Rgba, PixelFormat::Bgra) => {
-                                        for px in buf.chunks_exact_mut(4) {
-                                            px.swap(0, 2);
-                                        }
-                                    }
-                                    _ => unreachable!(),
-                                }
-                            }
-                            if let Some(img) = image::ImageBuffer::from_raw(w, h, buf) {
-                                let frame_img = image::Frame::new(img);
-                                let ts = last_ts.elapsed();
-                                last_ts = std::time::Instant::now();
-                                let _ = frame_tx.blocking_send(DecodedFrame {
-                                    frame: frame_img,
-                                    timestamp: ts,
-                                });
-                            }
+                            let frame = rescaler
+                                .process(&frame.to_ffmpeg())
+                                .expect("rescaler failed");
+                            let frame =
+                                DecodedFrame::from_ffmpeg(frame, frame_duration, start.elapsed());
+                            let _ = frame_tx.blocking_send(frame);
                         }
-                        Ok(None) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                        Ok(None) => {}
                         Err(_) => break,
+                    }
+                    let expected_time = i * frame_duration;
+                    let actual_time = start.elapsed();
+                    if expected_time < actual_time {
+                        std::thread::sleep(actual_time - expected_time);
                     }
                 }
                 if let Err(err) = source.stop() {
@@ -452,7 +450,7 @@ impl WatchTrack {
         }
     }
 
-    pub(crate) fn spawn<D: VideoDecoder>(
+    pub(crate) fn from_consumer<D: VideoDecoder>(
         rendition: String,
         consumer: TrackConsumer,
         config: &VideoConfig,
@@ -529,13 +527,17 @@ impl WatchTrack {
                 let (w, h) = viewport_watcher.peek();
                 decoder.set_viewport(*w, *h);
             }
+            let t = Instant::now();
             decoder
                 .push_packet(packet)
                 .context("failed to push packet")?;
+            trace!(t=?t.elapsed(), "videodec: push_packet");
             while let Some(frame) = decoder.pop_frame().context("failed to pop frame")? {
+                trace!(t=?t.elapsed(), "videodec: pop frame");
                 if frame_tx.blocking_send(frame).is_err() {
                     break;
                 }
+                trace!(t=?t.elapsed(), "videodec: tx");
             }
         }
         Ok(())

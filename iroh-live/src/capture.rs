@@ -3,14 +3,17 @@ use std::str::FromStr;
 use anyhow::{Context, Result};
 use nokhwa::{
     nokhwa_initialize,
-    utils::{CameraIndex, FrameFormat},
+    pixel_format::RgbFormat,
+    utils::{
+        CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType, Resolution,
+    },
 };
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 use xcap::{Monitor, VideoRecorder};
 
 use crate::{
     av::{PixelFormat, VideoFormat, VideoFrame, VideoSource},
-    ffmpeg::util::mjpg_decoder::MjpgDecoder,
+    ffmpeg::util::MjpgDecoder,
 };
 
 pub struct ScreenCapturer {
@@ -137,23 +140,42 @@ impl CameraCapturer {
         };
         let mut camera = nokhwa::Camera::new(
             camera_index,
-            nokhwa::utils::RequestedFormat::new::<nokhwa::pixel_format::RgbFormat>(
-                nokhwa::utils::RequestedFormatType::AbsoluteHighestFrameRate,
-            ),
+            RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution),
         )?;
-        info!(format=?camera.camera_format(), "Using camera: {}", camera.info().human_name());
-        debug!(
-            "Available formats: {:#?}",
-            camera.compatible_camera_formats()
-        );
+        info!("Using camera: {}", camera.info().human_name());
+        let available_formats = camera.compatible_camera_formats()?;
+        debug!("Available formats: {available_formats:?}",);
+        if let Some(format) = Self::select_format(available_formats, Resolution::new(1920, 1080)) {
+            if let Err(err) = camera.set_camera_requset(RequestedFormat::new::<RgbFormat>(
+                RequestedFormatType::Exact(format),
+            )) {
+                warn!(?format, "Failed to change camera format: {err:#}");
+            }
+        }
+        info!("Using format: {}", camera.camera_format());
         let resolution = camera.resolution();
-
         Ok(Self {
             camera,
             mjpg_decoder: MjpgDecoder::new()?,
             width: resolution.width(),
             height: resolution.height(),
         })
+    }
+
+    fn select_format(
+        mut formats: Vec<CameraFormat>,
+        desired_resolution: Resolution,
+    ) -> Option<CameraFormat> {
+        formats.sort_by(|a, b| {
+            a.resolution()
+                .cmp(&b.resolution())
+                .then(a.frame_rate().cmp(&b.frame_rate()))
+        });
+        formats
+            .iter()
+            .find(|format| format.resolution() >= desired_resolution)
+            .or_else(|| formats.last())
+            .cloned()
     }
 }
 

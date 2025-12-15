@@ -1,76 +1,15 @@
 use std::time::Duration;
 
-use anyhow::Result;
 use bytes::{BufMut, BytesMut};
-use ffmpeg_next::{
-    self as ffmpeg,
-    software::scaling::{self, Flags},
-    util::{format::pixel::Pixel, frame::video::Video as FfmpegFrame},
-};
-use image::RgbaImage;
+use ffmpeg_next::util::{format::pixel::Pixel, frame::video::Video as FfmpegFrame};
+use image::{Delay, RgbaImage};
 
-use crate::av::{PixelFormat, VideoFormat, VideoFrame};
+pub(crate) use self::mjpg_decoder::MjpgDecoder;
+pub(crate) use self::rescaler::Rescaler;
+use crate::av::{self, DecodedFrame, PixelFormat, VideoFormat, VideoFrame};
 
-pub(crate) mod mjpg_decoder;
-
-pub(crate) struct Rescaler {
-    pub(crate) target_format: Pixel,
-    pub(crate) target_width_height: Option<(u32, u32)>,
-    pub(crate) ctx: Option<scaling::Context>,
-    pub(crate) out_frame: FfmpegFrame,
-}
-
-// I think the ffmpeg structs are send-safe.
-// We want to create the encoder before moving it to a thread.
-unsafe impl Send for Rescaler {}
-
-impl Rescaler {
-    pub fn new(target_format: Pixel, target_width_height: Option<(u32, u32)>) -> Result<Self> {
-        Ok(Self {
-            target_format,
-            ctx: None,
-            target_width_height,
-            out_frame: FfmpegFrame::empty(),
-        })
-    }
-
-    pub fn process(&mut self, frame: &FfmpegFrame) -> Result<&FfmpegFrame, ffmpeg::Error> {
-        let (target_width, target_height) = self
-            .target_width_height
-            .unwrap_or_else(|| (frame.width(), frame.height()));
-        let out_frame_needs_reset = self.out_frame.width() != target_width
-            || self.out_frame.height() != target_height
-            || self.out_frame.format() != self.target_format;
-        if out_frame_needs_reset {
-            self.out_frame = FfmpegFrame::new(self.target_format, target_width, target_height);
-        }
-        let ctx = match self.ctx {
-            None => self.ctx.insert(scaling::Context::get(
-                frame.format(),
-                frame.width(),
-                frame.height(),
-                self.out_frame.format(),
-                self.out_frame.width(),
-                self.out_frame.height(),
-                Flags::BILINEAR,
-            )?),
-            Some(ref mut ctx) => ctx,
-        };
-        // This resets the contxt if any parameters changed.
-        ctx.cached(
-            frame.format(),
-            frame.width(),
-            frame.height(),
-            self.out_frame.format(),
-            self.out_frame.width(),
-            self.out_frame.height(),
-            Flags::BILINEAR,
-        );
-
-        ctx.run(&frame, &mut self.out_frame)?;
-        Ok(&self.out_frame)
-    }
-}
+mod mjpg_decoder;
+mod rescaler;
 
 #[derive(Default, Debug)]
 pub(crate) struct StreamClock {
@@ -86,6 +25,39 @@ impl StreamClock {
         };
         self.last_timestamp = Some(encoded_frame.timestamp);
         delay
+    }
+}
+
+impl av::VideoFrame {
+    pub fn to_ffmpeg(&self) -> FfmpegFrame {
+        // Wrap raw RGBA/BGRA data into an ffmpeg frame and encode
+        let pixel = match self.format.pixel_format {
+            av::PixelFormat::Rgba => Pixel::RGBA,
+            av::PixelFormat::Bgra => Pixel::BGRA,
+        };
+        let [w, h] = self.format.dimensions;
+        let mut ff = FfmpegFrame::new(pixel, w, h);
+        let stride = ff.stride(0) as usize;
+        let row_bytes = (w as usize) * 4;
+        for y in 0..(h as usize) {
+            let dst_off = y * stride;
+            let src_off = y * row_bytes;
+            ff.data_mut(0)[dst_off..dst_off + row_bytes]
+                .copy_from_slice(&self.raw[src_off..src_off + row_bytes]);
+        }
+        ff
+    }
+}
+
+impl av::DecodedFrame {
+    pub fn from_ffmpeg(frame: &FfmpegFrame, delay: Duration, timestamp: Duration) -> Self {
+        let image = ffmpeg_frame_to_image(frame);
+        // Compute interframe delay from provided timestamps
+        let delay = Delay::from_saturating_duration(delay);
+        DecodedFrame {
+            frame: image::Frame::from_parts(image, 0, 0, delay),
+            timestamp,
+        }
     }
 }
 
@@ -111,18 +83,20 @@ pub(crate) fn ffmpeg_frame_to_image(frame: &ffmpeg_next::util::frame::Video) -> 
     RgbaImage::from_raw(width, height, out).expect("valid image buffer")
 }
 
-pub(crate) fn pixel_to_ffmpeg(value: PixelFormat) -> Pixel {
-    match value {
-        PixelFormat::Rgba => Pixel::RGBA,
-        PixelFormat::Bgra => Pixel::BGRA,
+impl PixelFormat {
+    pub fn to_ffmpeg(&self) -> Pixel {
+        match self {
+            PixelFormat::Rgba => Pixel::RGBA,
+            PixelFormat::Bgra => Pixel::BGRA,
+        }
     }
-}
 
-pub(crate) fn ffmpeg_to_pixel(value: Pixel) -> Option<PixelFormat> {
-    match value {
-        Pixel::RGBA => Some(PixelFormat::Rgba),
-        Pixel::BGRA => Some(PixelFormat::Bgra),
-        _ => None,
+    pub fn from_ffmpeg(value: Pixel) -> Option<Self> {
+        match value {
+            Pixel::RGBA => Some(PixelFormat::Rgba),
+            Pixel::BGRA => Some(PixelFormat::Bgra),
+            _ => None,
+        }
     }
 }
 
@@ -134,7 +108,7 @@ pub(crate) fn ffmpeg_to_pixel(value: Pixel) -> Option<PixelFormat> {
 pub(crate) fn ffmpeg_frame_to_video_frame(
     frame: &ffmpeg_next::util::frame::Video,
 ) -> Option<VideoFrame> {
-    let pixel_format = ffmpeg_to_pixel(frame.format())?;
+    let pixel_format = PixelFormat::from_ffmpeg(frame.format())?;
     let width = frame.width();
     let height = frame.height();
     let bytes_per_pixel = 4usize; // RGBA/BGRA

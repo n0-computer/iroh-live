@@ -67,10 +67,12 @@ impl PublishBroadcast {
                 .expect("poisoned")
                 .start_track(kind, track.clone())
             {
+                info!("started track: {name}");
                 tokio::spawn({
                     let inner = state.clone();
                     async move {
                         track.unused().await;
+                        info!("stopping track: {name}");
                         inner.lock().expect("poisoned").stop_track(&name);
                     }
                 });
@@ -88,7 +90,7 @@ impl PublishBroadcast {
                 .map(|video| video.source.clone())?;
             Some((source, inner.shutdown_token.child_token()))
         }?;
-        Some(crate::subscribe::WatchTrack::from_shared_source(
+        Some(crate::subscribe::WatchTrack::from_video_source(
             "local".to_string(),
             shutdown,
             source,
@@ -363,7 +365,9 @@ impl SharedVideoSource {
             let shutdown = shutdown.clone();
             let running = running.clone();
             move || {
-                loop {
+                let frame_time = Duration::from_secs_f32(1. / 30.);
+                let start = Instant::now();
+                for i in 0.. {
                     if shutdown.is_cancelled() {
                         break;
                     }
@@ -385,8 +389,13 @@ impl SharedVideoSource {
                         Ok(Some(frame)) => {
                             let _ = tx.send(Some(frame));
                         }
-                        Ok(None) => std::thread::sleep(std::time::Duration::from_millis(5)),
+                        Ok(None) => {}
                         Err(_) => break,
+                    }
+                    let expected = frame_time * i;
+                    let actual = start.elapsed();
+                    if actual < expected {
+                        std::thread::sleep(expected - actual);
                     }
                 }
             }
