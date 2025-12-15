@@ -15,6 +15,7 @@ data-encoding = "2.9.0"
 derive_more = { version = "2.0.1", features = ["display", "debug"] }
 ffmpeg-next = { version = "8.0.0", features = ["device", "format", "filter"] }
 firewheel = { version = "0.9.1", features = ["cpal", "peak_meter_node", "std", "stream_nodes"] }
+firewheel = { version = "0.9.1", features = ["cpal", "peak_meter_node", "std", "stream_nodes", "cpal_resample_inputs"] }
 hang = "0.6.1"
 image = { version = "0.25.8", default-features = false }
 iroh = "0.95.1"
