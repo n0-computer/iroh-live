@@ -9229,8 +9229,7 @@ dependencies = [
 [[package]]
 name = "xcap"
 version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "604b4ac2b821a6c37510b9a065a1d52cf364375211a3d9a1557105ad8522cac6"
+source = "git+https://github.com/Icemic/xcap?branch=fix%2Fmissing_dbus_response#7efadb1da4d116678eeb061026a6b15460c2144a"
 dependencies = [
  "dispatch2",
  "image",
