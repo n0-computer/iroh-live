@@ -1,13 +1,12 @@
 use anyhow::{Context, Result};
 use ffmpeg_next::{
-    self as ffmpeg, codec, codec::Id as CodecId, packet::Packet,
-    util::frame::video::Video as FfmpegFrame,
+    self as ffmpeg, codec, codec::Id as CodecId, util::frame::video::Video as FfmpegFrame,
 };
 
 use crate::{
     av::{self, DecodeConfig, DecodedFrame, VideoDecoder},
     ffmpeg::{
-        ext::CodecContextExt,
+        ext::{CodecContextExt, PacketExt},
         video::util::{Rescaler, StreamClock},
     },
 };
@@ -18,7 +17,7 @@ pub struct FfmpegVideoDecoder {
     clock: StreamClock,
     decoded: FfmpegFrame,
     viewport_changed: Option<(u32, u32)>,
-    last_packet: Option<hang::Frame>,
+    last_timestamp: Option<hang::Timestamp>,
 }
 
 impl VideoDecoder for FfmpegVideoDecoder {
@@ -61,7 +60,7 @@ impl VideoDecoder for FfmpegVideoDecoder {
             clock,
             decoded,
             viewport_changed: None,
-            last_packet: None,
+            last_timestamp: None,
         })
     }
 
@@ -70,11 +69,9 @@ impl VideoDecoder for FfmpegVideoDecoder {
     }
 
     fn push_packet(&mut self, packet: hang::Frame) -> Result<()> {
-        {
-            let pkt = Packet::borrow(&packet.payload);
-            self.codec.send_packet(&pkt)?;
-        }
-        self.last_packet = Some(packet);
+        let ffmpeg_packet = packet.payload.to_ffmpeg_packet();
+        self.codec.send_packet(&ffmpeg_packet)?;
+        self.last_timestamp = Some(packet.timestamp);
         Ok(())
     }
 
@@ -90,11 +87,14 @@ impl VideoDecoder for FfmpegVideoDecoder {
                 }
 
                 let frame = self.rescaler.process(&mut self.decoded)?;
-                let last_packet = self.last_packet.as_ref().context("missing last packet")?;
+                let last_timestamp = self
+                    .last_timestamp
+                    .as_ref()
+                    .context("missing last packet")?;
                 let frame = DecodedFrame::from_ffmpeg(
                     frame,
-                    self.clock.frame_delay(&last_packet),
-                    last_packet.timestamp,
+                    self.clock.frame_delay(&last_timestamp),
+                    std::time::Duration::from(*last_timestamp),
                 );
                 Ok(Some(frame))
             }

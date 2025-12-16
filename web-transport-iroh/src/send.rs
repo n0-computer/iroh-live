@@ -106,18 +106,16 @@ impl tokio::io::AsyncWrite for SendStream {
 impl web_transport_trait::SendStream for SendStream {
     type Error = WriteError;
 
-    fn set_priority(&mut self, order: i32) {
-        Self::set_priority(self, order).ok();
+    fn set_priority(&mut self, order: u8) {
+        self.stream.set_priority(order.into()).ok();
     }
 
     fn reset(&mut self, code: u32) {
         Self::reset(self, code).ok();
     }
 
-    // Unlike Quinn, this will also block until the stream is closed.
-    async fn finish(&mut self) -> Result<(), Self::Error> {
+    fn finish(&mut self) -> Result<(), Self::Error> {
         Self::finish(self).map_err(|_| WriteError::ClosedStream)?;
-        Self::stopped(self).await?;
         Ok(())
     }
 

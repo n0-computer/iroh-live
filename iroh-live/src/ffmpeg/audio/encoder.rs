@@ -1,8 +1,6 @@
-use std::time::Duration;
-
 use anyhow::{Context, Result};
 use ffmpeg_next::{self as ffmpeg, Rational};
-use hang::catalog::AudioConfig;
+use hang::{Timestamp, catalog::AudioConfig};
 use tracing::trace;
 
 use crate::{
@@ -138,12 +136,12 @@ impl AudioEncoderInner for OpusEncoder {
                 let payload = packet.data().unwrap_or(&[]).to_vec();
                 let hang_frame = hang::Frame {
                     payload: payload.into(),
-                    timestamp: Duration::from_nanos(
-                        (self.frame_count * 1_000_000_000) / self.sample_rate as u64,
-                    ),
+                    timestamp: Timestamp::from_micros(
+                        (self.frame_count * 1_000_000) / self.sample_rate as u64,
+                    )?,
                     keyframe: true, // Audio frames are generally independent
                 };
-                trace!("poll frame {}", hang_frame.payload.len());
+                trace!("poll frame {}", hang_frame.payload.num_bytes());
                 Ok(Some(hang_frame))
             }
             Err(ffmpeg::Error::Eof) => Ok(None),

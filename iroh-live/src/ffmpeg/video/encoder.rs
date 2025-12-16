@@ -2,11 +2,11 @@ use std::{
     ffi::{CString, c_int},
     ptr,
     task::Poll,
-    time::Duration,
 };
 
 use anyhow::{Context, Result, anyhow};
 use ffmpeg_next::{self as ffmpeg, codec, format::Pixel, frame::Video as VideoFrame};
+use hang::Timestamp;
 use tracing::{debug, info, trace};
 
 use crate::{
@@ -209,7 +209,8 @@ impl H264Encoder {
             codec: hang::catalog::VideoCodec::H264(hang::catalog::H264 {
                 profile: 0x42, // Baseline
                 constraints: 0xE0,
-                level: 0x1E, // Level 3.0
+                level: 0x1E,   // Level 3.0
+                inline: false, // TODO: is this correct?
             }),
             description: Some(self.avcc_description()?.to_vec().into()),
             coded_width: Some(self.opts.width),
@@ -234,9 +235,9 @@ impl H264Encoder {
                     let payload = packet.data().unwrap_or(&[]).to_vec();
                     let hang_frame = hang::Frame {
                         payload: payload.into(),
-                        timestamp: Duration::from_nanos(
-                            self.frame_count * 1_000_000_000 / self.opts.framerate as u64,
-                        ),
+                        timestamp: Timestamp::from_micros(
+                            self.frame_count * 1_000_000 / self.opts.framerate as u64,
+                        )?,
                         keyframe: packet.is_key(),
                     };
                     return Ok(Poll::Ready(Some(hang_frame)));

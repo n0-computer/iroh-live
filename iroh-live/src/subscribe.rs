@@ -1,8 +1,8 @@
 use std::{collections::HashMap, time::Duration};
 
 use hang::{
-    Catalog, CatalogConsumer, TrackConsumer,
-    catalog::{AudioConfig, VideoConfig},
+    Timestamp, TrackConsumer,
+    catalog::{AudioConfig, Catalog, CatalogConsumer, VideoConfig},
 };
 use moq_lite::{BroadcastConsumer, Track};
 use n0_error::{Result, StackResultExt, StdResultExt};
@@ -291,12 +291,16 @@ impl AudioTrack {
                         let remote_start = *remote_start.get_or_insert_with(|| packet.timestamp);
 
                         let loop_elapsed = tick.duration_since(loop_start);
-                        let remote_elapsed = packet.timestamp.saturating_sub(remote_start);
+                        let remote_elapsed: Duration = packet
+                            .timestamp
+                            .checked_sub(remote_start)
+                            .unwrap_or(Timestamp::ZERO)
+                            .into();
                         let diff_ms =
                             (loop_elapsed.as_secs_f32() - remote_elapsed.as_secs_f32()) * 1000.;
 
                         // TODO: Skip outdated packets?
-                        trace!(len = packet.payload.len(), ts=?packet.timestamp, ?loop_elapsed, ?remote_elapsed, ?diff_ms, "recv packet");
+                        trace!(len = packet.payload.num_bytes(), ts=?packet.timestamp, ?loop_elapsed, ?remote_elapsed, ?diff_ms, "recv packet");
                         if !sink.is_paused() {
                             decoder.push_packet(packet)?;
                             if let Some(samples) = decoder.pop_samples()? {
@@ -563,7 +567,7 @@ impl WatchTrack {
 
 async fn forward_frames(mut track: hang::TrackConsumer, sender: mpsc::Sender<hang::Frame>) {
     loop {
-        let frame = track.read().await;
+        let frame = track.read_frame().await;
         match frame {
             Ok(Some(frame)) => {
                 if sender.send(frame).await.is_err() {

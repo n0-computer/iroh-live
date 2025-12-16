@@ -7,10 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use hang::{
-    Catalog, CatalogProducer,
-    catalog::{AudioConfig, VideoConfig},
-};
+use hang::catalog::{AudioConfig, Catalog, CatalogProducer, VideoConfig};
 use moq_lite::BroadcastProducer;
 use n0_error::Result;
 use n0_future::task::AbortOnDropHandle;
@@ -109,17 +106,20 @@ impl PublishBroadcast {
                     display: None,
                     rotation: None,
                     flip: None,
-                    detection: None,
                 };
-                self.catalog.set_video(Some(video));
-                self.catalog.publish();
+                {
+                    let mut catalog = self.catalog.lock();
+                    catalog.video = Some(video);
+                }
                 self.state.lock().expect("poisoned").available_video = Some(renditions);
             }
             None => {
                 // Clear catalog and stop any active video encoders
                 self.state.lock().expect("poisoned").remove_video();
-                self.catalog.set_video(None);
-                self.catalog.publish();
+                {
+                    let mut catalog = self.catalog.lock();
+                    catalog.video = None;
+                }
             }
         }
         Ok(())
@@ -133,18 +133,20 @@ impl PublishBroadcast {
                 let audio = hang::catalog::Audio {
                     renditions: configs,
                     priority,
-                    captions: None,
-                    speaking: None,
                 };
-                self.catalog.set_audio(Some(audio));
-                self.catalog.publish();
+                {
+                    let mut catalog = self.catalog.lock();
+                    catalog.audio = Some(audio);
+                }
                 self.state.lock().expect("poisoned").available_audio = Some(renditions);
             }
             None => {
                 // Clear catalog and stop any active audio encoders
                 self.state.lock().expect("poisoned").remove_audio();
-                self.catalog.set_audio(None);
-                self.catalog.publish();
+                {
+                    let mut catalog = self.catalog.lock();
+                    catalog.audio = None;
+                }
             }
         }
         Ok(())
@@ -492,7 +494,9 @@ impl EncoderThread {
                             break;
                         };
                         while let Ok(Some(pkt)) = encoder.pop_packet() {
-                            producer.write(pkt);
+                            if let Err(err) = producer.write(pkt) {
+                                warn!("failed to write frame to producer: {err:#}");
+                            }
                         }
                     }
                     std::thread::sleep(interval.saturating_sub(start.elapsed()));
@@ -543,7 +547,9 @@ impl EncoderThread {
                             .pop_packet()
                             .inspect_err(|err| warn!("encoder error: {err:#}"))
                         {
-                            producer.write(pkt);
+                            if let Err(err) = producer.write(pkt) {
+                                warn!("failed to write frame to producer: {err:#}");
+                            }
                         }
                     }
                     Ok(None) => {
@@ -566,7 +572,9 @@ impl EncoderThread {
             }
             // drain
             while let Ok(Some(pkt)) = encoder.pop_packet() {
-                producer.write(pkt);
+                if let Err(err) = producer.write(pkt) {
+                    warn!("failed to write frame to producer: {err:#}");
+                }
             }
             producer.inner.close();
             tracing::debug!("audio encoder thread stop");

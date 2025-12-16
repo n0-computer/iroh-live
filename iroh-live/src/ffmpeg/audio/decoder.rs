@@ -4,7 +4,7 @@ use hang::catalog::AudioConfig;
 
 use crate::{
     av::{AudioDecoder, AudioFormat},
-    ffmpeg::ext::CodecContextExt,
+    ffmpeg::ext::{CodecContextExt, PacketExt},
 };
 
 pub struct FfmpegAudioDecoder {
@@ -70,7 +70,7 @@ impl AudioDecoder for FfmpegAudioDecoder {
     }
 
     fn push_packet(&mut self, packet: hang::Frame) -> Result<()> {
-        let packet = ffmpeg::Packet::borrow(&packet.payload);
+        let packet = packet.payload.to_ffmpeg_packet();
         self.codec.send_packet(&packet)?;
         Ok(())
     }

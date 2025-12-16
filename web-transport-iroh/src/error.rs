@@ -207,6 +207,46 @@ pub enum ServerError {
     Bind(#[error(source)] Arc<iroh::endpoint::BindError>),
 }
 
-impl web_transport_trait::Error for SessionError {}
-impl web_transport_trait::Error for WriteError {}
-impl web_transport_trait::Error for ReadError {}
+impl web_transport_trait::Error for SessionError {
+    fn session_error(&self) -> Option<(u32, String)> {
+        if let SessionError::WebTransportError(WebTransportError::Closed(code, reason)) = self {
+            return Some((*code, reason.to_string()));
+        }
+
+        None
+    }
+}
+
+impl web_transport_trait::Error for WriteError {
+    fn session_error(&self) -> Option<(u32, String)> {
+        if let WriteError::SessionError(e) = self {
+            return e.session_error();
+        }
+
+        None
+    }
+
+    fn stream_error(&self) -> Option<u32> {
+        match self {
+            WriteError::Stopped(code) => Some(*code),
+            _ => None,
+        }
+    }
+}
+
+impl web_transport_trait::Error for ReadError {
+    fn session_error(&self) -> Option<(u32, String)> {
+        if let ReadError::SessionError(e) = self {
+            return e.session_error();
+        }
+
+        None
+    }
+
+    fn stream_error(&self) -> Option<u32> {
+        match self {
+            ReadError::Reset(code) => Some(*code),
+            _ => None,
+        }
+    }
+}

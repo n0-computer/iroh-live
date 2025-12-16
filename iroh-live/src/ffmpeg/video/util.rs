@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use bytes::{BufMut, BytesMut};
 use ffmpeg_next::util::{format::pixel::Pixel, frame::video::Video as FfmpegFrame};
+use hang::Timestamp;
 use image::{Delay, RgbaImage};
 
 pub(crate) use self::mjpg_decoder::MjpgDecoder;
@@ -13,17 +14,20 @@ mod rescaler;
 
 #[derive(Default, Debug)]
 pub(crate) struct StreamClock {
-    pub(crate) last_timestamp: Option<Duration>,
+    pub(crate) last_timestamp: Option<hang::Timestamp>,
 }
 
 impl StreamClock {
-    pub(crate) fn frame_delay(&mut self, encoded_frame: &hang::Frame) -> Duration {
+    pub(crate) fn frame_delay(&mut self, timestamp: &hang::Timestamp) -> Duration {
         // Compute interframe delay from provided timestamps
         let delay = match self.last_timestamp {
-            None => Duration::default(),
-            Some(last_timestamp) => encoded_frame.timestamp.saturating_sub(last_timestamp),
+            None => Duration::ZERO,
+            Some(last_timestamp) => timestamp
+                .checked_sub(last_timestamp)
+                .unwrap_or(Timestamp::ZERO)
+                .into(),
         };
-        self.last_timestamp = Some(encoded_frame.timestamp);
+        self.last_timestamp = Some(*timestamp);
         delay
     }
 }

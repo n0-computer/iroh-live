@@ -3,7 +3,11 @@ use std::{
     sync::Arc,
 };
 
-use iroh::{Endpoint, EndpointAddr, EndpointId, endpoint::Connection, protocol::ProtocolHandler};
+use iroh::{
+    Endpoint, EndpointAddr, EndpointId,
+    endpoint::{Connection, ConnectionError},
+    protocol::ProtocolHandler,
+};
 use moq_lite::{BroadcastConsumer, BroadcastProducer, OriginConsumer, OriginProducer};
 use n0_error::{AnyError, Result, StdResultExt, anyerr, e, stack_error};
 use n0_future::{
@@ -272,8 +276,8 @@ impl MoqSession {
         self.wt_session.close(error_code, reason);
     }
 
-    pub async fn closed(&self) -> Result<(), web_transport_iroh::SessionError> {
-        web_transport_iroh::generic::Session::closed(&self.wt_session).await
+    pub async fn closed(&self) -> web_transport_iroh::SessionError {
+        self.wt_session.closed().await
     }
 }
 
@@ -394,7 +398,10 @@ impl Actor {
                     session.close(0u32.into(), b"cancelled");
                     Ok(())
                 }
-                result = session.closed() => result,
+                result = session.closed() => match result {
+                    SessionError::ConnectionError(ConnectionError::LocallyClosed) => Ok(()),
+                    err @ _ => Err(err)
+                },
             };
             (remote, res)
         });

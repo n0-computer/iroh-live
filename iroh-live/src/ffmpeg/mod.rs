@@ -26,6 +26,8 @@ pub mod video {
 }
 
 pub(crate) mod ext {
+    use buf_list::BufList;
+    use bytes::Buf;
     use ffmpeg_next as ffmpeg;
     pub fn ffmpeg_log_init() {
         use ffmpeg::util::log::Level::*;
@@ -46,6 +48,19 @@ pub(crate) mod ext {
             Warning
         };
         ffmpeg::util::log::set_level(level);
+    }
+
+    pub trait PacketExt {
+        fn to_ffmpeg_packet(self) -> ffmpeg::Packet;
+    }
+
+    impl PacketExt for BufList {
+        fn to_ffmpeg_packet(mut self) -> ffmpeg_next::Packet {
+            let mut packet = ffmpeg::Packet::new(self.num_bytes());
+            let dst = packet.data_mut().unwrap();
+            self.copy_to_slice(dst);
+            packet
+        }
     }
 
     pub trait CodecContextExt {
