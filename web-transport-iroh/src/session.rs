@@ -8,7 +8,7 @@ use std::{
     task::{Context, Poll, ready},
 };
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use n0_future::{FuturesUnordered, Stream, StreamExt};
 use quinn::ConnectionStats;
 use url::Url;
@@ -29,18 +29,8 @@ use crate::{RecvStream, SendStream, SessionError, WebTransportError};
 pub struct Session {
     conn: iroh::endpoint::Connection,
 
-    // The session ID, as determined by the stream ID of the connect request.
-    session_id: Option<VarInt>,
-
     // The accept logic is stateful, so use an Arc<Mutex> to share it.
     accept: Option<Arc<Mutex<SessionAccept>>>,
-
-    // Cache the headers in front of each stream we open.
-    header_uni: Vec<u8>,
-    header_bi: Vec<u8>,
-    header_datagram: Vec<u8>,
-
-    // The URL used to create the session.
     url: Url,
 }
 
@@ -77,13 +67,12 @@ impl Session {
 
     /// Open a new unidirectional stream. See [`iroh::endpoint::Connection::open_uni`].
     pub async fn open_uni(&self) -> Result<SendStream, SessionError> {
-        let mut send = self.conn.open_uni().await?;
+        let send = self.conn.open_uni().await?;
 
         // Set the stream priority to max and then write the stream header.
         // Otherwise the application could write data with lower priority than the header, resulting in queuing.
         // Also the header is very important for determining the session ID without reliable reset.
         send.set_priority(i32::MAX).ok();
-        Self::write_full(&mut send, &self.header_uni).await?;
 
         // Reset the stream priority back to the default of 0.
         send.set_priority(0).ok();
@@ -92,13 +81,12 @@ impl Session {
 
     /// Open a new bidirectional stream. See [`iroh::endpoint::Connection::open_bi`].
     pub async fn open_bi(&self) -> Result<(SendStream, RecvStream), SessionError> {
-        let (mut send, recv) = self.conn.open_bi().await?;
+        let (send, recv) = self.conn.open_bi().await?;
 
         // Set the stream priority to max and then write the stream header.
         // Otherwise the application could write data with lower priority than the header, resulting in queuing.
         // Also the header is very important for determining the session ID without reliable reset.
         send.set_priority(i32::MAX).ok();
-        Self::write_full(&mut send, &self.header_bi).await?;
 
         // Reset the stream priority back to the default of 0.
         send.set_priority(0).ok();
@@ -111,23 +99,7 @@ impl Session {
     /// peer over the connection.
     /// It waits for a datagram to become available and returns the received bytes.
     pub async fn read_datagram(&self) -> Result<Bytes, SessionError> {
-        let mut datagram = self.conn.read_datagram().await?;
-
-        let mut cursor = Cursor::new(&datagram);
-
-        if let Some(session_id) = self.session_id {
-            // We have to check and strip the session ID from the datagram.
-            let actual_id = VarInt::decode(&mut cursor).map_err(|_| {
-                WebTransportError::ReadError(quinn::ReadExactError::FinishedEarly(0))
-            })?;
-            if actual_id != session_id {
-                return Err(WebTransportError::UnknownSession.into());
-            }
-        }
-
-        // Return the datagram without the session ID.
-        let datagram = datagram.split_off(cursor.position() as usize);
-
+        let datagram = self.conn.read_datagram().await?;
         Ok(datagram)
     }
 
@@ -136,19 +108,7 @@ impl Session {
     /// Datagrams are unreliable and may be dropped or delivered out of order.
     /// The data must be smaller than [`max_datagram_size`](Self::max_datagram_size).
     pub fn send_datagram(&self, data: Bytes) -> Result<(), SessionError> {
-        if !self.header_datagram.is_empty() {
-            // Unfortunately, we need to allocate/copy each datagram because of the Quinn API.
-            // Pls go +1 if you care: https://github.com/quinn-rs/quinn/issues/1724
-            let mut buf = BytesMut::with_capacity(self.header_datagram.len() + data.len());
-
-            // Prepend the datagram with the header indicating the session ID.
-            buf.extend_from_slice(&self.header_datagram);
-            buf.extend_from_slice(&data);
-
-            self.conn.send_datagram(buf.into())?;
-        } else {
-            self.conn.send_datagram(data)?;
-        }
+        self.conn.send_datagram(data)?;
 
         Ok(())
     }
@@ -160,20 +120,12 @@ impl Session {
             .conn
             .max_datagram_size()
             .expect("datagram support is required");
-        mtu.saturating_sub(self.header_datagram.len())
+        mtu
     }
 
     /// Immediately close the connection with an error code and reason. See [`iroh::endpoint::Connection::close`].
     pub fn close(&self, code: u32, reason: &[u8]) {
-        let code = if self.session_id.is_some() {
-            web_transport_proto::error_to_http3(code)
-                .try_into()
-                .unwrap()
-        } else {
-            code.into()
-        };
-
-        self.conn.close(code, reason)
+        self.conn.close(code.into(), reason)
     }
 
     /// Wait until the session is closed, returning the error. See [`iroh::endpoint::Connection::closed`].
@@ -194,14 +146,6 @@ impl Session {
         self.conn.close_reason().map(Into::into)
     }
 
-    async fn write_full(send: &mut quinn::SendStream, buf: &[u8]) -> Result<(), SessionError> {
-        match send.write_all(buf).await {
-            Ok(_) => Ok(()),
-            Err(quinn::WriteError::ConnectionLost(err)) => Err(err.into()),
-            Err(err) => Err(WebTransportError::WriteError(err).into()),
-        }
-    }
-
     /// Create a new session from a raw QUIC connection and a URL.
     ///
     /// This is used to pretend like a QUIC connection is a WebTransport session.
@@ -209,10 +153,6 @@ impl Session {
     pub fn raw(conn: iroh::endpoint::Connection, url: Url) -> Self {
         Self {
             conn,
-            session_id: None,
-            header_uni: Default::default(),
-            header_bi: Default::default(),
-            header_datagram: Default::default(),
             accept: None,
             url,
         }
