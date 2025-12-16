@@ -21,6 +21,18 @@ It uses [moq-rs](https://github.com/kixelated/moq) to transfer audio and video s
   
 There's still bugs and a lot of missing optimizations. This is an early, work-in-progress preview!
 
+## Building
+
+By default `ffmpeg` is dynamically linked. Enable the `static` feature to build ffmpeg from source and statically link it.
+
+#### Build dependencies
+
+*incomplete list, please file issues or PRs to expand this*
+
+##### Linux
+
+* For building with `static` feature: `apt install nasm pkg-config`
+
 ## Demo and examples
 
 Check out the [`rooms`](iroh-live/examples/rooms.rs) example:
@@ -35,6 +47,8 @@ cargo run --release --example rooms -- <TICKET>
 ```
 
 Now you're chatting! With video and audio! Over iroh!
+
+Use the `room-publish-file` example to publish a video form a file into a room.
 
 There's also a [`publish`](iroh-live/examples/publish.rs) example (publish only, no GUI), and a [`watch`](iroh-live/examples/watch.rs) example (watch a stream from the publish example).
 
