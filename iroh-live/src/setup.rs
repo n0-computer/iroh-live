@@ -84,10 +84,9 @@ impl RoomState {
             broadcast
         };
 
-        live.publish(&ticket.broadcast_name, broadcast.producer())
-            .await?;
-
         let room = Room::new(router.endpoint(), gossip, live, ticket).await?;
+        // TODO: track name
+        room.publish("default", broadcast.producer()).await?;
 
         println!("room ticket: {}", room.ticket());
 

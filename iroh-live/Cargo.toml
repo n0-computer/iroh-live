@@ -40,6 +40,7 @@ tracing = "0.1.41"
 xcap = "0.7.1"
 webrtc-audio-processing = { version = "0.5.0", features = ["bundled"] }
 bytes = "1.11.0"
+iroh-smol-kv = { git = "https://github.com/Frando/iroh-smol-kv", branch = "iroh-095", version = "0.3.1", default-features = false }
 
 
 [dev-dependencies]

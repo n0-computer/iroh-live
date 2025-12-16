@@ -1,13 +1,20 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, hash_map},
+    sync::Arc,
+};
 
 use iroh::{Endpoint, EndpointAddr, EndpointId, endpoint::Connection, protocol::ProtocolHandler};
 use moq_lite::{BroadcastConsumer, BroadcastProducer, OriginConsumer, OriginProducer};
-use n0_error::{AnyError, Result, StdResultExt, e, stack_error};
-use n0_future::task::{AbortOnDropHandle, JoinSet};
-use tokio::sync::mpsc;
+use n0_error::{AnyError, Result, StdResultExt, anyerr, e, stack_error};
+use n0_future::{
+    FuturesUnordered, StreamExt,
+    boxed::BoxFuture,
+    task::{AbortOnDropHandle, JoinSet},
+};
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error_span, info, instrument};
-use web_transport_iroh::Request;
+use web_transport_iroh::{Request, SessionError};
 
 pub const ALPN: &[u8] = b"iroh-live/1";
 
@@ -33,6 +40,8 @@ pub enum SubscribeError {
     NotAnnounced,
     #[error("track was closed")]
     Closed,
+    #[error("session was closed")]
+    SessionClosed(#[error(source, std_err)] SessionError),
 }
 
 #[stack_error(derive)]
@@ -47,7 +56,6 @@ impl From<mpsc::error::SendError<ActorMessage>> for LiveActorDiedError {
 
 #[derive(Debug, Clone)]
 pub struct Moq {
-    endpoint: Endpoint,
     tx: mpsc::Sender<ActorMessage>,
     shutdown_token: CancellationToken,
     _actor_handle: Arc<AbortOnDropHandle<()>>,
@@ -56,14 +64,13 @@ pub struct Moq {
 impl Moq {
     pub fn new(endpoint: Endpoint) -> Self {
         let (tx, rx) = mpsc::channel(16);
-        let actor = Actor::default();
+        let actor = Actor::new(endpoint);
         let shutdown_token = actor.shutdown_token.clone();
         let actor_task = n0_future::task::spawn(async move {
             actor.run(rx).instrument(error_span!("LiveActor")).await
         });
         Self {
             shutdown_token,
-            endpoint,
             tx,
             _actor_handle: Arc::new(AbortOnDropHandle::new(actor_task)),
         }
@@ -77,14 +84,37 @@ impl Moq {
 
     pub async fn publish(&self, name: impl ToString, producer: BroadcastProducer) -> Result<()> {
         self.tx
-            .send(ActorMessage::PublishBroadcast(name.to_string(), producer))
+            .send(ActorMessage::PublishBroadcast {
+                broadcast_name: name.to_string(),
+                producer,
+            })
             .await
             .std_context("live actor died")?;
         Ok(())
     }
 
-    pub async fn connect(&self, addr: impl Into<EndpointAddr>) -> Result<MoqSession, Error> {
-        MoqSession::connect(&self.endpoint, addr).await
+    pub async fn published_broadcasts(&self) -> Vec<String> {
+        let (reply, reply_rx) = oneshot::channel();
+        if let Err(_) = self.tx.send(ActorMessage::GetPublished { reply }).await {
+            return vec![];
+        }
+        reply_rx.await.unwrap_or_default()
+    }
+
+    pub async fn connect(&self, remote: impl Into<EndpointAddr>) -> Result<MoqSession, AnyError> {
+        // MoqSession::connect(&self.endpoint, addr).await
+        let (reply, reply_rx) = oneshot::channel();
+        self.tx
+            .send(ActorMessage::Connect {
+                remote: remote.into(),
+                reply,
+            })
+            .await
+            .map_err(|_| LiveActorDiedError)?;
+        reply_rx
+            .await
+            .map_err(|_| LiveActorDiedError)?
+            .map_err(|err| anyerr!(err))
     }
 
     pub fn shutdown(&self) {
@@ -104,7 +134,7 @@ impl MoqProtocolHandler {
         let session = request.ok().await?;
         let session = MoqSession::session_accept(session).await?;
         self.tx
-            .send(ActorMessage::HandleSession(session))
+            .send(ActorMessage::HandleSession { session })
             .await
             .map_err(LiveActorDiedError::from)?;
         Ok(())
@@ -120,10 +150,40 @@ impl ProtocolHandler for MoqProtocolHandler {
     }
 }
 
+// TODO: resubscribing session?
+// struct MoqSession2 {
+//     session: MoqSession,
+//     tx: mpsc::Sender<ActorMessage>,
+//     remote: EndpointAddr,
+// }
+
+// impl MoqSession2 {
+//     pub async fn subscribe(&mut self, name: &str) -> Result<BroadcastConsumer> {
+//         match self.session.subscribe(name).await {
+//             Ok(consumer) => return Ok(consumer),
+//             Err(err) => {
+//                 warn!("first attempt to subscribe failed, retrying. reason: {err:#}");
+//                 let (reply, reply_rx) = oneshot::channel();
+//                 self.tx
+//                     .send(ActorMessage::Connect {
+//                         remote: self.remote.clone(),
+//                         reply,
+//                     })
+//                     .await
+//                     .map_err(|_| LiveActorDiedError)?;
+//                 self.session = reply_rx
+//                     .await
+//                     .map_err(|_| LiveActorDiedError)?
+//                     .map_err(|err| anyerr!(err))?;
+//                 self.session.subscribe(name).await.map_err(Into::into)
+//             }
+//         }
+//     }
+// }
+
+#[derive(Clone)]
 pub struct MoqSession {
-    remote: EndpointId,
     wt_session: web_transport_iroh::Session,
-    moq_session: moq_lite::Session<web_transport_iroh::Session>,
     publish: OriginProducer,
     subscribe: OriginConsumer,
 }
@@ -145,35 +205,37 @@ impl MoqSession {
     }
 
     pub async fn session_connect(wt_session: web_transport_iroh::Session) -> Result<Self, Error> {
-        let remote = wt_session.remote_id();
         let publish = moq_lite::Origin::produce();
         let subscribe = moq_lite::Origin::produce();
-        let moq_session =
+        // We can drop the moq_lite::Session, it spawns it tasks in the background anyway.
+        // If that changes and it becomes a guard, we should keep it around.
+        let _moq_session =
             moq_lite::Session::connect(wt_session.clone(), publish.consumer, subscribe.producer)
                 .await?;
         Ok(Self {
             publish: publish.producer,
             subscribe: subscribe.consumer,
-            remote,
-            moq_session,
             wt_session,
         })
     }
 
     pub async fn session_accept(wt_session: web_transport_iroh::Session) -> Result<Self, Error> {
-        let remote = wt_session.remote_id();
         let publish = moq_lite::Origin::produce();
         let subscribe = moq_lite::Origin::produce();
-        let moq_session =
+        // We can drop the moq_lite::Session, it spawns it tasks in the background anyway.
+        // If that changes and it becomes a guard, we should keep it around.
+        let _moq_session =
             moq_lite::Session::accept(wt_session.clone(), publish.consumer, subscribe.producer)
                 .await?;
         Ok(Self {
-            remote,
             publish: publish.producer,
             subscribe: subscribe.consumer,
-            moq_session,
             wt_session,
         })
+    }
+
+    pub fn remote_id(&self) -> EndpointId {
+        self.wt_session.remote_id()
     }
 
     pub fn conn(&self) -> &iroh::endpoint::Connection {
@@ -181,27 +243,20 @@ impl MoqSession {
     }
 
     pub async fn subscribe(&mut self, name: &str) -> Result<BroadcastConsumer, SubscribeError> {
-        let consumer = self.wait_for_broadcast(name).await?;
-        Ok(consumer)
-    }
-
-    pub fn publish(&self, name: String, broadcast: BroadcastConsumer) {
-        self.publish.publish_broadcast(name, broadcast);
-    }
-
-    async fn wait_for_broadcast(
-        &mut self,
-        name: &str,
-    ) -> Result<BroadcastConsumer, SubscribeError> {
+        if let Some(reason) = self.conn().close_reason() {
+            return Err(SessionError::from(reason).into());
+        }
         if let Some(consumer) = self.subscribe.consume_broadcast(name) {
             return Ok(consumer);
         }
         loop {
-            let (path, consumer) = self
-                .subscribe
-                .announced()
-                .await
-                .ok_or_else(|| e!(SubscribeError::NotAnnounced))?;
+            let res = tokio::select! {
+                res = self.subscribe.announced() => res,
+                reason = self.wt_session.closed() => {
+                    return Err(reason.into())
+                }
+            };
+            let (path, consumer) = res.ok_or_else(|| e!(SubscribeError::NotAnnounced))?;
             debug!("peer announced broadcast: {path}");
             if path.as_str() == name {
                 return consumer.ok_or_else(|| e!(SubscribeError::Closed));
@@ -209,31 +264,64 @@ impl MoqSession {
         }
     }
 
+    pub fn publish(&self, name: String, broadcast: BroadcastConsumer) {
+        self.publish.publish_broadcast(name, broadcast);
+    }
+
     pub fn close(&self, error_code: u32, reason: &[u8]) {
         self.wt_session.close(error_code, reason);
+    }
+
+    pub async fn closed(&self) -> Result<(), web_transport_iroh::SessionError> {
+        web_transport_iroh::generic::Session::closed(&self.wt_session).await
     }
 }
 
 enum ActorMessage {
-    HandleSession(MoqSession),
-    PublishBroadcast(BroadcastName, BroadcastProducer),
-}
-
-struct SessionState {
-    publish: OriginProducer,
+    HandleSession {
+        session: MoqSession,
+    },
+    PublishBroadcast {
+        broadcast_name: BroadcastName,
+        producer: BroadcastProducer,
+    },
+    Connect {
+        remote: EndpointAddr,
+        reply: oneshot::Sender<Result<MoqSession, Arc<AnyError>>>,
+    },
+    GetPublished {
+        reply: oneshot::Sender<Vec<BroadcastName>>,
+    },
 }
 
 type BroadcastName = String;
 
-#[derive(Default)]
+#[derive()]
 struct Actor {
+    endpoint: Endpoint,
     shutdown_token: CancellationToken,
-    broadcasts: HashMap<BroadcastName, BroadcastProducer>,
-    sessions: HashMap<EndpointId, SessionState>,
-    session_tasks: JoinSet<(EndpointId, Result<(), moq_lite::Error>)>,
+    publishing: HashMap<BroadcastName, BroadcastProducer>,
+    publishing_closed_futs: FuturesUnordered<BoxFuture<BroadcastName>>,
+    sessions: HashMap<EndpointId, MoqSession>,
+    session_tasks: JoinSet<(EndpointId, Result<(), web_transport_iroh::SessionError>)>,
+    pending_connects: HashMap<EndpointId, Vec<oneshot::Sender<Result<MoqSession, Arc<AnyError>>>>>,
+    pending_connect_tasks: JoinSet<(EndpointId, Result<MoqSession, AnyError>)>,
 }
 
 impl Actor {
+    pub fn new(endpoint: Endpoint) -> Self {
+        Self {
+            endpoint,
+            shutdown_token: CancellationToken::new(),
+            publishing: Default::default(),
+            publishing_closed_futs: Default::default(),
+            sessions: Default::default(),
+            session_tasks: Default::default(),
+            pending_connects: Default::default(),
+            pending_connect_tasks: Default::default(),
+        }
+    }
+
     pub async fn run(mut self, mut inbox: mpsc::Receiver<ActorMessage>) {
         loop {
             tokio::select! {
@@ -248,41 +336,65 @@ impl Actor {
                     info!(remote=%endpoint_id.fmt_short(), "session closed: {res:?}");
                     self.sessions.remove(&endpoint_id);
                 }
+                Some(name) = self.publishing_closed_futs.next(), if !self.publishing_closed_futs.is_empty() => {
+                    self.publishing.remove(&name);
+                }
+                Some(res) = self.pending_connect_tasks.join_next(), if !self.pending_connect_tasks.is_empty() => {
+                    let (endpoint_id, res) = res.expect("connect task panicked");
+                    match res {
+                        Ok(session) => {
+                            info!(remote=%endpoint_id.fmt_short(), "connected");
+                            self.handle_incoming_session(session);
+                        }
+                        Err(err) => {
+                            info!(remote=%endpoint_id.fmt_short(), "connect failed: {err:#}");
+                            let replies = self.pending_connects.remove(&endpoint_id).into_iter().flatten();
+                            let err = Arc::new(err);
+                            for reply in replies {
+                                reply.send(Err(err.clone())).ok();
+                            }
+
+                        }
+                    }
+                }
             }
         }
     }
 
     fn handle_message(&mut self, msg: ActorMessage) {
         match msg {
-            ActorMessage::HandleSession(msg) => self.handle_incoming_session(msg),
-            ActorMessage::PublishBroadcast(name, producer) => {
-                self.handle_publish_broadcast(name, producer)
+            ActorMessage::HandleSession { session: msg } => self.handle_incoming_session(msg),
+            ActorMessage::PublishBroadcast {
+                broadcast_name: name,
+                producer,
+            } => self.handle_publish_broadcast(name, producer),
+            ActorMessage::Connect { remote, reply } => self.handle_connect(remote, reply),
+            ActorMessage::GetPublished { reply } => {
+                let names = self.publishing.keys().cloned().collect();
+                reply.send(names).ok();
             }
         }
     }
 
     fn handle_incoming_session(&mut self, session: MoqSession) {
         tracing::info!("handle new incoming session");
-        let MoqSession {
-            remote,
-            moq_session,
-            publish,
-            subscribe: _,
-            ..
-        } = session;
-        for (name, producer) in self.broadcasts.iter() {
-            publish.publish_broadcast(name.to_string(), producer.consume());
+        let remote = session.remote_id();
+        for (name, producer) in self.publishing.iter() {
+            session.publish(name.to_string(), producer.consume());
         }
-        self.sessions.insert(remote, SessionState { publish });
+        self.sessions.insert(remote, session.clone());
+        for reply in self.pending_connects.remove(&remote).into_iter().flatten() {
+            reply.send(Ok(session.clone())).ok();
+        }
 
         let shutdown = self.shutdown_token.child_token();
         self.session_tasks.spawn(async move {
             let res = tokio::select! {
                 _ = shutdown.cancelled() => {
-                    moq_session.close(moq_lite::Error::Cancel);
+                    session.close(0u32.into(), b"cancelled");
                     Ok(())
                 }
-                result = moq_session.closed() => result,
+                result = session.closed() => result,
             };
             (remote, res)
         });
@@ -294,6 +406,38 @@ impl Actor {
                 .publish
                 .publish_broadcast(name.clone(), producer.consume());
         }
-        self.broadcasts.insert(name, producer);
+        let closed = producer.consume().closed();
+        self.publishing.insert(name.clone(), producer);
+        self.publishing_closed_futs.push(Box::pin(async move {
+            closed.await;
+            name
+        }));
+    }
+
+    fn handle_connect(
+        &mut self,
+        remote: EndpointAddr,
+        reply: oneshot::Sender<Result<MoqSession, Arc<AnyError>>>,
+    ) {
+        let remote_id = remote.id;
+        if let Some(session) = self.sessions.get(&remote_id) {
+            reply.send(Ok(session.clone())).ok();
+            return;
+        }
+        match self.pending_connects.entry(remote_id) {
+            hash_map::Entry::Occupied(mut entry) => {
+                entry.get_mut().push(reply);
+            }
+            hash_map::Entry::Vacant(entry) => {
+                let endpoint = self.endpoint.clone();
+                self.pending_connect_tasks.spawn(async move {
+                    let res = MoqSession::connect(&endpoint, remote)
+                        .await
+                        .map_err(Into::into);
+                    (remote_id, res)
+                });
+                entry.insert(Default::default()).push(reply);
+            }
+        }
     }
 }

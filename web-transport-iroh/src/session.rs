@@ -185,6 +185,10 @@ impl Session {
         &self.conn
     }
 
+    pub fn remote_id(&self) -> iroh::EndpointId {
+        self.conn.remote_id()
+    }
+
     /// Return why the session was closed, or None if it's not closed. See [`iroh::endpoint::Connection::close_reason`].
     pub fn close_reason(&self) -> Option<SessionError> {
         self.conn.close_reason().map(Into::into)

@@ -17,26 +17,31 @@ use tracing::{Span, debug, error, info, info_span, trace, warn};
 
 use crate::{
     av::{
-        AudioDecoder, AudioSink, AudioSinkHandle, DecodeConfig, DecodedFrame, Quality,
-        VideoDecoder, VideoSource,
+        AudioDecoder, AudioSink, AudioSinkHandle, DecodeConfig, DecodedFrame, Decoders,
+        PlaybackConfig, Quality, VideoDecoder, VideoSource,
     },
     ffmpeg::util::Rescaler,
+    live::AvRemoteTrack,
     util::spawn_thread,
 };
 
-#[derive(Clone)]
+#[derive(derive_more::Debug)]
 pub struct SubscribeBroadcast {
+    broadcast_name: String,
+    #[debug("BroadcastConsumer")]
     broadcast: BroadcastConsumer,
+    #[debug("CatalogConsumer")]
     catalog_consumer: CatalogConsumer,
     catalog: Catalog,
     shutdown: CancellationToken,
 }
 
 impl SubscribeBroadcast {
-    pub async fn new(broadcast: BroadcastConsumer) -> Result<Self> {
+    pub async fn new(broadcast_name: String, broadcast: BroadcastConsumer) -> Result<Self> {
         let catalog_track = broadcast.subscribe_track(&Catalog::default_track());
         let catalog_consumer = CatalogConsumer::new(catalog_track);
         let mut this = Self {
+            broadcast_name,
             broadcast,
             catalog: Catalog::default(),
             catalog_consumer,
@@ -44,6 +49,10 @@ impl SubscribeBroadcast {
         };
         this.update_catalog().await?;
         Ok(this)
+    }
+
+    pub fn broadcast_name(&self) -> &str {
+        &self.broadcast_name
     }
 
     pub async fn update_catalog(&mut self) -> Result<()> {
@@ -154,12 +163,20 @@ impl SubscribeBroadcast {
             .map(|(name, _config)| name.as_str())
     }
 
-    pub async fn closed(&self) {
-        self.broadcast.closed().await
+    pub fn closed(&self) -> impl Future<Output = ()> + 'static {
+        self.broadcast.closed()
     }
 
     pub fn shutdown(&self) {
         self.shutdown.cancel();
+    }
+
+    pub fn watch_and_listen<D: Decoders>(
+        self,
+        audio_out: impl AudioSink,
+        config: PlaybackConfig,
+    ) -> Result<AvRemoteTrack> {
+        AvRemoteTrack::new::<D>(self, audio_out, config)
     }
 }
 

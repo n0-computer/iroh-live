@@ -1,15 +1,15 @@
 use iroh::{Endpoint, EndpointAddr};
-use iroh_moq::{Error, Moq, MoqProtocolHandler, MoqSession};
+use iroh_moq::{Moq, MoqProtocolHandler, MoqSession};
 use moq_lite::BroadcastProducer;
 use n0_error::Result;
 use tracing::info;
 
 use crate::{
-    audio::AudioBackend,
-    av::{Decoders, PlaybackConfig},
+    av::{AudioSink, Decoders, PlaybackConfig},
     subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
 };
 
+#[derive(Clone)]
 pub struct Live {
     pub moq: Moq,
 }
@@ -21,7 +21,7 @@ impl Live {
         }
     }
 
-    pub async fn connect(&self, remote: impl Into<EndpointAddr>) -> Result<MoqSession, Error> {
+    pub async fn connect(&self, remote: impl Into<EndpointAddr>) -> Result<MoqSession> {
         self.moq.connect(remote).await
     }
 
@@ -29,8 +29,24 @@ impl Live {
         &self,
         remote: impl Into<EndpointAddr>,
         broadcast_name: &str,
-    ) -> Result<RemoteTrack> {
-        RemoteTrack::connect(&self.moq, remote, broadcast_name).await
+    ) -> Result<(MoqSession, SubscribeBroadcast)> {
+        let mut session = self.connect(remote).await?;
+        info!(id=%session.conn().remote_id(), "new peer connected");
+        let broadcast = session.subscribe(broadcast_name).await?;
+        let broadcast = SubscribeBroadcast::new(broadcast_name.to_string(), broadcast).await?;
+        Ok((session, broadcast))
+    }
+
+    pub async fn watch_and_listen<D: Decoders>(
+        &self,
+        remote: impl Into<EndpointAddr>,
+        broadcast_name: &str,
+        audio_out: impl AudioSink,
+        config: PlaybackConfig,
+    ) -> Result<(MoqSession, AvRemoteTrack)> {
+        let (session, broadcast) = self.connect_and_subscribe(remote, &broadcast_name).await?;
+        let track = broadcast.watch_and_listen::<D>(audio_out, config)?;
+        Ok((session, track))
     }
 
     pub fn protocol_handler(&self) -> MoqProtocolHandler {
@@ -46,61 +62,83 @@ impl Live {
     }
 }
 
-pub struct RemoteTrack {
-    pub broadcast: SubscribeBroadcast,
-    pub session: MoqSession,
-}
+// pub struct RemoteTrack {
+//     pub broadcast: SubscribeBroadcast,
+//     pub session: MoqSession,
+// }
 
-impl RemoteTrack {
-    pub async fn connect(
-        moq: &Moq,
-        remote: impl Into<EndpointAddr>,
-        broadcast_name: &str,
-    ) -> Result<Self> {
-        let mut session = moq.connect(remote).await?;
-        info!(id=%session.conn().remote_id(), "new peer connected");
-        let broadcast = session.subscribe(broadcast_name).await?;
-        let broadcast = SubscribeBroadcast::new(broadcast).await?;
-        info!(id=%session.conn().remote_id(), "subscribed");
-        Ok(RemoteTrack { session, broadcast })
-    }
+// impl RemoteTrack {
+//     pub async fn connect(
+//         moq: &Moq,
+//         remote: impl Into<EndpointAddr>,
+//         broadcast_name: &str,
+//     ) -> Result<Self> {
+//         let mut session = moq.connect(remote).await?;
+//         info!(id=%session.conn().remote_id(), "new peer connected");
+//         let broadcast = session.subscribe(broadcast_name).await?;
+//         let broadcast = SubscribeBroadcast::new(broadcast).await?;
+//         info!(id=%session.conn().remote_id(), "subscribed");
+//         Ok(RemoteTrack { session, broadcast })
+//     }
 
-    pub async fn start<D: Decoders>(
-        self,
-        audio_ctx: &AudioBackend,
-        config: PlaybackConfig,
-    ) -> Result<AvRemoteTrack> {
-        AvRemoteTrack::new::<D>(self, audio_ctx, config).await
-    }
-}
+//     pub async fn start<D: Decoders>(
+//         self,
+//         audio_ctx: &AudioBackend,
+//         config: PlaybackConfig,
+//     ) -> Result<AvRemoteTrack> {
+//         AvRemoteTrack::new::<D>(self, audio_ctx, config).await
+//     }
+// }
 
 pub struct AvRemoteTrack {
     pub broadcast: SubscribeBroadcast,
-    pub session: MoqSession,
+    // pub session: Option<MoqSession>,
     pub video: Option<WatchTrack>,
     pub audio: Option<AudioTrack>,
 }
 
 impl AvRemoteTrack {
-    pub async fn new<D: Decoders>(
-        track: RemoteTrack,
-        audio_ctx: &AudioBackend,
+    // pub async fn new<D: Decoders>(
+    //     broadcast: SubscribeBroadcast,
+    //     // track: RemoteTrack,
+    //     audio_ctx: &AudioBackend,
+    //     config: PlaybackConfig,
+    // ) -> Result<Self> {
+    //     let audio_out = audio_ctx.default_output().await?;
+    //     let audio = track
+    //         .broadcast
+    //         .listen_with::<D::Audio>(config.quality, audio_out)
+    //         .inspect_err(|err| tracing::warn!("no audio track: {err}"))
+    //         .ok();
+    //     let video = track
+    //         .broadcast
+    //         .watch_with::<D::Video>(&config.playback, config.quality)
+    //         .inspect_err(|err| tracing::warn!("no video track: {err}"))
+    //         .ok();
+    //     Ok(Self {
+    //         broadcast: track.broadcast,
+    //         session: Some(track.session),
+    //         audio,
+    //         video,
+    //     })
+    // }
+
+    pub fn new<D: Decoders>(
+        broadcast: SubscribeBroadcast,
+        audio_out: impl AudioSink,
         config: PlaybackConfig,
     ) -> Result<Self> {
-        let audio_out = audio_ctx.default_output().await?;
-        let audio = track
-            .broadcast
+        let audio = broadcast
             .listen_with::<D::Audio>(config.quality, audio_out)
             .inspect_err(|err| tracing::warn!("no audio track: {err}"))
             .ok();
-        let video = track
-            .broadcast
+        let video = broadcast
             .watch_with::<D::Video>(&config.playback, config.quality)
             .inspect_err(|err| tracing::warn!("no video track: {err}"))
             .ok();
         Ok(Self {
-            broadcast: track.broadcast,
-            session: track.session,
+            broadcast,
+            // session: None,
             audio,
             video,
         })

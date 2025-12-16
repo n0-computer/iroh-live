@@ -17,6 +17,11 @@ use tracing::info;
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     ffmpeg_log_init();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
     let ticket_str = std::env::args()
         .into_iter()
         .nth(1)
@@ -24,24 +29,24 @@ fn main() -> Result<()> {
     let ticket = LiveTicket::deserialize(&ticket_str)?;
 
     let audio_ctx = AudioBackend::new();
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
 
     println!("connecting to {ticket} ...");
-    let (endpoint, track) = rt.block_on({
+    let (endpoint, session, track) = rt.block_on({
         let audio_ctx = audio_ctx.clone();
         async move {
             let endpoint = Endpoint::bind().await?;
             let live = Live::new(endpoint.clone());
-            let track = live
-                .connect_and_subscribe(ticket.endpoint, &ticket.broadcast_name)
-                .await?
-                .start::<FfmpegDecoders>(&audio_ctx, Default::default())
+            let audio_out = audio_ctx.default_output().await?;
+            let (session, track) = live
+                .watch_and_listen::<FfmpegDecoders>(
+                    ticket.endpoint,
+                    &ticket.broadcast_name,
+                    audio_out,
+                    Default::default(),
+                )
                 .await?;
             println!("connected!");
-            n0_error::Ok((endpoint, track))
+            n0_error::Ok((endpoint, session, track))
         }
     })?;
 
@@ -64,7 +69,7 @@ fn main() -> Result<()> {
                 _audio_ctx: audio_ctx,
                 _audio: track.audio,
                 broadcast: track.broadcast,
-                session: track.session,
+                session: session,
                 stats: StatsSmoother::new(),
                 endpoint,
                 rt,
