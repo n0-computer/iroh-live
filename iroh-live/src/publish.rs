@@ -22,7 +22,6 @@ use crate::{
     util::spawn_thread,
 };
 
-#[derive(Clone)]
 pub struct PublishBroadcast {
     producer: BroadcastProducer,
     catalog: CatalogProducer,

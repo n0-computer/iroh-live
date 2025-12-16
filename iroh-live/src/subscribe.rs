@@ -21,11 +21,10 @@ use crate::{
         PlaybackConfig, Quality, VideoDecoder, VideoSource,
     },
     ffmpeg::util::Rescaler,
-    live::AvRemoteTrack,
     util::spawn_thread,
 };
 
-#[derive(derive_more::Debug)]
+#[derive(derive_more::Debug, Clone)]
 pub struct SubscribeBroadcast {
     broadcast_name: String,
     #[debug("BroadcastConsumer")]
@@ -580,5 +579,34 @@ async fn forward_frames(mut track: hang::TrackConsumer, sender: mpsc::Sender<han
                 break;
             }
         }
+    }
+}
+
+pub struct AvRemoteTrack {
+    pub broadcast: SubscribeBroadcast,
+    pub video: Option<WatchTrack>,
+    pub audio: Option<AudioTrack>,
+}
+
+impl AvRemoteTrack {
+    pub fn new<D: Decoders>(
+        broadcast: SubscribeBroadcast,
+        audio_out: impl AudioSink,
+        config: PlaybackConfig,
+    ) -> Result<Self> {
+        let audio = broadcast
+            .listen_with::<D::Audio>(config.quality, audio_out)
+            .inspect_err(|err| tracing::warn!("no audio track: {err}"))
+            .ok();
+        let video = broadcast
+            .watch_with::<D::Video>(&config.playback, config.quality)
+            .inspect_err(|err| tracing::warn!("no video track: {err}"))
+            .ok();
+        Ok(Self {
+            broadcast,
+            // session: None,
+            audio,
+            video,
+        })
     }
 }
