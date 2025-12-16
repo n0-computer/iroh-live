@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{Live, subscribe::SubscribeBroadcast};
@@ -16,9 +17,12 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{self, error::TryRecvError};
 use tracing::{Instrument, debug, error_span, warn};
 
+pub use self::publisher::{PublishOpts, RoomPublisherSync, StreamKind};
 pub use self::ticket::RoomTicket;
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + Sync + 'static>>;
+
+mod publisher;
 
 pub struct Room {
     handle: RoomHandle,
@@ -27,15 +31,15 @@ pub struct Room {
 
 pub type RoomEvents = mpsc::Receiver<RoomEvent>;
 
+#[derive(Clone)]
 pub struct RoomHandle {
     me: EndpointId,
     ticket: RoomTicket,
     tx: mpsc::Sender<ApiMessage>,
-    _actor_handle: AbortOnDropHandle<()>,
+    _actor_handle: Arc<AbortOnDropHandle<()>>,
 }
 
 impl RoomHandle {
-    pub fn shutdown(&mut self) {}
     pub fn ticket(&self) -> RoomTicket {
         let mut ticket = self.ticket.clone();
         ticket.bootstrap = vec![self.me];
@@ -82,7 +86,7 @@ impl Room {
                 ticket,
                 me: endpoint_id,
                 tx: actor_tx,
-                _actor_handle: AbortOnDropHandle::new(actor_task),
+                _actor_handle: Arc::new(AbortOnDropHandle::new(actor_task)),
             },
             events: event_rx,
         })
@@ -98,10 +102,6 @@ impl Room {
 
     pub fn ticket(&self) -> RoomTicket {
         self.handle.ticket()
-    }
-
-    pub fn shutdown(&mut self) {
-        self.handle.shutdown();
     }
 
     pub fn split(self) -> (RoomEvents, RoomHandle) {
@@ -338,25 +338,31 @@ mod ticket {
         }
 
         pub fn new_from_env() -> Result<Self> {
-            let topic_id = match std::env::var("IROH_TOPIC") {
-                Ok(topic) => TopicId::from_bytes(
-                    data_encoding::HEXLOWER
-                        .decode(topic.as_bytes())
-                        .std_context("invalid hex")?
-                        .as_slice()
-                        .try_into()
-                        .std_context("invalid length")?,
-                ),
-                Err(_) => {
-                    let topic = TopicId::from_bytes(rand::random());
-                    println!(
-                        "Created new topic. Reuse with IROH_TOPIC={}",
-                        data_encoding::HEXLOWER.encode(topic.as_bytes())
-                    );
-                    topic
-                }
-            };
-            Ok(Self::new(topic_id, vec![]))
+            if let Ok(value) = std::env::var("IROH_LIVE_ROOM") {
+                value
+                    .parse()
+                    .std_context("failed to parse ticket from IROH_LIVE_ROOM environment variable")
+            } else {
+                let topic_id = match std::env::var("IROH_LIVE_TOPIC") {
+                    Ok(topic) => TopicId::from_bytes(
+                        data_encoding::HEXLOWER
+                            .decode(topic.as_bytes())
+                            .std_context("invalid hex")?
+                            .as_slice()
+                            .try_into()
+                            .std_context("invalid length")?,
+                    ),
+                    Err(_) => {
+                        let topic = TopicId::from_bytes(rand::random());
+                        println!(
+                            "Created new topic. Reuse with IROH_TOPIC={}",
+                            data_encoding::HEXLOWER.encode(topic.as_bytes())
+                        );
+                        topic
+                    }
+                };
+                Ok(Self::new(topic_id, vec![]))
+            }
         }
     }
 
