@@ -38,9 +38,7 @@ strum = { version = "0.27", features = ["derive"] }
 tokio = { version = "1.48.0", features = ["sync"] }
 tokio-util = "0.7.17"
 tracing = "0.1.41"
-# xcap = "0.7.1"
-# https://github.com/nashaofu/xcap/pull/246 fixes linux issues
-xcap = { git = "https://github.com/Icemic/xcap", branch = "fix/missing_dbus_response" }
+xcap = "0.8"
 webrtc-audio-processing = { version = "0.5.0", features = ["bundled"] }
 bytes = "1.11.0"
 iroh-smol-kv = { git = "https://github.com/Frando/iroh-smol-kv", branch = "iroh-095", version = "0.3.1", default-features = false }
