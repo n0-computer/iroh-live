@@ -31,6 +31,9 @@ pub enum ClientError {
     #[error("invalid DNS name")]
     InvalidDnsName(String),
 
+    #[error("invalid URL")]
+    InvalidUrl,
+
     #[error("endpoint failed to bind")]
     Bind(#[error(source)] Arc<iroh::endpoint::BindError>),
 }

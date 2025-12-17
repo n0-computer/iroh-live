@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use iroh::{EndpointAddr, endpoint::ConnectOptions};
+use iroh::{EndpointAddr, EndpointId, endpoint::ConnectOptions};
 use quinn::TransportConfig;
 use url::Url;
 
@@ -33,5 +33,17 @@ impl Client {
 
         // Connect with the connection we established.
         Ok(Session::raw(conn, url))
+    }
+
+    pub async fn connect_url(&self, url: Url) -> Result<Session, ClientError> {
+        if url.scheme() != "iroh" {
+            return Err(ClientError::InvalidUrl);
+        }
+        let host = url
+            .host()
+            .ok_or_else(|| ClientError::InvalidUrl)?
+            .to_string();
+        let endpoint_id: EndpointId = host.parse().map_err(|_| ClientError::InvalidUrl)?;
+        self.connect(endpoint_id).await
     }
 }
