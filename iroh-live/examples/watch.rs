@@ -141,14 +141,14 @@ impl App {
             egui::ComboBox::from_label("")
                 .selected_text(selected.clone().unwrap_or_default())
                 .show_ui(ui, |ui| {
-                    for name in self.broadcast.video_renditions() {
+                    for name in self.broadcast.catalog().video_renditions() {
                         if ui
                             .selectable_label(selected.as_deref() == Some(name), name)
                             .clicked()
                         {
                             if let Ok(track) = self
                                 .broadcast
-                                .watch_rendition::<FfmpegVideoDecoder>(&Default::default(), &name)
+                                .watch_rendition::<FfmpegVideoDecoder>(&Default::default(), name)
                             {
                                 self.video = Some(VideoView::new(ctx, track));
                             }

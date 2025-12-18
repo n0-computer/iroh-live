@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use hang::{
     Timestamp, TrackConsumer,
@@ -29,39 +29,116 @@ pub struct SubscribeBroadcast {
     broadcast_name: String,
     #[debug("BroadcastConsumer")]
     broadcast: BroadcastConsumer,
-    #[debug("CatalogConsumer")]
-    catalog_consumer: CatalogConsumer,
-    catalog: Catalog,
+    // catalog_watcher: n0_watcher::Direct<CatalogWrapper>,
+    catalog_watchable: Watchable<CatalogWrapper>,
     shutdown: CancellationToken,
+    _catalog_task: Arc<AbortOnDropHandle<()>>,
+}
+
+#[derive(Debug, derive_more::PartialEq, derive_more::Eq, Default, Clone, derive_more::Deref)]
+pub struct CatalogWrapper {
+    #[eq(skip)]
+    #[deref]
+    inner: Arc<Catalog>,
+    seq: usize,
+}
+
+impl CatalogWrapper {
+    fn new(inner: Catalog, seq: usize) -> Self {
+        Self {
+            inner: Arc::new(inner),
+            seq,
+        }
+    }
+
+    pub fn video_renditions(&self) -> impl Iterator<Item = &str> {
+        let mut renditions: Vec<_> = self
+            .inner
+            .video
+            .as_ref()
+            .iter()
+            .map(|v| v.renditions.iter())
+            .flatten()
+            .map(|(name, config)| (name.as_str(), config.coded_width))
+            .collect();
+        renditions.sort_by(|a, b| a.1.cmp(&b.1));
+        renditions.into_iter().map(|(name, _w)| name)
+    }
+
+    pub fn audio_renditions(&self) -> impl Iterator<Item = &str> + '_ {
+        self.inner
+            .audio
+            .as_ref()
+            .into_iter()
+            .map(|v| v.renditions.iter())
+            .flatten()
+            .map(|(name, _config)| name.as_str())
+    }
+}
+
+impl CatalogWrapper {
+    pub fn into_inner(self) -> Arc<Catalog> {
+        self.inner
+    }
 }
 
 impl SubscribeBroadcast {
     pub async fn new(broadcast_name: String, broadcast: BroadcastConsumer) -> Result<Self> {
-        let catalog_track = broadcast.subscribe_track(&Catalog::default_track());
-        let catalog_consumer = CatalogConsumer::new(catalog_track);
-        let mut this = Self {
+        let shutdown = CancellationToken::new();
+
+        let (catalog_watchable, catalog_task) = {
+            let track = broadcast.subscribe_track(&Catalog::default_track());
+            let mut consumer = CatalogConsumer::new(track);
+            let initial_catalog = consumer
+                .next()
+                .await
+                .std_context("Broadcast closed before receiving catalog")?
+                .context("Catalog track closed before receiving catalog")?;
+            let watchable = Watchable::new(CatalogWrapper::new(initial_catalog, 0));
+
+            let task = tokio::spawn({
+                let shutdown = shutdown.clone();
+                let watchable = watchable.clone();
+                async move {
+                    for seq in 1.. {
+                        match consumer.next().await {
+                            Ok(Some(catalog)) => {
+                                watchable.set(CatalogWrapper::new(catalog, seq)).ok();
+                            }
+                            Ok(None) => {
+                                debug!("subscribed broadcast catalog track ended");
+                                break;
+                            }
+                            Err(err) => {
+                                debug!("subscribed broadcast closed: {err:#}");
+                                break;
+                            }
+                        }
+                    }
+                    shutdown.cancel();
+                }
+            });
+            (watchable, task)
+        };
+        Ok(Self {
             broadcast_name,
             broadcast,
-            catalog: Catalog::default(),
-            catalog_consumer,
+            catalog_watchable,
+            _catalog_task: Arc::new(AbortOnDropHandle::new(catalog_task)),
             shutdown: CancellationToken::new(),
-        };
-        this.update_catalog().await?;
-        Ok(this)
+        })
     }
 
     pub fn broadcast_name(&self) -> &str {
         &self.broadcast_name
     }
 
-    pub async fn update_catalog(&mut self) -> Result<()> {
-        self.catalog = self
-            .catalog_consumer
-            .next()
-            .await
-            .std_context("Failed to fetch catalog")?
-            .context("Empty catalog")?;
-        Ok(())
+    pub fn catalog_watcher(&mut self) -> n0_watcher::Direct<CatalogWrapper> {
+        self.catalog_watchable.watch()
+    }
+
+    pub fn catalog(&self) -> CatalogWrapper {
+        self.catalog_watchable.get()
     }
 
     pub fn watch<D: VideoDecoder>(&self) -> Result<WatchTrack> {
@@ -73,10 +150,11 @@ impl SubscribeBroadcast {
         playback_config: &DecodeConfig,
         quality: Quality,
     ) -> Result<WatchTrack> {
-        let info = self.catalog.video.as_ref().context("no video published")?;
+        let catalog = self.catalog().into_inner();
+        let info = catalog.video.as_ref().context("no video published")?;
         let track_name =
             select_video_rendition(&info.renditions, quality).context("no video renditions")?;
-        self.watch_rendition::<D>(playback_config, &track_name)
+        self.watch_rendition_inner::<D>(catalog, playback_config, &track_name)
     }
 
     pub fn watch_rendition<D: VideoDecoder>(
@@ -84,7 +162,17 @@ impl SubscribeBroadcast {
         playback_config: &DecodeConfig,
         name: &str,
     ) -> Result<WatchTrack> {
-        let video = self.catalog.video.as_ref().context("no video published")?;
+        let catalog = self.catalog().into_inner();
+        self.watch_rendition_inner::<D>(catalog, playback_config, name)
+    }
+
+    fn watch_rendition_inner<D: VideoDecoder>(
+        &self,
+        catalog: Arc<Catalog>,
+        playback_config: &DecodeConfig,
+        name: &str,
+    ) -> Result<WatchTrack> {
+        let video = catalog.video.as_ref().context("no video published")?;
         let config = video.renditions.get(name).context("rendition not found")?;
         let consumer = TrackConsumer::new(self.broadcast.subscribe_track(&Track {
             name: name.to_string(),
@@ -109,8 +197,8 @@ impl SubscribeBroadcast {
         quality: Quality,
         output: impl AudioSink,
     ) -> Result<AudioTrack> {
-        debug!(catalog=?self.catalog,"catalog");
-        let info = self.catalog.audio.as_ref().context("no audio published")?;
+        let catalog = self.catalog();
+        let info = catalog.audio.as_ref().context("no audio published")?;
         let track_name =
             select_audio_rendition(&info.renditions, quality).context("no audio renditions")?;
         self.listen_rendition::<D>(&track_name, output)
@@ -121,7 +209,17 @@ impl SubscribeBroadcast {
         name: &str,
         output: impl AudioSink,
     ) -> Result<AudioTrack> {
-        let audio = self.catalog.audio.as_ref().context("no video published")?;
+        let catalog = self.catalog().into_inner();
+        self.listen_rendition_inner::<D>(catalog, name, output)
+    }
+
+    fn listen_rendition_inner<D: AudioDecoder>(
+        &self,
+        catalog: Arc<Catalog>,
+        name: &str,
+        output: impl AudioSink,
+    ) -> Result<AudioTrack> {
+        let audio = catalog.audio.as_ref().context("no video published")?;
         let config = audio.renditions.get(name).context("rendition not found")?;
         let consumer = TrackConsumer::new(self.broadcast.subscribe_track(&Track {
             name: name.to_string(),
@@ -136,30 +234,6 @@ impl SubscribeBroadcast {
             self.shutdown.child_token(),
             span,
         )
-    }
-
-    pub fn video_renditions(&self) -> impl Iterator<Item = &str> {
-        let mut renditions: Vec<_> = self
-            .catalog
-            .video
-            .as_ref()
-            .into_iter()
-            .map(|v| v.renditions.iter())
-            .flatten()
-            .map(|(name, config)| (name.as_str(), config.coded_width))
-            .collect();
-        renditions.sort_by(|a, b| a.1.cmp(&b.1));
-        renditions.into_iter().map(|(name, _w)| name)
-    }
-
-    pub fn audio_renditions(&self) -> impl Iterator<Item = &str> {
-        self.catalog
-            .audio
-            .as_ref()
-            .into_iter()
-            .map(|v| v.renditions.iter())
-            .flatten()
-            .map(|(name, _config)| name.as_str())
     }
 
     pub fn closed(&self) -> impl Future<Output = ()> + 'static {
@@ -220,7 +294,7 @@ pub(crate) fn select_audio_rendition<'a, T>(
 pub struct AudioTrack {
     name: String,
     handle: Box<dyn AudioSinkHandle>,
-    _shutdown_token_guard: DropGuard,
+    shutdown_token: CancellationToken,
     _task_handle: AbortOnDropHandle<()>,
     _thread_handle: std::thread::JoinHandle<()>,
 }
@@ -256,10 +330,15 @@ impl AudioTrack {
         Ok(Self {
             name,
             handle,
+            shutdown_token: shutdown,
             _task_handle: AbortOnDropHandle::new(task),
             _thread_handle: thread,
-            _shutdown_token_guard: shutdown.drop_guard(),
         })
+    }
+
+    pub fn stopped(&self) -> impl Future<Output = ()> + 'static {
+        let shutdown_token = self.shutdown_token.clone();
+        async move { shutdown_token.cancelled().await }
     }
 
     pub fn rendition(&self) -> &str {
@@ -325,11 +404,18 @@ impl AudioTrack {
                 std::thread::sleep(sleep);
             }
         }
+        shutdown.cancel();
         Ok(())
     }
 
     pub fn handle(&self) -> &dyn AudioSinkHandle {
         self.handle.as_ref()
+    }
+}
+
+impl Drop for AudioTrack {
+    fn drop(&mut self) {
+        self.shutdown_token.cancel();
     }
 }
 

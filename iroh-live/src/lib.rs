@@ -15,3 +15,5 @@ pub use self::node::LiveNode;
 
 pub use iroh_moq as moq;
 pub use iroh_moq::ALPN;
+
+pub use hang::catalog;

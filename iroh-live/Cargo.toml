@@ -12,7 +12,7 @@ anyhow = "1.0.100"
 bytemuck = "1.24.0"
 byte-unit = { version = "5.1", features = ["bit"] }
 data-encoding = "2.9.0"
-derive_more = { version = "2.0.1", features = ["display", "debug"] }
+derive_more = { version = "2.0.1", features = ["display", "debug", "eq"] }
 ffmpeg-next = { version = "8.0.0", default-features = false, features = ["device", "format", "filter", "software-resampling", "software-scaling"] }
 ffmpeg-sys-next = { version = "8.0.1", optional = true }
 firewheel = { version = "0.9.1", features = ["cpal", "peak_meter_node", "std", "stream_nodes", "cpal_resample_inputs"] }
