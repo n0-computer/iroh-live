@@ -500,6 +500,7 @@ impl EncoderThread {
                     }
                     std::thread::sleep(interval.saturating_sub(start.elapsed()));
                 }
+                producer.inner.close();
                 if let Err(err) = source.stop() {
                     warn!("video source failed to stop: {err:#}");
                 }
