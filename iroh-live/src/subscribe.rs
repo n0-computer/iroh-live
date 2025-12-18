@@ -522,9 +522,8 @@ impl WatchTrack {
                     }
                     match source.pop_frame() {
                         Ok(Some(frame)) => {
-                            let frame = rescaler
-                                .process(&frame.to_ffmpeg())
-                                .expect("rescaler failed");
+                            let frame = frame.to_ffmpeg();
+                            let frame = rescaler.process(&frame).expect("rescaler failed");
                             let frame =
                                 DecodedFrame::from_ffmpeg(frame, frame_duration, start.elapsed());
                             let _ = frame_tx.blocking_send(frame);

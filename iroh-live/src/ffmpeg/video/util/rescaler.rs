@@ -31,7 +31,14 @@ impl Rescaler {
         self.target_width_height = Some((w, h));
     }
 
-    pub fn process(&mut self, frame: &FfmpegFrame) -> Result<&FfmpegFrame, ffmpeg::Error> {
+    pub fn process<'a: 'b, 'b>(
+        &'a mut self,
+        frame: &'b FfmpegFrame,
+    ) -> Result<&'b FfmpegFrame, ffmpeg::Error> {
+        // Short-circuit if possible.
+        if self.target_width_height.is_none() && self.target_format == frame.format() {
+            return Ok(frame);
+        }
         let (target_width, target_height) = self
             .target_width_height
             .unwrap_or_else(|| (frame.width(), frame.height()));
@@ -53,7 +60,7 @@ impl Rescaler {
             )?),
             Some(ref mut ctx) => ctx,
         };
-        // This resets the contxt if any parameters changed.
+        // This resets the context if any parameters changed.
         ctx.cached(
             frame.format(),
             frame.width(),
