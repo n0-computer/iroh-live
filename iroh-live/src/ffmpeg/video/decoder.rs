@@ -21,6 +21,10 @@ pub struct FfmpegVideoDecoder {
 }
 
 impl VideoDecoder for FfmpegVideoDecoder {
+    fn name(&self) -> &str {
+        self.codec.id().name()
+    }
+
     fn new(config: &hang::catalog::VideoConfig, playback_config: &DecodeConfig) -> Result<Self>
     where
         Self: Sized,

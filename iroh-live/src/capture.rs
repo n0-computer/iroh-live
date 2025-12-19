@@ -65,6 +65,10 @@ impl ScreenCapturer {
 }
 
 impl VideoSource for ScreenCapturer {
+    fn name(&self) -> &str {
+        "screen"
+    }
+
     fn format(&self) -> VideoFormat {
         VideoFormat {
             pixel_format: PixelFormat::Rgba,
@@ -130,7 +134,7 @@ impl CameraCapturer {
             None => {
                 // Order of cameras in nokhwa is reversed from usual order (primary camera is last).
                 let first_camera = cameras.last().unwrap();
-                info!("Using camera: {}", first_camera.human_name());
+                info!(": {}", first_camera.human_name());
                 first_camera.index().clone()
             }
             Some(camera_name) => match u32::from_str(&camera_name).ok() {
@@ -180,6 +184,9 @@ impl CameraCapturer {
 }
 
 impl VideoSource for CameraCapturer {
+    fn name(&self) -> &str {
+        "cam"
+    }
     fn format(&self) -> VideoFormat {
         VideoFormat {
             pixel_format: PixelFormat::Rgba,

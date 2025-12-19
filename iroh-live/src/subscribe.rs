@@ -314,7 +314,7 @@ impl AudioTrack {
         info!(?config, "audio thread start");
         let decoder = D::new(&config, output_format)?;
         let handle = output.handle();
-        let thread_name = format!("audio-dec-{}", name);
+        let thread_name = format!("adec-{}", name);
         let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             let span = span.clone();
@@ -498,7 +498,7 @@ impl WatchTrack {
     ) -> Self {
         let viewport = Watchable::new((1u32, 1u32));
         let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<DecodedFrame>(2);
-        let thread_name = format!("video-preview-{}", rendition);
+        let thread_name = format!("vpr-{:>4}-{:>4}", source.name(), rendition);
         let thread = spawn_thread(thread_name, {
             let mut viewport = viewport.watch();
             let shutdown = shutdown.clone();
@@ -571,7 +571,7 @@ impl WatchTrack {
         let _guard = span.enter();
         debug!(?config, "video decoder start");
         let decoder = D::new(config, playback_config)?;
-        let thread_name = format!("video-dec-{}", rendition);
+        let thread_name = format!("vdec-{}", rendition);
         let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             let span = span.clone();

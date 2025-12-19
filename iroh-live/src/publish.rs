@@ -350,6 +350,7 @@ impl VideoRenditions {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SharedVideoSource {
+    name: String,
     frames_rx: tokio::sync::watch::Receiver<Option<crate::av::VideoFrame>>,
     format: crate::av::VideoFormat,
     running: Arc<AtomicBool>,
@@ -359,10 +360,11 @@ pub(crate) struct SharedVideoSource {
 
 impl SharedVideoSource {
     fn new(mut source: impl VideoSource, shutdown: CancellationToken) -> Self {
+        let name = source.name().to_string();
         let format = source.format();
         let (tx, rx) = tokio::sync::watch::channel(None);
         let running = Arc::new(AtomicBool::new(false));
-        let thread = spawn_thread("shared-video-src", {
+        let thread = spawn_thread(format!("vshr-{}", source.name()), {
             let shutdown = shutdown.clone();
             let running = running.clone();
             move || {
@@ -402,6 +404,7 @@ impl SharedVideoSource {
             }
         });
         Self {
+            name,
             format,
             frames_rx: rx,
             thread: Arc::new(thread),
@@ -412,6 +415,10 @@ impl SharedVideoSource {
 }
 
 impl VideoSource for SharedVideoSource {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
     fn format(&self) -> crate::av::VideoFormat {
         self.format.clone()
     }
@@ -458,7 +465,8 @@ impl EncoderThread {
         shutdown: CancellationToken,
         span: Span,
     ) -> Self {
-        let handle = spawn_thread("video-enc", {
+        let thread_name = format!("venc-{:<4}-{:<4}", source.name(), encoder.name());
+        let handle = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             move || {
                 let _guard = span.enter();
@@ -521,7 +529,8 @@ impl EncoderThread {
         span: tracing::Span,
     ) -> Self {
         let sd = shutdown.clone();
-        let handle = spawn_thread("audio-enc", move || {
+        let thread_name = format!("aenc-{:<4}", encoder.name());
+        let handle = spawn_thread(thread_name, move || {
             let _guard = span.enter();
             tracing::debug!(config=?encoder.config(), "audio encoder thread start");
             let shutdown = sd;
