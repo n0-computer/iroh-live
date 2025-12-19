@@ -290,13 +290,7 @@ impl AudioDriver {
             cx.connect(aec_render_node, cx.graph_out_node_id(), layout, true)
                 .unwrap();
         }
-        #[cfg(target_os = "windows")]
-        {
-            // On Windows, connect graph input/output directly without AEC
-            let layout = &[(0, 0), (1, 1)];
-            cx.connect(cx.graph_in_node_id(), cx.graph_out_node_id(), layout, true)
-                .unwrap();
-        }
+        
 
         Self {
             cx,
