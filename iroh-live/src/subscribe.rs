@@ -314,7 +314,7 @@ impl AudioTrack {
         info!(?config, "audio thread start");
         let decoder = D::new(&config, output_format)?;
         let handle = output.handle();
-        let thread_name = format!("audio-dec-{}", name);
+        let thread_name = format!("adec-{}", name);
         let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             let span = span.clone();
@@ -498,7 +498,7 @@ impl WatchTrack {
     ) -> Self {
         let viewport = Watchable::new((1u32, 1u32));
         let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<DecodedFrame>(2);
-        let thread_name = format!("video-preview-{}", rendition);
+        let thread_name = format!("vpr-{:>4}-{:>4}", source.name(), rendition);
         let thread = spawn_thread(thread_name, {
             let mut viewport = viewport.watch();
             let shutdown = shutdown.clone();
@@ -512,7 +512,8 @@ impl WatchTrack {
                     return;
                 }
                 let start = Instant::now();
-                for i in 0.. {
+                for i in 1.. {
+                    // let t = Instant::now();
                     if shutdown.is_cancelled() {
                         break;
                     }
@@ -522,19 +523,23 @@ impl WatchTrack {
                     }
                     match source.pop_frame() {
                         Ok(Some(frame)) => {
+                            // trace!(t=?t.elapsed(), "pop");
                             let frame = frame.to_ffmpeg();
                             let frame = rescaler.process(&frame).expect("rescaler failed");
                             let frame =
                                 DecodedFrame::from_ffmpeg(frame, frame_duration, start.elapsed());
+                            // trace!(t=?t.elapsed(), "convert");
                             let _ = frame_tx.blocking_send(frame);
+                            // trace!(t=?t.elapsed(), "send");
                         }
                         Ok(None) => {}
                         Err(_) => break,
                     }
                     let expected_time = i * frame_duration;
                     let actual_time = start.elapsed();
-                    if expected_time < actual_time {
-                        std::thread::sleep(actual_time - expected_time);
+                    if expected_time > actual_time {
+                        std::thread::sleep(expected_time - actual_time);
+                        // trace!(t=?t.elapsed(), slept=?(actual_time - expected_time), ?expected_time, ?actual_time, "done");
                     }
                 }
                 if let Err(err) = source.stop() {
@@ -571,7 +576,7 @@ impl WatchTrack {
         let _guard = span.enter();
         debug!(?config, "video decoder start");
         let decoder = D::new(config, playback_config)?;
-        let thread_name = format!("video-dec-{}", rendition);
+        let thread_name = format!("vdec-{}", rendition);
         let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             let span = span.clone();

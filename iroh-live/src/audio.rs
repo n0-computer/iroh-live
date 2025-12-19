@@ -525,7 +525,7 @@ impl AudioDriver {
 impl AudioBackend {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel(32);
-        let _handle = spawn_thread("audio-driver", move || AudioDriver::new(rx).run());
+        let _handle = spawn_thread("audiodriver", move || AudioDriver::new(rx).run());
         Self { tx }
     }
 
