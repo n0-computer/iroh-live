@@ -512,7 +512,8 @@ impl WatchTrack {
                     return;
                 }
                 let start = Instant::now();
-                for i in 0.. {
+                for i in 1.. {
+                    // let t = Instant::now();
                     if shutdown.is_cancelled() {
                         break;
                     }
@@ -522,19 +523,23 @@ impl WatchTrack {
                     }
                     match source.pop_frame() {
                         Ok(Some(frame)) => {
+                            // trace!(t=?t.elapsed(), "pop");
                             let frame = frame.to_ffmpeg();
                             let frame = rescaler.process(&frame).expect("rescaler failed");
                             let frame =
                                 DecodedFrame::from_ffmpeg(frame, frame_duration, start.elapsed());
+                            // trace!(t=?t.elapsed(), "convert");
                             let _ = frame_tx.blocking_send(frame);
+                            // trace!(t=?t.elapsed(), "send");
                         }
                         Ok(None) => {}
                         Err(_) => break,
                     }
                     let expected_time = i * frame_duration;
                     let actual_time = start.elapsed();
-                    if expected_time < actual_time {
-                        std::thread::sleep(actual_time - expected_time);
+                    if expected_time > actual_time {
+                        std::thread::sleep(expected_time - actual_time);
+                        // trace!(t=?t.elapsed(), slept=?(actual_time - expected_time), ?expected_time, ?actual_time, "done");
                     }
                 }
                 if let Err(err) = source.stop() {
