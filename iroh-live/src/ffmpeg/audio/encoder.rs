@@ -90,6 +90,10 @@ impl AudioEncoder for OpusEncoder {
 }
 
 impl AudioEncoderInner for OpusEncoder {
+    fn name(&self) -> &str {
+        self.encoder.id().name()
+    }
+
     fn config(&self) -> AudioConfig {
         hang::catalog::AudioConfig {
             codec: hang::catalog::AudioCodec::Opus,

@@ -43,12 +43,17 @@ pub trait AudioEncoder: AudioEncoderInner {
         Self: Sized;
 }
 pub trait AudioEncoderInner: Send + 'static {
+    fn name(&self) -> &str;
     fn config(&self) -> hang::catalog::AudioConfig;
     fn push_samples(&mut self, samples: &[f32]) -> Result<()>;
     fn pop_packet(&mut self) -> Result<Option<hang::Frame>>;
 }
 
 impl AudioEncoderInner for Box<dyn AudioEncoder> {
+    fn name(&self) -> &str {
+        (&**self).name()
+    }
+
     fn config(&self) -> hang::catalog::AudioConfig {
         (&**self).config()
     }
@@ -95,6 +100,7 @@ pub struct VideoFrame {
 }
 
 pub trait VideoSource: Send + 'static {
+    fn name(&self) -> &str;
     fn format(&self) -> VideoFormat;
     fn pop_frame(&mut self) -> Result<Option<VideoFrame>>;
     fn start(&mut self) -> Result<()>;
@@ -108,12 +114,17 @@ pub trait VideoEncoder: VideoEncoderInner {
 }
 
 pub trait VideoEncoderInner: Send + 'static {
+    fn name(&self) -> &str;
     fn config(&self) -> hang::catalog::VideoConfig;
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()>;
     fn pop_packet(&mut self) -> Result<Option<hang::Frame>>;
 }
 
 impl VideoEncoderInner for Box<dyn VideoEncoder> {
+    fn name(&self) -> &str {
+        (&**self).name()
+    }
+
     fn config(&self) -> hang::catalog::VideoConfig {
         (&**self).config()
     }
@@ -131,6 +142,7 @@ pub trait VideoDecoder: Send + 'static {
     fn new(config: &hang::catalog::VideoConfig, playback_config: &DecodeConfig) -> Result<Self>
     where
         Self: Sized;
+    fn name(&self) -> &str;
     fn pop_frame(&mut self) -> Result<Option<DecodedFrame>>;
     fn push_packet(&mut self, packet: hang::Frame) -> Result<()>;
     fn set_viewport(&mut self, w: u32, h: u32);

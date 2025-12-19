@@ -20,11 +20,19 @@ use crate::{
 enum HwBackend {
     #[default]
     Software,
+    /// Linux
     Vaapi,
+    /// macOS
     Videotoolbox,
+    /// Nvidia GPUs
     Nvenc,
+    /// Intel GPUs
     Qsv,
+    /// AMD GPUs
     Amf,
+    // TODO:
+    // Add DirectX (Windows)
+    // Add MediaCodec (Android)
 }
 
 impl HwBackend {
@@ -310,30 +318,18 @@ impl av::VideoEncoder for H264Encoder {
 }
 
 impl av::VideoEncoderInner for H264Encoder {
+    fn name(&self) -> &str {
+        self.encoder.id().name()
+    }
+
     fn config(&self) -> hang::catalog::VideoConfig {
         self.video_config().expect("video_config available")
     }
 
     fn push_frame(&mut self, frame: av::VideoFrame) -> anyhow::Result<()> {
         trace!(len = frame.raw.len(), format=?frame.format, "push frame");
-        use ffmpeg_next::{format::Pixel, frame::Video as FfFrame};
-
-        // Wrap raw RGBA/BGRA data into an ffmpeg frame and encode
-        let pixel = match frame.format.pixel_format {
-            av::PixelFormat::Rgba => Pixel::RGBA,
-            av::PixelFormat::Bgra => Pixel::BGRA,
-        };
-        let [w, h] = frame.format.dimensions;
-        let mut ff = FfFrame::new(pixel, w, h);
-        let stride = ff.stride(0) as usize;
-        let row_bytes = (w as usize) * 4;
-        for y in 0..(h as usize) {
-            let dst_off = y * stride;
-            let src_off = y * row_bytes;
-            ff.data_mut(0)[dst_off..dst_off + row_bytes]
-                .copy_from_slice(&frame.raw[src_off..src_off + row_bytes]);
-        }
-        self.encode_frame(ff)
+        let frame = frame.to_ffmpeg();
+        self.encode_frame(frame)
     }
 
     fn pop_packet(&mut self) -> anyhow::Result<Option<hang::Frame>> {
