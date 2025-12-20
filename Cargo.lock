@@ -861,7 +861,7 @@ dependencies = [
  "bitflags 2.10.0",
  "cexpr",
  "clang-sys",
- "itertools 0.12.1",
+ "itertools",
  "lazy_static",
  "lazycell",
  "proc-macro2",
@@ -881,9 +881,7 @@ dependencies = [
  "bitflags 2.10.0",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
- "log",
- "prettyplease",
+ "itertools",
  "proc-macro2",
  "quote",
  "regex",
@@ -2798,7 +2796,7 @@ dependencies = [
  "libc",
  "log",
  "rustversion",
- "windows-link 0.2.1",
+ "windows-link 0.1.3",
  "windows-result 0.4.1",
 ]
 
@@ -3970,15 +3968,6 @@ name = "itertools"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
-dependencies = [
- "either",
-]
-
-[[package]]
-name = "itertools"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
 dependencies = [
  "either",
 ]
@@ -8239,7 +8228,7 @@ checksum = "29747301e4fceb4ce1073179b5001f3e50b29d759e769fe3bfdaa3e7f6bce09d"
 dependencies = [
  "anyhow",
  "autotools",
- "bindgen 0.72.1",
+ "bindgen 0.65.1",
  "cc",
  "fs_extra",
  "pkg-config",
