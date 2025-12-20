@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, Ordering},
@@ -246,8 +246,8 @@ impl AudioRenditions {
         }
     }
 
-    pub fn available_renditions(&self) -> Result<HashMap<String, AudioConfig>> {
-        let mut renditions = HashMap::new();
+    pub fn available_renditions(&self) -> Result<BTreeMap<String, AudioConfig>> {
+        let mut renditions = BTreeMap::new();
         for (name, preset) in self.renditions.iter() {
             // We need to create the encoder to get the config, even though we drop it
             // again (it will be created on deman). Not ideal, but works for now.
@@ -310,8 +310,8 @@ impl VideoRenditions {
         }
     }
 
-    pub fn available_renditions(&self) -> Result<HashMap<String, VideoConfig>> {
-        let mut renditions = HashMap::new();
+    pub fn available_renditions(&self) -> Result<BTreeMap<String, VideoConfig>> {
+        let mut renditions = BTreeMap::new();
         for (name, preset) in self.renditions.iter() {
             // We need to create the encoder to get the config, even though we drop it
             // again (it will be created on deman). Not ideal, but works for now.

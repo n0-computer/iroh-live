@@ -52,3 +52,10 @@ impl LiveTicket {
         })
     }
 }
+
+impl std::str::FromStr for LiveTicket {
+    type Err = n0_error::AnyError;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        LiveTicket::deserialize(s)
+    }
+}
