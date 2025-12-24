@@ -18,7 +18,7 @@ It uses [moq-rs](https://github.com/kixelated/moq) to transfer audio and video s
   * Capture screens (with [xcap](https://github.com/nashaofu/xcap/))
   * Encode and decode video (h264) and audio (Opus) using [ffmpeg](https://docs.rs/ffmpeg-next/latest/ffmpeg_next/). Video encoding is hardware accelerated on supported platforms.
   * Support multiple renditions and on-demand switching of the encoding
-  
+
 There's still bugs and a lot of missing optimizations. This is an early, work-in-progress preview!
 
 ## Building
@@ -33,6 +33,12 @@ By default `ffmpeg` is dynamically linked. Enable the `static` feature to build 
 
 * For building with `static` feature: `apt install nasm pkg-config`
 
+##### Windows
+
+Windows builds require MSYS2 with the UCRT64 environment. You'll need to install MSYS2, Rust, and various build dependencies including FFmpeg, clang, and webrtc-audio-processing.
+
+See [BUILD-WINDOWS.md](BUILD-WINDOWS.md) for detailed setup instructions.
+
 ## Demo and examples
 
 Check out the [`rooms`](iroh-live/examples/rooms.rs) example:
@@ -42,6 +48,7 @@ cargo run --release --example rooms
 ```
 
 This will print a *room ticket*. Copy this to another device, and run:
+
 ```
 cargo run --release --example rooms -- <TICKET>
 ```
@@ -60,10 +67,10 @@ Copyright 2025 N0, INC.
 
 This project is licensed under either of
 
- * Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or
-   http://www.apache.org/licenses/LICENSE-2.0)
- * MIT license ([LICENSE-MIT](LICENSE-MIT) or
-   http://opensource.org/licenses/MIT)
+* Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or
+  http://www.apache.org/licenses/LICENSE-2.0)
+* MIT license ([LICENSE-MIT](LICENSE-MIT) or
+  http://opensource.org/licenses/MIT)
 
 at your option.
 

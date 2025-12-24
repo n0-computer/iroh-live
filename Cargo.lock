@@ -3740,6 +3740,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "webrtc-audio-processing",
+ "windows 0.58.0",
  "xcap",
 ]
 

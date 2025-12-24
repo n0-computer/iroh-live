@@ -28,6 +28,9 @@ fn main() -> Result<()> {
         .context("missing ticket")?;
     let ticket = LiveTicket::deserialize(&ticket_str)?;
 
+    // Initialize platform requirements for capture (COM on Windows)
+    iroh_live::capture::init();
+
     let audio_ctx = AudioBackend::new();
 
     println!("connecting to {ticket} ...");

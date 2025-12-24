@@ -34,6 +34,9 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     ffmpeg_log_init();
     let cli = Cli::parse();
+    
+    // Initialize platform requirements for capture (COM on Windows)
+    iroh_live::capture::init();
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
