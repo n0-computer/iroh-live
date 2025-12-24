@@ -498,7 +498,7 @@ impl WatchTrack {
         }
     }
 
-    pub(crate) fn from_video_source(
+    pub fn from_video_source(
         rendition: String,
         shutdown: CancellationToken,
         mut source: impl VideoSource,
