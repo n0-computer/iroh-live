@@ -5,10 +5,12 @@ use eframe::egui::{self, Color32, Id, Vec2};
 use iroh::{Endpoint, EndpointId};
 use iroh_live::{
     Live,
-    audio::AudioBackend,
-    ffmpeg::{FfmpegDecoders, FfmpegVideoDecoder, ffmpeg_log_init},
+    media::{
+        audio::AudioBackend,
+        ffmpeg::{FfmpegDecoders, FfmpegVideoDecoder, ffmpeg_log_init},
+        subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
+    },
     moq::MoqSession,
-    subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
     ticket::LiveTicket,
     util::StatsSmoother,
 };

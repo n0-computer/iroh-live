@@ -6,14 +6,16 @@ use iroh::{Endpoint, protocol::Router};
 use iroh_gossip::{Gossip, TopicId};
 use iroh_live::{
     Live,
-    audio::AudioBackend,
-    av::{AudioPreset, VideoPreset},
-    capture::{CameraCapturer, ScreenCapturer},
-    ffmpeg::{FfmpegDecoders, FfmpegVideoDecoder, H264Encoder, OpusEncoder, ffmpeg_log_init},
+    media::{
+        audio::AudioBackend,
+        av::{AudioPreset, VideoPreset},
+        capture::{CameraCapturer, ScreenCapturer},
+        ffmpeg::{FfmpegDecoders, FfmpegVideoDecoder, H264Encoder, OpusEncoder, ffmpeg_log_init},
+        publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
+        subscribe::{AudioTrack, AvRemoteTrack, SubscribeBroadcast, WatchTrack},
+    },
     moq::MoqSession,
-    publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
     rooms::{Room, RoomEvent, RoomTicket},
-    subscribe::{AudioTrack, AvRemoteTrack, SubscribeBroadcast, WatchTrack},
     util::StatsSmoother,
 };
 use n0_error::{Result, StdResultExt, anyerr};
