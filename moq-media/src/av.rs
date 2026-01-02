@@ -10,6 +10,29 @@ pub struct AudioFormat {
     pub channel_count: u32,
 }
 
+impl AudioFormat {
+    pub fn mono_48k() -> Self {
+        Self {
+            sample_rate: 48_000,
+            channel_count: 1,
+        }
+    }
+
+    pub fn stereo_48k() -> Self {
+        Self {
+            sample_rate: 48_000,
+            channel_count: 2,
+        }
+    }
+
+    pub fn from_hang_config(config: &hang::catalog::AudioConfig) -> Self {
+        Self {
+            channel_count: config.channel_count,
+            sample_rate: config.sample_rate,
+        }
+    }
+}
+
 pub trait Decoders {
     type Audio: AudioDecoder;
     type Video: VideoDecoder;
@@ -32,6 +55,8 @@ pub trait AudioSinkHandle: Send + 'static {
     fn resume(&self);
     fn is_paused(&self) -> bool;
     fn toggle_pause(&self);
+    /// Smoothed peak, normalized to 0..1.
+    // TODO: document how smoothing and normalization are expected
     fn smoothed_peak_normalized(&self) -> Option<f32> {
         None
     }
@@ -159,24 +184,6 @@ impl DecodedFrame {
     }
 }
 
-#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
-pub enum TrackKind {
-    Audio,
-    Video,
-}
-
-impl TrackKind {
-    pub fn from_name(name: &str) -> Option<Self> {
-        if name.starts_with("audio-") {
-            Some(Self::Audio)
-        } else if name.starts_with("video-") {
-            Some(Self::Video)
-        } else {
-            None
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Display, EnumString, VariantNames)]
 #[strum(serialize_all = "lowercase")]
 pub enum AudioCodec {
@@ -253,6 +260,6 @@ pub struct DecodeConfig {
 
 #[derive(Clone, Default)]
 pub struct PlaybackConfig {
-    pub playback: DecodeConfig,
+    pub decode_config: DecodeConfig,
     pub quality: Quality,
 }
