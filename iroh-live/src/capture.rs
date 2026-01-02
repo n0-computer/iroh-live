@@ -4,9 +4,7 @@ use anyhow::{Context, Result};
 use nokhwa::{
     nokhwa_initialize,
     pixel_format::RgbFormat,
-    utils::{
-        CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType, Resolution,
-    },
+    utils::{CameraFormat, FrameFormat, RequestedFormat, RequestedFormatType, Resolution},
 };
 use tracing::{debug, info, trace, warn};
 use xcap::{Monitor, VideoRecorder};
@@ -15,6 +13,8 @@ use crate::{
     av::{PixelFormat, VideoFormat, VideoFrame, VideoSource},
     ffmpeg::util::MjpgDecoder,
 };
+
+pub use nokhwa::utils::{CameraIndex, CameraInfo};
 
 pub struct ScreenCapturer {
     pub(crate) _monitor: Monitor,
@@ -119,16 +119,11 @@ pub struct CameraCapturer {
 
 impl CameraCapturer {
     pub fn new() -> Result<Self> {
-        info!("Initializing camera capturer (nokhwa)");
-        nokhwa_initialize(|granted| {
-            debug!("User selected camera access: {}", granted);
-        });
-
-        let cameras = nokhwa::query(nokhwa::utils::ApiBackend::Auto)?;
+        let cameras = Self::list()?;
         if cameras.is_empty() {
             return Err(anyhow::anyhow!("No cameras available"));
         }
-        info!("Available cameras: {cameras:?}");
+        info!("Available cameras: {cameras:#?}");
 
         let camera_index = match std::env::var("IROH_LIVE_CAMERA").ok() {
             None => {
@@ -142,6 +137,20 @@ impl CameraCapturer {
                 None => CameraIndex::String(camera_name),
             },
         };
+        Self::new_with(camera_index)
+    }
+
+    pub fn list() -> Result<Vec<CameraInfo>> {
+        info!("Initializing camera capturer (nokhwa)");
+        nokhwa_initialize(|granted| {
+            debug!("User selected camera access: {}", granted);
+        });
+
+        let cameras = nokhwa::query(nokhwa::utils::ApiBackend::Auto)?;
+        Ok(cameras)
+    }
+
+    pub fn new_with(camera_index: CameraIndex) -> Result<Self> {
         let mut camera = nokhwa::Camera::new(
             camera_index,
             RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution),

@@ -10,6 +10,7 @@ use crate::{
 };
 use moq_lite::BroadcastProducer;
 use n0_error::{AnyError, Result};
+use nokhwa::utils::CameraInfo;
 use tracing::{info, warn};
 
 #[derive(Debug, strum::Display, strum::EnumString)]
@@ -60,13 +61,17 @@ impl RoomPublisherSync {
         }
     }
 
-    pub fn set_state(&mut self, state: &PublishOpts) -> Result<(), Vec<(StreamKind, AnyError)>> {
+    pub fn set_state(
+        &mut self,
+        state: &PublishOpts,
+        camera: &Option<CameraInfo>,
+    ) -> Result<(), Vec<(StreamKind, AnyError)>> {
         info!(new=?state, old=?self.state, "set publish state");
         let errors = [
             self.set_audio(state.audio)
                 .err()
                 .map(|e| (StreamKind::Microphone, e)),
-            self.set_camera(state.camera)
+            self.set_camera(state.camera, camera)
                 .err()
                 .map(|e| (StreamKind::Camera, e)),
             self.set_screen(state.screen)
@@ -99,11 +104,14 @@ impl RoomPublisherSync {
         self.screen.clone()
     }
 
-    pub fn set_camera(&mut self, enable: bool) -> Result<()> {
+    pub fn set_camera(&mut self, enable: bool, camera: &Option<CameraInfo>) -> Result<()> {
         if self.state.camera != enable {
             if enable {
-                let camera = CameraCapturer::new()?;
-                let renditions = VideoRenditions::new::<H264Encoder>(camera, VideoPreset::all());
+                let capturer = match camera {
+                    Some(cam) => CameraCapturer::new_with(cam.index().clone())?,
+                    None => CameraCapturer::new()?,
+                };
+                let renditions = VideoRenditions::new::<H264Encoder>(capturer, VideoPreset::all());
                 self.ensure_camera();
                 self.camera
                     .as_ref()
