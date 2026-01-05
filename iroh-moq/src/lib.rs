@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error_span, info, instrument};
 use web_transport_iroh::SessionError;
 
-pub const ALPN: &[u8] = b"iroh-live/1";
+pub const ALPN: &[u8] = moq_lite::lite::ALPN.as_bytes();
 
 #[stack_error(derive, add_meta, from_sources)]
 #[allow(private_interfaces)]
