@@ -8,13 +8,19 @@ use std::{
     task::{Context, Poll, ready},
 };
 
-use bytes::Bytes;
-use n0_future::{FuturesUnordered, Stream, StreamExt};
-use quinn::ConnectionStats;
+use bytes::{Bytes, BytesMut};
+use iroh::endpoint::Connection;
+use n0_future::{
+    FuturesUnordered,
+    stream::{Stream, StreamExt},
+};
 use url::Url;
-use web_transport_proto::{Frame, StreamUni, VarInt};
 
-use crate::{RecvStream, SendStream, SessionError, WebTransportError};
+use crate::{
+    ClientError, Connect, RecvStream, SendStream, SessionError, Settings, WebTransportError,
+};
+
+use web_transport_proto::{Frame, StreamUni, VarInt};
 
 /// An established WebTransport session, acting like a full QUIC connection. See [`iroh::endpoint::Connection`].
 ///
@@ -27,22 +33,56 @@ use crate::{RecvStream, SendStream, SessionError, WebTransportError};
 /// These should be safe to use with WebTransport, but file a PR if you find one that isn't.
 #[derive(Clone)]
 pub struct Session {
-    conn: iroh::endpoint::Connection,
-
-    // The accept logic is stateful, so use an Arc<Mutex> to share it.
-    accept: Option<Arc<Mutex<SessionAccept>>>,
-    url: Url,
+    conn: Connection,
+    h3: Option<H3SessionState>,
 }
 
 impl Session {
-    pub fn stats(&self) -> ConnectionStats {
-        self.conn.stats()
+    /// Create a new session from a raw QUIC connection and a URL.
+    ///
+    /// This is used to pretend like a QUIC connection is a WebTransport session.
+    /// It's a hack, but it makes it much easier to support WebTransport and raw QUIC simultaneously.
+    pub fn raw(conn: Connection) -> Self {
+        Self { conn, h3: None }
+    }
+
+    /// Connect using an established QUIC connection if you want to create the connection yourself.
+    /// This will only work with a brand new QUIC connection using the HTTP/3 ALPN.
+    pub async fn connect_h3(conn: Connection, url: Url) -> Result<Session, ClientError> {
+        // Perform the H3 handshake by sending/reciving SETTINGS frames.
+        let settings = Settings::connect(&conn).await?;
+
+        // Send the HTTP/3 CONNECT request.
+        let connect = Connect::open(&conn, url).await?;
+
+        Ok(Self::new_h3(conn, settings, connect))
+    }
+
+    pub fn new_h3(conn: Connection, settings: Settings, connect: Connect) -> Self {
+        let h3 = H3SessionState::connect(conn.clone(), settings, &connect);
+        let this = Session { conn, h3: Some(h3) };
+        // Run a background task to check if the connect stream is closed.
+        let this2 = this.clone();
+        tokio::spawn(async move {
+            let (code, reason) = connect.run_closed().await;
+            // TODO We shouldn't be closing the QUIC connection with the same error.
+            this2.close(code, reason.as_bytes());
+        });
+        this
+    }
+
+    pub fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
+    pub fn url(&self) -> Option<&Url> {
+        self.h3.as_ref().map(|s| &s.url)
     }
 
     /// Accept a new unidirectional stream. See [`iroh::endpoint::Connection::accept_uni`].
     pub async fn accept_uni(&self) -> Result<RecvStream, SessionError> {
-        if let Some(accept) = &self.accept {
-            poll_fn(|cx| accept.lock().unwrap().poll_accept_uni(cx)).await
+        if let Some(h3) = &self.h3 {
+            poll_fn(|cx| h3.accept.lock().unwrap().poll_accept_uni(cx)).await
         } else {
             self.conn
                 .accept_uni()
@@ -54,8 +94,8 @@ impl Session {
 
     /// Accept a new bidirectional stream. See [`iroh::endpoint::Connection::accept_bi`].
     pub async fn accept_bi(&self) -> Result<(SendStream, RecvStream), SessionError> {
-        if let Some(accept) = &self.accept {
-            poll_fn(|cx| accept.lock().unwrap().poll_accept_bi(cx)).await
+        if let Some(h3) = &self.h3 {
+            poll_fn(|cx| h3.accept.lock().unwrap().poll_accept_bi(cx)).await
         } else {
             self.conn
                 .accept_bi()
@@ -67,29 +107,23 @@ impl Session {
 
     /// Open a new unidirectional stream. See [`iroh::endpoint::Connection::open_uni`].
     pub async fn open_uni(&self) -> Result<SendStream, SessionError> {
-        let send = self.conn.open_uni().await?;
+        let mut send = self.conn.open_uni().await?;
 
-        // Set the stream priority to max and then write the stream header.
-        // Otherwise the application could write data with lower priority than the header, resulting in queuing.
-        // Also the header is very important for determining the session ID without reliable reset.
-        send.set_priority(i32::MAX).ok();
+        if let Some(h3) = self.h3.as_ref() {
+            write_full_with_max_prio(&mut send, &h3.header_uni).await?;
+        }
 
-        // Reset the stream priority back to the default of 0.
-        send.set_priority(0).ok();
         Ok(SendStream::new(send))
     }
 
     /// Open a new bidirectional stream. See [`iroh::endpoint::Connection::open_bi`].
     pub async fn open_bi(&self) -> Result<(SendStream, RecvStream), SessionError> {
-        let (send, recv) = self.conn.open_bi().await?;
+        let (mut send, recv) = self.conn.open_bi().await?;
 
-        // Set the stream priority to max and then write the stream header.
-        // Otherwise the application could write data with lower priority than the header, resulting in queuing.
-        // Also the header is very important for determining the session ID without reliable reset.
-        send.set_priority(i32::MAX).ok();
+        if let Some(h3) = self.h3.as_ref() {
+            write_full_with_max_prio(&mut send, &h3.header_bi).await?;
+        }
 
-        // Reset the stream priority back to the default of 0.
-        send.set_priority(0).ok();
         Ok((SendStream::new(send), RecvStream::new(recv)))
     }
 
@@ -99,7 +133,29 @@ impl Session {
     /// peer over the connection.
     /// It waits for a datagram to become available and returns the received bytes.
     pub async fn read_datagram(&self) -> Result<Bytes, SessionError> {
-        let datagram = self.conn.read_datagram().await?;
+        let mut datagram = self
+            .conn
+            .read_datagram()
+            .await
+            .map_err(SessionError::from)?;
+
+        let datagram = if let Some(h3) = self.h3.as_ref() {
+            let mut cursor = Cursor::new(&datagram);
+
+            // We have to check and strip the session ID from the datagram.
+            let actual_id =
+                VarInt::decode(&mut cursor).map_err(|_| WebTransportError::UnknownSession)?;
+            if actual_id != h3.session_id {
+                return Err(WebTransportError::UnknownSession.into());
+            }
+
+            // Return the datagram without the session ID.
+            let datagram = datagram.split_off(cursor.position() as usize);
+            datagram
+        } else {
+            datagram
+        };
+
         Ok(datagram)
     }
 
@@ -108,7 +164,19 @@ impl Session {
     /// Datagrams are unreliable and may be dropped or delivered out of order.
     /// The data must be smaller than [`max_datagram_size`](Self::max_datagram_size).
     pub fn send_datagram(&self, data: Bytes) -> Result<(), SessionError> {
-        self.conn.send_datagram(data)?;
+        let datagram = if let Some(h3) = self.h3.as_ref() {
+            // Unfortunately, we need to allocate/copy each datagram because of the Quinn API.
+            // Pls go +1 if you care: https://github.com/quinn-rs/quinn/issues/1724
+            let mut buf = BytesMut::with_capacity(h3.header_datagram.len() + data.len());
+            // Prepend the datagram with the header indicating the session ID.
+            buf.extend_from_slice(&h3.header_datagram);
+            buf.extend_from_slice(&data);
+            buf.into()
+        } else {
+            data
+        };
+
+        self.conn.send_datagram(datagram)?;
 
         Ok(())
     }
@@ -120,12 +188,24 @@ impl Session {
             .conn
             .max_datagram_size()
             .expect("datagram support is required");
-        mtu
+        if let Some(h3) = self.h3.as_ref() {
+            mtu.saturating_sub(h3.header_datagram.len())
+        } else {
+            mtu
+        }
     }
 
     /// Immediately close the connection with an error code and reason. See [`iroh::endpoint::Connection::close`].
     pub fn close(&self, code: u32, reason: &[u8]) {
-        self.conn.close(code.into(), reason)
+        let code = if self.h3.is_some() {
+            web_transport_proto::error_to_http3(code)
+                .try_into()
+                .unwrap()
+        } else {
+            code.into()
+        };
+
+        self.conn.close(code, reason)
     }
 
     /// Wait until the session is closed, returning the error. See [`iroh::endpoint::Connection::closed`].
@@ -133,38 +213,32 @@ impl Session {
         self.conn.closed().await.into()
     }
 
-    pub fn conn(&self) -> &iroh::endpoint::Connection {
-        &self.conn
-    }
-
-    pub fn remote_id(&self) -> iroh::EndpointId {
-        self.conn.remote_id()
-    }
-
     /// Return why the session was closed, or None if it's not closed. See [`iroh::endpoint::Connection::close_reason`].
     pub fn close_reason(&self) -> Option<SessionError> {
         self.conn.close_reason().map(Into::into)
     }
+}
 
-    /// Create a new session from a raw QUIC connection and a URL.
-    ///
-    /// This is used to pretend like a QUIC connection is a WebTransport session.
-    /// It's a hack, but it makes it much easier to support WebTransport and raw QUIC simultaneously.
-    pub fn raw(conn: iroh::endpoint::Connection, url: Url) -> Self {
-        Self {
-            conn,
-            accept: None,
-            url,
-        }
-    }
-
-    pub fn url(&self) -> &Url {
-        &self.url
-    }
+async fn write_full_with_max_prio(
+    send: &mut quinn::SendStream,
+    buf: &[u8],
+) -> Result<(), SessionError> {
+    // Set the stream priority to max and then write the stream header.
+    // Otherwise the application could write data with lower priority than the header, resulting in queuing.
+    // Also the header is very important for determining the session ID without reliable reset.
+    send.set_priority(i32::MAX).ok();
+    let res = match send.write_all(buf).await {
+        Ok(_) => Ok(()),
+        Err(quinn::WriteError::ConnectionLost(err)) => Err(err.into()),
+        Err(err) => Err(WebTransportError::WriteError(err).into()),
+    };
+    // Reset the stream priority back to the default of 0.
+    send.set_priority(0).ok();
+    res
 }
 
 impl Deref for Session {
-    type Target = iroh::endpoint::Connection;
+    type Target = Connection;
 
     fn deref(&self) -> &Self::Target {
         &self.conn
@@ -185,6 +259,54 @@ impl PartialEq for Session {
 
 impl Eq for Session {}
 
+#[derive(Clone)]
+struct H3SessionState {
+    url: Url,
+    // The session ID, as determined by the stream ID of the connect request.
+    session_id: VarInt,
+    // Cache the headers in front of each stream we open.
+    header_uni: Vec<u8>,
+    header_bi: Vec<u8>,
+    header_datagram: Vec<u8>,
+
+    // Keep a reference to the settings and connect stream to avoid closing them until dropped.
+    #[allow(dead_code)]
+    settings: Arc<Settings>,
+    // The accept logic is stateful, so use an Arc<Mutex> to share it.
+    accept: Arc<Mutex<H3SessionAccept>>,
+}
+
+impl H3SessionState {
+    fn connect(conn: Connection, settings: Settings, connect: &Connect) -> Self {
+        // The session ID is the stream ID of the CONNECT request.
+        let session_id = connect.session_id();
+
+        // Cache the tiny header we write in front of each stream we open.
+        let mut header_uni = Vec::new();
+        StreamUni::WEBTRANSPORT.encode(&mut header_uni);
+        session_id.encode(&mut header_uni);
+
+        let mut header_bi = Vec::new();
+        Frame::WEBTRANSPORT.encode(&mut header_bi);
+        session_id.encode(&mut header_bi);
+
+        let mut header_datagram = Vec::new();
+        session_id.encode(&mut header_datagram);
+
+        // Accept logic is stateful, so use an Arc<Mutex> to share it.
+        let accept = H3SessionAccept::new(conn, session_id);
+        Self {
+            url: connect.url().clone(),
+            session_id,
+            header_uni,
+            header_bi,
+            header_datagram,
+            settings: Arc::new(settings),
+            accept: Arc::new(Mutex::new(accept)),
+        }
+    }
+}
+
 // Type aliases just so clippy doesn't complain about the complexity.
 type AcceptUni =
     dyn Stream<Item = Result<quinn::RecvStream, iroh::endpoint::ConnectionError>> + Send;
@@ -195,7 +317,7 @@ type PendingBi = dyn Future<Output = Result<Option<(quinn::SendStream, quinn::Re
     + Send;
 
 // Logic just for accepting streams, which is annoying because of the stream header.
-pub struct SessionAccept {
+pub struct H3SessionAccept {
     session_id: VarInt,
 
     // We also need to keep a reference to the qpack streams if the endpoint (incorrectly) creates them.
@@ -211,7 +333,31 @@ pub struct SessionAccept {
     pending_bi: FuturesUnordered<Pin<Box<PendingBi>>>,
 }
 
-impl SessionAccept {
+impl H3SessionAccept {
+    pub(crate) fn new(conn: Connection, session_id: VarInt) -> Self {
+        // Create a stream that just outputs new streams, so it's easy to call from poll.
+        let accept_uni = Box::pin(n0_future::stream::unfold(conn.clone(), |conn| async {
+            Some((conn.accept_uni().await, conn))
+        }));
+
+        let accept_bi = Box::pin(n0_future::stream::unfold(conn, |conn| async {
+            Some((conn.accept_bi().await, conn))
+        }));
+
+        Self {
+            session_id,
+
+            qpack_decoder: None,
+            qpack_encoder: None,
+
+            accept_uni,
+            accept_bi,
+
+            pending_uni: FuturesUnordered::new(),
+            pending_bi: FuturesUnordered::new(),
+        }
+    }
+
     // This is poll-based because we accept and decode streams in parallel.
     // In async land I would use tokio::JoinSet, but that requires a runtime.
     // It's better to use FuturesUnordered instead because it's agnostic.
@@ -232,7 +378,12 @@ impl SessionAccept {
 
             // Poll the list of pending streams.
             let (typ, recv) = match ready!(self.pending_uni.poll_next(cx)) {
-                Some(res) => res?,
+                Some(Ok(res)) => res,
+                Some(Err(err)) => {
+                    // Ignore the error, the stream was probably reset early.
+                    tracing::warn!("failed to decode unidirectional stream: {err:?}");
+                    continue;
+                }
                 None => return Poll::Pending,
             };
 
@@ -262,12 +413,16 @@ impl SessionAccept {
         expected_session: VarInt,
     ) -> Result<(StreamUni, quinn::RecvStream), SessionError> {
         // Read the VarInt at the start of the stream.
-        let typ = Self::read_varint(&mut recv).await?;
+        let typ = VarInt::read(&mut recv)
+            .await
+            .map_err(|_| WebTransportError::UnknownSession)?;
         let typ = StreamUni(typ);
 
         if typ == StreamUni::WEBTRANSPORT {
             // Read the session_id and validate it
-            let session_id = Self::read_varint(&mut recv).await?;
+            let session_id = VarInt::read(&mut recv)
+                .await
+                .map_err(|_| WebTransportError::UnknownSession)?;
             if session_id != expected_session {
                 return Err(WebTransportError::UnknownSession.into());
             }
@@ -294,7 +449,12 @@ impl SessionAccept {
 
             // Poll the list of pending streams.
             let res = match ready!(self.pending_bi.poll_next(cx)) {
-                Some(res) => res?,
+                Some(Ok(res)) => res,
+                Some(Err(err)) => {
+                    // Ignore the error, the stream was probably reset early.
+                    tracing::warn!("failed to decode bidirectional stream: {err:?}");
+                    continue;
+                }
                 None => return Poll::Pending,
             };
 
@@ -315,49 +475,23 @@ impl SessionAccept {
         mut recv: quinn::RecvStream,
         expected_session: VarInt,
     ) -> Result<Option<(quinn::SendStream, quinn::RecvStream)>, SessionError> {
-        let typ = Self::read_varint(&mut recv).await?;
+        let typ = VarInt::read(&mut recv)
+            .await
+            .map_err(|_| WebTransportError::UnknownSession)?;
         if Frame(typ) != Frame::WEBTRANSPORT {
             tracing::debug!("ignoring unknown bidirectional stream: {typ:?}");
             return Ok(None);
         }
 
         // Read the session ID and validate it.
-        let session_id = Self::read_varint(&mut recv).await?;
+        let session_id = VarInt::read(&mut recv)
+            .await
+            .map_err(|_| WebTransportError::UnknownSession)?;
         if session_id != expected_session {
             return Err(WebTransportError::UnknownSession.into());
         }
 
         Ok(Some((send, recv)))
-    }
-
-    // Read into the provided buffer and cast any errors to SessionError.
-    async fn read_full(recv: &mut quinn::RecvStream, buf: &mut [u8]) -> Result<(), SessionError> {
-        match recv.read_exact(buf).await {
-            Ok(()) => Ok(()),
-            Err(quinn::ReadExactError::ReadError(quinn::ReadError::ConnectionLost(err))) => {
-                Err(err.into())
-            }
-            Err(err) => Err(WebTransportError::ReadError(err).into()),
-        }
-    }
-
-    // Read a varint from the stream.
-    async fn read_varint(recv: &mut quinn::RecvStream) -> Result<VarInt, SessionError> {
-        // 8 bytes is the max size of a varint
-        let mut buf = [0; 8];
-
-        // Read the first byte because it includes the length.
-        Self::read_full(recv, &mut buf[0..1]).await?;
-
-        // 0b00 = 1, 0b01 = 2, 0b10 = 4, 0b11 = 8
-        let size = 1 << (buf[0] >> 6);
-        Self::read_full(recv, &mut buf[1..size]).await?;
-
-        // Use a cursor to read the varint on the stack.
-        let mut cursor = Cursor::new(&buf[..size]);
-        let v = VarInt::decode(&mut cursor).unwrap();
-
-        Ok(v)
     }
 }
 
@@ -387,7 +521,7 @@ impl web_transport_trait::Session for Session {
     }
 
     async fn closed(&self) -> Self::Error {
-        self.conn.closed().await.into()
+        Self::closed(self).await
     }
 
     fn send_datagram(&self, data: Bytes) -> Result<(), Self::Error> {
