@@ -18,7 +18,7 @@ use n0_future::{
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error_span, info, instrument};
-use web_transport_iroh::{Request, SessionError};
+use web_transport_iroh::SessionError;
 
 pub const ALPN: &[u8] = b"iroh-live/1";
 
@@ -133,9 +133,8 @@ pub struct MoqProtocolHandler {
 
 impl MoqProtocolHandler {
     async fn handle_connection(&self, connection: Connection) -> Result<(), Error> {
-        let request = Request::accept(connection).await?;
-        info!(url=%request.url(), "accepted");
-        let session = request.ok().await?;
+        info!(remote = %connection.remote_id().fmt_short(), "accepted");
+        let session = web_transport_iroh::Session::raw(connection);
         let session = MoqSession::session_accept(session).await?;
         self.tx
             .send(ActorMessage::HandleSession { session })
@@ -201,10 +200,7 @@ impl MoqSession {
         let addr = remote_addr.into();
         tracing::Span::current().record("remote", tracing::field::display(addr.id.fmt_short()));
         let connection = endpoint.connect(addr, ALPN).await?;
-        let url: url::Url = format!("iroh://{}", connection.remote_id())
-            .parse()
-            .expect("valid url");
-        let wt_session = web_transport_iroh::Session::raw(connection, url);
+        let wt_session = web_transport_iroh::Session::raw(connection);
         Self::session_connect(wt_session).await
     }
 
