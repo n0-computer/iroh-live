@@ -1,7 +1,8 @@
 use std::time::Duration;
 
+use clap::Parser;
 use eframe::egui::{self, Color32, Id, Vec2};
-use iroh::Endpoint;
+use iroh::{Endpoint, EndpointId};
 use iroh_live::{
     Live,
     audio::AudioBackend,
@@ -11,23 +12,36 @@ use iroh_live::{
     ticket::LiveTicket,
     util::StatsSmoother,
 };
-use n0_error::{Result, StackResultExt, anyerr};
+use n0_error::{Result, anyerr};
 use tracing::info;
 
+#[derive(Debug, Parser)]
+struct Cli {
+    #[clap(long, conflicts_with = "endpoint-id")]
+    ticket: Option<LiveTicket>,
+    #[clap(long, conflicts_with = "ticket", requires = "name")]
+    endpoint_id: Option<EndpointId>,
+    #[clap(long, conflicts_with = "ticket", requires = "endpoint-id")]
+    name: Option<String>,
+}
+
 fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let ticket = match (cli.ticket, cli.endpoint_id, cli.name) {
+        (Some(ticket), None, None) => ticket,
+        (None, Some(endpoint_id), Some(name)) => LiveTicket::new(endpoint_id, name),
+        _ => {
+            eprintln!("Invalid arguments: Use either --ticket, or --endpoint and --name");
+            std::process::exit(1);
+        }
+    };
+
     tracing_subscriber::fmt::init();
     ffmpeg_log_init();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
-
-    let ticket_str = std::env::args()
-        .into_iter()
-        .nth(1)
-        .context("missing ticket")?;
-    let ticket = LiveTicket::deserialize(&ticket_str)?;
-
     let audio_ctx = AudioBackend::new();
 
     println!("connecting to {ticket} ...");
