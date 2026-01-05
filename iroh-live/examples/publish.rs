@@ -2,11 +2,13 @@ use clap::Parser;
 use iroh::{Endpoint, SecretKey, protocol::Router};
 use iroh_live::{
     Live,
-    audio::AudioBackend,
-    av::{AudioPreset, VideoCodec, VideoPreset},
-    capture::CameraCapturer,
-    ffmpeg::{H264Encoder, OpusEncoder},
-    publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
+    media::{
+        audio::AudioBackend,
+        av::{AudioPreset, VideoCodec, VideoPreset},
+        capture::CameraCapturer,
+        ffmpeg::{H264Encoder, OpusEncoder},
+        publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
+    },
     ticket::LiveTicket,
 };
 use n0_error::StdResultExt;

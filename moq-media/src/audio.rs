@@ -23,7 +23,6 @@ use firewheel::{
         },
     },
 };
-use hang::catalog::AudioConfig;
 use tokio::sync::{mpsc, mpsc::error::TryRecvError, oneshot};
 use tracing::{debug, error, info, trace, warn};
 
@@ -37,6 +36,45 @@ mod aec;
 
 type StreamWriterHandle = Arc<Mutex<StreamWriterState>>;
 type StreamReaderHandle = Arc<Mutex<StreamReaderState>>;
+
+#[derive(Debug, Clone)]
+pub struct AudioBackend {
+    tx: mpsc::Sender<DriverMessage>,
+}
+
+impl AudioBackend {
+    pub fn new() -> Self {
+        let (tx, rx) = mpsc::channel(32);
+        let _handle = spawn_thread("audiodriver", move || AudioDriver::new(rx).run());
+        Self { tx }
+    }
+
+    pub async fn default_input(&self) -> Result<InputStream> {
+        self.input(AudioFormat::mono_48k()).await
+    }
+
+    pub async fn input(&self, format: AudioFormat) -> Result<InputStream> {
+        let (reply, reply_rx) = oneshot::channel();
+        self.tx
+            .send(DriverMessage::InputStream { format, reply })
+            .await?;
+        let handle = reply_rx.await??;
+        Ok(InputStream { handle, format })
+    }
+
+    pub async fn default_output(&self) -> Result<OutputStream> {
+        self.output(AudioFormat::stereo_48k()).await
+    }
+
+    pub async fn output(&self, format: AudioFormat) -> Result<OutputStream> {
+        let (reply, reply_rx) = oneshot::channel();
+        self.tx
+            .send(DriverMessage::OutputStream { format, reply })
+            .await?;
+        let handle = reply_rx.await??;
+        Ok(handle)
+    }
+}
 
 #[derive(Clone)]
 pub struct OutputStream {
@@ -129,13 +167,6 @@ impl AudioSink for OutputStream {
 }
 
 impl OutputStream {
-    // pub fn new(handle: StreamWriterHandle) -> Self {
-    //     Self {
-    //         handle,
-    //         paused: Arc::new(AtomicBool::new(false)),
-    //     }
-    // }
-
     #[allow(unused)]
     pub fn is_active(&self) -> bool {
         self.handle.lock().expect("poisoned").is_active()
@@ -149,18 +180,6 @@ pub struct InputStream {
     format: AudioFormat,
 }
 
-impl InputStream {
-    pub(crate) fn new(handle: StreamReaderHandle, sample_rate: u32, channel_count: u32) -> Self {
-        Self {
-            handle,
-            format: AudioFormat {
-                sample_rate,
-                channel_count,
-            },
-        }
-    }
-}
-
 impl AudioSource for InputStream {
     fn cloned_boxed(&self) -> Box<dyn AudioSource> {
         Box::new(self.clone())
@@ -170,7 +189,7 @@ impl AudioSource for InputStream {
         self.format
     }
 
-    fn pop_samples(&mut self, buf: &mut [f32]) -> anyhow::Result<Option<usize>> {
+    fn pop_samples(&mut self, buf: &mut [f32]) -> Result<Option<usize>> {
         use firewheel::nodes::stream::ReadStatus;
         let mut handle = self.handle.lock().expect("poisoned");
         match handle.read_interleaved(buf) {
@@ -202,28 +221,22 @@ impl AudioSource for InputStream {
 }
 
 #[derive(derive_more::Debug)]
-pub enum AudioCommand {
+enum DriverMessage {
     OutputStream {
-        config: Option<AudioConfig>,
+        format: AudioFormat,
         #[debug("Sender")]
-        reply: oneshot::Sender<OutputStream>,
+        reply: oneshot::Sender<Result<OutputStream>>,
     },
     InputStream {
-        sample_rate: u32,
-        channel_count: u32,
+        format: AudioFormat,
         #[debug("Sender")]
-        reply: oneshot::Sender<StreamReaderHandle>,
+        reply: oneshot::Sender<Result<StreamReaderHandle>>,
     },
-}
-
-#[derive(Debug, Clone)]
-pub struct AudioBackend {
-    tx: mpsc::Sender<AudioCommand>,
 }
 
 struct AudioDriver {
     cx: FirewheelContext,
-    rx: mpsc::Receiver<AudioCommand>,
+    rx: mpsc::Receiver<DriverMessage>,
     aec_processor: AecProcessor,
     aec_render_node: NodeID,
     aec_capture_node: NodeID,
@@ -231,7 +244,7 @@ struct AudioDriver {
 }
 
 impl AudioDriver {
-    fn new(rx: mpsc::Receiver<AudioCommand>) -> Self {
+    fn new(rx: mpsc::Receiver<DriverMessage>) -> Self {
         let config = FirewheelConfig {
             num_graph_inputs: ChannelCount::new(1).unwrap(),
             ..Default::default()
@@ -298,8 +311,8 @@ impl AudioDriver {
 
         loop {
             let tick = Instant::now();
-            if self.recv().is_err() {
-                info!("closing audio driver: command channel closed");
+            if self.drain_messages().is_err() {
+                info!("closing audio driver: message channel closed");
                 break;
             }
 
@@ -357,7 +370,7 @@ impl AudioDriver {
         }
     }
 
-    fn recv(&mut self) -> Result<(), ()> {
+    fn drain_messages(&mut self) -> Result<(), ()> {
         loop {
             match self.rx.try_recv() {
                 Err(TryRecvError::Disconnected) => {
@@ -367,43 +380,32 @@ impl AudioDriver {
                 Err(TryRecvError::Empty) => {
                     break Ok(());
                 }
-                Ok(command) => self.handle(command),
+                Ok(message) => self.handle_message(message),
             }
         }
     }
 
-    fn handle(&mut self, command: AudioCommand) {
-        debug!("handle {command:?}");
-        match command {
-            AudioCommand::OutputStream { config, reply } => {
-                match self.output_stream(config.as_ref()) {
-                    Err(err) => {
-                        warn!("failed to create audio output stream: {err:#}")
-                    }
-                    Ok(stream) => {
-                        reply.send(stream).ok();
-                    }
-                }
+    fn handle_message(&mut self, message: DriverMessage) {
+        debug!("handle {message:?}");
+        match message {
+            DriverMessage::OutputStream { format, reply } => {
+                let res = self
+                    .output_stream(format)
+                    .inspect_err(|err| warn!("failed to create audio output stream: {err:#}"));
+                reply.send(res).ok();
             }
-            AudioCommand::InputStream {
-                sample_rate,
-                channel_count,
-                reply,
-            } => match self.input_stream(sample_rate, channel_count) {
-                Err(err) => warn!("failed to create audio input stream: {err:#}"),
-                Ok(stream) => {
-                    reply.send(stream).ok();
-                }
-            },
+            DriverMessage::InputStream { format, reply } => {
+                let res = self
+                    .input_stream(format)
+                    .inspect_err(|err| warn!("failed to create audio input stream: {err:#}"));
+                reply.send(res).ok();
+            }
         }
     }
 
-    fn output_stream(
-        &mut self,
-        config: Option<&hang::catalog::AudioConfig>,
-    ) -> Result<OutputStream> {
-        let channel_count = config.map(|c| c.channel_count).unwrap_or(2);
-        let sample_rate = config.map(|c| c.sample_rate).unwrap_or(48_000);
+    fn output_stream(&mut self, format: AudioFormat) -> Result<OutputStream> {
+        let channel_count = format.channel_count;
+        let sample_rate = format.sample_rate;
         // setup stream
         let stream_writer_id = self.cx.add_node(
             StreamWriterNode,
@@ -467,7 +469,9 @@ impl AudioDriver {
         })
     }
 
-    fn input_stream(&mut self, sample_rate: u32, channel_count: u32) -> Result<StreamReaderHandle> {
+    fn input_stream(&mut self, format: AudioFormat) -> Result<StreamReaderHandle> {
+        let sample_rate = format.sample_rate;
+        let channel_count = format.channel_count;
         // Setup stream reader node
         let stream_reader_id = self.cx.add_node(
             StreamReaderNode,
@@ -519,95 +523,5 @@ impl AudioDriver {
             .unwrap()
             .handle();
         Ok(Arc::new(handle))
-    }
-}
-
-impl AudioBackend {
-    pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel(32);
-        let _handle = spawn_thread("audiodriver", move || AudioDriver::new(rx).run());
-        Self { tx }
-    }
-
-    pub async fn default_input(&self) -> anyhow::Result<InputStream> {
-        const SAMPLE_RATE: u32 = 48_000;
-        const CHANNELS: u32 = 2;
-        let handle = self.input_stream(SAMPLE_RATE, CHANNELS).await?;
-        Ok(InputStream::new(handle, SAMPLE_RATE, CHANNELS))
-    }
-
-    pub fn blocking_default_input(&self) -> anyhow::Result<InputStream> {
-        const SAMPLE_RATE: u32 = 48_000;
-        const CHANNELS: u32 = 2;
-        let handle = self.blocking_input_stream(SAMPLE_RATE, CHANNELS)?;
-        Ok(InputStream::new(handle, SAMPLE_RATE, CHANNELS))
-    }
-
-    pub async fn default_output(&self) -> anyhow::Result<OutputStream> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.tx
-            .send(AudioCommand::OutputStream {
-                config: None,
-                reply,
-            })
-            .await?;
-        let handle = reply_rx.await?;
-        Ok(handle)
-    }
-
-    pub async fn output_stream(&self, config: AudioConfig) -> Result<OutputStream> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.tx
-            .send(AudioCommand::OutputStream {
-                config: Some(config),
-                reply,
-            })
-            .await?;
-        let handle = reply_rx.await?;
-        Ok(handle)
-    }
-
-    #[allow(unused)]
-    pub fn blocking_output_stream(&self, config: AudioConfig) -> Result<OutputStream> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.tx.blocking_send(AudioCommand::OutputStream {
-            config: Some(config),
-            reply,
-        })?;
-        let handle = reply_rx.blocking_recv()?;
-        Ok(handle)
-    }
-
-    #[allow(unused)]
-    pub async fn input_stream(
-        &self,
-        sample_rate: u32,
-        channels: u32,
-    ) -> Result<StreamReaderHandle> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.tx
-            .send(AudioCommand::InputStream {
-                sample_rate,
-                channel_count: channels,
-                reply,
-            })
-            .await?;
-        let handle = reply_rx.await?;
-        Ok(handle)
-    }
-
-    pub fn blocking_input_stream(
-        &self,
-        sample_rate: u32,
-        channels: u32,
-    ) -> Result<StreamReaderHandle> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.tx.blocking_send(AudioCommand::InputStream {
-            sample_rate,
-            channel_count: channels,
-            reply,
-        })?;
-        let handle = reply_rx.blocking_recv()?;
-        Ok(handle)
     }
 }

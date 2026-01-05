@@ -7,18 +7,20 @@ use std::{
     time::{Duration, Instant},
 };
 
+use anyhow::Context;
 use hang::catalog::{AudioConfig, Catalog, CatalogProducer, VideoConfig};
 use moq_lite::BroadcastProducer;
 use n0_error::Result;
 use n0_future::task::AbortOnDropHandle;
 use tokio_util::sync::{CancellationToken, DropGuard};
-use tracing::{Span, debug, error, info, info_span, trace, warn};
+use tracing::{debug, error, info, info_span, trace, warn};
 
 use crate::{
     av::{
-        AudioEncoder, AudioEncoderInner, AudioPreset, AudioSource, DecodeConfig, TrackKind,
-        VideoEncoder, VideoEncoderInner, VideoPreset, VideoSource,
+        AudioEncoder, AudioEncoderInner, AudioPreset, AudioSource, DecodeConfig, VideoEncoder,
+        VideoEncoderInner, VideoPreset, VideoSource,
     },
+    subscribe::WatchTrack,
     util::spawn_thread,
 };
 
@@ -54,22 +56,20 @@ impl PublishBroadcast {
     async fn run(state: Arc<Mutex<State>>, mut producer: BroadcastProducer) {
         while let Some(track) = producer.requested_track().await {
             let name = track.info.name.clone();
-            let Some(kind) = TrackKind::from_name(&name) else {
-                info!("ignoring unsupported track: {name}");
-                continue;
-            };
             if state
                 .lock()
                 .expect("poisoned")
-                .start_track(kind, track.clone())
+                .start_track(track.clone())
+                .inspect_err(|err| warn!(%name, "failed to start requested track: {err:#}"))
+                .is_ok()
             {
                 info!("started track: {name}");
                 tokio::spawn({
-                    let inner = state.clone();
+                    let state = state.clone();
                     async move {
                         track.unused().await;
                         info!("stopping track: {name}");
-                        inner.lock().expect("poisoned").stop_track(&name);
+                        state.lock().expect("poisoned").stop_track(&name);
                     }
                 });
             }
@@ -77,16 +77,16 @@ impl PublishBroadcast {
     }
 
     /// Create a local WatchTrack from the current video source, if present.
-    pub fn watch_local(&self, decode_config: DecodeConfig) -> Option<crate::subscribe::WatchTrack> {
+    pub fn watch_local(&self, decode_config: DecodeConfig) -> Option<WatchTrack> {
         let (source, shutdown) = {
-            let inner = self.state.lock().expect("poisoned");
-            let source = inner
+            let state = self.state.lock().expect("poisoned");
+            let source = state
                 .available_video
                 .as_ref()
                 .map(|video| video.source.clone())?;
-            Some((source, inner.shutdown_token.child_token()))
+            Some((source, state.shutdown_token.child_token()))
         }?;
-        Some(crate::subscribe::WatchTrack::from_video_source(
+        Some(WatchTrack::from_video_source(
             "local".to_string(),
             shutdown,
             source,
@@ -111,6 +111,7 @@ impl PublishBroadcast {
                     catalog.video = Some(video);
                 }
                 self.state.lock().expect("poisoned").available_video = Some(renditions);
+                // TODO: Drop active encodings if their rendition is no longer available?
             }
             None => {
                 // Clear catalog and stop any active video encoders
@@ -193,33 +194,25 @@ impl State {
         self.available_video = None;
     }
 
-    fn start_track(&mut self, kind: TrackKind, track: moq_lite::TrackProducer) -> bool {
+    fn start_track(&mut self, track: moq_lite::TrackProducer) -> Result<()> {
         let name = track.info.name.clone();
         let track = hang::TrackProducer::new(track);
         let shutdown_token = self.shutdown_token.child_token();
-        match kind {
-            TrackKind::Video => {
-                if let Some(video) = self.available_video.as_mut()
-                    && let Some(encoder_thread) = video.start_encoder(&name, track, shutdown_token)
-                {
-                    self.active_video.insert(name, encoder_thread);
-                    true
-                } else {
-                    info!("ignoring video track request {name}: rendition not available");
-                    false
-                }
-            }
-            TrackKind::Audio => {
-                if let Some(audio) = self.available_audio.as_mut()
-                    && let Some(encoder_thread) = audio.start_encoder(&name, track, shutdown_token)
-                {
-                    self.active_audio.insert(name, encoder_thread);
-                    true
-                } else {
-                    info!("ignoring audio track request {name}: rendition not available");
-                    false
-                }
-            }
+        if let Some(video) = self.available_video.as_mut()
+            && video.contains_rendition(&name)
+        {
+            let thread = video.start_encoder(&name, track, shutdown_token)?;
+            self.active_video.insert(name, thread);
+            Ok(())
+        } else if let Some(audio) = self.available_audio.as_mut()
+            && audio.contains_rendition(&name)
+        {
+            let thread = audio.start_encoder(&name, track, shutdown_token)?;
+            self.active_audio.insert(name, thread);
+            Ok(())
+        } else {
+            info!("ignoring track request {name}: rendition not available");
+            Err(n0_error::anyerr!("rendition not available"))
         }
     }
 }
@@ -262,25 +255,28 @@ impl AudioRenditions {
         Some((self.make_encoder)(*preset))
     }
 
+    pub fn contains_rendition(&self, name: &str) -> bool {
+        self.renditions.contains_key(name)
+    }
+
     pub fn start_encoder(
         &mut self,
         name: &str,
         producer: hang::TrackProducer,
         shutdown_token: CancellationToken,
-    ) -> Option<EncoderThread> {
-        let encoder = self
-            .encoder(name)?
-            .inspect_err(|err| error!("failed to create audio encoder: {err:#?}"))
-            .ok()?;
-        let span = info_span!("audioenc", %name);
+    ) -> Result<EncoderThread> {
+        let preset = self
+            .renditions
+            .get(name)
+            .context("rendition not available")?;
+        let encoder = (self.make_encoder)(*preset)?;
         let thread = EncoderThread::spawn_audio(
             self.source.cloned_boxed(),
             encoder,
             producer,
             shutdown_token,
-            span,
         );
-        Some(thread)
+        Ok(thread)
     }
 }
 
@@ -321,9 +317,8 @@ impl VideoRenditions {
         Ok(renditions)
     }
 
-    pub fn encoder(&mut self, name: &str) -> Option<Result<Box<dyn VideoEncoder>>> {
-        let preset = self.renditions.get(name)?;
-        Some((self.make_encoder)(*preset))
+    pub fn contains_rendition(&self, name: &str) -> bool {
+        self.renditions.contains_key(name)
     }
 
     pub fn start_encoder(
@@ -331,20 +326,15 @@ impl VideoRenditions {
         name: &str,
         producer: hang::TrackProducer,
         shutdown_token: CancellationToken,
-    ) -> Option<EncoderThread> {
-        let encoder = self
-            .encoder(name)?
-            .inspect_err(|err| error!("failed to create video encoder: {err:#?}"))
-            .ok()?;
-        let span = info_span!("videoenc", %name);
-        let thread = EncoderThread::spawn_video(
-            self.source.clone(),
-            encoder,
-            producer,
-            shutdown_token,
-            span,
-        );
-        Some(thread)
+    ) -> Result<EncoderThread> {
+        let preset = self
+            .renditions
+            .get(name)
+            .context("rendition not available")?;
+        let encoder = (self.make_encoder)(*preset)?;
+        let thread =
+            EncoderThread::spawn_video(self.source.clone(), encoder, producer, shutdown_token);
+        Ok(thread)
     }
 }
 
@@ -463,9 +453,9 @@ impl EncoderThread {
         mut encoder: impl VideoEncoderInner,
         mut producer: hang::TrackProducer,
         shutdown: CancellationToken,
-        span: Span,
     ) -> Self {
         let thread_name = format!("venc-{:<4}-{:<4}", source.name(), encoder.name());
+        let span = info_span!("videoenc", source = source.name(), encoder = encoder.name());
         let handle = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             move || {
@@ -526,10 +516,11 @@ impl EncoderThread {
         mut encoder: impl AudioEncoderInner,
         mut producer: hang::TrackProducer,
         shutdown: CancellationToken,
-        span: tracing::Span,
     ) -> Self {
         let sd = shutdown.clone();
-        let thread_name = format!("aenc-{:<4}", encoder.name());
+        let name = encoder.name();
+        let thread_name = format!("aenc-{:<4}", name);
+        let span = info_span!("audioenc", %name);
         let handle = spawn_thread(thread_name, move || {
             let _guard = span.enter();
             tracing::debug!(config=?encoder.config(), "audio encoder thread start");

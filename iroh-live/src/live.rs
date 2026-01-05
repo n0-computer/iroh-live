@@ -1,13 +1,12 @@
 use iroh::{Endpoint, EndpointAddr};
 use iroh_moq::{Moq, MoqProtocolHandler, MoqSession};
 use moq_lite::BroadcastProducer;
-use n0_error::Result;
-use tracing::info;
-
-use crate::{
+use moq_media::{
     av::{AudioSink, Decoders, PlaybackConfig},
     subscribe::{AvRemoteTrack, SubscribeBroadcast},
 };
+use n0_error::Result;
+use tracing::info;
 
 #[derive(Clone)]
 pub struct Live {
