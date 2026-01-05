@@ -3,6 +3,8 @@ use std::sync::Arc;
 use n0_error::stack_error;
 use thiserror::Error;
 
+use crate::{ConnectError, SettingsError};
+
 /// An error returned when connecting to a WebTransport endpoint.
 #[stack_error(derive, from_sources)]
 #[derive(Clone)]
@@ -11,10 +13,7 @@ pub enum ClientError {
     UnexpectedEnd,
 
     #[error("failed to connect")]
-    Connect(#[error(source)] Arc<iroh::endpoint::ConnectWithOptsError>),
-
-    #[error("failed to connect")]
-    Connecting(#[error(source)] Arc<iroh::endpoint::ConnectingError>),
+    Connect(#[error(source)] Arc<iroh::endpoint::ConnectError>),
 
     #[error("connection failed")]
     Connection(#[error(source, std_err)] iroh::endpoint::ConnectionError),
@@ -25,11 +24,11 @@ pub enum ClientError {
     #[error("failed to read")]
     ReadError(#[error(source, std_err)] quinn::ReadError),
 
-    #[error("quic error")]
-    QuinnError(#[error(source, std_err)] quinn::ConnectError),
+    #[error("failed to exchange h3 settings")]
+    SettingsError(#[error(from)] SettingsError),
 
-    #[error("invalid DNS name")]
-    InvalidDnsName(String),
+    #[error("failed to exchange h3 connect")]
+    HttpError(#[error(from)] ConnectError),
 
     #[error("invalid URL")]
     InvalidUrl,
@@ -208,6 +207,12 @@ pub enum ServerError {
 
     #[error("failed to bind endpoint")]
     Bind(#[error(source)] Arc<iroh::endpoint::BindError>),
+
+    #[error("failed to exchange h3 connect")]
+    HttpError(#[error(from)] ConnectError),
+
+    #[error("failed to exchange h3 settings")]
+    SettingsError(#[error(from)] SettingsError),
 }
 
 impl web_transport_trait::Error for SessionError {

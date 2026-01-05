@@ -25,21 +25,25 @@
 
 // External
 mod client;
+mod connect;
 mod error;
 mod recv;
 mod send;
 mod server;
 mod session;
+mod settings;
 
 pub use client::*;
+pub use connect::*;
 pub use error::*;
 pub use recv::*;
 pub use send::*;
 pub use server::*;
 pub use session::*;
+pub use settings::*;
 
 /// The HTTP/3 ALPN is required when negotiating a QUIC connection.
-pub const ALPN: &str = "iroh-moq";
+pub const ALPN_H3: &str = "h3";
 
 /// Re-export the http crate because it's in the public API.
 pub use http;
