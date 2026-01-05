@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use hang::{
     Timestamp, TrackConsumer,
@@ -23,6 +23,8 @@ use crate::{
     ffmpeg::util::Rescaler,
     util::spawn_thread,
 };
+
+const DEFAULT_MAX_LATENCY: Duration = Duration::from_millis(150);
 
 #[derive(derive_more::Debug, Clone)]
 pub struct SubscribeBroadcast {
@@ -174,10 +176,13 @@ impl SubscribeBroadcast {
     ) -> Result<WatchTrack> {
         let video = catalog.video.as_ref().context("no video published")?;
         let config = video.renditions.get(name).context("rendition not found")?;
-        let consumer = TrackConsumer::new(self.broadcast.subscribe_track(&Track {
-            name: name.to_string(),
-            priority: video.priority,
-        }));
+        let consumer = TrackConsumer::new(
+            self.broadcast.subscribe_track(&Track {
+                name: name.to_string(),
+                priority: video.priority,
+            }),
+            DEFAULT_MAX_LATENCY,
+        );
         let span = info_span!("videodec", %name);
         WatchTrack::from_consumer::<D>(
             name.to_string(),
@@ -221,10 +226,13 @@ impl SubscribeBroadcast {
     ) -> Result<AudioTrack> {
         let audio = catalog.audio.as_ref().context("no video published")?;
         let config = audio.renditions.get(name).context("rendition not found")?;
-        let consumer = TrackConsumer::new(self.broadcast.subscribe_track(&Track {
-            name: name.to_string(),
-            priority: audio.priority,
-        }));
+        let consumer = TrackConsumer::new(
+            self.broadcast.subscribe_track(&Track {
+                name: name.to_string(),
+                priority: audio.priority,
+            }),
+            DEFAULT_MAX_LATENCY,
+        );
         let span = info_span!("audiodec", %name);
         AudioTrack::spawn::<D>(
             name.to_string(),
@@ -254,7 +262,7 @@ impl SubscribeBroadcast {
 }
 
 pub(crate) fn select_rendition<T, P: ToString>(
-    renditions: &HashMap<String, T>,
+    renditions: &BTreeMap<String, T>,
     order: &[P],
 ) -> Option<String> {
     order
@@ -265,7 +273,7 @@ pub(crate) fn select_rendition<T, P: ToString>(
 }
 
 pub(crate) fn select_video_rendition<'a, T>(
-    renditions: &'a HashMap<String, T>,
+    renditions: &'a BTreeMap<String, T>,
     q: Quality,
 ) -> Option<String> {
     use crate::av::VideoPreset::*;
@@ -280,7 +288,7 @@ pub(crate) fn select_video_rendition<'a, T>(
 }
 
 pub(crate) fn select_audio_rendition<'a, T>(
-    renditions: &'a HashMap<String, T>,
+    renditions: &'a BTreeMap<String, T>,
     q: Quality,
 ) -> Option<String> {
     use crate::av::AudioPreset::*;
