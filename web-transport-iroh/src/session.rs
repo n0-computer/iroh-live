@@ -65,8 +65,10 @@ impl Session {
         let this2 = this.clone();
         tokio::spawn(async move {
             let (code, reason) = connect.run_closed().await;
-            // TODO We shouldn't be closing the QUIC connection with the same error.
-            this2.close(code, reason.as_bytes());
+            if this2.conn().close_reason().is_none() {
+                // TODO We shouldn't be closing the QUIC connection with the same error.
+                this2.close(code, reason.as_bytes());
+            }
         });
         this
     }
