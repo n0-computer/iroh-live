@@ -32,6 +32,8 @@ mod send;
 mod server;
 mod session;
 mod settings;
+#[cfg(test)]
+mod tests;
 
 pub use client::*;
 pub use connect::*;

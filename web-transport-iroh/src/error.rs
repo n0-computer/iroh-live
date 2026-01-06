@@ -25,10 +25,10 @@ pub enum ClientError {
     ReadError(#[error(source, std_err)] quinn::ReadError),
 
     #[error("failed to exchange h3 settings")]
-    SettingsError(#[error(from)] SettingsError),
+    SettingsError(#[error(from, source, std_err)] SettingsError),
 
     #[error("failed to exchange h3 connect")]
-    HttpError(#[error(from)] ConnectError),
+    HttpError(#[error(from, source, std_err)] ConnectError),
 
     #[error("invalid URL")]
     InvalidUrl,
@@ -209,10 +209,10 @@ pub enum ServerError {
     Bind(#[error(source)] Arc<iroh::endpoint::BindError>),
 
     #[error("failed to exchange h3 connect")]
-    HttpError(#[error(from)] ConnectError),
+    HttpError(#[error(source, from, std_err)] ConnectError),
 
     #[error("failed to exchange h3 settings")]
-    SettingsError(#[error(from)] SettingsError),
+    SettingsError(#[error(source, from, std_err)] SettingsError),
 }
 
 impl web_transport_trait::Error for SessionError {
