@@ -25,7 +25,7 @@ impl Client {
         Self { endpoint, config }
     }
 
-    /// Connect to a server.
+    /// Connect to a server over QUIC without HTTP/3.
     pub async fn connect_quic(
         &self,
         addr: impl Into<EndpointAddr>,
@@ -35,6 +35,10 @@ impl Client {
         Ok(Session::raw(conn))
     }
 
+    /// Connect with a full HTTP/3 handshake and WebTransport semantics.
+    ///
+    /// Note that the url needs to have a `https:` scheme, otherwise the accepting side will
+    /// fail to accept the connection.
     pub async fn connect_h3(
         &self,
         addr: impl Into<EndpointAddr>,
@@ -60,5 +64,9 @@ impl Client {
             .await
             .map_err(|err| ClientError::Connect(Arc::new(err.into())))?;
         Ok(conn)
+    }
+
+    pub async fn close(&self) {
+        self.endpoint.close().await;
     }
 }
