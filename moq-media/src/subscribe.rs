@@ -174,7 +174,7 @@ impl SubscribeBroadcast {
         playback_config: &DecodeConfig,
         quality: Quality,
     ) -> Result<WatchTrack> {
-        let track_name = self.catalog().select_audio_rendition(quality)?;
+        let track_name = self.catalog().select_video_rendition(quality)?;
         self.watch_rendition::<D>(playback_config, &track_name)
     }
 
