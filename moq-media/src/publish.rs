@@ -232,8 +232,9 @@ impl AudioRenditions {
             .into_iter()
             .map(|preset| (format!("audio-{preset}"), preset))
             .collect();
+        let format = source.format();
         Self {
-            make_encoder: Box::new(|preset| Ok(Box::new(E::with_preset(preset)?))),
+            make_encoder: Box::new(move |preset| Ok(Box::new(E::with_preset(format, preset)?))),
             renditions,
             source: Box::new(source),
         }
@@ -540,7 +541,7 @@ impl EncoderThread {
                     Ok(Some(_n)) => {
                         // Expect a full frame; if shorter, zero-pad via slice len
                         if let Err(err) = encoder.push_samples(&buf) {
-                            error!("audio push_samples failed: {err:#}");
+                            error!(buf_len = buf.len(), "audio push_samples failed: {err:#}");
                             break;
                         }
                         while let Ok(Some(pkt)) = encoder
