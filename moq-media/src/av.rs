@@ -63,7 +63,7 @@ pub trait AudioSinkHandle: Send + 'static {
 }
 
 pub trait AudioEncoder: AudioEncoderInner {
-    fn with_preset(preset: AudioPreset) -> Result<Self>
+    fn with_preset(format: AudioFormat, preset: AudioPreset) -> Result<Self>
     where
         Self: Sized;
 }

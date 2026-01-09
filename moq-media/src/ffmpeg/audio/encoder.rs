@@ -4,7 +4,7 @@ use hang::{Timestamp, catalog::AudioConfig};
 use tracing::trace;
 
 use crate::{
-    av::{AudioEncoder, AudioEncoderInner, AudioPreset},
+    av::{AudioEncoder, AudioEncoderInner, AudioFormat, AudioPreset},
     ffmpeg::ext::CodecContextExt,
 };
 
@@ -73,19 +73,16 @@ impl OpusEncoder {
     }
 }
 impl AudioEncoder for OpusEncoder {
-    fn with_preset(preset: AudioPreset) -> Result<Self>
+    fn with_preset(format: AudioFormat, preset: AudioPreset) -> Result<Self>
     where
         Self: Sized,
     {
-        let channels = match preset {
-            AudioPreset::Hq => 2,
-            AudioPreset::Lq => 1,
-        };
+        let channel_count = format.channel_count;
         let bitrate = match preset {
             AudioPreset::Hq => BITRATE,
             AudioPreset::Lq => 32_000,
         };
-        Self::new(SAMPLE_RATE, channels, bitrate)
+        Self::new(SAMPLE_RATE, channel_count, bitrate)
     }
 }
 
