@@ -26,7 +26,7 @@ use firewheel::{
 use tokio::sync::{mpsc, mpsc::error::TryRecvError, oneshot};
 use tracing::{debug, error, info, trace, warn};
 
-use self::aec::{AecCaptureNode, AecProcessor, AecProcessorConfig, AecRenderNode};
+use self::aec::{AecCaptureNode, AecProcessor, AecRenderNode};
 use crate::{
     av::{AudioFormat, AudioSink, AudioSinkHandle, AudioSource},
     util::spawn_thread,
@@ -281,8 +281,8 @@ impl AudioDriver {
             num_outputs: ChannelCount::new(2).unwrap(),
         });
 
-        let aec_processor = AecProcessor::new(AecProcessorConfig::stereo_in_out(), true)
-            .expect("failed to initialize AEC processor");
+        let aec_processor =
+            AecProcessor::new(true).expect("failed to initialize AEC processor");
         let aec_render_node = cx.add_node(AecRenderNode::default(), Some(aec_processor.clone()));
         let aec_capture_node = cx.add_node(AecCaptureNode::default(), Some(aec_processor.clone()));
 
@@ -344,7 +344,7 @@ impl AudioDriver {
             if let Some(info) = self.cx.stream_info() {
                 let delay = info.input_to_output_latency_seconds;
                 if (last_delay - delay).abs() > (1. / 1000.) {
-                    let delay_ms = (delay * 1000.) as u32;
+                    let delay_ms = (delay * 1000.).min(u16::MAX as f64) as u16;
                     info!("update processor delay to {delay_ms}ms");
                     self.aec_processor.set_stream_delay(delay_ms);
                     last_delay = delay;

@@ -35,7 +35,7 @@ tokio = { version = "1.48.0", features = ["sync"] }
 tokio-util = "0.7.17"
 tracing = "0.1.41"
 xcap = "0.8"
-webrtc-audio-processing = { version = "0.5.0", features = ["bundled"] }
+webrtc-audio-processing = { git = "https://github.com/tonarino/webrtc-audio-processing.git", features = ["bundled"] }
 bytes = "1.11.0"
 buf-list = "1.1.2"
 
