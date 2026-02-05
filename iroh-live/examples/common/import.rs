@@ -5,6 +5,7 @@ use std::{
 
 use bytes::BytesMut;
 use clap::ValueEnum;
+use hang::import::DecoderFormat;
 use moq_lite::BroadcastProducer;
 use n0_error::Result;
 use tokio::{
@@ -20,15 +21,6 @@ pub enum ImportType {
     AnnexB,
 }
 
-impl ImportType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ImportType::AnnexB => "annex-b",
-            ImportType::Cmaf => "cmaf",
-        }
-    }
-}
-
 // Taken from
 // https://github.com/moq-dev/moq/blob/30c28b8c3b6bd941fe1279c0fd8855139a1d4f6a/rs/hang-cli/src/import.rs
 // License: Apache-2.0
@@ -39,8 +31,11 @@ pub struct Import {
 
 impl Import {
     pub fn new(broadcast: BroadcastProducer, format: ImportType) -> Self {
-        let decoder = hang::import::Decoder::new(broadcast.into(), format.as_str())
-            .expect("supported format");
+        let format = match format {
+            ImportType::Cmaf => DecoderFormat::Fmp4,
+            ImportType::AnnexB => DecoderFormat::Avc3,
+        };
+        let decoder = hang::import::Decoder::new(broadcast.into(), format);
         Self {
             decoder,
             buffer: BytesMut::new(),
