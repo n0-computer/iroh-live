@@ -10,7 +10,7 @@ use iroh_live::{
         audio::AudioBackend,
         av::{AudioPreset, VideoPreset},
         capture::{CameraCapturer, ScreenCapturer},
-        ffmpeg::{FfmpegDecoders, FfmpegVideoDecoder, H264Encoder, OpusEncoder, ffmpeg_log_init},
+        codec::{DefaultDecoders, H264Encoder, H264VideoDecoder, OpusEncoder, codec_init},
         publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
         subscribe::{AudioTrack, AvRemoteTrack, SubscribeBroadcast, WatchTrack},
     },
@@ -34,7 +34,7 @@ struct Cli {
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
-    ffmpeg_log_init();
+    codec_init();
     let cli = Cli::parse();
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -150,7 +150,7 @@ impl eframe::App for App {
                     );
                     let track = match self.rt.block_on(async {
                         let audio_out = self.audio_ctx.default_output().await?;
-                        broadcast.watch_and_listen::<FfmpegDecoders>(audio_out, Default::default())
+                        broadcast.watch_and_listen::<DefaultDecoders>(audio_out, Default::default())
                     }) {
                         Ok(track) => track,
                         Err(err) => {
@@ -268,7 +268,7 @@ impl RemoteTrackView {
                         {
                             if let Ok(track) = self
                                 .broadcast
-                                .watch_rendition::<FfmpegVideoDecoder>(&Default::default(), name)
+                                .watch_rendition::<H264VideoDecoder>(&Default::default(), name)
                             {
                                 if let Some(video) = self.video.as_mut() {
                                     video.set_track(track);

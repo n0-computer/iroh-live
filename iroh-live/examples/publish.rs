@@ -6,7 +6,7 @@ use iroh_live::{
         audio::AudioBackend,
         av::{AudioPreset, VideoCodec, VideoPreset},
         capture::CameraCapturer,
-        ffmpeg::{H264Encoder, OpusEncoder},
+        codec::{H264Encoder, OpusEncoder},
         publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
     },
     ticket::LiveTicket,
