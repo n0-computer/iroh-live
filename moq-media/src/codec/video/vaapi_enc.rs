@@ -319,10 +319,11 @@ impl VaapiEncoder {
             .any(|nal| !nal.is_empty() && (nal[0] & 0x1F) == 5);
 
         // On first keyframe, extract SPS/PPS and build avcC.
-        if keyframe && self.avcc.is_none() {
-            if let Some((sps, pps)) = extract_sps_pps(&nals) {
-                self.avcc = Some(build_avcc(&sps, &pps));
-            }
+        if keyframe
+            && self.avcc.is_none()
+            && let Some((sps, pps)) = extract_sps_pps(&nals)
+        {
+            self.avcc = Some(build_avcc(&sps, &pps));
         }
 
         // Convert Annex B to length-prefixed NALs for transport.
