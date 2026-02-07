@@ -16,22 +16,18 @@ It uses [moq-rs](https://github.com/kixelated/moq) to transfer audio and video s
   * Capture and playout audio (with [firewheel](https://github.com/BillyDM/Firewheel/))
   * Capture camera (with [nokwha](https://github.com/l1npengtul/nokhwa/))
   * Capture screens (with [xcap](https://github.com/nashaofu/xcap/))
-  * Encode and decode video (h264) and audio (Opus) using [ffmpeg](https://docs.rs/ffmpeg-next/latest/ffmpeg_next/). Video encoding is hardware accelerated on supported platforms.
+  * Encode and decode video (H.264) and audio (Opus) using bundled, pure-Rust or source-compiled codecs ([openh264](https://github.com/ralfbiedert/openh264-rs), [unsafe-libopus](https://github.com/niclas3640/unsafe-libopus)). No system ffmpeg required.
   * Support multiple renditions and on-demand switching of the encoding
   
 There's still bugs and a lot of missing optimizations. This is an early, work-in-progress preview!
 
 ## Building
 
-By default `ffmpeg` is dynamically linked. Enable the `static` feature to build ffmpeg from source and statically link it.
+No system dependencies are required for codec support. All codecs are either pure Rust or compiled from bundled source (openh264 is built via `cc`).
 
-#### Build dependencies
-
-*incomplete list, please file issues or PRs to expand this*
-
-##### Linux
-
-* For building with `static` feature: `apt install nasm pkg-config`
+```
+cargo build --workspace
+```
 
 ## Demo and examples
 
