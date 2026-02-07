@@ -1,7 +1,7 @@
 use anyhow::Result;
 use yuvutils_rs::{
-    YuvChromaSubsampling, YuvPlanarImage, YuvPlanarImageMut, YuvRange, YuvStandardMatrix,
-    bgra_to_yuv420, rgba_to_yuv420, yuv420_to_rgba,
+    YuvChromaSubsampling, YuvPlanarImageMut, YuvRange, YuvStandardMatrix, bgra_to_yuv420,
+    rgba_to_yuv420,
 };
 
 use crate::av::PixelFormat;
@@ -63,30 +63,6 @@ pub(crate) fn bgra_to_yuv420_data(src: &[u8], w: u32, h: u32) -> Result<YuvData>
         width: w,
         height: h,
     })
-}
-
-/// Convert YUV 4:2:0 planar data back to RGBA (BT.601).
-pub(crate) fn yuv420_to_rgba_data(yuv: &YuvData) -> Result<Vec<u8>> {
-    let planar = YuvPlanarImage {
-        y_plane: &yuv.y,
-        y_stride: yuv.y_stride,
-        u_plane: &yuv.u,
-        u_stride: yuv.u_stride,
-        v_plane: &yuv.v,
-        v_stride: yuv.v_stride,
-        width: yuv.width,
-        height: yuv.height,
-    };
-    let rgba_stride = yuv.width * 4;
-    let mut rgba = vec![0u8; (rgba_stride * yuv.height) as usize];
-    yuv420_to_rgba(
-        &planar,
-        &mut rgba,
-        rgba_stride,
-        YuvRange::Limited,
-        YuvStandardMatrix::Bt601,
-    )?;
-    Ok(rgba)
 }
 
 /// Dispatch pixel-format-aware RGBA/BGRA → YUV 4:2:0 conversion.
