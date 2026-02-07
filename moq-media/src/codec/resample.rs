@@ -52,9 +52,8 @@ impl Resampler {
     /// Resample interleaved f32 samples. Returns resampled interleaved data.
     /// If rates match, returns a copy of the input.
     pub(crate) fn process(&mut self, input: &[f32]) -> Result<Vec<f32>> {
-        let resampler = match &mut self.inner {
-            None => return Ok(input.to_vec()),
-            Some(r) => r,
+        let Some(resampler) = &mut self.inner else {
+            return Ok(input.to_vec());
         };
 
         let frames = input.len() / self.channels;
@@ -67,11 +66,11 @@ impl Resampler {
         Ok(result.take_data())
     }
 
-    pub(crate) fn from_rate(&self) -> u32 {
+    pub(crate) fn input_rate(&self) -> u32 {
         self.from_rate
     }
 
-    pub(crate) fn to_rate(&self) -> u32 {
+    pub(crate) fn output_rate(&self) -> u32 {
         self.to_rate
     }
 }
