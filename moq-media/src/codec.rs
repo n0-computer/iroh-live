@@ -11,7 +11,7 @@ pub struct DefaultDecoders;
 
 impl Decoders for DefaultDecoders {
     type Audio = OpusAudioDecoder;
-    type Video = H264VideoDecoder;
+    type Video = DynamicVideoDecoder;
 }
 
 /// No-op replacement for `ffmpeg_log_init`. Nothing to initialize.
