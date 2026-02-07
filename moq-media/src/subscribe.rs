@@ -18,7 +18,7 @@ use tracing::{Span, debug, error, info, info_span, trace, warn};
 use crate::{
     av::{
         AudioDecoder, AudioSink, AudioSinkHandle, DecodeConfig, DecodedFrame, Decoders,
-        PlaybackConfig, Quality, VideoDecoder, VideoSource,
+        PixelFormat, PlaybackConfig, Quality, VideoDecoder, VideoSource,
     },
     codec::video::util::scale::Scaler,
     util::spawn_thread,
@@ -500,7 +500,7 @@ impl WatchTrack {
         rendition: String,
         shutdown: CancellationToken,
         mut source: impl VideoSource,
-        _decode_config: DecodeConfig,
+        decode_config: DecodeConfig,
     ) -> Self {
         let viewport = Watchable::new((1u32, 1u32));
         let (frame_tx, frame_rx) = mpsc::channel::<DecodedFrame>(2);
@@ -535,7 +535,13 @@ impl WatchTrack {
                                 }
                                 _ => image::RgbaImage::from_raw(w, h, frame.raw.to_vec()),
                             };
-                            if let Some(img) = rgba {
+                            if let Some(mut img) = rgba {
+                                // Convert pixel format if needed.
+                                if decode_config.pixel_format == PixelFormat::Bgra {
+                                    for pixel in img.chunks_exact_mut(4) {
+                                        pixel.swap(0, 2);
+                                    }
+                                }
                                 let delay = image::Delay::from_saturating_duration(frame_duration);
                                 let decoded = DecodedFrame {
                                     frame: image::Frame::from_parts(img, 0, 0, delay),
