@@ -297,16 +297,10 @@ impl AudioDriver {
         info!("inputs: {:?}", cx.available_input_devices());
         info!("outputs: {:?}", cx.available_output_devices());
 
-        let input_device_name = input_device.or({
-            #[cfg(target_os = "linux")]
-            {
-                Some("pipewire".to_string())
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                None
-            }
-        });
+        #[cfg(target_os = "linux")]
+        let input_device_name = input_device.or_else(|| Some("pipewire".to_string()));
+        #[cfg(not(target_os = "linux"))]
+        let input_device_name = input_device;
         let config = CpalConfig {
             output: CpalOutputConfig {
                 #[cfg(target_os = "linux")]
