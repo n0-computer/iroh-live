@@ -595,15 +595,21 @@ impl WatchTrack {
         let _guard = span.enter();
         debug!(?config, "video decoder start");
         let decoder = D::new(config, playback_config)?;
+        let target_pixel_format = playback_config.pixel_format;
         let thread_name = format!("vdec-{}", rendition);
         let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             let span = span.clone();
             move || {
                 let _guard = span.enter();
-                if let Err(err) =
-                    Self::run_loop(&shutdown, packet_rx, frame_tx, viewport_watcher, decoder)
-                {
+                if let Err(err) = Self::run_loop(
+                    &shutdown,
+                    packet_rx,
+                    frame_tx,
+                    viewport_watcher,
+                    decoder,
+                    target_pixel_format,
+                ) {
                     error!("video decoder failed: {err:#}");
                 }
                 shutdown.cancel();
@@ -647,6 +653,7 @@ impl WatchTrack {
         output_tx: mpsc::Sender<DecodedFrame>,
         mut viewport_watcher: n0_watcher::Direct<(u32, u32)>,
         mut decoder: impl VideoDecoder,
+        target_pixel_format: PixelFormat,
     ) -> Result<(), anyhow::Error> {
         loop {
             if shutdown.is_cancelled() {
@@ -664,8 +671,14 @@ impl WatchTrack {
                 .push_packet(packet)
                 .context("failed to push packet")?;
             trace!(t=?t.elapsed(), "videodec: push_packet");
-            while let Some(frame) = decoder.pop_frame().context("failed to pop frame")? {
+            while let Some(mut frame) = decoder.pop_frame().context("failed to pop frame")? {
                 trace!(t=?t.elapsed(), "videodec: pop frame");
+                // Decoders output RGBA; convert if the consumer needs BGRA.
+                if target_pixel_format == PixelFormat::Bgra {
+                    for pixel in frame.frame.buffer_mut().chunks_exact_mut(4) {
+                        pixel.swap(0, 2);
+                    }
+                }
                 if output_tx.blocking_send(frame).is_err() {
                     break;
                 }
