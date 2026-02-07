@@ -4,13 +4,15 @@ use clap::Parser;
 use eframe::egui::{self, Color32, Id, Vec2};
 use iroh::{Endpoint, protocol::Router};
 use iroh_gossip::{Gossip, TopicId};
+#[cfg(feature = "av1")]
+use iroh_live::media::codec::Av1Encoder;
 use iroh_live::{
     Live,
     media::{
         audio::AudioBackend,
-        av::{AudioPreset, VideoPreset},
+        av::{AudioPreset, VideoCodec, VideoPreset},
         capture::{CameraCapturer, ScreenCapturer},
-        codec::{DefaultDecoders, H264Encoder, H264VideoDecoder, OpusEncoder, codec_init},
+        codec::{DefaultDecoders, DynamicVideoDecoder, H264Encoder, OpusEncoder, codec_init},
         publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
         subscribe::{AudioTrack, AvRemoteTrack, SubscribeBroadcast, WatchTrack},
     },
@@ -26,6 +28,8 @@ const BROADCAST_NAME: &str = "cam";
 #[derive(Debug, Parser)]
 struct Cli {
     join: Option<RoomTicket>,
+    #[clap(long, default_value_t = VideoCodec::H264)]
+    codec: VideoCodec,
     #[clap(long)]
     screen: bool,
     #[clap(long)]
@@ -90,12 +94,29 @@ async fn setup(cli: Cli, audio_ctx: AudioBackend) -> Result<(Router, PublishBroa
             let audio = AudioRenditions::new::<OpusEncoder>(mic, [AudioPreset::Hq]);
             broadcast.set_audio(Some(audio))?;
         }
-        let video = if cli.screen {
-            let screen = ScreenCapturer::new()?;
-            VideoRenditions::new::<H264Encoder>(screen, VideoPreset::all())
-        } else {
-            let camera = CameraCapturer::new()?;
-            VideoRenditions::new::<H264Encoder>(camera, VideoPreset::all())
+        let video = match (cli.screen, cli.codec) {
+            (true, VideoCodec::H264) => {
+                let screen = ScreenCapturer::new()?;
+                VideoRenditions::new::<H264Encoder>(screen, VideoPreset::all())
+            }
+            (false, VideoCodec::H264) => {
+                let camera = CameraCapturer::new()?;
+                VideoRenditions::new::<H264Encoder>(camera, VideoPreset::all())
+            }
+            #[cfg(feature = "av1")]
+            (true, VideoCodec::Av1) => {
+                let screen = ScreenCapturer::new()?;
+                VideoRenditions::new::<Av1Encoder>(screen, VideoPreset::all())
+            }
+            #[cfg(feature = "av1")]
+            (false, VideoCodec::Av1) => {
+                let camera = CameraCapturer::new()?;
+                VideoRenditions::new::<Av1Encoder>(camera, VideoPreset::all())
+            }
+            #[cfg(not(feature = "av1"))]
+            (_, VideoCodec::Av1) => {
+                anyhow::bail!("AV1 support requires the `av1` feature");
+            }
         };
         broadcast.set_video(Some(video))?;
         broadcast
@@ -268,7 +289,7 @@ impl RemoteTrackView {
                         {
                             if let Ok(track) = self
                                 .broadcast
-                                .watch_rendition::<H264VideoDecoder>(&Default::default(), name)
+                                .watch_rendition::<DynamicVideoDecoder>(&Default::default(), name)
                             {
                                 if let Some(video) = self.video.as_mut() {
                                     video.set_track(track);
