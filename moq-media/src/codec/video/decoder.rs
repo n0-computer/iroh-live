@@ -132,6 +132,8 @@ impl VideoDecoder for H264VideoDecoder {
 
 #[cfg(test)]
 mod tests {
+    use hang::catalog::{AV1, H264};
+
     use super::*;
     use crate::av::{
         PixelFormat, VideoEncoder, VideoEncoderInner, VideoFormat, VideoFrame, VideoPreset,
@@ -223,7 +225,7 @@ mod tests {
     #[test]
     fn pop_frame_empty_before_push() {
         let config = VideoConfig {
-            codec: VideoCodec::H264(hang::catalog::H264 {
+            codec: VideoCodec::H264(H264 {
                 profile: 0x42,
                 constraints: 0xE0,
                 level: 0x1E,
@@ -275,7 +277,7 @@ mod tests {
     #[test]
     fn unsupported_codec_errors() {
         let config = VideoConfig {
-            codec: VideoCodec::AV1(hang::catalog::AV1::default()),
+            codec: VideoCodec::AV1(AV1::default()),
             description: None,
             coded_width: Some(320),
             coded_height: Some(180),
