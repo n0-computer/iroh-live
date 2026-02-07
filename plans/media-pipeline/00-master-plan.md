@@ -19,9 +19,10 @@ Stored in-repo at `plans/media-pipeline/`. Copied from `.claude/plans/media-pipe
 
 | Phase | Track | Description | Status | Detailed plan |
 |-------|-------|-------------|--------|---------------|
-| 0 | Setup | Lints, CLAUDE.md, plans in-repo, module file fixes | Pending | below |
-| 1 | A - Codec | Codec swap — remove ffmpeg, add openh264 + unsafe-libopus + utilities | Pending | [phase-1-codec-swap.md](media-pipeline/phase-1-codec-swap.md) |
-| 2 | A - Codec | HW accel (VAAPI, VideoToolbox) + AV1 (rav1e/rav1d) behind features | Pending | [phase-2-hw-accel-av1.md](media-pipeline/phase-2-hw-accel-av1.md) |
+| 0 | Setup | Lints, CLAUDE.md, plans in-repo, module file fixes | **Done** | below |
+| 1 | A - Codec | Codec swap — remove ffmpeg, add openh264 + unsafe-libopus + utilities | **Done** | [phase-1-codec-swap.md](media-pipeline/phase-1-codec-swap.md) |
+| 2 | A - Codec | AV1 codec support (rav1e encoder + dav1d decoder) | **Done** | [phase-2-av1.md](media-pipeline/phase-2-av1.md) |
+| 2b | A - Codec | HW acceleration (VAAPI, VideoToolbox) | Pending | [phase-2b-hw-accel.md](media-pipeline/phase-2b-hw-accel.md) |
 | 3 | B - Resilience | Audio resilience — Opus FEC/PLC/DTX, jitter buffer, comfort noise | Pending | [phase-3-audio-resilience.md](media-pipeline/phase-3-audio-resilience.md) |
 | 4 | B - Resilience | Video resilience — adaptive bitrate, frame timing, temporal SVC | Pending | [phase-4-video-resilience.md](media-pipeline/phase-4-video-resilience.md) |
 
@@ -109,15 +110,22 @@ Fixes 7 bugs found in review (3x frame copies, viewport bug, unwrap, etc). Optim
 
 **Tests**: 9 unit test suites (YUV conversion, scaling, MJPEG, Annex B, resampling, Opus enc/dec, H.264 enc/dec) + 3 integration test suites (full pipeline, trait compliance, no-ffmpeg build).
 
-### Phase 2: HW Accel + AV1
-Feature-gated optional backends:
+### Phase 2: AV1 Codec Support (Done)
+AV1 encode/decode behind default-on `av1` feature flag:
+- `rav1e` 0.8 — pure Rust AV1 encoder (speed preset 10, low-latency)
+- `dav1d` 0.11 — Rust bindings to libdav1d AV1 decoder
+- `DynamicVideoDecoder` — enum dispatch, auto-routes H264→openh264, AV1→dav1d
+- `DefaultDecoders` updated to use `DynamicVideoDecoder`
+- Examples updated with `--codec` CLI arg
+
+**Tests**: 84 passing (default), 71 without `av1` feature. Encoder tests, decoder tests, roundtrip tests, DynamicVideoDecoder routing tests.
+
+### Phase 2b: HW Acceleration (Pending)
+Feature-gated optional HW encoder backends:
 - `vaapi` — `cros-codecs` for Linux GPU encoding
 - `videotoolbox` — `objc2-video-toolbox` for macOS GPU encoding
-- `av1` — `rav1e` (encoder) + `rav1d` (decoder), pure Rust
 
 Backend selector tries HW first, falls back to openh264.
-
-**Tests**: 5 unit test suites (backend selection, AV1 enc/dec, VAAPI, VideoToolbox) + 3 integration test suites (cross-codec interop, feature-gate isolation, dynamic backend switching).
 
 ### Phase 3: Audio Resilience
 - Opus in-band FEC with adaptive loss percentage

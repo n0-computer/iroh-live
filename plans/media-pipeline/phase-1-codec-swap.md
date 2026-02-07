@@ -1,5 +1,7 @@
 # Phase 1: Codec Swap — Remove ffmpeg
 
+**Status: Done** — 72 tests passing, 0 clippy warnings, ffmpeg fully removed.
+
 ## Goal
 Replace all ffmpeg usage with focused crates. After this phase, `cargo build` works without ffmpeg installed.
 

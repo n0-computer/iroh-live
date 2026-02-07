@@ -11,8 +11,9 @@ Replace ffmpeg with focused crates and build libwebrtc-grade media quality. Two 
 
 | Phase | Track | Description | Status | Plan |
 |-------|-------|-------------|--------|------|
-| 1 | A | Codec swap — scaffolding, utilities, audio, video, integration | Pending | [phase-1-codec-swap.md](phase-1-codec-swap.md) |
-| 2 | A | HW acceleration (VAAPI, VideoToolbox) + AV1 (rav1e/rav1d) | Pending | [phase-2-hw-accel-av1.md](phase-2-hw-accel-av1.md) |
+| 1 | A | Codec swap — scaffolding, utilities, audio, video, integration | **Done** | [phase-1-codec-swap.md](phase-1-codec-swap.md) |
+| 2 | A | AV1 codec support (rav1e encoder + dav1d decoder) | **Done** | [phase-2-av1.md](phase-2-av1.md) |
+| 2b | A | HW acceleration (VAAPI, VideoToolbox) | Pending | [phase-2b-hw-accel.md](phase-2b-hw-accel.md) |
 | 3 | B | Audio resilience — Opus FEC/PLC/DTX, jitter buffer, comfort noise | Pending | [phase-3-audio-resilience.md](phase-3-audio-resilience.md) |
 | 4 | B | Video resilience — adaptive bitrate, frame timing, temporal SVC | Pending | [phase-4-video-resilience.md](phase-4-video-resilience.md) |
 
@@ -46,7 +47,8 @@ Replace ffmpeg with focused crates and build libwebrtc-grade media quality. Two 
 | H.264 SW encode/decode | `openh264` | Bundled C via `cc` |
 | H.264 HW encode (VAAPI) | `cros-codecs` | feature: `vaapi` |
 | H.264 HW encode (VTB) | `objc2-video-toolbox` | feature: `videotoolbox` |
-| AV1 encode/decode | `rav1e` / `rav1d` | feature: `av1` |
+| AV1 encode | `rav1e` | feature: `av1` (default) |
+| AV1 decode | `dav1d` (libdav1d bindings) | feature: `av1` (default) |
 | Opus encode/decode | `unsafe-libopus` | c2rust, no C compiler |
 | MJPEG decode | `image` crate | Pure Rust (already dep) |
 | RGBA↔YUV | `yuvutils-rs` | Pure Rust, SIMD |
@@ -56,35 +58,32 @@ Replace ffmpeg with focused crates and build libwebrtc-grade media quality. Two 
 ### Layered backend selection
 
 ```
-VideoEncoder: vaapi → videotoolbox → openh264 (fallback)
-VideoDecoder: rav1d (for AV1) → openh264 (for H.264)
+VideoEncoder: user selects H264Encoder or Av1Encoder (future: vaapi → videotoolbox → openh264 fallback)
+VideoDecoder: DynamicVideoDecoder auto-routes: AV1 → dav1d, H.264 → openh264
 ```
 
 ### Feature flags
 ```toml
 [features]
-default = []
-vaapi = ["dep:cros-codecs"]
-videotoolbox = ["dep:objc2-video-toolbox"]
-av1 = ["dep:rav1e", "dep:rav1d"]
+default = ["av1"]
+av1 = ["dep:rav1e", "dep:dav1d"]
+# Future:
+# vaapi = ["dep:cros-codecs"]
+# videotoolbox = ["dep:objc2-video-toolbox"]
 ```
 
-### Module structure
+### Module structure (current)
 ```
 moq-media/src/codec/
-├── mod.rs                    # Exports, DefaultDecoders
+├── codec.rs                  # Exports, DefaultDecoders (DynamicVideoDecoder)
 ├── audio/
-│   ├── encoder.rs            # Opus (unsafe-libopus, FEC, DTX, internal buffering)
-│   └── decoder.rs            # Opus (unsafe-libopus, PLC, lazy resampler)
+│   ├── encoder.rs            # Opus (unsafe-libopus)
+│   └── decoder.rs            # Opus (unsafe-libopus)
 ├── video/
-│   ├── encoder.rs            # Backend selection + RGBA→YUV
-│   ├── decoder.rs            # Backend routing + YUV→RGBA
-│   ├── openh264_enc.rs       # openh264 (temporal SVC)
-│   ├── openh264_dec.rs       # openh264
-│   ├── vaapi_enc.rs          # (feature: vaapi)
-│   ├── vtb_enc.rs            # (feature: videotoolbox)
-│   ├── rav1e_enc.rs          # (feature: av1)
-│   ├── rav1d_dec.rs          # (feature: av1)
+│   ├── encoder.rs            # H264Encoder (openh264)
+│   ├── decoder.rs            # H264VideoDecoder (openh264) + DynamicVideoDecoder
+│   ├── rav1e_enc.rs          # Av1Encoder (feature: av1)
+│   ├── dav1d_dec.rs          # Av1VideoDecoder (feature: av1)
 │   └── util/
 │       ├── convert.rs        # YUV↔RGBA (yuvutils-rs)
 │       ├── scale.rs          # Bilinear scaling (pic-scale)
