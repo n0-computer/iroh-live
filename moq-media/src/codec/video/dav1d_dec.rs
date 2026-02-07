@@ -44,16 +44,13 @@ impl VideoDecoder for Av1VideoDecoder {
         settings.set_n_threads(0);
         settings.set_max_frame_delay(1);
 
-        let mut decoder =
+        let decoder =
             dav1d::Decoder::with_settings(&settings).context("failed to create dav1d decoder")?;
 
-        // If we have a sequence header, feed it to prime the decoder.
-        if let Some(description) = &config.description {
-            let data: Vec<u8> = description.to_vec();
-            let _ = decoder.send_data(data, None, None, None);
-            // Drain any picture produced by the sequence header.
-            let _ = decoder.get_picture();
-        }
+        // Note: config.description contains the av1C container configuration box
+        // (from rav1e's container_sequence_header()), which is ISOBMFF/Matroska
+        // metadata — NOT raw OBU data. The actual sequence header OBU is embedded
+        // in the first keyframe packet, so dav1d will parse it automatically.
 
         Ok(Self {
             decoder,
@@ -148,5 +145,151 @@ impl VideoDecoder for Av1VideoDecoder {
             frame: Frame::from_parts(final_img, 0, 0, frame_delay),
             timestamp,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hang::catalog::H264;
+
+    use super::*;
+    use crate::av::{
+        PixelFormat, VideoEncoder, VideoEncoderInner, VideoFormat, VideoFrame, VideoPreset,
+    };
+    use crate::codec::video::rav1e_enc::Av1Encoder;
+
+    fn make_rgba_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> VideoFrame {
+        let pixel = [r, g, b, 255u8];
+        let raw: Vec<u8> = pixel.repeat((w * h) as usize);
+        VideoFrame {
+            format: VideoFormat {
+                pixel_format: PixelFormat::Rgba,
+                dimensions: [w, h],
+            },
+            raw: raw.into(),
+        }
+    }
+
+    fn encode_frames(enc: &mut Av1Encoder, frames: &[VideoFrame]) -> Vec<hang::Frame> {
+        let mut packets = Vec::new();
+        for f in frames {
+            enc.push_frame(f.clone()).unwrap();
+            while let Some(pkt) = enc.pop_packet().unwrap() {
+                packets.push(pkt);
+            }
+        }
+        packets
+    }
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        let w = 320u32;
+        let h = 180u32;
+        let mut enc = Av1Encoder::with_preset(VideoPreset::P180).unwrap();
+
+        // rav1e buffers frames for look-ahead; send enough to produce output
+        let frames: Vec<VideoFrame> = (0..60)
+            .map(|i| make_rgba_frame(w, h, (i * 4) as u8, 128, 64))
+            .collect();
+        let packets = encode_frames(&mut enc, &frames);
+        assert!(!packets.is_empty());
+
+        let config = enc.config();
+        assert!(config.description.is_some());
+
+        let decode_config = DecodeConfig::default();
+        let mut dec = Av1VideoDecoder::new(&config, &decode_config).unwrap();
+
+        let mut decoded_count = 0;
+        for pkt in packets {
+            dec.push_packet(pkt).unwrap();
+            if let Some(frame) = dec.pop_frame().unwrap() {
+                let img = frame.img();
+                assert_eq!(img.width(), w);
+                assert_eq!(img.height(), h);
+                decoded_count += 1;
+            }
+        }
+        assert!(
+            decoded_count >= 5,
+            "expected >= 5 decoded frames, got {decoded_count}"
+        );
+    }
+
+    #[test]
+    fn solid_red_visual_roundtrip() {
+        let w = 320u32;
+        let h = 180u32;
+        let mut enc = Av1Encoder::with_preset(VideoPreset::P180).unwrap();
+
+        let frames: Vec<VideoFrame> = (0..60).map(|_| make_rgba_frame(w, h, 255, 0, 0)).collect();
+        let packets = encode_frames(&mut enc, &frames);
+
+        let config = enc.config();
+        let decode_config = DecodeConfig::default();
+        let mut dec = Av1VideoDecoder::new(&config, &decode_config).unwrap();
+
+        let mut last_frame = None;
+        for pkt in packets {
+            dec.push_packet(pkt).unwrap();
+            if let Some(frame) = dec.pop_frame().unwrap() {
+                last_frame = Some(frame);
+            }
+        }
+
+        let frame = last_frame.expect("should have decoded at least one frame");
+        let img = frame.img();
+        let pixel = img.get_pixel(w / 2, h / 2);
+        assert!(pixel[0] > 150, "R={} should be high", pixel[0]);
+        assert!(pixel[1] < 100, "G={} should be low", pixel[1]);
+        assert!(pixel[2] < 100, "B={} should be low", pixel[2]);
+    }
+
+    #[test]
+    fn viewport_scaling() {
+        let mut enc = Av1Encoder::with_preset(VideoPreset::P360).unwrap();
+
+        let frames: Vec<VideoFrame> = (0..60)
+            .map(|_| make_rgba_frame(640, 360, 100, 100, 100))
+            .collect();
+        let packets = encode_frames(&mut enc, &frames);
+
+        let config = enc.config();
+        let decode_config = DecodeConfig::default();
+        let mut dec = Av1VideoDecoder::new(&config, &decode_config).unwrap();
+
+        dec.set_viewport(320, 180);
+
+        for pkt in packets {
+            dec.push_packet(pkt).unwrap();
+            if let Some(frame) = dec.pop_frame().unwrap() {
+                let img = frame.img();
+                assert!(img.width() <= 320, "width {} > 320", img.width());
+                assert!(img.height() <= 180, "height {} > 180", img.height());
+            }
+        }
+    }
+
+    #[test]
+    fn unsupported_codec_errors() {
+        let config = VideoConfig {
+            codec: VideoCodec::H264(H264 {
+                profile: 0x42,
+                constraints: 0xE0,
+                level: 0x1E,
+                inline: false,
+            }),
+            description: None,
+            coded_width: Some(320),
+            coded_height: Some(180),
+            display_ratio_width: None,
+            display_ratio_height: None,
+            bitrate: None,
+            framerate: None,
+            optimize_for_latency: None,
+        };
+        let decode_config = DecodeConfig::default();
+        let result = Av1VideoDecoder::new(&config, &decode_config);
+        assert!(result.is_err());
     }
 }
