@@ -11,7 +11,8 @@ use std::{
 
 use anyhow::{Context, Result};
 use firewheel::{
-    CpalConfig, CpalInputConfig, CpalOutputConfig, FirewheelConfig, FirewheelContext,
+    CpalBackend, CpalConfig, CpalInputConfig, CpalOutputConfig, FirewheelConfig, FirewheelContext,
+    backend::AudioBackend as FirewheelAudioBackend,
     channel_config::{ChannelConfig, ChannelCount, NonZeroChannelCount},
     dsp::volume::{DEFAULT_DB_EPSILON, DbMeterNormalizer},
     graph::PortIdx,
@@ -39,6 +40,26 @@ mod aec;
 type StreamWriterHandle = Arc<Mutex<StreamWriterState>>;
 type StreamReaderHandle = Arc<Mutex<StreamReaderState>>;
 
+/// Information about an available audio input device.
+#[derive(Debug, Clone)]
+pub struct AudioInputInfo {
+    /// The device name (used to select it).
+    pub name: String,
+    /// Whether this is the system default input device.
+    pub is_default: bool,
+}
+
+/// List available audio input devices.
+pub fn list_audio_inputs() -> Vec<AudioInputInfo> {
+    <CpalBackend as FirewheelAudioBackend>::available_input_devices()
+        .into_iter()
+        .map(|d| AudioInputInfo {
+            name: d.name,
+            is_default: d.is_default,
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct AudioBackend {
     tx: mpsc::Sender<DriverMessage>,
@@ -46,14 +67,16 @@ pub struct AudioBackend {
 
 impl Default for AudioBackend {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
 impl AudioBackend {
-    pub fn new() -> Self {
+    pub fn new(input_device: Option<String>) -> Self {
         let (tx, rx) = mpsc::channel(32);
-        let _handle = spawn_thread("audiodriver", move || AudioDriver::new(rx).run());
+        let _handle = spawn_thread("audiodriver", move || {
+            AudioDriver::new(rx, input_device).run()
+        });
         Self { tx }
     }
 
@@ -265,7 +288,7 @@ impl fmt::Debug for AudioDriver {
 }
 
 impl AudioDriver {
-    fn new(rx: mpsc::Receiver<DriverMessage>) -> Self {
+    fn new(rx: mpsc::Receiver<DriverMessage>, input_device: Option<String>) -> Self {
         let config = FirewheelConfig {
             num_graph_inputs: ChannelCount::new(1).unwrap(),
             ..Default::default()
@@ -273,6 +296,17 @@ impl AudioDriver {
         let mut cx = FirewheelContext::new(config);
         info!("inputs: {:?}", cx.available_input_devices());
         info!("outputs: {:?}", cx.available_output_devices());
+
+        let input_device_name = input_device.or({
+            #[cfg(target_os = "linux")]
+            {
+                Some("pipewire".to_string())
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                None
+            }
+        });
         let config = CpalConfig {
             output: CpalOutputConfig {
                 #[cfg(target_os = "linux")]
@@ -281,8 +315,7 @@ impl AudioDriver {
                 ..Default::default()
             },
             input: Some(CpalInputConfig {
-                #[cfg(target_os = "linux")]
-                device_name: Some("pipewire".to_string()),
+                device_name: input_device_name,
                 fail_on_no_input: true,
                 ..Default::default()
             }),
