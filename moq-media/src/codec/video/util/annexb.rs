@@ -82,6 +82,73 @@ pub(crate) fn build_avcc(sps: &[u8], pps: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Extract SPS and PPS NAL units from an avcC (ISO 14496-15) configuration record
+/// and return them as Annex B formatted data (with start codes).
+pub(crate) fn avcc_to_annex_b(avcc: &[u8]) -> Option<Vec<u8>> {
+    // Minimum avcC is 7 bytes header + at least 1 SPS entry
+    if avcc.len() < 8 {
+        return None;
+    }
+    let mut out = Vec::new();
+    let mut i = 5; // skip configurationVersion, profile, compat, level, lengthSizeMinusOne
+
+    // SPS
+    let num_sps = (avcc[i] & 0x1F) as usize;
+    i += 1;
+    for _ in 0..num_sps {
+        if i + 2 > avcc.len() {
+            return None;
+        }
+        let len = u16::from_be_bytes([avcc[i], avcc[i + 1]]) as usize;
+        i += 2;
+        if i + len > avcc.len() {
+            return None;
+        }
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(&avcc[i..i + len]);
+        i += len;
+    }
+
+    // PPS
+    if i >= avcc.len() {
+        return None;
+    }
+    let num_pps = avcc[i] as usize;
+    i += 1;
+    for _ in 0..num_pps {
+        if i + 2 > avcc.len() {
+            return None;
+        }
+        let len = u16::from_be_bytes([avcc[i], avcc[i + 1]]) as usize;
+        i += 2;
+        if i + len > avcc.len() {
+            return None;
+        }
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(&avcc[i..i + len]);
+        i += len;
+    }
+
+    Some(out)
+}
+
+/// Convert length-prefixed (4-byte big-endian) NALs to Annex B format with 4-byte start codes.
+pub(crate) fn length_prefixed_to_annex_b(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    let mut i = 0;
+    while i + 4 <= data.len() {
+        let len = u32::from_be_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]) as usize;
+        i += 4;
+        if i + len > data.len() {
+            break;
+        }
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(&data[i..i + len]);
+        i += len;
+    }
+    out
+}
+
 /// Convert Annex B start-code-separated NALs to length-prefixed (4-byte big-endian) format.
 pub(crate) fn annex_b_to_length_prefixed(data: &[u8]) -> Vec<u8> {
     let nals = parse_annex_b(data);
