@@ -16,8 +16,6 @@ bytemuck = "1.24.0"
 byte-unit = { version = "5.1", features = ["bit"] }
 data-encoding = "2.9.0"
 derive_more = { version = "2.0.1", features = ["display", "debug", "eq", "deref"] }
-ffmpeg-next = { version = "8.0.0", default-features = false, features = ["device", "format", "filter", "software-resampling", "software-scaling"] }
-ffmpeg-sys-next = { version = "8.0.1", optional = true }
 firewheel = { version = "0.9.1", features = ["cpal", "peak_meter_node", "std", "stream_nodes", "cpal_resample_inputs"] }
 hang = "0.10"
 image = { version = "0.25.8", default-features = false }
@@ -40,7 +38,6 @@ tracing = "0.1.41"
 xcap = "0.8"
 webrtc-audio-processing = { version = "0.5.0", features = ["bundled"] }
 bytes = "1.11.0"
-buf-list = "1.1.2"
 openh264 = { version = "0.9", features = ["source"] }
 unsafe-libopus = "0.2"
 yuvutils-rs = "0.8"
@@ -58,40 +55,3 @@ tracing-subscriber = "0.3.20"
 
 [features]
 default = []
-
-# Enable static build of ffmpeg
-static = [
-  "ffmpeg-next/static",
-  "ffmpeg-next/build-lib-openssl",
-  "ffmpeg-next/build-license-version3",
-  "ffmpeg-next/build-lib-opus",
-  "ffmpeg-next/build-lib-x264",
-  "ffmpeg-next/build-license-gpl",
-  "dep:ffmpeg-sys-next",
-]
-
-[target.'cfg(target_os = "macos")'.dependencies]
-ffmpeg-sys-next = { version = "8.0.1", optional = true, features = [
-  "build-videotoolbox",
-  "build-audiotoolbox",
-] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-ffmpeg-sys-next = { version = "8.0.1", optional = true, features = [
-  "build-vaapi",
-  # "build-vulkan",
-  # "build-lib-libmfx",
-] }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-ffmpeg-sys-next = { version = "8.0.1", optional = true, features = [
-  "build-lib-d3d11va",
-  "build-lib-dxva2",
-  # "build-nvidia",
-  # "build-amf",
-] }
-
-[target.'cfg(target_os = "android")'.dependencies]
-ffmpeg-sys-next = { version = "8.0.1", optional = true, features = [
-  # "build-mediacodec",
-] }

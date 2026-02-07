@@ -46,6 +46,3 @@ workspace = true
 
 [features]
 default = []
-
-# Enable static build of ffmpeg
-static = ["moq-media/static"]

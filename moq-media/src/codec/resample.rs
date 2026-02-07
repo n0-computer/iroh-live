@@ -11,8 +11,6 @@ use rubato::{
 #[derive(Debug)]
 pub(crate) struct Resampler {
     inner: Option<Async<f32>>,
-    from_rate: u32,
-    to_rate: u32,
     channels: usize,
 }
 
@@ -41,12 +39,7 @@ impl Resampler {
                 FixedAsync::Input,
             )?)
         };
-        Ok(Self {
-            inner,
-            from_rate,
-            to_rate,
-            channels,
-        })
+        Ok(Self { inner, channels })
     }
 
     /// Resample interleaved f32 samples. Returns resampled interleaved data.
@@ -64,13 +57,5 @@ impl Resampler {
         let input_adapter = InterleavedSlice::new(input, self.channels, frames)?;
         let result = resampler.process(&input_adapter, 0, None)?;
         Ok(result.take_data())
-    }
-
-    pub(crate) fn input_rate(&self) -> u32 {
-        self.from_rate
-    }
-
-    pub(crate) fn output_rate(&self) -> u32 {
-        self.to_rate
     }
 }
