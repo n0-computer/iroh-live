@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y libva-dev vainfo mesa-va-drivers libtool automake libpipewire-0.3-dev libclang-dev
+      - run: sudo apt-get update && sudo apt-get install -y libva-dev vainfo mesa-va-drivers libtool automake libpipewire-0.3-dev libclang-dev libasound2-dev
       - run: cargo check -p moq-media --features vaapi
       - run: cargo check -p moq-media
       - run: cargo clippy -p moq-media --features vaapi -- -D warnings
@@ -33,7 +33,7 @@ jobs:
             install: brew install dav1d libtool automake
           - os: ubuntu-latest
             features: vaapi
-            install: sudo apt-get update && sudo apt-get install -y libva-dev libtool automake libpipewire-0.3-dev libclang-dev
+            install: sudo apt-get update && sudo apt-get install -y libva-dev libtool automake libpipewire-0.3-dev libclang-dev libasound2-dev
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
