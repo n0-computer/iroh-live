@@ -13,16 +13,31 @@ jobs:
       - run: cargo clippy -p moq-media --features videotoolbox -- -D warnings
       - run: cargo test -p moq-media --features videotoolbox -- --ignored
 
+  linux-vaapi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libva-dev vainfo mesa-va-drivers libtool automake
+      - run: cargo check -p moq-media --features vaapi
+      - run: cargo check -p moq-media
+      - run: cargo clippy -p moq-media --features vaapi -- -D warnings
+      - run: cargo test -p moq-media --features vaapi -- --ignored || echo "VAAPI not available on runner, skipping HW tests"
+
   compile-check:
     strategy:
       matrix:
         include:
           - os: macos-latest
             features: videotoolbox
+            install: brew install dav1d libtool automake
+          - os: ubuntu-latest
+            features: vaapi
+            install: sudo apt-get update && sudo apt-get install -y libva-dev libtool automake
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: brew install dav1d libtool automake
+      - run: ${{ matrix.install }}
       - run: cargo check -p moq-media --features ${{ matrix.features }}
       - run: cargo check -p moq-media

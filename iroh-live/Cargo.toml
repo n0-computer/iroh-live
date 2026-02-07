@@ -48,3 +48,4 @@ workspace = true
 default = ["av1"]
 av1 = ["moq-media/av1"]
 videotoolbox = ["moq-media/videotoolbox"]
+vaapi = ["moq-media/vaapi"]
