@@ -44,6 +44,8 @@ yuvutils-rs = "0.8"
 pic-scale = "0.6"
 rubato = "1.0"
 audioadapter-buffers = "2.0"
+rav1e = { version = "0.8", optional = true }
+dav1d = { version = "0.11", optional = true }
 
 
 [dev-dependencies]
@@ -55,4 +57,5 @@ tokio = { version = "1.48.0", features = ["full"] }
 tracing-subscriber = "0.3.20"
 
 [features]
-default = []
+default = ["av1"]
+av1 = ["dep:rav1e", "dep:dav1d"]
