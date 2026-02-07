@@ -213,6 +213,122 @@ mod tests {
         assert_video_roundtrip(&frames, w, h, 255, 255, 255, 40, 5);
     }
 
+    // --- AV1 video roundtrip helpers ---
+
+    #[cfg(feature = "av1")]
+    fn av1_video_encode(
+        enc: &mut Av1Encoder,
+        w: u32,
+        h: u32,
+        r: u8,
+        g: u8,
+        b: u8,
+        n: usize,
+    ) -> Vec<hang::Frame> {
+        let mut packets = Vec::new();
+        for _ in 0..n {
+            enc.push_frame(make_solid_frame(w, h, r, g, b)).unwrap();
+            while let Some(pkt) = enc.pop_packet().unwrap() {
+                packets.push(pkt);
+            }
+        }
+        packets
+    }
+
+    #[cfg(feature = "av1")]
+    fn av1_video_decode(config: &VideoConfig, packets: Vec<hang::Frame>) -> Vec<DecodedFrame> {
+        let decode_config = DecodeConfig::default();
+        let mut dec = Av1VideoDecoder::new(config, &decode_config).unwrap();
+        let mut frames = Vec::new();
+        for pkt in packets {
+            dec.push_packet(pkt).unwrap();
+            if let Some(frame) = dec.pop_frame().unwrap() {
+                frames.push(frame);
+            }
+        }
+        frames
+    }
+
+    // --- AV1 video roundtrip tests ---
+
+    #[cfg(feature = "av1")]
+    #[test]
+    fn av1_roundtrip_p180_red() {
+        let preset = VideoPreset::P180;
+        let (w, h) = preset.dimensions();
+        let mut enc = Av1Encoder::with_preset(preset).unwrap();
+        // rav1e buffers frames; send 60 to ensure sufficient output
+        let packets = av1_video_encode(&mut enc, w, h, 255, 0, 0, 60);
+        let config = enc.config();
+        let frames = av1_video_decode(&config, packets);
+        assert_video_roundtrip(&frames, w, h, 255, 0, 0, 80, 5);
+    }
+
+    #[cfg(feature = "av1")]
+    #[test]
+    fn av1_roundtrip_p360_green() {
+        let preset = VideoPreset::P360;
+        let (w, h) = preset.dimensions();
+        let mut enc = Av1Encoder::with_preset(preset).unwrap();
+        let packets = av1_video_encode(&mut enc, w, h, 0, 255, 0, 60);
+        let config = enc.config();
+        let frames = av1_video_decode(&config, packets);
+        assert_video_roundtrip(&frames, w, h, 0, 255, 0, 80, 5);
+    }
+
+    // --- DynamicVideoDecoder routing tests ---
+
+    #[test]
+    fn dynamic_routes_h264() {
+        let preset = VideoPreset::P180;
+        let (w, h) = preset.dimensions();
+        let mut enc = H264Encoder::with_preset(preset).unwrap();
+        let packets = video_encode(&mut enc, w, h, 200, 100, 50, 10);
+        let config = enc.config();
+
+        let decode_config = DecodeConfig::default();
+        let mut dec = DynamicVideoDecoder::new(&config, &decode_config).unwrap();
+        assert_eq!(dec.name(), "h264-openh264");
+
+        let mut decoded_count = 0;
+        for pkt in packets {
+            dec.push_packet(pkt).unwrap();
+            if dec.pop_frame().unwrap().is_some() {
+                decoded_count += 1;
+            }
+        }
+        assert!(
+            decoded_count >= 5,
+            "expected >= 5 decoded frames, got {decoded_count}"
+        );
+    }
+
+    #[cfg(feature = "av1")]
+    #[test]
+    fn dynamic_routes_av1() {
+        let preset = VideoPreset::P180;
+        let (w, h) = preset.dimensions();
+        let mut enc = Av1Encoder::with_preset(preset).unwrap();
+        let packets = av1_video_encode(&mut enc, w, h, 200, 100, 50, 60);
+        let config = enc.config();
+
+        let decode_config = DecodeConfig::default();
+        let mut dec = DynamicVideoDecoder::new(&config, &decode_config).unwrap();
+        assert_eq!(dec.name(), "av1-dav1d");
+
+        let mut decoded_count = 0;
+        for pkt in packets {
+            dec.push_packet(pkt).unwrap();
+            if dec.pop_frame().unwrap().is_some() {
+                decoded_count += 1;
+            }
+        }
+        assert!(
+            decoded_count >= 5,
+            "expected >= 5 decoded frames, got {decoded_count}"
+        );
+    }
+
     // --- Audio roundtrip tests for every format × preset combination ---
 
     #[test]

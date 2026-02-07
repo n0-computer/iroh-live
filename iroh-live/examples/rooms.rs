@@ -115,7 +115,7 @@ async fn setup(cli: Cli, audio_ctx: AudioBackend) -> Result<(Router, PublishBroa
             }
             #[cfg(not(feature = "av1"))]
             (_, VideoCodec::Av1) => {
-                anyhow::bail!("AV1 support requires the `av1` feature");
+                return Err(anyerr!("AV1 support requires the `av1` feature"));
             }
         };
         broadcast.set_video(Some(video))?;
