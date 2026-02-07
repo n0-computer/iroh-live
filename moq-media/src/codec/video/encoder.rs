@@ -1,10 +1,14 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use hang::{
     Timestamp,
     catalog::{H264, VideoCodec, VideoConfig},
 };
 use openh264::{
-    encoder::{EncoderConfig, FrameType},
+    OpenH264API,
+    encoder::{
+        BitRate, Encoder as OpenH264Encoder, EncoderConfig, FrameRate, FrameType, IntraFramePeriod,
+        RateControlMode, UsageType,
+    },
     formats::YUVSource,
 };
 
@@ -21,7 +25,7 @@ use super::util::convert::YuvData;
 #[derive(derive_more::Debug)]
 pub(crate) struct H264Encoder {
     #[debug(skip)]
-    encoder: openh264::encoder::Encoder,
+    encoder: OpenH264Encoder,
     width: u32,
     height: u32,
     framerate: u32,
@@ -66,16 +70,14 @@ impl H264Encoder {
         let bitrate = (pixels as f32 * 0.07 * framerate_factor).round() as u64;
 
         let config = EncoderConfig::new()
-            .bitrate(openh264::encoder::BitRate::from_bps(bitrate as u32))
-            .max_frame_rate(openh264::encoder::FrameRate::from_hz(framerate as f32))
-            .usage_type(openh264::encoder::UsageType::CameraVideoRealTime)
-            .rate_control_mode(openh264::encoder::RateControlMode::Bitrate)
-            .intra_frame_period(openh264::encoder::IntraFramePeriod::from_num_frames(
-                framerate,
-            ));
+            .bitrate(BitRate::from_bps(bitrate as u32))
+            .max_frame_rate(FrameRate::from_hz(framerate as f32))
+            .usage_type(UsageType::CameraVideoRealTime)
+            .rate_control_mode(RateControlMode::Bitrate)
+            .intra_frame_period(IntraFramePeriod::from_num_frames(framerate));
 
-        let api = openh264::OpenH264API::from_source();
-        let encoder = openh264::encoder::Encoder::with_api_config(api, config)?;
+        let api = OpenH264API::from_source();
+        let encoder = OpenH264Encoder::with_api_config(api, config)?;
 
         Ok(Self {
             encoder,
