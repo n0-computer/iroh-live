@@ -2,6 +2,8 @@ use clap::Parser;
 use iroh::{Endpoint, SecretKey, protocol::Router};
 #[cfg(feature = "av1")]
 use iroh_live::media::codec::Av1Encoder;
+#[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+use iroh_live::media::codec::VtbEncoder;
 use iroh_live::{
     Live,
     media::{
@@ -53,6 +55,13 @@ async fn main() -> n0_error::Result {
             #[cfg(not(feature = "av1"))]
             VideoCodec::Av1 => {
                 eprintln!("AV1 support requires the `av1` feature");
+                std::process::exit(1);
+            }
+            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+            VideoCodec::VtbH264 => VideoRenditions::new::<VtbEncoder>(camera, cli.video_presets),
+            #[cfg(not(all(target_os = "macos", feature = "videotoolbox")))]
+            VideoCodec::VtbH264 => {
+                eprintln!("VideoToolbox support requires macOS and the `videotoolbox` feature");
                 std::process::exit(1);
             }
         };

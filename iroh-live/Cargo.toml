@@ -47,3 +47,4 @@ workspace = true
 [features]
 default = ["av1"]
 av1 = ["moq-media/av1"]
+videotoolbox = ["moq-media/videotoolbox"]

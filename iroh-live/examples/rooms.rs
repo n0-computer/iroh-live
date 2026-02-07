@@ -6,6 +6,8 @@ use iroh::{Endpoint, protocol::Router};
 use iroh_gossip::{Gossip, TopicId};
 #[cfg(feature = "av1")]
 use iroh_live::media::codec::Av1Encoder;
+#[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+use iroh_live::media::codec::VtbEncoder;
 use iroh_live::{
     Live,
     media::{
@@ -116,6 +118,22 @@ async fn setup(cli: Cli, audio_ctx: AudioBackend) -> Result<(Router, PublishBroa
             #[cfg(not(feature = "av1"))]
             (_, VideoCodec::Av1) => {
                 return Err(anyerr!("AV1 support requires the `av1` feature"));
+            }
+            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+            (true, VideoCodec::VtbH264) => {
+                let screen = ScreenCapturer::new()?;
+                VideoRenditions::new::<VtbEncoder>(screen, VideoPreset::all())
+            }
+            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+            (false, VideoCodec::VtbH264) => {
+                let camera = CameraCapturer::new()?;
+                VideoRenditions::new::<VtbEncoder>(camera, VideoPreset::all())
+            }
+            #[cfg(not(all(target_os = "macos", feature = "videotoolbox")))]
+            (_, VideoCodec::VtbH264) => {
+                return Err(anyerr!(
+                    "VideoToolbox support requires macOS and the `videotoolbox` feature"
+                ));
             }
         };
         broadcast.set_video(Some(video))?;
