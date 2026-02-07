@@ -52,28 +52,28 @@ impl HwBackend {
         let mut candidates = Vec::new();
         // Platform-preferred order
         #[cfg(target_os = "macos")]
-        candidates.extend_from_slice(&[HwBackend::Videotoolbox]);
+        candidates.extend_from_slice(&[Self::Videotoolbox]);
         #[cfg(target_os = "windows")]
         candidates.extend_from_slice(&[HwBackend::Nvenc, HwBackend::Qsv, HwBackend::Amf]);
         #[cfg(target_os = "linux")]
         candidates.extend_from_slice(&[HwBackend::Vaapi, HwBackend::Nvenc, HwBackend::Qsv]);
 
         // Always end with software
-        candidates.push(HwBackend::Software);
+        candidates.push(Self::Software);
         candidates
     }
 
     fn pixel_format(&self) -> Pixel {
         match self {
-            HwBackend::Vaapi | HwBackend::Qsv => Pixel::NV12,
+            Self::Vaapi | Self::Qsv => Pixel::NV12,
             // These rest accepts yuv420p SW frames:
             _ => Pixel::YUV420P,
         }
     }
     fn hardware_pixel_format(&self) -> Pixel {
         match self {
-            HwBackend::Vaapi => Pixel::VAAPI,
-            HwBackend::Qsv => Pixel::NV12,
+            Self::Vaapi => Pixel::VAAPI,
+            Self::Qsv => Pixel::NV12,
             // These rest accepts yuv420p SW frames:
             _ => Pixel::YUV420P,
         }
@@ -172,7 +172,7 @@ impl H264Encoder {
             (*ctx_mut).framerate.den = 1;
             (*ctx_mut).gop_size = opts.framerate as i32;
             (*ctx_mut).bit_rate = opts.bitrate as i64;
-            (*ctx_mut).flags = (*ctx_mut).flags | codec::Flags::GLOBAL_HEADER.bits() as c_int;
+            (*ctx_mut).flags |= codec::Flags::GLOBAL_HEADER.bits() as c_int;
             (*ctx_mut).pix_fmt = backend.hardware_pixel_format().into();
         }
 
@@ -201,7 +201,7 @@ impl H264Encoder {
                     ("profile", "baseline"),
                 ]);
             }
-            ffmpeg::Dictionary::from_iter(opts.into_iter())
+            ffmpeg::Dictionary::from_iter(opts)
         };
         // Open encoder
         let encoder = ctx.encoder().video()?.open_as_with(codec, enc_opts)?;
@@ -263,7 +263,7 @@ impl H264Encoder {
         frame.set_pts(Some(self.frame_count as i64));
         self.frame_count += 1;
 
-        if self.frame_count % self.opts.framerate as u64 == 0 {
+        if self.frame_count.is_multiple_of(self.opts.framerate as u64) {
             tracing::trace!(
                 "Encoding {}: {}x{} fmt={:?} pts={:?} backend={:?}",
                 self.frame_count,
@@ -288,8 +288,8 @@ impl H264Encoder {
                     .vaapi
                     .as_ref()
                     .ok_or_else(|| anyhow!("no vaapi state"))?;
-                let hw_frame = va.transfer_nv12_to_hw(&frame)?;
-                hw_frame
+
+                va.transfer_nv12_to_hw(&frame)?
             }
             // Other backends accept SW frames directly
             _ => frame,

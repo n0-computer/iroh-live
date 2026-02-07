@@ -13,7 +13,7 @@ where
     std::thread::Builder::new()
         .name(name_str.clone())
         .spawn(f)
-        .expect(&format!("failed to spawn thread: {}", name_str))
+        .unwrap_or_else(|_| panic!("failed to spawn thread: {}", name_str))
 }
 
 pub struct StatsSmoother {
@@ -21,6 +21,12 @@ pub struct StatsSmoother {
     rate_down: Rate,
     last_update: Instant,
     rtt: Duration,
+}
+
+impl Default for StatsSmoother {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StatsSmoother {

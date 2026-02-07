@@ -38,7 +38,7 @@ impl VideoDecoder for FfmpegVideoDecoder {
                     codec::decoder::find(CodecId::H264).context("H.264 decoder not found")?;
                 let mut ctx = codec::context::Context::new_with_codec(codec);
                 if let Some(description) = &config.description {
-                    ctx.set_extradata(&description)?;
+                    ctx.set_extradata(description)?;
                 }
                 ctx.decoder().video().unwrap()
             }
@@ -46,7 +46,7 @@ impl VideoDecoder for FfmpegVideoDecoder {
                 let codec = codec::decoder::find(CodecId::AV1).context("AV1 decoder not found")?;
                 let mut ctx = codec::context::Context::new_with_codec(codec);
                 if let Some(description) = &config.description {
-                    ctx.set_extradata(&description)?;
+                    ctx.set_extradata(description)?;
                 }
                 ctx.decoder().video().unwrap()
             }
@@ -90,14 +90,14 @@ impl VideoDecoder for FfmpegVideoDecoder {
                     self.rescaler.set_target_dimensions(width, height);
                 }
 
-                let frame = self.rescaler.process(&mut self.decoded)?;
+                let frame = self.rescaler.process(&self.decoded)?;
                 let last_timestamp = self
                     .last_timestamp
                     .as_ref()
                     .context("missing last packet")?;
                 let frame = DecodedFrame::from_ffmpeg(
                     frame,
-                    self.clock.frame_delay(&last_timestamp),
+                    self.clock.frame_delay(last_timestamp),
                     std::time::Duration::from(*last_timestamp),
                 );
                 Ok(Some(frame))

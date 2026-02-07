@@ -1,4 +1,4 @@
-pub use self::{
+pub(super) use self::{
     firewheel_nodes::{AecCaptureNode, AecRenderNode},
     processor::{AecProcessor, AecProcessorConfig},
 };
@@ -19,7 +19,7 @@ mod processor {
     };
 
     #[derive(Debug, Clone)]
-    pub struct AecProcessorConfig {
+    pub(crate) struct AecProcessorConfig {
         pub num_input_channels: NonZeroU32,
         pub num_output_channels: NonZeroU32,
     }
@@ -34,13 +34,13 @@ mod processor {
     }
 
     impl AecProcessorConfig {
-        pub fn stereo_in_out() -> Self {
+        pub(crate) fn stereo_in_out() -> Self {
             Self::default()
         }
     }
 
     #[derive(Clone, Debug)]
-    pub struct AecProcessor(Arc<Inner>);
+    pub(crate) struct AecProcessor(Arc<Inner>);
 
     #[derive(derive_more::Debug)]
     struct Inner {
@@ -61,7 +61,7 @@ mod processor {
     }
 
     impl AecProcessor {
-        pub fn new(config: AecProcessorConfig, enabled: bool) -> anyhow::Result<Self> {
+        pub(crate) fn new(config: AecProcessorConfig, enabled: bool) -> anyhow::Result<Self> {
             let suppression_level = EchoCancellationSuppressionLevel::High;
             // High pass filter is a prerequisite to running echo cancellation.
             let processor_config = Config {
@@ -92,12 +92,12 @@ mod processor {
             })))
         }
 
-        pub fn is_enabled(&self) -> bool {
+        pub(crate) fn is_enabled(&self) -> bool {
             self.0.enabled.load(Ordering::SeqCst)
         }
 
         #[allow(unused)]
-        pub fn set_enabled(&self, enabled: bool) {
+        pub(crate) fn set_enabled(&self, enabled: bool) {
             let _prev = self.0.enabled.swap(enabled, Ordering::SeqCst);
         }
 
@@ -105,7 +105,7 @@ mod processor {
         /// signal processing as specified in the config. `frame` should hold an
         /// interleaved f32 audio frame, with [`NUM_SAMPLES_PER_FRAME`] samples.
         // webrtc-audio-processing expects a 10ms chunk for each process call.
-        pub fn process_capture_frame(
+        pub(crate) fn process_capture_frame(
             &self,
             frame: &mut [f32],
         ) -> Result<(), webrtc_audio_processing::Error> {
@@ -122,7 +122,7 @@ mod processor {
         /// Processes and optionally modifies the audio frame from a playback device.
         /// `frame` should hold an interleaved `f32` audio frame, with
         /// [`NUM_SAMPLES_PER_FRAME`] samples.
-        pub fn process_render_frame(
+        pub(crate) fn process_render_frame(
             &self,
             frame: &mut [f32],
         ) -> Result<(), webrtc_audio_processing::Error> {
@@ -136,7 +136,7 @@ mod processor {
                 .process_render_frame(frame)
         }
 
-        pub fn set_stream_delay(&self, delay_ms: u32) {
+        pub(crate) fn set_stream_delay(&self, delay_ms: u32) {
             debug!("updating stream delay to {delay_ms}ms");
             // let playback = self.0.playback_delay.load(Ordering::Relaxed);
             // let capture = self.0.capture_delay.load(Ordering::Relaxed);
@@ -174,7 +174,7 @@ mod firewheel_nodes {
 
     /// Simple render-side node: feeds output audio into WebRTC's render stream.
     #[derive(Diff, Patch, Debug, Clone, Copy, PartialEq)]
-    pub struct AecRenderNode {
+    pub(crate) struct AecRenderNode {
         pub enabled: bool,
     }
 
@@ -255,7 +255,7 @@ mod firewheel_nodes {
                 }
             }
 
-            let num_frames = info.frames as usize;
+            let num_frames = info.frames;
             // println!("num_frames: {num_frames}");
 
             // Get input/output slices like in the FilterNode example.
@@ -322,7 +322,7 @@ mod firewheel_nodes {
 
     /// Capture-side node: feeds mic audio into [`AecProcessor`]'s capture stream.
     #[derive(Diff, Patch, Debug, Clone, Copy, PartialEq)]
-    pub struct AecCaptureNode {
+    pub(crate) struct AecCaptureNode {
         pub enabled: bool,
     }
 
@@ -391,7 +391,7 @@ mod firewheel_nodes {
             }
 
             let frames = info.frames;
-            let num_frames = frames as usize;
+            let num_frames = frames;
 
             let in_l = &buffers.inputs[0][..num_frames];
             let in_r = &buffers.inputs[1][..num_frames];

@@ -59,8 +59,7 @@ impl CatalogWrapper {
             .video
             .as_ref()
             .iter()
-            .map(|v| v.renditions.iter())
-            .flatten()
+            .flat_map(|v| v.renditions.iter())
             .map(|(name, config)| (name.as_str(), config.coded_width))
             .collect();
         renditions.sort_by(|a, b| a.1.cmp(&b.1));
@@ -72,8 +71,7 @@ impl CatalogWrapper {
             .audio
             .as_ref()
             .into_iter()
-            .map(|v| v.renditions.iter())
-            .flatten()
+            .flat_map(|v| v.renditions.iter())
             .map(|(name, _config)| name.as_str())
     }
 
@@ -200,7 +198,7 @@ impl SubscribeBroadcast {
         WatchTrack::from_consumer::<D>(
             track_name.to_string(),
             consumer,
-            &config,
+            config,
             playback_config,
             self.shutdown.child_token(),
             span,
@@ -265,10 +263,7 @@ fn select_rendition<T, P: ToString>(
         .or_else(|| renditions.keys().next().cloned())
 }
 
-fn select_video_rendition<'a, T>(
-    renditions: &'a BTreeMap<String, T>,
-    q: Quality,
-) -> Option<String> {
+fn select_video_rendition<T>(renditions: &BTreeMap<String, T>, q: Quality) -> Option<String> {
     use crate::av::VideoPreset::*;
     let order = match q {
         Quality::Highest => [P1080, P720, P360, P180],
@@ -280,10 +275,7 @@ fn select_video_rendition<'a, T>(
     select_rendition(renditions, &order)
 }
 
-fn select_audio_rendition<'a, T>(
-    renditions: &'a BTreeMap<String, T>,
-    q: Quality,
-) -> Option<String> {
+fn select_audio_rendition<T>(renditions: &BTreeMap<String, T>, q: Quality) -> Option<String> {
     use crate::av::AudioPreset::*;
     let order = match q {
         Quality::Highest | Quality::High => [Hq, Lq],
@@ -371,7 +363,7 @@ impl AudioTrack {
             loop {
                 match packet_rx.try_recv() {
                     Ok(packet) => {
-                        let remote_start = *remote_start.get_or_insert_with(|| packet.timestamp);
+                        let remote_start = *remote_start.get_or_insert(packet.timestamp);
 
                         if tracing::enabled!(tracing::Level::TRACE) {
                             let loop_elapsed = tick.duration_since(loop_start);
@@ -549,7 +541,6 @@ impl WatchTrack {
                 }
                 if let Err(err) = source.stop() {
                     warn!("Video source failed to stop: {err:?}");
-                    return;
                 }
             }
         });
@@ -558,7 +549,7 @@ impl WatchTrack {
             _task_handle: None,
             _thread_handle: Some(thread),
         };
-        WatchTrack {
+        Self {
             video_frames: WatchTrackFrames { rx: frame_rx },
             handle: WatchTrackHandle {
                 rendition,
@@ -604,7 +595,7 @@ impl WatchTrack {
             _task_handle: Some(AbortOnDropHandle::new(task)),
             _thread_handle: Some(thread),
         };
-        Ok(WatchTrack {
+        Ok(Self {
             video_frames: WatchTrackFrames { rx: frame_rx },
             handle: WatchTrackHandle {
                 rendition,

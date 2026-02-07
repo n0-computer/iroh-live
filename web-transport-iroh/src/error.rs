@@ -87,12 +87,12 @@ impl From<quinn::WriteError> for WriteError {
         match e {
             quinn::WriteError::Stopped(code) => {
                 match web_transport_proto::error_from_http3(code.into_inner()) {
-                    Some(code) => WriteError::Stopped(code),
-                    None => WriteError::InvalidStopped(code),
+                    Some(code) => Self::Stopped(code),
+                    None => Self::InvalidStopped(code),
                 }
             }
-            quinn::WriteError::ClosedStream => WriteError::ClosedStream,
-            quinn::WriteError::ConnectionLost(e) => WriteError::SessionError(e.into()),
+            quinn::WriteError::ClosedStream => Self::ClosedStream,
+            quinn::WriteError::ConnectionLost(e) => Self::SessionError(e.into()),
             quinn::WriteError::ZeroRttRejected => unreachable!("0-RTT not supported"),
         }
     }
@@ -122,13 +122,13 @@ impl From<quinn::ReadError> for ReadError {
         match value {
             quinn::ReadError::Reset(code) => {
                 match web_transport_proto::error_from_http3(code.into_inner()) {
-                    Some(code) => ReadError::Reset(code),
-                    None => ReadError::InvalidReset(code),
+                    Some(code) => Self::Reset(code),
+                    None => Self::InvalidReset(code),
                 }
             }
-            quinn::ReadError::ConnectionLost(e) => ReadError::SessionError(e.into()),
-            quinn::ReadError::IllegalOrderedRead => ReadError::IllegalOrderedRead,
-            quinn::ReadError::ClosedStream => ReadError::ClosedStream,
+            quinn::ReadError::ConnectionLost(e) => Self::SessionError(e.into()),
+            quinn::ReadError::IllegalOrderedRead => Self::IllegalOrderedRead,
+            quinn::ReadError::ClosedStream => Self::ClosedStream,
             quinn::ReadError::ZeroRttRejected => unreachable!("0-RTT not supported"),
         }
     }
@@ -147,8 +147,8 @@ pub enum ReadExactError {
 impl From<quinn::ReadExactError> for ReadExactError {
     fn from(e: quinn::ReadExactError) -> Self {
         match e {
-            quinn::ReadExactError::FinishedEarly(size) => ReadExactError::FinishedEarly(size),
-            quinn::ReadExactError::ReadError(e) => ReadExactError::ReadError(e.into()),
+            quinn::ReadExactError::FinishedEarly(size) => Self::FinishedEarly(size),
+            quinn::ReadExactError::ReadError(e) => Self::ReadError(e.into()),
         }
     }
 }
@@ -166,8 +166,8 @@ pub enum ReadToEndError {
 impl From<quinn::ReadToEndError> for ReadToEndError {
     fn from(e: quinn::ReadToEndError) -> Self {
         match e {
-            quinn::ReadToEndError::TooLong => ReadToEndError::TooLong,
-            quinn::ReadToEndError::Read(e) => ReadToEndError::ReadError(e.into()),
+            quinn::ReadToEndError::TooLong => Self::TooLong,
+            quinn::ReadToEndError::Read(e) => Self::ReadError(e.into()),
         }
     }
 }
@@ -179,7 +179,7 @@ pub struct ClosedStream;
 
 impl From<quinn::ClosedStream> for ClosedStream {
     fn from(_: quinn::ClosedStream) -> Self {
-        ClosedStream
+        Self
     }
 }
 
@@ -217,7 +217,7 @@ pub enum ServerError {
 
 impl web_transport_trait::Error for SessionError {
     fn session_error(&self) -> Option<(u32, String)> {
-        if let SessionError::WebTransportError(WebTransportError::Closed(code, reason)) = self {
+        if let Self::WebTransportError(WebTransportError::Closed(code, reason)) = self {
             return Some((*code, reason.to_string()));
         }
 
@@ -227,7 +227,7 @@ impl web_transport_trait::Error for SessionError {
 
 impl web_transport_trait::Error for WriteError {
     fn session_error(&self) -> Option<(u32, String)> {
-        if let WriteError::SessionError(e) = self {
+        if let Self::SessionError(e) = self {
             return e.session_error();
         }
 
@@ -236,7 +236,7 @@ impl web_transport_trait::Error for WriteError {
 
     fn stream_error(&self) -> Option<u32> {
         match self {
-            WriteError::Stopped(code) => Some(*code),
+            Self::Stopped(code) => Some(*code),
             _ => None,
         }
     }
@@ -244,7 +244,7 @@ impl web_transport_trait::Error for WriteError {
 
 impl web_transport_trait::Error for ReadError {
     fn session_error(&self) -> Option<(u32, String)> {
-        if let ReadError::SessionError(e) = self {
+        if let Self::SessionError(e) = self {
             return e.session_error();
         }
 
@@ -253,7 +253,7 @@ impl web_transport_trait::Error for ReadError {
 
     fn stream_error(&self) -> Option<u32> {
         match self {
-            ReadError::Reset(code) => Some(*code),
+            Self::Reset(code) => Some(*code),
             _ => None,
         }
     }

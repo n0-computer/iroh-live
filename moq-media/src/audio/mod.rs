@@ -42,6 +42,12 @@ pub struct AudioBackend {
     tx: mpsc::Sender<DriverMessage>,
 }
 
+impl Default for AudioBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AudioBackend {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel(32);
@@ -422,7 +428,7 @@ impl AudioDriver {
         //     .context("missing audio output node")?;
 
         let peak_meter_node = PeakMeterNode::<2> { enabled: true };
-        let peak_meter_id = self.cx.add_node(peak_meter_node.clone(), None);
+        let peak_meter_id = self.cx.add_node(peak_meter_node, None);
         let peak_meter_smoother =
             Arc::new(Mutex::new(PeakMeterSmoother::<2>::new(Default::default())));
         self.peak_meters

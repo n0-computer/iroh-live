@@ -52,7 +52,7 @@ impl RoomHandle {
         self.tx
             .send(ApiMessage::Publish {
                 name: name.to_string(),
-                producer: producer,
+                producer,
             })
             .await
             .map_err(|_| anyerr!("room actor died"))
@@ -202,7 +202,7 @@ impl Actor {
         })
     }
 
-    pub async fn run(mut self, mut inbox: mpsc::Receiver<ApiMessage>) {
+    pub(crate) async fn run(mut self, mut inbox: mpsc::Receiver<ApiMessage>) {
         let updates = self
             .kv
             .subscribe_with_opts(Subscribe {
@@ -271,7 +271,7 @@ impl Actor {
 
     async fn handle_gossip_update(&mut self, entry: KvEntry) {
         let (remote, key, value) = entry;
-        if remote == self.me || &key != PEER_STATE_KEY {
+        if remote == self.me || key != PEER_STATE_KEY {
             return;
         }
         let Ok(value) = postcard::from_bytes::<PeerState>(&value.value) else {
