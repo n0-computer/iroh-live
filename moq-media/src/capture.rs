@@ -116,6 +116,31 @@ impl VideoSource for ScreenCapturer {
     }
 }
 
+/// Information about an available camera.
+#[derive(Debug, Clone)]
+pub struct CameraInfo {
+    /// Numeric index of this camera.
+    pub index: u32,
+    /// Human-readable name of this camera.
+    pub name: String,
+}
+
+/// List all available cameras.
+pub fn list_cameras() -> Result<Vec<CameraInfo>> {
+    nokhwa_initialize(|granted| {
+        debug!("User selected camera access: {}", granted);
+    });
+    let cameras = query(ApiBackend::Auto)?;
+    Ok(cameras
+        .iter()
+        .enumerate()
+        .map(|(i, info)| CameraInfo {
+            index: i as u32,
+            name: info.human_name().to_string(),
+        })
+        .collect())
+}
+
 #[derive(derive_more::Debug)]
 pub struct CameraCapturer {
     #[debug(skip)]
@@ -127,6 +152,9 @@ pub struct CameraCapturer {
 }
 
 impl CameraCapturer {
+    /// Create a new camera capturer using the default camera selection.
+    ///
+    /// Uses the `IROH_LIVE_CAMERA` environment variable if set, otherwise picks the last camera.
     pub fn new() -> Result<Self> {
         info!("Initializing camera capturer (nokhwa)");
         nokhwa_initialize(|granted| {
@@ -151,6 +179,19 @@ impl CameraCapturer {
                 None => CameraIndex::String(camera_name),
             },
         };
+        Self::open(camera_index)
+    }
+
+    /// Create a new camera capturer for a specific camera index.
+    pub fn with_index(index: u32) -> Result<Self> {
+        info!("Initializing camera capturer (nokhwa) with index {index}");
+        nokhwa_initialize(|granted| {
+            debug!("User selected camera access: {}", granted);
+        });
+        Self::open(CameraIndex::Index(index))
+    }
+
+    fn open(camera_index: CameraIndex) -> Result<Self> {
         let mut camera = nokhwa::Camera::new(
             camera_index,
             RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution),
@@ -184,10 +225,23 @@ impl CameraCapturer {
                 .cmp(&b.resolution())
                 .then(a.frame_rate().cmp(&b.frame_rate()))
         });
+        // Pick the smallest format that meets or exceeds the desired resolution,
+        // but don't go above 1920x1080 to avoid exceeding encoder limits.
+        let max_resolution = Resolution::new(1920, 1080);
         formats
             .iter()
-            .find(|format| format.resolution() >= desired_resolution)
-            .or_else(|| formats.last())
+            .find(|format| {
+                format.resolution() >= desired_resolution && format.resolution() <= max_resolution
+            })
+            // Fall back to the largest format at or below the max.
+            .or_else(|| {
+                formats
+                    .iter()
+                    .rev()
+                    .find(|format| format.resolution() <= max_resolution)
+            })
+            // Last resort: smallest available format.
+            .or_else(|| formats.first())
             .cloned()
     }
 }
