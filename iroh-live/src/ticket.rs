@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use iroh::EndpointAddr;
 use n0_error::{Result, StdResultExt};
 use serde::{Deserialize, Serialize};
@@ -53,9 +55,9 @@ impl LiveTicket {
     }
 }
 
-impl std::str::FromStr for LiveTicket {
+impl FromStr for LiveTicket {
     type Err = n0_error::AnyError;
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::deserialize(s)
     }
 }

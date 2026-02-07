@@ -8,7 +8,7 @@ use moq_media::{
 use n0_error::Result;
 use tracing::info;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Live {
     pub moq: Moq,
 }

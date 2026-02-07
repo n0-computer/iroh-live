@@ -70,7 +70,7 @@ impl av::DecodedFrame {
 /// Note: This does not do any color conversion. Make sure the frame is in the correct color format before.
 ///
 /// This allocates the full frame into a vec, which we need anyway to cross the thread boundary.
-pub(crate) fn ffmpeg_frame_to_image(frame: &ffmpeg_next::util::frame::Video) -> image::RgbaImage {
+pub(crate) fn ffmpeg_frame_to_image(frame: &FfmpegFrame) -> image::RgbaImage {
     let width = frame.width();
     let height = frame.height();
     let bytes_per_pixel = 4usize; // BGRA
@@ -109,9 +109,7 @@ impl PixelFormat {
 /// Returns `None` if the frame has an unsupported pixel format.
 ///
 /// This allocates the full frame into a vec, which we need anyway to cross the thread boundary.
-pub(crate) fn ffmpeg_frame_to_video_frame(
-    frame: &ffmpeg_next::util::frame::Video,
-) -> Option<VideoFrame> {
+pub(crate) fn ffmpeg_frame_to_video_frame(frame: &FfmpegFrame) -> Option<VideoFrame> {
     let pixel_format = PixelFormat::from_ffmpeg(frame.format())?;
     let width = frame.width();
     let height = frame.height();

@@ -1,7 +1,9 @@
-use web_transport_proto::{ConnectRequest, ConnectResponse, VarInt};
+use std::fmt;
 
+use iroh::endpoint::{Connection, ConnectionError};
 use thiserror::Error;
 use url::Url;
+use web_transport_proto::{ConnectRequest, ConnectResponse, VarInt};
 
 #[derive(Error, Debug, Clone)]
 pub enum ConnectError {
@@ -12,7 +14,7 @@ pub enum ConnectError {
     ProtoError(#[from] web_transport_proto::ConnectError),
 
     #[error("connection error")]
-    ConnectionError(#[from] iroh::endpoint::ConnectionError),
+    ConnectionError(#[from] ConnectionError),
 
     #[error("read error")]
     ReadError(#[from] quinn::ReadError),
@@ -31,12 +33,20 @@ pub struct Connect {
     // A reference to the send/recv stream, so we don't close it until dropped.
     send: quinn::SendStream,
 
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "kept alive to prevent stream from closing")]
     recv: quinn::RecvStream,
 }
 
+impl fmt::Debug for Connect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Connect")
+            .field("request", &self.request)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Connect {
-    pub async fn accept(conn: &iroh::endpoint::Connection) -> Result<Self, ConnectError> {
+    pub async fn accept(conn: &Connection) -> Result<Self, ConnectError> {
         // Accept the stream that will be used to send the HTTP CONNECT request.
         // If they try to send any other type of HTTP request, we will error out.
         let (send, mut recv) = conn.accept_bi().await?;
@@ -62,7 +72,7 @@ impl Connect {
         Ok(())
     }
 
-    pub async fn open(conn: &iroh::endpoint::Connection, url: Url) -> Result<Self, ConnectError> {
+    pub async fn open(conn: &Connection, url: Url) -> Result<Self, ConnectError> {
         // Create a new stream that will be used to send the CONNECT frame.
         let (mut send, mut recv) = conn.open_bi().await?;
 

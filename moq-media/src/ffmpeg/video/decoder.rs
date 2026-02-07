@@ -1,7 +1,11 @@
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use ffmpeg_next::{
-    self as ffmpeg, codec, codec::Id as CodecId, util::frame::video::Video as FfmpegFrame,
+    self as ffmpeg, codec, codec::Id as CodecId, error::EAGAIN,
+    util::frame::video::Video as FfmpegFrame,
 };
+use hang::catalog::{VideoCodec, VideoConfig};
 
 use crate::{
     av::{self, DecodeConfig, DecodedFrame, VideoDecoder},
@@ -11,10 +15,14 @@ use crate::{
     },
 };
 
+#[derive(derive_more::Debug)]
 pub struct FfmpegVideoDecoder {
-    codec: ffmpeg::decoder::Video,
+    #[debug(skip)]
+    codec: codec::decoder::Video,
+    #[debug(skip)]
     rescaler: Rescaler,
     clock: StreamClock,
+    #[debug(skip)]
     decoded: FfmpegFrame,
     viewport_changed: Option<(u32, u32)>,
     last_timestamp: Option<hang::Timestamp>,
@@ -25,7 +33,7 @@ impl VideoDecoder for FfmpegVideoDecoder {
         self.codec.id().name()
     }
 
-    fn new(config: &hang::catalog::VideoConfig, playback_config: &DecodeConfig) -> Result<Self>
+    fn new(config: &VideoConfig, playback_config: &DecodeConfig) -> Result<Self>
     where
         Self: Sized,
     {
@@ -33,7 +41,7 @@ impl VideoDecoder for FfmpegVideoDecoder {
 
         // Build a decoder context for H.264 and attach extradata (e.g., avcC)
         let codec = match &config.codec {
-            hang::catalog::VideoCodec::H264(_meta) => {
+            VideoCodec::H264(_meta) => {
                 let codec =
                     codec::decoder::find(CodecId::H264).context("H.264 decoder not found")?;
                 let mut ctx = codec::context::Context::new_with_codec(codec);
@@ -42,7 +50,7 @@ impl VideoDecoder for FfmpegVideoDecoder {
                 }
                 ctx.decoder().video().unwrap()
             }
-            hang::catalog::VideoCodec::AV1(_meta) => {
+            VideoCodec::AV1(_meta) => {
                 let codec = codec::decoder::find(CodecId::AV1).context("AV1 decoder not found")?;
                 let mut ctx = codec::context::Context::new_with_codec(codec);
                 if let Some(description) = &config.description {
@@ -98,12 +106,12 @@ impl VideoDecoder for FfmpegVideoDecoder {
                 let frame = DecodedFrame::from_ffmpeg(
                     frame,
                     self.clock.frame_delay(last_timestamp),
-                    std::time::Duration::from(*last_timestamp),
+                    Duration::from(*last_timestamp),
                 );
                 Ok(Some(frame))
             }
-            Err(ffmpeg::util::error::Error::BufferTooSmall) => Ok(None),
-            Err(ffmpeg::Error::Other { errno }) if errno == ffmpeg::util::error::EAGAIN => Ok(None),
+            Err(ffmpeg::Error::BufferTooSmall) => Ok(None),
+            Err(ffmpeg::Error::Other { errno }) if errno == EAGAIN => Ok(None),
             Err(err) => {
                 // tracing::warn!("decoder error: {err} {err:?} {err:#?}");
                 // Ok(None)
@@ -123,7 +131,7 @@ fn calculate_resized_size(decoded: &FfmpegFrame, max_width: u32, max_height: u32
     // Fit within requested bounds, preserve aspect ratio, never upscale
     let scale_w = (max_w as f32) / (src_w as f32);
     let scale_h = (max_h as f32) / (src_h as f32);
-    let scale = scale_w.min(scale_h).min(1.0).max(0.0);
+    let scale = scale_w.min(scale_h).clamp(0.0, 1.0);
     let target_width = ((src_w as f32) * scale).floor().max(1.0) as u32;
     let target_height = ((src_h as f32) * scale).floor().max(1.0) as u32;
     tracing::debug!(

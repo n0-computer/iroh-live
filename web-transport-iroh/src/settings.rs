@@ -1,3 +1,4 @@
+use iroh::endpoint::{Connection, ConnectionError};
 use thiserror::Error;
 use tokio::try_join;
 
@@ -13,7 +14,7 @@ pub enum SettingsError {
     WebTransportUnsupported,
 
     #[error("connection error")]
-    ConnectionError(#[from] iroh::endpoint::ConnectionError),
+    ConnectionError(#[from] ConnectionError),
 
     #[error("read error")]
     ReadError(#[from] quinn::ReadError),
@@ -22,18 +23,19 @@ pub enum SettingsError {
     WriteError(#[from] quinn::WriteError),
 }
 
+#[derive(Debug)]
 pub struct Settings {
     // A reference to the send/recv stream, so we don't close it until dropped.
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "kept alive to prevent closing the send stream")]
     send: quinn::SendStream,
 
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "kept alive to prevent closing the recv stream")]
     recv: quinn::RecvStream,
 }
 
 impl Settings {
     // Establish the H3 connection.
-    pub async fn connect(conn: &iroh::endpoint::Connection) -> Result<Self, SettingsError> {
+    pub async fn connect(conn: &Connection) -> Result<Self, SettingsError> {
         let recv = Self::accept(conn);
         let send = Self::open(conn);
 
@@ -42,7 +44,7 @@ impl Settings {
         Ok(Self { send, recv })
     }
 
-    async fn accept(conn: &iroh::endpoint::Connection) -> Result<quinn::RecvStream, SettingsError> {
+    async fn accept(conn: &Connection) -> Result<quinn::RecvStream, SettingsError> {
         let mut recv = conn.accept_uni().await?;
         let settings = web_transport_proto::Settings::read(&mut recv).await?;
 
@@ -55,7 +57,7 @@ impl Settings {
         Ok(recv)
     }
 
-    async fn open(conn: &iroh::endpoint::Connection) -> Result<quinn::SendStream, SettingsError> {
+    async fn open(conn: &Connection) -> Result<quinn::SendStream, SettingsError> {
         let mut settings = web_transport_proto::Settings::default();
         settings.enable_webtransport(1);
 

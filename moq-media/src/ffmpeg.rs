@@ -26,12 +26,15 @@ pub mod video {
 }
 
 pub(crate) mod ext {
+    use std::{env, ptr, slice};
+
     use buf_list::BufList;
     use bytes::Buf;
     use ffmpeg_next as ffmpeg;
+    use ffmpeg_next::util::log;
     pub fn ffmpeg_log_init() {
         use ffmpeg::util::log::Level::*;
-        let level = if let Ok(val) = std::env::var("FFMPEG_LOG") {
+        let level = if let Ok(val) = env::var("FFMPEG_LOG") {
             match val.as_str() {
                 "quiet" => Quiet,
                 "panic" => Panic,
@@ -47,7 +50,7 @@ pub(crate) mod ext {
         } else {
             Warning
         };
-        ffmpeg::util::log::set_level(level);
+        log::set_level(level);
     }
 
     pub(crate) trait PacketExt {
@@ -68,6 +71,7 @@ pub(crate) mod ext {
         fn set_extradata(&mut self, extradata: &[u8]) -> Result<(), ffmpeg::Error>;
     }
 
+    #[allow(clippy::absolute_paths, reason = "trait impl on external type")]
     impl CodecContextExt for ffmpeg::codec::Context {
         // SAFETY: Written by ChatGPT, so, dunno.
         fn extradata(&self) -> Option<&[u8]> {
@@ -76,7 +80,7 @@ pub(crate) mod ext {
                 if (*ctx).extradata.is_null() || (*ctx).extradata_size <= 0 {
                     return None;
                 }
-                Some(std::slice::from_raw_parts(
+                Some(slice::from_raw_parts(
                     (*ctx).extradata as *const u8,
                     (*ctx).extradata_size as usize,
                 ))
@@ -95,11 +99,7 @@ pub(crate) mod ext {
                     return Err(ffmpeg::Error::Bug);
                 }
                 // copy bytes and zero the padding
-                std::ptr::copy_nonoverlapping(
-                    extradata.as_ptr(),
-                    (*ctx).extradata,
-                    extradata.len(),
-                );
+                ptr::copy_nonoverlapping(extradata.as_ptr(), (*ctx).extradata, extradata.len());
                 (*ctx).extradata_size = extradata.len() as i32;
             }
             Ok(())

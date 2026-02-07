@@ -9,10 +9,10 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
-use iroh::endpoint::Connection;
+use iroh::endpoint::{Connection, ConnectionError};
 use n0_future::{
     FuturesUnordered,
-    stream::{Stream, StreamExt},
+    stream::{Stream, StreamExt, unfold},
 };
 use url::Url;
 
@@ -272,7 +272,10 @@ struct H3SessionState {
     header_datagram: Vec<u8>,
 
     // Keep a reference to the settings and connect stream to avoid closing them until dropped.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "kept alive to prevent closing the settings streams"
+    )]
     settings: Arc<Settings>,
     // The accept logic is stateful, so use an Arc<Mutex> to share it.
     accept: Arc<Mutex<H3SessionAccept>>,
@@ -310,10 +313,9 @@ impl H3SessionState {
 }
 
 // Type aliases just so clippy doesn't complain about the complexity.
-type AcceptUni =
-    dyn Stream<Item = Result<quinn::RecvStream, iroh::endpoint::ConnectionError>> + Send;
-type AcceptBi = dyn Stream<Item = Result<(quinn::SendStream, quinn::RecvStream), iroh::endpoint::ConnectionError>>
-    + Send;
+type AcceptUni = dyn Stream<Item = Result<quinn::RecvStream, ConnectionError>> + Send;
+type AcceptBi =
+    dyn Stream<Item = Result<(quinn::SendStream, quinn::RecvStream), ConnectionError>> + Send;
 type PendingUni = dyn Future<Output = Result<(StreamUni, quinn::RecvStream), SessionError>> + Send;
 type PendingBi = dyn Future<Output = Result<Option<(quinn::SendStream, quinn::RecvStream)>, SessionError>>
     + Send;
@@ -335,14 +337,22 @@ pub struct H3SessionAccept {
     pending_bi: FuturesUnordered<Pin<Box<PendingBi>>>,
 }
 
+impl fmt::Debug for H3SessionAccept {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("H3SessionAccept")
+            .field("session_id", &self.session_id)
+            .finish_non_exhaustive()
+    }
+}
+
 impl H3SessionAccept {
     pub(crate) fn new(conn: Connection, session_id: VarInt) -> Self {
         // Create a stream that just outputs new streams, so it's easy to call from poll.
-        let accept_uni = Box::pin(n0_future::stream::unfold(conn.clone(), |conn| async {
+        let accept_uni = Box::pin(unfold(conn.clone(), |conn| async {
             Some((conn.accept_uni().await, conn))
         }));
 
-        let accept_bi = Box::pin(n0_future::stream::unfold(conn, |conn| async {
+        let accept_bi = Box::pin(unfold(conn, |conn| async {
             Some((conn.accept_bi().await, conn))
         }));
 

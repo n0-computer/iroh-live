@@ -1,3 +1,5 @@
+use std::env;
+
 use crate::{
     live::Live,
     rooms::{Room, RoomTicket},
@@ -7,7 +9,7 @@ use iroh_gossip::Gossip;
 use n0_error::{Result, StdResultExt};
 use tracing::info;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct LiveNode {
     router: Router,
     pub live: Live,
@@ -58,7 +60,7 @@ impl LiveNode {
 }
 
 fn secret_key_from_env() -> n0_error::Result<iroh::SecretKey> {
-    Ok(match std::env::var("IROH_SECRET") {
+    Ok(match env::var("IROH_SECRET") {
         Ok(key) => key.parse()?,
         Err(_) => {
             let key = iroh::SecretKey::generate(&mut rand::rng());

@@ -1,12 +1,25 @@
 use std::{
     ffi::{CString, c_int},
-    ptr,
+    fmt, ptr,
     task::Poll,
 };
 
 use anyhow::{Context, Result, anyhow};
-use ffmpeg_next::{self as ffmpeg, codec, format::Pixel, frame::Video as VideoFrame};
-use hang::Timestamp;
+use ffmpeg_next::{
+    self as ffmpeg, codec,
+    error::EAGAIN,
+    format::Pixel,
+    frame::Video as VideoFrame,
+    sys::{
+        AVBufferRef, AVHWDeviceType, AVHWFramesContext, AVPixelFormat, av_buffer_ref,
+        av_buffer_unref, av_hwdevice_ctx_create, av_hwframe_ctx_alloc, av_hwframe_ctx_init,
+        av_hwframe_get_buffer, av_hwframe_transfer_data,
+    },
+};
+use hang::{
+    Timestamp,
+    catalog::{H264, VideoCodec, VideoConfig},
+};
 use tracing::{debug, info, trace};
 
 use crate::{
@@ -16,7 +29,10 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, Default)]
 // Allow unused because usage is cfg-gated on platform.
-#[allow(unused)]
+#[allow(
+    unused,
+    reason = "variants are conditionally used based on target platform"
+)]
 enum HwBackend {
     #[default]
     Software,
@@ -89,12 +105,22 @@ struct EncoderOpts {
 }
 
 pub struct H264Encoder {
-    encoder: ffmpeg::encoder::video::Encoder,
+    encoder: codec::encoder::video::Encoder,
     rescaler: Rescaler,
     backend: HwBackend,
     vaapi: Option<VaapiState>,
     opts: EncoderOpts,
     frame_count: u64,
+}
+
+impl fmt::Debug for H264Encoder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("H264Encoder")
+            .field("backend", &self.backend)
+            .field("opts", &self.opts)
+            .field("frame_count", &self.frame_count)
+            .finish_non_exhaustive()
+    }
 }
 
 impl H264Encoder {
@@ -150,13 +176,9 @@ impl H264Encoder {
     fn open_encoder(
         backend: HwBackend,
         opts: &EncoderOpts,
-    ) -> Result<(
-        ffmpeg::encoder::video::Encoder,
-        Rescaler,
-        Option<VaapiState>,
-    )> {
+    ) -> Result<(codec::encoder::video::Encoder, Rescaler, Option<VaapiState>)> {
         // Find encoder
-        let codec = ffmpeg::codec::encoder::find_by_name(backend.codec_name())
+        let codec = codec::encoder::find_by_name(backend.codec_name())
             .with_context(|| format!("encoder {} not found", backend.codec_name()))?;
         debug!("Found encoder: {}", codec.name());
 
@@ -212,9 +234,9 @@ impl H264Encoder {
         Ok((encoder, rescaler, vaapi_state))
     }
 
-    pub fn video_config(&self) -> Result<hang::catalog::VideoConfig> {
-        Ok(hang::catalog::VideoConfig {
-            codec: hang::catalog::VideoCodec::H264(hang::catalog::H264 {
+    pub fn video_config(&self) -> Result<VideoConfig> {
+        Ok(VideoConfig {
+            codec: VideoCodec::H264(H264 {
                 profile: 0x42, // Baseline
                 constraints: 0xE0,
                 level: 0x1E,   // Level 3.0
@@ -236,7 +258,7 @@ impl H264Encoder {
     }
 
     pub fn receive_packet(&mut self) -> Result<Poll<Option<hang::Frame>>> {
-        let mut packet = ffmpeg::packet::Packet::empty();
+        let mut packet = ffmpeg::Packet::empty();
         match self.encoder.receive_packet(&mut packet) {
             Ok(()) => {
                 let payload = packet.data().unwrap_or(&[]).to_vec();
@@ -250,9 +272,7 @@ impl H264Encoder {
                 Ok(Poll::Ready(Some(hang_frame)))
             }
             Err(ffmpeg::Error::Eof) => Ok(Poll::Ready(None)),
-            Err(ffmpeg::Error::Other { errno }) if errno == ffmpeg::util::error::EAGAIN => {
-                Ok(Poll::Pending)
-            }
+            Err(ffmpeg::Error::Other { errno }) if errno == EAGAIN => Ok(Poll::Pending),
             Err(e) => Err(e.into()),
         }
     }
@@ -320,7 +340,7 @@ impl av::VideoEncoderInner for H264Encoder {
         self.encoder.id().name()
     }
 
-    fn config(&self) -> hang::catalog::VideoConfig {
+    fn config(&self) -> VideoConfig {
         self.video_config().expect("video_config available")
     }
 
@@ -332,15 +352,15 @@ impl av::VideoEncoderInner for H264Encoder {
 
     fn pop_packet(&mut self) -> anyhow::Result<Option<hang::Frame>> {
         match self.receive_packet()? {
-            std::task::Poll::Ready(v) => Ok(v),
-            std::task::Poll::Pending => Ok(None),
+            Poll::Ready(v) => Ok(v),
+            Poll::Pending => Ok(None),
         }
     }
 }
 
 struct VaapiState {
-    device_ctx: *mut ffmpeg::sys::AVBufferRef,
-    frames_ctx: *mut ffmpeg::sys::AVBufferRef,
+    device_ctx: *mut AVBufferRef,
+    frames_ctx: *mut AVBufferRef,
 }
 
 unsafe impl Send for VaapiState {}
@@ -350,39 +370,39 @@ impl VaapiState {
     fn new(width: u32, height: u32, device_path: &str) -> Result<Self> {
         // 1) Create VAAPI device
         let cpath = CString::new(device_path)?;
-        let mut dev: *mut ffmpeg::sys::AVBufferRef = ptr::null_mut();
+        let mut dev: *mut AVBufferRef = ptr::null_mut();
         let ret = unsafe {
-            ffmpeg::sys::av_hwdevice_ctx_create(
+            av_hwdevice_ctx_create(
                 &mut dev,
-                ffmpeg::sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
+                AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
                 cpath.as_ptr(),
                 ptr::null_mut(),
                 0,
             )
         };
         if ret < 0 || dev.is_null() {
-            unsafe { ffmpeg::sys::av_buffer_unref(&mut dev) };
+            unsafe { av_buffer_unref(&mut dev) };
             return Err(anyhow!("vaapi device create failed: {ret}"));
         }
 
         // 2) Create frames pool for VAAPI with SW format NV12
-        let frames = unsafe { ffmpeg::sys::av_hwframe_ctx_alloc(dev) };
+        let frames = unsafe { av_hwframe_ctx_alloc(dev) };
         if frames.is_null() {
-            unsafe { ffmpeg::sys::av_buffer_unref(&mut dev) };
+            unsafe { av_buffer_unref(&mut dev) };
             return Err(anyhow!("av_hwframe_ctx_alloc failed"));
         }
-        let fc = unsafe { &mut *((*frames).data as *mut ffmpeg::sys::AVHWFramesContext) };
-        fc.format = ffmpeg::sys::AVPixelFormat::AV_PIX_FMT_VAAPI;
-        fc.sw_format = ffmpeg::sys::AVPixelFormat::AV_PIX_FMT_NV12;
+        let fc = unsafe { &mut *((*frames).data as *mut AVHWFramesContext) };
+        fc.format = AVPixelFormat::AV_PIX_FMT_VAAPI;
+        fc.sw_format = AVPixelFormat::AV_PIX_FMT_NV12;
         fc.width = width as i32;
         fc.height = height as i32;
         fc.initial_pool_size = 32;
 
-        let ret = unsafe { ffmpeg::sys::av_hwframe_ctx_init(frames) };
+        let ret = unsafe { av_hwframe_ctx_init(frames) };
         if ret < 0 {
             unsafe {
-                ffmpeg::sys::av_buffer_unref(&mut (frames as *mut _));
-                ffmpeg::sys::av_buffer_unref(&mut dev);
+                av_buffer_unref(&mut (frames as *mut _));
+                av_buffer_unref(&mut dev);
             }
             return Err(anyhow!("av_hwframe_ctx_init failed: {ret}"));
         }
@@ -397,7 +417,7 @@ impl VaapiState {
     fn bind_to_context(&self, ctx: &mut codec::context::Context) {
         unsafe {
             let ctx = ctx.as_mut_ptr();
-            (*ctx).hw_frames_ctx = ffmpeg::sys::av_buffer_ref(self.frames_ctx);
+            (*ctx).hw_frames_ctx = av_buffer_ref(self.frames_ctx);
             (*ctx).pix_fmt = Pixel::VAAPI.into();
         }
     }
@@ -407,8 +427,8 @@ impl VaapiState {
     fn transfer_nv12_to_hw(&self, sw_frame: &VideoFrame) -> Result<VideoFrame> {
         unsafe {
             // Allocate an empty HW frame from the pool
-            let mut hw = ffmpeg::frame::Video::empty();
-            let ret = ffmpeg::sys::av_hwframe_get_buffer(self.frames_ctx, hw.as_mut_ptr(), 0);
+            let mut hw = VideoFrame::empty();
+            let ret = av_hwframe_get_buffer(self.frames_ctx, hw.as_mut_ptr(), 0);
             if ret < 0 {
                 return Err(anyhow!("av_hwframe_get_buffer failed: {ret}"));
             }
@@ -416,7 +436,7 @@ impl VaapiState {
             (*hw.as_mut_ptr()).pts = sw_frame.pts().unwrap_or(0);
 
             // Transfer SW NV12 → HW VAAPI surface
-            let ret = ffmpeg::sys::av_hwframe_transfer_data(hw.as_mut_ptr(), sw_frame.as_ptr(), 0);
+            let ret = av_hwframe_transfer_data(hw.as_mut_ptr(), sw_frame.as_ptr(), 0);
             if ret < 0 {
                 return Err(anyhow!("av_hwframe_transfer_data failed: {ret}"));
             }
@@ -430,10 +450,10 @@ impl Drop for VaapiState {
     fn drop(&mut self) {
         unsafe {
             if !self.frames_ctx.is_null() {
-                ffmpeg::sys::av_buffer_unref(&mut (self.frames_ctx as *mut _));
+                av_buffer_unref(&mut (self.frames_ctx as *mut _));
             }
             if !self.device_ctx.is_null() {
-                ffmpeg::sys::av_buffer_unref(&mut (self.device_ctx as *mut _));
+                av_buffer_unref(&mut (self.device_ctx as *mut _));
             }
         }
     }

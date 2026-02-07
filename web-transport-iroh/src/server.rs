@@ -1,27 +1,47 @@
+use std::fmt;
+
+use iroh::endpoint::Connection;
 use url::Url;
 
 use crate::{Connect, ServerError, Session, Settings};
 
 /// A QUIC-only WebTransport handshake, awaiting server decision.
 pub struct QuicRequest {
-    conn: iroh::endpoint::Connection,
+    conn: Connection,
+}
+
+impl fmt::Debug for QuicRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QuicRequest")
+            .field("conn", &self.conn)
+            .finish()
+    }
 }
 
 /// An H3 WebTransport handshake, SETTINGS exchanged and CONNECT accepted,
 /// awaiting server decision (respond OK / reject).
 pub struct H3Request {
-    conn: iroh::endpoint::Connection,
+    conn: Connection,
     settings: Settings,
     connect: Connect,
 }
 
+impl fmt::Debug for H3Request {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("H3Request")
+            .field("conn", &self.conn)
+            .field("connect", &self.connect)
+            .finish_non_exhaustive()
+    }
+}
+
 impl QuicRequest {
     /// Accept a new QUIC-only WebTransport session from a client.
-    pub fn accept(conn: iroh::endpoint::Connection) -> Self {
+    pub fn accept(conn: Connection) -> Self {
         Self { conn }
     }
 
-    pub fn conn(&self) -> &iroh::endpoint::Connection {
+    pub fn conn(&self) -> &Connection {
         &self.conn
     }
 
@@ -39,7 +59,7 @@ impl QuicRequest {
 
 impl H3Request {
     /// Accept a new H3 WebTransport session from a client.
-    pub async fn accept(conn: iroh::endpoint::Connection) -> Result<Self, ServerError> {
+    pub async fn accept(conn: Connection) -> Result<Self, ServerError> {
         // Perform the H3 handshake by sending/receiving SETTINGS frames.
         let settings = Settings::connect(&conn).await?;
 
@@ -58,7 +78,7 @@ impl H3Request {
         self.connect.url()
     }
 
-    pub fn conn(&self) -> &iroh::endpoint::Connection {
+    pub fn conn(&self) -> &Connection {
         &self.conn
     }
 

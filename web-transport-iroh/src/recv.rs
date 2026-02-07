@@ -5,6 +5,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use tokio::io::{AsyncRead, ReadBuf};
 
 use crate::{ReadError, ReadExactError, ReadToEndError, SessionError};
 
@@ -78,11 +79,11 @@ impl RecvStream {
     // We purposely don't expose the stream ID or 0RTT because it's not valid with WebTransport
 }
 
-impl tokio::io::AsyncRead for RecvStream {
+impl AsyncRead for RecvStream {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut tokio::io::ReadBuf,
+        buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         Pin::new(&mut self.inner).poll_read(cx, buf)
     }

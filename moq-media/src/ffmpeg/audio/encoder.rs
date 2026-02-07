@@ -1,6 +1,14 @@
 use anyhow::{Context, Result};
-use ffmpeg_next::{self as ffmpeg, Rational};
-use hang::{Timestamp, catalog::AudioConfig};
+use ffmpeg_next::{
+    self as ffmpeg, Rational, codec,
+    error::EAGAIN,
+    format::{Sample, sample},
+    util::{channel_layout::ChannelLayout, frame},
+};
+use hang::{
+    Timestamp,
+    catalog::{AudioCodec, AudioConfig},
+};
 use tracing::trace;
 
 use crate::{
@@ -11,8 +19,10 @@ use crate::{
 const SAMPLE_RATE: u32 = 48_000;
 const BITRATE: u64 = 128_000; // 128 kbps
 
+#[derive(derive_more::Debug)]
 pub struct OpusEncoder {
-    encoder: ffmpeg::encoder::Audio,
+    #[debug(skip)]
+    encoder: codec::encoder::Audio,
     frame_count: u64,
     sample_rate: u32,
     bitrate: u64,
@@ -37,24 +47,22 @@ impl OpusEncoder {
         );
         ffmpeg::init()?;
 
-        let codec =
-            ffmpeg::encoder::find(ffmpeg::codec::Id::OPUS).context("Opus encoder not found")?;
-        tracing::debug!("Found Opus codec: {:?}", codec.name());
-        let mut ctx = ffmpeg::codec::context::Context::new_with_codec(codec)
+        let encoder_codec =
+            codec::encoder::find(codec::Id::OPUS).context("Opus encoder not found")?;
+        tracing::debug!("Found Opus codec: {:?}", encoder_codec.name());
+        let mut ctx = codec::context::Context::new_with_codec(encoder_codec)
             .encoder()
             .audio()?;
 
         let sample_rate = sample_rate as i32;
         ctx.set_rate(sample_rate);
         ctx.set_bit_rate(bitrate as usize);
-        ctx.set_format(ffmpeg::format::Sample::F32(
-            ffmpeg_next::format::sample::Type::Packed,
-        ));
+        ctx.set_format(Sample::F32(sample::Type::Packed));
         ctx.set_time_base(Rational::new(1, sample_rate));
         ctx.set_channel_layout(if channel_count == 1 {
-            ffmpeg::util::channel_layout::ChannelLayout::MONO
+            ChannelLayout::MONO
         } else {
-            ffmpeg::util::channel_layout::ChannelLayout::STEREO
+            ChannelLayout::STEREO
         });
 
         let encoder = ctx.open()?;
@@ -92,8 +100,8 @@ impl AudioEncoderInner for OpusEncoder {
     }
 
     fn config(&self) -> AudioConfig {
-        hang::catalog::AudioConfig {
-            codec: hang::catalog::AudioCodec::Opus,
+        AudioConfig {
+            codec: AudioCodec::Opus,
             sample_rate: self.sample_rate,
             channel_count: self.channel_count,
             bitrate: Some(self.bitrate),
@@ -109,10 +117,10 @@ impl AudioEncoderInner for OpusEncoder {
         let samples_per_channel = samples.len() / self.channel_count as usize;
         debug_assert_eq!(samples_per_channel as u32, self.encoder.frame_size());
 
-        let mut audio_frame = ffmpeg::util::frame::Audio::new(
-            ffmpeg::util::format::sample::Sample::F32(ffmpeg::util::format::sample::Type::Packed),
+        let mut audio_frame = frame::Audio::new(
+            Sample::F32(sample::Type::Packed),
             samples_per_channel,
-            ffmpeg::util::channel_layout::ChannelLayout::default(self.channel_count as i32),
+            ChannelLayout::default(self.channel_count as i32),
         );
 
         // Copy interleaved samples directly since we're using packed format
@@ -131,7 +139,7 @@ impl AudioEncoderInner for OpusEncoder {
     }
 
     fn pop_packet(&mut self) -> Result<Option<hang::Frame>> {
-        let mut packet = ffmpeg::packet::Packet::empty();
+        let mut packet = ffmpeg::Packet::empty();
         match self.encoder.receive_packet(&mut packet) {
             Ok(()) => {
                 let payload = packet.data().unwrap_or(&[]).to_vec();
@@ -146,7 +154,7 @@ impl AudioEncoderInner for OpusEncoder {
                 Ok(Some(hang_frame))
             }
             Err(ffmpeg::Error::Eof) => Ok(None),
-            Err(ffmpeg::Error::Other { errno }) if errno == ffmpeg::util::error::EAGAIN => Ok(None),
+            Err(ffmpeg::Error::Other { errno }) if errno == EAGAIN => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
