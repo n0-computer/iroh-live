@@ -168,3 +168,110 @@ impl av::VideoEncoderInner for H264Encoder {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::av::{
+        PixelFormat, VideoEncoder, VideoEncoderInner, VideoFormat, VideoFrame, VideoPreset,
+    };
+
+    fn make_rgba_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> VideoFrame {
+        let pixel = [r, g, b, 255u8];
+        let raw: Vec<u8> = pixel.repeat((w * h) as usize);
+        VideoFrame {
+            format: VideoFormat {
+                pixel_format: PixelFormat::Rgba,
+                dimensions: [w, h],
+            },
+            raw: raw.into(),
+        }
+    }
+
+    #[test]
+    fn encode_single_frame() {
+        let mut enc = H264Encoder::with_preset(VideoPreset::P180).unwrap();
+        let frame = make_rgba_frame(320, 180, 255, 0, 0);
+        enc.push_frame(frame).unwrap();
+        let packet = enc.pop_packet().unwrap();
+        assert!(packet.is_some(), "should produce a packet");
+        let pkt = packet.unwrap();
+        assert!(pkt.keyframe, "first frame should be keyframe");
+    }
+
+    #[test]
+    fn avcc_extradata_after_first_encode() {
+        let mut enc = H264Encoder::with_preset(VideoPreset::P180).unwrap();
+        assert!(enc.config().description.is_none());
+        let frame = make_rgba_frame(320, 180, 0, 255, 0);
+        enc.push_frame(frame).unwrap();
+        enc.pop_packet().unwrap();
+        let desc = enc.config().description;
+        assert!(
+            desc.is_some(),
+            "avcC should be populated after first encode"
+        );
+        let avcc = desc.unwrap();
+        assert_eq!(avcc[0], 1);
+    }
+
+    #[test]
+    fn encode_sequence_has_keyframes() {
+        let mut enc = H264Encoder::with_preset(VideoPreset::P180).unwrap();
+        let mut keyframe_count = 0;
+        for _ in 0..60 {
+            let frame = make_rgba_frame(320, 180, 128, 128, 128);
+            enc.push_frame(frame).unwrap();
+            if let Some(pkt) = enc.pop_packet().unwrap() {
+                if pkt.keyframe {
+                    keyframe_count += 1;
+                }
+            }
+        }
+        assert!(
+            keyframe_count >= 2,
+            "expected >= 2 keyframes, got {keyframe_count}"
+        );
+    }
+
+    #[test]
+    fn timestamps_increase() {
+        let mut enc = H264Encoder::with_preset(VideoPreset::P180).unwrap();
+        let mut prev_ts = None;
+        for _ in 0..10 {
+            let frame = make_rgba_frame(320, 180, 64, 64, 64);
+            enc.push_frame(frame).unwrap();
+            if let Some(pkt) = enc.pop_packet().unwrap() {
+                if let Some(prev) = prev_ts {
+                    assert!(pkt.timestamp > prev, "timestamps should increase");
+                }
+                prev_ts = Some(pkt.timestamp);
+            }
+        }
+    }
+
+    #[test]
+    fn multiple_presets() {
+        for preset in VideoPreset::all() {
+            let (w, h) = preset.dimensions();
+            let mut enc = H264Encoder::with_preset(preset).unwrap();
+            let frame = make_rgba_frame(w, h, 200, 100, 50);
+            enc.push_frame(frame).unwrap();
+            assert!(
+                enc.pop_packet().unwrap().is_some(),
+                "should encode at {w}x{h}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_fields() {
+        let enc = H264Encoder::with_preset(VideoPreset::P360).unwrap();
+        let config = enc.config();
+        assert!(matches!(config.codec, VideoCodec::H264(_)));
+        assert_eq!(config.coded_width, Some(640));
+        assert_eq!(config.coded_height, Some(360));
+        assert_eq!(config.framerate, Some(30.0));
+        assert_eq!(config.optimize_for_latency, Some(true));
+    }
+}

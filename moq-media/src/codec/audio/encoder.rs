@@ -195,3 +195,109 @@ fn build_opus_head(channel_count: u32, sample_rate: u32) -> Vec<u8> {
     head.push(0); // Channel mapping family (0 = mono/stereo)
     head
 }
+
+#[cfg(test)]
+mod tests {
+    use bytes::Buf;
+
+    use super::*;
+
+    fn make_sine(num_samples: usize, freq: f32, sample_rate: f32) -> Vec<f32> {
+        (0..num_samples)
+            .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / sample_rate).sin())
+            .collect()
+    }
+
+    #[test]
+    fn encode_silence_mono() {
+        let format = AudioFormat::mono_48k();
+        let mut enc = OpusEncoder::with_preset(format, AudioPreset::Hq).unwrap();
+        // Push exactly one frame (960 samples)
+        let silence = vec![0.0f32; 960];
+        enc.push_samples(&silence).unwrap();
+        let packet = enc.pop_packet().unwrap();
+        assert!(
+            packet.is_some(),
+            "should produce a packet for one full frame"
+        );
+        let pkt = packet.unwrap();
+        assert!(pkt.keyframe);
+        assert!(pkt.payload.has_remaining());
+    }
+
+    #[test]
+    fn encode_sine_mono() {
+        let format = AudioFormat::mono_48k();
+        let mut enc = OpusEncoder::with_preset(format, AudioPreset::Hq).unwrap();
+        let sine = make_sine(960, 440.0, 48000.0);
+        enc.push_samples(&sine).unwrap();
+        let packet = enc.pop_packet().unwrap().unwrap();
+        // At 128kbps, a 20ms packet should be ~50-320 bytes
+        let len = Buf::remaining(&packet.payload);
+        assert!(len > 2 && len < 1000, "unexpected packet size: {len}");
+    }
+
+    #[test]
+    fn sample_buffer_accumulation() {
+        let format = AudioFormat::mono_48k();
+        let mut enc = OpusEncoder::with_preset(format, AudioPreset::Hq).unwrap();
+        // Push 480 samples (half a frame) — should produce nothing
+        let half = vec![0.1f32; 480];
+        enc.push_samples(&half).unwrap();
+        assert!(enc.pop_packet().unwrap().is_none());
+        // Push another 480 — now we have a full frame
+        enc.push_samples(&half).unwrap();
+        assert!(enc.pop_packet().unwrap().is_some());
+    }
+
+    #[test]
+    fn multiple_frames() {
+        let format = AudioFormat::mono_48k();
+        let mut enc = OpusEncoder::with_preset(format, AudioPreset::Hq).unwrap();
+        // Push 3 frames worth
+        let samples = make_sine(960 * 3, 440.0, 48000.0);
+        enc.push_samples(&samples).unwrap();
+        for i in 0..3 {
+            assert!(enc.pop_packet().unwrap().is_some(), "missing packet {i}");
+        }
+        assert!(enc.pop_packet().unwrap().is_none());
+    }
+
+    #[test]
+    fn stereo_encoding() {
+        let format = AudioFormat::stereo_48k();
+        let mut enc = OpusEncoder::with_preset(format, AudioPreset::Hq).unwrap();
+        // Stereo: 960 frames * 2 channels = 1920 samples
+        let samples = vec![0.05f32; 960 * 2];
+        enc.push_samples(&samples).unwrap();
+        assert!(enc.pop_packet().unwrap().is_some());
+    }
+
+    #[test]
+    fn extradata_opus_head() {
+        let format = AudioFormat::mono_48k();
+        let enc = OpusEncoder::with_preset(format, AudioPreset::Hq).unwrap();
+        let config = enc.config();
+        let desc = config.description.unwrap();
+        assert_eq!(desc.len(), 19);
+        assert_eq!(&desc[..8], b"OpusHead");
+        assert_eq!(desc[8], 1); // version
+        assert_eq!(desc[9], 1); // mono
+    }
+
+    #[test]
+    fn timestamps_increase() {
+        let format = AudioFormat::mono_48k();
+        let mut enc = OpusEncoder::with_preset(format, AudioPreset::Hq).unwrap();
+        let samples = make_sine(960 * 3, 440.0, 48000.0);
+        enc.push_samples(&samples).unwrap();
+        let mut prev_ts = None;
+        for _ in 0..3 {
+            let pkt = enc.pop_packet().unwrap().unwrap();
+            if let Some(prev) = prev_ts {
+                assert!(pkt.timestamp > prev, "timestamps should increase");
+            }
+            prev_ts = Some(pkt.timestamp);
+        }
+    }
+}
