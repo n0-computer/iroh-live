@@ -4487,6 +4487,7 @@ name = "moq-media"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "audioadapter-buffers",
  "buf-list",
  "byte-unit",
  "bytemuck",
