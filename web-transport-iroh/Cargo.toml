@@ -11,6 +11,9 @@ edition = "2024"
 keywords = ["quic", "http3", "webtransport", "iroh"]
 categories = ["network-programming", "web-programming"]
 
+[lints]
+workspace = true
+
 [dependencies]
 bytes = "1"
 http = "1"
