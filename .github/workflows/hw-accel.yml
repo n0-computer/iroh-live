@@ -7,7 +7,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: brew install dav1d
+      - run: brew install dav1d libtool
       - run: cargo check -p moq-media --features videotoolbox
       - run: cargo check -p moq-media
       - run: cargo clippy -p moq-media --features videotoolbox -- -D warnings
@@ -23,6 +23,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: brew install dav1d
+      - run: brew install dav1d libtool
       - run: cargo check -p moq-media --features ${{ matrix.features }}
       - run: cargo check -p moq-media
