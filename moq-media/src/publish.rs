@@ -31,6 +31,12 @@ pub struct PublishBroadcast {
     _task: Arc<AbortOnDropHandle<()>>,
 }
 
+impl Default for PublishBroadcast {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PublishBroadcast {
     pub fn new() -> Self {
         let mut producer = BroadcastProducer::default();

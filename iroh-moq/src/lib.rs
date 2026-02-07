@@ -309,7 +309,7 @@ struct Actor {
 }
 
 impl Actor {
-    pub fn new(endpoint: Endpoint) -> Self {
+    pub(crate) fn new(endpoint: Endpoint) -> Self {
         Self {
             endpoint,
             shutdown_token: CancellationToken::new(),
@@ -322,7 +322,7 @@ impl Actor {
         }
     }
 
-    pub async fn run(mut self, mut inbox: mpsc::Receiver<ActorMessage>) {
+    pub(crate) async fn run(mut self, mut inbox: mpsc::Receiver<ActorMessage>) {
         loop {
             tokio::select! {
                 msg = inbox.recv() => {
@@ -391,12 +391,12 @@ impl Actor {
         self.session_tasks.spawn(async move {
             let res = tokio::select! {
                 _ = shutdown.cancelled() => {
-                    session.close(0u32.into(), b"cancelled");
+                    session.close(0u32, b"cancelled");
                     Ok(())
                 }
                 result = session.closed() => match result {
                     SessionError::ConnectionError(ConnectionError::LocallyClosed) => Ok(()),
-                    err @ _ => Err(err)
+                    err => Err(err)
                 },
             };
             (remote, res)

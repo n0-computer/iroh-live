@@ -50,7 +50,7 @@ pub(crate) mod ext {
         ffmpeg::util::log::set_level(level);
     }
 
-    pub trait PacketExt {
+    pub(crate) trait PacketExt {
         fn to_ffmpeg_packet(self) -> ffmpeg::Packet;
     }
 
@@ -63,7 +63,7 @@ pub(crate) mod ext {
         }
     }
 
-    pub trait CodecContextExt {
+    pub(crate) trait CodecContextExt {
         fn extradata(&self) -> Option<&[u8]>;
         fn set_extradata(&mut self, extradata: &[u8]) -> Result<(), ffmpeg::Error>;
     }
@@ -92,7 +92,7 @@ pub(crate) mod ext {
                 let size = extradata.len() + pad;
                 (*ctx).extradata = ffmpeg::ffi::av_mallocz(size).cast::<u8>();
                 if (*ctx).extradata.is_null() {
-                    return Err(ffmpeg::Error::Bug.into());
+                    return Err(ffmpeg::Error::Bug);
                 }
                 // copy bytes and zero the padding
                 std::ptr::copy_nonoverlapping(

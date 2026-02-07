@@ -27,7 +27,7 @@ impl AudioDecoder for FfmpegAudioDecoder {
                     .decoder()
                     .audio()?;
                 if let Some(extradata) = &config.description {
-                    ctx.set_extradata(&extradata)?;
+                    ctx.set_extradata(extradata)?;
                 }
                 ctx.set_channel_layout(if config.channel_count == 1 {
                     ChannelLayout::MONO

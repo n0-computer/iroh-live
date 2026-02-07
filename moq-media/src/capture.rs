@@ -149,12 +149,12 @@ impl CameraCapturer {
         info!("Using camera: {}", camera.info().human_name());
         let available_formats = camera.compatible_camera_formats()?;
         debug!("Available formats: {available_formats:?}",);
-        if let Some(format) = Self::select_format(available_formats, Resolution::new(1920, 1080)) {
-            if let Err(err) = camera.set_camera_requset(RequestedFormat::new::<RgbFormat>(
+        if let Some(format) = Self::select_format(available_formats, Resolution::new(1920, 1080))
+            && let Err(err) = camera.set_camera_requset(RequestedFormat::new::<RgbFormat>(
                 RequestedFormatType::Exact(format),
-            )) {
-                warn!(?format, "Failed to change camera format: {err:#}");
-            }
+            ))
+        {
+            warn!(?format, "Failed to change camera format: {err:#}");
         }
         info!("Using format: {}", camera.camera_format());
         let resolution = camera.resolution();

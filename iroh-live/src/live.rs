@@ -43,7 +43,7 @@ impl Live {
         audio_out: impl AudioSink,
         config: PlaybackConfig,
     ) -> Result<(MoqSession, AvRemoteTrack)> {
-        let (session, broadcast) = self.connect_and_subscribe(remote, &broadcast_name).await?;
+        let (session, broadcast) = self.connect_and_subscribe(remote, broadcast_name).await?;
         let track = broadcast.watch_and_listen::<D>(audio_out, config)?;
         Ok((session, track))
     }

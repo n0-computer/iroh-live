@@ -29,7 +29,7 @@ impl LiveTicket {
     /// Serialize to string.
     pub fn serialize(&self) -> String {
         let mut out = self.broadcast_name.clone();
-        out.push_str("@");
+        out.push('@');
         data_encoding::BASE32_NOPAD
             .encode_append(&postcard::to_stdvec(&self.endpoint).unwrap(), &mut out);
         out.to_ascii_lowercase()
@@ -56,6 +56,6 @@ impl LiveTicket {
 impl std::str::FromStr for LiveTicket {
     type Err = n0_error::AnyError;
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        LiveTicket::deserialize(s)
+        Self::deserialize(s)
     }
 }

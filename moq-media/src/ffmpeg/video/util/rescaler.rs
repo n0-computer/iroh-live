@@ -18,7 +18,10 @@ pub(crate) struct Rescaler {
 unsafe impl Send for Rescaler {}
 
 impl Rescaler {
-    pub fn new(target_format: Pixel, target_width_height: Option<(u32, u32)>) -> Result<Self> {
+    pub(crate) fn new(
+        target_format: Pixel,
+        target_width_height: Option<(u32, u32)>,
+    ) -> Result<Self> {
         Ok(Self {
             target_format,
             ctx: None,
@@ -27,11 +30,11 @@ impl Rescaler {
         })
     }
 
-    pub fn set_target_dimensions(&mut self, w: u32, h: u32) {
+    pub(crate) fn set_target_dimensions(&mut self, w: u32, h: u32) {
         self.target_width_height = Some((w, h));
     }
 
-    pub fn process<'a: 'b, 'b>(
+    pub(crate) fn process<'a: 'b, 'b>(
         &'a mut self,
         frame: &'b FfmpegFrame,
     ) -> Result<&'b FfmpegFrame, ffmpeg::Error> {
@@ -71,7 +74,7 @@ impl Rescaler {
             Flags::BILINEAR,
         );
 
-        ctx.run(&frame, &mut self.out_frame)?;
+        ctx.run(frame, &mut self.out_frame)?;
         Ok(&self.out_frame)
     }
 }

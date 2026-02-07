@@ -10,14 +10,14 @@ use crate::{
     ffmpeg::util::{Rescaler, ffmpeg_frame_to_video_frame},
 };
 
-pub struct MjpgDecoder {
+pub(crate) struct MjpgDecoder {
     dec: ffmpeg::decoder::Video,
     rescaler: Rescaler,
 }
 
 impl MjpgDecoder {
     /// Initialize FFmpeg and create a Video decoder for MJPEG.
-    pub fn new() -> anyhow::Result<Self> {
+    pub(crate) fn new() -> anyhow::Result<Self> {
         ffmpeg::init()?;
 
         // Find the MJPEG decoder and create a context bound to it.
@@ -34,7 +34,7 @@ impl MjpgDecoder {
     }
 
     /// Decode one complete MJPEG/JPEG frame from `mjpg_frame`.
-    pub fn decode_frame(&mut self, mjpg_frame: &[u8]) -> Result<VideoFrame, Error> {
+    pub(crate) fn decode_frame(&mut self, mjpg_frame: &[u8]) -> Result<VideoFrame, Error> {
         let now = Instant::now();
         // Make a packet that borrows/copies the data.
         let packet = Packet::borrow(mjpg_frame);

@@ -76,19 +76,19 @@ pub trait AudioEncoderInner: Send + 'static {
 
 impl AudioEncoderInner for Box<dyn AudioEncoder> {
     fn name(&self) -> &str {
-        (&**self).name()
+        (**self).name()
     }
 
     fn config(&self) -> hang::catalog::AudioConfig {
-        (&**self).config()
+        (**self).config()
     }
 
     fn push_samples(&mut self, samples: &[f32]) -> Result<()> {
-        (&mut **self).push_samples(samples)
+        (**self).push_samples(samples)
     }
 
     fn pop_packet(&mut self) -> Result<Option<hang::Frame>> {
-        (&mut **self).pop_packet()
+        (**self).pop_packet()
     }
 }
 
@@ -100,16 +100,11 @@ pub trait AudioDecoder: Send + 'static {
     fn pop_samples(&mut self) -> Result<Option<&[f32]>>;
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
 pub enum PixelFormat {
+    #[default]
     Rgba,
     Bgra,
-}
-
-impl Default for PixelFormat {
-    fn default() -> Self {
-        PixelFormat::Rgba
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -147,19 +142,19 @@ pub trait VideoEncoderInner: Send + 'static {
 
 impl VideoEncoderInner for Box<dyn VideoEncoder> {
     fn name(&self) -> &str {
-        (&**self).name()
+        (**self).name()
     }
 
     fn config(&self) -> hang::catalog::VideoConfig {
-        (&**self).config()
+        (**self).config()
     }
 
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
-        (&mut **self).push_frame(frame)
+        (**self).push_frame(frame)
     }
 
     fn pop_packet(&mut self) -> Result<Option<hang::Frame>> {
-        (&mut **self).pop_packet()
+        (**self).pop_packet()
     }
 }
 
@@ -210,7 +205,7 @@ pub enum VideoPreset {
 }
 
 impl VideoPreset {
-    pub fn all() -> [VideoPreset; 4] {
+    pub fn all() -> [Self; 4] {
         [Self::P180, Self::P360, Self::P720, Self::P1080]
     }
 

@@ -7,7 +7,7 @@ use image::{Delay, RgbaImage};
 
 pub(crate) use self::mjpg_decoder::MjpgDecoder;
 pub(crate) use self::rescaler::Rescaler;
-use crate::av::{self, DecodedFrame, PixelFormat, VideoFormat, VideoFrame};
+use crate::av::{self, PixelFormat, VideoFormat, VideoFrame};
 
 mod mjpg_decoder;
 mod rescaler;
@@ -41,7 +41,7 @@ impl av::VideoFrame {
         };
         let [w, h] = self.format.dimensions;
         let mut ff = FfmpegFrame::new(pixel, w, h);
-        let stride = ff.stride(0) as usize;
+        let stride = ff.stride(0);
         let row_bytes = (w as usize) * 4;
         for y in 0..(h as usize) {
             let dst_off = y * stride;
@@ -58,7 +58,7 @@ impl av::DecodedFrame {
         let image = ffmpeg_frame_to_image(frame);
         // Compute interframe delay from provided timestamps
         let delay = Delay::from_saturating_duration(delay);
-        DecodedFrame {
+        Self {
             frame: image::Frame::from_parts(image, 0, 0, delay),
             timestamp,
         }
@@ -76,7 +76,7 @@ pub(crate) fn ffmpeg_frame_to_image(frame: &ffmpeg_next::util::frame::Video) -> 
     let bytes_per_pixel = 4usize; // BGRA
     let src = frame.data(0);
     // ffmpeg frames may have padding at end of each line; copy row-by-row.
-    let stride = frame.stride(0) as usize;
+    let stride = frame.stride(0);
     let row_bytes = (width as usize) * bytes_per_pixel;
     let mut out = vec![0u8; row_bytes * (height as usize)];
     for y in 0..(height as usize) {
@@ -90,15 +90,15 @@ pub(crate) fn ffmpeg_frame_to_image(frame: &ffmpeg_next::util::frame::Video) -> 
 impl PixelFormat {
     pub fn to_ffmpeg(&self) -> Pixel {
         match self {
-            PixelFormat::Rgba => Pixel::RGBA,
-            PixelFormat::Bgra => Pixel::BGRA,
+            Self::Rgba => Pixel::RGBA,
+            Self::Bgra => Pixel::BGRA,
         }
     }
 
     pub fn from_ffmpeg(value: Pixel) -> Option<Self> {
         match value {
-            Pixel::RGBA => Some(PixelFormat::Rgba),
-            Pixel::BGRA => Some(PixelFormat::Bgra),
+            Pixel::RGBA => Some(Self::Rgba),
+            Pixel::BGRA => Some(Self::Bgra),
             _ => None,
         }
     }
@@ -118,7 +118,7 @@ pub(crate) fn ffmpeg_frame_to_video_frame(
     let bytes_per_pixel = 4usize; // RGBA/BGRA
     let src = frame.data(0);
     // ffmpeg frames may have padding at end of each line; copy row-by-row.
-    let stride = frame.stride(0) as usize;
+    let stride = frame.stride(0);
     let row_bytes = (width as usize) * bytes_per_pixel;
     let mut out = BytesMut::with_capacity(row_bytes * (height as usize));
     // let mut out = vec![0u8; row_bytes * (height as usize)];

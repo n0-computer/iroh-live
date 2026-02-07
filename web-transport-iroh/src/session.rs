@@ -48,7 +48,7 @@ impl Session {
 
     /// Connect using an established QUIC connection if you want to create the connection yourself.
     /// This will only work with a brand new QUIC connection using the HTTP/3 ALPN.
-    pub async fn connect_h3(conn: Connection, url: Url) -> Result<Session, ClientError> {
+    pub async fn connect_h3(conn: Connection, url: Url) -> Result<Self, ClientError> {
         // Perform the H3 handshake by sending/reciving SETTINGS frames.
         let settings = Settings::connect(&conn).await?;
 
@@ -60,7 +60,7 @@ impl Session {
 
     pub fn new_h3(conn: Connection, settings: Settings, connect: Connect) -> Self {
         let h3 = H3SessionState::connect(conn.clone(), settings, &connect);
-        let this = Session { conn, h3: Some(h3) };
+        let this = Self { conn, h3: Some(h3) };
         // Run a background task to check if the connect stream is closed.
         let this2 = this.clone();
         tokio::spawn(async move {
@@ -152,8 +152,8 @@ impl Session {
             }
 
             // Return the datagram without the session ID.
-            let datagram = datagram.split_off(cursor.position() as usize);
-            datagram
+
+            datagram.split_off(cursor.position() as usize)
         } else {
             datagram
         };
