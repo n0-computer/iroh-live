@@ -20,7 +20,7 @@ use crate::{
         AudioDecoder, AudioSink, AudioSinkHandle, DecodeConfig, DecodedFrame, Decoders,
         PlaybackConfig, Quality, VideoDecoder, VideoSource,
     },
-    ffmpeg::util::Rescaler,
+    codec::video::util::scale::Scaler,
     util::spawn_thread,
 };
 
@@ -500,7 +500,7 @@ impl WatchTrack {
         rendition: String,
         shutdown: CancellationToken,
         mut source: impl VideoSource,
-        decode_config: DecodeConfig,
+        _decode_config: DecodeConfig,
     ) -> Self {
         let viewport = Watchable::new((1u32, 1u32));
         let (frame_tx, frame_rx) = mpsc::channel::<DecodedFrame>(2);
@@ -511,8 +511,7 @@ impl WatchTrack {
             move || {
                 // TODO: Make configurable.
                 let fps = 30;
-                let mut rescaler = Rescaler::new(decode_config.pixel_format.to_ffmpeg(), None)
-                    .expect("failed to create rescaler");
+                let mut scaler = Scaler::new(None);
                 let frame_duration = Duration::from_secs_f32(1. / fps as f32);
                 if let Err(err) = source.start() {
                     warn!("Video source failed to start: {err:?}");
@@ -520,24 +519,30 @@ impl WatchTrack {
                 }
                 let start = Instant::now();
                 for i in 1.. {
-                    // let t = Instant::now();
                     if shutdown.is_cancelled() {
                         break;
                     }
                     if viewport.update() {
                         let (w, h) = viewport.peek();
-                        rescaler.set_target_dimensions(*w, *h);
+                        scaler.set_target_dimensions(*w, *h);
                     }
                     match source.pop_frame() {
                         Ok(Some(frame)) => {
-                            // trace!(t=?t.elapsed(), "pop");
-                            let frame = frame.to_ffmpeg();
-                            let frame = rescaler.process(&frame).expect("rescaler failed");
-                            let frame =
-                                DecodedFrame::from_ffmpeg(frame, frame_duration, start.elapsed());
-                            // trace!(t=?t.elapsed(), "convert");
-                            let _ = frame_tx.blocking_send(frame);
-                            // trace!(t=?t.elapsed(), "send");
+                            let [w, h] = frame.format.dimensions;
+                            let rgba = match scaler.scale_rgba(&frame.raw, w, h) {
+                                Ok(Some((scaled, sw, sh))) => {
+                                    image::RgbaImage::from_raw(sw, sh, scaled)
+                                }
+                                _ => image::RgbaImage::from_raw(w, h, frame.raw.to_vec()),
+                            };
+                            if let Some(img) = rgba {
+                                let delay = image::Delay::from_saturating_duration(frame_duration);
+                                let decoded = DecodedFrame {
+                                    frame: image::Frame::from_parts(img, 0, 0, delay),
+                                    timestamp: start.elapsed(),
+                                };
+                                let _ = frame_tx.blocking_send(decoded);
+                            }
                         }
                         Ok(None) => {}
                         Err(_) => break,
@@ -546,7 +551,6 @@ impl WatchTrack {
                     let actual_time = start.elapsed();
                     if expected_time > actual_time {
                         thread::sleep(expected_time - actual_time);
-                        // trace!(t=?t.elapsed(), slept=?(actual_time - expected_time), ?expected_time, ?actual_time, "done");
                     }
                 }
                 if let Err(err) = source.stop() {

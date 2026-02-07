@@ -6,7 +6,7 @@ use moq_media::{
     audio::AudioBackend,
     av::{AudioPreset, VideoPreset},
     capture::{CameraCapturer, ScreenCapturer},
-    ffmpeg::{H264Encoder, OpusEncoder},
+    codec::{H264Encoder, OpusEncoder},
     publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
 };
 use n0_error::{AnyError, Result};

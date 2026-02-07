@@ -7,7 +7,7 @@ use iroh_live::{
     Live,
     media::{
         audio::AudioBackend,
-        ffmpeg::{FfmpegDecoders, FfmpegVideoDecoder, ffmpeg_log_init},
+        codec::{DefaultDecoders, H264VideoDecoder, codec_init},
         subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
     },
     moq::MoqSession,
@@ -39,7 +39,7 @@ fn main() -> Result<()> {
     };
 
     tracing_subscriber::fmt::init();
-    ffmpeg_log_init();
+    codec_init();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -54,7 +54,7 @@ fn main() -> Result<()> {
             let live = Live::new(endpoint.clone());
             let audio_out = audio_ctx.default_output().await?;
             let (session, track) = live
-                .watch_and_listen::<FfmpegDecoders>(
+                .watch_and_listen::<DefaultDecoders>(
                     ticket.endpoint,
                     &ticket.broadcast_name,
                     audio_out,
@@ -164,7 +164,7 @@ impl App {
                         {
                             if let Ok(track) = self
                                 .broadcast
-                                .watch_rendition::<FfmpegVideoDecoder>(&Default::default(), name)
+                                .watch_rendition::<H264VideoDecoder>(&Default::default(), name)
                             {
                                 self.video = Some(VideoView::new(ctx, track));
                             }

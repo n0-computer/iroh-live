@@ -15,7 +15,7 @@ use xcap::{Monitor, VideoRecorder};
 
 use crate::{
     av::{PixelFormat, VideoFormat, VideoFrame, VideoSource},
-    ffmpeg::util::MjpgDecoder,
+    codec::video::util::mjpg::MjpgDecoder,
 };
 
 #[derive(derive_more::Debug)]
