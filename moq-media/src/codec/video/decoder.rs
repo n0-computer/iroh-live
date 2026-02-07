@@ -130,6 +130,66 @@ impl VideoDecoder for H264VideoDecoder {
     }
 }
 
+/// A video decoder that dispatches to the appropriate codec-specific decoder
+/// based on the `VideoConfig::codec` field.
+#[derive(derive_more::Debug)]
+pub enum DynamicVideoDecoder {
+    H264(H264VideoDecoder),
+    #[cfg(feature = "av1")]
+    Av1(super::dav1d_dec::Av1VideoDecoder),
+}
+
+impl VideoDecoder for DynamicVideoDecoder {
+    fn new(config: &VideoConfig, playback_config: &DecodeConfig) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        match &config.codec {
+            VideoCodec::H264(_) => Ok(Self::H264(H264VideoDecoder::new(config, playback_config)?)),
+            #[cfg(feature = "av1")]
+            VideoCodec::AV1(_) => Ok(Self::Av1(super::dav1d_dec::Av1VideoDecoder::new(
+                config,
+                playback_config,
+            )?)),
+            #[cfg(not(feature = "av1"))]
+            VideoCodec::AV1(_) => bail!("AV1 support requires the `av1` feature"),
+            other => bail!("Unsupported video codec: {other}"),
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::H264(d) => d.name(),
+            #[cfg(feature = "av1")]
+            Self::Av1(d) => d.name(),
+        }
+    }
+
+    fn push_packet(&mut self, packet: hang::Frame) -> Result<()> {
+        match self {
+            Self::H264(d) => d.push_packet(packet),
+            #[cfg(feature = "av1")]
+            Self::Av1(d) => d.push_packet(packet),
+        }
+    }
+
+    fn pop_frame(&mut self) -> Result<Option<av::DecodedFrame>> {
+        match self {
+            Self::H264(d) => d.pop_frame(),
+            #[cfg(feature = "av1")]
+            Self::Av1(d) => d.pop_frame(),
+        }
+    }
+
+    fn set_viewport(&mut self, w: u32, h: u32) {
+        match self {
+            Self::H264(d) => d.set_viewport(w, h),
+            #[cfg(feature = "av1")]
+            Self::Av1(d) => d.set_viewport(w, h),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use hang::catalog::{AV1, H264};
