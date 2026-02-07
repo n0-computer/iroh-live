@@ -236,26 +236,24 @@ impl H264Encoder {
     }
 
     pub fn receive_packet(&mut self) -> Result<Poll<Option<hang::Frame>>> {
-        loop {
-            let mut packet = ffmpeg::packet::Packet::empty();
-            match self.encoder.receive_packet(&mut packet) {
-                Ok(()) => {
-                    let payload = packet.data().unwrap_or(&[]).to_vec();
-                    let hang_frame = hang::Frame {
-                        payload: payload.into(),
-                        timestamp: Timestamp::from_micros(
-                            self.frame_count * 1_000_000 / self.opts.framerate as u64,
-                        )?,
-                        keyframe: packet.is_key(),
-                    };
-                    return Ok(Poll::Ready(Some(hang_frame)));
-                }
-                Err(ffmpeg::Error::Eof) => return Ok(Poll::Ready(None)),
-                Err(ffmpeg::Error::Other { errno }) if errno == ffmpeg::util::error::EAGAIN => {
-                    return Ok(Poll::Pending);
-                }
-                Err(e) => return Err(e.into()),
+        let mut packet = ffmpeg::packet::Packet::empty();
+        match self.encoder.receive_packet(&mut packet) {
+            Ok(()) => {
+                let payload = packet.data().unwrap_or(&[]).to_vec();
+                let hang_frame = hang::Frame {
+                    payload: payload.into(),
+                    timestamp: Timestamp::from_micros(
+                        self.frame_count * 1_000_000 / self.opts.framerate as u64,
+                    )?,
+                    keyframe: packet.is_key(),
+                };
+                Ok(Poll::Ready(Some(hang_frame)))
             }
+            Err(ffmpeg::Error::Eof) => Ok(Poll::Ready(None)),
+            Err(ffmpeg::Error::Other { errno }) if errno == ffmpeg::util::error::EAGAIN => {
+                Ok(Poll::Pending)
+            }
+            Err(e) => Err(e.into()),
         }
     }
 
