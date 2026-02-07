@@ -1,12 +1,18 @@
+use std::cell::RefCell;
 use std::rc::Rc;
 
-use anyhow::{Context, Result, bail};
-use cros_codecs::encoder::stateless::h264::EncoderConfig;
-use cros_codecs::encoder::stateless::h264::StatelessEncoder;
+use anyhow::{Context, Result};
+use cros_codecs::backend::vaapi::encoder::VaapiBackend;
+use cros_codecs::encoder::h264::EncoderConfig;
+use cros_codecs::encoder::stateless::h264::StatelessEncoder as H264StatelessEncoder;
 use cros_codecs::encoder::{
     CodedBitstreamBuffer, FrameMetadata, RateControl, Tunings, VideoEncoder as CrosVideoEncoder,
 };
-use cros_codecs::libva::{self, Display, UsageHint};
+use cros_codecs::libva::{
+    Display, Image, Surface, UsageHint, VA_FOURCC_NV12, VA_RT_FORMAT_YUV420, VAEntrypoint,
+    VAProfile,
+};
+use cros_codecs::video_frame::{ReadMapping, VideoFrame as CrosVideoFrame, WriteMapping};
 use cros_codecs::{BlockingMode, Fourcc, FrameLayout, PlaneLayout, Resolution};
 use hang::{
     Timestamp,
@@ -21,19 +27,176 @@ use crate::{
     },
 };
 
+/// An NV12 frame that implements the `cros_codecs::video_frame::VideoFrame` trait.
+///
+/// This allows us to use the cros-codecs stateless encoder API, which requires
+/// input frames to implement `VideoFrame` so they can be imported to VA surfaces.
+#[derive(Debug, Clone)]
+struct Nv12Frame {
+    data: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
+struct Nv12ReadMapping<'a> {
+    y_plane: &'a [u8],
+    uv_plane: &'a [u8],
+}
+
+impl<'a> ReadMapping<'a> for Nv12ReadMapping<'a> {
+    fn get(&self) -> Vec<&[u8]> {
+        vec![self.y_plane, self.uv_plane]
+    }
+}
+
+struct Nv12WriteMapping;
+
+impl<'a> WriteMapping<'a> for Nv12WriteMapping {
+    fn get(&self) -> Vec<RefCell<&'a mut [u8]>> {
+        // The encoder imports frames via `to_native_handle`, not by writing through mappings.
+        vec![]
+    }
+}
+
+impl CrosVideoFrame for Nv12Frame {
+    type MemDescriptor = ();
+    type NativeHandle = Surface<()>;
+
+    fn fourcc(&self) -> Fourcc {
+        Fourcc::from(b"NV12")
+    }
+
+    fn resolution(&self) -> Resolution {
+        Resolution {
+            width: self.width,
+            height: self.height,
+        }
+    }
+
+    fn get_plane_size(&self) -> Vec<usize> {
+        let y_size = (self.width * self.height) as usize;
+        let uv_size = (self.width * self.height.div_ceil(2)) as usize;
+        vec![y_size, uv_size]
+    }
+
+    fn get_plane_pitch(&self) -> Vec<usize> {
+        vec![self.width as usize, self.width as usize]
+    }
+
+    fn map<'a>(&'a self) -> Result<Box<dyn ReadMapping<'a> + 'a>, String> {
+        let y_size = (self.width * self.height) as usize;
+        Ok(Box::new(Nv12ReadMapping {
+            y_plane: &self.data[..y_size],
+            uv_plane: &self.data[y_size..],
+        }))
+    }
+
+    fn map_mut<'a>(&'a mut self) -> Result<Box<dyn WriteMapping<'a> + 'a>, String> {
+        Ok(Box::new(Nv12WriteMapping))
+    }
+
+    fn to_native_handle(&self, display: &Rc<Display>) -> Result<Self::NativeHandle, String> {
+        // Create a VA surface and upload NV12 data to it.
+        let mut surfaces = display
+            .create_surfaces(
+                VA_RT_FORMAT_YUV420,
+                Some(VA_FOURCC_NV12),
+                self.width,
+                self.height,
+                Some(UsageHint::USAGE_HINT_ENCODER),
+                vec![()],
+            )
+            .map_err(|e| format!("failed to create VA surface: {e:?}"))?;
+
+        let surface = surfaces.pop().ok_or("no surface created")?;
+
+        // Upload NV12 data via image mapping.
+        upload_nv12_to_surface(display, &surface, &self.data, self.width, self.height)
+            .map_err(|e| format!("failed to upload NV12 data: {e:?}"))?;
+
+        Ok(surface)
+    }
+}
+
+/// Upload raw NV12 data to a VA surface using image mapping.
+fn upload_nv12_to_surface(
+    display: &Rc<Display>,
+    surface: &Surface<()>,
+    nv12: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<()> {
+    let image_fmts = display
+        .query_image_formats()
+        .map_err(|e| anyhow::anyhow!("failed to query image formats: {e:?}"))?;
+
+    let nv12_fmt = image_fmts
+        .into_iter()
+        .find(|f| f.fourcc == VA_FOURCC_NV12)
+        .context("VAAPI display does not support NV12 image format")?;
+
+    let size = (width, height);
+    let mut image = Image::create_from(surface, nv12_fmt, size, size)
+        .map_err(|e| anyhow::anyhow!("failed to create VAAPI image: {e:?}"))?;
+
+    let va_image = *image.image();
+    let dst = image.as_mut();
+
+    let w = width as usize;
+    let h = height as usize;
+
+    // Copy Y plane (respecting VA pitch).
+    let y_offset = va_image.offsets[0] as usize;
+    let y_pitch = va_image.pitches[0] as usize;
+    for row in 0..h {
+        let src_start = row * w;
+        let dst_start = y_offset + row * y_pitch;
+        let copy_len = w.min(y_pitch);
+        if src_start + copy_len <= nv12.len() && dst_start + copy_len <= dst.len() {
+            dst[dst_start..dst_start + copy_len]
+                .copy_from_slice(&nv12[src_start..src_start + copy_len]);
+        }
+    }
+
+    // Copy UV plane (interleaved, respecting VA pitch).
+    let uv_offset = va_image.offsets[1] as usize;
+    let uv_pitch = va_image.pitches[1] as usize;
+    let chroma_h = h.div_ceil(2);
+    let chroma_w_bytes = w; // NV12: U+V interleaved = width bytes
+    let y_plane_size = w * h;
+    for row in 0..chroma_h {
+        let src_start = y_plane_size + row * chroma_w_bytes;
+        let dst_start = uv_offset + row * uv_pitch;
+        let copy_len = chroma_w_bytes.min(uv_pitch);
+        if src_start + copy_len <= nv12.len() && dst_start + copy_len <= dst.len() {
+            dst[dst_start..dst_start + copy_len]
+                .copy_from_slice(&nv12[src_start..src_start + copy_len]);
+        }
+    }
+
+    // Drop image to unmap and sync to surface.
+    drop(image);
+    surface
+        .sync()
+        .map_err(|e| anyhow::anyhow!("VA surface sync failed: {e:?}"))?;
+
+    Ok(())
+}
+
+/// The concrete H264 VAAPI encoder type.
+/// Handle = Nv12Frame, Backend = VaapiBackend<(), Surface<()>>.
+type VaapiH264Encoder = H264StatelessEncoder<Nv12Frame, VaapiBackend<(), Surface<()>>>;
+
 /// VAAPI hardware-accelerated H.264 encoder for Linux.
 ///
 /// Uses the `cros-codecs` crate to interface with the VA-API backend.
-/// The encoder accepts RGBA/BGRA frames, converts to NV12, uploads to
-/// a VA surface, and produces length-prefixed H.264 NAL units.
+/// The encoder accepts RGBA/BGRA frames, converts to NV12, wraps in
+/// an `Nv12Frame` (implementing `VideoFrame`), and submits to the
+/// stateless H.264 encoder.
 #[derive(derive_more::Debug)]
 pub struct VaapiEncoder {
     #[debug(skip)]
-    display: Rc<Display>,
-    #[debug(skip)]
     encoder: VaapiH264Encoder,
-    #[debug(skip)]
-    surface_pool: libva::surface::SurfacePool<()>,
     frame_layout: FrameLayout,
     width: u32,
     height: u32,
@@ -46,12 +209,6 @@ pub struct VaapiEncoder {
     packet_buf: Vec<hang::Frame>,
 }
 
-// The concrete encoder type with VAAPI backend using PooledVaSurface handles.
-type VaapiH264Encoder = StatelessEncoder<
-    libva::surface::PooledSurface<()>,
-    cros_codecs::backend::vaapi::encoder::VaapiBackend<(), libva::surface::PooledSurface<()>>,
->;
-
 impl VaapiEncoder {
     fn new(width: u32, height: u32, framerate: u32) -> Result<Self> {
         let pixels = width * height;
@@ -61,16 +218,18 @@ impl VaapiEncoder {
         // Open the VAAPI display (probes /dev/dri/renderD128 etc.)
         let display =
             Display::open().context("failed to open VAAPI display — no GPU or driver found")?;
-        let display = Rc::new(display);
+
+        let coded_size = Resolution { width, height };
+        let fourcc = Fourcc::from(b"NV12");
 
         // Check for low-power encoding support (fixed-function, some Intel GPUs).
         let entrypoints = display
-            .query_config_entrypoints(libva::VAProfile::VAProfileH264ConstrainedBaseline)
+            .query_config_entrypoints(VAProfile::VAProfileH264ConstrainedBaseline)
             .unwrap_or_default();
-        let low_power = entrypoints.contains(&libva::VAEntrypoint::VAEntrypointEncSliceLP);
+        let low_power = entrypoints.contains(&VAEntrypoint::VAEntrypointEncSliceLP);
 
         let config = EncoderConfig {
-            resolution: Resolution { width, height },
+            resolution: coded_size,
             initial_tunings: Tunings {
                 rate_control: RateControl::ConstantBitrate(bitrate),
                 framerate,
@@ -79,11 +238,8 @@ impl VaapiEncoder {
             ..EncoderConfig::default()
         };
 
-        let fourcc = Fourcc::from(b"NV12");
-        let coded_size = Resolution { width, height };
-
         let encoder = VaapiH264Encoder::new_vaapi(
-            Rc::clone(&display),
+            display,
             config,
             fourcc,
             coded_size,
@@ -92,21 +248,9 @@ impl VaapiEncoder {
         )
         .map_err(|e| anyhow::anyhow!("failed to create VAAPI H.264 encoder: {e:?}"))?;
 
-        // Create a surface pool for uploading frames.
-        let mut surface_pool = libva::surface::SurfacePool::new(
-            Rc::clone(&display),
-            libva::constants::VA_RT_FORMAT_YUV420,
-            Some(UsageHint::USAGE_HINT_ENCODER),
-            Resolution { width, height },
-        );
-        // Pre-allocate surfaces. 16 is enough for the encoder pipeline.
-        surface_pool
-            .add_frames(vec![(); 16])
-            .map_err(|e| anyhow::anyhow!("failed to allocate VAAPI surfaces: {e:?}"))?;
-
         let frame_layout = FrameLayout {
             format: (fourcc, 0),
-            size: Resolution { width, height },
+            size: coded_size,
             planes: vec![
                 PlaneLayout {
                     buffer_index: 0,
@@ -122,9 +266,7 @@ impl VaapiEncoder {
         };
 
         Ok(Self {
-            display,
             encoder,
-            surface_pool,
             frame_layout,
             width,
             height,
@@ -154,83 +296,13 @@ impl VaapiEncoder {
         // Interleave U and V into UV plane
         for row in 0..chroma_h {
             for col in 0..chroma_w {
-                let u_idx = row * chroma_w + col;
-                let v_idx = row * chroma_w + col;
-                nv12.push(u.get(u_idx).copied().unwrap_or(128));
-                nv12.push(v.get(v_idx).copied().unwrap_or(128));
+                let idx = row * chroma_w + col;
+                nv12.push(u.get(idx).copied().unwrap_or(128));
+                nv12.push(v.get(idx).copied().unwrap_or(128));
             }
         }
 
         nv12
-    }
-
-    /// Upload NV12 data to a VA surface using image mapping.
-    fn upload_nv12_to_surface(
-        &self,
-        surface: &libva::Surface<()>,
-        nv12: &[u8],
-        width: u32,
-        height: u32,
-    ) -> Result<()> {
-        let image_fmts = self
-            .display
-            .query_image_formats()
-            .map_err(|e| anyhow::anyhow!("failed to query image formats: {e:?}"))?;
-
-        let nv12_fmt = image_fmts
-            .into_iter()
-            .find(|f| f.fourcc == libva::constants::VA_FOURCC_NV12)
-            .context("VAAPI display does not support NV12 image format")?;
-
-        let size = Resolution { width, height };
-        let mut image = libva::Image::create_from(surface, nv12_fmt, size, size)
-            .map_err(|e| anyhow::anyhow!("failed to create VAAPI image: {e:?}"))?;
-
-        // Map the image for writing.
-        let dst = image.as_mut();
-        let img_info = image.image();
-        let pitches = &img_info.pitches;
-        let offsets = &img_info.offsets;
-
-        let w = width as usize;
-        let h = height as usize;
-
-        // Copy Y plane (respecting pitch).
-        let y_offset = offsets[0] as usize;
-        let y_pitch = pitches[0] as usize;
-        for row in 0..h {
-            let src_start = row * w;
-            let dst_start = y_offset + row * y_pitch;
-            let copy_len = w.min(y_pitch);
-            if src_start + copy_len <= nv12.len() && dst_start + copy_len <= dst.len() {
-                dst[dst_start..dst_start + copy_len]
-                    .copy_from_slice(&nv12[src_start..src_start + copy_len]);
-            }
-        }
-
-        // Copy UV plane (interleaved, respecting pitch).
-        let uv_offset = offsets[1] as usize;
-        let uv_pitch = pitches[1] as usize;
-        let chroma_h = h.div_ceil(2);
-        let chroma_w_bytes = w.div_ceil(2) * 2; // U+V interleaved
-        let y_plane_size = w * h; // offset into our nv12 buffer for UV data
-        for row in 0..chroma_h {
-            let src_start = y_plane_size + row * chroma_w_bytes;
-            let dst_start = uv_offset + row * uv_pitch;
-            let copy_len = chroma_w_bytes.min(uv_pitch);
-            if src_start + copy_len <= nv12.len() && dst_start + copy_len <= dst.len() {
-                dst[dst_start..dst_start + copy_len]
-                    .copy_from_slice(&nv12[src_start..src_start + copy_len]);
-            }
-        }
-
-        // Drop image to unmap and sync to surface.
-        drop(image);
-        surface
-            .sync()
-            .map_err(|e| anyhow::anyhow!("VA surface sync failed: {e:?}"))?;
-
-        Ok(())
     }
 
     /// Process a `CodedBitstreamBuffer` into a `hang::Frame`.
@@ -304,14 +376,12 @@ impl av::VideoEncoderInner for VaapiEncoder {
         // Convert I420 to NV12 (VAAPI expects NV12).
         let nv12 = Self::i420_to_nv12(&yuv.y, &yuv.u, &yuv.v, w, h);
 
-        // Get a surface from the pool.
-        let surface = self
-            .surface_pool
-            .get_surface()
-            .map_err(|e| anyhow::anyhow!("failed to get VAAPI surface from pool: {e:?}"))?;
-
-        // Upload NV12 data to the surface.
-        self.upload_nv12_to_surface(surface.borrow(), &nv12, w, h)?;
+        // Wrap NV12 data in our VideoFrame impl.
+        let nv12_frame = Nv12Frame {
+            data: nv12,
+            width: w,
+            height: h,
+        };
 
         // Build frame metadata.
         let timestamp_us = (self.frame_count * 1_000_000) / self.framerate as u64;
@@ -323,7 +393,7 @@ impl av::VideoEncoderInner for VaapiEncoder {
 
         // Submit frame to encoder.
         self.encoder
-            .encode(meta, surface)
+            .encode(meta, nv12_frame)
             .map_err(|e| anyhow::anyhow!("VAAPI encode failed: {e:?}"))?;
 
         self.frame_count += 1;
@@ -390,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "requires VAAPI hardware"]
     fn vaapi_encode_basic() {
         let mut enc = VaapiEncoder::with_preset(VideoPreset::P360).unwrap();
         let mut packet_count = 0;
@@ -408,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "requires VAAPI hardware"]
     fn vaapi_encode_decode_roundtrip() {
         use crate::av::{DecodeConfig, VideoDecoder};
         use crate::codec::video::H264VideoDecoder;
@@ -448,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "requires VAAPI hardware"]
     fn vaapi_encode_keyframe_interval() {
         let mut enc = VaapiEncoder::with_preset(VideoPreset::P360).unwrap();
         let mut keyframe_count = 0;
@@ -468,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "requires VAAPI hardware"]
     fn vaapi_timestamps_increase() {
         let mut enc = VaapiEncoder::with_preset(VideoPreset::P180).unwrap();
         let mut prev_ts = None;
@@ -485,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "requires VAAPI hardware"]
     fn vaapi_config_fields() {
         let enc = VaapiEncoder::with_preset(VideoPreset::P360).unwrap();
         let config = enc.config();
