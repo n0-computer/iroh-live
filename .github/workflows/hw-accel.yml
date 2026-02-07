@@ -1,0 +1,26 @@
+name: HW Acceleration Tests
+on: [push, pull_request]
+
+jobs:
+  macos-videotoolbox:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check -p moq-media --features videotoolbox
+      - run: cargo check -p moq-media
+      - run: cargo clippy -p moq-media --features videotoolbox -- -D warnings
+      - run: cargo test -p moq-media --features videotoolbox -- --ignored
+
+  compile-check:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            features: videotoolbox
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check -p moq-media --features ${{ matrix.features }}
+      - run: cargo check -p moq-media
