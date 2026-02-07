@@ -193,6 +193,8 @@ pub enum AudioCodec {
 pub enum VideoCodec {
     H264,
     Av1,
+    #[strum(serialize = "vtb-h264")]
+    VtbH264,
 }
 
 #[derive(Debug, Clone, Copy, Display, EnumString, VariantNames, Eq, PartialEq, Ord, PartialOrd)]
