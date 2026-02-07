@@ -9,3 +9,19 @@ resolver = "2"
 
 [profile.release]
 debug = true
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "deny", check-cfg = ["cfg(docsrs)"] }
+elided_lifetimes_in_paths = "warn"
+unnameable_types = "warn"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+or_fun_call = "warn"
+use_self = "warn"
+unused_async = "warn"
+absolute_paths = "warn"
+manual_let_else = "warn"
+allow_attributes_without_reason = "warn"
+mod_module_files = "deny"

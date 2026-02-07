@@ -7,6 +7,9 @@ authors = ["Franz Heinzmann <frando@n0.computer>"]
 repository = "https://github.com/n0-computer/iroh-live"
 license = "MIT OR Apache-2.0"
 
+[lints]
+workspace = true
+
 [dependencies]
 anyhow = "1.0.100"
 bytemuck = "1.24.0"
