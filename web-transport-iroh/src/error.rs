@@ -1,5 +1,8 @@
-use std::sync::Arc;
+use std::{io, sync::Arc};
 
+use iroh::endpoint::{
+    BindError, ConnectError as IrohConnectError, ConnectingError, ConnectionError,
+};
 use n0_error::stack_error;
 use thiserror::Error;
 
@@ -13,10 +16,10 @@ pub enum ClientError {
     UnexpectedEnd,
 
     #[error("failed to connect")]
-    Connect(#[error(source)] Arc<iroh::endpoint::ConnectError>),
+    Connect(#[error(source)] Arc<IrohConnectError>),
 
     #[error("connection failed")]
-    Connection(#[error(source, std_err)] iroh::endpoint::ConnectionError),
+    Connection(#[error(source, std_err)] ConnectionError),
 
     #[error("failed to write")]
     WriteError(#[error(source, std_err)] quinn::WriteError),
@@ -34,14 +37,14 @@ pub enum ClientError {
     InvalidUrl,
 
     #[error("endpoint failed to bind")]
-    Bind(#[error(source)] Arc<iroh::endpoint::BindError>),
+    Bind(#[error(source)] Arc<BindError>),
 }
 
 /// An errors returned by [`crate::Session`], split based on if they are underlying QUIC errors or WebTransport errors.
 #[derive(Clone, Error, Debug)]
 pub enum SessionError {
     #[error("connection error: {0}")]
-    ConnectionError(#[from] iroh::endpoint::ConnectionError),
+    ConnectionError(#[from] ConnectionError),
 
     #[error("webtransport error: {0}")]
     WebTransportError(#[from] WebTransportError),
@@ -191,10 +194,10 @@ pub enum ServerError {
     UnexpectedEnd,
 
     #[error("connection failed")]
-    Connection(#[error(source, std_err)] iroh::endpoint::ConnectionError),
+    Connection(#[error(source, std_err)] ConnectionError),
 
     #[error("connection failed during handshake")]
-    Connecting(#[error(source)] Arc<iroh::endpoint::ConnectingError>),
+    Connecting(#[error(source)] Arc<ConnectingError>),
 
     #[error("failed to write")]
     WriteError(#[error(source, std_err)] quinn::WriteError),
@@ -203,10 +206,10 @@ pub enum ServerError {
     ReadError(#[error(source, std_err)] quinn::ReadError),
 
     #[error("io error")]
-    IoError(#[error(source)] Arc<std::io::Error>),
+    IoError(#[error(source)] Arc<io::Error>),
 
     #[error("failed to bind endpoint")]
-    Bind(#[error(source)] Arc<iroh::endpoint::BindError>),
+    Bind(#[error(source)] Arc<BindError>),
 
     #[error("failed to exchange h3 connect")]
     HttpError(#[error(source, from, std_err)] ConnectError),

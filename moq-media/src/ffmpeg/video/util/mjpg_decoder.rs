@@ -1,7 +1,8 @@
 use std::time::Instant;
 
 use ffmpeg_next::{
-    self as ffmpeg, Error, Packet, codec::Id, format::Pixel, frame::Video as FfmpegVideoFrame,
+    self as ffmpeg, Error, Packet, codec, codec::Id, format::Pixel,
+    frame::Video as FfmpegVideoFrame,
 };
 use tracing::trace;
 
@@ -11,7 +12,7 @@ use crate::{
 };
 
 pub(crate) struct MjpgDecoder {
-    dec: ffmpeg::decoder::Video,
+    dec: codec::decoder::Video,
     rescaler: Rescaler,
 }
 
@@ -21,11 +22,11 @@ impl MjpgDecoder {
         ffmpeg::init()?;
 
         // Find the MJPEG decoder and create a context bound to it.
-        let mjpeg = ffmpeg::decoder::find(Id::MJPEG).ok_or(Error::DecoderNotFound)?;
+        let mjpeg = codec::decoder::find(Id::MJPEG).ok_or(Error::DecoderNotFound)?;
 
         // Create a codec::Context that's pre-bound to this decoder codec,
         // then get a video decoder out of it.
-        let ctx = ffmpeg::codec::context::Context::new_with_codec(mjpeg);
+        let ctx = codec::context::Context::new_with_codec(mjpeg);
         let dec = ctx.decoder().video()?; // has send_packet/receive_frame
 
         let rescaler = Rescaler::new(Pixel::RGBA, None)?;

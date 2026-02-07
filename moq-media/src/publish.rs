@@ -4,30 +4,38 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, Ordering},
     },
+    thread,
     time::{Duration, Instant},
 };
 
 use anyhow::Context;
-use hang::catalog::{AudioConfig, Catalog, CatalogProducer, VideoConfig};
+use hang::catalog::{Audio, AudioConfig, Catalog, CatalogProducer, Video, VideoConfig};
 use moq_lite::BroadcastProducer;
 use n0_error::Result;
 use n0_future::task::AbortOnDropHandle;
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{debug, error, info, info_span, trace, warn};
 
+use tokio::sync::watch;
+
 use crate::{
     av::{
         AudioEncoder, AudioEncoderInner, AudioPreset, AudioSource, DecodeConfig, VideoEncoder,
-        VideoEncoderInner, VideoPreset, VideoSource,
+        VideoEncoderInner, VideoFormat, VideoFrame, VideoPreset, VideoSource,
     },
     subscribe::WatchTrack,
     util::spawn_thread,
 };
 
+#[derive(derive_more::Debug)]
 pub struct PublishBroadcast {
+    #[debug(skip)]
     producer: BroadcastProducer,
+    #[debug(skip)]
     catalog: CatalogProducer,
+    #[debug(skip)]
     state: Arc<Mutex<State>>,
+    #[debug(skip)]
     _task: Arc<AbortOnDropHandle<()>>,
 }
 
@@ -105,7 +113,7 @@ impl PublishBroadcast {
             Some(renditions) => {
                 let priority = 1u8;
                 let configs = renditions.available_renditions()?;
-                let video = hang::catalog::Video {
+                let video = Video {
                     renditions: configs,
                     priority,
                     display: None,
@@ -136,7 +144,7 @@ impl PublishBroadcast {
             Some(renditions) => {
                 let priority = 2u8;
                 let configs = renditions.available_renditions()?;
-                let audio = hang::catalog::Audio {
+                let audio = Audio {
                     renditions: configs,
                     priority,
                 };
@@ -223,8 +231,11 @@ impl State {
     }
 }
 
+#[derive(derive_more::Debug)]
 pub struct AudioRenditions {
+    #[debug(skip)]
     make_encoder: Box<dyn Fn(AudioPreset) -> Result<Box<dyn AudioEncoder>> + Send>,
+    #[debug(skip)]
     source: Box<dyn AudioSource>,
     renditions: HashMap<String, AudioPreset>,
 }
@@ -287,10 +298,13 @@ impl AudioRenditions {
     }
 }
 
+#[derive(derive_more::Debug)]
 pub struct VideoRenditions {
+    #[debug(skip)]
     make_encoder: Box<dyn Fn(VideoPreset) -> Result<Box<dyn VideoEncoder>> + Send>,
     source: SharedVideoSource,
     renditions: HashMap<String, VideoPreset>,
+    #[debug(skip)]
     _shared_source_cancel_guard: DropGuard,
 }
 
@@ -348,10 +362,10 @@ impl VideoRenditions {
 #[derive(Debug, Clone)]
 pub(crate) struct SharedVideoSource {
     name: String,
-    frames_rx: tokio::sync::watch::Receiver<Option<crate::av::VideoFrame>>,
-    format: crate::av::VideoFormat,
+    frames_rx: watch::Receiver<Option<VideoFrame>>,
+    format: VideoFormat,
     running: Arc<AtomicBool>,
-    thread: Arc<std::thread::JoinHandle<()>>,
+    thread: Arc<thread::JoinHandle<()>>,
     subscriber_count: Arc<AtomicU32>,
 }
 
@@ -359,7 +373,7 @@ impl SharedVideoSource {
     fn new(mut source: impl VideoSource, shutdown: CancellationToken) -> Self {
         let name = source.name().to_string();
         let format = source.format();
-        let (tx, rx) = tokio::sync::watch::channel(None);
+        let (tx, rx) = watch::channel(None);
         let running = Arc::new(AtomicBool::new(false));
         let thread = spawn_thread(format!("vshr-{}", source.name()), {
             let shutdown = shutdown.clone();
@@ -379,7 +393,7 @@ impl SharedVideoSource {
                         if let Err(err) = source.stop() {
                             warn!("Failed to stop video source: {err:#}");
                         }
-                        std::thread::park();
+                        thread::park();
                         if let Err(err) = source.start() {
                             warn!("Failed to stop video source: {err:#}");
                         }
@@ -395,7 +409,7 @@ impl SharedVideoSource {
                     let expected = frame_time * i;
                     let actual = start.elapsed();
                     if actual < expected {
-                        std::thread::sleep(expected - actual);
+                        thread::sleep(expected - actual);
                     }
                 }
             }
@@ -416,7 +430,7 @@ impl VideoSource for SharedVideoSource {
         &self.name
     }
 
-    fn format(&self) -> crate::av::VideoFormat {
+    fn format(&self) -> VideoFormat {
         self.format.clone()
     }
 
@@ -443,14 +457,16 @@ impl VideoSource for SharedVideoSource {
         Ok(())
     }
 
-    fn pop_frame(&mut self) -> anyhow::Result<Option<crate::av::VideoFrame>> {
+    fn pop_frame(&mut self) -> anyhow::Result<Option<VideoFrame>> {
         let frame = self.frames_rx.borrow_and_update().clone();
         Ok(frame)
     }
 }
 
+#[derive(derive_more::Debug)]
 pub struct EncoderThread {
-    _thread_handle: std::thread::JoinHandle<()>,
+    #[debug(skip)]
+    _thread_handle: thread::JoinHandle<()>,
     shutdown: CancellationToken,
 }
 
@@ -503,7 +519,7 @@ impl EncoderThread {
                             }
                         }
                     }
-                    std::thread::sleep(interval.saturating_sub(start.elapsed()));
+                    thread::sleep(interval.saturating_sub(start.elapsed()));
                 }
                 producer.inner.close();
                 if let Err(err) = source.stop() {
@@ -574,7 +590,7 @@ impl EncoderThread {
                 }
                 let sleep = expected_time.saturating_sub(start.elapsed());
                 if sleep > Duration::ZERO {
-                    std::thread::sleep(sleep);
+                    thread::sleep(sleep);
                 }
             }
             // drain

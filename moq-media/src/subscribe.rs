@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, future, sync::Arc, thread, time::Duration};
 
 use hang::{
     Timestamp, TrackConsumer,
@@ -284,12 +284,16 @@ fn select_audio_rendition<T>(renditions: &BTreeMap<String, T>, q: Quality) -> Op
     select_rendition(renditions, &order)
 }
 
+#[derive(derive_more::Debug)]
 pub struct AudioTrack {
     name: String,
+    #[debug(skip)]
     handle: Box<dyn AudioSinkHandle>,
     shutdown_token: CancellationToken,
+    #[debug(skip)]
     _task_handle: AbortOnDropHandle<()>,
-    _thread_handle: std::thread::JoinHandle<()>,
+    #[debug(skip)]
+    _thread_handle: thread::JoinHandle<()>,
 }
 
 impl AudioTrack {
@@ -401,7 +405,7 @@ impl AudioTrack {
             let real_time = Instant::now().duration_since(loop_start);
             let sleep = target_time.saturating_sub(real_time);
             if !sleep.is_zero() {
-                std::thread::sleep(sleep);
+                thread::sleep(sleep);
             }
         }
         shutdown.cancel();
@@ -415,14 +419,18 @@ impl Drop for AudioTrack {
     }
 }
 
+#[derive(derive_more::Debug)]
 pub struct WatchTrack {
     video_frames: WatchTrackFrames,
     handle: WatchTrackHandle,
 }
 
+#[derive(derive_more::Debug)]
 pub struct WatchTrackHandle {
     rendition: String,
+    #[debug(skip)]
     viewport: Watchable<(u32, u32)>,
+    #[debug(skip)]
     _guard: WatchTrackGuard,
 }
 
@@ -436,7 +444,9 @@ impl WatchTrackHandle {
     }
 }
 
+#[derive(derive_more::Debug)]
 pub struct WatchTrackFrames {
+    #[debug(skip)]
     rx: mpsc::Receiver<DecodedFrame>,
 }
 
@@ -461,14 +471,14 @@ impl WatchTrackFrames {
 struct WatchTrackGuard {
     _shutdown_token_guard: DropGuard,
     _task_handle: Option<AbortOnDropHandle<()>>,
-    _thread_handle: Option<std::thread::JoinHandle<()>>,
+    _thread_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl WatchTrack {
     pub fn empty(rendition: impl ToString) -> Self {
         let (tx, rx) = mpsc::channel(1);
-        let task = tokio::task::spawn(async move {
-            std::future::pending::<()>().await;
+        let task = tokio::spawn(async move {
+            future::pending::<()>().await;
             let _ = tx;
         });
         let guard = WatchTrackGuard {
@@ -493,7 +503,7 @@ impl WatchTrack {
         decode_config: DecodeConfig,
     ) -> Self {
         let viewport = Watchable::new((1u32, 1u32));
-        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<DecodedFrame>(2);
+        let (frame_tx, frame_rx) = mpsc::channel::<DecodedFrame>(2);
         let thread_name = format!("vpr-{:>4}-{:>4}", source.name(), rendition);
         let thread = spawn_thread(thread_name, {
             let mut viewport = viewport.watch();
@@ -535,7 +545,7 @@ impl WatchTrack {
                     let expected_time = i * frame_duration;
                     let actual_time = start.elapsed();
                     if expected_time > actual_time {
-                        std::thread::sleep(expected_time - actual_time);
+                        thread::sleep(expected_time - actual_time);
                         // trace!(t=?t.elapsed(), slept=?(actual_time - expected_time), ?expected_time, ?actual_time, "done");
                     }
                 }
@@ -589,7 +599,7 @@ impl WatchTrack {
                 shutdown.cancel();
             }
         });
-        let task = tokio::task::spawn(forward_frames(consumer, packet_tx));
+        let task = tokio::spawn(forward_frames(consumer, packet_tx));
         let guard = WatchTrackGuard {
             _shutdown_token_guard: shutdown.drop_guard(),
             _task_handle: Some(AbortOnDropHandle::new(task)),
@@ -674,6 +684,7 @@ async fn forward_frames(mut track: hang::TrackConsumer, sender: mpsc::Sender<han
     }
 }
 
+#[derive(derive_more::Debug)]
 pub struct AvRemoteTrack {
     pub broadcast: SubscribeBroadcast,
     pub video: Option<WatchTrack>,

@@ -96,7 +96,7 @@ mod processor {
             self.0.enabled.load(Ordering::SeqCst)
         }
 
-        #[allow(unused)]
+        #[allow(unused, reason = "API reserved for future use")]
         pub(crate) fn set_enabled(&self, enabled: bool) {
             let _prev = self.0.enabled.swap(enabled, Ordering::SeqCst);
         }
@@ -203,7 +203,7 @@ mod firewheel_nodes {
         fn construct_processor(
             &self,
             config: &Self::Configuration,
-            _cx: ConstructProcessorContext,
+            _cx: ConstructProcessorContext<'_>,
         ) -> impl AudioNodeProcessor {
             // Clone = share the same underlying Arc<Inner>.
             let webrtc = config.clone();
@@ -237,8 +237,8 @@ mod firewheel_nodes {
         fn process(
             &mut self,
             info: &ProcInfo,
-            buffers: ProcBuffers,
-            events: &mut ProcEvents,
+            buffers: ProcBuffers<'_, '_>,
+            events: &mut ProcEvents<'_>,
             _extra: &mut ProcExtra,
         ) -> ProcessStatus {
             // Handle parameter patches.
@@ -313,7 +313,7 @@ mod firewheel_nodes {
             ProcessStatus::OutputsModified
         }
 
-        fn new_stream(&mut self, _stream_info: &StreamInfo, _ctx: &mut ProcStreamCtx) {
+        fn new_stream(&mut self, _stream_info: &StreamInfo, _ctx: &mut ProcStreamCtx<'_>) {
             // Reset buffers for new stream.
             self.in_ring.clear();
             self.out_ring.clear();
@@ -347,7 +347,7 @@ mod firewheel_nodes {
         fn construct_processor(
             &self,
             config: &Self::Configuration,
-            _cx: ConstructProcessorContext,
+            _cx: ConstructProcessorContext<'_>,
         ) -> impl AudioNodeProcessor {
             CaptureProcessor {
                 enabled: self.enabled,
@@ -374,8 +374,8 @@ mod firewheel_nodes {
         fn process(
             &mut self,
             info: &ProcInfo,
-            buffers: ProcBuffers,
-            events: &mut ProcEvents,
+            buffers: ProcBuffers<'_, '_>,
+            events: &mut ProcEvents<'_>,
             _extra: &mut ProcExtra,
         ) -> ProcessStatus {
             for patch in events.drain_patches::<AecCaptureNode>() {
@@ -443,7 +443,7 @@ mod firewheel_nodes {
             ProcessStatus::OutputsModified
         }
 
-        fn new_stream(&mut self, _stream_info: &StreamInfo, _ctx: &mut ProcStreamCtx) {
+        fn new_stream(&mut self, _stream_info: &StreamInfo, _ctx: &mut ProcStreamCtx<'_>) {
             // Reset state for new stream.
             self.in_ring.clear();
             self.out_ring.clear();

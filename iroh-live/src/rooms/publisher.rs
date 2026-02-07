@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use moq_lite::BroadcastProducer;
@@ -48,6 +49,18 @@ pub struct RoomPublisherSync {
     camera: Option<Arc<Mutex<PublishBroadcast>>>,
     screen: Option<Arc<Mutex<PublishBroadcast>>>,
     state: PublishOpts,
+}
+
+impl fmt::Debug for RoomPublisherSync {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RoomPublisherSync")
+            .field("audio_ctx", &self.audio_ctx)
+            .field("room", &self.room)
+            .field("camera", &"..")
+            .field("screen", &"..")
+            .field("state", &self.state)
+            .finish()
+    }
 }
 
 impl RoomPublisherSync {

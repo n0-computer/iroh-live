@@ -1,9 +1,11 @@
 use std::{
     collections::HashMap,
+    fmt,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    thread,
     time::{Duration, Instant},
 };
 
@@ -82,11 +84,14 @@ impl AudioBackend {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, derive_more::Debug)]
 pub struct OutputStream {
+    #[debug(skip)]
     handle: StreamWriterHandle,
     paused: Arc<AtomicBool>,
+    #[debug(skip)]
     peaks: Arc<Mutex<PeakMeterSmoother<2>>>,
+    #[debug(skip)]
     normalizer: DbMeterNormalizer,
 }
 
@@ -173,15 +178,16 @@ impl AudioSink for OutputStream {
 }
 
 impl OutputStream {
-    #[allow(unused)]
+    #[allow(unused, reason = "may be used in future")]
     pub fn is_active(&self) -> bool {
         self.handle.lock().expect("poisoned").is_active()
     }
 }
 
 /// A simple AudioSource that reads from the default microphone via Firewheel.
-#[derive(Clone)]
+#[derive(Clone, derive_more::Debug)]
 pub struct InputStream {
+    #[debug(skip)]
     handle: StreamReaderHandle,
     format: AudioFormat,
 }
@@ -247,6 +253,15 @@ struct AudioDriver {
     aec_render_node: NodeID,
     aec_capture_node: NodeID,
     peak_meters: HashMap<NodeID, Arc<Mutex<PeakMeterSmoother<2>>>>,
+}
+
+impl fmt::Debug for AudioDriver {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AudioDriver")
+            .field("aec_render_node", &self.aec_render_node)
+            .field("aec_capture_node", &self.aec_capture_node)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AudioDriver {
@@ -372,7 +387,7 @@ impl AudioDriver {
                 last_peak_update = Instant::now();
             }
 
-            std::thread::sleep(INTERVAL.saturating_sub(tick.elapsed()));
+            thread::sleep(INTERVAL.saturating_sub(tick.elapsed()));
         }
     }
 
@@ -484,7 +499,6 @@ impl AudioDriver {
             Some(StreamReaderConfig {
                 channels: NonZeroChannelCount::new(channel_count)
                     .context("channel count may not be zero")?,
-                ..Default::default()
             }),
         );
         let graph_in_node_id = self.aec_capture_node;

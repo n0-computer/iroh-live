@@ -1,32 +1,33 @@
 use std::{
     collections::{HashMap, hash_map},
+    fmt,
     sync::Arc,
 };
 
 use iroh::{
     Endpoint, EndpointAddr, EndpointId,
-    endpoint::{Connection, ConnectionError},
-    protocol::ProtocolHandler,
+    endpoint::{ConnectError, Connection, ConnectionError, WriteError},
+    protocol::{AcceptError, ProtocolHandler},
 };
-use moq_lite::{BroadcastConsumer, BroadcastProducer, OriginConsumer, OriginProducer};
+use moq_lite::{BroadcastConsumer, BroadcastProducer, OriginConsumer, OriginProducer, lite};
 use n0_error::{AnyError, Result, StdResultExt, anyerr, e, stack_error};
 use n0_future::{
     FuturesUnordered, StreamExt,
     boxed::BoxFuture,
-    task::{AbortOnDropHandle, JoinSet},
+    task::{AbortOnDropHandle, JoinSet, spawn},
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, error_span, info, instrument};
+use tracing::{Instrument, debug, error_span, field, info, instrument};
 use web_transport_iroh::SessionError;
 
-pub const ALPN: &[u8] = moq_lite::lite::ALPN.as_bytes();
+pub const ALPN: &[u8] = lite::ALPN.as_bytes();
 
 #[stack_error(derive, add_meta, from_sources)]
-#[allow(private_interfaces)]
+#[allow(private_interfaces, reason = "trait impl uses private types")]
 pub enum Error {
     #[error(transparent)]
-    Connect(iroh::endpoint::ConnectError),
+    Connect(ConnectError),
     #[error(transparent)]
     Moq(#[error(source, std_err)] moq_lite::Error),
     #[error(transparent)]
@@ -34,11 +35,11 @@ pub enum Error {
     #[error("internal consistency error")]
     InternalConsistencyError(#[error(source)] LiveActorDiedError),
     #[error("failed to perform request")]
-    Request(#[error(source, std_err)] iroh::endpoint::WriteError),
+    Request(#[error(source, std_err)] WriteError),
 }
 
 #[stack_error(derive, add_meta, from_sources)]
-#[allow(private_interfaces)]
+#[allow(private_interfaces, reason = "trait impl uses private types")]
 pub enum SubscribeError {
     #[error("track was not announced")]
     NotAnnounced,
@@ -70,9 +71,8 @@ impl Moq {
         let (tx, rx) = mpsc::channel(16);
         let actor = Actor::new(endpoint);
         let shutdown_token = actor.shutdown_token.clone();
-        let actor_task = n0_future::task::spawn(async move {
-            actor.run(rx).instrument(error_span!("LiveActor")).await
-        });
+        let actor_task =
+            spawn(async move { actor.run(rx).instrument(error_span!("LiveActor")).await });
         Self {
             shutdown_token,
             tx,
@@ -99,7 +99,12 @@ impl Moq {
 
     pub async fn published_broadcasts(&self) -> Vec<String> {
         let (reply, reply_rx) = oneshot::channel();
-        if let Err(_) = self.tx.send(ActorMessage::GetPublished { reply }).await {
+        if self
+            .tx
+            .send(ActorMessage::GetPublished { reply })
+            .await
+            .is_err()
+        {
             return vec![];
         }
         reply_rx.await.unwrap_or_default()
@@ -137,7 +142,9 @@ impl MoqProtocolHandler {
         let session = web_transport_iroh::Session::raw(connection);
         let session = MoqSession::session_accept(session).await?;
         self.tx
-            .send(ActorMessage::HandleSession { session })
+            .send(ActorMessage::HandleSession {
+                session: Box::new(session),
+            })
             .await
             .map_err(LiveActorDiedError::from)?;
         Ok(())
@@ -145,7 +152,7 @@ impl MoqProtocolHandler {
 }
 
 impl ProtocolHandler for MoqProtocolHandler {
-    async fn accept(&self, connection: Connection) -> Result<(), iroh::protocol::AcceptError> {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         self.handle_connection(connection)
             .await
             .map_err(AnyError::from)?;
@@ -191,14 +198,22 @@ pub struct MoqSession {
     subscribe: OriginConsumer,
 }
 
+impl fmt::Debug for MoqSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MoqSession")
+            .field("remote_id", &self.wt_session.remote_id())
+            .finish_non_exhaustive()
+    }
+}
+
 impl MoqSession {
-    #[instrument(skip_all, fields(remote=tracing::field::Empty))]
+    #[instrument(skip_all, fields(remote=field::Empty))]
     pub async fn connect(
         endpoint: &Endpoint,
         remote_addr: impl Into<EndpointAddr>,
     ) -> Result<Self, Error> {
         let addr = remote_addr.into();
-        tracing::Span::current().record("remote", tracing::field::display(addr.id.fmt_short()));
+        tracing::Span::current().record("remote", field::display(addr.id.fmt_short()));
         let connection = endpoint.connect(addr, ALPN).await?;
         let wt_session = web_transport_iroh::Session::raw(connection);
         Self::session_connect(wt_session).await
@@ -238,7 +253,7 @@ impl MoqSession {
         self.wt_session.remote_id()
     }
 
-    pub fn conn(&self) -> &iroh::endpoint::Connection {
+    pub fn conn(&self) -> &Connection {
         self.wt_session.conn()
     }
 
@@ -279,7 +294,7 @@ impl MoqSession {
 
 enum ActorMessage {
     HandleSession {
-        session: MoqSession,
+        session: Box<MoqSession>,
     },
     PublishBroadcast {
         broadcast_name: BroadcastName,
@@ -295,6 +310,7 @@ enum ActorMessage {
 }
 
 type BroadcastName = String;
+type PendingConnects = HashMap<EndpointId, Vec<oneshot::Sender<Result<MoqSession, Arc<AnyError>>>>>;
 
 #[derive()]
 struct Actor {
@@ -304,7 +320,7 @@ struct Actor {
     publishing_closed_futs: FuturesUnordered<BoxFuture<BroadcastName>>,
     sessions: HashMap<EndpointId, MoqSession>,
     session_tasks: JoinSet<(EndpointId, Result<(), web_transport_iroh::SessionError>)>,
-    pending_connects: HashMap<EndpointId, Vec<oneshot::Sender<Result<MoqSession, Arc<AnyError>>>>>,
+    pending_connects: PendingConnects,
     pending_connect_tasks: JoinSet<(EndpointId, Result<MoqSession, AnyError>)>,
 }
 
@@ -363,7 +379,7 @@ impl Actor {
 
     fn handle_message(&mut self, msg: ActorMessage) {
         match msg {
-            ActorMessage::HandleSession { session: msg } => self.handle_incoming_session(msg),
+            ActorMessage::HandleSession { session: msg } => self.handle_incoming_session(*msg),
             ActorMessage::PublishBroadcast {
                 broadcast_name: name,
                 producer,

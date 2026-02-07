@@ -1,11 +1,13 @@
-use std::str::FromStr;
+use std::{env, str::FromStr, sync::mpsc::Receiver, time::Instant};
 
 use anyhow::{Context, Result};
 use nokhwa::{
     nokhwa_initialize,
-    pixel_format::RgbFormat,
+    pixel_format::{RgbAFormat, RgbFormat},
+    query,
     utils::{
-        CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType, Resolution,
+        ApiBackend, CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType,
+        Resolution,
     },
 };
 use tracing::{debug, info, trace, warn};
@@ -16,12 +18,16 @@ use crate::{
     ffmpeg::util::MjpgDecoder,
 };
 
+#[derive(derive_more::Debug)]
 pub struct ScreenCapturer {
+    #[debug(skip)]
     pub(crate) _monitor: Monitor,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    #[debug(skip)]
     pub(crate) video_recorder: VideoRecorder,
-    pub(crate) rx: std::sync::mpsc::Receiver<xcap::Frame>,
+    #[debug(skip)]
+    pub(crate) rx: Receiver<xcap::Frame>,
 }
 
 // TODO: Review if sound.
@@ -110,8 +116,11 @@ impl VideoSource for ScreenCapturer {
     }
 }
 
+#[derive(derive_more::Debug)]
 pub struct CameraCapturer {
+    #[debug(skip)]
     pub(crate) camera: nokhwa::Camera,
+    #[debug(skip)]
     pub(crate) mjpg_decoder: MjpgDecoder,
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -124,13 +133,13 @@ impl CameraCapturer {
             debug!("User selected camera access: {}", granted);
         });
 
-        let cameras = nokhwa::query(nokhwa::utils::ApiBackend::Auto)?;
+        let cameras = query(ApiBackend::Auto)?;
         if cameras.is_empty() {
             return Err(anyhow::anyhow!("No cameras available"));
         }
         info!("Available cameras: {cameras:?}");
 
-        let camera_index = match std::env::var("IROH_LIVE_CAMERA").ok() {
+        let camera_index = match env::var("IROH_LIVE_CAMERA").ok() {
             None => {
                 // Order of cameras in nokhwa is reversed from usual order (primary camera is last).
                 let first_camera = cameras.last().unwrap();
@@ -205,21 +214,21 @@ impl VideoSource for CameraCapturer {
     }
 
     fn pop_frame(&mut self) -> anyhow::Result<Option<VideoFrame>> {
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         let frame = self
             .camera
             .frame()
             .context("Failed to capture camera frame")?;
         trace!("pop frame: capture took {:?}", start.elapsed());
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         let frame = match frame.source_frame_format() {
-            FrameFormat::MJPEG if std::env::var("IROH_LIVE_MJPEG_FFMPEG").is_ok() => {
+            FrameFormat::MJPEG if env::var("IROH_LIVE_MJPEG_FFMPEG").is_ok() => {
                 trace!("decode ffmpeg");
                 self.mjpg_decoder.decode_frame(frame.buffer())?
             }
             _ => {
                 let image = frame
-                    .decode_image::<nokhwa::pixel_format::RgbAFormat>()
+                    .decode_image::<RgbAFormat>()
                     .context("Failed to decode camera frame")?;
                 VideoFrame {
                     format: self.format(),
