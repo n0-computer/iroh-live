@@ -32,6 +32,10 @@ cargo clippy --workspace --all-features
 cargo fmt --check
 ```
 
+## Shell
+
+- Always use `rg` (ripgrep) instead of `grep` in shell commands
+
 ## Commits
 
 - Small incremental commits, each leaving all crates compiling
