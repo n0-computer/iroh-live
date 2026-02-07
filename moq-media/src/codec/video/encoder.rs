@@ -23,7 +23,7 @@ use crate::{
 use super::util::convert::YuvData;
 
 #[derive(derive_more::Debug)]
-pub(crate) struct H264Encoder {
+pub struct H264Encoder {
     #[debug(skip)]
     encoder: OpenH264Encoder,
     width: u32,

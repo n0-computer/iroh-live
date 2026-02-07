@@ -10,7 +10,7 @@ use crate::codec::resample::Resampler;
 const MAX_FRAME_SIZE: usize = 5760;
 
 #[derive(derive_more::Debug)]
-pub(crate) struct OpusAudioDecoder {
+pub struct OpusAudioDecoder {
     #[debug(skip)]
     decoder: *mut RawOpusDecoder,
     channel_count: u32,

@@ -15,7 +15,7 @@ use super::util::{
 };
 
 #[derive(derive_more::Debug)]
-pub(crate) struct H264VideoDecoder {
+pub struct H264VideoDecoder {
     #[debug(skip)]
     decoder: Decoder,
     scaler: Scaler,

@@ -1,5 +1,5 @@
 mod decoder;
 mod encoder;
 
-pub(crate) use decoder::OpusAudioDecoder;
-pub(crate) use encoder::OpusEncoder;
+pub use decoder::OpusAudioDecoder;
+pub use encoder::OpusEncoder;
