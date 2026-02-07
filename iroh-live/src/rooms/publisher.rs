@@ -33,6 +33,10 @@ pub struct PublishOpts {
     pub camera: bool,
     pub screen: bool,
     pub audio: bool,
+    /// If set, use a specific camera by index. If `None`, use the default camera.
+    pub camera_index: Option<u32>,
+    /// If set, use a specific audio input device by name. If `None`, use the system default.
+    pub audio_device: Option<String>,
 }
 
 /// Manager for publish broadcasts in a room
@@ -49,6 +53,8 @@ pub struct RoomPublisherSync {
     camera: Option<Arc<Mutex<PublishBroadcast>>>,
     screen: Option<Arc<Mutex<PublishBroadcast>>>,
     state: PublishOpts,
+    prev_camera_index: Option<u32>,
+    prev_audio_device: Option<String>,
 }
 
 impl fmt::Debug for RoomPublisherSync {
@@ -71,11 +77,15 @@ impl RoomPublisherSync {
             camera: None,
             screen: None,
             state: Default::default(),
+            prev_camera_index: None,
+            prev_audio_device: None,
         }
     }
 
     pub fn set_state(&mut self, state: &PublishOpts) -> Result<(), Vec<(StreamKind, AnyError)>> {
         info!(new=?state, old=?self.state, "set publish state");
+        self.state.camera_index = state.camera_index;
+        self.state.audio_device = state.audio_device.clone();
         let errors = [
             self.set_audio(state.audio)
                 .err()
@@ -114,9 +124,14 @@ impl RoomPublisherSync {
     }
 
     pub fn set_camera(&mut self, enable: bool) -> Result<()> {
-        if self.state.camera != enable {
+        let index_changed =
+            enable && self.state.camera && self.state.camera_index != self.prev_camera_index;
+        if self.state.camera != enable || index_changed {
             if enable {
-                let camera = CameraCapturer::new()?;
+                let camera = match self.state.camera_index {
+                    Some(index) => CameraCapturer::with_index(index)?,
+                    None => CameraCapturer::new()?,
+                };
                 let renditions = VideoRenditions::new::<H264Encoder>(camera, VideoPreset::all());
                 self.ensure_camera();
                 self.camera
@@ -129,6 +144,7 @@ impl RoomPublisherSync {
                 camera.lock().unwrap().set_video(None)?;
             }
             self.state.camera = enable;
+            self.prev_camera_index = self.state.camera_index;
         }
         Ok(())
     }
@@ -184,7 +200,17 @@ impl RoomPublisherSync {
     }
 
     pub fn set_audio(&mut self, enable: bool) -> Result<()> {
-        if self.state.audio != enable {
+        let device_changed =
+            enable && self.state.audio && self.state.audio_device != self.prev_audio_device;
+        if self.state.audio != enable || device_changed {
+            if device_changed {
+                // Recreate audio backend for the new device.
+                self.audio_ctx = AudioBackend::new(self.state.audio_device.clone());
+                // Disable current audio first.
+                if let Some(camera) = self.camera.as_mut() {
+                    camera.lock().unwrap().set_audio(None)?;
+                }
+            }
             if enable {
                 self.ensure_camera();
                 let camera = self.camera.as_ref().unwrap().clone();
@@ -206,6 +232,7 @@ impl RoomPublisherSync {
                 camera.lock().unwrap().set_audio(None)?;
             }
             self.state.audio = enable;
+            self.prev_audio_device = self.state.audio_device.clone();
         }
         Ok(())
     }
