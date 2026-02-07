@@ -41,6 +41,11 @@ xcap = "0.8"
 webrtc-audio-processing = { version = "0.5.0", features = ["bundled"] }
 bytes = "1.11.0"
 buf-list = "1.1.2"
+openh264 = { version = "0.9", features = ["source"] }
+unsafe-libopus = "0.2"
+yuvutils-rs = "0.8"
+pic-scale = "0.6"
+rubato = "1.0"
 
 
 [dev-dependencies]
