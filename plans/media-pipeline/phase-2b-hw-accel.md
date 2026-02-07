@@ -1,71 +1,130 @@
-# Phase 2b: Hardware Acceleration (VAAPI + VideoToolbox)
+# Phase 2b: Hardware-Accelerated H.264 Encoding
 
-**Status: Pending**
+**Status: In Progress**
 
 ## Goal
-Add optional hardware-accelerated H.264 encoding behind feature flags. After this phase, Linux users get VAAPI GPU encoding and macOS users get VideoToolbox.
 
-## Prerequisites
-- Phase 1 complete (openh264 baseline working)
-- Phase 2 complete (DynamicVideoDecoder pattern established)
+Add optional hardware-accelerated H.264 encoding on all three platforms, behind feature flags. Each platform encoder implements the same `VideoEncoder`/`VideoEncoderInner` traits as the existing software encoders. If HW init fails, callers fall back to `H264Encoder` (software).
 
-## Feature flags
-```toml
-[features]
-vaapi = ["dep:cros-codecs"]
-videotoolbox = ["dep:objc2-video-toolbox"]
+| Platform | API | Rust crate | Feature flag | Plan |
+|----------|-----|------------|--------------|------|
+| macOS | VideoToolbox | `objc2-video-toolbox` 0.3 | `videotoolbox` | phase-2b-macos-videotoolbox.md |
+| Linux | VAAPI (libva) | `cros-codecs` (ChromeOS/Google) | `vaapi` | phase-2b-linux-vaapi.md |
+| Windows | Media Foundation | `windows` (Microsoft) | `media-foundation` | phase-2b-windows-media-foundation.md |
+
+**Implementation order:** macOS first (dev machine), then Linux, then Windows. Each is an independent commit.
+
+## Shared across all platforms
+
+**Reused utilities:**
+- `pixel_format_to_yuv420()` from `util/convert.rs` — RGBA/BGRA → YUV420
+- `build_avcc()`, `extract_sps_pps()` from `util/annexb.rs` — avcC construction
+- `annex_b_to_length_prefixed()` from `util/annexb.rs` — NAL format conversion (VAAPI + MF)
+- Same bitrate formula as H264Encoder: `(pixels * 0.07 * framerate_factor).round()`
+- Same `VideoConfig` structure: `VideoCodec::H264(...)`, avcC description, dimensions, framerate
+
+**Shared changes (done with the first platform implemented):**
+
+### `moq-media/src/codec/video/mod.rs` — Feature-gated exports
+```rust
+#[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+mod vtb_enc;
+#[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+pub use vtb_enc::VtbEncoder;
+
+#[cfg(all(target_os = "linux", feature = "vaapi"))]
+mod vaapi_enc;
+#[cfg(all(target_os = "linux", feature = "vaapi"))]
+pub use vaapi_enc::VaapiEncoder;
+
+#[cfg(all(target_os = "windows", feature = "media-foundation"))]
+mod mf_enc;
+#[cfg(all(target_os = "windows", feature = "media-foundation"))]
+pub use mf_enc::MfEncoder;
 ```
 
-## Steps
+### `moq-media/src/lib.rs` — Conditional re-exports
+Same `#[cfg(...)]` pattern for each encoder.
 
-### 1. VAAPI backend (Linux)
-
-#### `codec/video/vaapi_enc.rs` — feature: `vaapi`
-- **Crate**: `cros-codecs` — Rust + libva, H.264 VAAPI encoding
-- **Input**: YUV420P planes (from shared convert.rs)
-- **Output**: H.264 NAL units
-- **Config**: match openh264 parameters (bitrate, GOP, profile)
-- **Detection**: probe for VAAPI device at `/dev/dri/renderD128`
-- **Fallback**: if VAAPI init fails, caller falls back to openh264
-- Implement `VideoEncoder` + `VideoEncoderInner` traits
-- `#[cfg(feature = "vaapi")]` gated
-
-### 2. VideoToolbox backend (macOS)
-
-#### `codec/video/vtb_enc.rs` — feature: `videotoolbox`
-- **Crate**: `objc2-video-toolbox` — Rust bindings to Apple VideoToolbox
-- **API flow**:
-  1. `VTCompressionSessionCreate` with H.264 codec type
-  2. Set properties: bitrate, keyframe interval, profile, realtime flag
-  3. Per frame: `CVPixelBuffer` from YUV420P → `VTCompressionSessionEncodeFrame`
-  4. Callback receives `CMSampleBuffer` → extract H.264 NAL data
-- **avcC**: Extract format description with SPS/PPS for `VideoConfig`
-- Implement `VideoEncoder` + `VideoEncoderInner` traits
-- `#[cfg(all(target_os = "macos", feature = "videotoolbox"))]` gated
-
-### 3. Dynamic encoder selection (optional)
-- Consider a `DynamicVideoEncoder` pattern similar to `DynamicVideoDecoder`
-- Or keep it simple: user selects encoder type via CLI/config
-- Backend probing: try HW first, fall back to SW
-
-### 4. Feature forwarding
-
-#### `iroh-live/Cargo.toml`
+### `iroh-live/Cargo.toml` — Feature forwarding
 ```toml
 [features]
-vaapi = ["moq-media/vaapi"]
 videotoolbox = ["moq-media/videotoolbox"]
+vaapi = ["moq-media/vaapi"]
+media-foundation = ["moq-media/media-foundation"]
 ```
 
-### 5. Update examples
-- Add `--codec vaapi-h264` and `--codec vtb-h264` options to examples
-- Or auto-detect: `--hw` flag tries HW first, falls back to SW
+### Example updates (`iroh-live/examples/`)
+Add `--codec` option:
+- `h264` → `H264Encoder` (software, default, all platforms)
+- `vtb-h264` → `VtbEncoder` (macOS)
+- `vaapi-h264` → `VaapiEncoder` (Linux)
+- `mf-h264` → `MfEncoder` (Windows)
+- `av1` → `Av1Encoder` (software, all platforms)
 
-## Testing
+### Test pattern (per encoder file)
+- `#[test] #[ignore] fn hw_encode_basic()` — push 30 frames, verify packets
+- `#[test] #[ignore] fn hw_encode_valid_h264()` — encode → decode with openh264, verify dimensions match
+- `#[test] #[ignore] fn hw_decode_sw_encoded()` — decode SW-encoded (openh264) H.264 with HW decoder, verify compat
+- `#[test] #[ignore] fn hw_encode_keyframe_interval()` — verify keyframes at expected intervals
+- `#[test] fn hw_encoder_fallback()` — graceful error when HW unavailable (runs anywhere)
 
-- Feature-gate compilation: `cargo check` with each feature individually
-- All features combined: `cargo check --features vaapi,videotoolbox,av1`
-- VAAPI encode roundtrip (requires GPU, `#[ignore]` by default)
-- VideoToolbox encode roundtrip (requires macOS HW, `#[ignore]` by default)
-- Cross-codec decode: HW-encoded H.264 decodable by openh264
-- Fallback on init failure: HW unavailable → clean error, not panic
+### CI: GitHub Actions (`.github/workflows/hw-accel.yml`)
+
+A new workflow that runs HW encode/decode roundtrip tests on platform-specific runners:
+
+```yaml
+name: HW Acceleration Tests
+on: [push, pull_request]
+jobs:
+  macos-videotoolbox:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo clippy -p moq-media --features videotoolbox -- -D warnings
+      - run: cargo test -p moq-media --features videotoolbox -- --ignored
+      # Cross-compat: HW-encoded → SW-decoded and vice versa
+      - run: cargo test -p moq-media --features videotoolbox -- vtb_cross_compat --ignored
+
+  linux-vaapi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get install -y libva-dev vainfo mesa-va-drivers
+      - run: cargo clippy -p moq-media --features vaapi -- -D warnings
+      - run: cargo test -p moq-media --features vaapi -- --ignored || echo "VAAPI not available on runner, skipping HW tests"
+
+  windows-media-foundation:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo clippy -p moq-media --features media-foundation -- -D warnings
+      - run: cargo test -p moq-media --features media-foundation -- --ignored
+
+  # Compilation check on all platforms (no HW required)
+  compile-check:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            features: videotoolbox
+          - os: ubuntu-latest
+            features: vaapi
+          - os: windows-latest
+            features: media-foundation
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check -p moq-media --features ${{ matrix.features }}
+      - run: cargo check -p moq-media  # also without feature
+```
+
+Key test categories for CI:
+1. **Compilation** — feature compiles on target platform, and without feature on all platforms
+2. **HW encode roundtrip** — encode with HW, decode with openh264 (SW), verify frames match
+3. **Cross-compat** — encode with openh264 (SW), verify HW encoder produces decodable output
+4. **Fallback** — runs on all platforms, verifies graceful error when HW unavailable
