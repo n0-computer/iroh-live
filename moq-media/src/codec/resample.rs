@@ -59,3 +59,65 @@ impl Resampler {
         Ok(result.take_data())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_resample() {
+        let mut resampler = Resampler::new(48000, 48000, 1).unwrap();
+        let input: Vec<f32> = (0..960).map(|i| (i as f32 / 960.0).sin()).collect();
+        let output = resampler.process(&input).unwrap();
+        assert_eq!(output.len(), input.len());
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn downsample_48k_to_16k() {
+        let mut resampler = Resampler::new(48000, 16000, 1).unwrap();
+        // 1024 samples at 48kHz
+        let input: Vec<f32> = (0..1024).map(|i| (i as f32 * 0.01).sin()).collect();
+        let output = resampler.process(&input).unwrap();
+        // Output should be roughly 1/3 the length (16k/48k)
+        let expected_len = (1024.0_f64 * 16000.0 / 48000.0).round() as usize;
+        let tolerance = expected_len / 5; // rubato may buffer
+        assert!(
+            output.len().abs_diff(expected_len) < tolerance,
+            "output len {} not near expected {expected_len}",
+            output.len()
+        );
+    }
+
+    #[test]
+    fn upsample_16k_to_48k() {
+        let mut resampler = Resampler::new(16000, 48000, 1).unwrap();
+        let input: Vec<f32> = (0..1024).map(|i| (i as f32 * 0.03).sin()).collect();
+        let output = resampler.process(&input).unwrap();
+        // Output should be roughly 3x the length
+        let expected_len = (1024.0_f64 * 48000.0 / 16000.0).round() as usize;
+        let tolerance = expected_len / 5;
+        assert!(
+            output.len().abs_diff(expected_len) < tolerance,
+            "output len {} not near expected {expected_len}",
+            output.len()
+        );
+    }
+
+    #[test]
+    fn stereo_resample() {
+        let mut resampler = Resampler::new(48000, 24000, 2).unwrap();
+        // 1024 frames * 2 channels = 2048 samples
+        let input: Vec<f32> = (0..2048).map(|i| (i as f32 * 0.01).sin()).collect();
+        let output = resampler.process(&input).unwrap();
+        // Output should have even number of samples (stereo)
+        assert_eq!(output.len() % 2, 0, "stereo output should have even length");
+    }
+
+    #[test]
+    fn empty_input() {
+        let mut resampler = Resampler::new(48000, 16000, 1).unwrap();
+        let output = resampler.process(&[]).unwrap();
+        assert!(output.is_empty());
+    }
+}

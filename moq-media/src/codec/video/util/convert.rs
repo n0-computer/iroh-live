@@ -77,3 +77,83 @@ pub(crate) fn pixel_format_to_yuv420(
         PixelFormat::Bgra => bgra_to_yuv420_data(src, w, h),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rgba_to_yuv_basic() {
+        // 4×4 solid red image
+        let w = 4u32;
+        let h = 4u32;
+        let rgba: Vec<u8> = vec![255, 0, 0, 255].repeat((w * h) as usize);
+        let yuv = rgba_to_yuv420_data(&rgba, w, h).unwrap();
+        assert_eq!(yuv.width, w);
+        assert_eq!(yuv.height, h);
+        // BT.601 limited range: pure red → Y≈81, U≈90, V≈240
+        // Check Y plane average is in the right ballpark
+        let y_avg: f64 = yuv.y.iter().map(|&v| v as f64).sum::<f64>() / yuv.y.len() as f64;
+        assert!((y_avg - 81.0).abs() < 10.0, "Y average {y_avg} not near 81");
+    }
+
+    #[test]
+    fn bgra_to_yuv_basic() {
+        // 4×4 solid blue image (BGRA: B=255, G=0, R=0, A=255)
+        let w = 4u32;
+        let h = 4u32;
+        let bgra: Vec<u8> = vec![255, 0, 0, 255].repeat((w * h) as usize);
+        let yuv = bgra_to_yuv420_data(&bgra, w, h).unwrap();
+        assert_eq!(yuv.width, w);
+        assert_eq!(yuv.height, h);
+        // BT.601 limited range: pure blue → Y≈41
+        let y_avg: f64 = yuv.y.iter().map(|&v| v as f64).sum::<f64>() / yuv.y.len() as f64;
+        assert!((y_avg - 41.0).abs() < 10.0, "Y average {y_avg} not near 41");
+    }
+
+    #[test]
+    fn pixel_format_dispatch() {
+        let w = 2u32;
+        let h = 2u32;
+        let data: Vec<u8> = vec![128; (w * h * 4) as usize];
+        // Both formats should succeed
+        pixel_format_to_yuv420(&data, w, h, PixelFormat::Rgba).unwrap();
+        pixel_format_to_yuv420(&data, w, h, PixelFormat::Bgra).unwrap();
+    }
+
+    #[test]
+    fn odd_dimensions() {
+        // YUV420 requires even chroma planes; verify odd dims don't panic
+        let w = 7u32;
+        let h = 5u32;
+        let rgba: Vec<u8> = vec![100; (w * h * 4) as usize];
+        let yuv = rgba_to_yuv420_data(&rgba, w, h).unwrap();
+        assert_eq!(yuv.width, w);
+        assert_eq!(yuv.height, h);
+    }
+
+    #[test]
+    fn large_frame() {
+        let w = 1920u32;
+        let h = 1080u32;
+        let rgba: Vec<u8> = vec![64; (w * h * 4) as usize];
+        let yuv = rgba_to_yuv420_data(&rgba, w, h).unwrap();
+        assert_eq!(yuv.width, w);
+        assert_eq!(yuv.height, h);
+    }
+
+    #[test]
+    fn yuv_plane_sizes() {
+        let w = 8u32;
+        let h = 6u32;
+        let rgba: Vec<u8> = vec![200; (w * h * 4) as usize];
+        let yuv = rgba_to_yuv420_data(&rgba, w, h).unwrap();
+        // Y plane: one byte per pixel (but may have stride padding)
+        assert!(yuv.y.len() >= (w * h) as usize);
+        // U and V planes: quarter the pixel count for 4:2:0 (with possible stride padding)
+        let chroma_w = (w + 1) / 2;
+        let chroma_h = (h + 1) / 2;
+        assert!(yuv.u.len() >= (chroma_w * chroma_h) as usize);
+        assert!(yuv.v.len() >= (chroma_w * chroma_h) as usize);
+    }
+}

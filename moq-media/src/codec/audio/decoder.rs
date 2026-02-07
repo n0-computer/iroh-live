@@ -97,3 +97,137 @@ impl AudioDecoder for OpusAudioDecoder {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::av::{AudioEncoder, AudioEncoderInner, AudioPreset};
+    use crate::codec::audio::encoder::OpusEncoder;
+
+    fn make_sine(num_samples: usize, freq: f32, sample_rate: f32) -> Vec<f32> {
+        (0..num_samples)
+            .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / sample_rate).sin())
+            .collect()
+    }
+
+    fn encode_frames(enc: &mut OpusEncoder, samples: &[f32]) -> Vec<hang::Frame> {
+        enc.push_samples(samples).unwrap();
+        let mut packets = Vec::new();
+        while let Some(pkt) = enc.pop_packet().unwrap() {
+            packets.push(pkt);
+        }
+        packets
+    }
+
+    #[test]
+    fn decode_single_packet() {
+        let format = AudioFormat::mono_48k();
+        let mut enc = OpusEncoder::with_preset(format, AudioPreset::Hq).unwrap();
+        let config = enc.config();
+
+        let sine = make_sine(960, 440.0, 48000.0);
+        let packets = encode_frames(&mut enc, &sine);
+        assert_eq!(packets.len(), 1);
+
+        let mut dec = OpusAudioDecoder::new(&config, format).unwrap();
+        dec.push_packet(packets.into_iter().next().unwrap())
+            .unwrap();
+        let samples = dec.pop_samples().unwrap().unwrap();
+        // Should get 960 mono samples back
+        assert_eq!(samples.len(), 960);
+    }
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        let format = AudioFormat::mono_48k();
+        let mut enc = OpusEncoder::with_preset(format, AudioPreset::Hq).unwrap();
+        let config = enc.config();
+
+        // Encode 5 frames
+        let sine = make_sine(960 * 5, 440.0, 48000.0);
+        let packets = encode_frames(&mut enc, &sine);
+        assert_eq!(packets.len(), 5);
+
+        let mut dec = OpusAudioDecoder::new(&config, format).unwrap();
+        let mut total_decoded = 0;
+        for pkt in packets {
+            dec.push_packet(pkt).unwrap();
+            if let Some(samples) = dec.pop_samples().unwrap() {
+                total_decoded += samples.len();
+            }
+        }
+        assert_eq!(total_decoded, 960 * 5);
+    }
+
+    #[test]
+    fn stereo_roundtrip() {
+        let format = AudioFormat::stereo_48k();
+        let mut enc = OpusEncoder::with_preset(format, AudioPreset::Hq).unwrap();
+        let config = enc.config();
+
+        // Stereo: 960 frames * 2 channels
+        let samples = make_sine(960 * 2, 440.0, 48000.0);
+        let packets = encode_frames(&mut enc, &samples);
+        assert_eq!(packets.len(), 1);
+
+        let mut dec = OpusAudioDecoder::new(&config, format).unwrap();
+        dec.push_packet(packets.into_iter().next().unwrap())
+            .unwrap();
+        let decoded = dec.pop_samples().unwrap().unwrap();
+        // 960 frames * 2 channels = 1920 samples
+        assert_eq!(decoded.len(), 960 * 2);
+    }
+
+    #[test]
+    fn pop_samples_empty_before_push() {
+        let config = AudioConfig {
+            codec: hang::catalog::AudioCodec::Opus,
+            sample_rate: 48000,
+            channel_count: 1,
+            bitrate: Some(128000),
+            description: None,
+        };
+        let format = AudioFormat::mono_48k();
+        let mut dec = OpusAudioDecoder::new(&config, format).unwrap();
+        assert!(dec.pop_samples().unwrap().is_none());
+    }
+
+    #[test]
+    fn corrupt_packet() {
+        let config = AudioConfig {
+            codec: hang::catalog::AudioCodec::Opus,
+            sample_rate: 48000,
+            channel_count: 1,
+            bitrate: Some(128000),
+            description: None,
+        };
+        let format = AudioFormat::mono_48k();
+        let mut dec = OpusAudioDecoder::new(&config, format).unwrap();
+        let bad_packet = hang::Frame {
+            payload: bytes::Bytes::from_static(&[0xFF, 0xFF, 0xFF, 0xFF]).into(),
+            timestamp: hang::Timestamp::ZERO,
+            keyframe: true,
+        };
+        // Corrupt packet should error, not panic
+        let result = dec.push_packet(bad_packet);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decoded_output_non_silent() {
+        let format = AudioFormat::mono_48k();
+        let mut enc = OpusEncoder::with_preset(format, AudioPreset::Hq).unwrap();
+        let config = enc.config();
+
+        let sine = make_sine(960, 440.0, 48000.0);
+        let packets = encode_frames(&mut enc, &sine);
+
+        let mut dec = OpusAudioDecoder::new(&config, format).unwrap();
+        dec.push_packet(packets.into_iter().next().unwrap())
+            .unwrap();
+        let samples = dec.pop_samples().unwrap().unwrap();
+        // Decoded 440Hz sine should not be all zeros
+        let energy: f32 = samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32;
+        assert!(energy > 0.01, "decoded signal energy {energy} is too low");
+    }
+}

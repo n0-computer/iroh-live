@@ -160,3 +160,148 @@ pub(crate) fn annex_b_to_length_prefixed(data: &[u8]) -> Vec<u8> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_single_nal_4byte_start_code() {
+        // 00 00 00 01 <NAL data>
+        let data = [0, 0, 0, 1, 0x67, 0x42, 0x00, 0x1E];
+        let nals = parse_annex_b(&data);
+        assert_eq!(nals.len(), 1);
+        assert_eq!(nals[0], &[0x67, 0x42, 0x00, 0x1E]);
+    }
+
+    #[test]
+    fn parse_single_nal_3byte_start_code() {
+        let data = [0, 0, 1, 0x68, 0xCE, 0x38, 0x80];
+        let nals = parse_annex_b(&data);
+        assert_eq!(nals.len(), 1);
+        assert_eq!(nals[0], &[0x68, 0xCE, 0x38, 0x80]);
+    }
+
+    #[test]
+    fn parse_multiple_nals() {
+        // SPS + PPS with 4-byte start codes
+        let mut data = vec![0, 0, 0, 1, 0x67, 0x42]; // SPS (type 7)
+        data.extend_from_slice(&[0, 0, 0, 1, 0x68, 0xCE]); // PPS (type 8)
+        let nals = parse_annex_b(&data);
+        assert_eq!(nals.len(), 2);
+        assert_eq!(nals[0], &[0x67, 0x42]);
+        assert_eq!(nals[1], &[0x68, 0xCE]);
+    }
+
+    #[test]
+    fn parse_empty() {
+        let nals = parse_annex_b(&[]);
+        assert!(nals.is_empty());
+    }
+
+    #[test]
+    fn extract_sps_pps_found() {
+        let sps = [0x67, 0x42, 0x00, 0x1E]; // NAL type 7
+        let pps = [0x68, 0xCE, 0x38, 0x80]; // NAL type 8
+        let idr = [0x65, 0x88, 0x84]; // NAL type 5 (IDR)
+        let nals: Vec<&[u8]> = vec![&sps, &pps, &idr];
+        let (found_sps, found_pps) = extract_sps_pps(&nals).unwrap();
+        assert_eq!(found_sps, sps);
+        assert_eq!(found_pps, pps);
+    }
+
+    #[test]
+    fn extract_sps_pps_missing() {
+        // Only IDR, no SPS/PPS
+        let idr = [0x65, 0x88];
+        let nals: Vec<&[u8]> = vec![&idr];
+        assert!(extract_sps_pps(&nals).is_none());
+    }
+
+    #[test]
+    fn extract_sps_pps_only_sps() {
+        let sps = [0x67, 0x42];
+        let nals: Vec<&[u8]> = vec![&sps];
+        assert!(extract_sps_pps(&nals).is_none());
+    }
+
+    #[test]
+    fn build_avcc_structure() {
+        let sps = vec![0x67, 0x42, 0xC0, 0x1E];
+        let pps = vec![0x68, 0xCE, 0x38, 0x80];
+        let avcc = build_avcc(&sps, &pps);
+        // configurationVersion
+        assert_eq!(avcc[0], 1);
+        // Profile from SPS[1]
+        assert_eq!(avcc[1], 0x42);
+        // Compatibility from SPS[2]
+        assert_eq!(avcc[2], 0xC0);
+        // Level from SPS[3]
+        assert_eq!(avcc[3], 0x1E);
+        // lengthSizeMinusOne | reserved
+        assert_eq!(avcc[4], 0xFF);
+        // numSPS | reserved
+        assert_eq!(avcc[5], 0xE1);
+        // SPS length (big-endian)
+        assert_eq!(u16::from_be_bytes([avcc[6], avcc[7]]), 4);
+        // SPS data
+        assert_eq!(&avcc[8..12], &sps);
+        // numPPS
+        assert_eq!(avcc[12], 1);
+        // PPS length
+        assert_eq!(u16::from_be_bytes([avcc[13], avcc[14]]), 4);
+        // PPS data
+        assert_eq!(&avcc[15..19], &pps);
+    }
+
+    #[test]
+    fn avcc_to_annex_b_roundtrip() {
+        let sps = vec![0x67, 0x42, 0xC0, 0x1E];
+        let pps = vec![0x68, 0xCE, 0x38, 0x80];
+        let avcc = build_avcc(&sps, &pps);
+        let annex_b = avcc_to_annex_b(&avcc).unwrap();
+        let nals = parse_annex_b(&annex_b);
+        assert_eq!(nals.len(), 2);
+        assert_eq!(nals[0], &sps[..]);
+        assert_eq!(nals[1], &pps[..]);
+    }
+
+    #[test]
+    fn avcc_to_annex_b_too_short() {
+        assert!(avcc_to_annex_b(&[1, 2, 3]).is_none());
+    }
+
+    #[test]
+    fn length_prefixed_to_annex_b_conversion() {
+        // Two NALs: 3 bytes and 2 bytes
+        let mut data = Vec::new();
+        data.extend_from_slice(&3u32.to_be_bytes());
+        data.extend_from_slice(&[0x67, 0x42, 0x00]);
+        data.extend_from_slice(&2u32.to_be_bytes());
+        data.extend_from_slice(&[0x68, 0xCE]);
+
+        let annex_b = length_prefixed_to_annex_b(&data);
+        let nals = parse_annex_b(&annex_b);
+        assert_eq!(nals.len(), 2);
+        assert_eq!(nals[0], &[0x67, 0x42, 0x00]);
+        assert_eq!(nals[1], &[0x68, 0xCE]);
+    }
+
+    #[test]
+    fn annex_b_to_length_prefixed_roundtrip() {
+        let mut original = vec![0, 0, 0, 1, 0x67, 0x42];
+        original.extend_from_slice(&[0, 0, 0, 1, 0x68, 0xCE]);
+        let length_prefixed = annex_b_to_length_prefixed(&original);
+        let back = length_prefixed_to_annex_b(&length_prefixed);
+        let nals = parse_annex_b(&back);
+        assert_eq!(nals.len(), 2);
+        assert_eq!(nals[0], &[0x67, 0x42]);
+        assert_eq!(nals[1], &[0x68, 0xCE]);
+    }
+
+    #[test]
+    fn length_prefixed_empty() {
+        let result = length_prefixed_to_annex_b(&[]);
+        assert!(result.is_empty());
+    }
+}
