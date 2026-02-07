@@ -1,5 +1,7 @@
 use clap::Parser;
 use iroh::{Endpoint, SecretKey, protocol::Router};
+#[cfg(feature = "av1")]
+use iroh_live::media::codec::Av1Encoder;
 use iroh_live::{
     Live,
     media::{
@@ -44,7 +46,16 @@ async fn main() -> n0_error::Result {
     // Capture camera, and encode with the cli-provided presets.
     if !cli.no_video {
         let camera = CameraCapturer::new()?;
-        let video = VideoRenditions::new::<H264Encoder>(camera, cli.video_presets);
+        let video = match cli.codec {
+            VideoCodec::H264 => VideoRenditions::new::<H264Encoder>(camera, cli.video_presets),
+            #[cfg(feature = "av1")]
+            VideoCodec::Av1 => VideoRenditions::new::<Av1Encoder>(camera, cli.video_presets),
+            #[cfg(not(feature = "av1"))]
+            VideoCodec::Av1 => {
+                eprintln!("AV1 support requires the `av1` feature");
+                std::process::exit(1);
+            }
+        };
         broadcast.set_video(Some(video))?;
     }
 

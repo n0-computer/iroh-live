@@ -7,7 +7,7 @@ use iroh_live::{
     Live,
     media::{
         audio::AudioBackend,
-        codec::{DefaultDecoders, H264VideoDecoder, codec_init},
+        codec::{DefaultDecoders, DynamicVideoDecoder, codec_init},
         subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
     },
     moq::MoqSession,
@@ -164,7 +164,7 @@ impl App {
                         {
                             if let Ok(track) = self
                                 .broadcast
-                                .watch_rendition::<H264VideoDecoder>(&Default::default(), name)
+                                .watch_rendition::<DynamicVideoDecoder>(&Default::default(), name)
                             {
                                 self.video = Some(VideoView::new(ctx, track));
                             }
