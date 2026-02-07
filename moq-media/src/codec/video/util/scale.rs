@@ -159,4 +159,54 @@ mod tests {
         assert_eq!(w, 640);
         assert_eq!(h, 360);
     }
+
+    /// Simulates the encoder thread scaling logic:
+    /// given source dimensions and encoder target, compute fit_within then scale.
+    fn encoder_scale_scenario(src_w: u32, src_h: u32, enc_w: u32, enc_h: u32) -> (u32, u32) {
+        let target = fit_within(src_w, src_h, enc_w, enc_h);
+        let scaler = Scaler::new(Some(target));
+        let src = vec![128u8; (src_w * src_h * 4) as usize];
+        match scaler.scale_rgba(&src, src_w, src_h).unwrap() {
+            Some((data, w, h)) => {
+                assert_eq!(data.len(), (w * h * 4) as usize);
+                (w, h)
+            }
+            None => (src_w, src_h),
+        }
+    }
+
+    #[test]
+    fn encoder_scale_4k_camera_to_1080p() {
+        // Logitech BRIO 4K (3840×2160) → 1080p encoder (1920×1080)
+        let (w, h) = encoder_scale_scenario(3840, 2160, 1920, 1080);
+        assert_eq!(w, 1920);
+        assert_eq!(h, 1080);
+    }
+
+    #[test]
+    fn encoder_scale_ultrawide_screen_to_1080p() {
+        // Pro Display XDR (3008×1692) → 1080p encoder (1920×1080)
+        let (w, h) = encoder_scale_scenario(3008, 1692, 1920, 1080);
+        assert!(w <= 1920);
+        assert!(h <= 1080);
+        // 3008:1692 ≈ 16:9, so both dimensions scale down proportionally
+        assert_eq!(w, 1920);
+        assert_eq!(h, 1080);
+    }
+
+    #[test]
+    fn encoder_scale_1080p_camera_to_720p() {
+        // 1080p camera → 720p encoder
+        let (w, h) = encoder_scale_scenario(1920, 1080, 1280, 720);
+        assert_eq!(w, 1280);
+        assert_eq!(h, 720);
+    }
+
+    #[test]
+    fn encoder_scale_already_fits() {
+        // 720p camera → 1080p encoder: no scaling needed
+        let (w, h) = encoder_scale_scenario(1280, 720, 1920, 1080);
+        assert_eq!(w, 1280);
+        assert_eq!(h, 720);
+    }
 }

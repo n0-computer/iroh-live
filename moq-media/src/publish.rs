@@ -23,6 +23,7 @@ use crate::{
         AudioEncoder, AudioEncoderInner, AudioPreset, AudioSource, DecodeConfig, VideoEncoder,
         VideoEncoderInner, VideoFormat, VideoFrame, VideoPreset, VideoSource,
     },
+    codec::video::util::scale::{Scaler, fit_within},
     subscribe::WatchTrack,
     util::spawn_thread,
 };
@@ -488,12 +489,22 @@ impl EncoderThread {
                     return;
                 }
                 let format = source.format();
+                let enc_config = encoder.config();
                 tracing::debug!(
                     src_format = ?format,
-                    dst_config = ?encoder.config(),
+                    dst_config = ?enc_config,
                     "video encoder thread start"
                 );
-                let framerate = encoder.config().framerate.unwrap_or(30.0);
+                // Set up scaler to downscale source frames to encoder dimensions.
+                let scaler_dims = match (enc_config.coded_width, enc_config.coded_height) {
+                    (Some(w), Some(h)) => {
+                        let target = fit_within(format.dimensions[0], format.dimensions[1], w, h);
+                        Some(target)
+                    }
+                    _ => None,
+                };
+                let scaler = Scaler::new(scaler_dims);
+                let framerate = enc_config.framerate.unwrap_or(30.0);
                 let interval = Duration::from_secs_f64(1. / framerate);
                 loop {
                     let start = Instant::now();
@@ -509,6 +520,24 @@ impl EncoderThread {
                         }
                     };
                     if let Some(frame) = frame {
+                        let frame = match scaler.scale_rgba(
+                            &frame.raw,
+                            frame.format.dimensions[0],
+                            frame.format.dimensions[1],
+                        ) {
+                            Ok(Some((data, w, h))) => VideoFrame {
+                                format: VideoFormat {
+                                    pixel_format: frame.format.pixel_format,
+                                    dimensions: [w, h],
+                                },
+                                raw: data.into(),
+                            },
+                            Ok(None) => frame,
+                            Err(err) => {
+                                warn!("frame scaling failed: {err:#}");
+                                break;
+                            }
+                        };
                         if let Err(err) = encoder.push_frame(frame) {
                             warn!("video encoder failed: {err:#}");
                             break;
