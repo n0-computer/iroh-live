@@ -6,4 +6,4 @@ pub mod publish;
 pub mod subscribe;
 mod util;
 
-pub use audio::AudioBackend;
+pub use audio::{AudioBackend, AudioInputInfo, list_audio_inputs};
