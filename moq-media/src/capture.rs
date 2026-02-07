@@ -222,8 +222,8 @@ impl VideoSource for CameraCapturer {
         trace!("pop frame: capture took {:?}", start.elapsed());
         let start = Instant::now();
         let frame = match frame.source_frame_format() {
-            FrameFormat::MJPEG if env::var("IROH_LIVE_MJPEG_FFMPEG").is_ok() => {
-                trace!("decode ffmpeg");
+            FrameFormat::MJPEG => {
+                trace!("decode mjpeg");
                 self.mjpg_decoder.decode_frame(frame.buffer())?
             }
             _ => {
