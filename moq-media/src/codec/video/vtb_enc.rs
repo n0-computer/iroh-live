@@ -471,12 +471,15 @@ unsafe fn extract_encoded_packet(
         guard.avcc = Some(avcc);
     }
 
-    let (frame_count, framerate) = {
+    // Use the presentation timestamp embedded in the sample buffer rather than
+    // the shared frame_count, which is racy with the async callback.
+    let pts = unsafe { sample_buffer.presentation_time_stamp() };
+    let timestamp_us = if pts.timescale > 0 {
+        (pts.value as u64 * 1_000_000) / pts.timescale as u64
+    } else {
         let guard = state.lock().ok()?;
-        (guard.frame_count, guard.framerate)
+        (guard.frame_count * 1_000_000) / guard.framerate as u64
     };
-
-    let timestamp_us = (frame_count * 1_000_000) / framerate as u64;
     let timestamp = Timestamp::from_micros(timestamp_us).ok()?;
 
     Some(hang::Frame {
