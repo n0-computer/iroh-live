@@ -87,7 +87,7 @@ mod tests {
         // 4×4 solid red image
         let w = 4u32;
         let h = 4u32;
-        let rgba: Vec<u8> = vec![255, 0, 0, 255].repeat((w * h) as usize);
+        let rgba: Vec<u8> = [255, 0, 0, 255].repeat((w * h) as usize);
         let yuv = rgba_to_yuv420_data(&rgba, w, h).unwrap();
         assert_eq!(yuv.width, w);
         assert_eq!(yuv.height, h);
@@ -102,7 +102,7 @@ mod tests {
         // 4×4 solid blue image (BGRA: B=255, G=0, R=0, A=255)
         let w = 4u32;
         let h = 4u32;
-        let bgra: Vec<u8> = vec![255, 0, 0, 255].repeat((w * h) as usize);
+        let bgra: Vec<u8> = [255, 0, 0, 255].repeat((w * h) as usize);
         let yuv = bgra_to_yuv420_data(&bgra, w, h).unwrap();
         assert_eq!(yuv.width, w);
         assert_eq!(yuv.height, h);
@@ -151,8 +151,8 @@ mod tests {
         // Y plane: one byte per pixel (but may have stride padding)
         assert!(yuv.y.len() >= (w * h) as usize);
         // U and V planes: quarter the pixel count for 4:2:0 (with possible stride padding)
-        let chroma_w = (w + 1) / 2;
-        let chroma_h = (h + 1) / 2;
+        let chroma_w = w.div_ceil(2);
+        let chroma_h = h.div_ceil(2);
         assert!(yuv.u.len() >= (chroma_w * chroma_h) as usize);
         assert!(yuv.v.len() >= (chroma_w * chroma_h) as usize);
     }

@@ -222,10 +222,10 @@ mod tests {
         for _ in 0..60 {
             let frame = make_rgba_frame(320, 180, 128, 128, 128);
             enc.push_frame(frame).unwrap();
-            if let Some(pkt) = enc.pop_packet().unwrap() {
-                if pkt.keyframe {
-                    keyframe_count += 1;
-                }
+            if let Some(pkt) = enc.pop_packet().unwrap()
+                && pkt.keyframe
+            {
+                keyframe_count += 1;
             }
         }
         assert!(

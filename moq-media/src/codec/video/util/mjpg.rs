@@ -34,10 +34,10 @@ mod tests {
 
     /// Create a minimal valid JPEG from a solid-color image.
     fn make_jpeg(w: u32, h: u32, r: u8, g: u8, b: u8) -> Vec<u8> {
-        use image::{ImageEncoder, RgbImage};
-        let img = RgbImage::from_fn(w, h, |_, _| image::Rgb([r, g, b]));
+        use image::{ImageEncoder, Rgb, RgbImage, codecs::jpeg::JpegEncoder};
+        let img = RgbImage::from_fn(w, h, |_, _| Rgb([r, g, b]));
         let mut buf = Vec::new();
-        let encoder = image::codecs::jpeg::JpegEncoder::new(&mut buf);
+        let encoder = JpegEncoder::new(&mut buf);
         encoder
             .write_image(img.as_raw(), w, h, image::ExtendedColorType::Rgb8)
             .unwrap();

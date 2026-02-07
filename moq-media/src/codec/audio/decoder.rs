@@ -100,13 +100,17 @@ impl AudioDecoder for OpusAudioDecoder {
 
 #[cfg(test)]
 mod tests {
+    use std::f32::consts::PI;
+
+    use hang::catalog::AudioCodec;
+
     use super::*;
     use crate::av::{AudioEncoder, AudioEncoderInner, AudioPreset};
     use crate::codec::audio::encoder::OpusEncoder;
 
     fn make_sine(num_samples: usize, freq: f32, sample_rate: f32) -> Vec<f32> {
         (0..num_samples)
-            .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / sample_rate).sin())
+            .map(|i| (2.0 * PI * freq * i as f32 / sample_rate).sin())
             .collect()
     }
 
@@ -181,7 +185,7 @@ mod tests {
     #[test]
     fn pop_samples_empty_before_push() {
         let config = AudioConfig {
-            codec: hang::catalog::AudioCodec::Opus,
+            codec: AudioCodec::Opus,
             sample_rate: 48000,
             channel_count: 1,
             bitrate: Some(128000),
@@ -195,7 +199,7 @@ mod tests {
     #[test]
     fn corrupt_packet() {
         let config = AudioConfig {
-            codec: hang::catalog::AudioCodec::Opus,
+            codec: AudioCodec::Opus,
             sample_rate: 48000,
             channel_count: 1,
             bitrate: Some(128000),

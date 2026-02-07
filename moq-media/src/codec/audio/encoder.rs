@@ -198,13 +198,15 @@ fn build_opus_head(channel_count: u32, sample_rate: u32) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use std::f32::consts::PI;
+
     use bytes::Buf;
 
     use super::*;
 
     fn make_sine(num_samples: usize, freq: f32, sample_rate: f32) -> Vec<f32> {
         (0..num_samples)
-            .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / sample_rate).sin())
+            .map(|i| (2.0 * PI * freq * i as f32 / sample_rate).sin())
             .collect()
     }
 

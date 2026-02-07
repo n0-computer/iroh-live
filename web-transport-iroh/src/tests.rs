@@ -1,5 +1,6 @@
 use iroh::{Endpoint, endpoint::ConnectionError};
 use n0_tracing_test::traced_test;
+use tokio::task;
 use tracing::Instrument;
 use url::Url;
 
@@ -26,7 +27,7 @@ async fn h3_smoke() -> n0_error::Result<()> {
 
     let url: Url = format!("https://{}/foo", server_id).parse().unwrap();
 
-    let client_task = tokio::task::spawn({
+    let client_task = task::spawn({
         let url = url.clone();
         async move {
             let session = client.connect_h3(server_addr, url.clone()).await.inspect_err(|err| println!("{err:#?}")).unwrap();
@@ -46,7 +47,7 @@ async fn h3_smoke() -> n0_error::Result<()> {
         }.instrument(tracing::error_span!("client"))
     });
 
-    let server_task = tokio::task::spawn(
+    let server_task = task::spawn(
         async move {
             let conn = server.accept().await.unwrap().await.unwrap();
             assert_eq!(conn.alpn(), ALPN_H3.as_bytes());
@@ -91,7 +92,7 @@ async fn quic_smoke() -> n0_error::Result<()> {
     let server_id = server.id();
     let server_addr = server.addr();
 
-    let client_task = tokio::task::spawn({
+    let client_task = task::spawn({
         async move {
             let session = client
                 .connect_quic(server_addr, ALPN.as_bytes())
@@ -107,7 +108,7 @@ async fn quic_smoke() -> n0_error::Result<()> {
         }.instrument(tracing::error_span!("client"))
     });
 
-    let server_task = tokio::task::spawn({
+    let server_task = task::spawn({
         async move {
             let conn = server.accept().await.unwrap().await.unwrap();
             assert_eq!(conn.alpn(), ALPN.as_bytes());
