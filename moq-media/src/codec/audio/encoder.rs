@@ -19,7 +19,7 @@ const FRAME_SIZE: usize = 960;
 const MAX_PACKET: usize = 4000;
 
 #[derive(derive_more::Debug)]
-pub(crate) struct OpusEncoder {
+pub struct OpusEncoder {
     #[debug(skip)]
     encoder: *mut RawOpusEncoder,
     sample_rate: u32,
