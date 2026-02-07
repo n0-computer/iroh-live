@@ -47,6 +47,9 @@ audioadapter-buffers = "2.0"
 rav1e = { version = "0.8", optional = true }
 dav1d = { version = "0.11", optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+cros-codecs = { version = "0.0.6", optional = true, features = ["vaapi"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-video-toolbox = { version = "0.3", optional = true, features = ["VTCompressionSession", "VTErrors"] }
 objc2-core-media = { version = "0.3", optional = true, features = ["CMTime", "CMSampleBuffer", "CMFormatDescription", "CMBlockBuffer"] }
@@ -66,3 +69,4 @@ tracing-subscriber = "0.3.20"
 default = ["av1"]
 av1 = ["dep:rav1e", "dep:dav1d"]
 videotoolbox = ["dep:objc2-video-toolbox", "dep:objc2-core-media", "dep:objc2-core-video", "dep:objc2-core-foundation", "dep:objc2"]
+vaapi = ["dep:cros-codecs"]

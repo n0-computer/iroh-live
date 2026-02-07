@@ -6,6 +6,8 @@ use iroh::{Endpoint, protocol::Router};
 use iroh_gossip::{Gossip, TopicId};
 #[cfg(feature = "av1")]
 use iroh_live::media::codec::Av1Encoder;
+#[cfg(all(target_os = "linux", feature = "vaapi"))]
+use iroh_live::media::codec::VaapiEncoder;
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
 use iroh_live::media::codec::VtbEncoder;
 use iroh_live::{
@@ -48,7 +50,7 @@ fn main() -> Result<()> {
         .build()
         .unwrap();
 
-    let audio_ctx = AudioBackend::new();
+    let audio_ctx = AudioBackend::new(None);
     let (router, broadcast, room) = rt.block_on(setup(cli, audio_ctx.clone()))?;
 
     let _guard = rt.enter();
@@ -133,6 +135,22 @@ async fn setup(cli: Cli, audio_ctx: AudioBackend) -> Result<(Router, PublishBroa
             (_, VideoCodec::VtbH264) => {
                 return Err(anyerr!(
                     "VideoToolbox support requires macOS and the `videotoolbox` feature"
+                ));
+            }
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            (true, VideoCodec::VaapiH264) => {
+                let screen = ScreenCapturer::new()?;
+                VideoRenditions::new::<VaapiEncoder>(screen, VideoPreset::all())
+            }
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            (false, VideoCodec::VaapiH264) => {
+                let camera = CameraCapturer::new()?;
+                VideoRenditions::new::<VaapiEncoder>(camera, VideoPreset::all())
+            }
+            #[cfg(not(all(target_os = "linux", feature = "vaapi")))]
+            (_, VideoCodec::VaapiH264) => {
+                return Err(anyerr!(
+                    "VAAPI support requires Linux and the `vaapi` feature"
                 ));
             }
         };
