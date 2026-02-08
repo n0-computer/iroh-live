@@ -1,7 +1,9 @@
 #[cfg(feature = "av1")]
-mod dav1d_dec;
+mod av1_dec;
 mod decoder;
 mod encoder;
+#[cfg(feature = "av1")]
+mod rav1d_safe;
 #[cfg(feature = "av1")]
 mod rav1e_enc;
 pub(crate) mod util;
@@ -11,7 +13,7 @@ mod vaapi_enc;
 mod vtb_enc;
 
 #[cfg(feature = "av1")]
-pub use dav1d_dec::Av1VideoDecoder;
+pub use av1_dec::Av1VideoDecoder;
 pub use decoder::DynamicVideoDecoder;
 pub use decoder::H264VideoDecoder;
 pub use encoder::H264Encoder;
