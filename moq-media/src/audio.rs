@@ -49,11 +49,31 @@ pub struct AudioInputInfo {
     pub is_default: bool,
 }
 
+/// Information about an available audio output device.
+#[derive(Debug, Clone)]
+pub struct AudioOutputInfo {
+    /// The device name (used to select it).
+    pub name: String,
+    /// Whether this is the system default output device.
+    pub is_default: bool,
+}
+
 /// List available audio input devices.
 pub fn list_audio_inputs() -> Vec<AudioInputInfo> {
     <CpalBackend as FirewheelAudioBackend>::available_input_devices()
         .into_iter()
         .map(|d| AudioInputInfo {
+            name: d.name,
+            is_default: d.is_default,
+        })
+        .collect()
+}
+
+/// List available audio output devices.
+pub fn list_audio_outputs() -> Vec<AudioOutputInfo> {
+    <CpalBackend as FirewheelAudioBackend>::available_output_devices()
+        .into_iter()
+        .map(|d| AudioOutputInfo {
             name: d.name,
             is_default: d.is_default,
         })
@@ -67,15 +87,15 @@ pub struct AudioBackend {
 
 impl Default for AudioBackend {
     fn default() -> Self {
-        Self::new(None)
+        Self::new(None, None)
     }
 }
 
 impl AudioBackend {
-    pub fn new(input_device: Option<String>) -> Self {
+    pub fn new(input_device: Option<String>, output_device: Option<String>) -> Self {
         let (tx, rx) = mpsc::channel(32);
         let _handle = spawn_thread("audiodriver", move || {
-            AudioDriver::new(rx, input_device).run()
+            AudioDriver::new(rx, input_device, output_device).run()
         });
         Self { tx }
     }
@@ -288,7 +308,11 @@ impl fmt::Debug for AudioDriver {
 }
 
 impl AudioDriver {
-    fn new(rx: mpsc::Receiver<DriverMessage>, input_device: Option<String>) -> Self {
+    fn new(
+        rx: mpsc::Receiver<DriverMessage>,
+        input_device: Option<String>,
+        output_device: Option<String>,
+    ) -> Self {
         let config = FirewheelConfig {
             num_graph_inputs: ChannelCount::new(1).unwrap(),
             ..Default::default()
@@ -301,11 +325,15 @@ impl AudioDriver {
         let input_device_name = input_device.or_else(|| Some("pipewire".to_string()));
         #[cfg(not(target_os = "linux"))]
         let input_device_name = input_device;
+
+        #[cfg(target_os = "linux")]
+        let output_device_name = output_device.or_else(|| Some("pipewire".to_string()));
+        #[cfg(not(target_os = "linux"))]
+        let output_device_name = output_device;
+
         let config = CpalConfig {
             output: CpalOutputConfig {
-                #[cfg(target_os = "linux")]
-                device_name: Some("pipewire".to_string()),
-
+                device_name: output_device_name,
                 ..Default::default()
             },
             input: Some(CpalInputConfig {
