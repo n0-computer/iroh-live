@@ -1,344 +1,390 @@
-# Phase 4: Video Resilience
+# Phase 4: Video Resilience (Revised)
 
-## Goal
-Adaptive video quality that responds to network conditions, smooth playback timing, and graceful degradation via temporal scalability. After this phase, video remains watchable even on constrained or lossy networks.
+## Context
 
-## Prerequisites
-- Phase 1 complete (openh264 encoder/decoder working)
-- Phase 2 optional (HW backends benefit from same ABR interface)
+iroh-live's video pipeline has zero congestion awareness — encoders run at fixed bitrate, `producer.write()` is fire-and-forget, decoders drain frames with no buffering or timing, and there's no feedback channel between subscriber and publisher. For iroh-live to be a viable WebRTC/LiveKit replacement, we need transport-aware rate control, adaptive playback, and graceful degradation.
 
-## Components
+**Key architectural advantage over WebRTC**: QUIC handles congestion control (Cubic/BBR), reliable delivery, and encryption natively. We don't need to reimplement GCC, NACK/RTX, FEC, or SRTP. Instead, we read QUIC's own bandwidth estimate from `PathStats` (cwnd, rtt, lost_packets) and let the transport handle the rest.
 
-### 1. Adaptive Bitrate (ABR)
+**Available signals** from `iroh::endpoint::ConnectionStats::path: PathStats`:
+- `cwnd: u64` — congestion window in bytes
+- `rtt: Duration` — smoothed round-trip time
+- `congestion_events: u64` — counter
+- `lost_packets: u64`, `lost_bytes: u64` — loss counters
+- `current_mtu: u16`
 
-#### Problem
-Current encoder uses fixed bitrate. On bandwidth-constrained links, encoded frames queue up in the QUIC send buffer, latency grows unboundedly, and eventually the connection stalls.
+**Key constraint**: Encoder threads (OS threads) have no access to `Connection`. Communication from the async runtime must use `watch` channels.
 
-#### Design
+## Sub-phases
 
-**Bandwidth signal source**: Monitor QUIC transport backpressure from iroh/quinn.
-- Option A: Check `quinn::SendStream` write readiness — if writes start blocking, bandwidth is constrained
-- Option B: Monitor the mpsc channel between encoder and `TrackProducer` — if frames accumulate, downstream is congested
-- Option C: Periodic `quinn::Connection::stats()` to read congestion window, RTT, bytes in flight
+Each sub-phase is independently committable with tests passing.
 
-**Encoder bitrate control**:
-- Add `set_bitrate(bps: u64)` to `VideoEncoderBackend` trait
-- openh264 supports runtime bitrate changes via `SetOption(ENCODER_OPTION_BITRATE, ...)`
-- cros-codecs/VTB: also support dynamic bitrate
+---
 
-**ABR algorithm** (simple AIMD — Additive Increase, Multiplicative Decrease):
-```
-every 1 second:
-  if send_queue_depth > HIGH_WATERMARK:
-    bitrate = max(bitrate * 0.7, min_bitrate)     # multiplicative decrease
-    log("ABR: reducing bitrate to {bitrate}")
-  elif send_queue_depth < LOW_WATERMARK:
-    bitrate = min(bitrate + step_up, max_bitrate)  # additive increase
-```
+### 4a: Encoder Runtime Control (P0)
 
-**Bitrate bounds** per preset:
-| Preset | Min bitrate | Max bitrate | Step up |
-|--------|-------------|-------------|---------|
-| 180p   | 50 kbps     | 500 kbps    | 30 kbps |
-| 360p   | 100 kbps    | 1.5 Mbps    | 80 kbps |
-| 720p   | 300 kbps    | 3 Mbps      | 150 kbps |
-| 1080p  | 500 kbps    | 6 Mbps      | 300 kbps |
+**Goal**: Add `set_bitrate()` and `force_keyframe()` to encoder trait and all backends.
 
-#### Integration into `publish.rs`
-- In the video encoder thread loop, after each encode cycle:
-  1. Check send queue depth (channel backpressure or QUIC stats)
-  2. Run ABR algorithm
-  3. If bitrate changed: call `encoder.set_bitrate(new_bitrate)`
-- Expose current bitrate as observable metric for UI
+**Files**:
+- `moq-media/src/av.rs` — extend `VideoEncoderInner` trait
+- `moq-media/src/codec/video/encoder.rs` — H264Encoder (OpenH264)
+- `moq-media/src/codec/video/rav1e_enc.rs` — Av1Encoder
+- `moq-media/src/codec/video/vtb_enc.rs` — VtbEncoder
+- `moq-media/src/codec/video/vaapi_enc.rs` — VaapiEncoder
 
-### 2. Video Frame Timing & Smoothing
-
-#### Problem
-`StreamClock` computes raw inter-packet delay from timestamps with no smoothing. Jittery networks cause jittery playback. Video decode loop uses `blocking_recv()` with no timing control.
-
-#### Frame delay smoothing
-Replace raw `StreamClock::frame_delay()` with EMA-smoothed delay:
+**Trait additions** (with default impls for backward compat):
 ```rust
-struct SmoothedClock {
-    last_timestamp: Option<Timestamp>,
-    smoothed_delay: Duration,
-    alpha: f32,  // 0.1 = heavy smoothing, 0.3 = responsive
+fn set_bitrate(&mut self, bitrate_bps: u64) -> Result<()> { Ok(()) }
+fn force_keyframe(&mut self);  // no default — all encoders must impl
+```
+
+**Per-backend**:
+| Backend | set_bitrate | force_keyframe |
+|---------|-------------|----------------|
+| H264 (OpenH264) | `raw_api.set_option(ENCODER_OPTION_SVC_ENCODE_PARAM_EXT, ...)` with updated `SEncParamExt` | `raw_api.force_intra_frame(true)` |
+| AV1 (rav1e) | Flush + recreate `Context` with new `EncoderConfig.bitrate` at next keyframe boundary | `ctx.flush()` triggers new keyframe sequence |
+| VTB | `VTSessionSetProperty(kVTCompressionPropertyKey_AverageBitRate, ...)` | `kVTEncodeFrameOptionKey_ForceKeyFrame` in frame properties |
+| VAAPI | `Tunings` with `ConstantBitrate(new_value)` via `tune()` | `FrameMetadata.force_keyframe = true` |
+
+Also forward through `Box<dyn VideoEncoder>` impl in av.rs.
+
+**Tests**: Per encoder: encode 30 frames, call `set_bitrate(low)`, encode 30 more, verify packet sizes decrease. Encode 10 frames, `force_keyframe()`, verify next packet is keyframe.
+
+---
+
+### 4b: Bandwidth Estimator (P0)
+
+**Goal**: Read QUIC path stats, produce a bandwidth estimate via `watch` channel.
+
+**New file**: `moq-media/src/bandwidth.rs`
+
+**Design**:
+```rust
+pub struct BandwidthEstimate {
+    pub available_bps: u64,   // estimated available bandwidth
+    pub rtt: Duration,
+    pub loss_rate: f64,       // 0.0–1.0, computed from lost_packets delta
+    pub congested: bool,      // true if congestion_events increasing
 }
 
-impl SmoothedClock {
-    fn frame_delay(&mut self, timestamp: &Timestamp) -> Duration {
-        let raw_delay = /* compute from timestamps */;
-        self.smoothed_delay = Duration::from_secs_f32(
-            self.alpha * raw_delay.as_secs_f32()
-            + (1.0 - self.alpha) * self.smoothed_delay.as_secs_f32()
-        );
-        self.smoothed_delay
-    }
+pub struct BandwidthEstimator { ... }
+
+impl BandwidthEstimator {
+    pub fn new() -> (Self, watch::Receiver<BandwidthEstimate>);
+    pub fn update(&mut self, stats: &ConnectionStats);
 }
 ```
 
-#### Frame freeze (last-frame hold)
-- In `subscribe.rs` video decode loop: if no frame available within expected interval, emit `PopResult::Freeze` to signal the display should hold the last good frame
-- Currently `blocking_recv()` blocks indefinitely — add a timeout equal to 2x expected frame duration
-- On timeout: hold last frame, don't stall
+**Algorithm**: Called every 200ms from async runtime.
+- `available_bps = cwnd * 8 / rtt_seconds` (BDP formula — QUIC's own estimate)
+- EMA smoothing (alpha=0.3) to avoid oscillation
+- `loss_rate` = delta(lost_packets) / delta(total_packets) over interval
+- `congested` = `congestion_events` counter increased since last sample
 
-#### Late frame detection
-- Track playout clock (monotonic wall time relative to first frame)
-- If decoded frame's timestamp is older than current playout time minus tolerance (e.g., 50ms):
-  - Skip the frame
-  - Log the skip
-  - Proceed to next
+This does NOT reimplement congestion control — it reads what QUIC has already computed. The cwnd/rtt ratio IS the bandwidth estimate.
 
-#### Implementation in `subscribe.rs` video decode loop
+**Integration point**: `BandwidthEstimator::update()` is called from a tokio task that has access to `session.conn().stats()`. The `watch::Receiver` is cloned to encoder threads.
+
+**Tests**: Unit tests with synthetic `ConnectionStats` sequences: stable network, congestion event, recovery, high loss.
+
+---
+
+### 4c: Transport-Aware Rate Control (P0)
+
+**Goal**: Wire bandwidth estimate to encoder threads for real-time bitrate adaptation.
+
+**Files**:
+- `moq-media/src/publish.rs` — thread bandwidth receiver into `EncoderThread::spawn_video()`
+- `moq-media/src/av.rs` — add `EncoderControl` struct
+
+**Design**:
 ```rust
-// Replace current blocking_recv pattern:
+// Passed to encoder thread at creation
+pub struct EncoderControl {
+    pub bandwidth_rx: watch::Receiver<BandwidthEstimate>,
+    pub keyframe_rx: mpsc::Receiver<()>,
+}
+```
+
+In the encoder loop, before `push_frame()`:
+1. Check `bandwidth_rx.has_changed()` — if yes, compute target bitrate
+2. Target = `available_bps * 0.85` (leave 15% for audio + protocol overhead)
+3. Clamp to preset-specific [min, max] range
+4. Call `encoder.set_bitrate(target)` if changed by >5% (debounce)
+5. Check `keyframe_rx.try_recv()` — if message received, call `force_keyframe()`
+
+**Bitrate bounds per preset**:
+| Preset | Min | Max |
+|--------|-----|-----|
+| 180p | 50 kbps | 500 kbps |
+| 360p | 100 kbps | 1.5 Mbps |
+| 720p | 300 kbps | 3 Mbps |
+| 1080p | 500 kbps | 6 Mbps |
+
+**Multi-rendition allocation**: When multiple renditions are active, total bandwidth is split proportionally by pixel count. If budget drops below a rendition's minimum, that rendition gets its minimum (audio always gets its full budget first).
+
+**Wiring from the top**: `PublishBroadcast` gains `set_encoder_control(EncoderControl)`. Examples/apps create `BandwidthEstimator` from `session.conn()`, spawn a 200ms ticker task, and pass the receiver.
+
+**Tests**: Integration test with mock bandwidth signal — verify encoder output bitrate tracks the signal.
+
+---
+
+### 4d: Keyframe Request Channel (P0)
+
+**Goal**: Subscriber can request immediate keyframe from publisher for mid-stream recovery.
+
+**Files**:
+- `moq-media/src/publish.rs` — receive keyframe requests, dispatch to encoder
+- `moq-media/src/subscribe.rs` — send keyframe requests on decoder error
+
+**Approach**: Use the `mpsc::Sender<()>` in `EncoderControl.keyframe_rx` for the encoder-thread side. The application-level signaling depends on topology:
+
+- **Direct P2P**: Application sends a custom message over a side-channel (iroh already has gossip/messaging). This is outside moq-media's scope.
+- **Within moq-media**: `PublishBroadcast` exposes `request_keyframe(track_name: &str)` which sends to the matching encoder thread's `keyframe_rx`.
+- **Automatic**: Decoder thread calls `request_keyframe()` when `push_packet()` returns a decode error (corrupted reference frame).
+
+**MoQ groups already handle initial join** — new subscribers start at the latest group (keyframe). This mechanism is for mid-stream recovery only.
+
+**Tests**: Encode 30 frames, send keyframe request via channel, verify encoder produces keyframe within next 2 frames.
+
+---
+
+### 4e: Video Jitter Buffer & Frame Timing (P1)
+
+**Goal**: Absorb network jitter with an adaptive buffer; smooth playout timing.
+
+**New file**: `moq-media/src/jitter.rs`
+**Modify**: `moq-media/src/subscribe.rs` — `WatchTrack::run_loop()`
+
+**Design**:
+```rust
+pub struct VideoJitterBuffer {
+    buffer: BTreeMap<Timestamp, hang::Frame>,
+    target_depth: Duration,       // adaptive: 20–200ms
+    min_depth: Duration,          // 20ms
+    max_depth: Duration,          // 200ms
+    smoothed_jitter: Duration,    // EMA of inter-arrival jitter
+    playout_clock: PlayoutClock,  // monotonic playout position
+}
+
+impl VideoJitterBuffer {
+    fn insert(&mut self, frame: hang::Frame);
+    fn pop_ready(&mut self) -> Option<hang::Frame>;  // returns frame if playout time reached
+    fn next_release_time(&self) -> Option<Instant>;
+}
+```
+
+**Jitter measurement**: RFC 3550 style — track difference between expected and actual inter-arrival times. EMA smooth with alpha=0.15. Set `target_depth = smoothed_jitter * 2 + 10ms`.
+
+**Integration into `run_loop()`**: Replace `input_rx.blocking_recv()` with `recv_timeout()` driven by jitter buffer's next release time.
+
+```rust
 loop {
-    match input_rx.recv_timeout(frame_timeout) {
-        Ok(packet) => {
-            decoder.push_packet(packet)?;
-            while let Some(frame) = decoder.pop_frame()? {
-                if frame.timestamp + tolerance < playout_clock.now() {
-                    trace!("skipping late frame");
-                    continue;
-                }
-                output_tx.blocking_send(frame)?;
-            }
-        }
-        Err(RecvTimeoutError::Timeout) => {
-            // Frame freeze: hold last frame, don't block
-            trace!("frame timeout, holding last frame");
-        }
+    let timeout = jitter_buffer.next_release_time()
+        .map(|t| t.saturating_duration_since(Instant::now()))
+        .unwrap_or(Duration::from_millis(100));
+
+    match input_rx.recv_timeout(timeout) {
+        Ok(packet) => jitter_buffer.insert(packet),
+        Err(RecvTimeoutError::Timeout) => {},
         Err(RecvTimeoutError::Disconnected) => break,
     }
+
+    while let Some(packet) = jitter_buffer.pop_ready() {
+        decoder.push_packet(packet)?;
+        while let Some(frame) = decoder.pop_frame()? {
+            output_tx.blocking_send(frame)?;
+        }
+    }
 }
 ```
 
-### 3. OpenH264 Temporal SVC
+**Tests**: Feed frames with simulated jitter (+-30ms), verify output is smoother than input. Feed burst of 5 frames, verify they're spread over expected playout times.
 
-#### What it provides
-OpenH264 supports temporal scalability with up to 4 layers in a dyadic hierarchy:
-- 2 layers: base at 15fps + enhancement at 30fps
-- 3 layers: base at 7.5fps + mid at 15fps + enhancement at 30fps
+---
 
-This allows downstream (SFU or receiver) to selectively drop higher temporal layers to reduce bandwidth without re-encoding. The base layer is always decodable on its own.
+### 4f: Frame Freeze & Late Frame Skip (P1)
 
-#### Encoder configuration (`codec/video/openh264_enc.rs`)
-- Set `iTemporalLayerNum = 2` (or 3) in openh264 encoder config
-- Each encoded frame is tagged with temporal layer ID
-- Base layer frames are always keyframe-independent (temporal prediction only within layer)
+**Goal**: Hold last frame on timeout (don't stall); skip frames too old to display.
 
-#### NAL layer tagging
-- openh264 `EncodedBitStream` provides layer info per NAL
-- Tag each `hang::Frame` with temporal layer metadata:
-  ```rust
-  // Extend hang::Frame or use a wrapper
-  struct TaggedFrame {
-      frame: hang::Frame,
-      temporal_layer: u8,  // 0 = base, 1 = enhancement, ...
-  }
-  ```
-- Or encode layer info in a frame header byte prepended to payload
+**Files**: `moq-media/src/subscribe.rs`, `moq-media/src/jitter.rs`
 
-#### Integration with ABR
-When ABR detects bandwidth pressure:
-1. First: reduce bitrate (component 1)
-2. If still congested: signal receiver to drop enhancement temporal layers (reduce fps)
-3. If still congested: reduce resolution (switch to lower preset if simulcast)
+**Late frame detection**: In `VideoJitterBuffer::pop_ready()`, if frame's playout time is more than `2 * target_depth` behind current position, drop it. Increment `frames_dropped_late` counter. Log at `trace!` level.
 
-This provides a smooth degradation path:
-```
-Full quality → lower bitrate → lower framerate (drop T1) → lower resolution
-```
+**Frame freeze**: Already handled by the timeout mechanism in 4e — when no frames arrive, the `recv_timeout` returns `Timeout`, the loop continues, and the UI keeps displaying the last decoded frame (since `WatchTrackFrames::current_frame()` returns the most recent).
 
-#### Decoder handling
-- openh264 decoder handles temporal SVC transparently — it can decode any subset of temporal layers
-- If enhancement layer NALs are dropped before reaching decoder, it still decodes base layer correctly
+**Frame repeat signaling**: Optionally emit a `FrameEvent::Freeze` or similar to let the UI show a "connection poor" indicator. Add `freeze_count` to stats.
 
-### 4. Quality metrics & observability
+**Tests**: Inject 200ms gap in frame delivery, verify no panic/stall, last frame remains accessible. Inject 5 late frames (timestamp 100ms behind playout), verify all skipped.
 
-#### Expose metrics for UI/debugging
+---
+
+### 4g: Subscriber-Side Rendition Switching (P1)
+
+**Goal**: Auto-switch between simulcast renditions based on receiver bandwidth.
+
+**Files**: `moq-media/src/subscribe.rs`
+
+**Design**: New `AdaptiveSubscriber` that wraps `SubscribeBroadcast` and manages rendition selection.
+
 ```rust
-pub struct VideoStats {
-    pub current_bitrate: u64,
-    pub target_bitrate: u64,
-    pub framerate: f32,
-    pub frames_decoded: u64,
-    pub frames_dropped: u64,
-    pub frames_late: u64,
-    pub decode_time_avg_ms: f32,
-    pub send_queue_depth: usize,
+pub struct AdaptiveSubscriber {
+    broadcast: SubscribeBroadcast,
+    current_track: Option<WatchTrack>,
+    current_rendition: String,
+    /// Receive-side bandwidth estimate (bytes/sec from incoming data rate)
+    receive_rate: ReceiveRateEstimator,
+    /// Hysteresis timers
+    upgrade_sustained_since: Option<Instant>,
+    upgrade_hold: Duration,     // 3s — must sustain higher bandwidth before upgrading
 }
 ```
-- Update per-frame in encoder/decoder loops
-- Observable via `Watchable<VideoStats>` for UI consumption
 
-## Files
+**Rendition selection logic**: Each rendition's bitrate is known from catalog. Compare receive rate against rendition bitrate requirements:
+- **Downgrade**: If current rendition's bitrate > 80% of receive rate for 500ms, switch down immediately
+- **Upgrade**: If next-higher rendition's bitrate < 50% of receive rate sustained for 3s, switch up
+- Hysteresis prevents oscillation
 
-| File | Change |
-|---|---|
-| `moq-media/src/codec/video/encoder.rs` | Add `set_bitrate()` to backend trait and public encoder |
-| `moq-media/src/codec/video/openh264_enc.rs` | Dynamic bitrate, temporal SVC config |
-| `moq-media/src/codec/video/decoder.rs` | Smoothed clock, late frame detection |
-| `moq-media/src/publish.rs` | ABR loop in encoder thread, queue monitoring |
-| `moq-media/src/subscribe.rs` | Frame timeout, frame freeze, late skip |
+**Seamless switching**: Create new `WatchTrack` for target rendition. It starts at the latest MoQ group (keyframe). Wait for first decoded frame, then swap output. Drop old track.
 
-## Testing
+**Receive rate estimation**: Measure incoming data volume in `forward_frames()` — sum `frame.payload.len()` per second, EMA smooth.
 
-### 5. Unit tests — ABR algorithm (`test_abr.rs`)
+**Tests**: Mock catalog with 3 renditions, simulate bandwidth changes, verify correct rendition is selected with hysteresis.
 
-#### 5a. Multiplicative decrease
-- Simulate `send_queue_depth > HIGH_WATERMARK` for 3 consecutive ticks.
-- Verify bitrate decreases by 30% each tick (`bitrate * 0.7`).
-- Verify bitrate never goes below `min_bitrate` for the current preset.
+---
 
-#### 5b. Additive increase
-- Simulate `send_queue_depth < LOW_WATERMARK` for 10 consecutive ticks.
-- Verify bitrate increases by `step_up` each tick.
-- Verify bitrate never exceeds `max_bitrate` for the current preset.
+### 4h: Graceful Degradation State Machine (P2)
 
-#### 5c. AIMD convergence
-- Start at max bitrate. Simulate congestion → decrease → clear → increase → congestion cycle.
-- Verify bitrate oscillates and converges to a stable value (doesn't ping-pong wildly).
+**Goal**: Explicit quality levels with smooth transitions.
 
-#### 5d. Preset boundaries
-- For each preset (180p, 360p, 720p, 1080p): verify min/max/step values are used correctly.
-- Verify bitrate clamps to bounds at edges.
+**New file**: `moq-media/src/quality.rs`
 
-#### 5e. Rapid congestion response
-- Simulate sudden queue spike (0 → 10x HIGH_WATERMARK in one tick).
-- Verify bitrate drops aggressively in one step (not gradual over many ticks).
+```rust
+pub enum QualityLevel {
+    Full,              // target bitrate, target fps, highest rendition
+    ReducedBitrate,    // 60% bitrate, same fps and resolution
+    ReducedFramerate,  // 50% fps via frame skipping in encoder loop
+    LowerResolution,   // drop to next-lower rendition
+    Minimum,           // lowest rendition, min bitrate, 15fps
+    Frozen,            // hold last frame
+}
+```
 
-#### 5f. Stable network (no adaptation)
-- Queue depth stays between LOW and HIGH watermarks for 100 ticks.
-- Verify bitrate stays unchanged — no unnecessary oscillation.
+**State transitions**:
+- Downgrade: after `downgrade_hold` (500ms) of sustained low bandwidth, drop one level
+- Upgrade: after `upgrade_hold` (5s) of sustained adequate bandwidth, raise one level
+- Emergency: if bandwidth drops to near-zero, skip directly to Minimum or Frozen
+- Recovery is always one level at a time (no jumping from Minimum to Full)
 
-#### 5g. set_bitrate integration
-- Call `set_bitrate()` on openh264 backend with various values.
-- Encode frames before and after, verify encoded size changes proportionally.
+**Integration**: Consumes `watch::Receiver<BandwidthEstimate>`, publishes `watch::Sender<QualityLevel>`. Encoder thread reads quality level to adjust bitrate and frame skipping. Subscriber reads it for rendition switching decisions.
 
-### 6. Unit tests — Frame timing (`test_frame_timing.rs`)
+**Tests**: Simulate progressive bandwidth degradation, verify correct level transitions with hysteresis.
 
-#### 6a. EMA smoothing
-- Feed raw delays [33, 50, 33, 16, 33] ms to `SmoothedClock`.
-- With α=0.1, verify smoothed output doesn't jump as wildly as raw input.
-- Verify after 30 consistent 33ms inputs, smoothed delay converges to ~33ms.
+---
 
-#### 6b. First frame
-- First frame has no previous timestamp → delay should be 0 or default (not random/panic).
+### 4i: Quality Metrics / Observability (P2)
 
-#### 6c. High jitter damping
-- Feed alternating 16ms/50ms delays (simulating high jitter).
-- Verify smoothed output converges to ~33ms (average), not oscillating between extremes.
+**Goal**: Expose real-time stats for UI and debugging.
 
-#### 6d. Timestamp gap
-- Feed normal sequence then a 500ms gap (dropped frames).
-- Verify smoothed clock doesn't produce a 500ms delay — caps at reasonable maximum.
+**New file**: `moq-media/src/video_stats.rs`
 
-### 7. Unit tests — Late frame detection (`test_late_frames.rs`)
+```rust
+pub struct VideoPublishStats {
+    pub encode_fps: f64,
+    pub encode_bitrate_bps: u64,
+    pub target_bitrate_bps: u64,
+    pub frames_encoded: u64,
+    pub keyframes_produced: u64,
+    pub encode_time_avg: Duration,
+    pub quality_level: QualityLevel,
+}
 
-#### 7a. On-time frame
-- Frame arrives within tolerance of playout clock → frame is passed through.
+pub struct VideoSubscribeStats {
+    pub decode_fps: f64,
+    pub receive_bitrate_bps: u64,
+    pub frames_decoded: u64,
+    pub frames_dropped_late: u64,
+    pub frames_repeated: u64,
+    pub decode_time_avg: Duration,
+    pub jitter_buffer_depth: Duration,
+    pub current_rendition: String,
+    pub rendition_switches: u64,
+}
+```
 
-#### 7b. Late frame skip
-- Frame timestamp is 100ms behind playout clock (tolerance=50ms) → frame is skipped.
-- Verify skip is logged.
+Exposed via `Watchable<T>` on `PublishBroadcast` and `WatchTrack`. Updated every 500ms from encoder/decoder threads via atomic counters.
 
-#### 7c. Boundary case
-- Frame timestamp is exactly at tolerance boundary → frame is kept (not skipped).
+---
 
-#### 7d. Burst of late frames
-- 5 frames arrive all 200ms late → all skipped. Next on-time frame → passed through.
-- Verify decoder doesn't stall on burst of skips.
+### 4j: Sender-Side Frame Pacing (P3)
 
-#### 7e. Frame freeze (timeout)
-- No frame arrives for 2x expected duration → `RecvTimeoutError::Timeout` triggers.
-- Verify last frame is held (no panic, no stall).
+**Goal**: Spread frame writes over time instead of bursting.
 
-### 8. Unit tests — Temporal SVC (`test_temporal_svc.rs`)
+**Files**: `moq-media/src/publish.rs`
 
-#### 8a. Layer tagging
-- Encode 60 frames with 2 temporal layers → verify base layer (T0) frames have `temporal_layer=0`, enhancement (T1) frames have `temporal_layer=1`.
-- With 30fps: T0 at 15fps (every other frame), T1 at 30fps.
+**Design**: Token bucket pacer in encoder thread. Rate = current target bitrate. Before each `producer.write(pkt)`, wait for sufficient tokens. Allow 2x burst for keyframes (they must arrive promptly for new subscribers).
 
-#### 8b. Base layer standalone decode
-- Encode 30 frames with 2 layers. Feed only T0 NALs to decoder (drop T1).
-- Verify decoder produces 15 frames successfully (half framerate, but valid).
+```rust
+struct FramePacer {
+    tokens: f64,        // available byte budget
+    rate_bps: f64,      // current rate
+    last_refill: Instant,
+    max_burst: usize,   // 2x average frame size
+}
+```
 
-#### 8c. 3-layer SVC
-- Encode with 3 layers. Drop T2 → 15fps. Drop T2+T1 → 7.5fps. All valid decode.
+Lower priority — QUIC already handles pacing at the transport layer. This adds application-level smoothing on top.
 
-#### 8d. Layer identification from NAL
-- Verify NAL units from openh264 `EncodedBitStream` correctly identify temporal layer.
-- Parse layer info, verify it matches expected pattern (T0-T1-T0-T1...).
+---
 
-#### 8e. ABR + SVC integration
-- Simulate congestion: ABR signals to drop enhancement layers.
-- Verify: first attempt is bitrate reduction, second is layer dropping.
-- Verify bitrate reduction → layer dropping → resolution reduction degradation path.
+## Implementation Order
 
-### 9. Unit tests — Quality metrics (`test_video_stats.rs`)
+```
+4a: Encoder Control Interface     --+
+                                    +---> 4c: Rate Control ---> 4j: Pacing (P3)
+4b: Bandwidth Estimator           --+         |
+                                              +---> 4h: Degradation SM (P2)
+4d: Keyframe Request              (parallel)  |
+                                              |
+4e: Jitter Buffer + Timing        ---> 4f: Frame Freeze ---> 4g: Rendition Switching
+                                                                    |
+                                                            4i: Stats (P2)
+```
 
-#### 9a. Counter accuracy
-- Decode 100 frames, skip 5, drop 3 → verify `frames_decoded=92`, `frames_dropped=3`, `frames_late=5`.
+Parallelizable tracks:
+- **Track A** (sender): 4a -> 4b -> 4c -> 4j
+- **Track B** (receiver): 4e -> 4f -> 4g
+- **Track C** (signaling): 4d (independent)
+- **Track D** (integration): 4h, 4i (after A+B)
 
-#### 9b. Bitrate tracking
-- Set encoder to 1Mbps → verify `current_bitrate` and `target_bitrate` fields match.
-- ABR changes bitrate → verify `target_bitrate` updates immediately, `current_bitrate` follows after next encode.
+## Verification
 
-#### 9c. Framerate calculation
-- Decode 30 frames in 1 second → `framerate` ≈ 30.0 (±1).
-- Decode 15 frames in 1 second (SVC T0 only) → `framerate` ≈ 15.0.
+After each sub-phase:
+```sh
+cargo build --workspace --all-features
+cargo test --workspace --all-features
+cargo clippy --workspace --all-features
+cargo fmt --check
+```
 
-#### 9d. Decode time measurement
-- `decode_time_avg_ms` is positive and reasonable (< 50ms for 720p software decode).
-- Verify it's averaged over recent frames (not cumulative).
+End-to-end manual verification after all sub-phases:
+1. Throttle network to 500kbps -> bitrate adapts down within 2-3s, latency stays <500ms
+2. Remove throttle -> bitrate recovers within 10s
+3. Add +-30ms jitter -> smooth playback, no visible judder
+4. Inject 200ms gap -> frames skipped, playback recovers
+5. Multiple renditions active -> subscriber switches to lower rendition under constraint
+6. `VideoPublishStats` and `VideoSubscribeStats` update in UI during a call
 
-#### 9e. Observability
-- Create `Watchable<VideoStats>`, update from encoder thread → verify consumer receives updates.
-- Verify updates arrive at reasonable frequency (not every frame, throttled to ~1Hz).
+## Commits
 
-### 10. Integration tests — `moq-media/tests/`
-
-#### 10a. ABR simulation (`test_video_abr_sim.rs`)
-Full pipeline: generate video frames → encode → simulate constrained send queue → ABR adjusts bitrate.
-
-- **Unconstrained**: queue stays empty → bitrate stays at max → frame quality is high.
-- **Moderately constrained**: queue grows slowly → bitrate decreases gradually → latency stays bounded.
-- **Severely constrained**: queue spikes → bitrate drops to minimum rapidly → no stall.
-- **Recovery**: constrain then unconstrain → bitrate recovers to near-max within 10 seconds.
-- **Oscillation test**: alternating constraint/unconstrain every 2s → bitrate adapts without wild swings.
-
-#### 10b. Frame timing simulation (`test_video_timing_sim.rs`)
-Full pipeline with simulated jitter on packet delivery.
-
-- **Low jitter (±5ms)**: playout is smooth, frame spacing is consistent.
-- **High jitter (±30ms)**: smoothed clock absorbs jitter, playback is stable.
-- **Packet burst**: 5 frames arrive simultaneously → spread over expected display times, not displayed all at once.
-
-#### 10c. Late frame simulation (`test_video_late_sim.rs`)
-- Introduce 200ms delay spike affecting 3 frames → frames are skipped, playback continues from next on-time frame.
-- Verify no accumulation of stale frames in buffer.
-
-#### 10d. Temporal SVC end-to-end (`test_temporal_svc_e2e.rs`)
-- Encode 60 frames with 2 layers → drop T1 midstream (frames 30-60) → decoder output: 30fps for first half, 15fps for second half.
-- Verify no decoder errors at layer transition point.
-- Verify base layer is always self-contained (no dependency on dropped T1 frames).
-
-#### 10e. Degradation path test (`test_degradation_path.rs`)
-- Simulate progressively worsening network: start unconstrained → moderate → severe.
-- Verify degradation follows expected path: full quality → lower bitrate → lower framerate (T1 drop) → lower resolution (if simulcast).
-- Verify each step is stable and doesn't jump multiple steps at once.
-
-#### 10f. Long-running video stability (`test_video_stability.rs`)
-- Run encode→decode pipeline for 120 seconds of simulated video at 30fps.
-- Verify: no memory leaks (RSS stable), no panic, metrics are accurate, bitrate stays bounded.
-- Vary network conditions throughout (good → bad → good cycle).
-
-## Verification (manual)
-
-1. Manual: throttle network to 500kbps with `tc qdisc` → bitrate adapts down within 2-3 seconds, latency < 500ms
-2. Manual: remove throttle → bitrate recovers within 10 seconds
-3. Manual: add ±30ms jitter → smooth playback, no visible judder
-4. Manual: introduce 200ms delay spike → late frames skipped, playback recovers
-5. Manual: enable 2-layer temporal SVC, observe smooth 30fps → constrain → observe 15fps base layer
-6. Manual: verify `VideoStats` updates in UI during a call
+One commit per sub-phase (4a through 4j), each with descriptive message:
+- `feat(codec): add set_bitrate and force_keyframe to encoder backends`
+- `feat(media): add QUIC-based bandwidth estimator`
+- `feat(media): wire bandwidth estimate to encoder rate control`
+- `feat(media): add keyframe request channel`
+- `feat(media): add adaptive video jitter buffer`
+- `feat(media): add frame freeze and late frame skip`
+- `feat(media): add subscriber-side rendition switching`
+- `feat(media): add quality degradation state machine`
+- `feat(media): add video publish/subscribe stats`
+- `feat(media): add sender-side frame pacing`
