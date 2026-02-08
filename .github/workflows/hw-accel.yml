@@ -7,7 +7,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: brew install dav1d libtool automake
+      - run: brew install libtool automake
       - run: cargo check -p moq-media --features videotoolbox
       - run: cargo check -p moq-media
       - run: cargo clippy -p moq-media --features videotoolbox -- -D warnings
@@ -27,7 +27,7 @@ jobs:
           libtool automake
           libpipewire-0.3-dev libclang-dev libasound2-dev
           libegl-dev libgbm-dev libdrm-dev
-          libdav1d-dev nasm meson
+          nasm
       - run: cargo check -p moq-media --features vaapi
       - run: cargo check -p moq-media
       - run: cargo clippy -p moq-media --features vaapi -- -D warnings
@@ -42,10 +42,10 @@ jobs:
         include:
           - os: macos-latest
             features: videotoolbox
-            install: brew install dav1d libtool automake
+            install: brew install libtool automake
           - os: ubuntu-latest
             features: vaapi
-            install: sudo apt-get update && sudo apt-get install -y libva-dev libtool automake libpipewire-0.3-dev libclang-dev libasound2-dev libegl-dev libgbm-dev libdrm-dev libdav1d-dev nasm meson
+            install: sudo apt-get update && sudo apt-get install -y libva-dev libtool automake libpipewire-0.3-dev libclang-dev libasound2-dev libegl-dev libgbm-dev libdrm-dev nasm
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
