@@ -82,6 +82,10 @@ impl RoomPublisherSync {
         }
     }
 
+    pub fn set_audio_backend(&mut self, backend: AudioBackend) {
+        self.audio_ctx = backend;
+    }
+
     pub fn set_state(&mut self, state: &PublishOpts) -> Result<(), Vec<(StreamKind, AnyError)>> {
         info!(new=?state, old=?self.state, "set publish state");
         self.state.camera_index = state.camera_index;
@@ -204,9 +208,8 @@ impl RoomPublisherSync {
             enable && self.state.audio && self.state.audio_device != self.prev_audio_device;
         if self.state.audio != enable || device_changed {
             if device_changed {
-                // Recreate audio backend for the new device.
-                self.audio_ctx = AudioBackend::new(self.state.audio_device.clone(), None);
-                // Disable current audio first.
+                // Disable current audio first — the caller is expected to have
+                // already set a new AudioBackend via `set_audio_backend`.
                 if let Some(camera) = self.camera.as_mut() {
                     camera.lock().unwrap().set_audio(None)?;
                 }
