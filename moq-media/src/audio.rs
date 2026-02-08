@@ -357,11 +357,8 @@ impl AudioDriver {
             num_outputs: ChannelCount::new(2).unwrap(),
         });
 
-        let stream_sample_rate = cx.stream_info().unwrap().sample_rate;
-        let aec_config = AecProcessorConfig {
-            sample_rate_hz: stream_sample_rate.get(),
-            ..AecProcessorConfig::stereo_in_out()
-        };
+        let stream_sample_rate = cx.stream_info().unwrap().sample_rate.get();
+        let aec_config = AecProcessorConfig::new(stream_sample_rate, 2, 2);
         let aec_processor =
             AecProcessor::new(aec_config, true).expect("failed to initialize AEC processor");
         let aec_render_node = cx.add_node(AecRenderNode::default(), Some(aec_processor.clone()));
