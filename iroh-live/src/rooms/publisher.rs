@@ -205,7 +205,7 @@ impl RoomPublisherSync {
         if self.state.audio != enable || device_changed {
             if device_changed {
                 // Recreate audio backend for the new device.
-                self.audio_ctx = AudioBackend::new(self.state.audio_device.clone());
+                self.audio_ctx = AudioBackend::new(self.state.audio_device.clone(), None);
                 // Disable current audio first.
                 if let Some(camera) = self.camera.as_mut() {
                     camera.lock().unwrap().set_audio(None)?;

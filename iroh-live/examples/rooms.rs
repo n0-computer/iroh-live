@@ -50,7 +50,7 @@ fn main() -> Result<()> {
         .build()
         .unwrap();
 
-    let audio_ctx = AudioBackend::new(None);
+    let audio_ctx = AudioBackend::new(None, None);
     let (router, broadcast, room) = rt.block_on(setup(cli, audio_ctx.clone()))?;
 
     let _guard = rt.enter();
