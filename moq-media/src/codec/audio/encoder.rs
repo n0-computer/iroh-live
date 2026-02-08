@@ -5,8 +5,7 @@ use hang::{
 };
 use unsafe_libopus::{
     self as opus, OPUS_APPLICATION_VOIP, OPUS_OK, OPUS_SET_BITRATE_REQUEST, OPUS_SET_DTX_REQUEST,
-    OPUS_SET_INBAND_FEC_REQUEST, OPUS_SET_PACKET_LOSS_PERC_REQUEST, OpusEncoder as RawOpusEncoder,
-    varargs,
+    OPUS_SET_INBAND_FEC_REQUEST, OpusEncoder as RawOpusEncoder, varargs,
 };
 
 use crate::av::{AudioEncoder, AudioEncoderInner, AudioFormat, AudioPreset};
@@ -71,20 +70,16 @@ impl OpusEncoder {
             if ret != OPUS_OK {
                 bail!("OPUS_SET_BITRATE failed: {ret}");
             }
+            // FEC and DTX are Phase 3 features that require proper decoder-side
+            // handling (comfort noise, PLC). Disabled for now to avoid artifacts.
+            // TODO(phase3): enable FEC with adaptive loss percentage
             let ret =
-                opus::opus_encoder_ctl_impl(encoder, OPUS_SET_INBAND_FEC_REQUEST, varargs!(1i32));
+                opus::opus_encoder_ctl_impl(encoder, OPUS_SET_INBAND_FEC_REQUEST, varargs!(0i32));
             if ret != OPUS_OK {
                 bail!("OPUS_SET_INBAND_FEC failed: {ret}");
             }
-            let ret = opus::opus_encoder_ctl_impl(
-                encoder,
-                OPUS_SET_PACKET_LOSS_PERC_REQUEST,
-                varargs!(10i32),
-            );
-            if ret != OPUS_OK {
-                bail!("OPUS_SET_PACKET_LOSS_PERC failed: {ret}");
-            }
-            let ret = opus::opus_encoder_ctl_impl(encoder, OPUS_SET_DTX_REQUEST, varargs!(1i32));
+            // TODO(phase3): enable DTX with proper comfort noise on decoder side
+            let ret = opus::opus_encoder_ctl_impl(encoder, OPUS_SET_DTX_REQUEST, varargs!(0i32));
             if ret != OPUS_OK {
                 bail!("OPUS_SET_DTX failed: {ret}");
             }

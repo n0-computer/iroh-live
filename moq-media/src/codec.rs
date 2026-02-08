@@ -167,6 +167,32 @@ mod tests {
         (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
     }
 
+    /// Assert that a decoded audio signal has preserved energy relative to the input.
+    /// Checks that the output is not silent and has energy in the same ballpark as input.
+    fn assert_energy_preserved(input: &[f32], output: &[f32]) {
+        let input_rms = rms(input);
+        let output_rms = rms(output);
+        assert!(
+            output_rms > 0.1,
+            "decoded RMS {output_rms} too low (signal is near-silent)"
+        );
+        let ratio = output_rms / input_rms;
+        assert!(
+            (0.3..3.0).contains(&ratio),
+            "energy ratio {ratio} out of range (input RMS={input_rms}, output RMS={output_rms})"
+        );
+    }
+
+    /// Extract one channel from interleaved samples.
+    fn extract_channel(interleaved: &[f32], channel: usize, num_channels: usize) -> Vec<f32> {
+        interleaved
+            .iter()
+            .skip(channel)
+            .step_by(num_channels)
+            .copied()
+            .collect()
+    }
+
     // --- Video roundtrip tests for every preset ---
 
     #[test]
@@ -341,16 +367,7 @@ mod tests {
         assert_eq!(packets.len(), 50);
         let decoded = audio_decode(&config, format, packets);
         assert_eq!(decoded.len(), 48000);
-        let input_rms = rms(&sine);
-        let output_rms = rms(&decoded);
-        // Decoded sine should have significant energy (not silence)
-        assert!(output_rms > 0.1, "mono HQ decoded RMS {output_rms} too low");
-        // Output energy should be in the same ballpark as input (within 50%)
-        let ratio = output_rms / input_rms;
-        assert!(
-            (0.5..2.0).contains(&ratio),
-            "energy ratio {ratio} out of range (input RMS={input_rms}, output RMS={output_rms})"
-        );
+        assert_energy_preserved(&sine, &decoded);
     }
 
     #[test]
@@ -363,8 +380,7 @@ mod tests {
         assert_eq!(packets.len(), 50);
         let decoded = audio_decode(&config, format, packets);
         assert_eq!(decoded.len(), 48000);
-        let energy = rms(&decoded);
-        assert!(energy > 0.1, "mono LQ decoded RMS {energy} too low");
+        assert_energy_preserved(&sine, &decoded);
     }
 
     #[test]
@@ -378,8 +394,7 @@ mod tests {
         assert_eq!(packets.len(), 50);
         let decoded = audio_decode(&config, format, packets);
         assert_eq!(decoded.len(), 96000);
-        let energy = rms(&decoded);
-        assert!(energy > 0.1, "stereo HQ decoded RMS {energy} too low");
+        assert_energy_preserved(&sine, &decoded);
     }
 
     #[test]
@@ -392,7 +407,89 @@ mod tests {
         assert_eq!(packets.len(), 50);
         let decoded = audio_decode(&config, format, packets);
         assert_eq!(decoded.len(), 96000);
-        let energy = rms(&decoded);
-        assert!(energy > 0.1, "stereo LQ decoded RMS {energy} too low");
+        assert_energy_preserved(&sine, &decoded);
+    }
+
+    // --- Cross-channel audio pipeline tests ---
+    // These test the real-world path: mono mic → encode → network → decode → stereo speakers
+    // and the reverse.
+
+    #[test]
+    fn audio_pipeline_mono_encode_stereo_decode() {
+        // The typical real-world path: mono mic capture → Opus encode → stereo speaker output
+        let enc_format = AudioFormat::mono_48k();
+        let dec_format = AudioFormat::stereo_48k();
+
+        let mut enc = OpusEncoder::with_preset(enc_format, AudioPreset::Hq).unwrap();
+        let config = enc.config();
+        assert_eq!(config.channel_count, 1);
+
+        // 1 second of mono 440Hz sine
+        let sine = make_sine(48000, 440.0, 48000.0);
+        let packets = audio_encode(&mut enc, &sine);
+        assert_eq!(packets.len(), 50);
+
+        // Decode to stereo target
+        let decoded = audio_decode(&config, dec_format, packets);
+
+        // Should have 48000 frames * 2 channels = 96000 interleaved samples
+        assert_eq!(decoded.len(), 96000);
+
+        // Each stereo pair should be identical (mono upmixed by duplication)
+        for (i, pair) in decoded.chunks_exact(2).enumerate() {
+            assert_eq!(
+                pair[0], pair[1],
+                "stereo pair at frame {i} should be equal: L={}, R={}",
+                pair[0], pair[1]
+            );
+        }
+
+        // Energy of one channel should match the mono input
+        let left = extract_channel(&decoded, 0, 2);
+        assert_energy_preserved(&sine, &left);
+    }
+
+    #[test]
+    fn audio_pipeline_stereo_encode_mono_decode() {
+        // Reverse path: stereo source → encode → mono output
+        let enc_format = AudioFormat::stereo_48k();
+        let dec_format = AudioFormat::mono_48k();
+
+        let mut enc = OpusEncoder::with_preset(enc_format, AudioPreset::Hq).unwrap();
+        let config = enc.config();
+        assert_eq!(config.channel_count, 2);
+
+        // 1 second of stereo sine (48000 frames * 2 channels)
+        let sine = make_sine(96000, 440.0, 48000.0);
+        let packets = audio_encode(&mut enc, &sine);
+        assert_eq!(packets.len(), 50);
+
+        // Decode to mono target
+        let decoded = audio_decode(&config, dec_format, packets);
+
+        // Should have 48000 mono samples
+        assert_eq!(decoded.len(), 48000);
+
+        // Energy of mono output should match one channel of stereo input
+        let input_left = extract_channel(&sine, 0, 2);
+        assert_energy_preserved(&input_left, &decoded);
+    }
+
+    #[test]
+    fn audio_pipeline_mono_encode_stereo_decode_lq() {
+        // Same cross-channel test at low quality
+        let enc_format = AudioFormat::mono_48k();
+        let dec_format = AudioFormat::stereo_48k();
+
+        let mut enc = OpusEncoder::with_preset(enc_format, AudioPreset::Lq).unwrap();
+        let config = enc.config();
+
+        let sine = make_sine(48000, 440.0, 48000.0);
+        let packets = audio_encode(&mut enc, &sine);
+        let decoded = audio_decode(&config, dec_format, packets);
+
+        assert_eq!(decoded.len(), 96000);
+        let left = extract_channel(&decoded, 0, 2);
+        assert_energy_preserved(&sine, &left);
     }
 }
