@@ -1,8 +1,8 @@
 use std::time::Duration;
 
+use super::rav1d_safe::{Decoder, PlanarImageComponent, Settings};
 use anyhow::{Context as _, Result, bail};
 use bytes::Buf;
-use dav1d::PlanarImageComponent;
 use hang::catalog::{VideoCodec, VideoConfig};
 use image::{Delay, Frame, RgbaImage};
 
@@ -17,7 +17,7 @@ use super::util::{
 #[derive(derive_more::Debug)]
 pub struct Av1VideoDecoder {
     #[debug(skip)]
-    decoder: dav1d::Decoder,
+    decoder: Decoder,
     scaler: Scaler,
     clock: StreamClock,
     viewport_changed: Option<(u32, u32)>,
@@ -29,7 +29,7 @@ pub struct Av1VideoDecoder {
 
 impl VideoDecoder for Av1VideoDecoder {
     fn name(&self) -> &str {
-        "av1-dav1d"
+        "av1-rav1d"
     }
 
     fn new(config: &VideoConfig, _playback_config: &DecodeConfig) -> Result<Self>
@@ -40,12 +40,12 @@ impl VideoDecoder for Av1VideoDecoder {
             bail!("Av1VideoDecoder only supports AV1, got {}", config.codec);
         }
 
-        let mut settings = dav1d::Settings::new();
+        let mut settings = Settings::new();
         settings.set_n_threads(0);
         settings.set_max_frame_delay(1);
 
         let decoder =
-            dav1d::Decoder::with_settings(&settings).context("failed to create dav1d decoder")?;
+            Decoder::with_settings(&settings).context("failed to create rav1d decoder")?;
 
         // Note: config.description contains the av1C container configuration box
         // (from rav1e's container_sequence_header()), which is ISOBMFF/Matroska
@@ -70,8 +70,8 @@ impl VideoDecoder for Av1VideoDecoder {
         let payload = packet.payload.copy_to_bytes(packet.payload.remaining());
 
         self.decoder
-            .send_data(payload.to_vec(), None, None, None)
-            .map_err(|e| anyhow::anyhow!("dav1d send_data error: {e}"))?;
+            .send_data(&payload)
+            .map_err(|e| anyhow::anyhow!("rav1d send_data error: {e}"))?;
 
         match self.decoder.get_picture() {
             Ok(picture) => {
@@ -87,9 +87,9 @@ impl VideoDecoder for Av1VideoDecoder {
                 let v_stride = picture.stride(PlanarImageComponent::V);
 
                 let yuv = YuvData {
-                    y: y_plane.as_ref().to_vec(),
-                    u: u_plane.as_ref().to_vec(),
-                    v: v_plane.as_ref().to_vec(),
+                    y: y_plane.to_vec(),
+                    u: u_plane.to_vec(),
+                    v: v_plane.to_vec(),
                     y_stride,
                     u_stride,
                     v_stride,
@@ -107,7 +107,7 @@ impl VideoDecoder for Av1VideoDecoder {
                 // No picture available yet — decoder needs more data.
             }
             Err(e) => {
-                bail!("dav1d get_picture error: {e}");
+                bail!("rav1d get_picture error: {e}");
             }
         }
 

@@ -45,7 +45,8 @@ pic-scale = "0.6"
 rubato = "1.0"
 audioadapter-buffers = "2.0"
 rav1e = { version = "0.8", optional = true }
-dav1d = { version = "0.11", optional = true }
+rav1d = { git = "https://github.com/memorysafety/rav1d", default-features = false, features = ["bitdepth_8", "bitdepth_16", "asm"], optional = true }
+libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 cros-codecs = { version = "0.0.6", optional = true, features = ["vaapi"] }
@@ -67,6 +68,6 @@ tracing-subscriber = "0.3.20"
 
 [features]
 default = ["av1"]
-av1 = ["dep:rav1e", "dep:dav1d"]
+av1 = ["dep:rav1e", "dep:rav1d"]
 videotoolbox = ["dep:objc2-video-toolbox", "dep:objc2-core-media", "dep:objc2-core-video", "dep:objc2-core-foundation", "dep:objc2"]
 vaapi = ["dep:cros-codecs"]

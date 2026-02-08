@@ -340,7 +340,7 @@ mod tests {
 
         let decode_config = DecodeConfig::default();
         let mut dec = DynamicVideoDecoder::new(&config, &decode_config).unwrap();
-        assert_eq!(dec.name(), "av1-dav1d");
+        assert_eq!(dec.name(), "av1-rav1d");
 
         let mut decoded_count = 0;
         for pkt in packets {

@@ -136,7 +136,7 @@ impl VideoDecoder for H264VideoDecoder {
 pub enum DynamicVideoDecoder {
     H264(H264VideoDecoder),
     #[cfg(feature = "av1")]
-    Av1(super::dav1d_dec::Av1VideoDecoder),
+    Av1(super::av1_dec::Av1VideoDecoder),
 }
 
 impl VideoDecoder for DynamicVideoDecoder {
@@ -147,7 +147,7 @@ impl VideoDecoder for DynamicVideoDecoder {
         match &config.codec {
             VideoCodec::H264(_) => Ok(Self::H264(H264VideoDecoder::new(config, playback_config)?)),
             #[cfg(feature = "av1")]
-            VideoCodec::AV1(_) => Ok(Self::Av1(super::dav1d_dec::Av1VideoDecoder::new(
+            VideoCodec::AV1(_) => Ok(Self::Av1(super::av1_dec::Av1VideoDecoder::new(
                 config,
                 playback_config,
             )?)),
