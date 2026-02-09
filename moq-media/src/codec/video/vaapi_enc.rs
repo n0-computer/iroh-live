@@ -23,7 +23,7 @@ use crate::{
     av::{self, VideoPreset},
     codec::video::util::{
         annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b},
-        convert::pixel_format_to_yuv420,
+        convert::{YuvData, pixel_format_to_yuv420},
     },
 };
 
@@ -238,7 +238,7 @@ impl VaapiEncoder {
             ..EncoderConfig::default()
         };
 
-        let encoder = VaapiH264Encoder::new_vaapi(
+        let mut encoder = VaapiH264Encoder::new_vaapi(
             display,
             config,
             fourcc,
@@ -265,6 +265,37 @@ impl VaapiEncoder {
             ],
         };
 
+        // Encode a black frame to extract SPS/PPS for the avcC description.
+        // VAAPI only emits parameter sets in the first encoded IDR frame.
+        let yuv = YuvData::black(width, height);
+        let nv12 = Self::i420_to_nv12(&yuv.y, &yuv.u, &yuv.v, width, height);
+        let black = Nv12Frame {
+            data: nv12,
+            width,
+            height,
+        };
+        let meta = FrameMetadata {
+            timestamp: 0,
+            layout: frame_layout.clone(),
+            force_keyframe: true,
+        };
+        encoder
+            .encode(meta, black)
+            .map_err(|e| anyhow::anyhow!("VAAPI priming encode failed: {e:?}"))?;
+
+        let mut avcc = None;
+        while let Some(coded) = encoder
+            .poll()
+            .map_err(|e| anyhow::anyhow!("VAAPI priming poll failed: {e:?}"))?
+        {
+            if avcc.is_none() {
+                let nals = parse_annex_b(&coded.bitstream);
+                if let Some((sps, pps)) = extract_sps_pps(&nals) {
+                    avcc = Some(build_avcc(&sps, &pps));
+                }
+            }
+        }
+
         Ok(Self {
             encoder,
             frame_layout,
@@ -273,7 +304,7 @@ impl VaapiEncoder {
             framerate,
             bitrate,
             frame_count: 0,
-            avcc: None,
+            avcc,
             packet_buf: Vec::new(),
         })
     }
@@ -458,6 +489,19 @@ mod tests {
             },
             raw: raw.into(),
         }
+    }
+
+    #[test]
+    #[ignore = "requires VAAPI hardware"]
+    fn vaapi_avcc_available_at_construction() {
+        let enc = VaapiEncoder::with_preset(VideoPreset::P360).unwrap();
+        let desc = enc.config().description;
+        assert!(
+            desc.is_some(),
+            "avcC should be populated at construction time"
+        );
+        let avcc = desc.unwrap();
+        assert_eq!(avcc[0], 1, "avcC should start with version 1");
     }
 
     #[test]
