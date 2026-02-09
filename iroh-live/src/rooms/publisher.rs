@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex};
 use moq_lite::BroadcastProducer;
 use moq_media::{
     audio::AudioBackend,
-    av::{AudioPreset, VideoPreset},
+    av::{AudioPreset, VideoEncoderKind, VideoPreset},
     capture::{CameraCapturer, ScreenCapturer},
-    codec::{H264Encoder, OpusEncoder},
+    codec::OpusEncoder,
     publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
 };
 use n0_error::{AnyError, Result};
@@ -37,6 +37,8 @@ pub struct PublishOpts {
     pub camera_index: Option<u32>,
     /// If set, use a specific audio input device by name. If `None`, use the system default.
     pub audio_device: Option<String>,
+    /// Video encoder to use. If `None`, automatically selects the best available.
+    pub video_codec: Option<VideoEncoderKind>,
 }
 
 /// Manager for publish broadcasts in a room
@@ -90,6 +92,7 @@ impl RoomPublisherSync {
         info!(new=?state, old=?self.state, "set publish state");
         self.state.camera_index = state.camera_index;
         self.state.audio_device = state.audio_device.clone();
+        self.state.video_codec = state.video_codec;
         let errors = [
             self.set_audio(state.audio)
                 .err()
@@ -136,7 +139,11 @@ impl RoomPublisherSync {
                     Some(index) => CameraCapturer::with_index(index)?,
                     None => CameraCapturer::new()?,
                 };
-                let renditions = VideoRenditions::new::<H264Encoder>(camera, VideoPreset::all());
+                let codec = self
+                    .state
+                    .video_codec
+                    .unwrap_or_else(VideoEncoderKind::best_available);
+                let renditions = VideoRenditions::new_for_codec(codec, camera, VideoPreset::all());
                 self.ensure_camera();
                 self.camera
                     .as_ref()
@@ -184,7 +191,11 @@ impl RoomPublisherSync {
                 };
 
                 let screen = ScreenCapturer::new()?;
-                let renditions = VideoRenditions::new::<H264Encoder>(screen, VideoPreset::all());
+                let codec = self
+                    .state
+                    .video_codec
+                    .unwrap_or_else(VideoEncoderKind::best_available);
+                let renditions = VideoRenditions::new_for_codec(codec, screen, VideoPreset::all());
                 self.screen
                     .as_mut()
                     .unwrap()

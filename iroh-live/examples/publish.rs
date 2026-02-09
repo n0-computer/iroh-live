@@ -1,18 +1,12 @@
 use clap::Parser;
 use iroh::{Endpoint, SecretKey, protocol::Router};
-#[cfg(feature = "av1")]
-use iroh_live::media::codec::Av1Encoder;
-#[cfg(all(target_os = "linux", feature = "vaapi"))]
-use iroh_live::media::codec::VaapiEncoder;
-#[cfg(all(target_os = "macos", feature = "videotoolbox"))]
-use iroh_live::media::codec::VtbEncoder;
 use iroh_live::{
     Live,
     media::{
         audio::AudioBackend,
-        av::{AudioPreset, VideoCodec, VideoPreset},
+        av::{AudioPreset, VideoCodec, VideoEncoderKind, VideoPreset},
         capture::CameraCapturer,
-        codec::{H264Encoder, OpusEncoder},
+        codec::OpusEncoder,
         publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
     },
     ticket::LiveTicket,
@@ -50,32 +44,8 @@ async fn main() -> n0_error::Result {
     // Capture camera, and encode with the cli-provided presets.
     if !cli.no_video {
         let camera = CameraCapturer::new()?;
-        let video = match cli.codec {
-            VideoCodec::H264 => VideoRenditions::new::<H264Encoder>(camera, cli.video_presets),
-            #[cfg(feature = "av1")]
-            VideoCodec::Av1 => VideoRenditions::new::<Av1Encoder>(camera, cli.video_presets),
-            #[cfg(not(feature = "av1"))]
-            VideoCodec::Av1 => {
-                eprintln!("AV1 support requires the `av1` feature");
-                std::process::exit(1);
-            }
-            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
-            VideoCodec::VtbH264 => VideoRenditions::new::<VtbEncoder>(camera, cli.video_presets),
-            #[cfg(not(all(target_os = "macos", feature = "videotoolbox")))]
-            VideoCodec::VtbH264 => {
-                eprintln!("VideoToolbox support requires macOS and the `videotoolbox` feature");
-                std::process::exit(1);
-            }
-            #[cfg(all(target_os = "linux", feature = "vaapi"))]
-            VideoCodec::VaapiH264 => {
-                VideoRenditions::new::<VaapiEncoder>(camera, cli.video_presets)
-            }
-            #[cfg(not(all(target_os = "linux", feature = "vaapi")))]
-            VideoCodec::VaapiH264 => {
-                eprintln!("VAAPI support requires Linux and the `vaapi` feature");
-                std::process::exit(1);
-            }
-        };
+        let codec = VideoEncoderKind::try_from(cli.codec)?;
+        let video = VideoRenditions::new_for_codec(codec, camera, cli.video_presets);
         broadcast.set_video(Some(video))?;
     }
 

@@ -1,3 +1,4 @@
+use std::fmt;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -197,6 +198,114 @@ pub enum VideoCodec {
     VtbH264,
     #[strum(serialize = "vaapi-h264")]
     VaapiH264,
+}
+
+/// Available video encoder implementations.
+///
+/// Unlike [`VideoCodec`] which represents wire-level codec identifiers (including unsupported
+/// ones for CLI parsing), this enum only contains variants that are actually compiled in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoEncoderKind {
+    /// Software H.264 via openh264 (always available).
+    H264,
+    /// Software AV1 via rav1e.
+    #[cfg(feature = "av1")]
+    Av1,
+    /// Hardware H.264 via macOS VideoToolbox.
+    #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+    VtbH264,
+    /// Hardware H.264 via Linux VAAPI.
+    #[cfg(all(target_os = "linux", feature = "vaapi"))]
+    VaapiH264,
+}
+
+impl VideoEncoderKind {
+    /// Returns all encoder kinds that are compiled in.
+    pub fn available() -> Vec<Self> {
+        vec![
+            Self::H264,
+            #[cfg(feature = "av1")]
+            Self::Av1,
+            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+            Self::VtbH264,
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            Self::VaapiH264,
+        ]
+    }
+
+    /// Returns the best available encoder: hardware if available, otherwise software H.264.
+    pub fn best_available() -> Self {
+        #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+        {
+            return Self::VtbH264;
+        }
+        #[cfg(all(target_os = "linux", feature = "vaapi"))]
+        {
+            return Self::VaapiH264;
+        }
+        #[allow(
+            unreachable_code,
+            reason = "fallback when no HW encoder is compiled in"
+        )]
+        Self::H264
+    }
+
+    /// Whether this is a hardware-accelerated encoder.
+    pub fn is_hardware(self) -> bool {
+        match self {
+            Self::H264 => false,
+            #[cfg(feature = "av1")]
+            Self::Av1 => false,
+            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+            Self::VtbH264 => true,
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            Self::VaapiH264 => true,
+        }
+    }
+
+    /// Human-readable display name.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::H264 => "H.264 (Software)",
+            #[cfg(feature = "av1")]
+            Self::Av1 => "AV1 (Software)",
+            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+            Self::VtbH264 => "H.264 (VideoToolbox)",
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            Self::VaapiH264 => "H.264 (VAAPI)",
+        }
+    }
+}
+
+impl fmt::Display for VideoEncoderKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.display_name())
+    }
+}
+
+impl TryFrom<VideoCodec> for VideoEncoderKind {
+    type Error = anyhow::Error;
+    fn try_from(codec: VideoCodec) -> Result<Self> {
+        match codec {
+            VideoCodec::H264 => Ok(Self::H264),
+            #[cfg(feature = "av1")]
+            VideoCodec::Av1 => Ok(Self::Av1),
+            #[cfg(not(feature = "av1"))]
+            VideoCodec::Av1 => anyhow::bail!("AV1 support requires the `av1` feature"),
+            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+            VideoCodec::VtbH264 => Ok(Self::VtbH264),
+            #[cfg(not(all(target_os = "macos", feature = "videotoolbox")))]
+            VideoCodec::VtbH264 => {
+                anyhow::bail!("VideoToolbox support requires macOS and the `videotoolbox` feature")
+            }
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            VideoCodec::VaapiH264 => Ok(Self::VaapiH264),
+            #[cfg(not(all(target_os = "linux", feature = "vaapi")))]
+            VideoCodec::VaapiH264 => {
+                anyhow::bail!("VAAPI support requires Linux and the `vaapi` feature")
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Display, EnumString, VariantNames, Eq, PartialEq, Ord, PartialOrd)]

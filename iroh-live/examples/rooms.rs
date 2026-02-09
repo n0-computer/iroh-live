@@ -4,19 +4,13 @@ use clap::Parser;
 use eframe::egui::{self, Color32, Id, Vec2};
 use iroh::{Endpoint, Watcher, protocol::Router};
 use iroh_gossip::{Gossip, TopicId};
-#[cfg(feature = "av1")]
-use iroh_live::media::codec::Av1Encoder;
-#[cfg(all(target_os = "linux", feature = "vaapi"))]
-use iroh_live::media::codec::VaapiEncoder;
-#[cfg(all(target_os = "macos", feature = "videotoolbox"))]
-use iroh_live::media::codec::VtbEncoder;
 use iroh_live::{
     Live,
     media::{
         audio::AudioBackend,
-        av::{AudioPreset, VideoCodec, VideoPreset},
+        av::{AudioPreset, VideoCodec, VideoEncoderKind, VideoPreset},
         capture::{CameraCapturer, ScreenCapturer},
-        codec::{DefaultDecoders, DynamicVideoDecoder, H264Encoder, OpusEncoder, codec_init},
+        codec::{DefaultDecoders, DynamicVideoDecoder, OpusEncoder, codec_init},
         publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
         subscribe::{AudioTrack, AvRemoteTrack, SubscribeBroadcast, WatchTrack},
     },
@@ -98,61 +92,13 @@ async fn setup(cli: Cli, audio_ctx: AudioBackend) -> Result<(Router, PublishBroa
             let audio = AudioRenditions::new::<OpusEncoder>(mic, [AudioPreset::Hq]);
             broadcast.set_audio(Some(audio))?;
         }
-        let video = match (cli.screen, cli.codec) {
-            (true, VideoCodec::H264) => {
-                let screen = ScreenCapturer::new()?;
-                VideoRenditions::new::<H264Encoder>(screen, VideoPreset::all())
-            }
-            (false, VideoCodec::H264) => {
-                let camera = CameraCapturer::new()?;
-                VideoRenditions::new::<H264Encoder>(camera, VideoPreset::all())
-            }
-            #[cfg(feature = "av1")]
-            (true, VideoCodec::Av1) => {
-                let screen = ScreenCapturer::new()?;
-                VideoRenditions::new::<Av1Encoder>(screen, VideoPreset::all())
-            }
-            #[cfg(feature = "av1")]
-            (false, VideoCodec::Av1) => {
-                let camera = CameraCapturer::new()?;
-                VideoRenditions::new::<Av1Encoder>(camera, VideoPreset::all())
-            }
-            #[cfg(not(feature = "av1"))]
-            (_, VideoCodec::Av1) => {
-                return Err(anyerr!("AV1 support requires the `av1` feature"));
-            }
-            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
-            (true, VideoCodec::VtbH264) => {
-                let screen = ScreenCapturer::new()?;
-                VideoRenditions::new::<VtbEncoder>(screen, VideoPreset::all())
-            }
-            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
-            (false, VideoCodec::VtbH264) => {
-                let camera = CameraCapturer::new()?;
-                VideoRenditions::new::<VtbEncoder>(camera, VideoPreset::all())
-            }
-            #[cfg(not(all(target_os = "macos", feature = "videotoolbox")))]
-            (_, VideoCodec::VtbH264) => {
-                return Err(anyerr!(
-                    "VideoToolbox support requires macOS and the `videotoolbox` feature"
-                ));
-            }
-            #[cfg(all(target_os = "linux", feature = "vaapi"))]
-            (true, VideoCodec::VaapiH264) => {
-                let screen = ScreenCapturer::new()?;
-                VideoRenditions::new::<VaapiEncoder>(screen, VideoPreset::all())
-            }
-            #[cfg(all(target_os = "linux", feature = "vaapi"))]
-            (false, VideoCodec::VaapiH264) => {
-                let camera = CameraCapturer::new()?;
-                VideoRenditions::new::<VaapiEncoder>(camera, VideoPreset::all())
-            }
-            #[cfg(not(all(target_os = "linux", feature = "vaapi")))]
-            (_, VideoCodec::VaapiH264) => {
-                return Err(anyerr!(
-                    "VAAPI support requires Linux and the `vaapi` feature"
-                ));
-            }
+        let codec = VideoEncoderKind::try_from(cli.codec)?;
+        let video = if cli.screen {
+            let screen = ScreenCapturer::new()?;
+            VideoRenditions::new_for_codec(codec, screen, VideoPreset::all())
+        } else {
+            let camera = CameraCapturer::new()?;
+            VideoRenditions::new_for_codec(codec, camera, VideoPreset::all())
         };
         broadcast.set_video(Some(video))?;
         broadcast
