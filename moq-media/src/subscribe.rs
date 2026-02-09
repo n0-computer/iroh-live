@@ -317,6 +317,7 @@ impl AudioTrack {
             let span = span.clone();
             move || {
                 let _guard = span.enter();
+                info!("audio decoder thread start");
                 if let Err(err) = Self::run_loop(decoder, packet_rx, output, &shutdown) {
                     error!("audio decoder failed: {err:#}");
                 }
@@ -353,8 +354,10 @@ impl AudioTrack {
         shutdown: &CancellationToken,
     ) -> Result<()> {
         const INTERVAL: Duration = Duration::from_millis(10);
+        const MAX_CONSECUTIVE_ERRORS: u32 = 10;
         let mut remote_start = None;
         let loop_start = Instant::now();
+        let mut consecutive_errors = 0u32;
 
         'main: for i in 0.. {
             let tick = Instant::now();
@@ -384,9 +387,36 @@ impl AudioTrack {
                         // TODO: Skip outdated packets?
 
                         if !sink.is_paused() {
-                            decoder.push_packet(packet)?;
-                            if let Some(samples) = decoder.pop_samples()? {
-                                sink.push_samples(samples)?;
+                            if let Err(err) = decoder.push_packet(packet) {
+                                consecutive_errors += 1;
+                                warn!(consecutive_errors, "failed to push audio packet: {err:#}");
+                                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                                    n0_error::bail_any!(
+                                        "too many consecutive audio decode errors: {err:#}"
+                                    );
+                                }
+                                continue;
+                            }
+                            match decoder.pop_samples() {
+                                Ok(Some(samples)) => {
+                                    consecutive_errors = 0;
+                                    sink.push_samples(samples)?;
+                                }
+                                Ok(None) => {
+                                    consecutive_errors = 0;
+                                }
+                                Err(err) => {
+                                    consecutive_errors += 1;
+                                    warn!(
+                                        consecutive_errors,
+                                        "failed to pop audio samples: {err:#}"
+                                    );
+                                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                                        n0_error::bail_any!(
+                                            "too many consecutive audio decode errors: {err:#}"
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -602,6 +632,7 @@ impl WatchTrack {
             let span = span.clone();
             move || {
                 let _guard = span.enter();
+                info!("video decoder thread start");
                 if let Err(err) = Self::run_loop(
                     &shutdown,
                     packet_rx,
@@ -612,6 +643,7 @@ impl WatchTrack {
                 ) {
                     error!("video decoder failed: {err:#}");
                 }
+                info!("video decoder thread stop");
                 shutdown.cancel();
             }
         });
@@ -655,6 +687,8 @@ impl WatchTrack {
         mut decoder: impl VideoDecoder,
         target_pixel_format: PixelFormat,
     ) -> Result<(), anyhow::Error> {
+        let mut consecutive_errors = 0u32;
+        const MAX_CONSECUTIVE_ERRORS: u32 = 10;
         loop {
             if shutdown.is_cancelled() {
                 break;
@@ -667,22 +701,60 @@ impl WatchTrack {
                 decoder.set_viewport(*w, *h);
             }
             let t = Instant::now();
-            decoder
-                .push_packet(packet)
-                .context("failed to push packet")?;
+            if let Err(err) = decoder.push_packet(packet) {
+                consecutive_errors += 1;
+                warn!(consecutive_errors, "failed to push video packet: {err:#}");
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                    return Err(err.context("too many consecutive video decode errors"));
+                }
+                continue;
+            }
             trace!(t=?t.elapsed(), "videodec: push_packet");
-            while let Some(mut frame) = decoder.pop_frame().context("failed to pop frame")? {
-                trace!(t=?t.elapsed(), "videodec: pop frame");
-                // Decoders output RGBA; convert if the consumer needs BGRA.
-                if target_pixel_format == PixelFormat::Bgra {
-                    for pixel in frame.frame.buffer_mut().chunks_exact_mut(4) {
-                        pixel.swap(0, 2);
+            match decoder.pop_frame() {
+                Ok(Some(mut frame)) => {
+                    consecutive_errors = 0;
+                    trace!(t=?t.elapsed(), "videodec: pop frame");
+                    // Decoders output RGBA; convert if the consumer needs BGRA.
+                    if target_pixel_format == PixelFormat::Bgra {
+                        for pixel in frame.frame.buffer_mut().chunks_exact_mut(4) {
+                            pixel.swap(0, 2);
+                        }
+                    }
+                    if output_tx.blocking_send(frame).is_err() {
+                        break;
+                    }
+                    trace!(t=?t.elapsed(), "videodec: tx");
+                    // Drain any additional frames.
+                    loop {
+                        match decoder.pop_frame() {
+                            Ok(Some(mut frame)) => {
+                                if target_pixel_format == PixelFormat::Bgra {
+                                    for pixel in frame.frame.buffer_mut().chunks_exact_mut(4) {
+                                        pixel.swap(0, 2);
+                                    }
+                                }
+                                if output_tx.blocking_send(frame).is_err() {
+                                    break;
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(err) => {
+                                warn!("failed to pop video frame: {err:#}");
+                                break;
+                            }
+                        }
                     }
                 }
-                if output_tx.blocking_send(frame).is_err() {
-                    break;
+                Ok(None) => {
+                    consecutive_errors = 0;
                 }
-                trace!(t=?t.elapsed(), "videodec: tx");
+                Err(err) => {
+                    consecutive_errors += 1;
+                    warn!(consecutive_errors, "failed to pop video frame: {err:#}");
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                        return Err(err.context("too many consecutive video decode errors"));
+                    }
+                }
             }
         }
         Ok(())
@@ -695,12 +767,16 @@ async fn forward_frames(mut track: hang::TrackConsumer, sender: mpsc::Sender<han
         match frame {
             Ok(Some(frame)) => {
                 if sender.send(frame).await.is_err() {
+                    debug!("forward_frames: decoder channel closed");
                     break;
                 }
             }
-            Ok(None) => break,
+            Ok(None) => {
+                debug!("forward_frames: track ended");
+                break;
+            }
             Err(err) => {
-                warn!("failed to read frame: {err:?}");
+                error!("forward_frames: failed to read frame from track: {err:#}");
                 break;
             }
         }
