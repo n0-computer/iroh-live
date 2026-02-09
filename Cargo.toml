@@ -25,6 +25,3 @@ absolute_paths = "warn"
 manual_let_else = "warn"
 allow_attributes_without_reason = "warn"
 mod_module_files = "deny"
-
-[patch.crates-io]
-sonora = { path = "../sonora/crates/sonora" }

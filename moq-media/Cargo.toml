@@ -36,7 +36,7 @@ tokio = { version = "1.48.0", features = ["sync"] }
 tokio-util = "0.7.17"
 tracing = "0.1.41"
 xcap = "0.8"
-sonora = { version = "0.1" }
+sonora = { git = "https://github.com/dignifiedquire/sonora", branch = "main" }
 bytes = "1.11.0"
 openh264 = { version = "0.9", features = ["source"] }
 unsafe-libopus = "0.2"
