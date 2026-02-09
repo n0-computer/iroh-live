@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
+use iroh::endpoint::{Connection, QuicTransportConfig};
 use iroh::{EndpointAddr, endpoint::ConnectOptions};
-use quinn::TransportConfig;
 use url::Url;
 
 use crate::{ALPN_H3, ClientError, Session};
@@ -9,7 +9,7 @@ use crate::{ALPN_H3, ClientError, Session};
 /// A client for connecting to a WebTransport server.
 pub struct Client {
     endpoint: iroh::Endpoint,
-    config: Arc<TransportConfig>,
+    config: QuicTransportConfig,
 }
 
 impl Client {
@@ -18,10 +18,7 @@ impl Client {
     }
 
     /// Creates a client from an endpoint and a transport config.
-    pub fn with_transport_config(
-        endpoint: iroh::Endpoint,
-        config: Arc<quinn::TransportConfig>,
-    ) -> Self {
+    pub fn with_transport_config(endpoint: iroh::Endpoint, config: QuicTransportConfig) -> Self {
         Self { endpoint, config }
     }
 
