@@ -16,7 +16,7 @@ use n0_future::task::AbortOnDropHandle;
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{error, info, info_span, trace, warn};
 
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 use crate::{
     av::{
@@ -28,12 +28,20 @@ use crate::{
     util::spawn_thread,
 };
 
+/// A catalog config update sent from an encoder thread after first successful encode.
+pub(crate) struct CatalogUpdate {
+    /// The rendition name (e.g. "video-1080p").
+    rendition: String,
+    /// The updated video config with populated description (avcC).
+    config: VideoConfig,
+}
+
 #[derive(derive_more::Debug)]
 pub struct PublishBroadcast {
     #[debug(skip)]
     producer: BroadcastProducer,
     #[debug(skip)]
-    catalog: CatalogProducer,
+    catalog: Arc<Mutex<CatalogProducer>>,
     #[debug(skip)]
     state: Arc<Mutex<State>>,
     #[debug(skip)]
@@ -51,10 +59,23 @@ impl PublishBroadcast {
         let mut producer = BroadcastProducer::default();
         let catalog = Catalog::default().produce();
         producer.insert_track(catalog.consumer.track);
-        let catalog = catalog.producer;
+        let catalog = Arc::new(Mutex::new(catalog.producer));
+        let (catalog_update_tx, catalog_update_rx) = mpsc::channel(8);
 
-        let state = Arc::new(Mutex::new(State::default()));
-        let task_handle = tokio::spawn(Self::run(state.clone(), producer.clone()));
+        let state = Arc::new(Mutex::new(State {
+            shutdown_token: CancellationToken::new(),
+            catalog_update_tx: catalog_update_tx.clone(),
+            available_video: None,
+            available_audio: None,
+            active_video: HashMap::new(),
+            active_audio: HashMap::new(),
+        }));
+        let task_handle = tokio::spawn(Self::run(
+            state.clone(),
+            producer.clone(),
+            catalog.clone(),
+            catalog_update_rx,
+        ));
 
         Self {
             producer,
@@ -68,25 +89,50 @@ impl PublishBroadcast {
         self.producer.clone()
     }
 
-    async fn run(state: Arc<Mutex<State>>, mut producer: BroadcastProducer) {
-        while let Some(track) = producer.requested_track().await {
-            let name = track.info.name.clone();
-            if state
-                .lock()
-                .expect("poisoned")
-                .start_track(track.clone())
-                .inspect_err(|err| warn!(%name, "failed to start requested track: {err:#}"))
-                .is_ok()
-            {
-                info!("started track: {name}");
-                tokio::spawn({
-                    let state = state.clone();
-                    async move {
-                        track.unused().await;
-                        info!("stopping track: {name} (all subscribers disconnected)");
-                        state.lock().expect("poisoned").stop_track(&name);
+    async fn run(
+        state: Arc<Mutex<State>>,
+        mut producer: BroadcastProducer,
+        catalog: Arc<Mutex<CatalogProducer>>,
+        mut catalog_update_rx: mpsc::Receiver<CatalogUpdate>,
+    ) {
+        loop {
+            tokio::select! {
+                Some(track) = producer.requested_track() => {
+                    let name = track.info.name.clone();
+                    if state
+                        .lock()
+                        .expect("poisoned")
+                        .start_track(track.clone())
+                        .inspect_err(|err| warn!(%name, "failed to start requested track: {err:#}"))
+                        .is_ok()
+                    {
+                        info!("started track: {name}");
+                        tokio::spawn({
+                            let state = state.clone();
+                            async move {
+                                track.unused().await;
+                                info!("stopping track: {name} (all subscribers disconnected)");
+                                state.lock().expect("poisoned").stop_track(&name);
+                            }
+                        });
                     }
-                });
+                }
+                Some(update) = catalog_update_rx.recv() => {
+                    let mut catalog = catalog.lock().expect("poisoned");
+                    let mut guard = catalog.lock();
+                    if let Some(video) = guard.video.as_mut()
+                        && let Some(existing) = video.renditions.get_mut(&update.rendition)
+                        && existing.description.is_none()
+                        && update.config.description.is_some()
+                    {
+                        info!(
+                            rendition = %update.rendition,
+                            "updating catalog with codec description"
+                        );
+                        existing.description = update.config.description;
+                    }
+                }
+                else => break,
             }
         }
         info!("publish broadcast: no more track requests, shutting down");
@@ -123,8 +169,8 @@ impl PublishBroadcast {
                     flip: None,
                 };
                 {
-                    let mut catalog = self.catalog.lock();
-                    catalog.video = Some(video);
+                    let mut catalog = self.catalog.lock().expect("poisoned");
+                    catalog.lock().video = Some(video);
                 }
                 self.state.lock().expect("poisoned").available_video = Some(renditions);
                 // TODO: Drop active encodings if their rendition is no longer available?
@@ -133,8 +179,8 @@ impl PublishBroadcast {
                 // Clear catalog and stop any active video encoders
                 self.state.lock().expect("poisoned").remove_video();
                 {
-                    let mut catalog = self.catalog.lock();
-                    catalog.video = None;
+                    let mut catalog = self.catalog.lock().expect("poisoned");
+                    catalog.lock().video = None;
                 }
             }
         }
@@ -151,8 +197,8 @@ impl PublishBroadcast {
                     priority,
                 };
                 {
-                    let mut catalog = self.catalog.lock();
-                    catalog.audio = Some(audio);
+                    let mut catalog = self.catalog.lock().expect("poisoned");
+                    catalog.lock().audio = Some(audio);
                 }
                 self.state.lock().expect("poisoned").available_audio = Some(renditions);
             }
@@ -160,8 +206,8 @@ impl PublishBroadcast {
                 // Clear catalog and stop any active audio encoders
                 self.state.lock().expect("poisoned").remove_audio();
                 {
-                    let mut catalog = self.catalog.lock();
-                    catalog.audio = None;
+                    let mut catalog = self.catalog.lock().expect("poisoned");
+                    catalog.lock().audio = None;
                 }
             }
         }
@@ -176,9 +222,9 @@ impl Drop for PublishBroadcast {
     }
 }
 
-#[derive(Default)]
 struct State {
     shutdown_token: CancellationToken,
+    catalog_update_tx: mpsc::Sender<CatalogUpdate>,
     available_video: Option<VideoRenditions>,
     available_audio: Option<AudioRenditions>,
     active_video: HashMap<String, EncoderThread>,
@@ -217,7 +263,12 @@ impl State {
         if let Some(video) = self.available_video.as_mut()
             && video.contains_rendition(&name)
         {
-            let thread = video.start_encoder(&name, track, shutdown_token)?;
+            let thread = video.start_encoder(
+                &name,
+                track,
+                shutdown_token,
+                self.catalog_update_tx.clone(),
+            )?;
             self.active_video.insert(name, thread);
             Ok(())
         } else if let Some(audio) = self.available_audio.as_mut()
@@ -344,19 +395,26 @@ impl VideoRenditions {
         self.renditions.contains_key(name)
     }
 
-    pub fn start_encoder(
+    pub(crate) fn start_encoder(
         &mut self,
         name: &str,
         producer: hang::TrackProducer,
         shutdown_token: CancellationToken,
+        catalog_update_tx: mpsc::Sender<CatalogUpdate>,
     ) -> Result<EncoderThread> {
         let preset = self
             .renditions
             .get(name)
             .context("rendition not available")?;
         let encoder = (self.make_encoder)(*preset)?;
-        let thread =
-            EncoderThread::spawn_video(self.source.clone(), encoder, producer, shutdown_token);
+        let thread = EncoderThread::spawn_video(
+            self.source.clone(),
+            encoder,
+            producer,
+            shutdown_token,
+            name.to_string(),
+            catalog_update_tx,
+        );
         Ok(thread)
     }
 }
@@ -473,11 +531,13 @@ pub struct EncoderThread {
 }
 
 impl EncoderThread {
-    pub fn spawn_video(
+    pub(crate) fn spawn_video(
         mut source: impl VideoSource,
         mut encoder: impl VideoEncoderInner,
         mut producer: hang::TrackProducer,
         shutdown: CancellationToken,
+        rendition_name: String,
+        catalog_update_tx: mpsc::Sender<CatalogUpdate>,
     ) -> Self {
         let thread_name = format!("venc-{:<4}-{:<4}", source.name(), encoder.name());
         let span = info_span!("videoenc", source = source.name(), encoder = encoder.name());
@@ -507,6 +567,7 @@ impl EncoderThread {
                 let scaler = Scaler::new(scaler_dims);
                 let framerate = enc_config.framerate.unwrap_or(30.0);
                 let interval = Duration::from_secs_f64(1. / framerate);
+                let mut description_sent = false;
                 loop {
                     let start = Instant::now();
                     if shutdown.is_cancelled() {
@@ -555,6 +616,20 @@ impl EncoderThread {
                                     error!("video encoder pop_packet failed: {err:#}");
                                     break;
                                 }
+                            }
+                        }
+                        // After first encode, the encoder has the codec description
+                        // (e.g. avcC with SPS/PPS). Update the catalog so new
+                        // subscribers can initialize their decoders before receiving
+                        // the first keyframe.
+                        if !description_sent {
+                            let config = encoder.config();
+                            if config.description.is_some() {
+                                let _ = catalog_update_tx.try_send(CatalogUpdate {
+                                    rendition: rendition_name.clone(),
+                                    config,
+                                });
+                                description_sent = true;
                             }
                         }
                     }
@@ -664,5 +739,128 @@ impl EncoderThread {
 impl Drop for EncoderThread {
     fn drop(&mut self) {
         self.shutdown.cancel();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use n0_watcher::Watcher;
+
+    use crate::{
+        av::{PixelFormat, VideoFormat, VideoFrame, VideoPreset, VideoSource},
+        codec::H264Encoder,
+        subscribe::SubscribeBroadcast,
+    };
+
+    /// A dummy video source that produces solid-color RGBA frames.
+    #[derive(Clone)]
+    struct DummyVideoSource {
+        format: VideoFormat,
+        frame: VideoFrame,
+    }
+
+    impl DummyVideoSource {
+        fn new(w: u32, h: u32) -> Self {
+            let pixel = [128u8, 128, 128, 255];
+            let raw: Vec<u8> = pixel.repeat((w * h) as usize);
+            let format = VideoFormat {
+                pixel_format: PixelFormat::Rgba,
+                dimensions: [w, h],
+            };
+            Self {
+                format: format.clone(),
+                frame: VideoFrame {
+                    format,
+                    raw: raw.into(),
+                },
+            }
+        }
+    }
+
+    impl VideoSource for DummyVideoSource {
+        fn name(&self) -> &str {
+            "dummy"
+        }
+        fn format(&self) -> VideoFormat {
+            self.format.clone()
+        }
+        fn pop_frame(&mut self) -> anyhow::Result<Option<VideoFrame>> {
+            Ok(Some(self.frame.clone()))
+        }
+        fn start(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn stop(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Verify that the catalog description (avcC) gets populated after the
+    /// encoder produces its first frame, so subscribers can initialize their
+    /// decoder before the first keyframe group arrives.
+    #[tokio::test]
+    async fn catalog_description_updated_after_first_encode() {
+        let _ = tracing_subscriber::fmt::try_init();
+
+        // --- Publisher side ---
+        let mut broadcast = PublishBroadcast::new();
+        let source = DummyVideoSource::new(320, 180);
+        let video = VideoRenditions::new::<H264Encoder>(source, [VideoPreset::P180]);
+        broadcast.set_video(Some(video)).unwrap();
+
+        // --- Subscriber side ---
+        let consumer = broadcast.producer().consume();
+        let mut sub = SubscribeBroadcast::new("test".into(), consumer)
+            .await
+            .unwrap();
+
+        // Initial catalog should have description: None
+        {
+            let catalog = sub.catalog();
+            let video = catalog.video.as_ref().unwrap();
+            let config = video.renditions.get("video-180p").unwrap();
+            assert!(
+                config.description.is_none(),
+                "description should be None before encoding starts"
+            );
+        }
+
+        // Request the video track — this triggers the encoder to start.
+        let _track = sub
+            .watch_rendition::<crate::codec::H264VideoDecoder>(&Default::default(), "video-180p")
+            .unwrap();
+
+        // Wait for the catalog to be updated with the description.
+        // The encoder needs ~1 frame to produce the avcC.
+        let mut watcher = sub.catalog_watcher();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let catalog = watcher.peek().clone();
+            if let Some(video) = catalog.video.as_ref()
+                && let Some(config) = video.renditions.get("video-180p")
+                && config.description.is_some()
+            {
+                // Verify it's a valid avcC (starts with version byte 1)
+                let desc = config.description.as_ref().unwrap();
+                assert_eq!(desc[0], 1, "avcC should start with version 1");
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for catalog description update"
+            );
+            tokio::select! {
+                _ = watcher.updated() => {}
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+            }
+        }
+
+        broadcast
+            .state
+            .lock()
+            .expect("poisoned")
+            .shutdown_token
+            .cancel();
     }
 }
