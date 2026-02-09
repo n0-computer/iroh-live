@@ -14,8 +14,11 @@ Replace ffmpeg with focused crates and build libwebrtc-grade media quality. Two 
 | 1 | A | Codec swap — scaffolding, utilities, audio, video, integration | **Done** | [phase-1-codec-swap.md](phase-1-codec-swap.md) |
 | 2 | A | AV1 codec support (rav1e encoder + dav1d decoder) | **Done** | [phase-2-av1.md](phase-2-av1.md) |
 | 2b | A | HW acceleration (VAAPI, VideoToolbox) | Pending | [phase-2b-hw-accel.md](phase-2b-hw-accel.md) |
-| 3 | B | Audio resilience — Opus FEC/PLC/DTX, jitter buffer, comfort noise | Pending | [phase-3-audio-resilience.md](phase-3-audio-resilience.md) |
-| 4 | B | Video resilience — adaptive bitrate, frame timing, temporal SVC | Pending | [phase-4-video-resilience.md](phase-4-video-resilience.md) |
+| 3 | B | AV resilience — overview | Pending | [phase-3-av-resilience.md](phase-3-av-resilience.md) |
+| 3a | B | Adaptive rendition switching — catalog-aware, signal-driven | Pending | [phase-3a-rendition-switching.md](phase-3a-rendition-switching.md) |
+| 3b | B | Jitter buffer & A/V sync — playout timing, adaptive latency, lip-sync | Pending | [phase-3b-jitter-sync.md](phase-3b-jitter-sync.md) |
+| 3c | B | Forward error correction — Opus FEC/PLC/DTX, comfort noise | Future | [phase-3c-fec.md](phase-3c-fec.md) |
+| 3d | B | Adaptive encoding — encoder rate control, bandwidth estimation, pacing | Future | [phase-3d-adaptive-encoding.md](phase-3d-adaptive-encoding.md) |
 
 ## Current pipeline issues (reference)
 
@@ -48,7 +51,7 @@ Replace ffmpeg with focused crates and build libwebrtc-grade media quality. Two 
 | H.264 HW encode (VAAPI) | `cros-codecs` | feature: `vaapi` |
 | H.264 HW encode (VTB) | `objc2-video-toolbox` | feature: `videotoolbox` |
 | AV1 encode | `rav1e` | feature: `av1` (default) |
-| AV1 decode | `dav1d` (libdav1d bindings) | feature: `av1` (default) |
+| AV1 decode | `rav1d` (pure Rust) | feature: `av1` (default) |
 | Opus encode/decode | `unsafe-libopus` | c2rust, no C compiler |
 | MJPEG decode | `image` crate | Pure Rust (already dep) |
 | RGBA↔YUV | `yuvutils-rs` | Pure Rust, SIMD |
@@ -59,14 +62,14 @@ Replace ffmpeg with focused crates and build libwebrtc-grade media quality. Two 
 
 ```
 VideoEncoder: user selects H264Encoder or Av1Encoder (future: vaapi → videotoolbox → openh264 fallback)
-VideoDecoder: DynamicVideoDecoder auto-routes: AV1 → dav1d, H.264 → openh264
+VideoDecoder: DynamicVideoDecoder auto-routes: AV1 → rav1d, H.264 → openh264
 ```
 
 ### Feature flags
 ```toml
 [features]
 default = ["av1"]
-av1 = ["dep:rav1e", "dep:dav1d"]
+av1 = ["dep:rav1e", "dep:rav1d"]
 # Future:
 # vaapi = ["dep:cros-codecs"]
 # videotoolbox = ["dep:objc2-video-toolbox"]
@@ -83,7 +86,7 @@ moq-media/src/codec/
 │   ├── encoder.rs            # H264Encoder (openh264)
 │   ├── decoder.rs            # H264VideoDecoder (openh264) + DynamicVideoDecoder
 │   ├── rav1e_enc.rs          # Av1Encoder (feature: av1)
-│   ├── dav1d_dec.rs          # Av1VideoDecoder (feature: av1)
+│   ├── rav1d_dec.rs          # Av1VideoDecoder (feature: av1)
 │   └── util/
 │       ├── convert.rs        # YUV↔RGBA (yuvutils-rs)
 │       ├── scale.rs          # Bilinear scaling (pic-scale)

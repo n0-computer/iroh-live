@@ -23,8 +23,11 @@ Stored in-repo at `plans/media-pipeline/`. Copied from `.claude/plans/media-pipe
 | 1 | A - Codec | Codec swap — remove ffmpeg, add openh264 + unsafe-libopus + utilities | **Done** | [phase-1-codec-swap.md](media-pipeline/phase-1-codec-swap.md) |
 | 2 | A - Codec | AV1 codec support (rav1e encoder + dav1d decoder) | **Done** | [phase-2-av1.md](media-pipeline/phase-2-av1.md) |
 | 2b | A - Codec | HW acceleration (VAAPI, VideoToolbox) | Pending | [phase-2b-hw-accel.md](media-pipeline/phase-2b-hw-accel.md) |
-| 3 | B - Resilience | Audio resilience — Opus FEC/PLC/DTX, jitter buffer, comfort noise | Pending | [phase-3-audio-resilience.md](media-pipeline/phase-3-audio-resilience.md) |
-| 4 | B - Resilience | Video resilience — adaptive bitrate, frame timing, temporal SVC | Pending | [phase-4-video-resilience.md](media-pipeline/phase-4-video-resilience.md) |
+| 3 | B - Resilience | AV resilience — overview of 3a–3d | Pending | [phase-3-av-resilience.md](media-pipeline/phase-3-av-resilience.md) |
+| 3a | B - Resilience | Adaptive rendition switching — catalog-aware, signal-driven | Pending | [phase-3a-rendition-switching.md](media-pipeline/phase-3a-rendition-switching.md) |
+| 3b | B - Resilience | Jitter buffer & A/V sync — playout timing, adaptive latency, lip-sync | Pending | [phase-3b-jitter-sync.md](media-pipeline/phase-3b-jitter-sync.md) |
+| 3c | B - Resilience | Forward error correction — Opus FEC/PLC/DTX, comfort noise | Future | [phase-3c-fec.md](media-pipeline/phase-3c-fec.md) |
+| 3d | B - Resilience | Adaptive encoding — encoder rate control, bandwidth estimation, pacing | Future | [phase-3d-adaptive-encoding.md](media-pipeline/phase-3d-adaptive-encoding.md) |
 
 ## Phase 0: Project Setup
 
@@ -113,8 +116,8 @@ Fixes 7 bugs found in review (3x frame copies, viewport bug, unwrap, etc). Optim
 ### Phase 2: AV1 Codec Support (Done)
 AV1 encode/decode behind default-on `av1` feature flag:
 - `rav1e` 0.8 — pure Rust AV1 encoder (speed preset 10, low-latency)
-- `dav1d` 0.11 — Rust bindings to libdav1d AV1 decoder
-- `DynamicVideoDecoder` — enum dispatch, auto-routes H264→openh264, AV1→dav1d
+- `rav1d` — pure Rust AV1 decoder
+- `DynamicVideoDecoder` — enum dispatch, auto-routes H264→openh264, AV1→rav1d
 - `DefaultDecoders` updated to use `DynamicVideoDecoder`
 - Examples updated with `--codec` CLI arg
 
@@ -127,23 +130,13 @@ Feature-gated optional HW encoder backends:
 
 Backend selector tries HW first, falls back to openh264.
 
-### Phase 3: Audio Resilience
-- Opus in-band FEC with adaptive loss percentage
-- 1-frame lookahead FEC recovery on decoder
-- Packet loss concealment (PLC) via Opus native comfort noise
-- DTX for bandwidth savings during silence
-- Adaptive audio jitter buffer (BTreeMap-based, EMA-smoothed target depth)
-- Loss rate feedback loop: observed loss → encoder FEC tuning
+### Phase 3: AV Resilience
+Subscriber-side and publisher-side media quality improvements, structured as four sub-phases:
 
-**Tests**: 4 unit test suites (jitter buffer — 10 scenarios, FEC/PLC — 5 scenarios, DTX — 4 scenarios, loss feedback — 4 scenarios) + 5 integration test suites (packet loss simulation at 5/10/20/30%, jitter simulation, combined loss+jitter, DTX bandwidth measurement, 60s stability).
+**Phase 3a: Adaptive Rendition Switching** — WatchTrack and AudioTrack switch renditions on-demand based on injected network signals (RTT, loss, bandwidth). Catalog-aware selection inspects metadata (resolution, bitrate, codec). Seamless switching runs old and new decoders in parallel during handoff.
 
-### Phase 4: Video Resilience
-- Adaptive bitrate (AIMD algorithm, monitor QUIC backpressure)
-- Dynamic `set_bitrate()` on encoder backends
-- EMA-smoothed frame delay for stable playback
-- Frame freeze (hold last frame on timeout, don't stall)
-- Late frame detection and skip
-- OpenH264 temporal SVC (2-4 layers, selective layer dropping)
-- Quality metrics observability (`VideoStats` struct)
+**Phase 3b: Jitter Buffer & A/V Sync** — Frame-level playout timing on top of hang's group-level management. PlayoutClock (shared `Arc<Mutex>`) coordinates A/V sync. PlayoutMode: `Auto { min, max }` (adapts to jitter) / `Fixed(Duration)` (user-controlled). Audio is sync master.
 
-**Tests**: 5 unit test suites (ABR algorithm — 7 scenarios, frame timing — 4 scenarios, late frames — 5 scenarios, temporal SVC — 5 scenarios, quality metrics — 5 scenarios) + 6 integration test suites (ABR simulation, frame timing simulation, late frame simulation, temporal SVC end-to-end, degradation path, 120s stability).
+**Phase 3c: Forward Error Correction (Future)** — Opus in-band FEC with adaptive loss percentage. 1-frame lookahead FEC recovery. PLC via Opus native comfort noise. DTX for bandwidth savings during silence.
+
+**Phase 3d: Adaptive Encoding (Future)** — `set_bitrate()` / `force_keyframe()` on encoder trait + all backends. Bandwidth estimation from QUIC PathStats (reuses NetworkSignals). Transport-aware rate control. Quality degradation state machine. Sender-side frame pacing.
