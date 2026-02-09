@@ -109,7 +109,7 @@ impl av::VideoEncoderInner for H264Encoder {
                 profile: 0x42, // Baseline
                 constraints: 0xE0,
                 level: 0x1E, // Level 3.0
-                inline: true,
+                inline: false,
             }),
             description: self.avcc.clone().map(Into::into),
             coded_width: Some(self.width),
