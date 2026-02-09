@@ -14,10 +14,10 @@ data-encoding = "2.9.0"
 derive_more = { version = "2.0.1", features = ["display", "debug", "eq"] }
 hang = "0.10"
 image = { version = "0.25.8", default-features = false }
-iroh = "0.95.1"
-iroh-gossip = "0.95.0"
+iroh = "0.96.1"
+iroh-gossip = "0.96.0"
 iroh-moq = { path = "../iroh-moq" }
-iroh-tickets = "0.2.0"
+iroh-tickets = "0.3.0"
 moq-lite = "0.11"
 moq-media = { version = "0.1.0", path = "../moq-media" }
 n0-error = { version = "0.1.2", features = ["anyhow"] }
@@ -31,7 +31,7 @@ tokio = { version = "1.48.0", features = ["sync"] }
 tokio-util = "0.7.17"
 tracing = "0.1.41"
 bytes = "1.11.0"
-iroh-smol-kv = { git = "https://github.com/Frando/iroh-smol-kv", branch = "iroh-095", version = "0.3.1", default-features = false }
+iroh-smol-kv = { git = "https://github.com/Frando/iroh-smol-kv", branch = "iroh-096", default-features = false }
 
 
 [dev-dependencies]
