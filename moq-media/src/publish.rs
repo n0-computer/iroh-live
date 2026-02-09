@@ -14,7 +14,7 @@ use moq_lite::BroadcastProducer;
 use n0_error::Result;
 use n0_future::task::AbortOnDropHandle;
 use tokio_util::sync::{CancellationToken, DropGuard};
-use tracing::{debug, error, info, info_span, trace, warn};
+use tracing::{error, info, info_span, trace, warn};
 
 use tokio::sync::watch;
 
@@ -83,12 +83,13 @@ impl PublishBroadcast {
                     let state = state.clone();
                     async move {
                         track.unused().await;
-                        info!("stopping track: {name}");
+                        info!("stopping track: {name} (all subscribers disconnected)");
                         state.lock().expect("poisoned").stop_track(&name);
                     }
                 });
             }
         }
+        info!("publish broadcast: no more track requests, shutting down");
     }
 
     /// Create a local WatchTrack from the current video source, if present.
@@ -485,12 +486,12 @@ impl EncoderThread {
             move || {
                 let _guard = span.enter();
                 if let Err(err) = source.start() {
-                    warn!("video source failed to start: {err:#}");
+                    error!("video source failed to start: {err:#}");
                     return;
                 }
                 let format = source.format();
                 let enc_config = encoder.config();
-                tracing::debug!(
+                info!(
                     src_format = ?format,
                     dst_config = ?enc_config,
                     "video encoder thread start"
@@ -509,13 +510,13 @@ impl EncoderThread {
                 loop {
                     let start = Instant::now();
                     if shutdown.is_cancelled() {
-                        debug!("stop video encoder: cancelled");
+                        info!("stop video encoder: cancelled");
                         break;
                     }
                     let frame = match source.pop_frame() {
                         Ok(frame) => frame,
                         Err(err) => {
-                            warn!("video encoder failed: {err:#}");
+                            error!("video source failed to produce frame: {err:#}");
                             break;
                         }
                     };
@@ -534,17 +535,26 @@ impl EncoderThread {
                             },
                             Ok(None) => frame,
                             Err(err) => {
-                                warn!("frame scaling failed: {err:#}");
+                                error!("video frame scaling failed: {err:#}");
                                 break;
                             }
                         };
                         if let Err(err) = encoder.push_frame(frame) {
-                            warn!("video encoder failed: {err:#}");
+                            error!("video encoder push_frame failed: {err:#}");
                             break;
                         };
-                        while let Ok(Some(pkt)) = encoder.pop_packet() {
-                            if let Err(err) = producer.write(pkt) {
-                                warn!("failed to write frame to producer: {err:#}");
+                        loop {
+                            match encoder.pop_packet() {
+                                Ok(Some(pkt)) => {
+                                    if let Err(err) = producer.write(pkt) {
+                                        error!("failed to write video packet to producer: {err:#}");
+                                    }
+                                }
+                                Ok(None) => break,
+                                Err(err) => {
+                                    error!("video encoder pop_packet failed: {err:#}");
+                                    break;
+                                }
                             }
                         }
                     }
@@ -554,7 +564,7 @@ impl EncoderThread {
                 if let Err(err) = source.stop() {
                     warn!("video source failed to stop: {err:#}");
                 }
-                tracing::debug!("video encoder thread stop");
+                info!("video encoder thread stop");
             }
         });
         Self {
@@ -575,7 +585,7 @@ impl EncoderThread {
         let span = info_span!("audioenc", %name);
         let handle = spawn_thread(thread_name, move || {
             let _guard = span.enter();
-            tracing::debug!(config=?encoder.config(), "audio encoder thread start");
+            info!(config=?encoder.config(), "audio encoder thread start");
             let shutdown = sd;
             // 20ms framing to align with typical Opus config (48kHz → 960 samples/ch)
             const INTERVAL: Duration = Duration::from_millis(20);
@@ -586,21 +596,31 @@ impl EncoderThread {
             for tick in 0.. {
                 trace!("tick");
                 if shutdown.is_cancelled() {
+                    info!("stop audio encoder: cancelled");
                     break;
                 }
                 match source.pop_samples(&mut buf) {
                     Ok(Some(_n)) => {
                         // Expect a full frame; if shorter, zero-pad via slice len
                         if let Err(err) = encoder.push_samples(&buf) {
-                            error!(buf_len = buf.len(), "audio push_samples failed: {err:#}");
+                            error!(
+                                buf_len = buf.len(),
+                                "audio encoder push_samples failed: {err:#}"
+                            );
                             break;
                         }
-                        while let Ok(Some(pkt)) = encoder
-                            .pop_packet()
-                            .inspect_err(|err| warn!("encoder error: {err:#}"))
-                        {
-                            if let Err(err) = producer.write(pkt) {
-                                warn!("failed to write frame to producer: {err:#}");
+                        loop {
+                            match encoder.pop_packet() {
+                                Ok(Some(pkt)) => {
+                                    if let Err(err) = producer.write(pkt) {
+                                        error!("failed to write audio packet to producer: {err:#}");
+                                    }
+                                }
+                                Ok(None) => break,
+                                Err(err) => {
+                                    error!("audio encoder pop_packet failed: {err:#}");
+                                    break;
+                                }
                             }
                         }
                     }
@@ -615,7 +635,10 @@ impl EncoderThread {
                 let expected_time = (tick + 1) * INTERVAL;
                 let actual_time = start.elapsed();
                 if actual_time > expected_time {
-                    warn!("audio thread too slow by {:?}", actual_time - expected_time);
+                    warn!(
+                        "audio encoder too slow by {:?}",
+                        actual_time - expected_time
+                    );
                 }
                 let sleep = expected_time.saturating_sub(start.elapsed());
                 if sleep > Duration::ZERO {
@@ -625,11 +648,11 @@ impl EncoderThread {
             // drain
             while let Ok(Some(pkt)) = encoder.pop_packet() {
                 if let Err(err) = producer.write(pkt) {
-                    warn!("failed to write frame to producer: {err:#}");
+                    error!("failed to write audio packet to producer: {err:#}");
                 }
             }
             producer.inner.close();
-            tracing::debug!("audio encoder thread stop");
+            info!("audio encoder thread stop");
         });
         Self {
             _thread_handle: handle,
