@@ -328,7 +328,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
  "x11rb",
 ]
 
@@ -2713,7 +2713,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3251,7 +3251,7 @@ dependencies = [
  "libc",
  "log",
  "rustversion",
- "windows-link 0.2.1",
+ "windows-link 0.1.3",
  "windows-result 0.4.1",
 ]
 
@@ -5531,7 +5531,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6796,7 +6796,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.1",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7356,7 +7356,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7977,6 +7977,7 @@ dependencies = [
 [[package]]
 name = "sonora"
 version = "0.1.0"
+source = "git+https://github.com/dignifiedquire/sonora?branch=main#87b3518c1c797b4c5c7e4649466126394b6c0bf2"
 dependencies = [
  "cbindgen",
  "sonora-aec3",
@@ -7990,6 +7991,7 @@ dependencies = [
 [[package]]
 name = "sonora-aec3"
 version = "0.1.0"
+source = "git+https://github.com/dignifiedquire/sonora?branch=main#87b3518c1c797b4c5c7e4649466126394b6c0bf2"
 dependencies = [
  "sonora-common-audio",
  "sonora-fft",
@@ -8000,6 +8002,7 @@ dependencies = [
 [[package]]
 name = "sonora-agc2"
 version = "0.1.0"
+source = "git+https://github.com/dignifiedquire/sonora?branch=main#87b3518c1c797b4c5c7e4649466126394b6c0bf2"
 dependencies = [
  "bytemuck",
  "derive_more 2.1.0",
@@ -8012,6 +8015,7 @@ dependencies = [
 [[package]]
 name = "sonora-common-audio"
 version = "0.1.0"
+source = "git+https://github.com/dignifiedquire/sonora?branch=main#87b3518c1c797b4c5c7e4649466126394b6c0bf2"
 dependencies = [
  "derive_more 2.1.0",
  "sonora-simd",
@@ -8021,10 +8025,12 @@ dependencies = [
 [[package]]
 name = "sonora-fft"
 version = "0.1.0"
+source = "git+https://github.com/dignifiedquire/sonora?branch=main#87b3518c1c797b4c5c7e4649466126394b6c0bf2"
 
 [[package]]
 name = "sonora-ns"
 version = "0.1.0"
+source = "git+https://github.com/dignifiedquire/sonora?branch=main#87b3518c1c797b4c5c7e4649466126394b6c0bf2"
 dependencies = [
  "sonora-fft",
  "tracing",
@@ -8033,6 +8039,7 @@ dependencies = [
 [[package]]
 name = "sonora-simd"
 version = "0.1.0"
+source = "git+https://github.com/dignifiedquire/sonora?branch=main#87b3518c1c797b4c5c7e4649466126394b6c0bf2"
 dependencies = [
  "cpufeatures 0.3.0",
 ]
@@ -8294,7 +8301,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -9581,7 +9588,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
