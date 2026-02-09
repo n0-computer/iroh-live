@@ -2,7 +2,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use byte_unit::{Bit, UnitType};
-use iroh::endpoint::ConnectionStats;
+use iroh::endpoint::{ConnectionStats, PathInfoList};
 
 /// Spawn a named OS thread and panic if spawning fails.
 pub fn spawn_thread<F, T>(name: impl ToString, f: F) -> thread::JoinHandle<T>
@@ -40,15 +40,22 @@ impl StatsSmoother {
             rtt: Duration::from_secs(0),
         }
     }
-    pub fn smoothed(&mut self, total: impl FnOnce() -> ConnectionStats) -> SmoothedStats<'_> {
+    pub fn smoothed(
+        &mut self,
+        total: impl FnOnce() -> (ConnectionStats, PathInfoList),
+    ) -> SmoothedStats<'_> {
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_update);
         if elapsed >= Duration::from_secs(1) {
-            let stats = (total)();
+            let (stats, paths) = (total)();
             self.rate_down.update(elapsed, stats.udp_rx.bytes);
             self.rate_up.update(elapsed, stats.udp_tx.bytes);
             self.last_update = now;
-            self.rtt = stats.path.rtt;
+            self.rtt = paths
+                .iter()
+                .find(|p| p.is_selected())
+                .map(|p| p.rtt())
+                .unwrap_or_default();
         }
         SmoothedStats {
             down: &self.rate_down,
