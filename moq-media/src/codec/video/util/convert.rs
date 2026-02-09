@@ -19,6 +19,24 @@ pub(crate) struct YuvData {
     pub(crate) v_stride: u32,
 }
 
+impl YuvData {
+    /// Create a black YUV 4:2:0 frame (BT.601 limited range).
+    pub(crate) fn black(width: u32, height: u32) -> Self {
+        let chroma_w = width.div_ceil(2);
+        let chroma_h = height.div_ceil(2);
+        Self {
+            y: vec![16; (width * height) as usize],
+            u: vec![128; (chroma_w * chroma_h) as usize],
+            v: vec![128; (chroma_w * chroma_h) as usize],
+            width,
+            height,
+            y_stride: width,
+            u_stride: chroma_w,
+            v_stride: chroma_w,
+        }
+    }
+}
+
 /// Convert RGBA pixel data to YUV 4:2:0 planar format (BT.601).
 pub(crate) fn rgba_to_yuv420_data(src: &[u8], w: u32, h: u32) -> Result<YuvData> {
     let mut planar = YuvPlanarImageMut::<u8>::alloc(w, h, YuvChromaSubsampling::Yuv420);

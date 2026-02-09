@@ -77,7 +77,18 @@ impl H264Encoder {
             .intra_frame_period(IntraFramePeriod::from_num_frames(framerate));
 
         let api = OpenH264API::from_source();
-        let encoder = OpenH264Encoder::with_api_config(api, config)?;
+        let mut encoder = OpenH264Encoder::with_api_config(api, config)?;
+
+        // Encode a black frame to extract SPS/PPS for the avcC description.
+        // openh264 only emits parameter sets in its first encoded IDR frame.
+        let black = YuvData::black(width, height);
+        let bitstream = encoder.encode(&black)?;
+        let annex_b = bitstream.to_vec();
+        let nals = parse_annex_b(&annex_b);
+        let avcc = extract_sps_pps(&nals).map(|(sps, pps)| build_avcc(&sps, &pps));
+
+        // Force the next real frame to be an IDR since we consumed the first one.
+        encoder.force_intra_frame();
 
         Ok(Self {
             encoder,
@@ -86,7 +97,7 @@ impl H264Encoder {
             framerate,
             bitrate,
             frame_count: 0,
-            avcc: None,
+            avcc,
             packet_buf: Vec::new(),
         })
     }
@@ -200,19 +211,15 @@ mod tests {
     }
 
     #[test]
-    fn avcc_extradata_after_first_encode() {
-        let mut enc = H264Encoder::with_preset(VideoPreset::P180).unwrap();
-        assert!(enc.config().description.is_none());
-        let frame = make_rgba_frame(320, 180, 0, 255, 0);
-        enc.push_frame(frame).unwrap();
-        enc.pop_packet().unwrap();
+    fn avcc_extradata_available_at_construction() {
+        let enc = H264Encoder::with_preset(VideoPreset::P180).unwrap();
         let desc = enc.config().description;
         assert!(
             desc.is_some(),
-            "avcC should be populated after first encode"
+            "avcC should be populated at construction time"
         );
         let avcc = desc.unwrap();
-        assert_eq!(avcc[0], 1);
+        assert_eq!(avcc[0], 1, "avcC should start with version 1");
     }
 
     #[test]

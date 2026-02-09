@@ -31,7 +31,10 @@ use objc2_video_toolbox::{
 
 use crate::{
     av::{self, VideoPreset},
-    codec::video::util::{annexb::build_avcc, convert::pixel_format_to_yuv420},
+    codec::video::util::{
+        annexb::build_avcc,
+        convert::{YuvData, pixel_format_to_yuv420},
+    },
 };
 
 /// Shared buffer between the encoder and the VTCompressionSession callback.
@@ -147,6 +150,45 @@ impl VtbEncoder {
                 session.invalidate();
             }
             bail!("prepare_to_encode_frames failed with status {status}");
+        }
+
+        // Encode a black frame to extract SPS/PPS for the avcC description.
+        // VTB only emits parameter sets in the first encoded IDR frame.
+        {
+            let pool = unsafe { session.pixel_buffer_pool() }
+                .context("VTCompressionSession pixel buffer pool is null (priming)")?;
+            let pixel_buffer = create_pixel_buffer_from_pool(&pool)?;
+
+            let yuv = YuvData::black(width, height);
+            copy_yuv_to_pixel_buffer(&pixel_buffer, &yuv.y, &yuv.u, &yuv.v, width, height)?;
+
+            let pts = unsafe { CMTime::new(0, framerate as i32) };
+            let duration = unsafe { CMTime::new(1, framerate as i32) };
+            let mut info_flags = VTEncodeInfoFlags(0);
+            let status = unsafe {
+                session.encode_frame(
+                    &pixel_buffer,
+                    pts,
+                    duration,
+                    None,
+                    ptr::null_mut(),
+                    &mut info_flags,
+                )
+            };
+            if status != 0 {
+                bail!("VTCompressionSessionEncodeFrame (priming) failed with status {status}");
+            }
+
+            // Flush to ensure the callback fires before we return.
+            let status = unsafe { session.complete_frames(kCMTimeInvalid) };
+            if status != 0 {
+                bail!("VTCompressionSessionCompleteFrames (priming) failed with status {status}");
+            }
+
+            // Discard the priming packet and reset frame count.
+            let mut state = callback_state.lock().unwrap();
+            state.packets.clear();
+            state.frame_count = 0;
         }
 
         Ok(Self {
@@ -575,6 +617,19 @@ mod tests {
             },
             raw: raw.into(),
         }
+    }
+
+    #[test]
+    #[ignore]
+    fn vtb_avcc_available_at_construction() {
+        let enc = VtbEncoder::with_preset(VideoPreset::P360).unwrap();
+        let desc = enc.config().description;
+        assert!(
+            desc.is_some(),
+            "avcC should be populated at construction time"
+        );
+        let avcc = desc.unwrap();
+        assert_eq!(avcc[0], 1, "avcC should start with version 1");
     }
 
     #[test]
