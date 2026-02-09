@@ -21,7 +21,7 @@ use tokio::sync::{mpsc, watch};
 use crate::{
     av::{
         AudioEncoder, AudioEncoderInner, AudioPreset, AudioSource, DecodeConfig, VideoEncoder,
-        VideoEncoderInner, VideoFormat, VideoFrame, VideoPreset, VideoSource,
+        VideoEncoderInner, VideoEncoderKind, VideoFormat, VideoFrame, VideoPreset, VideoSource,
     },
     codec::video::util::scale::{Scaler, fit_within},
     subscribe::WatchTrack,
@@ -377,6 +377,24 @@ impl VideoRenditions {
             renditions,
             source,
             _shared_source_cancel_guard: shutdown_token.drop_guard(),
+        }
+    }
+
+    /// Create video renditions with a dynamically-selected encoder.
+    pub fn new_for_codec(
+        codec: VideoEncoderKind,
+        source: impl VideoSource,
+        presets: impl IntoIterator<Item = VideoPreset>,
+    ) -> Self {
+        use crate::codec;
+        match codec {
+            VideoEncoderKind::H264 => Self::new::<codec::H264Encoder>(source, presets),
+            #[cfg(feature = "av1")]
+            VideoEncoderKind::Av1 => Self::new::<codec::Av1Encoder>(source, presets),
+            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+            VideoEncoderKind::VtbH264 => Self::new::<codec::VtbEncoder>(source, presets),
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            VideoEncoderKind::VaapiH264 => Self::new::<codec::VaapiEncoder>(source, presets),
         }
     }
 
