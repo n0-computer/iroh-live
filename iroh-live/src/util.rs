@@ -40,15 +40,18 @@ impl StatsSmoother {
             rtt: Duration::from_secs(0),
         }
     }
-    pub fn smoothed(&mut self, total: impl FnOnce() -> ConnectionStats) -> SmoothedStats<'_> {
+    pub fn smoothed(
+        &mut self,
+        total: impl FnOnce() -> (ConnectionStats, Duration),
+    ) -> SmoothedStats<'_> {
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_update);
         if elapsed >= Duration::from_secs(1) {
-            let stats = (total)();
+            let (stats, rtt) = (total)();
             self.rate_down.update(elapsed, stats.udp_rx.bytes);
             self.rate_up.update(elapsed, stats.udp_tx.bytes);
             self.last_update = now;
-            self.rtt = stats.path.rtt;
+            self.rtt = rtt;
         }
         SmoothedStats {
             down: &self.rate_down,
