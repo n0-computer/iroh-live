@@ -57,6 +57,7 @@ pub struct RoomPublisherSync {
     state: PublishOpts,
     prev_camera_index: Option<u32>,
     prev_audio_device: Option<String>,
+    prev_video_codec: Option<VideoEncoderKind>,
 }
 
 impl fmt::Debug for RoomPublisherSync {
@@ -81,6 +82,7 @@ impl RoomPublisherSync {
             state: Default::default(),
             prev_camera_index: None,
             prev_audio_device: None,
+            prev_video_codec: None,
         }
     }
 
@@ -133,7 +135,9 @@ impl RoomPublisherSync {
     pub fn set_camera(&mut self, enable: bool) -> Result<()> {
         let index_changed =
             enable && self.state.camera && self.state.camera_index != self.prev_camera_index;
-        if self.state.camera != enable || index_changed {
+        let codec_changed =
+            enable && self.state.camera && self.state.video_codec != self.prev_video_codec;
+        if self.state.camera != enable || index_changed || codec_changed {
             if enable {
                 let camera = match self.state.camera_index {
                     Some(index) => CameraCapturer::with_index(index)?,
@@ -156,6 +160,7 @@ impl RoomPublisherSync {
             }
             self.state.camera = enable;
             self.prev_camera_index = self.state.camera_index;
+            self.prev_video_codec = self.state.video_codec;
         }
         Ok(())
     }
@@ -182,7 +187,9 @@ impl RoomPublisherSync {
     }
 
     pub fn set_screen(&mut self, enable: bool) -> Result<()> {
-        if self.state.screen != enable {
+        let codec_changed =
+            enable && self.state.screen && self.state.video_codec != self.prev_video_codec;
+        if self.state.screen != enable || codec_changed {
             if enable {
                 if self.screen.is_none() {
                     let broadcast = PublishBroadcast::new();
@@ -206,6 +213,7 @@ impl RoomPublisherSync {
                 let _ = self.screen.take();
             }
             self.state.screen = enable;
+            self.prev_video_codec = self.state.video_codec;
         }
         Ok(())
     }
