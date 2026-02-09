@@ -687,8 +687,7 @@ impl WatchTrack {
         mut decoder: impl VideoDecoder,
         target_pixel_format: PixelFormat,
     ) -> Result<(), anyhow::Error> {
-        let mut consecutive_errors = 0u32;
-        const MAX_CONSECUTIVE_ERRORS: u32 = 10;
+        let mut waiting_for_keyframe = false;
         loop {
             if shutdown.is_cancelled() {
                 break;
@@ -696,23 +695,31 @@ impl WatchTrack {
             let Some(packet) = input_rx.blocking_recv() else {
                 break;
             };
+
+            // After a decode error, skip packets until we receive a keyframe
+            // so the decoder can resync.
+            if waiting_for_keyframe {
+                if !packet.keyframe {
+                    trace!("skipping non-keyframe packet while waiting for recovery");
+                    continue;
+                }
+                info!("received keyframe, resuming decode");
+                waiting_for_keyframe = false;
+            }
+
             if viewport_watcher.update() {
                 let (w, h) = viewport_watcher.peek();
                 decoder.set_viewport(*w, *h);
             }
             let t = Instant::now();
             if let Err(err) = decoder.push_packet(packet) {
-                consecutive_errors += 1;
-                warn!(consecutive_errors, "failed to push video packet: {err:#}");
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                    return Err(err.context("too many consecutive video decode errors"));
-                }
+                warn!("failed to push video packet, waiting for next keyframe: {err:#}");
+                waiting_for_keyframe = true;
                 continue;
             }
             trace!(t=?t.elapsed(), "videodec: push_packet");
             match decoder.pop_frame() {
                 Ok(Some(mut frame)) => {
-                    consecutive_errors = 0;
                     trace!(t=?t.elapsed(), "videodec: pop frame");
                     // Decoders output RGBA; convert if the consumer needs BGRA.
                     if target_pixel_format == PixelFormat::Bgra {
@@ -745,15 +752,10 @@ impl WatchTrack {
                         }
                     }
                 }
-                Ok(None) => {
-                    consecutive_errors = 0;
-                }
+                Ok(None) => {}
                 Err(err) => {
-                    consecutive_errors += 1;
-                    warn!(consecutive_errors, "failed to pop video frame: {err:#}");
-                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                        return Err(err.context("too many consecutive video decode errors"));
-                    }
+                    warn!("failed to pop video frame, waiting for next keyframe: {err:#}");
+                    waiting_for_keyframe = true;
                 }
             }
         }
