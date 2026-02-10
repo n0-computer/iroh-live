@@ -195,22 +195,9 @@ mod tests {
     use hang::catalog::{AV1, H264};
 
     use super::*;
-    use crate::av::{
-        PixelFormat, VideoEncoder, VideoEncoderFactory, VideoFormat, VideoFrame, VideoPreset,
-    };
+    use crate::av::{VideoEncoder, VideoEncoderFactory, VideoFrame, VideoPreset};
     use crate::codec::video::encoder::H264Encoder;
-
-    fn make_rgba_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> VideoFrame {
-        let pixel = [r, g, b, 255u8];
-        let raw: Vec<u8> = pixel.repeat((w * h) as usize);
-        VideoFrame {
-            format: VideoFormat {
-                pixel_format: PixelFormat::Rgba,
-                dimensions: [w, h],
-            },
-            raw: raw.into(),
-        }
-    }
+    use crate::codec::video::test_util::make_rgba_frame;
 
     fn encode_frames(enc: &mut H264Encoder, frames: &[VideoFrame]) -> Vec<hang::Frame> {
         let mut packets = Vec::new();

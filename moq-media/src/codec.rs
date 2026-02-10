@@ -21,10 +21,10 @@ pub fn codec_init() {}
 mod tests {
     use crate::av::{
         AudioDecoder, AudioEncoder, AudioEncoderFactory, AudioFormat, AudioPreset, DecodeConfig,
-        DecodedFrame, Decoders, PixelFormat, VideoDecoder, VideoEncoder, VideoEncoderFactory,
-        VideoFormat, VideoFrame, VideoPreset,
+        Decoders, VideoDecoder, VideoEncoder, VideoEncoderFactory, VideoPreset,
     };
-    use hang::catalog::{AudioConfig, VideoConfig};
+    use crate::codec::video::test_util;
+    use hang::catalog::AudioConfig;
     use std::f32::consts::PI;
 
     use super::*;
@@ -33,98 +33,6 @@ mod tests {
     fn default_decoders_types() {
         fn assert_decoders<D: Decoders>() {}
         assert_decoders::<DefaultDecoders>();
-    }
-
-    // --- Video roundtrip helpers ---
-
-    fn make_solid_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> VideoFrame {
-        let raw: Vec<u8> = [r, g, b, 255].repeat((w * h) as usize);
-        VideoFrame {
-            format: VideoFormat {
-                pixel_format: PixelFormat::Rgba,
-                dimensions: [w, h],
-            },
-            raw: raw.into(),
-        }
-    }
-
-    /// Encode `n` solid-color frames, return packets.
-    fn video_encode(
-        enc: &mut H264Encoder,
-        w: u32,
-        h: u32,
-        r: u8,
-        g: u8,
-        b: u8,
-        n: usize,
-    ) -> Vec<hang::Frame> {
-        let mut packets = Vec::new();
-        for _ in 0..n {
-            enc.push_frame(make_solid_frame(w, h, r, g, b)).unwrap();
-            while let Some(pkt) = enc.pop_packet().unwrap() {
-                packets.push(pkt);
-            }
-        }
-        packets
-    }
-
-    /// Decode all packets, return decoded frames.
-    fn video_decode(config: &VideoConfig, packets: Vec<hang::Frame>) -> Vec<DecodedFrame> {
-        let decode_config = DecodeConfig::default();
-        let mut dec = H264VideoDecoder::new(config, &decode_config).unwrap();
-        let mut frames = Vec::new();
-        for pkt in packets {
-            dec.push_packet(pkt).unwrap();
-            if let Some(frame) = dec.pop_frame().unwrap() {
-                frames.push(frame);
-            }
-        }
-        frames
-    }
-
-    /// Assert decoded frames have correct dimensions and the center pixel
-    /// approximately matches the expected color (within `tolerance`).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "test helper with clear parameters"
-    )]
-    fn assert_video_roundtrip(
-        frames: &[DecodedFrame],
-        w: u32,
-        h: u32,
-        expected_r: u8,
-        expected_g: u8,
-        expected_b: u8,
-        tolerance: u8,
-        min_frames: usize,
-    ) {
-        assert!(
-            frames.len() >= min_frames,
-            "expected >= {min_frames} frames, got {}",
-            frames.len()
-        );
-        // Check the last frame (encoder has stabilized by then)
-        let last = frames.last().unwrap();
-        let img = last.img();
-        assert_eq!(img.width(), w);
-        assert_eq!(img.height(), h);
-        let pixel = img.get_pixel(w / 2, h / 2);
-        assert!(
-            pixel[0].abs_diff(expected_r) <= tolerance,
-            "R: expected ~{expected_r}, got {} (tolerance {tolerance})",
-            pixel[0]
-        );
-        assert!(
-            pixel[1].abs_diff(expected_g) <= tolerance,
-            "G: expected ~{expected_g}, got {} (tolerance {tolerance})",
-            pixel[1]
-        );
-        assert!(
-            pixel[2].abs_diff(expected_b) <= tolerance,
-            "B: expected ~{expected_b}, got {} (tolerance {tolerance})",
-            pixel[2]
-        );
-        assert_eq!(pixel[3], 255, "alpha should be 255");
     }
 
     // --- Audio roundtrip helpers ---
@@ -200,10 +108,10 @@ mod tests {
         let preset = VideoPreset::P180;
         let (w, h) = preset.dimensions();
         let mut enc = H264Encoder::with_preset(preset).unwrap();
-        let packets = video_encode(&mut enc, w, h, 255, 0, 0, 10);
+        let packets = test_util::video_encode(&mut enc, w, h, 255, 0, 0, 10);
         let config = enc.config();
-        let frames = video_decode(&config, packets);
-        assert_video_roundtrip(&frames, w, h, 255, 0, 0, 80, 5);
+        let frames = test_util::video_decode::<H264VideoDecoder>(&config, packets);
+        test_util::assert_video_roundtrip(&frames, w, h, 255, 0, 0, 80, 5);
     }
 
     #[test]
@@ -211,10 +119,10 @@ mod tests {
         let preset = VideoPreset::P360;
         let (w, h) = preset.dimensions();
         let mut enc = H264Encoder::with_preset(preset).unwrap();
-        let packets = video_encode(&mut enc, w, h, 0, 255, 0, 10);
+        let packets = test_util::video_encode(&mut enc, w, h, 0, 255, 0, 10);
         let config = enc.config();
-        let frames = video_decode(&config, packets);
-        assert_video_roundtrip(&frames, w, h, 0, 255, 0, 80, 5);
+        let frames = test_util::video_decode::<H264VideoDecoder>(&config, packets);
+        test_util::assert_video_roundtrip(&frames, w, h, 0, 255, 0, 80, 5);
     }
 
     #[test]
@@ -222,10 +130,10 @@ mod tests {
         let preset = VideoPreset::P720;
         let (w, h) = preset.dimensions();
         let mut enc = H264Encoder::with_preset(preset).unwrap();
-        let packets = video_encode(&mut enc, w, h, 0, 0, 255, 10);
+        let packets = test_util::video_encode(&mut enc, w, h, 0, 0, 255, 10);
         let config = enc.config();
-        let frames = video_decode(&config, packets);
-        assert_video_roundtrip(&frames, w, h, 0, 0, 255, 80, 5);
+        let frames = test_util::video_decode::<H264VideoDecoder>(&config, packets);
+        test_util::assert_video_roundtrip(&frames, w, h, 0, 0, 255, 80, 5);
     }
 
     #[test]
@@ -233,46 +141,10 @@ mod tests {
         let preset = VideoPreset::P1080;
         let (w, h) = preset.dimensions();
         let mut enc = H264Encoder::with_preset(preset).unwrap();
-        let packets = video_encode(&mut enc, w, h, 255, 255, 255, 10);
+        let packets = test_util::video_encode(&mut enc, w, h, 255, 255, 255, 10);
         let config = enc.config();
-        let frames = video_decode(&config, packets);
-        assert_video_roundtrip(&frames, w, h, 255, 255, 255, 40, 5);
-    }
-
-    // --- AV1 video roundtrip helpers ---
-
-    #[cfg(feature = "av1")]
-    fn av1_video_encode(
-        enc: &mut Av1Encoder,
-        w: u32,
-        h: u32,
-        r: u8,
-        g: u8,
-        b: u8,
-        n: usize,
-    ) -> Vec<hang::Frame> {
-        let mut packets = Vec::new();
-        for _ in 0..n {
-            enc.push_frame(make_solid_frame(w, h, r, g, b)).unwrap();
-            while let Some(pkt) = enc.pop_packet().unwrap() {
-                packets.push(pkt);
-            }
-        }
-        packets
-    }
-
-    #[cfg(feature = "av1")]
-    fn av1_video_decode(config: &VideoConfig, packets: Vec<hang::Frame>) -> Vec<DecodedFrame> {
-        let decode_config = DecodeConfig::default();
-        let mut dec = Av1VideoDecoder::new(config, &decode_config).unwrap();
-        let mut frames = Vec::new();
-        for pkt in packets {
-            dec.push_packet(pkt).unwrap();
-            if let Some(frame) = dec.pop_frame().unwrap() {
-                frames.push(frame);
-            }
-        }
-        frames
+        let frames = test_util::video_decode::<H264VideoDecoder>(&config, packets);
+        test_util::assert_video_roundtrip(&frames, w, h, 255, 255, 255, 40, 5);
     }
 
     // --- AV1 video roundtrip tests ---
@@ -284,10 +156,10 @@ mod tests {
         let (w, h) = preset.dimensions();
         let mut enc = Av1Encoder::with_preset(preset).unwrap();
         // rav1e buffers frames; send 60 to ensure sufficient output
-        let packets = av1_video_encode(&mut enc, w, h, 255, 0, 0, 60);
+        let packets = test_util::video_encode(&mut enc, w, h, 255, 0, 0, 60);
         let config = enc.config();
-        let frames = av1_video_decode(&config, packets);
-        assert_video_roundtrip(&frames, w, h, 255, 0, 0, 80, 5);
+        let frames = test_util::video_decode::<Av1VideoDecoder>(&config, packets);
+        test_util::assert_video_roundtrip(&frames, w, h, 255, 0, 0, 80, 5);
     }
 
     #[cfg(feature = "av1")]
@@ -296,10 +168,10 @@ mod tests {
         let preset = VideoPreset::P360;
         let (w, h) = preset.dimensions();
         let mut enc = Av1Encoder::with_preset(preset).unwrap();
-        let packets = av1_video_encode(&mut enc, w, h, 0, 255, 0, 60);
+        let packets = test_util::video_encode(&mut enc, w, h, 0, 255, 0, 60);
         let config = enc.config();
-        let frames = av1_video_decode(&config, packets);
-        assert_video_roundtrip(&frames, w, h, 0, 255, 0, 80, 5);
+        let frames = test_util::video_decode::<Av1VideoDecoder>(&config, packets);
+        test_util::assert_video_roundtrip(&frames, w, h, 0, 255, 0, 80, 5);
     }
 
     // --- DynamicVideoDecoder routing tests ---
@@ -309,7 +181,7 @@ mod tests {
         let preset = VideoPreset::P180;
         let (w, h) = preset.dimensions();
         let mut enc = H264Encoder::with_preset(preset).unwrap();
-        let packets = video_encode(&mut enc, w, h, 200, 100, 50, 10);
+        let packets = test_util::video_encode(&mut enc, w, h, 200, 100, 50, 10);
         let config = enc.config();
 
         let decode_config = DecodeConfig::default();
@@ -332,12 +204,10 @@ mod tests {
     #[cfg(feature = "av1")]
     #[test]
     fn dynamic_routes_av1() {
-        use crate::av::VideoEncoderFactory;
-
         let preset = VideoPreset::P180;
         let (w, h) = preset.dimensions();
         let mut enc = Av1Encoder::with_preset(preset).unwrap();
-        let packets = av1_video_encode(&mut enc, w, h, 200, 100, 50, 60);
+        let packets = test_util::video_encode(&mut enc, w, h, 200, 100, 50, 60);
         let config = enc.config();
 
         let decode_config = DecodeConfig::default();
@@ -355,6 +225,36 @@ mod tests {
             decoded_count >= 5,
             "expected >= 5 decoded frames, got {decoded_count}"
         );
+    }
+
+    // --- Hardware encoder cross-codec roundtrip tests ---
+
+    #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+    #[test]
+    #[ignore]
+    fn vtb_roundtrip_p360_red() {
+        let preset = VideoPreset::P360;
+        let (w, h) = preset.dimensions();
+        let mut enc = VtbEncoder::with_preset(preset).unwrap();
+        let packets = test_util::video_encode_pattern(&mut enc, w, h, 30);
+        let config = enc.config();
+        // VTB produces H.264 — decode with software H264VideoDecoder
+        let frames = test_util::video_decode::<H264VideoDecoder>(&config, packets);
+        test_util::assert_video_not_black(&frames, w, h, 5);
+    }
+
+    #[cfg(all(target_os = "linux", feature = "vaapi"))]
+    #[test]
+    #[ignore = "requires VAAPI hardware"]
+    fn vaapi_roundtrip_p360_red() {
+        let preset = VideoPreset::P360;
+        let (w, h) = preset.dimensions();
+        let mut enc = VaapiEncoder::with_preset(preset).unwrap();
+        let packets = test_util::video_encode_pattern(&mut enc, w, h, 30);
+        let config = enc.config();
+        // VAAPI produces H.264 — decode with software H264VideoDecoder
+        let frames = test_util::video_decode::<H264VideoDecoder>(&config, packets);
+        test_util::assert_video_not_black(&frames, w, h, 5);
     }
 
     // --- Audio roundtrip tests for every format × preset combination ---

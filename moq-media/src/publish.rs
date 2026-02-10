@@ -790,12 +790,17 @@ impl Drop for EncoderThread {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::av::{PixelFormat, VideoCodec, VideoFormat, VideoFrame, VideoPreset, VideoSource};
+    use crate::av::{
+        PixelFormat, VideoCodec, VideoEncoderFactory, VideoFormat, VideoFrame, VideoPreset,
+        VideoSource,
+    };
+    use crate::codec::video::test_util::make_test_pattern;
 
-    /// A minimal video source for testing that produces solid-color frames.
+    /// A video source for testing that produces synthetic test pattern frames.
     struct TestVideoSource {
         format: VideoFormat,
         started: bool,
+        frame_index: u32,
     }
 
     impl TestVideoSource {
@@ -806,6 +811,7 @@ mod tests {
                     dimensions: [width, height],
                 },
                 started: false,
+                frame_index: 0,
             }
         }
     }
@@ -834,11 +840,9 @@ mod tests {
                 return Ok(None);
             }
             let [w, h] = self.format.dimensions;
-            let data = vec![128u8; (w * h * 4) as usize];
-            Ok(Some(VideoFrame {
-                format: self.format.clone(),
-                raw: data.into(),
-            }))
+            let frame = make_test_pattern(w, h, self.frame_index);
+            self.frame_index += 1;
+            Ok(Some(frame))
         }
     }
 
@@ -951,5 +955,98 @@ mod tests {
 
         // Verify no video available.
         assert!(broadcast.watch_local(DecodeConfig::default()).is_none());
+    }
+
+    // --- Real encoder pipeline tests ---
+    // These test spawn_video with actual encoders to verify the full
+    // source → encode → hang track pipeline works end-to-end.
+
+    async fn assert_spawn_video_produces_output<E: VideoEncoderFactory>(
+        preset: VideoPreset,
+        timeout: Duration,
+    ) {
+        let (w, h) = preset.dimensions();
+        let source = TestVideoSource::new(w, h);
+        let encoder = E::with_preset(preset).unwrap();
+        let track = moq_lite::Track::new("test-video").produce();
+        let producer = hang::TrackProducer::new(track.producer);
+        let mut consumer = track.consumer;
+        let shutdown = CancellationToken::new();
+
+        let _thread = EncoderThread::spawn_video(source, encoder, producer, shutdown.clone());
+
+        let result = tokio::time::timeout(timeout, consumer.next_group()).await;
+
+        shutdown.cancel();
+
+        let group = result
+            .expect("timed out waiting for first video group")
+            .expect("track error")
+            .expect("track closed without producing any groups");
+        assert_eq!(group.info.sequence, 0, "first group should be sequence 0");
+    }
+
+    #[tokio::test]
+    async fn spawn_video_h264_produces_output() {
+        assert_spawn_video_produces_output::<codec::H264Encoder>(
+            VideoPreset::P180,
+            Duration::from_millis(500),
+        )
+        .await;
+    }
+
+    #[cfg(feature = "av1")]
+    #[tokio::test]
+    async fn spawn_video_av1_produces_output() {
+        // rav1e buffers ~30 frames before first output at speed preset 10
+        assert_spawn_video_produces_output::<codec::Av1Encoder>(
+            VideoPreset::P180,
+            Duration::from_secs(3),
+        )
+        .await;
+    }
+
+    #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+    #[tokio::test]
+    #[ignore]
+    async fn spawn_video_vtb_produces_output() {
+        assert_spawn_video_produces_output::<codec::VtbEncoder>(
+            VideoPreset::P180,
+            Duration::from_millis(500),
+        )
+        .await;
+    }
+
+    #[cfg(all(target_os = "linux", feature = "vaapi"))]
+    #[tokio::test]
+    #[ignore = "requires VAAPI hardware"]
+    async fn spawn_video_vaapi_produces_output() {
+        assert_spawn_video_produces_output::<codec::VaapiEncoder>(
+            VideoPreset::P180,
+            Duration::from_millis(500),
+        )
+        .await;
+    }
+
+    /// Regression test: set_video must make renditions available BEFORE
+    /// publishing the catalog, otherwise subscribers that request tracks
+    /// based on the catalog will get "rendition not available" errors.
+    #[tokio::test]
+    async fn set_video_renditions_available_before_catalog() {
+        let mut broadcast = PublishBroadcast::new();
+        let renditions = make_renditions();
+        let rendition_names: Vec<String> = renditions.renditions.keys().cloned().collect();
+
+        broadcast.set_video(Some(renditions)).unwrap();
+
+        // After set_video, all rendition names should be available in state.
+        let state = broadcast.state.lock().expect("poisoned");
+        let available = state.available_video.as_ref().expect("video should be set");
+        for name in &rendition_names {
+            assert!(
+                available.contains_rendition(name),
+                "rendition {name} should be available after set_video"
+            );
+        }
     }
 }
