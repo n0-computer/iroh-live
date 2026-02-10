@@ -47,13 +47,17 @@ type StreamReaderHandle = Arc<Mutex<StreamReaderState>>;
 pub struct DeviceId(cpal::DeviceId);
 
 impl DeviceId {
-    pub fn from_str(id: &str) -> Result<Self> {
-        let id = cpal::DeviceId::from_str(id)?;
-        Ok(Self(id))
-    }
-
     fn to_cpal(&self) -> (cpal::HostId, cpal::DeviceId) {
         (self.0.0, self.0.clone())
+    }
+}
+
+impl FromStr for DeviceId {
+    type Err = anyhow::Error;
+
+    fn from_str(id: &str) -> Result<Self> {
+        let id = cpal::DeviceId::from_str(id)?;
+        Ok(Self(id))
     }
 }
 
@@ -78,7 +82,7 @@ pub fn list_audio_inputs() -> Vec<AudioDevice> {
             for (j, device) in host.input_devices().into_iter().enumerate() {
                 let id = DeviceId(device.id);
                 out.push(AudioDevice {
-                    name: device.name.unwrap_or(id.to_string()),
+                    name: device.name.unwrap_or_else(|| id.to_string()),
                     id,
                     is_default: i == 0 && j == 0,
                 })
@@ -97,7 +101,7 @@ pub fn list_audio_outputs() -> Vec<AudioDevice> {
             for (j, device) in host.output_devices().into_iter().enumerate() {
                 let id = DeviceId(device.id);
                 out.push(AudioDevice {
-                    name: device.name.unwrap_or(id.to_string()),
+                    name: device.name.unwrap_or_else(|| id.to_string()),
                     id,
                     is_default: i == 0 && j == 0,
                 })
@@ -137,7 +141,11 @@ impl AudioBackend {
             .send(DriverMessage::InputStream { format, reply })
             .await?;
         let handle = reply_rx.await??;
-        Ok(InputStream { handle, format })
+        Ok(InputStream {
+            handle,
+            format,
+            inactive_count: 0,
+        })
     }
 
     pub async fn default_output(&self) -> Result<OutputStream> {
@@ -260,6 +268,9 @@ pub struct InputStream {
     #[debug(skip)]
     handle: StreamReaderHandle,
     format: AudioFormat,
+    /// Count of consecutive inactive reads, used to rate-limit warnings.
+    #[debug(skip)]
+    inactive_count: u32,
 }
 
 impl AudioSource for InputStream {
@@ -275,9 +286,19 @@ impl AudioSource for InputStream {
         use firewheel::nodes::stream::ReadStatus;
         let mut handle = self.handle.lock().expect("poisoned");
         match handle.read_interleaved(buf) {
-            Some(ReadStatus::Ok) => Ok(Some(buf.len())),
+            Some(ReadStatus::Ok) => {
+                if self.inactive_count > 0 {
+                    info!(
+                        "audio input stream became active after {} inactive reads",
+                        self.inactive_count
+                    );
+                    self.inactive_count = 0;
+                }
+                Ok(Some(buf.len()))
+            }
             Some(ReadStatus::InputNotReady) => {
                 tracing::warn!("audio input not ready");
+                self.inactive_count = 0;
                 // Maintain pacing; still return a frame-sized buffer
                 Ok(Some(buf.len()))
             }
@@ -286,16 +307,28 @@ impl AudioSource for InputStream {
                     "audio input underflow: {} frames missing",
                     buf.len() - num_frames_read
                 );
+                self.inactive_count = 0;
                 Ok(Some(buf.len()))
             }
             Some(ReadStatus::OverflowCorrected {
                 num_frames_discarded,
             }) => {
                 tracing::warn!("audio input overflow: {num_frames_discarded} frames discarded");
+                self.inactive_count = 0;
                 Ok(Some(buf.len()))
             }
             None => {
-                tracing::warn!("audio input stream is inactive");
+                self.inactive_count += 1;
+                // Log at warn level on the first occurrence, then every 250
+                // reads (~5s at 20ms intervals) to avoid flooding the log.
+                if self.inactive_count == 1 {
+                    tracing::warn!("audio input stream is inactive");
+                } else if self.inactive_count.is_multiple_of(250) {
+                    tracing::warn!(
+                        "audio input stream still inactive ({} reads)",
+                        self.inactive_count,
+                    );
+                }
                 Ok(None)
             }
         }
@@ -350,13 +383,9 @@ impl AudioDriver {
 
         #[cfg(target_os = "linux")]
         let input_device = input_device.or_else(|| DeviceId::from_str("alsa:pipewire").ok());
-        #[cfg(not(target_os = "linux"))]
-        let input_device = input_device;
 
         #[cfg(target_os = "linux")]
         let output_device = output_device.or_else(|| DeviceId::from_str("alsa:pipewire").ok());
-        #[cfg(not(target_os = "linux"))]
-        let output_device = output_device;
 
         let (output_host, output_id) = match output_device {
             Some(device) => {
