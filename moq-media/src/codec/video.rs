@@ -6,6 +6,8 @@ mod encoder;
 mod rav1d_safe;
 #[cfg(feature = "av1")]
 mod rav1e_enc;
+#[cfg(test)]
+pub(crate) mod test_util;
 pub(crate) mod util;
 #[cfg(all(target_os = "linux", feature = "vaapi"))]
 mod vaapi_enc;
