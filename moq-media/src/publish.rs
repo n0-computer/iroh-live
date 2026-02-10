@@ -120,9 +120,6 @@ impl PublishBroadcast {
     pub fn set_video(&mut self, renditions: Option<VideoRenditions>) -> Result<()> {
         match renditions {
             Some(renditions) => {
-                // Tear down existing video first (stops encoders, cancels local watches).
-                self.state.lock().expect("poisoned").remove_video();
-
                 let priority = 1u8;
                 let configs = renditions.available_renditions()?;
                 let video = Video {
@@ -132,11 +129,17 @@ impl PublishBroadcast {
                     rotation: None,
                     flip: None,
                 };
+                // Tear down existing video, set new renditions, then publish catalog.
+                // Order matters: renditions must be available before the catalog is
+                // published, otherwise subscribers may request tracks we can't serve.
+                let mut state = self.state.lock().expect("poisoned");
+                state.remove_video();
+                state.available_video = Some(renditions);
+                drop(state);
                 {
                     let mut catalog = self.catalog.lock();
                     catalog.video = Some(video);
                 }
-                self.state.lock().expect("poisoned").available_video = Some(renditions);
             }
             None => {
                 // Clear catalog and stop any active video encoders
@@ -153,20 +156,23 @@ impl PublishBroadcast {
     pub fn set_audio(&mut self, renditions: Option<AudioRenditions>) -> Result<()> {
         match renditions {
             Some(renditions) => {
-                // Tear down existing audio first (stops encoders).
-                self.state.lock().expect("poisoned").remove_audio();
-
                 let priority = 2u8;
                 let configs = renditions.available_renditions()?;
                 let audio = Audio {
                     renditions: configs,
                     priority,
                 };
+                // Tear down existing audio, set new renditions, then publish catalog.
+                // Order matters: renditions must be available before the catalog is
+                // published, otherwise subscribers may request tracks we can't serve.
+                let mut state = self.state.lock().expect("poisoned");
+                state.remove_audio();
+                state.available_audio = Some(renditions);
+                drop(state);
                 {
                     let mut catalog = self.catalog.lock();
                     catalog.audio = Some(audio);
                 }
-                self.state.lock().expect("poisoned").available_audio = Some(renditions);
             }
             None => {
                 // Clear catalog and stop any active audio encoders
