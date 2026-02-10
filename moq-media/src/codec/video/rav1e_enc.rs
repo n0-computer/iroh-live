@@ -177,19 +177,8 @@ impl VideoEncoder for Av1Encoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::av::{PixelFormat, VideoEncoder, VideoFormat, VideoFrame, VideoPreset};
-
-    fn make_rgba_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> VideoFrame {
-        let pixel = [r, g, b, 255u8];
-        let raw: Vec<u8> = pixel.repeat((w * h) as usize);
-        VideoFrame {
-            format: VideoFormat {
-                pixel_format: PixelFormat::Rgba,
-                dimensions: [w, h],
-            },
-            raw: raw.into(),
-        }
-    }
+    use crate::av::{VideoEncoder, VideoPreset};
+    use crate::codec::video::test_util::make_rgba_frame;
 
     /// rav1e buffers frames for look-ahead even in low-latency mode.
     /// Helper to send frames and collect all resulting packets.
