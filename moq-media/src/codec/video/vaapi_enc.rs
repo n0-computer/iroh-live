@@ -6,7 +6,8 @@ use cros_codecs::backend::vaapi::encoder::VaapiBackend;
 use cros_codecs::encoder::h264::EncoderConfig;
 use cros_codecs::encoder::stateless::h264::StatelessEncoder as H264StatelessEncoder;
 use cros_codecs::encoder::{
-    CodedBitstreamBuffer, FrameMetadata, RateControl, Tunings, VideoEncoder as CrosVideoEncoder,
+    CodedBitstreamBuffer, FrameMetadata, PredictionStructure, RateControl, Tunings,
+    VideoEncoder as CrosVideoEncoder,
 };
 use cros_codecs::libva::{
     Display, Image, Surface, UsageHint, VA_FOURCC_NV12, VA_RT_FORMAT_YUV420, VAEntrypoint,
@@ -234,6 +235,9 @@ impl VaapiEncoder {
                 rate_control: RateControl::ConstantBitrate(bitrate),
                 framerate,
                 ..Tunings::default()
+            },
+            pred_structure: PredictionStructure::LowDelay {
+                limit: framerate as u16,
             },
             ..EncoderConfig::default()
         };
@@ -478,7 +482,7 @@ unsafe impl Send for VaapiEncoder {}
 mod tests {
     use super::*;
     use crate::av::{
-        PixelFormat, VideoEncoder, VideoEncoderInner, VideoFormat, VideoFrame, VideoPreset,
+        PixelFormat, VideoEncoder, VideoEncoderFactory, VideoFormat, VideoFrame, VideoPreset,
     };
 
     fn make_rgba_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> VideoFrame {
