@@ -20,8 +20,9 @@ use crate::{
         AudioDecoder, AudioSink, AudioSinkHandle, DecodeConfig, DecodedFrame, Decoders,
         PixelFormat, PlaybackConfig, Quality, VideoDecoder, VideoSource,
     },
-    codec::video::util::scale::Scaler,
+    codec::video::util::scale::{Scaler, fit_within},
     util::spawn_thread,
+    visualize::{SampleRing, Visualization, VisualizationStyle, spawn_visualizer},
 };
 
 const DEFAULT_MAX_LATENCY: Duration = Duration::from_millis(150);
@@ -291,6 +292,9 @@ pub struct AudioTrack {
     handle: Box<dyn AudioSinkHandle>,
     shutdown_token: CancellationToken,
     #[debug(skip)]
+    sample_ring: SampleRing,
+    channels: u32,
+    #[debug(skip)]
     _task_handle: AbortOnDropHandle<()>,
     #[debug(skip)]
     _thread_handle: thread::JoinHandle<()>,
@@ -311,14 +315,17 @@ impl AudioTrack {
         info!(?config, "audio thread start");
         let decoder = D::new(&config, output_format)?;
         let handle = output.handle();
+        let sample_ring = SampleRing::new();
+        let channels = output_format.channel_count;
         let thread_name = format!("adec-{}", name);
         let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             let span = span.clone();
+            let ring = sample_ring.clone();
             move || {
                 let _guard = span.enter();
                 info!("audio decoder thread start");
-                if let Err(err) = Self::run_loop(decoder, packet_rx, output, &shutdown) {
+                if let Err(err) = Self::run_loop(decoder, packet_rx, output, &shutdown, &ring) {
                     error!("audio decoder failed: {err:#}");
                 }
                 info!("audio decoder thread stop");
@@ -329,6 +336,8 @@ impl AudioTrack {
             name,
             handle,
             shutdown_token: shutdown,
+            sample_ring,
+            channels,
             _task_handle: AbortOnDropHandle::new(task),
             _thread_handle: thread,
         })
@@ -347,11 +356,30 @@ impl AudioTrack {
         self.handle.as_ref()
     }
 
+    /// Spawn a visualizer that renders audio into RGBA frames at ~30fps.
+    ///
+    /// Returns a [`WatchTrack`] compatible with existing video view components.
+    pub fn visualize(&self, mode: Visualization) -> WatchTrack {
+        self.visualize_styled(mode, VisualizationStyle::default())
+    }
+
+    /// Spawn a visualizer with custom colors.
+    pub fn visualize_styled(&self, mode: Visualization, style: VisualizationStyle) -> WatchTrack {
+        spawn_visualizer(
+            self.sample_ring.clone(),
+            self.channels,
+            mode,
+            self.shutdown_token.child_token(),
+            style,
+        )
+    }
+
     pub(crate) fn run_loop(
         mut decoder: impl AudioDecoder,
         mut packet_rx: mpsc::Receiver<hang::Frame>,
         mut sink: impl AudioSink,
         shutdown: &CancellationToken,
+        sample_ring: &SampleRing,
     ) -> Result<()> {
         const INTERVAL: Duration = Duration::from_millis(10);
         const MAX_CONSECUTIVE_ERRORS: u32 = 10;
@@ -401,6 +429,7 @@ impl AudioTrack {
                                 Ok(Some(samples)) => {
                                     consecutive_errors = 0;
                                     sink.push_samples(samples)?;
+                                    sample_ring.push(samples);
                                 }
                                 Ok(None) => {
                                     consecutive_errors = 0;
@@ -505,6 +534,28 @@ struct WatchTrackGuard {
 }
 
 impl WatchTrack {
+    pub(crate) fn from_thread(
+        rendition: String,
+        frame_rx: mpsc::Receiver<DecodedFrame>,
+        viewport: Watchable<(u32, u32)>,
+        shutdown: CancellationToken,
+        thread: thread::JoinHandle<()>,
+    ) -> Self {
+        let guard = WatchTrackGuard {
+            _shutdown_token_guard: shutdown.drop_guard(),
+            _task_handle: None,
+            _thread_handle: Some(thread),
+        };
+        Self {
+            video_frames: WatchTrackFrames { rx: frame_rx },
+            handle: WatchTrackHandle {
+                rendition,
+                viewport,
+                _guard: guard,
+            },
+        }
+    }
+
     pub fn empty(rendition: impl ToString) -> Self {
         let (tx, rx) = mpsc::channel(1);
         let task = tokio::spawn(async move {
@@ -532,7 +583,7 @@ impl WatchTrack {
         mut source: impl VideoSource,
         decode_config: DecodeConfig,
     ) -> Self {
-        let viewport = Watchable::new((1u32, 1u32));
+        let viewport = Watchable::new((0u32, 0u32));
         let (frame_tx, frame_rx) = mpsc::channel::<DecodedFrame>(2);
         let thread_name = format!("vpr-{:>4}-{:>4}", source.name(), rendition);
         let thread = spawn_thread(thread_name, {
@@ -542,6 +593,7 @@ impl WatchTrack {
                 // TODO: Make configurable.
                 let fps = 30;
                 let mut scaler = Scaler::new(None);
+                let mut pending_viewport: Option<(u32, u32)> = None;
                 let frame_duration = Duration::from_secs_f32(1. / fps as f32);
                 if let Err(err) = source.start() {
                     warn!("Video source failed to start: {err:?}");
@@ -553,12 +605,19 @@ impl WatchTrack {
                         break;
                     }
                     if viewport.update() {
-                        let (w, h) = viewport.peek();
-                        scaler.set_target_dimensions(*w, *h);
+                        let &(w, h) = viewport.peek();
+                        if w > 0 && h > 0 {
+                            pending_viewport = Some((w, h));
+                        }
                     }
                     match source.pop_frame() {
                         Ok(Some(frame)) => {
                             let [w, h] = frame.format.dimensions;
+                            // Apply viewport with aspect-preserving fit (same as decoder path).
+                            if let Some((max_w, max_h)) = pending_viewport.take() {
+                                let (tw, th) = fit_within(w, h, max_w, max_h);
+                                scaler.set_target_dimensions(tw, th);
+                            }
                             let rgba = match scaler.scale_rgba(&frame.raw, w, h) {
                                 Ok(Some((scaled, sw, sh))) => {
                                     image::RgbaImage::from_raw(sw, sh, scaled)

@@ -43,6 +43,7 @@ unsafe-libopus = "0.2"
 yuvutils-rs = "0.8"
 pic-scale = "0.6"
 rubato = "1.0"
+rustfft = "6"
 audioadapter-buffers = "2.0"
 rav1e = { version = "0.8", optional = true }
 rav1d = { git = "https://github.com/memorysafety/rav1d", default-features = false, features = ["bitdepth_8", "bitdepth_16", "asm"], optional = true }
