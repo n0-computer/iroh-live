@@ -26,7 +26,8 @@ use objc2_video_toolbox::{
     VTCompressionOutputCallback, VTCompressionSession, VTEncodeInfoFlags, VTSessionSetProperty,
     kVTCompressionPropertyKey_AllowFrameReordering, kVTCompressionPropertyKey_AverageBitRate,
     kVTCompressionPropertyKey_MaxKeyFrameInterval, kVTCompressionPropertyKey_ProfileLevel,
-    kVTCompressionPropertyKey_RealTime, kVTProfileLevel_H264_Baseline_AutoLevel,
+    kVTCompressionPropertyKey_RealTime, kVTEncodeFrameOptionKey_ForceKeyFrame,
+    kVTProfileLevel_H264_Baseline_AutoLevel,
 };
 
 use crate::{
@@ -57,6 +58,9 @@ pub struct VtbEncoder {
     height: u32,
     framerate: u32,
     bitrate: u64,
+    /// Force the next encoded frame to be a keyframe. Set after priming so
+    /// the first real frame is an IDR instead of waiting MaxKeyFrameInterval.
+    force_next_keyframe: bool,
 }
 
 // Safety: VTCompressionSession is thread-safe per Apple documentation.
@@ -198,6 +202,7 @@ impl VtbEncoder {
             height,
             framerate,
             bitrate,
+            force_next_keyframe: true,
         })
     }
 }
@@ -254,13 +259,22 @@ impl VideoEncoder for VtbEncoder {
         let pts = unsafe { CMTime::new(frame_count as i64, self.framerate as i32) };
         let duration = unsafe { CMTime::new(1, self.framerate as i32) };
 
+        // After priming, force the first real frame to be a keyframe so
+        // subscribers don't have to wait MaxKeyFrameInterval frames.
+        let frame_props = if self.force_next_keyframe {
+            self.force_next_keyframe = false;
+            Some(build_force_keyframe_props())
+        } else {
+            None
+        };
+
         let mut info_flags = VTEncodeInfoFlags(0);
         let status = unsafe {
             self.session.encode_frame(
                 &pixel_buffer,
                 pts,
                 duration,
-                None,            // frame properties
+                frame_props.as_deref(),
                 ptr::null_mut(), // source frame refcon
                 &mut info_flags,
             )
@@ -339,6 +353,26 @@ fn set_string_property(
         bail!("VTSessionSetProperty failed with status {status}");
     }
     Ok(())
+}
+
+/// Build a CFDictionary with `kVTEncodeFrameOptionKey_ForceKeyFrame = true`
+/// to force the next encoded frame to be an IDR keyframe.
+fn build_force_keyframe_props() -> CFRetained<CFDictionary> {
+    // Safety: accessing extern statics for VideoToolbox property keys.
+    unsafe {
+        let keys: [*const c_void; 1] =
+            [(kVTEncodeFrameOptionKey_ForceKeyFrame as *const CFString).cast()];
+        let values: [*const c_void; 1] = [(CFBoolean::new(true) as *const CFBoolean).cast()];
+        CFDictionary::new(
+            None,
+            keys.as_ptr().cast_mut(),
+            values.as_ptr().cast_mut(),
+            1,
+            &kCFTypeDictionaryKeyCallBacks,
+            &kCFTypeDictionaryValueCallBacks,
+        )
+        .expect("CFDictionaryCreate returned null")
+    }
 }
 
 /// Build a CFDictionary specifying I420 pixel format and dimensions for the
@@ -604,19 +638,8 @@ unsafe fn extract_avcc_from_sample_buffer(sample_buffer: &CMSampleBuffer) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::av::{PixelFormat, VideoEncoder, VideoFormat, VideoFrame, VideoPreset};
-
-    fn make_rgba_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> VideoFrame {
-        let pixel = [r, g, b, 255u8];
-        let raw: Vec<u8> = pixel.repeat((w * h) as usize);
-        VideoFrame {
-            format: VideoFormat {
-                pixel_format: PixelFormat::Rgba,
-                dimensions: [w, h],
-            },
-            raw: raw.into(),
-        }
-    }
+    use crate::av::{VideoEncoder, VideoPreset};
+    use crate::codec::video::test_util::make_rgba_frame;
 
     #[test]
     #[ignore]
@@ -724,6 +747,29 @@ mod tests {
                 prev_ts = Some(pkt.timestamp);
             }
         }
+    }
+
+    /// Regression test: the first packet after construction must be a keyframe.
+    /// Before the fix, priming discarded the first IDR and the next keyframe
+    /// only came after MaxKeyFrameInterval frames, causing ~1s of no video.
+    #[test]
+    #[ignore]
+    fn vtb_first_packet_is_keyframe() {
+        let mut enc = VtbEncoder::with_preset(VideoPreset::P360).unwrap();
+        let frame = make_rgba_frame(640, 360, 100, 100, 100);
+        enc.push_frame(frame).unwrap();
+        // VTB may need a flush to emit the packet synchronously.
+        unsafe {
+            let _ = enc.session.complete_frames(kCMTimeInvalid);
+        }
+        let pkt = enc
+            .pop_packet()
+            .unwrap()
+            .expect("first frame should produce a packet");
+        assert!(
+            pkt.keyframe,
+            "first packet after construction must be a keyframe"
+        );
     }
 
     #[test]
