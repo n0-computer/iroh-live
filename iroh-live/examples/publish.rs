@@ -4,14 +4,16 @@ use iroh_live::{
     Live,
     media::{
         audio::AudioBackend,
-        av::{AudioPreset, VideoCodec, VideoEncoderKind, VideoPreset},
+        av::{AudioPreset, VideoCodec, VideoPreset},
         capture::CameraCapturer,
-        codec::OpusEncoder,
         publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
     },
     ticket::LiveTicket,
 };
+use moq_media::av::AudioCodec;
 use n0_error::StdResultExt;
+
+mod common;
 
 #[tokio::main]
 async fn main() -> n0_error::Result {
@@ -37,15 +39,14 @@ async fn main() -> n0_error::Result {
     // Capture audio, and encode with the cli-provided preset.
     if !cli.no_audio {
         let mic = audio_ctx.default_input().await?;
-        let audio = AudioRenditions::new::<OpusEncoder>(mic, [cli.audio_preset]);
+        let audio = AudioRenditions::new(mic, AudioCodec::Opus, [cli.audio_preset]);
         broadcast.set_audio(Some(audio))?;
     }
 
     // Capture camera, and encode with the cli-provided presets.
     if !cli.no_video {
         let camera = CameraCapturer::new()?;
-        let codec = VideoEncoderKind::try_from(cli.codec)?;
-        let video = VideoRenditions::new_for_codec(codec, camera, cli.video_presets);
+        let video = VideoRenditions::new(camera, cli.codec, cli.video_presets);
         broadcast.set_video(Some(video))?;
     }
 
@@ -69,7 +70,7 @@ async fn main() -> n0_error::Result {
 
 #[derive(Parser, Debug)]
 struct Cli {
-    #[arg(long, default_value_t=VideoCodec::H264)]
+    #[arg(long, default_value_t=VideoCodec::best_available(), value_parser = clap_enum_variants!(VideoCodec))]
     codec: VideoCodec,
     #[arg(long, value_delimiter=',', default_values_t=[VideoPreset::P180, VideoPreset::P360, VideoPreset::P720, VideoPreset::P1080])]
     video_presets: Vec<VideoPreset>,

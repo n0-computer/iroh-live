@@ -13,7 +13,7 @@ use openh264::{
 };
 
 use crate::{
-    av::{self, VideoPreset},
+    av::{self, VideoEncoder, VideoEncoderFactory, VideoPreset},
     codec::video::util::{
         annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b},
         convert::pixel_format_to_yuv420,
@@ -103,15 +103,17 @@ impl H264Encoder {
     }
 }
 
-impl av::VideoEncoder for H264Encoder {
+impl VideoEncoderFactory for H264Encoder {
+    const ID: &str = "h264-openh264";
+
     fn with_preset(preset: VideoPreset) -> Result<Self> {
         Self::new(preset.width(), preset.height(), preset.fps())
     }
 }
 
-impl av::VideoEncoderInner for H264Encoder {
+impl VideoEncoder for H264Encoder {
     fn name(&self) -> &str {
-        "h264-openh264"
+        Self::ID
     }
 
     fn config(&self) -> VideoConfig {
@@ -183,9 +185,7 @@ impl av::VideoEncoderInner for H264Encoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::av::{
-        PixelFormat, VideoEncoder, VideoEncoderInner, VideoFormat, VideoFrame, VideoPreset,
-    };
+    use crate::av::{PixelFormat, VideoEncoder, VideoFormat, VideoFrame, VideoPreset};
 
     fn make_rgba_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> VideoFrame {
         let pixel = [r, g, b, 255u8];

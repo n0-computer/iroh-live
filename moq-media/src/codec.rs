@@ -20,8 +20,8 @@ pub fn codec_init() {}
 #[cfg(test)]
 mod tests {
     use crate::av::{
-        AudioDecoder, AudioEncoder, AudioEncoderInner, AudioFormat, AudioPreset, DecodeConfig,
-        DecodedFrame, Decoders, PixelFormat, VideoDecoder, VideoEncoder, VideoEncoderInner,
+        AudioDecoder, AudioEncoder, AudioEncoderFactory, AudioFormat, AudioPreset, DecodeConfig,
+        DecodedFrame, Decoders, PixelFormat, VideoDecoder, VideoEncoder, VideoEncoderFactory,
         VideoFormat, VideoFrame, VideoPreset,
     };
     use hang::catalog::{AudioConfig, VideoConfig};
@@ -332,6 +332,8 @@ mod tests {
     #[cfg(feature = "av1")]
     #[test]
     fn dynamic_routes_av1() {
+        use crate::av::VideoEncoderFactory;
+
         let preset = VideoPreset::P180;
         let (w, h) = preset.dimensions();
         let mut enc = Av1Encoder::with_preset(preset).unwrap();

@@ -6,7 +6,7 @@ use hang::{
 use rav1e::prelude::*;
 
 use crate::{
-    av::{self, VideoPreset},
+    av::{self, VideoEncoder, VideoEncoderFactory, VideoPreset},
     codec::video::util::convert::pixel_format_to_yuv420,
 };
 
@@ -104,15 +104,17 @@ impl Av1Encoder {
     }
 }
 
-impl av::VideoEncoder for Av1Encoder {
+impl VideoEncoderFactory for Av1Encoder {
+    const ID: &str = "av1-rav1e";
+
     fn with_preset(preset: VideoPreset) -> Result<Self> {
         Self::new(preset.width(), preset.height(), preset.fps())
     }
 }
 
-impl av::VideoEncoderInner for Av1Encoder {
+impl VideoEncoder for Av1Encoder {
     fn name(&self) -> &str {
-        "av1-rav1e"
+        Self::ID
     }
 
     fn config(&self) -> VideoConfig {
@@ -175,9 +177,7 @@ impl av::VideoEncoderInner for Av1Encoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::av::{
-        PixelFormat, VideoEncoder, VideoEncoderInner, VideoFormat, VideoFrame, VideoPreset,
-    };
+    use crate::av::{PixelFormat, VideoEncoder, VideoFormat, VideoFrame, VideoPreset};
 
     fn make_rgba_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> VideoFrame {
         let pixel = [r, g, b, 255u8];

@@ -20,13 +20,20 @@ use tokio::sync::watch;
 
 use crate::{
     av::{
-        AudioEncoder, AudioEncoderInner, AudioPreset, AudioSource, DecodeConfig, VideoEncoder,
-        VideoEncoderInner, VideoEncoderKind, VideoFormat, VideoFrame, VideoPreset, VideoSource,
+        AudioCodec, AudioEncoder, AudioEncoderFactory, AudioFormat, AudioPreset, AudioSource,
+        DecodeConfig, VideoCodec, VideoEncoder, VideoEncoderFactory, VideoFormat, VideoFrame,
+        VideoPreset, VideoSource,
     },
-    codec::video::util::scale::{Scaler, fit_within},
+    codec::{
+        self,
+        video::util::scale::{Scaler, fit_within},
+    },
     subscribe::WatchTrack,
     util::spawn_thread,
 };
+
+type MakeAudioEncoder = Box<dyn Fn() -> Result<Box<dyn AudioEncoder>> + Send + 'static>;
+type MakeVideoEncoder = Box<dyn Fn() -> Result<Box<dyn VideoEncoder>> + Send + 'static>;
 
 #[derive(derive_more::Debug)]
 pub struct PublishBroadcast {
@@ -236,43 +243,74 @@ impl State {
 #[derive(derive_more::Debug)]
 pub struct AudioRenditions {
     #[debug(skip)]
-    make_encoder: Box<dyn Fn(AudioPreset) -> Result<Box<dyn AudioEncoder>> + Send>,
-    #[debug(skip)]
     source: Box<dyn AudioSource>,
-    renditions: HashMap<String, AudioPreset>,
+    #[debug(skip)]
+    renditions: HashMap<String, MakeAudioEncoder>,
 }
 
 impl AudioRenditions {
-    pub fn new<E: AudioEncoder>(
+    pub fn new(
+        source: impl AudioSource,
+        codec: AudioCodec,
+        presets: impl IntoIterator<Item = AudioPreset>,
+    ) -> Self {
+        let mut this = Self::empty(source);
+        for preset in presets {
+            this.add(codec, preset);
+        }
+        this
+    }
+
+    pub fn new_from_generic<E: AudioEncoderFactory>(
         source: impl AudioSource,
         presets: impl IntoIterator<Item = AudioPreset>,
     ) -> Self {
-        let renditions = presets
-            .into_iter()
-            .map(|preset| (format!("audio-{preset}"), preset))
-            .collect();
-        let format = source.format();
-        Self {
-            make_encoder: Box::new(move |preset| Ok(Box::new(E::with_preset(format, preset)?))),
-            renditions,
-            source: Box::new(source),
+        let mut this = Self::empty(source);
+        for preset in presets {
+            this.add_with_generic::<E>(preset);
         }
+        this
+    }
+
+    pub fn empty(source: impl AudioSource) -> Self {
+        Self {
+            source: Box::new(source),
+            renditions: HashMap::new(),
+        }
+    }
+
+    pub fn add(&mut self, codec: AudioCodec, preset: AudioPreset) {
+        match codec {
+            AudioCodec::Opus => self.add_with_generic::<codec::OpusEncoder>(preset),
+        }
+    }
+
+    pub fn add_with_generic<E: AudioEncoderFactory>(&mut self, preset: AudioPreset) {
+        let name = format!("audio/{}-{preset}", E::ID);
+        self.add_with_callback(name, move |format| E::with_preset(format, preset));
+    }
+
+    pub fn add_with_callback<E: AudioEncoder>(
+        &mut self,
+        name: impl Into<String>,
+        callback: impl Fn(AudioFormat) -> anyhow::Result<E> + Send + 'static,
+    ) {
+        let format = self.source.format();
+        self.renditions.insert(
+            name.into(),
+            Box::new(move || Ok(Box::new(callback(format)?))),
+        );
     }
 
     pub fn available_renditions(&self) -> Result<BTreeMap<String, AudioConfig>> {
         let mut renditions = BTreeMap::new();
-        for (name, preset) in self.renditions.iter() {
+        for (name, make_encoder) in self.renditions.iter() {
             // We need to create the encoder to get the config, even though we drop it
-            // again (it will be created on deman). Not ideal, but works for now.
-            let config = (self.make_encoder)(*preset)?.config();
+            // again (it will be created on demand). Not ideal, but works for now.
+            let config = make_encoder()?.config();
             renditions.insert(name.clone(), config);
         }
         Ok(renditions)
-    }
-
-    pub fn encoder(&mut self, name: &str) -> Option<Result<Box<dyn AudioEncoder>>> {
-        let preset = self.renditions.get(name)?;
-        Some((self.make_encoder)(*preset))
     }
 
     pub fn contains_rendition(&self, name: &str) -> bool {
@@ -285,11 +323,11 @@ impl AudioRenditions {
         producer: hang::TrackProducer,
         shutdown_token: CancellationToken,
     ) -> Result<EncoderThread> {
-        let preset = self
+        let make_encoder = self
             .renditions
             .get(name)
             .context("rendition not available")?;
-        let encoder = (self.make_encoder)(*preset)?;
+        let encoder = make_encoder()?;
         let thread = EncoderThread::spawn_audio(
             self.source.cloned_boxed(),
             encoder,
@@ -302,57 +340,82 @@ impl AudioRenditions {
 
 #[derive(derive_more::Debug)]
 pub struct VideoRenditions {
-    #[debug(skip)]
-    make_encoder: Box<dyn Fn(VideoPreset) -> Result<Box<dyn VideoEncoder>> + Send>,
     source: SharedVideoSource,
-    renditions: HashMap<String, VideoPreset>,
+    #[debug(skip)]
+    renditions: HashMap<String, MakeVideoEncoder>,
     #[debug(skip)]
     _shared_source_cancel_guard: DropGuard,
 }
 
 impl VideoRenditions {
-    pub fn new<E: VideoEncoder>(
+    /// Create video renditions with a dynamically-selected encoder.
+    pub fn new(
+        source: impl VideoSource,
+        codec: VideoCodec,
+        presets: impl IntoIterator<Item = VideoPreset>,
+    ) -> Self {
+        let mut this = Self::empty(source);
+        for preset in presets {
+            this.add(codec, preset);
+        }
+        this
+    }
+
+    pub fn new_from_generic<E: VideoEncoderFactory>(
         source: impl VideoSource,
         presets: impl IntoIterator<Item = VideoPreset>,
     ) -> Self {
+        let mut this = Self::empty(source);
+        for preset in presets {
+            this.add_with_generic::<E>(preset);
+        }
+        this
+    }
+
+    pub fn empty(source: impl VideoSource) -> Self {
         let shutdown_token = CancellationToken::new();
         let source = SharedVideoSource::new(source, shutdown_token.clone());
-        let renditions = presets
-            .into_iter()
-            .map(|preset| (format!("video-{preset}"), preset))
-            .collect();
         Self {
-            make_encoder: Box::new(|preset| Ok(Box::new(E::with_preset(preset)?))),
-            renditions,
             source,
+            renditions: HashMap::new(),
             _shared_source_cancel_guard: shutdown_token.drop_guard(),
         }
     }
 
-    /// Create video renditions with a dynamically-selected encoder.
-    pub fn new_for_codec(
-        codec: VideoEncoderKind,
-        source: impl VideoSource,
-        presets: impl IntoIterator<Item = VideoPreset>,
-    ) -> Self {
-        use crate::codec;
+    pub fn add(&mut self, codec: VideoCodec, preset: VideoPreset) {
         match codec {
-            VideoEncoderKind::H264 => Self::new::<codec::H264Encoder>(source, presets),
+            VideoCodec::H264 => self.add_with_generic::<codec::H264Encoder>(preset),
             #[cfg(feature = "av1")]
-            VideoEncoderKind::Av1 => Self::new::<codec::Av1Encoder>(source, presets),
+            VideoCodec::Av1 => self.add_with_generic::<codec::Av1Encoder>(preset),
             #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
-            VideoEncoderKind::VtbH264 => Self::new::<codec::VtbEncoder>(source, presets),
+            VideoCodec::VtbH264 => self.add_with_generic::<codec::VtbEncoder>(preset),
             #[cfg(all(target_os = "linux", feature = "vaapi"))]
-            VideoEncoderKind::VaapiH264 => Self::new::<codec::VaapiEncoder>(source, presets),
+            VideoCodec::VaapiH264 => self.add_with_generic::<codec::VaapiEncoder>(preset),
         }
+    }
+
+    pub fn add_with_generic<E: VideoEncoderFactory>(&mut self, preset: VideoPreset) {
+        let name = format!("video/{}-{}", E::ID, preset);
+        self.add_with_callback(name, move || E::with_preset(preset))
+    }
+
+    pub fn add_with_callback<E: VideoEncoder>(
+        &mut self,
+        name: impl ToString,
+        encoder_factory: impl Fn() -> anyhow::Result<E> + Send + 'static,
+    ) {
+        self.renditions.insert(
+            name.to_string(),
+            Box::new(move || Ok(Box::new(encoder_factory()?))),
+        );
     }
 
     pub fn available_renditions(&self) -> Result<BTreeMap<String, VideoConfig>> {
         let mut renditions = BTreeMap::new();
-        for (name, preset) in self.renditions.iter() {
+        for (name, make_encoder) in self.renditions.iter() {
             // We need to create the encoder to get the config, even though we drop it
-            // again (it will be created on deman). Not ideal, but works for now.
-            let config = (self.make_encoder)(*preset)?.config();
+            // again (it will be created on demand). Not ideal, but works for now.
+            let config = make_encoder()?.config();
             renditions.insert(name.clone(), config);
         }
         Ok(renditions)
@@ -368,11 +431,11 @@ impl VideoRenditions {
         producer: hang::TrackProducer,
         shutdown_token: CancellationToken,
     ) -> Result<EncoderThread> {
-        let preset = self
+        let make_encoder = self
             .renditions
             .get(name)
             .context("rendition not available")?;
-        let encoder = (self.make_encoder)(*preset)?;
+        let encoder = make_encoder()?;
         let thread =
             EncoderThread::spawn_video(self.source.clone(), encoder, producer, shutdown_token);
         Ok(thread)
@@ -493,7 +556,7 @@ pub struct EncoderThread {
 impl EncoderThread {
     pub fn spawn_video(
         mut source: impl VideoSource,
-        mut encoder: impl VideoEncoderInner,
+        mut encoder: impl VideoEncoder,
         mut producer: hang::TrackProducer,
         shutdown: CancellationToken,
     ) -> Self {
@@ -507,6 +570,7 @@ impl EncoderThread {
                     error!("video source failed to start: {err:#}");
                     return;
                 }
+                let mut first = true;
                 let format = source.format();
                 let enc_config = encoder.config();
                 info!(
@@ -564,6 +628,11 @@ impl EncoderThread {
                         loop {
                             match encoder.pop_packet() {
                                 Ok(Some(pkt)) => {
+                                    if first && !pkt.keyframe {
+                                        warn!("ignoring frame: waiting for first keyframe");
+                                        continue;
+                                    }
+                                    first = false;
                                     if let Err(err) = producer.write(pkt) {
                                         error!("failed to write video packet to producer: {err:#}");
                                     }
@@ -593,7 +662,7 @@ impl EncoderThread {
 
     pub fn spawn_audio(
         mut source: Box<dyn AudioSource>,
-        mut encoder: impl AudioEncoderInner,
+        mut encoder: impl AudioEncoder,
         mut producer: hang::TrackProducer,
         shutdown: CancellationToken,
     ) -> Self {

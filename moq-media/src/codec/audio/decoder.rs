@@ -173,8 +173,10 @@ mod tests {
     use hang::catalog::AudioCodec;
 
     use super::*;
-    use crate::av::{AudioEncoder, AudioEncoderInner, AudioPreset};
-    use crate::codec::audio::encoder::OpusEncoder;
+    use crate::{
+        av::{AudioEncoder, AudioEncoderFactory, AudioPreset},
+        codec::audio::encoder::OpusEncoder,
+    };
 
     fn make_sine(num_samples: usize, freq: f32, sample_rate: f32) -> Vec<f32> {
         (0..num_samples)

@@ -8,7 +8,7 @@ use unsafe_libopus::{
     OPUS_SET_INBAND_FEC_REQUEST, OpusEncoder as RawOpusEncoder, varargs,
 };
 
-use crate::av::{AudioEncoder, AudioEncoderInner, AudioFormat, AudioPreset};
+use crate::av::{AudioEncoder, AudioEncoderFactory, AudioFormat, AudioPreset};
 
 const SAMPLE_RATE: u32 = 48_000;
 const BITRATE_HQ: u64 = 128_000;
@@ -136,7 +136,8 @@ impl OpusEncoder {
     }
 }
 
-impl AudioEncoder for OpusEncoder {
+impl AudioEncoderFactory for OpusEncoder {
+    const ID: &str = "opus";
     fn with_preset(format: AudioFormat, preset: AudioPreset) -> Result<Self> {
         let bitrate = match preset {
             AudioPreset::Hq => BITRATE_HQ,
@@ -146,9 +147,9 @@ impl AudioEncoder for OpusEncoder {
     }
 }
 
-impl AudioEncoderInner for OpusEncoder {
+impl AudioEncoder for OpusEncoder {
     fn name(&self) -> &str {
-        "opus"
+        Self::ID
     }
 
     fn config(&self) -> AudioConfig {
