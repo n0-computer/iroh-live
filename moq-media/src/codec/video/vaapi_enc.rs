@@ -211,19 +211,19 @@ pub struct VaapiEncoder {
 }
 
 impl VaapiEncoder {
-    fn new(width: u32, height: u32, framerate: u32) -> Result<Self> {
-        let pixels = width * height;
-        let framerate_factor = 30.0 + (framerate as f32 - 30.) / 2.;
-        let bitrate = (pixels as f32 * 0.07 * framerate_factor).round() as u64;
-
-        // Open the VAAPI display (probes /dev/dri/renderD128 etc.)
+    /// Create a VAAPI H.264 encoder instance with fresh state (counter=0).
+    fn create_encoder(
+        width: u32,
+        height: u32,
+        framerate: u32,
+        bitrate: u64,
+    ) -> Result<(VaapiH264Encoder, bool)> {
         let display =
             Display::open().context("failed to open VAAPI display — no GPU or driver found")?;
 
         let coded_size = Resolution { width, height };
         let fourcc = Fourcc::from(b"NV12");
 
-        // Check for low-power encoding support (fixed-function, some Intel GPUs).
         let entrypoints = display
             .query_config_entrypoints(VAProfile::VAProfileH264ConstrainedBaseline)
             .unwrap_or_default();
@@ -234,7 +234,12 @@ impl VaapiEncoder {
             initial_tunings: Tunings {
                 rate_control: RateControl::ConstantBitrate(bitrate),
                 framerate,
-                ..Tunings::default()
+                // Constrain QP range to prevent the hardware rate controller from
+                // producing large quality swings between IDR and P-frames.
+                // Default range (1–51) lets the RC spike QP on keyframes, causing
+                // a visible "compression burst" every keyframe interval.
+                min_quality: 18,
+                max_quality: 36,
             },
             pred_structure: PredictionStructure::LowDelay {
                 limit: framerate as u16,
@@ -242,7 +247,7 @@ impl VaapiEncoder {
             ..EncoderConfig::default()
         };
 
-        let mut encoder = VaapiH264Encoder::new_vaapi(
+        let encoder = VaapiH264Encoder::new_vaapi(
             display,
             config,
             fourcc,
@@ -251,6 +256,17 @@ impl VaapiEncoder {
             BlockingMode::Blocking,
         )
         .map_err(|e| anyhow::anyhow!("failed to create VAAPI H.264 encoder: {e:?}"))?;
+
+        Ok((encoder, low_power))
+    }
+
+    fn new(width: u32, height: u32, framerate: u32) -> Result<Self> {
+        let pixels = width * height;
+        let framerate_factor = 30.0 + (framerate as f32 - 30.) / 2.;
+        let bitrate = (pixels as f32 * 0.07 * framerate_factor).round() as u64;
+
+        let coded_size = Resolution { width, height };
+        let fourcc = Fourcc::from(b"NV12");
 
         let frame_layout = FrameLayout {
             format: (fourcc, 0),
@@ -269,36 +285,46 @@ impl VaapiEncoder {
             ],
         };
 
-        // Encode a black frame to extract SPS/PPS for the avcC description.
-        // VAAPI only emits parameter sets in the first encoded IDR frame.
-        let yuv = YuvData::black(width, height);
-        let nv12 = Self::i420_to_nv12(&yuv.y, &yuv.u, &yuv.v, width, height);
-        let black = Nv12Frame {
-            data: nv12,
-            width,
-            height,
-        };
-        let meta = FrameMetadata {
-            timestamp: 0,
-            layout: frame_layout.clone(),
-            force_keyframe: true,
-        };
-        encoder
-            .encode(meta, black)
-            .map_err(|e| anyhow::anyhow!("VAAPI priming encode failed: {e:?}"))?;
+        // Extract avcC by priming a temporary encoder with a black IDR frame.
+        // cros-codecs only emits SPS/PPS in the first IDR (counter=0).
+        let avcc = {
+            let (mut primer, _) = Self::create_encoder(width, height, framerate, bitrate)?;
+            let yuv = YuvData::black(width, height);
+            let nv12 = Self::i420_to_nv12(&yuv.y, &yuv.u, &yuv.v, width, height);
+            let black = Nv12Frame {
+                data: nv12,
+                width,
+                height,
+            };
+            let meta = FrameMetadata {
+                timestamp: 0,
+                layout: frame_layout.clone(),
+                force_keyframe: true,
+            };
+            primer
+                .encode(meta, black)
+                .map_err(|e| anyhow::anyhow!("VAAPI priming encode failed: {e:?}"))?;
 
-        let mut avcc = None;
-        while let Some(coded) = encoder
-            .poll()
-            .map_err(|e| anyhow::anyhow!("VAAPI priming poll failed: {e:?}"))?
-        {
-            if avcc.is_none() {
-                let nals = parse_annex_b(&coded.bitstream);
-                if let Some((sps, pps)) = extract_sps_pps(&nals) {
-                    avcc = Some(build_avcc(&sps, &pps));
+            let mut avcc = None;
+            while let Some(coded) = primer
+                .poll()
+                .map_err(|e| anyhow::anyhow!("VAAPI priming poll failed: {e:?}"))?
+            {
+                if avcc.is_none() {
+                    let nals = parse_annex_b(&coded.bitstream);
+                    if let Some((sps, pps)) = extract_sps_pps(&nals) {
+                        avcc = Some(build_avcc(&sps, &pps));
+                    }
                 }
             }
-        }
+            avcc
+        };
+        // Primer is dropped here — its counter offset and rate controller state are discarded.
+
+        // Create a fresh encoder for actual use. Counter starts at 0, so the
+        // first real frame will be a proper IDR (NAL type 5) — matching OpenH264's
+        // behavior after force_intra_frame().
+        let (encoder, _) = Self::create_encoder(width, height, framerate, bitrate)?;
 
         Ok(Self {
             encoder,
@@ -426,7 +452,7 @@ impl VideoEncoder for VaapiEncoder {
         let meta = FrameMetadata {
             timestamp: timestamp_us,
             layout: self.frame_layout.clone(),
-            force_keyframe: self.frame_count == 0,
+            force_keyframe: false,
         };
 
         // Submit frame to encoder.
