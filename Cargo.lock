@@ -5136,6 +5136,7 @@ dependencies = [
  "rav1d",
  "rav1e",
  "rubato 1.0.1",
+ "rustfft",
  "serde",
  "sonora",
  "strum",
