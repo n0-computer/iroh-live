@@ -604,9 +604,7 @@ unsafe fn extract_avcc_from_sample_buffer(sample_buffer: &CMSampleBuffer) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::av::{
-        PixelFormat, VideoEncoder, VideoEncoderInner, VideoFormat, VideoFrame, VideoPreset,
-    };
+    use crate::av::{PixelFormat, VideoEncoder, VideoFormat, VideoFrame, VideoPreset};
 
     fn make_rgba_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> VideoFrame {
         let pixel = [r, g, b, 255u8];
