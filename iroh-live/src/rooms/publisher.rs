@@ -1,7 +1,7 @@
-use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use moq_lite::BroadcastProducer;
+use moq_media::audio::DeviceId;
 use moq_media::{
     audio::AudioBackend,
     av::{AudioCodec, AudioPreset, VideoCodec, VideoPreset},
@@ -35,7 +35,7 @@ pub struct PublishOpts {
     /// If set, use a specific camera by index. If `None`, use the default camera.
     pub camera_index: Option<u32>,
     /// If set, use a specific audio input device by name. If `None`, use the system default.
-    pub audio_device: Option<String>,
+    pub audio_device: Option<DeviceId>,
     /// Video encoder to use. If `None`, automatically selects the best available.
     pub video_codec: Option<VideoCodec>,
 }
@@ -48,6 +48,7 @@ pub struct PublishOpts {
 /// Why does this have sync methods? In UI land it is so much easier for the operations to be sync,
 /// so this just spawns all async ops on tokio threads. Not yet sure about where this should evolve to
 /// but this kept me moving for now.
+#[derive(Debug)]
 pub struct RoomPublisherSync {
     audio_ctx: AudioBackend,
     room: RoomHandle,
@@ -55,20 +56,8 @@ pub struct RoomPublisherSync {
     screen: Option<Arc<Mutex<PublishBroadcast>>>,
     state: PublishOpts,
     prev_camera_index: Option<u32>,
-    prev_audio_device: Option<String>,
+    prev_audio_device: Option<DeviceId>,
     prev_video_codec: Option<VideoCodec>,
-}
-
-impl fmt::Debug for RoomPublisherSync {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RoomPublisherSync")
-            .field("audio_ctx", &self.audio_ctx)
-            .field("room", &self.room)
-            .field("camera", &"..")
-            .field("screen", &"..")
-            .field("state", &self.state)
-            .finish()
-    }
 }
 
 impl RoomPublisherSync {
