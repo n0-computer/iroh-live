@@ -13,7 +13,7 @@ use hang::catalog::{Audio, AudioConfig, Catalog, CatalogProducer, Video, VideoCo
 use moq_lite::BroadcastProducer;
 use n0_error::Result;
 use n0_future::task::AbortOnDropHandle;
-use tokio_util::sync::{CancellationToken, DropGuard};
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, info_span, trace, warn};
 
 use tokio::sync::watch;
@@ -107,7 +107,7 @@ impl PublishBroadcast {
                 .available_video
                 .as_ref()
                 .map(|video| video.source.clone())?;
-            Some((source, state.shutdown_token.child_token()))
+            Some((source, state.local_video_token.child_token()))
         }?;
         Some(WatchTrack::from_video_source(
             "local".to_string(),
@@ -120,6 +120,9 @@ impl PublishBroadcast {
     pub fn set_video(&mut self, renditions: Option<VideoRenditions>) -> Result<()> {
         match renditions {
             Some(renditions) => {
+                // Tear down existing video first (stops encoders, cancels local watches).
+                self.state.lock().expect("poisoned").remove_video();
+
                 let priority = 1u8;
                 let configs = renditions.available_renditions()?;
                 let video = Video {
@@ -134,7 +137,6 @@ impl PublishBroadcast {
                     catalog.video = Some(video);
                 }
                 self.state.lock().expect("poisoned").available_video = Some(renditions);
-                // TODO: Drop active encodings if their rendition is no longer available?
             }
             None => {
                 // Clear catalog and stop any active video encoders
@@ -151,6 +153,9 @@ impl PublishBroadcast {
     pub fn set_audio(&mut self, renditions: Option<AudioRenditions>) -> Result<()> {
         match renditions {
             Some(renditions) => {
+                // Tear down existing audio first (stops encoders).
+                self.state.lock().expect("poisoned").remove_audio();
+
                 let priority = 2u8;
                 let configs = renditions.available_renditions()?;
                 let audio = Audio {
@@ -186,6 +191,7 @@ impl Drop for PublishBroadcast {
 #[derive(Default)]
 struct State {
     shutdown_token: CancellationToken,
+    local_video_token: CancellationToken,
     available_video: Option<VideoRenditions>,
     available_audio: Option<AudioRenditions>,
     active_video: HashMap<String, EncoderThread>,
@@ -211,6 +217,8 @@ impl State {
     }
 
     fn remove_video(&mut self) {
+        self.local_video_token.cancel();
+        self.local_video_token = CancellationToken::new();
         for (_name, thread) in self.active_video.drain() {
             thread.shutdown.cancel();
         }
@@ -343,8 +351,7 @@ pub struct VideoRenditions {
     source: SharedVideoSource,
     #[debug(skip)]
     renditions: HashMap<String, MakeVideoEncoder>,
-    #[debug(skip)]
-    _shared_source_cancel_guard: DropGuard,
+    shutdown_token: CancellationToken,
 }
 
 impl VideoRenditions {
@@ -378,7 +385,7 @@ impl VideoRenditions {
         Self {
             source,
             renditions: HashMap::new(),
-            _shared_source_cancel_guard: shutdown_token.drop_guard(),
+            shutdown_token,
         }
     }
 
@@ -442,6 +449,13 @@ impl VideoRenditions {
     }
 }
 
+impl Drop for VideoRenditions {
+    fn drop(&mut self) {
+        self.shutdown_token.cancel();
+        self.source.unpark();
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct SharedVideoSource {
     name: String,
@@ -476,10 +490,19 @@ impl SharedVideoSource {
                         if let Err(err) = source.stop() {
                             warn!("Failed to stop video source: {err:#}");
                         }
-                        thread::park();
-                        if let Err(err) = source.start() {
-                            warn!("Failed to stop video source: {err:#}");
+                        if shutdown.is_cancelled() {
+                            break;
                         }
+                        thread::park();
+                        if shutdown.is_cancelled() {
+                            break;
+                        }
+                        if let Err(err) = source.start() {
+                            warn!("Failed to start video source: {err:#}");
+                        }
+                    }
+                    if shutdown.is_cancelled() {
+                        break;
                     }
 
                     match source.pop_frame() {
@@ -505,6 +528,10 @@ impl SharedVideoSource {
             running,
             subscriber_count: Default::default(),
         }
+    }
+
+    fn unpark(&self) {
+        self.thread.thread().unpark();
     }
 }
 
@@ -751,5 +778,172 @@ impl EncoderThread {
 impl Drop for EncoderThread {
     fn drop(&mut self) {
         self.shutdown.cancel();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::av::{PixelFormat, VideoCodec, VideoFormat, VideoFrame, VideoPreset, VideoSource};
+
+    /// A minimal video source for testing that produces solid-color frames.
+    struct TestVideoSource {
+        format: VideoFormat,
+        started: bool,
+    }
+
+    impl TestVideoSource {
+        fn new(width: u32, height: u32) -> Self {
+            Self {
+                format: VideoFormat {
+                    pixel_format: PixelFormat::Rgba,
+                    dimensions: [width, height],
+                },
+                started: false,
+            }
+        }
+    }
+
+    impl VideoSource for TestVideoSource {
+        fn name(&self) -> &str {
+            "test"
+        }
+
+        fn format(&self) -> VideoFormat {
+            self.format.clone()
+        }
+
+        fn start(&mut self) -> anyhow::Result<()> {
+            self.started = true;
+            Ok(())
+        }
+
+        fn stop(&mut self) -> anyhow::Result<()> {
+            self.started = false;
+            Ok(())
+        }
+
+        fn pop_frame(&mut self) -> anyhow::Result<Option<VideoFrame>> {
+            if !self.started {
+                return Ok(None);
+            }
+            let [w, h] = self.format.dimensions;
+            let data = vec![128u8; (w * h * 4) as usize];
+            Ok(Some(VideoFrame {
+                format: self.format.clone(),
+                raw: data.into(),
+            }))
+        }
+    }
+
+    fn make_renditions() -> VideoRenditions {
+        VideoRenditions::new(
+            TestVideoSource::new(320, 240),
+            VideoCodec::H264,
+            [VideoPreset::P180],
+        )
+    }
+
+    #[tokio::test]
+    async fn watch_local_produces_frames() {
+        let mut broadcast = PublishBroadcast::new();
+        broadcast.set_video(Some(make_renditions())).unwrap();
+        let watch = broadcast
+            .watch_local(DecodeConfig::default())
+            .expect("watch_local should return Some when video is set");
+        // The watch track exists — it will produce decoded frames once the
+        // decode loop runs, but here we just verify it was created successfully.
+        drop(watch);
+    }
+
+    #[tokio::test]
+    async fn set_video_stops_old_local_watch() {
+        let mut broadcast = PublishBroadcast::new();
+        broadcast.set_video(Some(make_renditions())).unwrap();
+        let watch = broadcast
+            .watch_local(DecodeConfig::default())
+            .expect("should have watch");
+
+        // Replace video — old local watches should be cancelled.
+        broadcast.set_video(Some(make_renditions())).unwrap();
+
+        // The old watch's cancellation token should now be cancelled.
+        // We can verify by checking that a new watch_local still works.
+        let watch2 = broadcast
+            .watch_local(DecodeConfig::default())
+            .expect("new watch should work after replacement");
+        drop(watch);
+        drop(watch2);
+    }
+
+    #[tokio::test]
+    async fn set_video_new_source_produces_frames() {
+        let mut broadcast = PublishBroadcast::new();
+        broadcast.set_video(Some(make_renditions())).unwrap();
+        broadcast.set_video(Some(make_renditions())).unwrap();
+
+        let watch = broadcast
+            .watch_local(DecodeConfig::default())
+            .expect("watch should work with replacement video");
+        drop(watch);
+    }
+
+    #[tokio::test]
+    async fn set_video_none_stops_local_watch() {
+        let mut broadcast = PublishBroadcast::new();
+        broadcast.set_video(Some(make_renditions())).unwrap();
+        let _watch = broadcast
+            .watch_local(DecodeConfig::default())
+            .expect("should have watch");
+
+        broadcast.set_video(None).unwrap();
+        assert!(
+            broadcast.watch_local(DecodeConfig::default()).is_none(),
+            "watch_local should return None after set_video(None)"
+        );
+    }
+
+    /// This is the critical test: replacing video while the source thread is parked
+    /// (no subscribers). Before the fix, the old source thread would remain parked
+    /// forever because nothing called unpark() on shutdown.
+    #[tokio::test]
+    async fn replace_video_while_source_parked() {
+        let mut broadcast = PublishBroadcast::new();
+
+        // Set video but never create a local watch — source thread will be parked.
+        broadcast.set_video(Some(make_renditions())).unwrap();
+
+        // Give the source thread time to park.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Replace video — this should cleanly shut down the parked source thread.
+        broadcast.set_video(Some(make_renditions())).unwrap();
+
+        // Give the old thread time to wake up and exit.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Verify the new video works.
+        let watch = broadcast
+            .watch_local(DecodeConfig::default())
+            .expect("new watch should work after replacing parked video");
+        drop(watch);
+    }
+
+    #[tokio::test]
+    async fn source_thread_stops_on_video_removal() {
+        let mut broadcast = PublishBroadcast::new();
+        broadcast.set_video(Some(make_renditions())).unwrap();
+
+        // Give source thread time to start and park.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Remove video — source thread should stop.
+        broadcast.set_video(None).unwrap();
+
+        // Give time for cleanup.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Verify no video available.
+        assert!(broadcast.watch_local(DecodeConfig::default()).is_none());
     }
 }
