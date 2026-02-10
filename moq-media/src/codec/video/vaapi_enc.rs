@@ -20,7 +20,7 @@ use hang::{
 };
 
 use crate::{
-    av::{self, VideoPreset},
+    av::{self, VideoEncoder, VideoEncoderFactory, VideoPreset},
     codec::video::util::{
         annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b},
         convert::{YuvData, pixel_format_to_yuv420},
@@ -371,15 +371,17 @@ impl VaapiEncoder {
     }
 }
 
-impl av::VideoEncoder for VaapiEncoder {
+impl VideoEncoderFactory for VaapiEncoder {
+    const ID: &str = "h264-vaapi";
+
     fn with_preset(preset: VideoPreset) -> Result<Self> {
         Self::new(preset.width(), preset.height(), preset.fps())
     }
 }
 
-impl av::VideoEncoderInner for VaapiEncoder {
+impl VideoEncoder for VaapiEncoder {
     fn name(&self) -> &str {
-        "h264-vaapi"
+        Self::ID
     }
 
     fn config(&self) -> VideoConfig {

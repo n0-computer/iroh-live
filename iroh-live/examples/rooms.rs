@@ -8,9 +8,9 @@ use iroh_live::{
     Live,
     media::{
         audio::AudioBackend,
-        av::{AudioPreset, VideoCodec, VideoEncoderKind, VideoPreset},
+        av::{AudioPreset, VideoCodec, VideoPreset},
         capture::{CameraCapturer, ScreenCapturer},
-        codec::{DefaultDecoders, DynamicVideoDecoder, OpusEncoder, codec_init},
+        codec::{DefaultDecoders, DynamicVideoDecoder, codec_init},
         publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
         subscribe::{AudioTrack, AvRemoteTrack, SubscribeBroadcast, WatchTrack},
     },
@@ -18,15 +18,18 @@ use iroh_live::{
     rooms::{Room, RoomEvent, RoomTicket},
     util::StatsSmoother,
 };
+use moq_media::av::AudioCodec;
 use n0_error::{Result, StdResultExt, anyerr};
 use tracing::{info, warn};
+
+mod common;
 
 const BROADCAST_NAME: &str = "cam";
 
 #[derive(Debug, Parser)]
 struct Cli {
     join: Option<RoomTicket>,
-    #[clap(long, default_value_t = VideoCodec::H264)]
+    #[arg(long, default_value_t=VideoCodec::best_available(), value_parser = clap_enum_variants!(VideoCodec))]
     codec: VideoCodec,
     #[clap(long)]
     screen: bool,
@@ -89,16 +92,15 @@ async fn setup(cli: Cli, audio_ctx: AudioBackend) -> Result<(Router, PublishBroa
         let mut broadcast = PublishBroadcast::new();
         if !cli.no_audio {
             let mic = audio_ctx.default_input().await?;
-            let audio = AudioRenditions::new::<OpusEncoder>(mic, [AudioPreset::Hq]);
+            let audio = AudioRenditions::new(mic, AudioCodec::Opus, [AudioPreset::Hq]);
             broadcast.set_audio(Some(audio))?;
         }
-        let codec = VideoEncoderKind::try_from(cli.codec)?;
         let video = if cli.screen {
             let screen = ScreenCapturer::new()?;
-            VideoRenditions::new_for_codec(codec, screen, VideoPreset::all())
+            VideoRenditions::new(screen, cli.codec, VideoPreset::all())
         } else {
             let camera = CameraCapturer::new()?;
-            VideoRenditions::new_for_codec(codec, camera, VideoPreset::all())
+            VideoRenditions::new(camera, cli.codec, VideoPreset::all())
         };
         broadcast.set_video(Some(video))?;
         broadcast

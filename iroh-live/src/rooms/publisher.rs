@@ -4,9 +4,8 @@ use std::sync::{Arc, Mutex};
 use moq_lite::BroadcastProducer;
 use moq_media::{
     audio::AudioBackend,
-    av::{AudioPreset, VideoEncoderKind, VideoPreset},
+    av::{AudioCodec, AudioPreset, VideoCodec, VideoPreset},
     capture::{CameraCapturer, ScreenCapturer},
-    codec::OpusEncoder,
     publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
 };
 use n0_error::{AnyError, Result};
@@ -38,7 +37,7 @@ pub struct PublishOpts {
     /// If set, use a specific audio input device by name. If `None`, use the system default.
     pub audio_device: Option<String>,
     /// Video encoder to use. If `None`, automatically selects the best available.
-    pub video_codec: Option<VideoEncoderKind>,
+    pub video_codec: Option<VideoCodec>,
 }
 
 /// Manager for publish broadcasts in a room
@@ -57,7 +56,7 @@ pub struct RoomPublisherSync {
     state: PublishOpts,
     prev_camera_index: Option<u32>,
     prev_audio_device: Option<String>,
-    prev_video_codec: Option<VideoEncoderKind>,
+    prev_video_codec: Option<VideoCodec>,
 }
 
 impl fmt::Debug for RoomPublisherSync {
@@ -146,8 +145,8 @@ impl RoomPublisherSync {
                 let codec = self
                     .state
                     .video_codec
-                    .unwrap_or_else(VideoEncoderKind::best_available);
-                let renditions = VideoRenditions::new_for_codec(codec, camera, VideoPreset::all());
+                    .unwrap_or_else(VideoCodec::best_available);
+                let renditions = VideoRenditions::new(camera, codec, VideoPreset::all());
                 self.ensure_camera();
                 self.camera
                     .as_ref()
@@ -201,8 +200,8 @@ impl RoomPublisherSync {
                 let codec = self
                     .state
                     .video_codec
-                    .unwrap_or_else(VideoEncoderKind::best_available);
-                let renditions = VideoRenditions::new_for_codec(codec, screen, VideoPreset::all());
+                    .unwrap_or_else(VideoCodec::best_available);
+                let renditions = VideoRenditions::new(screen, codec, VideoPreset::all());
                 self.screen
                     .as_mut()
                     .unwrap()
@@ -245,7 +244,7 @@ impl RoomPublisherSync {
                         }
                         Ok(mic) => mic,
                     };
-                    let renditions = AudioRenditions::new::<OpusEncoder>(mic, [AudioPreset::Hq]);
+                    let renditions = AudioRenditions::new(mic, AudioCodec::Opus, [AudioPreset::Hq]);
                     if let Err(err) = camera.lock().unwrap().set_audio(Some(renditions)) {
                         warn!("failed to set audio: {err:#}");
                     }

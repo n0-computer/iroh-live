@@ -1,4 +1,3 @@
-use std::fmt;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -64,19 +63,21 @@ pub trait AudioSinkHandle: Send + 'static {
     }
 }
 
-pub trait AudioEncoder: AudioEncoderInner {
+pub trait AudioEncoderFactory: AudioEncoder {
+    const ID: &str;
     fn with_preset(format: AudioFormat, preset: AudioPreset) -> Result<Self>
     where
         Self: Sized;
 }
-pub trait AudioEncoderInner: Send + 'static {
+
+pub trait AudioEncoder: Send + 'static {
     fn name(&self) -> &str;
     fn config(&self) -> AudioConfig;
     fn push_samples(&mut self, samples: &[f32]) -> Result<()>;
     fn pop_packet(&mut self) -> Result<Option<hang::Frame>>;
 }
 
-impl AudioEncoderInner for Box<dyn AudioEncoder> {
+impl AudioEncoder for Box<dyn AudioEncoder> {
     fn name(&self) -> &str {
         (**self).name()
     }
@@ -129,20 +130,22 @@ pub trait VideoSource: Send + 'static {
     fn stop(&mut self) -> Result<()>;
 }
 
-pub trait VideoEncoder: VideoEncoderInner {
+pub trait VideoEncoderFactory: VideoEncoder {
+    const ID: &str;
+
     fn with_preset(preset: VideoPreset) -> Result<Self>
     where
         Self: Sized;
 }
 
-pub trait VideoEncoderInner: Send + 'static {
+pub trait VideoEncoder: Send + 'static {
     fn name(&self) -> &str;
     fn config(&self) -> VideoConfig;
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()>;
     fn pop_packet(&mut self) -> Result<Option<hang::Frame>>;
 }
 
-impl VideoEncoderInner for Box<dyn VideoEncoder> {
+impl VideoEncoder for Box<dyn VideoEncoder> {
     fn name(&self) -> &str {
         (**self).name()
     }
@@ -189,23 +192,10 @@ pub enum AudioCodec {
     Opus,
 }
 
-#[derive(Debug, Clone, Copy, Display, EnumString, VariantNames)]
+/// Available video encoder implementations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display, EnumString, VariantNames)]
 #[strum(serialize_all = "lowercase")]
 pub enum VideoCodec {
-    H264,
-    Av1,
-    #[strum(serialize = "vtb-h264")]
-    VtbH264,
-    #[strum(serialize = "vaapi-h264")]
-    VaapiH264,
-}
-
-/// Available video encoder implementations.
-///
-/// Unlike [`VideoCodec`] which represents wire-level codec identifiers (including unsupported
-/// ones for CLI parsing), this enum only contains variants that are actually compiled in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VideoEncoderKind {
     /// Software H.264 via openh264 (always available).
     H264,
     /// Software AV1 via rav1e.
@@ -213,13 +203,15 @@ pub enum VideoEncoderKind {
     Av1,
     /// Hardware H.264 via macOS VideoToolbox.
     #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+    #[strum(serialize = "h264-vtb")]
     VtbH264,
     /// Hardware H.264 via Linux VAAPI.
+    #[strum(serialize = "h264-vaapi")]
     #[cfg(all(target_os = "linux", feature = "vaapi"))]
     VaapiH264,
 }
 
-impl VideoEncoderKind {
+impl VideoCodec {
     /// Returns all encoder kinds that are compiled in.
     pub fn available() -> Vec<Self> {
         vec![
@@ -273,37 +265,6 @@ impl VideoEncoderKind {
             Self::VtbH264 => "H.264 (VideoToolbox)",
             #[cfg(all(target_os = "linux", feature = "vaapi"))]
             Self::VaapiH264 => "H.264 (VAAPI)",
-        }
-    }
-}
-
-impl fmt::Display for VideoEncoderKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.display_name())
-    }
-}
-
-impl TryFrom<VideoCodec> for VideoEncoderKind {
-    type Error = anyhow::Error;
-    fn try_from(codec: VideoCodec) -> Result<Self> {
-        match codec {
-            VideoCodec::H264 => Ok(Self::H264),
-            #[cfg(feature = "av1")]
-            VideoCodec::Av1 => Ok(Self::Av1),
-            #[cfg(not(feature = "av1"))]
-            VideoCodec::Av1 => anyhow::bail!("AV1 support requires the `av1` feature"),
-            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
-            VideoCodec::VtbH264 => Ok(Self::VtbH264),
-            #[cfg(not(all(target_os = "macos", feature = "videotoolbox")))]
-            VideoCodec::VtbH264 => {
-                anyhow::bail!("VideoToolbox support requires macOS and the `videotoolbox` feature")
-            }
-            #[cfg(all(target_os = "linux", feature = "vaapi"))]
-            VideoCodec::VaapiH264 => Ok(Self::VaapiH264),
-            #[cfg(not(all(target_os = "linux", feature = "vaapi")))]
-            VideoCodec::VaapiH264 => {
-                anyhow::bail!("VAAPI support requires Linux and the `vaapi` feature")
-            }
         }
     }
 }

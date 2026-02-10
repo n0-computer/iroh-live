@@ -196,7 +196,7 @@ mod tests {
 
     use super::*;
     use crate::av::{
-        PixelFormat, VideoEncoder, VideoEncoderInner, VideoFormat, VideoFrame, VideoPreset,
+        PixelFormat, VideoEncoder, VideoEncoderFactory, VideoFormat, VideoFrame, VideoPreset,
     };
     use crate::codec::video::encoder::H264Encoder;
 

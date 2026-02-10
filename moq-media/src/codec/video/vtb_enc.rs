@@ -30,7 +30,7 @@ use objc2_video_toolbox::{
 };
 
 use crate::{
-    av::{self, VideoPreset},
+    av::{self, VideoEncoder, VideoEncoderFactory, VideoPreset},
     codec::video::util::{
         annexb::build_avcc,
         convert::{YuvData, pixel_format_to_yuv420},
@@ -202,15 +202,16 @@ impl VtbEncoder {
     }
 }
 
-impl av::VideoEncoder for VtbEncoder {
+impl VideoEncoderFactory for VtbEncoder {
+    const ID: &str = "h264-vtb";
     fn with_preset(preset: VideoPreset) -> Result<Self> {
         Self::new(preset.width(), preset.height(), preset.fps())
     }
 }
 
-impl av::VideoEncoderInner for VtbEncoder {
+impl VideoEncoder for VtbEncoder {
     fn name(&self) -> &str {
-        "h264-videotoolbox"
+        Self::ID
     }
 
     fn config(&self) -> VideoConfig {
