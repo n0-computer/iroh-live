@@ -94,7 +94,7 @@ pub fn list_audio_outputs() -> Vec<AudioDevice> {
     let enumerator = CpalBackend::enumerator();
     for (i, host_id) in enumerator.available_hosts().into_iter().enumerate() {
         if let Ok(host) = enumerator.get_host(host_id) {
-            for (j, device) in host.input_devices().into_iter().enumerate() {
+            for (j, device) in host.output_devices().into_iter().enumerate() {
                 let id = DeviceId(device.id);
                 out.push(AudioDevice {
                     name: device.name.unwrap_or(id.to_string()),
