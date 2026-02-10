@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fmt,
+    str::FromStr,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -11,9 +12,10 @@ use std::{
 
 use anyhow::{Context, Result};
 use firewheel::{
-    CpalBackend, CpalConfig, CpalInputConfig, CpalOutputConfig, FirewheelConfig, FirewheelContext,
+    FirewheelConfig, FirewheelContext,
     backend::AudioBackend as FirewheelAudioBackend,
     channel_config::{ChannelConfig, ChannelCount, NonZeroChannelCount},
+    cpal::{CpalBackend, CpalConfig, CpalInputConfig, CpalOutputConfig, cpal},
     dsp::volume::{DEFAULT_DB_EPSILON, DbMeterNormalizer},
     graph::PortIdx,
     node::NodeID,
@@ -40,44 +42,69 @@ mod aec;
 type StreamWriterHandle = Arc<Mutex<StreamWriterState>>;
 type StreamReaderHandle = Arc<Mutex<StreamReaderState>>;
 
+/// Identifier for an audio device
+#[derive(Debug, Clone, derive_more::Display, Eq, PartialEq)]
+pub struct DeviceId(cpal::DeviceId);
+
+impl DeviceId {
+    pub fn from_str(id: &str) -> Result<Self> {
+        let id = cpal::DeviceId::from_str(id)?;
+        Ok(Self(id))
+    }
+
+    fn to_cpal(&self) -> (cpal::HostId, cpal::DeviceId) {
+        (self.0.0, self.0.clone())
+    }
+}
+
 /// Information about an available audio input device.
-#[derive(Debug, Clone)]
-pub struct AudioInputInfo {
-    /// The device name (used to select it).
+#[derive(Debug, Clone, derive_more::Display)]
+#[display("{name}{}", is_default.then(|| " (default)").unwrap_or_default())]
+pub struct AudioDevice {
+    /// The device id
+    pub id: DeviceId,
+    /// Human-readable device name
     pub name: String,
     /// Whether this is the system default input device.
     pub is_default: bool,
 }
 
-/// Information about an available audio output device.
-#[derive(Debug, Clone)]
-pub struct AudioOutputInfo {
-    /// The device name (used to select it).
-    pub name: String,
-    /// Whether this is the system default output device.
-    pub is_default: bool,
-}
-
 /// List available audio input devices.
-pub fn list_audio_inputs() -> Vec<AudioInputInfo> {
-    <CpalBackend as FirewheelAudioBackend>::available_input_devices()
-        .into_iter()
-        .map(|d| AudioInputInfo {
-            name: d.name,
-            is_default: d.is_default,
-        })
-        .collect()
+pub fn list_audio_inputs() -> Vec<AudioDevice> {
+    let mut out = Vec::new();
+    let enumerator = CpalBackend::enumerator();
+    for (i, host_id) in enumerator.available_hosts().into_iter().enumerate() {
+        if let Ok(host) = enumerator.get_host(host_id) {
+            for (j, device) in host.input_devices().into_iter().enumerate() {
+                let id = DeviceId(device.id);
+                out.push(AudioDevice {
+                    name: device.name.unwrap_or(id.to_string()),
+                    id,
+                    is_default: i == 0 && j == 0,
+                })
+            }
+        }
+    }
+    out
 }
 
 /// List available audio output devices.
-pub fn list_audio_outputs() -> Vec<AudioOutputInfo> {
-    <CpalBackend as FirewheelAudioBackend>::available_output_devices()
-        .into_iter()
-        .map(|d| AudioOutputInfo {
-            name: d.name,
-            is_default: d.is_default,
-        })
-        .collect()
+pub fn list_audio_outputs() -> Vec<AudioDevice> {
+    let mut out = Vec::new();
+    let enumerator = CpalBackend::enumerator();
+    for (i, host_id) in enumerator.available_hosts().into_iter().enumerate() {
+        if let Ok(host) = enumerator.get_host(host_id) {
+            for (j, device) in host.input_devices().into_iter().enumerate() {
+                let id = DeviceId(device.id);
+                out.push(AudioDevice {
+                    name: device.name.unwrap_or(id.to_string()),
+                    id,
+                    is_default: i == 0 && j == 0,
+                })
+            }
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone)]
@@ -92,7 +119,7 @@ impl Default for AudioBackend {
 }
 
 impl AudioBackend {
-    pub fn new(input_device: Option<String>, output_device: Option<String>) -> Self {
+    pub fn new(input_device: Option<DeviceId>, output_device: Option<DeviceId>) -> Self {
         let (tx, rx) = mpsc::channel(32);
         let _handle = spawn_thread("audiodriver", move || {
             AudioDriver::new(rx, input_device, output_device).run()
@@ -310,34 +337,50 @@ impl fmt::Debug for AudioDriver {
 impl AudioDriver {
     fn new(
         rx: mpsc::Receiver<DriverMessage>,
-        input_device: Option<String>,
-        output_device: Option<String>,
+        input_device: Option<DeviceId>,
+        output_device: Option<DeviceId>,
     ) -> Self {
         let config = FirewheelConfig {
             num_graph_inputs: ChannelCount::new(1).unwrap(),
             ..Default::default()
         };
         let mut cx = FirewheelContext::new(config);
-        info!("inputs: {:?}", cx.available_input_devices());
-        info!("outputs: {:?}", cx.available_output_devices());
+        // info!("inputs: {:?}", cx.available_input_devices());
+        // info!("outputs: {:?}", cx.available_output_devices());
 
         #[cfg(target_os = "linux")]
-        let input_device_name = input_device.or_else(|| Some("pipewire".to_string()));
+        let input_device = input_device.or_else(|| DeviceId::from_str("alsa:pipewire").ok());
         #[cfg(not(target_os = "linux"))]
-        let input_device_name = input_device;
+        let input_device = input_device;
 
         #[cfg(target_os = "linux")]
-        let output_device_name = output_device.or_else(|| Some("pipewire".to_string()));
+        let output_device = output_device.or_else(|| DeviceId::from_str("alsa:pipewire").ok());
         #[cfg(not(target_os = "linux"))]
-        let output_device_name = output_device;
+        let output_device = output_device;
 
+        let (output_host, output_id) = match output_device {
+            Some(device) => {
+                let (host, device) = device.to_cpal();
+                (Some(host), Some(device))
+            }
+            None => (None, None),
+        };
+        let (input_host, input_id) = match input_device {
+            Some(device) => {
+                let (host, device) = device.to_cpal();
+                (Some(host), Some(device))
+            }
+            None => (None, None),
+        };
         let config = CpalConfig {
             output: CpalOutputConfig {
-                device_name: output_device_name,
+                host: output_host,
+                device_id: output_id,
                 ..Default::default()
             },
             input: Some(CpalInputConfig {
-                device_name: input_device_name,
+                host: input_host,
+                device_id: input_id,
                 fail_on_no_input: true,
                 ..Default::default()
             }),

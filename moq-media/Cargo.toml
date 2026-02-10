@@ -16,7 +16,7 @@ bytemuck = "1.24.0"
 byte-unit = { version = "5.1", features = ["bit"] }
 data-encoding = "2.9.0"
 derive_more = { version = "2.0.1", features = ["display", "debug", "eq", "deref"] }
-firewheel = { version = "0.9.1", features = ["cpal", "peak_meter_node", "std", "stream_nodes", "cpal_resample_inputs"] }
+firewheel = { version = "0.10.0", features = ["cpal", "peak_meter_node", "std", "stream_nodes", "cpal_resample_inputs"] }
 hang = "0.10"
 image = { version = "0.25.8", default-features = false }
 moq-lite = "0.11"
@@ -35,7 +35,7 @@ strum = { version = "0.27", features = ["derive"] }
 tokio = { version = "1.48.0", features = ["sync"] }
 tokio-util = "0.7.17"
 tracing = "0.1.41"
-xcap = "0.8"
+xcap = "0.8.1"
 sonora = { git = "https://github.com/dignifiedquire/sonora", branch = "main" }
 bytes = "1.11.0"
 openh264 = { version = "0.9", features = ["source"] }
