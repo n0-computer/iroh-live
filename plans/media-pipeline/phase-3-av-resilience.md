@@ -17,6 +17,7 @@ Bring subscriber-side media quality to libwebrtc grade: adaptive rendition switc
 | 3b | Jitter buffer & A/V sync — playout timing, adaptive latency, lip-sync | Pending | [phase-3b-jitter-sync.md](phase-3b-jitter-sync.md) |
 | 3c | Forward error correction — Opus FEC/PLC/DTX, comfort noise | Future | [phase-3c-fec.md](phase-3c-fec.md) |
 | 3d | Adaptive encoding — encoder rate control, bandwidth estimation, pacing | Future | [phase-3d-adaptive-encoding.md](phase-3d-adaptive-encoding.md) |
+| 3e | Runtime audio device switching & fallback — hot-swap devices, auto-fallback on disconnect | Pending | [phase-3e-audio-device-switching.md](phase-3e-audio-device-switching.md) |
 
 ## Architecture
 
@@ -47,9 +48,11 @@ Publisher                          Subscriber
                           ├──> 3c: FEC (uses NetworkSignals from 3a)
 3b: Jitter & Sync       ──┘    │
                                 └──> 3d: Adaptive Encoding (uses signals + encoder control)
+
+3e: Audio Device Switching (independent — AudioBackend/AudioDriver layer)
 ```
 
-Phases 3a and 3b are independent and can be developed in parallel. Phase 3c builds on 3a's signal infrastructure. Phase 3d builds on 3a's signals and adds publisher-side control.
+Phases 3a and 3b are independent and can be developed in parallel. Phase 3c builds on 3a's signal infrastructure. Phase 3d builds on 3a's signals and adds publisher-side control. Phase 3e is fully independent — it operates at the AudioBackend/AudioDriver layer and has no dependencies on the other sub-phases.
 
 ## Shared Infrastructure
 
