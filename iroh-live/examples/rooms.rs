@@ -2,15 +2,15 @@ use std::time::Duration;
 
 use clap::Parser;
 use eframe::egui::{self, Color32, Id, Vec2};
-use iroh::{Endpoint, protocol::Router};
+use iroh::{Endpoint, Watcher, protocol::Router};
 use iroh_gossip::{Gossip, TopicId};
 use iroh_live::{
     Live,
     media::{
         audio::AudioBackend,
-        av::{AudioPreset, VideoPreset},
+        av::{AudioPreset, VideoCodec, VideoPreset},
         capture::{CameraCapturer, ScreenCapturer},
-        ffmpeg::{FfmpegDecoders, FfmpegVideoDecoder, H264Encoder, OpusEncoder, ffmpeg_log_init},
+        codec::{DefaultDecoders, DynamicVideoDecoder, codec_init},
         publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
         subscribe::{AudioTrack, AvRemoteTrack, SubscribeBroadcast, WatchTrack},
     },
@@ -18,14 +18,19 @@ use iroh_live::{
     rooms::{Room, RoomEvent, RoomTicket},
     util::StatsSmoother,
 };
+use moq_media::av::AudioCodec;
 use n0_error::{Result, StdResultExt, anyerr};
 use tracing::{info, warn};
+
+mod common;
 
 const BROADCAST_NAME: &str = "cam";
 
 #[derive(Debug, Parser)]
 struct Cli {
     join: Option<RoomTicket>,
+    #[arg(long, default_value_t=VideoCodec::best_available(), value_parser = clap_enum_variants!(VideoCodec))]
+    codec: VideoCodec,
     #[clap(long)]
     screen: bool,
     #[clap(long)]
@@ -34,7 +39,7 @@ struct Cli {
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
-    ffmpeg_log_init();
+    codec_init();
     let cli = Cli::parse();
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -42,7 +47,7 @@ fn main() -> Result<()> {
         .build()
         .unwrap();
 
-    let audio_ctx = AudioBackend::new();
+    let audio_ctx = AudioBackend::new(None, None);
     let (router, broadcast, room) = rt.block_on(setup(cli, audio_ctx.clone()))?;
 
     let _guard = rt.enter();
@@ -87,15 +92,15 @@ async fn setup(cli: Cli, audio_ctx: AudioBackend) -> Result<(Router, PublishBroa
         let mut broadcast = PublishBroadcast::new();
         if !cli.no_audio {
             let mic = audio_ctx.default_input().await?;
-            let audio = AudioRenditions::new::<OpusEncoder>(mic, [AudioPreset::Hq]);
+            let audio = AudioRenditions::new(mic, AudioCodec::Opus, [AudioPreset::Hq]);
             broadcast.set_audio(Some(audio))?;
         }
         let video = if cli.screen {
             let screen = ScreenCapturer::new()?;
-            VideoRenditions::new::<H264Encoder>(screen, VideoPreset::all())
+            VideoRenditions::new(screen, cli.codec, VideoPreset::all())
         } else {
             let camera = CameraCapturer::new()?;
-            VideoRenditions::new::<H264Encoder>(camera, VideoPreset::all())
+            VideoRenditions::new(camera, cli.codec, VideoPreset::all())
         };
         broadcast.set_video(Some(video))?;
         broadcast
@@ -150,7 +155,7 @@ impl eframe::App for App {
                     );
                     let track = match self.rt.block_on(async {
                         let audio_out = self.audio_ctx.default_output().await?;
-                        broadcast.watch_and_listen::<FfmpegDecoders>(audio_out, Default::default())
+                        broadcast.watch_and_listen::<DefaultDecoders>(audio_out, Default::default())
                     }) {
                         Ok(track) => track,
                         Err(err) => {
@@ -268,7 +273,7 @@ impl RemoteTrackView {
                         {
                             if let Ok(track) = self
                                 .broadcast
-                                .watch_rendition::<FfmpegVideoDecoder>(&Default::default(), name)
+                                .watch_rendition::<DynamicVideoDecoder>(&Default::default(), name)
                             {
                                 if let Some(video) = self.video.as_mut() {
                                     video.set_track(track);
@@ -280,7 +285,10 @@ impl RemoteTrackView {
                     }
                 });
 
-            let stats = self.stats.smoothed(|| self.session.conn().stats());
+            let stats = self.stats.smoothed(|| {
+                let conn = self.session.conn();
+                (conn.stats(), conn.paths().get())
+            });
             ui.label(format!(
                 "peer:   {}",
                 self.session.conn().remote_id().fmt_short()

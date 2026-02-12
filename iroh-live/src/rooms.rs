@@ -15,6 +15,7 @@ use n0_future::FuturesUnordered;
 use n0_future::{StreamExt, task::AbortOnDropHandle};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{self, error::TryRecvError};
+use tokio::task;
 use tracing::{Instrument, debug, error_span, warn};
 
 use crate::Live;
@@ -26,6 +27,7 @@ type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + Sync + 'static>>;
 
 mod publisher;
 
+#[derive(Debug)]
 pub struct Room {
     handle: RoomHandle,
     events: mpsc::Receiver<RoomEvent>,
@@ -33,7 +35,7 @@ pub struct Room {
 
 pub type RoomEvents = mpsc::Receiver<RoomEvent>;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct RoomHandle {
     me: EndpointId,
     ticket: RoomTicket,
@@ -52,7 +54,7 @@ impl RoomHandle {
         self.tx
             .send(ApiMessage::Publish {
                 name: name.to_string(),
-                producer: producer,
+                producer,
             })
             .await
             .map_err(|_| anyerr!("room actor died"))
@@ -78,7 +80,7 @@ impl Room {
             ticket.clone(),
         )
         .await?;
-        let actor_task = tokio::task::spawn(
+        let actor_task = task::spawn(
             async move { actor.run(actor_rx).await }
                 .instrument(error_span!("RoomActor", id = ticket.topic_id.fmt_short())),
         );
@@ -122,6 +124,7 @@ enum ApiMessage {
     },
 }
 
+#[derive(Debug)]
 pub enum RoomEvent {
     RemoteAnnounced {
         remote: EndpointId,
@@ -143,6 +146,8 @@ struct PeerState {
     broadcasts: Vec<String>,
 }
 
+type ConnectingFutures =
+    FuturesUnordered<BoxFuture<(BroadcastId, Result<(MoqSession, SubscribeBroadcast)>)>>;
 type KvEntry = (EndpointId, Bytes, SignedValue);
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, derive_more::Display)]
@@ -155,8 +160,7 @@ struct Actor {
     live: Live,
     active_subscribe: HashSet<BroadcastId>,
     active_publish: HashSet<String>,
-    connecting:
-        FuturesUnordered<BoxFuture<(BroadcastId, Result<(MoqSession, SubscribeBroadcast)>)>>,
+    connecting: ConnectingFutures,
     subscribe_closed: FuturesUnordered<BoxFuture<BroadcastId>>,
     publish_closed: FuturesUnordered<BoxFuture<String>>,
     event_tx: mpsc::Sender<RoomEvent>,
@@ -202,7 +206,7 @@ impl Actor {
         })
     }
 
-    pub async fn run(mut self, mut inbox: mpsc::Receiver<ApiMessage>) {
+    pub(crate) async fn run(mut self, mut inbox: mpsc::Receiver<ApiMessage>) {
         let updates = self
             .kv
             .subscribe_with_opts(Subscribe {
@@ -271,7 +275,7 @@ impl Actor {
 
     async fn handle_gossip_update(&mut self, entry: KvEntry) {
         let (remote, key, value) = entry;
-        if remote == self.me || &key != PEER_STATE_KEY {
+        if remote == self.me || key != PEER_STATE_KEY {
             return;
         }
         let Ok(value) = postcard::from_bytes::<PeerState>(&value.value) else {
@@ -310,6 +314,7 @@ impl Actor {
 }
 
 mod ticket {
+    use std::env;
     use std::str::FromStr;
 
     use iroh::EndpointId;
@@ -340,12 +345,12 @@ mod ticket {
         }
 
         pub fn new_from_env() -> Result<Self> {
-            if let Ok(value) = std::env::var("IROH_LIVE_ROOM") {
+            if let Ok(value) = env::var("IROH_LIVE_ROOM") {
                 value
                     .parse()
                     .std_context("failed to parse ticket from IROH_LIVE_ROOM environment variable")
             } else {
-                let topic_id = match std::env::var("IROH_LIVE_TOPIC") {
+                let topic_id = match env::var("IROH_LIVE_TOPIC") {
                     Ok(topic) => TopicId::from_bytes(
                         data_encoding::HEXLOWER
                             .decode(topic.as_bytes())
@@ -371,7 +376,7 @@ mod ticket {
     impl FromStr for RoomTicket {
         type Err = iroh_tickets::ParseError;
 
-        fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
             iroh_tickets::Ticket::deserialize(s)
         }
     }

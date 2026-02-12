@@ -1,0 +1,55 @@
+name: HW Acceleration Tests
+on: [push, pull_request]
+
+jobs:
+  macos-videotoolbox:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: brew install libtool automake
+      - run: cargo check -p moq-media --features videotoolbox
+      - run: cargo check -p moq-media
+      - run: cargo clippy -p moq-media --features videotoolbox -- -D warnings
+      # TODO: run on self-hosted runner with real VideoToolbox hardware
+      - name: Run VideoToolbox HW tests
+        continue-on-error: true
+        run: cargo test -p moq-media --features videotoolbox -- --ignored
+
+  linux-vaapi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: >
+          sudo apt-get update && sudo apt-get install -y
+          libva-dev vainfo mesa-va-drivers
+          libtool automake
+          libpipewire-0.3-dev libclang-dev libasound2-dev
+          libegl-dev libgbm-dev libdrm-dev
+          nasm
+      - run: cargo check -p moq-media --features vaapi
+      - run: cargo check -p moq-media
+      - run: cargo clippy -p moq-media --features vaapi -- -D warnings
+      # TODO: run on self-hosted runner with real VAAPI hardware (GPU required)
+      - name: Run VAAPI HW tests
+        continue-on-error: true
+        run: cargo test -p moq-media --features vaapi -- --ignored
+
+  compile-check:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            features: videotoolbox
+            install: brew install libtool automake
+          - os: ubuntu-latest
+            features: vaapi
+            install: sudo apt-get update && sudo apt-get install -y libva-dev libtool automake libpipewire-0.3-dev libclang-dev libasound2-dev libegl-dev libgbm-dev libdrm-dev nasm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: ${{ matrix.install }}
+      - run: cargo check -p moq-media --features ${{ matrix.features }}
+      - run: cargo check -p moq-media

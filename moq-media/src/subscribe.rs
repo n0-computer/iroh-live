@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, future, sync::Arc, thread, time::Duration};
 
 use hang::{
     Timestamp, TrackConsumer,
@@ -18,10 +18,11 @@ use tracing::{Span, debug, error, info, info_span, trace, warn};
 use crate::{
     av::{
         AudioDecoder, AudioSink, AudioSinkHandle, DecodeConfig, DecodedFrame, Decoders,
-        PlaybackConfig, Quality, VideoDecoder, VideoSource,
+        PixelFormat, PlaybackConfig, Quality, VideoDecoder, VideoSource,
     },
-    ffmpeg::util::Rescaler,
+    codec::video::util::scale::{Scaler, fit_within},
     util::spawn_thread,
+    visualize::{SampleRing, Visualization, VisualizationStyle, spawn_visualizer},
 };
 
 const DEFAULT_MAX_LATENCY: Duration = Duration::from_millis(150);
@@ -59,8 +60,7 @@ impl CatalogWrapper {
             .video
             .as_ref()
             .iter()
-            .map(|v| v.renditions.iter())
-            .flatten()
+            .flat_map(|v| v.renditions.iter())
             .map(|(name, config)| (name.as_str(), config.coded_width))
             .collect();
         renditions.sort_by(|a, b| a.1.cmp(&b.1));
@@ -72,8 +72,7 @@ impl CatalogWrapper {
             .audio
             .as_ref()
             .into_iter()
-            .map(|v| v.renditions.iter())
-            .flatten()
+            .flat_map(|v| v.renditions.iter())
             .map(|(name, _config)| name.as_str())
     }
 
@@ -200,7 +199,7 @@ impl SubscribeBroadcast {
         WatchTrack::from_consumer::<D>(
             track_name.to_string(),
             consumer,
-            &config,
+            config,
             playback_config,
             self.shutdown.child_token(),
             span,
@@ -265,10 +264,7 @@ fn select_rendition<T, P: ToString>(
         .or_else(|| renditions.keys().next().cloned())
 }
 
-fn select_video_rendition<'a, T>(
-    renditions: &'a BTreeMap<String, T>,
-    q: Quality,
-) -> Option<String> {
+fn select_video_rendition<T>(renditions: &BTreeMap<String, T>, q: Quality) -> Option<String> {
     use crate::av::VideoPreset::*;
     let order = match q {
         Quality::Highest => [P1080, P720, P360, P180],
@@ -280,10 +276,7 @@ fn select_video_rendition<'a, T>(
     select_rendition(renditions, &order)
 }
 
-fn select_audio_rendition<'a, T>(
-    renditions: &'a BTreeMap<String, T>,
-    q: Quality,
-) -> Option<String> {
+fn select_audio_rendition<T>(renditions: &BTreeMap<String, T>, q: Quality) -> Option<String> {
     use crate::av::AudioPreset::*;
     let order = match q {
         Quality::Highest | Quality::High => [Hq, Lq],
@@ -292,12 +285,19 @@ fn select_audio_rendition<'a, T>(
     select_rendition(renditions, &order)
 }
 
+#[derive(derive_more::Debug)]
 pub struct AudioTrack {
     name: String,
+    #[debug(skip)]
     handle: Box<dyn AudioSinkHandle>,
     shutdown_token: CancellationToken,
+    #[debug(skip)]
+    sample_ring: SampleRing,
+    channels: u32,
+    #[debug(skip)]
     _task_handle: AbortOnDropHandle<()>,
-    _thread_handle: std::thread::JoinHandle<()>,
+    #[debug(skip)]
+    _thread_handle: thread::JoinHandle<()>,
 }
 
 impl AudioTrack {
@@ -315,13 +315,17 @@ impl AudioTrack {
         info!(?config, "audio thread start");
         let decoder = D::new(&config, output_format)?;
         let handle = output.handle();
+        let sample_ring = SampleRing::new();
+        let channels = output_format.channel_count;
         let thread_name = format!("adec-{}", name);
         let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             let span = span.clone();
+            let ring = sample_ring.clone();
             move || {
                 let _guard = span.enter();
-                if let Err(err) = Self::run_loop(decoder, packet_rx, output, &shutdown) {
+                info!("audio decoder thread start");
+                if let Err(err) = Self::run_loop(decoder, packet_rx, output, &shutdown, &ring) {
                     error!("audio decoder failed: {err:#}");
                 }
                 info!("audio decoder thread stop");
@@ -332,6 +336,8 @@ impl AudioTrack {
             name,
             handle,
             shutdown_token: shutdown,
+            sample_ring,
+            channels,
             _task_handle: AbortOnDropHandle::new(task),
             _thread_handle: thread,
         })
@@ -350,15 +356,36 @@ impl AudioTrack {
         self.handle.as_ref()
     }
 
+    /// Spawn a visualizer that renders audio into RGBA frames at ~30fps.
+    ///
+    /// Returns a [`WatchTrack`] compatible with existing video view components.
+    pub fn visualize(&self, mode: Visualization) -> WatchTrack {
+        self.visualize_styled(mode, VisualizationStyle::default())
+    }
+
+    /// Spawn a visualizer with custom colors.
+    pub fn visualize_styled(&self, mode: Visualization, style: VisualizationStyle) -> WatchTrack {
+        spawn_visualizer(
+            self.sample_ring.clone(),
+            self.channels,
+            mode,
+            self.shutdown_token.child_token(),
+            style,
+        )
+    }
+
     pub(crate) fn run_loop(
         mut decoder: impl AudioDecoder,
         mut packet_rx: mpsc::Receiver<hang::Frame>,
         mut sink: impl AudioSink,
         shutdown: &CancellationToken,
+        sample_ring: &SampleRing,
     ) -> Result<()> {
         const INTERVAL: Duration = Duration::from_millis(10);
+        const MAX_CONSECUTIVE_ERRORS: u32 = 10;
         let mut remote_start = None;
         let loop_start = Instant::now();
+        let mut consecutive_errors = 0u32;
 
         'main: for i in 0.. {
             let tick = Instant::now();
@@ -371,7 +398,7 @@ impl AudioTrack {
             loop {
                 match packet_rx.try_recv() {
                     Ok(packet) => {
-                        let remote_start = *remote_start.get_or_insert_with(|| packet.timestamp);
+                        let remote_start = *remote_start.get_or_insert(packet.timestamp);
 
                         if tracing::enabled!(tracing::Level::TRACE) {
                             let loop_elapsed = tick.duration_since(loop_start);
@@ -388,9 +415,37 @@ impl AudioTrack {
                         // TODO: Skip outdated packets?
 
                         if !sink.is_paused() {
-                            decoder.push_packet(packet)?;
-                            if let Some(samples) = decoder.pop_samples()? {
-                                sink.push_samples(samples)?;
+                            if let Err(err) = decoder.push_packet(packet) {
+                                consecutive_errors += 1;
+                                warn!(consecutive_errors, "failed to push audio packet: {err:#}");
+                                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                                    n0_error::bail_any!(
+                                        "too many consecutive audio decode errors: {err:#}"
+                                    );
+                                }
+                                continue;
+                            }
+                            match decoder.pop_samples() {
+                                Ok(Some(samples)) => {
+                                    consecutive_errors = 0;
+                                    sink.push_samples(samples)?;
+                                    sample_ring.push(samples);
+                                }
+                                Ok(None) => {
+                                    consecutive_errors = 0;
+                                }
+                                Err(err) => {
+                                    consecutive_errors += 1;
+                                    warn!(
+                                        consecutive_errors,
+                                        "failed to pop audio samples: {err:#}"
+                                    );
+                                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                                        n0_error::bail_any!(
+                                            "too many consecutive audio decode errors: {err:#}"
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -409,7 +464,7 @@ impl AudioTrack {
             let real_time = Instant::now().duration_since(loop_start);
             let sleep = target_time.saturating_sub(real_time);
             if !sleep.is_zero() {
-                std::thread::sleep(sleep);
+                thread::sleep(sleep);
             }
         }
         shutdown.cancel();
@@ -423,14 +478,18 @@ impl Drop for AudioTrack {
     }
 }
 
+#[derive(derive_more::Debug)]
 pub struct WatchTrack {
     video_frames: WatchTrackFrames,
     handle: WatchTrackHandle,
 }
 
+#[derive(derive_more::Debug)]
 pub struct WatchTrackHandle {
     rendition: String,
+    #[debug(skip)]
     viewport: Watchable<(u32, u32)>,
+    #[debug(skip)]
     _guard: WatchTrackGuard,
 }
 
@@ -444,7 +503,9 @@ impl WatchTrackHandle {
     }
 }
 
+#[derive(derive_more::Debug)]
 pub struct WatchTrackFrames {
+    #[debug(skip)]
     rx: mpsc::Receiver<DecodedFrame>,
 }
 
@@ -469,14 +530,36 @@ impl WatchTrackFrames {
 struct WatchTrackGuard {
     _shutdown_token_guard: DropGuard,
     _task_handle: Option<AbortOnDropHandle<()>>,
-    _thread_handle: Option<std::thread::JoinHandle<()>>,
+    _thread_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl WatchTrack {
+    pub(crate) fn from_thread(
+        rendition: String,
+        frame_rx: mpsc::Receiver<DecodedFrame>,
+        viewport: Watchable<(u32, u32)>,
+        shutdown: CancellationToken,
+        thread: thread::JoinHandle<()>,
+    ) -> Self {
+        let guard = WatchTrackGuard {
+            _shutdown_token_guard: shutdown.drop_guard(),
+            _task_handle: None,
+            _thread_handle: Some(thread),
+        };
+        Self {
+            video_frames: WatchTrackFrames { rx: frame_rx },
+            handle: WatchTrackHandle {
+                rendition,
+                viewport,
+                _guard: guard,
+            },
+        }
+    }
+
     pub fn empty(rendition: impl ToString) -> Self {
         let (tx, rx) = mpsc::channel(1);
-        let task = tokio::task::spawn(async move {
-            std::future::pending::<()>().await;
+        let task = tokio::spawn(async move {
+            future::pending::<()>().await;
             let _ = tx;
         });
         let guard = WatchTrackGuard {
@@ -500,8 +583,8 @@ impl WatchTrack {
         mut source: impl VideoSource,
         decode_config: DecodeConfig,
     ) -> Self {
-        let viewport = Watchable::new((1u32, 1u32));
-        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<DecodedFrame>(2);
+        let viewport = Watchable::new((0u32, 0u32));
+        let (frame_tx, frame_rx) = mpsc::channel::<DecodedFrame>(2);
         let thread_name = format!("vpr-{:>4}-{:>4}", source.name(), rendition);
         let thread = spawn_thread(thread_name, {
             let mut viewport = viewport.watch();
@@ -509,8 +592,8 @@ impl WatchTrack {
             move || {
                 // TODO: Make configurable.
                 let fps = 30;
-                let mut rescaler = Rescaler::new(decode_config.pixel_format.to_ffmpeg(), None)
-                    .expect("failed to create rescaler");
+                let mut scaler = Scaler::new(None);
+                let mut pending_viewport: Option<(u32, u32)> = None;
                 let frame_duration = Duration::from_secs_f32(1. / fps as f32);
                 if let Err(err) = source.start() {
                     warn!("Video source failed to start: {err:?}");
@@ -518,24 +601,43 @@ impl WatchTrack {
                 }
                 let start = Instant::now();
                 for i in 1.. {
-                    // let t = Instant::now();
                     if shutdown.is_cancelled() {
                         break;
                     }
                     if viewport.update() {
-                        let (w, h) = viewport.peek();
-                        rescaler.set_target_dimensions(*w, *h);
+                        let &(w, h) = viewport.peek();
+                        if w > 0 && h > 0 {
+                            pending_viewport = Some((w, h));
+                        }
                     }
                     match source.pop_frame() {
                         Ok(Some(frame)) => {
-                            // trace!(t=?t.elapsed(), "pop");
-                            let frame = frame.to_ffmpeg();
-                            let frame = rescaler.process(&frame).expect("rescaler failed");
-                            let frame =
-                                DecodedFrame::from_ffmpeg(frame, frame_duration, start.elapsed());
-                            // trace!(t=?t.elapsed(), "convert");
-                            let _ = frame_tx.blocking_send(frame);
-                            // trace!(t=?t.elapsed(), "send");
+                            let [w, h] = frame.format.dimensions;
+                            // Apply viewport with aspect-preserving fit (same as decoder path).
+                            if let Some((max_w, max_h)) = pending_viewport.take() {
+                                let (tw, th) = fit_within(w, h, max_w, max_h);
+                                scaler.set_target_dimensions(tw, th);
+                            }
+                            let rgba = match scaler.scale_rgba(&frame.raw, w, h) {
+                                Ok(Some((scaled, sw, sh))) => {
+                                    image::RgbaImage::from_raw(sw, sh, scaled)
+                                }
+                                _ => image::RgbaImage::from_raw(w, h, frame.raw.to_vec()),
+                            };
+                            if let Some(mut img) = rgba {
+                                // Convert pixel format if needed.
+                                if decode_config.pixel_format == PixelFormat::Bgra {
+                                    for pixel in img.chunks_exact_mut(4) {
+                                        pixel.swap(0, 2);
+                                    }
+                                }
+                                let delay = image::Delay::from_saturating_duration(frame_duration);
+                                let decoded = DecodedFrame {
+                                    frame: image::Frame::from_parts(img, 0, 0, delay),
+                                    timestamp: start.elapsed(),
+                                };
+                                let _ = frame_tx.blocking_send(decoded);
+                            }
                         }
                         Ok(None) => {}
                         Err(_) => break,
@@ -543,13 +645,11 @@ impl WatchTrack {
                     let expected_time = i * frame_duration;
                     let actual_time = start.elapsed();
                     if expected_time > actual_time {
-                        std::thread::sleep(expected_time - actual_time);
-                        // trace!(t=?t.elapsed(), slept=?(actual_time - expected_time), ?expected_time, ?actual_time, "done");
+                        thread::sleep(expected_time - actual_time);
                     }
                 }
                 if let Err(err) = source.stop() {
                     warn!("Video source failed to stop: {err:?}");
-                    return;
                 }
             }
         });
@@ -558,7 +658,7 @@ impl WatchTrack {
             _task_handle: None,
             _thread_handle: Some(thread),
         };
-        WatchTrack {
+        Self {
             video_frames: WatchTrackFrames { rx: frame_rx },
             handle: WatchTrackHandle {
                 rendition,
@@ -584,27 +684,35 @@ impl WatchTrack {
         let _guard = span.enter();
         debug!(?config, "video decoder start");
         let decoder = D::new(config, playback_config)?;
+        let target_pixel_format = playback_config.pixel_format;
         let thread_name = format!("vdec-{}", rendition);
         let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             let span = span.clone();
             move || {
                 let _guard = span.enter();
-                if let Err(err) =
-                    Self::run_loop(&shutdown, packet_rx, frame_tx, viewport_watcher, decoder)
-                {
+                info!("video decoder thread start");
+                if let Err(err) = Self::run_loop(
+                    &shutdown,
+                    packet_rx,
+                    frame_tx,
+                    viewport_watcher,
+                    decoder,
+                    target_pixel_format,
+                ) {
                     error!("video decoder failed: {err:#}");
                 }
+                info!("video decoder thread stop");
                 shutdown.cancel();
             }
         });
-        let task = tokio::task::spawn(forward_frames(consumer, packet_tx));
+        let task = tokio::spawn(forward_frames(consumer, packet_tx));
         let guard = WatchTrackGuard {
             _shutdown_token_guard: shutdown.drop_guard(),
             _task_handle: Some(AbortOnDropHandle::new(task)),
             _thread_handle: Some(thread),
         };
-        Ok(WatchTrack {
+        Ok(Self {
             video_frames: WatchTrackFrames { rx: frame_rx },
             handle: WatchTrackHandle {
                 rendition,
@@ -636,7 +744,9 @@ impl WatchTrack {
         output_tx: mpsc::Sender<DecodedFrame>,
         mut viewport_watcher: n0_watcher::Direct<(u32, u32)>,
         mut decoder: impl VideoDecoder,
+        target_pixel_format: PixelFormat,
     ) -> Result<(), anyhow::Error> {
+        let mut waiting_for_keyframe = false;
         loop {
             if shutdown.is_cancelled() {
                 break;
@@ -644,21 +754,68 @@ impl WatchTrack {
             let Some(packet) = input_rx.blocking_recv() else {
                 break;
             };
+
+            // After a decode error, skip packets until we receive a keyframe
+            // so the decoder can resync.
+            if waiting_for_keyframe {
+                if !packet.keyframe {
+                    trace!("skipping non-keyframe packet while waiting for recovery");
+                    continue;
+                }
+                info!("received keyframe, resuming decode");
+                waiting_for_keyframe = false;
+            }
+
             if viewport_watcher.update() {
                 let (w, h) = viewport_watcher.peek();
                 decoder.set_viewport(*w, *h);
             }
             let t = Instant::now();
-            decoder
-                .push_packet(packet)
-                .context("failed to push packet")?;
+            if let Err(err) = decoder.push_packet(packet) {
+                warn!("failed to push video packet, waiting for next keyframe: {err:#}");
+                waiting_for_keyframe = true;
+                continue;
+            }
             trace!(t=?t.elapsed(), "videodec: push_packet");
-            while let Some(frame) = decoder.pop_frame().context("failed to pop frame")? {
-                trace!(t=?t.elapsed(), "videodec: pop frame");
-                if output_tx.blocking_send(frame).is_err() {
-                    break;
+            match decoder.pop_frame() {
+                Ok(Some(mut frame)) => {
+                    trace!(t=?t.elapsed(), "videodec: pop frame");
+                    // Decoders output RGBA; convert if the consumer needs BGRA.
+                    if target_pixel_format == PixelFormat::Bgra {
+                        for pixel in frame.frame.buffer_mut().chunks_exact_mut(4) {
+                            pixel.swap(0, 2);
+                        }
+                    }
+                    if output_tx.blocking_send(frame).is_err() {
+                        break;
+                    }
+                    trace!(t=?t.elapsed(), "videodec: tx");
+                    // Drain any additional frames.
+                    loop {
+                        match decoder.pop_frame() {
+                            Ok(Some(mut frame)) => {
+                                if target_pixel_format == PixelFormat::Bgra {
+                                    for pixel in frame.frame.buffer_mut().chunks_exact_mut(4) {
+                                        pixel.swap(0, 2);
+                                    }
+                                }
+                                if output_tx.blocking_send(frame).is_err() {
+                                    break;
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(err) => {
+                                warn!("failed to pop video frame: {err:#}");
+                                break;
+                            }
+                        }
+                    }
                 }
-                trace!(t=?t.elapsed(), "videodec: tx");
+                Ok(None) => {}
+                Err(err) => {
+                    warn!("failed to pop video frame, waiting for next keyframe: {err:#}");
+                    waiting_for_keyframe = true;
+                }
             }
         }
         Ok(())
@@ -671,18 +828,23 @@ async fn forward_frames(mut track: hang::TrackConsumer, sender: mpsc::Sender<han
         match frame {
             Ok(Some(frame)) => {
                 if sender.send(frame).await.is_err() {
+                    debug!("forward_frames: decoder channel closed");
                     break;
                 }
             }
-            Ok(None) => break,
+            Ok(None) => {
+                debug!("forward_frames: track ended");
+                break;
+            }
             Err(err) => {
-                warn!("failed to read frame: {err:?}");
+                error!("forward_frames: failed to read frame from track: {err:#}");
                 break;
             }
         }
     }
 }
 
+#[derive(derive_more::Debug)]
 pub struct AvRemoteTrack {
     pub broadcast: SubscribeBroadcast,
     pub video: Option<WatchTrack>,

@@ -7,15 +7,16 @@ authors = ["Franz Heinzmann <frando@n0.computer>"]
 repository = "https://github.com/n0-computer/iroh-live"
 license = "MIT OR Apache-2.0"
 
+[lints]
+workspace = true
+
 [dependencies]
 anyhow = "1.0.100"
 bytemuck = "1.24.0"
 byte-unit = { version = "5.1", features = ["bit"] }
 data-encoding = "2.9.0"
-derive_more = { version = "2.0.1", features = ["display", "debug", "eq"] }
-ffmpeg-next = { version = "8.0.0", default-features = false, features = ["device", "format", "filter", "software-resampling", "software-scaling"] }
-ffmpeg-sys-next = { version = "8.0.1", optional = true }
-firewheel = { version = "0.9.1", features = ["cpal", "peak_meter_node", "std", "stream_nodes", "cpal_resample_inputs"] }
+derive_more = { version = "2.0.1", features = ["display", "debug", "eq", "deref"] }
+firewheel = { version = "0.10.0", features = ["cpal", "peak_meter_node", "std", "stream_nodes", "cpal_resample_inputs"] }
 hang = "0.10"
 image = { version = "0.25.8", default-features = false }
 moq-lite = "0.11"
@@ -34,55 +35,40 @@ strum = { version = "0.27", features = ["derive"] }
 tokio = { version = "1.48.0", features = ["sync"] }
 tokio-util = "0.7.17"
 tracing = "0.1.41"
-xcap = "0.8"
-webrtc-audio-processing = { version = "0.5.0", features = ["bundled"] }
+xcap = "0.8.1"
+sonora = { version = "0.1" }
 bytes = "1.11.0"
-buf-list = "1.1.2"
+openh264 = { version = "0.9", features = ["source"] }
+unsafe-libopus = "0.2"
+yuvutils-rs = "0.8"
+pic-scale = "0.6"
+rubato = "1.0"
+rustfft = "6"
+audioadapter-buffers = "2.0"
+rav1e = { version = "0.8", optional = true }
+rav1d = { git = "https://github.com/memorysafety/rav1d", default-features = false, features = ["bitdepth_8", "bitdepth_16", "asm"], optional = true }
+libc = "0.2"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+cros-codecs = { version = "0.0.6", optional = true, features = ["vaapi"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-video-toolbox = { version = "0.3", optional = true, features = ["VTCompressionSession", "VTErrors"] }
+objc2-core-media = { version = "0.3", optional = true, features = ["CMTime", "CMSampleBuffer", "CMFormatDescription", "CMBlockBuffer"] }
+objc2-core-video = { version = "0.3", optional = true, features = ["CVPixelBuffer", "CVBuffer", "CVPixelBufferPool", "CVReturn", "CVImageBuffer", "CVBase"] }
+objc2-core-foundation = { version = "0.3", optional = true, features = ["CFDictionary"] }
+objc2 = { version = "0.6", optional = true }
 
 [dev-dependencies]
 clap = { version = "4.5", features = ["derive"] }
 eframe = "0.33.0"
+image = { version = "0.25.8", features = ["jpeg"] }
 postcard = "1.1.3"
 tokio = { version = "1.48.0", features = ["full"] }
 tracing-subscriber = "0.3.20"
 
 [features]
-default = []
-
-# Enable static build of ffmpeg
-static = [
-  "ffmpeg-next/static",
-  "ffmpeg-next/build-lib-openssl",
-  "ffmpeg-next/build-license-version3",
-  "ffmpeg-next/build-lib-opus",
-  "ffmpeg-next/build-lib-x264",
-  "ffmpeg-next/build-license-gpl",
-  "dep:ffmpeg-sys-next",
-]
-
-[target.'cfg(target_os = "macos")'.dependencies]
-ffmpeg-sys-next = { version = "8.0.1", optional = true, features = [
-  "build-videotoolbox",
-  "build-audiotoolbox",
-] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-ffmpeg-sys-next = { version = "8.0.1", optional = true, features = [
-  "build-vaapi",
-  # "build-vulkan",
-  # "build-lib-libmfx",
-] }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-ffmpeg-sys-next = { version = "8.0.1", optional = true, features = [
-  "build-lib-d3d11va",
-  "build-lib-dxva2",
-  # "build-nvidia",
-  # "build-amf",
-] }
-
-[target.'cfg(target_os = "android")'.dependencies]
-ffmpeg-sys-next = { version = "8.0.1", optional = true, features = [
-  # "build-mediacodec",
-] }
+default = ["av1"]
+av1 = ["dep:rav1e", "dep:rav1d"]
+videotoolbox = ["dep:objc2-video-toolbox", "dep:objc2-core-media", "dep:objc2-core-video", "dep:objc2-core-foundation", "dep:objc2"]
+vaapi = ["dep:cros-codecs"]

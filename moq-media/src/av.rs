@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use hang::catalog::{AudioConfig, VideoConfig};
 use image::RgbaImage;
 use strum::{Display, EnumString, VariantNames};
 
@@ -25,7 +26,7 @@ impl AudioFormat {
         }
     }
 
-    pub fn from_hang_config(config: &hang::catalog::AudioConfig) -> Self {
+    pub fn from_hang_config(config: &AudioConfig) -> Self {
         Self {
             channel_count: config.channel_count,
             sample_rate: config.sample_rate,
@@ -62,54 +63,51 @@ pub trait AudioSinkHandle: Send + 'static {
     }
 }
 
-pub trait AudioEncoder: AudioEncoderInner {
+pub trait AudioEncoderFactory: AudioEncoder {
+    const ID: &str;
     fn with_preset(format: AudioFormat, preset: AudioPreset) -> Result<Self>
     where
         Self: Sized;
 }
-pub trait AudioEncoderInner: Send + 'static {
+
+pub trait AudioEncoder: Send + 'static {
     fn name(&self) -> &str;
-    fn config(&self) -> hang::catalog::AudioConfig;
+    fn config(&self) -> AudioConfig;
     fn push_samples(&mut self, samples: &[f32]) -> Result<()>;
     fn pop_packet(&mut self) -> Result<Option<hang::Frame>>;
 }
 
-impl AudioEncoderInner for Box<dyn AudioEncoder> {
+impl AudioEncoder for Box<dyn AudioEncoder> {
     fn name(&self) -> &str {
-        (&**self).name()
+        (**self).name()
     }
 
-    fn config(&self) -> hang::catalog::AudioConfig {
-        (&**self).config()
+    fn config(&self) -> AudioConfig {
+        (**self).config()
     }
 
     fn push_samples(&mut self, samples: &[f32]) -> Result<()> {
-        (&mut **self).push_samples(samples)
+        (**self).push_samples(samples)
     }
 
     fn pop_packet(&mut self) -> Result<Option<hang::Frame>> {
-        (&mut **self).pop_packet()
+        (**self).pop_packet()
     }
 }
 
 pub trait AudioDecoder: Send + 'static {
-    fn new(config: &hang::catalog::AudioConfig, target_format: AudioFormat) -> Result<Self>
+    fn new(config: &AudioConfig, target_format: AudioFormat) -> Result<Self>
     where
         Self: Sized;
     fn push_packet(&mut self, packet: hang::Frame) -> Result<()>;
     fn pop_samples(&mut self) -> Result<Option<&[f32]>>;
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
 pub enum PixelFormat {
+    #[default]
     Rgba,
     Bgra,
-}
-
-impl Default for PixelFormat {
-    fn default() -> Self {
-        PixelFormat::Rgba
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -132,39 +130,41 @@ pub trait VideoSource: Send + 'static {
     fn stop(&mut self) -> Result<()>;
 }
 
-pub trait VideoEncoder: VideoEncoderInner {
+pub trait VideoEncoderFactory: VideoEncoder {
+    const ID: &str;
+
     fn with_preset(preset: VideoPreset) -> Result<Self>
     where
         Self: Sized;
 }
 
-pub trait VideoEncoderInner: Send + 'static {
+pub trait VideoEncoder: Send + 'static {
     fn name(&self) -> &str;
-    fn config(&self) -> hang::catalog::VideoConfig;
+    fn config(&self) -> VideoConfig;
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()>;
     fn pop_packet(&mut self) -> Result<Option<hang::Frame>>;
 }
 
-impl VideoEncoderInner for Box<dyn VideoEncoder> {
+impl VideoEncoder for Box<dyn VideoEncoder> {
     fn name(&self) -> &str {
-        (&**self).name()
+        (**self).name()
     }
 
-    fn config(&self) -> hang::catalog::VideoConfig {
-        (&**self).config()
+    fn config(&self) -> VideoConfig {
+        (**self).config()
     }
 
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
-        (&mut **self).push_frame(frame)
+        (**self).push_frame(frame)
     }
 
     fn pop_packet(&mut self) -> Result<Option<hang::Frame>> {
-        (&mut **self).pop_packet()
+        (**self).pop_packet()
     }
 }
 
 pub trait VideoDecoder: Send + 'static {
-    fn new(config: &hang::catalog::VideoConfig, playback_config: &DecodeConfig) -> Result<Self>
+    fn new(config: &VideoConfig, playback_config: &DecodeConfig) -> Result<Self>
     where
         Self: Sized;
     fn name(&self) -> &str;
@@ -173,7 +173,9 @@ pub trait VideoDecoder: Send + 'static {
     fn set_viewport(&mut self, w: u32, h: u32);
 }
 
+#[derive(derive_more::Debug)]
 pub struct DecodedFrame {
+    #[debug(skip)]
     pub frame: image::Frame,
     pub timestamp: Duration,
 }
@@ -190,11 +192,81 @@ pub enum AudioCodec {
     Opus,
 }
 
-#[derive(Debug, Clone, Copy, Display, EnumString, VariantNames)]
+/// Available video encoder implementations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display, EnumString, VariantNames)]
 #[strum(serialize_all = "lowercase")]
 pub enum VideoCodec {
+    /// Software H.264 via openh264 (always available).
     H264,
+    /// Software AV1 via rav1e.
+    #[cfg(feature = "av1")]
     Av1,
+    /// Hardware H.264 via macOS VideoToolbox.
+    #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+    #[strum(serialize = "h264-vtb")]
+    VtbH264,
+    /// Hardware H.264 via Linux VAAPI.
+    #[strum(serialize = "h264-vaapi")]
+    #[cfg(all(target_os = "linux", feature = "vaapi"))]
+    VaapiH264,
+}
+
+impl VideoCodec {
+    /// Returns all encoder kinds that are compiled in.
+    pub fn available() -> Vec<Self> {
+        vec![
+            Self::H264,
+            #[cfg(feature = "av1")]
+            Self::Av1,
+            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+            Self::VtbH264,
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            Self::VaapiH264,
+        ]
+    }
+
+    /// Returns the best available encoder: hardware if available, otherwise software H.264.
+    pub fn best_available() -> Self {
+        #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+        {
+            return Self::VtbH264;
+        }
+        #[cfg(all(target_os = "linux", feature = "vaapi"))]
+        {
+            return Self::VaapiH264;
+        }
+        #[allow(
+            unreachable_code,
+            reason = "fallback when no HW encoder is compiled in"
+        )]
+        Self::H264
+    }
+
+    /// Whether this is a hardware-accelerated encoder.
+    pub fn is_hardware(self) -> bool {
+        match self {
+            Self::H264 => false,
+            #[cfg(feature = "av1")]
+            Self::Av1 => false,
+            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+            Self::VtbH264 => true,
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            Self::VaapiH264 => true,
+        }
+    }
+
+    /// Human-readable display name.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::H264 => "H.264 (Software)",
+            #[cfg(feature = "av1")]
+            Self::Av1 => "AV1 (Software)",
+            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+            Self::VtbH264 => "H.264 (VideoToolbox)",
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            Self::VaapiH264 => "H.264 (VAAPI)",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Display, EnumString, VariantNames, Eq, PartialEq, Ord, PartialOrd)]
@@ -210,7 +282,7 @@ pub enum VideoPreset {
 }
 
 impl VideoPreset {
-    pub fn all() -> [VideoPreset; 4] {
+    pub fn all() -> [Self; 4] {
         [Self::P180, Self::P360, Self::P720, Self::P1080]
     }
 
@@ -253,12 +325,12 @@ pub enum Quality {
     Low,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct DecodeConfig {
     pub pixel_format: PixelFormat,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct PlaybackConfig {
     pub decode_config: DecodeConfig,
     pub quality: Quality,

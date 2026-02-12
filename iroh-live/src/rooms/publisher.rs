@@ -1,11 +1,11 @@
 use std::sync::{Arc, Mutex};
 
 use moq_lite::BroadcastProducer;
+use moq_media::audio::DeviceId;
 use moq_media::{
     audio::AudioBackend,
-    av::{AudioPreset, VideoPreset},
+    av::{AudioCodec, AudioPreset, VideoCodec, VideoPreset},
     capture::{CameraCapturer, ScreenCapturer},
-    ffmpeg::{H264Encoder, OpusEncoder},
     publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
 };
 use n0_error::{AnyError, Result};
@@ -32,6 +32,12 @@ pub struct PublishOpts {
     pub camera: bool,
     pub screen: bool,
     pub audio: bool,
+    /// If set, use a specific camera by index. If `None`, use the default camera.
+    pub camera_index: Option<u32>,
+    /// If set, use a specific audio input device by name. If `None`, use the system default.
+    pub audio_device: Option<DeviceId>,
+    /// Video encoder to use. If `None`, automatically selects the best available.
+    pub video_codec: Option<VideoCodec>,
 }
 
 /// Manager for publish broadcasts in a room
@@ -42,12 +48,16 @@ pub struct PublishOpts {
 /// Why does this have sync methods? In UI land it is so much easier for the operations to be sync,
 /// so this just spawns all async ops on tokio threads. Not yet sure about where this should evolve to
 /// but this kept me moving for now.
+#[derive(Debug)]
 pub struct RoomPublisherSync {
     audio_ctx: AudioBackend,
     room: RoomHandle,
     camera: Option<Arc<Mutex<PublishBroadcast>>>,
     screen: Option<Arc<Mutex<PublishBroadcast>>>,
     state: PublishOpts,
+    prev_camera_index: Option<u32>,
+    prev_audio_device: Option<DeviceId>,
+    prev_video_codec: Option<VideoCodec>,
 }
 
 impl RoomPublisherSync {
@@ -58,11 +68,21 @@ impl RoomPublisherSync {
             camera: None,
             screen: None,
             state: Default::default(),
+            prev_camera_index: None,
+            prev_audio_device: None,
+            prev_video_codec: None,
         }
+    }
+
+    pub fn set_audio_backend(&mut self, backend: AudioBackend) {
+        self.audio_ctx = backend;
     }
 
     pub fn set_state(&mut self, state: &PublishOpts) -> Result<(), Vec<(StreamKind, AnyError)>> {
         info!(new=?state, old=?self.state, "set publish state");
+        self.state.camera_index = state.camera_index;
+        self.state.audio_device = state.audio_device.clone();
+        self.state.video_codec = state.video_codec;
         let errors = [
             self.set_audio(state.audio)
                 .err()
@@ -101,10 +121,21 @@ impl RoomPublisherSync {
     }
 
     pub fn set_camera(&mut self, enable: bool) -> Result<()> {
-        if self.state.camera != enable {
+        let index_changed =
+            enable && self.state.camera && self.state.camera_index != self.prev_camera_index;
+        let codec_changed =
+            enable && self.state.camera && self.state.video_codec != self.prev_video_codec;
+        if self.state.camera != enable || index_changed || codec_changed {
             if enable {
-                let camera = CameraCapturer::new()?;
-                let renditions = VideoRenditions::new::<H264Encoder>(camera, VideoPreset::all());
+                let camera = match self.state.camera_index {
+                    Some(index) => CameraCapturer::with_index(index)?,
+                    None => CameraCapturer::new()?,
+                };
+                let codec = self
+                    .state
+                    .video_codec
+                    .unwrap_or_else(VideoCodec::best_available);
+                let renditions = VideoRenditions::new(camera, codec, VideoPreset::all());
                 self.ensure_camera();
                 self.camera
                     .as_ref()
@@ -116,6 +147,8 @@ impl RoomPublisherSync {
                 camera.lock().unwrap().set_video(None)?;
             }
             self.state.camera = enable;
+            self.prev_camera_index = self.state.camera_index;
+            self.prev_video_codec = self.state.video_codec;
         }
         Ok(())
     }
@@ -142,7 +175,9 @@ impl RoomPublisherSync {
     }
 
     pub fn set_screen(&mut self, enable: bool) -> Result<()> {
-        if self.state.screen != enable {
+        let codec_changed =
+            enable && self.state.screen && self.state.video_codec != self.prev_video_codec;
+        if self.state.screen != enable || codec_changed {
             if enable {
                 if self.screen.is_none() {
                     let broadcast = PublishBroadcast::new();
@@ -151,7 +186,11 @@ impl RoomPublisherSync {
                 };
 
                 let screen = ScreenCapturer::new()?;
-                let renditions = VideoRenditions::new::<H264Encoder>(screen, VideoPreset::all());
+                let codec = self
+                    .state
+                    .video_codec
+                    .unwrap_or_else(VideoCodec::best_available);
+                let renditions = VideoRenditions::new(screen, codec, VideoPreset::all());
                 self.screen
                     .as_mut()
                     .unwrap()
@@ -162,6 +201,7 @@ impl RoomPublisherSync {
                 let _ = self.screen.take();
             }
             self.state.screen = enable;
+            self.prev_video_codec = self.state.video_codec;
         }
         Ok(())
     }
@@ -171,7 +211,16 @@ impl RoomPublisherSync {
     }
 
     pub fn set_audio(&mut self, enable: bool) -> Result<()> {
-        if self.state.audio != enable {
+        let device_changed =
+            enable && self.state.audio && self.state.audio_device != self.prev_audio_device;
+        if self.state.audio != enable || device_changed {
+            if device_changed {
+                // Disable current audio first — the caller is expected to have
+                // already set a new AudioBackend via `set_audio_backend`.
+                if let Some(camera) = self.camera.as_mut() {
+                    camera.lock().unwrap().set_audio(None)?;
+                }
+            }
             if enable {
                 self.ensure_camera();
                 let camera = self.camera.as_ref().unwrap().clone();
@@ -184,7 +233,7 @@ impl RoomPublisherSync {
                         }
                         Ok(mic) => mic,
                     };
-                    let renditions = AudioRenditions::new::<OpusEncoder>(mic, [AudioPreset::Hq]);
+                    let renditions = AudioRenditions::new(mic, AudioCodec::Opus, [AudioPreset::Hq]);
                     if let Err(err) = camera.lock().unwrap().set_audio(Some(renditions)) {
                         warn!("failed to set audio: {err:#}");
                     }
@@ -193,6 +242,7 @@ impl RoomPublisherSync {
                 camera.lock().unwrap().set_audio(None)?;
             }
             self.state.audio = enable;
+            self.prev_audio_device = self.state.audio_device.clone();
         }
         Ok(())
     }

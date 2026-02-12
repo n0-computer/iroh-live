@@ -1,16 +1,21 @@
 use std::{
     collections::HashMap,
+    fmt,
+    str::FromStr,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    thread,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
 use firewheel::{
-    CpalConfig, CpalInputConfig, CpalOutputConfig, FirewheelConfig, FirewheelContext,
+    FirewheelConfig, FirewheelContext,
+    backend::AudioBackend as FirewheelAudioBackend,
     channel_config::{ChannelConfig, ChannelCount, NonZeroChannelCount},
+    cpal::{CpalBackend, CpalConfig, CpalInputConfig, CpalOutputConfig, cpal},
     dsp::volume::{DEFAULT_DB_EPSILON, DbMeterNormalizer},
     graph::PortIdx,
     node::NodeID,
@@ -37,15 +42,92 @@ mod aec;
 type StreamWriterHandle = Arc<Mutex<StreamWriterState>>;
 type StreamReaderHandle = Arc<Mutex<StreamReaderState>>;
 
+/// Identifier for an audio device
+#[derive(Debug, Clone, derive_more::Display, Eq, PartialEq)]
+pub struct DeviceId(cpal::DeviceId);
+
+impl DeviceId {
+    fn to_cpal(&self) -> (cpal::HostId, cpal::DeviceId) {
+        (self.0.0, self.0.clone())
+    }
+}
+
+impl FromStr for DeviceId {
+    type Err = anyhow::Error;
+
+    fn from_str(id: &str) -> Result<Self> {
+        let id = cpal::DeviceId::from_str(id)?;
+        Ok(Self(id))
+    }
+}
+
+/// Information about an available audio input device.
+#[derive(Debug, Clone, derive_more::Display)]
+#[display("{name}{}", is_default.then(|| " (default)").unwrap_or_default())]
+pub struct AudioDevice {
+    /// The device id
+    pub id: DeviceId,
+    /// Human-readable device name
+    pub name: String,
+    /// Whether this is the system default input device.
+    pub is_default: bool,
+}
+
+/// List available audio input devices.
+pub fn list_audio_inputs() -> Vec<AudioDevice> {
+    let mut out = Vec::new();
+    let enumerator = CpalBackend::enumerator();
+    for (i, host_id) in enumerator.available_hosts().into_iter().enumerate() {
+        if let Ok(host) = enumerator.get_host(host_id) {
+            for (j, device) in host.input_devices().into_iter().enumerate() {
+                let id = DeviceId(device.id);
+                out.push(AudioDevice {
+                    name: device.name.unwrap_or_else(|| id.to_string()),
+                    id,
+                    is_default: i == 0 && j == 0,
+                })
+            }
+        }
+    }
+    out
+}
+
+/// List available audio output devices.
+pub fn list_audio_outputs() -> Vec<AudioDevice> {
+    let mut out = Vec::new();
+    let enumerator = CpalBackend::enumerator();
+    for (i, host_id) in enumerator.available_hosts().into_iter().enumerate() {
+        if let Ok(host) = enumerator.get_host(host_id) {
+            for (j, device) in host.output_devices().into_iter().enumerate() {
+                let id = DeviceId(device.id);
+                out.push(AudioDevice {
+                    name: device.name.unwrap_or_else(|| id.to_string()),
+                    id,
+                    is_default: i == 0 && j == 0,
+                })
+            }
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone)]
 pub struct AudioBackend {
     tx: mpsc::Sender<DriverMessage>,
 }
 
+impl Default for AudioBackend {
+    fn default() -> Self {
+        Self::new(None, None)
+    }
+}
+
 impl AudioBackend {
-    pub fn new() -> Self {
+    pub fn new(input_device: Option<DeviceId>, output_device: Option<DeviceId>) -> Self {
         let (tx, rx) = mpsc::channel(32);
-        let _handle = spawn_thread("audiodriver", move || AudioDriver::new(rx).run());
+        let _handle = spawn_thread("audiodriver", move || {
+            AudioDriver::new(rx, input_device, output_device).run()
+        });
         Self { tx }
     }
 
@@ -59,7 +141,11 @@ impl AudioBackend {
             .send(DriverMessage::InputStream { format, reply })
             .await?;
         let handle = reply_rx.await??;
-        Ok(InputStream { handle, format })
+        Ok(InputStream {
+            handle,
+            format,
+            inactive_count: 0,
+        })
     }
 
     pub async fn default_output(&self) -> Result<OutputStream> {
@@ -76,11 +162,14 @@ impl AudioBackend {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, derive_more::Debug)]
 pub struct OutputStream {
+    #[debug(skip)]
     handle: StreamWriterHandle,
     paused: Arc<AtomicBool>,
+    #[debug(skip)]
     peaks: Arc<Mutex<PeakMeterSmoother<2>>>,
+    #[debug(skip)]
     normalizer: DbMeterNormalizer,
 }
 
@@ -167,17 +256,21 @@ impl AudioSink for OutputStream {
 }
 
 impl OutputStream {
-    #[allow(unused)]
+    #[allow(unused, reason = "may be used in future")]
     pub fn is_active(&self) -> bool {
         self.handle.lock().expect("poisoned").is_active()
     }
 }
 
 /// A simple AudioSource that reads from the default microphone via Firewheel.
-#[derive(Clone)]
+#[derive(Clone, derive_more::Debug)]
 pub struct InputStream {
+    #[debug(skip)]
     handle: StreamReaderHandle,
     format: AudioFormat,
+    /// Count of consecutive inactive reads, used to rate-limit warnings.
+    #[debug(skip)]
+    inactive_count: u32,
 }
 
 impl AudioSource for InputStream {
@@ -193,9 +286,19 @@ impl AudioSource for InputStream {
         use firewheel::nodes::stream::ReadStatus;
         let mut handle = self.handle.lock().expect("poisoned");
         match handle.read_interleaved(buf) {
-            Some(ReadStatus::Ok) => Ok(Some(buf.len())),
+            Some(ReadStatus::Ok) => {
+                if self.inactive_count > 0 {
+                    info!(
+                        "audio input stream became active after {} inactive reads",
+                        self.inactive_count
+                    );
+                    self.inactive_count = 0;
+                }
+                Ok(Some(buf.len()))
+            }
             Some(ReadStatus::InputNotReady) => {
                 tracing::warn!("audio input not ready");
+                self.inactive_count = 0;
                 // Maintain pacing; still return a frame-sized buffer
                 Ok(Some(buf.len()))
             }
@@ -204,16 +307,28 @@ impl AudioSource for InputStream {
                     "audio input underflow: {} frames missing",
                     buf.len() - num_frames_read
                 );
+                self.inactive_count = 0;
                 Ok(Some(buf.len()))
             }
             Some(ReadStatus::OverflowCorrected {
                 num_frames_discarded,
             }) => {
                 tracing::warn!("audio input overflow: {num_frames_discarded} frames discarded");
+                self.inactive_count = 0;
                 Ok(Some(buf.len()))
             }
             None => {
-                tracing::warn!("audio input stream is inactive");
+                self.inactive_count += 1;
+                // Log at warn level on the first occurrence, then every 250
+                // reads (~5s at 20ms intervals) to avoid flooding the log.
+                if self.inactive_count == 1 {
+                    tracing::warn!("audio input stream is inactive");
+                } else if self.inactive_count.is_multiple_of(250) {
+                    tracing::warn!(
+                        "audio input stream still inactive ({} reads)",
+                        self.inactive_count,
+                    );
+                }
                 Ok(None)
             }
         }
@@ -243,25 +358,58 @@ struct AudioDriver {
     peak_meters: HashMap<NodeID, Arc<Mutex<PeakMeterSmoother<2>>>>,
 }
 
+impl fmt::Debug for AudioDriver {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AudioDriver")
+            .field("aec_render_node", &self.aec_render_node)
+            .field("aec_capture_node", &self.aec_capture_node)
+            .finish_non_exhaustive()
+    }
+}
+
 impl AudioDriver {
-    fn new(rx: mpsc::Receiver<DriverMessage>) -> Self {
+    fn new(
+        rx: mpsc::Receiver<DriverMessage>,
+        input_device: Option<DeviceId>,
+        output_device: Option<DeviceId>,
+    ) -> Self {
         let config = FirewheelConfig {
             num_graph_inputs: ChannelCount::new(1).unwrap(),
             ..Default::default()
         };
         let mut cx = FirewheelContext::new(config);
-        info!("inputs: {:?}", cx.available_input_devices());
-        info!("outputs: {:?}", cx.available_output_devices());
+        // info!("inputs: {:?}", cx.available_input_devices());
+        // info!("outputs: {:?}", cx.available_output_devices());
+
+        #[cfg(target_os = "linux")]
+        let input_device = input_device.or_else(|| DeviceId::from_str("alsa:pipewire").ok());
+
+        #[cfg(target_os = "linux")]
+        let output_device = output_device.or_else(|| DeviceId::from_str("alsa:pipewire").ok());
+
+        let (output_host, output_id) = match output_device {
+            Some(device) => {
+                let (host, device) = device.to_cpal();
+                (Some(host), Some(device))
+            }
+            None => (None, None),
+        };
+        let (input_host, input_id) = match input_device {
+            Some(device) => {
+                let (host, device) = device.to_cpal();
+                (Some(host), Some(device))
+            }
+            None => (None, None),
+        };
         let config = CpalConfig {
             output: CpalOutputConfig {
-                #[cfg(target_os = "linux")]
-                device_name: Some("pipewire".to_string()),
-
+                host: output_host,
+                device_id: output_id,
                 ..Default::default()
             },
             input: Some(CpalInputConfig {
-                #[cfg(target_os = "linux")]
-                device_name: Some("pipewire".to_string()),
+                host: input_host,
+                device_id: input_id,
                 fail_on_no_input: true,
                 ..Default::default()
             }),
@@ -281,8 +429,10 @@ impl AudioDriver {
             num_outputs: ChannelCount::new(2).unwrap(),
         });
 
-        let aec_processor = AecProcessor::new(AecProcessorConfig::stereo_in_out(), true)
-            .expect("failed to initialize AEC processor");
+        let stream_sample_rate = cx.stream_info().unwrap().sample_rate.get();
+        let aec_config = AecProcessorConfig::new(stream_sample_rate, 2, 2);
+        let aec_processor =
+            AecProcessor::new(aec_config, true).expect("failed to initialize AEC processor");
         let aec_render_node = cx.add_node(AecRenderNode::default(), Some(aec_processor.clone()));
         let aec_capture_node = cx.add_node(AecCaptureNode::default(), Some(aec_processor.clone()));
 
@@ -366,7 +516,7 @@ impl AudioDriver {
                 last_peak_update = Instant::now();
             }
 
-            std::thread::sleep(INTERVAL.saturating_sub(tick.elapsed()));
+            thread::sleep(INTERVAL.saturating_sub(tick.elapsed()));
         }
     }
 
@@ -422,7 +572,7 @@ impl AudioDriver {
         //     .context("missing audio output node")?;
 
         let peak_meter_node = PeakMeterNode::<2> { enabled: true };
-        let peak_meter_id = self.cx.add_node(peak_meter_node.clone(), None);
+        let peak_meter_id = self.cx.add_node(peak_meter_node, None);
         let peak_meter_smoother =
             Arc::new(Mutex::new(PeakMeterSmoother::<2>::new(Default::default())));
         self.peak_meters
@@ -478,7 +628,6 @@ impl AudioDriver {
             Some(StreamReaderConfig {
                 channels: NonZeroChannelCount::new(channel_count)
                     .context("channel count may not be zero")?,
-                ..Default::default()
             }),
         );
         let graph_in_node_id = self.aec_capture_node;

@@ -7,8 +7,11 @@ authors = ["Franz Heinzmann <frando@n0.computer>"]
 repository = "https://github.com/n0-computer/iroh-live"
 license = "MIT OR Apache-2.0"
 
+[lints]
+workspace = true
+
 [dependencies]
-iroh = "0.95.1"
+iroh = "0.96.1"
 moq-lite = "0.11"
 n0-error = { version = "0.1.2", features = ["anyhow"] }
 n0-future = "0.3.1"

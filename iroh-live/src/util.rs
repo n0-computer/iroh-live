@@ -1,26 +1,34 @@
+use std::thread;
 use std::time::{Duration, Instant};
 
 use byte_unit::{Bit, UnitType};
-use iroh::endpoint::ConnectionStats;
+use iroh::endpoint::{ConnectionStats, PathInfoList};
 
 /// Spawn a named OS thread and panic if spawning fails.
-pub fn spawn_thread<F, T>(name: impl ToString, f: F) -> std::thread::JoinHandle<T>
+pub fn spawn_thread<F, T>(name: impl ToString, f: F) -> thread::JoinHandle<T>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
     let name_str = name.to_string();
-    std::thread::Builder::new()
+    thread::Builder::new()
         .name(name_str.clone())
         .spawn(f)
-        .expect(&format!("failed to spawn thread: {}", name_str))
+        .unwrap_or_else(|_| panic!("failed to spawn thread: {}", name_str))
 }
 
+#[derive(Debug)]
 pub struct StatsSmoother {
     rate_up: Rate,
     rate_down: Rate,
     last_update: Instant,
     rtt: Duration,
+}
+
+impl Default for StatsSmoother {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StatsSmoother {
@@ -32,15 +40,22 @@ impl StatsSmoother {
             rtt: Duration::from_secs(0),
         }
     }
-    pub fn smoothed(&mut self, total: impl FnOnce() -> ConnectionStats) -> SmoothedStats<'_> {
+    pub fn smoothed(
+        &mut self,
+        total: impl FnOnce() -> (ConnectionStats, PathInfoList),
+    ) -> SmoothedStats<'_> {
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_update);
         if elapsed >= Duration::from_secs(1) {
-            let stats = (total)();
+            let (stats, paths) = (total)();
             self.rate_down.update(elapsed, stats.udp_rx.bytes);
             self.rate_up.update(elapsed, stats.udp_tx.bytes);
             self.last_update = now;
-            self.rtt = stats.path.rtt;
+            self.rtt = paths
+                .iter()
+                .find(|p| p.is_selected())
+                .map(|p| p.rtt())
+                .unwrap_or_default();
         }
         SmoothedStats {
             down: &self.rate_down,
@@ -77,6 +92,7 @@ impl Rate {
     }
 }
 
+#[derive(Debug)]
 pub struct SmoothedStats<'a> {
     pub rtt: Duration,
     pub down: &'a Rate,

@@ -2,12 +2,12 @@ use std::time::Duration;
 
 use clap::Parser;
 use eframe::egui::{self, Color32, Id, Vec2};
-use iroh::{Endpoint, EndpointId};
+use iroh::{Endpoint, EndpointId, Watcher};
 use iroh_live::{
     Live,
     media::{
         audio::AudioBackend,
-        ffmpeg::{FfmpegDecoders, FfmpegVideoDecoder, ffmpeg_log_init},
+        codec::{DefaultDecoders, DynamicVideoDecoder, codec_init},
         subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
     },
     moq::MoqSession,
@@ -39,12 +39,12 @@ fn main() -> Result<()> {
     };
 
     tracing_subscriber::fmt::init();
-    ffmpeg_log_init();
+    codec_init();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
-    let audio_ctx = AudioBackend::new();
+    let audio_ctx = AudioBackend::new(None, None);
 
     println!("connecting to {ticket} ...");
     let (endpoint, session, track) = rt.block_on({
@@ -54,7 +54,7 @@ fn main() -> Result<()> {
             let live = Live::new(endpoint.clone());
             let audio_out = audio_ctx.default_output().await?;
             let (session, track) = live
-                .watch_and_listen::<FfmpegDecoders>(
+                .watch_and_listen::<DefaultDecoders>(
                     ticket.endpoint,
                     &ticket.broadcast_name,
                     audio_out,
@@ -164,7 +164,7 @@ impl App {
                         {
                             if let Ok(track) = self
                                 .broadcast
-                                .watch_rendition::<FfmpegVideoDecoder>(&Default::default(), name)
+                                .watch_rendition::<DynamicVideoDecoder>(&Default::default(), name)
                             {
                                 self.video = Some(VideoView::new(ctx, track));
                             }
@@ -172,7 +172,10 @@ impl App {
                     }
                 });
 
-            let stats = self.stats.smoothed(|| self.session.conn().stats());
+            let stats = self.stats.smoothed(|| {
+                let conn = self.session.conn();
+                (conn.stats(), conn.paths().get())
+            });
             ui.label(format!(
                 "peer:   {}",
                 self.session.conn().remote_id().fmt_short()
