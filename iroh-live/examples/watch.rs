@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use eframe::egui::{self, Color32, Id, Vec2};
-use iroh::{Endpoint, EndpointId};
+use iroh::{Endpoint, EndpointId, Watcher};
 use iroh_live::{
     Live,
     media::{
@@ -172,7 +172,10 @@ impl App {
                     }
                 });
 
-            let stats = self.stats.smoothed(|| self.session.conn().stats());
+            let stats = self.stats.smoothed(|| {
+                let conn = self.session.conn();
+                (conn.stats(), conn.paths().get())
+            });
             ui.label(format!(
                 "peer:   {}",
                 self.session.conn().remote_id().fmt_short()

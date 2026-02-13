@@ -112,9 +112,6 @@ pub enum ReadError {
 
     #[error("stream already closed")]
     ClosedStream,
-
-    #[error("ordered read on unordered stream")]
-    IllegalOrderedRead,
 }
 
 impl From<quinn::ReadError> for ReadError {
@@ -126,9 +123,8 @@ impl From<quinn::ReadError> for ReadError {
                     None => ReadError::InvalidReset(code),
                 }
             }
-            quinn::ReadError::ConnectionLost(e) => ReadError::SessionError(e.into()),
-            quinn::ReadError::IllegalOrderedRead => ReadError::IllegalOrderedRead,
-            quinn::ReadError::ClosedStream => ReadError::ClosedStream,
+            quinn::ReadError::ConnectionLost(e) => Self::SessionError(e.into()),
+            quinn::ReadError::ClosedStream => Self::ClosedStream,
             quinn::ReadError::ZeroRttRejected => unreachable!("0-RTT not supported"),
         }
     }

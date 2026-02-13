@@ -43,12 +43,8 @@ impl RecvStream {
     pub async fn read_chunk(
         &mut self,
         max_length: usize,
-        ordered: bool,
     ) -> Result<Option<quinn::Chunk>, ReadError> {
-        self.inner
-            .read_chunk(max_length, ordered)
-            .await
-            .map_err(Into::into)
+        self.inner.read_chunk(max_length).await.map_err(Into::into)
     }
 
     /// Read chunks of data from the stream. See [`quinn::RecvStream::read_chunks`].
@@ -100,7 +96,7 @@ impl web_transport_trait::RecvStream for RecvStream {
     }
 
     async fn read_chunk(&mut self, max: usize) -> Result<Option<Bytes>, Self::Error> {
-        self.read_chunk(max, true)
+        self.read_chunk(max)
             .await
             .map(|r| r.map(|chunk| chunk.bytes))
     }

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use eframe::egui::{self, Color32, Id, Vec2};
-use iroh::{Endpoint, protocol::Router};
+use iroh::{Endpoint, Watcher, protocol::Router};
 use iroh_gossip::{Gossip, TopicId};
 use iroh_live::{
     Live,
@@ -280,7 +280,10 @@ impl RemoteTrackView {
                     }
                 });
 
-            let stats = self.stats.smoothed(|| self.session.conn().stats());
+            let stats = self.stats.smoothed(|| {
+                let conn = self.session.conn();
+                (conn.stats(), conn.paths().get())
+            });
             ui.label(format!(
                 "peer:   {}",
                 self.session.conn().remote_id().fmt_short()
