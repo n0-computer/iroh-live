@@ -7050,6 +7050,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sfv"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d471eaefb14f4b30032525bdb124b36e55ba9cb1292080e06f1a236cd10fe87"
+dependencies = [
+ "base64",
+ "indexmap 2.12.1",
+ "ref-cast",
+]
+
+[[package]]
 name = "sha1_smol"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8464,12 +8475,13 @@ dependencies = [
 
 [[package]]
 name = "web-transport-proto"
-version = "0.3.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b5400535d6dd4c07dc86e83651a838fd513de7f5011d4e4eafa239fa4d0ded4"
+checksum = "08f2dccff2e778302b6f9289cc6644e37b37629d6020a4608d4a4c2f99bd448b"
 dependencies = [
  "bytes",
  "http",
+ "sfv",
  "thiserror 2.0.17",
  "tokio",
  "url",

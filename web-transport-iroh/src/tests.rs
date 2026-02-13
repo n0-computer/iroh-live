@@ -31,7 +31,7 @@ async fn h3_smoke() -> n0_error::Result<()> {
         async move {
             let session = client.connect_h3(server_addr, url.clone()).await.inspect_err(|err| println!("{err:#?}")).unwrap();
             assert_eq!(session.remote_id(), server_id);
-            assert_eq!(session.url(), Some(&url));
+            assert_eq!(session.request().map(|r| &r.url), Some(&url));
 
             let mut stream = session.open_uni().await.unwrap();
             stream.write_all(b"hi").await.unwrap();
@@ -54,10 +54,10 @@ async fn h3_smoke() -> n0_error::Result<()> {
                 .await
                 .inspect_err(|err| tracing::error!("accept failed: {err:?}"))
                 .unwrap();
-            assert_eq!(request.url(), &url);
+            assert_eq!(request.url, url);
             assert_eq!(request.conn().remote_id(), client_id);
             let session = request.ok().await.unwrap();
-            assert_eq!(session.url(), Some(&url));
+            assert_eq!(session.request().map(|r| &r.url), Some(&url));
             assert_eq!(session.conn().remote_id(), client_id);
             let mut stream = session.accept_uni().await.unwrap();
             let buf = stream.read_to_end(2).await.unwrap();
@@ -99,7 +99,7 @@ async fn quic_smoke() -> n0_error::Result<()> {
                 .unwrap();
             println!("session established");
             assert_eq!(session.remote_id(), server_id);
-            assert_eq!(session.url(), None);
+            assert!(session.request().is_none());
             let reason = session.closed().await;
             assert!(
                 matches!(reason, SessionError::ConnectionError(ConnectionError::ApplicationClosed(frame)) if frame.error_code.into_inner() == 23)
@@ -114,7 +114,7 @@ async fn quic_smoke() -> n0_error::Result<()> {
             let request = QuicRequest::accept(conn);
             assert_eq!(request.conn().remote_id(), client_id);
             let session = request.ok();
-            assert_eq!(session.url(), None);
+            assert!(session.request().is_none());
             assert_eq!(session.conn().remote_id(), client_id);
             session.close(23, b"bye");
         }

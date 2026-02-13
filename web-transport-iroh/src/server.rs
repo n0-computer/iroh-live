@@ -1,6 +1,6 @@
-use url::Url;
+use web_transport_proto::{ConnectRequest, ConnectResponse};
 
-use crate::{Connect, ServerError, Session, Settings};
+use crate::{Connecting, ServerError, Session, Settings};
 
 /// A QUIC-only WebTransport handshake, awaiting server decision.
 pub struct QuicRequest {
@@ -12,7 +12,7 @@ pub struct QuicRequest {
 pub struct H3Request {
     conn: iroh::endpoint::Connection,
     settings: Settings,
-    connect: Connect,
+    connect: Connecting,
 }
 
 impl QuicRequest {
@@ -44,7 +44,7 @@ impl H3Request {
         let settings = Settings::connect(&conn).await?;
 
         // Accept the CONNECT request but don't send a response yet.
-        let connect = Connect::accept(&conn).await?;
+        let connect = Connecting::accept(&conn).await?;
 
         Ok(Self {
             conn,
@@ -53,24 +53,41 @@ impl H3Request {
         })
     }
 
-    /// Returns the URL provided by the client.
-    pub fn url(&self) -> &Url {
-        self.connect.url()
-    }
-
     pub fn conn(&self) -> &iroh::endpoint::Connection {
         &self.conn
     }
 
-    /// Accept the session, returning a 200 OK.
-    pub async fn ok(mut self) -> Result<Session, ServerError> {
-        self.connect.respond(http::StatusCode::OK).await?;
-        Ok(Session::new_h3(self.conn, self.settings, self.connect))
+    pub async fn ok(self) -> Result<Session, ServerError> {
+        self.respond(ConnectResponse::OK).await
     }
 
-    /// Reject the session, returning your favorite HTTP status code.
-    pub async fn close(mut self, status: http::StatusCode) -> Result<(), ServerError> {
-        self.connect.respond(status).await?;
+    /// Reply to the session with the given response, usually 200 OK.
+    ///
+    /// [ConnectResponse::with_protocol] can be used to select a subprotocol.
+    pub async fn respond(
+        self,
+        response: impl Into<ConnectResponse>,
+    ) -> Result<Session, ServerError> {
+        let response = response.into();
+        let connect = self.connect.respond(response).await?;
+        Ok(Session::new_h3(self.conn, self.settings, connect))
+    }
+
+    /// Reject the session with the given status code.
+    pub async fn reject(self, status: http::StatusCode) -> Result<(), ServerError> {
+        self.connect.reject(status).await?;
         Ok(())
+    }
+
+    pub fn request(&self) -> &ConnectRequest {
+        &self.connect
+    }
+}
+
+impl core::ops::Deref for H3Request {
+    type Target = ConnectRequest;
+
+    fn deref(&self) -> &Self::Target {
+        &self.connect
     }
 }

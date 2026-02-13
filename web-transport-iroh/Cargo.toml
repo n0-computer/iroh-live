@@ -25,7 +25,7 @@ tokio = { version = "1", default-features = false, features = [
 ] }
 tracing = "0.1.41"
 url = "2"
-web-transport-proto = "0.3.0"
+web-transport-proto = "0.5.0"
 web-transport-trait = "0.3.0"
 
 [dev-dependencies]

@@ -1,7 +1,9 @@
+use std::ops::Deref;
+
+use iroh::endpoint::Connection;
 use web_transport_proto::{ConnectRequest, ConnectResponse, VarInt};
 
 use thiserror::Error;
-use url::Url;
 
 #[derive(Error, Debug, Clone)]
 pub enum ConnectError {
@@ -22,9 +24,13 @@ pub enum ConnectError {
 
     #[error("http error status: {0}")]
     ErrorStatus(http::StatusCode),
+
+    #[error("server returned protocol not in request: {0}")]
+    ProtocolMismatch(String),
 }
 
-pub struct Connect {
+/// An HTTP/3 CONNECT request/response for establishing a WebTransport session.
+pub struct Connecting {
     // The request that was sent by the client.
     request: ConnectRequest,
 
@@ -35,7 +41,7 @@ pub struct Connect {
     recv: quinn::RecvStream,
 }
 
-impl Connect {
+impl Connecting {
     pub async fn accept(conn: &iroh::endpoint::Connection) -> Result<Self, ConnectError> {
         // Accept the stream that will be used to send the HTTP CONNECT request.
         // If they try to send any other type of HTTP request, we will error out.
@@ -52,36 +58,93 @@ impl Connect {
         })
     }
 
-    // Called by the server to send a response to the client.
-    pub async fn respond(&mut self, status: http::StatusCode) -> Result<(), ConnectError> {
-        let resp = ConnectResponse { status };
+    // Called by the server to send a response to the client and establish the session.
+    pub async fn respond(
+        mut self,
+        response: impl Into<ConnectResponse>,
+    ) -> Result<Connected, ConnectError> {
+        let response = response.into();
 
-        tracing::debug!("sending CONNECT response: {resp:?}");
-        resp.write(&mut self.send).await?;
+        // Validate that our protocol was in the client's request.
+        if let Some(protocol) = &response.protocol {
+            if !self.request.protocols.contains(protocol) {
+                return Err(ConnectError::ProtocolMismatch(protocol.clone()));
+            }
+        }
 
-        Ok(())
+        tracing::debug!(?response, "sending CONNECT response");
+        response.write(&mut self.send).await?;
+
+        Ok(Connected {
+            request: self.request,
+            response,
+            send: self.send,
+            recv: self.recv,
+        })
     }
 
-    pub async fn open(conn: &iroh::endpoint::Connection, url: Url) -> Result<Self, ConnectError> {
+    pub async fn reject(self, status: http::StatusCode) -> Result<(), ConnectError> {
+        let mut connect = self.respond(status).await?;
+        connect.send.finish().ok();
+        Ok(())
+    }
+}
+
+impl Deref for Connecting {
+    type Target = ConnectRequest;
+
+    fn deref(&self) -> &Self::Target {
+        &self.request
+    }
+}
+
+pub struct Connected {
+    // The request that was sent by the client.
+    pub request: ConnectRequest,
+
+    // The response sent by the server.
+    pub response: ConnectResponse,
+
+    // A reference to the send/recv stream, so we don't close it until dropped.
+    pub(crate) send: quinn::SendStream,
+    pub(crate) recv: quinn::RecvStream,
+}
+
+impl Connected {
+    /// Open a new WebTransport session on the given connection for the given URL.
+    ///
+    /// You may add any number of subprotocols allowing the server to select from.
+    /// If the list is empty the field will be omitted in the request header.
+    pub async fn open(
+        conn: &Connection,
+        request: impl Into<ConnectRequest>,
+    ) -> Result<Self, ConnectError> {
+        let request = request.into();
+
         // Create a new stream that will be used to send the CONNECT frame.
         let (mut send, mut recv) = conn.open_bi().await?;
 
-        // Create a new CONNECT request that we'll send using HTTP/3
-        let request = ConnectRequest { url };
-
-        tracing::debug!("sending CONNECT request: {request:?}");
+        tracing::debug!(?request, "sending CONNECT request");
         request.write(&mut send).await?;
 
         let response = web_transport_proto::ConnectResponse::read(&mut recv).await?;
-        tracing::debug!("received CONNECT response: {response:?}");
+        tracing::debug!(?response, "received CONNECT response");
 
         // Throw an error if we didn't get a 200 OK.
         if response.status != http::StatusCode::OK {
             return Err(ConnectError::ErrorStatus(response.status));
         }
 
+        // Validate that the server's protocol was in our request.
+        if let Some(protocol) = &response.protocol {
+            if !request.protocols.contains(protocol) {
+                return Err(ConnectError::ProtocolMismatch(protocol.clone()));
+            }
+        }
+
         Ok(Self {
             request,
+            response,
             send,
             recv,
         })
@@ -95,26 +158,22 @@ impl Connect {
         VarInt::try_from(stream_id.into_inner()).unwrap()
     }
 
-    // The URL in the CONNECT request.
-    pub fn url(&self) -> &Url {
-        &self.request.url
-    }
-
-    pub(super) fn into_inner(self) -> (quinn::SendStream, quinn::RecvStream) {
-        (self.send, self.recv)
-    }
-
     // Keep reading from the control stream until it's closed.
-    pub(crate) async fn run_closed(self) -> (u32, String) {
-        let (_send, mut recv) = self.into_inner();
-
+    pub(crate) async fn run_closed(&mut self) -> (u32, String) {
         loop {
-            match web_transport_proto::Capsule::read(&mut recv).await {
-                Ok(web_transport_proto::Capsule::CloseWebTransportSession { code, reason }) => {
+            match web_transport_proto::Capsule::read(&mut self.recv).await {
+                Ok(Some(web_transport_proto::Capsule::CloseWebTransportSession {
+                    code,
+                    reason,
+                })) => {
                     return (code, reason);
                 }
-                Ok(web_transport_proto::Capsule::Unknown { typ, payload }) => {
-                    tracing::warn!("unknown capsule: type={typ} size={}", payload.len());
+                Ok(Some(web_transport_proto::Capsule::Grease { .. })) => {}
+                Ok(Some(web_transport_proto::Capsule::Unknown { typ, payload })) => {
+                    tracing::warn!(%typ, size = payload.len(), "unknown capsule");
+                }
+                Ok(None) => {
+                    return (0, "stream closed".to_string());
                 }
                 Err(_) => {
                     return (1, "capsule error".to_string());

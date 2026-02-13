@@ -14,13 +14,12 @@ use n0_future::{
     FuturesUnordered,
     stream::{Stream, StreamExt},
 };
-use url::Url;
 
 use crate::{
-    ClientError, Connect, RecvStream, SendStream, SessionError, Settings, WebTransportError,
+    ClientError, Connected, RecvStream, SendStream, SessionError, Settings, WebTransportError,
 };
 
-use web_transport_proto::{Frame, StreamUni, VarInt};
+use web_transport_proto::{ConnectRequest, ConnectResponse, Frame, StreamUni, VarInt};
 
 /// An established WebTransport session, acting like a full QUIC connection. See [`iroh::endpoint::Connection`].
 ///
@@ -48,17 +47,26 @@ impl Session {
 
     /// Connect using an established QUIC connection if you want to create the connection yourself.
     /// This will only work with a brand new QUIC connection using the HTTP/3 ALPN.
-    pub async fn connect_h3(conn: Connection, url: Url) -> Result<Session, ClientError> {
+    pub async fn connect_h3(
+        conn: Connection,
+        request: impl Into<ConnectRequest>,
+    ) -> Result<Session, ClientError> {
+        let request = request.into();
+
         // Perform the H3 handshake by sending/reciving SETTINGS frames.
         let settings = Settings::connect(&conn).await?;
 
         // Send the HTTP/3 CONNECT request.
-        let connect = Connect::open(&conn, url).await?;
+        let connect = Connected::open(&conn, request).await?;
 
-        Ok(Self::new_h3(conn, settings, connect))
+        // Return the resulting session with a reference to the control/connect streams.
+        // If either stream is closed, then the session will be closed, so we need to keep them around.
+        let session = Session::new_h3(conn, settings, connect);
+
+        Ok(session)
     }
 
-    pub fn new_h3(conn: Connection, settings: Settings, connect: Connect) -> Self {
+    pub fn new_h3(conn: Connection, settings: Settings, mut connect: Connected) -> Self {
         let h3 = H3SessionState::connect(conn.clone(), settings, &connect);
         let this = Session { conn, h3: Some(h3) };
         // Run a background task to check if the connect stream is closed.
@@ -77,8 +85,14 @@ impl Session {
         &self.conn
     }
 
-    pub fn url(&self) -> Option<&Url> {
-        self.h3.as_ref().map(|s| &s.url)
+    /// Returns the [`ConnectRequest`] if this session was established over HTTP/3.
+    pub fn request(&self) -> Option<&ConnectRequest> {
+        self.h3.as_ref().map(|s| &s.request)
+    }
+
+    /// Returns the [`ConnectResponse`] if this session was established over HTTP/3.
+    pub fn response(&self) -> Option<&ConnectResponse> {
+        self.h3.as_ref().map(|s| &s.response)
     }
 
     /// Accept a new unidirectional stream. See [`iroh::endpoint::Connection::accept_uni`].
@@ -263,7 +277,6 @@ impl Eq for Session {}
 
 #[derive(Clone)]
 struct H3SessionState {
-    url: Url,
     // The session ID, as determined by the stream ID of the connect request.
     session_id: VarInt,
     // Cache the headers in front of each stream we open.
@@ -276,10 +289,16 @@ struct H3SessionState {
     settings: Arc<Settings>,
     // The accept logic is stateful, so use an Arc<Mutex> to share it.
     accept: Arc<Mutex<H3SessionAccept>>,
+
+    // The request sent by the client.
+    request: ConnectRequest,
+
+    // The response sent by the server.
+    response: ConnectResponse,
 }
 
 impl H3SessionState {
-    fn connect(conn: Connection, settings: Settings, connect: &Connect) -> Self {
+    fn connect(conn: Connection, settings: Settings, connect: &Connected) -> Self {
         // The session ID is the stream ID of the CONNECT request.
         let session_id = connect.session_id();
 
@@ -298,13 +317,14 @@ impl H3SessionState {
         // Accept logic is stateful, so use an Arc<Mutex> to share it.
         let accept = H3SessionAccept::new(conn, session_id);
         Self {
-            url: connect.url().clone(),
             session_id,
             header_uni,
             header_bi,
             header_datagram,
             settings: Arc::new(settings),
             accept: Arc::new(Mutex::new(accept)),
+            request: connect.request.clone(),
+            response: connect.response.clone(),
         }
     }
 }
