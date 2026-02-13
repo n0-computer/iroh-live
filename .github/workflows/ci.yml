@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: cargo-bins/cargo-binstall@main
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cargo check
+        run: cargo check --all-features --workspace --examples --tests
+
+      - name: Cargo test
+        run: cargo test --workspace
