@@ -16,4 +16,4 @@ tokio = { version = "1.48.0", features = ["sync"] }
 tokio-util = "0.7.17"
 tracing = "0.1.41"
 url = "2.5.7"
-web-transport-iroh = { version = "0.1.0", path = "../web-transport-iroh" }
+web-transport-iroh = { version = "0.2.0" }

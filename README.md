@@ -6,10 +6,10 @@ Livestreaming video and audio over iroh
 
 This repository implements a live streaming protocol over iroh with [Media over Quic](https://moq.dev/).
 It uses [moq-rs](https://github.com/kixelated/moq) to transfer audio and video streams over iroh connections.
+The bridge from iroh connections to the WebTransport interface towards `moq-rs` is [web-transport-iroh](https://github.com/n0-computer/web-transport-iroh).
 
 ## Structure of the repository
 
-* [**`web-transport-iroh`**](web-transport-iroh): Implements the [web-transport](https://github.com/kixelated/web-transport) traits for iroh connections
 * [**`iroh-moq`**](iroh-moq): Adapters to create and accept [moq-lite](https://github.com/kixelated/moq/tree/main/rs/moq) sessions over iroh
 * [**`iroh-live`**](iroh-live): Native capture, encoding and decoding of audio and video. This is an early preview of a high-level live streaming toolkit for iroh. Currently, it has these features, all subject to change:
   * Support for [hang](https://github.com/kixelated/moq/blob/main/rs/hang/) catalogs in MoQ sessions
