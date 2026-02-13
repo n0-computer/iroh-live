@@ -11,10 +11,22 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        os: [macos-latest, ubuntu-latest]
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install build deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            libx264-dev libpipewire-0.3-dev pkg-config libasound2-dev libegl1-mesa-dev  libgl1-mesa-dev libx11-dev \
+            clang curl ca-certificates llvm libssl-dev yasm nasm libopus-dev libva-dev libva-drm2 libdrm-dev \
+            libxext-dev libxfixes-dev libgbm-dev libxkbcommon-dev libxkbcommon-x11-dev
+
+      - name: Install build deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install -q create-dmg pkg-config curl openssl@3 x264 yasm nasm opus ffmpeg automake autoconf libtool
 
       - uses: dtolnay/rust-toolchain@stable
 
