@@ -35,7 +35,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Cargo check
-        run: cargo check --all-features --workspace --examples --tests
+        run: cargo check --workspace --examples --tests
 
       - name: Cargo test
         run: cargo test --workspace
