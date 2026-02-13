@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use iroh::endpoint::{Connection, QuicTransportConfig};
+use iroh::endpoint::QuicTransportConfig;
 use iroh::{EndpointAddr, endpoint::ConnectOptions};
 use url::Url;
 
