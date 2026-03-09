@@ -30,7 +30,6 @@ use crate::{
     },
     subscribe::WatchTrack,
     util::spawn_thread,
-    visualize::{SampleRing, Visualization, VisualizationStyle, spawn_visualizer},
 };
 
 type MakeAudioEncoder = Box<dyn Fn() -> Result<Box<dyn AudioEncoder>> + Send + 'static>;
@@ -154,25 +153,6 @@ impl PublishBroadcast {
         Ok(())
     }
 
-    /// Spawn a visualizer for the local (publishing) audio source.
-    ///
-    /// Returns `None` if no audio source is configured.
-    pub fn visualize_local_audio(&self, mode: Visualization) -> Option<WatchTrack> {
-        let state = self.state.lock().expect("poisoned");
-        let audio = state.available_audio.as_ref()?;
-        let ring = audio.sample_ring.clone();
-        let channels = audio.source.format().channel_count;
-        let shutdown = state.shutdown_token.child_token();
-        drop(state);
-        Some(spawn_visualizer(
-            ring,
-            channels,
-            mode,
-            shutdown,
-            VisualizationStyle::default(),
-        ))
-    }
-
     pub fn set_audio(&mut self, renditions: Option<AudioRenditions>) -> Result<()> {
         match renditions {
             Some(renditions) => {
@@ -280,7 +260,6 @@ pub struct AudioRenditions {
     source: Box<dyn AudioSource>,
     #[debug(skip)]
     renditions: HashMap<String, MakeAudioEncoder>,
-    sample_ring: SampleRing,
 }
 
 impl AudioRenditions {
@@ -311,7 +290,6 @@ impl AudioRenditions {
         Self {
             source: Box::new(source),
             renditions: HashMap::new(),
-            sample_ring: SampleRing::new(),
         }
     }
 
@@ -369,7 +347,6 @@ impl AudioRenditions {
             encoder,
             producer,
             shutdown_token,
-            self.sample_ring.clone(),
         );
         Ok(thread)
     }
@@ -716,12 +693,11 @@ impl EncoderThread {
         }
     }
 
-    pub(crate) fn spawn_audio(
+    pub fn spawn_audio(
         mut source: Box<dyn AudioSource>,
         mut encoder: impl AudioEncoder,
         mut producer: hang::TrackProducer,
         shutdown: CancellationToken,
-        sample_ring: SampleRing,
     ) -> Self {
         let sd = shutdown.clone();
         let name = encoder.name();
@@ -745,7 +721,6 @@ impl EncoderThread {
                 }
                 match source.pop_samples(&mut buf) {
                     Ok(Some(_n)) => {
-                        sample_ring.push(&buf);
                         // Expect a full frame; if shorter, zero-pad via slice len
                         if let Err(err) = encoder.push_samples(&buf) {
                             error!(
