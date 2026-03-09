@@ -4,6 +4,8 @@ pub mod codec;
 pub mod format;
 mod processing;
 pub mod publish;
+#[cfg(feature = "wgpu")]
+pub mod render;
 pub mod subscribe;
 pub mod traits;
 mod util;

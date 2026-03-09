@@ -27,6 +27,8 @@ pub enum DynamicVideoDecoder {
     H264(super::H264VideoDecoder),
     #[cfg(feature = "av1")]
     Av1(super::av1::Av1VideoDecoder),
+    #[cfg(all(target_os = "linux", feature = "vaapi"))]
+    VaapiH264(Box<super::vaapi::VaapiDecoder>),
 }
 
 #[cfg(any_video_codec)]
@@ -37,10 +39,20 @@ impl VideoDecoder for DynamicVideoDecoder {
     {
         match &config.codec {
             #[cfg(feature = "h264")]
-            VideoCodec::H264(_) => Ok(Self::H264(super::H264VideoDecoder::new(
-                config,
-                playback_config,
-            )?)),
+            VideoCodec::H264(_) => {
+                #[cfg(all(target_os = "linux", feature = "vaapi"))]
+                if matches!(playback_config.backend, crate::format::DecoderBackend::Auto) {
+                    if let Ok(dec) = super::vaapi::VaapiDecoder::new(config, playback_config) {
+                        tracing::info!("using VAAPI hardware H.264 decoder");
+                        return Ok(Self::VaapiH264(Box::new(dec)));
+                    }
+                }
+                tracing::info!("using software H.264 decoder");
+                Ok(Self::H264(super::H264VideoDecoder::new(
+                    config,
+                    playback_config,
+                )?))
+            }
             #[cfg(not(feature = "h264"))]
             VideoCodec::H264(_) => bail!("H.264 support requires the `h264` feature"),
             #[cfg(feature = "av1")]
@@ -60,6 +72,8 @@ impl VideoDecoder for DynamicVideoDecoder {
             Self::H264(d) => d.name(),
             #[cfg(feature = "av1")]
             Self::Av1(d) => d.name(),
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            Self::VaapiH264(d) => d.name(),
             #[cfg(not(any(feature = "h264", feature = "av1")))]
             _ => unreachable!(),
         }
@@ -71,6 +85,8 @@ impl VideoDecoder for DynamicVideoDecoder {
             Self::H264(d) => d.push_packet(packet),
             #[cfg(feature = "av1")]
             Self::Av1(d) => d.push_packet(packet),
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            Self::VaapiH264(d) => d.push_packet(packet),
             #[cfg(not(any(feature = "h264", feature = "av1")))]
             _ => unreachable!(),
         }
@@ -82,6 +98,8 @@ impl VideoDecoder for DynamicVideoDecoder {
             Self::H264(d) => d.pop_frame(),
             #[cfg(feature = "av1")]
             Self::Av1(d) => d.pop_frame(),
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            Self::VaapiH264(d) => d.pop_frame(),
             #[cfg(not(any(feature = "h264", feature = "av1")))]
             _ => unreachable!(),
         }
@@ -93,6 +111,8 @@ impl VideoDecoder for DynamicVideoDecoder {
             Self::H264(d) => d.set_viewport(w, h),
             #[cfg(feature = "av1")]
             Self::Av1(d) => d.set_viewport(w, h),
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            Self::VaapiH264(d) => d.set_viewport(w, h),
             #[cfg(not(any(feature = "h264", feature = "av1")))]
             _ => unreachable!(),
         }

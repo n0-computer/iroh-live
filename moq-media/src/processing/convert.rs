@@ -1,7 +1,7 @@
 use anyhow::Result;
 use yuvutils_rs::{
-    YuvChromaSubsampling, YuvPlanarImage, YuvPlanarImageMut, YuvRange, YuvStandardMatrix,
-    bgra_to_yuv420, rgba_to_yuv420, yuv420_to_rgba,
+    YuvBiPlanarImage, YuvChromaSubsampling, YuvPlanarImage, YuvPlanarImageMut, YuvRange,
+    YuvStandardMatrix, bgra_to_yuv420, rgba_to_yuv420, yuv_nv12_to_rgba, yuv420_to_rgba,
 };
 
 use crate::format::PixelFormat;
@@ -116,6 +116,42 @@ pub(crate) fn yuv420_to_rgba_data(yuv: &YuvData) -> Result<Vec<u8>> {
         rgba_stride,
         YuvRange::Limited,
         YuvStandardMatrix::Bt601,
+    )?;
+    Ok(rgba)
+}
+
+/// Convert NV12 bi-planar data to RGBA (BT.601 limited range).
+///
+/// `y_plane` and `uv_plane` are separate slices with their own strides.
+#[cfg_attr(
+    not(any(feature = "vaapi", target_os = "macos")),
+    allow(dead_code, reason = "used by vaapi and future vtb decoders")
+)]
+pub(crate) fn nv12_to_rgba_data(
+    y_plane: &[u8],
+    y_stride: u32,
+    uv_plane: &[u8],
+    uv_stride: u32,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>> {
+    let bi = YuvBiPlanarImage {
+        y_plane,
+        y_stride,
+        uv_plane,
+        uv_stride,
+        width,
+        height,
+    };
+    let rgba_stride = width * 4;
+    let mut rgba = vec![0u8; (width * height * 4) as usize];
+    yuv_nv12_to_rgba(
+        &bi,
+        &mut rgba,
+        rgba_stride,
+        YuvRange::Limited,
+        YuvStandardMatrix::Bt601,
+        yuvutils_rs::YuvConversionMode::Balanced,
     )?;
     Ok(rgba)
 }

@@ -19,7 +19,7 @@ use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{Span, debug, error, info, info_span, trace, warn};
 
 use crate::{
-    format::{DecodeConfig, DecodedVideoFrame, PixelFormat, PlaybackConfig, Quality},
+    format::{DecodeConfig, DecodedVideoFrame, FrameBuffer, PixelFormat, PlaybackConfig, Quality},
     processing::scale::Scaler,
     traits::{AudioDecoder, AudioSink, AudioSinkHandle, Decoders, VideoDecoder, VideoSource},
     util::spawn_thread,
@@ -464,6 +464,7 @@ pub struct WatchTrack {
 #[derive(derive_more::Debug)]
 pub struct WatchTrackHandle {
     rendition: String,
+    decoder_name: String,
     #[debug(skip)]
     viewport: Watchable<(u32, u32)>,
     #[debug(skip)]
@@ -477,6 +478,10 @@ impl WatchTrackHandle {
 
     pub fn rendition(&self) -> &str {
         &self.rendition
+    }
+
+    pub fn decoder_name(&self) -> &str {
+        &self.decoder_name
     }
 }
 
@@ -526,6 +531,7 @@ impl WatchTrack {
             video_frames: WatchTrackFrames { rx },
             handle: WatchTrackHandle {
                 rendition: rendition.to_string(),
+                decoder_name: String::new(),
                 viewport: Default::default(),
                 _guard: guard,
             },
@@ -578,11 +584,13 @@ impl WatchTrack {
                                         pixel.swap(0, 2);
                                     }
                                 }
-                                let delay = image::Delay::from_saturating_duration(frame_duration);
-                                let decoded = DecodedVideoFrame {
-                                    frame: image::Frame::from_parts(img, 0, 0, delay),
-                                    timestamp: start.elapsed(),
-                                };
+                                let (iw, ih) = (img.width(), img.height());
+                                let decoded = DecodedVideoFrame::new_cpu(
+                                    img.into_raw(),
+                                    iw,
+                                    ih,
+                                    start.elapsed(),
+                                );
                                 let _ = frame_tx.blocking_send(decoded);
                             }
                         }
@@ -609,6 +617,7 @@ impl WatchTrack {
             video_frames: WatchTrackFrames { rx: frame_rx },
             handle: WatchTrackHandle {
                 rendition,
+                decoder_name: "capture".to_string(),
                 viewport,
                 _guard: guard,
             },
@@ -631,6 +640,7 @@ impl WatchTrack {
         let _guard = span.enter();
         debug!(?config, "video decoder start");
         let decoder = D::new(config, playback_config)?;
+        let decoder_name = decoder.name().to_string();
         let target_pixel_format = playback_config.pixel_format;
         let thread_name = format!("vdec-{}", rendition);
         let thread = spawn_thread(thread_name, {
@@ -638,7 +648,7 @@ impl WatchTrack {
             let span = span.clone();
             move || {
                 let _guard = span.enter();
-                info!("video decoder thread start");
+                info!(decoder = decoder.name(), "video decoder thread start");
                 if let Err(err) = Self::run_loop(
                     &shutdown,
                     packet_rx,
@@ -663,6 +673,7 @@ impl WatchTrack {
             video_frames: WatchTrackFrames { rx: frame_rx },
             handle: WatchTrackHandle {
                 rendition,
+                decoder_name,
                 viewport,
                 _guard: guard,
             },
@@ -679,6 +690,10 @@ impl WatchTrack {
 
     pub fn rendition(&self) -> &str {
         self.handle.rendition()
+    }
+
+    pub fn decoder_name(&self) -> &str {
+        self.handle.decoder_name()
     }
 
     pub fn current_frame(&mut self) -> Option<DecodedVideoFrame> {
@@ -728,8 +743,11 @@ impl WatchTrack {
                 Ok(Some(mut frame)) => {
                     trace!(t=?t.elapsed(), "videodec: pop frame");
                     // Decoders output RGBA; convert if the consumer needs BGRA.
-                    if target_pixel_format == PixelFormat::Bgra {
-                        for pixel in frame.frame.buffer_mut().chunks_exact_mut(4) {
+                    if target_pixel_format == PixelFormat::Bgra
+                        && let FrameBuffer::Cpu(ref mut cpu) = frame.buffer
+                    {
+                        cpu.pixel_format = PixelFormat::Bgra;
+                        for pixel in cpu.data.chunks_exact_mut(4) {
                             pixel.swap(0, 2);
                         }
                     }
@@ -741,8 +759,11 @@ impl WatchTrack {
                     loop {
                         match decoder.pop_frame() {
                             Ok(Some(mut frame)) => {
-                                if target_pixel_format == PixelFormat::Bgra {
-                                    for pixel in frame.frame.buffer_mut().chunks_exact_mut(4) {
+                                if target_pixel_format == PixelFormat::Bgra
+                                    && let FrameBuffer::Cpu(ref mut cpu) = frame.buffer
+                                {
+                                    cpu.pixel_format = PixelFormat::Bgra;
+                                    for pixel in cpu.data.chunks_exact_mut(4) {
                                         pixel.swap(0, 2);
                                     }
                                 }

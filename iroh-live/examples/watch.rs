@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::Parser;
 use eframe::egui::{self, Color32, Id, Vec2};
@@ -8,6 +8,7 @@ use iroh_live::{
     media::{
         audio_backend::AudioBackend,
         codec::{DefaultDecoders, DynamicVideoDecoder},
+        format::{DecodeConfig, DecoderBackend, PlaybackConfig},
         subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
     },
     moq::MoqSession,
@@ -25,15 +26,31 @@ struct Cli {
     endpoint_id: Option<EndpointId>,
     #[clap(long, conflicts_with = "ticket", requires = "endpoint-id")]
     name: Option<String>,
+    /// Use wgpu for hardware-accelerated rendering
+    #[clap(long)]
+    wgpu: bool,
+    /// Decoder: "auto" (try HW then SW) or "software" (force SW)
+    #[clap(long, default_value = "auto")]
+    decoder: String,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let ticket = match (cli.ticket, cli.endpoint_id, cli.name) {
-        (Some(ticket), None, None) => ticket,
-        (None, Some(endpoint_id), Some(name)) => LiveTicket::new(endpoint_id, name),
+    let ticket = match (&cli.ticket, &cli.endpoint_id, &cli.name) {
+        (Some(ticket), None, None) => ticket.clone(),
+        (None, Some(endpoint_id), Some(name)) => LiveTicket::new(*endpoint_id, name.clone()),
         _ => {
             eprintln!("Invalid arguments: Use either --ticket, or --endpoint and --name");
+            std::process::exit(1);
+        }
+    };
+
+    let use_wgpu = cli.wgpu;
+    let backend = match cli.decoder.as_str() {
+        "auto" => DecoderBackend::Auto,
+        "software" | "sw" => DecoderBackend::Software,
+        other => {
+            eprintln!("Unknown decoder: {other}. Use 'auto' or 'software'");
             std::process::exit(1);
         }
     };
@@ -52,12 +69,19 @@ fn main() -> Result<()> {
             let endpoint = Endpoint::bind().await?;
             let live = Live::new(endpoint.clone());
             let audio_out = audio_ctx.default_output().await?;
+            let playback_config = PlaybackConfig {
+                decode_config: DecodeConfig {
+                    backend,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
             let (session, track) = live
                 .watch_and_listen::<DefaultDecoders>(
                     ticket.endpoint,
                     &ticket.broadcast_name,
                     audio_out,
-                    Default::default(),
+                    playback_config,
                 )
                 .await?;
             println!("connected!");
@@ -67,27 +91,84 @@ fn main() -> Result<()> {
 
     let _guard = rt.enter();
 
+    let native_options = if use_wgpu {
+        #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
+        let wgpu_config = {
+            // Create a wgpu device with VK_EXT_image_drm_format_modifier
+            // for zero-copy DMA-BUF import from VAAPI decoder.
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::VULKAN,
+                ..Default::default()
+            });
+            let adapter =
+                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    ..Default::default()
+                }))
+                .expect("no suitable wgpu adapter");
+
+            let (device, queue) = moq_media::render::create_device_with_dmabuf_extensions(&adapter)
+                .unwrap_or_else(|e| {
+                    eprintln!("DMA-BUF device creation failed ({e}), using default");
+                    pollster::block_on(adapter.request_device(&Default::default()))
+                        .expect("wgpu device creation failed")
+                });
+
+            egui_wgpu::WgpuConfiguration {
+                wgpu_setup: egui_wgpu::WgpuSetup::Existing(egui_wgpu::WgpuSetupExisting {
+                    instance,
+                    adapter,
+                    device,
+                    queue,
+                }),
+                ..Default::default()
+            }
+        };
+
+        #[cfg(not(all(target_os = "linux", feature = "dmabuf-import")))]
+        let wgpu_config = egui_wgpu::WgpuConfiguration::default();
+
+        eframe::NativeOptions {
+            renderer: eframe::Renderer::Wgpu,
+            wgpu_options: wgpu_config,
+            ..Default::default()
+        }
+    } else {
+        eframe::NativeOptions::default()
+    };
+
     eframe::run_native(
         "IrohLive",
-        eframe::NativeOptions::default(),
-        Box::new(|cc| {
+        native_options,
+        Box::new(move |cc| {
             let egui_ctx = cc.egui_ctx.clone();
             rt.spawn(async move {
                 let _ = tokio::signal::ctrl_c().await;
                 egui_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                // TODO: When the app is not visible, this will not trigger `update` immediately.
-                // See https://github.com/emilk/egui/issues/5112
                 egui_ctx.request_repaint();
             });
+
+            let video = track.video.map(|video| {
+                #[cfg(feature = "wgpu")]
+                if use_wgpu {
+                    return VideoView::new_wgpu(cc, video);
+                }
+                VideoView::new(&cc.egui_ctx, video)
+            });
+
             let app = App {
-                video: track.video.map(|video| VideoView::new(&cc.egui_ctx, video)),
+                video,
                 _audio_ctx: audio_ctx,
                 _audio: track.audio,
                 broadcast: track.broadcast,
-                session: session,
+                session,
                 stats: StatsSmoother::new(),
                 endpoint,
                 rt,
+                use_wgpu,
+                frame_count: 0,
+                fps_last_update: Instant::now(),
+                fps: 0.0,
             };
             Ok(Box::new(app))
         }),
@@ -104,11 +185,28 @@ struct App {
     broadcast: SubscribeBroadcast,
     stats: StatsSmoother,
     rt: tokio::runtime::Runtime,
+    use_wgpu: bool,
+    frame_count: u64,
+    fps_last_update: Instant,
+    fps: f32,
+}
+
+impl App {
+    fn update_fps(&mut self) {
+        self.frame_count += 1;
+        let elapsed = self.fps_last_update.elapsed();
+        if elapsed >= Duration::from_secs(1) {
+            self.fps = self.frame_count as f32 / elapsed.as_secs_f32();
+            self.frame_count = 0;
+            self.fps_last_update = Instant::now();
+        }
+    }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(30)); // min 30 fps
+        self.update_fps();
         egui::CentralPanel::default()
             .frame(egui::Frame::new().inner_margin(0.0).outer_margin(0.0))
             .show(ctx, |ui| {
@@ -149,11 +247,12 @@ impl eframe::App for App {
 impl App {
     fn render_overlay(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
+            // Rendition selector
             let selected = self
                 .video
                 .as_ref()
                 .map(|video| video.track.rendition().to_owned());
-            egui::ComboBox::from_label("")
+            egui::ComboBox::from_id_salt("rendition")
                 .selected_text(selected.clone().unwrap_or_default())
                 .show_ui(ui, |ui| {
                     for name in self.broadcast.catalog().video_renditions() {
@@ -171,14 +270,24 @@ impl App {
                     }
                 });
 
+            let decoder_name = self
+                .video
+                .as_ref()
+                .map(|v| v.track.decoder_name().to_owned())
+                .unwrap_or_default();
+            let renderer = if self.use_wgpu { "wgpu" } else { "cpu" };
+
             let stats = self.stats.smoothed(|| {
                 let conn = self.session.conn();
                 (conn.stats(), conn.paths().get())
             });
             ui.label(format!(
-                "peer:   {}",
+                "peer:    {}",
                 self.session.conn().remote_id().fmt_short()
             ));
+            ui.label(format!("decoder: {decoder_name}"));
+            ui.label(format!("render:  {renderer}"));
+            ui.label(format!("fps:     {:.0}", self.fps));
             ui.label(format!("BW up:   {}", stats.up.rate_str));
             ui.label(format!("BW down: {}", stats.down.rate_str));
             ui.label(format!("RTT:     {}ms", stats.rtt.as_millis()));
@@ -190,6 +299,16 @@ struct VideoView {
     track: WatchTrack,
     texture: egui::TextureHandle,
     size: egui::Vec2,
+    #[cfg(feature = "wgpu")]
+    wgpu_state: Option<WgpuState>,
+}
+
+#[cfg(feature = "wgpu")]
+struct WgpuState {
+    renderer: moq_media::render::WgpuVideoRenderer,
+    render_state: egui_wgpu::RenderState,
+    texture_id: Option<egui::TextureId>,
+    last_frame_size: Option<(u32, u32)>,
 }
 
 impl VideoView {
@@ -202,6 +321,36 @@ impl VideoView {
             size,
             texture,
             track,
+            #[cfg(feature = "wgpu")]
+            wgpu_state: None,
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    fn new_wgpu(cc: &eframe::CreationContext<'_>, track: WatchTrack) -> Self {
+        let size = egui::vec2(100., 100.);
+        let color_image =
+            egui::ColorImage::filled([size.x as usize, size.y as usize], Color32::BLACK);
+        let texture =
+            cc.egui_ctx
+                .load_texture("video", color_image, egui::TextureOptions::default());
+
+        let wgpu_state = cc.wgpu_render_state.as_ref().map(|rs| {
+            let renderer =
+                moq_media::render::WgpuVideoRenderer::new(rs.device.clone(), rs.queue.clone());
+            WgpuState {
+                renderer,
+                render_state: rs.clone(),
+                texture_id: None,
+                last_frame_size: None,
+            }
+        });
+
+        Self {
+            size,
+            texture,
+            track,
+            wgpu_state,
         }
     }
 
@@ -215,13 +364,59 @@ impl VideoView {
             self.track.set_viewport(w, h);
         }
         if let Some(frame) = self.track.current_frame() {
-            let (w, h) = frame.img().dimensions();
+            #[cfg(feature = "wgpu")]
+            if let Some(ref mut wgpu) = self.wgpu_state {
+                // wgpu rendering path
+                let view = wgpu.renderer.render(&frame);
+                let mut egui_renderer = wgpu.render_state.renderer.write();
+                if let Some(id) = wgpu.texture_id {
+                    egui_renderer.update_egui_texture_from_wgpu_texture(
+                        &wgpu.render_state.device,
+                        view,
+                        wgpu::FilterMode::Linear,
+                        id,
+                    );
+                } else {
+                    let id = egui_renderer.register_native_texture(
+                        &wgpu.render_state.device,
+                        view,
+                        wgpu::FilterMode::Linear,
+                    );
+                    wgpu.texture_id = Some(id);
+                }
+                wgpu.last_frame_size = Some(frame.dimensions());
+                drop(egui_renderer);
+                if let Some(id) = wgpu.texture_id {
+                    let (w, h) = frame.dimensions();
+                    return egui::Image::from_texture(egui::load::SizedTexture::new(
+                        id,
+                        [w as f32, h as f32],
+                    ))
+                    .shrink_to_fit();
+                }
+            }
+
+            // CPU fallback path
+            let (w, h) = frame.dimensions();
             let image = egui::ColorImage::from_rgba_unmultiplied(
                 [w as usize, h as usize],
                 frame.img().as_raw(),
             );
             self.texture.set(image, Default::default());
         }
+
+        // When using wgpu, return the last wgpu texture even if no new frame arrived.
+        #[cfg(feature = "wgpu")]
+        if let Some(ref wgpu) = self.wgpu_state {
+            if let (Some(id), Some((w, h))) = (wgpu.texture_id, wgpu.last_frame_size) {
+                return egui::Image::from_texture(egui::load::SizedTexture::new(
+                    id,
+                    [w as f32, h as f32],
+                ))
+                .shrink_to_fit();
+            }
+        }
+
         egui::Image::from_texture(&self.texture).shrink_to_fit()
     }
 }

@@ -4,7 +4,7 @@ use super::rav1d_safe::{Decoder, PlanarImageComponent, Settings};
 use anyhow::{Context as _, Result, bail};
 use bytes::Buf;
 use hang::catalog::{VideoCodec, VideoConfig};
-use image::{Delay, Frame, RgbaImage};
+use image::RgbaImage;
 
 use crate::format::{DecodeConfig, DecodedVideoFrame};
 use crate::traits::VideoDecoder;
@@ -125,7 +125,7 @@ impl VideoDecoder for Av1VideoDecoder {
             .last_timestamp
             .as_ref()
             .context("missing last packet timestamp")?;
-        let delay = self.clock.frame_delay(last_timestamp);
+        let _delay = self.clock.frame_delay(last_timestamp);
         let timestamp = Duration::from(*last_timestamp);
 
         if let Some((max_w, max_h)) = self.viewport_changed.take() {
@@ -133,19 +133,14 @@ impl VideoDecoder for Av1VideoDecoder {
             self.scaler.set_target_dimensions(tw, th);
         }
 
-        let final_img =
+        let (data, w, h) =
             if let Some((scaled, sw, sh)) = self.scaler.scale_rgba(img.as_raw(), src_w, src_h)? {
-                RgbaImage::from_raw(sw, sh, scaled).context("failed to create scaled RgbaImage")?
+                (scaled, sw, sh)
             } else {
-                img
+                (img.into_raw(), src_w, src_h)
             };
 
-        let frame_delay = Delay::from_saturating_duration(delay);
-
-        Ok(Some(DecodedVideoFrame {
-            frame: Frame::from_parts(final_img, 0, 0, frame_delay),
-            timestamp,
-        }))
+        Ok(Some(DecodedVideoFrame::new_cpu(data, w, h, timestamp)))
     }
 }
 
