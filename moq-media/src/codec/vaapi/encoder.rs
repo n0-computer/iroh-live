@@ -15,10 +15,7 @@ use cros_codecs::libva::{
 };
 use cros_codecs::video_frame::{ReadMapping, VideoFrame as CrosVideoFrame, WriteMapping};
 use cros_codecs::{BlockingMode, Fourcc, FrameLayout, PlaneLayout, Resolution};
-use hang::{
-    catalog::{H264, VideoCodec, VideoConfig},
-    container::{Frame, Timestamp},
-};
+use hang::catalog::{H264, VideoCodec, VideoConfig};
 
 use crate::{
     codec::h264::annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b},
@@ -370,7 +367,17 @@ impl VaapiEncoder {
         &mut self,
         coded: CodedBitstreamBuffer,
     ) -> Result<Option<EncodedFrame>> {
-        let annex_b = &coded.bitstream;
+        // Strip trailing zero-padding from the VA coded buffer. The VAAPI driver
+        // pads coded buffers to alignment boundaries, but the H.264 spec guarantees
+        // RBSP trailing bits end with a non-zero byte, so trailing zeros are safe to
+        // remove. Without this, parse_annex_b includes the padding in the last NAL,
+        // causing the decoder to choke on the zero bytes after consuming the real data.
+        let annex_b_end = coded
+            .bitstream
+            .iter()
+            .rposition(|&b| b != 0)
+            .map_or(0, |p| p + 1);
+        let annex_b = &coded.bitstream[..annex_b_end];
         if annex_b.is_empty() {
             return Ok(None);
         }
@@ -393,14 +400,11 @@ impl VaapiEncoder {
         let payload = annex_b_to_length_prefixed(annex_b);
 
         let timestamp_us = coded.metadata.timestamp;
-        let timestamp = Timestamp::from_micros(timestamp_us)?;
 
         Ok(Some(EncodedFrame {
             is_keyframe,
-            frame: Frame {
-                payload: payload.into(),
-                timestamp,
-            },
+            timestamp: std::time::Duration::from_micros(timestamp_us),
+            payload: payload.into(),
         }))
     }
 }
@@ -575,7 +579,7 @@ mod tests {
         let decode_config = DecodeConfig::default();
         let mut dec = H264VideoDecoder::new(&config, &decode_config).unwrap();
         let mut decoded_count = 0;
-        let ordered = crate::util::encoded_frames_to_ordered_frames(packets);
+        let ordered = crate::util::encoded_frames_to_media_packets(packets);
         for pkt in ordered {
             dec.push_packet(pkt).unwrap();
             if let Some(frame) = dec.pop_frame().unwrap() {
@@ -620,9 +624,9 @@ mod tests {
             enc.push_frame(frame).unwrap();
             if let Some(pkt) = enc.pop_packet().unwrap() {
                 if let Some(prev) = prev_ts {
-                    assert!(pkt.frame.timestamp > prev, "timestamps should increase");
+                    assert!(pkt.timestamp > prev, "timestamps should increase");
                 }
-                prev_ts = Some(pkt.frame.timestamp);
+                prev_ts = Some(pkt.timestamp);
             }
         }
     }

@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
-use bytes::Buf;
 use cros_codecs::backend::vaapi::decoder::VaapiBackend;
 use cros_codecs::decoder::stateless::h264::H264;
 use cros_codecs::decoder::stateless::{DecodeError, StatelessDecoder, StatelessVideoDecoder};
@@ -17,12 +16,11 @@ use cros_codecs::video_frame::frame_pool::{FramePool, PooledVideoFrame};
 use cros_codecs::video_frame::generic_dma_video_frame::GenericDmaVideoFrame;
 use cros_codecs::{BlockingMode, DecodedFormat, Fourcc, FrameLayout, PlaneLayout, Resolution};
 use hang::catalog::{VideoCodec, VideoConfig};
-use hang::container::{OrderedFrame, Timestamp};
 
 use crate::codec::h264::annexb::{avcc_to_annex_b, length_prefixed_to_annex_b};
 use crate::format::{
     CpuFrame, DecodeConfig, DecodedVideoFrame, DmaBufInfo, DmaBufPlaneInfo, GpuFrame,
-    GpuFrameInner, GpuPixelFormat, Nv12Planes, PixelFormat,
+    GpuFrameInner, GpuPixelFormat, MediaPacket, Nv12Planes, PixelFormat,
 };
 use crate::processing::convert::nv12_to_rgba_data;
 use crate::traits::VideoDecoder;
@@ -113,7 +111,7 @@ impl VaapiGpuFrame {
 
         // Y plane
         let y_offset = va_image.offsets[0] as usize;
-        let y_pitch = va_image.pitches[0] as u32;
+        let y_pitch = va_image.pitches[0];
         let y_data: Vec<u8> = (0..h as usize)
             .flat_map(|row| {
                 let start = y_offset + row * y_pitch as usize;
@@ -123,9 +121,9 @@ impl VaapiGpuFrame {
 
         // UV plane (interleaved, half height)
         let uv_offset = va_image.offsets[1] as usize;
-        let uv_pitch = va_image.pitches[1] as u32;
+        let uv_pitch = va_image.pitches[1];
         let uv_w = w; // UV row is w bytes (w/2 pairs of U,V)
-        let uv_h = (h + 1) / 2;
+        let uv_h = h.div_ceil(2);
         let uv_data: Vec<u8> = (0..uv_h as usize)
             .flat_map(|row| {
                 let start = uv_offset + row * uv_pitch as usize;
@@ -156,10 +154,10 @@ impl GpuFrameInner for VaapiGpuFrame {
             planes.height,
         )?;
 
+        let image = image::RgbaImage::from_raw(self.width, self.height, rgba)
+            .context("RGBA data size does not match dimensions")?;
         Ok(CpuFrame {
-            data: rgba,
-            width: self.width,
-            height: self.height,
+            image,
             pixel_format: PixelFormat::Rgba,
         })
     }
@@ -294,7 +292,7 @@ pub struct VaapiDecoder {
     #[debug(skip)]
     display: Rc<Display>,
     pending_frames: VecDeque<DecodedVideoFrame>,
-    last_timestamp: Option<Timestamp>,
+    last_timestamp: Option<Duration>,
     timestamp_counter: u64,
 }
 
@@ -325,8 +323,7 @@ impl VaapiDecoder {
                         dma_info,
                     };
 
-                    let last_ts = self.last_timestamp.as_ref();
-                    let timestamp = last_ts.map(|ts| Duration::from(*ts)).unwrap_or_default();
+                    let timestamp = self.last_timestamp.unwrap_or_default();
 
                     let decoded =
                         DecodedVideoFrame::new_gpu(GpuFrame::new(Arc::new(gpu_frame)), timestamp);
@@ -422,7 +419,8 @@ impl VideoDecoder for VaapiDecoder {
         // VAAPI decodes at full resolution; scaling happens in the renderer.
     }
 
-    fn push_packet(&mut self, mut packet: OrderedFrame) -> Result<()> {
+    fn push_packet(&mut self, mut packet: MediaPacket) -> Result<()> {
+        use bytes::Buf;
         let payload = packet.payload.copy_to_bytes(packet.payload.remaining());
         let mut annex_b = length_prefixed_to_annex_b(&payload);
         patch_baseline_constraint_flag(&mut annex_b);
@@ -498,6 +496,60 @@ mod tests {
         let decode_config = DecodeConfig::default();
         let dec = VaapiDecoder::new(&config, &decode_config);
         assert!(dec.is_ok(), "VAAPI decoder creation failed: {dec:?}");
+    }
+
+    #[test]
+    #[ignore = "requires VAAPI hardware"]
+    fn vaapi_encoder_decoder_roundtrip() {
+        use crate::codec::h264::annexb::parse_annex_b;
+        use crate::codec::vaapi::encoder::VaapiEncoder;
+        use crate::format::{PixelFormat, VideoFormat, VideoFrame, VideoPreset};
+        use crate::traits::{VideoEncoder, VideoEncoderFactory};
+
+        let mut encoder = VaapiEncoder::with_preset(VideoPreset::P360).unwrap();
+        let config = encoder.config();
+
+        let decode_config = DecodeConfig::default();
+        let mut decoder = VaapiDecoder::new(&config, &decode_config).unwrap();
+
+        let w = 640u32;
+        let h = 360u32;
+        let rgba = vec![128u8; (w * h * 4) as usize];
+        let frame = VideoFrame {
+            format: VideoFormat {
+                pixel_format: PixelFormat::Rgba,
+                dimensions: [w, h],
+            },
+            raw: rgba.into(),
+        };
+
+        let mut total_decoded = 0;
+        let mut all_packets = Vec::new();
+
+        for _ in 0..35 {
+            encoder.push_frame(frame.clone()).unwrap();
+            while let Some(pkt) = encoder.pop_packet().unwrap() {
+                all_packets.push(pkt);
+            }
+        }
+
+        for pkt in all_packets {
+            let media_pkt = MediaPacket {
+                timestamp: pkt.timestamp,
+                payload: pkt.payload.into(),
+                is_keyframe: pkt.is_keyframe,
+            };
+            if decoder.push_packet(media_pkt).is_ok() {
+                while let Ok(Some(_)) = decoder.pop_frame() {
+                    total_decoded += 1;
+                }
+            }
+        }
+
+        assert!(
+            total_decoded >= 30,
+            "expected at least 30 decoded frames, got {total_decoded}"
+        );
     }
 
     #[test]
