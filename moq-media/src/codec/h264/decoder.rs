@@ -6,7 +6,7 @@ use hang::{
     catalog::{VideoCodec, VideoConfig},
     container::OrderedFrame,
 };
-use image::{Delay, Frame, RgbaImage};
+use image::RgbaImage;
 use openh264::{decoder::Decoder, formats::YUVSource};
 
 use crate::format::{DecodeConfig, DecodedVideoFrame};
@@ -108,29 +108,23 @@ impl VideoDecoder for H264VideoDecoder {
             .last_timestamp
             .as_ref()
             .context("missing last packet timestamp")?;
-        let delay = self.clock.frame_delay(last_timestamp);
+        let _delay = self.clock.frame_delay(last_timestamp);
         let timestamp = Duration::from(*last_timestamp);
 
-        // Apply viewport scaling AFTER decode (fix: was consuming viewport_pending before decode
-        // in a previous implementation, leading to a bug).
+        // Apply viewport scaling AFTER decode.
         if let Some((max_w, max_h)) = self.viewport_changed.take() {
             let (tw, th) = fit_within(src_w, src_h, max_w, max_h);
             self.scaler.set_target_dimensions(tw, th);
         }
 
-        let final_img =
+        let (data, w, h) =
             if let Some((scaled, sw, sh)) = self.scaler.scale_rgba(img.as_raw(), src_w, src_h)? {
-                RgbaImage::from_raw(sw, sh, scaled).context("failed to create scaled RgbaImage")?
+                (scaled, sw, sh)
             } else {
-                img
+                (img.into_raw(), src_w, src_h)
             };
 
-        let frame_delay = Delay::from_saturating_duration(delay);
-
-        Ok(Some(DecodedVideoFrame {
-            frame: Frame::from_parts(final_img, 0, 0, frame_delay),
-            timestamp,
-        }))
+        Ok(Some(DecodedVideoFrame::new_cpu(data, w, h, timestamp)))
     }
 }
 

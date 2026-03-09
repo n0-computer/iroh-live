@@ -1,3 +1,8 @@
+use std::cell::OnceCell;
+use std::fmt;
+#[cfg(target_os = "linux")]
+use std::os::unix::io::OwnedFd;
+use std::sync::Arc;
 use std::time::Duration;
 
 use hang::catalog::AudioConfig;
@@ -58,16 +63,193 @@ pub struct EncodedFrame {
     pub frame: hang::container::Frame,
 }
 
+/// CPU-resident RGBA pixel data.
+#[derive(derive_more::Debug, Clone)]
+pub struct CpuFrame {
+    #[debug(skip)]
+    pub data: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub pixel_format: PixelFormat,
+}
+
+/// GPU-resident frame from a hardware decoder.
+#[derive(Clone)]
+pub struct GpuFrame {
+    inner: Arc<dyn GpuFrameInner>,
+}
+
+impl fmt::Debug for GpuFrame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GpuFrame")
+            .field("dimensions", &self.inner.dimensions())
+            .field("pixel_format", &self.inner.gpu_pixel_format())
+            .finish()
+    }
+}
+
+impl GpuFrame {
+    pub fn new(inner: Arc<dyn GpuFrameInner>) -> Self {
+        Self { inner }
+    }
+
+    pub fn download(&self) -> anyhow::Result<CpuFrame> {
+        self.inner.download()
+    }
+
+    pub fn dimensions(&self) -> (u32, u32) {
+        self.inner.dimensions()
+    }
+
+    pub fn gpu_pixel_format(&self) -> GpuPixelFormat {
+        self.inner.gpu_pixel_format()
+    }
+
+    pub fn download_nv12(&self) -> Option<anyhow::Result<Nv12Planes>> {
+        self.inner.download_nv12()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn dma_buf_info(&self) -> Option<&DmaBufInfo> {
+        self.inner.dma_buf_info()
+    }
+}
+
+/// NV12 plane data downloaded from GPU.
+#[derive(Debug, Clone)]
+pub struct Nv12Planes {
+    pub y_data: Vec<u8>,
+    pub y_stride: u32,
+    pub uv_data: Vec<u8>,
+    pub uv_stride: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Platform-specific GPU frame operations.
+pub trait GpuFrameInner: Send + Sync + fmt::Debug + 'static {
+    /// Download the GPU frame to a CPU RGBA buffer.
+    fn download(&self) -> anyhow::Result<CpuFrame>;
+    /// Native pixel format on the GPU (NV12, I420, etc.).
+    fn gpu_pixel_format(&self) -> GpuPixelFormat;
+    /// Frame dimensions.
+    fn dimensions(&self) -> (u32, u32);
+    /// Download NV12 plane data for GPU-side color conversion.
+    /// Returns None if the frame is not NV12 or doesn't support plane download.
+    fn download_nv12(&self) -> Option<anyhow::Result<Nv12Planes>> {
+        None
+    }
+    /// DMA-BUF info for zero-copy GPU import, if available.
+    #[cfg(target_os = "linux")]
+    fn dma_buf_info(&self) -> Option<&DmaBufInfo> {
+        None
+    }
+}
+
+/// DMA-BUF metadata for zero-copy GPU frame import.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub struct DmaBufInfo {
+    pub fd: OwnedFd,
+    pub modifier: u64,
+    pub drm_format: u32,
+    pub coded_width: u32,
+    pub coded_height: u32,
+    pub display_width: u32,
+    pub display_height: u32,
+    pub planes: Vec<DmaBufPlaneInfo>,
+}
+
+/// Per-plane DMA-BUF layout info.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone)]
+pub struct DmaBufPlaneInfo {
+    pub offset: u32,
+    pub pitch: u32,
+}
+
+/// Native GPU pixel formats from hardware decoders.
+#[derive(Debug, Clone, Copy)]
+pub enum GpuPixelFormat {
+    Nv12,
+}
+
+/// Backing storage for a decoded frame.
+#[derive(derive_more::Debug)]
+pub enum FrameBuffer {
+    Cpu(CpuFrame),
+    #[debug("Gpu({:?})", _0)]
+    Gpu(GpuFrame),
+}
+
+/// A decoded video frame that may live on CPU or GPU.
 #[derive(derive_more::Debug)]
 pub struct DecodedVideoFrame {
-    #[debug(skip)]
-    pub frame: image::Frame,
+    pub buffer: FrameBuffer,
     pub timestamp: Duration,
+    /// Lazy CPU image cache for backward-compat `img()`.
+    #[debug(skip)]
+    cached_rgba: OnceCell<RgbaImage>,
 }
 
 impl DecodedVideoFrame {
+    /// Create a new CPU-backed frame.
+    pub fn new_cpu(data: Vec<u8>, width: u32, height: u32, timestamp: Duration) -> Self {
+        Self {
+            buffer: FrameBuffer::Cpu(CpuFrame {
+                data,
+                width,
+                height,
+                pixel_format: PixelFormat::Rgba,
+            }),
+            timestamp,
+            cached_rgba: OnceCell::new(),
+        }
+    }
+
+    /// Create a new GPU-backed frame.
+    pub fn new_gpu(gpu: GpuFrame, timestamp: Duration) -> Self {
+        Self {
+            buffer: FrameBuffer::Gpu(gpu),
+            timestamp,
+            cached_rgba: OnceCell::new(),
+        }
+    }
+
+    /// Frame dimensions.
+    pub fn dimensions(&self) -> (u32, u32) {
+        match &self.buffer {
+            FrameBuffer::Cpu(f) => (f.width, f.height),
+            FrameBuffer::Gpu(f) => f.dimensions(),
+        }
+    }
+
+    /// Whether this frame lives on the GPU.
+    pub fn is_gpu(&self) -> bool {
+        matches!(&self.buffer, FrameBuffer::Gpu(_))
+    }
+
+    /// Access the GPU frame directly for zero-copy rendering.
+    pub fn gpu_frame(&self) -> Option<&GpuFrame> {
+        match &self.buffer {
+            FrameBuffer::Gpu(f) => Some(f),
+            _ => None,
+        }
+    }
+
+    /// Get the frame as a CPU RGBA image.
+    /// For CPU frames, this is cheap (wraps existing data).
+    /// For GPU frames, this downloads from the GPU on first call and caches.
     pub fn img(&self) -> &RgbaImage {
-        self.frame.buffer()
+        self.cached_rgba.get_or_init(|| match &self.buffer {
+            FrameBuffer::Cpu(cpu) => {
+                RgbaImage::from_raw(cpu.width, cpu.height, cpu.data.clone()).unwrap()
+            }
+            FrameBuffer::Gpu(gpu) => {
+                let cpu = gpu.download().expect("GPU frame download failed");
+                RgbaImage::from_raw(cpu.width, cpu.height, cpu.data).unwrap()
+            }
+        })
     }
 }
 
@@ -127,9 +309,20 @@ pub enum Quality {
     Low,
 }
 
+/// Which decoder backend to use.
+#[derive(Clone, Debug, Default)]
+pub enum DecoderBackend {
+    /// Try hardware decoder first, fall back to software.
+    #[default]
+    Auto,
+    /// Force software decoder.
+    Software,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct DecodeConfig {
     pub pixel_format: PixelFormat,
+    pub backend: DecoderBackend,
 }
 
 #[derive(Clone, Debug, Default)]

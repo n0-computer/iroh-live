@@ -47,9 +47,11 @@ audioadapter-buffers = { version = "2.0", optional = true }
 rav1e = { version = "0.8", optional = true }
 rav1d = { git = "https://github.com/memorysafety/rav1d", default-features = false, features = ["bitdepth_8", "bitdepth_16", "asm"], optional = true }
 libc = "0.2"
+wgpu = { version = "27", optional = true, default-features = false, features = ["wgsl", "vulkan"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 cros-codecs = { version = "0.0.6", optional = true, features = ["vaapi"] }
+ash = { version = "0.38", optional = true, default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-video-toolbox = { version = "0.3", optional = true, features = ["VTCompressionSession", "VTErrors"] }
@@ -76,3 +78,5 @@ capture-camera = ["dep:nokhwa"]
 capture-screen = ["dep:xcap"]
 videotoolbox = ["dep:objc2-video-toolbox", "dep:objc2-core-media", "dep:objc2-core-video", "dep:objc2-core-foundation", "dep:objc2"]
 vaapi = ["dep:cros-codecs"]
+wgpu = ["dep:wgpu"]
+dmabuf-import = ["wgpu", "dep:ash"]
