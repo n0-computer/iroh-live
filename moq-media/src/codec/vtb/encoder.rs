@@ -4,10 +4,7 @@ use std::slice;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail};
-use hang::{
-    catalog::{H264, VideoCodec, VideoConfig},
-    container::{Frame, Timestamp},
-};
+use hang::catalog::{H264, VideoCodec, VideoConfig};
 use objc2_core_foundation::{
     CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType, kCFTypeDictionaryKeyCallBacks,
     kCFTypeDictionaryValueCallBacks,
@@ -558,14 +555,10 @@ unsafe fn extract_encoded_packet(
         let guard = state.lock().ok()?;
         (guard.frame_count * 1_000_000) / guard.framerate as u64
     };
-    let timestamp = Timestamp::from_micros(timestamp_us).ok()?;
-
     Some(EncodedFrame {
         is_keyframe: keyframe,
-        frame: Frame {
-            payload: payload.into(),
-            timestamp,
-        },
+        timestamp: std::time::Duration::from_micros(timestamp_us),
+        payload: payload.into(),
     })
 }
 

@@ -1,23 +1,18 @@
 use std::time::Duration;
 
-use hang::container::Timestamp;
-
 /// Tracks inter-frame delay from stream timestamps.
 #[derive(Default, Debug)]
 pub(crate) struct StreamClock {
-    pub(crate) last_timestamp: Option<Timestamp>,
+    pub(crate) last_timestamp: Option<Duration>,
 }
 
 impl StreamClock {
-    pub(crate) fn frame_delay(&mut self, timestamp: &Timestamp) -> Duration {
+    pub(crate) fn frame_delay(&mut self, timestamp: Duration) -> Duration {
         let delay = match self.last_timestamp {
             None => Duration::ZERO,
-            Some(last) => timestamp
-                .checked_sub(last)
-                .unwrap_or(Timestamp::ZERO)
-                .into(),
+            Some(last) => timestamp.saturating_sub(last),
         };
-        self.last_timestamp = Some(*timestamp);
+        self.last_timestamp = Some(timestamp);
         delay
     }
 }

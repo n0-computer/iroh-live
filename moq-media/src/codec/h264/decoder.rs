@@ -1,15 +1,11 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use bytes::Buf;
-use hang::{
-    catalog::{VideoCodec, VideoConfig},
-    container::OrderedFrame,
-};
+use hang::catalog::{VideoCodec, VideoConfig};
 use image::RgbaImage;
 use openh264::{decoder::Decoder, formats::YUVSource};
 
-use crate::format::{DecodeConfig, DecodedVideoFrame};
+use crate::format::{DecodeConfig, DecodedVideoFrame, MediaPacket};
 use crate::traits::VideoDecoder;
 
 use super::annexb::{avcc_to_annex_b, length_prefixed_to_annex_b};
@@ -25,7 +21,7 @@ pub struct H264VideoDecoder {
     scaler: Scaler,
     clock: StreamClock,
     viewport_changed: Option<(u32, u32)>,
-    last_timestamp: Option<hang::container::Timestamp>,
+    last_timestamp: Option<Duration>,
     /// Decoded frame waiting to be collected via `pop_frame`.
     #[debug(skip)]
     pending_frame: Option<(RgbaImage, u32, u32)>,
@@ -70,9 +66,9 @@ impl VideoDecoder for H264VideoDecoder {
         self.viewport_changed = Some((w, h));
     }
 
-    fn push_packet(&mut self, mut packet: OrderedFrame) -> Result<()> {
+    fn push_packet(&mut self, mut packet: MediaPacket) -> Result<()> {
+        use bytes::Buf;
         let payload = packet.payload.copy_to_bytes(packet.payload.remaining());
-
         // Transport uses length-prefixed NALs (avcC style), openh264 expects Annex B.
         let annex_b = length_prefixed_to_annex_b(&payload);
 
@@ -104,12 +100,10 @@ impl VideoDecoder for H264VideoDecoder {
             return Ok(None);
         };
 
-        let last_timestamp = self
+        let timestamp = self
             .last_timestamp
-            .as_ref()
             .context("missing last packet timestamp")?;
-        let _delay = self.clock.frame_delay(last_timestamp);
-        let timestamp = Duration::from(*last_timestamp);
+        let _delay = self.clock.frame_delay(timestamp);
 
         // Apply viewport scaling AFTER decode.
         if let Some((max_w, max_h)) = self.viewport_changed.take() {
@@ -137,7 +131,7 @@ mod tests {
     use crate::codec::test_util::make_rgba_frame;
     use crate::format::{EncodedFrame, VideoFrame, VideoPreset};
     use crate::traits::{VideoDecoder, VideoEncoder, VideoEncoderFactory};
-    use crate::util::encoded_frames_to_ordered_frames;
+    use crate::util::encoded_frames_to_media_packets;
 
     fn encode_frames(enc: &mut H264Encoder, frames: &[VideoFrame]) -> Vec<EncodedFrame> {
         let mut packets = Vec::new();
@@ -169,7 +163,7 @@ mod tests {
         let mut dec = H264VideoDecoder::new(&config, &decode_config).unwrap();
 
         let mut decoded_count = 0;
-        let packets = encoded_frames_to_ordered_frames(packets);
+        let packets = encoded_frames_to_media_packets(packets);
         for pkt in packets {
             dec.push_packet(pkt).unwrap();
             if let Some(frame) = dec.pop_frame().unwrap() {
@@ -200,7 +194,7 @@ mod tests {
 
         dec.set_viewport(320, 180);
 
-        let packets = encoded_frames_to_ordered_frames(packets);
+        let packets = encoded_frames_to_media_packets(packets);
         for pkt in packets {
             dec.push_packet(pkt).unwrap();
             if let Some(frame) = dec.pop_frame().unwrap() {
@@ -250,7 +244,7 @@ mod tests {
         let mut dec = H264VideoDecoder::new(&config, &decode_config).unwrap();
 
         let mut last_frame = None;
-        let packets = encoded_frames_to_ordered_frames(packets);
+        let packets = encoded_frames_to_media_packets(packets);
         for pkt in packets {
             dec.push_packet(pkt).unwrap();
             if let Some(frame) = dec.pop_frame().unwrap() {

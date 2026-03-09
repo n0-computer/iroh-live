@@ -2,11 +2,10 @@ use std::time::Duration;
 
 use super::rav1d_safe::{Decoder, PlanarImageComponent, Settings};
 use anyhow::{Context as _, Result, bail};
-use bytes::Buf;
 use hang::catalog::{VideoCodec, VideoConfig};
 use image::RgbaImage;
 
-use crate::format::{DecodeConfig, DecodedVideoFrame};
+use crate::format::{DecodeConfig, DecodedVideoFrame, MediaPacket};
 use crate::traits::VideoDecoder;
 
 use crate::processing::{
@@ -22,7 +21,7 @@ pub struct Av1VideoDecoder {
     scaler: Scaler,
     clock: StreamClock,
     viewport_changed: Option<(u32, u32)>,
-    last_timestamp: Option<hang::container::Timestamp>,
+    last_timestamp: Option<Duration>,
     /// Decoded frame waiting to be collected via `pop_frame`.
     #[debug(skip)]
     pending_frame: Option<(RgbaImage, u32, u32)>,
@@ -67,9 +66,9 @@ impl VideoDecoder for Av1VideoDecoder {
         self.viewport_changed = Some((w, h));
     }
 
-    fn push_packet(&mut self, mut packet: hang::container::OrderedFrame) -> Result<()> {
+    fn push_packet(&mut self, mut packet: MediaPacket) -> Result<()> {
+        use bytes::Buf;
         let payload = packet.payload.copy_to_bytes(packet.payload.remaining());
-
         self.decoder
             .send_data(&payload)
             .map_err(|e| anyhow::anyhow!("rav1d send_data error: {e}"))?;
@@ -121,12 +120,10 @@ impl VideoDecoder for Av1VideoDecoder {
             return Ok(None);
         };
 
-        let last_timestamp = self
+        let timestamp = self
             .last_timestamp
-            .as_ref()
             .context("missing last packet timestamp")?;
-        let _delay = self.clock.frame_delay(last_timestamp);
-        let timestamp = Duration::from(*last_timestamp);
+        let _delay = self.clock.frame_delay(timestamp);
 
         if let Some((max_w, max_h)) = self.viewport_changed.take() {
             let (tw, th) = fit_within(src_w, src_h, max_w, max_h);
@@ -153,7 +150,7 @@ mod tests {
     use crate::codec::test_util::make_rgba_frame;
     use crate::format::{EncodedFrame, VideoFrame, VideoPreset};
     use crate::traits::{VideoDecoder, VideoEncoder, VideoEncoderFactory};
-    use crate::util::encoded_frames_to_ordered_frames;
+    use crate::util::encoded_frames_to_media_packets;
 
     fn encode_frames(enc: &mut Av1Encoder, frames: &[VideoFrame]) -> Vec<EncodedFrame> {
         let mut packets = Vec::new();
@@ -186,7 +183,7 @@ mod tests {
         let mut dec = Av1VideoDecoder::new(&config, &decode_config).unwrap();
 
         let mut decoded_count = 0;
-        let packets = encoded_frames_to_ordered_frames(packets);
+        let packets = encoded_frames_to_media_packets(packets);
         for pkt in packets {
             dec.push_packet(pkt).unwrap();
             if let Some(frame) = dec.pop_frame().unwrap() {
@@ -216,7 +213,7 @@ mod tests {
         let mut dec = Av1VideoDecoder::new(&config, &decode_config).unwrap();
 
         let mut last_frame = None;
-        let packets = encoded_frames_to_ordered_frames(packets);
+        let packets = encoded_frames_to_media_packets(packets);
         for pkt in packets {
             dec.push_packet(pkt).unwrap();
             if let Some(frame) = dec.pop_frame().unwrap() {
@@ -247,7 +244,7 @@ mod tests {
 
         dec.set_viewport(320, 180);
 
-        let packets = encoded_frames_to_ordered_frames(packets);
+        let packets = encoded_frames_to_media_packets(packets);
         for pkt in packets {
             dec.push_packet(pkt).unwrap();
             if let Some(frame) = dec.pop_frame().unwrap() {

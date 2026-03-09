@@ -57,20 +57,73 @@ pub struct VideoFrame {
     pub raw: bytes::Bytes,
 }
 
+/// An encoded media packet, independent of transport.
+#[derive(Clone, Debug)]
+pub struct MediaPacket {
+    /// Presentation timestamp.
+    pub timestamp: Duration,
+    /// Encoded payload (scatter-gather buffer, zero-copy from MoQ transport).
+    pub payload: buf_list::BufList,
+    /// Whether this is a keyframe (first frame of a new group).
+    pub is_keyframe: bool,
+}
+
+impl MediaPacket {
+    /// Get contiguous bytes from the payload.
+    /// Zero-copy for single-chunk payloads (common case from MoQ transport).
+    pub fn into_payload_bytes(mut self) -> bytes::Bytes {
+        use bytes::Buf;
+        self.payload.copy_to_bytes(self.payload.remaining())
+    }
+}
+
+impl From<hang::container::OrderedFrame> for MediaPacket {
+    fn from(f: hang::container::OrderedFrame) -> Self {
+        let is_keyframe = f.is_keyframe();
+        Self {
+            timestamp: f.timestamp.into(),
+            payload: f.payload,
+            is_keyframe,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct EncodedFrame {
     pub is_keyframe: bool,
-    pub frame: hang::container::Frame,
+    pub timestamp: Duration,
+    pub payload: bytes::Bytes,
 }
 
-/// CPU-resident RGBA pixel data.
+impl EncodedFrame {
+    /// Convert to a hang `Frame` for MoQ transport.
+    pub fn to_hang_frame(&self) -> hang::container::Frame {
+        hang::container::Frame {
+            timestamp: hang::container::Timestamp::from_micros(self.timestamp.as_micros() as u64)
+                .expect("timestamp overflow"),
+            payload: self.payload.clone().into(),
+        }
+    }
+}
+
+/// CPU-resident RGBA pixel data backed by an [`RgbaImage`].
 #[derive(derive_more::Debug, Clone)]
 pub struct CpuFrame {
     #[debug(skip)]
-    pub data: Vec<u8>,
-    pub width: u32,
-    pub height: u32,
+    pub image: RgbaImage,
     pub pixel_format: PixelFormat,
+}
+
+impl CpuFrame {
+    /// Returns the frame width.
+    pub fn width(&self) -> u32 {
+        self.image.width()
+    }
+
+    /// Returns the frame height.
+    pub fn height(&self) -> u32 {
+        self.image.height()
+    }
 }
 
 /// GPU-resident frame from a hardware decoder.
@@ -193,13 +246,18 @@ pub struct DecodedVideoFrame {
 }
 
 impl DecodedVideoFrame {
-    /// Create a new CPU-backed frame.
+    /// Creates a new CPU-backed frame from raw RGBA data.
     pub fn new_cpu(data: Vec<u8>, width: u32, height: u32, timestamp: Duration) -> Self {
+        let image = RgbaImage::from_raw(width, height, data)
+            .expect("RGBA data size does not match dimensions");
+        Self::from_image(image, timestamp)
+    }
+
+    /// Creates a new CPU-backed frame from an existing [`RgbaImage`].
+    pub fn from_image(image: RgbaImage, timestamp: Duration) -> Self {
         Self {
             buffer: FrameBuffer::Cpu(CpuFrame {
-                data,
-                width,
-                height,
+                image,
                 pixel_format: PixelFormat::Rgba,
             }),
             timestamp,
@@ -207,7 +265,7 @@ impl DecodedVideoFrame {
         }
     }
 
-    /// Create a new GPU-backed frame.
+    /// Creates a new GPU-backed frame.
     pub fn new_gpu(gpu: GpuFrame, timestamp: Duration) -> Self {
         Self {
             buffer: FrameBuffer::Gpu(gpu),
@@ -216,10 +274,10 @@ impl DecodedVideoFrame {
         }
     }
 
-    /// Frame dimensions.
+    /// Returns the frame dimensions as `(width, height)`.
     pub fn dimensions(&self) -> (u32, u32) {
         match &self.buffer {
-            FrameBuffer::Cpu(f) => (f.width, f.height),
+            FrameBuffer::Cpu(f) => (f.width(), f.height()),
             FrameBuffer::Gpu(f) => f.dimensions(),
         }
     }
@@ -237,19 +295,21 @@ impl DecodedVideoFrame {
         }
     }
 
-    /// Get the frame as a CPU RGBA image.
-    /// For CPU frames, this is cheap (wraps existing data).
-    /// For GPU frames, this downloads from the GPU on first call and caches.
+    /// Returns the frame as a CPU RGBA image.
+    ///
+    /// For CPU frames, returns a zero-copy reference to the underlying image.
+    /// For GPU frames, downloads from the GPU on first call and caches.
     pub fn img(&self) -> &RgbaImage {
-        self.cached_rgba.get_or_init(|| match &self.buffer {
-            FrameBuffer::Cpu(cpu) => {
-                RgbaImage::from_raw(cpu.width, cpu.height, cpu.data.clone()).unwrap()
-            }
-            FrameBuffer::Gpu(gpu) => {
+        match &self.buffer {
+            FrameBuffer::Cpu(cpu) => &cpu.image,
+            FrameBuffer::Gpu(_) => self.cached_rgba.get_or_init(|| {
+                let FrameBuffer::Gpu(gpu) = &self.buffer else {
+                    unreachable!()
+                };
                 let cpu = gpu.download().expect("GPU frame download failed");
-                RgbaImage::from_raw(cpu.width, cpu.height, cpu.data).unwrap()
-            }
-        })
+                cpu.image
+            }),
+        }
     }
 }
 
@@ -310,7 +370,7 @@ pub enum Quality {
 }
 
 /// Which decoder backend to use.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DecoderBackend {
     /// Try hardware decoder first, fall back to software.
     #[default]

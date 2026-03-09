@@ -1,8 +1,7 @@
+use std::time::Duration;
+
 use anyhow::Result;
-use hang::{
-    catalog::{H264, VideoCodec, VideoConfig},
-    container::Timestamp,
-};
+use hang::catalog::{H264, VideoCodec, VideoConfig};
 use openh264::{
     OpenH264API,
     encoder::{
@@ -165,11 +164,9 @@ impl VideoEncoder for H264Encoder {
         self.frame_count += 1;
 
         self.packet_buf.push(EncodedFrame {
-            frame: hang::container::Frame {
-                payload: payload.into(),
-                timestamp: Timestamp::from_micros(timestamp_us)?,
-            },
             is_keyframe,
+            timestamp: Duration::from_micros(timestamp_us),
+            payload: payload.into(),
         });
 
         Ok(())
@@ -242,9 +239,9 @@ mod tests {
             enc.push_frame(frame).unwrap();
             if let Some(pkt) = enc.pop_packet().unwrap() {
                 if let Some(prev) = prev_ts {
-                    assert!(pkt.frame.timestamp > prev, "timestamps should increase");
+                    assert!(pkt.timestamp > prev, "timestamps should increase");
                 }
-                prev_ts = Some(pkt.frame.timestamp);
+                prev_ts = Some(pkt.timestamp);
             }
         }
     }
