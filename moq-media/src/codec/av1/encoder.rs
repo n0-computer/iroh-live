@@ -6,8 +6,9 @@ use hang::{
 use rav1e::prelude::*;
 
 use crate::{
-    av::{self, EncodedFrame, VideoEncoder, VideoEncoderFactory, VideoPreset},
-    codec::video::util::convert::pixel_format_to_yuv420,
+    format::{EncodedFrame, VideoFrame, VideoPreset},
+    processing::convert::pixel_format_to_yuv420,
+    traits::{VideoEncoder, VideoEncoderFactory},
 };
 
 #[derive(derive_more::Debug)]
@@ -148,7 +149,7 @@ impl VideoEncoder for Av1Encoder {
         }
     }
 
-    fn push_frame(&mut self, frame: av::VideoFrame) -> Result<()> {
+    fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
         let [w, h] = frame.format.dimensions;
         let yuv = pixel_format_to_yuv420(&frame.raw, w, h, frame.format.pixel_format)?;
 
@@ -181,8 +182,9 @@ impl VideoEncoder for Av1Encoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::av::{VideoEncoder, VideoPreset};
-    use crate::codec::video::test_util::make_rgba_frame;
+    use crate::codec::test_util::make_rgba_frame;
+    use crate::format::VideoPreset;
+    use crate::traits::{VideoEncoder, VideoEncoderFactory};
 
     /// rav1e buffers frames for look-ahead even in low-latency mode.
     /// Helper to send frames and collect all resulting packets.

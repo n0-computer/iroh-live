@@ -2,7 +2,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use image::ImageFormat;
 
-use crate::av::{PixelFormat, VideoFormat, VideoFrame};
+use crate::format::{PixelFormat, VideoFormat, VideoFrame};
 
 /// Stateless MJPEG decoder using the `image` crate.
 #[derive(Debug)]

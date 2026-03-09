@@ -33,7 +33,8 @@ use tracing::{debug, error, info, trace, warn};
 
 use self::aec::{AecCaptureNode, AecProcessor, AecProcessorConfig, AecRenderNode};
 use crate::{
-    av::{AudioFormat, AudioSink, AudioSinkHandle, AudioSource},
+    format::AudioFormat,
+    traits::{AudioSink, AudioSinkHandle, AudioSource},
     util::spawn_thread,
 };
 
@@ -243,9 +244,6 @@ impl AudioSink for OutputStream {
 
         // Wait until the node's processor is ready to receive data.
         if handle.is_ready() {
-            // let expected_bytes =
-            //     frame.samples() * frame.channels() as usize * core::mem::size_of::<f32>();
-            // let cpal_sample_data: &[f32] = bytemuck::cast_slice(&frame.data(0)[..expected_bytes]);
             handle.push_interleaved(samples);
             trace!("pushed samples {}", samples.len());
         } else {
@@ -378,8 +376,6 @@ impl AudioDriver {
             ..Default::default()
         };
         let mut cx = FirewheelContext::new(config);
-        // info!("inputs: {:?}", cx.available_input_devices());
-        // info!("outputs: {:?}", cx.available_output_devices());
 
         #[cfg(target_os = "linux")]
         let input_device = input_device.or_else(|| DeviceId::from_str("alsa:pipewire").ok());
@@ -468,27 +464,6 @@ impl AudioDriver {
 
             if let Err(e) = self.cx.update() {
                 error!("audio backend error: {:?}", &e);
-
-                // if let UpdateError::StreamStoppedUnexpectedly(_) = e {
-                //     // Notify the stream node handles that the output stream has stopped.
-                //     // This will automatically stop any active streams on the nodes.
-                //     cx.node_state_mut::<StreamWriterState>(stream_writer_id)
-                //         .unwrap()
-                //         .stop_stream();
-                //     cx.node_state_mut::<StreamReaderState>(stream_reader_id)
-                //         .unwrap()
-                //         .stop_stream();
-
-                //     // The stream has stopped unexpectedly (i.e the user has
-                //     // unplugged their headphones.)
-                //     //
-                //     // Typically you should start a new stream as soon as
-                //     // possible to resume processing (event if it's a dummy
-                //     // output device).
-                //     //
-                //     // In this example we just quit the application.
-                //     break;
-                // }
             }
 
             if let Some(info) = self.cx.stream_info() {
@@ -566,10 +541,6 @@ impl AudioDriver {
             }),
         );
         let graph_out = self.aec_render_node;
-        // let graph_out_info = self
-        //     .cx
-        //     .node_info(graph_out)
-        //     .context("missing audio output node")?;
 
         let peak_meter_node = PeakMeterNode::<2> { enabled: true };
         let peak_meter_id = self.cx.add_node(peak_meter_node, None);

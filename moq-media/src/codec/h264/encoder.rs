@@ -13,14 +13,12 @@ use openh264::{
 };
 
 use crate::{
-    av::{self, EncodedFrame, VideoEncoder, VideoEncoderFactory, VideoPreset},
-    codec::video::util::{
-        annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b},
-        convert::pixel_format_to_yuv420,
-    },
+    format::{EncodedFrame, VideoFrame, VideoPreset},
+    processing::convert::{YuvData, pixel_format_to_yuv420},
+    traits::{VideoEncoder, VideoEncoderFactory},
 };
 
-use super::util::convert::YuvData;
+use super::annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b};
 
 #[derive(derive_more::Debug)]
 pub struct H264Encoder {
@@ -137,7 +135,7 @@ impl VideoEncoder for H264Encoder {
         }
     }
 
-    fn push_frame(&mut self, frame: av::VideoFrame) -> Result<()> {
+    fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
         let [w, h] = frame.format.dimensions;
         let yuv = pixel_format_to_yuv420(&frame.raw, w, h, frame.format.pixel_format)?;
 
@@ -189,8 +187,9 @@ impl VideoEncoder for H264Encoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::av::{VideoEncoder, VideoPreset};
-    use crate::codec::video::test_util::make_rgba_frame;
+    use crate::codec::test_util::make_rgba_frame;
+    use crate::format::VideoPreset;
+    use crate::traits::{VideoEncoder, VideoEncoderFactory};
 
     #[test]
     fn encode_single_frame() {

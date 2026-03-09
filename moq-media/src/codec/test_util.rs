@@ -1,8 +1,6 @@
 use crate::{
-    av::{
-        DecodeConfig, DecodedVideoFrame, EncodedFrame, PixelFormat, VideoDecoder, VideoEncoder,
-        VideoFormat, VideoFrame,
-    },
+    format::{DecodeConfig, DecodedVideoFrame, PixelFormat, VideoFormat, VideoFrame},
+    traits::{VideoDecoder, VideoEncoder},
     util::encoded_frames_to_ordered_frames,
 };
 use hang::{catalog::VideoConfig, container::OrderedFrame};
@@ -109,7 +107,7 @@ pub(crate) fn video_encode_pattern(
     w: u32,
     h: u32,
     n: usize,
-) -> Vec<EncodedFrame> {
+) -> Vec<OrderedFrame> {
     let mut packets = Vec::new();
     for i in 0..n {
         enc.push_frame(make_test_pattern(w, h, i as u32)).unwrap();
@@ -117,7 +115,7 @@ pub(crate) fn video_encode_pattern(
             packets.push(pkt);
         }
     }
-    packets
+    encoded_frames_to_ordered_frames(packets)
 }
 
 /// Decode all packets with any VideoDecoder type, return decoded frames.

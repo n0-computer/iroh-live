@@ -6,8 +6,8 @@ use iroh::{Endpoint, EndpointId, Watcher};
 use iroh_live::{
     Live,
     media::{
-        audio::AudioBackend,
-        codec::{DefaultDecoders, DynamicVideoDecoder, codec_init},
+        audio_backend::AudioBackend,
+        codec::{DefaultDecoders, DynamicVideoDecoder},
         subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
     },
     moq::MoqSession,
@@ -39,7 +39,6 @@ fn main() -> Result<()> {
     };
 
     tracing_subscriber::fmt::init();
-    codec_init();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

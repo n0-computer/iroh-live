@@ -4,7 +4,7 @@ use yuvutils_rs::{
     bgra_to_yuv420, rgba_to_yuv420, yuv420_to_rgba,
 };
 
-use crate::av::PixelFormat;
+use crate::format::PixelFormat;
 
 /// YUV 4:2:0 planar image data.
 #[derive(Debug)]

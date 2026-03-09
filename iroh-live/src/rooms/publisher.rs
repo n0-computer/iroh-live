@@ -1,11 +1,11 @@
 use std::sync::{Arc, Mutex};
 
 use moq_lite::BroadcastProducer;
-use moq_media::audio::DeviceId;
+use moq_media::audio_backend::{AudioBackend, DeviceId};
 use moq_media::{
-    audio::AudioBackend,
-    av::{AudioCodec, AudioPreset, VideoCodec, VideoPreset},
     capture::{CameraCapturer, ScreenCapturer},
+    codec::{AudioCodec, VideoCodec},
+    format::{AudioPreset, VideoPreset},
     publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
 };
 use n0_error::{AnyError, Result};

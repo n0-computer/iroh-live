@@ -6,10 +6,11 @@ use bytes::Buf;
 use hang::catalog::{VideoCodec, VideoConfig};
 use image::{Delay, Frame, RgbaImage};
 
-use crate::av::{self, DecodeConfig, DecodedVideoFrame, VideoDecoder};
+use crate::format::{DecodeConfig, DecodedVideoFrame};
+use crate::traits::VideoDecoder;
 
-use super::util::{
-    StreamClock,
+use crate::processing::{
+    clock::StreamClock,
     convert::{YuvData, yuv420_to_rgba_data},
     scale::{Scaler, fit_within},
 };
@@ -115,7 +116,7 @@ impl VideoDecoder for Av1VideoDecoder {
         Ok(())
     }
 
-    fn pop_frame(&mut self) -> Result<Option<av::DecodedVideoFrame>> {
+    fn pop_frame(&mut self) -> Result<Option<DecodedVideoFrame>> {
         let Some((img, src_w, src_h)) = self.pending_frame.take() else {
             return Ok(None);
         };
@@ -153,9 +154,10 @@ mod tests {
     use hang::catalog::H264;
 
     use super::*;
-    use crate::av::{EncodedFrame, VideoEncoder, VideoEncoderFactory, VideoFrame, VideoPreset};
-    use crate::codec::video::rav1e_enc::Av1Encoder;
-    use crate::codec::video::test_util::make_rgba_frame;
+    use crate::codec::av1::encoder::Av1Encoder;
+    use crate::codec::test_util::make_rgba_frame;
+    use crate::format::{EncodedFrame, VideoFrame, VideoPreset};
+    use crate::traits::{VideoDecoder, VideoEncoder, VideoEncoderFactory};
     use crate::util::encoded_frames_to_ordered_frames;
 
     fn encode_frames(enc: &mut Av1Encoder, frames: &[VideoFrame]) -> Vec<EncodedFrame> {

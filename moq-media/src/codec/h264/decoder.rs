@@ -9,11 +9,12 @@ use hang::{
 use image::{Delay, Frame, RgbaImage};
 use openh264::{decoder::Decoder, formats::YUVSource};
 
-use crate::av::{self, DecodeConfig, DecodedVideoFrame, VideoDecoder};
+use crate::format::{DecodeConfig, DecodedVideoFrame};
+use crate::traits::VideoDecoder;
 
-use super::util::{
-    StreamClock,
-    annexb::{avcc_to_annex_b, length_prefixed_to_annex_b},
+use super::annexb::{avcc_to_annex_b, length_prefixed_to_annex_b};
+use crate::processing::{
+    clock::StreamClock,
     scale::{Scaler, fit_within},
 };
 
@@ -98,7 +99,7 @@ impl VideoDecoder for H264VideoDecoder {
         Ok(())
     }
 
-    fn pop_frame(&mut self) -> Result<Option<av::DecodedVideoFrame>> {
+    fn pop_frame(&mut self) -> Result<Option<DecodedVideoFrame>> {
         let Some((img, src_w, src_h)) = self.pending_frame.take() else {
             return Ok(None);
         };
@@ -133,74 +134,15 @@ impl VideoDecoder for H264VideoDecoder {
     }
 }
 
-/// A video decoder that dispatches to the appropriate codec-specific decoder
-/// based on the `VideoConfig::codec` field.
-#[derive(derive_more::Debug)]
-pub enum DynamicVideoDecoder {
-    H264(H264VideoDecoder),
-    #[cfg(feature = "av1")]
-    Av1(super::av1_dec::Av1VideoDecoder),
-}
-
-impl VideoDecoder for DynamicVideoDecoder {
-    fn new(config: &VideoConfig, playback_config: &DecodeConfig) -> Result<Self>
-    where
-        Self: Sized,
-    {
-        match &config.codec {
-            VideoCodec::H264(_) => Ok(Self::H264(H264VideoDecoder::new(config, playback_config)?)),
-            #[cfg(feature = "av1")]
-            VideoCodec::AV1(_) => Ok(Self::Av1(super::av1_dec::Av1VideoDecoder::new(
-                config,
-                playback_config,
-            )?)),
-            #[cfg(not(feature = "av1"))]
-            VideoCodec::AV1(_) => bail!("AV1 support requires the `av1` feature"),
-            other => bail!("Unsupported video codec: {other}"),
-        }
-    }
-
-    fn name(&self) -> &str {
-        match self {
-            Self::H264(d) => d.name(),
-            #[cfg(feature = "av1")]
-            Self::Av1(d) => d.name(),
-        }
-    }
-
-    fn push_packet(&mut self, packet: OrderedFrame) -> Result<()> {
-        match self {
-            Self::H264(d) => d.push_packet(packet),
-            #[cfg(feature = "av1")]
-            Self::Av1(d) => d.push_packet(packet),
-        }
-    }
-
-    fn pop_frame(&mut self) -> Result<Option<av::DecodedVideoFrame>> {
-        match self {
-            Self::H264(d) => d.pop_frame(),
-            #[cfg(feature = "av1")]
-            Self::Av1(d) => d.pop_frame(),
-        }
-    }
-
-    fn set_viewport(&mut self, w: u32, h: u32) {
-        match self {
-            Self::H264(d) => d.set_viewport(w, h),
-            #[cfg(feature = "av1")]
-            Self::Av1(d) => d.set_viewport(w, h),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use hang::catalog::{AV1, H264};
 
     use super::*;
-    use crate::av::{EncodedFrame, VideoEncoder, VideoEncoderFactory, VideoFrame, VideoPreset};
-    use crate::codec::video::encoder::H264Encoder;
-    use crate::codec::video::test_util::make_rgba_frame;
+    use crate::codec::h264::encoder::H264Encoder;
+    use crate::codec::test_util::make_rgba_frame;
+    use crate::format::{EncodedFrame, VideoFrame, VideoPreset};
+    use crate::traits::{VideoDecoder, VideoEncoder, VideoEncoderFactory};
     use crate::util::encoded_frames_to_ordered_frames;
 
     fn encode_frames(enc: &mut H264Encoder, frames: &[VideoFrame]) -> Vec<EncodedFrame> {
