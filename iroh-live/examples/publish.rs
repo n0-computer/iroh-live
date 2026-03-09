@@ -21,7 +21,7 @@ async fn main() -> n0_error::Result {
     let cli = Cli::parse();
 
     // Setup audio backend.
-    let audio_ctx = AudioBackend::new(None, None);
+    let audio_ctx = AudioBackend::default();
 
     // Setup iroh and iroh-live.
     let endpoint = Endpoint::builder()

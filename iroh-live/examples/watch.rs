@@ -43,7 +43,7 @@ fn main() -> Result<()> {
         .enable_all()
         .build()
         .unwrap();
-    let audio_ctx = AudioBackend::new(None, None);
+    let audio_ctx = AudioBackend::default();
 
     println!("connecting to {ticket} ...");
     let (endpoint, session, track) = rt.block_on({
