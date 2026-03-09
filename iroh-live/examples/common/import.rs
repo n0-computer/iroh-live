@@ -5,8 +5,8 @@ use std::{
 
 use bytes::BytesMut;
 use clap::ValueEnum;
-use hang::import::DecoderFormat;
 use moq_lite::BroadcastProducer;
+use moq_mux::import::{DecoderFormat, StreamFormat};
 use n0_error::Result;
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
@@ -17,25 +17,26 @@ use tracing::info;
 #[derive(ValueEnum, Debug, Clone, Default, Copy)]
 pub enum ImportType {
     #[default]
-    Cmaf,
-    AnnexB,
+    Fmp4,
+    Avc3,
 }
 
 // Taken from
 // https://github.com/moq-dev/moq/blob/30c28b8c3b6bd941fe1279c0fd8855139a1d4f6a/rs/hang-cli/src/import.rs
 // License: Apache-2.0
 pub struct Import {
-    decoder: hang::import::Decoder,
+    decoder: moq_mux::import::StreamDecoder,
     buffer: BytesMut,
 }
 
 impl Import {
-    pub fn new(broadcast: BroadcastProducer, format: ImportType) -> Self {
+    pub fn new(mut broadcast: BroadcastProducer, format: ImportType) -> Self {
+        let catalog = moq_mux::CatalogProducer::new(&mut broadcast).unwrap();
         let format = match format {
-            ImportType::Cmaf => DecoderFormat::Fmp4,
-            ImportType::AnnexB => DecoderFormat::Avc3,
+            ImportType::Fmp4 => StreamFormat::Fmp4,
+            ImportType::Avc3 => StreamFormat::Avc3,
         };
-        let decoder = hang::import::Decoder::new(broadcast.into(), format);
+        let decoder = moq_mux::import::StreamDecoder::new(broadcast.into(), catalog, format);
         Self {
             decoder,
             buffer: BytesMut::new(),
@@ -58,7 +59,7 @@ impl Import {
         }
 
         // Flush the final frame.
-        self.decoder.decode_frame(&mut self.buffer, None)
+        self.decoder.finish()
     }
 }
 
@@ -86,7 +87,7 @@ pub async fn transcode(input: PathBuf, format: ImportType) -> Result<impl AsyncR
     }
 
     match format {
-        ImportType::Cmaf => {
+        ImportType::Fmp4 => {
             cmd.args(["-c:a", "libopus", "-b:a", "128k"]);
             cmd.args([
                 "-movflags",
@@ -95,7 +96,7 @@ pub async fn transcode(input: PathBuf, format: ImportType) -> Result<impl AsyncR
                 "mp4",
             ]);
         }
-        ImportType::AnnexB => {
+        ImportType::Avc3 => {
             cmd.args([
                 "-a",
                 "n",

@@ -9,7 +9,7 @@ use iroh::{
     endpoint::{ConnectError, Connection, ConnectionError, WriteError},
     protocol::{AcceptError, ProtocolHandler},
 };
-use moq_lite::{BroadcastConsumer, BroadcastProducer, OriginConsumer, OriginProducer, lite};
+use moq_lite::{BroadcastConsumer, BroadcastProducer, OriginConsumer, OriginProducer};
 use n0_error::{AnyError, Result, StdResultExt, anyerr, e, stack_error};
 use n0_future::{
     FuturesUnordered, StreamExt,
@@ -21,7 +21,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error_span, field, info, instrument};
 use web_transport_iroh::SessionError;
 
-pub const ALPN: &[u8] = lite::ALPN.as_bytes();
+// TODO: Use export from moq_lite after next update
+pub const ALPN: &[u8] = b"moq-lite-03";
 
 #[stack_error(derive, add_meta, from_sources)]
 #[allow(private_interfaces, reason = "trait impl uses private types")]
@@ -194,6 +195,7 @@ impl ProtocolHandler for MoqProtocolHandler {
 #[derive(Clone)]
 pub struct MoqSession {
     wt_session: web_transport_iroh::Session,
+    _moq_session: Arc<moq_lite::Session>,
     publish: OriginProducer,
     subscribe: OriginConsumer,
 }
@@ -220,32 +222,34 @@ impl MoqSession {
     }
 
     pub async fn session_connect(wt_session: web_transport_iroh::Session) -> Result<Self, Error> {
-        let publish = moq_lite::Origin::produce();
-        let subscribe = moq_lite::Origin::produce();
-        // We can drop the moq_lite::Session, it spawns it tasks in the background anyway.
-        // If that changes and it becomes a guard, we should keep it around.
-        let _moq_session =
-            moq_lite::Session::connect(wt_session.clone(), publish.consumer, subscribe.producer)
-                .await?;
+        let publish_prod = OriginProducer::new();
+        let subscribe_prod = OriginProducer::new();
+        let subscribe = subscribe_prod.consume();
+        let client = moq_lite::Client::new()
+            .with_publish(publish_prod.consume())
+            .with_consume(subscribe_prod);
+        let moq_session = client.connect(wt_session.clone()).await?;
         Ok(Self {
-            publish: publish.producer,
-            subscribe: subscribe.consumer,
+            publish: publish_prod,
+            subscribe,
             wt_session,
+            _moq_session: Arc::new(moq_session),
         })
     }
 
     pub async fn session_accept(wt_session: web_transport_iroh::Session) -> Result<Self, Error> {
-        let publish = moq_lite::Origin::produce();
-        let subscribe = moq_lite::Origin::produce();
-        // We can drop the moq_lite::Session, it spawns it tasks in the background anyway.
-        // If that changes and it becomes a guard, we should keep it around.
-        let _moq_session =
-            moq_lite::Session::accept(wt_session.clone(), publish.consumer, subscribe.producer)
-                .await?;
+        let publish_prod = OriginProducer::new();
+        let subscribe_prod = OriginProducer::new();
+        let subscribe = subscribe_prod.consume();
+        let server = moq_lite::Server::new()
+            .with_publish(publish_prod.consume())
+            .with_consume(subscribe_prod);
+        let moq_session = server.accept(wt_session.clone()).await?;
         Ok(Self {
-            publish: publish.producer,
-            subscribe: subscribe.consumer,
+            publish: publish_prod,
+            subscribe,
             wt_session,
+            _moq_session: Arc::new(moq_session),
         })
     }
 
@@ -407,6 +411,7 @@ impl Actor {
         self.session_tasks.spawn(async move {
             let res = tokio::select! {
                 _ = shutdown.cancelled() => {
+                    debug!(remote=%remote.fmt_short(), "closing session: cancelled");
                     session.close(0u32, b"cancelled");
                     Ok(())
                 }
@@ -415,6 +420,7 @@ impl Actor {
                     err => Err(err)
                 },
             };
+            debug!(remote=%remote.fmt_short(), "closing session: {res:?}");
             (remote, res)
         });
     }
@@ -425,9 +431,10 @@ impl Actor {
                 .publish
                 .publish_broadcast(name.clone(), producer.consume());
         }
-        let closed = producer.consume().closed();
+        let consume = producer.consume();
         self.publishing.insert(name.clone(), producer);
         self.publishing_closed_futs.push(Box::pin(async move {
+            let closed = consume.closed();
             closed.await;
             name
         }));

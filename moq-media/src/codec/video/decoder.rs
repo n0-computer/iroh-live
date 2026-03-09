@@ -2,11 +2,14 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use bytes::Buf;
-use hang::catalog::{VideoCodec, VideoConfig};
+use hang::{
+    catalog::{VideoCodec, VideoConfig},
+    container::OrderedFrame,
+};
 use image::{Delay, Frame, RgbaImage};
 use openh264::{decoder::Decoder, formats::YUVSource};
 
-use crate::av::{self, DecodeConfig, DecodedFrame, VideoDecoder};
+use crate::av::{self, DecodeConfig, DecodedVideoFrame, VideoDecoder};
 
 use super::util::{
     StreamClock,
@@ -21,7 +24,7 @@ pub struct H264VideoDecoder {
     scaler: Scaler,
     clock: StreamClock,
     viewport_changed: Option<(u32, u32)>,
-    last_timestamp: Option<hang::Timestamp>,
+    last_timestamp: Option<hang::container::Timestamp>,
     /// Decoded frame waiting to be collected via `pop_frame`.
     #[debug(skip)]
     pending_frame: Option<(RgbaImage, u32, u32)>,
@@ -66,7 +69,7 @@ impl VideoDecoder for H264VideoDecoder {
         self.viewport_changed = Some((w, h));
     }
 
-    fn push_packet(&mut self, mut packet: hang::Frame) -> Result<()> {
+    fn push_packet(&mut self, mut packet: OrderedFrame) -> Result<()> {
         let payload = packet.payload.copy_to_bytes(packet.payload.remaining());
 
         // Transport uses length-prefixed NALs (avcC style), openh264 expects Annex B.
@@ -95,7 +98,7 @@ impl VideoDecoder for H264VideoDecoder {
         Ok(())
     }
 
-    fn pop_frame(&mut self) -> Result<Option<av::DecodedFrame>> {
+    fn pop_frame(&mut self) -> Result<Option<av::DecodedVideoFrame>> {
         let Some((img, src_w, src_h)) = self.pending_frame.take() else {
             return Ok(None);
         };
@@ -123,7 +126,7 @@ impl VideoDecoder for H264VideoDecoder {
 
         let frame_delay = Delay::from_saturating_duration(delay);
 
-        Ok(Some(DecodedFrame {
+        Ok(Some(DecodedVideoFrame {
             frame: Frame::from_parts(final_img, 0, 0, frame_delay),
             timestamp,
         }))
@@ -165,7 +168,7 @@ impl VideoDecoder for DynamicVideoDecoder {
         }
     }
 
-    fn push_packet(&mut self, packet: hang::Frame) -> Result<()> {
+    fn push_packet(&mut self, packet: OrderedFrame) -> Result<()> {
         match self {
             Self::H264(d) => d.push_packet(packet),
             #[cfg(feature = "av1")]
@@ -173,7 +176,7 @@ impl VideoDecoder for DynamicVideoDecoder {
         }
     }
 
-    fn pop_frame(&mut self) -> Result<Option<av::DecodedFrame>> {
+    fn pop_frame(&mut self) -> Result<Option<av::DecodedVideoFrame>> {
         match self {
             Self::H264(d) => d.pop_frame(),
             #[cfg(feature = "av1")]
@@ -195,11 +198,12 @@ mod tests {
     use hang::catalog::{AV1, H264};
 
     use super::*;
-    use crate::av::{VideoEncoder, VideoEncoderFactory, VideoFrame, VideoPreset};
+    use crate::av::{EncodedFrame, VideoEncoder, VideoEncoderFactory, VideoFrame, VideoPreset};
     use crate::codec::video::encoder::H264Encoder;
     use crate::codec::video::test_util::make_rgba_frame;
+    use crate::util::encoded_frames_to_ordered_frames;
 
-    fn encode_frames(enc: &mut H264Encoder, frames: &[VideoFrame]) -> Vec<hang::Frame> {
+    fn encode_frames(enc: &mut H264Encoder, frames: &[VideoFrame]) -> Vec<EncodedFrame> {
         let mut packets = Vec::new();
         for f in frames {
             enc.push_frame(f.clone()).unwrap();
@@ -229,6 +233,7 @@ mod tests {
         let mut dec = H264VideoDecoder::new(&config, &decode_config).unwrap();
 
         let mut decoded_count = 0;
+        let packets = encoded_frames_to_ordered_frames(packets);
         for pkt in packets {
             dec.push_packet(pkt).unwrap();
             if let Some(frame) = dec.pop_frame().unwrap() {
@@ -259,6 +264,7 @@ mod tests {
 
         dec.set_viewport(320, 180);
 
+        let packets = encoded_frames_to_ordered_frames(packets);
         for pkt in packets {
             dec.push_packet(pkt).unwrap();
             if let Some(frame) = dec.pop_frame().unwrap() {
@@ -286,6 +292,8 @@ mod tests {
             bitrate: None,
             framerate: None,
             optimize_for_latency: None,
+            container: Default::default(),
+            jitter: None,
         };
         let decode_config = DecodeConfig::default();
         let mut dec = H264VideoDecoder::new(&config, &decode_config).unwrap();
@@ -306,6 +314,7 @@ mod tests {
         let mut dec = H264VideoDecoder::new(&config, &decode_config).unwrap();
 
         let mut last_frame = None;
+        let packets = encoded_frames_to_ordered_frames(packets);
         for pkt in packets {
             dec.push_packet(pkt).unwrap();
             if let Some(frame) = dec.pop_frame().unwrap() {
@@ -333,6 +342,8 @@ mod tests {
             bitrate: None,
             framerate: None,
             optimize_for_latency: None,
+            container: Default::default(),
+            jitter: None,
         };
         let decode_config = DecodeConfig::default();
         let result = H264VideoDecoder::new(&config, &decode_config);

@@ -30,9 +30,6 @@ pub struct ScreenCapturer {
     pub(crate) rx: Receiver<xcap::Frame>,
 }
 
-// TODO: Review if sound.
-unsafe impl Send for ScreenCapturer {}
-
 impl Drop for ScreenCapturer {
     fn drop(&mut self) {
         self.video_recorder.stop().ok();

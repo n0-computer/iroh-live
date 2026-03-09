@@ -19,7 +19,7 @@ struct Cli {
     path: String,
 
     /// The format of the input media.
-    #[clap(long, value_enum, default_value_t = ImportType::Cmaf)]
+    #[clap(long, value_enum, default_value_t = ImportType::Fmp4)]
     format: ImportType,
 
     /// Input file.

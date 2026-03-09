@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use hang::catalog::{AudioConfig, VideoConfig};
+use hang::{
+    catalog::{AudioConfig, VideoConfig},
+    container::OrderedFrame,
+};
 use image::RgbaImage;
 use strum::{Display, EnumString, VariantNames};
 
@@ -74,7 +77,7 @@ pub trait AudioEncoder: Send + 'static {
     fn name(&self) -> &str;
     fn config(&self) -> AudioConfig;
     fn push_samples(&mut self, samples: &[f32]) -> Result<()>;
-    fn pop_packet(&mut self) -> Result<Option<hang::Frame>>;
+    fn pop_packet(&mut self) -> Result<Option<EncodedFrame>>;
 }
 
 impl AudioEncoder for Box<dyn AudioEncoder> {
@@ -90,7 +93,7 @@ impl AudioEncoder for Box<dyn AudioEncoder> {
         (**self).push_samples(samples)
     }
 
-    fn pop_packet(&mut self) -> Result<Option<hang::Frame>> {
+    fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
         (**self).pop_packet()
     }
 }
@@ -99,7 +102,7 @@ pub trait AudioDecoder: Send + 'static {
     fn new(config: &AudioConfig, target_format: AudioFormat) -> Result<Self>
     where
         Self: Sized;
-    fn push_packet(&mut self, packet: hang::Frame) -> Result<()>;
+    fn push_packet(&mut self, packet: OrderedFrame) -> Result<()>;
     fn pop_samples(&mut self) -> Result<Option<&[f32]>>;
 }
 
@@ -138,11 +141,17 @@ pub trait VideoEncoderFactory: VideoEncoder {
         Self: Sized;
 }
 
+#[derive(Debug)]
+pub struct EncodedFrame {
+    pub is_keyframe: bool,
+    pub frame: hang::container::Frame,
+}
+
 pub trait VideoEncoder: Send + 'static {
     fn name(&self) -> &str;
     fn config(&self) -> VideoConfig;
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()>;
-    fn pop_packet(&mut self) -> Result<Option<hang::Frame>>;
+    fn pop_packet(&mut self) -> Result<Option<EncodedFrame>>;
 }
 
 impl VideoEncoder for Box<dyn VideoEncoder> {
@@ -158,7 +167,7 @@ impl VideoEncoder for Box<dyn VideoEncoder> {
         (**self).push_frame(frame)
     }
 
-    fn pop_packet(&mut self) -> Result<Option<hang::Frame>> {
+    fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
         (**self).pop_packet()
     }
 }
@@ -168,19 +177,19 @@ pub trait VideoDecoder: Send + 'static {
     where
         Self: Sized;
     fn name(&self) -> &str;
-    fn pop_frame(&mut self) -> Result<Option<DecodedFrame>>;
-    fn push_packet(&mut self, packet: hang::Frame) -> Result<()>;
+    fn pop_frame(&mut self) -> Result<Option<DecodedVideoFrame>>;
+    fn push_packet(&mut self, packet: OrderedFrame) -> Result<()>;
     fn set_viewport(&mut self, w: u32, h: u32);
 }
 
 #[derive(derive_more::Debug)]
-pub struct DecodedFrame {
+pub struct DecodedVideoFrame {
     #[debug(skip)]
     pub frame: image::Frame,
     pub timestamp: Duration,
 }
 
-impl DecodedFrame {
+impl DecodedVideoFrame {
     pub fn img(&self) -> &RgbaImage {
         self.frame.buffer()
     }

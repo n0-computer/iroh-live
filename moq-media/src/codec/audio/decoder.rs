@@ -1,6 +1,7 @@
 use anyhow::{Result, bail};
 use bytes::Buf;
 use hang::catalog::{AudioCodec, AudioConfig};
+use hang::container::OrderedFrame;
 use unsafe_libopus::{self as opus, OPUS_OK, OpusDecoder as RawOpusDecoder};
 
 use crate::av::{AudioDecoder, AudioFormat};
@@ -64,7 +65,7 @@ impl AudioDecoder for OpusAudioDecoder {
         })
     }
 
-    fn push_packet(&mut self, mut packet: hang::Frame) -> Result<()> {
+    fn push_packet(&mut self, mut packet: OrderedFrame) -> Result<()> {
         let payload = packet.payload.copy_to_bytes(packet.payload.remaining());
         let max_samples = MAX_FRAME_SIZE * self.channel_count as usize;
         let mut pcm = vec![0f32; max_samples];
@@ -176,6 +177,7 @@ mod tests {
     use crate::{
         av::{AudioEncoder, AudioEncoderFactory, AudioPreset},
         codec::audio::encoder::OpusEncoder,
+        util::encoded_frames_to_ordered_frames,
     };
 
     fn make_sine(num_samples: usize, freq: f32, sample_rate: f32) -> Vec<f32> {
@@ -184,13 +186,13 @@ mod tests {
             .collect()
     }
 
-    fn encode_frames(enc: &mut OpusEncoder, samples: &[f32]) -> Vec<hang::Frame> {
+    fn encode_frames(enc: &mut OpusEncoder, samples: &[f32]) -> Vec<OrderedFrame> {
         enc.push_samples(samples).unwrap();
         let mut packets = Vec::new();
         while let Some(pkt) = enc.pop_packet().unwrap() {
             packets.push(pkt);
         }
-        packets
+        encoded_frames_to_ordered_frames(packets)
     }
 
     #[test]
@@ -260,6 +262,8 @@ mod tests {
             channel_count: 1,
             bitrate: Some(128000),
             description: None,
+            container: hang::catalog::Container::Legacy,
+            jitter: None,
         };
         let format = AudioFormat::mono_48k();
         let mut dec = OpusAudioDecoder::new(&config, format).unwrap();
@@ -274,13 +278,16 @@ mod tests {
             channel_count: 1,
             bitrate: Some(128000),
             description: None,
+            container: hang::catalog::Container::Legacy,
+            jitter: None,
         };
         let format = AudioFormat::mono_48k();
         let mut dec = OpusAudioDecoder::new(&config, format).unwrap();
-        let bad_packet = hang::Frame {
+        let bad_packet = OrderedFrame {
             payload: bytes::Bytes::from_static(&[0xFF, 0xFF, 0xFF, 0xFF]).into(),
-            timestamp: hang::Timestamp::ZERO,
-            keyframe: true,
+            timestamp: hang::container::Timestamp::ZERO,
+            group: 0,
+            index: 0,
         };
         // Corrupt packet should error, not panic
         let result = dec.push_packet(bad_packet);

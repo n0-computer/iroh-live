@@ -80,14 +80,14 @@ struct PlayoutClockInner {
 
     /// Wall clock ↔ media timestamp mapping, established on first frame.
     base_wall: Option<Instant>,
-    base_pts: Option<hang::Timestamp>,
+    base_pts: Option<hang::container::Timestamp>,
 
     /// Per-track latest playout PTS — for cross-track sync.
     tracks: HashMap<String, TrackSync>,
 }
 
 struct TrackSync {
-    latest_pts: hang::Timestamp,
+    latest_pts: hang::container::Timestamp,
     last_arrival: Instant,
 }
 
@@ -140,18 +140,18 @@ impl PlayoutClock {
     // --- Internal, called by decoder threads ---
 
     /// Record frame arrival. Updates jitter estimate and adaptive target.
-    fn observe_arrival(&self, track_id: &str, pts: hang::Timestamp) { ... }
+    fn observe_arrival(&self, track_id: &str, pts: hang::container::Timestamp) { ... }
 
     /// When should the frame with this PTS be played out?
     /// Returns wall clock time. If in the past, play immediately.
-    fn playout_time(&self, pts: hang::Timestamp) -> Instant { ... }
+    fn playout_time(&self, pts: hang::container::Timestamp) -> Instant { ... }
 
     /// Report that a frame was played out. Updates sync tracking.
-    fn report_playout(&self, track_id: &str, pts: hang::Timestamp) { ... }
+    fn report_playout(&self, track_id: &str, pts: hang::container::Timestamp) { ... }
 
     /// Check if this track is behind the sync target.
     /// Returns frames to skip if too far behind.
-    fn sync_check(&self, track_id: &str, pts: hang::Timestamp) -> SyncAction { ... }
+    fn sync_check(&self, track_id: &str, pts: hang::container::Timestamp) -> SyncAction { ... }
 
     /// Current max_latency value to propagate to hang's TrackConsumer.
     /// Called by the adaptation task when target_latency changes.
@@ -176,7 +176,7 @@ A small per-thread buffer between the mpsc channel and the decoder. Holds frames
 /// Per-decoder-thread frame buffer with playout timing.
 struct PlayoutBuffer {
     /// Frames waiting for playout, ordered by PTS.
-    buffer: BTreeMap<hang::Timestamp, hang::Frame>,
+    buffer: BTreeMap<hang::container::Timestamp, hang::Frame>,
     /// Maximum frames to buffer (safety valve).
     max_frames: usize,
     /// Reference to shared clock.

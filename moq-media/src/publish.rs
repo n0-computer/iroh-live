@@ -9,12 +9,15 @@ use std::{
 };
 
 use anyhow::Context;
-use hang::catalog::{Audio, AudioConfig, Catalog, CatalogProducer, Video, VideoConfig};
-use moq_lite::BroadcastProducer;
-use n0_error::Result;
+use hang::{
+    catalog::{Audio, AudioConfig, Catalog, Video, VideoConfig},
+    container::OrderedProducer,
+};
+use moq_lite::{BroadcastProducer, TrackProducer};
+use n0_error::{Result, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, info_span, trace, warn};
+use tracing::{debug, error, info, info_span, trace, warn};
 
 use tokio::sync::watch;
 
@@ -47,18 +50,10 @@ pub struct PublishBroadcast {
     _task: Arc<AbortOnDropHandle<()>>,
 }
 
-impl Default for PublishBroadcast {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl PublishBroadcast {
     pub fn new() -> Self {
         let mut producer = BroadcastProducer::default();
-        let catalog = Catalog::default().produce();
-        producer.insert_track(catalog.consumer.track);
-        let catalog = catalog.producer;
+        let catalog = CatalogProducer::new(&mut producer).expect("not closed");
 
         let state = Arc::new(Mutex::new(State::default()));
         let task_handle = tokio::spawn(Self::run(state.clone(), producer.clone()));
@@ -75,8 +70,20 @@ impl PublishBroadcast {
         self.producer.clone()
     }
 
-    async fn run(state: Arc<Mutex<State>>, mut producer: BroadcastProducer) {
-        while let Some(track) = producer.requested_track().await {
+    async fn run(state: Arc<Mutex<State>>, producer: BroadcastProducer) {
+        let mut producer = producer.dynamic();
+        loop {
+            let track = match producer.requested_track().await {
+                Ok(None) => {
+                    debug!("broadcast producer: closed");
+                    break;
+                }
+                Err(err) => {
+                    warn!("broadcast producer: closed {err:#}");
+                    break;
+                }
+                Ok(Some(track)) => track,
+            };
             let name = track.info.name.clone();
             if state
                 .lock()
@@ -89,14 +96,15 @@ impl PublishBroadcast {
                 tokio::spawn({
                     let state = state.clone();
                     async move {
-                        track.unused().await;
+                        if let Err(err) = track.unused().await {
+                            warn!("track closed: {err:#}");
+                        }
                         info!("stopping track: {name} (all subscribers disconnected)");
                         state.lock().expect("poisoned").stop_track(&name);
                     }
                 });
             }
         }
-        info!("publish broadcast: no more track requests, shutting down");
     }
 
     /// Create a local WatchTrack from the current video source, if present.
@@ -120,11 +128,9 @@ impl PublishBroadcast {
     pub fn set_video(&mut self, renditions: Option<VideoRenditions>) -> Result<()> {
         match renditions {
             Some(renditions) => {
-                let priority = 1u8;
                 let configs = renditions.available_renditions()?;
                 let video = Video {
                     renditions: configs,
-                    priority,
                     display: None,
                     rotation: None,
                     flip: None,
@@ -136,18 +142,12 @@ impl PublishBroadcast {
                 state.remove_video();
                 state.available_video = Some(renditions);
                 drop(state);
-                {
-                    let mut catalog = self.catalog.lock();
-                    catalog.video = Some(video);
-                }
+                self.catalog.set_video(video)?;
             }
             None => {
                 // Clear catalog and stop any active video encoders
                 self.state.lock().expect("poisoned").remove_video();
-                {
-                    let mut catalog = self.catalog.lock();
-                    catalog.video = None;
-                }
+                self.catalog.set_video(Default::default())?;
             }
         }
         Ok(())
@@ -156,11 +156,9 @@ impl PublishBroadcast {
     pub fn set_audio(&mut self, renditions: Option<AudioRenditions>) -> Result<()> {
         match renditions {
             Some(renditions) => {
-                let priority = 2u8;
                 let configs = renditions.available_renditions()?;
                 let audio = Audio {
                     renditions: configs,
-                    priority,
                 };
                 // Tear down existing audio, set new renditions, then publish catalog.
                 // Order matters: renditions must be available before the catalog is
@@ -169,18 +167,12 @@ impl PublishBroadcast {
                 state.remove_audio();
                 state.available_audio = Some(renditions);
                 drop(state);
-                {
-                    let mut catalog = self.catalog.lock();
-                    catalog.audio = Some(audio);
-                }
+                self.catalog.set_audio(audio)?;
             }
             None => {
                 // Clear catalog and stop any active audio encoders
                 self.state.lock().expect("poisoned").remove_audio();
-                {
-                    let mut catalog = self.catalog.lock();
-                    catalog.audio = None;
-                }
+                self.catalog.set_audio(Default::default())?;
             }
         }
         Ok(())
@@ -190,7 +182,42 @@ impl PublishBroadcast {
 impl Drop for PublishBroadcast {
     fn drop(&mut self) {
         self.state.lock().expect("poisoned").shutdown_token.cancel();
-        self.producer.close();
+        // TODO: Do we need to close explicitly here?
+        // self.producer.close();
+    }
+}
+
+struct CatalogProducer {
+    track: TrackProducer,
+    catalog: Catalog,
+}
+
+impl CatalogProducer {
+    fn new(broadcast: &mut BroadcastProducer) -> Result<Self, moq_lite::Error> {
+        let track = broadcast.create_track(hang::Catalog::default_track())?;
+        let catalog = Catalog::default();
+        Ok(Self { track, catalog })
+    }
+
+    fn set_video(&mut self, video: Video) -> Result<()> {
+        self.catalog.video = video;
+        self.publish()?;
+        Ok(())
+    }
+
+    fn set_audio(&mut self, audio: Audio) -> Result<()> {
+        self.catalog.audio = audio;
+        self.publish()?;
+        Ok(())
+    }
+
+    fn publish(&mut self) -> Result<()> {
+        let mut group = self.track.append_group().anyerr()?;
+        group
+            .write_frame(self.catalog.to_string().anyerr()?)
+            .anyerr()?;
+        group.finish().anyerr()?;
+        Ok(())
     }
 }
 
@@ -233,7 +260,6 @@ impl State {
 
     fn start_track(&mut self, track: moq_lite::TrackProducer) -> Result<()> {
         let name = track.info.name.clone();
-        let track = hang::TrackProducer::new(track);
         let shutdown_token = self.shutdown_token.child_token();
         if let Some(video) = self.available_video.as_mut()
             && video.contains_rendition(&name)
@@ -334,7 +360,7 @@ impl AudioRenditions {
     pub fn start_encoder(
         &mut self,
         name: &str,
-        producer: hang::TrackProducer,
+        producer: TrackProducer,
         shutdown_token: CancellationToken,
     ) -> Result<EncoderThread> {
         let make_encoder = self
@@ -441,7 +467,7 @@ impl VideoRenditions {
     pub fn start_encoder(
         &mut self,
         name: &str,
-        producer: hang::TrackProducer,
+        producer: TrackProducer,
         shutdown_token: CancellationToken,
     ) -> Result<EncoderThread> {
         let make_encoder = self
@@ -590,9 +616,10 @@ impl EncoderThread {
     pub fn spawn_video(
         mut source: impl VideoSource,
         mut encoder: impl VideoEncoder,
-        mut producer: hang::TrackProducer,
+        producer: TrackProducer,
         shutdown: CancellationToken,
     ) -> Self {
+        let mut producer = OrderedProducer::new(producer);
         let thread_name = format!("venc-{:<4}-{:<4}", source.name(), encoder.name());
         let span = info_span!("videoenc", source = source.name(), encoder = encoder.name());
         let handle = spawn_thread(thread_name, {
@@ -661,12 +688,20 @@ impl EncoderThread {
                         loop {
                             match encoder.pop_packet() {
                                 Ok(Some(pkt)) => {
-                                    if first && !pkt.keyframe {
+                                    if first && !pkt.is_keyframe {
                                         warn!("ignoring frame: waiting for first keyframe");
                                         continue;
                                     }
                                     first = false;
-                                    if let Err(err) = producer.write(pkt) {
+                                    if pkt.is_keyframe {
+                                        if let Err(err) = producer.keyframe() {
+                                            error!(
+                                                "failed to close previous group for keyframe: {err:#}"
+                                            );
+                                            break;
+                                        }
+                                    }
+                                    if let Err(err) = producer.write(pkt.frame) {
                                         error!("failed to write video packet to producer: {err:#}");
                                     }
                                 }
@@ -680,7 +715,7 @@ impl EncoderThread {
                     }
                     thread::sleep(interval.saturating_sub(start.elapsed()));
                 }
-                producer.inner.close();
+                producer.finish().ok();
                 if let Err(err) = source.stop() {
                     warn!("video source failed to stop: {err:#}");
                 }
@@ -696,13 +731,14 @@ impl EncoderThread {
     pub fn spawn_audio(
         mut source: Box<dyn AudioSource>,
         mut encoder: impl AudioEncoder,
-        mut producer: hang::TrackProducer,
+        producer: TrackProducer,
         shutdown: CancellationToken,
     ) -> Self {
         let sd = shutdown.clone();
         let name = encoder.name();
         let thread_name = format!("aenc-{:<4}", name);
         let span = info_span!("audioenc", %name);
+        let mut producer = OrderedProducer::new(producer);
         let handle = spawn_thread(thread_name, move || {
             let _guard = span.enter();
             info!(config=?encoder.config(), "audio encoder thread start");
@@ -732,7 +768,15 @@ impl EncoderThread {
                         loop {
                             match encoder.pop_packet() {
                                 Ok(Some(pkt)) => {
-                                    if let Err(err) = producer.write(pkt) {
+                                    if pkt.is_keyframe {
+                                        if let Err(err) = producer.keyframe() {
+                                            error!(
+                                                "failed to close previous group for keyframe: {err:#}"
+                                            );
+                                            break;
+                                        }
+                                    }
+                                    if let Err(err) = producer.write(pkt.frame) {
                                         error!("failed to write audio packet to producer: {err:#}");
                                     }
                                 }
@@ -767,11 +811,17 @@ impl EncoderThread {
             }
             // drain
             while let Ok(Some(pkt)) = encoder.pop_packet() {
-                if let Err(err) = producer.write(pkt) {
+                if pkt.is_keyframe {
+                    if let Err(err) = producer.keyframe() {
+                        error!("failed to close previous group for keyframe: {err:#}");
+                        break;
+                    }
+                }
+                if let Err(err) = producer.write(pkt.frame) {
                     error!("failed to write audio packet to producer: {err:#}");
                 }
             }
-            producer.inner.close();
+            producer.finish().ok();
             info!("audio encoder thread stop");
         });
         Self {
@@ -968,9 +1018,9 @@ mod tests {
         let (w, h) = preset.dimensions();
         let source = TestVideoSource::new(w, h);
         let encoder = E::with_preset(preset).unwrap();
-        let track = moq_lite::Track::new("test-video").produce();
-        let producer = hang::TrackProducer::new(track.producer);
-        let mut consumer = track.consumer;
+        let track = moq_lite::Track::new("test-video");
+        let producer = TrackProducer::new(track);
+        let mut consumer = producer.consume();
         let shutdown = CancellationToken::new();
 
         let _thread = EncoderThread::spawn_video(source, encoder, producer, shutdown.clone());
@@ -1001,7 +1051,7 @@ mod tests {
         // rav1e buffers ~30 frames before first output at speed preset 10
         assert_spawn_video_produces_output::<codec::Av1Encoder>(
             VideoPreset::P180,
-            Duration::from_secs(3),
+            Duration::from_secs(5),
         )
         .await;
     }

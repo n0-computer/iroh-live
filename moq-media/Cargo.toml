@@ -17,9 +17,9 @@ byte-unit = { version = "5.1", features = ["bit"] }
 data-encoding = "2.9.0"
 derive_more = { version = "2.0.1", features = ["display", "debug", "eq", "deref"] }
 firewheel = { version = "0.10.0", features = ["cpal", "peak_meter_node", "std", "stream_nodes", "cpal_resample_inputs"] }
-hang = "0.10"
+hang = "0.15"
 image = { version = "0.25.8", default-features = false }
-moq-lite = "0.11"
+moq-lite = "0.15"
 n0-error = { version = "0.1.2", features = ["anyhow"] }
 n0-future = "0.3.1"
 n0-watcher = "0.6.0"
@@ -29,13 +29,13 @@ nokhwa = { version = "0.10", features = [
     "output-threaded",
 ] }
 postcard = "1.1.3"
-rand = "0.9.2"
+rand = "0.9"
 serde = { version = "1.0.228", features = ["derive"] }
-strum = { version = "0.27", features = ["derive"] }
+strum = { version = "0.28", features = ["derive"] }
 tokio = { version = "1.48.0", features = ["sync"] }
 tokio-util = "0.7.17"
 tracing = "0.1.41"
-xcap = "0.8.1"
+xcap = "0.9.0"
 sonora = { version = "0.1" }
 bytes = "1.11.0"
 openh264 = { version = "0.9", features = ["source"] }

@@ -21,10 +21,12 @@ pub fn codec_init() {}
 mod tests {
     use crate::av::{
         AudioDecoder, AudioEncoder, AudioEncoderFactory, AudioFormat, AudioPreset, DecodeConfig,
-        Decoders, VideoDecoder, VideoEncoder, VideoEncoderFactory, VideoPreset,
+        Decoders, EncodedFrame, VideoDecoder, VideoEncoder, VideoEncoderFactory, VideoPreset,
     };
     use crate::codec::video::test_util;
+    use crate::util::encoded_frames_to_ordered_frames;
     use hang::catalog::AudioConfig;
+    use hang::container::OrderedFrame;
     use std::f32::consts::PI;
 
     use super::*;
@@ -44,7 +46,7 @@ mod tests {
     }
 
     /// Encode samples, return packets.
-    fn audio_encode(enc: &mut OpusEncoder, samples: &[f32]) -> Vec<hang::Frame> {
+    fn audio_encode(enc: &mut OpusEncoder, samples: &[f32]) -> Vec<EncodedFrame> {
         enc.push_samples(samples).unwrap();
         let mut packets = Vec::new();
         while let Some(pkt) = enc.pop_packet().unwrap() {
@@ -57,7 +59,7 @@ mod tests {
     fn audio_decode(
         config: &AudioConfig,
         format: AudioFormat,
-        packets: Vec<hang::Frame>,
+        packets: Vec<OrderedFrame>,
     ) -> Vec<f32> {
         let mut dec = OpusAudioDecoder::new(config, format).unwrap();
         let mut all_samples = Vec::new();
@@ -267,6 +269,7 @@ mod tests {
         let sine = make_sine(48000, 440.0, 48000.0); // 1 second
         let packets = audio_encode(&mut enc, &sine);
         assert_eq!(packets.len(), 50);
+        let packets = encoded_frames_to_ordered_frames(packets);
         let decoded = audio_decode(&config, format, packets);
         assert_eq!(decoded.len(), 48000);
         assert_energy_preserved(&sine, &decoded);
@@ -280,6 +283,7 @@ mod tests {
         let sine = make_sine(48000, 440.0, 48000.0);
         let packets = audio_encode(&mut enc, &sine);
         assert_eq!(packets.len(), 50);
+        let packets = encoded_frames_to_ordered_frames(packets);
         let decoded = audio_decode(&config, format, packets);
         assert_eq!(decoded.len(), 48000);
         assert_energy_preserved(&sine, &decoded);
@@ -294,6 +298,7 @@ mod tests {
         let sine = make_sine(96000, 440.0, 48000.0);
         let packets = audio_encode(&mut enc, &sine);
         assert_eq!(packets.len(), 50);
+        let packets = encoded_frames_to_ordered_frames(packets);
         let decoded = audio_decode(&config, format, packets);
         assert_eq!(decoded.len(), 96000);
         assert_energy_preserved(&sine, &decoded);
@@ -307,6 +312,7 @@ mod tests {
         let sine = make_sine(96000, 440.0, 48000.0);
         let packets = audio_encode(&mut enc, &sine);
         assert_eq!(packets.len(), 50);
+        let packets = encoded_frames_to_ordered_frames(packets);
         let decoded = audio_decode(&config, format, packets);
         assert_eq!(decoded.len(), 96000);
         assert_energy_preserved(&sine, &decoded);
@@ -332,6 +338,7 @@ mod tests {
         assert_eq!(packets.len(), 50);
 
         // Decode to stereo target
+        let packets = encoded_frames_to_ordered_frames(packets);
         let decoded = audio_decode(&config, dec_format, packets);
 
         // Should have 48000 frames * 2 channels = 96000 interleaved samples
@@ -367,6 +374,7 @@ mod tests {
         assert_eq!(packets.len(), 50);
 
         // Decode to mono target
+        let packets = encoded_frames_to_ordered_frames(packets);
         let decoded = audio_decode(&config, dec_format, packets);
 
         // Should have 48000 mono samples
@@ -388,6 +396,7 @@ mod tests {
 
         let sine = make_sine(48000, 440.0, 48000.0);
         let packets = audio_encode(&mut enc, &sine);
+        let packets = encoded_frames_to_ordered_frames(packets);
         let decoded = audio_decode(&config, dec_format, packets);
 
         assert_eq!(decoded.len(), 96000);
