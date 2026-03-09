@@ -20,8 +20,9 @@ use tracing::{Instrument, debug, error_span, warn};
 
 use crate::Live;
 
-pub use self::publisher::{PublishOpts, RoomPublisherSync, StreamKind};
+pub use self::publisher::RoomPublisherSync;
 pub use self::ticket::RoomTicket;
+pub use moq_media::publish::{PublishOpts, PublishUpdateError, StreamKind};
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + Sync + 'static>>;
 

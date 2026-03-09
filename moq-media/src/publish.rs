@@ -1,3 +1,9 @@
+mod controller;
+pub use controller::{
+    CaptureConfig, PublishCaptureController, PublishOpts, PublishUpdate, PublishUpdateError,
+    StreamKind,
+};
+
 use std::{
     collections::{BTreeMap, HashMap},
     sync::{
