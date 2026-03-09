@@ -1,8 +1,7 @@
+use std::time::Duration;
+
 use anyhow::{Result, bail};
-use hang::{
-    catalog::{AV1, VideoCodec, VideoConfig},
-    container::Timestamp,
-};
+use hang::catalog::{AV1, VideoCodec, VideoConfig};
 use rav1e::prelude::*;
 
 use crate::{
@@ -80,11 +79,9 @@ impl Av1Encoder {
                     self.frame_count += 1;
 
                     self.packet_buf.push(EncodedFrame {
-                        frame: hang::container::Frame {
-                            payload: packet.data.into(),
-                            timestamp: Timestamp::from_micros(timestamp_us)?,
-                        },
                         is_keyframe,
+                        timestamp: Duration::from_micros(timestamp_us),
+                        payload: packet.data.into(),
                     });
                 }
                 Err(EncoderStatus::Encoded) => {
@@ -251,9 +248,9 @@ mod tests {
             enc.push_frame(frame).unwrap();
             if let Some(pkt) = enc.pop_packet().unwrap() {
                 if let Some(prev) = prev_ts {
-                    assert!(pkt.frame.timestamp > prev, "timestamps should increase");
+                    assert!(pkt.timestamp > prev, "timestamps should increase");
                 }
-                prev_ts = Some(pkt.frame.timestamp);
+                prev_ts = Some(pkt.timestamp);
             }
         }
     }

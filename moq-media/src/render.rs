@@ -375,20 +375,20 @@ impl WgpuVideoRenderer {
 
     /// Upload a CPU RGBA frame to the output texture.
     fn render_cpu(&mut self, cpu: &CpuFrame) -> &wgpu::TextureView {
-        self.ensure_output_texture(cpu.width, cpu.height);
+        self.ensure_output_texture(cpu.width(), cpu.height());
 
         let out = self.output_texture.as_ref().unwrap();
         self.queue.write_texture(
             out.texture.as_image_copy(),
-            &cpu.data,
+            &*cpu.image,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(cpu.width * 4),
+                bytes_per_row: Some(cpu.width() * 4),
                 rows_per_image: None,
             },
             wgpu::Extent3d {
-                width: cpu.width,
-                height: cpu.height,
+                width: cpu.width(),
+                height: cpu.height(),
                 depth_or_array_layers: 1,
             },
         );

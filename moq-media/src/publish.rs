@@ -719,7 +719,7 @@ impl EncoderThread {
                                             break;
                                         }
                                     }
-                                    if let Err(err) = producer.write(pkt.frame) {
+                                    if let Err(err) = producer.write(pkt.to_hang_frame()) {
                                         error!("failed to write video packet to producer: {err:#}");
                                     }
                                 }
@@ -794,7 +794,7 @@ impl EncoderThread {
                                             break;
                                         }
                                     }
-                                    if let Err(err) = producer.write(pkt.frame) {
+                                    if let Err(err) = producer.write(pkt.to_hang_frame()) {
                                         error!("failed to write audio packet to producer: {err:#}");
                                     }
                                 }
@@ -835,7 +835,7 @@ impl EncoderThread {
                         break;
                     }
                 }
-                if let Err(err) = producer.write(pkt.frame) {
+                if let Err(err) = producer.write(pkt.to_hang_frame()) {
                     error!("failed to write audio packet to producer: {err:#}");
                 }
             }

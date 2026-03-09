@@ -1,12 +1,9 @@
 use anyhow::Result;
-use hang::{
-    catalog::{AudioConfig, VideoConfig},
-    container::OrderedFrame,
-};
+use hang::catalog::{AudioConfig, VideoConfig};
 
 use crate::format::{
-    AudioFormat, AudioPreset, DecodeConfig, DecodedVideoFrame, EncodedFrame, VideoFormat,
-    VideoFrame, VideoPreset,
+    AudioFormat, AudioPreset, DecodeConfig, DecodedVideoFrame, EncodedFrame, MediaPacket,
+    VideoFormat, VideoFrame, VideoPreset,
 };
 
 pub trait Decoders {
@@ -75,7 +72,7 @@ pub trait AudioDecoder: Send + 'static {
     fn new(config: &AudioConfig, target_format: AudioFormat) -> Result<Self>
     where
         Self: Sized;
-    fn push_packet(&mut self, packet: OrderedFrame) -> Result<()>;
+    fn push_packet(&mut self, packet: MediaPacket) -> Result<()>;
     fn pop_samples(&mut self) -> Result<Option<&[f32]>>;
 }
 
@@ -85,6 +82,24 @@ pub trait VideoSource: Send + 'static {
     fn pop_frame(&mut self) -> Result<Option<VideoFrame>>;
     fn start(&mut self) -> Result<()>;
     fn stop(&mut self) -> Result<()>;
+}
+
+impl VideoSource for Box<dyn VideoSource> {
+    fn name(&self) -> &str {
+        (**self).name()
+    }
+    fn format(&self) -> VideoFormat {
+        (**self).format()
+    }
+    fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {
+        (**self).pop_frame()
+    }
+    fn start(&mut self) -> Result<()> {
+        (**self).start()
+    }
+    fn stop(&mut self) -> Result<()> {
+        (**self).stop()
+    }
 }
 
 pub trait VideoEncoderFactory: VideoEncoder {
@@ -126,6 +141,6 @@ pub trait VideoDecoder: Send + 'static {
         Self: Sized;
     fn name(&self) -> &str;
     fn pop_frame(&mut self) -> Result<Option<DecodedVideoFrame>>;
-    fn push_packet(&mut self, packet: OrderedFrame) -> Result<()>;
+    fn push_packet(&mut self, packet: MediaPacket) -> Result<()>;
     fn set_viewport(&mut self, w: u32, h: u32);
 }

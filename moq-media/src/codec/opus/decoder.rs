@@ -1,10 +1,8 @@
 use anyhow::{Result, bail};
-use bytes::Buf;
 use hang::catalog::{AudioCodec, AudioConfig};
-use hang::container::OrderedFrame;
 use unsafe_libopus::{self as opus, OPUS_OK, OpusDecoder as RawOpusDecoder};
 
-use crate::format::AudioFormat;
+use crate::format::{AudioFormat, MediaPacket};
 use crate::processing::resample::Resampler;
 use crate::traits::AudioDecoder;
 
@@ -66,7 +64,8 @@ impl AudioDecoder for OpusAudioDecoder {
         })
     }
 
-    fn push_packet(&mut self, mut packet: OrderedFrame) -> Result<()> {
+    fn push_packet(&mut self, mut packet: MediaPacket) -> Result<()> {
+        use bytes::Buf;
         let payload = packet.payload.copy_to_bytes(packet.payload.remaining());
         let max_samples = MAX_FRAME_SIZE * self.channel_count as usize;
         let mut pcm = vec![0f32; max_samples];
@@ -179,7 +178,7 @@ mod tests {
         codec::opus::encoder::OpusEncoder,
         format::AudioPreset,
         traits::{AudioEncoder, AudioEncoderFactory},
-        util::encoded_frames_to_ordered_frames,
+        util::encoded_frames_to_media_packets,
     };
 
     fn make_sine(num_samples: usize, freq: f32, sample_rate: f32) -> Vec<f32> {
@@ -188,13 +187,13 @@ mod tests {
             .collect()
     }
 
-    fn encode_frames(enc: &mut OpusEncoder, samples: &[f32]) -> Vec<OrderedFrame> {
+    fn encode_frames(enc: &mut OpusEncoder, samples: &[f32]) -> Vec<MediaPacket> {
         enc.push_samples(samples).unwrap();
         let mut packets = Vec::new();
         while let Some(pkt) = enc.pop_packet().unwrap() {
             packets.push(pkt);
         }
-        encoded_frames_to_ordered_frames(packets)
+        encoded_frames_to_media_packets(packets)
     }
 
     #[test]
@@ -285,11 +284,10 @@ mod tests {
         };
         let format = AudioFormat::mono_48k();
         let mut dec = OpusAudioDecoder::new(&config, format).unwrap();
-        let bad_packet = OrderedFrame {
+        let bad_packet = MediaPacket {
             payload: bytes::Bytes::from_static(&[0xFF, 0xFF, 0xFF, 0xFF]).into(),
-            timestamp: hang::container::Timestamp::ZERO,
-            group: 0,
-            index: 0,
+            timestamp: std::time::Duration::ZERO,
+            is_keyframe: false,
         };
         // Corrupt packet should error, not panic
         let result = dec.push_packet(bad_packet);

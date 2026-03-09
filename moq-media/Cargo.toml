@@ -37,6 +37,7 @@ tokio-util = "0.7.17"
 tracing = "0.1.41"
 xcap = { version = "0.9.0", optional = true }
 sonora = { version = "0.1" }
+buf-list = "1.1"
 bytes = "1.11.0"
 openh264 = { version = "0.9", optional = true, features = ["source"] }
 unsafe-libopus = { version = "0.2", optional = true }
@@ -62,7 +63,9 @@ objc2 = { version = "0.6", optional = true }
 
 [dev-dependencies]
 clap = { version = "4.5", features = ["derive"] }
-eframe = "0.33.0"
+eframe = { version = "0.33.0", features = ["wgpu"] }
+egui-wgpu = "0.33.0"
+pollster = "0.4"
 image = { version = "0.25.8", features = ["jpeg"] }
 postcard = "1.1.3"
 tokio = { version = "1.48.0", features = ["full"] }

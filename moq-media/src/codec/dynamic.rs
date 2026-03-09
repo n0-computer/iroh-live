@@ -1,11 +1,8 @@
 use anyhow::{Result, bail};
-use hang::{
-    catalog::{AudioCodec, AudioConfig, VideoCodec, VideoConfig},
-    container::OrderedFrame,
-};
+use hang::catalog::{AudioCodec, AudioConfig, VideoCodec, VideoConfig};
 
 use crate::{
-    format::{AudioFormat, DecodeConfig, DecodedVideoFrame},
+    format::{AudioFormat, DecodeConfig, DecodedVideoFrame, MediaPacket},
     traits::{AudioDecoder, Decoders, VideoDecoder},
 };
 
@@ -41,11 +38,11 @@ impl VideoDecoder for DynamicVideoDecoder {
             #[cfg(feature = "h264")]
             VideoCodec::H264(_) => {
                 #[cfg(all(target_os = "linux", feature = "vaapi"))]
-                if matches!(playback_config.backend, crate::format::DecoderBackend::Auto) {
-                    if let Ok(dec) = super::vaapi::VaapiDecoder::new(config, playback_config) {
-                        tracing::info!("using VAAPI hardware H.264 decoder");
-                        return Ok(Self::VaapiH264(Box::new(dec)));
-                    }
+                if matches!(playback_config.backend, crate::format::DecoderBackend::Auto)
+                    && let Ok(dec) = super::vaapi::VaapiDecoder::new(config, playback_config)
+                {
+                    tracing::info!("using VAAPI hardware H.264 decoder");
+                    return Ok(Self::VaapiH264(Box::new(dec)));
                 }
                 tracing::info!("using software H.264 decoder");
                 Ok(Self::H264(super::H264VideoDecoder::new(
@@ -79,7 +76,7 @@ impl VideoDecoder for DynamicVideoDecoder {
         }
     }
 
-    fn push_packet(&mut self, packet: OrderedFrame) -> Result<()> {
+    fn push_packet(&mut self, packet: MediaPacket) -> Result<()> {
         match self {
             #[cfg(feature = "h264")]
             Self::H264(d) => d.push_packet(packet),
@@ -147,7 +144,7 @@ impl AudioDecoder for DynamicAudioDecoder {
         }
     }
 
-    fn push_packet(&mut self, packet: OrderedFrame) -> Result<()> {
+    fn push_packet(&mut self, packet: MediaPacket) -> Result<()> {
         match self {
             #[cfg(feature = "opus")]
             Self::Opus(d) => d.push_packet(packet),

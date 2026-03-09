@@ -109,6 +109,24 @@ impl VideoCodec {
         }
     }
 
+    /// Create an encoder for this codec with the given preset.
+    pub fn create_encoder(
+        self,
+        preset: crate::format::VideoPreset,
+    ) -> anyhow::Result<Box<dyn crate::traits::VideoEncoder>> {
+        use crate::traits::VideoEncoderFactory as _;
+        match self {
+            #[cfg(feature = "h264")]
+            Self::H264 => Ok(Box::new(H264Encoder::with_preset(preset)?)),
+            #[cfg(feature = "av1")]
+            Self::Av1 => Ok(Box::new(Av1Encoder::with_preset(preset)?)),
+            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+            Self::VtbH264 => Ok(Box::new(VtbEncoder::with_preset(preset)?)),
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            Self::VaapiH264 => Ok(Box::new(VaapiEncoder::with_preset(preset)?)),
+        }
+    }
+
     /// Human-readable display name.
     pub fn display_name(self) -> &'static str {
         match self {
@@ -126,14 +144,15 @@ impl VideoCodec {
 
 #[cfg(all(test, feature = "opus"))]
 mod tests {
-    use crate::format::{AudioFormat, AudioPreset, DecodeConfig, EncodedFrame, VideoPreset};
+    use crate::format::{
+        AudioFormat, AudioPreset, DecodeConfig, EncodedFrame, MediaPacket, VideoPreset,
+    };
     use crate::traits::{
         AudioDecoder, AudioEncoder, AudioEncoderFactory, Decoders, VideoDecoder, VideoEncoder,
         VideoEncoderFactory,
     };
-    use crate::util::encoded_frames_to_ordered_frames;
+    use crate::util::encoded_frames_to_media_packets;
     use hang::catalog::AudioConfig;
-    use hang::container::OrderedFrame;
     use std::f32::consts::PI;
 
     use super::*;
@@ -166,7 +185,7 @@ mod tests {
     fn audio_decode(
         config: &AudioConfig,
         format: AudioFormat,
-        packets: Vec<OrderedFrame>,
+        packets: Vec<MediaPacket>,
     ) -> Vec<f32> {
         let mut dec = OpusAudioDecoder::new(config, format).unwrap();
         let mut all_samples = Vec::new();
@@ -377,7 +396,7 @@ mod tests {
         let sine = make_sine(48000, 440.0, 48000.0);
         let packets = audio_encode(&mut enc, &sine);
         assert_eq!(packets.len(), 50);
-        let packets = encoded_frames_to_ordered_frames(packets);
+        let packets = encoded_frames_to_media_packets(packets);
         let decoded = audio_decode(&config, format, packets);
         assert_eq!(decoded.len(), 48000);
         assert_energy_preserved(&sine, &decoded);
@@ -391,7 +410,7 @@ mod tests {
         let sine = make_sine(48000, 440.0, 48000.0);
         let packets = audio_encode(&mut enc, &sine);
         assert_eq!(packets.len(), 50);
-        let packets = encoded_frames_to_ordered_frames(packets);
+        let packets = encoded_frames_to_media_packets(packets);
         let decoded = audio_decode(&config, format, packets);
         assert_eq!(decoded.len(), 48000);
         assert_energy_preserved(&sine, &decoded);
@@ -405,7 +424,7 @@ mod tests {
         let sine = make_sine(96000, 440.0, 48000.0);
         let packets = audio_encode(&mut enc, &sine);
         assert_eq!(packets.len(), 50);
-        let packets = encoded_frames_to_ordered_frames(packets);
+        let packets = encoded_frames_to_media_packets(packets);
         let decoded = audio_decode(&config, format, packets);
         assert_eq!(decoded.len(), 96000);
         assert_energy_preserved(&sine, &decoded);
@@ -419,7 +438,7 @@ mod tests {
         let sine = make_sine(96000, 440.0, 48000.0);
         let packets = audio_encode(&mut enc, &sine);
         assert_eq!(packets.len(), 50);
-        let packets = encoded_frames_to_ordered_frames(packets);
+        let packets = encoded_frames_to_media_packets(packets);
         let decoded = audio_decode(&config, format, packets);
         assert_eq!(decoded.len(), 96000);
         assert_energy_preserved(&sine, &decoded);
@@ -440,7 +459,7 @@ mod tests {
         let packets = audio_encode(&mut enc, &sine);
         assert_eq!(packets.len(), 50);
 
-        let packets = encoded_frames_to_ordered_frames(packets);
+        let packets = encoded_frames_to_media_packets(packets);
         let decoded = audio_decode(&config, dec_format, packets);
 
         assert_eq!(decoded.len(), 96000);
@@ -470,7 +489,7 @@ mod tests {
         let packets = audio_encode(&mut enc, &sine);
         assert_eq!(packets.len(), 50);
 
-        let packets = encoded_frames_to_ordered_frames(packets);
+        let packets = encoded_frames_to_media_packets(packets);
         let decoded = audio_decode(&config, dec_format, packets);
 
         assert_eq!(decoded.len(), 48000);
@@ -489,7 +508,7 @@ mod tests {
 
         let sine = make_sine(48000, 440.0, 48000.0);
         let packets = audio_encode(&mut enc, &sine);
-        let packets = encoded_frames_to_ordered_frames(packets);
+        let packets = encoded_frames_to_media_packets(packets);
         let decoded = audio_decode(&config, dec_format, packets);
 
         assert_eq!(decoded.len(), 96000);

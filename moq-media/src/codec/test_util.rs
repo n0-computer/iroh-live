@@ -1,9 +1,9 @@
 use crate::{
-    format::{DecodeConfig, DecodedVideoFrame, PixelFormat, VideoFormat, VideoFrame},
+    format::{DecodeConfig, DecodedVideoFrame, MediaPacket, PixelFormat, VideoFormat, VideoFrame},
     traits::{VideoDecoder, VideoEncoder},
-    util::encoded_frames_to_ordered_frames,
+    util::encoded_frames_to_media_packets,
 };
-use hang::{catalog::VideoConfig, container::OrderedFrame};
+use hang::catalog::VideoConfig;
 
 /// Create a solid-color RGBA frame.
 pub(crate) fn make_rgba_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> VideoFrame {
@@ -89,7 +89,7 @@ pub(crate) fn video_encode(
     g: u8,
     b: u8,
     n: usize,
-) -> Vec<OrderedFrame> {
+) -> Vec<MediaPacket> {
     let mut packets = Vec::new();
     for _ in 0..n {
         enc.push_frame(make_rgba_frame(w, h, r, g, b)).unwrap();
@@ -97,7 +97,7 @@ pub(crate) fn video_encode(
             packets.push(pkt);
         }
     }
-    encoded_frames_to_ordered_frames(packets)
+    encoded_frames_to_media_packets(packets)
 }
 
 /// Encode `n` test-pattern frames with any VideoEncoder, return packets.
@@ -107,7 +107,7 @@ pub(crate) fn video_encode_pattern(
     w: u32,
     h: u32,
     n: usize,
-) -> Vec<OrderedFrame> {
+) -> Vec<MediaPacket> {
     let mut packets = Vec::new();
     for i in 0..n {
         enc.push_frame(make_test_pattern(w, h, i as u32)).unwrap();
@@ -115,13 +115,13 @@ pub(crate) fn video_encode_pattern(
             packets.push(pkt);
         }
     }
-    encoded_frames_to_ordered_frames(packets)
+    encoded_frames_to_media_packets(packets)
 }
 
 /// Decode all packets with any VideoDecoder type, return decoded frames.
 pub(crate) fn video_decode<D: VideoDecoder>(
     config: &VideoConfig,
-    packets: Vec<OrderedFrame>,
+    packets: Vec<MediaPacket>,
 ) -> Vec<DecodedVideoFrame> {
     let decode_config = DecodeConfig::default();
     let mut dec = D::new(config, &decode_config).unwrap();

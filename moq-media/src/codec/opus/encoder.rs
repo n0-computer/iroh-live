@@ -1,8 +1,7 @@
+use std::time::Duration;
+
 use anyhow::{Result, bail};
-use hang::{
-    catalog::{AudioCodec, AudioConfig},
-    container::Timestamp,
-};
+use hang::catalog::{AudioCodec, AudioConfig};
 use unsafe_libopus::{
     self as opus, OPUS_APPLICATION_VOIP, OPUS_OK, OPUS_SET_BITRATE_REQUEST, OPUS_SET_DTX_REQUEST,
     OPUS_SET_INBAND_FEC_REQUEST, OpusEncoder as RawOpusEncoder, varargs,
@@ -124,11 +123,9 @@ impl OpusEncoder {
             let timestamp_us =
                 (self.frame_count * FRAME_SIZE as u64 * 1_000_000) / self.sample_rate as u64;
             self.packet_buf.push(EncodedFrame {
-                frame: hang::container::Frame {
-                    payload: out.into(),
-                    timestamp: Timestamp::from_micros(timestamp_us)?,
-                },
                 is_keyframe: true,
+                timestamp: Duration::from_micros(timestamp_us),
+                payload: out.into(),
             });
             self.frame_count += 1;
 
@@ -225,7 +222,7 @@ mod tests {
         );
         let pkt = packet.unwrap();
         assert!(pkt.is_keyframe);
-        assert!(pkt.frame.payload.has_remaining());
+        assert!(!pkt.payload.is_empty());
     }
 
     #[test]
@@ -236,7 +233,7 @@ mod tests {
         enc.push_samples(&sine).unwrap();
         let packet = enc.pop_packet().unwrap().unwrap();
         // At 128kbps, a 20ms packet should be ~50-320 bytes
-        let len = Buf::remaining(&packet.frame.payload);
+        let len = packet.payload.len();
         assert!(len > 2 && len < 1000, "unexpected packet size: {len}");
     }
 
@@ -298,9 +295,9 @@ mod tests {
         for _ in 0..3 {
             let pkt = enc.pop_packet().unwrap().unwrap();
             if let Some(prev) = prev_ts {
-                assert!(pkt.frame.timestamp > prev, "timestamps should increase");
+                assert!(pkt.timestamp > prev, "timestamps should increase");
             }
-            prev_ts = Some(pkt.frame.timestamp);
+            prev_ts = Some(pkt.timestamp);
         }
     }
 }
