@@ -29,7 +29,9 @@ pub(crate) mod test_util;
 
 /// Available audio encoder implementations.
 #[cfg(any_audio_codec)]
-#[derive(Debug, Clone, Copy, PartialEq, strum::Display, strum::EnumString, strum::VariantNames)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, strum::Display, strum::EnumString, strum::VariantNames,
+)]
 #[strum(serialize_all = "lowercase")]
 pub enum AudioCodec {
     #[cfg(feature = "opus")]
@@ -38,7 +40,9 @@ pub enum AudioCodec {
 
 /// Available video encoder implementations.
 #[cfg(any_video_codec)]
-#[derive(Debug, Clone, Copy, PartialEq, strum::Display, strum::EnumString, strum::VariantNames)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, strum::Display, strum::EnumString, strum::VariantNames,
+)]
 #[strum(serialize_all = "lowercase")]
 pub enum VideoCodec {
     /// Software H.264 via openh264.
