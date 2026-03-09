@@ -439,9 +439,7 @@ impl AudioTrack {
                 }
             }
 
-            let target_time = i * INTERVAL;
-            let real_time = Instant::now().duration_since(loop_start);
-            let sleep = target_time.saturating_sub(real_time);
+            let sleep = (INTERVAL * i).saturating_sub(loop_start.elapsed());
             if !sleep.is_zero() {
                 thread::sleep(sleep);
             }

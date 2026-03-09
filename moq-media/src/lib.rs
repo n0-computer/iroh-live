@@ -8,4 +8,4 @@ pub mod subscribe;
 pub mod traits;
 mod util;
 
-pub use audio_backend::{AudioBackend, AudioDevice, list_audio_inputs, list_audio_outputs};
+pub use audio_backend::{AudioBackend, AudioBackendOpts, AudioDevice};

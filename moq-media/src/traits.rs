@@ -27,6 +27,7 @@ pub trait AudioSink: AudioSinkHandle {
 }
 
 pub trait AudioSinkHandle: Send + 'static {
+    fn cloned_boxed(&self) -> Box<dyn AudioSinkHandle>;
     fn pause(&self);
     fn resume(&self);
     fn is_paused(&self) -> bool;

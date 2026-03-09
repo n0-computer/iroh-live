@@ -43,6 +43,28 @@ mod aec;
 type StreamWriterHandle = Arc<Mutex<StreamWriterState>>;
 type StreamReaderHandle = Arc<Mutex<StreamReaderState>>;
 
+/// Options for configuring the [`AudioBackend`].
+#[derive(Debug, Clone)]
+pub struct AudioBackendOpts {
+    /// Initial input device. `None` = system default.
+    pub input_device: Option<DeviceId>,
+    /// Initial output device. `None` = system default.
+    pub output_device: Option<DeviceId>,
+    /// When a device disconnects unexpectedly, automatically switch to
+    /// the system default device. Default: `true`.
+    pub fallback_to_default: bool,
+}
+
+impl Default for AudioBackendOpts {
+    fn default() -> Self {
+        Self {
+            input_device: None,
+            output_device: None,
+            fallback_to_default: true,
+        }
+    }
+}
+
 /// Identifier for an audio device
 #[derive(Debug, Clone, derive_more::Display, Eq, PartialEq)]
 pub struct DeviceId(cpal::DeviceId);
@@ -62,7 +84,7 @@ impl FromStr for DeviceId {
     }
 }
 
-/// Information about an available audio input device.
+/// Information about an available audio device.
 #[derive(Debug, Clone, derive_more::Display)]
 #[display("{name}{}", is_default.then(|| " (default)").unwrap_or_default())]
 pub struct AudioDevice {
@@ -74,44 +96,6 @@ pub struct AudioDevice {
     pub is_default: bool,
 }
 
-/// List available audio input devices.
-pub fn list_audio_inputs() -> Vec<AudioDevice> {
-    let mut out = Vec::new();
-    let enumerator = CpalBackend::enumerator();
-    for (i, host_id) in enumerator.available_hosts().into_iter().enumerate() {
-        if let Ok(host) = enumerator.get_host(host_id) {
-            for (j, device) in host.input_devices().into_iter().enumerate() {
-                let id = DeviceId(device.id);
-                out.push(AudioDevice {
-                    name: device.name.unwrap_or_else(|| id.to_string()),
-                    id,
-                    is_default: i == 0 && j == 0,
-                })
-            }
-        }
-    }
-    out
-}
-
-/// List available audio output devices.
-pub fn list_audio_outputs() -> Vec<AudioDevice> {
-    let mut out = Vec::new();
-    let enumerator = CpalBackend::enumerator();
-    for (i, host_id) in enumerator.available_hosts().into_iter().enumerate() {
-        if let Ok(host) = enumerator.get_host(host_id) {
-            for (j, device) in host.output_devices().into_iter().enumerate() {
-                let id = DeviceId(device.id);
-                out.push(AudioDevice {
-                    name: device.name.unwrap_or_else(|| id.to_string()),
-                    id,
-                    is_default: i == 0 && j == 0,
-                })
-            }
-        }
-    }
-    out
-}
-
 #[derive(Debug, Clone)]
 pub struct AudioBackend {
     tx: mpsc::Sender<DriverMessage>,
@@ -119,16 +103,52 @@ pub struct AudioBackend {
 
 impl Default for AudioBackend {
     fn default() -> Self {
-        Self::new(None, None)
+        Self::new(AudioBackendOpts::default())
     }
 }
 
 impl AudioBackend {
-    pub fn new(input_device: Option<DeviceId>, output_device: Option<DeviceId>) -> Self {
+    /// List available audio input devices.
+    pub fn list_inputs() -> Vec<AudioDevice> {
+        let mut out = Vec::new();
+        let enumerator = CpalBackend::enumerator();
+        for (i, host_id) in enumerator.available_hosts().into_iter().enumerate() {
+            if let Ok(host) = enumerator.get_host(host_id) {
+                for (j, device) in host.input_devices().into_iter().enumerate() {
+                    let id = DeviceId(device.id);
+                    out.push(AudioDevice {
+                        name: device.name.unwrap_or_else(|| id.to_string()),
+                        id,
+                        is_default: i == 0 && j == 0,
+                    })
+                }
+            }
+        }
+        out
+    }
+
+    /// List available audio output devices.
+    pub fn list_outputs() -> Vec<AudioDevice> {
+        let mut out = Vec::new();
+        let enumerator = CpalBackend::enumerator();
+        for (i, host_id) in enumerator.available_hosts().into_iter().enumerate() {
+            if let Ok(host) = enumerator.get_host(host_id) {
+                for (j, device) in host.output_devices().into_iter().enumerate() {
+                    let id = DeviceId(device.id);
+                    out.push(AudioDevice {
+                        name: device.name.unwrap_or_else(|| id.to_string()),
+                        id,
+                        is_default: i == 0 && j == 0,
+                    })
+                }
+            }
+        }
+        out
+    }
+
+    pub fn new(opts: AudioBackendOpts) -> Self {
         let (tx, rx) = mpsc::channel(32);
-        let _handle = spawn_thread("audiodriver", move || {
-            AudioDriver::new(rx, input_device, output_device).run()
-        });
+        let _handle = spawn_thread("audiodriver", move || AudioDriver::new(rx, opts).run());
         Self { tx }
     }
 
@@ -160,6 +180,49 @@ impl AudioBackend {
             .await?;
         let handle = reply_rx.await??;
         Ok(handle)
+    }
+
+    /// Switch the input device. `None` = system default.
+    pub async fn switch_input(&self, device: Option<DeviceId>) -> Result<()> {
+        let (reply, reply_rx) = oneshot::channel();
+        self.tx
+            .send(DriverMessage::SwitchDevice {
+                input_device: Some(device),
+                output_device: None,
+                reply,
+            })
+            .await?;
+        reply_rx.await?
+    }
+
+    /// Switch the output device. `None` = system default.
+    pub async fn switch_output(&self, device: Option<DeviceId>) -> Result<()> {
+        let (reply, reply_rx) = oneshot::channel();
+        self.tx
+            .send(DriverMessage::SwitchDevice {
+                input_device: None,
+                output_device: Some(device),
+                reply,
+            })
+            .await?;
+        reply_rx.await?
+    }
+
+    /// Switch both input and output devices at once. `None` = system default.
+    pub async fn switch_devices(
+        &self,
+        input: Option<DeviceId>,
+        output: Option<DeviceId>,
+    ) -> Result<()> {
+        let (reply, reply_rx) = oneshot::channel();
+        self.tx
+            .send(DriverMessage::SwitchDevice {
+                input_device: Some(input),
+                output_device: Some(output),
+                reply,
+            })
+            .await?;
+        reply_rx.await?
     }
 }
 
@@ -204,6 +267,10 @@ impl AudioSinkHandle for OutputStream {
                 .expect("poisoned")
                 .smoothed_peaks_normalized_mono(&self.normalizer),
         )
+    }
+
+    fn cloned_boxed(&self) -> Box<dyn AudioSinkHandle> {
+        Box::new(self.clone())
     }
 }
 
@@ -345,6 +412,26 @@ enum DriverMessage {
         #[debug("Sender")]
         reply: oneshot::Sender<Result<StreamReaderHandle>>,
     },
+    SwitchDevice {
+        /// `None` = don't change, `Some(None)` = system default, `Some(Some(id))` = specific device.
+        input_device: Option<Option<DeviceId>>,
+        /// `None` = don't change, `Some(None)` = system default, `Some(Some(id))` = specific device.
+        output_device: Option<Option<DeviceId>>,
+        #[debug("Sender")]
+        reply: oneshot::Sender<Result<()>>,
+    },
+}
+
+struct TrackedInputStream {
+    node_id: NodeID,
+    format: AudioFormat,
+    handle: StreamReaderHandle,
+}
+
+struct TrackedOutputStream {
+    node_id: NodeID,
+    format: AudioFormat,
+    handle: StreamWriterHandle,
 }
 
 struct AudioDriver {
@@ -354,6 +441,11 @@ struct AudioDriver {
     aec_render_node: NodeID,
     aec_capture_node: NodeID,
     peak_meters: HashMap<NodeID, Arc<Mutex<PeakMeterSmoother<2>>>>,
+    opts: AudioBackendOpts,
+    current_input_device: Option<DeviceId>,
+    current_output_device: Option<DeviceId>,
+    input_streams: Vec<TrackedInputStream>,
+    output_streams: Vec<TrackedOutputStream>,
 }
 
 impl fmt::Debug for AudioDriver {
@@ -366,51 +458,16 @@ impl fmt::Debug for AudioDriver {
 }
 
 impl AudioDriver {
-    fn new(
-        rx: mpsc::Receiver<DriverMessage>,
-        input_device: Option<DeviceId>,
-        output_device: Option<DeviceId>,
-    ) -> Self {
+    fn new(rx: mpsc::Receiver<DriverMessage>, opts: AudioBackendOpts) -> Self {
         let config = FirewheelConfig {
             num_graph_inputs: ChannelCount::new(1).unwrap(),
             ..Default::default()
         };
         let mut cx = FirewheelContext::new(config);
 
-        #[cfg(target_os = "linux")]
-        let input_device = input_device.or_else(|| DeviceId::from_str("alsa:pipewire").ok());
-
-        #[cfg(target_os = "linux")]
-        let output_device = output_device.or_else(|| DeviceId::from_str("alsa:pipewire").ok());
-
-        let (output_host, output_id) = match output_device {
-            Some(device) => {
-                let (host, device) = device.to_cpal();
-                (Some(host), Some(device))
-            }
-            None => (None, None),
-        };
-        let (input_host, input_id) = match input_device {
-            Some(device) => {
-                let (host, device) = device.to_cpal();
-                (Some(host), Some(device))
-            }
-            None => (None, None),
-        };
-        let config = CpalConfig {
-            output: CpalOutputConfig {
-                host: output_host,
-                device_id: output_id,
-                ..Default::default()
-            },
-            input: Some(CpalInputConfig {
-                host: input_host,
-                device_id: input_id,
-                fail_on_no_input: true,
-                ..Default::default()
-            }),
-        };
-        cx.start_stream(config).unwrap();
+        let (input_device, output_device) = Self::resolve_devices(&opts);
+        let cpal_config = Self::build_cpal_config(&input_device, &output_device);
+        cx.start_stream(cpal_config).unwrap();
         info!(
             "audio graph in: {:?}",
             cx.node_info(cx.graph_in_node_id()).map(|x| &x.info)
@@ -446,6 +503,58 @@ impl AudioDriver {
             aec_render_node,
             aec_capture_node,
             peak_meters: Default::default(),
+            opts,
+            current_input_device: input_device,
+            current_output_device: output_device,
+            input_streams: Vec::new(),
+            output_streams: Vec::new(),
+        }
+    }
+
+    /// Apply platform-specific device fallbacks (Linux pipewire).
+    fn resolve_devices(opts: &AudioBackendOpts) -> (Option<DeviceId>, Option<DeviceId>) {
+        let input_device = opts.input_device.clone();
+        let output_device = opts.output_device.clone();
+
+        #[cfg(target_os = "linux")]
+        let input_device = input_device.or_else(|| DeviceId::from_str("alsa:pipewire").ok());
+        #[cfg(target_os = "linux")]
+        let output_device = output_device.or_else(|| DeviceId::from_str("alsa:pipewire").ok());
+
+        (input_device, output_device)
+    }
+
+    /// Build a [`CpalConfig`] from resolved device IDs.
+    fn build_cpal_config(
+        input_device: &Option<DeviceId>,
+        output_device: &Option<DeviceId>,
+    ) -> CpalConfig {
+        let (output_host, output_id) = match output_device {
+            Some(device) => {
+                let (host, device) = device.to_cpal();
+                (Some(host), Some(device))
+            }
+            None => (None, None),
+        };
+        let (input_host, input_id) = match input_device {
+            Some(device) => {
+                let (host, device) = device.to_cpal();
+                (Some(host), Some(device))
+            }
+            None => (None, None),
+        };
+        CpalConfig {
+            output: CpalOutputConfig {
+                host: output_host,
+                device_id: output_id,
+                ..Default::default()
+            },
+            input: Some(CpalInputConfig {
+                host: input_host,
+                device_id: input_id,
+                fail_on_no_input: true,
+                ..Default::default()
+            }),
         }
     }
 
@@ -525,17 +634,127 @@ impl AudioDriver {
                     .inspect_err(|err| warn!("failed to create audio input stream: {err:#}"));
                 reply.send(res).ok();
             }
+            DriverMessage::SwitchDevice {
+                input_device,
+                output_device,
+                reply,
+            } => {
+                let input = match input_device {
+                    Some(dev) => dev,
+                    None => self.opts.input_device.clone(),
+                };
+                let output = match output_device {
+                    Some(dev) => dev,
+                    None => self.opts.output_device.clone(),
+                };
+                let res = self.switch_device_internal(input, output);
+                reply.send(res).ok();
+            }
         }
     }
 
+    /// Stop the current CPAL stream, start a new one with the given devices, and
+    /// re-activate all tracked streams — swapping fresh handles into consumers.
+    fn switch_device_internal(
+        &mut self,
+        input_device: Option<DeviceId>,
+        output_device: Option<DeviceId>,
+    ) -> Result<()> {
+        info!(
+            "switching audio devices: input={:?}, output={:?}",
+            input_device, output_device
+        );
+
+        // 1. Stop the CPAL stream.
+        self.cx.stop_stream();
+
+        // 2. Wait for the processor to be returned from the audio thread.
+        while !self.cx.can_start_stream() {
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        // 3. Rebuild CPAL config with new devices (applying platform fallbacks).
+        let opts = AudioBackendOpts {
+            input_device: input_device.clone(),
+            output_device: output_device.clone(),
+            ..self.opts.clone()
+        };
+        let (resolved_input, resolved_output) = Self::resolve_devices(&opts);
+        let cpal_config = Self::build_cpal_config(&resolved_input, &resolved_output);
+
+        // 4. Start new CPAL stream.
+        self.cx
+            .start_stream(cpal_config)
+            .context("failed to start audio stream with new device")?;
+
+        let stream_sample_rate = self.cx.stream_info().unwrap().sample_rate;
+
+        // 5. Re-activate output streams and swap handles.
+        for tracked in &self.output_streams {
+            let event = self
+                .cx
+                .node_state_mut::<StreamWriterState>(tracked.node_id)
+                .unwrap()
+                .start_stream(
+                    tracked.format.sample_rate.try_into().unwrap(),
+                    stream_sample_rate,
+                    ResamplingChannelConfig {
+                        capacity_seconds: 3.,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            self.cx.queue_event_for(tracked.node_id, event.into());
+            let fresh = self
+                .cx
+                .node_state::<StreamWriterState>(tracked.node_id)
+                .unwrap()
+                .handle();
+            *tracked.handle.lock().unwrap() = fresh.into_inner().unwrap();
+        }
+
+        // 6. Re-activate input streams and swap handles.
+        for tracked in &self.input_streams {
+            let event = self
+                .cx
+                .node_state_mut::<StreamReaderState>(tracked.node_id)
+                .unwrap()
+                .start_stream(
+                    tracked.format.sample_rate.try_into().unwrap(),
+                    stream_sample_rate,
+                    ResamplingChannelConfig {
+                        capacity_seconds: 3.,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            self.cx.queue_event_for(tracked.node_id, event.into());
+            let fresh = self
+                .cx
+                .node_state::<StreamReaderState>(tracked.node_id)
+                .unwrap()
+                .handle();
+            *tracked.handle.lock().unwrap() = fresh.into_inner().unwrap();
+        }
+
+        // 7. Update AEC delay for the new device's latency.
+        if let Some(info) = self.cx.stream_info() {
+            let delay_ms = (info.input_to_output_latency_seconds * 1000.) as u32;
+            info!("update processor delay to {delay_ms}ms after device switch");
+            self.aec_processor.set_stream_delay(delay_ms);
+        }
+
+        self.current_input_device = input_device;
+        self.current_output_device = output_device;
+        info!("audio device switch completed");
+        Ok(())
+    }
+
     fn output_stream(&mut self, format: AudioFormat) -> Result<OutputStream> {
-        let channel_count = format.channel_count;
-        let sample_rate = format.sample_rate;
-        // setup stream
         let stream_writer_id = self.cx.add_node(
             StreamWriterNode,
             Some(StreamWriterConfig {
-                channels: NonZeroChannelCount::new(channel_count)
+                channels: NonZeroChannelCount::new(format.channel_count)
                     .context("channel count may not be zero")?,
                 ..Default::default()
             }),
@@ -552,7 +771,7 @@ impl AudioDriver {
             .connect(peak_meter_id, graph_out, &[(0, 0), (1, 1)], true)
             .unwrap();
 
-        let layout: &[(PortIdx, PortIdx)] = match channel_count {
+        let layout: &[(PortIdx, PortIdx)] = match format.channel_count {
             0 => anyhow::bail!("audio stream has no channels"),
             1 => &[(0, 0), (0, 1)],
             _ => &[(0, 0), (1, 1)],
@@ -566,7 +785,7 @@ impl AudioDriver {
             .node_state_mut::<StreamWriterState>(stream_writer_id)
             .unwrap()
             .start_stream(
-                sample_rate.try_into().unwrap(),
+                format.sample_rate.try_into().unwrap(),
                 output_stream_sample_rate,
                 ResamplingChannelConfig {
                     capacity_seconds: 3.,
@@ -576,14 +795,19 @@ impl AudioDriver {
             .unwrap();
         info!("started output stream");
         self.cx.queue_event_for(stream_writer_id, event.into());
-        // Wrap the handles in an `Arc<Mutex<T>>>` so that we can send them to other threads.
-        let handle = self
-            .cx
-            .node_state::<StreamWriterState>(stream_writer_id)
-            .unwrap()
-            .handle();
+        let handle: StreamWriterHandle = Arc::new(
+            self.cx
+                .node_state::<StreamWriterState>(stream_writer_id)
+                .unwrap()
+                .handle(),
+        );
+        self.output_streams.push(TrackedOutputStream {
+            node_id: stream_writer_id,
+            format,
+            handle: handle.clone(),
+        });
         Ok(OutputStream {
-            handle: Arc::new(handle),
+            handle,
             paused: Arc::new(AtomicBool::new(false)),
             peaks: peak_meter_smoother,
             normalizer: DbMeterNormalizer::new(-60., 0., -20.),
@@ -591,13 +815,10 @@ impl AudioDriver {
     }
 
     fn input_stream(&mut self, format: AudioFormat) -> Result<StreamReaderHandle> {
-        let sample_rate = format.sample_rate;
-        let channel_count = format.channel_count;
-        // Setup stream reader node
         let stream_reader_id = self.cx.add_node(
             StreamReaderNode,
             Some(StreamReaderConfig {
-                channels: NonZeroChannelCount::new(channel_count)
+                channels: NonZeroChannelCount::new(format.channel_count)
                     .context("channel count may not be zero")?,
             }),
         );
@@ -609,7 +830,7 @@ impl AudioDriver {
 
         let layout: &[(PortIdx, PortIdx)] = match (
             graph_in_info.info.channel_config.num_outputs.get(),
-            channel_count,
+            format.channel_count,
         ) {
             (0, _) => anyhow::bail!("audio input has no channels"),
             (1, 2) => &[(0, 0), (0, 1)],
@@ -627,7 +848,7 @@ impl AudioDriver {
             .node_state_mut::<StreamReaderState>(stream_reader_id)
             .unwrap()
             .start_stream(
-                sample_rate.try_into().unwrap(),
+                format.sample_rate.try_into().unwrap(),
                 input_stream_sample_rate,
                 ResamplingChannelConfig {
                     capacity_seconds: 3.0,
@@ -637,11 +858,17 @@ impl AudioDriver {
             .unwrap();
         self.cx.queue_event_for(stream_reader_id, event.into());
 
-        let handle = self
-            .cx
-            .node_state::<StreamReaderState>(stream_reader_id)
-            .unwrap()
-            .handle();
-        Ok(Arc::new(handle))
+        let handle: StreamReaderHandle = Arc::new(
+            self.cx
+                .node_state::<StreamReaderState>(stream_reader_id)
+                .unwrap()
+                .handle(),
+        );
+        self.input_streams.push(TrackedInputStream {
+            node_id: stream_reader_id,
+            format,
+            handle: handle.clone(),
+        });
+        Ok(handle)
     }
 }
