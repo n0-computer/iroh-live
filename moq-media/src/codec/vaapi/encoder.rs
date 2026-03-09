@@ -16,16 +16,15 @@ use cros_codecs::libva::{
 use cros_codecs::video_frame::{ReadMapping, VideoFrame as CrosVideoFrame, WriteMapping};
 use cros_codecs::{BlockingMode, Fourcc, FrameLayout, PlaneLayout, Resolution};
 use hang::{
-    Timestamp,
     catalog::{H264, VideoCodec, VideoConfig},
+    container::{Frame, Timestamp},
 };
 
 use crate::{
-    av::{self, VideoEncoder, VideoEncoderFactory, VideoPreset},
-    codec::video::util::{
-        annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b},
-        convert::{YuvData, pixel_format_to_yuv420},
-    },
+    codec::h264::annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b},
+    format::{EncodedFrame, VideoFrame, VideoPreset},
+    processing::convert::{YuvData, pixel_format_to_yuv420},
+    traits::{VideoEncoder, VideoEncoderFactory},
 };
 
 /// An NV12 frame that implements the `cros_codecs::video_frame::VideoFrame` trait.
@@ -207,7 +206,7 @@ pub struct VaapiEncoder {
     /// avcC description, populated after first keyframe.
     avcc: Option<Vec<u8>>,
     /// Encoded packets ready for collection.
-    packet_buf: Vec<hang::Frame>,
+    packet_buf: Vec<EncodedFrame>,
 }
 
 impl VaapiEncoder {
@@ -366,8 +365,11 @@ impl VaapiEncoder {
         nv12
     }
 
-    /// Process a `CodedBitstreamBuffer` into a `hang::Frame`.
-    fn process_coded_output(&mut self, coded: CodedBitstreamBuffer) -> Result<Option<hang::Frame>> {
+    /// Process a `CodedBitstreamBuffer` into an `EncodedFrame`.
+    fn process_coded_output(
+        &mut self,
+        coded: CodedBitstreamBuffer,
+    ) -> Result<Option<EncodedFrame>> {
         let annex_b = &coded.bitstream;
         if annex_b.is_empty() {
             return Ok(None);
@@ -375,12 +377,12 @@ impl VaapiEncoder {
 
         // Detect keyframe by scanning NAL types for IDR (type 5).
         let nals = parse_annex_b(annex_b);
-        let keyframe = nals
+        let is_keyframe = nals
             .iter()
             .any(|nal| !nal.is_empty() && (nal[0] & 0x1F) == 5);
 
         // On first keyframe, extract SPS/PPS and build avcC.
-        if keyframe
+        if is_keyframe
             && self.avcc.is_none()
             && let Some((sps, pps)) = extract_sps_pps(&nals)
         {
@@ -393,10 +395,12 @@ impl VaapiEncoder {
         let timestamp_us = coded.metadata.timestamp;
         let timestamp = Timestamp::from_micros(timestamp_us)?;
 
-        Ok(Some(hang::Frame {
-            payload: payload.into(),
-            timestamp,
-            keyframe,
+        Ok(Some(EncodedFrame {
+            is_keyframe,
+            frame: Frame {
+                payload: payload.into(),
+                timestamp,
+            },
         }))
     }
 }
@@ -430,10 +434,12 @@ impl VideoEncoder for VaapiEncoder {
             bitrate: Some(self.bitrate),
             framerate: Some(self.framerate as f64),
             optimize_for_latency: Some(true),
+            container: hang::catalog::Container::Legacy,
+            jitter: None,
         }
     }
 
-    fn push_frame(&mut self, frame: av::VideoFrame) -> Result<()> {
+    fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
         let [w, h] = frame.format.dimensions;
         let yuv = pixel_format_to_yuv420(&frame.raw, w, h, frame.format.pixel_format)?;
 
@@ -476,7 +482,7 @@ impl VideoEncoder for VaapiEncoder {
         Ok(())
     }
 
-    fn pop_packet(&mut self) -> Result<Option<hang::Frame>> {
+    fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
         Ok(if self.packet_buf.is_empty() {
             None
         } else {
@@ -507,8 +513,9 @@ unsafe impl Send for VaapiEncoder {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::av::{VideoEncoder, VideoEncoderFactory, VideoPreset};
-    use crate::codec::video::test_util::make_rgba_frame;
+    use crate::codec::test_util::make_rgba_frame;
+    use crate::format::VideoPreset;
+    use crate::traits::{VideoEncoder, VideoEncoderFactory};
 
     #[test]
     #[ignore = "requires VAAPI hardware"]
@@ -544,8 +551,9 @@ mod tests {
     #[test]
     #[ignore = "requires VAAPI hardware"]
     fn vaapi_encode_decode_roundtrip() {
-        use crate::av::{DecodeConfig, VideoDecoder};
-        use crate::codec::video::H264VideoDecoder;
+        use crate::codec::h264::H264VideoDecoder;
+        use crate::format::DecodeConfig;
+        use crate::traits::VideoDecoder;
 
         let mut enc = VaapiEncoder::with_preset(VideoPreset::P360).unwrap();
         let mut packets = Vec::new();
@@ -567,7 +575,8 @@ mod tests {
         let decode_config = DecodeConfig::default();
         let mut dec = H264VideoDecoder::new(&config, &decode_config).unwrap();
         let mut decoded_count = 0;
-        for pkt in packets {
+        let ordered = crate::util::encoded_frames_to_ordered_frames(packets);
+        for pkt in ordered {
             dec.push_packet(pkt).unwrap();
             if let Some(frame) = dec.pop_frame().unwrap() {
                 assert_eq!(frame.img().width(), 640);
@@ -590,7 +599,7 @@ mod tests {
             let frame = make_rgba_frame(640, 360, 128, 128, 128);
             enc.push_frame(frame).unwrap();
             while let Some(pkt) = enc.pop_packet().unwrap() {
-                if pkt.keyframe {
+                if pkt.is_keyframe {
                     keyframe_count += 1;
                 }
             }
@@ -611,9 +620,9 @@ mod tests {
             enc.push_frame(frame).unwrap();
             if let Some(pkt) = enc.pop_packet().unwrap() {
                 if let Some(prev) = prev_ts {
-                    assert!(pkt.timestamp > prev, "timestamps should increase");
+                    assert!(pkt.frame.timestamp > prev, "timestamps should increase");
                 }
-                prev_ts = Some(pkt.timestamp);
+                prev_ts = Some(pkt.frame.timestamp);
             }
         }
     }

@@ -23,7 +23,7 @@ moq-lite = "0.15"
 n0-error = { version = "0.1.2", features = ["anyhow"] }
 n0-future = "0.3.1"
 n0-watcher = "0.6.0"
-nokhwa = { version = "0.10", features = [
+nokhwa = { version = "0.10", optional = true, features = [
     "input-native",
     "input-v4l",
     "output-threaded",
@@ -35,15 +35,15 @@ strum = { version = "0.28", features = ["derive"] }
 tokio = { version = "1.48.0", features = ["sync"] }
 tokio-util = "0.7.17"
 tracing = "0.1.41"
-xcap = "0.9.0"
+xcap = { version = "0.9.0", optional = true }
 sonora = { version = "0.1" }
 bytes = "1.11.0"
-openh264 = { version = "0.9", features = ["source"] }
-unsafe-libopus = "0.2"
+openh264 = { version = "0.9", optional = true, features = ["source"] }
+unsafe-libopus = { version = "0.2", optional = true }
 yuvutils-rs = "0.8"
 pic-scale = "0.6"
-rubato = "1.0"
-audioadapter-buffers = "2.0"
+rubato = { version = "1.0", optional = true }
+audioadapter-buffers = { version = "2.0", optional = true }
 rav1e = { version = "0.8", optional = true }
 rav1d = { git = "https://github.com/memorysafety/rav1d", default-features = false, features = ["bitdepth_8", "bitdepth_16", "asm"], optional = true }
 libc = "0.2"
@@ -67,7 +67,12 @@ tokio = { version = "1.48.0", features = ["full"] }
 tracing-subscriber = "0.3.20"
 
 [features]
-default = ["av1"]
+default = ["h264", "opus", "av1", "capture"]
+h264 = ["dep:openh264"]
+opus = ["dep:unsafe-libopus", "dep:rubato", "dep:audioadapter-buffers"]
 av1 = ["dep:rav1e", "dep:rav1d"]
+capture = ["capture-camera", "capture-screen"]
+capture-camera = ["dep:nokhwa"]
+capture-screen = ["dep:xcap"]
 videotoolbox = ["dep:objc2-video-toolbox", "dep:objc2-core-media", "dep:objc2-core-video", "dep:objc2-core-foundation", "dep:objc2"]
 vaapi = ["dep:cros-codecs"]

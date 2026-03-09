@@ -8,7 +8,8 @@ use unsafe_libopus::{
     OPUS_SET_INBAND_FEC_REQUEST, OpusEncoder as RawOpusEncoder, varargs,
 };
 
-use crate::av::{AudioEncoder, AudioEncoderFactory, AudioFormat, AudioPreset, EncodedFrame};
+use crate::format::{AudioFormat, AudioPreset, EncodedFrame};
+use crate::traits::{AudioEncoder, AudioEncoderFactory};
 
 const SAMPLE_RATE: u32 = 48_000;
 const BITRATE_HQ: u64 = 128_000;

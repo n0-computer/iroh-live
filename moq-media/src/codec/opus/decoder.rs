@@ -4,8 +4,9 @@ use hang::catalog::{AudioCodec, AudioConfig};
 use hang::container::OrderedFrame;
 use unsafe_libopus::{self as opus, OPUS_OK, OpusDecoder as RawOpusDecoder};
 
-use crate::av::{AudioDecoder, AudioFormat};
-use crate::codec::resample::Resampler;
+use crate::format::AudioFormat;
+use crate::processing::resample::Resampler;
+use crate::traits::AudioDecoder;
 
 /// Maximum Opus frame size: 120ms at 48kHz = 5760 samples per channel.
 const MAX_FRAME_SIZE: usize = 5760;
@@ -175,8 +176,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        av::{AudioEncoder, AudioEncoderFactory, AudioPreset},
-        codec::audio::encoder::OpusEncoder,
+        codec::opus::encoder::OpusEncoder,
+        format::AudioPreset,
+        traits::{AudioEncoder, AudioEncoderFactory},
         util::encoded_frames_to_ordered_frames,
     };
 

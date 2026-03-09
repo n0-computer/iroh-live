@@ -7,10 +7,10 @@ use iroh_gossip::{Gossip, TopicId};
 use iroh_live::{
     Live,
     media::{
-        audio::AudioBackend,
-        av::{AudioPreset, VideoCodec, VideoPreset},
+        audio_backend::AudioBackend,
         capture::{CameraCapturer, ScreenCapturer},
-        codec::{DefaultDecoders, DynamicVideoDecoder, codec_init},
+        codec::{AudioCodec, DefaultDecoders, DynamicVideoDecoder, VideoCodec},
+        format::{AudioPreset, VideoPreset},
         publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
         subscribe::{AudioTrack, AvRemoteTrack, SubscribeBroadcast, WatchTrack},
     },
@@ -18,7 +18,6 @@ use iroh_live::{
     rooms::{Room, RoomEvent, RoomTicket},
     util::StatsSmoother,
 };
-use moq_media::av::AudioCodec;
 use n0_error::{Result, StdResultExt, anyerr};
 use tracing::{info, warn};
 
@@ -39,7 +38,6 @@ struct Cli {
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
-    codec_init();
     let cli = Cli::parse();
 
     let rt = tokio::runtime::Builder::new_multi_thread()

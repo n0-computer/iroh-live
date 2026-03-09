@@ -22,18 +22,24 @@ use tracing::{debug, error, info, info_span, trace, warn};
 use tokio::sync::watch;
 
 use crate::{
-    av::{
-        AudioCodec, AudioEncoder, AudioEncoderFactory, AudioFormat, AudioPreset, AudioSource,
-        DecodeConfig, VideoCodec, VideoEncoder, VideoEncoderFactory, VideoFormat, VideoFrame,
-        VideoPreset, VideoSource,
-    },
-    codec::{
-        self,
-        video::util::scale::{Scaler, fit_within},
-    },
+    format::{AudioFormat, AudioPreset, DecodeConfig, VideoFormat, VideoFrame, VideoPreset},
+    processing::scale::{Scaler, fit_within},
     subscribe::WatchTrack,
+    traits::{
+        AudioEncoder, AudioEncoderFactory, AudioSource, VideoEncoder, VideoEncoderFactory,
+        VideoSource,
+    },
     util::spawn_thread,
 };
+
+#[cfg(any_audio_codec)]
+use crate::codec::AudioCodec;
+
+#[cfg(any_video_codec)]
+use crate::codec::VideoCodec;
+
+#[cfg(any_codec)]
+use crate::codec;
 
 type MakeAudioEncoder = Box<dyn Fn() -> Result<Box<dyn AudioEncoder>> + Send + 'static>;
 type MakeVideoEncoder = Box<dyn Fn() -> Result<Box<dyn VideoEncoder>> + Send + 'static>;
@@ -289,6 +295,7 @@ pub struct AudioRenditions {
 }
 
 impl AudioRenditions {
+    #[cfg(any_audio_codec)]
     pub fn new(
         source: impl AudioSource,
         codec: AudioCodec,
@@ -319,8 +326,10 @@ impl AudioRenditions {
         }
     }
 
+    #[cfg(any_audio_codec)]
     pub fn add(&mut self, codec: AudioCodec, preset: AudioPreset) {
         match codec {
+            #[cfg(feature = "opus")]
             AudioCodec::Opus => self.add_with_generic::<codec::OpusEncoder>(preset),
         }
     }
@@ -388,6 +397,7 @@ pub struct VideoRenditions {
 
 impl VideoRenditions {
     /// Create video renditions with a dynamically-selected encoder.
+    #[cfg(any_video_codec)]
     pub fn new(
         source: impl VideoSource,
         codec: VideoCodec,
@@ -421,8 +431,10 @@ impl VideoRenditions {
         }
     }
 
+    #[cfg(any_video_codec)]
     pub fn add(&mut self, codec: VideoCodec, preset: VideoPreset) {
         match codec {
+            #[cfg(feature = "h264")]
             VideoCodec::H264 => self.add_with_generic::<codec::H264Encoder>(preset),
             #[cfg(feature = "av1")]
             VideoCodec::Av1 => self.add_with_generic::<codec::Av1Encoder>(preset),
@@ -837,14 +849,12 @@ impl Drop for EncoderThread {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any_codec))]
 mod tests {
     use super::*;
-    use crate::av::{
-        PixelFormat, VideoCodec, VideoEncoderFactory, VideoFormat, VideoFrame, VideoPreset,
-        VideoSource,
-    };
-    use crate::codec::video::test_util::make_test_pattern;
+    use crate::codec::{VideoCodec, test_util::make_test_pattern};
+    use crate::format::{PixelFormat, VideoFormat, VideoFrame, VideoPreset};
+    use crate::traits::{VideoEncoderFactory, VideoSource};
 
     /// A video source for testing that produces synthetic test pattern frames.
     struct TestVideoSource {
@@ -1036,6 +1046,7 @@ mod tests {
         assert_eq!(group.info.sequence, 0, "first group should be sequence 0");
     }
 
+    #[cfg(feature = "h264")]
     #[tokio::test]
     async fn spawn_video_h264_produces_output() {
         assert_spawn_video_produces_output::<codec::H264Encoder>(

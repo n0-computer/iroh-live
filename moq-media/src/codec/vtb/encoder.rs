@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail};
 use hang::{
-    Timestamp,
     catalog::{H264, VideoCodec, VideoConfig},
+    container::{Frame, Timestamp},
 };
 use objc2_core_foundation::{
     CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType, kCFTypeDictionaryKeyCallBacks,
@@ -31,18 +31,17 @@ use objc2_video_toolbox::{
 };
 
 use crate::{
-    av::{self, VideoEncoder, VideoEncoderFactory, VideoPreset},
-    codec::video::util::{
-        annexb::build_avcc,
-        convert::{YuvData, pixel_format_to_yuv420},
-    },
+    codec::h264::annexb::build_avcc,
+    format::{EncodedFrame, VideoFrame, VideoPreset},
+    processing::convert::{YuvData, pixel_format_to_yuv420},
+    traits::{VideoEncoder, VideoEncoderFactory},
 };
 
 /// Shared buffer between the encoder and the VTCompressionSession callback.
 type SharedPacketBuf = Arc<Mutex<CallbackState>>;
 
 struct CallbackState {
-    packets: Vec<hang::Frame>,
+    packets: Vec<EncodedFrame>,
     avcc: Option<Vec<u8>>,
     framerate: u32,
     frame_count: u64,
@@ -236,10 +235,12 @@ impl VideoEncoder for VtbEncoder {
             bitrate: Some(self.bitrate),
             framerate: Some(self.framerate as f64),
             optimize_for_latency: Some(true),
+            container: hang::catalog::Container::Legacy,
+            jitter: None,
         }
     }
 
-    fn push_frame(&mut self, frame: av::VideoFrame) -> Result<()> {
+    fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
         let [w, h] = frame.format.dimensions;
         let yuv = pixel_format_to_yuv420(&frame.raw, w, h, frame.format.pixel_format)?;
 
@@ -293,7 +294,7 @@ impl VideoEncoder for VtbEncoder {
         Ok(())
     }
 
-    fn pop_packet(&mut self) -> Result<Option<hang::Frame>> {
+    fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
         let mut state = self.callback_state.lock().unwrap();
         Ok(if state.packets.is_empty() {
             None
@@ -515,7 +516,7 @@ unsafe extern "C-unwind" fn compression_output_callback(
 unsafe fn extract_encoded_packet(
     state: &Mutex<CallbackState>,
     sample_buffer: &CMSampleBuffer,
-) -> Option<hang::Frame> {
+) -> Option<EncodedFrame> {
     // Get the data buffer (contains length-prefixed NAL units).
     let block_buffer: CFRetained<CMBlockBuffer> = unsafe { sample_buffer.data_buffer()? };
 
@@ -559,10 +560,12 @@ unsafe fn extract_encoded_packet(
     };
     let timestamp = Timestamp::from_micros(timestamp_us).ok()?;
 
-    Some(hang::Frame {
-        payload: payload.into(),
-        timestamp,
-        keyframe,
+    Some(EncodedFrame {
+        is_keyframe: keyframe,
+        frame: Frame {
+            payload: payload.into(),
+            timestamp,
+        },
     })
 }
 
@@ -638,8 +641,9 @@ unsafe fn extract_avcc_from_sample_buffer(sample_buffer: &CMSampleBuffer) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::av::{VideoEncoder, VideoPreset};
-    use crate::codec::video::test_util::make_rgba_frame;
+    use crate::codec::test_util::make_rgba_frame;
+    use crate::format::VideoPreset;
+    use crate::traits::VideoEncoder;
 
     #[test]
     #[ignore]
@@ -675,8 +679,9 @@ mod tests {
     #[test]
     #[ignore]
     fn vtb_encode_decode_roundtrip() {
-        use crate::av::{DecodeConfig, VideoDecoder};
-        use crate::codec::video::H264VideoDecoder;
+        use crate::codec::h264::H264VideoDecoder;
+        use crate::format::DecodeConfig;
+        use crate::traits::VideoDecoder;
 
         let mut enc = VtbEncoder::with_preset(VideoPreset::P360).unwrap();
         let mut packets = Vec::new();

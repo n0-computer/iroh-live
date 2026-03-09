@@ -2,8 +2,9 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_moq::{Moq, MoqProtocolHandler, MoqSession};
 use moq_lite::BroadcastProducer;
 use moq_media::{
-    av::{AudioSink, Decoders, PlaybackConfig},
+    format::PlaybackConfig,
     subscribe::{AvRemoteTrack, SubscribeBroadcast},
+    traits::{AudioSink, Decoders},
 };
 use n0_error::Result;
 use tracing::info;

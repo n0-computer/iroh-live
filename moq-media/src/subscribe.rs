@@ -19,11 +19,9 @@ use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{Span, debug, error, info, info_span, trace, warn};
 
 use crate::{
-    av::{
-        AudioDecoder, AudioSink, AudioSinkHandle, DecodeConfig, DecodedVideoFrame, Decoders,
-        PixelFormat, PlaybackConfig, Quality, VideoDecoder, VideoSource,
-    },
-    codec::video::util::scale::Scaler,
+    format::{DecodeConfig, DecodedVideoFrame, PixelFormat, PlaybackConfig, Quality},
+    processing::scale::Scaler,
+    traits::{AudioDecoder, AudioSink, AudioSinkHandle, Decoders, VideoDecoder, VideoSource},
     util::spawn_thread,
 };
 
@@ -274,7 +272,7 @@ fn select_rendition<T, P: ToString>(
 }
 
 fn select_video_rendition<T>(renditions: &BTreeMap<String, T>, q: Quality) -> Option<String> {
-    use crate::av::VideoPreset::*;
+    use crate::format::VideoPreset::*;
     let order = match q {
         Quality::Highest => [P1080, P720, P360, P180],
         Quality::High => [P720, P360, P180, P1080],
@@ -286,7 +284,7 @@ fn select_video_rendition<T>(renditions: &BTreeMap<String, T>, q: Quality) -> Op
 }
 
 fn select_audio_rendition<T>(renditions: &BTreeMap<String, T>, q: Quality) -> Option<String> {
-    use crate::av::AudioPreset::*;
+    use crate::format::AudioPreset::*;
     let order = match q {
         Quality::Highest | Quality::High => [Hq, Lq],
         Quality::Mid | Quality::Low => [Lq, Hq],

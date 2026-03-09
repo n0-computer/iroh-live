@@ -4,7 +4,7 @@ use std::thread;
 use hang::container::OrderedFrame;
 
 #[cfg(test)]
-use crate::av::EncodedFrame;
+use crate::format::EncodedFrame;
 
 /// Spawn a named OS thread and panic if spawning fails.
 pub(crate) fn spawn_thread<F, T>(name: impl ToString, f: F) -> thread::JoinHandle<T>

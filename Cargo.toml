@@ -10,7 +10,7 @@ resolver = "2"
 debug = true
 
 [workspace.lints.rust]
-unexpected_cfgs = { level = "deny", check-cfg = ["cfg(docsrs)"] }
+unexpected_cfgs = { level = "deny", check-cfg = ["cfg(docsrs)", "cfg(any_audio_codec)", "cfg(any_video_codec)", "cfg(any_codec)"] }
 elided_lifetimes_in_paths = "warn"
 unnameable_types = "warn"
 unreachable_pub = "warn"
