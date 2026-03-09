@@ -6,7 +6,7 @@ use bytes::Buf;
 use hang::catalog::{VideoCodec, VideoConfig};
 use image::{Delay, Frame, RgbaImage};
 
-use crate::av::{self, DecodeConfig, DecodedFrame, VideoDecoder};
+use crate::av::{self, DecodeConfig, DecodedVideoFrame, VideoDecoder};
 
 use super::util::{
     StreamClock,
@@ -21,7 +21,7 @@ pub struct Av1VideoDecoder {
     scaler: Scaler,
     clock: StreamClock,
     viewport_changed: Option<(u32, u32)>,
-    last_timestamp: Option<hang::Timestamp>,
+    last_timestamp: Option<hang::container::Timestamp>,
     /// Decoded frame waiting to be collected via `pop_frame`.
     #[debug(skip)]
     pending_frame: Option<(RgbaImage, u32, u32)>,
@@ -66,7 +66,7 @@ impl VideoDecoder for Av1VideoDecoder {
         self.viewport_changed = Some((w, h));
     }
 
-    fn push_packet(&mut self, mut packet: hang::Frame) -> Result<()> {
+    fn push_packet(&mut self, mut packet: hang::container::OrderedFrame) -> Result<()> {
         let payload = packet.payload.copy_to_bytes(packet.payload.remaining());
 
         self.decoder
@@ -115,7 +115,7 @@ impl VideoDecoder for Av1VideoDecoder {
         Ok(())
     }
 
-    fn pop_frame(&mut self) -> Result<Option<av::DecodedFrame>> {
+    fn pop_frame(&mut self) -> Result<Option<av::DecodedVideoFrame>> {
         let Some((img, src_w, src_h)) = self.pending_frame.take() else {
             return Ok(None);
         };
@@ -141,7 +141,7 @@ impl VideoDecoder for Av1VideoDecoder {
 
         let frame_delay = Delay::from_saturating_duration(delay);
 
-        Ok(Some(DecodedFrame {
+        Ok(Some(DecodedVideoFrame {
             frame: Frame::from_parts(final_img, 0, 0, frame_delay),
             timestamp,
         }))
@@ -153,11 +153,12 @@ mod tests {
     use hang::catalog::H264;
 
     use super::*;
-    use crate::av::{VideoEncoder, VideoEncoderFactory, VideoFrame, VideoPreset};
+    use crate::av::{EncodedFrame, VideoEncoder, VideoEncoderFactory, VideoFrame, VideoPreset};
     use crate::codec::video::rav1e_enc::Av1Encoder;
     use crate::codec::video::test_util::make_rgba_frame;
+    use crate::util::encoded_frames_to_ordered_frames;
 
-    fn encode_frames(enc: &mut Av1Encoder, frames: &[VideoFrame]) -> Vec<hang::Frame> {
+    fn encode_frames(enc: &mut Av1Encoder, frames: &[VideoFrame]) -> Vec<EncodedFrame> {
         let mut packets = Vec::new();
         for f in frames {
             enc.push_frame(f.clone()).unwrap();
@@ -188,6 +189,7 @@ mod tests {
         let mut dec = Av1VideoDecoder::new(&config, &decode_config).unwrap();
 
         let mut decoded_count = 0;
+        let packets = encoded_frames_to_ordered_frames(packets);
         for pkt in packets {
             dec.push_packet(pkt).unwrap();
             if let Some(frame) = dec.pop_frame().unwrap() {
@@ -217,6 +219,7 @@ mod tests {
         let mut dec = Av1VideoDecoder::new(&config, &decode_config).unwrap();
 
         let mut last_frame = None;
+        let packets = encoded_frames_to_ordered_frames(packets);
         for pkt in packets {
             dec.push_packet(pkt).unwrap();
             if let Some(frame) = dec.pop_frame().unwrap() {
@@ -247,6 +250,7 @@ mod tests {
 
         dec.set_viewport(320, 180);
 
+        let packets = encoded_frames_to_ordered_frames(packets);
         for pkt in packets {
             dec.push_packet(pkt).unwrap();
             if let Some(frame) = dec.pop_frame().unwrap() {
@@ -266,14 +270,16 @@ mod tests {
                 level: 0x1E,
                 inline: false,
             }),
-            description: None,
             coded_width: Some(320),
             coded_height: Some(180),
+            description: None,
             display_ratio_width: None,
             display_ratio_height: None,
             bitrate: None,
             framerate: None,
             optimize_for_latency: None,
+            container: Default::default(),
+            jitter: None,
         };
         let decode_config = DecodeConfig::default();
         let result = Av1VideoDecoder::new(&config, &decode_config);

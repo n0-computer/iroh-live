@@ -1,7 +1,11 @@
-use crate::av::{
-    DecodeConfig, DecodedFrame, PixelFormat, VideoDecoder, VideoEncoder, VideoFormat, VideoFrame,
+use crate::{
+    av::{
+        DecodeConfig, DecodedVideoFrame, EncodedFrame, PixelFormat, VideoDecoder, VideoEncoder,
+        VideoFormat, VideoFrame,
+    },
+    util::encoded_frames_to_ordered_frames,
 };
-use hang::catalog::VideoConfig;
+use hang::{catalog::VideoConfig, container::OrderedFrame};
 
 /// Create a solid-color RGBA frame.
 pub(crate) fn make_rgba_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> VideoFrame {
@@ -87,7 +91,7 @@ pub(crate) fn video_encode(
     g: u8,
     b: u8,
     n: usize,
-) -> Vec<hang::Frame> {
+) -> Vec<OrderedFrame> {
     let mut packets = Vec::new();
     for _ in 0..n {
         enc.push_frame(make_rgba_frame(w, h, r, g, b)).unwrap();
@@ -95,16 +99,17 @@ pub(crate) fn video_encode(
             packets.push(pkt);
         }
     }
-    packets
+    encoded_frames_to_ordered_frames(packets)
 }
 
 /// Encode `n` test-pattern frames with any VideoEncoder, return packets.
+#[allow(dead_code)]
 pub(crate) fn video_encode_pattern(
     enc: &mut impl VideoEncoder,
     w: u32,
     h: u32,
     n: usize,
-) -> Vec<hang::Frame> {
+) -> Vec<EncodedFrame> {
     let mut packets = Vec::new();
     for i in 0..n {
         enc.push_frame(make_test_pattern(w, h, i as u32)).unwrap();
@@ -118,8 +123,8 @@ pub(crate) fn video_encode_pattern(
 /// Decode all packets with any VideoDecoder type, return decoded frames.
 pub(crate) fn video_decode<D: VideoDecoder>(
     config: &VideoConfig,
-    packets: Vec<hang::Frame>,
-) -> Vec<DecodedFrame> {
+    packets: Vec<OrderedFrame>,
+) -> Vec<DecodedVideoFrame> {
     let decode_config = DecodeConfig::default();
     let mut dec = D::new(config, &decode_config).unwrap();
     let mut frames = Vec::new();
@@ -139,7 +144,7 @@ pub(crate) fn video_decode<D: VideoDecoder>(
     reason = "test helper with clear parameters"
 )]
 pub(crate) fn assert_video_roundtrip(
-    frames: &[DecodedFrame],
+    frames: &[DecodedVideoFrame],
     w: u32,
     h: u32,
     expected_r: u8,
@@ -178,7 +183,13 @@ pub(crate) fn assert_video_roundtrip(
 }
 
 /// Assert that decoded frames have correct dimensions and are not all black.
-pub(crate) fn assert_video_not_black(frames: &[DecodedFrame], w: u32, h: u32, min_frames: usize) {
+#[allow(dead_code)]
+pub(crate) fn assert_video_not_black(
+    frames: &[DecodedVideoFrame],
+    w: u32,
+    h: u32,
+    min_frames: usize,
+) {
     assert!(
         frames.len() >= min_frames,
         "expected >= {min_frames} frames, got {}",

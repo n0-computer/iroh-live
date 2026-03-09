@@ -261,11 +261,11 @@ impl Actor {
     async fn handle_api_message(&mut self, msg: ApiMessage) {
         match msg {
             ApiMessage::Publish { name, producer } => {
-                let closed = producer.consume().closed();
+                let consume = producer.consume();
                 self.live.publish(name.clone(), producer).await.ok();
                 self.active_publish.insert(name.clone());
                 self.publish_closed.push(Box::pin(async move {
-                    closed.await;
+                    consume.closed().await;
                     name
                 }));
                 self.update_kv().await;

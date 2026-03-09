@@ -18,7 +18,7 @@ struct Cli {
     room: Option<RoomTicket>,
 
     /// The format of the input media.
-    #[clap(long, value_enum, default_value_t = ImportType::Cmaf)]
+    #[clap(long, value_enum, default_value_t = ImportType::Fmp4)]
     format: ImportType,
 
     /// Input file. If empty reads from stdin.

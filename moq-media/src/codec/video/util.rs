@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use hang::Timestamp;
+use hang::container::Timestamp;
 
 pub(crate) mod annexb;
 pub(crate) mod convert;

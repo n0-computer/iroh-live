@@ -1,12 +1,12 @@
 use anyhow::{Result, bail};
 use hang::{
-    Timestamp,
     catalog::{AV1, VideoCodec, VideoConfig},
+    container::Timestamp,
 };
 use rav1e::prelude::*;
 
 use crate::{
-    av::{self, VideoEncoder, VideoEncoderFactory, VideoPreset},
+    av::{self, EncodedFrame, VideoEncoder, VideoEncoderFactory, VideoPreset},
     codec::video::util::convert::pixel_format_to_yuv420,
 };
 
@@ -22,7 +22,7 @@ pub struct Av1Encoder {
     /// AV1 sequence header, populated after context creation.
     seq_header: Vec<u8>,
     /// Encoded packets ready for collection.
-    packet_buf: Vec<hang::Frame>,
+    packet_buf: Vec<EncodedFrame>,
 }
 
 impl Av1Encoder {
@@ -74,14 +74,16 @@ impl Av1Encoder {
         loop {
             match self.ctx.receive_packet() {
                 Ok(packet) => {
-                    let keyframe = packet.frame_type == FrameType::KEY;
+                    let is_keyframe = packet.frame_type == FrameType::KEY;
                     let timestamp_us = (self.frame_count * 1_000_000) / self.framerate as u64;
                     self.frame_count += 1;
 
-                    self.packet_buf.push(hang::Frame {
-                        payload: packet.data.into(),
-                        timestamp: Timestamp::from_micros(timestamp_us)?,
-                        keyframe,
+                    self.packet_buf.push(EncodedFrame {
+                        frame: hang::container::Frame {
+                            payload: packet.data.into(),
+                            timestamp: Timestamp::from_micros(timestamp_us)?,
+                        },
+                        is_keyframe,
                     });
                 }
                 Err(EncoderStatus::Encoded) => {
@@ -141,6 +143,8 @@ impl VideoEncoder for Av1Encoder {
             bitrate: Some(self.bitrate),
             framerate: Some(self.framerate as f64),
             optimize_for_latency: Some(true),
+            container: hang::catalog::Container::Legacy,
+            jitter: None,
         }
     }
 
@@ -165,7 +169,7 @@ impl VideoEncoder for Av1Encoder {
         Ok(())
     }
 
-    fn pop_packet(&mut self) -> Result<Option<hang::Frame>> {
+    fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
         Ok(if self.packet_buf.is_empty() {
             None
         } else {
@@ -182,7 +186,7 @@ mod tests {
 
     /// rav1e buffers frames for look-ahead even in low-latency mode.
     /// Helper to send frames and collect all resulting packets.
-    fn encode_n_frames(enc: &mut Av1Encoder, n: usize) -> Vec<hang::Frame> {
+    fn encode_n_frames(enc: &mut Av1Encoder, n: usize) -> Vec<EncodedFrame> {
         let mut packets = Vec::new();
         for _ in 0..n {
             let frame = make_rgba_frame(320, 180, 255, 0, 0);
@@ -200,7 +204,7 @@ mod tests {
         // rav1e buffers frames for look-ahead; send enough to produce output
         let packets = encode_n_frames(&mut enc, 30);
         assert!(!packets.is_empty(), "should produce at least one packet");
-        assert!(packets[0].keyframe, "first packet should be keyframe");
+        assert!(packets[0].is_keyframe, "first packet should be keyframe");
     }
 
     #[test]
@@ -225,7 +229,7 @@ mod tests {
             let frame = make_rgba_frame(320, 180, 128, 128, 128);
             enc.push_frame(frame).unwrap();
             if let Some(pkt) = enc.pop_packet().unwrap()
-                && pkt.keyframe
+                && pkt.is_keyframe
             {
                 keyframe_count += 1;
             }
@@ -245,9 +249,9 @@ mod tests {
             enc.push_frame(frame).unwrap();
             if let Some(pkt) = enc.pop_packet().unwrap() {
                 if let Some(prev) = prev_ts {
-                    assert!(pkt.timestamp > prev, "timestamps should increase");
+                    assert!(pkt.frame.timestamp > prev, "timestamps should increase");
                 }
-                prev_ts = Some(pkt.timestamp);
+                prev_ts = Some(pkt.frame.timestamp);
             }
         }
     }

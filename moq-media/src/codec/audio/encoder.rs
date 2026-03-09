@@ -1,14 +1,14 @@
 use anyhow::{Result, bail};
 use hang::{
-    Timestamp,
     catalog::{AudioCodec, AudioConfig},
+    container::Timestamp,
 };
 use unsafe_libopus::{
     self as opus, OPUS_APPLICATION_VOIP, OPUS_OK, OPUS_SET_BITRATE_REQUEST, OPUS_SET_DTX_REQUEST,
     OPUS_SET_INBAND_FEC_REQUEST, OpusEncoder as RawOpusEncoder, varargs,
 };
 
-use crate::av::{AudioEncoder, AudioEncoderFactory, AudioFormat, AudioPreset};
+use crate::av::{AudioEncoder, AudioEncoderFactory, AudioFormat, AudioPreset, EncodedFrame};
 
 const SAMPLE_RATE: u32 = 48_000;
 const BITRATE_HQ: u64 = 128_000;
@@ -30,7 +30,7 @@ pub struct OpusEncoder {
     /// Number of complete frames encoded so far (for timestamp calculation).
     frame_count: u64,
     /// Encoded packets ready for collection.
-    packet_buf: Vec<hang::Frame>,
+    packet_buf: Vec<EncodedFrame>,
 }
 
 // Safety: The OpusEncoder pointer is only used from a single thread.
@@ -122,10 +122,12 @@ impl OpusEncoder {
 
             let timestamp_us =
                 (self.frame_count * FRAME_SIZE as u64 * 1_000_000) / self.sample_rate as u64;
-            self.packet_buf.push(hang::Frame {
-                payload: out.into(),
-                timestamp: Timestamp::from_micros(timestamp_us)?,
-                keyframe: true,
+            self.packet_buf.push(EncodedFrame {
+                frame: hang::container::Frame {
+                    payload: out.into(),
+                    timestamp: Timestamp::from_micros(timestamp_us)?,
+                },
+                is_keyframe: true,
             });
             self.frame_count += 1;
 
@@ -159,6 +161,8 @@ impl AudioEncoder for OpusEncoder {
             channel_count: self.channel_count,
             bitrate: Some(self.bitrate),
             description: Some(self.extradata.clone().into()),
+            container: hang::catalog::Container::Legacy,
+            jitter: None,
         }
     }
 
@@ -170,7 +174,7 @@ impl AudioEncoder for OpusEncoder {
         self.encode_pending()
     }
 
-    fn pop_packet(&mut self) -> Result<Option<hang::Frame>> {
+    fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
         Ok(if self.packet_buf.is_empty() {
             None
         } else {
@@ -219,8 +223,8 @@ mod tests {
             "should produce a packet for one full frame"
         );
         let pkt = packet.unwrap();
-        assert!(pkt.keyframe);
-        assert!(pkt.payload.has_remaining());
+        assert!(pkt.is_keyframe);
+        assert!(pkt.frame.payload.has_remaining());
     }
 
     #[test]
@@ -231,7 +235,7 @@ mod tests {
         enc.push_samples(&sine).unwrap();
         let packet = enc.pop_packet().unwrap().unwrap();
         // At 128kbps, a 20ms packet should be ~50-320 bytes
-        let len = Buf::remaining(&packet.payload);
+        let len = Buf::remaining(&packet.frame.payload);
         assert!(len > 2 && len < 1000, "unexpected packet size: {len}");
     }
 
@@ -293,9 +297,9 @@ mod tests {
         for _ in 0..3 {
             let pkt = enc.pop_packet().unwrap().unwrap();
             if let Some(prev) = prev_ts {
-                assert!(pkt.timestamp > prev, "timestamps should increase");
+                assert!(pkt.frame.timestamp > prev, "timestamps should increase");
             }
-            prev_ts = Some(pkt.timestamp);
+            prev_ts = Some(pkt.frame.timestamp);
         }
     }
 }

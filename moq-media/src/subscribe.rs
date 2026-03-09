@@ -1,23 +1,26 @@
-use std::{collections::BTreeMap, future, sync::Arc, thread, time::Duration};
+use std::{
+    collections::BTreeMap,
+    future,
+    sync::Arc,
+    thread,
+    time::{Duration, Instant},
+};
 
 use hang::{
-    Timestamp, TrackConsumer,
     catalog::{AudioConfig, Catalog, CatalogConsumer, VideoConfig},
+    container::{OrderedConsumer, OrderedFrame, Timestamp},
 };
 use moq_lite::{BroadcastConsumer, Track};
 use n0_error::{Result, StackResultExt, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
-use tokio::{
-    sync::mpsc::{self, error::TryRecvError},
-    time::Instant,
-};
+use tokio::sync::mpsc::{self, error::TryRecvError};
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{Span, debug, error, info, info_span, trace, warn};
 
 use crate::{
     av::{
-        AudioDecoder, AudioSink, AudioSinkHandle, DecodeConfig, DecodedFrame, Decoders,
+        AudioDecoder, AudioSink, AudioSinkHandle, DecodeConfig, DecodedVideoFrame, Decoders,
         PixelFormat, PlaybackConfig, Quality, VideoDecoder, VideoSource,
     },
     codec::video::util::scale::Scaler,
@@ -25,6 +28,8 @@ use crate::{
 };
 
 const DEFAULT_MAX_LATENCY: Duration = Duration::from_millis(150);
+const VIDEO_PRIORITY: u8 = 1u8;
+const AUDIO_PRIORITY: u8 = 2u8;
 
 #[derive(derive_more::Debug, Clone)]
 pub struct SubscribeBroadcast {
@@ -57,9 +62,8 @@ impl CatalogWrapper {
         let mut renditions: Vec<_> = self
             .inner
             .video
-            .as_ref()
+            .renditions
             .iter()
-            .flat_map(|v| v.renditions.iter())
             .map(|(name, config)| (name.as_str(), config.coded_width))
             .collect();
         renditions.sort_by(|a, b| a.1.cmp(&b.1));
@@ -69,23 +73,22 @@ impl CatalogWrapper {
     pub fn audio_renditions(&self) -> impl Iterator<Item = &str> + '_ {
         self.inner
             .audio
-            .as_ref()
-            .into_iter()
-            .flat_map(|v| v.renditions.iter())
+            .renditions
+            .iter()
             .map(|(name, _config)| name.as_str())
     }
 
     pub fn select_video_rendition(&self, quality: Quality) -> Result<String> {
-        let video = self.inner.video.as_ref().context("no video published")?;
+        let video = &self.inner.video;
         let track_name =
             select_video_rendition(&video.renditions, quality).context("no video renditions")?;
         Ok(track_name)
     }
 
     pub fn select_audio_rendition(&self, quality: Quality) -> Result<String> {
-        let audio = self.inner.audio.as_ref().context("no video published")?;
+        let audio = &self.inner.audio;
         let track_name =
-            select_audio_rendition(&audio.renditions, quality).context("no video renditions")?;
+            select_audio_rendition(&audio.renditions, quality).context("no audio renditions")?;
         Ok(track_name)
     }
 }
@@ -101,7 +104,9 @@ impl SubscribeBroadcast {
         let shutdown = CancellationToken::new();
 
         let (catalog_watchable, catalog_task) = {
-            let track = broadcast.subscribe_track(&Catalog::default_track());
+            let track = broadcast
+                .subscribe_track(&Catalog::default_track())
+                .anyerr()?;
             let mut consumer = CatalogConsumer::new(track);
             let initial_catalog = consumer
                 .next()
@@ -139,7 +144,7 @@ impl SubscribeBroadcast {
             broadcast,
             catalog_watchable,
             _catalog_task: Arc::new(AbortOnDropHandle::new(catalog_task)),
-            shutdown: CancellationToken::new(),
+            shutdown,
         })
     }
 
@@ -182,16 +187,18 @@ impl SubscribeBroadcast {
         track_name: &str,
     ) -> Result<WatchTrack> {
         let catalog = self.catalog();
-        let video = catalog.video.as_ref().context("no video published")?;
+        let video = &catalog.video;
         let config = video
             .renditions
             .get(track_name)
             .context("rendition not found")?;
-        let consumer = TrackConsumer::new(
-            self.broadcast.subscribe_track(&Track {
-                name: track_name.to_string(),
-                priority: video.priority,
-            }),
+        let consumer = OrderedConsumer::new(
+            self.broadcast
+                .subscribe_track(&Track {
+                    name: track_name.to_string(),
+                    priority: VIDEO_PRIORITY,
+                })
+                .anyerr()?,
             DEFAULT_MAX_LATENCY,
         );
         let span = info_span!("videodec", %track_name);
@@ -223,13 +230,15 @@ impl SubscribeBroadcast {
         output: impl AudioSink,
     ) -> Result<AudioTrack> {
         let catalog = self.catalog();
-        let audio = catalog.audio.as_ref().context("no audio published")?;
+        let audio = &catalog.audio;
         let config = audio.renditions.get(name).context("rendition not found")?;
-        let consumer = TrackConsumer::new(
-            self.broadcast.subscribe_track(&Track {
-                name: name.to_string(),
-                priority: audio.priority,
-            }),
+        let consumer = OrderedConsumer::new(
+            self.broadcast
+                .subscribe_track(&Track {
+                    name: name.to_string(),
+                    priority: AUDIO_PRIORITY,
+                })
+                .anyerr()?,
             DEFAULT_MAX_LATENCY,
         );
         let span = info_span!("audiodec", %name);
@@ -243,8 +252,9 @@ impl SubscribeBroadcast {
         )
     }
 
-    pub fn closed(&self) -> impl Future<Output = ()> + 'static {
-        self.broadcast.closed()
+    pub fn closed(&self) -> impl Future<Output = moq_lite::Error> + 'static {
+        let broadcast = self.broadcast.clone();
+        async move { broadcast.closed().await }
     }
 
     pub fn shutdown(&self) {
@@ -299,7 +309,7 @@ pub struct AudioTrack {
 impl AudioTrack {
     pub(crate) fn spawn<D: AudioDecoder>(
         name: String,
-        consumer: TrackConsumer,
+        consumer: OrderedConsumer,
         config: AudioConfig,
         output: impl AudioSink,
         shutdown: CancellationToken,
@@ -349,7 +359,7 @@ impl AudioTrack {
 
     pub(crate) fn run_loop(
         mut decoder: impl AudioDecoder,
-        mut packet_rx: mpsc::Receiver<hang::Frame>,
+        mut packet_rx: mpsc::Receiver<hang::container::OrderedFrame>,
         mut sink: impl AudioSink,
         shutdown: &CancellationToken,
     ) -> Result<()> {
@@ -477,11 +487,11 @@ impl WatchTrackHandle {
 #[derive(derive_more::Debug)]
 pub struct WatchTrackFrames {
     #[debug(skip)]
-    rx: mpsc::Receiver<DecodedFrame>,
+    rx: mpsc::Receiver<DecodedVideoFrame>,
 }
 
 impl WatchTrackFrames {
-    pub fn current_frame(&mut self) -> Option<DecodedFrame> {
+    pub fn current_frame(&mut self) -> Option<DecodedVideoFrame> {
         let mut out = None;
         while let Ok(item) = self.rx.try_recv() {
             out = Some(item);
@@ -489,7 +499,7 @@ impl WatchTrackFrames {
         out
     }
 
-    pub async fn next_frame(&mut self) -> Option<DecodedFrame> {
+    pub async fn next_frame(&mut self) -> Option<DecodedVideoFrame> {
         if let Some(frame) = self.current_frame() {
             Some(frame)
         } else {
@@ -533,7 +543,7 @@ impl WatchTrack {
         decode_config: DecodeConfig,
     ) -> Self {
         let viewport = Watchable::new((1u32, 1u32));
-        let (frame_tx, frame_rx) = mpsc::channel::<DecodedFrame>(2);
+        let (frame_tx, frame_rx) = mpsc::channel::<DecodedVideoFrame>(2);
         let thread_name = format!("vpr-{:>4}-{:>4}", source.name(), rendition);
         let thread = spawn_thread(thread_name, {
             let mut viewport = viewport.watch();
@@ -573,7 +583,7 @@ impl WatchTrack {
                                     }
                                 }
                                 let delay = image::Delay::from_saturating_duration(frame_duration);
-                                let decoded = DecodedFrame {
+                                let decoded = DecodedVideoFrame {
                                     frame: image::Frame::from_parts(img, 0, 0, delay),
                                     timestamp: start.elapsed(),
                                 };
@@ -611,7 +621,7 @@ impl WatchTrack {
 
     pub(crate) fn from_consumer<D: VideoDecoder>(
         rendition: String,
-        consumer: TrackConsumer,
+        consumer: OrderedConsumer,
         config: &VideoConfig,
         playback_config: &DecodeConfig,
         shutdown: CancellationToken,
@@ -675,14 +685,14 @@ impl WatchTrack {
         self.handle.rendition()
     }
 
-    pub fn current_frame(&mut self) -> Option<DecodedFrame> {
+    pub fn current_frame(&mut self) -> Option<DecodedVideoFrame> {
         self.video_frames.current_frame()
     }
 
     pub(crate) fn run_loop(
         shutdown: &CancellationToken,
-        mut input_rx: mpsc::Receiver<hang::Frame>,
-        output_tx: mpsc::Sender<DecodedFrame>,
+        mut input_rx: mpsc::Receiver<OrderedFrame>,
+        output_tx: mpsc::Sender<DecodedVideoFrame>,
         mut viewport_watcher: n0_watcher::Direct<(u32, u32)>,
         mut decoder: impl VideoDecoder,
         target_pixel_format: PixelFormat,
@@ -699,7 +709,7 @@ impl WatchTrack {
             // After a decode error, skip packets until we receive a keyframe
             // so the decoder can resync.
             if waiting_for_keyframe {
-                if !packet.keyframe {
+                if !packet.is_keyframe() {
                     trace!("skipping non-keyframe packet while waiting for recovery");
                     continue;
                 }
@@ -763,9 +773,9 @@ impl WatchTrack {
     }
 }
 
-async fn forward_frames(mut track: hang::TrackConsumer, sender: mpsc::Sender<hang::Frame>) {
+async fn forward_frames(mut track: OrderedConsumer, sender: mpsc::Sender<OrderedFrame>) {
     loop {
-        let frame = track.read_frame().await;
+        let frame = track.read().await;
         match frame {
             Ok(Some(frame)) => {
                 if sender.send(frame).await.is_err() {

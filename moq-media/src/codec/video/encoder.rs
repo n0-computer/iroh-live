@@ -1,7 +1,7 @@
 use anyhow::Result;
 use hang::{
-    Timestamp,
     catalog::{H264, VideoCodec, VideoConfig},
+    container::Timestamp,
 };
 use openh264::{
     OpenH264API,
@@ -13,7 +13,7 @@ use openh264::{
 };
 
 use crate::{
-    av::{self, VideoEncoder, VideoEncoderFactory, VideoPreset},
+    av::{self, EncodedFrame, VideoEncoder, VideoEncoderFactory, VideoPreset},
     codec::video::util::{
         annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b},
         convert::pixel_format_to_yuv420,
@@ -34,7 +34,7 @@ pub struct H264Encoder {
     /// avcC description, populated after first successful encode.
     avcc: Option<Vec<u8>>,
     /// Encoded packets ready for collection.
-    packet_buf: Vec<hang::Frame>,
+    packet_buf: Vec<EncodedFrame>,
 }
 
 impl YUVSource for YuvData {
@@ -132,6 +132,8 @@ impl VideoEncoder for H264Encoder {
             bitrate: Some(self.bitrate),
             framerate: Some(self.framerate as f64),
             optimize_for_latency: Some(true),
+            container: hang::catalog::Container::Legacy,
+            jitter: None,
         }
     }
 
@@ -160,20 +162,22 @@ impl VideoEncoder for H264Encoder {
         // Convert Annex B → length-prefixed NALs for transport
         let payload = annex_b_to_length_prefixed(&annex_b);
 
-        let keyframe = matches!(frame_type, FrameType::IDR | FrameType::I);
+        let is_keyframe = matches!(frame_type, FrameType::IDR | FrameType::I);
         let timestamp_us = (self.frame_count * 1_000_000) / self.framerate as u64;
         self.frame_count += 1;
 
-        self.packet_buf.push(hang::Frame {
-            payload: payload.into(),
-            timestamp: Timestamp::from_micros(timestamp_us)?,
-            keyframe,
+        self.packet_buf.push(EncodedFrame {
+            frame: hang::container::Frame {
+                payload: payload.into(),
+                timestamp: Timestamp::from_micros(timestamp_us)?,
+            },
+            is_keyframe,
         });
 
         Ok(())
     }
 
-    fn pop_packet(&mut self) -> Result<Option<hang::Frame>> {
+    fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
         Ok(if self.packet_buf.is_empty() {
             None
         } else {
@@ -196,7 +200,7 @@ mod tests {
         let packet = enc.pop_packet().unwrap();
         assert!(packet.is_some(), "should produce a packet");
         let pkt = packet.unwrap();
-        assert!(pkt.keyframe, "first frame should be keyframe");
+        assert!(pkt.is_keyframe, "first frame should be keyframe");
     }
 
     #[test]
@@ -219,7 +223,7 @@ mod tests {
             let frame = make_rgba_frame(320, 180, 128, 128, 128);
             enc.push_frame(frame).unwrap();
             if let Some(pkt) = enc.pop_packet().unwrap()
-                && pkt.keyframe
+                && pkt.is_keyframe
             {
                 keyframe_count += 1;
             }
@@ -239,9 +243,9 @@ mod tests {
             enc.push_frame(frame).unwrap();
             if let Some(pkt) = enc.pop_packet().unwrap() {
                 if let Some(prev) = prev_ts {
-                    assert!(pkt.timestamp > prev, "timestamps should increase");
+                    assert!(pkt.frame.timestamp > prev, "timestamps should increase");
                 }
-                prev_ts = Some(pkt.timestamp);
+                prev_ts = Some(pkt.frame.timestamp);
             }
         }
     }
