@@ -7,14 +7,12 @@ pub use controller::{
 use std::{
     collections::{BTreeMap, HashMap},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, Ordering},
     },
     thread,
     time::{Duration, Instant},
 };
-
-use parking_lot::Mutex;
 
 use anyhow::Context;
 use hang::catalog::{Audio, AudioConfig, Catalog, Video, VideoConfig};
@@ -99,6 +97,7 @@ impl PublishBroadcast {
             let name = track.info.name.clone();
             if state
                 .lock()
+                .unwrap()
                 .start_track(track.clone())
                 .inspect_err(|err| warn!(%name, "failed to start requested track: {err:#}"))
                 .is_ok()
@@ -111,7 +110,7 @@ impl PublishBroadcast {
                             warn!("track closed: {err:#}");
                         }
                         info!("stopping track: {name} (all subscribers disconnected)");
-                        state.lock().stop_track(&name);
+                        state.lock().expect("poisoned").stop_track(&name);
                     }
                 });
             }
@@ -121,7 +120,7 @@ impl PublishBroadcast {
     /// Create a local WatchTrack from the current video source, if present.
     pub fn watch_local(&self, decode_config: DecodeConfig) -> Option<WatchTrack> {
         let (source, shutdown) = {
-            let state = self.state.lock();
+            let state = self.state.lock().expect("poisoned");
             let source = state
                 .available_video
                 .as_ref()
@@ -149,7 +148,7 @@ impl PublishBroadcast {
                 // Tear down existing video, set new renditions, then publish catalog.
                 // Order matters: renditions must be available before the catalog is
                 // published, otherwise subscribers may request tracks we can't serve.
-                let mut state = self.state.lock();
+                let mut state = self.state.lock().expect("poisoned");
                 state.remove_video();
                 state.available_video = Some(renditions);
                 drop(state);
@@ -157,7 +156,7 @@ impl PublishBroadcast {
             }
             None => {
                 // Clear catalog and stop any active video encoders
-                self.state.lock().remove_video();
+                self.state.lock().expect("poisoned").remove_video();
                 self.catalog.set_video(Default::default())?;
             }
         }
@@ -174,7 +173,7 @@ impl PublishBroadcast {
                 // Tear down existing audio, set new renditions, then publish catalog.
                 // Order matters: renditions must be available before the catalog is
                 // published, otherwise subscribers may request tracks we can't serve.
-                let mut state = self.state.lock();
+                let mut state = self.state.lock().expect("poisoned");
                 state.remove_audio();
                 state.available_audio = Some(renditions);
                 drop(state);
@@ -182,7 +181,7 @@ impl PublishBroadcast {
             }
             None => {
                 // Clear catalog and stop any active audio encoders
-                self.state.lock().remove_audio();
+                self.state.lock().expect("poisoned").remove_audio();
                 self.catalog.set_audio(Default::default())?;
             }
         }
@@ -192,7 +191,7 @@ impl PublishBroadcast {
 
 impl Drop for PublishBroadcast {
     fn drop(&mut self) {
-        self.state.lock().shutdown_token.cancel();
+        self.state.lock().expect("poisoned").shutdown_token.cancel();
         // TODO: Do we need to close explicitly here?
         // self.producer.close();
     }
@@ -868,7 +867,7 @@ mod tests {
         broadcast.set_video(Some(renditions)).unwrap();
 
         // After set_video, all rendition names should be available in state.
-        let state = broadcast.state.lock();
+        let state = broadcast.state.lock().expect("poisoned");
         let available = state.available_video.as_ref().expect("video should be set");
         for name in &rendition_names {
             assert!(
