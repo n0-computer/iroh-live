@@ -15,6 +15,8 @@
 
 mod metrics;
 mod patterns;
+#[cfg(feature = "h264")]
+mod vectors;
 
 use crate::codec::test_util::encoded_frames_to_media_packets;
 use crate::format::{
