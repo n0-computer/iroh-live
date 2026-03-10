@@ -11,11 +11,13 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, info_span, trace, warn};
 
 use crate::format::{
-    DecodeConfig, DecodedVideoFrame, FrameBuffer, MediaPacket, PixelFormat, VideoFormat, VideoFrame,
+    AudioFormat, DecodeConfig, DecodedVideoFrame, FrameBuffer, MediaPacket, PixelFormat,
+    VideoFormat, VideoFrame,
 };
 use crate::processing::scale::{Scaler, fit_within};
 use crate::traits::{
-    AudioDecoder, AudioEncoder, AudioSink, AudioSource, VideoDecoder, VideoEncoder, VideoSource,
+    AudioDecoder, AudioEncoder, AudioSink, AudioSinkHandle, AudioSource, AudioStreamFactory,
+    VideoDecoder, VideoEncoder, VideoSource,
 };
 use crate::transport::{PacketSink, PacketSource};
 use crate::util::spawn_thread;
@@ -88,8 +90,8 @@ impl VideoDecoderFrames {
 /// Control handle for a [`VideoDecoderPipeline`].
 #[derive(Debug)]
 pub struct VideoDecoderHandle {
-    pub rendition: String,
-    pub decoder_name: String,
+    rendition: String,
+    decoder_name: String,
     pub(crate) viewport: n0_watcher::Watchable<(u32, u32)>,
     _guard: PipelineGuard,
 }
@@ -121,6 +123,9 @@ struct PipelineGuard {
 
 impl VideoDecoderPipeline {
     /// Creates a new decoder pipeline from any packet source.
+    ///
+    /// Dropping the pipeline cancels the decode thread. The pipeline also
+    /// shuts down automatically when the packet source closes.
     pub fn new<D: VideoDecoder>(
         name: String,
         source: impl PacketSource,
@@ -128,6 +133,7 @@ impl VideoDecoderPipeline {
         decode_config: &DecodeConfig,
     ) -> Result<Self> {
         let shutdown = CancellationToken::new();
+        let span = info_span!("videodec", %name);
         let (packet_tx, packet_rx) = mpsc::channel(32);
         let (frame_tx, frame_rx) = mpsc::channel(32);
         let viewport = n0_watcher::Watchable::new((1u32, 1u32));
@@ -142,6 +148,7 @@ impl VideoDecoderPipeline {
         let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             move || {
+                let _guard = span.enter();
                 info!(decoder = %decoder_name, "pipeline decoder thread start");
                 if let Err(err) = decode_loop(
                     &shutdown,
@@ -406,35 +413,72 @@ fn decode_loop(
 pub struct AudioDecoderPipeline {
     shutdown: CancellationToken,
     #[debug(skip)]
+    handle: Box<dyn AudioSinkHandle>,
+    #[debug(skip)]
     _task_handle: AbortOnDropHandle<()>,
     #[debug(skip)]
     _thread_handle: thread::JoinHandle<()>,
 }
 
 impl AudioDecoderPipeline {
-    /// Creates a new audio decoder pipeline from any packet source.
+    /// Creates a new audio decoder pipeline, using an [`AudioStreamFactory`] to
+    /// create an output stream with the format required by the decoder.
     ///
-    /// The `shutdown` token is used for external cancellation. The pipeline
-    /// will also cancel this token when the decode loop exits (e.g., source
-    /// closes or too many consecutive errors).
-    pub fn new<D: AudioDecoder>(
+    /// Dropping the pipeline cancels the decode thread. The pipeline also
+    /// shuts down automatically when the packet source closes.
+    pub async fn new<D: AudioDecoder>(
+        name: String,
+        source: impl PacketSource,
+        config: &AudioConfig,
+        audio_backend: &dyn AudioStreamFactory,
+    ) -> Result<Self> {
+        let target_format = AudioFormat::from_hang_config(config);
+        let sink = audio_backend.create_output(target_format).await?;
+        let handle = sink.handle();
+        Self::build::<D>(name, source, config, sink, handle)
+    }
+
+    /// Creates a new audio decoder pipeline with a pre-made [`AudioSink`].
+    ///
+    /// Returns an error if the sink's format does not match the audio config.
+    pub fn with_sink<D: AudioDecoder>(
         name: String,
         source: impl PacketSource,
         config: &AudioConfig,
         sink: impl AudioSink,
-        shutdown: CancellationToken,
-        span: tracing::Span,
     ) -> Result<Self> {
-        let _guard = span.enter();
-        let (packet_tx, packet_rx) = mpsc::channel(32);
         let output_format = sink.format()?;
-        info!(?config, "audio decoder start");
+        let expected = AudioFormat::from_hang_config(config);
+        anyhow::ensure!(
+            output_format.sample_rate == expected.sample_rate
+                && output_format.channel_count == expected.channel_count,
+            "audio sink format mismatch: sink has {output_format:?}, decoder expects {expected:?}"
+        );
+        let handle = sink.handle();
+        Self::build::<D>(name, source, config, sink, handle)
+    }
+
+    fn build<D: AudioDecoder>(
+        name: String,
+        source: impl PacketSource,
+        config: &AudioConfig,
+        sink: impl AudioSink,
+        handle: Box<dyn AudioSinkHandle>,
+    ) -> Result<Self> {
+        let shutdown = CancellationToken::new();
+        let span = info_span!("audiodec", %name);
+        let output_format = {
+            let _guard = span.enter();
+            let output_format = sink.format()?;
+            info!(?config, "audio decoder start");
+            output_format
+        };
         let decoder = D::new(config, output_format)?;
 
+        let (packet_tx, packet_rx) = mpsc::channel(32);
         let thread_name = format!("adec-{}", name);
         let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
-            let span = span.clone();
             move || {
                 let _guard = span.enter();
                 info!("audio decoder thread start");
@@ -447,9 +491,15 @@ impl AudioDecoderPipeline {
         let task = tokio::spawn(forward_packets(source, packet_tx));
         Ok(Self {
             shutdown,
+            handle,
             _task_handle: AbortOnDropHandle::new(task),
             _thread_handle: thread,
         })
+    }
+
+    /// Returns the [`AudioSinkHandle`] for controlling playback (pause/resume/peaks).
+    pub fn handle(&self) -> &dyn AudioSinkHandle {
+        self.handle.as_ref()
     }
 
     /// Returns a future that completes when the pipeline shuts down.
@@ -579,11 +629,39 @@ pub struct AudioEncoderPipeline {
 }
 
 impl AudioEncoderPipeline {
-    /// Creates a new audio encoder pipeline.
+    /// Creates a new audio encoder pipeline, using an [`AudioStreamFactory`] to
+    /// create an input stream with the format required by the encoder.
+    pub async fn new(
+        audio_backend: &dyn AudioStreamFactory,
+        encoder: impl AudioEncoder,
+        sink: impl PacketSink,
+    ) -> Result<Self> {
+        let format = AudioFormat::from_hang_config(&encoder.config());
+        let source = audio_backend.create_input(format).await?;
+        Ok(Self::build(source, encoder, sink))
+    }
+
+    /// Creates a new audio encoder pipeline with a pre-made [`AudioSource`].
     ///
-    /// Spawns an OS thread that captures samples from `source`, encodes them
-    /// with `encoder`, and writes the resulting packets to `sink`.
-    pub fn new(
+    /// Returns an error if the source's format does not match the encoder's config.
+    pub fn with_source(
+        source: Box<dyn AudioSource>,
+        encoder: impl AudioEncoder,
+        sink: impl PacketSink,
+    ) -> Result<Self> {
+        let source_format = source.format();
+        let enc_config = encoder.config();
+        anyhow::ensure!(
+            source_format.sample_rate == enc_config.sample_rate
+                && source_format.channel_count == enc_config.channel_count,
+            "audio source format mismatch: source has {source_format:?}, encoder expects sr={} ch={}",
+            enc_config.sample_rate,
+            enc_config.channel_count,
+        );
+        Ok(Self::build(source, encoder, sink))
+    }
+
+    fn build(
         mut source: Box<dyn AudioSource>,
         mut encoder: impl AudioEncoder,
         mut sink: impl PacketSink,

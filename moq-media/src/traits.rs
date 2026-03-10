@@ -1,5 +1,6 @@
 use anyhow::Result;
 use hang::catalog::{AudioConfig, VideoConfig};
+use n0_future::boxed::BoxFuture;
 
 use crate::format::{
     AudioEncoderConfig, AudioFormat, AudioPreset, DecodeConfig, DecodedVideoFrame, EncodedFrame,
@@ -33,6 +34,51 @@ pub trait AudioSinkHandle: Send + 'static {
     // TODO: document how smoothing and normalization are expected
     fn smoothed_peak_normalized(&self) -> Option<f32> {
         None
+    }
+}
+
+/// Factory for creating audio input/output streams.
+///
+/// Implementations create [`AudioSource`] and [`AudioSink`] streams with the
+/// requested [`AudioFormat`], handling any necessary resampling internally.
+pub trait AudioStreamFactory: Send + Sync + 'static {
+    /// Creates an audio input stream (microphone capture) with the given format.
+    fn create_input(&self, format: AudioFormat) -> BoxFuture<Result<Box<dyn AudioSource>>>;
+
+    /// Creates an audio output stream (speaker playback) with the given format.
+    fn create_output(&self, format: AudioFormat) -> BoxFuture<Result<Box<dyn AudioSink>>>;
+}
+
+impl AudioSinkHandle for Box<dyn AudioSink> {
+    fn cloned_boxed(&self) -> Box<dyn AudioSinkHandle> {
+        (**self).cloned_boxed()
+    }
+    fn pause(&self) {
+        (**self).pause();
+    }
+    fn resume(&self) {
+        (**self).resume();
+    }
+    fn is_paused(&self) -> bool {
+        (**self).is_paused()
+    }
+    fn toggle_pause(&self) {
+        (**self).toggle_pause();
+    }
+    fn smoothed_peak_normalized(&self) -> Option<f32> {
+        (**self).smoothed_peak_normalized()
+    }
+}
+
+impl AudioSink for Box<dyn AudioSink> {
+    fn format(&self) -> Result<AudioFormat> {
+        (**self).format()
+    }
+    fn push_samples(&mut self, buf: &[f32]) -> Result<()> {
+        (**self).push_samples(buf)
+    }
+    fn handle(&self) -> Box<dyn AudioSinkHandle> {
+        (**self).handle()
     }
 }
 

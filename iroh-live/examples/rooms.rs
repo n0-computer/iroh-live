@@ -152,8 +152,12 @@ impl eframe::App for App {
                         broadcast.broadcast_name()
                     );
                     let track = match self.rt.block_on(async {
-                        let audio_out = self.audio_ctx.default_output().await?;
-                        broadcast.watch_and_listen::<DefaultDecoders>(audio_out, Default::default())
+                        broadcast
+                            .watch_and_listen::<DefaultDecoders>(
+                                &self.audio_ctx,
+                                Default::default(),
+                            )
+                            .await
                     }) {
                         Ok(track) => track,
                         Err(err) => {

@@ -4,7 +4,7 @@ use moq_lite::BroadcastProducer;
 use moq_media::{
     format::PlaybackConfig,
     subscribe::{AvRemoteTrack, SubscribeBroadcast},
-    traits::{AudioSink, Decoders},
+    traits::{AudioStreamFactory, Decoders},
 };
 use n0_error::Result;
 use tracing::info;
@@ -41,11 +41,13 @@ impl Live {
         &self,
         remote: impl Into<EndpointAddr>,
         broadcast_name: &str,
-        audio_out: impl AudioSink,
+        audio_backend: &dyn AudioStreamFactory,
         config: PlaybackConfig,
     ) -> Result<(MoqSession, AvRemoteTrack)> {
         let (session, broadcast) = self.connect_and_subscribe(remote, broadcast_name).await?;
-        let track = broadcast.watch_and_listen::<D>(audio_out, config)?;
+        let track = broadcast
+            .watch_and_listen::<D>(audio_backend, config)
+            .await?;
         Ok((session, track))
     }
 
