@@ -30,7 +30,7 @@ cargo test --workspace --all-features
 ## Lint
 
 ```sh
-cargo clippy --workspace --all-features
+cargo clippy --locked --workspace --all-targets --all-features
 cargo fmt --check
 ```
 
@@ -41,7 +41,7 @@ cargo fmt --check
 ## Commits
 
 - Small incremental commits, each leaving all crates compiling
-- `cargo clippy --workspace` must be clean (no warnings)
+- `cargo clippy --locked --workspace --all-targets --all-features` must be clean (no warnings)
 - `cargo fmt --check` must pass
 - Concise commit messages
 
