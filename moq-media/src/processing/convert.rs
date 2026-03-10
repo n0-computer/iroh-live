@@ -452,6 +452,132 @@ mod tests {
     }
 
     #[test]
+    fn rgba_to_nv12_roundtrip() {
+        let w = 8u32;
+        let h = 8u32;
+        // Solid red RGBA
+        let rgba: Vec<u8> = [255, 0, 0, 255].repeat((w * h) as usize);
+        let nv12 = rgba_to_nv12_data(&rgba, w, h).unwrap();
+        assert_eq!(nv12.width, w);
+        assert_eq!(nv12.height, h);
+        // Y plane: one byte per pixel
+        assert!(nv12.y.len() >= (w * h) as usize);
+        // UV plane: interleaved, half width * half height * 2
+        let chroma_h = h.div_ceil(2);
+        assert!(nv12.uv.len() >= (w * chroma_h) as usize);
+
+        // Round-trip: NV12 → RGBA
+        let restored =
+            nv12_to_rgba_data(&nv12.y, nv12.y_stride, &nv12.uv, nv12.uv_stride, w, h).unwrap();
+        assert_eq!(restored.len(), (w * h * 4) as usize);
+        // Center pixel should still be reddish
+        let mid = ((h / 2 * w + w / 2) * 4) as usize;
+        assert!(restored[mid] > 150, "R={} should be high", restored[mid]);
+        assert!(restored[mid + 1] < 100, "G={}", restored[mid + 1]);
+        assert!(restored[mid + 2] < 100, "B={}", restored[mid + 2]);
+    }
+
+    #[test]
+    fn bgra_to_nv12_roundtrip() {
+        let w = 8u32;
+        let h = 8u32;
+        // Solid blue in BGRA (B=255, G=0, R=0, A=255)
+        let bgra: Vec<u8> = [255, 0, 0, 255].repeat((w * h) as usize);
+        let nv12 = bgra_to_nv12_data(&bgra, w, h).unwrap();
+        assert_eq!(nv12.width, w);
+        assert_eq!(nv12.height, h);
+
+        // Round-trip: NV12 → BGRA
+        let restored =
+            nv12_to_bgra_data(&nv12.y, nv12.y_stride, &nv12.uv, nv12.uv_stride, w, h).unwrap();
+        assert_eq!(restored.len(), (w * h * 4) as usize);
+        // Center pixel should be bluish (BGRA order)
+        let mid = ((h / 2 * w + w / 2) * 4) as usize;
+        assert!(restored[mid] > 150, "B={} should be high", restored[mid]);
+    }
+
+    #[test]
+    fn nv12_into_contiguous() {
+        let nv12 = Nv12Data {
+            y: vec![16; 16],
+            uv: vec![128; 8],
+            y_stride: 4,
+            uv_stride: 4,
+            width: 4,
+            height: 4,
+        };
+        let buf = nv12.into_contiguous();
+        assert_eq!(buf.len(), 24);
+        assert_eq!(&buf[..16], &[16u8; 16]);
+        assert_eq!(&buf[16..], &[128u8; 8]);
+    }
+
+    #[test]
+    fn pixel_format_to_nv12_dispatch() {
+        let w = 4u32;
+        let h = 4u32;
+        let data: Vec<u8> = vec![128; (w * h * 4) as usize];
+        pixel_format_to_nv12(&data, w, h, PixelFormat::Rgba).unwrap();
+        pixel_format_to_nv12(&data, w, h, PixelFormat::Bgra).unwrap();
+    }
+
+    #[test]
+    fn yuv420_to_bgra_from_slices_basic() {
+        let w = 4u32;
+        let h = 4u32;
+        // Create YUV from known RGBA, then convert to BGRA
+        let rgba: Vec<u8> = [255, 0, 0, 255].repeat((w * h) as usize);
+        let yuv = rgba_to_yuv420_data(&rgba, w, h).unwrap();
+        let bgra = yuv420_to_bgra_from_slices(
+            &yuv.y,
+            yuv.y_stride,
+            &yuv.u,
+            yuv.u_stride,
+            &yuv.v,
+            yuv.v_stride,
+            w,
+            h,
+        )
+        .unwrap();
+        assert_eq!(bgra.len(), (w * h * 4) as usize);
+        // BGRA: B should be low for red input, R (at offset 2) should be high
+        let mid = ((h / 2 * w + w / 2) * 4) as usize;
+        assert!(
+            bgra[mid + 2] > 150,
+            "BGRA R={} should be high",
+            bgra[mid + 2]
+        );
+        assert!(bgra[mid] < 100, "BGRA B={} should be low", bgra[mid]);
+    }
+
+    #[test]
+    fn yuv420_to_rgba_from_slices_basic() {
+        let w = 4u32;
+        let h = 4u32;
+        let rgba_in: Vec<u8> = [0, 255, 0, 255].repeat((w * h) as usize);
+        let yuv = rgba_to_yuv420_data(&rgba_in, w, h).unwrap();
+        let rgba_out = yuv420_to_rgba_from_slices(
+            &yuv.y,
+            yuv.y_stride,
+            &yuv.u,
+            yuv.u_stride,
+            &yuv.v,
+            yuv.v_stride,
+            w,
+            h,
+        )
+        .unwrap();
+        assert_eq!(rgba_out.len(), (w * h * 4) as usize);
+        // Green should survive roundtrip
+        let mid = ((h / 2 * w + w / 2) * 4) as usize;
+        assert!(
+            rgba_out[mid + 1] > 150,
+            "G={} should be high",
+            rgba_out[mid + 1]
+        );
+    }
+
+    #[test]
     fn yuv_plane_sizes() {
         let w = 8u32;
         let h = 6u32;

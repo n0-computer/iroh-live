@@ -553,3 +553,63 @@ impl AudioEncoderConfig {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn new_cpu_with_format_rgba() {
+        let data = vec![128u8; 4 * 4 * 4];
+        let frame = DecodedVideoFrame::new_cpu_with_format(
+            data.clone(),
+            4,
+            4,
+            Duration::from_millis(100),
+            PixelFormat::Rgba,
+        );
+        assert_eq!(frame.timestamp, Duration::from_millis(100));
+        if let FrameBuffer::Cpu(ref cpu) = frame.buffer {
+            assert_eq!(cpu.pixel_format, PixelFormat::Rgba);
+            assert_eq!(cpu.image.width(), 4);
+            assert_eq!(cpu.image.height(), 4);
+        } else {
+            panic!("expected CPU frame");
+        }
+    }
+
+    #[test]
+    fn new_cpu_with_format_bgra() {
+        let data = vec![64u8; 8 * 8 * 4];
+        let frame =
+            DecodedVideoFrame::new_cpu_with_format(data, 8, 8, Duration::ZERO, PixelFormat::Bgra);
+        if let FrameBuffer::Cpu(ref cpu) = frame.buffer {
+            assert_eq!(cpu.pixel_format, PixelFormat::Bgra);
+        } else {
+            panic!("expected CPU frame");
+        }
+    }
+
+    #[test]
+    fn new_cpu_defaults_to_rgba() {
+        let data = vec![0u8; 2 * 2 * 4];
+        let frame = DecodedVideoFrame::new_cpu(data, 2, 2, Duration::ZERO);
+        if let FrameBuffer::Cpu(ref cpu) = frame.buffer {
+            assert_eq!(cpu.pixel_format, PixelFormat::Rgba);
+        } else {
+            panic!("expected CPU frame");
+        }
+    }
+
+    #[test]
+    fn from_image_defaults_to_rgba() {
+        let img = image::RgbaImage::new(4, 4);
+        let frame = DecodedVideoFrame::from_image(img, Duration::from_secs(1));
+        if let FrameBuffer::Cpu(ref cpu) = frame.buffer {
+            assert_eq!(cpu.pixel_format, PixelFormat::Rgba);
+        } else {
+            panic!("expected CPU frame");
+        }
+    }
+}
