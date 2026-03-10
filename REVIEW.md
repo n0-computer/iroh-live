@@ -14,11 +14,11 @@
 - [x] **D1g: `VideoEncoderPipeline` struct** — standalone encoder with thread, `PipeSink` output (`pipeline.rs`)
 - [x] **D1h: `subscribe.rs` uses `VideoDecoderPipeline`** — `from_consumer` delegates to pipeline
 - [x] **D1i: `StreamClock` removed** — was unused dead code, deleted `processing/clock.rs`
-- [ ] **D1j: `PacketSink` trait** — abstract over `OrderedProducer` and `PipeSink` (currently `PipeSink` is concrete only)
-- [ ] **D1k: Refactor `publish.rs` `EncoderThread`** to use pipeline structs / `PacketSink` trait
-- [ ] **D1l: `AudioDecoderPipeline` / `AudioEncoderPipeline`** — audio equivalents not yet implemented
-- [ ] **D1m: `subscribe.rs` `AudioTrack` still converts `OrderedFrame`→`MediaPacket` inline** (line 399)
-- [ ] **D1n: `forward_frames` in `subscribe.rs`** still uses `OrderedFrame` for audio path
+- [x] **D1j: `PacketSink` trait** — abstract over `OrderedProducer` and `PipeSink` (`transport.rs`)
+- [x] **D1k: Refactor `publish.rs` `EncoderThread`** to use `PacketSink` trait
+- [x] **D1l: `AudioDecoderPipeline` / `AudioEncoderPipeline`** — audio equivalents (`pipeline.rs`)
+- [x] **D1m: `subscribe.rs` `AudioTrack` uses `MediaPacket` throughout** (no inline `OrderedFrame` conversion)
+- [x] **D1n: `subscribe.rs` audio path uses `PacketSource`/`forward_packets`** (removed `forward_frames`)
 
 ### Bugs
 

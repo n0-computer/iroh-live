@@ -114,7 +114,12 @@ impl VideoEncoderFactory for Av1Encoder {
     const ID: &str = "av1-rav1e";
 
     fn with_config(config: VideoEncoderConfig) -> Result<Self> {
-        Self::new(config.width, config.height, config.framerate, config.bitrate)
+        Self::new(
+            config.width,
+            config.height,
+            config.framerate,
+            config.bitrate,
+        )
     }
 }
 

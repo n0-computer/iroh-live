@@ -6,9 +6,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use bytes::Buf as _;
 use hang::{
     catalog::{AudioConfig, Catalog, CatalogConsumer, VideoConfig},
-    container::{OrderedConsumer, OrderedFrame, Timestamp},
+    container::OrderedConsumer,
 };
 use moq_lite::{BroadcastConsumer, Track};
 use n0_error::{Result, StackResultExt, StdResultExt};
@@ -20,7 +21,7 @@ use tracing::{Span, debug, error, info, info_span, trace, warn};
 
 use crate::{
     format::{DecodeConfig, DecodedVideoFrame, MediaPacket, PixelFormat, PlaybackConfig, Quality},
-    pipeline::{VideoDecoderHandle, VideoDecoderPipeline},
+    pipeline::{VideoDecoderHandle, VideoDecoderPipeline, forward_packets},
     processing::scale::Scaler,
     traits::{AudioDecoder, AudioSink, AudioSinkHandle, Decoders, VideoDecoder, VideoSource},
     transport::MoqPacketSource,
@@ -334,7 +335,8 @@ impl AudioTrack {
                 info!("audio decoder thread stop");
             }
         });
-        let task = tokio::spawn(forward_frames(consumer, packet_tx));
+        let source = MoqPacketSource(consumer);
+        let task = tokio::spawn(forward_packets(source, packet_tx));
         Ok(Self {
             name,
             handle,
@@ -359,7 +361,7 @@ impl AudioTrack {
 
     pub(crate) fn run_loop(
         mut decoder: impl AudioDecoder,
-        mut packet_rx: mpsc::Receiver<hang::container::OrderedFrame>,
+        mut packet_rx: mpsc::Receiver<MediaPacket>,
         mut sink: impl AudioSink,
         shutdown: &CancellationToken,
     ) -> Result<()> {
@@ -384,19 +386,14 @@ impl AudioTrack {
 
                         if tracing::enabled!(tracing::Level::TRACE) {
                             let loop_elapsed = tick.duration_since(loop_start);
-                            let remote_elapsed: Duration = packet
-                                .timestamp
-                                .checked_sub(remote_start)
-                                .unwrap_or(Timestamp::ZERO)
-                                .into();
+                            let remote_elapsed = packet.timestamp.saturating_sub(remote_start);
                             let diff_ms =
                                 (loop_elapsed.as_secs_f32() - remote_elapsed.as_secs_f32()) * 1000.;
-                            trace!(len = packet.payload.num_bytes(), ts=?packet.timestamp, ?loop_elapsed, ?remote_elapsed, ?diff_ms, "recv packet");
+                            trace!(payload_bytes = packet.payload.remaining(), ts=?packet.timestamp, ?loop_elapsed, ?remote_elapsed, ?diff_ms, "recv packet");
                         }
 
                         // TODO: Skip outdated packets?
 
-                        let packet: MediaPacket = packet.into();
                         if !sink.is_paused() {
                             if let Err(err) = decoder.push_packet(packet) {
                                 consecutive_errors += 1;
@@ -684,28 +681,6 @@ impl WatchTrack {
 
     pub fn current_frame(&mut self) -> Option<DecodedVideoFrame> {
         self.video_frames.current_frame()
-    }
-}
-
-async fn forward_frames(mut track: OrderedConsumer, sender: mpsc::Sender<OrderedFrame>) {
-    loop {
-        let frame = track.read().await;
-        match frame {
-            Ok(Some(frame)) => {
-                if sender.send(frame).await.is_err() {
-                    debug!("forward_frames: decoder channel closed");
-                    break;
-                }
-            }
-            Ok(None) => {
-                debug!("forward_frames: track ended");
-                break;
-            }
-            Err(err) => {
-                error!("forward_frames: failed to read frame from track: {err:#}");
-                break;
-            }
-        }
     }
 }
 
