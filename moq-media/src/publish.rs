@@ -373,11 +373,11 @@ impl AudioRenditions {
             .context("rendition not available")?;
         let encoder = make_encoder()?;
         let sink = MoqPacketSink::new(producer);
-        Ok(AudioEncoderPipeline::new(
+        Ok(AudioEncoderPipeline::with_source(
             self.source.cloned_boxed(),
             encoder,
             sink,
-        ))
+        )?)
     }
 }
 
