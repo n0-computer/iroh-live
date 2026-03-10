@@ -75,6 +75,7 @@
 - [ ] **A3: Quality enum is coarse** — `Highest/High/Mid/Low` maps to 4 fixed presets only
 - [ ] **A4: `DecodeConfig` minimal** — only `pixel_format` and `backend`, no resolution/framerate constraints
 - [ ] **A5: VideoToolbox decoder stub** — `vtb/decoder.rs` is TODO skeleton only
+- [ ] **A6: No `set_keyframe_interval` on `VideoEncoder` trait** — all encoders hardcode keyframe interval = framerate (1/sec) at construction. Only VTB supports runtime change via `VTSessionSetProperty`. OpenH264/rav1e/VAAPI require encoder recreation. Add trait method with default no-op; implement for VTB; others store desired interval for next reset.
 
 ---
 
