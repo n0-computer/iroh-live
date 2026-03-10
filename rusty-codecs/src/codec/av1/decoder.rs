@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use super::rav1d_safe::{Decoder, PlanarImageComponent, Settings};
+use crate::config::{VideoCodec, VideoConfig};
 use anyhow::{Context as _, Result, bail};
-use hang::catalog::{VideoCodec, VideoConfig};
 use image::RgbaImage;
 
 use crate::format::{DecodeConfig, DecodedVideoFrame, MediaPacket, PixelFormat};
@@ -142,7 +142,7 @@ impl VideoDecoder for Av1VideoDecoder {
 
 #[cfg(test)]
 mod tests {
-    use hang::catalog::H264;
+    use crate::config::H264;
 
     use super::*;
     use crate::codec::av1::encoder::Av1Encoder;
@@ -320,8 +320,6 @@ mod tests {
             bitrate: None,
             framerate: None,
             optimize_for_latency: None,
-            container: Default::default(),
-            jitter: None,
         };
         let decode_config = DecodeConfig::default();
         let result = Av1VideoDecoder::new(&config, &decode_config);

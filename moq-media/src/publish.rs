@@ -351,7 +351,7 @@ impl AudioRenditions {
         self.renditions.insert(
             name,
             AudioRenditionEntry {
-                config,
+                config: config.into(),
                 factory: Box::new(move || Ok(Box::new(E::with_preset(format, preset)?))),
             },
         );
@@ -469,7 +469,7 @@ impl VideoRenditions {
         self.renditions.insert(
             name,
             VideoRenditionEntry {
-                config,
+                config: config.into(),
                 factory: Box::new(move || Ok(Box::new(E::with_preset(preset)?))),
             },
         );

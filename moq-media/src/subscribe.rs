@@ -295,6 +295,7 @@ impl AudioTrack {
         audio_backend: &dyn AudioStreamFactory,
     ) -> Result<Self> {
         let source = MoqPacketSource(consumer);
+        let config: rusty_codecs::config::AudioConfig = config.into();
         let pipeline = AudioDecoderPipeline::new::<D>(name, source, &config, audio_backend).await?;
         Ok(Self { pipeline })
     }
@@ -442,7 +443,8 @@ impl WatchTrack {
         playback_config: &DecodeConfig,
     ) -> Result<Self> {
         let source = MoqPacketSource(consumer);
-        let pipeline = VideoDecoderPipeline::new::<D>(rendition, source, config, playback_config)?;
+        let config: rusty_codecs::config::VideoConfig = config.clone().into();
+        let pipeline = VideoDecoderPipeline::new::<D>(rendition, source, &config, playback_config)?;
         Ok(Self::from_pipeline(pipeline))
     }
 

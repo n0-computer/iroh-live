@@ -15,7 +15,7 @@ anyhow = "1.0.100"
 buf-list = "1.1"
 bytes = "1.11.0"
 derive_more = { version = "2.0.1", features = ["display", "debug", "eq", "deref"] }
-hang = "0.15"
+hang = { version = "0.15", optional = true }
 image = { version = "0.25", default-features = false }
 n0-future = "0.3.1"
 pic-scale = "0.6"
@@ -48,6 +48,7 @@ rand = "0.9"
 
 [features]
 default = ["h264", "opus", "av1"]
+hang = ["dep:hang"]
 h264 = ["dep:openh264"]
 opus = ["dep:unsafe-libopus", "dep:rubato", "dep:audioadapter-buffers"]
 av1 = ["dep:rav1e", "dep:rav1d"]

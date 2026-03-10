@@ -19,6 +19,7 @@ mod patterns;
 mod vectors;
 
 use crate::codec::test_util::encoded_frames_to_media_packets;
+use crate::config::{AudioConfig, VideoConfig};
 use crate::format::{
     AudioFormat, AudioPreset, DecodeConfig, DecodedVideoFrame, DecoderBackend, EncodedFrame,
     MediaPacket, VideoFrame, VideoPreset,
@@ -27,7 +28,6 @@ use crate::traits::{
     AudioDecoder, AudioEncoder, AudioEncoderFactory, Decoders, VideoDecoder, VideoEncoder,
     VideoEncoderFactory,
 };
-use hang::catalog::{AudioConfig, VideoConfig};
 use metrics::{FrameMetrics, compute_metrics};
 use std::f32::consts::PI;
 use std::time::Duration;

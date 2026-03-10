@@ -5,7 +5,6 @@ use std::os::unix::io::OwnedFd;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hang::catalog::AudioConfig;
 use image::RgbaImage;
 use strum::{Display, EnumString, VariantNames};
 
@@ -35,8 +34,8 @@ impl AudioFormat {
         }
     }
 
-    /// Creates an [`AudioFormat`] from a hang catalog [`AudioConfig`].
-    pub fn from_hang_config(config: &AudioConfig) -> Self {
+    /// Creates an [`AudioFormat`] from an [`AudioConfig`](crate::config::AudioConfig).
+    pub fn from_config(config: &crate::config::AudioConfig) -> Self {
         Self {
             channel_count: config.channel_count,
             sample_rate: config.sample_rate,
@@ -92,17 +91,6 @@ impl MediaPacket {
     }
 }
 
-impl From<hang::container::OrderedFrame> for MediaPacket {
-    fn from(f: hang::container::OrderedFrame) -> Self {
-        let is_keyframe = f.is_keyframe();
-        Self {
-            timestamp: f.timestamp.into(),
-            payload: f.payload,
-            is_keyframe,
-        }
-    }
-}
-
 /// A single compressed video or audio frame produced by an encoder.
 #[derive(Debug)]
 pub struct EncodedFrame {
@@ -112,17 +100,6 @@ pub struct EncodedFrame {
     pub timestamp: Duration,
     /// Compressed bitstream data.
     pub payload: bytes::Bytes,
-}
-
-impl EncodedFrame {
-    /// Converts to a hang [`Frame`](hang::container::Frame) for MoQ transport.
-    pub fn to_hang_frame(&self) -> hang::container::Frame {
-        hang::container::Frame {
-            timestamp: hang::container::Timestamp::from_micros(self.timestamp.as_micros() as u64)
-                .expect("timestamp overflow"),
-            payload: self.payload.clone().into(),
-        }
-    }
 }
 
 /// CPU-resident RGBA pixel data backed by an [`RgbaImage`].

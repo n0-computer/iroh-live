@@ -1,7 +1,7 @@
 use std::time::Duration;
 
+use crate::config::{VideoCodec, VideoConfig};
 use anyhow::{Context, Result, bail};
-use hang::catalog::{VideoCodec, VideoConfig};
 use image::RgbaImage;
 use openh264::{decoder::Decoder, formats::YUVSource};
 
@@ -174,7 +174,7 @@ impl VideoDecoder for H264VideoDecoder {
 
 #[cfg(test)]
 mod tests {
-    use hang::catalog::{AV1, H264};
+    use crate::config::{AV1, H264};
 
     use super::*;
     use crate::codec::h264::encoder::H264Encoder;
@@ -271,8 +271,6 @@ mod tests {
             bitrate: None,
             framerate: None,
             optimize_for_latency: None,
-            container: Default::default(),
-            jitter: None,
         };
         let decode_config = DecodeConfig::default();
         let mut dec = H264VideoDecoder::new(&config, &decode_config).unwrap();
@@ -371,8 +369,6 @@ mod tests {
             bitrate: None,
             framerate: None,
             optimize_for_latency: None,
-            container: Default::default(),
-            jitter: None,
         };
         let decode_config = DecodeConfig::default();
         let result = H264VideoDecoder::new(&config, &decode_config);

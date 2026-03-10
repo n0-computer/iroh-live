@@ -3,9 +3,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use hang::catalog::{AudioConfig, VideoConfig};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher as _;
+use rusty_codecs::config::{AudioConfig, VideoConfig};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, info_span, trace, warn};
@@ -417,7 +417,7 @@ impl AudioDecoderPipeline {
         config: &AudioConfig,
         audio_backend: &dyn AudioStreamFactory,
     ) -> Result<Self> {
-        let target_format = AudioFormat::from_hang_config(config);
+        let target_format = AudioFormat::from_config(config);
         let sink = audio_backend.create_output(target_format).await?;
         let handle = sink.handle();
         Self::build::<D>(name, source, config, sink, handle)
@@ -433,7 +433,7 @@ impl AudioDecoderPipeline {
         sink: impl AudioSink,
     ) -> Result<Self> {
         let output_format = sink.format()?;
-        let expected = AudioFormat::from_hang_config(config);
+        let expected = AudioFormat::from_config(config);
         anyhow::ensure!(
             output_format.sample_rate == expected.sample_rate
                 && output_format.channel_count == expected.channel_count,
@@ -623,7 +623,7 @@ impl AudioEncoderPipeline {
         encoder: impl AudioEncoder,
         sink: impl PacketSink,
     ) -> Result<Self> {
-        let format = AudioFormat::from_hang_config(&encoder.config());
+        let format = AudioFormat::from_config(&encoder.config());
         let source = audio_backend.create_input(format).await?;
         Ok(Self::build(source, encoder, sink))
     }
@@ -759,7 +759,7 @@ mod tests {
         h: u32,
         n: usize,
         preset: VideoPreset,
-    ) -> (hang::catalog::VideoConfig, Vec<MediaPacket>) {
+    ) -> (VideoConfig, Vec<MediaPacket>) {
         let mut enc = H264Encoder::with_preset(preset).unwrap();
         let mut packets = Vec::new();
         for i in 0..n {

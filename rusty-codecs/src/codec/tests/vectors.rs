@@ -15,9 +15,9 @@
 //! | `seq_64x64_pattern_5f.h264` | Baseline | 5 (I+P) | 64×64 | Test pattern |
 
 use crate::codec::h264::annexb;
+use crate::config::{H264, VideoCodec, VideoConfig};
 use crate::format::{DecodeConfig, DecoderBackend, MediaPacket, PixelFormat};
 use crate::traits::VideoDecoder;
-use hang::catalog::{H264, VideoCodec, VideoConfig};
 use std::time::Duration;
 
 // Embed test vectors at compile time.
@@ -47,10 +47,12 @@ fn split_access_units(data: &[u8]) -> Vec<MediaPacket> {
 
         // Slice NAL (IDR=5, non-IDR=1) marks the start of a new access unit
         // if we already have slice data accumulated.
-        if (nal_type == 1 || nal_type == 5) && current_au.iter().any(|n: &Vec<u8>| {
-            let t = n[0] & 0x1F;
-            t == 1 || t == 5
-        }) {
+        if (nal_type == 1 || nal_type == 5)
+            && current_au.iter().any(|n: &Vec<u8>| {
+                let t = n[0] & 0x1F;
+                t == 1 || t == 5
+            })
+        {
             // Emit previous access unit.
             let payload = nals_to_annex_b(&current_au);
             packets.push(MediaPacket {
@@ -108,8 +110,6 @@ fn h264_config(width: u32, height: u32) -> VideoConfig {
         bitrate: None,
         framerate: None,
         optimize_for_latency: None,
-        container: Default::default(),
-        jitter: None,
     }
 }
 
@@ -138,7 +138,11 @@ fn decode_all(
 #[test]
 fn parse_real_bitstream_nal_types() {
     let nals = annexb::parse_annex_b(IDR_32X32_RED);
-    assert!(nals.len() >= 3, "expected SPS+PPS+IDR, got {} NALs", nals.len());
+    assert!(
+        nals.len() >= 3,
+        "expected SPS+PPS+IDR, got {} NALs",
+        nals.len()
+    );
 
     let types: Vec<u8> = nals.iter().map(|n| n[0] & 0x1F).collect();
     // Should contain SPS (7), PPS (8), and IDR slice (5)
@@ -219,7 +223,11 @@ fn decode_external_idr_16x16_blue() {
     assert_eq!(img.height(), 16);
     let pixel = img.get_pixel(8, 8);
     // Blue: R low, G low, B high
-    assert!(pixel[2] > 100, "B={} should be high for blue frame", pixel[2]);
+    assert!(
+        pixel[2] > 100,
+        "B={} should be high for blue frame",
+        pixel[2]
+    );
 }
 
 #[test]
@@ -234,13 +242,20 @@ fn decode_external_idr_32x32_red() {
     assert_eq!(img.height(), 32);
     let pixel = img.get_pixel(16, 16);
     // Red: R high, G low, B low
-    assert!(pixel[0] > 100, "R={} should be high for red frame", pixel[0]);
+    assert!(
+        pixel[0] > 100,
+        "R={} should be high for red frame",
+        pixel[0]
+    );
 }
 
 #[test]
 fn decode_external_sequence_green_6f() {
     let packets = split_access_units(SEQ_32X32_GREEN_6F);
-    assert!(packets.len() >= 2, "expected multiple packets for 6-frame sequence");
+    assert!(
+        packets.len() >= 2,
+        "expected multiple packets for 6-frame sequence"
+    );
 
     let config = h264_config(32, 32);
     let frames = decode_all(&config, packets);
@@ -257,7 +272,11 @@ fn decode_external_sequence_green_6f() {
     assert_eq!(img.height(), 32);
     let pixel = img.get_pixel(16, 16);
     // Green: G high
-    assert!(pixel[1] > 100, "G={} should be high for green frame", pixel[1]);
+    assert!(
+        pixel[1] > 100,
+        "G={} should be high for green frame",
+        pixel[1]
+    );
 }
 
 #[test]
@@ -389,5 +408,8 @@ fn dynamic_decoder_routes_external_h264() {
             decoded_count += 1;
         }
     }
-    assert!(decoded_count >= 1, "DynamicVideoDecoder should decode external vectors");
+    assert!(
+        decoded_count >= 1,
+        "DynamicVideoDecoder should decode external vectors"
+    );
 }

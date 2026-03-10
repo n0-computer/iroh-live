@@ -1,5 +1,5 @@
+use crate::config::{AudioCodec, AudioConfig, VideoCodec, VideoConfig};
 use anyhow::{Result, bail};
-use hang::catalog::{AudioCodec, AudioConfig, VideoCodec, VideoConfig};
 
 use crate::{
     format::{AudioFormat, DecodeConfig, DecodedVideoFrame, MediaPacket},
