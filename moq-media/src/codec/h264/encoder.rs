@@ -12,7 +12,7 @@ use openh264::{
 };
 
 use crate::{
-    format::{EncodedFrame, VideoFrame, VideoPreset},
+    format::{EncodedFrame, VideoEncoderConfig, VideoFrame},
     processing::convert::{YuvData, pixel_format_to_yuv420},
     traits::{VideoEncoder, VideoEncoderFactory},
 };
@@ -60,11 +60,18 @@ impl YUVSource for YuvData {
     }
 }
 
+/// Bits-per-pixel factor for H.264 default bitrate calculation.
+const H264_BPP: f32 = 0.07;
+
 impl H264Encoder {
-    fn new(width: u32, height: u32, framerate: u32) -> Result<Self> {
-        let pixels = width * height;
-        let framerate_factor = 30.0 + (framerate as f32 - 30.) / 2.;
-        let bitrate = (pixels as f32 * 0.07 * framerate_factor).round() as u64;
+    fn new(width: u32, height: u32, framerate: u32, bitrate: Option<u64>) -> Result<Self> {
+        let enc_config = VideoEncoderConfig {
+            width,
+            height,
+            framerate,
+            bitrate,
+        };
+        let bitrate = enc_config.bitrate_or_default(H264_BPP);
 
         let config = EncoderConfig::new()
             .bitrate(BitRate::from_bps(bitrate as u32))
@@ -103,8 +110,8 @@ impl H264Encoder {
 impl VideoEncoderFactory for H264Encoder {
     const ID: &str = "h264-openh264";
 
-    fn with_preset(preset: VideoPreset) -> Result<Self> {
-        Self::new(preset.width(), preset.height(), preset.fps())
+    fn with_config(config: VideoEncoderConfig) -> Result<Self> {
+        Self::new(config.width, config.height, config.framerate, config.bitrate)
     }
 }
 

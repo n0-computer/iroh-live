@@ -29,7 +29,7 @@ use objc2_video_toolbox::{
 
 use crate::{
     codec::h264::annexb::build_avcc,
-    format::{EncodedFrame, VideoFrame, VideoPreset},
+    format::{EncodedFrame, VideoEncoderConfig, VideoFrame, VideoPreset},
     processing::convert::{YuvData, pixel_format_to_yuv420},
     traits::{VideoEncoder, VideoEncoderFactory},
 };
@@ -64,11 +64,18 @@ pub struct VtbEncoder {
 // on VTB's internal thread. We synchronize via Arc<Mutex<_>>.
 unsafe impl Send for VtbEncoder {}
 
+/// Bits-per-pixel factor for H.264 default bitrate calculation.
+const H264_BPP: f32 = 0.07;
+
 impl VtbEncoder {
-    fn new(width: u32, height: u32, framerate: u32) -> Result<Self> {
-        let pixels = width * height;
-        let framerate_factor = 30.0 + (framerate as f32 - 30.) / 2.;
-        let bitrate = (pixels as f32 * 0.07 * framerate_factor).round() as u64;
+    fn new(width: u32, height: u32, framerate: u32, bitrate: Option<u64>) -> Result<Self> {
+        let enc_config = VideoEncoderConfig {
+            width,
+            height,
+            framerate,
+            bitrate,
+        };
+        let bitrate = enc_config.bitrate_or_default(H264_BPP);
 
         let callback_state: SharedPacketBuf = Arc::new(Mutex::new(CallbackState {
             packets: Vec::new(),
@@ -205,8 +212,9 @@ impl VtbEncoder {
 
 impl VideoEncoderFactory for VtbEncoder {
     const ID: &str = "h264-vtb";
-    fn with_preset(preset: VideoPreset) -> Result<Self> {
-        Self::new(preset.width(), preset.height(), preset.fps())
+
+    fn with_config(config: VideoEncoderConfig) -> Result<Self> {
+        Self::new(config.width, config.height, config.framerate, config.bitrate)
     }
 }
 
@@ -298,6 +306,19 @@ impl VideoEncoder for VtbEncoder {
         } else {
             Some(state.packets.remove(0))
         })
+    }
+
+    fn set_bitrate(&mut self, bitrate: u64) -> Result<()> {
+        unsafe {
+            let bitrate_num = CFNumber::new_i64(bitrate as i64);
+            set_number_property(
+                &self.session,
+                kVTCompressionPropertyKey_AverageBitRate,
+                &bitrate_num,
+            )?;
+        }
+        self.bitrate = bitrate;
+        Ok(())
     }
 }
 
