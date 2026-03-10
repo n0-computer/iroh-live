@@ -2,50 +2,46 @@
 
 [dioxus-native](https://github.com/DioxusLabs/blitz) integration for moq-media video rendering.
 
-Provides `DioxusVideoRenderer`, a wrapper around `WgpuVideoRenderer` that implements
-dioxus-native's `CustomPaintSource` trait for rendering decoded video frames in a
-`<canvas>` element.
+Provides `use_video_renderer`, a dioxus hook that creates a `DioxusVideoRenderer`
+and returns a `VideoTrackHandle` for setting the active video track.
 
 ## Usage
 
 ```rust
-use moq_media_dioxus::DioxusVideoRenderer;
-use dioxus_native::use_wgpu;
+use moq_media_dioxus::use_video_renderer;
 
-let renderer = DioxusVideoRenderer::new();
-let frame_tx = renderer.frame_sender();
-let paint_source_id = use_wgpu(move || renderer);
+let (handle, paint_source_id) = use_video_renderer();
 
-// Send decoded frames from any thread:
-frame_tx.send(decoded_frame).ok();
+// Set or swap the video track at any time:
+handle.set(watch_track);
 
 // In RSX:
 rsx!(canvas { "src": paint_source_id })
 ```
 
-## Running the viewer example
+## Running the demo
 
-The viewer example captures from a camera or screen, optionally encodes and decodes
+The demo captures from a camera or screen, optionally encodes and decodes
 through a full pipeline, and renders via wgpu.
 
 ```sh
-# Camera + screen capture (default)
-cargo run -p moq-media-dioxus --example viewer --features capture-camera,capture-screen
+# Camera + screen capture
+cargo run -p moq-media-dioxus --example demo --features capture-camera,capture-screen
 
 # Camera only
-cargo run -p moq-media-dioxus --example viewer --features capture-camera
+cargo run -p moq-media-dioxus --example demo --features capture-camera
 
 # Screen only
-cargo run -p moq-media-dioxus --example viewer --features capture-screen
+cargo run -p moq-media-dioxus --example demo --features capture-screen
 
 # With DMA-BUF import (Linux, for zero-copy HW decode)
-cargo run -p moq-media-dioxus --example viewer --features capture-camera,capture-screen,dmabuf-import
+cargo run -p moq-media-dioxus --example demo --features capture-camera,capture-screen,dmabuf-import
 ```
 
-The viewer UI lets you switch between:
+The UI lets you switch between:
 
 - **Source**: Camera or Screen (depending on enabled features)
-- **Mode**: Direct (raw capture → decode → render) or Encode/Decode (capture → encode → decode → render)
+- **Mode**: Direct (raw capture → render) or Encode/Decode (capture → encode → decode → render)
 - **Encoder/Decoder**: selectable when in Encode/Decode mode
 
 ## Features
