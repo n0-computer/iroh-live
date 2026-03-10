@@ -29,8 +29,8 @@ use objc2_video_toolbox::{
 };
 
 use crate::{
-    codec::h264::annexb::build_avcc,
-    format::{EncodedFrame, VideoEncoderConfig, VideoFrame, VideoPreset},
+    codec::h264::annexb::{build_avcc, length_prefixed_to_annex_b},
+    format::{EncodedFrame, NalFormat, VideoEncoderConfig, VideoFrame, VideoPreset},
     processing::convert::{YuvData, pixel_format_to_yuv420},
     traits::{VideoEncoder, VideoEncoderFactory},
 };
@@ -40,6 +40,7 @@ type SharedPacketBuf = Arc<Mutex<CallbackState>>;
 
 struct CallbackState {
     packets: VecDeque<EncodedFrame>,
+    nal_format: NalFormat,
     avcc: Option<Vec<u8>>,
     framerate: u32,
     frame_count: u64,
@@ -55,6 +56,7 @@ pub struct VtbEncoder {
     height: u32,
     framerate: u32,
     bitrate: u64,
+    nal_format: NalFormat,
     /// Force the next encoded frame to be a keyframe. Set after priming so
     /// the first real frame is an IDR instead of waiting MaxKeyFrameInterval.
     force_next_keyframe: bool,
@@ -74,9 +76,11 @@ impl VtbEncoder {
         let height = config.height;
         let framerate = config.framerate;
         let bitrate = config.bitrate_or_default(H264_BPP);
+        let nal_format = config.nal_format;
 
         let callback_state: SharedPacketBuf = Arc::new(Mutex::new(CallbackState {
             packets: VecDeque::new(),
+            nal_format,
             avcc: None,
             framerate,
             frame_count: 0,
@@ -157,44 +161,8 @@ impl VtbEncoder {
             bail!("prepare_to_encode_frames failed with status {status}");
         }
 
-        // Encode a black frame to extract SPS/PPS for the avcC description.
-        // VTB only emits parameter sets in the first encoded IDR frame.
-        {
-            let pool = unsafe { session.pixel_buffer_pool() }
-                .context("VTCompressionSession pixel buffer pool is null (priming)")?;
-            let pixel_buffer = create_pixel_buffer_from_pool(&pool)?;
-
-            let yuv = YuvData::black(width, height);
-            copy_yuv_to_pixel_buffer(&pixel_buffer, &yuv.y, &yuv.u, &yuv.v, width, height)?;
-
-            let pts = unsafe { CMTime::new(0, framerate as i32) };
-            let duration = unsafe { CMTime::new(1, framerate as i32) };
-            let mut info_flags = VTEncodeInfoFlags(0);
-            let status = unsafe {
-                session.encode_frame(
-                    &pixel_buffer,
-                    pts,
-                    duration,
-                    None,
-                    ptr::null_mut(),
-                    &mut info_flags,
-                )
-            };
-            if status != 0 {
-                bail!("VTCompressionSessionEncodeFrame (priming) failed with status {status}");
-            }
-
-            // Flush to ensure the callback fires before we return.
-            let status = unsafe { session.complete_frames(kCMTimeInvalid) };
-            if status != 0 {
-                bail!("VTCompressionSessionCompleteFrames (priming) failed with status {status}");
-            }
-
-            // Discard the priming packet and reset frame count.
-            let mut state = callback_state.lock().unwrap();
-            state.packets.clear();
-            state.frame_count = 0;
-        }
+        // No priming: avcC is extracted from the first real keyframe's
+        // CMFormatDescription in the compression callback.
 
         Ok(Self {
             session,
@@ -203,7 +171,8 @@ impl VtbEncoder {
             height,
             framerate,
             bitrate,
-            force_next_keyframe: true,
+            nal_format,
+            force_next_keyframe: false,
         })
     }
 }
@@ -214,6 +183,29 @@ impl VideoEncoderFactory for VtbEncoder {
     fn with_config(config: VideoEncoderConfig) -> Result<Self> {
         Self::new(config)
     }
+
+    fn config_for(config: &VideoEncoderConfig) -> VideoConfig {
+        let bitrate = config.bitrate_or_default(H264_BPP);
+        let inline = config.nal_format == NalFormat::AnnexB;
+        VideoConfig {
+            codec: VideoCodec::H264(H264 {
+                profile: 0x42,
+                constraints: 0xE0,
+                level: 0x1E,
+                inline,
+            }),
+            description: None,
+            coded_width: Some(config.width),
+            coded_height: Some(config.height),
+            display_ratio_width: None,
+            display_ratio_height: None,
+            bitrate: Some(bitrate),
+            framerate: Some(config.framerate as f64),
+            optimize_for_latency: Some(true),
+            container: hang::catalog::Container::Legacy,
+            jitter: None,
+        }
+    }
 }
 
 impl VideoEncoder for VtbEncoder {
@@ -222,13 +214,14 @@ impl VideoEncoder for VtbEncoder {
     }
 
     fn config(&self) -> VideoConfig {
+        let inline = self.nal_format == NalFormat::AnnexB;
         let state = self.callback_state.lock().unwrap();
         VideoConfig {
             codec: VideoCodec::H264(H264 {
                 profile: 0x42, // Baseline
                 constraints: 0xE0,
                 level: 0x1E, // Level 3.0
-                inline: false,
+                inline,
             }),
             description: state.avcc.clone().map(Into::into),
             coded_width: Some(self.width),
@@ -547,19 +540,32 @@ unsafe fn extract_encoded_packet(
         return None;
     }
 
-    let payload = unsafe { slice::from_raw_parts(data_ptr.cast::<u8>(), data_length) }.to_vec();
+    // VTB always outputs length-prefixed NAL units.
+    let lp_payload = unsafe { slice::from_raw_parts(data_ptr.cast::<u8>(), data_length) }.to_vec();
 
     // Check if this is a keyframe by looking at the first NAL unit type.
-    let keyframe = is_keyframe_payload(&payload);
+    let keyframe = is_keyframe_payload(&lp_payload);
 
-    // On first keyframe, extract SPS/PPS and build avcC.
-    if keyframe
-        && let Ok(mut guard) = state.lock()
-        && guard.avcc.is_none()
-        && let Some(avcc) = unsafe { extract_avcc_from_sample_buffer(sample_buffer) }
-    {
-        guard.avcc = Some(avcc);
+    let guard = state.lock().ok()?;
+    let nal_format = guard.nal_format;
+
+    // In avcC mode, extract SPS/PPS on first keyframe.
+    if nal_format == NalFormat::Avcc && keyframe && guard.avcc.is_none() {
+        drop(guard);
+        if let Some(avcc) = unsafe { extract_avcc_from_sample_buffer(sample_buffer) } {
+            if let Ok(mut guard) = state.lock() {
+                guard.avcc = Some(avcc);
+            }
+        }
+    } else {
+        drop(guard);
     }
+
+    // Convert to Annex B if needed.
+    let payload: bytes::Bytes = match nal_format {
+        NalFormat::AnnexB => length_prefixed_to_annex_b(&lp_payload).into(),
+        NalFormat::Avcc => lp_payload.into(),
+    };
 
     // Use the presentation timestamp embedded in the sample buffer rather than
     // the shared frame_count, which is racy with the async callback.
@@ -573,7 +579,7 @@ unsafe fn extract_encoded_packet(
     Some(EncodedFrame {
         is_keyframe: keyframe,
         timestamp: std::time::Duration::from_micros(timestamp_us),
-        payload: payload.into(),
+        payload,
     })
 }
 
@@ -655,15 +661,17 @@ mod tests {
 
     #[test]
     #[ignore]
-    fn vtb_avcc_available_at_construction() {
+    fn vtb_annex_b_default_no_description() {
         let enc = VtbEncoder::with_preset(VideoPreset::P360).unwrap();
-        let desc = enc.config().description;
+        let config = enc.config();
         assert!(
-            desc.is_some(),
-            "avcC should be populated at construction time"
+            config.description.is_none(),
+            "Annex B mode should have no avcC description"
         );
-        let avcc = desc.unwrap();
-        assert_eq!(avcc[0], 1, "avcC should start with version 1");
+        let VideoCodec::H264(h264) = &config.codec else {
+            panic!("expected H264 codec");
+        };
+        assert!(h264.inline, "Annex B mode should set inline=true");
     }
 
     #[test]
@@ -703,11 +711,6 @@ mod tests {
         assert!(!packets.is_empty(), "should have produced packets");
 
         let config = enc.config();
-        assert!(
-            config.description.is_some(),
-            "avcC should be populated after encoding"
-        );
-
         let decode_config = DecodeConfig::default();
         let mut dec = H264VideoDecoder::new(&config, &decode_config).unwrap();
         let mut decoded_count = 0;
