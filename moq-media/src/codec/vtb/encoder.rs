@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::ffi::{c_char, c_int, c_void};
 use std::ptr::{self, NonNull};
 use std::slice;
@@ -38,7 +39,7 @@ use crate::{
 type SharedPacketBuf = Arc<Mutex<CallbackState>>;
 
 struct CallbackState {
-    packets: Vec<EncodedFrame>,
+    packets: VecDeque<EncodedFrame>,
     avcc: Option<Vec<u8>>,
     framerate: u32,
     frame_count: u64,
@@ -75,7 +76,7 @@ impl VtbEncoder {
         let bitrate = config.bitrate_or_default(H264_BPP);
 
         let callback_state: SharedPacketBuf = Arc::new(Mutex::new(CallbackState {
-            packets: Vec::new(),
+            packets: VecDeque::new(),
             avcc: None,
             framerate,
             frame_count: 0,
@@ -298,11 +299,7 @@ impl VideoEncoder for VtbEncoder {
 
     fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
         let mut state = self.callback_state.lock().unwrap();
-        Ok(if state.packets.is_empty() {
-            None
-        } else {
-            Some(state.packets.remove(0))
-        })
+        Ok(state.packets.pop_front())
     }
 
     fn set_bitrate(&mut self, bitrate: u64) -> Result<()> {
@@ -523,7 +520,7 @@ unsafe extern "C-unwind" fn compression_output_callback(
     if let Some(packet) = unsafe { extract_encoded_packet(&state_arc, sample_buffer_ref) }
         && let Ok(mut guard) = state_arc.lock()
     {
-        guard.packets.push(packet);
+        guard.packets.push_back(packet);
     }
 }
 
