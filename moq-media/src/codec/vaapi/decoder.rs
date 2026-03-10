@@ -19,7 +19,7 @@ use hang::catalog::{VideoCodec, VideoConfig};
 use crate::codec::h264::annexb::{avcc_to_annex_b, length_prefixed_to_annex_b};
 use crate::format::{
     CpuFrame, DecodeConfig, DecodedVideoFrame, DmaBufInfo, DmaBufPlaneInfo, GpuFrame,
-    GpuFrameInner, GpuPixelFormat, MediaPacket, Nv12Planes, PixelFormat,
+    GpuFrameInner, GpuPixelFormat, MediaPacket, NalFormat, Nv12Planes, PixelFormat,
 };
 use crate::processing::convert::nv12_to_rgba_data;
 use crate::traits::VideoDecoder;
@@ -299,6 +299,8 @@ pub struct VaapiDecoder {
     framepool: Arc<Mutex<FramePool<GenericDmaVideoFrame>>>,
     #[debug(skip)]
     display: Rc<Display>,
+    /// NAL framing format of incoming packets.
+    nal_format: NalFormat,
     pending_frames: VecDeque<DecodedVideoFrame>,
     last_timestamp: Option<Duration>,
     timestamp_counter: u64,
@@ -364,9 +366,16 @@ impl VideoDecoder for VaapiDecoder {
     where
         Self: Sized,
     {
-        if !matches!(&config.codec, VideoCodec::H264(_)) {
-            bail!("VaapiDecoder only supports H.264, got {}", config.codec);
-        }
+        let inline = match &config.codec {
+            VideoCodec::H264(h264) => h264.inline,
+            other => bail!("VaapiDecoder only supports H.264, got {other}"),
+        };
+
+        let nal_format = if inline || config.description.is_none() {
+            NalFormat::AnnexB
+        } else {
+            NalFormat::Avcc
+        };
 
         let display =
             Display::open().context("failed to open VAAPI display — no GPU or driver found")?;
@@ -401,6 +410,7 @@ impl VideoDecoder for VaapiDecoder {
             decoder,
             framepool,
             display: export_display,
+            nal_format,
             pending_frames: VecDeque::new(),
             last_timestamp: None,
             timestamp_counter: 0,
@@ -429,7 +439,10 @@ impl VideoDecoder for VaapiDecoder {
     fn push_packet(&mut self, mut packet: MediaPacket) -> Result<()> {
         use bytes::Buf;
         let payload = packet.payload.copy_to_bytes(packet.payload.remaining());
-        let mut annex_b = length_prefixed_to_annex_b(&payload);
+        let mut annex_b = match self.nal_format {
+            NalFormat::AnnexB => payload.to_vec(),
+            NalFormat::Avcc => length_prefixed_to_annex_b(&payload),
+        };
         patch_baseline_constraint_flag(&mut annex_b);
 
         self.last_timestamp = Some(packet.timestamp);

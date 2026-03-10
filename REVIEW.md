@@ -33,14 +33,13 @@
 - [ ] **B8: No VAAPI→Vulkan sync for DMA-BUF** — works on Intel implicit sync, may fail elsewhere (`render/dmabuf_import.rs`)
 - [ ] **B9: `SharedVideoSource` pacing accumulates paused time** — resume can burst frames with no sleep (`publish.rs:529-569`)
 - [ ] **B10: Opus encoder ignores requested input sample rate** — hardcodes 48k, can drift/non-48k mismatch (`codec/opus/encoder.rs:141-147`, `publish.rs:764-768`)
-- [ ] **B11: `watch_local` video scaling errors are silently swallowed** — falls back to unscaled frame on any scaler error (`subscribe.rs:580-585`)
+- [x] **B11: `watch_local` video scaling errors are silently swallowed** — now logs warning on `Err`, only `Ok(None)` falls back silently (`subscribe.rs`)
 
 ### Design
 
 - [ ] **D2a: Dual NAL format support (avcC / Annex B)** — decoders and encoders should handle both length-prefixed (avcC, `description` present) and Annex B inline (`description` absent) H.264 transport modes. See details in Design Issues section below.
 - [ ] **D3: Encoder config by instantiation** — creates/drops encoders just for config (`publish.rs:363,475`)
 - [ ] **D4: SharedVideoSource park/unpark fragile** — replace with condvar or select (`publish.rs:520-586`)
-- [ ] **D5: `.expect("poisoned")` throughout** — use `parking_lot::Mutex` (`publish.rs` 8x, `controller.rs` 5x)
 - [ ] **D6: `apply_audio` fire-and-forget task** — no handle, caller can't observe failure (`controller.rs:281-293`)
 - [ ] **D7: No backpressure encoder→transport** — frames produced at source rate regardless (`publish.rs:706-732`)
 - [ ] **D8: BGRA pixel swap code still in `from_video_source`** (`subscribe.rs:582-586`); extracted in pipeline decode_loop but not in video source path
@@ -54,8 +53,8 @@
 - [x] **P3: Opus channel conversion allocates on identity** — caller now skips `convert_channels` when from==to (`opus/decoder.rs:94-98`)
 - [ ] **P4: `parse_annex_b` allocates Vec** — could use iterator (`h264/annexb.rs`)
 - [x] **P5: StreamClock unused** — removed dead code (`processing/clock.rs`, h264/av1 decoders)
-- [ ] **P6: Opus encoder queue/buffer use front-removal on `Vec`** — `drain(..n)` and `remove(0)` are O(n) (`codec/opus/encoder.rs:133,179`)
-- [ ] **P7: VideoToolbox encoder packet queue uses `Vec::remove(0)`** — O(n) per packet (`codec/vtb/encoder.rs:299`)
+- [x] **P6: Opus encoder queue/buffer use front-removal on `Vec`** — `packet_buf` changed to `VecDeque` with `pop_front()` (`codec/opus/encoder.rs`)
+- [x] **P7: VideoToolbox encoder packet queue uses `Vec::remove(0)`** — changed to `VecDeque` with `pop_front()` (`codec/vtb/encoder.rs`)
 
 ### Safety
 
@@ -148,11 +147,7 @@ The worktree has partially decoupled moq-media from hang/moq-lite transport type
 - `subscribe.rs` `from_consumer` delegates to `VideoDecoderPipeline`
 - `StreamClock` removed (was unused dead code)
 
-**Not done:**
-- `PacketSink` trait (only `PipeSink` concrete type; `EncoderThread` still uses `OrderedProducer` directly)
-- `publish.rs` `EncoderThread` not refactored to use pipeline structs
-- Audio pipeline equivalents (`AudioDecoderPipeline`, `AudioEncoderPipeline`)
-- Audio path in `subscribe.rs` still converts `OrderedFrame` → `MediaPacket` inline
+**All items complete** (D1a–D1o).
 
 ---
 
@@ -237,22 +232,9 @@ Meanwhile, `EncoderThread::spawn_audio` sizes its per-tick input buffer from `so
 - Enforce 48k at the API boundary (reject non-48k in `with_preset` with a clear error).
 - Or add explicit resampling before/inside Opus encoding.
 
-### B11: `watch_local` swallows scaler errors and silently changes behavior
+### B11: `watch_local` swallows scaler errors (FIXED)
 
-**File**: `subscribe.rs:580-585`
-
-In `WatchTrack::from_video_source`, scaling errors are matched by `_` and silently fall back to unscaled data:
-
-```rust
-let rgba = match scaler.scale_rgba(&frame.raw, w, h) {
-    Ok(Some((scaled, sw, sh))) => image::RgbaImage::from_raw(sw, sh, scaled),
-    _ => image::RgbaImage::from_raw(w, h, frame.raw.to_vec()),
-};
-```
-
-This hides real processing failures (bad input dimensions/stride assumptions/etc.) and makes debugging difficult. It also creates inconsistent behavior vs encoder pipeline code, which logs and aborts on scaling failure.
-
-**Fix**: Handle `Err(err)` separately with logging (and preferably fail fast or propagate), keeping the `Ok(None)` path as the only intentional "no scaling needed" case.
+`Err` and `Ok(None)` are now handled separately. Scaler errors are logged via `warn!` before falling back to the unscaled frame. `Ok(None)` (no scaling needed) still falls back silently as intended.
 
 ---
 
@@ -280,12 +262,6 @@ The source thread uses `thread::park()/unpark()` for lifecycle management. This 
 - Race between cancellation check and park: if `shutdown.cancel()` fires between `shutdown.is_cancelled()` check and `thread::park()`, the thread hangs until explicit `unpark()` in `VideoRenditions::drop()`
 
 Currently safe due to the `unpark()` in `drop()`, but brittle. A condvar or select-style mechanism would be clearer.
-
-### D5: Mutex poisoning — `.expect("poisoned")` throughout
-
-**Files**: `publish.rs` (8 occurrences), `controller.rs:136,202,275,290,295`
-
-If any code panics while holding the mutex, all subsequent `.expect("poisoned")` calls cascade into panics. Consider using `parking_lot::Mutex` (no poisoning) or handling the PoisonError.
 
 ### D6: `PublishCaptureController::apply_audio` spawns fire-and-forget tokio task
 
@@ -366,27 +342,13 @@ Builds a `Vec<&[u8]>` of all NAL units. Could use an iterator pattern to avoid t
 
 Removed `StreamClock` from both H.264 and AV1 decoders and deleted `processing/clock.rs`. The computed delay was never used for frame pacing.
 
-### P6: Opus encoder front-removal on `Vec` causes avoidable O(n) work
+### P6: Opus encoder front-removal on `Vec` (FIXED)
 
-**File**: `codec/opus/encoder.rs:133,179`
+`packet_buf` changed from `Vec<EncodedFrame>` to `VecDeque<EncodedFrame>` with `pop_front()` — O(1) instead of O(n). `sample_buf` remains `Vec<f32>` because `opus_encode_float` requires a contiguous pointer via `as_ptr()`; `drain(..n)` is the best available approach without a custom ring buffer with contiguous guarantees.
 
-Two hot paths shift data from the front of `Vec`:
-- `self.sample_buf.drain(..samples_per_frame)` after each encoded frame
-- `self.packet_buf.remove(0)` in `pop_packet()`
+### P7: VideoToolbox packet queue uses `Vec::remove(0)` (FIXED)
 
-Both are O(n) per operation and can become costly under load or when callers batch many samples/packets per call.
-
-**Fix**: Use a ring-buffer strategy:
-- `VecDeque<f32>`/`VecDeque<EncodedFrame>` with `drain(..n)`/`pop_front()`
-- or maintain head indices and compact periodically.
-
-### P7: VideoToolbox packet queue uses `Vec::remove(0)`
-
-**File**: `codec/vtb/encoder.rs:299`
-
-`VtbEncoder::pop_packet` currently does `state.packets.remove(0)`, which is O(n) and scales poorly as queue depth grows.
-
-**Fix**: Switch callback packet storage to `VecDeque` and use `pop_front()`.
+`CallbackState.packets` changed from `Vec<EncodedFrame>` to `VecDeque<EncodedFrame>`. `pop_packet()` now uses `pop_front()` — O(1) instead of O(n).
 
 ---
 

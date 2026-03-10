@@ -113,6 +113,36 @@ impl VideoEncoderFactory for Av1Encoder {
     fn with_config(config: VideoEncoderConfig) -> Result<Self> {
         Self::new(config)
     }
+
+    fn config_for(config: &VideoEncoderConfig) -> VideoConfig {
+        let bitrate = config.bitrate_or_default(AV1_BPP);
+        VideoConfig {
+            codec: VideoCodec::AV1(AV1 {
+                profile: 0,
+                level: 0,
+                tier: 'M',
+                bitdepth: 8,
+                mono_chrome: false,
+                chroma_subsampling_x: true,
+                chroma_subsampling_y: true,
+                chroma_sample_position: 0,
+                color_primaries: 1,
+                transfer_characteristics: 1,
+                matrix_coefficients: 1,
+                full_range: false,
+            }),
+            description: None,
+            coded_width: Some(config.width),
+            coded_height: Some(config.height),
+            display_ratio_width: None,
+            display_ratio_height: None,
+            bitrate: Some(bitrate),
+            framerate: Some(config.framerate as f64),
+            optimize_for_latency: Some(true),
+            container: hang::catalog::Container::Legacy,
+            jitter: None,
+        }
+    }
 }
 
 impl VideoEncoder for Av1Encoder {

@@ -12,7 +12,7 @@ use openh264::{
 };
 
 use crate::{
-    format::{EncodedFrame, VideoEncoderConfig, VideoFrame},
+    format::{EncodedFrame, NalFormat, VideoEncoderConfig, VideoFrame},
     processing::convert::{YuvData, pixel_format_to_yuv420},
     traits::{VideoEncoder, VideoEncoderFactory},
 };
@@ -28,7 +28,8 @@ pub struct H264Encoder {
     framerate: u32,
     bitrate: u64,
     frame_count: u64,
-    /// avcC description, populated after first successful encode.
+    nal_format: NalFormat,
+    /// avcC description, populated after first successful encode (avcC mode only).
     avcc: Option<Vec<u8>>,
     /// Encoded packets ready for collection.
     packet_buf: std::collections::VecDeque<EncodedFrame>,
@@ -69,8 +70,9 @@ impl H264Encoder {
         let height = config.height;
         let framerate = config.framerate;
         let bitrate = config.bitrate_or_default(H264_BPP);
+        let nal_format = config.nal_format;
 
-        let config = EncoderConfig::new()
+        let enc_config = EncoderConfig::new()
             .bitrate(BitRate::from_bps(bitrate as u32))
             .max_frame_rate(FrameRate::from_hz(framerate as f32))
             .usage_type(UsageType::CameraVideoRealTime)
@@ -78,18 +80,23 @@ impl H264Encoder {
             .intra_frame_period(IntraFramePeriod::from_num_frames(framerate));
 
         let api = OpenH264API::from_source();
-        let mut encoder = OpenH264Encoder::with_api_config(api, config)?;
+        let mut encoder = OpenH264Encoder::with_api_config(api, enc_config)?;
 
-        // Encode a black frame to extract SPS/PPS for the avcC description.
-        // openh264 only emits parameter sets in its first encoded IDR frame.
-        let black = YuvData::black(width, height);
-        let bitstream = encoder.encode(&black)?;
-        let annex_b = bitstream.to_vec();
-        let nals = parse_annex_b(&annex_b);
-        let avcc = extract_sps_pps(&nals).map(|(sps, pps)| build_avcc(&sps, &pps));
-
-        // Force the next real frame to be an IDR since we consumed the first one.
-        encoder.force_intra_frame();
+        let avcc = if nal_format == NalFormat::Avcc {
+            // Encode a black frame to extract SPS/PPS for the avcC description.
+            // openh264 only emits parameter sets in its first encoded IDR frame.
+            let black = YuvData::black(width, height);
+            let bitstream = encoder.encode(&black)?;
+            let annex_b = bitstream.to_vec();
+            let nals = parse_annex_b(&annex_b);
+            let avcc = extract_sps_pps(&nals).map(|(sps, pps)| build_avcc(&sps, &pps));
+            // Force the next real frame to be an IDR since we consumed the first one.
+            encoder.force_intra_frame();
+            avcc
+        } else {
+            // Annex B mode: SPS/PPS are inline in keyframes, no priming needed.
+            None
+        };
 
         Ok(Self {
             encoder,
@@ -98,6 +105,7 @@ impl H264Encoder {
             framerate,
             bitrate,
             frame_count: 0,
+            nal_format,
             avcc,
             packet_buf: std::collections::VecDeque::new(),
         })
@@ -110,6 +118,29 @@ impl VideoEncoderFactory for H264Encoder {
     fn with_config(config: VideoEncoderConfig) -> Result<Self> {
         Self::new(config)
     }
+
+    fn config_for(config: &VideoEncoderConfig) -> VideoConfig {
+        let bitrate = config.bitrate_or_default(H264_BPP);
+        let inline = config.nal_format == NalFormat::AnnexB;
+        VideoConfig {
+            codec: VideoCodec::H264(H264 {
+                profile: 0x42,
+                constraints: 0xE0,
+                level: 0x1E,
+                inline,
+            }),
+            description: None,
+            coded_width: Some(config.width),
+            coded_height: Some(config.height),
+            display_ratio_width: None,
+            display_ratio_height: None,
+            bitrate: Some(bitrate),
+            framerate: Some(config.framerate as f64),
+            optimize_for_latency: Some(true),
+            container: hang::catalog::Container::Legacy,
+            jitter: None,
+        }
+    }
 }
 
 impl VideoEncoder for H264Encoder {
@@ -118,12 +149,13 @@ impl VideoEncoder for H264Encoder {
     }
 
     fn config(&self) -> VideoConfig {
+        let inline = self.nal_format == NalFormat::AnnexB;
         VideoConfig {
             codec: VideoCodec::H264(H264 {
                 profile: 0x42, // Baseline
                 constraints: 0xE0,
                 level: 0x1E, // Level 3.0
-                inline: false,
+                inline,
             }),
             description: self.avcc.clone().map(Into::into),
             coded_width: Some(self.width),
@@ -149,19 +181,21 @@ impl VideoEncoder for H264Encoder {
             return Ok(());
         }
 
-        // openh264 outputs Annex B format
+        // openh264 outputs Annex B format natively.
         let annex_b = bitstream.to_vec();
 
-        // On first encode (or first IDR), extract SPS/PPS and build avcC
-        if self.avcc.is_none() {
+        // In avcC mode, extract SPS/PPS on first IDR and convert to length-prefixed.
+        if self.nal_format == NalFormat::Avcc && self.avcc.is_none() {
             let nals = parse_annex_b(&annex_b);
             if let Some((sps, pps)) = extract_sps_pps(&nals) {
                 self.avcc = Some(build_avcc(&sps, &pps));
             }
         }
 
-        // Convert Annex B → length-prefixed NALs for transport
-        let payload = annex_b_to_length_prefixed(&annex_b);
+        let payload: bytes::Bytes = match self.nal_format {
+            NalFormat::AnnexB => annex_b.into(),
+            NalFormat::Avcc => annex_b_to_length_prefixed(&annex_b).into(),
+        };
 
         let is_keyframe = matches!(frame_type, FrameType::IDR | FrameType::I);
         let timestamp_us = (self.frame_count * 1_000_000) / self.framerate as u64;
@@ -170,7 +204,7 @@ impl VideoEncoder for H264Encoder {
         self.packet_buf.push_back(EncodedFrame {
             is_keyframe,
             timestamp: Duration::from_micros(timestamp_us),
-            payload: payload.into(),
+            payload,
         });
 
         Ok(())
@@ -200,15 +234,17 @@ mod tests {
     }
 
     #[test]
-    fn avcc_extradata_available_at_construction() {
+    fn annex_b_default_no_description() {
         let enc = H264Encoder::with_preset(VideoPreset::P180).unwrap();
-        let desc = enc.config().description;
+        let config = enc.config();
         assert!(
-            desc.is_some(),
-            "avcC should be populated at construction time"
+            config.description.is_none(),
+            "Annex B mode should have no avcC description"
         );
-        let avcc = desc.unwrap();
-        assert_eq!(avcc[0], 1, "avcC should start with version 1");
+        let VideoCodec::H264(h264) = &config.codec else {
+            panic!("expected H264 codec");
+        };
+        assert!(h264.inline, "Annex B mode should set inline=true");
     }
 
     #[test]
