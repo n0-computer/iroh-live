@@ -20,7 +20,7 @@ use hang::catalog::{H264, VideoCodec, VideoConfig};
 use crate::{
     codec::h264::annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b},
     format::{EncodedFrame, NalFormat, VideoEncoderConfig, VideoFrame},
-    processing::convert::{YuvData, pixel_format_to_yuv420},
+    processing::convert::{YuvData, pixel_format_to_nv12},
     traits::{VideoEncoder, VideoEncoderFactory},
 };
 
@@ -479,14 +479,11 @@ impl VideoEncoder for VaapiEncoder {
 
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
         let [w, h] = frame.format.dimensions;
-        let yuv = pixel_format_to_yuv420(&frame.raw, w, h, frame.format.pixel_format)?;
-
-        // Convert I420 to NV12 (VAAPI expects NV12).
-        let nv12 = Self::i420_to_nv12(&yuv.y, &yuv.u, &yuv.v, w, h);
+        let nv12_data = pixel_format_to_nv12(&frame.raw, w, h, frame.format.pixel_format)?;
 
         // Wrap NV12 data in our VideoFrame impl.
         let nv12_frame = Nv12Frame {
-            data: nv12,
+            data: nv12_data.into_contiguous(),
             width: w,
             height: h,
         };

@@ -5,11 +5,14 @@ use hang::catalog::{VideoCodec, VideoConfig};
 use image::RgbaImage;
 use openh264::{decoder::Decoder, formats::YUVSource};
 
-use crate::format::{DecodeConfig, DecodedVideoFrame, MediaPacket, NalFormat};
+use crate::format::{DecodeConfig, DecodedVideoFrame, MediaPacket, NalFormat, PixelFormat};
 use crate::traits::VideoDecoder;
 
 use super::annexb::{avcc_to_annex_b, length_prefixed_to_annex_b};
-use crate::processing::scale::{Scaler, fit_within};
+use crate::processing::{
+    convert::yuv420_to_bgra_from_slices,
+    scale::{Scaler, fit_within},
+};
 
 #[derive(derive_more::Debug)]
 pub struct H264VideoDecoder {
@@ -17,12 +20,16 @@ pub struct H264VideoDecoder {
     decoder: Decoder,
     /// NAL framing format of incoming packets.
     nal_format: NalFormat,
+    pixel_format: PixelFormat,
     scaler: Scaler,
     viewport_changed: Option<(u32, u32)>,
     last_timestamp: Option<Duration>,
     /// Decoded frame waiting to be collected via `pop_frame`.
     #[debug(skip)]
     pending_frame: Option<(RgbaImage, u32, u32)>,
+    /// Reusable pixel buffer to avoid per-frame allocation.
+    #[debug(skip)]
+    pixel_buf: Vec<u8>,
 }
 
 impl VideoDecoder for H264VideoDecoder {
@@ -30,7 +37,7 @@ impl VideoDecoder for H264VideoDecoder {
         "h264-openh264"
     }
 
-    fn new(config: &VideoConfig, _playback_config: &DecodeConfig) -> Result<Self>
+    fn new(config: &VideoConfig, playback_config: &DecodeConfig) -> Result<Self>
     where
         Self: Sized,
     {
@@ -61,10 +68,12 @@ impl VideoDecoder for H264VideoDecoder {
         Ok(Self {
             decoder,
             nal_format,
+            pixel_format: playback_config.pixel_format,
             scaler: Scaler::new(None),
             viewport_changed: None,
             last_timestamp: None,
             pending_frame: None,
+            pixel_buf: Vec::new(),
         })
     }
 
@@ -95,13 +104,33 @@ impl VideoDecoder for H264VideoDecoder {
             let (w, h) = yuv.dimensions();
             let w = w as u32;
             let h = h as u32;
+            let needed = (w * h * 4) as usize;
 
-            // Convert YUV → RGBA using openh264's built-in converter.
-            let mut rgba = vec![0u8; (w * h * 4) as usize];
-            yuv.write_rgba8(&mut rgba);
+            let pixels = match self.pixel_format {
+                PixelFormat::Bgra => {
+                    // Use yuvutils-rs for direct YUV→BGRA (avoids RGBA + swap).
+                    let (y_stride, u_stride, v_stride) = yuv.strides();
+                    yuv420_to_bgra_from_slices(
+                        yuv.y(),
+                        y_stride as u32,
+                        yuv.u(),
+                        u_stride as u32,
+                        yuv.v(),
+                        v_stride as u32,
+                        w,
+                        h,
+                    )?
+                }
+                PixelFormat::Rgba => {
+                    // Use openh264's built-in RGBA converter, reusing the buffer.
+                    self.pixel_buf.resize(needed, 0);
+                    yuv.write_rgba8(&mut self.pixel_buf);
+                    std::mem::take(&mut self.pixel_buf)
+                }
+            };
 
-            let img =
-                RgbaImage::from_raw(w, h, rgba).context("failed to create RgbaImage from RGBA")?;
+            let img = RgbaImage::from_raw(w, h, pixels)
+                .context("failed to create RgbaImage from pixel data")?;
             self.pending_frame = Some((img, w, h));
         }
 
@@ -125,12 +154,20 @@ impl VideoDecoder for H264VideoDecoder {
 
         let (data, w, h) =
             if let Some((scaled, sw, sh)) = self.scaler.scale_rgba(img.as_raw(), src_w, src_h)? {
+                // Reclaim the unscaled image buffer for reuse.
+                self.pixel_buf = img.into_raw();
                 (scaled, sw, sh)
             } else {
                 (img.into_raw(), src_w, src_h)
             };
 
-        Ok(Some(DecodedVideoFrame::new_cpu(data, w, h, timestamp)))
+        Ok(Some(DecodedVideoFrame::new_cpu_with_format(
+            data,
+            w,
+            h,
+            timestamp,
+            self.pixel_format,
+        )))
     }
 }
 

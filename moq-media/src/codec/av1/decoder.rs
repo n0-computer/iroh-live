@@ -5,11 +5,11 @@ use anyhow::{Context as _, Result, bail};
 use hang::catalog::{VideoCodec, VideoConfig};
 use image::RgbaImage;
 
-use crate::format::{DecodeConfig, DecodedVideoFrame, MediaPacket};
+use crate::format::{DecodeConfig, DecodedVideoFrame, MediaPacket, PixelFormat};
 use crate::traits::VideoDecoder;
 
 use crate::processing::{
-    convert::{YuvData, yuv420_to_rgba_data},
+    convert::{yuv420_to_bgra_from_slices, yuv420_to_rgba_from_slices},
     scale::{Scaler, fit_within},
 };
 
@@ -18,6 +18,7 @@ pub struct Av1VideoDecoder {
     #[debug(skip)]
     decoder: Decoder,
     scaler: Scaler,
+    pixel_format: PixelFormat,
     viewport_changed: Option<(u32, u32)>,
     last_timestamp: Option<Duration>,
     /// Decoded frame waiting to be collected via `pop_frame`.
@@ -30,7 +31,7 @@ impl VideoDecoder for Av1VideoDecoder {
         "av1-rav1d"
     }
 
-    fn new(config: &VideoConfig, _playback_config: &DecodeConfig) -> Result<Self>
+    fn new(config: &VideoConfig, playback_config: &DecodeConfig) -> Result<Self>
     where
         Self: Sized,
     {
@@ -53,6 +54,7 @@ impl VideoDecoder for Av1VideoDecoder {
         Ok(Self {
             decoder,
             scaler: Scaler::new(None),
+            pixel_format: playback_config.pixel_format,
             viewport_changed: None,
             last_timestamp: None,
             pending_frame: None,
@@ -83,21 +85,17 @@ impl VideoDecoder for Av1VideoDecoder {
                 let u_stride = picture.stride(PlanarImageComponent::U);
                 let v_stride = picture.stride(PlanarImageComponent::V);
 
-                let yuv = YuvData {
-                    y: y_plane.to_vec(),
-                    u: u_plane.to_vec(),
-                    v: v_plane.to_vec(),
-                    y_stride,
-                    u_stride,
-                    v_stride,
-                    width: w,
-                    height: h,
+                let pixels = match self.pixel_format {
+                    PixelFormat::Bgra => yuv420_to_bgra_from_slices(
+                        y_plane, y_stride, u_plane, u_stride, v_plane, v_stride, w, h,
+                    )?,
+                    PixelFormat::Rgba => yuv420_to_rgba_from_slices(
+                        y_plane, y_stride, u_plane, u_stride, v_plane, v_stride, w, h,
+                    )?,
                 };
 
-                let rgba = yuv420_to_rgba_data(&yuv)?;
-
-                let img = RgbaImage::from_raw(w, h, rgba)
-                    .context("failed to create RgbaImage from RGBA")?;
+                let img = RgbaImage::from_raw(w, h, pixels)
+                    .context("failed to create RgbaImage from pixel data")?;
                 self.pending_frame = Some((img, w, h));
             }
             Err(e) if e.is_again() => {
@@ -132,7 +130,13 @@ impl VideoDecoder for Av1VideoDecoder {
                 (img.into_raw(), src_w, src_h)
             };
 
-        Ok(Some(DecodedVideoFrame::new_cpu(data, w, h, timestamp)))
+        Ok(Some(DecodedVideoFrame::new_cpu_with_format(
+            data,
+            w,
+            h,
+            timestamp,
+            self.pixel_format,
+        )))
     }
 }
 

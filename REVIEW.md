@@ -42,19 +42,24 @@
 - [ ] **D4: SharedVideoSource park/unpark fragile** — replace with condvar or select (`publish.rs:520-586`)
 - [ ] **D6: `apply_audio` fire-and-forget task** — no handle, caller can't observe failure (`controller.rs:281-293`)
 - [ ] **D7: No backpressure encoder→transport** — frames produced at source rate regardless (`publish.rs:706-732`)
-- [ ] **D8: BGRA pixel swap code still in `from_video_source`** (`subscribe.rs:582-586`); extracted in pipeline decode_loop but not in video source path
+- [x] **D8: BGRA pixel swap code still in `from_video_source`** — decoders now output native BGRA when `DecodeConfig.pixel_format == Bgra`; swap loops removed from both `pipeline.rs` and `subscribe.rs`
 - [ ] **D9: VkImage coded vs display dimension mismatch** (`render/dmabuf_import.rs`)
-- [ ] **D10: Per-frame bind group creation in renderer** — cache when dimensions unchanged (`render.rs:187-204,306-323`)
+- [x] **D10: Per-frame bind group creation in renderer** — NV12 bind group cached on `Nv12PlaneTextures`, recreated only on resolution change (`render.rs`)
 
 ### Performance
 
-- [ ] **P1: Per-frame YUV allocation** in encoders — ~90MB/s at 1080p30 (`processing/convert.rs`)
-- [ ] **P2: Per-frame RGBA allocation** in SW decoders — double alloc (YUV→RGBA + scale) (`h264/decoder.rs`, `av1/decoder.rs`)
+- [x] **P1: Per-frame YUV allocation** in encoders — `take_owned()` extracts `Vec` from `BufferStoreMut::Owned` without copying; eliminates 3 `.to_vec()` per YUV conversion (`processing/convert.rs`)
+- [x] **P2: Per-frame RGBA allocation** in SW decoders — H.264 reuses `pixel_buf: Vec<u8>` across frames; AV1 uses `yuv420_to_rgba_from_slices` to avoid intermediate `YuvData` allocation (`h264/decoder.rs`, `av1/decoder.rs`)
 - [x] **P3: Opus channel conversion allocates on identity** — caller now skips `convert_channels` when from==to (`opus/decoder.rs:94-98`)
 - [ ] **P4: `parse_annex_b` allocates Vec** — could use iterator (`h264/annexb.rs`)
 - [x] **P5: StreamClock unused** — removed dead code (`processing/clock.rs`, h264/av1 decoders)
 - [x] **P6: Opus encoder queue/buffer use front-removal on `Vec`** — `packet_buf` changed to `VecDeque` with `pop_front()` (`codec/opus/encoder.rs`)
 - [x] **P7: VideoToolbox encoder packet queue uses `Vec::remove(0)`** — changed to `VecDeque` with `pop_front()` (`codec/vtb/encoder.rs`)
+- [x] **P8: Scaler clones source buffer** — `ImageStore::from_slice()` accepts borrowed input; `PicScaler` cached on struct (`processing/scale.rs`)
+- [x] **P9: VAAPI encoder I420→NV12 intermediate** — `pixel_format_to_nv12()` converts RGBA/BGRA→NV12 directly, skipping I420 (`vaapi/encoder.rs`)
+- [x] **P10: Opus decoder per-packet PCM allocation** — reusable `pcm_buf: Vec<f32>` on decoder struct; `convert_channels_into()` writes into existing `samples` Vec (`opus/decoder.rs`)
+- [ ] **P11: Annex-B ↔ length-prefixed round-trip** — encoders produce Annex-B, convert to length-prefixed for transport; decoders convert back. Each direction allocates a `Vec<u8>` (`h264/annexb.rs`)
+- [ ] **P12: Payload copy in all decoders** — `copy_to_bytes()` is zero-copy for single-chunk, but multi-chunk BufLists copy. Could check `chunk().len() == remaining` to avoid (`h264/decoder.rs`, `av1/decoder.rs`)
 
 ### Safety
 
@@ -282,11 +287,9 @@ Audio setup runs in a detached task. If it fails, the error is logged but `set_o
 
 Encoder threads call `producer.write(pkt.to_hang_frame())` synchronously. If the transport can't keep up (slow network), writes may fail, but there's no backpressure to the encoder or source. Frames are produced at source rate regardless.
 
-### D8: BGRA pixel swap still in `from_video_source`
+### D8: BGRA pixel swap code in decoders and pipeline (FIXED)
 
-**File**: `subscribe.rs:582-586`
-
-The decode_loop in `pipeline.rs` handles BGRA conversion once cleanly, but the `from_video_source` path in `subscribe.rs` still has its own inline BGRA swap. Should extract to a shared helper.
+Decoders (H.264, AV1) now respect `DecodeConfig.pixel_format` and output BGRA natively via `yuv420_to_bgra_from_slices()` when requested. Per-pixel swap loops removed from both `pipeline.rs` decode_loop and `subscribe.rs` video source path. `DecodedVideoFrame::new_cpu_with_format()` preserves the pixel format through to the renderer.
 
 ### D9: VkImage coded vs display dimension mismatch
 
@@ -294,11 +297,9 @@ The decode_loop in `pipeline.rs` handles BGRA conversion once cleanly, but the `
 
 The Y plane VkImage is created with `coded_width x coded_height` (e.g., 1920x1088) but wrapped as a wgpu texture with `display_width x display_height` (e.g., 1920x1080). H.264 coded height is commonly rounded up to 16. The wgpu TextureDescriptor size doesn't match the actual VkImage extent — could cause Vulkan validation errors or incorrect sampling.
 
-### D10: Per-frame bind group creation in renderer
+### D10: Per-frame bind group creation in renderer (FIXED)
 
-**File**: `render.rs:187-204, 306-323`
-
-Both `render_imported_nv12` and `render_nv12` create a new wgpu bind group every frame. These could be cached when texture dimensions haven't changed, avoiding per-frame descriptor set allocation.
+NV12 bind group is now cached on `Nv12PlaneTextures` and recreated only when textures are recreated (resolution change). The DMA-BUF path (`render_imported_nv12`) still creates per-frame bind groups because imported textures change every frame (different DMA-BUF FDs).
 
 ---
 
@@ -320,13 +321,13 @@ The refactored `DecodedVideoFrame` stored raw `Vec<u8>` in `CpuFrame` and create
 
 **Fixed**: `CpuFrame` now stores `RgbaImage` directly. `img()` returns `&cpu.image` for CPU frames — zero-copy, matching pre-refactor behavior. Added `DecodedVideoFrame::from_image()` constructor to avoid round-tripping through `into_raw()`/`from_raw()`.
 
-### P1: YUV allocation per frame
+### P1: YUV allocation per frame (FIXED)
 
-Every encode path does `pixel_format_to_yuv420()` which allocates 3 new Vecs (Y, U, V planes) per frame. At 1080p30 that's ~3MB/frame × 30fps = 90MB/s of allocations. Consider reusing buffers.
+`take_owned()` helper extracts the owned `Vec<u8>` from `BufferStoreMut::Owned` without copying — eliminates 3 `.to_vec()` per YUV conversion (~3MB/frame at 1080p).
 
-### P2: RGBA allocation in decoders
+### P2: RGBA allocation in decoders (FIXED)
 
-H.264 and AV1 software decoders convert YUV→RGBA into a new `Vec<u8>` per frame, then optionally scale into another `Vec`. Two full-frame allocations per decode.
+H.264 decoder reuses `pixel_buf: Vec<u8>` across frames (`.resize()` only reallocates on resolution change). AV1 decoder passes plane slices directly to `yuv420_to_rgba_from_slices()`, avoiding intermediate `YuvData` allocation.
 
 ### P3: Channel conversion allocates unnecessarily (FIXED)
 
@@ -349,6 +350,30 @@ Removed `StreamClock` from both H.264 and AV1 decoders and deleted `processing/c
 ### P7: VideoToolbox packet queue uses `Vec::remove(0)` (FIXED)
 
 `CallbackState.packets` changed from `Vec<EncodedFrame>` to `VecDeque<EncodedFrame>`. `pop_packet()` now uses `pop_front()` — O(1) instead of O(n).
+
+### P8: Scaler clones source buffer (FIXED)
+
+`ImageStore::from_slice()` accepts borrowed `&[u8]` input, eliminating the full-frame `.to_vec()` clone. `PicScaler` is now a cached field on `Scaler` instead of being recreated per call.
+
+### P9: VAAPI encoder I420→NV12 intermediate (FIXED)
+
+`pixel_format_to_nv12()` converts RGBA/BGRA directly to NV12 via `yuvutils_rs::rgba_to_yuv_nv12`, skipping the I420 intermediate. `Nv12Data::into_contiguous()` concatenates Y and UV planes into the single buffer needed by `Nv12Frame`.
+
+### P10: Opus decoder per-packet PCM allocation (FIXED)
+
+Reusable `pcm_buf: Vec<f32>` on the decoder struct eliminates per-packet allocation. New `convert_channels_into()` writes directly into `self.samples` instead of returning a new `Vec`.
+
+### P11: Annex-B ↔ length-prefixed round-trip
+
+**Files**: `h264/annexb.rs`, `vaapi/encoder.rs`, `h264/decoder.rs`
+
+Encoders produce Annex-B, convert to length-prefixed for transport. Decoders convert back to Annex-B. Each direction allocates a `Vec<u8>`. Could be avoided by using Annex-B end-to-end with a transport flag.
+
+### P12: Payload copy in all decoders
+
+**Files**: `h264/decoder.rs`, `av1/decoder.rs`, `opus/decoder.rs`
+
+`copy_to_bytes()` materializes `BufList` into contiguous `Bytes`. Zero-copy for single-chunk (common case), but copies for multi-chunk. Could check `chunk().len() == remaining` and use the chunk directly.
 
 ---
 

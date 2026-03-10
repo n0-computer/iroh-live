@@ -1,7 +1,8 @@
 use anyhow::Result;
 use yuvutils_rs::{
-    YuvBiPlanarImage, YuvChromaSubsampling, YuvPlanarImage, YuvPlanarImageMut, YuvRange,
-    YuvStandardMatrix, bgra_to_yuv420, rgba_to_yuv420, yuv_nv12_to_rgba, yuv420_to_rgba,
+    BufferStoreMut, YuvBiPlanarImage, YuvBiPlanarImageMut, YuvChromaSubsampling, YuvPlanarImage,
+    YuvPlanarImageMut, YuvRange, YuvStandardMatrix, bgra_to_yuv420, rgba_to_yuv_nv12,
+    rgba_to_yuv420, yuv_nv12_to_bgra, yuv_nv12_to_rgba, yuv420_to_bgra, yuv420_to_rgba,
 };
 
 use crate::format::PixelFormat;
@@ -37,6 +38,15 @@ impl YuvData {
     }
 }
 
+/// Extract the owned `Vec` from a `BufferStoreMut::Owned` without copying.
+/// Panics if the buffer is borrowed (only happens when user passes external slices).
+fn take_owned(buf: BufferStoreMut<'_, u8>) -> Vec<u8> {
+    match buf {
+        BufferStoreMut::Owned(v) => v,
+        BufferStoreMut::Borrowed(_) => unreachable!("alloc() always creates Owned buffers"),
+    }
+}
+
 /// Convert RGBA pixel data to YUV 4:2:0 planar format (BT.601).
 pub(crate) fn rgba_to_yuv420_data(src: &[u8], w: u32, h: u32) -> Result<YuvData> {
     let mut planar = YuvPlanarImageMut::<u8>::alloc(w, h, YuvChromaSubsampling::Yuv420);
@@ -52,9 +62,9 @@ pub(crate) fn rgba_to_yuv420_data(src: &[u8], w: u32, h: u32) -> Result<YuvData>
         y_stride: planar.y_stride,
         u_stride: planar.u_stride,
         v_stride: planar.v_stride,
-        y: planar.y_plane.borrow().to_vec(),
-        u: planar.u_plane.borrow().to_vec(),
-        v: planar.v_plane.borrow().to_vec(),
+        y: take_owned(planar.y_plane),
+        u: take_owned(planar.u_plane),
+        v: take_owned(planar.v_plane),
         width: w,
         height: h,
     })
@@ -75,9 +85,9 @@ pub(crate) fn bgra_to_yuv420_data(src: &[u8], w: u32, h: u32) -> Result<YuvData>
         y_stride: planar.y_stride,
         u_stride: planar.u_stride,
         v_stride: planar.v_stride,
-        y: planar.y_plane.borrow().to_vec(),
-        u: planar.u_plane.borrow().to_vec(),
-        v: planar.v_plane.borrow().to_vec(),
+        y: take_owned(planar.y_plane),
+        u: take_owned(planar.u_plane),
+        v: take_owned(planar.v_plane),
         width: w,
         height: h,
     })
@@ -96,7 +106,77 @@ pub(crate) fn pixel_format_to_yuv420(
     }
 }
 
+/// Convert YUV 4:2:0 planar slices directly to RGBA (BT.601).
+///
+/// Avoids intermediate `YuvData` allocation — useful when plane data is
+/// already available as borrowed slices (e.g. from dav1d decoder).
+pub(crate) fn yuv420_to_rgba_from_slices(
+    y: &[u8],
+    y_stride: u32,
+    u: &[u8],
+    u_stride: u32,
+    v: &[u8],
+    v_stride: u32,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>> {
+    let planar = YuvPlanarImage {
+        y_plane: y,
+        y_stride,
+        u_plane: u,
+        u_stride,
+        v_plane: v,
+        v_stride,
+        width,
+        height,
+    };
+    let rgba_stride = width * 4;
+    let mut rgba = vec![0u8; (width * height * 4) as usize];
+    yuv420_to_rgba(
+        &planar,
+        &mut rgba,
+        rgba_stride,
+        YuvRange::Limited,
+        YuvStandardMatrix::Bt601,
+    )?;
+    Ok(rgba)
+}
+
+/// Convert YUV 4:2:0 planar slices directly to BGRA (BT.601).
+pub(crate) fn yuv420_to_bgra_from_slices(
+    y: &[u8],
+    y_stride: u32,
+    u: &[u8],
+    u_stride: u32,
+    v: &[u8],
+    v_stride: u32,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>> {
+    let planar = YuvPlanarImage {
+        y_plane: y,
+        y_stride,
+        u_plane: u,
+        u_stride,
+        v_plane: v,
+        v_stride,
+        width,
+        height,
+    };
+    let bgra_stride = width * 4;
+    let mut bgra = vec![0u8; (width * height * 4) as usize];
+    yuv420_to_bgra(
+        &planar,
+        &mut bgra,
+        bgra_stride,
+        YuvRange::Limited,
+        YuvStandardMatrix::Bt601,
+    )?;
+    Ok(bgra)
+}
+
 /// Convert YUV 4:2:0 planar data back to RGBA format (BT.601).
+#[allow(dead_code, reason = "symmetric API; prefer yuv420_to_rgba_from_slices")]
 pub(crate) fn yuv420_to_rgba_data(yuv: &YuvData) -> Result<Vec<u8>> {
     let planar = YuvPlanarImage {
         y_plane: &yuv.y,
@@ -118,6 +198,126 @@ pub(crate) fn yuv420_to_rgba_data(yuv: &YuvData) -> Result<Vec<u8>> {
         YuvStandardMatrix::Bt601,
     )?;
     Ok(rgba)
+}
+
+/// Convert YUV 4:2:0 planar data to BGRA format (BT.601).
+#[allow(dead_code, reason = "symmetric API; prefer yuv420_to_bgra_from_slices")]
+pub(crate) fn yuv420_to_bgra_data(yuv: &YuvData) -> Result<Vec<u8>> {
+    let planar = YuvPlanarImage {
+        y_plane: &yuv.y,
+        y_stride: yuv.y_stride,
+        u_plane: &yuv.u,
+        u_stride: yuv.u_stride,
+        v_plane: &yuv.v,
+        v_stride: yuv.v_stride,
+        width: yuv.width,
+        height: yuv.height,
+    };
+    let bgra_stride = yuv.width * 4;
+    let mut bgra = vec![0u8; (yuv.width * yuv.height * 4) as usize];
+    yuv420_to_bgra(
+        &planar,
+        &mut bgra,
+        bgra_stride,
+        YuvRange::Limited,
+        YuvStandardMatrix::Bt601,
+    )?;
+    Ok(bgra)
+}
+
+/// NV12 bi-planar data with Y and interleaved UV planes.
+#[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "stride/dimension fields used by future render paths"
+)]
+pub(crate) struct Nv12Data {
+    pub(crate) y: Vec<u8>,
+    pub(crate) uv: Vec<u8>,
+    pub(crate) y_stride: u32,
+    pub(crate) uv_stride: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
+impl Nv12Data {
+    /// Concatenate Y and UV planes into a single contiguous buffer.
+    pub(crate) fn into_contiguous(mut self) -> Vec<u8> {
+        self.y.extend_from_slice(&self.uv);
+        self.y
+    }
+}
+
+/// Convert RGBA pixel data directly to NV12 bi-planar format (BT.601).
+#[cfg_attr(
+    not(feature = "vaapi"),
+    allow(dead_code, reason = "used by vaapi encoder")
+)]
+pub(crate) fn rgba_to_nv12_data(src: &[u8], w: u32, h: u32) -> Result<Nv12Data> {
+    let mut bi = YuvBiPlanarImageMut::<u8>::alloc(w, h, YuvChromaSubsampling::Yuv420);
+    rgba_to_yuv_nv12(
+        &mut bi,
+        src,
+        w * 4,
+        YuvRange::Limited,
+        YuvStandardMatrix::Bt601,
+        yuvutils_rs::YuvConversionMode::Balanced,
+    )?;
+    let y = take_owned(bi.y_plane);
+    let uv = take_owned(bi.uv_plane);
+    Ok(Nv12Data {
+        y_stride: bi.y_stride,
+        uv_stride: bi.uv_stride,
+        y,
+        uv,
+        width: w,
+        height: h,
+    })
+}
+
+/// Convert BGRA pixel data directly to NV12 bi-planar format (BT.601).
+#[cfg_attr(
+    not(feature = "vaapi"),
+    allow(dead_code, reason = "used by vaapi encoder")
+)]
+pub(crate) fn bgra_to_nv12_data(src: &[u8], w: u32, h: u32) -> Result<Nv12Data> {
+    use yuvutils_rs::bgra_to_yuv_nv12;
+    let mut bi = YuvBiPlanarImageMut::<u8>::alloc(w, h, YuvChromaSubsampling::Yuv420);
+    bgra_to_yuv_nv12(
+        &mut bi,
+        src,
+        w * 4,
+        YuvRange::Limited,
+        YuvStandardMatrix::Bt601,
+        yuvutils_rs::YuvConversionMode::Balanced,
+    )?;
+    let y = take_owned(bi.y_plane);
+    let uv = take_owned(bi.uv_plane);
+    Ok(Nv12Data {
+        y_stride: bi.y_stride,
+        uv_stride: bi.uv_stride,
+        y,
+        uv,
+        width: w,
+        height: h,
+    })
+}
+
+/// Dispatch pixel-format-aware RGBA/BGRA → NV12 conversion.
+#[cfg_attr(
+    not(feature = "vaapi"),
+    allow(dead_code, reason = "used by vaapi encoder")
+)]
+pub(crate) fn pixel_format_to_nv12(
+    src: &[u8],
+    w: u32,
+    h: u32,
+    format: PixelFormat,
+) -> Result<Nv12Data> {
+    match format {
+        PixelFormat::Rgba => rgba_to_nv12_data(src, w, h),
+        PixelFormat::Bgra => bgra_to_nv12_data(src, w, h),
+    }
 }
 
 /// Convert NV12 bi-planar data to RGBA (BT.601 limited range).
@@ -154,6 +354,37 @@ pub(crate) fn nv12_to_rgba_data(
         yuvutils_rs::YuvConversionMode::Balanced,
     )?;
     Ok(rgba)
+}
+
+/// Convert NV12 bi-planar data to BGRA (BT.601 limited range).
+#[allow(dead_code, reason = "symmetric with nv12_to_rgba_data; future use")]
+pub(crate) fn nv12_to_bgra_data(
+    y_plane: &[u8],
+    y_stride: u32,
+    uv_plane: &[u8],
+    uv_stride: u32,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>> {
+    let bi = YuvBiPlanarImage {
+        y_plane,
+        y_stride,
+        uv_plane,
+        uv_stride,
+        width,
+        height,
+    };
+    let bgra_stride = width * 4;
+    let mut bgra = vec![0u8; (width * height * 4) as usize];
+    yuv_nv12_to_bgra(
+        &bi,
+        &mut bgra,
+        bgra_stride,
+        YuvRange::Limited,
+        YuvStandardMatrix::Bt601,
+        yuvutils_rs::YuvConversionMode::Balanced,
+    )?;
+    Ok(bgra)
 }
 
 #[cfg(test)]

@@ -9,6 +9,7 @@ use pic_scale::{ImageStore, ImageStoreMut, ResamplingFunction, Scaler as PicScal
 pub(crate) struct Scaler {
     target_width: Option<u32>,
     target_height: Option<u32>,
+    scaler: PicScaler,
 }
 
 impl Scaler {
@@ -17,6 +18,7 @@ impl Scaler {
         Self {
             target_width: dims.map(|(w, _)| w),
             target_height: dims.map(|(_, h)| h),
+            scaler: PicScaler::new(ResamplingFunction::Bilinear),
         }
     }
 
@@ -39,10 +41,9 @@ impl Scaler {
             _ => return Ok(None),
         };
 
-        let scaler = PicScaler::new(ResamplingFunction::Bilinear);
-        let src_store = ImageStore::<u8, 4>::new(src.to_vec(), src_w as usize, src_h as usize)?;
+        let src_store = ImageStore::<u8, 4>::from_slice(src, src_w as usize, src_h as usize)?;
         let mut dst_store = ImageStoreMut::<u8, 4>::alloc(tw as usize, th as usize);
-        scaler.resize_rgba(&src_store, &mut dst_store, false)?;
+        self.scaler.resize_rgba(&src_store, &mut dst_store, false)?;
 
         let out = dst_store.as_bytes().to_vec();
         Ok(Some((out, tw, th)))
