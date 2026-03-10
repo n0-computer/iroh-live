@@ -40,13 +40,9 @@ xcap = { version = "0.9.0", optional = true }
 sonora = { version = "0.1" }
 bytes = "1.11.0"
 libc = "0.2"
-wgpu = { version = "27", optional = true, default-features = false, features = ["wgsl", "vulkan"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 cros-codecs = { version = "0.0.6", optional = true, features = ["vaapi"] }
-ash = { version = "0.38", optional = true, default-features = false }
-gbm = { version = "0.18", optional = true }
-drm-fourcc = { version = "2.2", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 
@@ -71,5 +67,5 @@ capture-camera = ["dep:nokhwa"]
 capture-screen = ["dep:xcap"]
 videotoolbox = ["rusty-codecs/videotoolbox"]
 vaapi = ["rusty-codecs/vaapi", "dep:cros-codecs"]
-wgpu = ["dep:wgpu"]
-dmabuf-import = ["wgpu", "dep:ash", "dep:gbm", "dep:drm-fourcc"]
+wgpu = ["rusty-codecs/wgpu"]
+dmabuf-import = ["wgpu", "rusty-codecs/dmabuf-import"]

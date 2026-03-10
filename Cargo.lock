@@ -6352,7 +6352,6 @@ name = "moq-media"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ash 0.38.0+1.3.281",
  "byte-unit",
  "bytemuck",
  "bytes",
@@ -6360,11 +6359,9 @@ dependencies = [
  "cros-codecs",
  "data-encoding",
  "derive_more 2.1.0",
- "drm-fourcc",
  "eframe",
  "egui-wgpu",
  "firewheel",
- "gbm 0.18.0",
  "hang",
  "image",
  "libc",
@@ -6385,7 +6382,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "wgpu 27.0.1",
  "xcap",
 ]
 
@@ -9158,11 +9154,14 @@ name = "rusty-codecs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ash 0.38.0+1.3.281",
  "audioadapter-buffers",
  "buf-list",
  "bytes",
  "cros-codecs",
  "derive_more 2.1.0",
+ "drm-fourcc",
+ "gbm 0.18.0",
  "hang",
  "image",
  "libc",
@@ -9182,6 +9181,7 @@ dependencies = [
  "strum 0.28.0",
  "tracing",
  "unsafe-libopus",
+ "wgpu 27.0.1",
  "yuvutils-rs",
 ]
 
