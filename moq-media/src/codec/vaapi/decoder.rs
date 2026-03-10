@@ -508,7 +508,6 @@ mod tests {
     #[test]
     #[ignore = "requires VAAPI hardware"]
     fn vaapi_encoder_decoder_roundtrip() {
-        use crate::codec::h264::annexb::parse_annex_b;
         use crate::codec::vaapi::encoder::VaapiEncoder;
         use crate::format::{PixelFormat, VideoFormat, VideoFrame, VideoPreset};
         use crate::traits::{VideoEncoder, VideoEncoderFactory};
