@@ -109,22 +109,30 @@ impl VideoCodec {
         }
     }
 
-    /// Create an encoder for this codec with the given preset.
+    /// Creates an encoder for this codec with a full [`VideoEncoderConfig`](crate::format::VideoEncoderConfig).
     pub fn create_encoder(
         self,
-        preset: crate::format::VideoPreset,
+        config: crate::format::VideoEncoderConfig,
     ) -> anyhow::Result<Box<dyn crate::traits::VideoEncoder>> {
         use crate::traits::VideoEncoderFactory as _;
         match self {
             #[cfg(feature = "h264")]
-            Self::H264 => Ok(Box::new(H264Encoder::with_preset(preset)?)),
+            Self::H264 => Ok(Box::new(H264Encoder::with_config(config)?)),
             #[cfg(feature = "av1")]
-            Self::Av1 => Ok(Box::new(Av1Encoder::with_preset(preset)?)),
+            Self::Av1 => Ok(Box::new(Av1Encoder::with_config(config)?)),
             #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
-            Self::VtbH264 => Ok(Box::new(VtbEncoder::with_preset(preset)?)),
+            Self::VtbH264 => Ok(Box::new(VtbEncoder::with_config(config)?)),
             #[cfg(all(target_os = "linux", feature = "vaapi"))]
-            Self::VaapiH264 => Ok(Box::new(VaapiEncoder::with_preset(preset)?)),
+            Self::VaapiH264 => Ok(Box::new(VaapiEncoder::with_config(config)?)),
         }
+    }
+
+    /// Creates an encoder for this codec with a [`VideoPreset`](crate::format::VideoPreset).
+    pub fn create_encoder_from_preset(
+        self,
+        preset: crate::format::VideoPreset,
+    ) -> anyhow::Result<Box<dyn crate::traits::VideoEncoder>> {
+        self.create_encoder(crate::format::VideoEncoderConfig::from_preset(preset))
     }
 
     /// Human-readable display name.
