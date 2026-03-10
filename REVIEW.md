@@ -13,7 +13,7 @@
 - [x] **D1f: `VideoDecoderPipeline` struct** — standalone decoder with thread, any `PacketSource` (`pipeline.rs`)
 - [x] **D1g: `VideoEncoderPipeline` struct** — standalone encoder with thread, `PipeSink` output (`pipeline.rs`)
 - [x] **D1h: `subscribe.rs` uses `VideoDecoderPipeline`** — `from_consumer` delegates to pipeline
-- [x] **D1i: `StreamClock` decoupled** from `hang::Timestamp`, uses `Duration`
+- [x] **D1i: `StreamClock` removed** — was unused dead code, deleted `processing/clock.rs`
 - [ ] **D1j: `PacketSink` trait** — abstract over `OrderedProducer` and `PipeSink` (currently `PipeSink` is concrete only)
 - [ ] **D1k: Refactor `publish.rs` `EncoderThread`** to use pipeline structs / `PacketSink` trait
 - [ ] **D1l: `AudioDecoderPipeline` / `AudioEncoderPipeline`** — audio equivalents not yet implemented
@@ -22,13 +22,13 @@
 
 ### Bugs
 
-- [ ] **B1: `Vec::remove(0)` in encoder packet buffers** — O(n) per pop, should be `VecDeque::pop_front()` (`h264/encoder.rs:182`, `av1/encoder.rs`, `vaapi/encoder.rs:489`)
-- [ ] **B2: VAAPI encoder Drop silently loses frames** on drain failure (`vaapi/encoder.rs:494-504`)
-- [ ] **B3: VAAPI Display::open() per frame download** — expensive, should cache (`vaapi/decoder.rs:95`)
-- [ ] **B4: Audio encoder timing re-measurement** — `start.elapsed()` called twice (`publish.rs:819-825`)
+- [x] **B1: `Vec::remove(0)` in encoder packet buffers** — O(n) per pop, should be `VecDeque::pop_front()` (`h264/encoder.rs:182`, `av1/encoder.rs`, `vaapi/encoder.rs:489`)
+- [x] **B2: VAAPI encoder Drop silently loses frames** on drain failure (`vaapi/encoder.rs:494-504`)
+- [x] **B3: VAAPI Display::open() per frame download** — cached via `OnceCell` in `VaapiGpuFrame` (`vaapi/decoder.rs:93-100`)
+- [x] **B4: Audio encoder timing re-measurement** — `start.elapsed()` called once, reused (`publish.rs:818-822`)
 - [ ] **B5: `watch_local` hardcoded 30fps** (`subscribe.rs:554`)
 - [ ] **B6: Per-frame Vulkan resource allocation** in DMA-BUF import — pool Y/UV plane images (`render/dmabuf_import.rs`)
-- [ ] **B7: NV12→RGBA shader missing limited-range expansion** — washed-out blacks/whites (`nv12_to_rgba.wgsl`)
+- [x] **B7: NV12→RGBA shader missing limited-range expansion** — BT.601 limited range scaling added (`nv12_to_rgba.wgsl`)
 - [ ] **B8: No VAAPI→Vulkan sync for DMA-BUF** — works on Intel implicit sync, may fail elsewhere (`render/dmabuf_import.rs`)
 
 ### Design
@@ -47,9 +47,9 @@
 
 - [ ] **P1: Per-frame YUV allocation** in encoders — ~90MB/s at 1080p30 (`processing/convert.rs`)
 - [ ] **P2: Per-frame RGBA allocation** in SW decoders — double alloc (YUV→RGBA + scale) (`h264/decoder.rs`, `av1/decoder.rs`)
-- [ ] **P3: Opus channel conversion allocates on identity** — `to_vec()` when from==to (`opus/decoder.rs`)
+- [x] **P3: Opus channel conversion allocates on identity** — caller now skips `convert_channels` when from==to (`opus/decoder.rs:94-98`)
 - [ ] **P4: `parse_annex_b` allocates Vec** — could use iterator (`h264/annexb.rs`)
-- [ ] **P5: StreamClock unused** — computes delay but value is ignored by decoders (`processing/clock.rs`)
+- [x] **P5: StreamClock unused** — removed dead code (`processing/clock.rs`, h264/av1 decoders)
 
 ### Safety
 
@@ -105,7 +105,6 @@ lib.rs
 │   ├── convert.rs     — YUV ↔ RGBA (yuvutils-rs)
 │   ├── scale.rs       — Bilinear scaling (pic-scale)
 │   ├── resample.rs    — Audio resampling (rubato)
-│   ├── clock.rs       — StreamClock (uses Duration, decoupled from hang)
 │   └── mjpg.rs        — MJPEG decoder for camera frames
 ├── audio_backend.rs   — Firewheel audio I/O + AEC
 ├── publish.rs         — PublishBroadcast, VideoRenditions, EncoderThread
@@ -140,7 +139,7 @@ The worktree has partially decoupled moq-media from hang/moq-lite transport type
 - `media_pipe()` / `PipeSink` / `PipeSource` for local pipelines (`transport.rs`)
 - `VideoDecoderPipeline` / `VideoEncoderPipeline` structs (`pipeline.rs`)
 - `subscribe.rs` `from_consumer` delegates to `VideoDecoderPipeline`
-- `StreamClock` uses `Duration` instead of `hang::Timestamp`
+- `StreamClock` removed (was unused dead code)
 
 **Not done:**
 - `PacketSink` trait (only `PipeSink` concrete type; `EncoderThread` still uses `OrderedProducer` directly)
@@ -152,63 +151,21 @@ The worktree has partially decoupled moq-media from hang/moq-lite transport type
 
 ## Bugs
 
-### B1: `Vec::remove(0)` in all encoder packet buffers
+### B1: `Vec::remove(0)` in all encoder packet buffers (FIXED)
 
-**Files**: `h264/encoder.rs:182`, `av1/encoder.rs`, `vaapi/encoder.rs:489`
+Changed `packet_buf` from `Vec` to `VecDeque` in all three encoders (h264, av1, vaapi). `pop_packet()` now uses `pop_front()` — O(1) instead of O(n).
 
-```rust
-fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
-    Ok(if self.packet_buf.is_empty() {
-        None
-    } else {
-        Some(self.packet_buf.remove(0))
-    })
-}
-```
+### B2: VAAPI encoder Drop silently loses frames on drain failure (FIXED)
 
-`Vec::remove(0)` is O(n) — shifts all remaining elements. Should be `VecDeque` with `pop_front()`. With multiple frames buffered (common for AV1 which buffers ~30 frames before output), this becomes quadratic.
+Drop now logs a warning on drain failure before returning early.
 
-### B2: VAAPI encoder Drop silently loses frames on drain failure
+### B3: VAAPI decoder `Display::open()` called per frame download (FIXED)
 
-**File**: `vaapi/encoder.rs:494-504`
+Cached the VAAPI display in `VaapiGpuFrame` via `OnceCell` — opened lazily on first download, reused for subsequent calls on the same frame.
 
-```rust
-impl Drop for VaapiEncoder {
-    fn drop(&mut self) {
-        if self.encoder.drain().is_ok() {  // silent loss if drain() fails
-            while let Ok(Some(coded)) = self.encoder.poll() {
-                ...
-            }
-        }
-    }
-}
-```
+### B4: Audio encoder timing re-measurement (FIXED)
 
-If `drain()` fails, all buffered frames are silently lost. Should at least log a warning.
-
-### B3: VAAPI decoder `Display::open()` called per frame download
-
-**File**: `vaapi/decoder.rs:95`
-
-```rust
-fn derive_nv12_planes(&self) -> Result<Nv12Planes> {
-    let display = Display::open().context("failed to open VAAPI display for mapping")?;
-```
-
-Every call to `download()` or `download_nv12()` opens a new `Display` connection to the DRM device. This is expensive (involves DRM authentication). The display should be cached or shared.
-
-### B4: Audio encoder timing re-measurement
-
-**File**: `publish.rs:819-825`
-
-```rust
-if actual_time > expected_time {
-    warn!("audio encoder too slow by {:?}", actual_time - expected_time);
-}
-let sleep = expected_time.saturating_sub(start.elapsed());  // re-measured after warn!
-```
-
-`start.elapsed()` is called again after the warn log. If the warning takes measurable time (formatting + I/O), the sleep calculation uses a stale `expected_time` against a newer `elapsed`. Should capture elapsed once.
+`start.elapsed()` is now captured once into `elapsed` and reused for both the warning check and sleep calculation.
 
 ### B5: `watch_local` viewport hardcoded to 30 fps
 
@@ -229,11 +186,9 @@ Local video preview always runs at 30 fps regardless of source or encoder framer
 
 **Fix**: Pool Y and UV plane images across frames (same resolution = same image). Only the NV12 source image needs to be per-frame (different DMA-BUF fd).
 
-### B7: NV12→RGBA shader missing limited-range expansion
+### B7: NV12→RGBA shader missing limited-range expansion (FIXED)
 
-**File**: `nv12_to_rgba.wgsl`
-
-The shader treats Y values as full-range (0.0-1.0) but VAAPI output is BT.601 limited range (Y: 16-235, UV: 16-240). Y should be scaled: `y = (y_raw - 16.0/255.0) * (255.0/219.0)`. Produces slightly washed-out blacks and dim whites. The CPU-side `nv12_to_rgba_data` (via yuvutils-rs) handles this correctly with `YuvRange::Limited`.
+Shader now applies BT.601 limited-range scaling: Y [16..235] and UV [16..240] are expanded before color conversion.
 
 ### B8: No VAAPI→Vulkan synchronization for DMA-BUF
 
@@ -339,11 +294,9 @@ Every encode path does `pixel_format_to_yuv420()` which allocates 3 new Vecs (Y,
 
 H.264 and AV1 software decoders convert YUV→RGBA into a new `Vec<u8>` per frame, then optionally scale into another `Vec`. Two full-frame allocations per decode.
 
-### P3: Channel conversion allocates unnecessarily
+### P3: Channel conversion allocates unnecessarily (FIXED)
 
-**File**: `opus/decoder.rs`
-
-Even the identity case `(from == to)` does `samples.to_vec()`. Should return a borrowed slice or avoid the copy.
+`push_packet` now moves the resampled buffer directly when `channel_count == target_channel_count`, skipping `convert_channels` entirely.
 
 ### P4: `parse_annex_b` allocates Vec of slices
 
@@ -351,11 +304,9 @@ Even the identity case `(from == to)` does `samples.to_vec()`. Should return a b
 
 Builds a `Vec<&[u8]>` of all NAL units. Could use an iterator pattern to avoid the allocation.
 
-### P5: StreamClock unused
+### P5: StreamClock unused (FIXED)
 
-**File**: `processing/clock.rs`
-
-`StreamClock` computes inter-frame delay but the value is ignored downstream in H.264 and AV1 decoders (they pop frames immediately). The clock adds no value currently. Either use the delay for frame pacing or remove StreamClock.
+Removed `StreamClock` from both H.264 and AV1 decoders and deleted `processing/clock.rs`. The computed delay was never used for frame pacing.
 
 ---
 

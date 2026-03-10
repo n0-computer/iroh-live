@@ -22,7 +22,7 @@ pub struct Av1Encoder {
     /// AV1 sequence header, populated after context creation.
     seq_header: Vec<u8>,
     /// Encoded packets ready for collection.
-    packet_buf: Vec<EncodedFrame>,
+    packet_buf: std::collections::VecDeque<EncodedFrame>,
 }
 
 impl Av1Encoder {
@@ -65,7 +65,7 @@ impl Av1Encoder {
             bitrate,
             frame_count: 0,
             seq_header,
-            packet_buf: Vec::new(),
+            packet_buf: std::collections::VecDeque::new(),
         })
     }
 
@@ -78,7 +78,7 @@ impl Av1Encoder {
                     let timestamp_us = (self.frame_count * 1_000_000) / self.framerate as u64;
                     self.frame_count += 1;
 
-                    self.packet_buf.push(EncodedFrame {
+                    self.packet_buf.push_back(EncodedFrame {
                         is_keyframe,
                         timestamp: Duration::from_micros(timestamp_us),
                         payload: packet.data.into(),
@@ -168,11 +168,7 @@ impl VideoEncoder for Av1Encoder {
     }
 
     fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
-        Ok(if self.packet_buf.is_empty() {
-            None
-        } else {
-            Some(self.packet_buf.remove(0))
-        })
+        Ok(self.packet_buf.pop_front())
     }
 }
 

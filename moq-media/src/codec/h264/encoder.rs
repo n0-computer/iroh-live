@@ -31,7 +31,7 @@ pub struct H264Encoder {
     /// avcC description, populated after first successful encode.
     avcc: Option<Vec<u8>>,
     /// Encoded packets ready for collection.
-    packet_buf: Vec<EncodedFrame>,
+    packet_buf: std::collections::VecDeque<EncodedFrame>,
 }
 
 impl YUVSource for YuvData {
@@ -95,7 +95,7 @@ impl H264Encoder {
             bitrate,
             frame_count: 0,
             avcc,
-            packet_buf: Vec::new(),
+            packet_buf: std::collections::VecDeque::new(),
         })
     }
 }
@@ -163,7 +163,7 @@ impl VideoEncoder for H264Encoder {
         let timestamp_us = (self.frame_count * 1_000_000) / self.framerate as u64;
         self.frame_count += 1;
 
-        self.packet_buf.push(EncodedFrame {
+        self.packet_buf.push_back(EncodedFrame {
             is_keyframe,
             timestamp: Duration::from_micros(timestamp_us),
             payload: payload.into(),
@@ -173,11 +173,7 @@ impl VideoEncoder for H264Encoder {
     }
 
     fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
-        Ok(if self.packet_buf.is_empty() {
-            None
-        } else {
-            Some(self.packet_buf.remove(0))
-        })
+        Ok(self.packet_buf.pop_front())
     }
 }
 

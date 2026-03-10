@@ -9,17 +9,13 @@ use crate::format::{DecodeConfig, DecodedVideoFrame, MediaPacket};
 use crate::traits::VideoDecoder;
 
 use super::annexb::{avcc_to_annex_b, length_prefixed_to_annex_b};
-use crate::processing::{
-    clock::StreamClock,
-    scale::{Scaler, fit_within},
-};
+use crate::processing::scale::{Scaler, fit_within};
 
 #[derive(derive_more::Debug)]
 pub struct H264VideoDecoder {
     #[debug(skip)]
     decoder: Decoder,
     scaler: Scaler,
-    clock: StreamClock,
     viewport_changed: Option<(u32, u32)>,
     last_timestamp: Option<Duration>,
     /// Decoded frame waiting to be collected via `pop_frame`.
@@ -55,7 +51,6 @@ impl VideoDecoder for H264VideoDecoder {
         Ok(Self {
             decoder,
             scaler: Scaler::new(None),
-            clock: StreamClock::default(),
             viewport_changed: None,
             last_timestamp: None,
             pending_frame: None,
@@ -103,8 +98,6 @@ impl VideoDecoder for H264VideoDecoder {
         let timestamp = self
             .last_timestamp
             .context("missing last packet timestamp")?;
-        let _delay = self.clock.frame_delay(timestamp);
-
         // Apply viewport scaling AFTER decode.
         if let Some((max_w, max_h)) = self.viewport_changed.take() {
             let (tw, th) = fit_within(src_w, src_h, max_w, max_h);

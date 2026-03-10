@@ -1,6 +1,4 @@
 #[cfg(any(feature = "h264", feature = "av1"))]
-pub(crate) mod clock;
-#[cfg(any(feature = "h264", feature = "av1"))]
 pub(crate) mod convert;
 #[cfg(feature = "capture-camera")]
 pub(crate) mod mjpg;
