@@ -36,7 +36,7 @@ impl Import {
             ImportType::Fmp4 => StreamFormat::Fmp4,
             ImportType::Avc3 => StreamFormat::Avc3,
         };
-        let decoder = moq_mux::import::StreamDecoder::new(broadcast.into(), catalog, format);
+        let decoder = moq_mux::import::StreamDecoder::new(broadcast, catalog, format);
         Self {
             decoder,
             buffer: BytesMut::new(),

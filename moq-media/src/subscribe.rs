@@ -73,11 +73,7 @@ impl CatalogWrapper {
     }
 
     pub fn audio_renditions(&self) -> impl Iterator<Item = &str> + '_ {
-        self.inner
-            .audio
-            .renditions
-            .iter()
-            .map(|(name, _config)| name.as_str())
+        self.inner.audio.renditions.keys().map(|name| name.as_str())
     }
 
     pub fn select_video_rendition(&self, quality: Quality) -> Result<String> {

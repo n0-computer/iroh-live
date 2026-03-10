@@ -274,6 +274,10 @@ fn encode_n(enc: &mut dyn VideoEncoder, frame: &VideoFrame, n: usize) -> Vec<Med
 ///
 /// Encodes `n` frames of color `(r,g,b)` at the given preset, decodes all,
 /// and computes quality metrics on the last decoded frame (encoder has stabilized).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test helper with color components"
+)]
 fn solid_color_roundtrip(
     enc: &mut dyn VideoEncoder,
     dec_info: &TestDecoder,

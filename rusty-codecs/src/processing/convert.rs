@@ -105,6 +105,7 @@ pub fn pixel_format_to_yuv420(src: &[u8], w: u32, h: u32, format: PixelFormat) -
 ///
 /// Avoids intermediate `YuvData` allocation — useful when plane data is
 /// already available as borrowed slices (e.g. from dav1d decoder).
+#[allow(clippy::too_many_arguments, reason = "mirrors YUV plane layout")]
 pub fn yuv420_to_rgba_from_slices(
     y: &[u8],
     y_stride: u32,
@@ -138,6 +139,7 @@ pub fn yuv420_to_rgba_from_slices(
 }
 
 /// Convert YUV 4:2:0 planar slices directly to BGRA (BT.601).
+#[allow(clippy::too_many_arguments, reason = "mirrors YUV plane layout")]
 pub fn yuv420_to_bgra_from_slices(
     y: &[u8],
     y_stride: u32,

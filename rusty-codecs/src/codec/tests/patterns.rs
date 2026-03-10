@@ -50,7 +50,7 @@ pub(super) fn checkerboard(w: u32, h: u32, cell_size: u32) -> VideoFrame {
     let cs = cell_size.max(1);
     for y in 0..h {
         for x in 0..w {
-            let is_white = ((x / cs) + (y / cs)) % 2 == 0;
+            let is_white = ((x / cs) + (y / cs)).is_multiple_of(2);
             let v = if is_white { 255 } else { 0 };
             let off = ((y * w + x) * 4) as usize;
             raw[off] = v;

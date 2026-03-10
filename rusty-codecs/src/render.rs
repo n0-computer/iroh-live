@@ -343,7 +343,7 @@ impl WgpuVideoRenderer {
         let out = self.output_texture.as_ref().unwrap();
         self.queue.write_texture(
             out.texture.as_image_copy(),
-            &*cpu.image,
+            &cpu.image,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(cpu.width() * 4),
