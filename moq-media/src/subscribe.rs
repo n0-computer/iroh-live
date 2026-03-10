@@ -6,7 +6,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bytes::Buf as _;
 use hang::{
     catalog::{AudioConfig, Catalog, CatalogConsumer, VideoConfig},
     container::OrderedConsumer,
@@ -15,13 +14,13 @@ use moq_lite::{BroadcastConsumer, Track};
 use n0_error::{Result, StackResultExt, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
-use tokio::sync::mpsc::{self, error::TryRecvError};
+use tokio::sync::mpsc;
 use tokio_util::sync::{CancellationToken, DropGuard};
-use tracing::{Span, debug, error, info, info_span, trace, warn};
+use tracing::{Span, debug, info_span, warn};
 
 use crate::{
-    format::{DecodeConfig, DecodedVideoFrame, MediaPacket, PixelFormat, PlaybackConfig, Quality},
-    pipeline::{VideoDecoderHandle, VideoDecoderPipeline, forward_packets},
+    format::{DecodeConfig, DecodedVideoFrame, PixelFormat, PlaybackConfig, Quality},
+    pipeline::{AudioDecoderPipeline, VideoDecoderHandle, VideoDecoderPipeline},
     processing::scale::Scaler,
     traits::{AudioDecoder, AudioSink, AudioSinkHandle, Decoders, VideoDecoder, VideoSource},
     transport::MoqPacketSource,
@@ -300,11 +299,8 @@ pub struct AudioTrack {
     name: String,
     #[debug(skip)]
     handle: Box<dyn AudioSinkHandle>,
-    shutdown_token: CancellationToken,
     #[debug(skip)]
-    _task_handle: AbortOnDropHandle<()>,
-    #[debug(skip)]
-    _thread_handle: thread::JoinHandle<()>,
+    _pipeline: AudioDecoderPipeline,
 }
 
 impl AudioTrack {
@@ -316,39 +312,19 @@ impl AudioTrack {
         shutdown: CancellationToken,
         span: Span,
     ) -> Result<Self> {
-        let _guard = span.enter();
-        let (packet_tx, packet_rx) = mpsc::channel(32);
-        let output_format = output.format()?;
-        info!(?config, "audio thread start");
-        let decoder = D::new(&config, output_format)?;
         let handle = output.handle();
-        let thread_name = format!("adec-{}", name);
-        let thread = spawn_thread(thread_name, {
-            let shutdown = shutdown.clone();
-            let span = span.clone();
-            move || {
-                let _guard = span.enter();
-                info!("audio decoder thread start");
-                if let Err(err) = Self::run_loop(decoder, packet_rx, output, &shutdown) {
-                    error!("audio decoder failed: {err:#}");
-                }
-                info!("audio decoder thread stop");
-            }
-        });
         let source = MoqPacketSource(consumer);
-        let task = tokio::spawn(forward_packets(source, packet_tx));
+        let pipeline =
+            AudioDecoderPipeline::new::<D>(name.clone(), source, &config, output, shutdown, span)?;
         Ok(Self {
             name,
             handle,
-            shutdown_token: shutdown,
-            _task_handle: AbortOnDropHandle::new(task),
-            _thread_handle: thread,
+            _pipeline: pipeline,
         })
     }
 
     pub fn stopped(&self) -> impl Future<Output = ()> + 'static {
-        let shutdown_token = self.shutdown_token.clone();
-        async move { shutdown_token.cancelled().await }
+        self._pipeline.stopped()
     }
 
     pub fn rendition(&self) -> &str {
@@ -357,101 +333,6 @@ impl AudioTrack {
 
     pub fn handle(&self) -> &dyn AudioSinkHandle {
         self.handle.as_ref()
-    }
-
-    pub(crate) fn run_loop(
-        mut decoder: impl AudioDecoder,
-        mut packet_rx: mpsc::Receiver<MediaPacket>,
-        mut sink: impl AudioSink,
-        shutdown: &CancellationToken,
-    ) -> Result<()> {
-        const INTERVAL: Duration = Duration::from_millis(10);
-        const MAX_CONSECUTIVE_ERRORS: u32 = 10;
-        let mut remote_start = None;
-        let loop_start = Instant::now();
-        let mut consecutive_errors = 0u32;
-
-        'main: for i in 0.. {
-            let tick = Instant::now();
-
-            if shutdown.is_cancelled() {
-                debug!("stop audio thread: cancelled");
-                break;
-            }
-
-            loop {
-                match packet_rx.try_recv() {
-                    Ok(packet) => {
-                        let remote_start = *remote_start.get_or_insert(packet.timestamp);
-
-                        if tracing::enabled!(tracing::Level::TRACE) {
-                            let loop_elapsed = tick.duration_since(loop_start);
-                            let remote_elapsed = packet.timestamp.saturating_sub(remote_start);
-                            let diff_ms =
-                                (loop_elapsed.as_secs_f32() - remote_elapsed.as_secs_f32()) * 1000.;
-                            trace!(payload_bytes = packet.payload.remaining(), ts=?packet.timestamp, ?loop_elapsed, ?remote_elapsed, ?diff_ms, "recv packet");
-                        }
-
-                        // TODO: Skip outdated packets?
-
-                        if !sink.is_paused() {
-                            if let Err(err) = decoder.push_packet(packet) {
-                                consecutive_errors += 1;
-                                warn!(consecutive_errors, "failed to push audio packet: {err:#}");
-                                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                                    n0_error::bail_any!(
-                                        "too many consecutive audio decode errors: {err:#}"
-                                    );
-                                }
-                                continue;
-                            }
-                            match decoder.pop_samples() {
-                                Ok(Some(samples)) => {
-                                    consecutive_errors = 0;
-                                    sink.push_samples(samples)?;
-                                }
-                                Ok(None) => {
-                                    consecutive_errors = 0;
-                                }
-                                Err(err) => {
-                                    consecutive_errors += 1;
-                                    warn!(
-                                        consecutive_errors,
-                                        "failed to pop audio samples: {err:#}"
-                                    );
-                                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                                        n0_error::bail_any!(
-                                            "too many consecutive audio decode errors: {err:#}"
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        debug!("stop audio thread: packet_rx disconnected");
-                        break 'main;
-                    }
-                    Err(TryRecvError::Empty) => {
-                        trace!("no packet to recv");
-                        break;
-                    }
-                }
-            }
-
-            let sleep = (INTERVAL * i).saturating_sub(loop_start.elapsed());
-            if !sleep.is_zero() {
-                thread::sleep(sleep);
-            }
-        }
-        shutdown.cancel();
-        Ok(())
-    }
-}
-
-impl Drop for AudioTrack {
-    fn drop(&mut self) {
-        self.shutdown_token.cancel();
     }
 }
 
