@@ -380,9 +380,23 @@ impl WgpuVideoRenderer {
         &self.output_texture.as_ref().unwrap().view
     }
 
-    /// Get the current output texture view, if any frame has been rendered.
+    /// Returns the current output texture view, if any frame has been rendered.
     pub fn output_view(&self) -> Option<&wgpu::TextureView> {
         self.output_texture.as_ref().map(|t| &t.view)
+    }
+
+    /// Returns the current output texture, if any frame has been rendered.
+    ///
+    /// The texture format is [`wgpu::TextureFormat::Rgba8UnormSrgb`].
+    /// This is useful for frameworks (e.g. dioxus-native) that need
+    /// an owned `wgpu::Texture` for registration.
+    pub fn output_texture(&self) -> Option<&wgpu::Texture> {
+        self.output_texture.as_ref().map(|t| &t.texture)
+    }
+
+    /// Returns the current output dimensions `(width, height)`, if any frame has been rendered.
+    pub fn output_dimensions(&self) -> Option<(u32, u32)> {
+        self.output_texture.as_ref().map(|t| (t.width, t.height))
     }
 
     /// Get the NV12 pipeline and bind group layout for zero-copy GPU rendering.

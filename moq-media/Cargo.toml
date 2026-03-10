@@ -18,7 +18,7 @@ data-encoding = "2.9.0"
 derive_more = { version = "2.0.1", features = ["display", "debug", "eq", "deref"] }
 firewheel = { version = "0.10.0", features = ["cpal", "peak_meter_node", "std", "stream_nodes", "cpal_resample_inputs"] }
 hang = "0.15"
-image = { version = "0.25.8", default-features = false }
+image = { version = "0.25", default-features = false }
 moq-lite = "0.15"
 n0-error = { version = "0.1.2", features = ["anyhow"] }
 n0-future = "0.3.1"
@@ -69,7 +69,7 @@ eframe = { version = "0.33.0", features = ["wgpu"] }
 egui-wgpu = "0.33.0"
 moq-media-egui = { path = "../moq-media-egui" }
 pollster = "0.4"
-image = { version = "0.25.8", features = ["jpeg"] }
+image = { version = "0.25", features = ["jpeg"] }
 postcard = "1.1.3"
 tokio = { version = "1.48.0", features = ["full"] }
 tracing-subscriber = "0.3.20"

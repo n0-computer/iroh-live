@@ -135,6 +135,21 @@ impl VideoCodec {
         self.create_encoder(crate::format::VideoEncoderConfig::from_preset(preset))
     }
 
+    /// Creates an encoder matching a [`VideoSource`](crate::traits::VideoSource)'s format.
+    pub fn create_encoder_from_source(
+        self,
+        source: &dyn crate::traits::VideoSource,
+    ) -> anyhow::Result<Box<dyn crate::traits::VideoEncoder>> {
+        let fmt = source.format();
+        let [width, height] = fmt.dimensions;
+        self.create_encoder(crate::format::VideoEncoderConfig {
+            width,
+            height,
+            framerate: 30,
+            bitrate: None,
+        })
+    }
+
     /// Human-readable display name.
     pub fn display_name(self) -> &'static str {
         match self {
