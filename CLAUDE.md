@@ -1,5 +1,7 @@
 # iroh-live
 
+RULES FOR ALL AGENTS: if .agents folder exists, read it. ALWAYS KEEP IT IN MIND. if sth in there is marked as mandatory, treat it as such unless specifically told otherwise. if you deviate from anything, inform the user and justify why.
+
 Rust workspace for real-time media over iroh (QUIC-based transport).
 
 ## Crates
