@@ -4,8 +4,8 @@ use std::ptr::{self, NonNull};
 use std::slice;
 use std::sync::{Arc, Mutex};
 
+use crate::config::{H264, VideoCodec, VideoConfig};
 use anyhow::{Context, Result, bail};
-use hang::catalog::{H264, VideoCodec, VideoConfig};
 use objc2_core_foundation::{
     CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType, kCFTypeDictionaryKeyCallBacks,
     kCFTypeDictionaryValueCallBacks,
@@ -202,8 +202,6 @@ impl VideoEncoderFactory for VtbEncoder {
             bitrate: Some(bitrate),
             framerate: Some(config.framerate as f64),
             optimize_for_latency: Some(true),
-            container: hang::catalog::Container::Legacy,
-            jitter: None,
         }
     }
 }
@@ -231,8 +229,6 @@ impl VideoEncoder for VtbEncoder {
             bitrate: Some(self.bitrate),
             framerate: Some(self.framerate as f64),
             optimize_for_latency: Some(true),
-            container: hang::catalog::Container::Legacy,
-            jitter: None,
         }
     }
 

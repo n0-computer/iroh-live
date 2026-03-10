@@ -1,5 +1,5 @@
+use crate::config::{AudioCodec, AudioConfig};
 use anyhow::{Result, bail};
-use hang::catalog::{AudioCodec, AudioConfig};
 use unsafe_libopus::{self as opus, OPUS_OK, OpusDecoder as RawOpusDecoder};
 
 use crate::format::{AudioFormat, MediaPacket};
@@ -179,7 +179,7 @@ fn convert_channels_into(samples: &[f32], from_ch: u32, to_ch: u32, out: &mut Ve
 mod tests {
     use std::f32::consts::PI;
 
-    use hang::catalog::AudioCodec;
+    use crate::config::AudioCodec;
 
     use super::*;
     use crate::{
@@ -271,8 +271,6 @@ mod tests {
             channel_count: 1,
             bitrate: Some(128000),
             description: None,
-            container: hang::catalog::Container::Legacy,
-            jitter: None,
         };
         let format = AudioFormat::mono_48k();
         let mut dec = OpusAudioDecoder::new(&config, format).unwrap();
@@ -287,8 +285,6 @@ mod tests {
             channel_count: 1,
             bitrate: Some(128000),
             description: None,
-            container: hang::catalog::Container::Legacy,
-            jitter: None,
         };
         let format = AudioFormat::mono_48k();
         let mut dec = OpusAudioDecoder::new(&config, format).unwrap();

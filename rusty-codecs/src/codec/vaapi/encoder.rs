@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::config::{H264, VideoCodec, VideoConfig};
 use anyhow::{Context, Result};
 use cros_codecs::backend::vaapi::encoder::VaapiBackend;
 use cros_codecs::encoder::h264::EncoderConfig;
@@ -15,7 +16,6 @@ use cros_codecs::libva::{
 };
 use cros_codecs::video_frame::{ReadMapping, VideoFrame as CrosVideoFrame, WriteMapping};
 use cros_codecs::{BlockingMode, Fourcc, FrameLayout, PlaneLayout, Resolution};
-use hang::catalog::{H264, VideoCodec, VideoConfig};
 
 use crate::{
     codec::h264::annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b},
@@ -444,8 +444,6 @@ impl VideoEncoderFactory for VaapiEncoder {
             bitrate: Some(bitrate),
             framerate: Some(config.framerate as f64),
             optimize_for_latency: Some(true),
-            container: hang::catalog::Container::Legacy,
-            jitter: None,
         }
     }
 }
@@ -472,8 +470,6 @@ impl VideoEncoder for VaapiEncoder {
             bitrate: Some(self.bitrate),
             framerate: Some(self.framerate as f64),
             optimize_for_latency: Some(true),
-            container: hang::catalog::Container::Legacy,
-            jitter: None,
         }
     }
 

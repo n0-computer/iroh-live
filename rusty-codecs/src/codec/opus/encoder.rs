@@ -1,8 +1,8 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
+use crate::config::{AudioCodec, AudioConfig};
 use anyhow::{Result, bail};
-use hang::catalog::{AudioCodec, AudioConfig};
 use unsafe_libopus::{
     self as opus, OPUS_APPLICATION_VOIP, OPUS_OK, OPUS_SET_BITRATE_REQUEST, OPUS_SET_DTX_REQUEST,
     OPUS_SET_INBAND_FEC_REQUEST, OpusEncoder as RawOpusEncoder, varargs,
@@ -152,8 +152,6 @@ impl AudioEncoderFactory for OpusEncoder {
             channel_count: config.channel_count,
             bitrate: Some(config.bitrate),
             description: Some(build_opus_head(config.channel_count, SAMPLE_RATE).into()),
-            container: hang::catalog::Container::Legacy,
-            jitter: None,
         }
     }
 }
@@ -170,8 +168,6 @@ impl AudioEncoder for OpusEncoder {
             channel_count: self.channel_count,
             bitrate: Some(self.bitrate),
             description: Some(self.extradata.clone().into()),
-            container: hang::catalog::Container::Legacy,
-            jitter: None,
         }
     }
 

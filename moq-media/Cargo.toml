@@ -30,7 +30,7 @@ nokhwa = { version = "0.10", optional = true, features = [
 ] }
 postcard = "1.1.3"
 rand = "0.9"
-rusty-codecs = { path = "../rusty-codecs" }
+rusty-codecs = { path = "../rusty-codecs", features = ["hang"] }
 serde = { version = "1.0.228", features = ["derive"] }
 strum = { version = "0.28", features = ["derive"] }
 tokio = { version = "1.48.0", features = ["sync"] }

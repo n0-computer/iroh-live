@@ -1,7 +1,7 @@
 use std::time::Duration;
 
+use crate::config::{AV1, VideoCodec, VideoConfig};
 use anyhow::{Result, bail};
-use hang::catalog::{AV1, VideoCodec, VideoConfig};
 use rav1e::prelude::*;
 
 use crate::{
@@ -139,8 +139,6 @@ impl VideoEncoderFactory for Av1Encoder {
             bitrate: Some(bitrate),
             framerate: Some(config.framerate as f64),
             optimize_for_latency: Some(true),
-            container: hang::catalog::Container::Legacy,
-            jitter: None,
         }
     }
 }
@@ -174,8 +172,6 @@ impl VideoEncoder for Av1Encoder {
             bitrate: Some(self.bitrate),
             framerate: Some(self.framerate as f64),
             optimize_for_latency: Some(true),
-            container: hang::catalog::Container::Legacy,
-            jitter: None,
         }
     }
 

@@ -4,6 +4,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::config::{VideoCodec, VideoConfig};
 use anyhow::{Context as _, Result, bail};
 use cros_codecs::backend::vaapi::decoder::VaapiBackend;
 use cros_codecs::decoder::stateless::h264::H264;
@@ -14,7 +15,6 @@ use cros_codecs::video_frame::VideoFrame as CrosVideoFrame;
 use cros_codecs::video_frame::frame_pool::{FramePool, PooledVideoFrame};
 use cros_codecs::video_frame::generic_dma_video_frame::GenericDmaVideoFrame;
 use cros_codecs::{BlockingMode, DecodedFormat, Fourcc, FrameLayout, PlaneLayout, Resolution};
-use hang::catalog::{VideoCodec, VideoConfig};
 
 use crate::codec::h264::annexb::{avcc_to_annex_b, length_prefixed_to_annex_b};
 use crate::format::{
@@ -505,7 +505,7 @@ impl VideoDecoder for VaapiDecoder {
 
 #[cfg(test)]
 mod tests {
-    use hang::catalog::H264;
+    use crate::config::H264;
 
     use super::*;
 
@@ -527,8 +527,6 @@ mod tests {
             bitrate: None,
             framerate: None,
             optimize_for_latency: None,
-            container: Default::default(),
-            jitter: None,
         };
         let decode_config = DecodeConfig::default();
         let dec = VaapiDecoder::new(&config, &decode_config);
@@ -590,7 +588,7 @@ mod tests {
 
     #[test]
     fn unsupported_codec_errors() {
-        use hang::catalog::AV1;
+        use crate::config::AV1;
         let config = VideoConfig {
             codec: VideoCodec::AV1(AV1::default()),
             description: None,
@@ -601,8 +599,6 @@ mod tests {
             bitrate: None,
             framerate: None,
             optimize_for_latency: None,
-            container: Default::default(),
-            jitter: None,
         };
         let decode_config = DecodeConfig::default();
         let result = VaapiDecoder::new(&config, &decode_config);

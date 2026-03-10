@@ -1,7 +1,7 @@
 use std::time::Duration;
 
+use crate::config::{H264, VideoCodec, VideoConfig};
 use anyhow::Result;
-use hang::catalog::{H264, VideoCodec, VideoConfig};
 use openh264::{
     OpenH264API,
     encoder::{
@@ -137,8 +137,6 @@ impl VideoEncoderFactory for H264Encoder {
             bitrate: Some(bitrate),
             framerate: Some(config.framerate as f64),
             optimize_for_latency: Some(true),
-            container: hang::catalog::Container::Legacy,
-            jitter: None,
         }
     }
 }
@@ -165,8 +163,6 @@ impl VideoEncoder for H264Encoder {
             bitrate: Some(self.bitrate),
             framerate: Some(self.framerate as f64),
             optimize_for_latency: Some(true),
-            container: hang::catalog::Container::Legacy,
-            jitter: None,
         }
     }
 

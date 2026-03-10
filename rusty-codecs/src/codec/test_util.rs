@@ -1,3 +1,4 @@
+use crate::config::VideoConfig;
 use crate::{
     format::{
         DecodeConfig, DecodedVideoFrame, EncodedFrame, MediaPacket, PixelFormat, VideoFormat,
@@ -5,7 +6,6 @@ use crate::{
     },
     traits::{VideoDecoder, VideoEncoder},
 };
-use hang::catalog::VideoConfig;
 
 /// Converts encoded frames to media packets for decoder testing.
 pub fn encoded_frames_to_media_packets(input: Vec<EncodedFrame>) -> Vec<MediaPacket> {
