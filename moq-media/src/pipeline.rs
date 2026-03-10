@@ -11,8 +11,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, info_span, trace, warn};
 
 use crate::format::{
-    AudioFormat, DecodeConfig, DecodedVideoFrame, FrameBuffer, MediaPacket, PixelFormat,
-    VideoFormat, VideoFrame,
+    AudioFormat, DecodeConfig, DecodedVideoFrame, MediaPacket, VideoFormat, VideoFrame,
 };
 use crate::processing::scale::{Scaler, fit_within};
 use crate::traits::{
@@ -140,7 +139,6 @@ impl VideoDecoderPipeline {
 
         let decoder = D::new(config, decode_config)?;
         let decoder_name = decoder.name().to_string();
-        let target_pixel_format = decode_config.pixel_format;
         let span = info_span!("videodec", %name, decoder = %decoder_name);
 
         let thread_name = format!("vdec-{name}");
@@ -150,14 +148,9 @@ impl VideoDecoderPipeline {
             move || {
                 let _guard = span.enter();
                 info!("decode start");
-                if let Err(err) = decode_loop(
-                    &shutdown,
-                    packet_rx,
-                    frame_tx,
-                    viewport_watcher,
-                    decoder,
-                    target_pixel_format,
-                ) {
+                if let Err(err) =
+                    decode_loop(&shutdown, packet_rx, frame_tx, viewport_watcher, decoder)
+                {
                     error!("decoder failed: {err:#}");
                 }
                 info!("decode stop");
@@ -338,7 +331,6 @@ fn decode_loop(
     output_tx: mpsc::Sender<DecodedVideoFrame>,
     mut viewport_watcher: n0_watcher::Direct<(u32, u32)>,
     mut decoder: impl VideoDecoder,
-    target_pixel_format: PixelFormat,
 ) -> Result<()> {
     let mut waiting_for_keyframe = false;
 
@@ -373,16 +365,8 @@ fn decode_loop(
         trace!(t=?t.elapsed(), "pipeline: push_packet");
 
         match decoder.pop_frame() {
-            Ok(Some(mut frame)) => {
+            Ok(Some(frame)) => {
                 trace!(t=?t.elapsed(), "pipeline: pop frame");
-                if target_pixel_format == PixelFormat::Bgra
-                    && let FrameBuffer::Cpu(ref mut cpu) = frame.buffer
-                {
-                    cpu.pixel_format = PixelFormat::Bgra;
-                    for pixel in cpu.image.chunks_exact_mut(4) {
-                        pixel.swap(0, 2);
-                    }
-                }
                 if output_tx.blocking_send(frame).is_err() {
                     debug!("pipeline: frame receiver dropped");
                     break;

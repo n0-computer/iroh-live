@@ -248,9 +248,27 @@ pub struct DecodedVideoFrame {
 impl DecodedVideoFrame {
     /// Creates a new CPU-backed frame from raw RGBA data.
     pub fn new_cpu(data: Vec<u8>, width: u32, height: u32, timestamp: Duration) -> Self {
+        Self::new_cpu_with_format(data, width, height, timestamp, PixelFormat::Rgba)
+    }
+
+    /// Creates a new CPU-backed frame with an explicit pixel format.
+    pub fn new_cpu_with_format(
+        data: Vec<u8>,
+        width: u32,
+        height: u32,
+        timestamp: Duration,
+        pixel_format: PixelFormat,
+    ) -> Self {
         let image = RgbaImage::from_raw(width, height, data)
-            .expect("RGBA data size does not match dimensions");
-        Self::from_image(image, timestamp)
+            .expect("pixel data size does not match dimensions");
+        Self {
+            buffer: FrameBuffer::Cpu(CpuFrame {
+                image,
+                pixel_format,
+            }),
+            timestamp,
+            cached_rgba: OnceCell::new(),
+        }
     }
 
     /// Creates a new CPU-backed frame from an existing [`RgbaImage`].

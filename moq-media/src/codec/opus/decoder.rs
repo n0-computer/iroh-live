@@ -21,6 +21,8 @@ pub struct OpusAudioDecoder {
     resampler: Resampler,
     /// Decoded + resampled + channel-converted sample buffer.
     samples: Vec<f32>,
+    /// Reusable PCM decode buffer.
+    pcm_buf: Vec<f32>,
 }
 
 // Safety: The OpusDecoder pointer is only used from a single thread.
@@ -55,27 +57,27 @@ impl AudioDecoder for OpusAudioDecoder {
         let resampler =
             Resampler::new(config.sample_rate, target_format.sample_rate, channel_count)?;
 
+        let max_samples = MAX_FRAME_SIZE * channel_count as usize;
         Ok(Self {
             decoder,
             channel_count,
             target_channel_count: target_format.channel_count,
             resampler,
             samples: Vec::new(),
+            pcm_buf: vec![0f32; max_samples],
         })
     }
 
     fn push_packet(&mut self, mut packet: MediaPacket) -> Result<()> {
         use bytes::Buf;
         let payload = packet.payload.copy_to_bytes(packet.payload.remaining());
-        let max_samples = MAX_FRAME_SIZE * self.channel_count as usize;
-        let mut pcm = vec![0f32; max_samples];
 
         let decoded_samples = unsafe {
             opus::opus_decode_float(
                 self.decoder,
                 payload.as_ptr(),
                 payload.len() as i32,
-                pcm.as_mut_ptr(),
+                self.pcm_buf.as_mut_ptr(),
                 MAX_FRAME_SIZE as i32,
                 0, // no FEC
             )
@@ -85,17 +87,22 @@ impl AudioDecoder for OpusAudioDecoder {
         }
 
         let total_samples = decoded_samples as usize * self.channel_count as usize;
-        pcm.truncate(total_samples);
+        let pcm = &self.pcm_buf[..total_samples];
 
         // Resample if needed (e.g., 48kHz → target rate)
-        let resampled = self.resampler.process(&pcm)?;
+        let resampled = self.resampler.process(pcm)?;
 
         // Convert channel count if source and target differ
+        self.samples.clear();
         if self.channel_count == self.target_channel_count {
-            self.samples = resampled;
+            self.samples.extend_from_slice(&resampled);
         } else {
-            self.samples =
-                convert_channels(&resampled, self.channel_count, self.target_channel_count);
+            convert_channels_into(
+                &resampled,
+                self.channel_count,
+                self.target_channel_count,
+                &mut self.samples,
+            );
         }
 
         Ok(())
@@ -110,62 +117,60 @@ impl AudioDecoder for OpusAudioDecoder {
     }
 }
 
-/// Convert interleaved audio between channel counts.
+/// Convert interleaved audio between channel counts, writing into `out`.
 ///
-/// - Same count: returns the input unchanged (no allocation).
+/// - Same count: copies input directly.
 /// - Mono→Stereo: duplicates each sample to both channels.
 /// - Stereo→Mono: averages L and R for each frame.
 /// - Other combinations: mixes down to mono, then upmixes by duplication.
-fn convert_channels(samples: &[f32], from_ch: u32, to_ch: u32) -> Vec<f32> {
+fn convert_channels_into(samples: &[f32], from_ch: u32, to_ch: u32, out: &mut Vec<f32>) {
     if from_ch == to_ch {
-        return samples.to_vec();
+        out.extend_from_slice(samples);
+        return;
     }
 
     let from = from_ch as usize;
     let to = to_ch as usize;
     let frames = samples.len() / from;
 
+    out.reserve(frames * to);
     match (from, to) {
         (1, 2) => {
-            // Mono → Stereo: duplicate each sample
-            let mut out = Vec::with_capacity(frames * 2);
             for &s in samples {
                 out.push(s);
                 out.push(s);
             }
-            out
         }
         (2, 1) => {
-            // Stereo → Mono: average L and R
-            let mut out = Vec::with_capacity(frames);
             for pair in samples.chunks_exact(2) {
                 out.push((pair[0] + pair[1]) * 0.5);
             }
-            out
         }
         (_, 1) => {
-            // N channels → Mono: average all channels per frame
-            let mut out = Vec::with_capacity(frames);
             for frame in samples.chunks_exact(from) {
                 let sum: f32 = frame.iter().sum();
                 out.push(sum / from as f32);
             }
-            out
         }
         (1, _) => {
-            // Mono → N channels: duplicate to all channels
-            let mut out = Vec::with_capacity(frames * to);
             for &s in samples {
                 for _ in 0..to {
                     out.push(s);
                 }
             }
-            out
         }
         _ => {
             // General: mix down to mono, then upmix
-            let mono = convert_channels(samples, from_ch, 1);
-            convert_channels(&mono, 1, to_ch)
+            // Use a temp buffer for the mono intermediate.
+            let mono_len = frames;
+            let start = out.len();
+            out.reserve(mono_len);
+            for frame in samples.chunks_exact(from) {
+                let sum: f32 = frame.iter().sum();
+                out.push(sum / from as f32);
+            }
+            let mono: Vec<f32> = out.drain(start..).collect();
+            convert_channels_into(&mono, 1, to_ch, out);
         }
     }
 }
@@ -365,21 +370,24 @@ mod tests {
     #[test]
     fn convert_channels_identity() {
         let input = vec![1.0, 2.0, 3.0];
-        let output = super::convert_channels(&input, 1, 1);
+        let mut output = Vec::new();
+        super::convert_channels_into(&input, 1, 1, &mut output);
         assert_eq!(output, input);
     }
 
     #[test]
     fn convert_channels_mono_to_stereo() {
         let input = vec![1.0, 2.0, 3.0];
-        let output = super::convert_channels(&input, 1, 2);
+        let mut output = Vec::new();
+        super::convert_channels_into(&input, 1, 2, &mut output);
         assert_eq!(output, vec![1.0, 1.0, 2.0, 2.0, 3.0, 3.0]);
     }
 
     #[test]
     fn convert_channels_stereo_to_mono() {
         let input = vec![1.0, 3.0, 2.0, 4.0];
-        let output = super::convert_channels(&input, 2, 1);
+        let mut output = Vec::new();
+        super::convert_channels_into(&input, 2, 1, &mut output);
         assert_eq!(output, vec![2.0, 3.0]);
     }
 }

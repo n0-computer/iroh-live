@@ -19,7 +19,7 @@ use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{debug, warn};
 
 use crate::{
-    format::{DecodeConfig, DecodedVideoFrame, PixelFormat, PlaybackConfig, Quality},
+    format::{DecodeConfig, DecodedVideoFrame, PlaybackConfig, Quality},
     pipeline::{AudioDecoderPipeline, VideoDecoderHandle, VideoDecoderPipeline},
     processing::scale::Scaler,
     traits::{
@@ -363,7 +363,7 @@ impl WatchTrack {
         rendition: String,
         shutdown: CancellationToken,
         mut source: impl VideoSource,
-        decode_config: DecodeConfig,
+        _decode_config: DecodeConfig,
     ) -> Self {
         let viewport = Watchable::new((1u32, 1u32));
         let (frame_tx, frame_rx) = mpsc::channel::<DecodedVideoFrame>(2);
@@ -392,25 +392,23 @@ impl WatchTrack {
                     match source.pop_frame() {
                         Ok(Some(frame)) => {
                             let [w, h] = frame.format.dimensions;
-                            let rgba = match scaler.scale_rgba(&frame.raw, w, h) {
-                                Ok(Some((scaled, sw, sh))) => {
-                                    image::RgbaImage::from_raw(sw, sh, scaled)
-                                }
-                                Ok(None) => image::RgbaImage::from_raw(w, h, frame.raw.to_vec()),
+                            let pixel_format = frame.format.pixel_format;
+                            let (data, fw, fh) = match scaler.scale_rgba(&frame.raw, w, h) {
+                                Ok(Some((scaled, sw, sh))) => (scaled, sw, sh),
+                                Ok(None) => (frame.raw.to_vec(), w, h),
                                 Err(err) => {
                                     warn!("scaler error: {err:#}");
-                                    image::RgbaImage::from_raw(w, h, frame.raw.to_vec())
+                                    (frame.raw.to_vec(), w, h)
                                 }
                             };
-                            if let Some(mut img) = rgba {
-                                if decode_config.pixel_format == PixelFormat::Bgra {
-                                    for pixel in img.chunks_exact_mut(4) {
-                                        pixel.swap(0, 2);
-                                    }
-                                }
-                                let decoded = DecodedVideoFrame::from_image(img, start.elapsed());
-                                let _ = frame_tx.blocking_send(decoded);
-                            }
+                            let decoded = DecodedVideoFrame::new_cpu_with_format(
+                                data,
+                                fw,
+                                fh,
+                                start.elapsed(),
+                                pixel_format,
+                            );
+                            let _ = frame_tx.blocking_send(decoded);
                         }
                         Ok(None) => {}
                         Err(_) => break,

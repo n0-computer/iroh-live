@@ -147,6 +147,7 @@ impl VideoCodec {
             height,
             framerate: 30,
             bitrate: None,
+            nal_format: crate::format::NalFormat::default(),
         })
     }
 
