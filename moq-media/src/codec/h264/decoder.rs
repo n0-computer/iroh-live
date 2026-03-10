@@ -10,7 +10,7 @@ use crate::traits::VideoDecoder;
 
 use super::annexb::{avcc_to_annex_b, length_prefixed_to_annex_b};
 use crate::processing::{
-    convert::yuv420_to_bgra_from_slices,
+    convert::{yuv420_to_bgra_from_slices, yuv420_to_rgba_from_slices},
     scale::{Scaler, fit_within},
 };
 
@@ -27,9 +27,6 @@ pub struct H264VideoDecoder {
     /// Decoded frame waiting to be collected via `pop_frame`.
     #[debug(skip)]
     pending_frame: Option<(RgbaImage, u32, u32)>,
-    /// Reusable pixel buffer to avoid per-frame allocation.
-    #[debug(skip)]
-    pixel_buf: Vec<u8>,
 }
 
 impl VideoDecoder for H264VideoDecoder {
@@ -73,7 +70,6 @@ impl VideoDecoder for H264VideoDecoder {
             viewport_changed: None,
             last_timestamp: None,
             pending_frame: None,
-            pixel_buf: Vec::new(),
         })
     }
 
@@ -104,8 +100,6 @@ impl VideoDecoder for H264VideoDecoder {
             let (w, h) = yuv.dimensions();
             let w = w as u32;
             let h = h as u32;
-            let needed = (w * h * 4) as usize;
-
             let pixels = match self.pixel_format {
                 PixelFormat::Bgra => {
                     // Use yuvutils-rs for direct YUV→BGRA (avoids RGBA + swap).
@@ -122,10 +116,19 @@ impl VideoDecoder for H264VideoDecoder {
                     )?
                 }
                 PixelFormat::Rgba => {
-                    // Use openh264's built-in RGBA converter, reusing the buffer.
-                    self.pixel_buf.resize(needed, 0);
-                    yuv.write_rgba8(&mut self.pixel_buf);
-                    std::mem::take(&mut self.pixel_buf)
+                    // Use yuvutils-rs for consistent BT.601 limited-range conversion
+                    // across all backends (software, VAAPI, VideoToolbox).
+                    let (y_stride, u_stride, v_stride) = yuv.strides();
+                    yuv420_to_rgba_from_slices(
+                        yuv.y(),
+                        y_stride as u32,
+                        yuv.u(),
+                        u_stride as u32,
+                        yuv.v(),
+                        v_stride as u32,
+                        w,
+                        h,
+                    )?
                 }
             };
 
@@ -154,8 +157,6 @@ impl VideoDecoder for H264VideoDecoder {
 
         let (data, w, h) =
             if let Some((scaled, sw, sh)) = self.scaler.scale_rgba(img.as_raw(), src_w, src_h)? {
-                // Reclaim the unscaled image buffer for reuse.
-                self.pixel_buf = img.into_raw();
                 (scaled, sw, sh)
             } else {
                 (img.into_raw(), src_w, src_h)

@@ -75,9 +75,9 @@ struct VaapiGpuFrame {
     width: u32,
     height: u32,
     dma_info: Option<DmaBufInfo>,
-    /// Cached VAAPI display for frame mapping (opened lazily on first download).
+    /// Shared VAAPI display for frame mapping (pre-opened at decoder init).
     #[debug(skip)]
-    mapping_display: std::cell::OnceCell<Rc<Display>>,
+    mapping_display: Rc<Display>,
 }
 
 // PooledVideoFrame<GenericDmaVideoFrame> holds owned File descriptors.
@@ -92,17 +92,10 @@ impl VaapiGpuFrame {
     /// (including Intel 4-tile) correctly — unlike GenericDmaVideoFrame::map()
     /// which only supports linear and Y-tile.
     fn derive_nv12_planes(&self) -> Result<Nv12Planes> {
-        let display = match self.mapping_display.get() {
-            Some(d) => d,
-            None => {
-                let d = Display::open().context("failed to open VAAPI display for mapping")?;
-                let _ = self.mapping_display.set(d);
-                self.mapping_display.get().unwrap()
-            }
-        };
+        let display = &self.mapping_display;
         let surface = self
             .frame
-            .to_native_handle(&display)
+            .to_native_handle(display)
             .map_err(|e| anyhow::anyhow!("failed to re-import frame as VA surface: {e}"))?;
 
         surface
@@ -242,13 +235,12 @@ fn extract_dma_buf_info(
 /// Allocate a `GenericDmaVideoFrame` by creating a VA surface and exporting
 /// its DMA-BUF file descriptors.
 ///
-/// Opens a temporary VA Display connection for surface creation. The exported
-/// DMA-BUF FDs are GPU-global and survive after the Display is dropped.
-fn alloc_va_dma_frame(stream_info: &StreamInfo) -> GenericDmaVideoFrame {
+/// Uses the provided shared Display connection rather than opening a new one
+/// per allocation. The exported DMA-BUF FDs are GPU-global and survive
+/// independently of the Display.
+fn alloc_va_dma_frame(display: &Rc<Display>, stream_info: &StreamInfo) -> GenericDmaVideoFrame {
     let w = stream_info.coded_resolution.width;
     let h = stream_info.coded_resolution.height;
-
-    let display = Display::open().expect("failed to open VAAPI display for frame allocation");
 
     let mut surfaces = display
         .create_surfaces(
@@ -299,6 +291,9 @@ pub struct VaapiDecoder {
     framepool: Arc<Mutex<FramePool<GenericDmaVideoFrame>>>,
     #[debug(skip)]
     display: Rc<Display>,
+    /// Pre-opened VAAPI display for GPU→CPU frame mapping (vaDeriveImage).
+    #[debug(skip)]
+    mapping_display: Rc<Display>,
     /// NAL framing format of incoming packets.
     nal_format: NalFormat,
     pending_frames: VecDeque<DecodedVideoFrame>,
@@ -331,7 +326,7 @@ impl VaapiDecoder {
                         width: w,
                         height: h,
                         dma_info,
-                        mapping_display: std::cell::OnceCell::new(),
+                        mapping_display: self.mapping_display.clone(),
                     };
 
                     let timestamp = self.last_timestamp.unwrap_or_default();
@@ -387,6 +382,13 @@ impl VideoDecoder for VaapiDecoder {
         let export_display =
             Display::open().context("failed to open second VAAPI display for frame export")?;
 
+        // Pre-open a third Display for GPU→CPU frame mapping (vaDeriveImage)
+        // and frame pool allocation. Sharing displays avoids the driver
+        // serialization deadlock that occurs when Display::open() is called
+        // while other displays are actively decoding.
+        let mapping_display =
+            Display::open().context("failed to open VAAPI display for frame mapping")?;
+
         // Verify VA surface allocation + DMA-BUF export works on this GPU.
         {
             let test_info = StreamInfo {
@@ -401,15 +403,30 @@ impl VideoDecoder for VaapiDecoder {
                 },
                 min_num_frames: 1,
             };
-            let _test_frame = alloc_va_dma_frame(&test_info);
+            let _test_frame = alloc_va_dma_frame(&mapping_display, &test_info);
         }
 
-        let framepool = Arc::new(Mutex::new(FramePool::new(alloc_va_dma_frame)));
+        // FramePool requires Send, but Rc<Display> is !Send. Store the display
+        // pointer in a Send wrapper. Safety: the FramePool is Mutex-protected and
+        // VaapiDecoder is only used from a single thread (same as all Rc<Display>
+        // in this module, which already has `unsafe impl Send for VaapiDecoder`).
+        struct SendRcDisplay(Rc<Display>);
+        // Safety: same reasoning as `unsafe impl Send for VaapiDecoder` — the decoder
+        // (and its frame pool) are only used on a single OS thread at a time.
+        unsafe impl Send for SendRcDisplay {}
+        unsafe impl Sync for SendRcDisplay {}
+        let pool_display = Arc::new(SendRcDisplay(
+            Display::open().context("failed to open VAAPI display for frame pool")?,
+        ));
+        let framepool = Arc::new(Mutex::new(FramePool::new(move |info: &StreamInfo| {
+            alloc_va_dma_frame(&pool_display.0, info)
+        })));
 
         let mut this = Self {
             decoder,
             framepool,
             display: export_display,
+            mapping_display,
             nal_format,
             pending_frames: VecDeque::new(),
             last_timestamp: None,
