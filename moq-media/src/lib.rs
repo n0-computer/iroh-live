@@ -3,8 +3,6 @@ pub mod capture;
 pub mod pipeline;
 mod processing;
 pub mod publish;
-#[cfg(feature = "wgpu")]
-pub mod render;
 pub mod subscribe;
 pub mod transport;
 mod util;
@@ -15,4 +13,6 @@ pub use audio_backend::{AudioBackend, AudioBackendOpts, AudioDevice};
 pub use rusty_codecs::codec;
 pub use rusty_codecs::config;
 pub use rusty_codecs::format;
+#[cfg(feature = "wgpu")]
+pub use rusty_codecs::render;
 pub use rusty_codecs::traits;
