@@ -9,13 +9,17 @@ use hang::catalog::AudioConfig;
 use image::RgbaImage;
 use strum::{Display, EnumString, VariantNames};
 
+/// Describes an audio stream's sample rate and channel layout.
 #[derive(Copy, Clone, Debug)]
 pub struct AudioFormat {
+    /// Sample rate in Hz (e.g. 48 000).
     pub sample_rate: u32,
+    /// Number of audio channels (1 = mono, 2 = stereo).
     pub channel_count: u32,
 }
 
 impl AudioFormat {
+    /// Returns a mono 48 kHz format.
     pub fn mono_48k() -> Self {
         Self {
             sample_rate: 48_000,
@@ -23,6 +27,7 @@ impl AudioFormat {
         }
     }
 
+    /// Returns a stereo 48 kHz format.
     pub fn stereo_48k() -> Self {
         Self {
             sample_rate: 48_000,
@@ -30,6 +35,7 @@ impl AudioFormat {
         }
     }
 
+    /// Creates an [`AudioFormat`] from a hang catalog [`AudioConfig`].
     pub fn from_hang_config(config: &AudioConfig) -> Self {
         Self {
             channel_count: config.channel_count,
@@ -38,22 +44,31 @@ impl AudioFormat {
     }
 }
 
+/// Pixel byte ordering for CPU-resident frame data.
 #[derive(Copy, Clone, Debug, PartialEq, Default)]
 pub enum PixelFormat {
+    /// Red, green, blue, alpha (standard for most APIs).
     #[default]
     Rgba,
+    /// Blue, green, red, alpha (common on Windows / some capture APIs).
     Bgra,
 }
 
+/// Describes the pixel layout and resolution of raw video frames.
 #[derive(Clone, Debug)]
 pub struct VideoFormat {
+    /// Pixel byte ordering.
     pub pixel_format: PixelFormat,
+    /// Frame dimensions as `[width, height]`.
     pub dimensions: [u32; 2],
 }
 
+/// A raw, uncompressed video frame with pixel data in CPU memory.
 #[derive(Clone, Debug)]
 pub struct VideoFrame {
+    /// Pixel format and dimensions.
     pub format: VideoFormat,
+    /// Raw pixel data in row-major order, sized `width * height * 4`.
     pub raw: bytes::Bytes,
 }
 
@@ -88,15 +103,19 @@ impl From<hang::container::OrderedFrame> for MediaPacket {
     }
 }
 
+/// A single compressed video or audio frame produced by an encoder.
 #[derive(Debug)]
 pub struct EncodedFrame {
+    /// Whether this frame can be decoded independently (I-frame / IDR).
     pub is_keyframe: bool,
+    /// Presentation timestamp.
     pub timestamp: Duration,
+    /// Compressed bitstream data.
     pub payload: bytes::Bytes,
 }
 
 impl EncodedFrame {
-    /// Convert to a hang `Frame` for MoQ transport.
+    /// Converts to a hang [`Frame`](hang::container::Frame) for MoQ transport.
     pub fn to_hang_frame(&self) -> hang::container::Frame {
         hang::container::Frame {
             timestamp: hang::container::Timestamp::from_micros(self.timestamp.as_micros() as u64)
@@ -142,26 +161,32 @@ impl fmt::Debug for GpuFrame {
 }
 
 impl GpuFrame {
+    /// Wraps a platform-specific GPU frame implementation.
     pub fn new(inner: Arc<dyn GpuFrameInner>) -> Self {
         Self { inner }
     }
 
+    /// Downloads the GPU frame to a CPU-resident [`CpuFrame`].
     pub fn download(&self) -> anyhow::Result<CpuFrame> {
         self.inner.download()
     }
 
+    /// Returns the frame dimensions as `(width, height)`.
     pub fn dimensions(&self) -> (u32, u32) {
         self.inner.dimensions()
     }
 
+    /// Returns the native GPU pixel format.
     pub fn gpu_pixel_format(&self) -> GpuPixelFormat {
         self.inner.gpu_pixel_format()
     }
 
+    /// Downloads raw NV12 plane data, if the GPU frame supports it.
     pub fn download_nv12(&self) -> Option<anyhow::Result<Nv12Planes>> {
         self.inner.download_nv12()
     }
 
+    /// Returns DMA-BUF metadata for zero-copy import, if available.
     #[cfg(target_os = "linux")]
     pub fn dma_buf_info(&self) -> Option<&DmaBufInfo> {
         self.inner.dma_buf_info()
@@ -331,6 +356,10 @@ impl DecodedVideoFrame {
     }
 }
 
+/// Standard video resolution presets.
+///
+/// Each preset defines a width, height, and framerate suitable for
+/// common streaming scenarios.
 #[derive(Debug, Clone, Copy, Display, EnumString, VariantNames, Eq, PartialEq, Ord, PartialOrd)]
 pub enum VideoPreset {
     #[strum(serialize = "180p")]
@@ -344,10 +373,12 @@ pub enum VideoPreset {
 }
 
 impl VideoPreset {
+    /// Returns all presets ordered from lowest to highest resolution.
     pub fn all() -> [Self; 4] {
         [Self::P180, Self::P360, Self::P720, Self::P1080]
     }
 
+    /// Returns the `(width, height)` for this preset.
     pub fn dimensions(&self) -> (u32, u32) {
         match self {
             Self::P180 => (320, 180),
@@ -357,33 +388,44 @@ impl VideoPreset {
         }
     }
 
+    /// Returns the frame width in pixels.
     pub fn width(&self) -> u32 {
         self.dimensions().0
     }
 
+    /// Returns the frame height in pixels.
     pub fn height(&self) -> u32 {
         self.dimensions().1
     }
 
+    /// Returns the target framerate for this preset.
     pub fn fps(&self) -> u32 {
         30
     }
 }
 
+/// Audio quality presets controlling encoder bitrate.
 #[derive(Debug, Clone, Copy, Display, EnumString, VariantNames, Eq, PartialEq)]
 #[strum(serialize_all = "lowercase")]
 pub enum AudioPreset {
+    /// High quality (128 kbps).
     Hq,
+    /// Low quality (32 kbps).
     Lq,
 }
 
+/// Playback quality preference for decoder/renderer selection.
 #[derive(Debug, Clone, Copy, Display, EnumString, VariantNames, Eq, PartialEq, Default)]
 #[strum(serialize_all = "lowercase")]
 pub enum Quality {
+    /// Maximum quality, no downscaling.
     Highest,
+    /// Default quality, minor optimizations allowed.
     #[default]
     High,
+    /// Balanced quality and performance.
     Mid,
+    /// Favor performance over visual fidelity.
     Low,
 }
 
@@ -397,15 +439,21 @@ pub enum DecoderBackend {
     Software,
 }
 
+/// Configuration passed to video decoders at construction time.
 #[derive(Clone, Debug, Default)]
 pub struct DecodeConfig {
+    /// Desired output pixel format.
     pub pixel_format: PixelFormat,
+    /// Decoder backend selection strategy.
     pub backend: DecoderBackend,
 }
 
+/// Combined decoding and quality settings for media playback.
 #[derive(Clone, Debug, Default)]
 pub struct PlaybackConfig {
+    /// Decoder configuration (backend, pixel format).
     pub decode_config: DecodeConfig,
+    /// Quality preference for rendering.
     pub quality: Quality,
 }
 
