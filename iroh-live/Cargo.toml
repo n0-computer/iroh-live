@@ -13,7 +13,7 @@ byte-unit = { version = "5.1", features = ["bit"] }
 data-encoding = "2.9.0"
 derive_more = { version = "2.0.1", features = ["display", "debug", "eq"] }
 hang = "0.15"
-image = { version = "0.25.8", default-features = false }
+image = { version = "0.25", default-features = false }
 iroh = "0.96.1"
 iroh-gossip = "0.96.0"
 iroh-moq = { path = "../iroh-moq" }
