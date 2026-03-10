@@ -30,6 +30,9 @@
 - [ ] **B6: Per-frame Vulkan resource allocation** in DMA-BUF import — pool Y/UV plane images (`render/dmabuf_import.rs`)
 - [x] **B7: NV12→RGBA shader missing limited-range expansion** — BT.601 limited range scaling added (`nv12_to_rgba.wgsl`)
 - [ ] **B8: No VAAPI→Vulkan sync for DMA-BUF** — works on Intel implicit sync, may fail elsewhere (`render/dmabuf_import.rs`)
+- [ ] **B9: `SharedVideoSource` pacing accumulates paused time** — resume can burst frames with no sleep (`publish.rs:529-569`)
+- [ ] **B10: Opus encoder ignores requested input sample rate** — hardcodes 48k, can drift/non-48k mismatch (`codec/opus/encoder.rs:141-147`, `publish.rs:764-768`)
+- [ ] **B11: `watch_local` video scaling errors are silently swallowed** — falls back to unscaled frame on any scaler error (`subscribe.rs:580-585`)
 
 ### Design
 
@@ -50,6 +53,8 @@
 - [x] **P3: Opus channel conversion allocates on identity** — caller now skips `convert_channels` when from==to (`opus/decoder.rs:94-98`)
 - [ ] **P4: `parse_annex_b` allocates Vec** — could use iterator (`h264/annexb.rs`)
 - [x] **P5: StreamClock unused** — removed dead code (`processing/clock.rs`, h264/av1 decoders)
+- [ ] **P6: Opus encoder queue/buffer use front-removal on `Vec`** — `drain(..n)` and `remove(0)` are O(n) (`codec/opus/encoder.rs:133,179`)
+- [ ] **P7: VideoToolbox encoder packet queue uses `Vec::remove(0)`** — O(n) per packet (`codec/vtb/encoder.rs:299`)
 
 ### Safety
 
@@ -76,6 +81,7 @@
 - [ ] **A4: `DecodeConfig` minimal** — only `pixel_format` and `backend`, no resolution/framerate constraints
 - [ ] **A5: VideoToolbox decoder stub** — `vtb/decoder.rs` is TODO skeleton only
 - [ ] **A6: No `set_keyframe_interval` on `VideoEncoder` trait** — all encoders hardcode keyframe interval = framerate (1/sec) at construction. Only VTB supports runtime change via `VTSessionSetProperty`. OpenH264/rav1e/VAAPI require encoder recreation. Add trait method with default no-op; implement for VTB; others store desired interval for next reset.
+- [ ] **A7: `AudioEncoderFactory::with_preset(format, ..)` contract is ambiguous on sample-rate handling** — Opus currently ignores `format.sample_rate` and hardcodes 48k (`codec/opus/encoder.rs:141-147`)
 
 ---
 
@@ -196,6 +202,57 @@ Shader now applies BT.601 limited-range scaling: Y [16..235] and UV [16..240] ar
 
 `drain_events()` calls `handle.sync()` for VAAPI decode completion, but no explicit synchronization primitive (fence/semaphore) between VAAPI write and Vulkan read of the DMA-BUF. The `VK_QUEUE_FAMILY_EXTERNAL` barrier provides an implicit acquire, but the Vulkan spec requires either a fence signaled by the exporter or `DMA_BUF_IOCTL_EXPORT_SYNC_FILE`. Works on Intel (implicit sync) but may fail on explicit-sync-only drivers.
 
+### B9: `SharedVideoSource` pacing accumulates parked time, causing bursty catch-up on resume
+
+**File**: `publish.rs:529-569`
+
+`SharedVideoSource::new` uses a fixed `start = Instant::now()` and frame index `i` to compute:
+
+```rust
+let expected = frame_time * i;
+let actual = start.elapsed();
+if actual < expected {
+    thread::sleep(expected - actual);
+}
+```
+
+When the thread is parked (no subscribers), wall-clock time keeps advancing while `i` does not. After unpark, `actual >> expected`, so sleep is skipped for many iterations and frames are pulled/sent as fast as possible until the schedule catches up. This creates bursty CPU usage and uneven local preview cadence.
+
+**Fix**: Reset pacing baseline after each park/unpark transition (or use a rolling `next_deadline` that is reinitialized on resume).
+
+### B10: Opus encoder ignores requested input sample rate
+
+**Files**: `codec/opus/encoder.rs:141-147`, `publish.rs:764-768`
+
+`OpusEncoder::with_preset(format, preset)` accepts an `AudioFormat` but always constructs the encoder with `SAMPLE_RATE` (48_000):
+
+```rust
+Self::new(SAMPLE_RATE, format.channel_count, bitrate)
+```
+
+Meanwhile, `EncoderThread::spawn_audio` sizes its per-tick input buffer from `source.format().sample_rate`. For non-48k sources, samples are fed at the source cadence into a 48k-configured Opus encoder, causing packetization/timestamp drift and incorrect real-time behavior.
+
+**Fix options**:
+- Enforce 48k at the API boundary (reject non-48k in `with_preset` with a clear error).
+- Or add explicit resampling before/inside Opus encoding.
+
+### B11: `watch_local` swallows scaler errors and silently changes behavior
+
+**File**: `subscribe.rs:580-585`
+
+In `WatchTrack::from_video_source`, scaling errors are matched by `_` and silently fall back to unscaled data:
+
+```rust
+let rgba = match scaler.scale_rgba(&frame.raw, w, h) {
+    Ok(Some((scaled, sw, sh))) => image::RgbaImage::from_raw(sw, sh, scaled),
+    _ => image::RgbaImage::from_raw(w, h, frame.raw.to_vec()),
+};
+```
+
+This hides real processing failures (bad input dimensions/stride assumptions/etc.) and makes debugging difficult. It also creates inconsistent behavior vs encoder pipeline code, which logs and aborts on scaling failure.
+
+**Fix**: Handle `Err(err)` separately with logging (and preferably fail fast or propagate), keeping the `Ok(None)` path as the only intentional "no scaling needed" case.
+
 ---
 
 ## Design Issues
@@ -308,6 +365,28 @@ Builds a `Vec<&[u8]>` of all NAL units. Could use an iterator pattern to avoid t
 
 Removed `StreamClock` from both H.264 and AV1 decoders and deleted `processing/clock.rs`. The computed delay was never used for frame pacing.
 
+### P6: Opus encoder front-removal on `Vec` causes avoidable O(n) work
+
+**File**: `codec/opus/encoder.rs:133,179`
+
+Two hot paths shift data from the front of `Vec`:
+- `self.sample_buf.drain(..samples_per_frame)` after each encoded frame
+- `self.packet_buf.remove(0)` in `pop_packet()`
+
+Both are O(n) per operation and can become costly under load or when callers batch many samples/packets per call.
+
+**Fix**: Use a ring-buffer strategy:
+- `VecDeque<f32>`/`VecDeque<EncodedFrame>` with `drain(..n)`/`pop_front()`
+- or maintain head indices and compact periodically.
+
+### P7: VideoToolbox packet queue uses `Vec::remove(0)`
+
+**File**: `codec/vtb/encoder.rs:299`
+
+`VtbEncoder::pop_packet` currently does `state.packets.remove(0)`, which is O(n) and scales poorly as queue depth grows.
+
+**Fix**: Switch callback packet storage to `VecDeque` and use `pop_front()`.
+
 ---
 
 ## Safety
@@ -393,3 +472,4 @@ The VTB compression callback uses `Arc::into_raw()` to pass state to the C callb
 - **A3**: Quality enum coarse — 4 fixed presets, no custom resolution/bitrate
 - **A4**: `DecodeConfig` minimal — only `pixel_format` and `backend`
 - **A5**: VideoToolbox decoder is stub only — macOS HW decode not available
+- **A7**: `AudioEncoderFactory::with_preset(format, ..)` does not define whether encoders must honor `format.sample_rate` or may coerce internally. Current Opus impl hardcodes 48k, so callers can pass incompatible formats without explicit error.
