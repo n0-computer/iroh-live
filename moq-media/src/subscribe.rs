@@ -396,7 +396,11 @@ impl WatchTrack {
                                 Ok(Some((scaled, sw, sh))) => {
                                     image::RgbaImage::from_raw(sw, sh, scaled)
                                 }
-                                _ => image::RgbaImage::from_raw(w, h, frame.raw.to_vec()),
+                                Ok(None) => image::RgbaImage::from_raw(w, h, frame.raw.to_vec()),
+                                Err(err) => {
+                                    warn!("scaler error: {err:#}");
+                                    image::RgbaImage::from_raw(w, h, frame.raw.to_vec())
+                                }
                             };
                             if let Some(mut img) = rgba {
                                 if decode_config.pixel_format == PixelFormat::Bgra {
