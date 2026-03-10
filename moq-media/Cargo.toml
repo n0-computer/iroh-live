@@ -53,6 +53,8 @@ wgpu = { version = "27", optional = true, default-features = false, features = [
 [target.'cfg(target_os = "linux")'.dependencies]
 cros-codecs = { version = "0.0.6", optional = true, features = ["vaapi"] }
 ash = { version = "0.38", optional = true, default-features = false }
+gbm = { version = "0.18", optional = true }
+drm-fourcc = { version = "2.2", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-video-toolbox = { version = "0.3", optional = true, features = ["VTCompressionSession", "VTErrors"] }
@@ -82,4 +84,4 @@ capture-screen = ["dep:xcap"]
 videotoolbox = ["dep:objc2-video-toolbox", "dep:objc2-core-media", "dep:objc2-core-video", "dep:objc2-core-foundation", "dep:objc2"]
 vaapi = ["dep:cros-codecs"]
 wgpu = ["dep:wgpu"]
-dmabuf-import = ["wgpu", "dep:ash"]
+dmabuf-import = ["wgpu", "dep:ash", "dep:gbm", "dep:drm-fourcc"]
