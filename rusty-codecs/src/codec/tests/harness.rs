@@ -118,26 +118,8 @@ fn all_encoders() -> Vec<TestEncoder> {
         },
     });
 
-    // TODO: re-enable AV1 encoder when AV1 testing is needed.
-    // AV1 (rav1e) is very slow and currently out of scope — H264 focus only.
-    //
-    // #[cfg(feature = "av1")]
-    // encoders.push(TestEncoder {
-    //     name: "av1-rav1e",
-    //     family: CodecFamily::Av1,
-    //     min_frames: 60,
-    //     create: |preset| Some(Box::new(Av1Encoder::with_preset(preset).ok()?)),
-    //     create_with_dims: |w, h| {
-    //         let config = crate::format::VideoEncoderConfig {
-    //             width: w,
-    //             height: h,
-    //             framerate: 30,
-    //             bitrate: None,
-    //             nal_format: Default::default(),
-    //         };
-    //         Some(Box::new(Av1Encoder::with_config(config).ok()?))
-    //     },
-    // });
+    // NOTE: AV1 (rav1e) encoder omitted — too slow for routine testing.
+    // Re-enable when AV1 performance is acceptable.
 
     #[cfg(all(target_os = "linux", feature = "vaapi"))]
     encoders.push(TestEncoder {
@@ -191,17 +173,7 @@ fn all_decoders() -> Vec<TestDecoder> {
         },
     });
 
-    // TODO: re-enable AV1 decoder when AV1 testing is needed.
-    //
-    // #[cfg(feature = "av1")]
-    // decoders.push(TestDecoder {
-    //     name: "av1-rav1d",
-    //     family: CodecFamily::Av1,
-    //     decode: |config, dc, pkts| {
-    //         let mut dec = av1::decoder::Av1VideoDecoder::new(config, dc).ok()?;
-    //         Some(decode_all(&mut dec, pkts))
-    //     },
-    // });
+    // NOTE: AV1 (rav1d) decoder omitted — see encoder note above.
 
     #[cfg(all(target_os = "linux", feature = "vaapi"))]
     {
@@ -754,94 +726,10 @@ fn cross_backend_h264_encoder_parity() {
     });
 }
 
-// ── Migrated video roundtrip tests ───────────────────────────────────
-
-#[cfg(feature = "h264")]
-#[test]
-fn video_roundtrip_p180_red() {
-    with_timeout(TEST_TIMEOUT, || {
-        let preset = VideoPreset::P180;
-        let (w, h) = preset.dimensions();
-        let mut enc = H264Encoder::with_preset(preset).unwrap();
-        let packets = video_encode(&mut enc, w, h, 255, 0, 0, 10);
-        let config = enc.config();
-        let frames = super::test_util::video_decode::<H264VideoDecoder>(&config, packets);
-        super::test_util::assert_video_roundtrip(&frames, w, h, 255, 0, 0, 80, 5);
-    });
-}
-
-#[cfg(feature = "h264")]
-#[test]
-fn video_roundtrip_p360_green() {
-    with_timeout(TEST_TIMEOUT, || {
-        let preset = VideoPreset::P360;
-        let (w, h) = preset.dimensions();
-        let mut enc = H264Encoder::with_preset(preset).unwrap();
-        let packets = video_encode(&mut enc, w, h, 0, 255, 0, 10);
-        let config = enc.config();
-        let frames = super::test_util::video_decode::<H264VideoDecoder>(&config, packets);
-        super::test_util::assert_video_roundtrip(&frames, w, h, 0, 255, 0, 80, 5);
-    });
-}
-
-#[cfg(feature = "h264")]
-#[test]
-fn video_roundtrip_p720_blue() {
-    with_timeout(TEST_TIMEOUT, || {
-        let preset = VideoPreset::P720;
-        let (w, h) = preset.dimensions();
-        let mut enc = H264Encoder::with_preset(preset).unwrap();
-        let packets = video_encode(&mut enc, w, h, 0, 0, 255, 10);
-        let config = enc.config();
-        let frames = super::test_util::video_decode::<H264VideoDecoder>(&config, packets);
-        super::test_util::assert_video_roundtrip(&frames, w, h, 0, 0, 255, 80, 5);
-    });
-}
-
-#[cfg(feature = "h264")]
-#[test]
-fn video_roundtrip_p1080_white() {
-    with_timeout(TEST_TIMEOUT, || {
-        let preset = VideoPreset::P1080;
-        let (w, h) = preset.dimensions();
-        let mut enc = H264Encoder::with_preset(preset).unwrap();
-        let packets = video_encode(&mut enc, w, h, 255, 255, 255, 10);
-        let config = enc.config();
-        let frames = super::test_util::video_decode::<H264VideoDecoder>(&config, packets);
-        super::test_util::assert_video_roundtrip(&frames, w, h, 255, 255, 255, 40, 5);
-    });
-}
-
-// TODO: re-enable AV1 roundtrip tests when AV1 testing is needed.
-// AV1 (rav1e) encoding is very slow — H264 focus only for now.
-//
-// #[cfg(feature = "av1")]
-// #[test]
-// fn av1_roundtrip_p180_red() {
-//     with_timeout(TEST_TIMEOUT, || {
-//         let preset = VideoPreset::P180;
-//         let (w, h) = preset.dimensions();
-//         let mut enc = Av1Encoder::with_preset(preset).unwrap();
-//         let packets = video_encode(&mut enc, w, h, 255, 0, 0, 60);
-//         let config = enc.config();
-//         let frames = super::test_util::video_decode::<Av1VideoDecoder>(&config, packets);
-//         super::test_util::assert_video_roundtrip(&frames, w, h, 255, 0, 0, 80, 5);
-//     });
-// }
-//
-// #[cfg(feature = "av1")]
-// #[test]
-// fn av1_roundtrip_p360_green() {
-//     with_timeout(TEST_TIMEOUT, || {
-//         let preset = VideoPreset::P360;
-//         let (w, h) = preset.dimensions();
-//         let mut enc = Av1Encoder::with_preset(preset).unwrap();
-//         let packets = video_encode(&mut enc, w, h, 0, 255, 0, 60);
-//         let config = enc.config();
-//         let frames = super::test_util::video_decode::<Av1VideoDecoder>(&config, packets);
-//         super::test_util::assert_video_roundtrip(&frames, w, h, 0, 255, 0, 80, 5);
-//     });
-// }
+// NOTE: Individual per-resolution roundtrip tests (P180, P360, P720, P1080)
+// were consolidated into `resolution_matrix` and `color_accuracy_matrix` above.
+// AV1 roundtrip tests are disabled — re-enable in `all_encoders()`/`all_decoders()`
+// when AV1 testing performance is acceptable.
 
 // ── DynamicVideoDecoder routing (fixed) ──────────────────────────────
 
@@ -876,36 +764,6 @@ fn dynamic_routes_h264_software() {
         );
     });
 }
-
-// TODO: re-enable AV1 dynamic routing test when AV1 testing is needed.
-//
-// #[cfg(all(feature = "h264", feature = "av1"))]
-// #[test]
-// fn dynamic_routes_av1() {
-//     with_timeout(TEST_TIMEOUT, || {
-//         let preset = VideoPreset::P180;
-//         let (w, h) = preset.dimensions();
-//         let mut enc = Av1Encoder::with_preset(preset).unwrap();
-//         let packets = video_encode(&mut enc, w, h, 200, 100, 50, 60);
-//         let config = enc.config();
-//
-//         let dc = DecodeConfig::default();
-//         let mut dec = DynamicVideoDecoder::new(&config, &dc).unwrap();
-//         assert_eq!(dec.name(), "av1-rav1d");
-//
-//         let mut decoded_count = 0;
-//         for pkt in packets {
-//             dec.push_packet(pkt).unwrap();
-//             if dec.pop_frame().unwrap().is_some() {
-//                 decoded_count += 1;
-//             }
-//         }
-//         assert!(
-//             decoded_count >= 5,
-//             "expected >= 5 decoded frames, got {decoded_count}"
-//         );
-//     });
-// }
 
 // ── DefaultDecoders type assertion ───────────────────────────────────
 
