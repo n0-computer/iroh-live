@@ -19,6 +19,7 @@
 - [x] **D1l: `AudioDecoderPipeline` / `AudioEncoderPipeline`** — audio equivalents (`pipeline.rs`)
 - [x] **D1m: `subscribe.rs` `AudioTrack` uses `MediaPacket` throughout** (no inline `OrderedFrame` conversion)
 - [x] **D1n: `subscribe.rs` audio path uses `PacketSource`/`forward_packets`** (removed `forward_frames`)
+- [x] **D1o: Pipeline consolidation** — all encode/decode loops moved to `pipeline.rs`; `EncoderThread` removed from `publish.rs`; `AudioTrack::run_loop` removed from `subscribe.rs`; `publish.rs`/`subscribe.rs` use pipeline types
 
 ### Bugs
 
@@ -65,8 +66,8 @@
 
 ### Testing
 
-- [ ] **T1: No `subscribe.rs` tests** — `run_loop`, `forward_frames`, `SubscribeBroadcast` untested
-- [ ] **T2: No audio decode loop tests** — `AudioTrack::run_loop` untested
+- [ ] **T1: No `subscribe.rs` tests** — `SubscribeBroadcast`, `WatchTrack`, `AudioTrack` untested
+- [ ] **T2: No audio decode loop tests** — `audio_decode_loop` in `pipeline.rs` untested
 - [ ] **T3: No `render.rs` tests** — `WgpuVideoRenderer` untested (needs GPU)
 - [ ] **T4: No integration tests** — no end-to-end encode→transport→decode
 - [ ] **T5: `PublishCaptureController` not tested** — `set_opts` has no tests
@@ -93,8 +94,8 @@
 lib.rs
 ├── format.rs          — Frame types, presets, pixel formats, MediaPacket
 ├── traits.rs          — Encoder/Decoder/Source/Sink traits (use MediaPacket)
-├── transport.rs       — PacketSource trait, MoqPacketSource, media_pipe
-├── pipeline.rs        — VideoDecoderPipeline, VideoEncoderPipeline
+├── transport.rs       — PacketSource/PacketSink traits, MoqPacketSource/Sink, media_pipe
+├── pipeline.rs        — Video/Audio Encoder/Decoder Pipelines (all encode/decode loops)
 ├── codec/
 │   ├── mod.rs         — Codec enums, re-exports, create_encoder()
 │   ├── dynamic.rs     — DynamicVideoDecoder/DynamicAudioDecoder dispatch
@@ -113,7 +114,7 @@ lib.rs
 │   ├── resample.rs    — Audio resampling (rubato)
 │   └── mjpg.rs        — MJPEG decoder for camera frames
 ├── audio_backend.rs   — Firewheel audio I/O + AEC
-├── publish.rs         — PublishBroadcast, VideoRenditions, EncoderThread
+├── publish.rs         — PublishBroadcast, VideoRenditions, AudioRenditions
 ├── publish/controller.rs — PublishCaptureController
 ├── subscribe.rs       — SubscribeBroadcast, WatchTrack, AudioTrack
 ├── render.rs          — wgpu NV12→RGBA renderer
