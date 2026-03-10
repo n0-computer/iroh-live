@@ -144,6 +144,18 @@ impl AudioEncoderFactory for OpusEncoder {
         // sample rate (see B10 in REVIEW.md).
         Self::new(SAMPLE_RATE, config.channel_count, config.bitrate)
     }
+
+    fn config_for(config: &AudioEncoderConfig) -> AudioConfig {
+        AudioConfig {
+            codec: AudioCodec::Opus,
+            sample_rate: SAMPLE_RATE,
+            channel_count: config.channel_count,
+            bitrate: Some(config.bitrate),
+            description: Some(build_opus_head(config.channel_count, SAMPLE_RATE).into()),
+            container: hang::catalog::Container::Legacy,
+            jitter: None,
+        }
+    }
 }
 
 impl AudioEncoder for OpusEncoder {

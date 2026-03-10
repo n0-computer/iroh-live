@@ -19,7 +19,7 @@ use hang::catalog::{H264, VideoCodec, VideoConfig};
 
 use crate::{
     codec::h264::annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b},
-    format::{EncodedFrame, VideoEncoderConfig, VideoFrame},
+    format::{EncodedFrame, NalFormat, VideoEncoderConfig, VideoFrame},
     processing::convert::{YuvData, pixel_format_to_yuv420},
     traits::{VideoEncoder, VideoEncoderFactory},
 };
@@ -200,7 +200,8 @@ pub struct VaapiEncoder {
     framerate: u32,
     bitrate: u64,
     frame_count: u64,
-    /// avcC description, populated after first keyframe.
+    nal_format: NalFormat,
+    /// avcC description, populated after first keyframe (avcC mode only).
     avcc: Option<Vec<u8>>,
     /// Encoded packets ready for collection.
     packet_buf: std::collections::VecDeque<EncodedFrame>,
@@ -264,6 +265,7 @@ impl VaapiEncoder {
         let height = config.height;
         let framerate = config.framerate;
         let bitrate = config.bitrate_or_default(Self::H264_BPP);
+        let nal_format = config.nal_format;
 
         let coded_size = Resolution { width, height };
         let fourcc = Fourcc::from(b"NV12");
@@ -285,9 +287,9 @@ impl VaapiEncoder {
             ],
         };
 
-        // Extract avcC by priming a temporary encoder with a black IDR frame.
-        // cros-codecs only emits SPS/PPS in the first IDR (counter=0).
-        let avcc = {
+        let avcc = if nal_format == NalFormat::Avcc {
+            // Extract avcC by priming a temporary encoder with a black IDR frame.
+            // cros-codecs only emits SPS/PPS in the first IDR (counter=0).
             let (mut primer, _) = Self::create_encoder(width, height, framerate, bitrate)?;
             let yuv = YuvData::black(width, height);
             let nv12 = Self::i420_to_nv12(&yuv.y, &yuv.u, &yuv.v, width, height);
@@ -318,12 +320,12 @@ impl VaapiEncoder {
                 }
             }
             avcc
+        } else {
+            // Annex B mode: SPS/PPS are inline in keyframes, no priming needed.
+            None
         };
-        // Primer is dropped here — its counter offset and rate controller state are discarded.
 
-        // Create a fresh encoder for actual use. Counter starts at 0, so the
-        // first real frame will be a proper IDR (NAL type 5) — matching OpenH264's
-        // behavior after force_intra_frame().
+        // Create a fresh encoder for actual use.
         let (encoder, _) = Self::create_encoder(width, height, framerate, bitrate)?;
 
         Ok(Self {
@@ -334,6 +336,7 @@ impl VaapiEncoder {
             framerate,
             bitrate,
             frame_count: 0,
+            nal_format,
             avcc,
             packet_buf: std::collections::VecDeque::new(),
         })
@@ -392,23 +395,26 @@ impl VaapiEncoder {
             .iter()
             .any(|nal| !nal.is_empty() && (nal[0] & 0x1F) == 5);
 
-        // On first keyframe, extract SPS/PPS and build avcC.
-        if is_keyframe
+        // In avcC mode, extract SPS/PPS on first keyframe.
+        if self.nal_format == NalFormat::Avcc
+            && is_keyframe
             && self.avcc.is_none()
             && let Some((sps, pps)) = extract_sps_pps(&nals)
         {
             self.avcc = Some(build_avcc(&sps, &pps));
         }
 
-        // Convert Annex B to length-prefixed NALs for transport.
-        let payload = annex_b_to_length_prefixed(annex_b);
+        let payload: bytes::Bytes = match self.nal_format {
+            NalFormat::AnnexB => annex_b.to_vec().into(),
+            NalFormat::Avcc => annex_b_to_length_prefixed(annex_b).into(),
+        };
 
         let timestamp_us = coded.metadata.timestamp;
 
         Ok(Some(EncodedFrame {
             is_keyframe,
             timestamp: std::time::Duration::from_micros(timestamp_us),
-            payload: payload.into(),
+            payload,
         }))
     }
 }
@@ -419,6 +425,29 @@ impl VideoEncoderFactory for VaapiEncoder {
     fn with_config(config: VideoEncoderConfig) -> Result<Self> {
         Self::new(config)
     }
+
+    fn config_for(config: &VideoEncoderConfig) -> VideoConfig {
+        let bitrate = config.bitrate_or_default(Self::H264_BPP);
+        let inline = config.nal_format == NalFormat::AnnexB;
+        VideoConfig {
+            codec: VideoCodec::H264(H264 {
+                profile: 0x42,
+                constraints: 0xE0,
+                level: 0x1E,
+                inline,
+            }),
+            description: None,
+            coded_width: Some(config.width),
+            coded_height: Some(config.height),
+            display_ratio_width: None,
+            display_ratio_height: None,
+            bitrate: Some(bitrate),
+            framerate: Some(config.framerate as f64),
+            optimize_for_latency: Some(true),
+            container: hang::catalog::Container::Legacy,
+            jitter: None,
+        }
+    }
 }
 
 impl VideoEncoder for VaapiEncoder {
@@ -427,12 +456,13 @@ impl VideoEncoder for VaapiEncoder {
     }
 
     fn config(&self) -> VideoConfig {
+        let inline = self.nal_format == NalFormat::AnnexB;
         VideoConfig {
             codec: VideoCodec::H264(H264 {
                 profile: 0x42, // Baseline
                 constraints: 0xE0,
                 level: 0x1E, // Level 3.0
-                inline: false,
+                inline,
             }),
             description: self.avcc.clone().map(Into::into),
             coded_width: Some(self.width),

@@ -5,7 +5,7 @@ use hang::catalog::{VideoCodec, VideoConfig};
 use image::RgbaImage;
 use openh264::{decoder::Decoder, formats::YUVSource};
 
-use crate::format::{DecodeConfig, DecodedVideoFrame, MediaPacket};
+use crate::format::{DecodeConfig, DecodedVideoFrame, MediaPacket, NalFormat};
 use crate::traits::VideoDecoder;
 
 use super::annexb::{avcc_to_annex_b, length_prefixed_to_annex_b};
@@ -15,6 +15,8 @@ use crate::processing::scale::{Scaler, fit_within};
 pub struct H264VideoDecoder {
     #[debug(skip)]
     decoder: Decoder,
+    /// NAL framing format of incoming packets.
+    nal_format: NalFormat,
     scaler: Scaler,
     viewport_changed: Option<(u32, u32)>,
     last_timestamp: Option<Duration>,
@@ -32,12 +34,20 @@ impl VideoDecoder for H264VideoDecoder {
     where
         Self: Sized,
     {
-        if !matches!(&config.codec, VideoCodec::H264(_)) {
-            bail!(
-                "Unsupported codec {} (only H.264 is supported, AV1 planned for phase 2)",
-                config.codec
-            );
-        }
+        let inline = match &config.codec {
+            VideoCodec::H264(h264) => h264.inline,
+            other => bail!(
+                "Unsupported codec {other} (only H.264 is supported, AV1 planned for phase 2)",
+            ),
+        };
+
+        // Determine NAL format: inline (avc3) → Annex B, non-inline (avc1) → length-prefixed.
+        // Also treat missing description as Annex B regardless of inline flag.
+        let nal_format = if inline || config.description.is_none() {
+            NalFormat::AnnexB
+        } else {
+            NalFormat::Avcc
+        };
 
         let mut decoder = Decoder::new().context("failed to create openh264 decoder")?;
 
@@ -50,6 +60,7 @@ impl VideoDecoder for H264VideoDecoder {
 
         Ok(Self {
             decoder,
+            nal_format,
             scaler: Scaler::new(None),
             viewport_changed: None,
             last_timestamp: None,
@@ -64,12 +75,20 @@ impl VideoDecoder for H264VideoDecoder {
     fn push_packet(&mut self, mut packet: MediaPacket) -> Result<()> {
         use bytes::Buf;
         let payload = packet.payload.copy_to_bytes(packet.payload.remaining());
-        // Transport uses length-prefixed NALs (avcC style), openh264 expects Annex B.
-        let annex_b = length_prefixed_to_annex_b(&payload);
+
+        // Convert to Annex B if needed — openh264 expects start-code framing.
+        let annex_b_buf;
+        let annex_b: &[u8] = match self.nal_format {
+            NalFormat::AnnexB => &payload,
+            NalFormat::Avcc => {
+                annex_b_buf = length_prefixed_to_annex_b(&payload);
+                &annex_b_buf
+            }
+        };
 
         let maybe_yuv = self
             .decoder
-            .decode(&annex_b)
+            .decode(annex_b)
             .map_err(|e| anyhow::anyhow!("openh264 decode error: {e}"))?;
 
         if let Some(yuv) = maybe_yuv {
@@ -150,7 +169,6 @@ mod tests {
         assert!(!packets.is_empty());
 
         let config = enc.config();
-        assert!(config.description.is_some());
 
         let decode_config = DecodeConfig::default();
         let mut dec = H264VideoDecoder::new(&config, &decode_config).unwrap();

@@ -90,6 +90,10 @@ pub trait AudioEncoderFactory: AudioEncoder {
     where
         Self: Sized;
 
+    /// Returns the catalog [`AudioConfig`] for the given parameters
+    /// without constructing an encoder instance.
+    fn config_for(config: &AudioEncoderConfig) -> AudioConfig;
+
     /// Creates an encoder from a preset (convenience wrapper around [`with_config`](Self::with_config)).
     fn with_preset(format: AudioFormat, preset: AudioPreset) -> Result<Self>
     where
@@ -177,6 +181,10 @@ pub trait VideoEncoderFactory: VideoEncoder {
     fn with_config(config: VideoEncoderConfig) -> Result<Self>
     where
         Self: Sized;
+
+    /// Returns the catalog [`VideoConfig`] for the given parameters
+    /// without constructing an encoder instance.
+    fn config_for(config: &VideoEncoderConfig) -> VideoConfig;
 
     /// Creates an encoder from a preset (convenience wrapper around [`with_config`](Self::with_config)).
     fn with_preset(preset: VideoPreset) -> Result<Self>
