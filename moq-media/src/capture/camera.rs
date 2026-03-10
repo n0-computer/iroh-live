@@ -58,22 +58,22 @@ impl CameraCapturer {
     ///
     /// Uses the `IROH_LIVE_CAMERA` environment variable if set, otherwise picks the last camera.
     pub fn new() -> Result<Self> {
-        info!("Initializing camera capturer (nokhwa)");
+        debug!("initializing camera capturer (nokhwa)");
         nokhwa_initialize(|granted| {
-            debug!("User selected camera access: {}", granted);
+            debug!("user selected camera access: {}", granted);
         });
 
         let cameras = query(ApiBackend::Auto)?;
         if cameras.is_empty() {
             return Err(anyhow::anyhow!("No cameras available"));
         }
-        info!("Available cameras: {cameras:?}");
+        debug!("available cameras: {cameras:?}");
 
         let camera_index = match env::var("IROH_LIVE_CAMERA").ok() {
             None => {
                 // Order of cameras in nokhwa is reversed from usual order (primary camera is last).
                 let first_camera = cameras.last().unwrap();
-                info!(": {}", first_camera.human_name());
+                debug!("selected camera: {}", first_camera.human_name());
                 first_camera.index().clone()
             }
             Some(camera_name) => match u32::from_str(&camera_name).ok() {
@@ -86,9 +86,9 @@ impl CameraCapturer {
 
     /// Create a new camera capturer for a specific camera index.
     pub fn with_index(index: u32) -> Result<Self> {
-        info!("Initializing camera capturer (nokhwa) with index {index}");
+        debug!("initializing camera capturer (nokhwa) with index {index}");
         nokhwa_initialize(|granted| {
-            debug!("User selected camera access: {}", granted);
+            debug!("user selected camera access: {}", granted);
         });
         Self::open(CameraIndex::Index(index))
     }
@@ -98,17 +98,18 @@ impl CameraCapturer {
             camera_index,
             RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution),
         )?;
-        info!("Using camera: {}", camera.info().human_name());
         let available_formats = camera.compatible_camera_formats()?;
-        debug!("Available formats: {available_formats:?}",);
+        debug!("available formats: {available_formats:?}",);
         if let Some(format) = Self::select_format(available_formats, Resolution::new(1920, 1080))
             && let Err(err) = camera.set_camera_requset(RequestedFormat::new::<RgbFormat>(
                 RequestedFormatType::Exact(format),
             ))
         {
-            warn!(?format, "Failed to change camera format: {err:#}");
+            warn!(?format, "failed to change camera format: {err:#}");
         }
-        info!("Using format: {}", camera.camera_format());
+        let cam_name = camera.info().human_name().to_string();
+        let cam_format = camera.camera_format().to_string();
+        info!(camera = %cam_name, format = %cam_format, "capture start");
         let resolution = camera.resolution();
         Ok(Self {
             camera,
