@@ -32,9 +32,11 @@ use tokio::sync::{mpsc, mpsc::error::TryRecvError, oneshot};
 use tracing::{debug, error, info, trace, warn};
 
 use self::aec::{AecCaptureNode, AecProcessor, AecProcessorConfig, AecRenderNode};
+use n0_future::boxed::BoxFuture;
+
 use crate::{
     format::AudioFormat,
-    traits::{AudioSink, AudioSinkHandle, AudioSource},
+    traits::{AudioSink, AudioSinkHandle, AudioSource, AudioStreamFactory},
     util::spawn_thread,
 };
 
@@ -223,6 +225,24 @@ impl AudioBackend {
             })
             .await?;
         reply_rx.await?
+    }
+}
+
+impl AudioStreamFactory for AudioBackend {
+    fn create_input(&self, format: AudioFormat) -> BoxFuture<Result<Box<dyn AudioSource>>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let stream = this.input(format).await?;
+            Ok(Box::new(stream) as Box<dyn AudioSource>)
+        })
+    }
+
+    fn create_output(&self, format: AudioFormat) -> BoxFuture<Result<Box<dyn AudioSink>>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let stream = this.output(format).await?;
+            Ok(Box::new(stream) as Box<dyn AudioSink>)
+        })
     }
 }
 

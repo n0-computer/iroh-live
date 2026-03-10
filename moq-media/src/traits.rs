@@ -1,9 +1,10 @@
 use anyhow::Result;
 use hang::catalog::{AudioConfig, VideoConfig};
+use n0_future::boxed::BoxFuture;
 
 use crate::format::{
-    AudioFormat, AudioPreset, DecodeConfig, DecodedVideoFrame, EncodedFrame, MediaPacket,
-    VideoFormat, VideoFrame, VideoPreset,
+    AudioEncoderConfig, AudioFormat, AudioPreset, DecodeConfig, DecodedVideoFrame, EncodedFrame,
+    MediaPacket, VideoEncoderConfig, VideoFormat, VideoFrame, VideoPreset,
 };
 
 pub trait Decoders {
@@ -36,11 +37,66 @@ pub trait AudioSinkHandle: Send + 'static {
     }
 }
 
+/// Factory for creating audio input/output streams.
+///
+/// Implementations create [`AudioSource`] and [`AudioSink`] streams with the
+/// requested [`AudioFormat`], handling any necessary resampling internally.
+pub trait AudioStreamFactory: Send + Sync + 'static {
+    /// Creates an audio input stream (microphone capture) with the given format.
+    fn create_input(&self, format: AudioFormat) -> BoxFuture<Result<Box<dyn AudioSource>>>;
+
+    /// Creates an audio output stream (speaker playback) with the given format.
+    fn create_output(&self, format: AudioFormat) -> BoxFuture<Result<Box<dyn AudioSink>>>;
+}
+
+impl AudioSinkHandle for Box<dyn AudioSink> {
+    fn cloned_boxed(&self) -> Box<dyn AudioSinkHandle> {
+        (**self).cloned_boxed()
+    }
+    fn pause(&self) {
+        (**self).pause();
+    }
+    fn resume(&self) {
+        (**self).resume();
+    }
+    fn is_paused(&self) -> bool {
+        (**self).is_paused()
+    }
+    fn toggle_pause(&self) {
+        (**self).toggle_pause();
+    }
+    fn smoothed_peak_normalized(&self) -> Option<f32> {
+        (**self).smoothed_peak_normalized()
+    }
+}
+
+impl AudioSink for Box<dyn AudioSink> {
+    fn format(&self) -> Result<AudioFormat> {
+        (**self).format()
+    }
+    fn push_samples(&mut self, buf: &[f32]) -> Result<()> {
+        (**self).push_samples(buf)
+    }
+    fn handle(&self) -> Box<dyn AudioSinkHandle> {
+        (**self).handle()
+    }
+}
+
 pub trait AudioEncoderFactory: AudioEncoder {
     const ID: &str;
-    fn with_preset(format: AudioFormat, preset: AudioPreset) -> Result<Self>
+
+    /// Creates an encoder from a full [`AudioEncoderConfig`].
+    fn with_config(config: AudioEncoderConfig) -> Result<Self>
     where
         Self: Sized;
+
+    /// Creates an encoder from a preset (convenience wrapper around [`with_config`](Self::with_config)).
+    fn with_preset(format: AudioFormat, preset: AudioPreset) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        Self::with_config(AudioEncoderConfig::from_preset(format, preset))
+    }
 }
 
 pub trait AudioEncoder: Send + 'static {
@@ -48,6 +104,14 @@ pub trait AudioEncoder: Send + 'static {
     fn config(&self) -> AudioConfig;
     fn push_samples(&mut self, samples: &[f32]) -> Result<()>;
     fn pop_packet(&mut self) -> Result<Option<EncodedFrame>>;
+
+    /// Sets the target bitrate in bits per second.
+    ///
+    /// Not all encoders support runtime bitrate changes. The default
+    /// implementation is a no-op.
+    fn set_bitrate(&mut self, _bitrate: u64) -> Result<()> {
+        Ok(())
+    }
 }
 
 impl AudioEncoder for Box<dyn AudioEncoder> {
@@ -65,6 +129,10 @@ impl AudioEncoder for Box<dyn AudioEncoder> {
 
     fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
         (**self).pop_packet()
+    }
+
+    fn set_bitrate(&mut self, bitrate: u64) -> Result<()> {
+        (**self).set_bitrate(bitrate)
     }
 }
 
@@ -105,9 +173,18 @@ impl VideoSource for Box<dyn VideoSource> {
 pub trait VideoEncoderFactory: VideoEncoder {
     const ID: &str;
 
-    fn with_preset(preset: VideoPreset) -> Result<Self>
+    /// Creates an encoder from a full [`VideoEncoderConfig`].
+    fn with_config(config: VideoEncoderConfig) -> Result<Self>
     where
         Self: Sized;
+
+    /// Creates an encoder from a preset (convenience wrapper around [`with_config`](Self::with_config)).
+    fn with_preset(preset: VideoPreset) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        Self::with_config(VideoEncoderConfig::from_preset(preset))
+    }
 }
 
 pub trait VideoEncoder: Send + 'static {
@@ -115,6 +192,14 @@ pub trait VideoEncoder: Send + 'static {
     fn config(&self) -> VideoConfig;
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()>;
     fn pop_packet(&mut self) -> Result<Option<EncodedFrame>>;
+
+    /// Sets the target bitrate in bits per second.
+    ///
+    /// Not all encoders support runtime bitrate changes. The default
+    /// implementation is a no-op.
+    fn set_bitrate(&mut self, _bitrate: u64) -> Result<()> {
+        Ok(())
+    }
 }
 
 impl VideoEncoder for Box<dyn VideoEncoder> {
@@ -132,6 +217,10 @@ impl VideoEncoder for Box<dyn VideoEncoder> {
 
     fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
         (**self).pop_packet()
+    }
+
+    fn set_bitrate(&mut self, bitrate: u64) -> Result<()> {
+        (**self).set_bitrate(bitrate)
     }
 }
 

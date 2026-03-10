@@ -68,7 +68,6 @@ fn main() -> Result<()> {
         async move {
             let endpoint = Endpoint::bind().await?;
             let live = Live::new(endpoint.clone());
-            let audio_out = audio_ctx.default_output().await?;
             let playback_config = PlaybackConfig {
                 decode_config: DecodeConfig {
                     backend,
@@ -80,7 +79,7 @@ fn main() -> Result<()> {
                 .watch_and_listen::<DefaultDecoders>(
                     ticket.endpoint,
                     &ticket.broadcast_name,
-                    audio_out,
+                    &audio_ctx,
                     playback_config,
                 )
                 .await?;

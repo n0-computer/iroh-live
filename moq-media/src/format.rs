@@ -390,3 +390,132 @@ pub struct PlaybackConfig {
     pub decode_config: DecodeConfig,
     pub quality: Quality,
 }
+
+/// Configuration for creating a video encoder.
+///
+/// Construct from a [`VideoPreset`] via [`from_preset`](Self::from_preset),
+/// then override individual fields with the builder methods.
+///
+/// ```
+/// # use moq_media::format::{VideoEncoderConfig, VideoPreset};
+/// let config = VideoEncoderConfig::from_preset(VideoPreset::P720)
+///     .bitrate(2_000_000)
+///     .framerate(60);
+/// ```
+#[derive(Clone, Debug)]
+pub struct VideoEncoderConfig {
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// Frames per second.
+    pub framerate: u32,
+    /// Target bitrate in bits per second.
+    /// `None` uses a codec-specific default based on resolution and framerate.
+    pub bitrate: Option<u64>,
+}
+
+impl VideoEncoderConfig {
+    /// Creates a config from a [`VideoPreset`] with automatic bitrate.
+    pub fn from_preset(preset: VideoPreset) -> Self {
+        let (width, height) = preset.dimensions();
+        Self {
+            width,
+            height,
+            framerate: preset.fps(),
+            bitrate: None,
+        }
+    }
+
+    /// Sets the frame width.
+    pub fn width(mut self, width: u32) -> Self {
+        self.width = width;
+        self
+    }
+
+    /// Sets the frame height.
+    pub fn height(mut self, height: u32) -> Self {
+        self.height = height;
+        self
+    }
+
+    /// Sets the framerate.
+    pub fn framerate(mut self, framerate: u32) -> Self {
+        self.framerate = framerate;
+        self
+    }
+
+    /// Sets the target bitrate in bits per second.
+    pub fn bitrate(mut self, bitrate: u64) -> Self {
+        self.bitrate = Some(bitrate);
+        self
+    }
+
+    /// Computes a default bitrate for H.264-class codecs.
+    ///
+    /// Uses `pixels * factor * framerate_adjustment` where `factor` controls
+    /// quality (0.07 for H.264, 0.05 for AV1).
+    pub fn default_bitrate(&self, bits_per_pixel: f32) -> u64 {
+        let pixels = self.width * self.height;
+        let framerate_factor = 30.0 + (self.framerate as f32 - 30.) / 2.;
+        (pixels as f32 * bits_per_pixel * framerate_factor).round() as u64
+    }
+
+    /// Returns the configured bitrate, or a default based on resolution and framerate.
+    pub fn bitrate_or_default(&self, bits_per_pixel: f32) -> u64 {
+        self.bitrate
+            .unwrap_or_else(|| self.default_bitrate(bits_per_pixel))
+    }
+}
+
+/// Configuration for creating an audio encoder.
+///
+/// Construct from an [`AudioFormat`] and [`AudioPreset`] via
+/// [`from_preset`](Self::from_preset), then override with builder methods.
+///
+/// ```
+/// # use moq_media::format::{AudioEncoderConfig, AudioFormat, AudioPreset};
+/// let config = AudioEncoderConfig::from_preset(AudioFormat::stereo_48k(), AudioPreset::Hq)
+///     .bitrate(96_000);
+/// ```
+#[derive(Clone, Debug)]
+pub struct AudioEncoderConfig {
+    /// Input sample rate in Hz.
+    pub sample_rate: u32,
+    /// Number of audio channels.
+    pub channel_count: u32,
+    /// Target bitrate in bits per second.
+    pub bitrate: u64,
+}
+
+impl AudioEncoderConfig {
+    /// Creates a config from an [`AudioFormat`] and [`AudioPreset`].
+    pub fn from_preset(format: AudioFormat, preset: AudioPreset) -> Self {
+        Self {
+            sample_rate: format.sample_rate,
+            channel_count: format.channel_count,
+            bitrate: match preset {
+                AudioPreset::Hq => 128_000,
+                AudioPreset::Lq => 32_000,
+            },
+        }
+    }
+
+    /// Sets the sample rate in Hz.
+    pub fn sample_rate(mut self, rate: u32) -> Self {
+        self.sample_rate = rate;
+        self
+    }
+
+    /// Sets the channel count.
+    pub fn channel_count(mut self, count: u32) -> Self {
+        self.channel_count = count;
+        self
+    }
+
+    /// Sets the target bitrate in bits per second.
+    pub fn bitrate(mut self, bitrate: u64) -> Self {
+        self.bitrate = bitrate;
+        self
+    }
+}

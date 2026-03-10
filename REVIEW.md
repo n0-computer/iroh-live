@@ -14,11 +14,12 @@
 - [x] **D1g: `VideoEncoderPipeline` struct** — standalone encoder with thread, `PipeSink` output (`pipeline.rs`)
 - [x] **D1h: `subscribe.rs` uses `VideoDecoderPipeline`** — `from_consumer` delegates to pipeline
 - [x] **D1i: `StreamClock` removed** — was unused dead code, deleted `processing/clock.rs`
-- [ ] **D1j: `PacketSink` trait** — abstract over `OrderedProducer` and `PipeSink` (currently `PipeSink` is concrete only)
-- [ ] **D1k: Refactor `publish.rs` `EncoderThread`** to use pipeline structs / `PacketSink` trait
-- [ ] **D1l: `AudioDecoderPipeline` / `AudioEncoderPipeline`** — audio equivalents not yet implemented
-- [ ] **D1m: `subscribe.rs` `AudioTrack` still converts `OrderedFrame`→`MediaPacket` inline** (line 399)
-- [ ] **D1n: `forward_frames` in `subscribe.rs`** still uses `OrderedFrame` for audio path
+- [x] **D1j: `PacketSink` trait** — abstract over `OrderedProducer` and `PipeSink` (`transport.rs`)
+- [x] **D1k: Refactor `publish.rs` `EncoderThread`** to use `PacketSink` trait
+- [x] **D1l: `AudioDecoderPipeline` / `AudioEncoderPipeline`** — audio equivalents (`pipeline.rs`)
+- [x] **D1m: `subscribe.rs` `AudioTrack` uses `MediaPacket` throughout** (no inline `OrderedFrame` conversion)
+- [x] **D1n: `subscribe.rs` audio path uses `PacketSource`/`forward_packets`** (removed `forward_frames`)
+- [x] **D1o: Pipeline consolidation** — all encode/decode loops moved to `pipeline.rs`; `EncoderThread` removed from `publish.rs`; `AudioTrack::run_loop` removed from `subscribe.rs`; `publish.rs`/`subscribe.rs` use pipeline types
 
 ### Bugs
 
@@ -65,8 +66,8 @@
 
 ### Testing
 
-- [ ] **T1: No `subscribe.rs` tests** — `run_loop`, `forward_frames`, `SubscribeBroadcast` untested
-- [ ] **T2: No audio decode loop tests** — `AudioTrack::run_loop` untested
+- [ ] **T1: No `subscribe.rs` tests** — `SubscribeBroadcast`, `WatchTrack`, `AudioTrack` untested
+- [ ] **T2: No audio decode loop tests** — `audio_decode_loop` in `pipeline.rs` untested
 - [ ] **T3: No `render.rs` tests** — `WgpuVideoRenderer` untested (needs GPU)
 - [ ] **T4: No integration tests** — no end-to-end encode→transport→decode
 - [ ] **T5: `PublishCaptureController` not tested** — `set_opts` has no tests
@@ -75,8 +76,8 @@
 
 ### API
 
-- [ ] **A1: No encoder rate control API** — bitrate hardcoded `pixels * 0.07 * framerate_factor`
-- [ ] **A2: No builder pattern** for encoder/decoder configuration
+- [x] **A1: Encoder rate control API** — `set_bitrate()` on `VideoEncoder`/`AudioEncoder` traits (default no-op); implemented for Opus and VTB
+- [x] **A2: Builder pattern for encoder configuration** — `VideoEncoderConfig`/`AudioEncoderConfig` with `from_preset()` + builder methods; `with_config()` on factory traits
 - [ ] **A3: Quality enum is coarse** — `Highest/High/Mid/Low` maps to 4 fixed presets only
 - [ ] **A4: `DecodeConfig` minimal** — only `pixel_format` and `backend`, no resolution/framerate constraints
 - [ ] **A5: VideoToolbox decoder stub** — `vtb/decoder.rs` is TODO skeleton only
@@ -93,8 +94,8 @@
 lib.rs
 ├── format.rs          — Frame types, presets, pixel formats, MediaPacket
 ├── traits.rs          — Encoder/Decoder/Source/Sink traits (use MediaPacket)
-├── transport.rs       — PacketSource trait, MoqPacketSource, media_pipe
-├── pipeline.rs        — VideoDecoderPipeline, VideoEncoderPipeline
+├── transport.rs       — PacketSource/PacketSink traits, MoqPacketSource/Sink, media_pipe
+├── pipeline.rs        — Video/Audio Encoder/Decoder Pipelines (all encode/decode loops)
 ├── codec/
 │   ├── mod.rs         — Codec enums, re-exports, create_encoder()
 │   ├── dynamic.rs     — DynamicVideoDecoder/DynamicAudioDecoder dispatch
@@ -113,7 +114,7 @@ lib.rs
 │   ├── resample.rs    — Audio resampling (rubato)
 │   └── mjpg.rs        — MJPEG decoder for camera frames
 ├── audio_backend.rs   — Firewheel audio I/O + AEC
-├── publish.rs         — PublishBroadcast, VideoRenditions, EncoderThread
+├── publish.rs         — PublishBroadcast, VideoRenditions, AudioRenditions
 ├── publish/controller.rs — PublishCaptureController
 ├── subscribe.rs       — SubscribeBroadcast, WatchTrack, AudioTrack
 ├── render.rs          — wgpu NV12→RGBA renderer
@@ -467,8 +468,8 @@ The VTB compression callback uses `Arc::into_raw()` to pass state to the C callb
 
 ### Improvable
 
-- **A1**: No runtime bitrate adjustment — hardcoded `pixels * 0.07 * framerate_factor` in every encoder
-- **A2**: No builder pattern for encoder/decoder configuration
+- ~~**A1**: No runtime bitrate adjustment~~ — `set_bitrate()` added to `VideoEncoder`/`AudioEncoder` traits; implemented for Opus and VTB
+- ~~**A2**: No builder pattern for encoder/decoder configuration~~ — `VideoEncoderConfig`/`AudioEncoderConfig` added with `from_preset()` + builder methods
 - **A3**: Quality enum coarse — 4 fixed presets, no custom resolution/bitrate
 - **A4**: `DecodeConfig` minimal — only `pixel_format` and `backend`
 - **A5**: VideoToolbox decoder is stub only — macOS HW decode not available

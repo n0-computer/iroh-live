@@ -7,11 +7,10 @@ use unsafe_libopus::{
     OPUS_SET_INBAND_FEC_REQUEST, OpusEncoder as RawOpusEncoder, varargs,
 };
 
-use crate::format::{AudioFormat, AudioPreset, EncodedFrame};
+use crate::format::{AudioEncoderConfig, EncodedFrame};
 use crate::traits::{AudioEncoder, AudioEncoderFactory};
 
 const SAMPLE_RATE: u32 = 48_000;
-const BITRATE_HQ: u64 = 128_000;
 /// Opus frame size: 20ms at 48kHz = 960 samples per channel.
 const FRAME_SIZE: usize = 960;
 /// Maximum Opus packet size.
@@ -138,12 +137,11 @@ impl OpusEncoder {
 
 impl AudioEncoderFactory for OpusEncoder {
     const ID: &str = "opus";
-    fn with_preset(format: AudioFormat, preset: AudioPreset) -> Result<Self> {
-        let bitrate = match preset {
-            AudioPreset::Hq => BITRATE_HQ,
-            AudioPreset::Lq => 32_000,
-        };
-        Self::new(SAMPLE_RATE, format.channel_count, bitrate)
+
+    fn with_config(config: AudioEncoderConfig) -> Result<Self> {
+        // Opus internally operates at 48 kHz regardless of the requested
+        // sample rate (see B10 in REVIEW.md).
+        Self::new(SAMPLE_RATE, config.channel_count, config.bitrate)
     }
 }
 
@@ -179,6 +177,21 @@ impl AudioEncoder for OpusEncoder {
             Some(self.packet_buf.remove(0))
         })
     }
+
+    fn set_bitrate(&mut self, bitrate: u64) -> Result<()> {
+        let ret = unsafe {
+            opus::opus_encoder_ctl_impl(
+                self.encoder,
+                OPUS_SET_BITRATE_REQUEST,
+                varargs!(bitrate as i32),
+            )
+        };
+        if ret != OPUS_OK {
+            bail!("OPUS_SET_BITRATE failed: {ret}");
+        }
+        self.bitrate = bitrate;
+        Ok(())
+    }
 }
 
 /// Build a 19-byte OpusHead structure per RFC 7845 §5.1.
@@ -199,6 +212,8 @@ mod tests {
     use std::f32::consts::PI;
 
     use super::*;
+    use crate::format::{AudioFormat, AudioPreset};
+    use crate::traits::AudioEncoderFactory;
 
     fn make_sine(num_samples: usize, freq: f32, sample_rate: f32) -> Vec<f32> {
         (0..num_samples)

@@ -15,26 +15,24 @@ use std::{
 };
 
 use anyhow::Context;
-use hang::{
-    catalog::{Audio, AudioConfig, Catalog, Video, VideoConfig},
-    container::OrderedProducer,
-};
+use hang::catalog::{Audio, AudioConfig, Catalog, Video, VideoConfig};
 use moq_lite::{BroadcastProducer, TrackProducer};
 use n0_error::{Result, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, info_span, trace, warn};
+use tracing::{debug, info, warn};
 
 use tokio::sync::watch;
 
 use crate::{
     format::{AudioFormat, AudioPreset, DecodeConfig, VideoFormat, VideoFrame, VideoPreset},
-    processing::scale::{Scaler, fit_within},
+    pipeline::{AudioEncoderPipeline, VideoEncoderPipeline},
     subscribe::WatchTrack,
     traits::{
         AudioEncoder, AudioEncoderFactory, AudioSource, VideoEncoder, VideoEncoderFactory,
         VideoSource,
     },
+    transport::MoqPacketSink,
     util::spawn_thread,
 };
 
@@ -239,51 +237,43 @@ struct State {
     local_video_token: CancellationToken,
     available_video: Option<VideoRenditions>,
     available_audio: Option<AudioRenditions>,
-    active_video: HashMap<String, EncoderThread>,
-    active_audio: HashMap<String, EncoderThread>,
+    active_video: HashMap<String, VideoEncoderPipeline>,
+    active_audio: HashMap<String, AudioEncoderPipeline>,
 }
 
 impl State {
     fn stop_track(&mut self, name: &str) {
-        let thread = self
-            .active_video
-            .remove(name)
-            .or_else(|| self.active_audio.remove(name));
-        if let Some(thread) = thread {
-            thread.shutdown.cancel();
+        // Pipelines cancel on drop, so removing is sufficient.
+        if self.active_video.remove(name).is_none() {
+            self.active_audio.remove(name);
         }
     }
 
     fn remove_audio(&mut self) {
-        for (_name, thread) in self.active_audio.drain() {
-            thread.shutdown.cancel();
-        }
+        self.active_audio.clear();
         self.available_audio = None;
     }
 
     fn remove_video(&mut self) {
         self.local_video_token.cancel();
         self.local_video_token = CancellationToken::new();
-        for (_name, thread) in self.active_video.drain() {
-            thread.shutdown.cancel();
-        }
+        self.active_video.clear();
         self.available_video = None;
     }
 
     fn start_track(&mut self, track: moq_lite::TrackProducer) -> Result<()> {
         let name = track.info.name.clone();
-        let shutdown_token = self.shutdown_token.child_token();
         if let Some(video) = self.available_video.as_mut()
             && video.contains_rendition(&name)
         {
-            let thread = video.start_encoder(&name, track, shutdown_token)?;
-            self.active_video.insert(name, thread);
+            let pipeline = video.start_encoder(&name, track)?;
+            self.active_video.insert(name, pipeline);
             Ok(())
         } else if let Some(audio) = self.available_audio.as_mut()
             && audio.contains_rendition(&name)
         {
-            let thread = audio.start_encoder(&name, track, shutdown_token)?;
-            self.active_audio.insert(name, thread);
+            let pipeline = audio.start_encoder(&name, track)?;
+            self.active_audio.insert(name, pipeline);
             Ok(())
         } else {
             info!("ignoring track request {name}: rendition not available");
@@ -376,20 +366,18 @@ impl AudioRenditions {
         &mut self,
         name: &str,
         producer: TrackProducer,
-        shutdown_token: CancellationToken,
-    ) -> Result<EncoderThread> {
+    ) -> Result<AudioEncoderPipeline> {
         let make_encoder = self
             .renditions
             .get(name)
             .context("rendition not available")?;
         let encoder = make_encoder()?;
-        let thread = EncoderThread::spawn_audio(
+        let sink = MoqPacketSink::new(producer);
+        Ok(AudioEncoderPipeline::with_source(
             self.source.cloned_boxed(),
             encoder,
-            producer,
-            shutdown_token,
-        );
-        Ok(thread)
+            sink,
+        )?)
     }
 }
 
@@ -486,16 +474,18 @@ impl VideoRenditions {
         &mut self,
         name: &str,
         producer: TrackProducer,
-        shutdown_token: CancellationToken,
-    ) -> Result<EncoderThread> {
+    ) -> Result<VideoEncoderPipeline> {
         let make_encoder = self
             .renditions
             .get(name)
             .context("rendition not available")?;
         let encoder = make_encoder()?;
-        let thread =
-            EncoderThread::spawn_video(self.source.clone(), encoder, producer, shutdown_token);
-        Ok(thread)
+        let sink = MoqPacketSink::new(producer);
+        Ok(VideoEncoderPipeline::new(
+            self.source.clone(),
+            encoder,
+            sink,
+        ))
     }
 }
 
@@ -620,235 +610,6 @@ impl VideoSource for SharedVideoSource {
     fn pop_frame(&mut self) -> anyhow::Result<Option<VideoFrame>> {
         let frame = self.frames_rx.borrow_and_update().clone();
         Ok(frame)
-    }
-}
-
-#[derive(derive_more::Debug)]
-pub struct EncoderThread {
-    #[debug(skip)]
-    _thread_handle: thread::JoinHandle<()>,
-    shutdown: CancellationToken,
-}
-
-impl EncoderThread {
-    pub fn spawn_video(
-        mut source: impl VideoSource,
-        mut encoder: impl VideoEncoder,
-        producer: TrackProducer,
-        shutdown: CancellationToken,
-    ) -> Self {
-        let mut producer = OrderedProducer::new(producer);
-        let thread_name = format!("venc-{:<4}-{:<4}", source.name(), encoder.name());
-        let span = info_span!("videoenc", source = source.name(), encoder = encoder.name());
-        let handle = spawn_thread(thread_name, {
-            let shutdown = shutdown.clone();
-            move || {
-                let _guard = span.enter();
-                if let Err(err) = source.start() {
-                    error!("video source failed to start: {err:#}");
-                    return;
-                }
-                let mut first = true;
-                let format = source.format();
-                let enc_config = encoder.config();
-                info!(
-                    src_format = ?format,
-                    dst_config = ?enc_config,
-                    "video encoder thread start"
-                );
-                // Set up scaler to downscale source frames to encoder dimensions.
-                let scaler_dims = match (enc_config.coded_width, enc_config.coded_height) {
-                    (Some(w), Some(h)) => {
-                        let target = fit_within(format.dimensions[0], format.dimensions[1], w, h);
-                        Some(target)
-                    }
-                    _ => None,
-                };
-                let scaler = Scaler::new(scaler_dims);
-                let framerate = enc_config.framerate.unwrap_or(30.0);
-                let interval = Duration::from_secs_f64(1. / framerate);
-                loop {
-                    let start = Instant::now();
-                    if shutdown.is_cancelled() {
-                        info!("stop video encoder: cancelled");
-                        break;
-                    }
-                    let frame = match source.pop_frame() {
-                        Ok(frame) => frame,
-                        Err(err) => {
-                            error!("video source failed to produce frame: {err:#}");
-                            break;
-                        }
-                    };
-                    if let Some(frame) = frame {
-                        let frame = match scaler.scale_rgba(
-                            &frame.raw,
-                            frame.format.dimensions[0],
-                            frame.format.dimensions[1],
-                        ) {
-                            Ok(Some((data, w, h))) => VideoFrame {
-                                format: VideoFormat {
-                                    pixel_format: frame.format.pixel_format,
-                                    dimensions: [w, h],
-                                },
-                                raw: data.into(),
-                            },
-                            Ok(None) => frame,
-                            Err(err) => {
-                                error!("video frame scaling failed: {err:#}");
-                                break;
-                            }
-                        };
-                        if let Err(err) = encoder.push_frame(frame) {
-                            error!("video encoder push_frame failed: {err:#}");
-                            break;
-                        };
-                        loop {
-                            match encoder.pop_packet() {
-                                Ok(Some(pkt)) => {
-                                    if first && !pkt.is_keyframe {
-                                        warn!("ignoring frame: waiting for first keyframe");
-                                        continue;
-                                    }
-                                    first = false;
-                                    if pkt.is_keyframe {
-                                        if let Err(err) = producer.keyframe() {
-                                            error!(
-                                                "failed to close previous group for keyframe: {err:#}"
-                                            );
-                                            break;
-                                        }
-                                    }
-                                    if let Err(err) = producer.write(pkt.to_hang_frame()) {
-                                        error!("failed to write video packet to producer: {err:#}");
-                                    }
-                                }
-                                Ok(None) => break,
-                                Err(err) => {
-                                    error!("video encoder pop_packet failed: {err:#}");
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    thread::sleep(interval.saturating_sub(start.elapsed()));
-                }
-                producer.finish().ok();
-                if let Err(err) = source.stop() {
-                    warn!("video source failed to stop: {err:#}");
-                }
-                info!("video encoder thread stop");
-            }
-        });
-        Self {
-            _thread_handle: handle,
-            shutdown,
-        }
-    }
-
-    pub fn spawn_audio(
-        mut source: Box<dyn AudioSource>,
-        mut encoder: impl AudioEncoder,
-        producer: TrackProducer,
-        shutdown: CancellationToken,
-    ) -> Self {
-        let sd = shutdown.clone();
-        let name = encoder.name();
-        let thread_name = format!("aenc-{:<4}", name);
-        let span = info_span!("audioenc", %name);
-        let mut producer = OrderedProducer::new(producer);
-        let handle = spawn_thread(thread_name, move || {
-            let _guard = span.enter();
-            info!(config=?encoder.config(), "audio encoder thread start");
-            let shutdown = sd;
-            // 20ms framing to align with typical Opus config (48kHz → 960 samples/ch)
-            const INTERVAL: Duration = Duration::from_millis(20);
-            let format = source.format();
-            let samples_per_frame = (format.sample_rate / 1000) * INTERVAL.as_millis() as u32;
-            let mut buf = vec![0.0f32; samples_per_frame as usize * format.channel_count as usize];
-            let start = Instant::now();
-            for tick in 0.. {
-                trace!("tick");
-                if shutdown.is_cancelled() {
-                    info!("stop audio encoder: cancelled");
-                    break;
-                }
-                match source.pop_samples(&mut buf) {
-                    Ok(Some(_n)) => {
-                        // Expect a full frame; if shorter, zero-pad via slice len
-                        if let Err(err) = encoder.push_samples(&buf) {
-                            error!(
-                                buf_len = buf.len(),
-                                "audio encoder push_samples failed: {err:#}"
-                            );
-                            break;
-                        }
-                        loop {
-                            match encoder.pop_packet() {
-                                Ok(Some(pkt)) => {
-                                    if pkt.is_keyframe {
-                                        if let Err(err) = producer.keyframe() {
-                                            error!(
-                                                "failed to close previous group for keyframe: {err:#}"
-                                            );
-                                            break;
-                                        }
-                                    }
-                                    if let Err(err) = producer.write(pkt.to_hang_frame()) {
-                                        error!("failed to write audio packet to producer: {err:#}");
-                                    }
-                                }
-                                Ok(None) => break,
-                                Err(err) => {
-                                    error!("audio encoder pop_packet failed: {err:#}");
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        // keep pacing
-                    }
-                    Err(err) => {
-                        error!("audio source failed: {err:#}");
-                        break;
-                    }
-                }
-                let expected_time = (tick + 1) * INTERVAL;
-                let elapsed = start.elapsed();
-                if elapsed > expected_time {
-                    warn!("audio encoder too slow by {:?}", elapsed - expected_time);
-                }
-                let sleep = expected_time.saturating_sub(elapsed);
-                if sleep > Duration::ZERO {
-                    thread::sleep(sleep);
-                }
-            }
-            // drain
-            while let Ok(Some(pkt)) = encoder.pop_packet() {
-                if pkt.is_keyframe {
-                    if let Err(err) = producer.keyframe() {
-                        error!("failed to close previous group for keyframe: {err:#}");
-                        break;
-                    }
-                }
-                if let Err(err) = producer.write(pkt.to_hang_frame()) {
-                    error!("failed to write audio packet to producer: {err:#}");
-                }
-            }
-            producer.finish().ok();
-            info!("audio encoder thread stop");
-        });
-        Self {
-            _thread_handle: handle,
-            shutdown,
-        }
-    }
-}
-
-impl Drop for EncoderThread {
-    fn drop(&mut self) {
-        self.shutdown.cancel();
     }
 }
 
@@ -1028,19 +789,21 @@ mod tests {
         preset: VideoPreset,
         timeout: Duration,
     ) {
+        use crate::pipeline::VideoEncoderPipeline;
+
         let (w, h) = preset.dimensions();
         let source = TestVideoSource::new(w, h);
         let encoder = E::with_preset(preset).unwrap();
         let track = moq_lite::Track::new("test-video");
         let producer = TrackProducer::new(track);
         let mut consumer = producer.consume();
-        let shutdown = CancellationToken::new();
+        let sink = MoqPacketSink::new(producer);
 
-        let _thread = EncoderThread::spawn_video(source, encoder, producer, shutdown.clone());
+        let _pipeline = VideoEncoderPipeline::new(source, encoder, sink);
 
         let result = tokio::time::timeout(timeout, consumer.next_group()).await;
 
-        shutdown.cancel();
+        drop(_pipeline);
 
         let group = result
             .expect("timed out waiting for first video group")
