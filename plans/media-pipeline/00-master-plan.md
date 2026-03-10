@@ -22,12 +22,16 @@ Stored in-repo at `plans/media-pipeline/`. Copied from `.claude/plans/media-pipe
 | 0 | Setup | Lints, CLAUDE.md, plans in-repo, module file fixes | **Done** | below |
 | 1 | A - Codec | Codec swap — remove ffmpeg, add openh264 + unsafe-libopus + utilities | **Done** | [phase-1-codec-swap.md](media-pipeline/phase-1-codec-swap.md) |
 | 2 | A - Codec | AV1 codec support (rav1e encoder + dav1d decoder) | **Done** | [phase-2-av1.md](media-pipeline/phase-2-av1.md) |
-| 2b | A - Codec | HW acceleration (VAAPI, VideoToolbox) | Pending | [phase-2b-hw-accel.md](media-pipeline/phase-2b-hw-accel.md) |
+| 2b | A - Codec | HW acceleration (VAAPI, VideoToolbox) | **Done** | [phase-2b-hw-accel.md](media-pipeline/phase-2b-hw-accel.md) |
+| — | A - Render | GPU rendering (wgpu, DMA-BUF zero-copy) | **Done** | [gpu-rendering.md](media-pipeline/gpu-rendering.md) |
+| — | A - API | API decoupling (MediaPacket, pipeline traits) | **Done** | [api-decoupling.md](media-pipeline/api-decoupling.md) |
+| — | A - Example | Standalone viewer example | **Done** | [standalone-viewer-example.md](media-pipeline/standalone-viewer-example.md) |
 | 3 | B - Resilience | AV resilience — overview of 3a–3d | Pending | [phase-3-av-resilience.md](media-pipeline/phase-3-av-resilience.md) |
 | 3a | B - Resilience | Adaptive rendition switching — catalog-aware, signal-driven | Pending | [phase-3a-rendition-switching.md](media-pipeline/phase-3a-rendition-switching.md) |
 | 3b | B - Resilience | Jitter buffer & A/V sync — playout timing, adaptive latency, lip-sync | Pending | [phase-3b-jitter-sync.md](media-pipeline/phase-3b-jitter-sync.md) |
 | 3c | B - Resilience | Forward error correction — Opus FEC/PLC/DTX, comfort noise | Future | [phase-3c-fec.md](media-pipeline/phase-3c-fec.md) |
 | 3d | B - Resilience | Adaptive encoding — encoder rate control, bandwidth estimation, pacing | Future | [phase-3d-adaptive-encoding.md](media-pipeline/phase-3d-adaptive-encoding.md) |
+| 3e | B - Resilience | Audio device switching — hot-swap, resampling | Partial | [phase-3e-audio-device-switching.md](media-pipeline/phase-3e-audio-device-switching.md) |
 
 ## Phase 0: Project Setup
 

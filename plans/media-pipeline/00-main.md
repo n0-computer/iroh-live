@@ -13,12 +13,16 @@ Replace ffmpeg with focused crates and build libwebrtc-grade media quality. Two 
 |-------|-------|-------------|--------|------|
 | 1 | A | Codec swap — scaffolding, utilities, audio, video, integration | **Done** | [phase-1-codec-swap.md](phase-1-codec-swap.md) |
 | 2 | A | AV1 codec support (rav1e encoder + dav1d decoder) | **Done** | [phase-2-av1.md](phase-2-av1.md) |
-| 2b | A | HW acceleration (VAAPI, VideoToolbox) | Pending | [phase-2b-hw-accel.md](phase-2b-hw-accel.md) |
+| 2b | A | HW acceleration (VAAPI, VideoToolbox) | **Done** | [phase-2b-hw-accel.md](phase-2b-hw-accel.md) |
+| — | A | GPU rendering (wgpu, DMA-BUF zero-copy) | **Done** | [gpu-rendering.md](gpu-rendering.md) |
+| — | A | API decoupling (MediaPacket, pipeline traits) | **Done** | [api-decoupling.md](api-decoupling.md) |
+| — | A | Standalone viewer example | **Done** | [standalone-viewer-example.md](standalone-viewer-example.md) |
 | 3 | B | AV resilience — overview | Pending | [phase-3-av-resilience.md](phase-3-av-resilience.md) |
 | 3a | B | Adaptive rendition switching — catalog-aware, signal-driven | Pending | [phase-3a-rendition-switching.md](phase-3a-rendition-switching.md) |
 | 3b | B | Jitter buffer & A/V sync — playout timing, adaptive latency, lip-sync | Pending | [phase-3b-jitter-sync.md](phase-3b-jitter-sync.md) |
 | 3c | B | Forward error correction — Opus FEC/PLC/DTX, comfort noise | Future | [phase-3c-fec.md](phase-3c-fec.md) |
 | 3d | B | Adaptive encoding — encoder rate control, bandwidth estimation, pacing | Future | [phase-3d-adaptive-encoding.md](phase-3d-adaptive-encoding.md) |
+| 3e | B | Audio device switching — hot-swap, resampling | Partial | [phase-3e-audio-device-switching.md](phase-3e-audio-device-switching.md) |
 
 ## Current pipeline issues (reference)
 
