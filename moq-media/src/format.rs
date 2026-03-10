@@ -463,7 +463,8 @@ impl VideoEncoderConfig {
 
     /// Returns the configured bitrate, or a default based on resolution and framerate.
     pub fn bitrate_or_default(&self, bits_per_pixel: f32) -> u64 {
-        self.bitrate.unwrap_or_else(|| self.default_bitrate(bits_per_pixel))
+        self.bitrate
+            .unwrap_or_else(|| self.default_bitrate(bits_per_pixel))
     }
 }
 

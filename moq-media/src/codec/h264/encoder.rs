@@ -111,7 +111,12 @@ impl VideoEncoderFactory for H264Encoder {
     const ID: &str = "h264-openh264";
 
     fn with_config(config: VideoEncoderConfig) -> Result<Self> {
-        Self::new(config.width, config.height, config.framerate, config.bitrate)
+        Self::new(
+            config.width,
+            config.height,
+            config.framerate,
+            config.bitrate,
+        )
     }
 }
 

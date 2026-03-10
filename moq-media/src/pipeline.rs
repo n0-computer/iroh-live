@@ -2,7 +2,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use hang::catalog::VideoConfig;
+use hang::catalog::{AudioConfig, VideoConfig};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher as _;
 use tokio::sync::mpsc;
@@ -11,12 +11,17 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::format::{DecodeConfig, DecodedVideoFrame, FrameBuffer, MediaPacket, PixelFormat};
 use crate::processing::scale::{Scaler, fit_within};
-use crate::traits::{VideoDecoder, VideoEncoder, VideoSource};
-use crate::transport::{PacketSource, PipeSink};
+use crate::traits::{
+    AudioDecoder, AudioEncoder, AudioSink, AudioSource, VideoDecoder, VideoEncoder, VideoSource,
+};
+use crate::transport::{PacketSink, PacketSource};
 use crate::util::spawn_thread;
 
-/// Forward packets from any async `PacketSource` into a sync mpsc channel.
-async fn forward_packets(mut source: impl PacketSource, sender: mpsc::Sender<MediaPacket>) {
+/// Forwards packets from an async [`PacketSource`] into an mpsc channel.
+pub(crate) async fn forward_packets(
+    mut source: impl PacketSource,
+    sender: mpsc::Sender<MediaPacket>,
+) {
     loop {
         match source.read().await {
             Ok(Some(packet)) => {
@@ -57,7 +62,7 @@ pub struct VideoDecoderFrames {
 }
 
 impl VideoDecoderFrames {
-    /// Get the most recent decoded frame, draining any older buffered frames.
+    /// Returns the most recent decoded frame, draining any older buffered frames.
     pub fn current_frame(&mut self) -> Option<DecodedVideoFrame> {
         let mut latest = None;
         while let Ok(frame) = self.rx.try_recv() {
@@ -66,12 +71,12 @@ impl VideoDecoderFrames {
         latest
     }
 
-    /// Blocking receive of the next decoded frame.
+    /// Receives the next decoded frame, blocking until one is available.
     pub fn recv_blocking(&mut self) -> Option<DecodedVideoFrame> {
         self.rx.blocking_recv()
     }
 
-    /// Consume this and return the underlying receiver.
+    /// Consumes this and returns the underlying receiver.
     pub fn into_rx(self) -> mpsc::Receiver<DecodedVideoFrame> {
         self.rx
     }
@@ -100,7 +105,7 @@ impl VideoDecoderHandle {
     }
 }
 
-/// Holds resources that keep the pipeline alive; dropping cancels everything.
+/// Keeps pipeline resources alive; dropping cancels everything.
 #[derive(derive_more::Debug)]
 struct PipelineGuard {
     #[debug(skip)]
@@ -112,7 +117,7 @@ struct PipelineGuard {
 }
 
 impl VideoDecoderPipeline {
-    /// Create a new decoder pipeline from any packet source.
+    /// Creates a new decoder pipeline from any packet source.
     pub fn new<D: VideoDecoder>(
         name: String,
         source: impl PacketSource,
@@ -177,7 +182,7 @@ impl VideoDecoderPipeline {
 /// A standalone video encoder pipeline.
 ///
 /// Captures frames from a [`VideoSource`], encodes them on an OS thread,
-/// and sends [`MediaPacket`]s to a [`PipeSink`].
+/// and sends encoded packets to any [`PacketSink`].
 ///
 /// This can be used without MoQ networking — e.g., paired with a
 /// [`VideoDecoderPipeline`] via [`media_pipe`](crate::transport::media_pipe)
@@ -190,14 +195,14 @@ pub struct VideoEncoderPipeline {
 }
 
 impl VideoEncoderPipeline {
-    /// Create a new encoder pipeline.
+    /// Creates a new encoder pipeline.
     ///
     /// Spawns an OS thread that captures frames from `source`, encodes them
     /// with `encoder`, and writes the resulting packets to `sink`.
     pub fn new(
         mut source: impl VideoSource,
         mut encoder: impl VideoEncoder,
-        sink: PipeSink,
+        mut sink: impl PacketSink,
     ) -> Self {
         let shutdown = CancellationToken::new();
         let enc_config = encoder.config();
@@ -259,12 +264,7 @@ impl VideoEncoderPipeline {
                                             continue;
                                         }
                                         first = false;
-                                        let media_pkt = MediaPacket {
-                                            timestamp: pkt.timestamp,
-                                            payload: pkt.payload.into(),
-                                            is_keyframe: pkt.is_keyframe,
-                                        };
-                                        if let Err(err) = sink.send_blocking(media_pkt) {
+                                        if let Err(err) = sink.write(pkt) {
                                             debug!("encoder pipeline: sink closed: {err:#}");
                                             shutdown.cancel();
                                             break;
@@ -286,6 +286,7 @@ impl VideoEncoderPipeline {
                     }
                     thread::sleep(interval.saturating_sub(tick.elapsed()));
                 }
+                sink.finish().ok();
                 if let Err(err) = source.stop() {
                     warn!("encoder pipeline: source failed to stop: {err:#}");
                 }
@@ -378,4 +379,202 @@ fn decode_loop(
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Audio Decoder Pipeline
+// ---------------------------------------------------------------------------
+
+/// A standalone audio decoder pipeline.
+///
+/// Reads encoded packets from any [`PacketSource`], decodes on an OS thread,
+/// and pushes decoded samples to an [`AudioSink`].
+///
+/// This can be used without MoQ networking — e.g., with a
+/// [`PipeSource`](crate::transport::PipeSource) for local encode→decode pipelines.
+#[derive(derive_more::Debug)]
+pub struct AudioDecoderPipeline {
+    shutdown: CancellationToken,
+    #[debug(skip)]
+    _task_handle: AbortOnDropHandle<()>,
+    #[debug(skip)]
+    _thread_handle: thread::JoinHandle<()>,
+}
+
+impl AudioDecoderPipeline {
+    /// Creates a new audio decoder pipeline from any packet source.
+    pub fn new<D: AudioDecoder>(
+        source: impl PacketSource,
+        config: &AudioConfig,
+        sink: impl AudioSink,
+    ) -> Result<Self> {
+        let shutdown = CancellationToken::new();
+        let (packet_tx, packet_rx) = mpsc::channel(32);
+        let output_format = sink.format()?;
+        let decoder = D::new(config, output_format)?;
+
+        let thread_name = "adec-pipe".to_string();
+        let thread = spawn_thread(thread_name, {
+            let shutdown = shutdown.clone();
+            move || {
+                info!("audio decoder pipeline thread start");
+                if let Err(err) = audio_decode_loop(&shutdown, packet_rx, decoder, sink) {
+                    error!("audio decoder pipeline failed: {err:#}");
+                }
+                info!("audio decoder pipeline thread stop");
+                shutdown.cancel();
+            }
+        });
+        let task = tokio::spawn(forward_packets(source, packet_tx));
+        Ok(Self {
+            shutdown,
+            _task_handle: AbortOnDropHandle::new(task),
+            _thread_handle: thread,
+        })
+    }
+}
+
+impl Drop for AudioDecoderPipeline {
+    fn drop(&mut self) {
+        self.shutdown.cancel();
+    }
+}
+
+/// Runs the audio decode loop on an OS thread.
+///
+/// Reads [`MediaPacket`]s from the channel, feeds them to the decoder,
+/// and pushes decoded samples to the sink.
+fn audio_decode_loop(
+    shutdown: &CancellationToken,
+    mut input_rx: mpsc::Receiver<MediaPacket>,
+    mut decoder: impl AudioDecoder,
+    mut sink: impl AudioSink,
+) -> Result<()> {
+    loop {
+        if shutdown.is_cancelled() {
+            break;
+        }
+        let Some(packet) = input_rx.blocking_recv() else {
+            break;
+        };
+        if let Err(err) = decoder.push_packet(packet) {
+            warn!("audio pipeline: failed to push packet: {err:#}");
+            continue;
+        }
+        match decoder.pop_samples() {
+            Ok(Some(samples)) => {
+                sink.push_samples(samples)?;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                warn!("audio pipeline: failed to pop samples: {err:#}");
+            }
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Audio Encoder Pipeline
+// ---------------------------------------------------------------------------
+
+/// A standalone audio encoder pipeline.
+///
+/// Captures samples from an [`AudioSource`], encodes them on an OS thread,
+/// and sends encoded packets to any [`PacketSink`].
+///
+/// This can be used without MoQ networking — e.g., paired with an
+/// [`AudioDecoderPipeline`] via [`media_pipe`](crate::transport::media_pipe)
+/// for local encode→decode loops.
+#[derive(derive_more::Debug)]
+pub struct AudioEncoderPipeline {
+    shutdown: CancellationToken,
+    #[debug(skip)]
+    _thread_handle: thread::JoinHandle<()>,
+}
+
+impl AudioEncoderPipeline {
+    /// Creates a new audio encoder pipeline.
+    ///
+    /// Spawns an OS thread that captures samples from `source`, encodes them
+    /// with `encoder`, and writes the resulting packets to `sink`.
+    pub fn new(
+        mut source: Box<dyn AudioSource>,
+        mut encoder: impl AudioEncoder,
+        mut sink: impl PacketSink,
+    ) -> Self {
+        let shutdown = CancellationToken::new();
+        let format = source.format();
+        // 20ms framing to align with typical Opus config (48kHz -> 960 samples/ch)
+        const INTERVAL: Duration = Duration::from_millis(20);
+        let samples_per_frame = (format.sample_rate / 1000) * INTERVAL.as_millis() as u32;
+
+        let thread_name = "aenc-pipe".to_string();
+        let thread = spawn_thread(thread_name, {
+            let shutdown = shutdown.clone();
+            move || {
+                info!(
+                    encoder = encoder.name(),
+                    "audio encoder pipeline thread start"
+                );
+                let mut buf =
+                    vec![0.0f32; samples_per_frame as usize * format.channel_count as usize];
+                let start = Instant::now();
+                for tick in 0.. {
+                    if shutdown.is_cancelled() {
+                        break;
+                    }
+                    match source.pop_samples(&mut buf) {
+                        Ok(Some(_)) => {
+                            if let Err(err) = encoder.push_samples(&buf) {
+                                error!("audio encoder pipeline: push_samples failed: {err:#}");
+                                break;
+                            }
+                            loop {
+                                match encoder.pop_packet() {
+                                    Ok(Some(pkt)) => {
+                                        if let Err(err) = sink.write(pkt) {
+                                            debug!("audio encoder pipeline: sink closed: {err:#}");
+                                            shutdown.cancel();
+                                            break;
+                                        }
+                                    }
+                                    Ok(None) => break,
+                                    Err(err) => {
+                                        error!(
+                                            "audio encoder pipeline: pop_packet failed: {err:#}"
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            error!("audio encoder pipeline: source failed: {err:#}");
+                            break;
+                        }
+                    }
+                    let expected_time = (tick + 1) * INTERVAL;
+                    let sleep = expected_time.saturating_sub(start.elapsed());
+                    if !sleep.is_zero() {
+                        thread::sleep(sleep);
+                    }
+                }
+                sink.finish().ok();
+                info!("audio encoder pipeline thread stop");
+            }
+        });
+
+        Self {
+            shutdown,
+            _thread_handle: thread,
+        }
+    }
+}
+
+impl Drop for AudioEncoderPipeline {
+    fn drop(&mut self) {
+        self.shutdown.cancel();
+    }
 }

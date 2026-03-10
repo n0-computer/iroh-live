@@ -19,7 +19,7 @@ use hang::catalog::{H264, VideoCodec, VideoConfig};
 
 use crate::{
     codec::h264::annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b},
-    format::{EncodedFrame, VideoEncoderConfig, VideoFrame, VideoPreset},
+    format::{EncodedFrame, VideoEncoderConfig, VideoFrame},
     processing::convert::{YuvData, pixel_format_to_yuv420},
     traits::{VideoEncoder, VideoEncoderFactory},
 };
@@ -420,7 +420,12 @@ impl VideoEncoderFactory for VaapiEncoder {
     const ID: &str = "h264-vaapi";
 
     fn with_config(config: VideoEncoderConfig) -> Result<Self> {
-        Self::new(config.width, config.height, config.framerate, config.bitrate)
+        Self::new(
+            config.width,
+            config.height,
+            config.framerate,
+            config.bitrate,
+        )
     }
 }
 

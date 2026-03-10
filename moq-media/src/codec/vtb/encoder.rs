@@ -214,7 +214,12 @@ impl VideoEncoderFactory for VtbEncoder {
     const ID: &str = "h264-vtb";
 
     fn with_config(config: VideoEncoderConfig) -> Result<Self> {
-        Self::new(config.width, config.height, config.framerate, config.bitrate)
+        Self::new(
+            config.width,
+            config.height,
+            config.framerate,
+            config.bitrate,
+        )
     }
 }
 

@@ -15,10 +15,7 @@ use std::{
 };
 
 use anyhow::Context;
-use hang::{
-    catalog::{Audio, AudioConfig, Catalog, Video, VideoConfig},
-    container::OrderedProducer,
-};
+use hang::catalog::{Audio, AudioConfig, Catalog, Video, VideoConfig};
 use moq_lite::{BroadcastProducer, TrackProducer};
 use n0_error::{Result, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
@@ -35,6 +32,7 @@ use crate::{
         AudioEncoder, AudioEncoderFactory, AudioSource, VideoEncoder, VideoEncoderFactory,
         VideoSource,
     },
+    transport::{MoqPacketSink, PacketSink},
     util::spawn_thread,
 };
 
@@ -383,12 +381,9 @@ impl AudioRenditions {
             .get(name)
             .context("rendition not available")?;
         let encoder = make_encoder()?;
-        let thread = EncoderThread::spawn_audio(
-            self.source.cloned_boxed(),
-            encoder,
-            producer,
-            shutdown_token,
-        );
+        let sink = MoqPacketSink::new(producer);
+        let thread =
+            EncoderThread::spawn_audio(self.source.cloned_boxed(), encoder, sink, shutdown_token);
         Ok(thread)
     }
 }
@@ -493,8 +488,8 @@ impl VideoRenditions {
             .get(name)
             .context("rendition not available")?;
         let encoder = make_encoder()?;
-        let thread =
-            EncoderThread::spawn_video(self.source.clone(), encoder, producer, shutdown_token);
+        let sink = MoqPacketSink::new(producer);
+        let thread = EncoderThread::spawn_video(self.source.clone(), encoder, sink, shutdown_token);
         Ok(thread)
     }
 }
@@ -634,10 +629,9 @@ impl EncoderThread {
     pub fn spawn_video(
         mut source: impl VideoSource,
         mut encoder: impl VideoEncoder,
-        producer: TrackProducer,
+        mut sink: impl PacketSink,
         shutdown: CancellationToken,
     ) -> Self {
-        let mut producer = OrderedProducer::new(producer);
         let thread_name = format!("venc-{:<4}-{:<4}", source.name(), encoder.name());
         let span = info_span!("videoenc", source = source.name(), encoder = encoder.name());
         let handle = spawn_thread(thread_name, {
@@ -711,16 +705,9 @@ impl EncoderThread {
                                         continue;
                                     }
                                     first = false;
-                                    if pkt.is_keyframe {
-                                        if let Err(err) = producer.keyframe() {
-                                            error!(
-                                                "failed to close previous group for keyframe: {err:#}"
-                                            );
-                                            break;
-                                        }
-                                    }
-                                    if let Err(err) = producer.write(pkt.to_hang_frame()) {
-                                        error!("failed to write video packet to producer: {err:#}");
+                                    if let Err(err) = sink.write(pkt) {
+                                        error!("failed to write video packet: {err:#}");
+                                        break;
                                     }
                                 }
                                 Ok(None) => break,
@@ -733,7 +720,7 @@ impl EncoderThread {
                     }
                     thread::sleep(interval.saturating_sub(start.elapsed()));
                 }
-                producer.finish().ok();
+                sink.finish().ok();
                 if let Err(err) = source.stop() {
                     warn!("video source failed to stop: {err:#}");
                 }
@@ -749,14 +736,13 @@ impl EncoderThread {
     pub fn spawn_audio(
         mut source: Box<dyn AudioSource>,
         mut encoder: impl AudioEncoder,
-        producer: TrackProducer,
+        mut sink: impl PacketSink,
         shutdown: CancellationToken,
     ) -> Self {
         let sd = shutdown.clone();
         let name = encoder.name();
         let thread_name = format!("aenc-{:<4}", name);
         let span = info_span!("audioenc", %name);
-        let mut producer = OrderedProducer::new(producer);
         let handle = spawn_thread(thread_name, move || {
             let _guard = span.enter();
             info!(config=?encoder.config(), "audio encoder thread start");
@@ -786,16 +772,9 @@ impl EncoderThread {
                         loop {
                             match encoder.pop_packet() {
                                 Ok(Some(pkt)) => {
-                                    if pkt.is_keyframe {
-                                        if let Err(err) = producer.keyframe() {
-                                            error!(
-                                                "failed to close previous group for keyframe: {err:#}"
-                                            );
-                                            break;
-                                        }
-                                    }
-                                    if let Err(err) = producer.write(pkt.to_hang_frame()) {
-                                        error!("failed to write audio packet to producer: {err:#}");
+                                    if let Err(err) = sink.write(pkt) {
+                                        error!("failed to write audio packet: {err:#}");
+                                        break;
                                     }
                                 }
                                 Ok(None) => break,
@@ -826,17 +805,12 @@ impl EncoderThread {
             }
             // drain
             while let Ok(Some(pkt)) = encoder.pop_packet() {
-                if pkt.is_keyframe {
-                    if let Err(err) = producer.keyframe() {
-                        error!("failed to close previous group for keyframe: {err:#}");
-                        break;
-                    }
-                }
-                if let Err(err) = producer.write(pkt.to_hang_frame()) {
-                    error!("failed to write audio packet to producer: {err:#}");
+                if let Err(err) = sink.write(pkt) {
+                    error!("failed to write audio packet: {err:#}");
+                    break;
                 }
             }
-            producer.finish().ok();
+            sink.finish().ok();
             info!("audio encoder thread stop");
         });
         Self {
@@ -1035,8 +1009,9 @@ mod tests {
         let producer = TrackProducer::new(track);
         let mut consumer = producer.consume();
         let shutdown = CancellationToken::new();
+        let sink = MoqPacketSink::new(producer);
 
-        let _thread = EncoderThread::spawn_video(source, encoder, producer, shutdown.clone());
+        let _thread = EncoderThread::spawn_video(source, encoder, sink, shutdown.clone());
 
         let result = tokio::time::timeout(timeout, consumer.next_group()).await;
 
