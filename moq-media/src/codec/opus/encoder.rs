@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -29,7 +30,7 @@ pub struct OpusEncoder {
     /// Number of complete frames encoded so far (for timestamp calculation).
     frame_count: u64,
     /// Encoded packets ready for collection.
-    packet_buf: Vec<EncodedFrame>,
+    packet_buf: VecDeque<EncodedFrame>,
 }
 
 // Safety: The OpusEncoder pointer is only used from a single thread.
@@ -95,7 +96,7 @@ impl OpusEncoder {
             extradata,
             sample_buf: Vec::new(),
             frame_count: 0,
-            packet_buf: Vec::new(),
+            packet_buf: VecDeque::new(),
         })
     }
 
@@ -121,7 +122,7 @@ impl OpusEncoder {
 
             let timestamp_us =
                 (self.frame_count * FRAME_SIZE as u64 * 1_000_000) / self.sample_rate as u64;
-            self.packet_buf.push(EncodedFrame {
+            self.packet_buf.push_back(EncodedFrame {
                 is_keyframe: true,
                 timestamp: Duration::from_micros(timestamp_us),
                 payload: out.into(),
@@ -142,6 +143,18 @@ impl AudioEncoderFactory for OpusEncoder {
         // Opus internally operates at 48 kHz regardless of the requested
         // sample rate (see B10 in REVIEW.md).
         Self::new(SAMPLE_RATE, config.channel_count, config.bitrate)
+    }
+
+    fn config_for(config: &AudioEncoderConfig) -> AudioConfig {
+        AudioConfig {
+            codec: AudioCodec::Opus,
+            sample_rate: SAMPLE_RATE,
+            channel_count: config.channel_count,
+            bitrate: Some(config.bitrate),
+            description: Some(build_opus_head(config.channel_count, SAMPLE_RATE).into()),
+            container: hang::catalog::Container::Legacy,
+            jitter: None,
+        }
     }
 }
 
@@ -171,11 +184,7 @@ impl AudioEncoder for OpusEncoder {
     }
 
     fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
-        Ok(if self.packet_buf.is_empty() {
-            None
-        } else {
-            Some(self.packet_buf.remove(0))
-        })
+        Ok(self.packet_buf.pop_front())
     }
 
     fn set_bitrate(&mut self, bitrate: u64) -> Result<()> {

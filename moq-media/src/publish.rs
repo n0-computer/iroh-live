@@ -25,7 +25,10 @@ use tracing::{debug, info, warn};
 use tokio::sync::watch;
 
 use crate::{
-    format::{AudioFormat, AudioPreset, DecodeConfig, VideoFormat, VideoFrame, VideoPreset},
+    format::{
+        AudioEncoderConfig, AudioFormat, AudioPreset, DecodeConfig, VideoEncoderConfig,
+        VideoFormat, VideoFrame, VideoPreset,
+    },
     pipeline::{AudioEncoderPipeline, VideoEncoderPipeline},
     subscribe::WatchTrack,
     traits::{
@@ -47,6 +50,16 @@ use crate::codec;
 
 type MakeAudioEncoder = Box<dyn Fn() -> Result<Box<dyn AudioEncoder>> + Send + 'static>;
 type MakeVideoEncoder = Box<dyn Fn() -> Result<Box<dyn VideoEncoder>> + Send + 'static>;
+
+struct AudioRenditionEntry {
+    config: AudioConfig,
+    factory: MakeAudioEncoder,
+}
+
+struct VideoRenditionEntry {
+    config: VideoConfig,
+    factory: MakeVideoEncoder,
+}
 
 #[derive(derive_more::Debug)]
 pub struct PublishBroadcast {
@@ -97,7 +110,7 @@ impl PublishBroadcast {
             let name = track.info.name.clone();
             if state
                 .lock()
-                .expect("poisoned")
+                .unwrap()
                 .start_track(track.clone())
                 .inspect_err(|err| warn!(%name, "failed to start requested track: {err:#}"))
                 .is_ok()
@@ -287,7 +300,7 @@ pub struct AudioRenditions {
     #[debug(skip)]
     source: Box<dyn AudioSource>,
     #[debug(skip)]
-    renditions: HashMap<String, MakeAudioEncoder>,
+    renditions: HashMap<String, AudioRenditionEntry>,
 }
 
 impl AudioRenditions {
@@ -332,28 +345,38 @@ impl AudioRenditions {
 
     pub fn add_with_generic<E: AudioEncoderFactory>(&mut self, preset: AudioPreset) {
         let name = format!("audio/{}-{preset}", E::ID);
-        self.add_with_callback(name, move |format| E::with_preset(format, preset));
+        let format = self.source.format();
+        let enc_config = AudioEncoderConfig::from_preset(format, preset);
+        let config = E::config_for(&enc_config);
+        self.renditions.insert(
+            name,
+            AudioRenditionEntry {
+                config,
+                factory: Box::new(move || Ok(Box::new(E::with_preset(format, preset)?))),
+            },
+        );
     }
 
     pub fn add_with_callback<E: AudioEncoder>(
         &mut self,
         name: impl Into<String>,
+        config: AudioConfig,
         callback: impl Fn(AudioFormat) -> anyhow::Result<E> + Send + 'static,
     ) {
         let format = self.source.format();
         self.renditions.insert(
             name.into(),
-            Box::new(move || Ok(Box::new(callback(format)?))),
+            AudioRenditionEntry {
+                config,
+                factory: Box::new(move || Ok(Box::new(callback(format)?))),
+            },
         );
     }
 
     pub fn available_renditions(&self) -> Result<BTreeMap<String, AudioConfig>> {
         let mut renditions = BTreeMap::new();
-        for (name, make_encoder) in self.renditions.iter() {
-            // We need to create the encoder to get the config, even though we drop it
-            // again (it will be created on demand). Not ideal, but works for now.
-            let config = make_encoder()?.config();
-            renditions.insert(name.clone(), config);
+        for (name, entry) in self.renditions.iter() {
+            renditions.insert(name.clone(), entry.config.clone());
         }
         Ok(renditions)
     }
@@ -367,11 +390,11 @@ impl AudioRenditions {
         name: &str,
         producer: TrackProducer,
     ) -> Result<AudioEncoderPipeline> {
-        let make_encoder = self
+        let entry = self
             .renditions
             .get(name)
             .context("rendition not available")?;
-        let encoder = make_encoder()?;
+        let encoder = (entry.factory)()?;
         let sink = MoqPacketSink::new(producer);
         Ok(AudioEncoderPipeline::with_source(
             self.source.cloned_boxed(),
@@ -385,7 +408,7 @@ impl AudioRenditions {
 pub struct VideoRenditions {
     source: SharedVideoSource,
     #[debug(skip)]
-    renditions: HashMap<String, MakeVideoEncoder>,
+    renditions: HashMap<String, VideoRenditionEntry>,
     shutdown_token: CancellationToken,
 }
 
@@ -441,27 +464,36 @@ impl VideoRenditions {
 
     pub fn add_with_generic<E: VideoEncoderFactory>(&mut self, preset: VideoPreset) {
         let name = format!("video/{}-{}", E::ID, preset);
-        self.add_with_callback(name, move || E::with_preset(preset))
+        let enc_config = VideoEncoderConfig::from_preset(preset);
+        let config = E::config_for(&enc_config);
+        self.renditions.insert(
+            name,
+            VideoRenditionEntry {
+                config,
+                factory: Box::new(move || Ok(Box::new(E::with_preset(preset)?))),
+            },
+        );
     }
 
     pub fn add_with_callback<E: VideoEncoder>(
         &mut self,
         name: impl ToString,
+        config: VideoConfig,
         encoder_factory: impl Fn() -> anyhow::Result<E> + Send + 'static,
     ) {
         self.renditions.insert(
             name.to_string(),
-            Box::new(move || Ok(Box::new(encoder_factory()?))),
+            VideoRenditionEntry {
+                config,
+                factory: Box::new(move || Ok(Box::new(encoder_factory()?))),
+            },
         );
     }
 
     pub fn available_renditions(&self) -> Result<BTreeMap<String, VideoConfig>> {
         let mut renditions = BTreeMap::new();
-        for (name, make_encoder) in self.renditions.iter() {
-            // We need to create the encoder to get the config, even though we drop it
-            // again (it will be created on demand). Not ideal, but works for now.
-            let config = make_encoder()?.config();
-            renditions.insert(name.clone(), config);
+        for (name, entry) in self.renditions.iter() {
+            renditions.insert(name.clone(), entry.config.clone());
         }
         Ok(renditions)
     }
@@ -475,11 +507,11 @@ impl VideoRenditions {
         name: &str,
         producer: TrackProducer,
     ) -> Result<VideoEncoderPipeline> {
-        let make_encoder = self
+        let entry = self
             .renditions
             .get(name)
             .context("rendition not available")?;
-        let encoder = make_encoder()?;
+        let encoder = (entry.factory)()?;
         let sink = MoqPacketSink::new(producer);
         Ok(VideoEncoderPipeline::new(
             self.source.clone(),

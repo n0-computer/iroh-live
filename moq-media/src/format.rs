@@ -391,6 +391,19 @@ pub struct PlaybackConfig {
     pub quality: Quality,
 }
 
+/// H.264 NAL unit framing format.
+///
+/// Controls whether the encoder outputs Annex B start codes (`0x00000001`)
+/// or length-prefixed (avcC-style, 4-byte big-endian) NAL units.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NalFormat {
+    /// Annex B start codes. SPS/PPS are inline in keyframes.
+    #[default]
+    AnnexB,
+    /// 4-byte length-prefixed NALs (ISO 14496-15 / avcC style).
+    Avcc,
+}
+
 /// Configuration for creating a video encoder.
 ///
 /// Construct from a [`VideoPreset`] via [`from_preset`](Self::from_preset),
@@ -413,6 +426,8 @@ pub struct VideoEncoderConfig {
     /// Target bitrate in bits per second.
     /// `None` uses a codec-specific default based on resolution and framerate.
     pub bitrate: Option<u64>,
+    /// H.264 NAL framing format. Ignored by non-H.264 codecs.
+    pub(crate) nal_format: NalFormat,
 }
 
 impl VideoEncoderConfig {
@@ -424,6 +439,7 @@ impl VideoEncoderConfig {
             height,
             framerate: preset.fps(),
             bitrate: None,
+            nal_format: NalFormat::default(),
         }
     }
 
