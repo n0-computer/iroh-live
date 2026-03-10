@@ -301,7 +301,7 @@ impl DmaBufImporter {
             let memory_type_index = self
                 .find_memory_type(mem_reqs.memory_type_bits, vk::MemoryPropertyFlags::empty())
                 .ok_or_else(|| {
-                    unsafe { libc::close(fd) };
+                    libc::close(fd);
                     self.device.destroy_image(image, None);
                     anyhow::anyhow!("no suitable memory type for NV12 image")
                 })?;
@@ -340,8 +340,8 @@ impl DmaBufImporter {
         &self,
         wgpu_device: &wgpu::Device,
         nv12_image: vk::Image,
-        coded_width: u32,
-        coded_height: u32,
+        _coded_width: u32,
+        _coded_height: u32,
         display_width: u32,
         display_height: u32,
     ) -> anyhow::Result<ImportedNv12Frame> {
