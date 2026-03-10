@@ -94,7 +94,8 @@ impl AudioDecoder for OpusAudioDecoder {
         if self.channel_count == self.target_channel_count {
             self.samples = resampled;
         } else {
-            self.samples = convert_channels(&resampled, self.channel_count, self.target_channel_count);
+            self.samples =
+                convert_channels(&resampled, self.channel_count, self.target_channel_count);
         }
 
         Ok(())
