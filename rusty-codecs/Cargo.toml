@@ -1,0 +1,55 @@
+[package]
+name = "rusty-codecs"
+version = "0.1.0"
+edition = "2024"
+description = "Audio and video codec implementations: encoding, decoding, and format conversion"
+authors = ["Franz Heinzmann <frando@n0.computer>"]
+repository = "https://github.com/n0-computer/iroh-live"
+license = "MIT OR Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = "1.0.100"
+buf-list = "1.1"
+bytes = "1.11.0"
+derive_more = { version = "2.0.1", features = ["display", "debug", "eq", "deref"] }
+hang = "0.15"
+image = { version = "0.25", default-features = false }
+n0-future = "0.3.1"
+pic-scale = "0.6"
+serde = { version = "1.0.228", features = ["derive"] }
+strum = { version = "0.28", features = ["derive"] }
+tracing = "0.1.41"
+yuvutils-rs = "0.8"
+libc = "0.2"
+
+openh264 = { version = "0.9", optional = true, features = ["source"] }
+unsafe-libopus = { version = "0.2", optional = true }
+rubato = { version = "1.0", optional = true }
+audioadapter-buffers = { version = "2.0", optional = true }
+rav1e = { version = "0.8", optional = true }
+rav1d = { git = "https://github.com/memorysafety/rav1d", default-features = false, features = ["bitdepth_8", "bitdepth_16", "asm"], optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cros-codecs = { version = "0.0.6", optional = true, features = ["vaapi"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-video-toolbox = { version = "0.3", optional = true, features = ["VTCompressionSession", "VTErrors"] }
+objc2-core-media = { version = "0.3", optional = true, features = ["CMTime", "CMSampleBuffer", "CMFormatDescription", "CMBlockBuffer"] }
+objc2-core-video = { version = "0.3", optional = true, features = ["CVPixelBuffer", "CVBuffer", "CVPixelBufferPool", "CVReturn", "CVImageBuffer", "CVBase"] }
+objc2-core-foundation = { version = "0.3", optional = true, features = ["CFDictionary"] }
+objc2 = { version = "0.6", optional = true }
+
+[dev-dependencies]
+image = { version = "0.25", features = ["jpeg"] }
+rand = "0.9"
+
+[features]
+default = ["h264", "opus", "av1"]
+h264 = ["dep:openh264"]
+opus = ["dep:unsafe-libopus", "dep:rubato", "dep:audioadapter-buffers"]
+av1 = ["dep:rav1e", "dep:rav1d"]
+videotoolbox = ["dep:objc2-video-toolbox", "dep:objc2-core-media", "dep:objc2-core-video", "dep:objc2-core-foundation", "dep:objc2"]
+vaapi = ["dep:cros-codecs"]

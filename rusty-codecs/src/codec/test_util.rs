@@ -1,12 +1,26 @@
 use crate::{
-    format::{DecodeConfig, DecodedVideoFrame, MediaPacket, PixelFormat, VideoFormat, VideoFrame},
+    format::{
+        DecodeConfig, DecodedVideoFrame, EncodedFrame, MediaPacket, PixelFormat, VideoFormat,
+        VideoFrame,
+    },
     traits::{VideoDecoder, VideoEncoder},
-    util::encoded_frames_to_media_packets,
 };
 use hang::catalog::VideoConfig;
 
+/// Converts encoded frames to media packets for decoder testing.
+pub fn encoded_frames_to_media_packets(input: Vec<EncodedFrame>) -> Vec<MediaPacket> {
+    input
+        .into_iter()
+        .map(|frame| MediaPacket {
+            timestamp: frame.timestamp,
+            payload: frame.payload.into(),
+            is_keyframe: frame.is_keyframe,
+        })
+        .collect()
+}
+
 /// Create a solid-color RGBA frame.
-pub(crate) fn make_rgba_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> VideoFrame {
+pub fn make_rgba_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> VideoFrame {
     let pixel = [r, g, b, 255u8];
     let raw: Vec<u8> = pixel.repeat((w * h) as usize);
     VideoFrame {
@@ -23,7 +37,7 @@ pub(crate) fn make_rgba_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> VideoFrame
 /// Generates SMPTE-style color bars in the top 2/3 of the frame and a horizontal
 /// gradient in the bottom 1/3. A vertical stripe moves across the frame based on
 /// `frame_index`, giving inter-frame motion for P-frame encoding.
-pub(crate) fn make_test_pattern(w: u32, h: u32, frame_index: u32) -> VideoFrame {
+pub fn make_test_pattern(w: u32, h: u32, frame_index: u32) -> VideoFrame {
     let mut raw = vec![0u8; (w * h * 4) as usize];
 
     // SMPTE color bars: white, yellow, cyan, green, magenta, red, blue
@@ -81,7 +95,7 @@ pub(crate) fn make_test_pattern(w: u32, h: u32, frame_index: u32) -> VideoFrame 
 }
 
 /// Encode `n` solid-color frames with any VideoEncoder, return packets.
-pub(crate) fn video_encode(
+pub fn video_encode(
     enc: &mut (impl VideoEncoder + ?Sized),
     w: u32,
     h: u32,
@@ -105,7 +119,7 @@ pub(crate) fn video_encode(
     dead_code,
     reason = "shared test utility, not all callers always compiled"
 )]
-pub(crate) fn video_encode_pattern(
+pub fn video_encode_pattern(
     enc: &mut (impl VideoEncoder + ?Sized),
     w: u32,
     h: u32,
@@ -122,7 +136,7 @@ pub(crate) fn video_encode_pattern(
 }
 
 /// Decode all packets with any VideoDecoder type, return decoded frames.
-pub(crate) fn video_decode<D: VideoDecoder>(
+pub fn video_decode<D: VideoDecoder>(
     config: &VideoConfig,
     packets: Vec<MediaPacket>,
 ) -> Vec<DecodedVideoFrame> {
@@ -144,7 +158,7 @@ pub(crate) fn video_decode<D: VideoDecoder>(
     clippy::too_many_arguments,
     reason = "test helper with clear parameters"
 )]
-pub(crate) fn assert_video_roundtrip(
+pub fn assert_video_roundtrip(
     frames: &[DecodedVideoFrame],
     w: u32,
     h: u32,
@@ -188,12 +202,7 @@ pub(crate) fn assert_video_roundtrip(
     dead_code,
     reason = "shared test utility, not all callers always compiled"
 )]
-pub(crate) fn assert_video_not_black(
-    frames: &[DecodedVideoFrame],
-    w: u32,
-    h: u32,
-    min_frames: usize,
-) {
+pub fn assert_video_not_black(frames: &[DecodedVideoFrame], w: u32, h: u32, min_frames: usize) {
     assert!(
         frames.len() >= min_frames,
         "expected >= {min_frames} frames, got {}",

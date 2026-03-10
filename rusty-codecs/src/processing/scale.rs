@@ -6,7 +6,7 @@ use pic_scale::{ImageStore, ImageStoreMut, ResamplingFunction, Scaler as PicScal
 /// Optionally scales RGBA frames to target dimensions using bilinear filtering.
 /// If no target dimensions are set, frames pass through unchanged.
 #[derive(Debug)]
-pub(crate) struct Scaler {
+pub struct Scaler {
     target_width: Option<u32>,
     target_height: Option<u32>,
     scaler: PicScaler,
@@ -14,7 +14,7 @@ pub(crate) struct Scaler {
 
 impl Scaler {
     /// Create a new scaler. If `dims` is `None`, frames pass through unscaled.
-    pub(crate) fn new(dims: Option<(u32, u32)>) -> Self {
+    pub fn new(dims: Option<(u32, u32)>) -> Self {
         Self {
             target_width: dims.map(|(w, _)| w),
             target_height: dims.map(|(_, h)| h),
@@ -23,14 +23,14 @@ impl Scaler {
     }
 
     /// Update the target dimensions.
-    pub(crate) fn set_target_dimensions(&mut self, w: u32, h: u32) {
+    pub fn set_target_dimensions(&mut self, w: u32, h: u32) {
         self.target_width = Some(w);
         self.target_height = Some(h);
     }
 
     /// Scale an RGBA buffer. Returns `None` if no scaling is needed (pass-through).
     /// Returns `Some((scaled_data, new_w, new_h))` when scaling was performed.
-    pub(crate) fn scale_rgba(
+    pub fn scale_rgba(
         &self,
         src: &[u8],
         src_w: u32,
@@ -52,7 +52,7 @@ impl Scaler {
 
 /// Compute dimensions that fit `(src_w, src_h)` within `(max_w, max_h)`,
 /// preserving aspect ratio. Never upscales.
-pub(crate) fn fit_within(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
+pub fn fit_within(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
     if src_w <= max_w && src_h <= max_h {
         return (src_w, src_h);
     }

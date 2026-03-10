@@ -9,14 +9,14 @@ use rubato::{
 ///
 /// If input and output rates match, samples pass through without processing.
 #[derive(Debug)]
-pub(crate) struct Resampler {
+pub struct Resampler {
     inner: Option<Async<f32>>,
     channels: usize,
 }
 
 impl Resampler {
     /// Create a new resampler. If `from_rate == to_rate`, no resampling is performed.
-    pub(crate) fn new(from_rate: u32, to_rate: u32, channels: u32) -> Result<Self> {
+    pub fn new(from_rate: u32, to_rate: u32, channels: u32) -> Result<Self> {
         let channels = channels as usize;
         let inner = if from_rate == to_rate {
             None
@@ -44,7 +44,7 @@ impl Resampler {
 
     /// Resample interleaved f32 samples. Returns resampled interleaved data.
     /// If rates match, returns a copy of the input.
-    pub(crate) fn process(&mut self, input: &[f32]) -> Result<Vec<f32>> {
+    pub fn process(&mut self, input: &[f32]) -> Result<Vec<f32>> {
         let Some(resampler) = &mut self.inner else {
             return Ok(input.to_vec());
         };

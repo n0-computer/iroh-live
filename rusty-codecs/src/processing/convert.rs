@@ -9,20 +9,20 @@ use crate::format::PixelFormat;
 
 /// YUV 4:2:0 planar image data.
 #[derive(Debug)]
-pub(crate) struct YuvData {
-    pub(crate) y: Vec<u8>,
-    pub(crate) u: Vec<u8>,
-    pub(crate) v: Vec<u8>,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-    pub(crate) y_stride: u32,
-    pub(crate) u_stride: u32,
-    pub(crate) v_stride: u32,
+pub struct YuvData {
+    pub y: Vec<u8>,
+    pub u: Vec<u8>,
+    pub v: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub y_stride: u32,
+    pub u_stride: u32,
+    pub v_stride: u32,
 }
 
 impl YuvData {
     /// Create a black YUV 4:2:0 frame (BT.601 limited range).
-    pub(crate) fn black(width: u32, height: u32) -> Self {
+    pub fn black(width: u32, height: u32) -> Self {
         let chroma_w = width.div_ceil(2);
         let chroma_h = height.div_ceil(2);
         Self {
@@ -48,7 +48,7 @@ fn take_owned(buf: BufferStoreMut<'_, u8>) -> Vec<u8> {
 }
 
 /// Convert RGBA pixel data to YUV 4:2:0 planar format (BT.601).
-pub(crate) fn rgba_to_yuv420_data(src: &[u8], w: u32, h: u32) -> Result<YuvData> {
+pub fn rgba_to_yuv420_data(src: &[u8], w: u32, h: u32) -> Result<YuvData> {
     let mut planar = YuvPlanarImageMut::<u8>::alloc(w, h, YuvChromaSubsampling::Yuv420);
     rgba_to_yuv420(
         &mut planar,
@@ -71,7 +71,7 @@ pub(crate) fn rgba_to_yuv420_data(src: &[u8], w: u32, h: u32) -> Result<YuvData>
 }
 
 /// Convert BGRA pixel data to YUV 4:2:0 planar format (BT.601).
-pub(crate) fn bgra_to_yuv420_data(src: &[u8], w: u32, h: u32) -> Result<YuvData> {
+pub fn bgra_to_yuv420_data(src: &[u8], w: u32, h: u32) -> Result<YuvData> {
     let mut planar = YuvPlanarImageMut::<u8>::alloc(w, h, YuvChromaSubsampling::Yuv420);
     bgra_to_yuv420(
         &mut planar,
@@ -94,12 +94,7 @@ pub(crate) fn bgra_to_yuv420_data(src: &[u8], w: u32, h: u32) -> Result<YuvData>
 }
 
 /// Dispatch pixel-format-aware RGBA/BGRA → YUV 4:2:0 conversion.
-pub(crate) fn pixel_format_to_yuv420(
-    src: &[u8],
-    w: u32,
-    h: u32,
-    format: PixelFormat,
-) -> Result<YuvData> {
+pub fn pixel_format_to_yuv420(src: &[u8], w: u32, h: u32, format: PixelFormat) -> Result<YuvData> {
     match format {
         PixelFormat::Rgba => rgba_to_yuv420_data(src, w, h),
         PixelFormat::Bgra => bgra_to_yuv420_data(src, w, h),
@@ -110,7 +105,7 @@ pub(crate) fn pixel_format_to_yuv420(
 ///
 /// Avoids intermediate `YuvData` allocation — useful when plane data is
 /// already available as borrowed slices (e.g. from dav1d decoder).
-pub(crate) fn yuv420_to_rgba_from_slices(
+pub fn yuv420_to_rgba_from_slices(
     y: &[u8],
     y_stride: u32,
     u: &[u8],
@@ -143,7 +138,7 @@ pub(crate) fn yuv420_to_rgba_from_slices(
 }
 
 /// Convert YUV 4:2:0 planar slices directly to BGRA (BT.601).
-pub(crate) fn yuv420_to_bgra_from_slices(
+pub fn yuv420_to_bgra_from_slices(
     y: &[u8],
     y_stride: u32,
     u: &[u8],
@@ -177,7 +172,7 @@ pub(crate) fn yuv420_to_bgra_from_slices(
 
 /// Convert YUV 4:2:0 planar data back to RGBA format (BT.601).
 #[allow(dead_code, reason = "symmetric API; prefer yuv420_to_rgba_from_slices")]
-pub(crate) fn yuv420_to_rgba_data(yuv: &YuvData) -> Result<Vec<u8>> {
+pub fn yuv420_to_rgba_data(yuv: &YuvData) -> Result<Vec<u8>> {
     let planar = YuvPlanarImage {
         y_plane: &yuv.y,
         y_stride: yuv.y_stride,
@@ -202,7 +197,7 @@ pub(crate) fn yuv420_to_rgba_data(yuv: &YuvData) -> Result<Vec<u8>> {
 
 /// Convert YUV 4:2:0 planar data to BGRA format (BT.601).
 #[allow(dead_code, reason = "symmetric API; prefer yuv420_to_bgra_from_slices")]
-pub(crate) fn yuv420_to_bgra_data(yuv: &YuvData) -> Result<Vec<u8>> {
+pub fn yuv420_to_bgra_data(yuv: &YuvData) -> Result<Vec<u8>> {
     let planar = YuvPlanarImage {
         y_plane: &yuv.y,
         y_stride: yuv.y_stride,
@@ -231,18 +226,18 @@ pub(crate) fn yuv420_to_bgra_data(yuv: &YuvData) -> Result<Vec<u8>> {
     dead_code,
     reason = "stride/dimension fields used by future render paths"
 )]
-pub(crate) struct Nv12Data {
-    pub(crate) y: Vec<u8>,
-    pub(crate) uv: Vec<u8>,
-    pub(crate) y_stride: u32,
-    pub(crate) uv_stride: u32,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
+pub struct Nv12Data {
+    pub y: Vec<u8>,
+    pub uv: Vec<u8>,
+    pub y_stride: u32,
+    pub uv_stride: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl Nv12Data {
     /// Concatenate Y and UV planes into a single contiguous buffer.
-    pub(crate) fn into_contiguous(mut self) -> Vec<u8> {
+    pub fn into_contiguous(mut self) -> Vec<u8> {
         self.y.extend_from_slice(&self.uv);
         self.y
     }
@@ -253,7 +248,7 @@ impl Nv12Data {
     not(feature = "vaapi"),
     allow(dead_code, reason = "used by vaapi encoder")
 )]
-pub(crate) fn rgba_to_nv12_data(src: &[u8], w: u32, h: u32) -> Result<Nv12Data> {
+pub fn rgba_to_nv12_data(src: &[u8], w: u32, h: u32) -> Result<Nv12Data> {
     let mut bi = YuvBiPlanarImageMut::<u8>::alloc(w, h, YuvChromaSubsampling::Yuv420);
     rgba_to_yuv_nv12(
         &mut bi,
@@ -280,7 +275,7 @@ pub(crate) fn rgba_to_nv12_data(src: &[u8], w: u32, h: u32) -> Result<Nv12Data> 
     not(feature = "vaapi"),
     allow(dead_code, reason = "used by vaapi encoder")
 )]
-pub(crate) fn bgra_to_nv12_data(src: &[u8], w: u32, h: u32) -> Result<Nv12Data> {
+pub fn bgra_to_nv12_data(src: &[u8], w: u32, h: u32) -> Result<Nv12Data> {
     use yuvutils_rs::bgra_to_yuv_nv12;
     let mut bi = YuvBiPlanarImageMut::<u8>::alloc(w, h, YuvChromaSubsampling::Yuv420);
     bgra_to_yuv_nv12(
@@ -308,12 +303,7 @@ pub(crate) fn bgra_to_nv12_data(src: &[u8], w: u32, h: u32) -> Result<Nv12Data> 
     not(feature = "vaapi"),
     allow(dead_code, reason = "used by vaapi encoder")
 )]
-pub(crate) fn pixel_format_to_nv12(
-    src: &[u8],
-    w: u32,
-    h: u32,
-    format: PixelFormat,
-) -> Result<Nv12Data> {
+pub fn pixel_format_to_nv12(src: &[u8], w: u32, h: u32, format: PixelFormat) -> Result<Nv12Data> {
     match format {
         PixelFormat::Rgba => rgba_to_nv12_data(src, w, h),
         PixelFormat::Bgra => bgra_to_nv12_data(src, w, h),
@@ -327,7 +317,7 @@ pub(crate) fn pixel_format_to_nv12(
     not(any(feature = "vaapi", target_os = "macos")),
     allow(dead_code, reason = "used by vaapi and future vtb decoders")
 )]
-pub(crate) fn nv12_to_rgba_data(
+pub fn nv12_to_rgba_data(
     y_plane: &[u8],
     y_stride: u32,
     uv_plane: &[u8],
@@ -358,7 +348,7 @@ pub(crate) fn nv12_to_rgba_data(
 
 /// Convert NV12 bi-planar data to BGRA (BT.601 limited range).
 #[allow(dead_code, reason = "symmetric with nv12_to_rgba_data; future use")]
-pub(crate) fn nv12_to_bgra_data(
+pub fn nv12_to_bgra_data(
     y_plane: &[u8],
     y_stride: u32,
     uv_plane: &[u8],

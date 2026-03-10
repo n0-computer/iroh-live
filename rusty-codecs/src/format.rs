@@ -428,7 +428,7 @@ pub enum NalFormat {
 /// then override individual fields with the builder methods.
 ///
 /// ```
-/// # use moq_media::format::{VideoEncoderConfig, VideoPreset};
+/// # use rusty_codecs::format::{VideoEncoderConfig, VideoPreset};
 /// let config = VideoEncoderConfig::from_preset(VideoPreset::P720)
 ///     .bitrate(2_000_000)
 ///     .framerate(60);
@@ -508,7 +508,7 @@ impl VideoEncoderConfig {
 /// [`from_preset`](Self::from_preset), then override with builder methods.
 ///
 /// ```
-/// # use moq_media::format::{AudioEncoderConfig, AudioFormat, AudioPreset};
+/// # use rusty_codecs::format::{AudioEncoderConfig, AudioFormat, AudioPreset};
 /// let config = AudioEncoderConfig::from_preset(AudioFormat::stereo_48k(), AudioPreset::Hq)
 ///     .bitrate(96_000);
 /// ```

@@ -1,7 +1,4 @@
-#[cfg(any(feature = "h264", feature = "av1"))]
-pub(crate) mod convert;
+pub(crate) use rusty_codecs::processing::scale;
+
 #[cfg(feature = "capture-camera")]
 pub(crate) mod mjpg;
-#[cfg(feature = "opus")]
-pub(crate) mod resample;
-pub(crate) mod scale;

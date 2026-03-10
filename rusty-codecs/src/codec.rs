@@ -24,8 +24,7 @@ pub use vaapi::*;
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
 pub use vtb::*;
 
-#[cfg(test)]
-pub(crate) mod test_util;
+pub mod test_util;
 
 /// Available audio encoder implementations.
 #[cfg(any_audio_codec)]

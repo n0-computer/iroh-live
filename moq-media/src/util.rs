@@ -1,8 +1,5 @@
 use std::thread;
 
-#[cfg(test)]
-use crate::format::{EncodedFrame, MediaPacket};
-
 /// Spawn a named OS thread and panic if spawning fails.
 pub(crate) fn spawn_thread<F, T>(name: impl ToString, f: F) -> thread::JoinHandle<T>
 where
@@ -17,10 +14,12 @@ where
 }
 
 #[cfg(test)]
-pub(crate) fn encoded_frames_to_media_packets(input: Vec<EncodedFrame>) -> Vec<MediaPacket> {
+pub(crate) fn encoded_frames_to_media_packets(
+    input: Vec<crate::format::EncodedFrame>,
+) -> Vec<crate::format::MediaPacket> {
     input
         .into_iter()
-        .map(|frame| MediaPacket {
+        .map(|frame| crate::format::MediaPacket {
             timestamp: frame.timestamp,
             payload: frame.payload.into(),
             is_keyframe: frame.is_keyframe,
