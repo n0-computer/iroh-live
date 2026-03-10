@@ -1,9 +1,4 @@
 mod controller;
-pub use controller::{
-    CaptureConfig, PublishCaptureController, PublishOpts, PublishUpdate, PublishUpdateError,
-    StreamKind,
-};
-
 use std::{
     collections::{BTreeMap, HashMap},
     sync::{
@@ -15,15 +10,24 @@ use std::{
 };
 
 use anyhow::Context;
+pub use controller::{
+    CaptureConfig, PublishCaptureController, PublishOpts, PublishUpdate, PublishUpdateError,
+    StreamKind,
+};
 use hang::catalog::{Audio, AudioConfig, Catalog, Video, VideoConfig};
 use moq_lite::{BroadcastProducer, TrackProducer};
 use n0_error::{Result, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use tokio::sync::watch;
-
+#[cfg(any_codec)]
+use crate::codec;
+#[cfg(any_audio_codec)]
+use crate::codec::AudioCodec;
+#[cfg(any_video_codec)]
+use crate::codec::VideoCodec;
 use crate::{
     format::{
         AudioEncoderConfig, AudioFormat, AudioPreset, DecodeConfig, VideoEncoderConfig,
@@ -38,15 +42,6 @@ use crate::{
     transport::MoqPacketSink,
     util::spawn_thread,
 };
-
-#[cfg(any_audio_codec)]
-use crate::codec::AudioCodec;
-
-#[cfg(any_video_codec)]
-use crate::codec::VideoCodec;
-
-#[cfg(any_codec)]
-use crate::codec;
 
 type MakeAudioEncoder = Box<dyn Fn() -> Result<Box<dyn AudioEncoder>> + Send + 'static>;
 type MakeVideoEncoder = Box<dyn Fn() -> Result<Box<dyn VideoEncoder>> + Send + 'static>;
@@ -648,9 +643,11 @@ impl VideoSource for SharedVideoSource {
 #[cfg(all(test, any_codec))]
 mod tests {
     use super::*;
-    use crate::codec::{VideoCodec, test_util::make_test_pattern};
-    use crate::format::{PixelFormat, VideoFormat, VideoFrame, VideoPreset};
-    use crate::traits::{VideoEncoderFactory, VideoSource};
+    use crate::{
+        codec::{VideoCodec, test_util::make_test_pattern},
+        format::{PixelFormat, VideoFormat, VideoFrame, VideoPreset},
+        traits::{VideoEncoderFactory, VideoSource},
+    };
 
     /// A video source for testing that produces synthetic test pattern frames.
     struct TestVideoSource {

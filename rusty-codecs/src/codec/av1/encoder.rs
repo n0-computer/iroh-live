@@ -1,10 +1,10 @@
 use std::time::Duration;
 
-use crate::config::{AV1, VideoCodec, VideoConfig};
 use anyhow::{Result, bail};
 use rav1e::prelude::*;
 
 use crate::{
+    config::{AV1, VideoCodec, VideoConfig},
     format::{EncodedFrame, VideoEncoderConfig, VideoFrame},
     processing::convert::pixel_format_to_yuv420,
     traits::{VideoEncoder, VideoEncoderFactory},
@@ -204,9 +204,11 @@ impl VideoEncoder for Av1Encoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::test_util::make_rgba_frame;
-    use crate::format::VideoPreset;
-    use crate::traits::{VideoEncoder, VideoEncoderFactory};
+    use crate::{
+        codec::test_util::make_rgba_frame,
+        format::VideoPreset,
+        traits::{VideoEncoder, VideoEncoderFactory},
+    };
 
     /// rav1e buffers frames for look-ahead even in low-latency mode.
     /// Helper to send frames and collect all resulting packets.

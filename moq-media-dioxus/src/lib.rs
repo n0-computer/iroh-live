@@ -18,18 +18,15 @@
 //! rsx!(canvas { "src": paint_source_id })
 //! ```
 
-pub use anyrender_vello;
-pub use dioxus_native;
-pub use moq_media;
-pub use wgpu_context;
-
 use std::sync::{Arc, Mutex};
 
+pub use anyrender_vello;
 use anyrender_vello::{CustomPaintCtx, CustomPaintSource, TextureHandle};
-use dioxus_native::prelude::dioxus_core::use_hook;
-use dioxus_native::use_wgpu;
-use moq_media::render::WgpuVideoRenderer;
-use moq_media::subscribe::WatchTrack;
+pub use dioxus_native;
+use dioxus_native::{prelude::dioxus_core::use_hook, use_wgpu};
+pub use moq_media;
+use moq_media::{render::WgpuVideoRenderer, subscribe::WatchTrack};
+pub use wgpu_context;
 use wgpu_context::DeviceHandle;
 
 /// Dioxus hook that creates a video renderer and returns a handle for setting tracks.

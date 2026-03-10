@@ -18,22 +18,23 @@ mod patterns;
 #[cfg(feature = "h264")]
 mod vectors;
 
-use crate::codec::test_util::encoded_frames_to_media_packets;
-use crate::config::{AudioConfig, VideoConfig};
-use crate::format::{
-    AudioFormat, AudioPreset, DecodeConfig, DecodedVideoFrame, DecoderBackend, EncodedFrame,
-    MediaPacket, VideoFrame, VideoPreset,
-};
-use crate::traits::{
-    AudioDecoder, AudioEncoder, AudioEncoderFactory, Decoders, VideoDecoder, VideoEncoder,
-    VideoEncoderFactory,
-};
-use metrics::{FrameMetrics, compute_metrics};
-use std::f32::consts::PI;
-use std::time::Duration;
+use std::{f32::consts::PI, time::Duration};
 
-use super::test_util::video_encode;
-use super::*;
+use metrics::{FrameMetrics, compute_metrics};
+
+use super::{test_util::video_encode, *};
+use crate::{
+    codec::test_util::encoded_frames_to_media_packets,
+    config::{AudioConfig, VideoConfig},
+    format::{
+        AudioFormat, AudioPreset, DecodeConfig, DecodedVideoFrame, DecoderBackend, EncodedFrame,
+        MediaPacket, VideoFrame, VideoPreset,
+    },
+    traits::{
+        AudioDecoder, AudioEncoder, AudioEncoderFactory, Decoders, VideoDecoder, VideoEncoder,
+        VideoEncoderFactory,
+    },
+};
 
 /// Default timeout for single-combination codec tests.
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);

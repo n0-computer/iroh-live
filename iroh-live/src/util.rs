@@ -1,5 +1,7 @@
-use std::thread;
-use std::time::{Duration, Instant};
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
 
 use byte_unit::{Bit, UnitType};
 use iroh::endpoint::{ConnectionStats, PathInfoList};

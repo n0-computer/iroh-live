@@ -12,22 +12,26 @@
 //! cargo run -p moq-media --example viewer --features "h264,vaapi,wgpu"
 //! ```
 
-use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 use eframe::egui;
 #[cfg(feature = "capture-camera")]
 use moq_media::capture::CameraCapturer;
 #[cfg(feature = "capture-screen")]
 use moq_media::capture::ScreenCapturer;
-use moq_media::codec::{DynamicVideoDecoder, VideoCodec};
-use moq_media::format::{
-    DecodeConfig, DecodedVideoFrame, DecoderBackend, PixelFormat, VideoFormat, VideoFrame,
-    VideoPreset,
+use moq_media::{
+    codec::{DynamicVideoDecoder, VideoCodec},
+    format::{
+        DecodeConfig, DecodedVideoFrame, DecoderBackend, PixelFormat, VideoFormat, VideoFrame,
+        VideoPreset,
+    },
+    pipeline::{VideoDecoderPipeline, VideoEncoderPipeline},
+    traits::{VideoEncoder, VideoSource},
+    transport::media_pipe,
 };
-use moq_media::pipeline::{VideoDecoderPipeline, VideoEncoderPipeline};
-use moq_media::traits::{VideoEncoder, VideoSource};
-use moq_media::transport::media_pipe;
 #[cfg(feature = "wgpu")]
 use moq_media_egui::{EguiVideoRenderer, create_egui_wgpu_config};
 use strum::VariantArray;

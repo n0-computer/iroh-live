@@ -11,10 +11,6 @@ pub(crate) mod vaapi;
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
 pub(crate) mod vtb;
 
-#[cfg(feature = "h264")]
-pub use self::h264::*;
-#[cfg(feature = "opus")]
-pub use self::opus::*;
 #[cfg(feature = "av1")]
 pub use av1::*;
 #[cfg(any_codec)]
@@ -23,6 +19,11 @@ pub use dynamic::*;
 pub use vaapi::*;
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
 pub use vtb::*;
+
+#[cfg(feature = "h264")]
+pub use self::h264::*;
+#[cfg(feature = "opus")]
+pub use self::opus::*;
 
 pub mod test_util;
 

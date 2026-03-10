@@ -1,10 +1,12 @@
-use crate::config::{AudioConfig, VideoConfig};
 use anyhow::Result;
 use n0_future::boxed::BoxFuture;
 
-use crate::format::{
-    AudioEncoderConfig, AudioFormat, AudioPreset, DecodeConfig, DecodedVideoFrame, EncodedFrame,
-    MediaPacket, VideoEncoderConfig, VideoFormat, VideoFrame, VideoPreset,
+use crate::{
+    config::{AudioConfig, VideoConfig},
+    format::{
+        AudioEncoderConfig, AudioFormat, AudioPreset, DecodeConfig, DecodedVideoFrame,
+        EncodedFrame, MediaPacket, VideoEncoderConfig, VideoFormat, VideoFrame, VideoPreset,
+    },
 };
 
 /// Pairs an [`AudioDecoder`] and [`VideoDecoder`] implementation for use by

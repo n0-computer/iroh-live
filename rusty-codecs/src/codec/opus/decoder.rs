@@ -1,10 +1,12 @@
-use crate::config::{AudioCodec, AudioConfig};
 use anyhow::{Result, bail};
 use unsafe_libopus::{self as opus, OPUS_OK, OpusDecoder as RawOpusDecoder};
 
-use crate::format::{AudioFormat, MediaPacket};
-use crate::processing::resample::Resampler;
-use crate::traits::AudioDecoder;
+use crate::{
+    config::{AudioCodec, AudioConfig},
+    format::{AudioFormat, MediaPacket},
+    processing::resample::Resampler,
+    traits::AudioDecoder,
+};
 
 /// Maximum Opus frame size: 120ms at 48kHz = 5760 samples per channel.
 const MAX_FRAME_SIZE: usize = 5760;
@@ -179,12 +181,10 @@ fn convert_channels_into(samples: &[f32], from_ch: u32, to_ch: u32, out: &mut Ve
 mod tests {
     use std::f32::consts::PI;
 
-    use crate::config::AudioCodec;
-
     use super::*;
     use crate::{
-        codec::opus::encoder::OpusEncoder,
-        codec::test_util::encoded_frames_to_media_packets,
+        codec::{opus::encoder::OpusEncoder, test_util::encoded_frames_to_media_packets},
+        config::AudioCodec,
         format::AudioPreset,
         traits::{AudioEncoder, AudioEncoderFactory},
     };

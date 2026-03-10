@@ -14,11 +14,14 @@
 //! | `seq_32x32_main_3f.h264` | Main | 3 (I+P) | 32×32 | Solid yellow |
 //! | `seq_64x64_pattern_5f.h264` | Baseline | 5 (I+P) | 64×64 | Test pattern |
 
-use crate::codec::h264::annexb;
-use crate::config::{H264, VideoCodec, VideoConfig};
-use crate::format::{DecodeConfig, DecoderBackend, MediaPacket, PixelFormat};
-use crate::traits::VideoDecoder;
 use std::time::Duration;
+
+use crate::{
+    codec::h264::annexb,
+    config::{H264, VideoCodec, VideoConfig},
+    format::{DecodeConfig, DecoderBackend, MediaPacket, PixelFormat},
+    traits::VideoDecoder,
+};
 
 // Embed test vectors at compile time.
 const IDR_16X16_BLUE: &[u8] = include_bytes!("vectors/idr_16x16_blue.h264");

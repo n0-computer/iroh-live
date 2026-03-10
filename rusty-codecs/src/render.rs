@@ -9,13 +9,12 @@
 #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
 pub mod dmabuf_import;
 
-use std::fmt;
-use std::iter;
-
-use crate::format::{CpuFrame, DecodedVideoFrame, FrameBuffer, Nv12Planes};
+use std::{fmt, iter};
 
 #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
 pub use dmabuf_import::create_device_with_dmabuf_extensions;
+
+use crate::format::{CpuFrame, DecodedVideoFrame, FrameBuffer, Nv12Planes};
 
 /// Renders decoded video frames to a wgpu RGBA texture.
 ///

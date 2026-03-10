@@ -1,7 +1,7 @@
-use crate::config::{AudioCodec, AudioConfig, VideoCodec, VideoConfig};
 use anyhow::{Result, bail};
 
 use crate::{
+    config::{AudioCodec, AudioConfig, VideoCodec, VideoConfig},
     format::{AudioFormat, DecodeConfig, DecodedVideoFrame, MediaPacket},
     traits::{AudioDecoder, Decoders, VideoDecoder},
 };

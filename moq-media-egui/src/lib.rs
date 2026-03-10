@@ -29,11 +29,9 @@ use std::fmt;
 pub use egui_wgpu;
 pub use epaint;
 pub use moq_media;
-
-use moq_media::format::DecodedVideoFrame;
-use moq_media::render::WgpuVideoRenderer;
 #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
 use moq_media::render::create_device_with_dmabuf_extensions;
+use moq_media::{format::DecodedVideoFrame, render::WgpuVideoRenderer};
 
 /// Convenience renderer that integrates [`WgpuVideoRenderer`] with egui.
 ///

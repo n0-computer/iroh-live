@@ -1,6 +1,8 @@
-use std::future::Future;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::{
+    future::Future,
+    thread,
+    time::{Duration, Instant},
+};
 
 use anyhow::Result;
 use n0_future::task::AbortOnDropHandle;
@@ -10,16 +12,16 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, info_span, trace, warn};
 
-use crate::format::{
-    AudioFormat, DecodeConfig, DecodedVideoFrame, MediaPacket, VideoFormat, VideoFrame,
+use crate::{
+    format::{AudioFormat, DecodeConfig, DecodedVideoFrame, MediaPacket, VideoFormat, VideoFrame},
+    processing::scale::{Scaler, fit_within},
+    traits::{
+        AudioDecoder, AudioEncoder, AudioSink, AudioSinkHandle, AudioSource, AudioStreamFactory,
+        VideoDecoder, VideoEncoder, VideoSource,
+    },
+    transport::{PacketSink, PacketSource},
+    util::spawn_thread,
 };
-use crate::processing::scale::{Scaler, fit_within};
-use crate::traits::{
-    AudioDecoder, AudioEncoder, AudioSink, AudioSinkHandle, AudioSource, AudioStreamFactory,
-    VideoDecoder, VideoEncoder, VideoSource,
-};
-use crate::transport::{PacketSink, PacketSource};
-use crate::util::spawn_thread;
 
 /// Forwards packets from an async [`PacketSource`] into an mpsc channel.
 pub(crate) async fn forward_packets(
@@ -747,12 +749,13 @@ impl Drop for AudioEncoderPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::test_util::make_rgba_frame;
-    use crate::codec::{H264Encoder, H264VideoDecoder};
-    use crate::format::VideoPreset;
-    use crate::traits::{VideoEncoder, VideoEncoderFactory};
-    use crate::transport::media_pipe;
-    use crate::util::encoded_frames_to_media_packets;
+    use crate::{
+        codec::{H264Encoder, H264VideoDecoder, test_util::make_rgba_frame},
+        format::VideoPreset,
+        traits::{VideoEncoder, VideoEncoderFactory},
+        transport::media_pipe,
+        util::encoded_frames_to_media_packets,
+    };
 
     fn encode_h264_packets(
         w: u32,

@@ -1,5 +1,4 @@
-use std::fmt;
-use std::future::Future;
+use std::{fmt, future::Future};
 
 use anyhow::Result;
 use hang::container::OrderedProducer;
