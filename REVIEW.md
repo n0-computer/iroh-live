@@ -40,7 +40,6 @@
 - [ ] **D2a: Dual NAL format support (avcC / Annex B)** — decoders and encoders should handle both length-prefixed (avcC, `description` present) and Annex B inline (`description` absent) H.264 transport modes. See details in Design Issues section below.
 - [ ] **D3: Encoder config by instantiation** — creates/drops encoders just for config (`publish.rs:363,475`)
 - [ ] **D4: SharedVideoSource park/unpark fragile** — replace with condvar or select (`publish.rs:520-586`)
-- [ ] **D5: `.expect("poisoned")` throughout** — use `parking_lot::Mutex` (`publish.rs` 8x, `controller.rs` 5x)
 - [ ] **D6: `apply_audio` fire-and-forget task** — no handle, caller can't observe failure (`controller.rs:281-293`)
 - [ ] **D7: No backpressure encoder→transport** — frames produced at source rate regardless (`publish.rs:706-732`)
 - [ ] **D8: BGRA pixel swap code still in `from_video_source`** (`subscribe.rs:582-586`); extracted in pipeline decode_loop but not in video source path
@@ -263,12 +262,6 @@ The source thread uses `thread::park()/unpark()` for lifecycle management. This 
 - Race between cancellation check and park: if `shutdown.cancel()` fires between `shutdown.is_cancelled()` check and `thread::park()`, the thread hangs until explicit `unpark()` in `VideoRenditions::drop()`
 
 Currently safe due to the `unpark()` in `drop()`, but brittle. A condvar or select-style mechanism would be clearer.
-
-### D5: Mutex poisoning — `.expect("poisoned")` throughout
-
-**Files**: `publish.rs` (8 occurrences), `controller.rs:136,202,275,290,295`
-
-If any code panics while holding the mutex, all subsequent `.expect("poisoned")` calls cascade into panics. Consider using `parking_lot::Mutex` (no poisoning) or handling the PoisonError.
 
 ### D6: `PublishCaptureController::apply_audio` spawns fire-and-forget tokio task
 
