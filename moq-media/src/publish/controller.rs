@@ -1,6 +1,8 @@
-use std::{error::Error, fmt, sync::Arc};
-
-use parking_lot::Mutex;
+use std::{
+    error::Error,
+    fmt,
+    sync::{Arc, Mutex},
+};
 
 use moq_lite::BroadcastProducer;
 use n0_error::{AnyError, Result};
@@ -131,7 +133,7 @@ impl PublishCaptureController {
     /// Producer for the main broadcast (camera video + audio).
     /// Grab this once at creation and connect to your transport layer.
     pub fn camera_producer(&self) -> BroadcastProducer {
-        self.camera.lock().producer()
+        self.camera.lock().expect("poisoned").producer()
     }
 
     /// Current publish options (snapshot).
@@ -197,7 +199,7 @@ impl PublishCaptureController {
         let index_changed = enable && cur.camera && capture.camera_index != self.prev.camera_index;
         let codec_changed = enable && cur.camera && capture.video_codec != self.prev.video_codec;
         if cur.camera != enable || index_changed || codec_changed {
-            let mut camera = self.camera.lock();
+            let mut camera = self.camera.lock().expect("poisoned");
             if enable {
                 let capturer = match capture.camera_index {
                     Some(index) => CameraCapturer::with_index(index)?,
@@ -270,7 +272,7 @@ impl PublishCaptureController {
         if cur.audio != enable || device_changed {
             if device_changed {
                 // Disable current audio first before re-enabling with the new device.
-                self.camera.lock().set_audio(None)?;
+                self.camera.lock().expect("poisoned").set_audio(None)?;
             }
             if enable {
                 let audio_ctx = self.audio_ctx.clone();
@@ -285,12 +287,12 @@ impl PublishCaptureController {
                         Ok(mic) => mic,
                     };
                     let renditions = AudioRenditions::new(mic, audio_codec, [AudioPreset::Hq]);
-                    if let Err(err) = camera.lock().set_audio(Some(renditions)) {
+                    if let Err(err) = camera.lock().expect("poisoned").set_audio(Some(renditions)) {
                         tracing::warn!("failed to set audio: {err:#}");
                     }
                 });
             } else {
-                self.camera.lock().set_audio(None)?;
+                self.camera.lock().expect("poisoned").set_audio(None)?;
             }
         }
         Ok(())

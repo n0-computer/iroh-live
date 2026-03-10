@@ -5105,7 +5105,6 @@ dependencies = [
  "objc2-core-video",
  "objc2-video-toolbox",
  "openh264",
- "parking_lot",
  "pic-scale",
  "pollster",
  "postcard",
