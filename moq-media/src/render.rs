@@ -29,6 +29,8 @@ pub struct WgpuVideoRenderer {
     nv12_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     output_texture: Option<OutputTexture>,
+    /// Reusable NV12 plane textures (Y=R8, UV=RG8) to avoid per-frame allocation.
+    nv12_planes: Option<Nv12PlaneTextures>,
     #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
     dmabuf_importer: Option<dmabuf_import::DmaBufImporter>,
     /// Consecutive DMA-BUF import failures. After MAX_DMABUF_FAILURES,
@@ -40,6 +42,15 @@ pub struct WgpuVideoRenderer {
 struct OutputTexture {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
+    width: u32,
+    height: u32,
+}
+
+struct Nv12PlaneTextures {
+    y_texture: wgpu::Texture,
+    y_view: wgpu::TextureView,
+    uv_texture: wgpu::Texture,
+    uv_view: wgpu::TextureView,
     width: u32,
     height: u32,
 }
@@ -139,6 +150,7 @@ impl WgpuVideoRenderer {
             nv12_bind_group_layout: bind_group_layout,
             sampler,
             output_texture: None,
+            nv12_planes: None,
             #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
             dmabuf_importer,
             #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
@@ -258,24 +270,13 @@ impl WgpuVideoRenderer {
         let w = planes.width;
         let h = planes.height;
         self.ensure_output_texture(w, h);
+        self.ensure_nv12_planes(w, h);
 
-        // Create Y texture (R8Unorm, full resolution)
-        let y_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("nv12_y"),
-            size: wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
+        let nv12 = self.nv12_planes.as_ref().unwrap();
+
+        // Upload Y plane data
         self.queue.write_texture(
-            y_texture.as_image_copy(),
+            nv12.y_texture.as_image_copy(),
             &planes.y_data,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
@@ -289,25 +290,11 @@ impl WgpuVideoRenderer {
             },
         );
 
-        // Create UV texture (Rg8Unorm, half height)
+        // Upload UV plane data
         let uv_w = w / 2;
         let uv_h = h.div_ceil(2);
-        let uv_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("nv12_uv"),
-            size: wgpu::Extent3d {
-                width: uv_w,
-                height: uv_h,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rg8Unorm,
-            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
         self.queue.write_texture(
-            uv_texture.as_image_copy(),
+            nv12.uv_texture.as_image_copy(),
             &planes.uv_data,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
@@ -321,20 +308,17 @@ impl WgpuVideoRenderer {
             },
         );
 
-        // Bind Y/UV textures + sampler
-        let y_view = y_texture.create_view(&Default::default());
-        let uv_view = uv_texture.create_view(&Default::default());
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("nv12_bind_group"),
             layout: &self.nv12_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&y_view),
+                    resource: wgpu::BindingResource::TextureView(&nv12.y_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&uv_view),
+                    resource: wgpu::BindingResource::TextureView(&nv12.uv_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -420,6 +404,59 @@ impl WgpuVideoRenderer {
     /// Get a reference to the queue.
     pub fn queue(&self) -> &wgpu::Queue {
         &self.queue
+    }
+
+    fn ensure_nv12_planes(&mut self, width: u32, height: u32) {
+        if let Some(ref nv12) = self.nv12_planes
+            && nv12.width == width
+            && nv12.height == height
+        {
+            return;
+        }
+
+        let uv_w = width / 2;
+        let uv_h = height.div_ceil(2);
+
+        let y_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("nv12_y"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let y_view = y_texture.create_view(&Default::default());
+
+        let uv_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("nv12_uv"),
+            size: wgpu::Extent3d {
+                width: uv_w,
+                height: uv_h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rg8Unorm,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let uv_view = uv_texture.create_view(&Default::default());
+
+        self.nv12_planes = Some(Nv12PlaneTextures {
+            y_texture,
+            y_view,
+            uv_texture,
+            uv_view,
+            width,
+            height,
+        });
     }
 
     fn ensure_output_texture(&mut self, width: u32, height: u32) {

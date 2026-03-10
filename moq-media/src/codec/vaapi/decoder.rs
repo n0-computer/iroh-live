@@ -1,6 +1,5 @@
 use std::collections::VecDeque;
 use std::fs::File;
-
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -241,8 +240,7 @@ fn extract_dma_buf_info(
 }
 
 /// Allocate a `GenericDmaVideoFrame` by creating a VA surface and exporting
-/// its DMA-BUF file descriptors. This avoids GBM, which fails on some GPUs
-/// (e.g. Intel Arc) with `GBM_BO_USE_HW_VIDEO_DECODER`.
+/// its DMA-BUF file descriptors.
 ///
 /// Opens a temporary VA Display connection for surface creation. The exported
 /// DMA-BUF FDs are GPU-global and survive after the Display is dropped.
@@ -258,7 +256,7 @@ fn alloc_va_dma_frame(stream_info: &StreamInfo) -> GenericDmaVideoFrame {
             Some(VA_FOURCC_NV12),
             w,
             h,
-            Some(UsageHint::USAGE_HINT_DECODER),
+            Some(UsageHint::USAGE_HINT_DECODER | UsageHint::USAGE_HINT_EXPORT),
             vec![()],
         )
         .expect("failed to create VA surface for decoder frame pool");
@@ -397,9 +395,7 @@ impl VideoDecoder for VaapiDecoder {
             let _test_frame = alloc_va_dma_frame(&test_info);
         }
 
-        let framepool = Arc::new(Mutex::new(FramePool::new(
-            move |stream_info: &StreamInfo| alloc_va_dma_frame(stream_info),
-        )));
+        let framepool = Arc::new(Mutex::new(FramePool::new(alloc_va_dma_frame)));
 
         let mut this = Self {
             decoder,

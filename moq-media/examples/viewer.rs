@@ -856,8 +856,45 @@ fn main() -> eframe::Result<()> {
     tracing_subscriber::fmt::init();
 
     let native_options = if cfg!(feature = "wgpu") {
+        #[cfg(feature = "dmabuf-import")]
+        let wgpu_config = {
+            // Create a Vulkan device with VK_EXT_image_drm_format_modifier
+            // for zero-copy DMA-BUF import from VAAPI decoder.
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::VULKAN,
+                ..Default::default()
+            });
+            let adapter =
+                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    ..Default::default()
+                }))
+                .expect("no suitable wgpu adapter");
+
+            let (device, queue) = moq_media::render::create_device_with_dmabuf_extensions(&adapter)
+                .unwrap_or_else(|e| {
+                    eprintln!("DMA-BUF device creation failed ({e}), using default");
+                    pollster::block_on(adapter.request_device(&Default::default()))
+                        .expect("wgpu device creation failed")
+                });
+
+            egui_wgpu::WgpuConfiguration {
+                wgpu_setup: egui_wgpu::WgpuSetup::Existing(egui_wgpu::WgpuSetupExisting {
+                    instance,
+                    adapter,
+                    device,
+                    queue,
+                }),
+                ..Default::default()
+            }
+        };
+
+        #[cfg(not(feature = "dmabuf-import"))]
+        let wgpu_config = egui_wgpu::WgpuConfiguration::default();
+
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
+            wgpu_options: wgpu_config,
             ..Default::default()
         }
     } else {
