@@ -133,7 +133,6 @@ impl VideoDecoderPipeline {
         decode_config: &DecodeConfig,
     ) -> Result<Self> {
         let shutdown = CancellationToken::new();
-        let span = info_span!("videodec", %name);
         let (packet_tx, packet_rx) = mpsc::channel(32);
         let (frame_tx, frame_rx) = mpsc::channel(32);
         let viewport = n0_watcher::Watchable::new((1u32, 1u32));
@@ -142,14 +141,15 @@ impl VideoDecoderPipeline {
         let decoder = D::new(config, decode_config)?;
         let decoder_name = decoder.name().to_string();
         let target_pixel_format = decode_config.pixel_format;
+        let span = info_span!("videodec", %name, decoder = %decoder_name);
 
         let thread_name = format!("vdec-{name}");
-        let decoder_name_for_handle = decoder_name.clone();
+        let decoder_name_for_handle = decoder_name;
         let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             move || {
                 let _guard = span.enter();
-                info!(decoder = %decoder_name, "pipeline decoder thread start");
+                info!("decode start");
                 if let Err(err) = decode_loop(
                     &shutdown,
                     packet_rx,
@@ -158,9 +158,9 @@ impl VideoDecoderPipeline {
                     decoder,
                     target_pixel_format,
                 ) {
-                    error!("pipeline decoder failed: {err:#}");
+                    error!("decoder failed: {err:#}");
                 }
-                info!("pipeline decoder thread stop");
+                info!("decode stop");
                 shutdown.cancel();
             }
         });
@@ -216,7 +216,7 @@ impl VideoEncoderPipeline {
     ) -> Self {
         let shutdown = CancellationToken::new();
         let thread_name = format!("venc-{:<4}-{:<4}", source.name(), encoder.name());
-        let span = info_span!("videoenc", source = source.name(), encoder = encoder.name());
+        let span = info_span!("videoenc", source = %source.name(), encoder = %encoder.name());
         let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             move || {
@@ -228,11 +228,8 @@ impl VideoEncoderPipeline {
                 let mut first = true;
                 let format = source.format();
                 let enc_config = encoder.config();
-                info!(
-                    src_format = ?format,
-                    dst_config = ?enc_config,
-                    "video encoder thread start"
-                );
+                info!(src_format = ?format, "encode start");
+                debug!(dst_config = ?enc_config);
                 // Set up scaler to downscale source frames to encoder dimensions.
                 let scaler_dims = match (enc_config.coded_width, enc_config.coded_height) {
                     (Some(w), Some(h)) => {
@@ -244,10 +241,10 @@ impl VideoEncoderPipeline {
                 let scaler = Scaler::new(scaler_dims);
                 let framerate = enc_config.framerate.unwrap_or(30.0);
                 let interval = Duration::from_secs_f64(1. / framerate);
-                loop {
+                let mut sink_closed = false;
+                'encode: loop {
                     let start = Instant::now();
                     if shutdown.is_cancelled() {
-                        info!("stop video encoder: cancelled");
                         break;
                     }
                     let frame = match source.pop_frame() {
@@ -277,37 +274,40 @@ impl VideoEncoderPipeline {
                             }
                         };
                         if let Err(err) = encoder.push_frame(frame) {
-                            error!("video encoder push_frame failed: {err:#}");
+                            error!("encoder push_frame failed: {err:#}");
                             break;
                         };
                         loop {
                             match encoder.pop_packet() {
                                 Ok(Some(pkt)) => {
                                     if first && !pkt.is_keyframe {
-                                        warn!("ignoring frame: waiting for first keyframe");
+                                        debug!("ignoring frame: waiting for first keyframe");
                                         continue;
                                     }
                                     first = false;
                                     if let Err(err) = sink.write(pkt) {
-                                        error!("failed to write video packet: {err:#}");
-                                        break;
+                                        debug!("sink closed: {err:#}");
+                                        sink_closed = true;
+                                        break 'encode;
                                     }
                                 }
                                 Ok(None) => break,
                                 Err(err) => {
-                                    error!("video encoder pop_packet failed: {err:#}");
-                                    break;
+                                    error!("encoder pop_packet failed: {err:#}");
+                                    break 'encode;
                                 }
                             }
                         }
                     }
                     thread::sleep(interval.saturating_sub(start.elapsed()));
                 }
-                sink.finish().ok();
+                if !sink_closed {
+                    sink.finish().ok();
+                }
                 if let Err(err) = source.stop() {
                     warn!("video source failed to stop: {err:#}");
                 }
-                info!("video encoder thread stop");
+                info!("encode stop");
             }
         });
 
@@ -468,25 +468,21 @@ impl AudioDecoderPipeline {
     ) -> Result<Self> {
         let shutdown = CancellationToken::new();
         let span = info_span!("audiodec", %name);
-        let output_format = {
-            let _guard = span.enter();
-            let output_format = sink.format()?;
-            info!(?config, "audio decoder start");
-            output_format
-        };
+        let output_format = sink.format()?;
         let decoder = D::new(config, output_format)?;
 
         let (packet_tx, packet_rx) = mpsc::channel(32);
         let thread_name = format!("adec-{}", name);
+        let config = config.clone();
         let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             move || {
                 let _guard = span.enter();
-                info!("audio decoder thread start");
+                info!(?config, "decode start");
                 if let Err(err) = audio_decode_loop(&shutdown, packet_rx, decoder, sink) {
-                    error!("audio decoder failed: {err:#}");
+                    error!("decoder failed: {err:#}");
                 }
-                info!("audio decoder thread stop");
+                info!("decode stop");
             }
         });
         let task = tokio::spawn(forward_packets(source, packet_tx));
@@ -676,12 +672,12 @@ impl AudioEncoderPipeline {
         let shutdown = CancellationToken::new();
         let name = encoder.name();
         let thread_name = format!("aenc-{:<4}", name);
-        let span = info_span!("audioenc", %name);
+        let span = info_span!("audioenc", encoder = %name);
         let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             move || {
                 let _guard = span.enter();
-                info!(config=?encoder.config(), "audio encoder thread start");
+                info!(config = ?encoder.config(), "encode start");
                 // 20ms framing to align with typical Opus config (48kHz → 960 samples/ch)
                 const INTERVAL: Duration = Duration::from_millis(20);
                 let format = source.format();
@@ -689,34 +685,32 @@ impl AudioEncoderPipeline {
                 let mut buf =
                     vec![0.0f32; samples_per_frame as usize * format.channel_count as usize];
                 let start = Instant::now();
-                for tick in 0.. {
+                let mut sink_closed = false;
+                'encode: for tick in 0.. {
                     trace!("tick");
                     if shutdown.is_cancelled() {
-                        info!("stop audio encoder: cancelled");
                         break;
                     }
                     match source.pop_samples(&mut buf) {
                         Ok(Some(_n)) => {
                             // Expect a full frame; if shorter, zero-pad via slice len
                             if let Err(err) = encoder.push_samples(&buf) {
-                                error!(
-                                    buf_len = buf.len(),
-                                    "audio encoder push_samples failed: {err:#}"
-                                );
+                                error!(buf_len = buf.len(), "encoder push_samples failed: {err:#}");
                                 break;
                             }
                             loop {
                                 match encoder.pop_packet() {
                                     Ok(Some(pkt)) => {
                                         if let Err(err) = sink.write(pkt) {
-                                            error!("failed to write audio packet: {err:#}");
-                                            break;
+                                            debug!("sink closed: {err:#}");
+                                            sink_closed = true;
+                                            break 'encode;
                                         }
                                     }
                                     Ok(None) => break,
                                     Err(err) => {
-                                        error!("audio encoder pop_packet failed: {err:#}");
-                                        break;
+                                        error!("encoder pop_packet failed: {err:#}");
+                                        break 'encode;
                                     }
                                 }
                             }
@@ -739,15 +733,17 @@ impl AudioEncoderPipeline {
                         thread::sleep(sleep);
                     }
                 }
-                // drain
-                while let Ok(Some(pkt)) = encoder.pop_packet() {
-                    if let Err(err) = sink.write(pkt) {
-                        error!("failed to write audio packet: {err:#}");
-                        break;
+                if !sink_closed {
+                    // drain
+                    while let Ok(Some(pkt)) = encoder.pop_packet() {
+                        if let Err(err) = sink.write(pkt) {
+                            debug!("sink closed during drain: {err:#}");
+                            break;
+                        }
                     }
+                    sink.finish().ok();
                 }
-                sink.finish().ok();
-                info!("audio encoder thread stop");
+                info!("encode stop");
             }
         });
 

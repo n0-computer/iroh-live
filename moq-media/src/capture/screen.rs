@@ -1,7 +1,7 @@
 use std::sync::mpsc::Receiver;
 
 use anyhow::{Context, Result};
-use tracing::info;
+use tracing::{debug, info};
 use xcap::{Monitor, VideoRecorder};
 
 use crate::format::{PixelFormat, VideoFormat, VideoFrame};
@@ -27,13 +27,13 @@ impl Drop for ScreenCapturer {
 
 impl ScreenCapturer {
     pub fn new() -> Result<Self> {
-        info!("Initializing screen capturer (xcap)");
+        debug!("initializing screen capturer (xcap)");
 
         let monitors = Monitor::all().context("Failed to get monitors")?;
         if monitors.is_empty() {
             return Err(anyhow::anyhow!("No monitors available"));
         }
-        info!("Available monitors: {monitors:?}");
+        debug!("available monitors: {monitors:?}");
 
         let monitor = monitors.into_iter().next().unwrap();
         let width = monitor.width()?;
@@ -42,7 +42,7 @@ impl ScreenCapturer {
             .name()
             .unwrap_or_else(|_| "Unknown Monitor".to_string());
 
-        info!("Using monitor: {} ({}x{})", name, width, height);
+        info!(monitor = %name, width, height, "capture start");
 
         let (video_recorder, rx) = monitor.video_recorder()?;
 
