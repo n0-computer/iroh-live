@@ -82,7 +82,7 @@ pub(crate) fn make_test_pattern(w: u32, h: u32, frame_index: u32) -> VideoFrame 
 
 /// Encode `n` solid-color frames with any VideoEncoder, return packets.
 pub(crate) fn video_encode(
-    enc: &mut impl VideoEncoder,
+    enc: &mut (impl VideoEncoder + ?Sized),
     w: u32,
     h: u32,
     r: u8,
@@ -101,9 +101,12 @@ pub(crate) fn video_encode(
 }
 
 /// Encode `n` test-pattern frames with any VideoEncoder, return packets.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "shared test utility, not all callers always compiled"
+)]
 pub(crate) fn video_encode_pattern(
-    enc: &mut impl VideoEncoder,
+    enc: &mut (impl VideoEncoder + ?Sized),
     w: u32,
     h: u32,
     n: usize,
@@ -181,7 +184,10 @@ pub(crate) fn assert_video_roundtrip(
 }
 
 /// Assert that decoded frames have correct dimensions and are not all black.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "shared test utility, not all callers always compiled"
+)]
 pub(crate) fn assert_video_not_black(
     frames: &[DecodedVideoFrame],
     w: u32,
