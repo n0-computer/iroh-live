@@ -75,8 +75,8 @@
 
 ### API
 
-- [ ] **A1: No encoder rate control API** — bitrate hardcoded `pixels * 0.07 * framerate_factor`
-- [ ] **A2: No builder pattern** for encoder/decoder configuration
+- [x] **A1: Encoder rate control API** — `set_bitrate()` on `VideoEncoder`/`AudioEncoder` traits (default no-op); implemented for Opus and VTB
+- [x] **A2: Builder pattern for encoder configuration** — `VideoEncoderConfig`/`AudioEncoderConfig` with `from_preset()` + builder methods; `with_config()` on factory traits
 - [ ] **A3: Quality enum is coarse** — `Highest/High/Mid/Low` maps to 4 fixed presets only
 - [ ] **A4: `DecodeConfig` minimal** — only `pixel_format` and `backend`, no resolution/framerate constraints
 - [ ] **A5: VideoToolbox decoder stub** — `vtb/decoder.rs` is TODO skeleton only
@@ -467,8 +467,8 @@ The VTB compression callback uses `Arc::into_raw()` to pass state to the C callb
 
 ### Improvable
 
-- **A1**: No runtime bitrate adjustment — hardcoded `pixels * 0.07 * framerate_factor` in every encoder
-- **A2**: No builder pattern for encoder/decoder configuration
+- ~~**A1**: No runtime bitrate adjustment~~ — `set_bitrate()` added to `VideoEncoder`/`AudioEncoder` traits; implemented for Opus and VTB
+- ~~**A2**: No builder pattern for encoder/decoder configuration~~ — `VideoEncoderConfig`/`AudioEncoderConfig` added with `from_preset()` + builder methods
 - **A3**: Quality enum coarse — 4 fixed presets, no custom resolution/bitrate
 - **A4**: `DecodeConfig` minimal — only `pixel_format` and `backend`
 - **A5**: VideoToolbox decoder is stub only — macOS HW decode not available

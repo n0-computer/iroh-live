@@ -447,7 +447,7 @@ impl Tile {
             }
         };
 
-        let encoder = match self.settings.codec.create_encoder(self.settings.preset) {
+        let encoder = match self.settings.codec.create_encoder_from_preset(self.settings.preset) {
             Ok(e) => e,
             Err(e) => {
                 self.error_msg = Some(format!("Encoder: {e:#}"));

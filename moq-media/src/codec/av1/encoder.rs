@@ -5,7 +5,7 @@ use hang::catalog::{AV1, VideoCodec, VideoConfig};
 use rav1e::prelude::*;
 
 use crate::{
-    format::{EncodedFrame, VideoFrame, VideoPreset},
+    format::{EncodedFrame, VideoEncoderConfig, VideoFrame},
     processing::convert::pixel_format_to_yuv420,
     traits::{VideoEncoder, VideoEncoderFactory},
 };
@@ -25,12 +25,18 @@ pub struct Av1Encoder {
     packet_buf: std::collections::VecDeque<EncodedFrame>,
 }
 
+/// Bits-per-pixel factor for AV1 default bitrate calculation (~30% more efficient than H.264).
+const AV1_BPP: f32 = 0.05;
+
 impl Av1Encoder {
-    fn new(width: u32, height: u32, framerate: u32) -> Result<Self> {
-        let pixels = width * height;
-        let framerate_factor = 30.0 + (framerate as f32 - 30.) / 2.;
-        // AV1 is ~30% more efficient than H.264
-        let bitrate = (pixels as f32 * 0.05 * framerate_factor).round() as u64;
+    fn new(width: u32, height: u32, framerate: u32, bitrate: Option<u64>) -> Result<Self> {
+        let enc_config = VideoEncoderConfig {
+            width,
+            height,
+            framerate,
+            bitrate,
+        };
+        let bitrate = enc_config.bitrate_or_default(AV1_BPP);
 
         let mut enc_config = EncoderConfig::with_speed_preset(10);
         enc_config.width = width as usize;
@@ -107,8 +113,8 @@ impl Av1Encoder {
 impl VideoEncoderFactory for Av1Encoder {
     const ID: &str = "av1-rav1e";
 
-    fn with_preset(preset: VideoPreset) -> Result<Self> {
-        Self::new(preset.width(), preset.height(), preset.fps())
+    fn with_config(config: VideoEncoderConfig) -> Result<Self> {
+        Self::new(config.width, config.height, config.framerate, config.bitrate)
     }
 }
 

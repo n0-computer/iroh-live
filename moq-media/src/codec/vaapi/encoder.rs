@@ -19,7 +19,7 @@ use hang::catalog::{H264, VideoCodec, VideoConfig};
 
 use crate::{
     codec::h264::annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b},
-    format::{EncodedFrame, VideoFrame, VideoPreset},
+    format::{EncodedFrame, VideoEncoderConfig, VideoFrame, VideoPreset},
     processing::convert::{YuvData, pixel_format_to_yuv420},
     traits::{VideoEncoder, VideoEncoderFactory},
 };
@@ -256,10 +256,17 @@ impl VaapiEncoder {
         Ok((encoder, low_power))
     }
 
-    fn new(width: u32, height: u32, framerate: u32) -> Result<Self> {
-        let pixels = width * height;
-        let framerate_factor = 30.0 + (framerate as f32 - 30.) / 2.;
-        let bitrate = (pixels as f32 * 0.07 * framerate_factor).round() as u64;
+    /// Bits-per-pixel factor for H.264 default bitrate calculation.
+    const H264_BPP: f32 = 0.07;
+
+    fn new(width: u32, height: u32, framerate: u32, bitrate: Option<u64>) -> Result<Self> {
+        let enc_config = VideoEncoderConfig {
+            width,
+            height,
+            framerate,
+            bitrate,
+        };
+        let bitrate = enc_config.bitrate_or_default(Self::H264_BPP);
 
         let coded_size = Resolution { width, height };
         let fourcc = Fourcc::from(b"NV12");
@@ -412,8 +419,8 @@ impl VaapiEncoder {
 impl VideoEncoderFactory for VaapiEncoder {
     const ID: &str = "h264-vaapi";
 
-    fn with_preset(preset: VideoPreset) -> Result<Self> {
-        Self::new(preset.width(), preset.height(), preset.fps())
+    fn with_config(config: VideoEncoderConfig) -> Result<Self> {
+        Self::new(config.width, config.height, config.framerate, config.bitrate)
     }
 }
 
