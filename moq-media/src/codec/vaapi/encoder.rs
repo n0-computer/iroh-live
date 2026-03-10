@@ -203,7 +203,7 @@ pub struct VaapiEncoder {
     /// avcC description, populated after first keyframe.
     avcc: Option<Vec<u8>>,
     /// Encoded packets ready for collection.
-    packet_buf: Vec<EncodedFrame>,
+    packet_buf: std::collections::VecDeque<EncodedFrame>,
 }
 
 impl VaapiEncoder {
@@ -331,7 +331,7 @@ impl VaapiEncoder {
             bitrate,
             frame_count: 0,
             avcc,
-            packet_buf: Vec::new(),
+            packet_buf: std::collections::VecDeque::new(),
         })
     }
 
@@ -479,7 +479,7 @@ impl VideoEncoder for VaapiEncoder {
             .map_err(|e| anyhow::anyhow!("VAAPI poll failed: {e:?}"))?
         {
             if let Some(pkt) = self.process_coded_output(coded)? {
-                self.packet_buf.push(pkt);
+                self.packet_buf.push_back(pkt);
             }
         }
 
@@ -487,22 +487,20 @@ impl VideoEncoder for VaapiEncoder {
     }
 
     fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
-        Ok(if self.packet_buf.is_empty() {
-            None
-        } else {
-            Some(self.packet_buf.remove(0))
-        })
+        Ok(self.packet_buf.pop_front())
     }
 }
 
 impl Drop for VaapiEncoder {
     fn drop(&mut self) {
         // Drain remaining buffered frames.
-        if self.encoder.drain().is_ok() {
-            while let Ok(Some(coded)) = self.encoder.poll() {
-                if let Ok(Some(pkt)) = self.process_coded_output(coded) {
-                    self.packet_buf.push(pkt);
-                }
+        if let Err(e) = self.encoder.drain() {
+            tracing::warn!("VAAPI encoder drain failed on drop: {e}");
+            return;
+        }
+        while let Ok(Some(coded)) = self.encoder.poll() {
+            if let Ok(Some(pkt)) = self.process_coded_output(coded) {
+                self.packet_buf.push_back(pkt);
             }
         }
     }

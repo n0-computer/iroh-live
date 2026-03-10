@@ -20,10 +20,13 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let y = textureSample(y_tex, samp, in.uv).r;
-    let u = textureSample(uv_tex, samp, in.uv).r - 0.5;
-    let v = textureSample(uv_tex, samp, in.uv).g - 0.5;
-    // BT.601 limited range YUV to RGB
+    let y_raw = textureSample(y_tex, samp, in.uv).r;
+    let u_raw = textureSample(uv_tex, samp, in.uv).r;
+    let v_raw = textureSample(uv_tex, samp, in.uv).g;
+    // BT.601 limited range: Y [16..235] → [0..1], UV [16..240] → [-0.5..0.5]
+    let y = (y_raw - 16.0 / 255.0) * (255.0 / 219.0);
+    let u = (u_raw - 16.0 / 255.0) * (255.0 / 224.0) - 0.5;
+    let v = (v_raw - 16.0 / 255.0) * (255.0 / 224.0) - 0.5;
     let r = y + 1.402 * v;
     let g = y - 0.344136 * u - 0.714136 * v;
     let b = y + 1.772 * u;

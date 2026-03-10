@@ -815,14 +815,11 @@ impl EncoderThread {
                     }
                 }
                 let expected_time = (tick + 1) * INTERVAL;
-                let actual_time = start.elapsed();
-                if actual_time > expected_time {
-                    warn!(
-                        "audio encoder too slow by {:?}",
-                        actual_time - expected_time
-                    );
+                let elapsed = start.elapsed();
+                if elapsed > expected_time {
+                    warn!("audio encoder too slow by {:?}", elapsed - expected_time);
                 }
-                let sleep = expected_time.saturating_sub(start.elapsed());
+                let sleep = expected_time.saturating_sub(elapsed);
                 if sleep > Duration::ZERO {
                     thread::sleep(sleep);
                 }

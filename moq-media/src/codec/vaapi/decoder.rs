@@ -70,12 +70,15 @@ type VaapiFrame = PooledVideoFrame<GenericDmaVideoFrame>;
 type VaapiH264Decoder = StatelessDecoder<H264, VaapiBackend<VaapiFrame>>;
 
 /// GPU-resident frame backed by DMA-BUF file descriptors from VAAPI decoding.
-#[derive(Debug)]
+#[derive(derive_more::Debug)]
 struct VaapiGpuFrame {
     frame: Arc<VaapiFrame>,
     width: u32,
     height: u32,
     dma_info: Option<DmaBufInfo>,
+    /// Cached VAAPI display for frame mapping (opened lazily on first download).
+    #[debug(skip)]
+    mapping_display: std::cell::OnceCell<Rc<Display>>,
 }
 
 // PooledVideoFrame<GenericDmaVideoFrame> holds owned File descriptors.
@@ -90,7 +93,14 @@ impl VaapiGpuFrame {
     /// (including Intel 4-tile) correctly — unlike GenericDmaVideoFrame::map()
     /// which only supports linear and Y-tile.
     fn derive_nv12_planes(&self) -> Result<Nv12Planes> {
-        let display = Display::open().context("failed to open VAAPI display for mapping")?;
+        let display = match self.mapping_display.get() {
+            Some(d) => d,
+            None => {
+                let d = Display::open().context("failed to open VAAPI display for mapping")?;
+                let _ = self.mapping_display.set(d);
+                self.mapping_display.get().unwrap()
+            }
+        };
         let surface = self
             .frame
             .to_native_handle(&display)
@@ -321,6 +331,7 @@ impl VaapiDecoder {
                         width: w,
                         height: h,
                         dma_info,
+                        mapping_display: std::cell::OnceCell::new(),
                     };
 
                     let timestamp = self.last_timestamp.unwrap_or_default();

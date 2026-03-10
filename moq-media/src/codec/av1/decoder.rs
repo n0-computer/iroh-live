@@ -9,7 +9,6 @@ use crate::format::{DecodeConfig, DecodedVideoFrame, MediaPacket};
 use crate::traits::VideoDecoder;
 
 use crate::processing::{
-    clock::StreamClock,
     convert::{YuvData, yuv420_to_rgba_data},
     scale::{Scaler, fit_within},
 };
@@ -19,7 +18,6 @@ pub struct Av1VideoDecoder {
     #[debug(skip)]
     decoder: Decoder,
     scaler: Scaler,
-    clock: StreamClock,
     viewport_changed: Option<(u32, u32)>,
     last_timestamp: Option<Duration>,
     /// Decoded frame waiting to be collected via `pop_frame`.
@@ -55,7 +53,6 @@ impl VideoDecoder for Av1VideoDecoder {
         Ok(Self {
             decoder,
             scaler: Scaler::new(None),
-            clock: StreamClock::default(),
             viewport_changed: None,
             last_timestamp: None,
             pending_frame: None,
@@ -123,8 +120,6 @@ impl VideoDecoder for Av1VideoDecoder {
         let timestamp = self
             .last_timestamp
             .context("missing last packet timestamp")?;
-        let _delay = self.clock.frame_delay(timestamp);
-
         if let Some((max_w, max_h)) = self.viewport_changed.take() {
             let (tw, th) = fit_within(src_w, src_h, max_w, max_h);
             self.scaler.set_target_dimensions(tw, th);
