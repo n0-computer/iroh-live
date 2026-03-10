@@ -272,16 +272,14 @@ impl RemoteTrackView {
                         if ui
                             .selectable_label(selected.as_deref() == Some(name), name)
                             .clicked()
-                        {
-                            if let Ok(track) = self
+                            && let Ok(track) = self
                                 .broadcast
                                 .watch_rendition::<DynamicVideoDecoder>(&Default::default(), name)
-                            {
-                                if let Some(video) = self.video.as_mut() {
-                                    video.set_track(track);
-                                } else {
-                                    self.video = Some(VideoView::new(ui.ctx(), track, self.id))
-                                }
+                        {
+                            if let Some(video) = self.video.as_mut() {
+                                video.set_track(track);
+                            } else {
+                                self.video = Some(VideoView::new(ui.ctx(), track, self.id))
                             }
                         }
                     }
@@ -327,7 +325,6 @@ impl VideoView {
     }
 
     fn render_image(&mut self, ctx: &egui::Context, available_size: Vec2) -> egui::Image<'_> {
-        let available_size = available_size.into();
         if available_size != self.size {
             self.size = available_size;
             let ppp = ctx.pixels_per_point();
@@ -359,7 +356,7 @@ fn show_video_grid(ctx: &egui::Context, ui: &mut egui::Ui, videos: &mut [RemoteT
     let avail = ui.available_size(); // egui docs recommend this for filling containers
     // Choose columns ≈ ceil(sqrt(n)), rows to fit the rest
     let cols = (n as f32).sqrt().ceil() as usize;
-    let rows = (n + cols - 1) / cols;
+    let rows = n.div_ceil(cols);
 
     // Side length of each square in points (fill the limiting axis)
     let cell = (avail.x / cols as f32).min(avail.y / rows as f32).floor();

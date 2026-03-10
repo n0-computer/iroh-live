@@ -78,7 +78,10 @@ impl VideoCodec {
     }
 
     /// Returns the best available encoder: hardware if available, otherwise software H.264.
-    #[allow(unreachable_code)]
+    #[allow(
+        unreachable_code,
+        reason = "cfg-gated returns may make trailing code unreachable"
+    )]
     pub fn best_available() -> Self {
         #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
         {

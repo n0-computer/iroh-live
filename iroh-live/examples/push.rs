@@ -50,7 +50,7 @@ async fn main() -> Result<()> {
     session.publish(cli.path, broadcast.consume());
 
     let import = async move {
-        let mut import = Import::new(broadcast.into(), cli.format);
+        let mut import = Import::new(broadcast, cli.format);
         import.init_from(&mut input).await?;
         import.read_from(&mut input).await?;
         n0_error::Ok(())
@@ -65,7 +65,6 @@ async fn main() -> Result<()> {
         }
         _ = tokio::signal::ctrl_c() => {}
     };
-    drop(import);
     node.shutdown().await?;
     Ok(())
 }

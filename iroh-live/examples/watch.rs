@@ -222,13 +222,11 @@ impl App {
                         if ui
                             .selectable_label(selected.as_deref() == Some(name), name)
                             .clicked()
-                        {
-                            if let Ok(track) = self
+                            && let Ok(track) = self
                                 .broadcast
                                 .watch_rendition::<DynamicVideoDecoder>(&Default::default(), name)
-                            {
-                                self.video = Some(VideoView::new(ctx, track));
-                            }
+                        {
+                            self.video = Some(VideoView::new(ctx, track));
                         }
                     }
                 });
@@ -294,7 +292,6 @@ impl VideoView {
     }
 
     fn render(&mut self, ctx: &egui::Context, available_size: Vec2) -> egui::Image<'_> {
-        let available_size = available_size.into();
         if available_size != self.size {
             self.size = available_size;
             let ppp = ctx.pixels_per_point();
@@ -323,14 +320,14 @@ impl VideoView {
         }
 
         // Return last wgpu texture even if no new frame arrived.
-        if let Some(ref r) = self.egui_renderer {
-            if let Some((id, (w, h))) = r.last_texture() {
-                return egui::Image::from_texture(egui::load::SizedTexture::new(
-                    id,
-                    [w as f32, h as f32],
-                ))
-                .shrink_to_fit();
-            }
+        if let Some(ref r) = self.egui_renderer
+            && let Some((id, (w, h))) = r.last_texture()
+        {
+            return egui::Image::from_texture(egui::load::SizedTexture::new(
+                id,
+                [w as f32, h as f32],
+            ))
+            .shrink_to_fit();
         }
 
         egui::Image::from_texture(&self.texture).shrink_to_fit()

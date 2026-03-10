@@ -1,3 +1,7 @@
+#![allow(
+    clippy::mod_module_files,
+    reason = "examples/common/ needs mod.rs for cargo example discovery"
+)]
 #[allow(unreachable_pub, unused, reason = "example helper module")]
 pub mod import;
 

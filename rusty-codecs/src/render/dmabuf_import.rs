@@ -111,9 +111,8 @@ impl DmaBufImporter {
                 .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
             let command_pool = raw_device
                 .create_command_pool(&pool_info, None)
-                .map_err(|e| {
+                .inspect_err(|e| {
                     debug!("Failed to create command pool for DMA-BUF import: {e}");
-                    e
                 })
                 .ok()?;
 
@@ -500,7 +499,10 @@ impl DmaBufImporter {
     }
 
     /// Record and submit a command buffer that copies NV12 planes to R8/RG8 images.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Vulkan API requires many parameters"
+    )]
     unsafe fn record_and_submit_copy(
         &self,
         nv12_image: vk::Image,
