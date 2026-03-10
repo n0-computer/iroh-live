@@ -54,24 +54,38 @@ New file. Wraps existing moq-media types:
 - Wraps `moq_media::publish::PublishBroadcast` in an `Arc`
 - Methods delegate directly:
   - `new()` → `PublishBroadcast::new()`
-  - `set_video(Option<VideoRenditions>)` → inner `set_video()`
-  - `set_audio(Option<AudioRenditions>)` → inner `set_audio()`
-  - `watch_local(config)` → inner `watch_local(config)`
+  - `video()` / `audio()` return lightweight slot handles
+  - `LocalVideoSlot::publish_camera()` / `publish_screen()` build renditions and call inner `set_video(Some(...))`
+  - `LocalVideoSlot::replace_source()` preserves the logical video slot while swapping the underlying source
+  - `LocalVideoSlot::clear()` → inner `set_video(None)`
+  - `LocalAudioSlot::publish_microphone()` builds renditions and calls inner `set_audio(Some(...))`
+  - `LocalAudioSlot::replace_source()` preserves the logical audio slot while swapping the underlying source
+  - `LocalAudioSlot::clear()` → inner `set_audio(None)`
+  - `preview(config)` → inner `watch_local(config)`
   - `producer()` → inner `producer()`
 - Add `Clone` (Arc-based)
 
+**Source replacement semantics**:
+- camera A → camera B keeps the same logical video slot
+- microphone A → microphone B keeps the same logical audio slot
+- `clear()` removes the slot entirely and tears down active encoders
+- mute/disable should not require full teardown
+- the broadcast layer preserves slots; the product layer decides whether a semantic source change maps to a new publication identity
+
 **`RemoteBroadcast`**:
-- Wraps `moq_media::subscribe::SubscribeBroadcast` in an `Arc<Mutex<_>>` (subscribe methods take `&mut self` currently)
+- Wraps `moq_media::subscribe::SubscribeBroadcast` in an `Arc` (all methods take `&self`)
 - Methods delegate:
   - `status()` → new Watchable tracking connect/live/ended
   - `catalog()` → inner `catalog_watcher()`
   - `catalog_snapshot()` → inner `catalog()`
   - `name()` → inner `broadcast_name()`
+  - `has_video()` / `has_audio()` derived from catalog
   - `subscribe_video<D>()` → inner `watch::<D>()`
   - `subscribe_video_with<D>(opts)` → inner `watch_with::<D>(config, quality)` or `watch_rendition::<D>(config, name)`
   - `subscribe_audio<D>(backend)` → inner `listen::<D>(backend)`
   - `video_renditions()` → iterate catalog
   - `audio_renditions()` → iterate catalog
+  - `selected_video()` / `selected_audio()` retain the last successful selection snapshot for UI and debugging
   - `closed()` → inner `closed()`
   - `as_inner()` → access inner
 
@@ -80,6 +94,7 @@ New file. Wraps existing moq-media types:
 - `BroadcastStatus` — enum `{ Connecting, Live, Ended }`
 - `SubscribeVideoOptions` — struct with `quality`, `rendition`, `viewport`, `decode_config`. Builder methods.
 - `SubscribeAudioOptions` — struct with `quality`, `rendition`. Builder methods.
+- `SelectedVideo` / `SelectedAudio` — snapshots of the currently selected rendition and options
 
 **Key decision**: `SubscribeBroadcast` methods already take `&self` (catalog, watch,
 listen, etc.), so `RemoteBroadcast` can use `Arc<SubscribeBroadcast>` directly — no
@@ -159,6 +174,8 @@ does MoQ session negotiation. We keep that — the "incoming" stream surfaces *a
 MoQ handshake completes. True pre-accept inspection (before MoQ handshake) can come
 later if needed.
 
+> codex: This is a sensible first cut, but we should document the semantic limitation clearly: "accept/reject" here means application-level acceptance after MoQ setup, not transport-level refusal before setup cost is paid.
+
 ### 2.2 Wire into Live
 
 Add to `Live`:
@@ -226,8 +243,9 @@ New file:
 ### 3.2 Wire into Live
 
 - `Live::call(impl Into<CallTicket>) -> Result<Call>`
-- `Live::incoming_calls() -> impl Stream<Item = IncomingCall>`
-  - Maps `incoming_sessions()` into `IncomingCall` wrappers
+- `Live::accept_call() -> Result<IncomingCall>` — socket-style, awaits next incoming call
+  - Internally reads from an mpsc channel fed by the incoming session handler
+  - Returns `Err` when Live is shut down
 
 ### 3.3 Update example
 
@@ -258,6 +276,8 @@ New or updated example `iroh-live/examples/call.rs`:
 ## Phase 4: Room Participant Model
 
 **Goal**: Redesign `Room` to expose participants, publications, and structured events.
+
+> codex: This phase is where API quality will be won or lost. If participant and publication identities remain stringly or ephemeral here, the top layer will still feel improvised even if the names improve.
 The current room actor stays but gets a new public face.
 
 ### 4.1 Participant types (in `iroh-live/src/room.rs`)
@@ -270,7 +290,7 @@ The current room actor stays but gets a new public face.
 - Methods:
   - `id() -> ParticipantId`
   - `broadcast() -> &LocalBroadcast` (escape hatch)
-  - `publish_video(source, presets) -> Result<LocalTrackPublication>`
+  - `publish_video(source, encoder, presets) -> Result<LocalTrackPublication>`
   - `publish_audio(source, presets) -> Result<LocalTrackPublication>`
   - `publications() -> Vec<LocalTrackPublication>`
 
@@ -354,7 +374,7 @@ Methods:
 - `id() -> RoomId`
 - `ticket() -> RoomTicket` (include self as bootstrap)
 - `local_participant() -> &LocalParticipant`
-- `events() -> impl Stream<Item = RoomEvent>`
+- `recv() -> Result<RoomEvent>` — socket-style, awaits next event
 - `remote_participants() -> HashMap<ParticipantId, RemoteParticipant>`
 - `remote_participant(id) -> Option<RemoteParticipant>`
 - `leave()`

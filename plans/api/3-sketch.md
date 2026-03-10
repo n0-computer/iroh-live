@@ -7,6 +7,24 @@ implementation.
 
 See `0-overview.md` for context on the three layers and design principles.
 
+### Review notes (2026-03-10)
+
+Changes from detailed review pass:
+
+- **`accept_call()` instead of `incoming_calls() -> Stream`**: Socket-style `async fn accept_call()` returns one `IncomingCall` at a time. Simpler to implement (single channel or manual future), easier to use, no `Stream` import needed.
+- **Same pattern for `Room::recv()`**: Keep `async fn recv()` style for room events instead of `events() -> impl Stream`. Consistent with the `accept_call` pattern and with the current codebase's `Room::recv()`.
+- **Removed `VideoTarget` enum**: Premature abstraction with one variant. Removed.
+- **Fixed `CallState` / `DisconnectReason` PartialEq conflict**: `dyn Error` doesn't impl `PartialEq`. Removed `PartialEq` from `CallState`, added helper methods instead.
+- **Added codec parameter to `publish_video`**: Was missing — users need to choose H264 vs AV1.
+- **Renamed `watch_local` → `preview`**: As discussed in review doc.
+- **Made ticket/ID fields `pub(crate)`**: Users shouldn't construct IDs or tickets from raw fields. Added accessor methods.
+- **Removed `RemoteBroadcast::subscribe_video_rendition`**: Redundant with `subscribe_video_with(opts.rendition("name"))`. Fewer methods = less surface to learn.
+- **`Call::remote()` returns `Option`**: Remote broadcast doesn't exist until the peer announces.
+- **Added `Live::new()` taking gossip too**: Entry point needs gossip for rooms.
+- **`LocalVideoSlot` / `LocalAudioSlot`**: Replaced `set_video`/`set_audio` with slot-based API. Supports source replacement (`replaceTrack()` equivalent), mute/enable without teardown, camera vs screen-share distinction.
+- **`has_video()` / `has_audio()`** on both `LocalBroadcast` and `RemoteBroadcast`.
+- **`SelectedVideo` / `SelectedAudio`** snapshots on `RemoteBroadcast` for UI and debugging.
+
 ## `types.rs` -- Shared newtypes and IDs
 
 ```rust
@@ -22,7 +40,14 @@ use serde::{Deserialize, Serialize};
 /// Wraps an [`EndpointId`] to provide domain-specific meaning. Two
 /// participants with the same underlying endpoint always compare equal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ParticipantId(pub EndpointId);
+pub struct ParticipantId(pub(crate) EndpointId);
+
+impl ParticipantId {
+    /// Returns the underlying [`EndpointId`].
+    pub fn as_endpoint_id(&self) -> &EndpointId {
+        &self.0
+    }
+}
 
 impl fmt::Display for ParticipantId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -43,9 +68,21 @@ impl From<EndpointId> for ParticipantId {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PublicationId {
     /// Participant that owns the publication.
-    pub participant: ParticipantId,
+    pub(crate) participant: ParticipantId,
     /// Track name within the participant's broadcast.
-    pub name: String,
+    pub(crate) name: String,
+}
+
+impl PublicationId {
+    /// Returns the participant that owns this publication.
+    pub fn participant(&self) -> &ParticipantId {
+        &self.participant
+    }
+
+    /// Returns the track name within the participant's broadcast.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 impl fmt::Display for PublicationId {
@@ -56,7 +93,7 @@ impl fmt::Display for PublicationId {
 
 /// Identifies a room by its gossip topic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct RoomId(pub iroh_gossip::TopicId);
+pub struct RoomId(pub(crate) iroh_gossip::TopicId);
 
 impl fmt::Display for RoomId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -121,8 +158,6 @@ use std::sync::Arc;
 
 use iroh::Endpoint;
 use n0_error::Result;
-use n0_future::Stream;
-
 use crate::broadcast::{LocalBroadcast, RemoteBroadcast, BroadcastTicket};
 use crate::call::{Call, CallTicket, IncomingCall};
 use crate::room::{Room, RoomTicket};
@@ -146,8 +181,8 @@ struct LiveInner {
 }
 
 impl Live {
-    /// Creates a new [`Live`] instance from an iroh [`Endpoint`].
-    pub fn new(endpoint: Endpoint) -> Self {
+    /// Creates a new [`Live`] instance from an iroh [`Endpoint`] and gossip handle.
+    pub fn new(endpoint: Endpoint, gossip: iroh_gossip::Gossip) -> Self {
         todo!()
     }
 
@@ -163,15 +198,14 @@ impl Live {
         todo!()
     }
 
-    /// Returns a stream of incoming calls from remote peers.
+    /// Waits for the next incoming call from a remote peer.
     ///
-    /// Each [`IncomingCall`] must be explicitly accepted or rejected. Dropping
-    /// an [`IncomingCall`] without calling [`accept`](IncomingCall::accept)
-    /// automatically rejects it.
-    pub fn incoming_calls(&self) -> impl Stream<Item = IncomingCall> {
-        todo!();
-        // Needed for type inference; unreachable.
-        futures_lite::stream::empty()
+    /// Returns `Ok(IncomingCall)` when a new call arrives, or `Err` if the
+    /// listener is shut down. Each [`IncomingCall`] must be explicitly accepted
+    /// or rejected. Dropping an [`IncomingCall`] without calling
+    /// [`accept`](IncomingCall::accept) automatically rejects it.
+    pub async fn accept_call(&self) -> Result<IncomingCall> {
+        todo!()
     }
 
     // -- Rooms --
@@ -235,7 +269,7 @@ use crate::types::{DisconnectReason, ParticipantId};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallTicket {
     /// Remote endpoint address.
-    pub remote: iroh::EndpointAddr,
+    pub(crate) remote: iroh::EndpointAddr,
 }
 
 impl fmt::Display for CallTicket {
@@ -259,7 +293,7 @@ impl From<iroh::EndpointAddr> for CallTicket {
 }
 
 /// State of a call connection.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum CallState {
     /// Connecting to the remote peer.
     Connecting,
@@ -296,7 +330,9 @@ impl Call {
     }
 
     /// Returns the remote broadcast for subscribing to incoming media.
-    pub fn remote(&self) -> &RemoteBroadcast {
+    ///
+    /// Returns `None` until the remote peer has announced their broadcast.
+    pub fn remote(&self) -> Option<&RemoteBroadcast> {
         todo!()
     }
 
@@ -364,11 +400,10 @@ use std::{collections::HashMap, fmt, str::FromStr, sync::Arc};
 
 use iroh::EndpointId;
 use n0_error::Result;
-use n0_future::Stream;
 use n0_watcher::Watcher;
 use serde::{Deserialize, Serialize};
 
-use crate::broadcast::{LocalBroadcast, RemoteBroadcast, SubscribeVideoOptions, SubscribeAudioOptions, VideoTarget};
+use crate::broadcast::{LocalBroadcast, RemoteBroadcast, SubscribeVideoOptions, SubscribeAudioOptions};
 use crate::types::{DisconnectReason, ParticipantId, PublicationId, RoomId};
 
 /// Portable handle for joining or creating a room.
@@ -378,9 +413,9 @@ use crate::types::{DisconnectReason, ParticipantId, PublicationId, RoomId};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoomTicket {
     /// Gossip topic that identifies the room.
-    pub room_id: RoomId,
+    pub(crate) room_id: RoomId,
     /// Bootstrap peers to connect through.
-    pub bootstrap: Vec<EndpointId>,
+    pub(crate) bootstrap: Vec<EndpointId>,
 }
 
 impl RoomTicket {
@@ -474,13 +509,13 @@ impl Room {
         todo!()
     }
 
-    /// Returns a stream of [`RoomEvent`]s.
+    /// Waits for the next room event.
     ///
-    /// Events are buffered; slow consumers will eventually see backpressure.
-    /// The stream ends when the room is closed.
-    pub fn events(&self) -> impl Stream<Item = RoomEvent> {
-        todo!();
-        futures_lite::stream::empty()
+    /// Returns `Ok(RoomEvent)` when an event occurs, or `Err` when the
+    /// room has been closed. Events are buffered; slow consumers will
+    /// eventually see backpressure.
+    pub async fn recv(&self) -> Result<RoomEvent> {
+        todo!()
     }
 
     /// Returns a snapshot of all currently connected remote participants.
@@ -528,10 +563,12 @@ impl LocalParticipant {
     /// Publishes a video track and returns a handle to the publication.
     ///
     /// The `source` can be any type implementing [`moq_media::traits::VideoSource`].
-    /// Multiple renditions are encoded automatically based on the provided presets.
+    /// The `encoder` selects the codec (H.264 or AV1). Multiple renditions are
+    /// encoded automatically based on the provided presets.
     pub fn publish_video(
         &self,
         source: impl moq_media::traits::VideoSource,
+        encoder: impl moq_media::traits::VideoEncoder,
         presets: impl IntoIterator<Item = moq_media::format::VideoPreset>,
     ) -> Result<LocalTrackPublication> {
         todo!()
@@ -740,9 +777,9 @@ use crate::types::ParticipantId;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BroadcastTicket {
     /// Remote endpoint address.
-    pub remote: iroh::EndpointAddr,
+    pub(crate) remote: iroh::EndpointAddr,
     /// Name of the broadcast to subscribe to.
-    pub broadcast_name: String,
+    pub(crate) broadcast_name: String,
 }
 
 impl fmt::Display for BroadcastTicket {
@@ -770,22 +807,6 @@ pub enum BroadcastStatus {
     Ended,
 }
 
-/// Where to deliver decoded video frames.
-///
-/// Used in [`SubscribeVideoOptions`] to control the output destination.
-#[derive(Debug, Clone)]
-pub enum VideoTarget {
-    /// Delivers frames through a [`moq_media::subscribe::WatchTrack`] receiver.
-    Frames,
-    // Future: Texture(wgpu::Device), DirectDisplay, etc.
-}
-
-impl Default for VideoTarget {
-    fn default() -> Self {
-        Self::Frames
-    }
-}
-
 /// Options for subscribing to a video track.
 #[derive(Debug, Clone, Default)]
 pub struct SubscribeVideoOptions {
@@ -795,8 +816,6 @@ pub struct SubscribeVideoOptions {
     pub rendition: Option<String>,
     /// Initial viewport dimensions for decode scaling.
     pub viewport: Option<(u32, u32)>,
-    /// Where to deliver decoded frames.
-    pub target: VideoTarget,
     /// Decode configuration overrides.
     pub decode_config: Option<moq_media::format::DecodeConfig>,
 }
@@ -872,38 +891,154 @@ impl LocalBroadcast {
         todo!()
     }
 
-    /// Sets the video source and rendition presets for encoding.
+    /// Returns the local video publication slot for this broadcast.
     ///
-    /// Replaces any previously configured video. Pass `None` to remove video.
-    pub fn set_video(
-        &self,
-        renditions: Option<moq_media::publish::VideoRenditions>,
-    ) -> Result<()> {
+    /// The returned handle is cheap to clone and provides all video-side
+    /// configuration methods, including source replacement and preview.
+    pub fn video(&self) -> LocalVideoSlot {
         todo!()
     }
 
-    /// Sets the audio source and rendition presets for encoding.
+    /// Returns the local audio publication slot for this broadcast.
     ///
-    /// Replaces any previously configured audio. Pass `None` to remove audio.
-    pub fn set_audio(
-        &self,
-        renditions: Option<moq_media::publish::AudioRenditions>,
-    ) -> Result<()> {
+    /// The returned handle is cheap to clone and provides all audio-side
+    /// configuration methods, including source replacement and mute control.
+    pub fn audio(&self) -> LocalAudioSlot {
         todo!()
     }
 
     /// Creates a local video preview from the current video source.
     ///
     /// Returns `None` if no video source is configured.
-    pub fn watch_local(
+    pub fn preview(
         &self,
         decode_config: moq_media::format::DecodeConfig,
     ) -> Option<moq_media::subscribe::WatchTrack> {
         todo!()
     }
 
+    /// Returns whether the broadcast currently has a video source configured.
+    pub fn has_video(&self) -> bool {
+        todo!()
+    }
+
+    /// Returns whether the broadcast currently has an audio source configured.
+    pub fn has_audio(&self) -> bool {
+        todo!()
+    }
+
     /// Returns the raw [`moq_lite::BroadcastProducer`] for transport-level access.
     pub fn producer(&self) -> moq_lite::BroadcastProducer {
+        todo!()
+    }
+}
+
+/// Video-side configuration and control for a [`LocalBroadcast`].
+///
+/// Replacement semantics:
+///
+/// - Replacing one camera source with another camera source keeps the same
+///   logical video slot and should preserve publication identity at higher layers.
+/// - Replacing a camera source with a screen-share source is allowed at the
+///   broadcast layer, but higher layers may choose to model that as a distinct
+///   publication based on `TrackSource`.
+/// - Removing video tears down active video encoders and preview state.
+#[derive(Debug, Clone)]
+pub struct LocalVideoSlot {
+    // inner: Arc<LocalBroadcastInner>,
+}
+
+impl LocalVideoSlot {
+    /// Publishes a camera source with the provided presets.
+    pub fn publish_camera(
+        &self,
+        source: impl moq_media::traits::VideoSource,
+        presets: impl IntoIterator<Item = moq_media::format::VideoPreset>,
+    ) -> Result<()> {
+        todo!()
+    }
+
+    /// Publishes a screen-share source with the provided presets.
+    pub fn publish_screen(
+        &self,
+        source: impl moq_media::traits::VideoSource,
+        presets: impl IntoIterator<Item = moq_media::format::VideoPreset>,
+    ) -> Result<()> {
+        todo!()
+    }
+
+    /// Replaces the current video source while keeping the slot alive.
+    ///
+    /// This is the broadcast-layer equivalent of WebRTC's `replaceTrack()`.
+    /// It should avoid tearing down the logical slot unless the caller clears it.
+    pub fn replace_source(
+        &self,
+        source: impl moq_media::traits::VideoSource,
+        presets: impl IntoIterator<Item = moq_media::format::VideoPreset>,
+    ) -> Result<()> {
+        todo!()
+    }
+
+    /// Removes video from the broadcast entirely.
+    pub fn clear(&self) -> Result<()> {
+        todo!()
+    }
+
+    /// Mutes or unmutes the video slot without removing it.
+    pub fn set_enabled(&self, enabled: bool) {
+        todo!()
+    }
+
+    /// Returns whether the video slot is currently enabled.
+    pub fn is_enabled(&self) -> bool {
+        todo!()
+    }
+}
+
+/// Audio-side configuration and control for a [`LocalBroadcast`].
+///
+/// Replacement semantics:
+///
+/// - Replacing one microphone device with another microphone device keeps the
+///   same logical audio slot.
+/// - Muting should not require full teardown or republish.
+/// - Clearing audio tears down active encoders and disconnects sinks cleanly.
+#[derive(Debug, Clone)]
+pub struct LocalAudioSlot {
+    // inner: Arc<LocalBroadcastInner>,
+}
+
+impl LocalAudioSlot {
+    /// Publishes a microphone source with the provided presets.
+    pub fn publish_microphone(
+        &self,
+        source: impl moq_media::traits::AudioSource,
+        presets: impl IntoIterator<Item = moq_media::format::AudioPreset>,
+    ) -> Result<()> {
+        todo!()
+    }
+
+    /// Replaces the current audio source while keeping the slot alive.
+    pub fn replace_source(
+        &self,
+        source: impl moq_media::traits::AudioSource,
+        presets: impl IntoIterator<Item = moq_media::format::AudioPreset>,
+    ) -> Result<()> {
+        todo!()
+    }
+
+    /// Removes audio from the broadcast entirely.
+    pub fn clear(&self) -> Result<()> {
+        todo!()
+    }
+
+    /// Mutes or unmutes the audio slot without removing it.
+    pub fn set_muted(&self, muted: bool) {
+        todo!()
+    }
+
+    /// Returns whether the audio slot is currently muted.
+    pub fn is_muted(&self) -> bool {
         todo!()
     }
 }
@@ -948,6 +1083,16 @@ impl RemoteBroadcast {
         todo!()
     }
 
+    /// Returns whether the broadcast currently advertises any video renditions.
+    pub fn has_video(&self) -> bool {
+        todo!()
+    }
+
+    /// Returns whether the broadcast currently advertises any audio renditions.
+    pub fn has_audio(&self) -> bool {
+        todo!()
+    }
+
     // -- Simple subscription path --
 
     /// Subscribes to the best available video track with default options.
@@ -986,29 +1131,7 @@ impl RemoteBroadcast {
         todo!()
     }
 
-    // -- Advanced subscription path --
-
-    /// Subscribes to a specific video rendition by track name.
-    ///
-    /// Bypasses quality-based selection for full control over which rendition
-    /// is decoded. Useful for picture-in-picture, thumbnails, or adaptive
-    /// bitrate logic.
-    pub fn subscribe_video_rendition<D: moq_media::traits::VideoDecoder>(
-        &self,
-        track_name: &str,
-        decode_config: &moq_media::format::DecodeConfig,
-    ) -> Result<moq_media::subscribe::WatchTrack> {
-        todo!()
-    }
-
-    /// Subscribes to a specific audio rendition by track name.
-    pub async fn subscribe_audio_rendition<D: moq_media::traits::AudioDecoder>(
-        &self,
-        track_name: &str,
-        audio_backend: &dyn moq_media::traits::AudioStreamFactory,
-    ) -> Result<moq_media::subscribe::AudioTrack> {
-        todo!()
-    }
+    // -- Catalog inspection --
 
     /// Lists available video rendition names, sorted by resolution (ascending).
     pub fn video_renditions(&self) -> Vec<String> {
@@ -1017,6 +1140,18 @@ impl RemoteBroadcast {
 
     /// Lists available audio rendition names.
     pub fn audio_renditions(&self) -> Vec<String> {
+        todo!()
+    }
+
+    /// Returns the currently preferred video selection derived from the last
+    /// successful subscription options, if any.
+    pub fn selected_video(&self) -> Option<SelectedVideo> {
+        todo!()
+    }
+
+    /// Returns the currently preferred audio selection derived from the last
+    /// successful subscription options, if any.
+    pub fn selected_audio(&self) -> Option<SelectedAudio> {
         todo!()
     }
 
@@ -1031,6 +1166,20 @@ impl RemoteBroadcast {
     pub fn as_inner(&self) -> &moq_media::subscribe::SubscribeBroadcast {
         todo!()
     }
+}
+
+/// Snapshot of the currently selected video rendition and options.
+#[derive(Debug, Clone)]
+pub struct SelectedVideo {
+    pub rendition: String,
+    pub options: SubscribeVideoOptions,
+}
+
+/// Snapshot of the currently selected audio rendition and options.
+#[derive(Debug, Clone)]
+pub struct SelectedAudio {
+    pub rendition: String,
+    pub options: SubscribeAudioOptions,
 }
 ```
 

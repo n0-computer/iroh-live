@@ -4,18 +4,16 @@
 //! `unsafe extern "C"` functions. This module provides a safe interface
 //! for the subset we use.
 
-use std::error;
-use std::ffi::c_int;
-use std::fmt;
-use std::mem::MaybeUninit;
-use std::ptr;
-use std::ptr::NonNull;
-use std::slice;
+use std::{error, ffi::c_int, fmt, mem::MaybeUninit, ptr, ptr::NonNull, slice};
 
-use rav1d::Dav1dResult;
-use rav1d::include::dav1d::data::Dav1dData;
-use rav1d::include::dav1d::dav1d::{Dav1dContext, Dav1dSettings};
-use rav1d::include::dav1d::picture::Dav1dPicture;
+use rav1d::{
+    Dav1dResult,
+    include::dav1d::{
+        data::Dav1dData,
+        dav1d::{Dav1dContext, Dav1dSettings},
+        picture::Dav1dPicture,
+    },
+};
 
 /// YUV plane component.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

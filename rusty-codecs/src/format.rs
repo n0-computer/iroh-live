@@ -1,9 +1,6 @@
-use std::cell::OnceCell;
-use std::fmt;
 #[cfg(target_os = "linux")]
 use std::os::unix::io::OwnedFd;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{cell::OnceCell, fmt, sync::Arc, time::Duration};
 
 use image::RgbaImage;
 use strum::{Display, EnumString, VariantNames};
@@ -534,8 +531,8 @@ impl VideoEncoderConfig {
 ///
 /// ```
 /// # use rusty_codecs::format::{AudioEncoderConfig, AudioFormat, AudioPreset};
-/// let config = AudioEncoderConfig::from_preset(AudioFormat::stereo_48k(), AudioPreset::Hq)
-///     .bitrate(96_000);
+/// let config =
+///     AudioEncoderConfig::from_preset(AudioFormat::stereo_48k(), AudioPreset::Hq).bitrate(96_000);
 /// ```
 #[derive(Clone, Debug)]
 pub struct AudioEncoderConfig {
@@ -581,8 +578,9 @@ impl AudioEncoderConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::Duration;
+
+    use super::*;
 
     #[test]
     fn new_cpu_with_format_rgba() {

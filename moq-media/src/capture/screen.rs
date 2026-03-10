@@ -4,8 +4,10 @@ use anyhow::{Context, Result};
 use tracing::{debug, info};
 use xcap::{Monitor, VideoRecorder};
 
-use crate::format::{PixelFormat, VideoFormat, VideoFrame};
-use crate::traits::VideoSource;
+use crate::{
+    format::{PixelFormat, VideoFormat, VideoFrame},
+    traits::VideoSource,
+};
 
 #[derive(derive_more::Debug)]
 pub struct ScreenCapturer {

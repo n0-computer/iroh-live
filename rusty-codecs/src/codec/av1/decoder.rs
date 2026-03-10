@@ -1,16 +1,17 @@
 use std::time::Duration;
 
-use super::rav1d_safe::{Decoder, PlanarImageComponent, Settings};
-use crate::config::{VideoCodec, VideoConfig};
 use anyhow::{Context as _, Result, bail};
 use image::RgbaImage;
 
-use crate::format::{DecodeConfig, DecodedVideoFrame, MediaPacket, PixelFormat};
-use crate::traits::VideoDecoder;
-
-use crate::processing::{
-    convert::{yuv420_to_bgra_from_slices, yuv420_to_rgba_from_slices},
-    scale::{Scaler, fit_within},
+use super::rav1d_safe::{Decoder, PlanarImageComponent, Settings};
+use crate::{
+    config::{VideoCodec, VideoConfig},
+    format::{DecodeConfig, DecodedVideoFrame, MediaPacket, PixelFormat},
+    processing::{
+        convert::{yuv420_to_bgra_from_slices, yuv420_to_rgba_from_slices},
+        scale::{Scaler, fit_within},
+    },
+    traits::VideoDecoder,
 };
 
 #[derive(derive_more::Debug)]
@@ -142,14 +143,16 @@ impl VideoDecoder for Av1VideoDecoder {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::H264;
-
     use super::*;
-    use crate::codec::av1::encoder::Av1Encoder;
-    use crate::codec::test_util::encoded_frames_to_media_packets;
-    use crate::codec::test_util::make_rgba_frame;
-    use crate::format::{EncodedFrame, VideoFrame, VideoPreset};
-    use crate::traits::{VideoDecoder, VideoEncoder, VideoEncoderFactory};
+    use crate::{
+        codec::{
+            av1::encoder::Av1Encoder,
+            test_util::{encoded_frames_to_media_packets, make_rgba_frame},
+        },
+        config::H264,
+        format::{EncodedFrame, VideoFrame, VideoPreset},
+        traits::{VideoDecoder, VideoEncoder, VideoEncoderFactory},
+    };
 
     fn encode_frames(enc: &mut Av1Encoder, frames: &[VideoFrame]) -> Vec<EncodedFrame> {
         let mut packets = Vec::new();

@@ -72,6 +72,8 @@ The right direction is not to remove low-level control. It is to add a better to
 - makes the simple path obvious
 - still allows dropping down to manual transport/media APIs when needed
 
+> codex: This is the center of the whole review. The repo does not need more transport helpers first. It needs a better default object model, with transport and media power preserved below that surface.
+
 ## Scope Reviewed
 
 ### Top-level public surface
@@ -218,6 +220,8 @@ This means the library does not currently expose enough to support:
 
 This is exactly the issue the user called out, and I agree with it.
 
+> codex: I would treat incoming accept/reject support as a hard requirement for calling the one-to-one API "complete." Without it, the callee side is an afterthought.
+
 > **[Note]:** Looking at the actual protocol handler code (`iroh-moq/src/lib.rs:135-162`), `MoqProtocolHandler::handle_connection` immediately calls `MoqSession::session_accept()` and sends the fully-accepted session to the actor. There is no point where app code can intercept. The fix needs to happen at two levels:
 >
 > 1. **Transport level**: split `handle_connection` into "receive connection metadata" + "accept/reject". The QUIC handshake gives you `remote_id()` before accepting the WebTransport session.
@@ -328,6 +332,8 @@ Hang's `Broadcast` classes are a useful example:
 - publish-side `Broadcast` owns `audio`, `video`, `chat`, `location`, `preview`, and serves tracks internally (`../moq/js/publish/src/broadcast.ts:11`)
 
 That is substantially more ergonomic than the Rust API's current exposure of raw producers/consumers plus helper wrappers.
+
+> codex: This is the most important correction from reviewing Hang JS. Broadcast is not the wrong abstraction. Unstructured raw transport primitives are. A good broadcast layer is the bridge between product APIs and MoQ internals.
 
 ## 7. `PublishCaptureController` is helpful but not yet product-grade
 
@@ -1655,6 +1661,18 @@ Recommendation:
 - evolve this into `LocalBroadcast`
 - keep `watch_local()` capability but rename it as preview
 - stop exposing `producer()` in the default path
+
+> **[Note]:** The `LocalBroadcast` surface should be component-based, not setter-based. Prefer:
+>
+> - `broadcast.video().publish_camera(...)`
+> - `broadcast.video().publish_screen(...)`
+> - `broadcast.video().replace_source(...)`
+> - `broadcast.video().clear()`
+> - `broadcast.audio().publish_microphone(...)`
+> - `broadcast.audio().replace_source(...)`
+> - `broadcast.audio().clear()`
+>
+> over top-level `set_video()` / `set_audio()` methods as the primary public shape. The setter form can still exist internally or as a lower-level escape hatch, but the component form matches the examples and makes source replacement semantics much clearer.
 
 ## `Moq`
 

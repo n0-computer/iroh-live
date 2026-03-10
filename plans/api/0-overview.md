@@ -10,6 +10,8 @@ The existing stack has strong low-level building blocks (`moq-media` codecs/pipe
 
 ## Chosen Direction: Three-Layer API (Alternative D)
 
+> codex: This is the right choice. A room/call-only API would underserve manual media users, and a broadcast-only API would keep product ergonomics too low. The three-layer split matches the actual goals of the repo.
+
 ### Layer 1: Product API (`iroh_live`)
 
 For app authors building calls, rooms, and interactive sessions.
@@ -29,6 +31,8 @@ For advanced users who want direct media composition without room/call semantics
 - `BroadcastTicket` — standalone broadcast join handle
 - `VideoTarget` / `SubscribeVideoOptions` — declarative selection
 - Catalog access, rendition selection, preview
+
+> codex: This middle layer is where the toolkit can become genuinely distinctive. If `RemoteBroadcast` and `LocalBroadcast` are excellent, the project can be both an ergonomic app SDK and a serious media toolkit.
 
 ### Layer 3: Raw Transport + Media (`iroh_live::transport`, `moq-media`)
 
@@ -68,13 +72,17 @@ For systems work, custom pipelines, and experimentation.
 - `2-research.md` — survey of LiveKit, Hang, WebRTC, GStreamer, OBS APIs
 - `3-sketch.md` — Rust code sketch of the proposed API (all todo!())
 - `4-impl.md` — phased implementation plan with concrete steps
+- `5-risks-and-future.md` — redesign risks, future work, and success criteria
+- `6-examples.md` — rewritten examples against the proposed API, with async/sync boundaries
 
 ## Migration Strategy
 
 1. Add broadcast object layer (`LocalBroadcast` / `RemoteBroadcast`) wrapping existing types
-2. Add incoming call acceptance primitives (`Moq::incoming()`, `Live::incoming_calls()`)
+2. Add incoming call acceptance primitives (`Moq::incoming()`, `Live::accept_call()`)
 3. Define participant/publication object model
 4. Redesign room events around participants and tracks
 5. Redesign local publish APIs around `LocalParticipant`
 6. Hide transport-first types from default surface
 7. Clean up naming
+
+> codex: The ordering matters. We should not jump directly to `Call` and `Room` wrappers if the broadcast layer is still thin, or we will just bake today's rough edges into tomorrow's API.

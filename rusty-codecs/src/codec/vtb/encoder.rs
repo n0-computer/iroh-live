@@ -1,10 +1,11 @@
-use std::collections::VecDeque;
-use std::ffi::{c_char, c_int, c_void};
-use std::ptr::{self, NonNull};
-use std::slice;
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::VecDeque,
+    ffi::{c_char, c_int, c_void},
+    ptr::{self, NonNull},
+    slice,
+    sync::{Arc, Mutex},
+};
 
-use crate::config::{H264, VideoCodec, VideoConfig};
 use anyhow::{Context, Result, bail};
 use objc2_core_foundation::{
     CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType, kCFTypeDictionaryKeyCallBacks,
@@ -30,6 +31,7 @@ use objc2_video_toolbox::{
 
 use crate::{
     codec::h264::annexb::{build_avcc, length_prefixed_to_annex_b},
+    config::{H264, VideoCodec, VideoConfig},
     format::{EncodedFrame, NalFormat, VideoEncoderConfig, VideoFrame, VideoPreset},
     processing::convert::{YuvData, pixel_format_to_yuv420},
     traits::{VideoEncoder, VideoEncoderFactory},
@@ -651,9 +653,7 @@ unsafe fn extract_avcc_from_sample_buffer(sample_buffer: &CMSampleBuffer) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::test_util::make_rgba_frame;
-    use crate::format::VideoPreset;
-    use crate::traits::VideoEncoder;
+    use crate::{codec::test_util::make_rgba_frame, format::VideoPreset, traits::VideoEncoder};
 
     #[test]
     #[ignore]
@@ -691,9 +691,7 @@ mod tests {
     #[test]
     #[ignore]
     fn vtb_encode_decode_roundtrip() {
-        use crate::codec::h264::H264VideoDecoder;
-        use crate::format::DecodeConfig;
-        use crate::traits::VideoDecoder;
+        use crate::{codec::h264::H264VideoDecoder, format::DecodeConfig, traits::VideoDecoder};
 
         let mut enc = VtbEncoder::with_preset(VideoPreset::P360).unwrap();
         let mut packets = Vec::new();

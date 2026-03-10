@@ -1,28 +1,37 @@
-use std::collections::VecDeque;
-use std::fs::File;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-use crate::config::{VideoCodec, VideoConfig};
-use anyhow::{Context as _, Result, bail};
-use cros_codecs::backend::vaapi::decoder::VaapiBackend;
-use cros_codecs::decoder::stateless::h264::H264;
-use cros_codecs::decoder::stateless::{DecodeError, StatelessDecoder, StatelessVideoDecoder};
-use cros_codecs::decoder::{DecodedHandle, DecoderEvent, StreamInfo};
-use cros_codecs::libva::{Display, UsageHint, VA_FOURCC_NV12, VA_RT_FORMAT_YUV420};
-use cros_codecs::video_frame::VideoFrame as CrosVideoFrame;
-use cros_codecs::video_frame::frame_pool::{FramePool, PooledVideoFrame};
-use cros_codecs::video_frame::generic_dma_video_frame::GenericDmaVideoFrame;
-use cros_codecs::{BlockingMode, DecodedFormat, Fourcc, FrameLayout, PlaneLayout, Resolution};
-
-use crate::codec::h264::annexb::{avcc_to_annex_b, length_prefixed_to_annex_b};
-use crate::format::{
-    CpuFrame, DecodeConfig, DecodedVideoFrame, DmaBufInfo, DmaBufPlaneInfo, GpuFrame,
-    GpuFrameInner, GpuPixelFormat, MediaPacket, NalFormat, Nv12Planes, PixelFormat,
+use std::{
+    collections::VecDeque,
+    fs::File,
+    rc::Rc,
+    sync::{Arc, Mutex},
+    time::Duration,
 };
-use crate::processing::convert::nv12_to_rgba_data;
-use crate::traits::VideoDecoder;
+
+use anyhow::{Context as _, Result, bail};
+use cros_codecs::{
+    BlockingMode, DecodedFormat, Fourcc, FrameLayout, PlaneLayout, Resolution,
+    backend::vaapi::decoder::VaapiBackend,
+    decoder::{
+        DecodedHandle, DecoderEvent, StreamInfo,
+        stateless::{DecodeError, StatelessDecoder, StatelessVideoDecoder, h264::H264},
+    },
+    libva::{Display, UsageHint, VA_FOURCC_NV12, VA_RT_FORMAT_YUV420},
+    video_frame::{
+        VideoFrame as CrosVideoFrame,
+        frame_pool::{FramePool, PooledVideoFrame},
+        generic_dma_video_frame::GenericDmaVideoFrame,
+    },
+};
+
+use crate::{
+    codec::h264::annexb::{avcc_to_annex_b, length_prefixed_to_annex_b},
+    config::{VideoCodec, VideoConfig},
+    format::{
+        CpuFrame, DecodeConfig, DecodedVideoFrame, DmaBufInfo, DmaBufPlaneInfo, GpuFrame,
+        GpuFrameInner, GpuPixelFormat, MediaPacket, NalFormat, Nv12Planes, PixelFormat,
+    },
+    processing::convert::nv12_to_rgba_data,
+    traits::VideoDecoder,
+};
 
 /// Patch SPS NALs in Annex B data to set `constraint_set0_flag` for Baseline profile.
 ///
@@ -505,9 +514,8 @@ impl VideoDecoder for VaapiDecoder {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::H264;
-
     use super::*;
+    use crate::config::H264;
 
     #[test]
     #[ignore = "requires VAAPI hardware"]
@@ -536,9 +544,11 @@ mod tests {
     #[test]
     #[ignore = "requires VAAPI hardware"]
     fn vaapi_encoder_decoder_roundtrip() {
-        use crate::codec::vaapi::encoder::VaapiEncoder;
-        use crate::format::{PixelFormat, VideoFormat, VideoFrame, VideoPreset};
-        use crate::traits::{VideoEncoder, VideoEncoderFactory};
+        use crate::{
+            codec::vaapi::encoder::VaapiEncoder,
+            format::{PixelFormat, VideoFormat, VideoFrame, VideoPreset},
+            traits::{VideoEncoder, VideoEncoderFactory},
+        };
 
         let mut encoder = VaapiEncoder::with_preset(VideoPreset::P360).unwrap();
         let config = encoder.config();

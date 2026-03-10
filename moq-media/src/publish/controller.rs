@@ -9,12 +9,10 @@ use n0_error::{AnyError, Result};
 use n0_watcher::{Direct, Watchable};
 use tracing::info;
 
-use crate::audio_backend::{AudioBackend, DeviceId};
-use crate::publish::PublishBroadcast;
-
-#[cfg(any_audio_codec)]
-use crate::{codec::AudioCodec, format::AudioPreset, publish::AudioRenditions};
-
+use crate::{
+    audio_backend::{AudioBackend, DeviceId},
+    publish::PublishBroadcast,
+};
 #[cfg(any_video_codec)]
 use crate::{
     capture::{CameraCapturer, ScreenCapturer},
@@ -22,6 +20,8 @@ use crate::{
     format::VideoPreset,
     publish::VideoRenditions,
 };
+#[cfg(any_audio_codec)]
+use crate::{codec::AudioCodec, format::AudioPreset, publish::AudioRenditions};
 
 /// Device and codec selection for capture sources.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

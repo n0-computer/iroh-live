@@ -14,12 +14,14 @@ use dioxus_native::prelude::*;
 use moq_media::capture::CameraCapturer;
 #[cfg(feature = "capture-screen")]
 use moq_media::capture::ScreenCapturer;
-use moq_media::codec::{DynamicVideoDecoder, VideoCodec};
-use moq_media::format::{DecodeConfig, DecoderBackend};
-use moq_media::pipeline::{VideoDecoderPipeline, VideoEncoderPipeline};
-use moq_media::subscribe::WatchTrack;
-use moq_media::traits::{VideoEncoder, VideoSource};
-use moq_media::transport::media_pipe;
+use moq_media::{
+    codec::{DynamicVideoDecoder, VideoCodec},
+    format::{DecodeConfig, DecoderBackend},
+    pipeline::{VideoDecoderPipeline, VideoEncoderPipeline},
+    subscribe::WatchTrack,
+    traits::{VideoEncoder, VideoSource},
+    transport::media_pipe,
+};
 use moq_media_dioxus::use_video_renderer;
 use strum::VariantArray;
 

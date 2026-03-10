@@ -1,5 +1,5 @@
-use crate::config::VideoConfig;
 use crate::{
+    config::VideoConfig,
     format::{
         DecodeConfig, DecodedVideoFrame, EncodedFrame, MediaPacket, PixelFormat, VideoFormat,
         VideoFrame,

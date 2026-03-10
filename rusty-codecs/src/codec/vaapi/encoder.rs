@@ -1,24 +1,24 @@
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
-use crate::config::{H264, VideoCodec, VideoConfig};
 use anyhow::{Context, Result};
-use cros_codecs::backend::vaapi::encoder::VaapiBackend;
-use cros_codecs::encoder::h264::EncoderConfig;
-use cros_codecs::encoder::stateless::h264::StatelessEncoder as H264StatelessEncoder;
-use cros_codecs::encoder::{
-    CodedBitstreamBuffer, FrameMetadata, PredictionStructure, RateControl, Tunings,
-    VideoEncoder as CrosVideoEncoder,
+use cros_codecs::{
+    BlockingMode, Fourcc, FrameLayout, PlaneLayout, Resolution,
+    backend::vaapi::encoder::VaapiBackend,
+    encoder::{
+        CodedBitstreamBuffer, FrameMetadata, PredictionStructure, RateControl, Tunings,
+        VideoEncoder as CrosVideoEncoder, h264::EncoderConfig,
+        stateless::h264::StatelessEncoder as H264StatelessEncoder,
+    },
+    libva::{
+        Display, Image, Surface, UsageHint, VA_FOURCC_NV12, VA_RT_FORMAT_YUV420, VAEntrypoint,
+        VAProfile,
+    },
+    video_frame::{ReadMapping, VideoFrame as CrosVideoFrame, WriteMapping},
 };
-use cros_codecs::libva::{
-    Display, Image, Surface, UsageHint, VA_FOURCC_NV12, VA_RT_FORMAT_YUV420, VAEntrypoint,
-    VAProfile,
-};
-use cros_codecs::video_frame::{ReadMapping, VideoFrame as CrosVideoFrame, WriteMapping};
-use cros_codecs::{BlockingMode, Fourcc, FrameLayout, PlaneLayout, Resolution};
 
 use crate::{
     codec::h264::annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b},
+    config::{H264, VideoCodec, VideoConfig},
     format::{EncodedFrame, NalFormat, VideoEncoderConfig, VideoFrame},
     processing::convert::{YuvData, pixel_format_to_nv12},
     traits::{VideoEncoder, VideoEncoderFactory},
@@ -542,9 +542,11 @@ unsafe impl Send for VaapiEncoder {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::test_util::make_rgba_frame;
-    use crate::format::VideoPreset;
-    use crate::traits::{VideoEncoder, VideoEncoderFactory};
+    use crate::{
+        codec::test_util::make_rgba_frame,
+        format::VideoPreset,
+        traits::{VideoEncoder, VideoEncoderFactory},
+    };
 
     #[test]
     #[ignore = "requires VAAPI hardware"]
@@ -580,9 +582,7 @@ mod tests {
     #[test]
     #[ignore = "requires VAAPI hardware"]
     fn vaapi_encode_decode_roundtrip() {
-        use crate::codec::h264::H264VideoDecoder;
-        use crate::format::DecodeConfig;
-        use crate::traits::VideoDecoder;
+        use crate::{codec::h264::H264VideoDecoder, format::DecodeConfig, traits::VideoDecoder};
 
         let mut enc = VaapiEncoder::with_preset(VideoPreset::P360).unwrap();
         let mut packets = Vec::new();

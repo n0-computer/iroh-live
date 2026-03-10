@@ -1,15 +1,16 @@
-use std::collections::VecDeque;
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 
-use crate::config::{AudioCodec, AudioConfig};
 use anyhow::{Result, bail};
 use unsafe_libopus::{
     self as opus, OPUS_APPLICATION_VOIP, OPUS_OK, OPUS_SET_BITRATE_REQUEST, OPUS_SET_DTX_REQUEST,
     OPUS_SET_INBAND_FEC_REQUEST, OpusEncoder as RawOpusEncoder, varargs,
 };
 
-use crate::format::{AudioEncoderConfig, EncodedFrame};
-use crate::traits::{AudioEncoder, AudioEncoderFactory};
+use crate::{
+    config::{AudioCodec, AudioConfig},
+    format::{AudioEncoderConfig, EncodedFrame},
+    traits::{AudioEncoder, AudioEncoderFactory},
+};
 
 const SAMPLE_RATE: u32 = 48_000;
 /// Opus frame size: 20ms at 48kHz = 960 samples per channel.
@@ -217,8 +218,10 @@ mod tests {
     use std::f32::consts::PI;
 
     use super::*;
-    use crate::format::{AudioFormat, AudioPreset};
-    use crate::traits::AudioEncoderFactory;
+    use crate::{
+        format::{AudioFormat, AudioPreset},
+        traits::AudioEncoderFactory,
+    };
 
     fn make_sine(num_samples: usize, freq: f32, sample_rate: f32) -> Vec<f32> {
         (0..num_samples)

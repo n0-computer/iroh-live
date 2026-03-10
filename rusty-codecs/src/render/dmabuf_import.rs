@@ -12,15 +12,10 @@
 //! cannot import (e.g. Y_TILED on Intel), a VAAPI VPP blit is used to re-tile
 //! the surface to a Vulkan-compatible modifier before import.
 
-use std::ffi::CStr;
-use std::fmt;
-use std::io;
-use std::os::fd::AsRawFd;
+use std::{ffi::CStr, fmt, io, os::fd::AsRawFd};
 
-use ash::vk;
+use ash::{ext::image_drm_format_modifier, vk};
 use tracing::debug;
-
-use ash::ext::image_drm_format_modifier;
 use wgpu::hal::MemoryFlags;
 
 use crate::format::DmaBufInfo;
@@ -816,13 +811,14 @@ impl Drop for DmaBufImporter {
 use std::fs::File;
 #[cfg(feature = "vaapi")]
 use std::os::fd::{FromRawFd, OwnedFd};
+
+#[cfg(feature = "vaapi")]
+use cros_codecs::libva as va;
 #[cfg(feature = "vaapi")]
 use tracing::warn;
 
 #[cfg(feature = "vaapi")]
 use crate::format::DmaBufPlaneInfo;
-#[cfg(feature = "vaapi")]
-use cros_codecs::libva as va;
 
 /// VAProcPipelineParameterBuffer from va/va_vpp.h.
 ///

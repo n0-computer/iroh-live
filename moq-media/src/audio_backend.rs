@@ -28,12 +28,11 @@ use firewheel::{
         },
     },
 };
+use n0_future::boxed::BoxFuture;
 use tokio::sync::{mpsc, mpsc::error::TryRecvError, oneshot};
 use tracing::{debug, error, info, trace, warn};
 
 use self::aec::{AecCaptureNode, AecProcessor, AecProcessorConfig, AecRenderNode};
-use n0_future::boxed::BoxFuture;
-
 use crate::{
     format::AudioFormat,
     traits::{AudioSink, AudioSinkHandle, AudioSource, AudioStreamFactory},

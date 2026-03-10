@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use crate::config::{H264, VideoCodec, VideoConfig};
 use anyhow::Result;
 use openh264::{
     OpenH264API,
@@ -11,13 +10,13 @@ use openh264::{
     formats::YUVSource,
 };
 
+use super::annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b};
 use crate::{
+    config::{H264, VideoCodec, VideoConfig},
     format::{EncodedFrame, NalFormat, VideoEncoderConfig, VideoFrame},
     processing::convert::{YuvData, pixel_format_to_yuv420},
     traits::{VideoEncoder, VideoEncoderFactory},
 };
-
-use super::annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b};
 
 #[derive(derive_more::Debug)]
 pub struct H264Encoder {
@@ -214,9 +213,11 @@ impl VideoEncoder for H264Encoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::test_util::make_rgba_frame;
-    use crate::format::VideoPreset;
-    use crate::traits::{VideoEncoder, VideoEncoderFactory};
+    use crate::{
+        codec::test_util::make_rgba_frame,
+        format::VideoPreset,
+        traits::{VideoEncoder, VideoEncoderFactory},
+    };
 
     #[test]
     fn encode_single_frame() {

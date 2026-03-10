@@ -1,7 +1,4 @@
-use std::collections::HashSet;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::HashSet, pin::Pin, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use iroh::{Endpoint, EndpointId, SecretKey};
@@ -9,20 +6,19 @@ use iroh_gossip::Gossip;
 use iroh_moq::MoqSession;
 use iroh_smol_kv::{ExpiryConfig, Filter, SignedValue, Subscribe, SubscribeMode, WriteScope};
 use moq_lite::BroadcastProducer;
+pub use moq_media::publish::{PublishOpts, PublishUpdateError, StreamKind};
 use moq_media::subscribe::SubscribeBroadcast;
 use n0_error::{Result, StdResultExt, anyerr};
-use n0_future::FuturesUnordered;
-use n0_future::{StreamExt, task::AbortOnDropHandle};
+use n0_future::{FuturesUnordered, StreamExt, task::AbortOnDropHandle};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc::{self, error::TryRecvError};
-use tokio::task;
+use tokio::{
+    sync::mpsc::{self, error::TryRecvError},
+    task,
+};
 use tracing::{Instrument, debug, error_span, warn};
 
+pub use self::{publisher::RoomPublisherSync, ticket::RoomTicket};
 use crate::Live;
-
-pub use self::publisher::RoomPublisherSync;
-pub use self::ticket::RoomTicket;
-pub use moq_media::publish::{PublishOpts, PublishUpdateError, StreamKind};
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + Sync + 'static>>;
 
@@ -315,8 +311,7 @@ impl Actor {
 }
 
 mod ticket {
-    use std::env;
-    use std::str::FromStr;
+    use std::{env, str::FromStr};
 
     use iroh::EndpointId;
     use iroh_gossip::TopicId;

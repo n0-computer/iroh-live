@@ -1,13 +1,14 @@
 use std::env;
 
-use crate::{
-    live::Live,
-    rooms::{Room, RoomTicket},
-};
 use iroh::{Endpoint, protocol::Router};
 use iroh_gossip::Gossip;
 use n0_error::{Result, StdResultExt};
 use tracing::info;
+
+use crate::{
+    live::Live,
+    rooms::{Room, RoomTicket},
+};
 
 #[derive(Debug, Clone)]
 pub struct LiveNode {
