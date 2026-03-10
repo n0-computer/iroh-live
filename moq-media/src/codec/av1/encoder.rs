@@ -29,14 +29,11 @@ pub struct Av1Encoder {
 const AV1_BPP: f32 = 0.05;
 
 impl Av1Encoder {
-    fn new(width: u32, height: u32, framerate: u32, bitrate: Option<u64>) -> Result<Self> {
-        let enc_config = VideoEncoderConfig {
-            width,
-            height,
-            framerate,
-            bitrate,
-        };
-        let bitrate = enc_config.bitrate_or_default(AV1_BPP);
+    fn new(config: VideoEncoderConfig) -> Result<Self> {
+        let width = config.width;
+        let height = config.height;
+        let framerate = config.framerate;
+        let bitrate = config.bitrate_or_default(AV1_BPP);
 
         let mut enc_config = EncoderConfig::with_speed_preset(10);
         enc_config.width = width as usize;
@@ -114,12 +111,7 @@ impl VideoEncoderFactory for Av1Encoder {
     const ID: &str = "av1-rav1e";
 
     fn with_config(config: VideoEncoderConfig) -> Result<Self> {
-        Self::new(
-            config.width,
-            config.height,
-            config.framerate,
-            config.bitrate,
-        )
+        Self::new(config)
     }
 }
 

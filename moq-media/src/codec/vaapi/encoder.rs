@@ -259,14 +259,11 @@ impl VaapiEncoder {
     /// Bits-per-pixel factor for H.264 default bitrate calculation.
     const H264_BPP: f32 = 0.07;
 
-    fn new(width: u32, height: u32, framerate: u32, bitrate: Option<u64>) -> Result<Self> {
-        let enc_config = VideoEncoderConfig {
-            width,
-            height,
-            framerate,
-            bitrate,
-        };
-        let bitrate = enc_config.bitrate_or_default(Self::H264_BPP);
+    fn new(config: VideoEncoderConfig) -> Result<Self> {
+        let width = config.width;
+        let height = config.height;
+        let framerate = config.framerate;
+        let bitrate = config.bitrate_or_default(Self::H264_BPP);
 
         let coded_size = Resolution { width, height };
         let fourcc = Fourcc::from(b"NV12");
@@ -420,12 +417,7 @@ impl VideoEncoderFactory for VaapiEncoder {
     const ID: &str = "h264-vaapi";
 
     fn with_config(config: VideoEncoderConfig) -> Result<Self> {
-        Self::new(
-            config.width,
-            config.height,
-            config.framerate,
-            config.bitrate,
-        )
+        Self::new(config)
     }
 }
 
