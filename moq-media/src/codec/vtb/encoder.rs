@@ -68,14 +68,11 @@ unsafe impl Send for VtbEncoder {}
 const H264_BPP: f32 = 0.07;
 
 impl VtbEncoder {
-    fn new(width: u32, height: u32, framerate: u32, bitrate: Option<u64>) -> Result<Self> {
-        let enc_config = VideoEncoderConfig {
-            width,
-            height,
-            framerate,
-            bitrate,
-        };
-        let bitrate = enc_config.bitrate_or_default(H264_BPP);
+    fn new(config: VideoEncoderConfig) -> Result<Self> {
+        let width = config.width;
+        let height = config.height;
+        let framerate = config.framerate;
+        let bitrate = config.bitrate_or_default(H264_BPP);
 
         let callback_state: SharedPacketBuf = Arc::new(Mutex::new(CallbackState {
             packets: Vec::new(),
@@ -214,12 +211,7 @@ impl VideoEncoderFactory for VtbEncoder {
     const ID: &str = "h264-vtb";
 
     fn with_config(config: VideoEncoderConfig) -> Result<Self> {
-        Self::new(
-            config.width,
-            config.height,
-            config.framerate,
-            config.bitrate,
-        )
+        Self::new(config)
     }
 }
 
