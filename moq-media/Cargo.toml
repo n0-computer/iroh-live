@@ -67,6 +67,7 @@ objc2 = { version = "0.6", optional = true }
 clap = { version = "4.5", features = ["derive"] }
 eframe = { version = "0.33.0", features = ["wgpu"] }
 egui-wgpu = "0.33.0"
+moq-media-egui = { path = "../moq-media-egui" }
 pollster = "0.4"
 image = { version = "0.25.8", features = ["jpeg"] }
 postcard = "1.1.3"

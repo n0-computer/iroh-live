@@ -3,6 +3,7 @@ members = [
     "iroh-live",
     "iroh-moq",
     "moq-media",
+    "moq-media-egui",
 ]
 resolver = "2"
 

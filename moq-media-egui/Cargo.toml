@@ -1,0 +1,25 @@
+[package]
+name = "moq-media-egui"
+version = "0.1.0"
+edition = "2024"
+description = "egui integration for moq-media video rendering"
+authors = ["Franz Heinzmann <frando@n0.computer>"]
+repository = "https://github.com/n0-computer/iroh-live"
+license = "MIT OR Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+egui-wgpu = "0.33.0"
+epaint = "0.33"
+moq-media = { path = "../moq-media", features = ["wgpu"] }
+pollster = "0.4"
+tracing = "0.1.41"
+wgpu = { version = "27", default-features = false, features = ["wgsl", "vulkan"] }
+
+[dev-dependencies]
+
+[features]
+default = []
+dmabuf-import = ["moq-media/dmabuf-import"]

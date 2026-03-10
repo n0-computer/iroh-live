@@ -26,10 +26,10 @@ use moq_media::format::{
     VideoPreset,
 };
 use moq_media::pipeline::{VideoDecoderPipeline, VideoEncoderPipeline};
-#[cfg(feature = "wgpu")]
-use moq_media::render::WgpuVideoRenderer;
 use moq_media::traits::{VideoEncoder, VideoSource};
 use moq_media::transport::media_pipe;
+#[cfg(feature = "wgpu")]
+use moq_media_egui::{EguiVideoRenderer, create_egui_wgpu_config};
 use strum::VariantArray;
 use tokio::runtime::Runtime;
 
@@ -302,15 +302,7 @@ impl Stats {
 struct VideoView {
     texture: egui::TextureHandle,
     #[cfg(feature = "wgpu")]
-    wgpu_state: Option<WgpuState>,
-}
-
-#[cfg(feature = "wgpu")]
-struct WgpuState {
-    renderer: WgpuVideoRenderer,
-    render_state: egui_wgpu::RenderState,
-    texture_id: Option<egui::TextureId>,
-    last_frame_size: Option<(u32, u32)>,
+    egui_renderer: Option<EguiVideoRenderer>,
 }
 
 impl VideoView {
@@ -324,13 +316,8 @@ impl VideoView {
         let texture = ctx.load_texture(format!("video-{id}"), placeholder, Default::default());
 
         #[cfg(feature = "wgpu")]
-        let wgpu_state = if render_mode == RenderMode::Wgpu {
-            wgpu_render_state.map(|rs| WgpuState {
-                renderer: WgpuVideoRenderer::new(rs.device.clone(), rs.queue.clone()),
-                render_state: rs.clone(),
-                texture_id: None,
-                last_frame_size: None,
-            })
+        let egui_renderer = if render_mode == RenderMode::Wgpu {
+            wgpu_render_state.map(EguiVideoRenderer::new)
         } else {
             None
         };
@@ -338,31 +325,14 @@ impl VideoView {
         Self {
             texture,
             #[cfg(feature = "wgpu")]
-            wgpu_state,
+            egui_renderer,
         }
     }
 
     fn render_frame(&mut self, frame: &DecodedVideoFrame) {
         #[cfg(feature = "wgpu")]
-        if let Some(ref mut wgpu) = self.wgpu_state {
-            let view = wgpu.renderer.render(frame);
-            let mut egui_renderer = wgpu.render_state.renderer.write();
-            if let Some(id) = wgpu.texture_id {
-                egui_renderer.update_egui_texture_from_wgpu_texture(
-                    &wgpu.render_state.device,
-                    view,
-                    wgpu::FilterMode::Linear,
-                    id,
-                );
-            } else {
-                let id = egui_renderer.register_native_texture(
-                    &wgpu.render_state.device,
-                    view,
-                    wgpu::FilterMode::Linear,
-                );
-                wgpu.texture_id = Some(id);
-            }
-            wgpu.last_frame_size = Some(frame.dimensions());
+        if let Some(ref mut r) = self.egui_renderer {
+            r.render(frame);
             return;
         }
 
@@ -376,8 +346,8 @@ impl VideoView {
 
     fn texture_info(&self) -> Option<(egui::TextureId, egui::Vec2)> {
         #[cfg(feature = "wgpu")]
-        if let Some(ref wgpu) = self.wgpu_state
-            && let (Some(id), Some((w, h))) = (wgpu.texture_id, wgpu.last_frame_size)
+        if let Some(ref r) = self.egui_renderer
+            && let Some((id, (w, h))) = r.last_texture()
         {
             return Some((id, egui::vec2(w as f32, h as f32)));
         }
@@ -860,40 +830,9 @@ fn main() -> eframe::Result<()> {
     tracing_subscriber::fmt::init();
 
     let native_options = if cfg!(feature = "wgpu") {
-        #[cfg(feature = "dmabuf-import")]
-        let wgpu_config = {
-            // Create a Vulkan device with VK_EXT_image_drm_format_modifier
-            // for zero-copy DMA-BUF import from VAAPI decoder.
-            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-                backends: wgpu::Backends::VULKAN,
-                ..Default::default()
-            });
-            let adapter =
-                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::HighPerformance,
-                    ..Default::default()
-                }))
-                .expect("no suitable wgpu adapter");
-
-            let (device, queue) = moq_media::render::create_device_with_dmabuf_extensions(&adapter)
-                .unwrap_or_else(|e| {
-                    eprintln!("DMA-BUF device creation failed ({e}), using default");
-                    pollster::block_on(adapter.request_device(&Default::default()))
-                        .expect("wgpu device creation failed")
-                });
-
-            egui_wgpu::WgpuConfiguration {
-                wgpu_setup: egui_wgpu::WgpuSetup::Existing(egui_wgpu::WgpuSetupExisting {
-                    instance,
-                    adapter,
-                    device,
-                    queue,
-                }),
-                ..Default::default()
-            }
-        };
-
-        #[cfg(not(feature = "dmabuf-import"))]
+        #[cfg(feature = "wgpu")]
+        let wgpu_config = create_egui_wgpu_config();
+        #[cfg(not(feature = "wgpu"))]
         let wgpu_config = egui_wgpu::WgpuConfiguration::default();
 
         eframe::NativeOptions {

@@ -15,6 +15,7 @@ use iroh_live::{
     ticket::LiveTicket,
     util::StatsSmoother,
 };
+use moq_media_egui::{EguiVideoRenderer, create_egui_wgpu_config};
 use n0_error::{Result, anyerr};
 use tracing::info;
 
@@ -91,45 +92,9 @@ fn main() -> Result<()> {
     let _guard = rt.enter();
 
     let native_options = if use_wgpu {
-        #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
-        let wgpu_config = {
-            // Create a wgpu device with VK_EXT_image_drm_format_modifier
-            // for zero-copy DMA-BUF import from VAAPI decoder.
-            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-                backends: wgpu::Backends::VULKAN,
-                ..Default::default()
-            });
-            let adapter =
-                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::HighPerformance,
-                    ..Default::default()
-                }))
-                .expect("no suitable wgpu adapter");
-
-            let (device, queue) = moq_media::render::create_device_with_dmabuf_extensions(&adapter)
-                .unwrap_or_else(|e| {
-                    eprintln!("DMA-BUF device creation failed ({e}), using default");
-                    pollster::block_on(adapter.request_device(&Default::default()))
-                        .expect("wgpu device creation failed")
-                });
-
-            egui_wgpu::WgpuConfiguration {
-                wgpu_setup: egui_wgpu::WgpuSetup::Existing(egui_wgpu::WgpuSetupExisting {
-                    instance,
-                    adapter,
-                    device,
-                    queue,
-                }),
-                ..Default::default()
-            }
-        };
-
-        #[cfg(not(all(target_os = "linux", feature = "dmabuf-import")))]
-        let wgpu_config = egui_wgpu::WgpuConfiguration::default();
-
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
-            wgpu_options: wgpu_config,
+            wgpu_options: create_egui_wgpu_config(),
             ..Default::default()
         }
     } else {
@@ -148,7 +113,6 @@ fn main() -> Result<()> {
             });
 
             let video = track.video.map(|video| {
-                #[cfg(feature = "wgpu")]
                 if use_wgpu {
                     return VideoView::new_wgpu(cc, video);
                 }
@@ -298,58 +262,34 @@ struct VideoView {
     track: WatchTrack,
     texture: egui::TextureHandle,
     size: egui::Vec2,
-    #[cfg(feature = "wgpu")]
-    wgpu_state: Option<WgpuState>,
-}
-
-#[cfg(feature = "wgpu")]
-struct WgpuState {
-    renderer: moq_media::render::WgpuVideoRenderer,
-    render_state: egui_wgpu::RenderState,
-    texture_id: Option<egui::TextureId>,
-    last_frame_size: Option<(u32, u32)>,
+    egui_renderer: Option<EguiVideoRenderer>,
 }
 
 impl VideoView {
     fn new(ctx: &egui::Context, track: WatchTrack) -> Self {
-        let size = egui::vec2(100., 100.);
-        let color_image =
-            egui::ColorImage::filled([size.x as usize, size.y as usize], Color32::BLACK);
-        let texture = ctx.load_texture("video", color_image, egui::TextureOptions::default());
+        let placeholder = egui::ColorImage::filled([1, 1], Color32::BLACK);
+        let texture = ctx.load_texture("video", placeholder, Default::default());
         Self {
-            size,
+            size: egui::vec2(100., 100.),
             texture,
             track,
-            #[cfg(feature = "wgpu")]
-            wgpu_state: None,
+            egui_renderer: None,
         }
     }
 
-    #[cfg(feature = "wgpu")]
     fn new_wgpu(cc: &eframe::CreationContext<'_>, track: WatchTrack) -> Self {
-        let size = egui::vec2(100., 100.);
-        let color_image =
-            egui::ColorImage::filled([size.x as usize, size.y as usize], Color32::BLACK);
-        let texture =
-            cc.egui_ctx
-                .load_texture("video", color_image, egui::TextureOptions::default());
+        let placeholder = egui::ColorImage::filled([1, 1], Color32::BLACK);
+        let texture = cc
+            .egui_ctx
+            .load_texture("video", placeholder, Default::default());
 
-        let wgpu_state = cc.wgpu_render_state.as_ref().map(|rs| {
-            let renderer =
-                moq_media::render::WgpuVideoRenderer::new(rs.device.clone(), rs.queue.clone());
-            WgpuState {
-                renderer,
-                render_state: rs.clone(),
-                texture_id: None,
-                last_frame_size: None,
-            }
-        });
+        let egui_renderer = cc.wgpu_render_state.as_ref().map(EguiVideoRenderer::new);
 
         Self {
-            size,
+            size: egui::vec2(100., 100.),
             texture,
             track,
-            wgpu_state,
+            egui_renderer,
         }
     }
 
@@ -362,40 +302,18 @@ impl VideoView {
             let h = (available_size.y * ppp) as u32;
             self.track.set_viewport(w, h);
         }
+
         if let Some(frame) = self.track.current_frame() {
-            #[cfg(feature = "wgpu")]
-            if let Some(ref mut wgpu) = self.wgpu_state {
-                // wgpu rendering path
-                let view = wgpu.renderer.render(&frame);
-                let mut egui_renderer = wgpu.render_state.renderer.write();
-                if let Some(id) = wgpu.texture_id {
-                    egui_renderer.update_egui_texture_from_wgpu_texture(
-                        &wgpu.render_state.device,
-                        view,
-                        wgpu::FilterMode::Linear,
-                        id,
-                    );
-                } else {
-                    let id = egui_renderer.register_native_texture(
-                        &wgpu.render_state.device,
-                        view,
-                        wgpu::FilterMode::Linear,
-                    );
-                    wgpu.texture_id = Some(id);
-                }
-                wgpu.last_frame_size = Some(frame.dimensions());
-                drop(egui_renderer);
-                if let Some(id) = wgpu.texture_id {
-                    let (w, h) = frame.dimensions();
-                    return egui::Image::from_texture(egui::load::SizedTexture::new(
-                        id,
-                        [w as f32, h as f32],
-                    ))
-                    .shrink_to_fit();
-                }
+            if let Some(ref mut r) = self.egui_renderer {
+                let (id, (w, h)) = r.render(&frame);
+                return egui::Image::from_texture(egui::load::SizedTexture::new(
+                    id,
+                    [w as f32, h as f32],
+                ))
+                .shrink_to_fit();
             }
 
-            // CPU fallback path
+            // CPU fallback
             let (w, h) = frame.dimensions();
             let image = egui::ColorImage::from_rgba_unmultiplied(
                 [w as usize, h as usize],
@@ -404,10 +322,9 @@ impl VideoView {
             self.texture.set(image, Default::default());
         }
 
-        // When using wgpu, return the last wgpu texture even if no new frame arrived.
-        #[cfg(feature = "wgpu")]
-        if let Some(ref wgpu) = self.wgpu_state {
-            if let (Some(id), Some((w, h))) = (wgpu.texture_id, wgpu.last_frame_size) {
+        // Return last wgpu texture even if no new frame arrived.
+        if let Some(ref r) = self.egui_renderer {
+            if let Some((id, (w, h))) = r.last_texture() {
                 return egui::Image::from_texture(egui::load::SizedTexture::new(
                     id,
                     [w as f32, h as f32],
