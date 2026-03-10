@@ -966,19 +966,23 @@ impl VppRetiler {
                 attribs[1].value.type_ = va::VAGenericValueType::VAGenericValueTypePointer;
                 attribs[1].value.value.p = &mut prime_desc as *mut _ as *mut std::ffi::c_void;
 
-                va_check(
-                    va::vaCreateSurfaces(
-                        self.dpy,
-                        va::VA_RT_FORMAT_YUV420,
-                        info.coded_width,
-                        info.coded_height,
-                        &mut input_surface,
-                        1,
-                        attribs.as_mut_ptr(),
-                        attribs.len() as u32,
-                    ),
-                    "vaCreateSurfaces(VPP input)",
-                )?;
+                let status = va::vaCreateSurfaces(
+                    self.dpy,
+                    va::VA_RT_FORMAT_YUV420,
+                    info.coded_width,
+                    info.coded_height,
+                    &mut input_surface,
+                    1,
+                    attribs.as_mut_ptr(),
+                    attribs.len() as u32,
+                );
+                if status != va::VA_STATUS_SUCCESS as i32 {
+                    // Driver did not take ownership of fd_dup on failure.
+                    libc::close(fd_dup);
+                    return Err(anyhow::anyhow!(
+                        "vaCreateSurfaces(VPP input) failed: VA status {status}"
+                    ));
+                }
             }
 
             // Create output surface with VPP_WRITE + EXPORT hints.
@@ -1073,12 +1077,18 @@ impl VppRetiler {
                 "vaExportSurfaceHandle(VPP output)",
             )?;
 
-            let obj = &desc.objects[0];
+            // Take ownership of the primary object FD. Close any additional
+            // object FDs (e.g. CCS aux planes) to prevent per-frame FD leaks.
+            let primary_fd = OwnedFd::from_raw_fd(desc.objects[0].fd);
+            for i in 1..desc.num_objects as usize {
+                libc::close(desc.objects[i].fd);
+            }
+
             let layer = &desc.layers[0];
 
             let result = DmaBufInfo {
-                fd: OwnedFd::from_raw_fd(obj.fd),
-                modifier: obj.drm_format_modifier,
+                fd: primary_fd,
+                modifier: desc.objects[0].drm_format_modifier,
                 drm_format: desc.fourcc,
                 coded_width: desc.width,
                 coded_height: desc.height,
