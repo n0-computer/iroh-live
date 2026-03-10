@@ -153,6 +153,7 @@ impl DmaBufImporter {
         }
 
         // If modifier is not Vulkan-compatible, try VPP re-tile (requires vaapi feature).
+        #[cfg(feature = "vaapi")]
         let retiled: DmaBufInfo;
         let info = if self.supported_nv12_modifiers.contains(&info.modifier) {
             info
