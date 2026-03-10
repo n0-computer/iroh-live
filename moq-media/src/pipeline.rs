@@ -411,6 +411,7 @@ fn decode_loop(
 /// [`PipeSource`](crate::transport::PipeSource) for local encode→decode pipelines.
 #[derive(derive_more::Debug)]
 pub struct AudioDecoderPipeline {
+    name: String,
     shutdown: CancellationToken,
     #[debug(skip)]
     handle: Box<dyn AudioSinkHandle>,
@@ -490,11 +491,17 @@ impl AudioDecoderPipeline {
         });
         let task = tokio::spawn(forward_packets(source, packet_tx));
         Ok(Self {
+            name,
             shutdown,
             handle,
             _task_handle: AbortOnDropHandle::new(task),
             _thread_handle: thread,
         })
+    }
+
+    /// Returns the pipeline name (typically the rendition/track name).
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Returns the [`AudioSinkHandle`] for controlling playback (pause/resume/peaks).
