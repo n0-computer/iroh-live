@@ -192,16 +192,26 @@ impl GpuFrameInner for VaapiGpuFrame {
 
 /// Extract DMA-BUF metadata from a decoded frame by re-importing it as a VA Surface
 /// and exporting PRIME descriptors. This gives us fresh FDs and full plane layout info.
+///
+/// Uses `catch_unwind` because cros-codecs' `GenericDmaVideoFrame::clone` panics on
+/// FD exhaustion (EMFILE) rather than returning an error.
 fn extract_dma_buf_info(
     display: &Rc<Display>,
     frame: &VaapiFrame,
     display_w: u32,
     display_h: u32,
 ) -> Option<DmaBufInfo> {
-    let surface = match frame.to_native_handle(display) {
-        Ok(s) => s,
-        Err(e) => {
+    let surface = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        frame.to_native_handle(display)
+    })) {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
             tracing::warn!("failed to re-import frame as VA surface: {e}");
+            return None;
+        }
+        Err(_) => {
+            tracing::error!("FD exhaustion (EMFILE) during DMA-BUF frame clone — \
+                             skipping zero-copy path for this frame");
             return None;
         }
     };
