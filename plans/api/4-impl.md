@@ -18,9 +18,9 @@ See `0-overview.md` for the design, `3-sketch.md` for the target API shape.
 |-------|------|------------|-----------------|
 | 1 | Shared types + broadcast wrappers | nothing | small |
 | 2 | Incoming session support | phase 1 | medium |
-| 3 | Call API | phase 2 | medium |
-| 4 | Room participant model | phase 1 | medium |
-| 5 | Polish, deprecation, examples | phases 3-4 | small |
+| 3 | Call API | phases 1, 2 | medium |
+| 4 | Room participant model | phases 1, 2 | medium-large |
+| 5 | Polish, deprecation, examples | phases 3, 4 | small |
 
 ---
 
@@ -81,13 +81,10 @@ New file. Wraps existing moq-media types:
 - `SubscribeVideoOptions` — struct with `quality`, `rendition`, `viewport`, `decode_config`. Builder methods.
 - `SubscribeAudioOptions` — struct with `quality`, `rendition`. Builder methods.
 
-**Key decision**: `RemoteBroadcast` needs interior mutability because `SubscribeBroadcast`
-methods take `&mut self`. Options:
-1. `Arc<Mutex<SubscribeBroadcast>>` — simple, blocks briefly on subscribe
-2. `Arc<RwLock<SubscribeBroadcast>>` — reads (catalog, name) don't block
-3. Refactor `SubscribeBroadcast` to use `&self` — cleanest but changes moq-media
-
-Start with option 1, refactor to option 3 in a later phase.
+**Key decision**: `SubscribeBroadcast` methods already take `&self` (catalog, watch,
+listen, etc.), so `RemoteBroadcast` can use `Arc<SubscribeBroadcast>` directly — no
+Mutex needed. `PublishBroadcast::set_video/set_audio` take `&mut self`, so
+`LocalBroadcast` needs `Arc<Mutex<PublishBroadcast>>` (or refactor to `&self` later).
 
 ### 1.3 Transport re-exports (`iroh-live/src/transport.rs`)
 
@@ -322,11 +319,20 @@ The existing room actor (`iroh-live/src/rooms.rs`) needs to:
    known publications and emit `TrackPublished`/`TrackUnpublished` events
 3. **Map old events to new events**:
    - `RemoteAnnounced` → no direct event (internal bookkeeping)
-   - `RemoteConnected` → create `RemoteParticipant`, emit `ParticipantJoined`
+   - `RemoteConnected` → create `RemoteParticipant` (wrapping session), emit `ParticipantJoined`
    - `BroadcastSubscribed` → create `RemoteBroadcast`, attach to participant,
      derive publications from catalog, emit `TrackPublished` for each
 
-4. **Expose new Room API** while keeping old one available (deprecated)
+4. **Catalog diffing**: When a catalog update arrives (via `catalog_watcher()`), diff
+   old vs new to emit `TrackPublished`/`TrackUnpublished`:
+   ```rust
+   fn diff_catalog(old: &Catalog, new: &Catalog) -> (Vec<TrackPublished>, Vec<TrackUnpublished>) {
+       // Compare video/audio BTreeMap keys. New keys → TrackPublished. Missing keys → TrackUnpublished.
+   }
+   ```
+   The actor spawns a catalog watch task per RemoteBroadcast, forwarding diffs as events.
+
+5. **Expose new Room API** while keeping old one available (deprecated)
 
 ### 4.4 New Room struct
 
@@ -456,15 +462,16 @@ All Arc-based handles need interior mutability for state. Choices:
 
 | Type | Strategy | Reason |
 |------|----------|--------|
-| `LocalBroadcast` | `Arc<Mutex<PublishBroadcast>>` | set_video/set_audio mutate |
-| `RemoteBroadcast` | `Arc<Mutex<SubscribeBroadcast>>` | subscribe methods take `&mut self` |
+| `LocalBroadcast` | `Arc<Mutex<PublishBroadcast>>` | `set_video`/`set_audio` take `&mut self` |
+| `RemoteBroadcast` | `Arc<SubscribeBroadcast>` | All methods already take `&self` |
 | `Room` | Actor + `RwLock<HashMap>` for participants | Concurrent reads common |
 | `Call` | `Watchable<CallState>` + Arc refs | Mostly reads + state transitions |
 | `LocalParticipant` | `Arc<Mutex<Vec<LocalTrackPublication>>>` | Rare writes |
 | `RemoteParticipant` | `Arc<RwLock<Vec<RemoteTrackPublication>>>` | Reads from catalog updates |
 
-Future optimization: refactor `SubscribeBroadcast` to use `&self` internally (catalog
-is already `Watchable`, subscribe creates new pipeline — should not need `&mut self`).
+Future optimization: refactor `PublishBroadcast::set_video/set_audio` to use `&self`
+internally (state is already behind internal Arc/Mutex). This would let
+`LocalBroadcast` drop its Mutex.
 
 ### Thread safety
 

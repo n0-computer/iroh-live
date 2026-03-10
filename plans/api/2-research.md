@@ -261,7 +261,7 @@ pc.ontrack = (event) => {
   Alice's camera" requires out-of-band signaling.
 - **No catalog/capability discovery**: you don't know what the remote can send
   until they send it.
-- **Srenegotiation is fragile**: adding/removing tracks triggers renegotiation,
+- **Renegotiation is fragile**: adding/removing tracks triggers renegotiation,
   which can race with other changes.
 
 ---
@@ -517,6 +517,19 @@ internal C API.
 10. **Dispose/cleanup ceremony** (LiveKit `room.disconnect()`, WebRTC `pc.close()`)
     - Explicit cleanup is a bug source. People forget. Resources leak.
     - Drop handles, everything cleans up. Explicit `close()` available but optional.
+
+11. **No graceful degradation for unavailable resources** (all toolkits)
+    - Camera unavailable? Error. Encoder missing? Error. No toolkit surveyed handles
+      partial availability well.
+    - We should: degrade gracefully (audio-only if no camera), surface capability
+      queries (`available_codecs()`, `has_camera()`), and make missing sources a
+      runtime state, not a fatal error.
+
+12. **No codec negotiation pattern** (all toolkits except WebRTC SDP)
+    - WebRTC has SDP codec negotiation but it's terrible. Everyone else just picks a
+      codec and hopes the other side can decode it.
+    - MoQ catalogs already solve this: the catalog advertises available codecs/renditions.
+      We should expose this as inspectable state before subscribing.
 
 ### The North Star
 

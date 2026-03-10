@@ -65,8 +65,9 @@ For systems work, custom pipelines, and experimentation.
 
 - `0-overview.md` — this file
 - `1-review.md` — detailed review of current API with inline comments
-- `2-research.md` — survey of LiveKit, Hang, and other toolkit APIs
-- `3-sketch.md` — Rust code sketch of the proposed API
+- `2-research.md` — survey of LiveKit, Hang, WebRTC, GStreamer, OBS APIs
+- `3-sketch.md` — Rust code sketch of the proposed API (all todo!())
+- `4-impl.md` — phased implementation plan with concrete steps
 
 ## Migration Strategy
 

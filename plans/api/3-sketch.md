@@ -674,14 +674,18 @@ impl RemoteTrackPublication {
 
     /// Subscribes to this video publication with default options.
     ///
+    /// Uses [`moq_media::codec::DynamicVideoDecoder`] for automatic codec selection.
     /// Returns a [`moq_media::subscribe::WatchTrack`] that yields decoded frames.
-    /// For advanced options (rendition selection, viewport hints), use
-    /// [`subscribe_video_with`](Self::subscribe_video_with).
+    /// For explicit decoder selection, use [`RemoteBroadcast::subscribe_video`]
+    /// on the underlying broadcast.
     pub fn subscribe_video(&self) -> Result<moq_media::subscribe::WatchTrack> {
         self.subscribe_video_with(Default::default())
     }
 
     /// Subscribes to this video publication with custom options.
+    ///
+    /// Uses [`moq_media::codec::DynamicVideoDecoder`] internally. For explicit
+    /// decoder type selection, use the broadcast-layer API via [`RemoteParticipant::broadcast`].
     pub fn subscribe_video_with(
         &self,
         options: SubscribeVideoOptions,
@@ -858,7 +862,8 @@ pub struct LocalBroadcast {
 
 #[derive(Debug)]
 struct LocalBroadcastInner {
-    // publish: moq_media::publish::PublishBroadcast,
+    // Mutex needed: PublishBroadcast::set_video/set_audio take &mut self.
+    // publish: Mutex<PublishBroadcast>,
 }
 
 impl LocalBroadcast {
@@ -915,7 +920,9 @@ pub struct RemoteBroadcast {
 
 #[derive(Debug)]
 struct RemoteBroadcastInner {
-    // subscribe: moq_media::subscribe::SubscribeBroadcast,
+    // No Mutex needed: SubscribeBroadcast methods all take &self.
+    // subscribe: SubscribeBroadcast,
+    // status: Watchable<BroadcastStatus>,
 }
 
 impl RemoteBroadcast {
