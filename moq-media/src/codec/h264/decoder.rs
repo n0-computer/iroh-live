@@ -309,6 +309,56 @@ mod tests {
     }
 
     #[test]
+    fn bgra_output_roundtrip() {
+        let w = 320u32;
+        let h = 180u32;
+        let mut enc = H264Encoder::with_preset(VideoPreset::P180).unwrap();
+
+        let frames: Vec<VideoFrame> = (0..5).map(|_| make_rgba_frame(w, h, 255, 0, 0)).collect();
+        let packets = encode_frames(&mut enc, &frames);
+
+        let config = enc.config();
+        let decode_config = DecodeConfig {
+            pixel_format: crate::format::PixelFormat::Bgra,
+            ..Default::default()
+        };
+        let mut dec = H264VideoDecoder::new(&config, &decode_config).unwrap();
+
+        let mut last_frame = None;
+        let packets = encoded_frames_to_media_packets(packets);
+        for pkt in packets {
+            dec.push_packet(pkt).unwrap();
+            if let Some(frame) = dec.pop_frame().unwrap() {
+                last_frame = Some(frame);
+            }
+        }
+
+        let frame = last_frame.expect("should have decoded at least one frame");
+        // Frame should report BGRA pixel format
+        if let crate::format::FrameBuffer::Cpu(ref cpu) = frame.buffer {
+            assert_eq!(
+                cpu.pixel_format,
+                crate::format::PixelFormat::Bgra,
+                "should be BGRA"
+            );
+            // In BGRA order, red pixel = [B=low, G=low, R=high, A=255]
+            let mid = ((h / 2 * w + w / 2) * 4) as usize;
+            assert!(
+                cpu.image.as_raw()[mid + 2] > 150,
+                "BGRA R={} should be high",
+                cpu.image.as_raw()[mid + 2]
+            );
+            assert!(
+                cpu.image.as_raw()[mid] < 100,
+                "BGRA B={} should be low",
+                cpu.image.as_raw()[mid]
+            );
+        } else {
+            panic!("expected CPU frame");
+        }
+    }
+
+    #[test]
     fn unsupported_codec_errors() {
         let config = VideoConfig {
             codec: VideoCodec::AV1(AV1::default()),

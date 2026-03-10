@@ -390,4 +390,41 @@ mod tests {
         super::convert_channels_into(&input, 2, 1, &mut output);
         assert_eq!(output, vec![2.0, 3.0]);
     }
+
+    #[test]
+    fn convert_channels_mono_to_quad() {
+        let input = vec![1.0, 2.0];
+        let mut output = Vec::new();
+        super::convert_channels_into(&input, 1, 4, &mut output);
+        assert_eq!(output, vec![1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn convert_channels_quad_to_mono() {
+        // 2 frames of 4 channels: average each frame
+        let input = vec![1.0, 2.0, 3.0, 4.0, 8.0, 8.0, 8.0, 8.0];
+        let mut output = Vec::new();
+        super::convert_channels_into(&input, 4, 1, &mut output);
+        assert_eq!(output, vec![2.5, 8.0]);
+    }
+
+    #[test]
+    fn convert_channels_general_n_to_m() {
+        // 3ch → 2ch: goes through mono intermediate, then upmix
+        let input = vec![3.0, 6.0, 9.0]; // 1 frame of 3 channels → mono avg = 6.0
+        let mut output = Vec::new();
+        super::convert_channels_into(&input, 3, 2, &mut output);
+        // Mono 6.0 → stereo [6.0, 6.0]
+        assert_eq!(output, vec![6.0, 6.0]);
+    }
+
+    #[test]
+    fn convert_channels_reuses_output_capacity() {
+        let mut output = Vec::with_capacity(100);
+        let input = vec![1.0, 2.0, 3.0];
+        super::convert_channels_into(&input, 1, 2, &mut output);
+        assert_eq!(output, vec![1.0, 1.0, 2.0, 2.0, 3.0, 3.0]);
+        // Capacity should be at least what we reserved
+        assert!(output.capacity() >= 100);
+    }
 }

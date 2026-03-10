@@ -743,3 +743,121 @@ impl Drop for AudioEncoderPipeline {
         self.shutdown.cancel();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codec::h264::decoder::H264VideoDecoder;
+    use crate::codec::h264::encoder::H264Encoder;
+    use crate::codec::test_util::make_rgba_frame;
+    use crate::format::VideoPreset;
+    use crate::traits::{VideoEncoder, VideoEncoderFactory};
+    use crate::transport::media_pipe;
+    use crate::util::encoded_frames_to_media_packets;
+
+    fn encode_h264_packets(
+        w: u32,
+        h: u32,
+        n: usize,
+        preset: VideoPreset,
+    ) -> (hang::catalog::VideoConfig, Vec<MediaPacket>) {
+        let mut enc = H264Encoder::with_preset(preset).unwrap();
+        let mut packets = Vec::new();
+        for i in 0..n {
+            let frame = make_rgba_frame(w, h, (i * 25) as u8, 128, 64);
+            enc.push_frame(frame).unwrap();
+            while let Some(pkt) = enc.pop_packet().unwrap() {
+                packets.push(pkt);
+            }
+        }
+        let config = enc.config();
+        (config, encoded_frames_to_media_packets(packets))
+    }
+
+    #[tokio::test]
+    async fn video_decoder_pipeline_roundtrip() {
+        let w = 320u32;
+        let h = 180u32;
+        let (config, packets) = encode_h264_packets(w, h, 10, VideoPreset::P180);
+        assert!(!packets.is_empty());
+
+        let decode_config = DecodeConfig::default();
+        let (sink, source) = media_pipe(64);
+
+        let pipeline = VideoDecoderPipeline::new::<H264VideoDecoder>(
+            "test".into(),
+            source,
+            &config,
+            &decode_config,
+        )
+        .unwrap();
+
+        // Feed packets from a blocking thread (send_blocking can't be called in async context)
+        tokio::task::spawn_blocking(move || {
+            for pkt in packets {
+                sink.send_blocking(pkt).unwrap();
+            }
+            // drop sink to signal EOF
+        });
+
+        let mut frames = pipeline.frames;
+        let mut count = 0;
+        while let Some(frame) = frames.rx.recv().await {
+            let img = frame.img();
+            assert_eq!(img.width(), w);
+            assert_eq!(img.height(), h);
+            count += 1;
+        }
+        assert!(count >= 5, "expected >= 5 decoded frames, got {count}");
+    }
+
+    #[tokio::test]
+    async fn video_decoder_pipeline_shutdown_on_drop() {
+        let (_config, _packets) = encode_h264_packets(320, 180, 1, VideoPreset::P180);
+        let config = _config;
+        let decode_config = DecodeConfig::default();
+        let (_sink, source) = media_pipe(64);
+
+        let pipeline = VideoDecoderPipeline::new::<H264VideoDecoder>(
+            "test".into(),
+            source,
+            &config,
+            &decode_config,
+        )
+        .unwrap();
+
+        // Drop pipeline — should not hang or panic
+        drop(pipeline);
+    }
+
+    #[tokio::test]
+    async fn video_decoder_pipeline_viewport() {
+        let (config, packets) = encode_h264_packets(640, 360, 5, VideoPreset::P360);
+
+        let decode_config = DecodeConfig::default();
+        let (sink, source) = media_pipe(64);
+
+        let pipeline = VideoDecoderPipeline::new::<H264VideoDecoder>(
+            "test".into(),
+            source,
+            &config,
+            &decode_config,
+        )
+        .unwrap();
+
+        pipeline.handle.set_viewport(320, 180);
+
+        tokio::task::spawn_blocking(move || {
+            for pkt in packets {
+                sink.send_blocking(pkt).unwrap();
+            }
+        });
+
+        let mut frames = pipeline.frames;
+        while let Some(frame) = frames.rx.recv().await {
+            let img = frame.img();
+            assert!(img.width() <= 320, "width {} > 320", img.width());
+            assert!(img.height() <= 180, "height {} > 180", img.height());
+        }
+    }
+}
