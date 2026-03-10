@@ -283,11 +283,8 @@ fn select_audio_rendition<T>(renditions: &BTreeMap<String, T>, q: Quality) -> Op
 
 #[derive(derive_more::Debug)]
 pub struct AudioTrack {
-    name: String,
     #[debug(skip)]
-    handle: Box<dyn AudioSinkHandle>,
-    #[debug(skip)]
-    _pipeline: AudioDecoderPipeline,
+    pipeline: AudioDecoderPipeline,
 }
 
 impl AudioTrack {
@@ -298,115 +295,70 @@ impl AudioTrack {
         audio_backend: &dyn AudioStreamFactory,
     ) -> Result<Self> {
         let source = MoqPacketSource(consumer);
-        let pipeline =
-            AudioDecoderPipeline::new::<D>(name.clone(), source, &config, audio_backend).await?;
-        let handle = pipeline.handle().cloned_boxed();
-        Ok(Self {
-            name,
-            handle,
-            _pipeline: pipeline,
-        })
+        let pipeline = AudioDecoderPipeline::new::<D>(name, source, &config, audio_backend).await?;
+        Ok(Self { pipeline })
     }
 
     pub fn stopped(&self) -> impl Future<Output = ()> + 'static {
-        self._pipeline.stopped()
+        self.pipeline.stopped()
     }
 
     pub fn rendition(&self) -> &str {
-        &self.name
+        self.pipeline.name()
     }
 
     pub fn handle(&self) -> &dyn AudioSinkHandle {
-        self.handle.as_ref()
+        self.pipeline.handle()
     }
 }
 
 #[derive(derive_more::Debug)]
 pub struct WatchTrack {
-    video_frames: WatchTrackFrames,
-    handle: WatchTrackHandle,
-}
-
-#[derive(derive_more::Debug)]
-pub struct WatchTrackHandle {
-    rendition: String,
-    decoder_name: String,
-    #[debug(skip)]
-    viewport: Watchable<(u32, u32)>,
-    #[debug(skip)]
-    _guard: WatchTrackGuard,
-}
-
-impl WatchTrackHandle {
-    pub fn set_viewport(&self, w: u32, h: u32) {
-        self.viewport.set((w, h)).ok();
-    }
-
-    pub fn rendition(&self) -> &str {
-        &self.rendition
-    }
-
-    pub fn decoder_name(&self) -> &str {
-        &self.decoder_name
-    }
-}
-
-#[derive(derive_more::Debug)]
-pub struct WatchTrackFrames {
     #[debug(skip)]
     rx: mpsc::Receiver<DecodedVideoFrame>,
+    inner: WatchTrackInner,
 }
 
-impl WatchTrackFrames {
-    pub fn current_frame(&mut self) -> Option<DecodedVideoFrame> {
-        let mut out = None;
-        while let Ok(item) = self.rx.try_recv() {
-            out = Some(item);
-        }
-        out
-    }
-
-    pub async fn next_frame(&mut self) -> Option<DecodedVideoFrame> {
-        if let Some(frame) = self.current_frame() {
-            Some(frame)
-        } else {
-            self.rx.recv().await
-        }
-    }
-}
-
-struct WatchTrackGuard {
-    _shutdown_token_guard: DropGuard,
-    _task_handle: Option<AbortOnDropHandle<()>>,
-    _thread_handle: Option<thread::JoinHandle<()>>,
-    /// Keeps a [`VideoDecoderPipeline`] handle alive when wrapping a pipeline.
-    _pipeline_handle: Option<VideoDecoderHandle>,
+#[derive(derive_more::Debug)]
+enum WatchTrackInner {
+    /// Wraps a [`VideoDecoderPipeline`] (from `from_consumer` / `from_pipeline`).
+    Pipeline(VideoDecoderHandle),
+    /// Raw video source capture (from `from_video_source`).
+    #[debug("VideoSource")]
+    VideoSource {
+        rendition: String,
+        viewport: Watchable<(u32, u32)>,
+        _shutdown_guard: DropGuard,
+        _thread: thread::JoinHandle<()>,
+    },
+    /// Empty placeholder.
+    #[debug("Empty")]
+    Empty {
+        rendition: String,
+        viewport: Watchable<(u32, u32)>,
+        _task: AbortOnDropHandle<()>,
+    },
 }
 
 impl WatchTrack {
+    /// Creates an empty placeholder that never produces frames.
     pub fn empty(rendition: impl ToString) -> Self {
         let (tx, rx) = mpsc::channel(1);
         let task = tokio::spawn(async move {
             future::pending::<()>().await;
             let _ = tx;
         });
-        let guard = WatchTrackGuard {
-            _shutdown_token_guard: CancellationToken::new().drop_guard(),
-            _task_handle: Some(AbortOnDropHandle::new(task)),
-            _thread_handle: None,
-            _pipeline_handle: None,
-        };
         Self {
-            video_frames: WatchTrackFrames { rx },
-            handle: WatchTrackHandle {
+            rx,
+            inner: WatchTrackInner::Empty {
                 rendition: rendition.to_string(),
-                decoder_name: String::new(),
                 viewport: Default::default(),
-                _guard: guard,
+                _task: AbortOnDropHandle::new(task),
             },
         }
     }
 
+    /// Creates a track from a raw [`VideoSource`] (e.g. camera capture).
     pub fn from_video_source(
         rendition: String,
         shutdown: CancellationToken,
@@ -447,7 +399,6 @@ impl WatchTrack {
                                 _ => image::RgbaImage::from_raw(w, h, frame.raw.to_vec()),
                             };
                             if let Some(mut img) = rgba {
-                                // Convert pixel format if needed.
                                 if decode_config.pixel_format == PixelFormat::Bgra {
                                     for pixel in img.chunks_exact_mut(4) {
                                         pixel.swap(0, 2);
@@ -471,19 +422,13 @@ impl WatchTrack {
                 }
             }
         });
-        let guard = WatchTrackGuard {
-            _shutdown_token_guard: shutdown.drop_guard(),
-            _task_handle: None,
-            _thread_handle: Some(thread),
-            _pipeline_handle: None,
-        };
         Self {
-            video_frames: WatchTrackFrames { rx: frame_rx },
-            handle: WatchTrackHandle {
+            rx: frame_rx,
+            inner: WatchTrackInner::VideoSource {
                 rendition,
-                decoder_name: "capture".to_string(),
                 viewport,
-                _guard: guard,
+                _shutdown_guard: shutdown.drop_guard(),
+                _thread: thread,
             },
         }
     }
@@ -496,52 +441,60 @@ impl WatchTrack {
     ) -> Result<Self> {
         let source = MoqPacketSource(consumer);
         let pipeline = VideoDecoderPipeline::new::<D>(rendition, source, config, playback_config)?;
-
         Ok(Self::from_pipeline(pipeline))
     }
 
-    /// Create a `WatchTrack` from a standalone [`VideoDecoderPipeline`].
+    /// Creates a `WatchTrack` from a standalone [`VideoDecoderPipeline`].
     pub fn from_pipeline(pipeline: VideoDecoderPipeline) -> Self {
         let VideoDecoderPipeline { frames, handle } = pipeline;
-        let rendition = handle.rendition().to_string();
-        let decoder_name = handle.decoder_name().to_string();
-        let viewport = handle.viewport.clone();
         Self {
-            video_frames: WatchTrackFrames {
-                rx: frames.into_rx(),
-            },
-            handle: WatchTrackHandle {
-                rendition,
-                decoder_name,
-                viewport,
-                _guard: WatchTrackGuard {
-                    _shutdown_token_guard: CancellationToken::new().drop_guard(),
-                    _task_handle: None,
-                    _thread_handle: None,
-                    _pipeline_handle: Some(handle),
-                },
-            },
+            rx: frames.into_rx(),
+            inner: WatchTrackInner::Pipeline(handle),
         }
     }
 
-    pub fn split(self) -> (WatchTrackFrames, WatchTrackHandle) {
-        (self.video_frames, self.handle)
-    }
-
     pub fn set_viewport(&self, w: u32, h: u32) {
-        self.handle.set_viewport(w, h);
+        match &self.inner {
+            WatchTrackInner::Pipeline(handle) => handle.set_viewport(w, h),
+            WatchTrackInner::VideoSource { viewport, .. }
+            | WatchTrackInner::Empty { viewport, .. } => {
+                viewport.set((w, h)).ok();
+            }
+        }
     }
 
     pub fn rendition(&self) -> &str {
-        self.handle.rendition()
+        match &self.inner {
+            WatchTrackInner::Pipeline(handle) => handle.rendition(),
+            WatchTrackInner::VideoSource { rendition, .. }
+            | WatchTrackInner::Empty { rendition, .. } => rendition,
+        }
     }
 
     pub fn decoder_name(&self) -> &str {
-        self.handle.decoder_name()
+        match &self.inner {
+            WatchTrackInner::Pipeline(handle) => handle.decoder_name(),
+            WatchTrackInner::VideoSource { .. } => "capture",
+            WatchTrackInner::Empty { .. } => "",
+        }
     }
 
+    /// Returns the most recent decoded frame, draining any older buffered frames.
     pub fn current_frame(&mut self) -> Option<DecodedVideoFrame> {
-        self.video_frames.current_frame()
+        let mut out = None;
+        while let Ok(item) = self.rx.try_recv() {
+            out = Some(item);
+        }
+        out
+    }
+
+    /// Returns the next decoded frame, waiting if none is buffered.
+    pub async fn next_frame(&mut self) -> Option<DecodedVideoFrame> {
+        if let Some(frame) = self.current_frame() {
+            Some(frame)
+        } else {
+            self.rx.recv().await
+        }
     }
 }
 
