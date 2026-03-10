@@ -184,9 +184,9 @@ mod tests {
     use super::*;
     use crate::{
         codec::opus::encoder::OpusEncoder,
+        codec::test_util::encoded_frames_to_media_packets,
         format::AudioPreset,
         traits::{AudioEncoder, AudioEncoderFactory},
-        util::encoded_frames_to_media_packets,
     };
 
     fn make_sine(num_samples: usize, freq: f32, sample_rate: f32) -> Vec<f32> {

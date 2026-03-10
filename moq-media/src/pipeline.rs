@@ -747,9 +747,8 @@ impl Drop for AudioEncoderPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::h264::decoder::H264VideoDecoder;
-    use crate::codec::h264::encoder::H264Encoder;
     use crate::codec::test_util::make_rgba_frame;
+    use crate::codec::{H264Encoder, H264VideoDecoder};
     use crate::format::VideoPreset;
     use crate::traits::{VideoEncoder, VideoEncoderFactory};
     use crate::transport::media_pipe;

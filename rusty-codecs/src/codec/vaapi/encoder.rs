@@ -608,7 +608,7 @@ mod tests {
         let decode_config = DecodeConfig::default();
         let mut dec = H264VideoDecoder::new(&config, &decode_config).unwrap();
         let mut decoded_count = 0;
-        let ordered = crate::util::encoded_frames_to_media_packets(packets);
+        let ordered = crate::codec::test_util::encoded_frames_to_media_packets(packets);
         for pkt in ordered {
             dec.push_packet(pkt).unwrap();
             if let Some(frame) = dec.pop_frame().unwrap() {

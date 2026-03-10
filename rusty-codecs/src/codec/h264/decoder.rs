@@ -178,10 +178,10 @@ mod tests {
 
     use super::*;
     use crate::codec::h264::encoder::H264Encoder;
+    use crate::codec::test_util::encoded_frames_to_media_packets;
     use crate::codec::test_util::make_rgba_frame;
     use crate::format::{EncodedFrame, VideoFrame, VideoPreset};
     use crate::traits::{VideoDecoder, VideoEncoder, VideoEncoderFactory};
-    use crate::util::encoded_frames_to_media_packets;
 
     fn encode_frames(enc: &mut H264Encoder, frames: &[VideoFrame]) -> Vec<EncodedFrame> {
         let mut packets = Vec::new();

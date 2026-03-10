@@ -4,6 +4,7 @@ members = [
     "iroh-moq",
     "moq-media",
     "moq-media-dioxus",
+    "rusty-codecs",
     "moq-media-egui",
 ]
 resolver = "2"
