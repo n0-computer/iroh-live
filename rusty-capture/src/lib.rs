@@ -137,7 +137,7 @@ fn list_monitors() -> anyhow::Result<Vec<MonitorInfo>> {
     unreachable_code,
     reason = "cfg-gated returns may make trailing code unreachable"
 )]
-fn list_cameras_inner() -> anyhow::Result<Vec<CameraInfo>> {
+fn list_cameras() -> anyhow::Result<Vec<CameraInfo>> {
     #[cfg(all(target_os = "linux", feature = "pipewire"))]
     if pipewire_available() {
         return Ok(vec![pipewire_camera_placeholder()]);
@@ -230,17 +230,9 @@ pub struct CameraCapturer {
 }
 
 impl CameraCapturer {
-    /// Lists available cameras with numeric indices.
-    pub fn list() -> anyhow::Result<Vec<CameraListEntry>> {
-        let cams = list_cameras_inner()?;
-        Ok(cams
-            .into_iter()
-            .enumerate()
-            .map(|(i, info)| CameraListEntry {
-                index: i as u32,
-                name: info.name,
-            })
-            .collect())
+    /// Lists available cameras.
+    pub fn list() -> anyhow::Result<Vec<CameraInfo>> {
+        list_cameras()
     }
 
     /// Opens the default camera.
@@ -248,7 +240,7 @@ impl CameraCapturer {
     /// Picks the last camera in the enumerated list, which on most systems is
     /// the primary built-in camera.
     pub fn new() -> anyhow::Result<Self> {
-        let cams = list_cameras_inner()?;
+        let cams = list_cameras()?;
         if cams.is_empty() {
             anyhow::bail!("no cameras available");
         }
@@ -259,7 +251,7 @@ impl CameraCapturer {
 
     /// Opens a camera by numeric index (from [`CameraCapturer::list()`]).
     pub fn with_index(index: u32) -> anyhow::Result<Self> {
-        let cams = list_cameras_inner()?;
+        let cams = list_cameras()?;
         let cam = cams
             .get(index as usize)
             .ok_or_else(|| anyhow::anyhow!("camera index {index} out of range"))?;
@@ -292,15 +284,6 @@ impl VideoSource for CameraCapturer {
     fn pop_frame(&mut self) -> anyhow::Result<Option<VideoFrame>> {
         self.inner.pop_frame()
     }
-}
-
-/// Entry in the camera list returned by [`CameraCapturer::list()`].
-#[derive(Debug, Clone)]
-pub struct CameraListEntry {
-    /// Numeric index for use with [`CameraCapturer::with_index()`].
-    pub index: u32,
-    /// Human-readable device name.
-    pub name: String,
 }
 
 /// Screen capturer that auto-selects the best available backend.
