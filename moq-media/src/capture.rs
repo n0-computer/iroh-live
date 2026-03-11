@@ -1,9 +1,10 @@
-#[cfg(feature = "capture-camera")]
-pub mod camera;
-#[cfg(feature = "capture-screen")]
-pub mod screen;
+//! Camera and screen capture, backed by [`rusty_capture`].
+//!
+//! Re-exports the high-level [`CameraCapturer`] and [`ScreenCapturer`] types
+//! that auto-select the best platform backend.
 
 #[cfg(feature = "capture-camera")]
-pub use camera::*;
+pub use rusty_capture::{CameraCapturer, SimpleCameraInfo as CameraInfo, list_cameras};
+
 #[cfg(feature = "capture-screen")]
-pub use screen::*;
+pub use rusty_capture::ScreenCapturer;
