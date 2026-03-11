@@ -198,3 +198,232 @@ fn pipewire_camera_placeholder() -> CameraInfo {
         supported_formats: vec![],
     }
 }
+
+// ── High-level capturers ────────────────────────────────────────────
+
+/// Simplified camera device listing with numeric indices.
+#[derive(Debug, Clone)]
+pub struct SimpleCameraInfo {
+    /// Numeric index of this camera.
+    pub index: u32,
+    /// Human-readable device name.
+    pub name: String,
+}
+
+/// Lists available cameras with simple numeric indices.
+///
+/// Wraps [`cameras()`] into a flat list suitable for UI selection.
+pub fn list_cameras() -> anyhow::Result<Vec<SimpleCameraInfo>> {
+    let cams = cameras()?;
+    Ok(cams
+        .into_iter()
+        .enumerate()
+        .map(|(i, info)| SimpleCameraInfo {
+            index: i as u32,
+            name: info.name,
+        })
+        .collect())
+}
+
+/// Camera capturer that auto-selects the best available backend.
+///
+/// Implements [`VideoSource`]. On Linux, prefers PipeWire (if running) over
+/// V4L2. On macOS/iOS, uses AVFoundation.
+#[derive(derive_more::Debug)]
+pub struct CameraCapturer {
+    #[debug(skip)]
+    inner: Box<dyn VideoSource>,
+}
+
+impl CameraCapturer {
+    /// Opens the default camera.
+    ///
+    /// Picks the last camera in the enumerated list, which on most systems is
+    /// the primary built-in camera.
+    pub fn new() -> anyhow::Result<Self> {
+        let cams = cameras()?;
+        if cams.is_empty() {
+            anyhow::bail!("no cameras available");
+        }
+        let cam = cams.last().unwrap();
+        tracing::debug!(name = %cam.name, "selected camera");
+        Self::open(cam)
+    }
+
+    /// Opens a camera by numeric index (from [`list_cameras()`]).
+    pub fn with_index(index: u32) -> anyhow::Result<Self> {
+        let cams = cameras()?;
+        let cam = cams
+            .get(index as usize)
+            .ok_or_else(|| anyhow::anyhow!("camera index {index} out of range"))?;
+        Self::open(cam)
+    }
+
+    fn open(info: &CameraInfo) -> anyhow::Result<Self> {
+        let config = CameraConfig {
+            preferred_resolution: Some([1920, 1080]),
+            ..Default::default()
+        };
+        let inner = create_camera_backend(info, &config)?;
+        Ok(Self { inner })
+    }
+}
+
+impl VideoSource for CameraCapturer {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn format(&self) -> VideoFormat {
+        self.inner.format()
+    }
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.inner.start()
+    }
+    fn stop(&mut self) -> anyhow::Result<()> {
+        self.inner.stop()
+    }
+    fn pop_frame(&mut self) -> anyhow::Result<Option<VideoFrame>> {
+        self.inner.pop_frame()
+    }
+}
+
+/// Screen capturer that auto-selects the best available backend.
+///
+/// Implements [`VideoSource`]. On Linux, prefers PipeWire (if running) over
+/// X11. On macOS, uses ScreenCaptureKit.
+#[derive(derive_more::Debug)]
+pub struct ScreenCapturer {
+    #[debug(skip)]
+    inner: Box<dyn VideoSource>,
+}
+
+impl ScreenCapturer {
+    /// Opens the default monitor for screen capture.
+    pub fn new() -> anyhow::Result<Self> {
+        let config = ScreenConfig::default();
+        let inner = create_screen_backend(&config)?;
+        Ok(Self { inner })
+    }
+}
+
+impl VideoSource for ScreenCapturer {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn format(&self) -> VideoFormat {
+        self.inner.format()
+    }
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.inner.start()
+    }
+    fn stop(&mut self) -> anyhow::Result<()> {
+        self.inner.stop()
+    }
+    fn pop_frame(&mut self) -> anyhow::Result<Option<VideoFrame>> {
+        self.inner.pop_frame()
+    }
+}
+
+// ── Backend dispatch for high-level capturers ───────────────────────
+
+#[cfg(all(target_os = "linux", any(feature = "pipewire", feature = "v4l2")))]
+fn create_camera_backend(
+    info: &CameraInfo,
+    config: &CameraConfig,
+) -> anyhow::Result<Box<dyn VideoSource>> {
+    #[cfg(feature = "pipewire")]
+    if info.id == "pipewire-portal" {
+        let capturer = PipeWireCameraCapturer::new()?;
+        return Ok(Box::new(capturer));
+    }
+    #[cfg(feature = "v4l2")]
+    {
+        let capturer = V4l2CameraCapturer::new(info, config)?;
+        Ok(Box::new(capturer))
+    }
+    #[cfg(not(feature = "v4l2"))]
+    {
+        let _ = (info, config);
+        anyhow::bail!("no camera backend available (PipeWire camera not selected)")
+    }
+}
+
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "apple",))]
+fn create_camera_backend(
+    info: &CameraInfo,
+    config: &CameraConfig,
+) -> anyhow::Result<Box<dyn VideoSource>> {
+    let capturer = AppleCameraCapturer::new(info, config)?;
+    Ok(Box::new(capturer))
+}
+
+#[cfg(not(any(
+    all(target_os = "linux", any(feature = "pipewire", feature = "v4l2")),
+    all(any(target_os = "macos", target_os = "ios"), feature = "apple"),
+)))]
+fn create_camera_backend(
+    _info: &CameraInfo,
+    _config: &CameraConfig,
+) -> anyhow::Result<Box<dyn VideoSource>> {
+    anyhow::bail!("no camera capture backend available on this platform")
+}
+
+#[cfg(all(target_os = "linux", any(feature = "pipewire", feature = "x11")))]
+fn create_screen_backend(config: &ScreenConfig) -> anyhow::Result<Box<dyn VideoSource>> {
+    #[cfg(feature = "pipewire")]
+    if screen_pipewire_available() {
+        let capturer = PipeWireScreenCapturer::new(config)?;
+        return Ok(Box::new(capturer));
+    }
+    #[cfg(feature = "x11")]
+    {
+        let mons = monitors()?;
+        let mon = mons
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("no monitors available"))?;
+        let capturer = X11ScreenCapturer::new(mon, config)?;
+        Ok(Box::new(capturer))
+    }
+    #[cfg(not(feature = "x11"))]
+    {
+        let _ = config;
+        anyhow::bail!("no screen backend available (PipeWire not running and X11 disabled)")
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "apple-screen"))]
+fn create_screen_backend(config: &ScreenConfig) -> anyhow::Result<Box<dyn VideoSource>> {
+    let mons = monitors()?;
+    let mon = mons
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("no monitors available"))?;
+    let capturer = MacScreenCapturer::new(mon, config)?;
+    Ok(Box::new(capturer))
+}
+
+#[cfg(not(any(
+    all(target_os = "linux", any(feature = "pipewire", feature = "x11")),
+    all(target_os = "macos", feature = "apple-screen"),
+)))]
+fn create_screen_backend(_config: &ScreenConfig) -> anyhow::Result<Box<dyn VideoSource>> {
+    anyhow::bail!("no screen capture backend available on this platform")
+}
+
+/// PipeWire availability check for the screen capturer dispatch.
+/// Separate from the `pipewire_available()` used by `monitors()`/`cameras()`
+/// which is gated on both pipewire + a fallback feature.
+#[cfg(all(target_os = "linux", feature = "pipewire"))]
+fn screen_pipewire_available() -> bool {
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        let socket = std::path::Path::new(&runtime_dir).join("pipewire-0");
+        if socket.exists() {
+            return true;
+        }
+    }
+    std::process::Command::new("pidof")
+        .arg("pipewire")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
