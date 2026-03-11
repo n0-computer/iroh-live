@@ -70,10 +70,7 @@ struct CaptureState {
 /// The `preferred_size` default hint tells the PipeWire producer which
 /// resolution to prefer within the supported range. The `preferred_fps`
 /// default hint does the same for frame rate.
-fn build_enum_format_pod(
-    preferred_size: Rectangle,
-    preferred_fps: Fraction,
-) -> Result<Vec<u8>> {
+fn build_enum_format_pod(preferred_size: Rectangle, preferred_fps: Fraction) -> Result<Vec<u8>> {
     let obj = Object {
         type_: SpaTypes::ObjectParamFormat.as_raw(),
         id: ParamType::EnumFormat.as_raw(),
@@ -751,6 +748,7 @@ impl PipeWireScreenCapturer {
     /// (via `spawn_blocking`).
     pub fn new(config: &ScreenConfig) -> Result<Self> {
         let show_cursor = config.show_cursor;
+        let preferred_fps = config.target_fps.unwrap_or(30.0);
 
         // Portal negotiation runs on its own thread (inside portal_screen_capture).
         let (fd, node_id) = portal_screen_capture(show_cursor)?;
@@ -766,8 +764,14 @@ impl PipeWireScreenCapturer {
                 let result = run_pipewire_stream(
                     fd,
                     Some(node_id),
-                    Rectangle { width: 1920, height: 1080 },
-                    Fraction { num: 30, denom: 1 },
+                    Rectangle {
+                        width: 8192,
+                        height: 4320,
+                    },
+                    Fraction {
+                        num: preferred_fps as u32,
+                        denom: 1,
+                    },
                     frame_tx,
                     init_tx.clone(),
                     stop_flag,
@@ -861,15 +865,24 @@ impl PipeWireCameraCapturer {
         // Translate CameraSelector into PipeWire format negotiation hints.
         let (preferred_size, preferred_fps) = match config.selector {
             CameraSelector::HighestResolution => (
-                Rectangle { width: 8192, height: 4320 },
+                Rectangle {
+                    width: 8192,
+                    height: 4320,
+                },
                 Fraction { num: 30, denom: 1 },
             ),
             CameraSelector::HighestFramerate => (
-                Rectangle { width: 1920, height: 1080 },
+                Rectangle {
+                    width: 1920,
+                    height: 1080,
+                },
                 Fraction { num: 144, denom: 1 },
             ),
             CameraSelector::TargetResolution(w, h) => (
-                Rectangle { width: w, height: h },
+                Rectangle {
+                    width: w,
+                    height: h,
+                },
                 Fraction { num: 30, denom: 1 },
             ),
         };

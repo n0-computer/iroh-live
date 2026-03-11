@@ -126,17 +126,33 @@ pub struct MacScreenCapturer {
 }
 
 impl MacScreenCapturer {
-    /// Creates a screen capturer for the primary display.
-    pub fn new(config: &ScreenConfig) -> Result<Self> {
+    /// Creates a screen capturer for the given monitor.
+    ///
+    /// When `monitor` is provided, captures from the display matching its ID.
+    /// Falls back to the first available display otherwise.
+    pub fn new(monitor: &MonitorInfo, config: &ScreenConfig) -> Result<Self> {
         check_screen_capture_permission();
         let content = SCShareableContent::get()
             .map_err(|e| anyhow::anyhow!("ScreenCaptureKit: failed to get content: {e:?}"))?;
 
-        let display = content
-            .displays
-            .into_iter()
-            .next()
-            .context("no displays available")?;
+        // Try to find the display matching the monitor ID, fall back to first.
+        let display_id: Option<u32> = monitor
+            .id
+            .strip_prefix("macos-display-")
+            .and_then(|s| s.parse().ok());
+        let display = if let Some(did) = display_id {
+            content
+                .displays
+                .into_iter()
+                .find(|d| d.display_id == did)
+                .context("display not found")?
+        } else {
+            content
+                .displays
+                .into_iter()
+                .next()
+                .context("no displays available")?
+        };
 
         let width = display.width as u32;
         let height = display.height as u32;

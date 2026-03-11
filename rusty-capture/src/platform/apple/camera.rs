@@ -92,11 +92,20 @@ pub struct AppleCameraCapturer {
 impl AppleCameraCapturer {
     /// Creates a camera capturer for the given device.
     pub fn new(info: &CameraInfo, config: &CameraConfig) -> Result<Self> {
+        use crate::CameraSelector;
+
         let (frame_tx, frame_rx) = mpsc::channel();
         let (stop_tx, stop_rx) = mpsc::channel();
 
-        let width = config.preferred_resolution.map(|r| r[0]).unwrap_or(1280);
-        let height = config.preferred_resolution.map(|r| r[1]).unwrap_or(720);
+        // Derive requested resolution from the selector strategy.
+        let (width, height) = if let Some(fmt) = config.select_format(&info.supported_formats) {
+            (fmt.dimensions[0], fmt.dimensions[1])
+        } else {
+            match &config.selector {
+                CameraSelector::TargetResolution(w, h) => (*w, *h),
+                _ => (1280, 720),
+            }
+        };
         let device_id = info.id.clone();
 
         // TODO: Implement AVFoundation capture session.
