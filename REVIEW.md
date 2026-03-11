@@ -375,6 +375,54 @@ Encoders produce Annex-B, convert to length-prefixed for transport. Decoders con
 
 `copy_to_bytes()` materializes `BufList` into contiguous `Bytes`. Zero-copy for single-chunk (common case), but copies for multi-chunk. Could check `chunk().len() == remaining` and use the chunk directly.
 
+### P13: Opus encoder per-frame output allocation (FIXED)
+
+**File**: `codec/opus/encoder.rs`
+
+`encode_pending` allocated `vec![0u8; 4000]` on every 20ms frame encode. Replaced with a reusable `encode_buf` field on the struct. Saves ~50 allocations/sec per audio stream.
+
+### P14: VAAPI decoder NV12 plane copy via iterator (FIXED)
+
+**File**: `codec/vaapi/decoder.rs:126`
+
+`derive_nv12_planes` used `flat_map` + `iter().copied().collect()` to strip pitch padding from mapped VA image data. This grew Vecs byte-by-byte through iterator chaining. Replaced with pre-allocated Vecs and `copy_from_slice` per row — same memcpy volume, no reallocation or iterator overhead.
+
+### P15: VAAPI encoder I420→NV12 bounds-checked per pixel (FIXED)
+
+**File**: `codec/vaapi/encoder.rs:347`
+
+`i420_to_nv12` used `u.get(idx).copied().unwrap_or(128)` and `v.get(idx).copied().unwrap_or(128)` per chroma sample — two bounds checks per pixel in the UV interleave loop. Since the planes are always correctly sized from `pixel_format_to_nv12`, replaced with direct indexing and pre-allocated output.
+
+### P16: Double YUV→RGB→YUV conversion on encode path
+
+All software encoders (H.264, AV1) accept RGBA frames and convert to YUV420 in `push_frame`. If the capture source produces NV12 natively (V4L2 cameras on Linux), the pipeline converts NV12→RGBA in the driver, then RGBA→YUV420 in the encoder. At 1080p this wastes ~5ms/frame.
+
+*Fix:* Accept YUV/NV12 directly in encoder `push_frame`, or add a `VideoFrame::Nv12` variant. The VAAPI encoder already takes NV12 internally. Requires `VideoSource` trait changes and camera backend support for raw YUV passthrough.
+
+### P17: VAAPI decoder opens 4 VA Displays per instance
+
+**File**: `codec/vaapi/decoder.rs:394-439`
+
+Each `VaapiDecoder` opens 4 `Display::open()` calls (decode, export, mapping, frame pool). With N concurrent streams, that's 4N DRM FDs + VA contexts. The separate displays exist to avoid driver serialization deadlocks (documented in comments), but the pool and mapping displays could likely share one, and the export display might be consolidatable if export calls are serialized with decode.
+
+### P18: Per-frame DMA-BUF re-export in VAAPI decoder
+
+**File**: `codec/vaapi/decoder.rs:198`
+
+`extract_dma_buf_info` calls `to_native_handle` (clones DMA-BUF FDs) + `export_prime` on every decoded frame. Pool surfaces are long-lived — their export metadata (FD, modifier, planes) could be cached per surface and reused across frames. This would eliminate per-frame FD dup + ioctl overhead and the primary source of FD churn (now mitigated by the EMFILE fix, but still unnecessary work).
+
+### P19: `frame.raw.to_vec()` in video source passthrough
+
+**File**: `subscribe.rs:396`
+
+`WatchTrack::from_video_source` calls `frame.raw.to_vec()` when the scaler returns `None` (no scaling needed). Since `frame.raw` is `bytes::Bytes`, this copies the entire frame. Could accept `Bytes` in `DecodedVideoFrame::new_cpu_with_format` or use `Bytes::into()` to avoid the copy.
+
+### P20: VAAPI encoder `query_image_formats` per frame upload
+
+**File**: `codec/vaapi/encoder.rs:126-133`
+
+`upload_nv12_to_surface` calls `display.query_image_formats()` on every encode to find NV12. The result is stable for a given display. Should cache the `VAImageFormat` at encoder construction time.
+
 ---
 
 ## Safety

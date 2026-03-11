@@ -352,17 +352,21 @@ impl VaapiEncoder {
 
         let y_size = w * h;
         let uv_size = chroma_w * 2 * chroma_h;
-        let mut nv12 = Vec::with_capacity(y_size + uv_size);
+        let mut nv12 = vec![0u8; y_size + uv_size];
 
         // Copy Y plane
-        nv12.extend_from_slice(&y[..y_size.min(y.len())]);
+        nv12[..y_size.min(y.len())].copy_from_slice(&y[..y_size.min(y.len())]);
 
         // Interleave U and V into UV plane
+        let uv_dst = &mut nv12[y_size..];
         for row in 0..chroma_h {
+            let row_offset = row * chroma_w;
+            let dst_offset = row * chroma_w * 2;
             for col in 0..chroma_w {
-                let idx = row * chroma_w + col;
-                nv12.push(u.get(idx).copied().unwrap_or(128));
-                nv12.push(v.get(idx).copied().unwrap_or(128));
+                let idx = row_offset + col;
+                let out = dst_offset + col * 2;
+                uv_dst[out] = u[idx];
+                uv_dst[out + 1] = v[idx];
             }
         }
 

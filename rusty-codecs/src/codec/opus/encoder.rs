@@ -28,6 +28,8 @@ pub struct OpusEncoder {
     extradata: Vec<u8>,
     /// Internal buffer accumulating interleaved f32 samples until we have a full frame.
     sample_buf: Vec<f32>,
+    /// Reusable encode output buffer (avoids per-frame allocation).
+    encode_buf: Vec<u8>,
     /// Number of complete frames encoded so far (for timestamp calculation).
     frame_count: u64,
     /// Encoded packets ready for collection.
@@ -96,6 +98,7 @@ impl OpusEncoder {
             bitrate,
             extradata,
             sample_buf: Vec::new(),
+            encode_buf: vec![0u8; MAX_PACKET],
             frame_count: 0,
             packet_buf: VecDeque::new(),
         })
@@ -105,13 +108,12 @@ impl OpusEncoder {
     fn encode_pending(&mut self) -> Result<()> {
         let samples_per_frame = FRAME_SIZE * self.channel_count as usize;
         while self.sample_buf.len() >= samples_per_frame {
-            let mut out = vec![0u8; MAX_PACKET];
             let ret = unsafe {
                 opus::opus_encode_float(
                     self.encoder,
                     self.sample_buf.as_ptr(),
                     FRAME_SIZE as i32,
-                    out.as_mut_ptr(),
+                    self.encode_buf.as_mut_ptr(),
                     MAX_PACKET as i32,
                 )
             };
@@ -119,14 +121,13 @@ impl OpusEncoder {
                 bail!("opus_encode_float failed: {ret}");
             }
             let encoded_len = ret as usize;
-            out.truncate(encoded_len);
 
             let timestamp_us =
                 (self.frame_count * FRAME_SIZE as u64 * 1_000_000) / self.sample_rate as u64;
             self.packet_buf.push_back(EncodedFrame {
                 is_keyframe: true,
                 timestamp: Duration::from_micros(timestamp_us),
-                payload: out.into(),
+                payload: self.encode_buf[..encoded_len].to_vec().into(),
             });
             self.frame_count += 1;
 
