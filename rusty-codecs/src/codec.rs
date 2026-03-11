@@ -6,6 +6,8 @@ pub(crate) mod dynamic;
 pub(crate) mod h264;
 #[cfg(feature = "opus")]
 pub(crate) mod opus;
+#[cfg(all(target_os = "linux", feature = "v4l2"))]
+pub(crate) mod v4l2;
 #[cfg(all(target_os = "linux", feature = "vaapi"))]
 pub(crate) mod vaapi;
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
@@ -15,6 +17,8 @@ pub(crate) mod vtb;
 pub use av1::*;
 #[cfg(any_codec)]
 pub use dynamic::*;
+#[cfg(all(target_os = "linux", feature = "v4l2"))]
+pub use v4l2::*;
 #[cfg(all(target_os = "linux", feature = "vaapi"))]
 pub use vaapi::*;
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
@@ -59,6 +63,10 @@ pub enum VideoCodec {
     #[strum(serialize = "h264-vaapi")]
     #[cfg(all(target_os = "linux", feature = "vaapi"))]
     VaapiH264,
+    /// Hardware H.264 via Linux V4L2 (stateful encoder).
+    #[strum(serialize = "h264-v4l2")]
+    #[cfg(all(target_os = "linux", feature = "v4l2"))]
+    V4l2H264,
 }
 
 #[cfg(any_video_codec)]
@@ -74,6 +82,8 @@ impl VideoCodec {
             Self::VtbH264,
             #[cfg(all(target_os = "linux", feature = "vaapi"))]
             Self::VaapiH264,
+            #[cfg(all(target_os = "linux", feature = "v4l2"))]
+            Self::V4l2H264,
         ]
     }
 
@@ -90,6 +100,10 @@ impl VideoCodec {
         #[cfg(all(target_os = "linux", feature = "vaapi"))]
         {
             return Self::VaapiH264;
+        }
+        #[cfg(all(target_os = "linux", feature = "v4l2"))]
+        {
+            return Self::V4l2H264;
         }
         #[cfg(feature = "h264")]
         {
@@ -109,6 +123,8 @@ impl VideoCodec {
             Self::VtbH264 => true,
             #[cfg(all(target_os = "linux", feature = "vaapi"))]
             Self::VaapiH264 => true,
+            #[cfg(all(target_os = "linux", feature = "v4l2"))]
+            Self::V4l2H264 => true,
         }
     }
 
@@ -127,6 +143,8 @@ impl VideoCodec {
             Self::VtbH264 => Ok(Box::new(VtbEncoder::with_config(config)?)),
             #[cfg(all(target_os = "linux", feature = "vaapi"))]
             Self::VaapiH264 => Ok(Box::new(VaapiEncoder::with_config(config)?)),
+            #[cfg(all(target_os = "linux", feature = "v4l2"))]
+            Self::V4l2H264 => Ok(Box::new(V4l2Encoder::with_config(config)?)),
         }
     }
 
@@ -165,6 +183,8 @@ impl VideoCodec {
             Self::VtbH264 => "H.264 (VideoToolbox)",
             #[cfg(all(target_os = "linux", feature = "vaapi"))]
             Self::VaapiH264 => "H.264 (VAAPI)",
+            #[cfg(all(target_os = "linux", feature = "v4l2"))]
+            Self::V4l2H264 => "H.264 (V4L2)",
         }
     }
 }

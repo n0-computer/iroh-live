@@ -8887,6 +8887,7 @@ dependencies = [
  "strum 0.28.0",
  "tracing",
  "unsafe-libopus",
+ "v4l2r",
  "wgpu 27.0.1",
  "yuvutils-rs",
 ]
@@ -10893,6 +10894,22 @@ dependencies = [
  "js-sys",
  "serde_core",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "v4l2r"
+version = "0.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b609e6cc820e3f95dac66f8ef4efbdf1f39b8d119ec16e6476f797ec95ebaa7"
+dependencies = [
+ "anyhow",
+ "bindgen 0.70.1",
+ "bitflags 2.10.0",
+ "enumn",
+ "log",
+ "nix 0.28.0",
+ "paste",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
