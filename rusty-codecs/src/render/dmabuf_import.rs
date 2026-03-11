@@ -923,8 +923,53 @@ impl VppRetiler {
     }
 
     /// Re-tile a DMA-BUF surface via VPP identity blit.
+    ///
+    /// Uses an inner function + cleanup-on-error pattern to ensure VA resources
+    /// are always released, even when intermediate steps fail.
     fn retile(&self, info: &DmaBufInfo) -> anyhow::Result<DmaBufInfo> {
+        // Track allocated VA resources for cleanup on error.
+        struct VppResources {
+            dpy: va::VADisplay,
+            input_surface: va::VASurfaceID,
+            output_surface: va::VASurfaceID,
+            context_id: va::VAContextID,
+            buf_id: va::VABufferID,
+        }
+
+        impl VppResources {
+            fn cleanup(&mut self) {
+                unsafe {
+                    if self.buf_id != 0 {
+                        va::vaDestroyBuffer(self.dpy, self.buf_id);
+                    }
+                    if self.context_id != 0 {
+                        va::vaDestroyContext(self.dpy, self.context_id);
+                    }
+                    if self.input_surface != 0 {
+                        va::vaDestroySurfaces(self.dpy, &mut self.input_surface, 1);
+                    }
+                    if self.output_surface != 0 {
+                        va::vaDestroySurfaces(self.dpy, &mut self.output_surface, 1);
+                    }
+                }
+            }
+        }
+
+        impl Drop for VppResources {
+            fn drop(&mut self) {
+                self.cleanup();
+            }
+        }
+
         unsafe {
+            let mut res = VppResources {
+                dpy: self.dpy,
+                input_surface: 0,
+                output_surface: 0,
+                context_id: 0,
+                buf_id: 0,
+            };
+
             // Import decoded DMA-BUF as VA surface using DRM_PRIME_2 (preserves modifier).
             let fd_dup = libc::dup(info.fd.as_raw_fd());
             if fd_dup < 0 {
@@ -934,7 +979,6 @@ impl VppRetiler {
                 ));
             }
 
-            let mut input_surface: va::VASurfaceID = 0;
             {
                 // Build a PRIME2 descriptor matching the decoded surface layout.
                 let mut prime_desc: va::VADRMPRIMESurfaceDescriptor = std::mem::zeroed();
@@ -955,12 +999,10 @@ impl VppRetiler {
                 }
 
                 let mut attribs: [va::VASurfaceAttrib; 2] = std::mem::zeroed();
-                // Memory type: DRM_PRIME_2 (carries modifier info).
                 attribs[0].type_ = va::VASurfaceAttribType::VASurfaceAttribMemoryType;
                 attribs[0].flags = va::VA_SURFACE_ATTRIB_SETTABLE;
                 attribs[0].value.type_ = va::VAGenericValueType::VAGenericValueTypeInteger;
                 attribs[0].value.value.i = va::VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 as i32;
-                // External buffer descriptor (PRIME2).
                 attribs[1].type_ = va::VASurfaceAttribType::VASurfaceAttribExternalBufferDescriptor;
                 attribs[1].flags = va::VA_SURFACE_ATTRIB_SETTABLE;
                 attribs[1].value.type_ = va::VAGenericValueType::VAGenericValueTypePointer;
@@ -971,7 +1013,7 @@ impl VppRetiler {
                     va::VA_RT_FORMAT_YUV420,
                     info.coded_width,
                     info.coded_height,
-                    &mut input_surface,
+                    &mut res.input_surface,
                     1,
                     attribs.as_mut_ptr(),
                     attribs.len() as u32,
@@ -979,6 +1021,7 @@ impl VppRetiler {
                 if status != va::VA_STATUS_SUCCESS as i32 {
                     // Driver did not take ownership of fd_dup on failure.
                     libc::close(fd_dup);
+                    res.input_surface = 0; // not created
                     return Err(anyhow::anyhow!(
                         "vaCreateSurfaces(VPP input) failed: VA status {status}"
                     ));
@@ -986,7 +1029,6 @@ impl VppRetiler {
             }
 
             // Create output surface with VPP_WRITE + EXPORT hints.
-            let mut output_surface: va::VASurfaceID = 0;
             {
                 let mut attribs: [va::VASurfaceAttrib; 2] = std::mem::zeroed();
                 attribs[0].type_ = va::VASurfaceAttribType::VASurfaceAttribPixelFormat;
@@ -1006,7 +1048,7 @@ impl VppRetiler {
                         va::VA_RT_FORMAT_YUV420,
                         info.coded_width,
                         info.coded_height,
-                        &mut output_surface,
+                        &mut res.output_surface,
                         1,
                         attribs.as_mut_ptr(),
                         attribs.len() as u32,
@@ -1016,7 +1058,6 @@ impl VppRetiler {
             }
 
             // Create VPP context.
-            let mut context_id: va::VAContextID = 0;
             va_check(
                 va::vaCreateContext(
                     self.dpy,
@@ -1024,43 +1065,45 @@ impl VppRetiler {
                     info.coded_width as i32,
                     info.coded_height as i32,
                     0,
-                    &mut output_surface,
+                    &mut res.output_surface,
                     1,
-                    &mut context_id,
+                    &mut res.context_id,
                 ),
                 "vaCreateContext(VPP)",
             )?;
 
             // Create pipeline parameter buffer (identity blit).
             let mut pipeline_param: VaProcPipelineParameterBuffer = std::mem::zeroed();
-            pipeline_param.surface = input_surface;
+            pipeline_param.surface = res.input_surface;
 
-            let mut buf_id: va::VABufferID = 0;
             va_check(
                 va::vaCreateBuffer(
                     self.dpy,
-                    context_id,
+                    res.context_id,
                     va::VABufferType::VAProcPipelineParameterBufferType,
                     std::mem::size_of::<VaProcPipelineParameterBuffer>() as u32,
                     1,
                     &mut pipeline_param as *mut _ as *mut std::ffi::c_void,
-                    &mut buf_id,
+                    &mut res.buf_id,
                 ),
                 "vaCreateBuffer(VPP)",
             )?;
 
             // Execute VPP pipeline.
             va_check(
-                va::vaBeginPicture(self.dpy, context_id, output_surface),
+                va::vaBeginPicture(self.dpy, res.context_id, res.output_surface),
                 "vaBeginPicture(VPP)",
             )?;
             va_check(
-                va::vaRenderPicture(self.dpy, context_id, &mut buf_id, 1),
+                va::vaRenderPicture(self.dpy, res.context_id, &mut res.buf_id, 1),
                 "vaRenderPicture(VPP)",
             )?;
-            va_check(va::vaEndPicture(self.dpy, context_id), "vaEndPicture(VPP)")?;
             va_check(
-                va::vaSyncSurface(self.dpy, output_surface),
+                va::vaEndPicture(self.dpy, res.context_id),
+                "vaEndPicture(VPP)",
+            )?;
+            va_check(
+                va::vaSyncSurface(self.dpy, res.output_surface),
                 "vaSyncSurface(VPP)",
             )?;
 
@@ -1069,7 +1112,7 @@ impl VppRetiler {
             va_check(
                 va::vaExportSurfaceHandle(
                     self.dpy,
-                    output_surface,
+                    res.output_surface,
                     va::VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
                     va::VA_EXPORT_SURFACE_READ_ONLY | va::VA_EXPORT_SURFACE_COMPOSED_LAYERS,
                     &mut desc as *mut _ as *mut std::ffi::c_void,
@@ -1103,10 +1146,9 @@ impl VppRetiler {
             };
 
             // Cleanup VA resources (exported FD keeps the buffer alive).
-            va::vaDestroyBuffer(self.dpy, buf_id);
-            va::vaDestroyContext(self.dpy, context_id);
-            va::vaDestroySurfaces(self.dpy, &mut input_surface, 1);
-            va::vaDestroySurfaces(self.dpy, &mut output_surface, 1);
+            // Drop guard handles this — explicit cleanup so Drop doesn't double-free.
+            res.cleanup();
+            std::mem::forget(res);
 
             Ok(result)
         }

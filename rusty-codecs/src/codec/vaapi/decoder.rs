@@ -318,6 +318,8 @@ pub struct VaapiDecoder {
     pending_frames: VecDeque<VideoFrame>,
     last_timestamp: Option<Duration>,
     timestamp_counter: u64,
+    /// Frame counter for periodic FD diagnostics.
+    fd_log_counter: u64,
 }
 
 // VaapiH264Decoder uses Rc<Display> internally (not Send).
@@ -329,6 +331,17 @@ impl VaapiDecoder {
         while let Some(event) = self.decoder.next_event() {
             match event {
                 DecoderEvent::FrameReady(handle) => {
+                    self.fd_log_counter += 1;
+                    if self.fd_log_counter % 120 == 0 {
+                        if let Ok(entries) = std::fs::read_dir("/proc/self/fd") {
+                            let count = entries.count();
+                            tracing::debug!(
+                                fd_count = count,
+                                pending = self.pending_frames.len(),
+                                "VAAPI decoder FD status"
+                            );
+                        }
+                    }
                     if let Err(e) = handle.sync() {
                         tracing::warn!("VAAPI frame sync failed: {e:#}");
                         continue;
@@ -450,6 +463,7 @@ impl VideoDecoder for VaapiDecoder {
             pending_frames: VecDeque::new(),
             last_timestamp: None,
             timestamp_counter: 0,
+            fd_log_counter: 0,
         };
 
         // Feed SPS/PPS from avcC description if available.
