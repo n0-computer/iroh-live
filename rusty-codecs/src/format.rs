@@ -349,6 +349,34 @@ impl VideoFrame {
         }
     }
 
+    /// Creates a frame with NV12 (semi-planar YUV 4:2:0) CPU data.
+    pub fn new_nv12(planes: Nv12Planes) -> Self {
+        let w = planes.width;
+        let h = planes.height;
+        Self {
+            dimensions: [w, h],
+            data: FrameData::Nv12(planes),
+            timestamp: Duration::ZERO,
+            cached_rgba: OnceLock::new(),
+        }
+    }
+
+    /// Creates a frame with I420 (planar YUV 4:2:0) CPU data.
+    pub fn new_i420(
+        y: bytes::Bytes,
+        u: bytes::Bytes,
+        v: bytes::Bytes,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        Self {
+            dimensions: [width, height],
+            data: FrameData::I420 { y, u, v },
+            timestamp: Duration::ZERO,
+            cached_rgba: OnceLock::new(),
+        }
+    }
+
     /// Creates a GPU-backed frame.
     pub fn new_gpu(gpu: GpuFrame, timestamp: Duration) -> Self {
         let (w, h) = gpu.dimensions();

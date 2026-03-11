@@ -5,6 +5,7 @@ members = [
     "moq-media",
     "moq-media-dioxus",
     "rusty-codecs",
+    "rusty-capture",
     "moq-media-egui",
 ]
 resolver = "2"
@@ -23,7 +24,7 @@ missing_debug_implementations = "warn"
 or_fun_call = "warn"
 use_self = "warn"
 unused_async = "warn"
-absolute_paths = "warn"
+absolute_paths = "allow"
 manual_let_else = "warn"
 allow_attributes_without_reason = "warn"
 mod_module_files = "deny"
