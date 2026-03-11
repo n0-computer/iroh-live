@@ -165,7 +165,7 @@ fn create_camera_backend(
 ) -> anyhow::Result<Box<dyn VideoSource>> {
     #[cfg(all(target_os = "linux", feature = "pipewire"))]
     if info.id == "pipewire-portal" {
-        return Ok(Box::new(PipeWireCameraCapturer::new()?));
+        return Ok(Box::new(PipeWireCameraCapturer::new(config)?));
     }
     #[cfg(all(target_os = "linux", feature = "v4l2"))]
     {
