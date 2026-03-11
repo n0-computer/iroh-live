@@ -561,8 +561,36 @@ fn run_pipewire_stream(
 
 // ── Portal helpers ──────────────────────────────────────────────────
 
-/// Runs the ashpd ScreenCast portal negotiation on a temporary tokio runtime.
+/// Timeout for portal D-Bus operations (per step, not total).
+///
+/// Each portal step (create_session, select_sources, start, open_pipe_wire_remote)
+/// gets its own timeout. The user-facing dialog (select_sources → start) may take
+/// longer, so those get a generous 120s. Infrastructure calls get 10s.
+const PORTAL_INFRA_TIMEOUT: Duration = Duration::from_secs(10);
+const PORTAL_DIALOG_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Runs the ashpd ScreenCast portal negotiation on a dedicated thread.
+///
+/// Portal D-Bus calls happen on a temporary tokio runtime that lives only for
+/// the duration of the negotiation. Each D-Bus round-trip is wrapped in a
+/// timeout to prevent hangs if the compositor drops the response signal
+/// (see <https://github.com/nashaofu/xcap/pull/246>).
 fn portal_screen_capture(show_cursor: bool) -> Result<(OwnedFd, u32)> {
+    // Run portal on a dedicated thread so we never block an async runtime.
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("pw-portal-screen".into())
+        .spawn(move || {
+            let result = portal_screen_capture_inner(show_cursor);
+            let _ = tx.send(result);
+        })
+        .context("failed to spawn portal thread")?;
+
+    rx.recv_timeout(PORTAL_DIALOG_TIMEOUT + PORTAL_INFRA_TIMEOUT * 3)
+        .context("portal thread did not respond")?
+}
+
+fn portal_screen_capture_inner(show_cursor: bool) -> Result<(OwnedFd, u32)> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -571,13 +599,18 @@ fn portal_screen_capture(show_cursor: bool) -> Result<(OwnedFd, u32)> {
     rt.block_on(async {
         use ashpd::desktop::PersistMode;
         use ashpd::desktop::screencast::{CursorMode, Screencast, SourceType};
+        use tokio::time::timeout;
 
-        let proxy = Screencast::new()
+        debug!("creating ScreenCast proxy");
+        let proxy = timeout(PORTAL_INFRA_TIMEOUT, Screencast::new())
             .await
+            .context("timeout creating ScreenCast proxy")?
             .context("failed to create ScreenCast proxy")?;
-        let session = proxy
-            .create_session()
+
+        debug!("creating ScreenCast session");
+        let session = timeout(PORTAL_INFRA_TIMEOUT, proxy.create_session())
             .await
+            .context("timeout creating session")?
             .context("failed to create ScreenCast session")?;
 
         let cursor_mode = if show_cursor {
@@ -586,23 +619,28 @@ fn portal_screen_capture(show_cursor: bool) -> Result<(OwnedFd, u32)> {
             CursorMode::Hidden
         };
 
-        proxy
-            .select_sources(
+        debug!("selecting sources (waiting for user to pick a screen)");
+        timeout(
+            PORTAL_DIALOG_TIMEOUT,
+            proxy.select_sources(
                 &session,
                 cursor_mode,
                 SourceType::Monitor.into(),
                 false,
                 None,
                 PersistMode::DoNot,
-            )
-            .await
-            .context("select_sources failed")?
-            .response()
-            .context("select_sources response failed")?;
+            ),
+        )
+        .await
+        .context("timeout waiting for select_sources")?
+        .context("select_sources failed")?
+        .response()
+        .context("select_sources response failed (permission denied?)")?;
 
-        let streams = proxy
-            .start(&session, None)
+        debug!("starting ScreenCast (waiting for user confirmation)");
+        let streams = timeout(PORTAL_DIALOG_TIMEOUT, proxy.start(&session, None))
             .await
+            .context("timeout waiting for start")?
             .context("start failed")?
             .response()
             .context("start response failed (user cancelled?)")?;
@@ -613,9 +651,11 @@ fn portal_screen_capture(show_cursor: bool) -> Result<(OwnedFd, u32)> {
             .context("no streams returned from ScreenCast portal")?;
 
         let node_id = stream.pipe_wire_node_id();
-        let fd = proxy
-            .open_pipe_wire_remote(&session)
+
+        debug!(node_id, "opening PipeWire remote");
+        let fd = timeout(PORTAL_INFRA_TIMEOUT, proxy.open_pipe_wire_remote(&session))
             .await
+            .context("timeout opening PipeWire remote")?
             .context("failed to open PipeWire remote")?;
 
         info!(node_id, "ScreenCast portal negotiated");
@@ -623,8 +663,24 @@ fn portal_screen_capture(show_cursor: bool) -> Result<(OwnedFd, u32)> {
     })
 }
 
-/// Runs the ashpd Camera portal negotiation on a temporary tokio runtime.
+/// Runs the ashpd Camera portal negotiation on a dedicated thread.
+///
+/// Same timeout and thread-isolation strategy as [`portal_screen_capture`].
 fn portal_camera_capture() -> Result<OwnedFd> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("pw-portal-camera".into())
+        .spawn(move || {
+            let result = portal_camera_capture_inner();
+            let _ = tx.send(result);
+        })
+        .context("failed to spawn portal thread")?;
+
+    rx.recv_timeout(PORTAL_DIALOG_TIMEOUT + PORTAL_INFRA_TIMEOUT * 3)
+        .context("portal thread did not respond")?
+}
+
+fn portal_camera_capture_inner() -> Result<OwnedFd> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -632,29 +688,35 @@ fn portal_camera_capture() -> Result<OwnedFd> {
 
     rt.block_on(async {
         use ashpd::desktop::camera::Camera;
+        use tokio::time::timeout;
 
-        let proxy = Camera::new()
+        debug!("creating Camera proxy");
+        let proxy = timeout(PORTAL_INFRA_TIMEOUT, Camera::new())
             .await
+            .context("timeout creating Camera proxy")?
             .context("failed to create Camera proxy")?;
 
-        if !proxy
-            .is_present()
+        debug!("checking camera presence");
+        let present = timeout(PORTAL_INFRA_TIMEOUT, proxy.is_present())
             .await
-            .context("camera presence check failed")?
-        {
+            .context("timeout checking camera presence")?
+            .context("camera presence check failed")?;
+        if !present {
             anyhow::bail!("no camera available via PipeWire portal");
         }
 
-        proxy
-            .request_access()
+        debug!("requesting camera access");
+        timeout(PORTAL_DIALOG_TIMEOUT, proxy.request_access())
             .await
+            .context("timeout requesting camera access")?
             .context("camera access request failed")?
             .response()
             .context("camera access denied")?;
 
-        let fd = proxy
-            .open_pipe_wire_remote()
+        debug!("opening camera PipeWire remote");
+        let fd = timeout(PORTAL_INFRA_TIMEOUT, proxy.open_pipe_wire_remote())
             .await
+            .context("timeout opening camera PipeWire remote")?
             .context("failed to open camera PipeWire remote")?;
 
         info!("Camera portal negotiated");
@@ -680,10 +742,15 @@ impl PipeWireScreenCapturer {
     /// Creates a new PipeWire screen capturer.
     ///
     /// Triggers the xdg-desktop-portal ScreenCast dialog where the user
-    /// selects which monitor or window to share. Blocks until the user makes
-    /// a selection (or cancels).
+    /// selects which monitor or window to share. The portal D-Bus negotiation
+    /// runs on a dedicated thread so this is safe to call from async contexts
+    /// (via `spawn_blocking`).
     pub fn new(config: &ScreenConfig) -> Result<Self> {
         let show_cursor = config.show_cursor;
+
+        // Portal negotiation runs on its own thread (inside portal_screen_capture).
+        let (fd, node_id) = portal_screen_capture(show_cursor)?;
+
         let (frame_tx, frame_rx) = mpsc::channel();
         let (init_tx, init_rx) = mpsc::channel();
         let should_stop = Arc::new(AtomicBool::new(false));
@@ -692,11 +759,8 @@ impl PipeWireScreenCapturer {
         std::thread::Builder::new()
             .name("pw-screen".into())
             .spawn(move || {
-                let result = (|| {
-                    let (fd, node_id) = portal_screen_capture(show_cursor)?;
-                    run_pipewire_stream(fd, Some(node_id), frame_tx, init_tx.clone(), stop_flag)
-                })();
-
+                let result =
+                    run_pipewire_stream(fd, Some(node_id), frame_tx, init_tx.clone(), stop_flag);
                 if let Err(e) = result {
                     let _ = init_tx.send(Err(e));
                 }
@@ -704,8 +768,8 @@ impl PipeWireScreenCapturer {
             .context("failed to spawn PipeWire screen capture thread")?;
 
         let (width, height) = init_rx
-            .recv_timeout(Duration::from_secs(60))
-            .context("PipeWire screen capture init timeout")?
+            .recv_timeout(Duration::from_secs(30))
+            .context("PipeWire screen capture format negotiation timeout")?
             .context("PipeWire screen capture init failed")?;
 
         info!(width, height, "PipeWire screen capture started");
@@ -773,9 +837,12 @@ impl PipeWireCameraCapturer {
     /// Creates a new PipeWire camera capturer.
     ///
     /// Triggers the Camera portal permission dialog if not already granted.
-    /// Uses `PW_ID_ANY` with `AUTOCONNECT` — PipeWire routes to the first
-    /// available camera node exposed by the portal.
+    /// The portal D-Bus negotiation runs on a dedicated thread so this is
+    /// safe to call from async contexts (via `spawn_blocking`).
     pub fn new() -> Result<Self> {
+        // Portal negotiation runs on its own thread (inside portal_camera_capture).
+        let fd = portal_camera_capture()?;
+
         let (frame_tx, frame_rx) = mpsc::channel();
         let (init_tx, init_rx) = mpsc::channel();
         let should_stop = Arc::new(AtomicBool::new(false));
@@ -784,12 +851,8 @@ impl PipeWireCameraCapturer {
         std::thread::Builder::new()
             .name("pw-camera".into())
             .spawn(move || {
-                let result = (|| {
-                    let fd = portal_camera_capture()?;
-                    // node_id = None → PW_ID_ANY, AUTOCONNECT routes to camera.
-                    run_pipewire_stream(fd, None, frame_tx, init_tx.clone(), stop_flag)
-                })();
-
+                // node_id = None → PW_ID_ANY, AUTOCONNECT routes to camera.
+                let result = run_pipewire_stream(fd, None, frame_tx, init_tx.clone(), stop_flag);
                 if let Err(e) = result {
                     let _ = init_tx.send(Err(e));
                 }
@@ -798,7 +861,7 @@ impl PipeWireCameraCapturer {
 
         let (width, height) = init_rx
             .recv_timeout(Duration::from_secs(30))
-            .context("PipeWire camera capture init timeout")?
+            .context("PipeWire camera capture format negotiation timeout")?
             .context("PipeWire camera capture init failed")?;
 
         info!(width, height, "PipeWire camera capture started");
