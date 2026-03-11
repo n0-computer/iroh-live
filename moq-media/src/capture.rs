@@ -4,7 +4,7 @@
 //! that auto-select the best platform backend.
 
 #[cfg(feature = "capture-camera")]
-pub use rusty_capture::{CameraCapturer, SimpleCameraInfo as CameraInfo, list_cameras};
+pub use rusty_capture::{CameraCapturer, CameraListEntry};
 
 #[cfg(feature = "capture-screen")]
 pub use rusty_capture::ScreenCapturer;
