@@ -30,7 +30,7 @@ ashpd = { version = "0.11", optional = true, default-features = false, features 
 nix = { version = "0.30", optional = true, default-features = false, features = ["ioctl", "fs", "mman"] }
 tokio = { version = "1", optional = true, features = ["rt"] }
 v4l2r = { version = "0.0.7", optional = true }
-x11rb = { version = "0.13", optional = true, features = ["shm"] }
+x11rb = { version = "0.13", optional = true, features = ["shm", "randr"] }
 
 # macOS/iOS: ScreenCaptureKit (screen) + AVFoundation (camera)
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]

@@ -19,10 +19,23 @@ use rusty_codecs::traits::VideoSource;
 
 use crate::types::{MonitorInfo, ScreenConfig};
 
-/// Lists available X11 screens as monitors.
+/// Lists available X11 monitors via RANDR.
+///
+/// Uses the RANDR extension to enumerate outputs with their positions,
+/// dimensions, refresh rates, and primary status. Falls back to simple
+/// X11 screen enumeration if RANDR is not available.
 pub fn monitors() -> Result<Vec<MonitorInfo>> {
     let (conn, screen_num) = x11rb::connect(None).context("failed to connect to X11")?;
     let setup = conn.setup();
+
+    // Try RANDR first for accurate multihead info.
+    if let Ok(monitors) = monitors_randr(&conn, setup, screen_num)
+        && !monitors.is_empty()
+    {
+        return Ok(monitors);
+    }
+
+    // Fallback: enumerate X11 screens (no position info, no multihead).
     let mut monitors = Vec::new();
     for (i, screen) in setup.roots.iter().enumerate() {
         monitors.push(MonitorInfo {
@@ -36,6 +49,71 @@ pub fn monitors() -> Result<Vec<MonitorInfo>> {
             scale_factor: 1.0,
             refresh_rate_hz: None,
             is_primary: i == screen_num,
+        });
+    }
+    Ok(monitors)
+}
+
+/// Enumerates monitors using RANDR extension for multihead support.
+fn monitors_randr(
+    conn: &impl Connection,
+    setup: &x11rb::protocol::xproto::Setup,
+    screen_num: usize,
+) -> Result<Vec<MonitorInfo>> {
+    use x11rb::protocol::randr;
+
+    let root = setup.roots.get(screen_num).context("no root screen")?.root;
+
+    let resources = randr::get_screen_resources(conn, root)?
+        .reply()
+        .context("RANDR get_screen_resources failed")?;
+
+    let primary = randr::get_output_primary(conn, root)?
+        .reply()
+        .ok()
+        .map(|r| r.output);
+
+    let mut monitors = Vec::new();
+    for output in &resources.outputs {
+        let Ok(info) = randr::get_output_info(conn, *output, 0)?.reply() else {
+            continue;
+        };
+        // Skip disconnected or off outputs.
+        if info.crtc == 0 || info.connection != randr::Connection::CONNECTED {
+            continue;
+        }
+        let Ok(crtc) = randr::get_crtc_info(conn, info.crtc, 0)?.reply() else {
+            continue;
+        };
+
+        let name = String::from_utf8_lossy(&info.name).to_string();
+        let is_primary = primary.is_some_and(|p| p == *output);
+
+        // Compute refresh rate from the mode.
+        let refresh_rate_hz = resources
+            .modes
+            .iter()
+            .find(|m| m.id == crtc.mode)
+            .map(|mode| {
+                let interlaced =
+                    mode.mode_flags & randr::ModeFlag::INTERLACE != randr::ModeFlag::from(0u8);
+                let vtotal = mode.vtotal as f32 * if interlaced { 0.5 } else { 1.0 };
+                if vtotal > 0.0 && mode.htotal > 0 {
+                    mode.dot_clock as f32 / (vtotal * mode.htotal as f32)
+                } else {
+                    0.0
+                }
+            })
+            .filter(|r| *r > 0.0);
+
+        monitors.push(MonitorInfo {
+            id: format!("x11-screen-{screen_num}"),
+            name,
+            position: [crtc.x as i32, crtc.y as i32],
+            dimensions: [crtc.width as u32, crtc.height as u32],
+            scale_factor: 1.0,
+            refresh_rate_hz,
+            is_primary,
         });
     }
     Ok(monitors)
@@ -140,7 +218,10 @@ fn capture_loop_shm(
     stop_rx: mpsc::Receiver<()>,
 ) -> Result<()> {
     let (conn, _) = x11rb::connect(None)?;
-    let buf_size = (width * height * 4) as usize;
+    let buf_size = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(4))
+        .context("screen dimensions too large for SHM buffer")?;
 
     // Create SHM segment.
     let shm_id = unsafe { libc::shmget(libc::IPC_PRIVATE, buf_size, libc::IPC_CREAT | 0o600) };

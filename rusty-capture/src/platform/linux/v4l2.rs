@@ -349,7 +349,15 @@ fn capture_loop(
         };
 
         let buf_idx = dqbuf.index;
-        let data: &[u8] = &mappings[buf_idx];
+        let Some(mapping) = mappings.get(buf_idx) else {
+            warn!(
+                buf_idx,
+                num_bufs = mappings.len(),
+                "V4L2 dqbuf returned invalid index"
+            );
+            break;
+        };
+        let data: &[u8] = mapping;
 
         let frame = convert_frame(data, width, height, capture_format)?;
 
@@ -391,10 +399,17 @@ fn convert_frame(
         CapturePixelFormat::Nv12 => {
             use rusty_codecs::format::Nv12Planes;
             let y_size = (width * height) as usize;
+            let uv_size = y_size / 2;
+            anyhow::ensure!(
+                data.len() >= y_size + uv_size,
+                "NV12 frame too small: {} < {}",
+                data.len(),
+                y_size + uv_size
+            );
             VideoFrame::new_nv12(Nv12Planes {
                 y_data: data[..y_size].to_vec(),
                 y_stride: width,
-                uv_data: data[y_size..].to_vec(),
+                uv_data: data[y_size..y_size + uv_size].to_vec(),
                 uv_stride: width,
                 width,
                 height,
@@ -403,10 +418,17 @@ fn convert_frame(
         CapturePixelFormat::I420 => {
             let y_size = (width * height) as usize;
             let uv_size = y_size / 4;
+            let total = y_size + uv_size * 2;
+            anyhow::ensure!(
+                data.len() >= total,
+                "I420 frame too small: {} < {}",
+                data.len(),
+                total
+            );
             VideoFrame::new_i420(
                 bytes::Bytes::copy_from_slice(&data[..y_size]),
                 bytes::Bytes::copy_from_slice(&data[y_size..y_size + uv_size]),
-                bytes::Bytes::copy_from_slice(&data[y_size + uv_size..]),
+                bytes::Bytes::copy_from_slice(&data[y_size + uv_size..y_size + uv_size * 2]),
                 width,
                 height,
             )
@@ -494,9 +516,17 @@ fn gray_to_rgba(data: &[u8], width: u32, height: u32) -> Vec<u8> {
     rgba
 }
 
-fn mjpeg_to_rgba(data: &[u8], _width: u32, _height: u32) -> Result<Vec<u8>> {
+fn mjpeg_to_rgba(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
     let img = image::load_from_memory_with_format(data, image::ImageFormat::Jpeg)
         .context("MJPEG decode failed")?;
+    anyhow::ensure!(
+        img.width() == width && img.height() == height,
+        "MJPEG dimensions mismatch: {}x{} != {}x{}",
+        img.width(),
+        img.height(),
+        width,
+        height
+    );
     Ok(img.to_rgba8().into_raw())
 }
 
