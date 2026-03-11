@@ -1,20 +1,8 @@
-use std::{env, str::FromStr, time::Instant};
-
-use anyhow::{Context, Result};
-use nokhwa::{
-    nokhwa_initialize,
-    pixel_format::{RgbAFormat, RgbFormat},
-    query,
-    utils::{
-        ApiBackend, CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType,
-        Resolution,
-    },
-};
-use tracing::{debug, info, trace, warn};
+use anyhow::Result;
+use tracing::debug;
 
 use crate::{
     format::{PixelFormat, VideoFormat, VideoFrame},
-    processing::mjpg::MjpgDecoder,
     traits::VideoSource,
 };
 
@@ -29,130 +17,111 @@ pub struct CameraInfo {
 
 /// List all available cameras.
 pub fn list_cameras() -> Result<Vec<CameraInfo>> {
-    nokhwa_initialize(|granted| {
-        debug!("User selected camera access: {}", granted);
-    });
-    let cameras = query(ApiBackend::Auto)?;
+    let cameras = rusty_capture::cameras()?;
     Ok(cameras
-        .iter()
+        .into_iter()
         .enumerate()
         .map(|(i, info)| CameraInfo {
             index: i as u32,
-            name: info.human_name().to_string(),
+            name: info.name,
         })
         .collect())
 }
 
+/// Camera capturer backed by rusty-capture.
 #[derive(derive_more::Debug)]
 pub struct CameraCapturer {
     #[debug(skip)]
-    pub(crate) camera: nokhwa::Camera,
-    #[debug(skip)]
-    pub(crate) mjpg_decoder: MjpgDecoder,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
+    inner: Box<dyn VideoSource>,
+    width: u32,
+    height: u32,
 }
 
 impl CameraCapturer {
-    /// Create a new camera capturer using the default camera selection.
-    ///
-    /// Uses the `IROH_LIVE_CAMERA` environment variable if set, otherwise picks the last camera.
+    /// Creates a new camera capturer using the default camera.
     pub fn new() -> Result<Self> {
-        debug!("initializing camera capturer (nokhwa)");
-        nokhwa_initialize(|granted| {
-            debug!("user selected camera access: {}", granted);
-        });
-
-        let cameras = query(ApiBackend::Auto)?;
+        debug!("initializing camera capturer (rusty-capture)");
+        let cameras = rusty_capture::cameras()?;
         if cameras.is_empty() {
-            return Err(anyhow::anyhow!("No cameras available"));
+            anyhow::bail!("No cameras available");
         }
-        debug!("available cameras: {cameras:?}");
-
-        let camera_index = match env::var("IROH_LIVE_CAMERA").ok() {
-            None => {
-                // Order of cameras in nokhwa is reversed from usual order (primary camera is last).
-                let first_camera = cameras.last().unwrap();
-                debug!("selected camera: {}", first_camera.human_name());
-                first_camera.index().clone()
-            }
-            Some(camera_name) => match u32::from_str(&camera_name).ok() {
-                Some(num) => CameraIndex::Index(num),
-                None => CameraIndex::String(camera_name),
-            },
-        };
-        Self::open(camera_index)
+        // Pick the last camera (primary is often last, matching old nokhwa behavior).
+        let camera = cameras.last().unwrap();
+        debug!(name = %camera.name, "selected camera");
+        Self::open(camera)
     }
 
-    /// Create a new camera capturer for a specific camera index.
+    /// Creates a new camera capturer for a specific camera index.
     pub fn with_index(index: u32) -> Result<Self> {
-        debug!("initializing camera capturer (nokhwa) with index {index}");
-        nokhwa_initialize(|granted| {
-            debug!("user selected camera access: {}", granted);
-        });
-        Self::open(CameraIndex::Index(index))
+        debug!("initializing camera capturer (rusty-capture) with index {index}");
+        let cameras = rusty_capture::cameras()?;
+        let camera = cameras
+            .get(index as usize)
+            .ok_or_else(|| anyhow::anyhow!("Camera index {index} out of range"))?;
+        Self::open(camera)
     }
 
-    fn open(camera_index: CameraIndex) -> Result<Self> {
-        let mut camera = nokhwa::Camera::new(
-            camera_index,
-            RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution),
-        )?;
-        let available_formats = camera.compatible_camera_formats()?;
-        debug!("available formats: {available_formats:?}",);
-        if let Some(format) = Self::select_format(available_formats, Resolution::new(1920, 1080))
-            && let Err(err) = camera.set_camera_requset(RequestedFormat::new::<RgbFormat>(
-                RequestedFormatType::Exact(format),
-            ))
-        {
-            warn!(?format, "failed to change camera format: {err:#}");
-        }
-        let cam_name = camera.info().human_name().to_string();
-        let cam_format = camera.camera_format().to_string();
-        info!(camera = %cam_name, format = %cam_format, "capture start");
-        let resolution = camera.resolution();
+    fn open(info: &rusty_capture::CameraInfo) -> Result<Self> {
+        let config = rusty_capture::CameraConfig {
+            preferred_resolution: Some([1920, 1080]),
+            ..Default::default()
+        };
+        let inner = Self::create_backend(info, &config)?;
+        let fmt = inner.format();
+        let [w, h] = fmt.dimensions;
         Ok(Self {
-            camera,
-            mjpg_decoder: MjpgDecoder::new()?,
-            width: resolution.width(),
-            height: resolution.height(),
+            inner,
+            width: w,
+            height: h,
         })
     }
 
-    fn select_format(
-        mut formats: Vec<CameraFormat>,
-        desired_resolution: Resolution,
-    ) -> Option<CameraFormat> {
-        formats.sort_by(|a, b| {
-            a.resolution()
-                .cmp(&b.resolution())
-                .then(a.frame_rate().cmp(&b.frame_rate()))
-        });
-        // Pick the smallest format that meets or exceeds the desired resolution,
-        // but don't go above 1920x1080 to avoid exceeding encoder limits.
-        let max_resolution = Resolution::new(1920, 1080);
-        formats
-            .iter()
-            .find(|format| {
-                format.resolution() >= desired_resolution && format.resolution() <= max_resolution
-            })
-            // Fall back to the largest format at or below the max.
-            .or_else(|| {
-                formats
-                    .iter()
-                    .rev()
-                    .find(|format| format.resolution() <= max_resolution)
-            })
-            // Last resort: smallest available format.
-            .or_else(|| formats.first())
-            .cloned()
+    #[cfg(all(target_os = "linux", feature = "capture-camera"))]
+    fn create_backend(
+        info: &rusty_capture::CameraInfo,
+        config: &rusty_capture::CameraConfig,
+    ) -> Result<Box<dyn VideoSource>> {
+        // Try PipeWire first, fall back to V4L2.
+        if info.id == "pipewire-portal" {
+            let capturer = rusty_capture::PipeWireCameraCapturer::new()?;
+            return Ok(Box::new(capturer));
+        }
+        let capturer = rusty_capture::V4l2CameraCapturer::new(info, config)?;
+        Ok(Box::new(capturer))
+    }
+
+    #[cfg(all(
+        any(target_os = "macos", target_os = "ios"),
+        feature = "capture-camera"
+    ))]
+    fn create_backend(
+        info: &rusty_capture::CameraInfo,
+        config: &rusty_capture::CameraConfig,
+    ) -> Result<Box<dyn VideoSource>> {
+        let capturer = rusty_capture::AppleCameraCapturer::new(info, config)?;
+        Ok(Box::new(capturer))
+    }
+
+    #[cfg(not(any(
+        all(target_os = "linux", feature = "capture-camera"),
+        all(
+            any(target_os = "macos", target_os = "ios"),
+            feature = "capture-camera"
+        ),
+    )))]
+    fn create_backend(
+        _info: &rusty_capture::CameraInfo,
+        _config: &rusty_capture::CameraConfig,
+    ) -> Result<Box<dyn VideoSource>> {
+        anyhow::bail!("No camera capture backend available on this platform")
     }
 }
 
 impl VideoSource for CameraCapturer {
     fn name(&self) -> &str {
-        "cam"
+        self.inner.name()
     }
+
     fn format(&self) -> VideoFormat {
         VideoFormat {
             pixel_format: PixelFormat::Rgba,
@@ -161,36 +130,14 @@ impl VideoSource for CameraCapturer {
     }
 
     fn start(&mut self) -> Result<()> {
-        self.camera.open_stream()?;
-        Ok(())
+        self.inner.start()
     }
 
     fn stop(&mut self) -> Result<()> {
-        self.camera.stop_stream()?;
-        Ok(())
+        self.inner.stop()
     }
 
-    fn pop_frame(&mut self) -> anyhow::Result<Option<VideoFrame>> {
-        let start = Instant::now();
-        let frame = self
-            .camera
-            .frame()
-            .context("Failed to capture camera frame")?;
-        trace!("pop frame: capture took {:?}", start.elapsed());
-        let start = Instant::now();
-        let frame = match frame.source_frame_format() {
-            FrameFormat::MJPEG => {
-                trace!("decode mjpeg");
-                self.mjpg_decoder.decode_frame(frame.buffer())?
-            }
-            _ => {
-                let image = frame
-                    .decode_image::<RgbAFormat>()
-                    .context("Failed to decode camera frame")?;
-                VideoFrame::new_rgba(image.into_raw().into(), self.width, self.height)
-            }
-        };
-        trace!("pop frame: decode took {:?}", start.elapsed());
-        Ok(Some(frame))
+    fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {
+        self.inner.pop_frame()
     }
 }
