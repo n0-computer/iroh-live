@@ -99,31 +99,49 @@ fn enumerate_formats(fd: &impl AsRawFd) -> Vec<CameraFormat> {
                 ioctl::FrmSizeTypes::Discrete(d) => (d.width, d.height),
                 ioctl::FrmSizeTypes::StepWise(s) => (s.max_width, s.max_height),
             };
-            // Get frame interval (fps) for this size.
-            let fps = frame_interval_fps(fd, desc.pixelformat, w, h);
-            formats.push(CameraFormat {
-                dimensions: [w, h],
-                fps,
-                pixel_format: pf,
-            });
+            // Enumerate all frame intervals (fps values) for this size.
+            let fps_list = enumerate_frame_intervals(fd, desc.pixelformat, w, h);
+            for fps in fps_list {
+                formats.push(CameraFormat {
+                    dimensions: [w, h],
+                    fps,
+                    pixel_format: pf,
+                });
+            }
         }
     }
     formats
 }
 
-fn frame_interval_fps(fd: &impl AsRawFd, pixfmt: V4l2PixelFormat, w: u32, h: u32) -> f32 {
-    let Ok(ival) =
-        ioctl::enum_frame_intervals::<v4l2r::bindings::v4l2_frmivalenum>(fd, 0, pixfmt, w, h)
-    else {
-        return 30.0;
-    };
-    match ival.intervals() {
-        Some(ioctl::FrmIvalTypes::Discrete(d)) => d.denominator as f32 / d.numerator.max(1) as f32,
-        Some(ioctl::FrmIvalTypes::StepWise(s)) => {
-            s.min.denominator as f32 / s.min.numerator.max(1) as f32
+fn enumerate_frame_intervals(
+    fd: &impl AsRawFd,
+    pixfmt: V4l2PixelFormat,
+    w: u32,
+    h: u32,
+) -> Vec<f32> {
+    let mut fps_list = Vec::new();
+    for idx in 0u32.. {
+        let Ok(ival) =
+            ioctl::enum_frame_intervals::<v4l2r::bindings::v4l2_frmivalenum>(fd, idx, pixfmt, w, h)
+        else {
+            break;
+        };
+        match ival.intervals() {
+            Some(ioctl::FrmIvalTypes::Discrete(d)) => {
+                fps_list.push(d.denominator as f32 / d.numerator.max(1) as f32);
+            }
+            Some(ioctl::FrmIvalTypes::StepWise(s)) => {
+                // Report the fastest (min interval = max fps).
+                fps_list.push(s.min.denominator as f32 / s.min.numerator.max(1) as f32);
+                break; // Stepwise has a single range, not multiple entries.
+            }
+            None => break,
         }
-        None => 30.0,
     }
+    if fps_list.is_empty() {
+        fps_list.push(30.0); // Fallback when driver doesn't report intervals.
+    }
+    fps_list
 }
 
 /// V4L2 camera capturer.
@@ -147,33 +165,48 @@ pub struct V4l2CameraCapturer {
 impl V4l2CameraCapturer {
     /// Creates a new V4L2 camera capturer for the given device.
     pub fn new(info: &CameraInfo, config: &CameraConfig) -> Result<Self> {
-        Self::open(&info.id, &info.name, config)
+        Self::open(&info.id, &info.name, info, config)
     }
 
     /// Opens the first available V4L2 camera with default configuration.
     pub fn open_default() -> Result<Self> {
         let cams = cameras()?;
         let cam = cams.first().context("no V4L2 cameras available")?;
-        Self::open(&cam.id, &cam.name, &CameraConfig::default())
+        Self::open(&cam.id, &cam.name, cam, &CameraConfig::default())
     }
 
-    fn open(path: &str, name: &str, config: &CameraConfig) -> Result<Self> {
+    fn open(path: &str, name: &str, info: &CameraInfo, config: &CameraConfig) -> Result<Self> {
         let mut dev = OpenOptions::new()
             .read(true)
             .write(true)
             .open(path)
             .context("failed to open V4L2 device")?;
 
-        // Negotiate format.
-        let preferred_fourcc = config
-            .preferred_format
-            .map(|pf| V4l2PixelFormat::from_fourcc(&pf.to_v4l2_fourcc()))
-            .unwrap_or_else(|| V4l2PixelFormat::from_fourcc(b"YUYV"));
+        // Select best format from supported formats using the config strategy.
+        let selected = config.select_format(&info.supported_formats);
+        let (req_w, req_h, req_fourcc) = if let Some(fmt) = selected {
+            debug!(
+                ?fmt.dimensions, fps = fmt.fps, ?fmt.pixel_format,
+                "V4L2 format selected by {:?}", config.selector
+            );
+            (
+                fmt.dimensions[0],
+                fmt.dimensions[1],
+                V4l2PixelFormat::from_fourcc(&fmt.pixel_format.to_v4l2_fourcc()),
+            )
+        } else {
+            // No supported formats enumerated — let the driver pick.
+            let fourcc = config
+                .preferred_format
+                .map(|pf| V4l2PixelFormat::from_fourcc(&pf.to_v4l2_fourcc()))
+                .unwrap_or_else(|| V4l2PixelFormat::from_fourcc(b"YUYV"));
+            (0, 0, fourcc)
+        };
 
         let desired = Format {
-            width: config.preferred_resolution.map_or(0, |r| r[0]),
-            height: config.preferred_resolution.map_or(0, |r| r[1]),
-            pixelformat: preferred_fourcc,
+            width: req_w,
+            height: req_h,
+            pixelformat: req_fourcc,
             plane_fmt: vec![],
         };
         let actual: Format = ioctl::s_fmt(&mut dev, (QueueType::VideoCapture, &desired))

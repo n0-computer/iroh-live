@@ -235,18 +235,23 @@ impl CameraCapturer {
         list_cameras()
     }
 
-    /// Opens the default camera.
+    /// Opens the default camera with [`CameraSelector::HighestResolution`].
     ///
     /// Picks the last camera in the enumerated list, which on most systems is
     /// the primary built-in camera.
     pub fn new() -> anyhow::Result<Self> {
-        let cams = list_cameras()?;
-        if cams.is_empty() {
-            anyhow::bail!("no cameras available");
-        }
-        let cam = cams.last().unwrap();
-        tracing::debug!(name = %cam.name, "selected camera");
-        Self::open(cam)
+        Self::with_config(None, &CameraConfig::default())
+    }
+
+    /// Opens the default camera with a custom selector strategy.
+    pub fn with_selector(selector: CameraSelector) -> anyhow::Result<Self> {
+        Self::with_config(
+            None,
+            &CameraConfig {
+                selector,
+                ..Default::default()
+            },
+        )
     }
 
     /// Opens a camera by numeric index (from [`CameraCapturer::list()`]).
@@ -255,15 +260,38 @@ impl CameraCapturer {
         let cam = cams
             .get(index as usize)
             .ok_or_else(|| anyhow::anyhow!("camera index {index} out of range"))?;
-        Self::open(cam)
+        Self::with_config(Some(cam), &CameraConfig::default())
     }
 
-    fn open(info: &CameraInfo) -> anyhow::Result<Self> {
+    /// Opens a camera with a specific format from [`CameraInfo::supported_formats`].
+    pub fn with_format(info: &CameraInfo, format: &CameraFormat) -> anyhow::Result<Self> {
         let config = CameraConfig {
-            preferred_resolution: Some([1920, 1080]),
+            selector: CameraSelector::TargetResolution(format.dimensions[0], format.dimensions[1]),
+            preferred_format: Some(format.pixel_format),
             ..Default::default()
         };
         let inner = create_camera_backend(info, &config)?;
+        Ok(Self { inner })
+    }
+
+    /// Opens a camera with full configuration control.
+    ///
+    /// When `info` is `None`, selects the last camera from the enumerated list.
+    pub fn with_config(info: Option<&CameraInfo>, config: &CameraConfig) -> anyhow::Result<Self> {
+        let owned;
+        let info = match info {
+            Some(i) => i,
+            None => {
+                let cams = list_cameras()?;
+                if cams.is_empty() {
+                    anyhow::bail!("no cameras available");
+                }
+                owned = cams.into_iter().last().unwrap();
+                &owned
+            }
+        };
+        tracing::debug!(name = %info.name, ?config.selector, "opening camera");
+        let inner = create_camera_backend(info, config)?;
         Ok(Self { inner })
     }
 }

@@ -31,7 +31,7 @@ pub struct CameraInfo {
 }
 
 /// A resolution + frame rate + pixel format combination a camera supports.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CameraFormat {
     /// Frame dimensions `[width, height]`.
     pub dimensions: [u32; 2],
@@ -39,6 +39,107 @@ pub struct CameraFormat {
     pub fps: f32,
     /// Pixel format produced by the camera at this setting.
     pub pixel_format: CapturePixelFormat,
+}
+
+impl CameraFormat {
+    /// Returns the total pixel count (width × height).
+    pub fn pixel_count(&self) -> u64 {
+        self.dimensions[0] as u64 * self.dimensions[1] as u64
+    }
+}
+
+/// Strategy for selecting a camera format from the list of supported formats.
+#[derive(Debug, Clone, Default)]
+pub enum CameraSelector {
+    /// Selects the format with the highest frame rate.
+    /// Ties broken by highest resolution.
+    HighestFramerate,
+    /// Selects the format with the highest resolution.
+    /// Ties broken by highest frame rate.
+    #[default]
+    HighestResolution,
+    /// Selects the format closest to the target resolution.
+    /// Prefers exact match, then next larger, then next smaller.
+    /// Ties broken by highest frame rate.
+    TargetResolution(u32, u32),
+}
+
+impl CameraSelector {
+    /// Picks the best format from a slice of references.
+    fn select_refs<'a>(&self, formats: &[&'a CameraFormat]) -> Option<&'a CameraFormat> {
+        if formats.is_empty() {
+            return None;
+        }
+        // Delegate to select() on a view. We re-implement to avoid cloning.
+        let idx = self.select_index(formats.iter().copied())?;
+        Some(formats[idx])
+    }
+
+    /// Returns the index of the best format from an iterator.
+    fn select_index<'a>(
+        &self,
+        formats: impl Iterator<Item = &'a CameraFormat> + Clone,
+    ) -> Option<usize> {
+        match self {
+            Self::HighestFramerate => formats
+                .enumerate()
+                .max_by(|(_, a), (_, b)| {
+                    a.fps
+                        .partial_cmp(&b.fps)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.pixel_count().cmp(&b.pixel_count()))
+                })
+                .map(|(i, _)| i),
+            Self::HighestResolution => formats
+                .enumerate()
+                .max_by(|(_, a), (_, b)| {
+                    a.pixel_count().cmp(&b.pixel_count()).then_with(|| {
+                        a.fps
+                            .partial_cmp(&b.fps)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                })
+                .map(|(i, _)| i),
+            Self::TargetResolution(tw, th) => {
+                let target = *tw as u64 * *th as u64;
+                let all: Vec<_> = formats.collect();
+                // Prefer smallest resolution >= target, break ties by fps.
+                let above = all
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| f.pixel_count() >= target)
+                    .min_by(|(_, a), (_, b)| {
+                        a.pixel_count().cmp(&b.pixel_count()).then_with(|| {
+                            b.fps
+                                .partial_cmp(&a.fps)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                    });
+                // Fallback: largest resolution < target, break ties by fps.
+                let below = || {
+                    all.iter()
+                        .enumerate()
+                        .filter(|(_, f)| f.pixel_count() < target)
+                        .max_by(|(_, a), (_, b)| {
+                            a.pixel_count().cmp(&b.pixel_count()).then_with(|| {
+                                a.fps
+                                    .partial_cmp(&b.fps)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                        })
+                };
+                above.or_else(below).map(|(i, _)| i)
+            }
+        }
+    }
+
+    /// Picks the best format from a list according to this strategy.
+    ///
+    /// Returns `None` if `formats` is empty.
+    pub fn select<'a>(&self, formats: &'a [CameraFormat]) -> Option<&'a CameraFormat> {
+        let idx = self.select_index(formats.iter())?;
+        Some(&formats[idx])
+    }
 }
 
 /// Pixel formats that capture devices may produce.
@@ -103,13 +204,12 @@ impl CapturePixelFormat {
 /// Configuration for creating a camera capturer.
 #[derive(Debug, Clone)]
 pub struct CameraConfig {
-    /// Preferred resolution `[width, height]`. The backend picks the closest
-    /// supported resolution at or below these dimensions.
-    pub preferred_resolution: Option<[u32; 2]>,
-    /// Preferred frame rate. The backend picks the closest supported fps.
-    pub preferred_fps: Option<f32>,
+    /// Strategy for picking resolution and frame rate from the camera's
+    /// supported format list. Defaults to [`CameraSelector::HighestResolution`].
+    pub selector: CameraSelector,
     /// Preferred pixel format. [`CapturePixelFormat::Nv12`] enables zero-copy
-    /// on platforms with DMA-BUF or IOSurface support.
+    /// on platforms with DMA-BUF or IOSurface support. When set, only formats
+    /// matching this pixel format are considered.
     pub preferred_format: Option<CapturePixelFormat>,
     /// Attempt DMA-BUF / IOSurface zero-copy if the platform supports it.
     /// Falls back to CPU buffers transparently on failure.
@@ -119,11 +219,27 @@ pub struct CameraConfig {
 impl Default for CameraConfig {
     fn default() -> Self {
         Self {
-            preferred_resolution: None,
-            preferred_fps: None,
+            selector: CameraSelector::default(),
             preferred_format: None,
             zero_copy: true,
         }
+    }
+}
+
+impl CameraConfig {
+    /// Selects the best format from a camera's supported formats.
+    ///
+    /// Filters by [`preferred_format`](Self::preferred_format) when set,
+    /// then applies the [`selector`](Self::selector) strategy.
+    pub fn select_format<'a>(&self, formats: &'a [CameraFormat]) -> Option<&'a CameraFormat> {
+        if let Some(pf) = self.preferred_format {
+            let filtered: Vec<&CameraFormat> =
+                formats.iter().filter(|f| f.pixel_format == pf).collect();
+            if let Some(f) = self.selector.select_refs(&filtered) {
+                return Some(f);
+            }
+        }
+        self.selector.select(formats)
     }
 }
 
