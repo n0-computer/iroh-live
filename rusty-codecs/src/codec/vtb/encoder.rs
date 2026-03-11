@@ -235,8 +235,16 @@ impl VideoEncoder for VtbEncoder {
     }
 
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
-        let [w, h] = frame.format.dimensions;
-        let yuv = pixel_format_to_yuv420(&frame.raw, w, h, frame.format.pixel_format)?;
+        let [w, h] = frame.dimensions;
+        let yuv = match &frame.data {
+            crate::format::FrameData::Packed { pixel_format, data } => {
+                pixel_format_to_yuv420(data, w, h, *pixel_format)?
+            }
+            _ => {
+                let img = frame.rgba_image();
+                pixel_format_to_yuv420(img.as_raw(), w, h, crate::format::PixelFormat::Rgba)?
+            }
+        };
 
         // Get a pixel buffer from the session's pool.
         let pool = unsafe { self.session.pixel_buffer_pool() }

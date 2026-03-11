@@ -94,12 +94,10 @@ impl VideoSource for ScreenCapturer {
                 .recv()
                 .context("Screen recorder did not produce new frame")?,
         };
-        Ok(Some(VideoFrame {
-            format: VideoFormat {
-                pixel_format: PixelFormat::Rgba,
-                dimensions: [raw_frame.width, raw_frame.height],
-            },
-            raw: raw_frame.raw.into(),
-        }))
+        Ok(Some(VideoFrame::new_rgba(
+            raw_frame.raw.into(),
+            raw_frame.width,
+            raw_frame.height,
+        )))
     }
 }

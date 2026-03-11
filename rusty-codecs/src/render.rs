@@ -1,6 +1,6 @@
 //! wgpu-based video frame renderer.
 //!
-//! Renders [`DecodedVideoFrame`] to a wgpu texture. CPU frames are uploaded
+//! Renders [`VideoFrame`] to a wgpu texture. Packed CPU frames are uploaded
 //! via `queue.write_texture()`. GPU frames (NV12) are converted via a shader.
 //!
 //! On Linux with `dmabuf-import` feature, GPU frames can be imported directly
@@ -14,7 +14,9 @@ use std::{fmt, iter};
 #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
 pub use dmabuf_import::create_device_with_dmabuf_extensions;
 
-use crate::format::{CpuFrame, DecodedVideoFrame, FrameBuffer, Nv12Planes};
+#[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
+use crate::format::NativeFrameHandle;
+use crate::format::{FrameData, Nv12Planes, VideoFrame};
 
 /// Renders decoded video frames to a wgpu RGBA texture.
 ///
@@ -156,21 +158,23 @@ impl WgpuVideoRenderer {
         }
     }
 
-    /// Render a frame to an RGBA texture. Returns a `TextureView` suitable for
+    /// Renders a frame to an RGBA texture. Returns a `TextureView` suitable for
     /// registering with egui via `register_native_texture`.
-    pub fn render(&mut self, frame: &DecodedVideoFrame) -> &wgpu::TextureView {
+    pub fn render(&mut self, frame: &VideoFrame) -> &wgpu::TextureView {
         /// Disable DMA-BUF import after this many consecutive failures to avoid
         /// log spam and allocation churn from a fundamentally unsupported path.
         #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
         const MAX_DMABUF_FAILURES: u32 = 3;
 
-        match &frame.buffer {
-            FrameBuffer::Cpu(cpu) => self.render_cpu(cpu),
-            FrameBuffer::Gpu(gpu) => {
+        let [w, h] = frame.dimensions;
+        match &frame.data {
+            FrameData::Packed { data, .. } => self.render_packed(data, w, h),
+            FrameData::Nv12(planes) => self.render_nv12(planes),
+            FrameData::Gpu(gpu) => {
                 // Try zero-copy DMA-BUF import (Linux only)
                 #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
                 if let Some(ref mut importer) = self.dmabuf_importer
-                    && let Some(info) = gpu.dma_buf_info()
+                    && let Some(NativeFrameHandle::DmaBuf(info)) = gpu.native_handle()
                 {
                     match importer.import_nv12(&self.device, info) {
                         Ok(imported) => {
@@ -197,8 +201,13 @@ impl WgpuVideoRenderer {
                     return self.render_nv12(&planes);
                 }
                 // Fallback: download as RGBA
-                let cpu = gpu.download().expect("GPU frame download failed");
-                self.render_cpu(&cpu)
+                let img = gpu.download_rgba().expect("GPU frame download failed");
+                self.render_packed(img.as_raw(), img.width(), img.height())
+            }
+            FrameData::I420 { .. } => {
+                // Fall back through RGBA cache
+                let img = frame.rgba_image();
+                self.render_packed(img.as_raw(), img.width(), img.height())
             }
         }
     }
@@ -336,22 +345,22 @@ impl WgpuVideoRenderer {
         &self.output_texture.as_ref().unwrap().view
     }
 
-    /// Upload a CPU RGBA frame to the output texture.
-    fn render_cpu(&mut self, cpu: &CpuFrame) -> &wgpu::TextureView {
-        self.ensure_output_texture(cpu.width(), cpu.height());
+    /// Uploads packed RGBA pixel data to the output texture.
+    fn render_packed(&mut self, data: &[u8], width: u32, height: u32) -> &wgpu::TextureView {
+        self.ensure_output_texture(width, height);
 
         let out = self.output_texture.as_ref().unwrap();
         self.queue.write_texture(
             out.texture.as_image_copy(),
-            &cpu.image,
+            data,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(cpu.width() * 4),
+                bytes_per_row: Some(width * 4),
                 rows_per_image: None,
             },
             wgpu::Extent3d {
-                width: cpu.width(),
-                height: cpu.height(),
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
         );

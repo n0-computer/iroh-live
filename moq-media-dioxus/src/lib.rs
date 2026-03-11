@@ -167,7 +167,7 @@ impl CustomPaintSource for DioxusVideoRenderer {
 
         tracing::trace!(
             "render: frame {:?}, canvas={}x{}",
-            frame.dimensions(),
+            (frame.width(), frame.height()),
             width,
             height
         );

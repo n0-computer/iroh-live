@@ -117,10 +117,7 @@ fn h264_config(width: u32, height: u32) -> VideoConfig {
 }
 
 /// Decodes all packets with the software H.264 decoder.
-fn decode_all(
-    config: &VideoConfig,
-    packets: Vec<MediaPacket>,
-) -> Vec<crate::format::DecodedVideoFrame> {
+fn decode_all(config: &VideoConfig, packets: Vec<MediaPacket>) -> Vec<crate::format::VideoFrame> {
     let dc = DecodeConfig {
         backend: DecoderBackend::Software,
         pixel_format: PixelFormat::Rgba,
@@ -353,16 +350,20 @@ fn decode_external_with_bgra_output() {
     }
     assert!(!frames.is_empty());
 
-    if let crate::format::FrameBuffer::Cpu(ref cpu) = frames[0].buffer {
-        assert_eq!(cpu.pixel_format, PixelFormat::Bgra);
+    if let crate::format::FrameData::Packed {
+        pixel_format,
+        ref data,
+    } = frames[0].data
+    {
+        assert_eq!(pixel_format, PixelFormat::Bgra);
         // In BGRA, red pixel has: B=low(0), G=low(1), R=high(2), A=255(3)
         let mid = ((16 * 32 + 16) * 4) as usize;
         assert!(
-            cpu.image.as_raw()[mid + 2] > 100,
+            data[mid + 2] > 100,
             "BGRA R channel should be high for red frame"
         );
     } else {
-        panic!("expected CPU frame");
+        panic!("expected Packed frame");
     }
 }
 
@@ -386,7 +387,7 @@ fn decode_external_with_viewport_scaling() {
     }
 
     let frame = last_frame.expect("should decode at least one frame");
-    let (w, h) = frame.dimensions();
+    let [w, h] = frame.dimensions;
     assert!(w <= 32, "width {w} should be <= 32 after viewport scaling");
     assert!(h <= 32, "height {h} should be <= 32 after viewport scaling");
 }

@@ -27,8 +27,8 @@ use crate::{
     codec::test_util::encoded_frames_to_media_packets,
     config::{AudioConfig, VideoConfig},
     format::{
-        AudioFormat, AudioPreset, DecodeConfig, DecodedVideoFrame, DecoderBackend, EncodedFrame,
-        MediaPacket, VideoFrame, VideoPreset,
+        AudioFormat, AudioPreset, DecodeConfig, DecoderBackend, EncodedFrame, MediaPacket,
+        VideoFrame, VideoPreset,
     },
     traits::{
         AudioDecoder, AudioEncoder, AudioEncoderFactory, Decoders, VideoDecoder, VideoEncoder,
@@ -90,7 +90,7 @@ struct TestEncoder {
 struct TestDecoder {
     name: &'static str,
     family: CodecFamily,
-    decode: fn(&VideoConfig, &DecodeConfig, Vec<MediaPacket>) -> Option<Vec<DecodedVideoFrame>>,
+    decode: fn(&VideoConfig, &DecodeConfig, Vec<MediaPacket>) -> Option<Vec<VideoFrame>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,12 +215,7 @@ fn all_decoders() -> Vec<TestDecoder> {
                                 let h = img.height();
                                 let ts = f.timestamp;
                                 drop(f);
-                                cpu_frames.push(DecodedVideoFrame::new_cpu(
-                                    img.into_raw(),
-                                    w,
-                                    h,
-                                    ts,
-                                ));
+                                cpu_frames.push(VideoFrame::new_cpu(img.into_raw(), w, h, ts));
                             }
                         }
                         Some(cpu_frames)
@@ -247,7 +242,7 @@ fn all_decoders() -> Vec<TestDecoder> {
     decoders
 }
 
-fn decode_all(dec: &mut impl VideoDecoder, packets: Vec<MediaPacket>) -> Vec<DecodedVideoFrame> {
+fn decode_all(dec: &mut impl VideoDecoder, packets: Vec<MediaPacket>) -> Vec<VideoFrame> {
     let mut frames = Vec::new();
     for pkt in packets {
         dec.push_packet(pkt).unwrap();
@@ -287,7 +282,7 @@ fn solid_color_roundtrip(
     g: u8,
     b: u8,
     n: usize,
-) -> Option<(Vec<DecodedVideoFrame>, FrameMetrics)> {
+) -> Option<(Vec<VideoFrame>, FrameMetrics)> {
     let packets = video_encode(enc, w, h, r, g, b, n);
     let config = enc.config();
     let dc = DecodeConfig::default();
@@ -310,7 +305,7 @@ fn pattern_roundtrip(
     dec_info: &TestDecoder,
     frame: &VideoFrame,
     n: usize,
-) -> Option<(Vec<DecodedVideoFrame>, FrameMetrics)> {
+) -> Option<(Vec<VideoFrame>, FrameMetrics)> {
     let packets = encode_n(enc, frame, n);
     let config = enc.config();
     let dc = DecodeConfig::default();
@@ -320,7 +315,7 @@ fn pattern_roundtrip(
     }
     let last = frames.last().unwrap();
     let img = last.img();
-    let m = compute_metrics(&frame.raw, img.as_raw());
+    let m = compute_metrics(frame.rgba_image().as_raw(), img.as_raw());
     Some((frames, m))
 }
 

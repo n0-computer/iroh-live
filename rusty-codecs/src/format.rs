@@ -1,6 +1,10 @@
 #[cfg(target_os = "linux")]
 use std::os::unix::io::OwnedFd;
-use std::{cell::OnceCell, fmt, sync::Arc, time::Duration};
+use std::{
+    fmt,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use image::RgbaImage;
 use strum::{Display, EnumString, VariantNames};
@@ -59,13 +63,20 @@ pub struct VideoFormat {
     pub dimensions: [u32; 2],
 }
 
-/// A raw, uncompressed video frame with pixel data in CPU memory.
-#[derive(Clone, Debug)]
-pub struct VideoFrame {
-    /// Pixel format and dimensions.
-    pub format: VideoFormat,
-    /// Raw pixel data in row-major order, sized `width * height * 4`.
-    pub raw: bytes::Bytes,
+/// Platform-specific handle for zero-copy GPU frame import/export.
+///
+/// Each variant is gated on the target platform. On platforms with no
+/// supported handle type the enum is uninhabited and
+/// `Option<&NativeFrameHandle>` is always `None`.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum NativeFrameHandle {
+    /// Linux DMA-BUF file descriptor and layout metadata.
+    #[cfg(target_os = "linux")]
+    DmaBuf(DmaBufInfo),
+    // Future variants:
+    // #[cfg(target_os = "macos")] IoSurface(IoSurfaceInfo),
+    // #[cfg(target_os = "windows")] D3D11Texture(D3D11TextureInfo),
 }
 
 /// An encoded media packet, independent of transport.
@@ -99,27 +110,7 @@ pub struct EncodedFrame {
     pub payload: bytes::Bytes,
 }
 
-/// CPU-resident RGBA pixel data backed by an [`RgbaImage`].
-#[derive(derive_more::Debug, Clone)]
-pub struct CpuFrame {
-    #[debug(skip)]
-    pub image: RgbaImage,
-    pub pixel_format: PixelFormat,
-}
-
-impl CpuFrame {
-    /// Returns the frame width.
-    pub fn width(&self) -> u32 {
-        self.image.width()
-    }
-
-    /// Returns the frame height.
-    pub fn height(&self) -> u32 {
-        self.image.height()
-    }
-}
-
-/// GPU-resident frame from a hardware decoder.
+/// GPU-resident frame from a hardware decoder or capture device.
 #[derive(Clone)]
 pub struct GpuFrame {
     inner: Arc<dyn GpuFrameInner>,
@@ -140,9 +131,9 @@ impl GpuFrame {
         Self { inner }
     }
 
-    /// Downloads the GPU frame to a CPU-resident [`CpuFrame`].
-    pub fn download(&self) -> anyhow::Result<CpuFrame> {
-        self.inner.download()
+    /// Downloads the GPU frame to a CPU RGBA image.
+    pub fn download_rgba(&self) -> anyhow::Result<RgbaImage> {
+        self.inner.download_rgba()
     }
 
     /// Returns the frame dimensions as `(width, height)`.
@@ -160,10 +151,9 @@ impl GpuFrame {
         self.inner.download_nv12()
     }
 
-    /// Returns DMA-BUF metadata for zero-copy import, if available.
-    #[cfg(target_os = "linux")]
-    pub fn dma_buf_info(&self) -> Option<&DmaBufInfo> {
-        self.inner.dma_buf_info()
+    /// Returns a platform-specific native handle for zero-copy import, if available.
+    pub fn native_handle(&self) -> Option<&NativeFrameHandle> {
+        self.inner.native_handle()
     }
 }
 
@@ -180,20 +170,21 @@ pub struct Nv12Planes {
 
 /// Platform-specific GPU frame operations.
 pub trait GpuFrameInner: Send + Sync + fmt::Debug + 'static {
-    /// Download the GPU frame to a CPU RGBA buffer.
-    fn download(&self) -> anyhow::Result<CpuFrame>;
-    /// Native pixel format on the GPU (NV12, I420, etc.).
+    /// Downloads the GPU frame to a CPU RGBA image.
+    fn download_rgba(&self) -> anyhow::Result<RgbaImage>;
+    /// Returns the native pixel format on the GPU (NV12, I420, etc.).
     fn gpu_pixel_format(&self) -> GpuPixelFormat;
-    /// Frame dimensions.
+    /// Returns the frame dimensions as `(width, height)`.
     fn dimensions(&self) -> (u32, u32);
-    /// Download NV12 plane data for GPU-side color conversion.
-    /// Returns None if the frame is not NV12 or doesn't support plane download.
+    /// Downloads NV12 plane data for GPU-side color conversion.
+    ///
+    /// Returns `None` if the frame is not NV12 or the implementation does
+    /// not support plane download.
     fn download_nv12(&self) -> Option<anyhow::Result<Nv12Planes>> {
         None
     }
-    /// DMA-BUF info for zero-copy GPU import, if available.
-    #[cfg(target_os = "linux")]
-    fn dma_buf_info(&self) -> Option<&DmaBufInfo> {
+    /// Returns a platform-specific native handle for zero-copy import/export.
+    fn native_handle(&self) -> Option<&NativeFrameHandle> {
         None
     }
 }
@@ -226,31 +217,100 @@ pub enum GpuPixelFormat {
     Nv12,
 }
 
-/// Backing storage for a decoded frame.
-#[derive(derive_more::Debug)]
-pub enum FrameBuffer {
-    Cpu(CpuFrame),
+/// Backing storage for a video frame.
+///
+/// Variants cover the common pixel layouts produced by capture devices and
+/// hardware decoders. Encoders match on the variant to pick the cheapest
+/// conversion path (e.g. a VAAPI encoder can consume [`Nv12`](Self::Nv12) or
+/// [`Gpu`](Self::Gpu) directly, avoiding an extra color-space round-trip).
+#[derive(derive_more::Debug, Clone)]
+pub enum FrameData {
+    /// Packed RGBA or BGRA pixel data in CPU memory.
+    Packed {
+        pixel_format: PixelFormat,
+        #[debug(skip)]
+        data: bytes::Bytes,
+    },
+    /// Planar I420 (YUV 4:2:0) in CPU memory.
+    I420 {
+        #[debug(skip)]
+        y: bytes::Bytes,
+        #[debug(skip)]
+        u: bytes::Bytes,
+        #[debug(skip)]
+        v: bytes::Bytes,
+    },
+    /// Semi-planar NV12 in CPU memory.
+    Nv12(Nv12Planes),
+    /// GPU-resident frame from a hardware decoder or capture device.
     #[debug("Gpu({:?})", _0)]
     Gpu(GpuFrame),
 }
 
-/// A decoded video frame that may live on CPU or GPU.
+/// A video frame that may reside in CPU or GPU memory.
+///
+/// Unifies the capture and decode paths into a single type. Capture sources
+/// produce `Packed` RGBA frames, software decoders produce `Packed` or `I420`
+/// frames, and hardware decoders produce `Gpu` frames. Encoders inspect
+/// [`FrameData`] to pick the cheapest input path.
 #[derive(derive_more::Debug)]
-pub struct DecodedVideoFrame {
-    pub buffer: FrameBuffer,
+pub struct VideoFrame {
+    /// Frame dimensions as `[width, height]`.
+    pub dimensions: [u32; 2],
+    /// Backing pixel data.
+    pub data: FrameData,
+    /// Presentation timestamp (`Duration::ZERO` for capture frames before
+    /// the encoder assigns a PTS).
     pub timestamp: Duration,
-    /// Lazy CPU image cache for backward-compat `img()`.
+    /// Lazy RGBA cache for rendering and legacy accessors.
     #[debug(skip)]
-    cached_rgba: OnceCell<RgbaImage>,
+    cached_rgba: OnceLock<RgbaImage>,
 }
 
-impl DecodedVideoFrame {
-    /// Creates a new CPU-backed frame from raw RGBA data.
-    pub fn new_cpu(data: Vec<u8>, width: u32, height: u32, timestamp: Duration) -> Self {
-        Self::new_cpu_with_format(data, width, height, timestamp, PixelFormat::Rgba)
+impl Clone for VideoFrame {
+    fn clone(&self) -> Self {
+        Self {
+            dimensions: self.dimensions,
+            data: self.data.clone(),
+            timestamp: self.timestamp,
+            cached_rgba: OnceLock::new(),
+        }
+    }
+}
+
+impl VideoFrame {
+    /// Creates a packed RGBA frame (common path for camera/screen capture).
+    pub fn new_rgba(data: bytes::Bytes, width: u32, height: u32) -> Self {
+        Self {
+            dimensions: [width, height],
+            data: FrameData::Packed {
+                pixel_format: PixelFormat::Rgba,
+                data,
+            },
+            timestamp: Duration::ZERO,
+            cached_rgba: OnceLock::new(),
+        }
     }
 
-    /// Creates a new CPU-backed frame with an explicit pixel format.
+    /// Creates a packed frame with an explicit pixel format and timestamp.
+    pub fn new_packed(
+        data: bytes::Bytes,
+        width: u32,
+        height: u32,
+        pixel_format: PixelFormat,
+        timestamp: Duration,
+    ) -> Self {
+        Self {
+            dimensions: [width, height],
+            data: FrameData::Packed { pixel_format, data },
+            timestamp,
+            cached_rgba: OnceLock::new(),
+        }
+    }
+
+    /// Creates a CPU-backed frame from raw pixel data and dimensions.
+    ///
+    /// Equivalent to the old `DecodedVideoFrame::new_cpu_with_format`.
     pub fn new_cpu_with_format(
         data: Vec<u8>,
         width: u32,
@@ -258,75 +318,115 @@ impl DecodedVideoFrame {
         timestamp: Duration,
         pixel_format: PixelFormat,
     ) -> Self {
-        let image = RgbaImage::from_raw(width, height, data)
-            .expect("pixel data size does not match dimensions");
         Self {
-            buffer: FrameBuffer::Cpu(CpuFrame {
-                image,
+            dimensions: [width, height],
+            data: FrameData::Packed {
                 pixel_format,
-            }),
+                data: data.into(),
+            },
             timestamp,
-            cached_rgba: OnceCell::new(),
+            cached_rgba: OnceLock::new(),
         }
     }
 
-    /// Creates a new CPU-backed frame from an existing [`RgbaImage`].
+    /// Creates a CPU-backed RGBA frame from raw pixel data.
+    pub fn new_cpu(data: Vec<u8>, width: u32, height: u32, timestamp: Duration) -> Self {
+        Self::new_cpu_with_format(data, width, height, timestamp, PixelFormat::Rgba)
+    }
+
+    /// Creates a frame from an existing [`RgbaImage`].
     pub fn from_image(image: RgbaImage, timestamp: Duration) -> Self {
+        let width = image.width();
+        let height = image.height();
         Self {
-            buffer: FrameBuffer::Cpu(CpuFrame {
-                image,
+            dimensions: [width, height],
+            data: FrameData::Packed {
                 pixel_format: PixelFormat::Rgba,
-            }),
+                data: image.into_raw().into(),
+            },
             timestamp,
-            cached_rgba: OnceCell::new(),
+            cached_rgba: OnceLock::new(),
         }
     }
 
-    /// Creates a new GPU-backed frame.
+    /// Creates a GPU-backed frame.
     pub fn new_gpu(gpu: GpuFrame, timestamp: Duration) -> Self {
+        let (w, h) = gpu.dimensions();
         Self {
-            buffer: FrameBuffer::Gpu(gpu),
+            dimensions: [w, h],
+            data: FrameData::Gpu(gpu),
             timestamp,
-            cached_rgba: OnceCell::new(),
+            cached_rgba: OnceLock::new(),
         }
     }
 
-    /// Returns the frame dimensions as `(width, height)`.
-    pub fn dimensions(&self) -> (u32, u32) {
-        match &self.buffer {
-            FrameBuffer::Cpu(f) => (f.width(), f.height()),
-            FrameBuffer::Gpu(f) => f.dimensions(),
-        }
+    /// Returns the frame width.
+    pub fn width(&self) -> u32 {
+        self.dimensions[0]
+    }
+
+    /// Returns the frame height.
+    pub fn height(&self) -> u32 {
+        self.dimensions[1]
     }
 
     /// Whether this frame lives on the GPU.
     pub fn is_gpu(&self) -> bool {
-        matches!(&self.buffer, FrameBuffer::Gpu(_))
+        matches!(&self.data, FrameData::Gpu(_))
     }
 
-    /// Access the GPU frame directly for zero-copy rendering.
+    /// Returns the GPU frame, if this is a GPU-backed frame.
     pub fn gpu_frame(&self) -> Option<&GpuFrame> {
-        match &self.buffer {
-            FrameBuffer::Gpu(f) => Some(f),
+        match &self.data {
+            FrameData::Gpu(f) => Some(f),
+            _ => None,
+        }
+    }
+
+    /// Returns a platform-specific native handle for zero-copy import, if available.
+    pub fn native_handle(&self) -> Option<&NativeFrameHandle> {
+        match &self.data {
+            FrameData::Gpu(gpu) => gpu.native_handle(),
             _ => None,
         }
     }
 
     /// Returns the frame as a CPU RGBA image.
     ///
-    /// For CPU frames, returns a zero-copy reference to the underlying image.
-    /// For GPU frames, downloads from the GPU on first call and caches.
+    /// For packed RGBA frames the data is wrapped without copying. For GPU
+    /// frames the pixels are downloaded on first call and cached. Other
+    /// layouts are not yet supported and will panic.
+    pub fn rgba_image(&self) -> &RgbaImage {
+        self.cached_rgba.get_or_init(|| {
+            let [w, h] = self.dimensions;
+            match &self.data {
+                FrameData::Packed {
+                    pixel_format: PixelFormat::Rgba,
+                    data,
+                } => RgbaImage::from_raw(w, h, data.to_vec())
+                    .expect("pixel data size does not match dimensions"),
+                FrameData::Packed {
+                    pixel_format: PixelFormat::Bgra,
+                    data,
+                } => {
+                    let mut rgba = data.to_vec();
+                    for chunk in rgba.chunks_exact_mut(4) {
+                        chunk.swap(0, 2);
+                    }
+                    RgbaImage::from_raw(w, h, rgba)
+                        .expect("pixel data size does not match dimensions")
+                }
+                FrameData::Gpu(gpu) => gpu.download_rgba().expect("GPU frame download failed"),
+                FrameData::I420 { .. } | FrameData::Nv12(_) => {
+                    unimplemented!("rgba_image() for YUV CPU frames")
+                }
+            }
+        })
+    }
+
+    /// Backward-compat alias for [`rgba_image`](Self::rgba_image).
     pub fn img(&self) -> &RgbaImage {
-        match &self.buffer {
-            FrameBuffer::Cpu(cpu) => &cpu.image,
-            FrameBuffer::Gpu(_) => self.cached_rgba.get_or_init(|| {
-                let FrameBuffer::Gpu(gpu) = &self.buffer else {
-                    unreachable!()
-                };
-                let cpu = gpu.download().expect("GPU frame download failed");
-                cpu.image
-            }),
-        }
+        self.rgba_image()
     }
 }
 
@@ -585,7 +685,7 @@ mod tests {
     #[test]
     fn new_cpu_with_format_rgba() {
         let data = vec![128u8; 4 * 4 * 4];
-        let frame = DecodedVideoFrame::new_cpu_with_format(
+        let frame = VideoFrame::new_cpu_with_format(
             data.clone(),
             4,
             4,
@@ -593,46 +693,72 @@ mod tests {
             PixelFormat::Rgba,
         );
         assert_eq!(frame.timestamp, Duration::from_millis(100));
-        if let FrameBuffer::Cpu(ref cpu) = frame.buffer {
-            assert_eq!(cpu.pixel_format, PixelFormat::Rgba);
-            assert_eq!(cpu.image.width(), 4);
-            assert_eq!(cpu.image.height(), 4);
-        } else {
-            panic!("expected CPU frame");
-        }
+        assert_eq!(frame.dimensions, [4, 4]);
+        assert!(matches!(
+            frame.data,
+            FrameData::Packed {
+                pixel_format: PixelFormat::Rgba,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn new_cpu_with_format_bgra() {
         let data = vec![64u8; 8 * 8 * 4];
-        let frame =
-            DecodedVideoFrame::new_cpu_with_format(data, 8, 8, Duration::ZERO, PixelFormat::Bgra);
-        if let FrameBuffer::Cpu(ref cpu) = frame.buffer {
-            assert_eq!(cpu.pixel_format, PixelFormat::Bgra);
-        } else {
-            panic!("expected CPU frame");
-        }
+        let frame = VideoFrame::new_cpu_with_format(data, 8, 8, Duration::ZERO, PixelFormat::Bgra);
+        assert!(matches!(
+            frame.data,
+            FrameData::Packed {
+                pixel_format: PixelFormat::Bgra,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn new_cpu_defaults_to_rgba() {
         let data = vec![0u8; 2 * 2 * 4];
-        let frame = DecodedVideoFrame::new_cpu(data, 2, 2, Duration::ZERO);
-        if let FrameBuffer::Cpu(ref cpu) = frame.buffer {
-            assert_eq!(cpu.pixel_format, PixelFormat::Rgba);
-        } else {
-            panic!("expected CPU frame");
-        }
+        let frame = VideoFrame::new_cpu(data, 2, 2, Duration::ZERO);
+        assert!(matches!(
+            frame.data,
+            FrameData::Packed {
+                pixel_format: PixelFormat::Rgba,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn from_image_defaults_to_rgba() {
         let img = image::RgbaImage::new(4, 4);
-        let frame = DecodedVideoFrame::from_image(img, Duration::from_secs(1));
-        if let FrameBuffer::Cpu(ref cpu) = frame.buffer {
-            assert_eq!(cpu.pixel_format, PixelFormat::Rgba);
-        } else {
-            panic!("expected CPU frame");
-        }
+        let frame = VideoFrame::from_image(img, Duration::from_secs(1));
+        assert!(matches!(
+            frame.data,
+            FrameData::Packed {
+                pixel_format: PixelFormat::Rgba,
+                ..
+            }
+        ));
+        assert_eq!(frame.dimensions, [4, 4]);
+    }
+
+    #[test]
+    fn new_rgba_capture_frame() {
+        let data = vec![255u8; 8 * 4 * 4];
+        let frame = VideoFrame::new_rgba(data.into(), 8, 4);
+        assert_eq!(frame.timestamp, Duration::ZERO);
+        assert_eq!(frame.dimensions, [8, 4]);
+        assert!(!frame.is_gpu());
+    }
+
+    #[test]
+    fn rgba_image_round_trip() {
+        let data = vec![42u8; 2 * 2 * 4];
+        let frame = VideoFrame::new_rgba(data.clone().into(), 2, 2);
+        let img = frame.rgba_image();
+        assert_eq!(img.width(), 2);
+        assert_eq!(img.height(), 2);
+        assert_eq!(img.as_raw(), &data);
     }
 }

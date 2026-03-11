@@ -7,7 +7,7 @@ use openh264::{decoder::Decoder, formats::YUVSource};
 use super::annexb::{avcc_to_annex_b, length_prefixed_to_annex_b};
 use crate::{
     config::{VideoCodec, VideoConfig},
-    format::{DecodeConfig, DecodedVideoFrame, MediaPacket, NalFormat, PixelFormat},
+    format::{DecodeConfig, MediaPacket, NalFormat, PixelFormat, VideoFrame},
     processing::{
         convert::{yuv420_to_bgra_from_slices, yuv420_to_rgba_from_slices},
         scale::{Scaler, fit_within},
@@ -142,7 +142,7 @@ impl VideoDecoder for H264VideoDecoder {
         Ok(())
     }
 
-    fn pop_frame(&mut self) -> Result<Option<DecodedVideoFrame>> {
+    fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {
         let Some((img, src_w, src_h)) = self.pending_frame.take() else {
             return Ok(None);
         };
@@ -163,7 +163,7 @@ impl VideoDecoder for H264VideoDecoder {
                 (img.into_raw(), src_w, src_h)
             };
 
-        Ok(Some(DecodedVideoFrame::new_cpu_with_format(
+        Ok(Some(VideoFrame::new_cpu_with_format(
             data,
             w,
             h,
@@ -337,26 +337,26 @@ mod tests {
 
         let frame = last_frame.expect("should have decoded at least one frame");
         // Frame should report BGRA pixel format
-        if let crate::format::FrameBuffer::Cpu(ref cpu) = frame.buffer {
+        if let crate::format::FrameData::Packed {
+            pixel_format,
+            ref data,
+        } = frame.data
+        {
             assert_eq!(
-                cpu.pixel_format,
+                pixel_format,
                 crate::format::PixelFormat::Bgra,
                 "should be BGRA"
             );
             // In BGRA order, red pixel = [B=low, G=low, R=high, A=255]
             let mid = ((h / 2 * w + w / 2) * 4) as usize;
             assert!(
-                cpu.image.as_raw()[mid + 2] > 150,
+                data[mid + 2] > 150,
                 "BGRA R={} should be high",
-                cpu.image.as_raw()[mid + 2]
+                data[mid + 2]
             );
-            assert!(
-                cpu.image.as_raw()[mid] < 100,
-                "BGRA B={} should be low",
-                cpu.image.as_raw()[mid]
-            );
+            assert!(data[mid] < 100, "BGRA B={} should be low", data[mid]);
         } else {
-            panic!("expected CPU frame");
+            panic!("expected Packed frame");
         }
     }
 

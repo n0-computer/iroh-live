@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 
 use crate::{
     config::{AudioCodec, AudioConfig, VideoCodec, VideoConfig},
-    format::{AudioFormat, DecodeConfig, DecodedVideoFrame, MediaPacket},
+    format::{AudioFormat, DecodeConfig, MediaPacket, VideoFrame},
     traits::{AudioDecoder, Decoders, VideoDecoder},
 };
 
@@ -89,7 +89,7 @@ impl VideoDecoder for DynamicVideoDecoder {
         }
     }
 
-    fn pop_frame(&mut self) -> Result<Option<DecodedVideoFrame>> {
+    fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {
         match self {
             #[cfg(feature = "h264")]
             Self::H264(d) => d.pop_frame(),

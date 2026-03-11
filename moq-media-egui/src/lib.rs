@@ -31,7 +31,7 @@ pub use epaint;
 pub use moq_media;
 #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
 use moq_media::render::create_device_with_dmabuf_extensions;
-use moq_media::{format::DecodedVideoFrame, render::WgpuVideoRenderer};
+use moq_media::{format::VideoFrame, render::WgpuVideoRenderer};
 
 /// Convenience renderer that integrates [`WgpuVideoRenderer`] with egui.
 ///
@@ -69,7 +69,7 @@ impl EguiVideoRenderer {
     }
 
     /// Renders a decoded video frame and returns the egui texture ID and dimensions.
-    pub fn render(&mut self, frame: &DecodedVideoFrame) -> (epaint::TextureId, (u32, u32)) {
+    pub fn render(&mut self, frame: &VideoFrame) -> (epaint::TextureId, (u32, u32)) {
         let view = self.renderer.render(frame);
         let device = &self.render_state.device;
         let mut egui_renderer = self.render_state.renderer.write();
@@ -88,7 +88,7 @@ impl EguiVideoRenderer {
             id
         };
 
-        let dims = frame.dimensions();
+        let dims = (frame.width(), frame.height());
         self.last_frame_size = Some(dims);
         (id, dims)
     }

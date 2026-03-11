@@ -166,8 +166,27 @@ impl VideoEncoder for H264Encoder {
     }
 
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
-        let [w, h] = frame.format.dimensions;
-        let yuv = pixel_format_to_yuv420(&frame.raw, w, h, frame.format.pixel_format)?;
+        let [w, h] = frame.dimensions;
+        let yuv = match &frame.data {
+            crate::format::FrameData::Packed { pixel_format, data } => {
+                pixel_format_to_yuv420(data, w, h, *pixel_format)?
+            }
+            crate::format::FrameData::I420 { y, u, v } => YuvData {
+                y: y.to_vec(),
+                y_stride: w,
+                u: u.to_vec(),
+                u_stride: w / 2,
+                v: v.to_vec(),
+                v_stride: w / 2,
+                width: w,
+                height: h,
+            },
+            _ => {
+                // GPU or NV12 frames: fall back through RGBA.
+                let img = frame.rgba_image();
+                pixel_format_to_yuv420(img.as_raw(), w, h, crate::format::PixelFormat::Rgba)?
+            }
+        };
 
         let bitstream = self.encoder.encode(&yuv)?;
         let frame_type = bitstream.frame_type();

@@ -4,8 +4,8 @@ use n0_future::boxed::BoxFuture;
 use crate::{
     config::{AudioConfig, VideoConfig},
     format::{
-        AudioEncoderConfig, AudioFormat, AudioPreset, DecodeConfig, DecodedVideoFrame,
-        EncodedFrame, MediaPacket, VideoEncoderConfig, VideoFormat, VideoFrame, VideoPreset,
+        AudioEncoderConfig, AudioFormat, AudioPreset, DecodeConfig, EncodedFrame, MediaPacket,
+        VideoEncoderConfig, VideoFormat, VideoFrame, VideoPreset,
     },
 };
 
@@ -300,7 +300,7 @@ pub trait VideoDecoder: Send + 'static {
     /// Returns the decoder's display name.
     fn name(&self) -> &str;
     /// Pops the next decoded frame, or `None` if the decoder needs more input.
-    fn pop_frame(&mut self) -> Result<Option<DecodedVideoFrame>>;
+    fn pop_frame(&mut self) -> Result<Option<VideoFrame>>;
     /// Pushes an encoded packet into the decoder.
     fn push_packet(&mut self, packet: MediaPacket) -> Result<()>;
     /// Sets the target viewport dimensions for optional downscaling.
