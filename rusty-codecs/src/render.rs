@@ -174,7 +174,7 @@ impl WgpuVideoRenderer {
                 // Try zero-copy DMA-BUF import (Linux only)
                 #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
                 if let Some(ref mut importer) = self.dmabuf_importer
-                    && let Some(NativeFrameHandle::DmaBuf(info)) = gpu.native_handle()
+                    && let Some(NativeFrameHandle::DmaBuf(ref info)) = gpu.native_handle()
                 {
                     match importer.import_nv12(&self.device, info) {
                         Ok(imported) => {
