@@ -120,33 +120,35 @@ impl VaapiGpuFrame {
         let w = self.width;
         let h = self.height;
 
-        // Y plane
+        // Y plane — copy row-by-row stripping pitch padding.
         let y_offset = va_image.offsets[0] as usize;
-        let y_pitch = va_image.pitches[0];
-        let y_data: Vec<u8> = (0..h as usize)
-            .flat_map(|row| {
-                let start = y_offset + row * y_pitch as usize;
-                data[start..start + w as usize].iter().copied()
-            })
-            .collect();
+        let y_pitch = va_image.pitches[0] as usize;
+        let w_usize = w as usize;
+        let h_usize = h as usize;
+        let mut y_data = vec![0u8; w_usize * h_usize];
+        for row in 0..h_usize {
+            let src = y_offset + row * y_pitch;
+            let dst = row * w_usize;
+            y_data[dst..dst + w_usize].copy_from_slice(&data[src..src + w_usize]);
+        }
 
-        // UV plane (interleaved, half height)
+        // UV plane (interleaved, half height) — same row-by-row copy.
         let uv_offset = va_image.offsets[1] as usize;
-        let uv_pitch = va_image.pitches[1];
-        let uv_w = w; // UV row is w bytes (w/2 pairs of U,V)
-        let uv_h = h.div_ceil(2);
-        let uv_data: Vec<u8> = (0..uv_h as usize)
-            .flat_map(|row| {
-                let start = uv_offset + row * uv_pitch as usize;
-                data[start..start + uv_w as usize].iter().copied()
-            })
-            .collect();
+        let uv_pitch = va_image.pitches[1] as usize;
+        let uv_w = w_usize; // UV row is w bytes (w/2 pairs of U,V)
+        let uv_h = h.div_ceil(2) as usize;
+        let mut uv_data = vec![0u8; uv_w * uv_h];
+        for row in 0..uv_h {
+            let src = uv_offset + row * uv_pitch;
+            let dst = row * uv_w;
+            uv_data[dst..dst + uv_w].copy_from_slice(&data[src..src + uv_w]);
+        }
 
         Ok(Nv12Planes {
             y_data,
             y_stride: w,
             uv_data,
-            uv_stride: uv_w,
+            uv_stride: w,
             width: w,
             height: h,
         })
