@@ -505,6 +505,7 @@ struct ViewerApp {
 
 impl ViewerApp {
     fn new(
+        rt: Runtime,
         #[allow(unused_variables, reason = "used only with wgpu feature")]
         cc: &eframe::CreationContext<'_>,
     ) -> Self {
@@ -519,7 +520,7 @@ impl ViewerApp {
             next_tile_id: 0,
             pending_close: None,
             error_msg: None,
-            rt: Runtime::new().expect("tokio runtime"),
+            rt,
 
             #[cfg(feature = "wgpu")]
             wgpu_render_state: cc.wgpu_render_state.clone(),
@@ -831,6 +832,12 @@ impl eframe::App for ViewerApp {
 fn main() -> eframe::Result<()> {
     tracing_subscriber::fmt::init();
 
+    // Create the tokio runtime *before* eframe so that accesskit (which uses
+    // zbus → tokio spawn_blocking under the hood) finds a reactor context
+    // throughout the eframe event loop.
+    let rt = Runtime::new().expect("tokio runtime");
+    let _guard = rt.enter();
+
     let native_options = if cfg!(feature = "wgpu") {
         #[cfg(feature = "wgpu")]
         let wgpu_config = create_egui_wgpu_config();
@@ -849,6 +856,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "moq-media viewer",
         native_options,
-        Box::new(move |cc| Ok(Box::new(ViewerApp::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(ViewerApp::new(rt, cc)))),
     )
 }

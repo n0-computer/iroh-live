@@ -51,7 +51,7 @@ use tracing::{debug, info, warn};
 use rusty_codecs::format::{Nv12Planes, PixelFormat, VideoFormat, VideoFrame};
 use rusty_codecs::traits::VideoSource;
 
-use crate::types::ScreenConfig;
+use crate::types::{CameraConfig, ScreenConfig};
 
 // ── Shared PipeWire stream infrastructure ───────────────────────────
 
@@ -67,8 +67,13 @@ struct CaptureState {
 /// Builds an `EnumFormat` pod requesting common video formats.
 ///
 /// Preference order: BGRx (screen compositors), BGRA, RGBA, NV12.
-/// Size and framerate are left as ranges so the producer picks optimal values.
-fn build_enum_format_pod() -> Result<Vec<u8>> {
+/// The `preferred_size` default hint tells the PipeWire producer which
+/// resolution to prefer within the supported range. The `preferred_fps`
+/// default hint does the same for frame rate.
+fn build_enum_format_pod(
+    preferred_size: Rectangle,
+    preferred_fps: Fraction,
+) -> Result<Vec<u8>> {
     let obj = Object {
         type_: SpaTypes::ObjectParamFormat.as_raw(),
         id: ParamType::EnumFormat.as_raw(),
@@ -103,10 +108,7 @@ fn build_enum_format_pod() -> Result<Vec<u8>> {
                 Value::Choice(ChoiceValue::Rectangle(Choice(
                     ChoiceFlags::empty(),
                     ChoiceEnum::Range {
-                        default: Rectangle {
-                            width: 1920,
-                            height: 1080,
-                        },
+                        default: preferred_size,
                         min: Rectangle {
                             width: 1,
                             height: 1,
@@ -123,7 +125,7 @@ fn build_enum_format_pod() -> Result<Vec<u8>> {
                 Value::Choice(ChoiceValue::Fraction(Choice(
                     ChoiceFlags::empty(),
                     ChoiceEnum::Range {
-                        default: Fraction { num: 30, denom: 1 },
+                        default: preferred_fps,
                         min: Fraction { num: 0, denom: 1 },
                         max: Fraction { num: 144, denom: 1 },
                     },
@@ -389,6 +391,8 @@ fn dmabuf_to_frame(
 fn run_pipewire_stream(
     fd: OwnedFd,
     node_id: Option<u32>,
+    preferred_size: Rectangle,
+    preferred_fps: Fraction,
     frame_tx: mpsc::Sender<VideoFrame>,
     init_tx: mpsc::Sender<Result<(u32, u32)>>,
     should_stop: Arc<AtomicBool>,
@@ -414,7 +418,7 @@ fn run_pipewire_stream(
     .map_err(|e| anyhow::anyhow!("failed to create PipeWire stream: {e}"))?;
 
     // Build format negotiation pod.
-    let format_bytes = build_enum_format_pod()?;
+    let format_bytes = build_enum_format_pod(preferred_size, preferred_fps)?;
     let pod = Pod::from_bytes(&format_bytes).context("invalid format pod")?;
 
     let state = CaptureState {
@@ -759,8 +763,15 @@ impl PipeWireScreenCapturer {
         std::thread::Builder::new()
             .name("pw-screen".into())
             .spawn(move || {
-                let result =
-                    run_pipewire_stream(fd, Some(node_id), frame_tx, init_tx.clone(), stop_flag);
+                let result = run_pipewire_stream(
+                    fd,
+                    Some(node_id),
+                    Rectangle { width: 1920, height: 1080 },
+                    Fraction { num: 30, denom: 1 },
+                    frame_tx,
+                    init_tx.clone(),
+                    stop_flag,
+                );
                 if let Err(e) = result {
                     let _ = init_tx.send(Err(e));
                 }
@@ -836,10 +847,33 @@ pub struct PipeWireCameraCapturer {
 impl PipeWireCameraCapturer {
     /// Creates a new PipeWire camera capturer.
     ///
+    /// The [`CameraSelector`](crate::types::CameraSelector) in `config`
+    /// controls the resolution/framerate preference hint sent to PipeWire
+    /// during format negotiation. `HighestResolution` (the default) requests
+    /// the maximum size the camera supports.
+    ///
     /// Triggers the Camera portal permission dialog if not already granted.
     /// The portal D-Bus negotiation runs on a dedicated thread so this is
     /// safe to call from async contexts (via `spawn_blocking`).
-    pub fn new() -> Result<Self> {
+    pub fn new(config: &CameraConfig) -> Result<Self> {
+        use crate::CameraSelector;
+
+        // Translate CameraSelector into PipeWire format negotiation hints.
+        let (preferred_size, preferred_fps) = match config.selector {
+            CameraSelector::HighestResolution => (
+                Rectangle { width: 8192, height: 4320 },
+                Fraction { num: 30, denom: 1 },
+            ),
+            CameraSelector::HighestFramerate => (
+                Rectangle { width: 1920, height: 1080 },
+                Fraction { num: 144, denom: 1 },
+            ),
+            CameraSelector::TargetResolution(w, h) => (
+                Rectangle { width: w, height: h },
+                Fraction { num: 30, denom: 1 },
+            ),
+        };
+
         // Portal negotiation runs on its own thread (inside portal_camera_capture).
         let fd = portal_camera_capture()?;
 
@@ -852,7 +886,15 @@ impl PipeWireCameraCapturer {
             .name("pw-camera".into())
             .spawn(move || {
                 // node_id = None → PW_ID_ANY, AUTOCONNECT routes to camera.
-                let result = run_pipewire_stream(fd, None, frame_tx, init_tx.clone(), stop_flag);
+                let result = run_pipewire_stream(
+                    fd,
+                    None,
+                    preferred_size,
+                    preferred_fps,
+                    frame_tx,
+                    init_tx.clone(),
+                    stop_flag,
+                );
                 if let Err(e) = result {
                     let _ = init_tx.send(Err(e));
                 }
