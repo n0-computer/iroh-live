@@ -1,0 +1,74 @@
+[package]
+name = "rusty-capture"
+version = "0.1.0"
+edition = "2024"
+description = "Cross-platform screen and camera capture with zero-copy GPU buffer support"
+authors = ["Franz Heinzmann <frando@n0.computer>"]
+repository = "https://github.com/n0-computer/iroh-live"
+license = "MIT OR Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = "1.0.100"
+bytes = "1.11.0"
+derive_more = { version = "2.0.1", features = ["display", "debug"] }
+tracing = "0.1.41"
+
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+
+# Core types from rusty-codecs (no codec features enabled).
+rusty-codecs = { path = "../rusty-codecs", default-features = false }
+
+# Linux: PipeWire (screen + camera, DMA-BUF zero-copy)
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+pipewire = { version = "0.9", optional = true }
+libspa = { version = "0.9", optional = true }
+ashpd = { version = "0.11", optional = true, default-features = false, features = ["tokio"] }
+nix = { version = "0.30", optional = true, default-features = false, features = ["ioctl", "fs", "mman"] }
+tokio = { version = "1", optional = true, features = ["rt"] }
+v4l2r = { version = "0.0.7", optional = true }
+x11rb = { version = "0.13", optional = true, features = ["shm"] }
+
+# macOS/iOS: ScreenCaptureKit (screen) + AVFoundation (camera)
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", optional = true }
+objc2-av-foundation = { version = "0.3", optional = true, features = [
+    "AVCaptureDevice",
+    "AVCaptureInput",
+    "AVCaptureOutput",
+    "AVCaptureSession",
+    "AVMediaFormat",
+] }
+objc2-core-media = { version = "0.3", optional = true, features = [
+    "CMSampleBuffer",
+    "CMTime",
+    "CMFormatDescription",
+] }
+objc2-core-video = { version = "0.3", optional = true, features = [
+    "CVPixelBuffer",
+    "CVBuffer",
+    "CVReturn",
+    "CVImageBuffer",
+    "CVBase",
+] }
+block2 = { version = "0.6", optional = true }
+dispatch2 = { version = "0.3", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+screencapturekit = { version = "1.5", optional = true }
+
+[features]
+default = []
+
+# Linux backends
+pipewire = ["dep:pipewire", "dep:libspa", "dep:ashpd", "dep:nix", "dep:tokio"]
+v4l2 = ["dep:v4l2r", "dep:nix"]
+x11 = ["dep:x11rb"]
+
+# macOS/iOS backends
+apple = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-av-foundation", "dep:objc2-core-media", "dep:objc2-core-video", "dep:block2", "dep:dispatch2"]
+apple-screen = ["apple", "dep:screencapturekit"]
