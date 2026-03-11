@@ -27,15 +27,32 @@ use screencapturekit::stream::configuration::SCStreamConfiguration;
 use screencapturekit::stream::content_filter::SCContentFilter;
 use screencapturekit::stream::output_trait::SCStreamOutputTrait;
 use screencapturekit::stream::output_type::SCStreamOutputType;
-use tracing::info;
+use tracing::{info, warn};
 
 use rusty_codecs::format::{PixelFormat, VideoFormat, VideoFrame};
 use rusty_codecs::traits::VideoSource;
 
 use crate::types::{MonitorInfo, ScreenConfig};
 
+// CoreGraphics permission check (macOS 10.15+).
+unsafe extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> bool;
+}
+
+/// Warns if Screen Recording permission has not been granted.
+fn check_screen_capture_permission() {
+    let granted = unsafe { CGPreflightScreenCaptureAccess() };
+    if !granted {
+        warn!(
+            "Screen Recording permission not granted. \
+             Grant access in System Settings > Privacy & Security > Screen Recording"
+        );
+    }
+}
+
 /// Lists available macOS displays.
 pub fn monitors() -> Result<Vec<MonitorInfo>> {
+    check_screen_capture_permission();
     let content = SCShareableContent::get()
         .map_err(|e| anyhow::anyhow!("ScreenCaptureKit: failed to get shareable content: {e:?}"))?;
     let displays = content.displays;
@@ -111,6 +128,7 @@ pub struct MacScreenCapturer {
 impl MacScreenCapturer {
     /// Creates a screen capturer for the primary display.
     pub fn new(config: &ScreenConfig) -> Result<Self> {
+        check_screen_capture_permission();
         let content = SCShareableContent::get()
             .map_err(|e| anyhow::anyhow!("ScreenCaptureKit: failed to get content: {e:?}"))?;
 

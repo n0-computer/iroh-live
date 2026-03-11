@@ -3,267 +3,740 @@
 Step-by-step plan for implementing the three-layer API redesign. Each phase produces
 a working codebase — no phase leaves things broken.
 
-See `0-overview.md` for the design, `3-sketch.md` for the target API shape.
+See `0-overview.md` for the design, `3-sketch.md` for the target API shape,
+`3a-glossary.md` for term definitions.
 
 ## Principles
 
 - **Each phase compiles and passes tests.** No "we'll fix it in the next phase."
-- **Additive first, remove later.** New types wrap old ones. Old types get deprecated.
-- **Examples update with each phase.** At least one example should use the new API.
-- **Keep moq-media unchanged as long as possible.** It's transport-agnostic and stable.
+- **No backwards compatibility.** This is a monorepo. Port all examples and apps
+  in the same phase that changes the API. Remove old types immediately — no
+  deprecation period.
+- **Keep moq-media unchanged where possible.** Exceptions: rename `WatchTrack` →
+  `VideoTrack` (Phase 1), and change `SubscribeBroadcast::catalog_watcher` to
+  `&self` if feasible (Phase 1).
+- **Only wrap when adding state.** See justification table in `3-sketch.md`.
+
+## Current Codebase Mapping
+
+What exists today and what it becomes:
+
+| Current type | Location | Becomes |
+|-------------|----------|---------|
+| `Live` | `iroh-live/src/live.rs` | Redesigned `Live` (builder, call, room, broadcast methods) |
+| `LiveNode` | `iroh-live/src/node.rs` | **Removed.** `LiveBuilder::spawn()` absorbs its role. |
+| `LiveTicket` | `iroh-live/src/ticket.rs` | Renamed to `BroadcastTicket` (same fields: endpoint + broadcast_name) |
+| `Room` | `iroh-live/src/rooms.rs` | Redesigned `Room` with participant model |
+| `RoomHandle` | `iroh-live/src/rooms.rs` | Internal to new `Room` (not public) |
+| `RoomEvent` | `iroh-live/src/rooms.rs` | Redesigned: `BroadcastPublished`/`BroadcastUnpublished` replace raw events |
+| `RoomPublisherSync` | `iroh-live/src/rooms/publisher.rs` | **Removed.** Replaced by `LocalParticipant::broadcast(kind)` + slot API. |
+| `StatsSmoother` | `iroh-live/src/util.rs` | Kept as-is |
+| `Moq` | `iroh-moq/src/lib.rs` | Kept. Add `accept_session()` method. |
+| `MoqProtocolHandler` | `iroh-moq/src/lib.rs` | Kept. Split accept into actor + incoming channel. |
+| `MoqSession` | `iroh-moq/src/lib.rs` | Kept. Already `Clone`. Used internally by Call and Room. |
+| `PublishBroadcast` | `moq-media/src/publish.rs` | Kept. Wrapped by `LocalBroadcast`. |
+| `SubscribeBroadcast` | `moq-media/src/subscribe.rs` | Kept. Wrapped by `RemoteBroadcast`. |
+| `WatchTrack` | `moq-media/src/subscribe.rs` | Renamed to `VideoTrack`. |
+| `AudioTrack` | `moq-media/src/subscribe.rs` | Kept as-is. |
+| `AvRemoteTrack` | `moq-media/src/subscribe.rs` | **Removed** in Phase 5. Use `VideoTrack` + `AudioTrack` separately. |
+
+New types not in current codebase:
+
+| New type | Location | Purpose |
+|----------|----------|---------|
+| `Call`, `IncomingCall`, `CallTicket` | `iroh-live/src/call.rs` | One-to-one call API |
+| `LocalParticipant`, `RemoteParticipant` | `iroh-live/src/room.rs` | Participant model |
+| `LocalBroadcast`, `RemoteBroadcast` | `iroh-live/src/broadcast.rs` | Broadcast wrappers |
+| `LocalVideoSlot`, `LocalAudioSlot` | `iroh-live/src/broadcast.rs` | Slot API |
+| `BroadcastKind`, `ParticipantId`, `RoomId` | `iroh-live/src/types.rs` | Shared IDs |
+| `LiveBuilder` | `iroh-live/src/live.rs` | Builder for Live |
+| `CallState`, `DisconnectReason` | `iroh-live/src/types.rs` | State enums |
+| `BroadcastTicket`, `BroadcastStatus` | `iroh-live/src/broadcast.rs` | Broadcast layer types |
 
 ## Phase Overview
 
-| Phase | What | Depends on | Estimated scope |
-|-------|------|------------|-----------------|
-| 1 | Shared types + broadcast wrappers | nothing | small |
-| 2 | Incoming session support | phase 1 | medium |
-| 3 | Call API | phases 1, 2 | medium |
-| 4 | Room participant model | phases 1, 2 | medium-large |
-| 5 | Polish, deprecation, examples | phases 3, 4 | small |
+| Phase | What | Depends on | Scope |
+|-------|------|------------|-------|
+| 1 | moq-media rename + shared types + broadcast wrappers + LiveBuilder | nothing | large |
+| 2 | Incoming session support in iroh-moq | Phase 1 | small |
+| 3 | Call API + call example | Phases 1, 2 | medium |
+| 4 | Room participant model + room migration | Phases 1, 2 | large |
+| 5 | Port all examples/apps, remove old API, polish | Phases 3, 4 | medium |
 
 ---
 
 ## Phase 1: Types + Broadcast Layer
 
-**Goal**: Introduce the `types`, `broadcast`, and `transport` modules. These are thin
-wrappers around existing types. No behavior changes.
+**Goal**: Rename `WatchTrack`, introduce shared types, broadcast wrappers, transport
+re-exports, and `LiveBuilder`. No behavior changes to existing code yet (additive only,
+old API still works).
 
-### 1.1 Shared types (`iroh-live/src/types.rs`)
+### 1.1 Rename `WatchTrack` → `VideoTrack` (moq-media)
 
-New file. Contains:
+In `moq-media/src/subscribe.rs`:
+- Rename struct `WatchTrack` → `VideoTrack`
+- Rename all internal references (construction sites, type aliases)
+- Update `moq-media/src/lib.rs` re-exports
+- Update all downstream usage in `iroh-live` and examples
 
-- `ParticipantId` — newtype over `EndpointId`
-  - Derive: `Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize`
-  - `Display` (short hex), `From<EndpointId>`
-- `PublicationId` — struct `{ participant: ParticipantId, name: String }`
-  - Derive: `Debug, Clone, PartialEq, Eq, Hash`
-  - `Display` → `"participant:name"`
-- `RoomId` — newtype over gossip `TopicId`
-  - Derive: `Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize`
-- `DisconnectReason` — enum `{ Normal, Error(String), Timeout }`
-- `TrackKind` — enum `{ Video, Audio }`
+Also in `moq-media/src/publish.rs`:
+- `PublishBroadcast::watch_local()` returns `WatchTrack` → rename to `VideoTrack`
 
-Implementation: pure data types, no logic beyond Display/From impls.
+**Files touched**: `moq-media/src/subscribe.rs`, `moq-media/src/lib.rs`,
+`moq-media/src/publish.rs`, `iroh-live/src/rooms/publisher.rs` (if it references
+WatchTrack), all examples that use WatchTrack.
 
-### 1.2 Broadcast wrappers (`iroh-live/src/broadcast.rs`)
+### 1.2 Consider: `SubscribeBroadcast::catalog_watcher` → `&self`
 
-New file. Wraps existing moq-media types:
+Currently `catalog_watcher(&mut self)` returns `n0_watcher::Direct<CatalogWrapper>`.
+Internally, `SubscribeBroadcast` holds a `Watchable<CatalogWrapper>` and
+`catalog_watcher` calls `.watch()` on it. `Watchable::watch()` takes `&self` in
+n0_watcher, so this **can be changed to `&self`** with no semantic change.
 
-**`LocalBroadcast`**:
-- Wraps `moq_media::publish::PublishBroadcast` in an `Arc`
-- Methods delegate directly:
-  - `new()` → `PublishBroadcast::new()`
-  - `video()` / `audio()` return lightweight slot handles
-  - `LocalVideoSlot::publish_camera()` / `publish_screen()` build renditions and call inner `set_video(Some(...))`
-  - `LocalVideoSlot::replace_source()` preserves the logical video slot while swapping the underlying source
-  - `LocalVideoSlot::clear()` → inner `set_video(None)`
-  - `LocalAudioSlot::publish_microphone()` builds renditions and calls inner `set_audio(Some(...))`
-  - `LocalAudioSlot::replace_source()` preserves the logical audio slot while swapping the underlying source
-  - `LocalAudioSlot::clear()` → inner `set_audio(None)`
-  - `preview(config)` → inner `watch_local(config)`
-  - `producer()` → inner `producer()`
-- Add `Clone` (Arc-based)
+If changed: `RemoteBroadcast` can expose `catalog()` by calling
+`self.inner.subscribe.catalog_watcher()` directly — no mirror task needed.
 
-**Source replacement semantics**:
-- camera A → camera B keeps the same logical video slot
-- microphone A → microphone B keeps the same logical audio slot
-- `clear()` removes the slot entirely and tears down active encoders
-- mute/disable should not require full teardown
-- the broadcast layer preserves slots; the product layer decides whether a semantic source change maps to a new publication identity
+If not changed: `RemoteBroadcast` spawns a background task during construction that
+mirrors catalog updates into its own `Watchable<CatalogWrapper>`, and exposes a
+watcher on that. This works but adds complexity.
 
-**`RemoteBroadcast`**:
-- Wraps `moq_media::subscribe::SubscribeBroadcast` in an `Arc` (all methods take `&self`)
-- Methods delegate:
-  - `status()` → new Watchable tracking connect/live/ended
-  - `catalog()` → inner `catalog_watcher()`
-  - `catalog_snapshot()` → inner `catalog()`
-  - `name()` → inner `broadcast_name()`
-  - `has_video()` / `has_audio()` derived from catalog
-  - `subscribe_video<D>()` → inner `watch::<D>()`
-  - `subscribe_video_with<D>(opts)` → inner `watch_with::<D>(config, quality)` or `watch_rendition::<D>(config, name)`
-  - `subscribe_audio<D>(backend)` → inner `listen::<D>(backend)`
-  - `video_renditions()` → iterate catalog
-  - `audio_renditions()` → iterate catalog
-  - `selected_video()` / `selected_audio()` retain the last successful selection snapshot for UI and debugging
-  - `closed()` → inner `closed()`
-  - `as_inner()` → access inner
+**Recommendation**: Change to `&self` in moq-media. It's a one-line signature change
+with zero semantic impact. Verify no downstream code relies on `&mut self` exclusivity.
 
-**Option types** (same file):
-- `BroadcastTicket` — struct `{ remote: EndpointAddr, broadcast_name: String }`, Display/FromStr
-- `BroadcastStatus` — enum `{ Connecting, Live, Ended }`
-- `SubscribeVideoOptions` — struct with `quality`, `rendition`, `viewport`, `decode_config`. Builder methods.
-- `SubscribeAudioOptions` — struct with `quality`, `rendition`. Builder methods.
-- `SelectedVideo` / `SelectedAudio` — snapshots of the currently selected rendition and options
+### 1.3 Shared types (`iroh-live/src/types.rs`)
 
-**Key decision**: `SubscribeBroadcast` methods already take `&self` (catalog, watch,
-listen, etc.), so `RemoteBroadcast` can use `Arc<SubscribeBroadcast>` directly — no
-Mutex needed. `PublishBroadcast::set_video/set_audio` take `&mut self`, so
-`LocalBroadcast` needs `Arc<Mutex<PublishBroadcast>>` (or refactor to `&self` later).
+New file. Pure data types with no dependencies beyond iroh:
 
-### 1.3 Transport re-exports (`iroh-live/src/transport.rs`)
+```rust
+// ParticipantId — newtype over EndpointId
+//   Derive: Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize
+//   Impls: Display (fmt_short), From<EndpointId>
 
-New file. Re-exports:
+// BroadcastKind — enum { Camera, Screen, Named(String) }
+//   Derive: Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize
+//   Impls: Display, From<&str>, From<String>, as_str()
+//   Round-trip: "camera" → Camera, "screen" → Screen, anything else → Named
+
+// RoomId — newtype over TopicId
+//   Derive: Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize
+//   Impls: Display (hex)
+
+// DisconnectReason — enum { LocalClose, RemoteClose, TransportError(Arc<dyn Error>) }
+//   Derive: Debug, Clone
+//   No PartialEq (Arc<dyn Error> doesn't support it)
+
+// CallState — enum { Connecting, Connected, Disconnected(DisconnectReason) }
+//   Derive: Debug, Clone
+//   Helper methods: is_connecting(), is_connected(), is_disconnected()
+```
+
+### 1.4 Broadcast wrappers (`iroh-live/src/broadcast.rs`)
+
+#### `LocalBroadcast`
+
+Wraps `PublishBroadcast`. Inner needs `Mutex` because `set_video()`/`set_audio()` take
+`&mut self`:
+
+```rust
+struct LocalBroadcastInner {
+    publish: Mutex<PublishBroadcast>,
+}
+```
+
+**Slot implementation**: `LocalVideoSlot` and `LocalAudioSlot` both hold
+`Arc<LocalBroadcastInner>` (same inner as their parent `LocalBroadcast`). They don't
+own separate state — they're thin handles that lock the `Mutex` to modify the
+`PublishBroadcast`.
+
+**`set_source` and the encoder question**: The current `VideoRenditions` API supports
+two construction paths:
+- `VideoRenditions::new(source, codec, presets)` — dynamic codec selection (requires
+  `any_video_codec` feature)
+- `VideoRenditions::new_from_generic::<E>(source, presets)` — explicit encoder type
+
+The slot `set_source` needs to create `VideoRenditions`. Options:
+
+**(a) Codec parameter on slot**: `set_source(source, codec, presets)` — uses the dynamic
+path. Requires `any_video_codec` feature (or we make it default).
+
+**(b) Generic encoder type on slot**: `set_source::<E: VideoEncoderFactory>(source, presets)`
+— explicit but verbose.
+
+**(c) Take pre-built renditions**: `set_source(source, renditions: VideoRenditions)` —
+caller builds renditions manually. Most flexible but least ergonomic.
+
+**(d) Codec parameter on `LocalBroadcast`**: Set the default codec at broadcast level,
+slots inherit it. `LocalBroadcast::new_with_codec(VideoCodec::H264)`.
+
+**Decision**: Option (a) as the primary API, with escape hatch (c) for advanced use.
+The slot signature:
+```rust
+pub fn set_source(
+    &self,
+    source: impl VideoSource,
+    codec: VideoCodec,
+    presets: impl IntoIterator<Item = VideoPreset>,
+) -> Result<()>
+```
+This maps directly to `VideoRenditions::new()`. For the generic path, users can call
+`LocalBroadcast::producer()` and use `PublishBroadcast` directly.
+
+Similarly for audio:
+```rust
+pub fn set_source(
+    &self,
+    source: impl AudioSource,
+    codec: AudioCodec,
+    presets: impl IntoIterator<Item = AudioPreset>,
+) -> Result<()>
+```
+
+**`preview()`**: Delegates to `PublishBroadcast::watch_local()` (which returns
+`Option<VideoTrack>`). Needs lock but the lock is short (watch_local clones internal
+state and returns).
+
+**`publish(name)` on `LocalBroadcast`**: The sketch shows this method, but
+`LocalBroadcast` doesn't know about networking. Two options:
+
+**(a) LocalBroadcast holds a channel to Moq**: Pass during construction for Live-managed
+broadcasts. `publish()` sends the producer through the channel.
+
+**(b) Separate publish step on Live**: `live.publish_broadcast("name", &broadcast)`.
+LocalBroadcast is purely local; publishing is a Live concern.
+
+**Decision**: Option (b). `LocalBroadcast` is a pure media wrapper. Publishing happens
+through:
+- Standalone: `let ticket = live.publish_broadcast("name", &broadcast)?`
+- Room: room actor calls `moq.publish()` with the producer
+- Call: call code calls `session.publish()` with the producer
+
+This means `LocalBroadcast` has no `publish()` method. Publishing happens through
+`Live::publish_broadcast()` instead. The `producer()` escape hatch is the bridge.
+
+#### `RemoteBroadcast`
+
+Wraps `SubscribeBroadcast`. If we change `catalog_watcher` to `&self` (§1.2), the
+inner is simpler:
+
+```rust
+struct RemoteBroadcastInner {
+    subscribe: SubscribeBroadcast,
+    status: Watchable<BroadcastStatus>,
+    selected_video: Mutex<Option<SelectedVideo>>,
+    selected_audio: Mutex<Option<SelectedAudio>>,
+    _status_task: AbortOnDropHandle<()>,  // watches closed() → updates status
+}
+```
+
+No catalog mirror task needed — `catalog()` calls `subscribe.catalog_watcher()`
+directly.
+
+**Status tracking**: Spawn one task during construction:
+1. Start as `Connecting`
+2. Watch `subscribe.catalog_watcher()` — first update → transition to `Live`
+3. Watch `subscribe.closed()` — resolves → transition to `Ended`
+
+**`subscribe_video_with`**: Delegates to `SubscribeBroadcast::watch_rendition()` or
+`watch_with()` depending on options. Then updates `selected_video`. Returns `VideoTrack`.
+
+**`subscribe_audio_with`**: Delegates to `SubscribeBroadcast::listen_rendition()` or
+`listen_with()`. Updates `selected_audio`. Returns `AudioTrack`.
+
+**`has_video()`/`has_audio()`**: Check `subscribe.catalog().video.is_empty()` /
+`subscribe.catalog().audio.is_empty()`. These read the current catalog snapshot — no
+lock needed since `catalog()` returns owned `CatalogWrapper`.
+
+#### `BroadcastTicket`
+
+Rename of existing `LiveTicket`. Same fields: `endpoint: EndpointAddr` +
+`broadcast_name: String`. Keep the existing `serialize()`/`deserialize()` logic but
+rename the type and update the format string prefix if it has one.
+
+#### Option types
+
+Pure data, no implementation complexity:
+- `SubscribeVideoOptions` — quality, rendition, viewport, decode_config (builder)
+- `SubscribeAudioOptions` — quality, rendition (builder)
+- `SelectedVideo` — rendition name + options snapshot
+- `SelectedAudio` — rendition name + options snapshot
+- `BroadcastStatus` — enum { Connecting, Live, Ended }
+
+### 1.5 Transport re-exports (`iroh-live/src/transport.rs`)
+
 ```rust
 pub use iroh_moq::{Moq, MoqProtocolHandler, MoqSession};
+
 pub mod raw {
     pub use moq_lite::{BroadcastConsumer, BroadcastProducer, Track, TrackProducer};
 }
 ```
 
-### 1.4 Wire up in lib.rs
+### 1.6 LiveBuilder (`iroh-live/src/live.rs`)
 
-- Add `pub mod broadcast;`
-- Add `pub mod transport;`
-- Add `pub mod types;`
-- Add re-exports: `pub use types::{ParticipantId, PublicationId, RoomId, TrackKind, DisconnectReason};`
-- Keep all existing exports (no breaking changes)
+Absorbs `LiveNode`'s role. The current `LiveNode::spawn_from_env()` does:
+1. Read `IROH_SECRET` env var (or generate key)
+2. Build & bind `Endpoint` with ALPN
+3. Create `Gossip`
+4. Create `Live::new(endpoint)`
+5. Create `Router`, register gossip + moq protocol handlers
+6. Spawn router
+7. Return `LiveNode { router, live, gossip }`
 
-### 1.5 Add broadcast example
+`LiveBuilder::spawn()` does the same but returns a `Live` that owns everything:
 
-New example `iroh-live/examples/broadcast.rs`:
-- Publisher creates `LocalBroadcast`, sets video, publishes via `Live`
-- Subscriber creates `RemoteBroadcast`, subscribes to video, prints frame count
-- Uses new types throughout
+```rust
+struct LiveInner {
+    endpoint: Endpoint,
+    moq: Moq,
+    gossip: Gossip,
+    _router: Router,
+}
+```
 
-### 1.6 Tests
+**`Live::new(endpoint, gossip)`**: Manual construction for users who manage their own
+endpoint/gossip. Creates `Moq` internally but doesn't spawn a router — caller is
+responsible for registering the protocol handler.
 
-- Unit tests for type Display/FromStr/From impls
-- Integration test: `LocalBroadcast` → transport → `RemoteBroadcast` → subscribe video
-- Verify `Clone` works (Arc semantics)
+### 1.7 Wire up in lib.rs
+
+- Add new modules: `pub mod broadcast`, `pub mod transport`, `mod types`
+- Add re-exports for new types
+- Remove old exports (`LiveNode`, `LiveTicket`, `Live::connect`, `Live::connect_and_subscribe`,
+  `Live::watch_and_listen`, `Live::publish`, `pub moq` field) in this phase
+
+### 1.8 Tests
+
+- `BroadcastKind` round-trip: `From<&str>` ↔ `as_str()` for "camera", "screen", custom
+- `ParticipantId` Display/Eq
+- `LocalBroadcast`: create, set video source via slot, verify `has_video()`
+- `RemoteBroadcast`: create from `SubscribeBroadcast`, verify status transitions
+  (Connecting → Live on first catalog → Ended on close)
+- `BroadcastTicket`: Display/FromStr round-trip
+- `LiveBuilder::spawn()`: verify it produces a working `Live`
+- Integration: `LocalBroadcast` → publish via `live.publish_broadcast()` → connect →
+  `RemoteBroadcast` → subscribe_video → get frames
 
 ### Done when
 
-- `cargo check --workspace --all-features` passes
+- `cargo check --workspace --all-features --tests --examples` passes
 - `cargo test --workspace` passes
-- `cargo clippy --workspace --all-features` clean
-- New example runs
+- `cargo clippy --locked --workspace --all-targets --all-features` clean
+- All examples ported to new types
 
 ---
 
 ## Phase 2: Incoming Session Support
 
-**Goal**: Add a public stream of incoming MoQ sessions at the transport layer, then
-wrap it at the Live layer.
+**Goal**: Add the ability to receive and distinguish incoming MoQ sessions.
+Required for the Call API (Phase 3). Small, focused change in iroh-moq.
 
 ### 2.1 Transport-level incoming stream (`iroh-moq`)
 
-Changes to `iroh-moq/src/lib.rs`:
+**Current behavior**: `MoqProtocolHandler::accept()` receives connections, does the MoQ
+handshake, and sends `ActorMessage::HandleSession { session }` to the actor. The actor
+auto-publishes all local broadcasts to every new session.
 
-**New type `IncomingSession`**:
+**Change**: After the MoQ handshake, *also* send the session to an incoming channel:
+
 ```rust
+// New field in Moq's actor:
+incoming_tx: mpsc::Sender<IncomingSession>,
+
+// In MoqProtocolHandler::handle_connection():
+let session = MoqSession::session_accept(wt_session).await?;
+// Send to actor (existing — for broadcast distribution)
+self.tx.send(ActorMessage::HandleSession { session: session.clone() }).await?;
+// Also send to incoming channel (new — for Call API)
+let _ = self.incoming_tx.send(IncomingSession { session: session.clone() });
+```
+
+Since `MoqSession` is `Clone`, this is straightforward.
+
+```rust
+// New public type
 pub struct IncomingSession {
-    remote_id: EndpointId,
-    session: MoqSession, // already accepted at transport level
+    session: MoqSession,
 }
 
 impl IncomingSession {
-    pub fn remote_id(&self) -> EndpointId { ... }
-    pub fn into_session(self) -> MoqSession { ... }
+    pub fn remote_id(&self) -> EndpointId {
+        self.session.conn().remote_id()
+    }
+    pub fn session(&self) -> &MoqSession { &self.session }
+    pub fn into_session(self) -> MoqSession { self.session }
+}
+
+// New method on Moq
+impl Moq {
+    pub async fn accept_session(&self) -> Result<IncomingSession> { ... }
 }
 ```
 
-**Modify actor to surface incoming sessions**:
-- Add a new channel `incoming_tx: mpsc::Sender<IncomingSession>`
-- In `MoqProtocolHandler::handle_connection`, after `MoqSession::session_accept()`,
-  send to both the actor (for internal tracking) and the incoming channel
-- New method `Moq::incoming() -> mpsc::Receiver<IncomingSession>`
-
-**Design note**: The current protocol handler auto-accepts at the QUIC level and then
-does MoQ session negotiation. We keep that — the "incoming" stream surfaces *after*
-MoQ handshake completes. True pre-accept inspection (before MoQ handshake) can come
-later if needed.
-
-> codex: This is a sensible first cut, but we should document the semantic limitation clearly: "accept/reject" here means application-level acceptance after MoQ setup, not transport-level refusal before setup cost is paid.
+**Note**: The actor continues to handle all sessions (publishing local broadcasts to
+them). The incoming channel is an *additional* notification that lets product code
+(Call, accept_call) act on specific sessions. This is not either/or — both paths fire.
 
 ### 2.2 Wire into Live
 
-Add to `Live`:
 ```rust
-pub fn incoming_sessions(&self) -> impl Stream<Item = IncomingSession> { ... }
+impl Live {
+    /// Receives the next incoming MoQ session. Used internally by accept_call().
+    pub(crate) async fn accept_session(&self) -> Result<IncomingSession> {
+        self.inner.moq.accept_session().await
+    }
+}
 ```
 
-This is the raw escape hatch. The product-level `incoming_calls()` comes in Phase 3.
+Keep `pub(crate)` — it's a building block for `accept_call()`, not a public API.
 
 ### 2.3 Tests
 
-- Integration test: peer A connects to peer B, B receives IncomingSession
-- Verify remote_id matches
-- Verify session is usable (subscribe/publish work)
+- Integration: peer A connects to peer B → B receives via `moq.accept_session()`
+- Verify `remote_id()` matches A's endpoint ID
+- Verify the session is usable (subscribe/publish work after accept)
+- Verify existing room behavior still works (rooms use gossip-initiated outbound
+  connections, not the incoming channel)
+- Verify the actor still auto-publishes to the new session (both paths fire)
 
 ### Done when
 
-- `Moq::incoming()` works
-- `Live::incoming_sessions()` works
-- Existing behavior unchanged (auto-accept still works for rooms)
+- `Moq::accept_session()` works
+- Existing tests pass unchanged
+- No regressions
 
 ---
 
 ## Phase 3: Call API
 
-**Goal**: Add `Call`, `IncomingCall`, `CallTicket` on top of Phase 2.
+**Goal**: Add `Call`, `IncomingCall`, `CallTicket`. One-to-one media sessions.
 
-### 3.1 Call types (`iroh-live/src/call.rs`)
+### 3.1 Call signaling design
 
-New file:
+MoQ has no "call" concept. A MoQ session is a bidirectional media pipe. We layer call
+semantics on top using naming conventions.
+
+**Design**: A call is a MoQ session where both sides publish broadcasts with a shared
+`call_id` prefix:
+- For `call_id = "abc123"`:
+  - Camera → `"abc123/camera"`
+  - Screen → `"abc123/screen"`
+  - Custom `"foo"` → `"abc123/foo"`
+
+Both sides subscribe to the other's broadcasts by watching announces with the call_id
+prefix.
+
+### 3.2 Key implementation insight: `OriginConsumer` announce watching
+
+The MoQ transport already has exactly the announce-watching API we need:
+
+```rust
+// In moq-lite OriginConsumer:
+async fn announced(&mut self) -> Option<(PathOwned, Option<BroadcastConsumer>)>
+fn consume_only(&mut self, prefixes: &[&str])  // filter to prefix
+fn with_root(&mut self, prefix: &str)          // strip prefix from paths
+fn consume_broadcast(&self, path: &str) -> Option<BroadcastConsumer>  // lookup
+```
+
+**For Call**: Clone the `MoqSession`, access its `OriginConsumer` field (need to
+check visibility — currently `subscribe` field is pub in MoqSession struct, but it's
+`OriginConsumer`). Use `with_root("{call_id}/")` to create a scoped consumer that
+yields announces like `"camera"`, `"screen"` with the prefix stripped.
+
+Add `MoqSession::announced()` to iroh-moq (wraps `self.subscribe.announced()`):
+```rust
+/// Yields the next broadcast announced by the remote peer.
+///
+/// Returns `(name, Some(consumer))` for new broadcasts, `(name, None)` for
+/// unannounced broadcasts. Returns `Err` when the session closes.
+pub async fn announced(&mut self) -> Result<(String, Option<BroadcastConsumer>)> {
+    loop {
+        tokio::select! {
+            res = self.subscribe.announced() => {
+                let (path, consumer) = res.ok_or_else(|| ...)?;
+                return Ok((path.to_string(), consumer));
+            }
+            reason = self.wt_session.closed() => {
+                return Err(reason.into());
+            }
+        }
+    }
+}
+```
+
+This gives Call everything it needs. The Call's background task:
+1. Clones the `MoqSession`
+2. Loops on `session.announced()`
+3. Filters for `"{call_id}/"` prefix (or we add prefix filtering later)
+4. Creates `SubscribeBroadcast` → `RemoteBroadcast` for each match
+5. Maps the suffix to `BroadcastKind`
+6. Inserts into remotes map and sends on channel
+
+### 3.3 Call types (`iroh-live/src/call.rs`)
 
 **`CallTicket`**:
-- Struct `{ remote: EndpointAddr }`
-- `Display`/`FromStr` (base32 encoded)
-- `From<EndpointAddr>`
-
-**`CallState`**:
-- Enum `{ Connecting, Connected, Disconnected(DisconnectReason) }`
+```rust
+pub struct CallTicket {
+    pub(crate) remote: EndpointAddr,
+    pub(crate) call_id: String,
+}
+```
+- `From<EndpointAddr>` generates random call_id (UUID or short random)
+- `Display`/`FromStr` for sharing
 
 **`Call`**:
-- Inner: `Arc<CallInner>` containing:
-  - `MoqSession`
-  - `Watchable<CallState>`
-  - `LocalBroadcast` (for outgoing media)
-  - `RemoteBroadcast` (for incoming media, created lazily on first subscription)
-- Methods:
-  - `remote_participant() -> ParticipantId`
-  - `local() -> &LocalBroadcast`
-  - `remote() -> &RemoteBroadcast`
-  - `state() -> impl Watcher<Value = CallState>`
-  - `hangup()`
+```rust
+struct CallInner {
+    session: MoqSession,
+    call_id: String,
+    state: Watchable<CallState>,
+    locals: RwLock<HashMap<BroadcastKind, LocalBroadcast>>,
+    remotes: RwLock<HashMap<BroadcastKind, RemoteBroadcast>>,
+    remote_tx: mpsc::Sender<(BroadcastKind, RemoteBroadcast)>,
+    remote_rx: Mutex<mpsc::Receiver<(BroadcastKind, RemoteBroadcast)>>,
+    _announce_task: AbortOnDropHandle<()>,
+    _state_task: AbortOnDropHandle<()>,
+}
+```
 
-**Construction** (outbound):
-- `Live::call(ticket)` → `MoqSession::connect()` → wrap in `Call`
-- `Call` publishes the local broadcast on the session
-- `Call` subscribes to the first announced broadcast from remote
+**`local(kind)` — lazy creation + auto-publish**:
+```rust
+pub fn local(&self, kind: impl Into<BroadcastKind>) -> LocalBroadcast {
+    let kind = kind.into();
+    // Check if already exists
+    if let Some(b) = self.inner.locals.read().get(&kind) {
+        return b.clone();
+    }
+    // Create new
+    let broadcast = LocalBroadcast::new();
+    let name = format!("{}/{}", self.inner.call_id, kind.as_str());
+    // Publish the producer to the session
+    self.inner.session.publish(name, broadcast.producer());
+    // Cache
+    self.inner.locals.write().insert(kind, broadcast.clone());
+    broadcast
+}
+```
 
-**`IncomingCall`**:
-- Wraps `IncomingSession` from Phase 2
-- `remote_participant() -> ParticipantId`
-- `accept(self) -> Result<Call>` — consumes self, creates Call
-- `reject(self, reason)` — consumes self, closes connection
-- `Drop` → auto-reject if not consumed
+Note: `session.publish()` takes `&self` (not `&mut self`). No mutability issue.
 
-### 3.2 Wire into Live
+**`remote(kind)` / `wait_remote(kind)` / `recv_remote()`**:
 
-- `Live::call(impl Into<CallTicket>) -> Result<Call>`
-- `Live::accept_call() -> Result<IncomingCall>` — socket-style, awaits next incoming call
-  - Internally reads from an mpsc channel fed by the incoming session handler
-  - Returns `Err` when Live is shut down
+`wait_remote` and `recv_remote` use separate mechanisms to avoid channel contention:
 
-### 3.3 Update example
+```rust
+struct CallInner {
+    remotes: RwLock<HashMap<BroadcastKind, RemoteBroadcast>>,
+    recv_remote_rx: Mutex<mpsc::Receiver<(BroadcastKind, RemoteBroadcast)>>,
+    recv_remote_tx: mpsc::Sender<(BroadcastKind, RemoteBroadcast)>,
+    remote_notify: Notify,
+}
 
-New or updated example `iroh-live/examples/call.rs`:
-- Peer A calls peer B
-- Peer B accepts
-- Both publish camera + mic
-- Both subscribe to remote video + audio
-- Uses new Call API throughout
+// Announce task on each new broadcast:
+//   1. Insert into remotes map
+//   2. Send on recv_remote_tx (for recv_remote consumers)
+//   3. Notify remote_notify (for wait_remote waiters)
+```
 
-### 3.4 Tests
+```rust
+pub fn remote(&self, kind: impl Into<BroadcastKind>) -> Option<RemoteBroadcast> {
+    self.inner.remotes.read().get(&kind.into()).cloned()
+}
 
-- Outbound call connects and returns Call
-- Inbound call surfaces as IncomingCall
-- Accept → Call works, media flows
-- Reject → connection closes
-- Drop IncomingCall → auto-reject
-- CallState transitions: Connecting → Connected → Disconnected
+pub async fn wait_remote(&self, kind: impl Into<BroadcastKind>) -> Result<RemoteBroadcast> {
+    let kind = kind.into();
+    loop {
+        if let Some(b) = self.inner.remotes.read().get(&kind).cloned() {
+            return Ok(b);
+        }
+        tokio::select! {
+            _ = self.inner.remote_notify.notified() => continue,
+            _ = self.closed() => return Err(anyhow!("call ended")),
+        }
+    }
+}
+
+pub async fn recv_remote(&self) -> Result<(BroadcastKind, RemoteBroadcast)> {
+    let mut rx = self.inner.recv_remote_rx.lock().await;
+    rx.recv().await.ok_or_else(|| anyhow!("call ended"))
+}
+```
+
+`recv_remote()` is single-consumer (`Mutex<Receiver>`). `wait_remote()` uses
+`Notify` + map re-check — safe for multiple concurrent waiters, cancellation-safe
+(re-checks map on each wake).
+
+### 3.4 `IncomingCall`
+
+```rust
+pub struct IncomingCall {
+    session: MoqSession,
+    call_id: String,
+    remote_id: ParticipantId,
+    first_announce: Option<(String, BroadcastConsumer)>,  // preserved for Call::new()
+}
+```
+
+**How the callee discovers the call_id**: The caller connects and announces broadcasts
+prefixed with `"{call_id}/"`. `Live::accept_call()` waits for the first announce from
+the session to extract the prefix. The first announce's consumer is preserved in
+`IncomingCall` and passed to `Call::new()` so the announce task doesn't miss it:
+
+```rust
+impl Live {
+    pub async fn accept_call(&self) -> Result<IncomingCall> {
+        let incoming = self.accept_session().await?;
+        let mut session = incoming.into_session();
+        // Wait for first announce to discover call_id
+        let (name, consumer) = session.announced().await?;
+        let call_id = name.split('/').next()
+            .ok_or_else(|| anyhow!("invalid call: no prefix in broadcast name"))?
+            .to_string();
+        let remote_id = ParticipantId::from(session.conn().remote_id());
+        Ok(IncomingCall {
+            session,
+            call_id,
+            remote_id,
+            first_announce: consumer.map(|c| (name, c)),
+        })
+    }
+}
+```
+
+**`accept()` → `Call`**:
+```rust
+impl IncomingCall {
+    pub fn accept(self) -> Call {
+        Call::new(self.session, self.call_id, self.first_announce)
+    }
+    pub fn reject(self) {
+        self.session.close(/* reject code */);
+    }
+    pub fn remote_id(&self) -> ParticipantId { self.remote_id }
+}
+// Drop without accept → close session (auto-reject)
+// Uses Option<IncomingCallInner> internally — accept/reject take it, drop checks Some.
+```
+
+`IncomingCall` uses `Option<IncomingCallInner>` internally. `accept()` takes it via
+`.take()`, `reject()` takes it, `Drop` checks if it's still `Some` (auto-rejects).
+This is already reflected in the sketch.
+
+### 3.5 Announce task for Call
+
+When a `Call` is created (either outbound or inbound-accepted), spawn the announce
+watching task:
+
+```rust
+async fn announce_watch_task(
+    mut session: MoqSession,  // cloned
+    call_id: String,
+    remotes: Arc<RwLock<HashMap<BroadcastKind, RemoteBroadcast>>>,
+    recv_remote_tx: mpsc::Sender<(BroadcastKind, RemoteBroadcast)>,
+    remote_notify: Arc<Notify>,
+    state: Watchable<CallState>,
+) {
+    // Set state to Connected once we're running
+    state.set(CallState::Connected);
+
+    loop {
+        match session.announced().await {
+            Ok((name, Some(consumer))) => {
+                // Check if this is our call's broadcast
+                let suffix = match name.strip_prefix(&format!("{}/", call_id)) {
+                    Some(s) => s,
+                    None => continue,  // not our call
+                };
+                let kind = BroadcastKind::from(suffix);
+                // Create SubscribeBroadcast → RemoteBroadcast
+                let sub = SubscribeBroadcast::new(name.clone(), consumer).await;
+                let sub = match sub {
+                    Ok(s) => s,
+                    Err(e) => { warn!("failed to subscribe: {e}"); continue; }
+                };
+                let broadcast = RemoteBroadcast::new(sub);
+                remotes.write().insert(kind.clone(), broadcast.clone());
+                let _ = recv_remote_tx.send((kind.clone(), broadcast)).await;
+                remote_notify.notify_waiters();
+            }
+            Ok((name, None)) => {
+                // Broadcast unannounced — remove from map
+                if let Some(suffix) = name.strip_prefix(&format!("{}/", call_id)) {
+                    let kind = BroadcastKind::from(suffix);
+                    remotes.write().remove(&kind);
+                }
+            }
+            Err(_) => {
+                // Session closed
+                state.set(CallState::Disconnected(DisconnectReason::RemoteClose));
+                break;
+            }
+        }
+    }
+}
+```
+
+**Announce stream ownership**: The Moq actor does NOT read incoming announces on
+sessions — it only publishes outbound. So the Call's announce task safely owns the
+announce stream for its session. Room sessions are separate (created via gossip-initiated
+outbound connections), so there's no conflict. Each Call gets exclusive ownership of
+its session's `announced()` stream.
+
+### 3.6 State tracking task
+
+Separate task that watches the QUIC connection for closure:
+
+```rust
+async fn state_watch_task(session: MoqSession, state: Watchable<CallState>) {
+    let reason = session.conn().closed().await;
+    // Only update if not already disconnected (announce task may have set it)
+    if !state.get().is_disconnected() {
+        state.set(CallState::Disconnected(
+            DisconnectReason::TransportError(Arc::new(reason))
+        ));
+    }
+}
+```
+
+Actually, the announce task already detects session closure (when `announced()` returns
+Err). So we might not need a separate state task — the announce task handles it.
+
+**Decision**: No separate state task. Announce task sets Disconnected on session close.
+
+### 3.7 Wire into Live
+
+```rust
+impl Live {
+    pub async fn call(&self, ticket: impl Into<CallTicket>) -> Result<Call> {
+        let ticket = ticket.into();
+        let session = self.inner.moq.connect(ticket.remote).await?;
+        Ok(Call::new(session, ticket.call_id))
+    }
+
+    pub async fn accept_call(&self) -> Result<IncomingCall> {
+        // See §3.4 above
+    }
+}
+```
+
+### 3.8 Port/create call examples
+
+- `examples/call.rs` — simple two-peer call using Camera
+- Show both initiator and acceptor sides
+- May rewrite existing `publish.rs` / `watch.rs` to use Call API if they fit
+
+### 3.9 Tests
+
+- Outbound: `live_a.call(ticket_b)` → Call connects
+- Inbound: `live_b.accept_call()` → IncomingCall surfaces, remote_id correct
+- Accept → both sides can local(Camera).video().set_source() + recv_remote()
+- Reject → session closes immediately
+- Drop IncomingCall without accept → auto-reject (session closes)
+- `recv_remote()` yields broadcasts as they appear
+- `wait_remote(Camera)` resolves when camera broadcast announced
+- `wait_remote(Camera)` returns immediately if already announced
+- `CallState` transitions: Connecting → Connected → Disconnected
+- Multi-broadcast: caller publishes Camera + Screen, callee sees both via recv_remote
+- `call.close()` → state transitions to Disconnected(LocalClose), remote sees Err
 
 ### Done when
 
@@ -275,86 +748,36 @@ New or updated example `iroh-live/examples/call.rs`:
 
 ## Phase 4: Room Participant Model
 
-**Goal**: Redesign `Room` to expose participants, publications, and structured events.
+**Goal**: Redesign `Room` to expose participants, `BroadcastKind`-based broadcasts,
+and structured events. Port all room examples.
 
-> codex: This phase is where API quality will be won or lost. If participant and publication identities remain stringly or ephemeral here, the top layer will still feel improvised even if the names improve.
-The current room actor stays but gets a new public face.
+### 4.1 Current Room actor behavior (reference)
 
-### 4.1 Participant types (in `iroh-live/src/room.rs`)
+The actor in `rooms.rs`:
+1. Subscribes to a gossip topic via `iroh_smol_kv`
+2. Each peer publishes its broadcast list to KV key `"s"` (PeerState JSON)
+3. When a remote peer's KV entry arrives:
+   - Emit `RoomEvent::RemoteAnnounced { remote, broadcasts }`
+   - For each new broadcast: spawn `live.connect_and_subscribe(remote, name)`
+4. When connect+subscribe completes:
+   - Emit `RoomEvent::BroadcastSubscribed { session, broadcast }`
+5. When local `room.publish(name, producer)` is called:
+   - Publish directly on room sessions (see §4.4a — session-scoped, not global)
+   - Update KV with new PeerState
 
-**`LocalParticipant`**:
-- Inner: `Arc<LocalParticipantInner>` containing:
-  - `ParticipantId`
-  - `LocalBroadcast`
-  - `Vec<LocalTrackPublication>` (tracked)
-- Methods:
-  - `id() -> ParticipantId`
-  - `broadcast() -> &LocalBroadcast` (escape hatch)
-  - `publish_video(source, encoder, presets) -> Result<LocalTrackPublication>`
-  - `publish_audio(source, presets) -> Result<LocalTrackPublication>`
-  - `publications() -> Vec<LocalTrackPublication>`
+Remove `RemoteConnected` event (defined but never emitted).
 
-**`LocalTrackPublication`**:
-- Inner: `Arc<_>` with `PublicationId`, `TrackKind`, mute state
-- Methods: `id()`, `kind()`, `set_muted()`, `is_muted()`, `unpublish(self)`
+### 4.2 Strategy: wrap existing actor
 
-**`RemoteParticipant`**:
-- Inner: `Arc<RemoteParticipantInner>` containing:
-  - `ParticipantId`
-  - `RemoteBroadcast`
-  - `Vec<RemoteTrackPublication>` (derived from catalog)
-- Methods:
-  - `id() -> ParticipantId`
-  - `broadcast() -> &RemoteBroadcast` (escape hatch)
-  - `publications() -> Vec<RemoteTrackPublication>`
-  - `publication(name) -> Option<RemoteTrackPublication>`
+Rewriting the room actor is high-risk. Instead, wrap it:
+1. Create the old `Room` actor internally
+2. `split()` it into `(RoomEvents, RoomHandle)`
+3. Spawn an event-forwarder task that translates old events → new events
+4. Expose new `Room` struct with participant model
 
-**`RemoteTrackPublication`**:
-- Inner: `Arc<_>` with `PublicationId`, `TrackKind`, reference to `RemoteBroadcast`
-- Methods:
-  - `id()`, `kind()`, `participant()`
-  - `subscribe_video() -> Result<WatchTrack>`
-  - `subscribe_video_with(opts) -> Result<WatchTrack>`
-  - `subscribe_audio(backend) -> Result<AudioTrack>`
-  - `subscribe_audio_with(opts, backend) -> Result<AudioTrack>`
+This reuses all the gossip/KV/subscription logic unchanged.
 
-### 4.2 Redesign RoomEvent
-
-New `RoomEvent` enum:
-```rust
-pub enum RoomEvent {
-    ParticipantJoined(RemoteParticipant),
-    ParticipantLeft { participant: ParticipantId, reason: DisconnectReason },
-    TrackPublished { participant: ParticipantId, publication: RemoteTrackPublication },
-    TrackUnpublished { participant: ParticipantId, publication_id: PublicationId },
-}
-```
-
-### 4.3 Modify Room actor
-
-The existing room actor (`iroh-live/src/rooms.rs`) needs to:
-
-1. **Track participants** — maintain `HashMap<ParticipantId, RemoteParticipant>`
-2. **Derive publications from catalogs** — when a catalog update arrives, diff against
-   known publications and emit `TrackPublished`/`TrackUnpublished` events
-3. **Map old events to new events**:
-   - `RemoteAnnounced` → no direct event (internal bookkeeping)
-   - `RemoteConnected` → create `RemoteParticipant` (wrapping session), emit `ParticipantJoined`
-   - `BroadcastSubscribed` → create `RemoteBroadcast`, attach to participant,
-     derive publications from catalog, emit `TrackPublished` for each
-
-4. **Catalog diffing**: When a catalog update arrives (via `catalog_watcher()`), diff
-   old vs new to emit `TrackPublished`/`TrackUnpublished`:
-   ```rust
-   fn diff_catalog(old: &Catalog, new: &Catalog) -> (Vec<TrackPublished>, Vec<TrackUnpublished>) {
-       // Compare video/audio BTreeMap keys. New keys → TrackPublished. Missing keys → TrackUnpublished.
-   }
-   ```
-   The actor spawns a catalog watch task per RemoteBroadcast, forwarding diffs as events.
-
-5. **Expose new Room API** while keeping old one available (deprecated)
-
-### 4.4 New Room struct
+### 4.3 New Room struct
 
 ```rust
 pub struct Room {
@@ -365,112 +788,323 @@ struct RoomInner {
     id: RoomId,
     local: LocalParticipant,
     participants: RwLock<HashMap<ParticipantId, RemoteParticipant>>,
-    event_tx: broadcast::Sender<RoomEvent>,
-    _actor: AbortOnDropHandle<()>,
+    event_tx: mpsc::Sender<RoomEvent>,
+    event_rx: Mutex<mpsc::Receiver<RoomEvent>>,  // Mutex for &self recv()
+    _room_handle: RoomHandle,  // kept alive for publishing
+    _forwarder: AbortOnDropHandle<()>,
 }
 ```
 
-Methods:
-- `id() -> RoomId`
-- `ticket() -> RoomTicket` (include self as bootstrap)
-- `local_participant() -> &LocalParticipant`
-- `recv() -> Result<RoomEvent>` — socket-style, awaits next event
-- `remote_participants() -> HashMap<ParticipantId, RemoteParticipant>`
-- `remote_participant(id) -> Option<RemoteParticipant>`
-- `leave()`
+**`Room::recv(&self)`**: Locks the Mutex on event_rx and awaits. Single consumer per
+call (Mutex ensures this). Multiple concurrent callers will serialize — only one gets
+each event. This matches socket-style usage.
 
-### 4.5 Migration
+### 4.4 Participant types
 
-- New Room wraps old room actor internally
-- Old `RoomEvent` types (`RemoteAnnounced`, etc.) become internal
-- Old `Room::recv()` / `Room::split()` deprecated with doc pointer to new API
-- `RoomTicket` stays (same concept, maybe extend fields)
+**`LocalParticipant`**:
+```rust
+struct LocalParticipantInner {
+    id: ParticipantId,
+    broadcasts: RwLock<HashMap<BroadcastKind, LocalBroadcast>>,
+    room_handle: RoomHandle,
+}
+```
 
-### 4.6 Update room example
+**`broadcast(kind)` implementation**:
+```rust
+pub fn broadcast(&self, kind: impl Into<BroadcastKind>) -> LocalBroadcast {
+    let kind = kind.into();
+    if let Some(b) = self.inner.broadcasts.read().get(&kind) {
+        return b.clone();
+    }
+    let broadcast = LocalBroadcast::new();
+    let name = kind.as_str().to_string();
+    // Publish the producer to the room (which forwards to all sessions + KV)
+    let handle = self.inner.room_handle.clone();
+    let producer = broadcast.producer();
+    tokio::spawn(async move {
+        if let Err(e) = handle.publish(name, producer).await {
+            warn!("failed to publish to room: {e}");
+        }
+    });
+    self.inner.broadcasts.write().insert(kind, broadcast.clone());
+    broadcast
+}
+```
 
-Update `iroh-live/examples/rooms.rs` to use new API:
-- `live.join_room(ticket)` instead of `Room::new(endpoint, gossip, live, ticket)`
-- Event loop uses new `RoomEvent` variants
-- Subscribe through `RemoteTrackPublication` instead of `BroadcastSubscribed`
+`room_handle.publish()` is async but `broadcast(kind)` is sync. Solved by spawning a
+fire-and-forget task for the async publish. If the actor is alive it succeeds nearly
+instantly. If dead, the broadcast still works locally (useful for preview). Log errors.
 
-### 4.7 Tests
+**Publishing order**: `broadcast(Camera)` publishes the producer immediately with an
+empty catalog. Subscribers see `has_video() = false` until `set_source()` updates the
+catalog. This is the simplest approach — deferring publish to first `set_source()` would
+require the slot to know about the room (more coupling). Empty catalog is valid.
 
-- ParticipantJoined fires when peer connects
-- ParticipantLeft fires on disconnect
-- TrackPublished fires when catalog arrives
-- Publications are accessible on RemoteParticipant
-- Subscribe through publication works
-- LocalParticipant publish_video/audio creates publications
+**`RemoteParticipant`**:
+```rust
+struct RemoteParticipantInner {
+    id: ParticipantId,
+    broadcasts: RwLock<HashMap<BroadcastKind, RemoteBroadcast>>,
+    broadcast_notify: Notify,
+}
+```
+
+### 4.4a Room actor: session-scoped publishing
+
+The current room actor calls `self.live.publish(name, producer)` which goes through
+the global Moq actor (leaks to all sessions). Change to session-scoped:
+
+```rust
+// In Actor:
+local_producers: HashMap<String, BroadcastProducer>,  // NEW: track local producers
+sessions: HashMap<EndpointId, MoqSession>,             // NEW: track room sessions
+
+async fn handle_api_message(&mut self, msg: ApiMessage) {
+    match msg {
+        ApiMessage::Publish { name, producer } => {
+            // Publish to all existing room sessions directly
+            for session in self.sessions.values() {
+                session.publish(name.clone(), producer.consume());
+            }
+            self.local_producers.insert(name.clone(), producer);
+            self.active_publish.insert(name.clone());
+            self.update_kv().await;
+        }
+    }
+}
+
+// When a connecting future completes with a new session:
+fn register_session(&mut self, remote: EndpointId, session: MoqSession) {
+    // Publish all local broadcasts to the new session
+    for (name, producer) in &self.local_producers {
+        session.publish(name.clone(), producer.consume());
+    }
+    self.sessions.insert(remote, session);
+}
+```
+
+This is ~20 lines of change to the existing actor. No wrapping needed — we modify
+`handle_api_message` directly. The `self.live.publish()` call is removed.
+
+See question 15 in Open Questions for full rationale (publish scoping).
+
+### 4.5 Event forwarder
+
+Translates internal actor events to the public `RoomEvent` types:
+
+```rust
+async fn forward_events(
+    mut old_rx: mpsc::Receiver<InternalRoomEvent>,
+    new_tx: mpsc::Sender<RoomEvent>,
+    participants: Arc<RwLock<HashMap<ParticipantId, RemoteParticipant>>>,
+) {
+    while let Some(event) = old_rx.recv().await {
+        match event {
+            InternalRoomEvent::RemoteAnnounced { remote, broadcasts } => {
+                let pid = ParticipantId::from(remote);
+                let participant = participants.write()
+                    .entry(pid)
+                    .or_insert_with(|| RemoteParticipant::new(pid))
+                    .clone();
+                let _ = new_tx.send(RoomEvent::ParticipantJoined(participant)).await;
+            }
+            InternalRoomEvent::BroadcastSubscribed { session, broadcast } => {
+                let pid = ParticipantId::from(session.conn().remote_id());
+                if let Some(participant) = participants.read().get(&pid) {
+                    let name = broadcast.broadcast_name().to_string();
+                    let kind = BroadcastKind::from(name.as_str());
+                    let remote = RemoteBroadcast::new(broadcast);
+                    participant.add_broadcast(kind.clone(), remote.clone());
+                    // Spawn a closure watcher for BroadcastUnpublished
+                    let close_tx = new_tx.clone();
+                    let close_pid = pid;
+                    let close_kind = kind.clone();
+                    let close_participants = participants.clone();
+                    let close_remote = remote.clone();
+                    tokio::spawn(async move {
+                        close_remote.closed().await;
+                        if let Some(p) = close_participants.read().get(&close_pid) {
+                            p.remove_broadcast(&close_kind);
+                        }
+                        let _ = close_tx.send(RoomEvent::BroadcastUnpublished {
+                            participant: close_pid,
+                            kind: close_kind.clone(),
+                        }).await;
+                        // If all broadcasts gone, emit ParticipantLeft
+                        let should_remove = close_participants.read()
+                            .get(&close_pid)
+                            .map(|p| p.broadcasts().is_empty())
+                            .unwrap_or(false);
+                        if should_remove {
+                            close_participants.write().remove(&close_pid);
+                            let _ = close_tx.send(RoomEvent::ParticipantLeft {
+                                participant: close_pid,
+                                reason: DisconnectReason::RemoteClose,
+                            }).await;
+                        }
+                    });
+                    let _ = new_tx.send(RoomEvent::BroadcastPublished {
+                        participant: pid,
+                        kind,
+                        broadcast: remote,
+                    }).await;
+                }
+            }
+        }
+    }
+}
+```
+
+Each `RemoteBroadcast` gets a closure watcher that emits `BroadcastUnpublished` when
+the broadcast ends. When all of a participant's broadcasts close, `ParticipantLeft`
+is inferred.
+
+### 4.6 Wire into Live
+
+```rust
+impl Live {
+    pub async fn join_room(&self, ticket: impl Into<RoomTicket>) -> Result<Room> {
+        let ticket = ticket.into();
+        // Create old room actor internally
+        let old_room = OldRoom::new(/* endpoint, gossip, ticket */).await?;
+        let (old_events, room_handle) = old_room.split();
+        // Create new Room wrapping old actor
+        Room::new(ticket.room_id, old_events, room_handle, self.endpoint().id())
+    }
+}
+```
+
+### 4.7 Port room examples
+
+- `examples/rooms.rs` → use new Room/RoomEvent/LocalParticipant/RemoteParticipant API
+- `examples/room-publish-file.rs` → use LocalParticipant::broadcast() + slot API
+
+Example migration pattern:
+```rust
+// OLD:
+let (mut events, handle) = room.split();
+handle.publish("camera", producer).await?;
+while let Ok(event) = events.recv().await {
+    match event {
+        RoomEvent::BroadcastSubscribed { broadcast, .. } => { ... }
+    }
+}
+
+// NEW:
+room.local_participant().broadcast(Camera).video().set_source(cam, codec, presets)?;
+while let Ok(event) = room.recv().await {
+    match event {
+        RoomEvent::BroadcastPublished { participant, kind, broadcast } => {
+            let video = broadcast.subscribe_video::<D>()?;
+            // render video...
+        }
+        RoomEvent::ParticipantLeft { participant, .. } => { ... }
+        _ => {}
+    }
+}
+```
+
+### 4.8 Tests
+
+- `ParticipantJoined` fires when peer joins via gossip
+- `BroadcastPublished` fires when remote's broadcast is subscribed
+- `BroadcastUnpublished` fires when remote's broadcast closes
+- `ParticipantLeft` fires on disconnect (if we have this signal)
+- `RemoteParticipant::broadcast(Camera)` returns correct broadcast
+- `RemoteParticipant::wait_broadcast(Screen)` resolves when screen announced
+- `LocalParticipant::broadcast(Camera)` creates and caches
+- Multiple participants in same room
+- Participant with Camera + Screen broadcasts
+- Room ticket round-trip
 
 ### Done when
 
-- Room example works with new API
-- All room-related tests pass
-- Old API still compiles (deprecated)
+- All room examples use new API
+- All tests pass
+- No references to old RoomEvent variants in user-facing code
 
 ---
 
-## Phase 5: Polish
+## Phase 5: Remove Old API + Polish
 
-**Goal**: Clean up, deprecate, document.
+**Goal**: Delete all old types, clean up, add docs.
 
-### 5.1 Deprecations
+### 5.1 Remove old types
 
-Mark with `#[deprecated(since = "0.x", note = "use ... instead")]`:
-- `Live::connect()` → "use `Live::call()` or `Live::connect_raw()`"
-- `Live::connect_and_subscribe()` → "use `Live::call()` or `Live::subscribe_broadcast()`"
-- `Live::watch_and_listen()` → "use `Call::remote()` or `RemoteBroadcast::subscribe_*()`"
-- `Live::publish()` → "use `LocalBroadcast::producer()` or `LocalParticipant::publish_*()`"
-- `pub moq` field on `Live` → make private, add `Live::transport() -> &Moq`
-- Old `RoomEvent` variants
-- `Room::recv()` / `Room::split()`
-- `RoomPublisherSync`
+Delete entirely (no deprecation):
 
-### 5.2 Prelude
+| Remove | Replacement |
+|--------|------------|
+| `LiveNode` struct + `node.rs` | `Live::builder().spawn()` |
+| `LiveTicket` struct + `ticket.rs` | `BroadcastTicket` |
+| `RoomPublisherSync` + `rooms/publisher.rs` | `LocalParticipant::broadcast()` + slot API |
+| `Live::connect()` | `Live::call()` or `Live::connect_raw()` |
+| `Live::connect_and_subscribe()` | `Live::subscribe_broadcast()` |
+| `Live::watch_and_listen()` | `RemoteBroadcast::subscribe_video/audio()` |
+| `Live::publish()` | `Live::publish_broadcast()` |
+| `pub moq` field on `Live` | Private. `Live::transport() -> &Moq` if needed. |
+| Old `RoomEvent` variants | New participant-based events |
+| `Room::split()` | Not needed (`&self` recv) |
+| `RoomHandle` (public) | Internal only |
+| `AvRemoteTrack` | Use `VideoTrack` + `AudioTrack` separately |
+| `RoomEvents` type alias | Removed (internal mpsc) |
+| Old `Room` struct (pub fields) | New `Room` (Arc-based, Clone) |
 
-Add `iroh-live/src/prelude.rs`:
+### 5.2 Update lib.rs exports
+
+Final public surface:
 ```rust
-pub use crate::{Live, Room, RoomEvent, Call, IncomingCall};
-pub use crate::room::{LocalParticipant, RemoteParticipant};
-pub use crate::room::{LocalTrackPublication, RemoteTrackPublication};
-pub use crate::broadcast::{LocalBroadcast, RemoteBroadcast, BroadcastTicket};
-pub use crate::call::CallTicket;
-pub use crate::room::RoomTicket;
-pub use crate::types::{ParticipantId, TrackKind};
+// Product API (crate root)
+pub use call::{Call, CallTicket, CallState, IncomingCall};
+pub use live::{Live, LiveBuilder};
+pub use room::{Room, RoomEvent, RoomTicket, LocalParticipant, RemoteParticipant};
+pub use types::{BroadcastKind, DisconnectReason, ParticipantId, RoomId};
+
+// Broadcast layer
+pub mod broadcast;  // LocalBroadcast, RemoteBroadcast, BroadcastTicket,
+                    // LocalVideoSlot, LocalAudioSlot,
+                    // SubscribeVideoOptions, SubscribeAudioOptions,
+                    // SelectedVideo, SelectedAudio, BroadcastStatus
+
+// Transport layer
+pub mod transport;  // MoqSession, Moq, MoqProtocolHandler, raw::*
+
+// Media access
+pub use moq_media as media;
 ```
 
 ### 5.3 Error types
 
-Introduce structured errors for the product layer:
-- `CallError` — connection failed, rejected, already connected
-- `RoomError` — join failed, already in room, gossip failure
-- `PublishError` — no source, codec failure, already published
-- `SubscribeError` — rendition not found, decode failure, not available
+Introduce structured errors:
+- `CallError` — connection failed, rejected, timed out
+- `RoomError` — join failed, gossip failure
+- `BroadcastError` — publish failed, subscribe failed, rendition not found
 
-These wrap the lower-level errors from iroh-moq and moq-media.
+Wrap lower-level errors from iroh-moq and moq-media.
 
-### 5.4 Documentation pass
+### 5.4 Documentation
 
-- Module-level docs (`//!`) for each new module
+- Module-level docs (`//!`) for each module
 - Type-level docs for all public types
-- Method docs following RFC 1574 style
-- Add doc examples for key types (Room, Call, LocalBroadcast, RemoteBroadcast)
+- Method docs following RFC 1574 style (third-person declarative)
+- Doc examples for key types (Live, Call, Room, LocalBroadcast, RemoteBroadcast)
 
-### 5.5 Example suite
+### 5.5 Final test pass
 
-Update all examples to use new API:
-- `examples/call.rs` — one-to-one call (new)
-- `examples/broadcast.rs` — one-to-many streaming (new)
-- `examples/rooms.rs` — multi-party room (updated)
-- `examples/publish.rs` — keep as low-level example using transport layer
-- `examples/watch.rs` — keep as low-level example
+- `cargo check --workspace --all-features --tests --examples`
+- `cargo test --workspace --all-features`
+- `cargo clippy --locked --workspace --all-targets --all-features`
+- `cargo fmt --check`
+- `cargo doc --workspace` — verify no broken links
+- Manually run each example
 
 ### Done when
 
+- No old types in public API
 - All examples compile and work
 - No clippy warnings
-- `cargo doc --workspace` builds cleanly
-- Deprecated items have clear migration pointers
+- Clean docs
 
 ---
 
@@ -478,68 +1112,88 @@ Update all examples to use new API:
 
 ### Interior mutability strategy
 
-All Arc-based handles need interior mutability for state. Choices:
-
 | Type | Strategy | Reason |
 |------|----------|--------|
 | `LocalBroadcast` | `Arc<Mutex<PublishBroadcast>>` | `set_video`/`set_audio` take `&mut self` |
-| `RemoteBroadcast` | `Arc<SubscribeBroadcast>` | All methods already take `&self` |
-| `Room` | Actor + `RwLock<HashMap>` for participants | Concurrent reads common |
-| `Call` | `Watchable<CallState>` + Arc refs | Mostly reads + state transitions |
-| `LocalParticipant` | `Arc<Mutex<Vec<LocalTrackPublication>>>` | Rare writes |
-| `RemoteParticipant` | `Arc<RwLock<Vec<RemoteTrackPublication>>>` | Reads from catalog updates |
+| `RemoteBroadcast` | `Arc` + `Watchable`s + `Mutex<Option<Selected*>>` | Status and selection are extra state |
+| `Room` | Actor + `RwLock<participants>` + `Mutex<mpsc::Receiver>` | Concurrent reads, single consumer |
+| `Call` | `Watchable<CallState>` + `RwLock<remotes>` + `Mutex<Receiver>` | State + concurrent map access |
+| `LocalParticipant` | `Arc<RwLock<HashMap<Kind, LocalBroadcast>>>` | Lazy broadcast creation |
+| `RemoteParticipant` | `Arc<RwLock<HashMap<Kind, RemoteBroadcast>>>` + `Notify` | Broadcasts arrive over time |
 
-Future optimization: refactor `PublishBroadcast::set_video/set_audio` to use `&self`
-internally (state is already behind internal Arc/Mutex). This would let
-`LocalBroadcast` drop its Mutex.
+### Return by value (settled)
 
-### Thread safety
+All methods returning `LocalBroadcast`, `RemoteBroadcast`, `RemoteParticipant` etc.
+return owned (Arc-cloned) values, not references. Arc-clone is a pointer-width atomic
+increment — cheaper than managing lock guard lifetimes.
 
-All public types must be `Send + Sync`. This is automatic with Arc + Mutex/RwLock.
-Verify with:
-```rust
-fn assert_send_sync<T: Send + Sync>() {}
-assert_send_sync::<Room>();
-assert_send_sync::<Call>();
-// etc.
-```
+### MoqSession mutability (resolved)
 
-### Backward compatibility
+`MoqSession` is `Clone`. Cloning shares the underlying channels. The `subscribe()`
+and `announced()` methods take `&mut self` because `OriginConsumer::announced()`
+advances a message queue.
 
-During the transition:
-- Old `Room::new()` still works but is deprecated
-- Old `Live::connect()` still works but is deprecated
-- Old `RoomEvent` variants still exist but are deprecated
-- New and old APIs can coexist in the same binary
+For Call: clone the session, give the clone to the announce task. The announce task
+calls `announced()` in a loop. The main Call object uses the original session for
+`publish()` (which takes `&self`). No conflict since `announced()` and `publish()`
+operate on different internal channels (`OriginConsumer` vs `OriginProducer`).
 
-After 1-2 releases, remove deprecated items in a semver-major bump.
+**⚠️ Careful**: Two clones of MoqSession calling `announced()` concurrently WILL
+race on the same mpsc channel — each announce will be delivered to exactly one of them.
+This is fine for Call (only one announce task per session) but would be a problem if
+we tried to share.
 
-### What NOT to change
+### What NOT to change (beyond Phase 1 renames)
 
-- `moq-media` internals — keep as-is, it's stable
-- `iroh-moq` protocol behavior — only add incoming stream
+- `moq-media` codec pipelines — keep as-is
+- `iroh-moq` protocol wire format — no changes
 - `web-transport-iroh` — no changes
 - `hang` / `moq-lite` — no changes
-- Codec implementations — no changes
-- Pipeline architecture — no changes
+- `rusty-codecs` encoder/decoder impls — no changes
 
-### Open questions
+---
 
-1. **Should `Call` auto-subscribe to remote broadcasts?** Currently the plan says yes
-   (subscribe to first announced broadcast). But should it be opt-in? Consider
-   audio-only calls or custom subscription logic.
+## Open Questions
 
-2. **Should `RemoteBroadcast` cache subscriptions?** If you call `subscribe_video()`
-   twice, should it return the same `WatchTrack` or create a new one? Current plan:
-   create new one each time (caller manages lifetime).
+### Protocol-level
 
-3. **Should `Room` auto-subscribe to all participants?** Current room behavior is
-   auto-subscribe. New API could make this configurable via `RoomOptions`.
+1. **Call signaling robustness**: The design uses broadcast name prefixes
+   (`"{call_id}/camera"`) for call signaling. What happens if someone connects and
+   publishes broadcasts without following the naming convention? The announce task
+   ignores names without the expected prefix. The call simply sees no remote
+   broadcasts. Acceptable for now — we could add connection validation later.
 
-4. **`PublicationId` stability**: is `(participant, track_name)` stable enough across
-   reconnects? If a participant disconnects and reconnects, their publications get new
-   session state but same logical identity.
+2. **Call ID collision**: If two callers simultaneously call the same callee with
+   different call_ids, `accept_call()` picks up whichever announce arrives first.
+   The second session stays connected but nobody consumes its broadcasts. Should we
+   add a timeout for unclaimed sessions?
 
-5. **Should `LocalBroadcast` be created via `Live::create_broadcast()` or
-   `LocalBroadcast::new()`?** The sketch shows both. Preference: `new()` for standalone,
-   `Live` method for transport-attached.
+3. **Room peer departure**: The current actor doesn't explicitly emit a "peer left"
+   event. The forwarder infers it from all broadcasts closing (see §4.5). This may
+   need a gossip-level change or timeout heuristic for more reliable detection.
+
+### API design
+
+4. **`set_source` codec parameter**: Requires the `any_video_codec` feature in
+   moq-media for runtime codec dispatch. Should we gate the simple slot API behind
+   a feature flag and provide only `set_source::<E>(source, presets)` otherwise?
+
+5. **`recv_remote()` / `Room::recv()` single-consumer**: Both use `Mutex<Receiver>`.
+   Only one task can call these at a time. Acceptable for the loop-based pattern
+   shown in examples. Multi-consumer (via `tokio::broadcast`) could be added later
+   if needed for UI components that subscribe independently.
+
+6. **Screen share lifecycle**: Screen shares are transient. Should `LocalBroadcast`
+   support `unpublish()` to remove it from the room/call entirely? Currently
+   `clear()` removes the source but the broadcast still exists (announced/in KV).
+
+7. **Publishing order for rooms**: `broadcast(Camera)` publishes immediately with
+   empty catalog. Remote peers see `has_video() = false` until `set_source()`.
+   Document this behavior explicitly?
+
+### Implementation
+
+8. **Room actor rewrite vs wrap**: Phase 4 wraps the existing actor. Lower risk but
+   adds a translation layer. `ParticipantLeft`/`BroadcastUnpublished` detection is
+   indirect (watching broadcast closures). Plan to rewrite the actor in a future
+   phase?

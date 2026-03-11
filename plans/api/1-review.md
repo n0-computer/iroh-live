@@ -136,7 +136,7 @@ This is valuable. The redesign should preserve it.
 
 > **[Note]:** Two more strengths worth calling out explicitly:
 >
-> - **Drop-based cleanup is already the norm.** `PipelineGuard` (moq-media/src/pipeline.rs:113-121) bundles `DropGuard` + `AbortOnDropHandle` + `JoinHandle` so pipelines clean up automatically. `AbortOnDropHandle` is used consistently for async task lifetimes (rooms.rs, subscribe.rs, publish.rs). This is excellent idiomatic Rust — resources are tied to ownership, no manual `close()` calls needed. The new API should preserve this property universally: dropping a `Call` should clean up its session, dropping a `Room` should leave it, dropping a `LocalTrackPublication` should unpublish.
+> - **Drop-based cleanup is already the norm.** `PipelineGuard` (moq-media/src/pipeline.rs:113-121) bundles `DropGuard` + `AbortOnDropHandle` + `JoinHandle` so pipelines clean up automatically. `AbortOnDropHandle` is used consistently for async task lifetimes (rooms.rs, subscribe.rs, publish.rs). This is excellent idiomatic Rust — resources are tied to ownership, no manual `close()` calls needed. The new API should preserve this property universally: dropping a `Call` should clean up its session, dropping a `Room` should leave it, and dropping a subscription should unsubscribe.
 >
 > - **The `Watchable`/`Watcher` pattern** (from `n0_watcher`) is already used for reactive state in `SubscribeBroadcast` (catalog changes), `VideoDecoderHandle` (viewport), and `PublishCaptureController` (capture opts). This is a better fit than tokio watch channels for the "current state + change notification" pattern that a product API needs. The new `Participant`, `Publication`, and `Room` types should use `Watchable` internally for state that UIs need to observe (connection status, available renditions, active speaker, etc.).
 
@@ -146,7 +146,7 @@ This is valuable. The redesign should preserve it.
 
 ### 3. Tickets are conceptually useful
 
-`LiveTicket` and `RoomTicket` are the right general idea: a small portable join handle.
+`CallTicket`, `BroadcastTicket`, and `RoomTicket` are the right general idea: small portable join handles.
 
 > **[Note]:** Tickets should implement `Display` + `FromStr` (for copy-paste in terminals/chat), `Serialize`/`Deserialize` (for storage/APIs), and possibly `Into<Url>` for deep-linking. They're one of the few types that genuinely benefit from maximum conversion ergonomics.
 
@@ -536,22 +536,13 @@ For one-to-one, a user needs:
 - access to announced publications after accept
 - a consistent session lifecycle
 
-> **[Note]:** The acceptor stream should be a proper `Stream` impl, not a custom `recv()` method. This enables composition with `StreamExt` combinators:
+> **[Note]:** After reviewing the rest of the plan, I no longer think `Stream` should be the default surface here. `accept_call()` and `recv()` are the better choice for this crate:
 >
-> ```rust
-> use futures::StreamExt;
+> - they match the existing codebase style
+> - they avoid forcing `StreamExt` into the happy path
+> - they keep event ownership and single-consumer semantics explicit
 >
-> // Filter, map, buffer — all for free
-> let mut calls = live.incoming_calls()
->     .filter(|c| future::ready(allowlist.contains(&c.remote_id())))
->     .take(1); // only accept one call
->
-> if let Some(incoming) = calls.next().await {
->     let call = incoming.accept().await?;
-> }
-> ```
->
-> The current `Room` uses `mpsc::Receiver<RoomEvent>` internally but wraps it in custom `recv()`/`try_recv()` methods. That's fine for now, but the new API should expose `impl Stream<Item = RoomEvent>` (or a named stream type) so users get the full `StreamExt` ecosystem. The `async_stream` crate or `futures::stream::unfold` can bridge from mpsc easily.
+> If multi-consumer composition becomes important later, it can be added as an adapter on top of the simpler core API.
 
 ## What To Copy From LiveKit JS/TS
 
@@ -1123,7 +1114,7 @@ This is better than either purely event-driven or purely builder-driven APIs.
 >
 > This is how `DashMap::get()` returns a guard and how `iroh::Endpoint::remote_info()` returns owned data. It avoids the "hold a lock while awaiting" anti-pattern.
 >
-> **Events should carry enough data to be self-contained**: Don't make users query the room to understand an event. For example, `TrackPublished` should carry the `RemoteTrackPublication` handle directly, not just a `PublicationId` that requires a follow-up lookup. The current `RoomEvent::BroadcastSubscribed` already does this with `broadcast: SubscribeBroadcast` — good instinct, just needs better types.
+> **Events should carry enough data to be self-contained**: Don't make users query the room to understand an event. For example, `BroadcastPublished` should carry the `RemoteBroadcast` handle directly, not just a `BroadcastKind` that requires a follow-up lookup. The current `RoomEvent::BroadcastSubscribed` already does this with `broadcast: SubscribeBroadcast` — good instinct, just needs better types.
 
 ## Proposed API Shape
 
@@ -1136,20 +1127,16 @@ pub mod call;
 pub mod room;
 pub mod media;
 pub mod broadcast;
-pub mod tickets;
-pub mod node;
-pub mod lowlevel; // opt-in escape hatch
+pub mod transport; // opt-in escape hatch
 
-pub use call::{Call, CallAcceptor, CallEvent, IncomingCall};
-pub use broadcast::{LocalBroadcast, RemoteBroadcast, BroadcastStatus};
+pub use call::{Call, CallState, CallTicket, IncomingCall};
+pub use broadcast::{BroadcastStatus, BroadcastTicket, LocalBroadcast, RemoteBroadcast};
 pub use room::{
-    Room, RoomEvent, RoomOptions,
+    Room, RoomEvent,
     LocalParticipant, RemoteParticipant, ParticipantId,
-    LocalTrackPublication, RemoteTrackPublication,
-    TrackKind, TrackSource,
+    RoomTicket,
 };
-pub use tickets::{CallTicket, RoomTicket};
-pub use node::LiveNode;
+pub use types::{BroadcastKind, DisconnectReason, RoomId};
 
 pub struct Live { ... }
 ```
@@ -1165,10 +1152,9 @@ Important:
 > ```rust
 > // For users who want everything at once
 > pub mod prelude {
->     pub use crate::{Live, Room, RoomEvent, Call, CallEvent, IncomingCall};
+>     pub use crate::{BroadcastKind, Call, CallTicket, IncomingCall, Live, Room, RoomEvent, RoomTicket};
+>     pub use crate::broadcast::{BroadcastTicket, LocalBroadcast, RemoteBroadcast};
 >     pub use crate::room::{LocalParticipant, RemoteParticipant, ParticipantId};
->     pub use crate::room::{LocalTrackPublication, RemoteTrackPublication, TrackSource};
->     pub use crate::tickets::{CallTicket, RoomTicket};
 >     pub use crate::media::{AudioBackend, DecodeConfig, Quality};
 > }
 > ```
@@ -1231,28 +1217,27 @@ These rules matter, otherwise the same confusion returns under new names.
 
 ```rust
 let live = Live::builder().spawn().await?;
-let mut call = live.call(peer_ticket).await?;
-call.local_participant()
-    .publish_camera(camera, PublishCameraOptions::default())
-    .await?;
-call.local_participant()
-    .publish_microphone(mic, PublishAudioOptions::default())
-    .await?;
+let call = live.call(peer_ticket).await?;
+call.local(BroadcastKind::Camera)
+    .video()
+    .set_source(camera, [VideoPreset::P720])?;
+call.local(BroadcastKind::Camera)
+    .audio()
+    .set_source(mic, [AudioPreset::Speech])?;
 ```
 
 ### Inbound
 
 ```rust
 let live = Live::builder().spawn().await?;
-let mut incoming = live.incoming_calls();
-
-while let Some(call) = incoming.next().await {
-    let remote = call.remote_id();
+loop {
+    let incoming = live.accept_call().await?;
+    let remote = incoming.remote_id();
     if should_accept(remote) {
-        let mut call = call.accept().await?;
+        let call = incoming.accept().await?;
         // subscribe / publish
     } else {
-        call.reject().await?;
+        incoming.reject().await?;
     }
 }
 ```
@@ -1287,9 +1272,9 @@ Even if the implementation internally reuses room-ish concepts, the public API s
 
 `Call` can still expose:
 
-- `local_participant()`
-- `remote_participant()`
-- `events()`
+- `local(kind)`
+- `remote(kind)`
+- `recv_remote()`
 - `close()`
 
 That is much easier to reason about than a raw `MoqSession` plus named broadcasts.
@@ -1320,10 +1305,10 @@ let room = node.live().join_room(ticket).await?;
 pub struct Room {
     pub fn id(&self) -> RoomId;
     pub fn ticket(&self) -> RoomTicket;
-    pub fn local_participant(&self) -> &LocalParticipant;
-    pub fn remote_participants(&self) -> impl Iterator<Item = &RemoteParticipant>;
-    pub fn participant(&self, id: ParticipantId) -> Option<&RemoteParticipant>;
-    pub fn events(&self) -> RoomEvents;
+    pub fn local_participant(&self) -> LocalParticipant;
+    pub fn remote_participants(&self) -> HashMap<ParticipantId, RemoteParticipant>;
+    pub fn remote_participant(&self, id: ParticipantId) -> Option<RemoteParticipant>;
+    pub async fn recv(&self) -> Result<RoomEvent>;
     pub async fn close(&self) -> Result<()>;
 }
 ```
@@ -1333,54 +1318,28 @@ pub struct Room {
 ```rust
 pub enum RoomEvent {
     ParticipantJoined(RemoteParticipant),
-    ParticipantLeft { participant_id: ParticipantId },
-    TrackPublished {
-        participant_id: ParticipantId,
-        publication: RemoteTrackPublication,
+    ParticipantLeft { participant: ParticipantId, reason: DisconnectReason },
+    BroadcastPublished {
+        participant: ParticipantId,
+        kind: BroadcastKind,
+        broadcast: RemoteBroadcast,
     },
-    TrackUnpublished {
-        participant_id: ParticipantId,
-        publication_id: PublicationId,
-    },
-    TrackSubscribed {
-        participant_id: ParticipantId,
-        publication_id: PublicationId,
-        track: RemoteTrack,
-    },
-    TrackUnsubscribed {
-        participant_id: ParticipantId,
-        publication_id: PublicationId,
+    BroadcastUnpublished {
+        participant: ParticipantId,
+        kind: BroadcastKind,
     },
 }
 ```
 
 That is much closer to what room users actually need.
 
-## 4. Participant and publication model
+## 4. Participant and broadcast model
 
 ### Local participant
 
 ```rust
 impl LocalParticipant {
-    pub async fn publish_camera(
-        &self,
-        source: impl VideoSource,
-        options: PublishCameraOptions,
-    ) -> Result<LocalTrackPublication>;
-
-    pub async fn publish_microphone(
-        &self,
-        source: impl AudioSource,
-        options: PublishAudioOptions,
-    ) -> Result<LocalTrackPublication>;
-
-    pub async fn publish_screen(
-        &self,
-        source: impl VideoSource,
-        options: PublishScreenOptions,
-    ) -> Result<LocalTrackPublication>;
-
-    pub async fn unpublish(&self, publication_id: PublicationId) -> Result<()>;
+    pub fn broadcast(&self, kind: impl Into<BroadcastKind>) -> LocalBroadcast;
 }
 ```
 
@@ -1389,26 +1348,26 @@ impl LocalParticipant {
 ```rust
 impl RemoteParticipant {
     pub fn id(&self) -> ParticipantId;
-    pub fn publications(&self) -> impl Iterator<Item = &RemoteTrackPublication>;
-    pub fn publication(&self, id: PublicationId) -> Option<&RemoteTrackPublication>;
+    pub fn broadcasts(&self) -> HashMap<BroadcastKind, RemoteBroadcast>;
+    pub fn broadcast(&self, kind: impl Into<BroadcastKind>) -> Option<RemoteBroadcast>;
 }
 ```
 
-### Publication
+### Why broadcasts are the publication unit
 
 This is the missing middle layer in the current design.
 
-A publication should represent:
+A broadcast should represent:
 
 - stable identity
 - metadata
-- source kind (`Camera`, `Microphone`, `ScreenShare`, `Custom`)
-- whether it is currently subscribed
+- broadcast kind (`Camera`, `Screen`, `Named`)
+- whether it is currently available
 - available qualities/renditions
 
 Then the media object can be separate:
 
-- publication metadata exists before subscribing
+- broadcast metadata exists before subscribing
 - subscription attaches actual audio/video pipelines
 
 That matches both LiveKit's shape and common RTC expectations.

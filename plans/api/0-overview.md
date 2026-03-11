@@ -18,9 +18,9 @@ For app authors building calls, rooms, and interactive sessions.
 
 - `Live` — entry point, builder-based
 - `Call` / `IncomingCall` — one-to-one sessions with accept/reject
-- `Room` / `RoomEvent` — multi-party with participant and publication model
+- `Room` / `RoomEvent` — multi-party with participant and broadcast model
 - `LocalParticipant` / `RemoteParticipant` — first-class participant identity
-- `LocalTrackPublication` / `RemoteTrackPublication` — publish/subscribe through publications
+- `BroadcastKind` — type-safe broadcast identification (Camera, Screen, Named)
 - `CallTicket` / `RoomTicket` — portable join handles
 
 ### Layer 2: Broadcast API (`iroh_live::broadcast`)
@@ -29,7 +29,7 @@ For advanced users who want direct media composition without room/call semantics
 
 - `LocalBroadcast` / `RemoteBroadcast` — cohesive broadcast objects
 - `BroadcastTicket` — standalone broadcast join handle
-- `VideoTarget` / `SubscribeVideoOptions` — declarative selection
+- `SubscribeVideoOptions` — declarative quality/rendition selection
 - Catalog access, rendition selection, preview
 
 > codex: This middle layer is where the toolkit can become genuinely distinctive. If `RemoteBroadcast` and `LocalBroadcast` are excellent, the project can be both an ergonomic app SDK and a serious media toolkit.
@@ -47,8 +47,8 @@ For systems work, custom pipelines, and experimentation.
 1. **Product-first top layer, systems-first lower layers.** Simple path stays in layer 1.
 2. **Stable, cheaply-cloneable object model.** All handles are `Arc`-based + `Clone`.
 3. **Drop-based cleanup.** Dropping a `Call` closes it, dropping a subscription unsubscribes.
-4. **Command-query split.** Methods mutate (`&self` + interior mutability), queries return owned snapshots, events via `Stream`.
-5. **Watchers for continuous state, streams for discrete events.** Using `n0_watcher::Watchable` (already in codebase).
+4. **Command-query split.** Methods mutate (`&self` + interior mutability), queries return owned snapshots, and discrete events use `recv()`-style async methods.
+5. **Watchers for continuous state, `recv()` for discrete events.** Using `n0_watcher::Watchable` (already in codebase).
 6. **Broadcast layer is first-class.** Not just an implementation detail — it's the universal mid-level API for all use cases.
 7. **Accepting inbound is first-class.** `IncomingCall` with type-safe accept/reject, auto-reject on drop.
 8. **Manual processing remains first-class.** Custom sources, encoders, decoders, frame processing — behind explicit advanced APIs.
@@ -57,8 +57,8 @@ For systems work, custom pipelines, and experimentation.
 
 | Use case | Primary layer | Key types |
 |---|---|---|
-| Video/audio call | Product | `Call`, `LocalParticipant`, `RemoteTrackPublication` |
-| Multi-party room | Product | `Room`, `RoomEvent`, `Participant` |
+| Video/audio call | Product | `Call`, `BroadcastKind`, `RemoteBroadcast` |
+| Multi-party room | Product | `Room`, `RoomEvent`, `RemoteParticipant` |
 | Live streaming | Broadcast | `LocalBroadcast`, `RemoteBroadcast` |
 | Audio studio link | Broadcast | `LocalBroadcast` (audio-only) |
 | Camera dashboard | Broadcast | N × `RemoteBroadcast` |
@@ -71,17 +71,19 @@ For systems work, custom pipelines, and experimentation.
 - `1-review.md` — detailed review of current API with inline comments
 - `2-research.md` — survey of LiveKit, Hang, WebRTC, GStreamer, OBS APIs
 - `3-sketch.md` — Rust code sketch of the proposed API (all todo!())
+- `3a-glossary.md` — glossary of all terms with precise definitions and layer assignments
 - `4-impl.md` — phased implementation plan with concrete steps
 - `5-risks-and-future.md` — redesign risks, future work, and success criteria
 - `6-examples.md` — rewritten examples against the proposed API, with async/sync boundaries
+- `7-relay.md` — moq-relay integration proposal (additive, no changes to core API)
 
 ## Migration Strategy
 
-1. Add broadcast object layer (`LocalBroadcast` / `RemoteBroadcast`) wrapping existing types
+1. Add shared types (`BroadcastKind`, `ParticipantId`) and broadcast wrappers (`LocalBroadcast` / `RemoteBroadcast`)
 2. Add incoming call acceptance primitives (`Moq::incoming()`, `Live::accept_call()`)
-3. Define participant/publication object model
-4. Redesign room events around participants and tracks
-5. Redesign local publish APIs around `LocalParticipant`
+3. Add Call API with `BroadcastKind`-based local/remote access
+4. Redesign room events around participants and broadcasts (`BroadcastPublished`/`BroadcastUnpublished`)
+5. Redesign local publish APIs around `LocalParticipant::broadcast(kind)`
 6. Hide transport-first types from default surface
 7. Clean up naming
 

@@ -21,9 +21,52 @@ Changes from detailed review pass:
 - **Removed `RemoteBroadcast::subscribe_video_rendition`**: Redundant with `subscribe_video_with(opts.rendition("name"))`. Fewer methods = less surface to learn.
 - **`Call::remote()` returns `Option`**: Remote broadcast doesn't exist until the peer announces.
 - **Added `Live::new()` taking gossip too**: Entry point needs gossip for rooms.
-- **`LocalVideoSlot` / `LocalAudioSlot`**: Replaced `set_video`/`set_audio` with slot-based API. Supports source replacement (`replaceTrack()` equivalent), mute/enable without teardown, camera vs screen-share distinction.
+- **`LocalVideoSlot` / `LocalAudioSlot`**: Slot-based API. Supports source replacement (`replaceTrack()` equivalent), mute/enable without teardown.
 - **`has_video()` / `has_audio()`** on both `LocalBroadcast` and `RemoteBroadcast`.
 - **`SelectedVideo` / `SelectedAudio`** snapshots on `RemoteBroadcast` for UI and debugging.
+- **`Live::builder()` + `LiveBuilder`**: Ergonomic construction with defaults. `from_env()` for environment-based config. Matches north star's one-liner setup.
+- **`Live::publish_broadcast(name, &broadcast)`**: Returns `BroadcastTicket`. The broadcast-layer way to publish to the network. Publishing is a `Live` concern, not a `LocalBroadcast` concern — `LocalBroadcast` is a pure media wrapper.
+- **`Room::participants()` watcher**: Continuous state watcher over participant list (pattern #10). Enables reactive UIs without polling `recv()`.
+- **Multi-broadcast participant model**: Each participant publishes N broadcasts (camera, screen, custom). This matches the actual hang/moq model where camera+mic and screen are separate broadcasts with separate catalogs.
+- **Removed `LocalTrackPublication`**: Publishing is now done through `LocalBroadcast` slot API. Mute/enable/clear are on the slots. No need for a separate product-layer publication handle on the local side.
+
+### Review notes (2026-03-11)
+
+Changes from second review pass:
+
+- **`BroadcastKind` enum**: Replaces hard-coded `camera()`/`screen()` methods with a type-safe extensible enum: `Camera`, `Screen`, `Named(String)`. All broadcast getter methods take `impl Into<BroadcastKind>`. Enables `call.local(Camera)` and `call.local("custom")` with the same API.
+- **`CallTicket` includes `call_id`**: MoQ protocol requires a broadcast name for subscription. `call_id` is the broadcast name the callee will publish under. Generated randomly by default.
+- **`hangup()` → `close()`**: More neutral, consistent with `Room::leave()`, better for API that handles both calls and non-calls.
+- **`RemoteParticipant::wait_broadcast(kind)`**: Async method to wait for a specific broadcast to appear. Essential for call flows where remote media arrives after connection.
+- **Removed `RemoteTrackPublication`**: Broadcasts are the unit of publication in MoQ. The extra indirection added confusion without value. Room events are now `BroadcastPublished`/`BroadcastUnpublished`. Subscribe directly on `RemoteBroadcast`.
+- **Removed `PublicationId` and `TrackKind`**: With broadcasts as the publication unit, per-track IDs at the product layer are unnecessary. Track discovery happens through the broadcast's catalog.
+- **Removed `RemoteVideoTrack` / `RemoteAudioTrack` wrappers**: `VideoTrack` already provides `current_frame()` and `AudioTrack` already plays automatically. Thin wrappers that add no state are not worth the indirection. Use `moq_media` types directly.
+- **Simplified slots**: Removed `publish_camera()`/`publish_screen()`/`publish_microphone()` — these are synonymous with `set_source()`. The broadcast's `BroadcastKind` already carries the semantic meaning (camera vs screen). Slots have one method: `set_source()`.
+- **Justified all wrappers**: Each wrapper type documents what state it adds beyond the wrapped type. `RemoteBroadcast` adds: status watchable, selection snapshots, has_video/has_audio. `LocalBroadcast` adds: Arc+Mutex for &self API, slot model, publish(). Types that add nothing are removed.
+- **`Call::recv_remote()`**: Async method that yields the next `(BroadcastKind, RemoteBroadcast)` as they are announced. Complements `wait_remote(kind)` for dynamic subscription patterns (handle camera, screen, or custom broadcasts as they arrive).
+- **Renamed `WatchTrack` → `VideoTrack`** (in moq-media): `WatchTrack` is an implementation-detail name. `VideoTrack` is the semantic counterpart to `AudioTrack`, consistent and self-describing. This is a moq-media rename that should happen in Phase 1.
+- **Screen-share in examples**: Call and room examples now demonstrate multi-broadcast complexity (camera + screen) to show the `BroadcastKind` pattern in practice.
+- **Return by value, not reference**: All methods returning `LocalBroadcast`, `RemoteBroadcast`, etc. return owned (Arc-cloned) values, not references. Returning `&T` would require holding `RwLock` guards across the return boundary, which is unsound. Arc-clone is cheap and these types are designed for it.
+- **Codec parameter on `set_source`**: Slots take `(source, codec, presets)` — e.g. `set_source(cam, VideoCodec::H264, [P720])`. The codec is a real choice (H264 vs AV1, software vs hardware) that shouldn't be hidden. Maps directly to `VideoRenditions::new()`. For advanced codec control, use `LocalBroadcast::producer()` directly.
+- **`LocalBroadcast::publish()` removed**: `LocalBroadcast` is a pure media wrapper with no networking knowledge. Publishing happens through `Live::publish_broadcast(name, &broadcast)` for standalone use, or internally through the room actor / call code. The `producer()` escape hatch is the bridge.
+
+## Wrapping justification
+
+Every wrapper in this sketch must add state or API surface that the inner type does not provide. This section documents the rationale:
+
+| Wrapper | Inner type | What it adds | Justified? |
+|---------|-----------|-------------|-----------|
+| `LocalBroadcast` | `PublishBroadcast` | Arc+Mutex (inner needs `&mut self`), slot model (`LocalVideoSlot`/`LocalAudioSlot`), `producer()` escape hatch for transport | Yes: inner has `&mut self` API, no slot abstraction |
+| `RemoteBroadcast` | `SubscribeBroadcast` | `BroadcastStatus` watchable (Connecting/Live/Ended), selection snapshots (`SelectedVideo`/`SelectedAudio`), `has_video()`/`has_audio()` convenience | Yes: inner has no connection-lifecycle state or selection memory |
+| `LocalVideoSlot` / `LocalAudioSlot` | N/A (composed) | Slot abstraction with set/clear/enable/mute. No inner type to wrap — this is new API surface. | Yes: new concept |
+
+Types that were considered for wrapping but rejected:
+
+| Rejected wrapper | Why rejected |
+|-----------------|-------------|
+| `RemoteVideoTrack` wrapping `VideoTrack` | `VideoTrack` already has `current_frame()`. Wrapper would add zero state. Use `VideoTrack` directly. |
+| `RemoteAudioTrack` wrapping `AudioTrack` | `AudioTrack` already plays automatically. Wrapper would add zero state. Use `AudioTrack` directly. |
+| `RemoteTrackPublication` | Broadcasts are the publication unit in MoQ. An extra track-level handle between participant and broadcast added confusion. Subscribe directly on `RemoteBroadcast`. |
 
 ## `types.rs` -- Shared newtypes and IDs
 
@@ -61,33 +104,59 @@ impl From<EndpointId> for ParticipantId {
     }
 }
 
-/// Identifies a published track within a broadcast.
+/// Identifies the kind of broadcast a participant publishes.
 ///
-/// Combines a [`ParticipantId`] and a track name to form a globally unique
-/// reference to a specific audio or video publication.
+/// A participant typically publishes one or two broadcasts: a `Camera`
+/// broadcast (with video and/or audio) and optionally a `Screen` broadcast
+/// (with screen-capture video and optional system audio). Custom workflows
+/// can use `Named` for additional broadcasts.
+///
+/// Implements `From<&str>` so callers can pass string literals for custom
+/// broadcast names without constructing the enum explicitly.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct PublicationId {
-    /// Participant that owns the publication.
-    pub(crate) participant: ParticipantId,
-    /// Track name within the participant's broadcast.
-    pub(crate) name: String,
+pub enum BroadcastKind {
+    /// Camera video and microphone audio.
+    Camera,
+    /// Screen-share video and optional system audio.
+    Screen,
+    /// Custom named broadcast for advanced workflows.
+    Named(String),
 }
 
-impl PublicationId {
-    /// Returns the participant that owns this publication.
-    pub fn participant(&self) -> &ParticipantId {
-        &self.participant
-    }
-
-    /// Returns the track name within the participant's broadcast.
-    pub fn name(&self) -> &str {
-        &self.name
+impl BroadcastKind {
+    /// Returns the wire name used in the MoQ protocol.
+    pub fn as_str(&self) -> &str {
+        match self {
+            BroadcastKind::Camera => "camera",
+            BroadcastKind::Screen => "screen",
+            BroadcastKind::Named(name) => name,
+        }
     }
 }
 
-impl fmt::Display for PublicationId {
+impl fmt::Display for BroadcastKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.participant, self.name)
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<&str> for BroadcastKind {
+    fn from(s: &str) -> Self {
+        match s {
+            "camera" => BroadcastKind::Camera,
+            "screen" => BroadcastKind::Screen,
+            other => BroadcastKind::Named(other.to_string()),
+        }
+    }
+}
+
+impl From<String> for BroadcastKind {
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "camera" => BroadcastKind::Camera,
+            "screen" => BroadcastKind::Screen,
+            _ => BroadcastKind::Named(s),
+        }
     }
 }
 
@@ -121,7 +190,7 @@ pub enum DisconnectReason {
 //! This crate provides a three-layer API:
 //!
 //! - **Product API** (crate root): [`Live`], [`Call`], [`Room`], participants,
-//!   publications, and tickets for building end-user applications.
+//!   and tickets for building end-user applications.
 //! - **Broadcast API** ([`broadcast`]): [`LocalBroadcast`], [`RemoteBroadcast`],
 //!   and [`BroadcastTicket`] for streaming, studio links, and media pipelines.
 //! - **Transport API** ([`transport`]): Direct access to [`MoqSession`] and
@@ -138,12 +207,10 @@ pub mod transport;
 pub use self::call::{Call, CallTicket, IncomingCall};
 pub use self::live::Live;
 pub use self::room::{Room, RoomEvent, RoomTicket};
-pub use self::types::{DisconnectReason, ParticipantId, PublicationId, RoomId};
+pub use self::types::{BroadcastKind, DisconnectReason, ParticipantId, RoomId};
 
-// Participant and publication types from room module.
-pub use self::room::{
-    LocalParticipant, LocalTrackPublication, RemoteParticipant, RemoteTrackPublication,
-};
+// Participant types from room module.
+pub use self::room::{LocalParticipant, RemoteParticipant};
 
 // Re-export media crate for codec/pipeline access (layer 3).
 pub use moq_media as media;
@@ -186,6 +253,14 @@ impl Live {
         todo!()
     }
 
+    /// Returns a builder for configuring and creating a [`Live`] instance.
+    ///
+    /// The builder provides sensible defaults and environment-based configuration.
+    /// Preferred over [`new`](Self::new) for most use cases.
+    pub fn builder() -> LiveBuilder {
+        todo!()
+    }
+
     /// Returns the underlying iroh [`Endpoint`].
     pub fn endpoint(&self) -> &Endpoint {
         todo!()
@@ -210,8 +285,33 @@ impl Live {
 
     // -- Rooms --
 
-    /// Joins or creates a multi-party room.
+    /// Joins or creates a multi-party room with default options (P2P only).
     pub async fn join_room(&self, ticket: impl Into<RoomTicket>) -> Result<Room> {
+        todo!()
+    }
+
+    /// Joins or creates a multi-party room with custom options.
+    ///
+    /// Use [`RoomOpts`] to configure relay support, path preference, and
+    /// other room-level settings. See `7-relay.md` for relay integration.
+    pub async fn join_room_with_opts(
+        &self,
+        ticket: impl Into<RoomTicket>,
+        opts: crate::relay::RoomOpts,
+    ) -> Result<Room> {
+        todo!()
+    }
+
+    // -- Relay --
+
+    /// Connects to a moq-relay server.
+    ///
+    /// Returns a [`Relay`](crate::relay::Relay) handle for publishing and
+    /// subscribing broadcasts through the relay. See `7-relay.md`.
+    pub async fn connect_relay(
+        &self,
+        remote: impl Into<iroh::EndpointAddr>,
+    ) -> Result<crate::relay::Relay> {
         todo!()
     }
 
@@ -219,6 +319,18 @@ impl Live {
 
     /// Creates a local broadcast that can be published to peers.
     pub fn create_broadcast(&self) -> LocalBroadcast {
+        todo!()
+    }
+
+    /// Publishes a local broadcast under the given name.
+    ///
+    /// The broadcast becomes reachable by remote peers once published.
+    /// Returns a [`BroadcastTicket`] that can be shared with subscribers.
+    pub fn publish_broadcast(
+        &self,
+        name: impl ToString,
+        broadcast: &LocalBroadcast,
+    ) -> Result<BroadcastTicket> {
         todo!()
     }
 
@@ -245,6 +357,27 @@ impl Live {
         todo!()
     }
 }
+
+/// Builder for configuring a [`Live`] instance.
+///
+/// Provides defaults for endpoint, gossip, and protocol handler setup.
+/// Call [`spawn`](Self::spawn) to create the instance.
+#[derive(Debug)]
+pub struct LiveBuilder {
+    // endpoint_config, gossip_config, ...
+}
+
+impl LiveBuilder {
+    /// Configures the builder from environment variables (relay URLs, secrets).
+    pub fn from_env(self) -> Self {
+        todo!()
+    }
+
+    /// Creates the [`Live`] instance, starting background tasks.
+    pub async fn spawn(self) -> Result<Live> {
+        todo!()
+    }
+}
 ```
 
 ## `call.rs` -- One-to-one calls
@@ -259,17 +392,32 @@ use n0_watcher::Watcher;
 use serde::{Deserialize, Serialize};
 
 use crate::broadcast::{LocalBroadcast, RemoteBroadcast};
-use crate::types::{DisconnectReason, ParticipantId};
+use crate::types::{BroadcastKind, DisconnectReason, ParticipantId};
 
 /// Portable handle for initiating a call to a specific peer.
 ///
 /// Serializes to a compact string representation suitable for sharing
 /// via QR codes, URLs, or clipboard. Contains the remote endpoint address
-/// and optional bootstrap information.
+/// and a `call_id` that names the broadcast the callee will publish under
+/// (required by the MoQ protocol for subscription).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallTicket {
     /// Remote endpoint address.
     pub(crate) remote: iroh::EndpointAddr,
+    /// Broadcast name the callee publishes under. Generated randomly by default.
+    pub(crate) call_id: String,
+}
+
+impl CallTicket {
+    /// Returns the call identifier (broadcast name for this call session).
+    pub fn call_id(&self) -> &str {
+        &self.call_id
+    }
+
+    /// Returns the remote endpoint address.
+    pub fn remote(&self) -> &iroh::EndpointAddr {
+        &self.remote
+    }
 }
 
 impl fmt::Display for CallTicket {
@@ -287,8 +435,12 @@ impl FromStr for CallTicket {
 }
 
 impl From<iroh::EndpointAddr> for CallTicket {
+    /// Creates a ticket with a randomly generated call_id.
     fn from(remote: iroh::EndpointAddr) -> Self {
-        Self { remote }
+        Self {
+            remote,
+            call_id: uuid::Uuid::new_v4().to_string(),
+        }
     }
 }
 
@@ -305,9 +457,9 @@ pub enum CallState {
 
 /// Active one-to-one call session.
 ///
-/// Provides access to local and remote media through [`LocalBroadcast`] and
-/// [`RemoteBroadcast`]. Dropping the [`Call`] closes the connection and
-/// stops all media.
+/// Provides access to local and remote broadcasts keyed by [`BroadcastKind`].
+/// Each side can publish camera, screen, or custom broadcasts independently.
+/// Dropping the [`Call`] closes the connection and stops all media.
 #[derive(Debug, Clone)]
 pub struct Call {
     inner: Arc<CallInner>,
@@ -315,7 +467,8 @@ pub struct Call {
 
 #[derive(Debug)]
 struct CallInner {
-    // session, state, local, remote, ...
+    // session, state, locals: HashMap<BroadcastKind, LocalBroadcast>,
+    // remotes: HashMap<BroadcastKind, RemoteBroadcast>, ...
 }
 
 impl Call {
@@ -324,15 +477,64 @@ impl Call {
         todo!()
     }
 
-    /// Returns the local broadcast for publishing media into the call.
-    pub fn local(&self) -> &LocalBroadcast {
+    /// Returns a local broadcast for the given kind, creating it lazily.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use iroh_live::BroadcastKind::*;
+    ///
+    /// call.local(Camera).video().set_source(cam, VideoCodec::H264, presets)?;
+    /// call.local(Screen).video().set_source(screen, VideoCodec::H264, presets)?;
+    /// call.local("custom").video().set_source(src, VideoCodec::H264, presets)?;
+    /// ```
+    pub fn local(&self, kind: impl Into<BroadcastKind>) -> LocalBroadcast {
         todo!()
     }
 
-    /// Returns the remote broadcast for subscribing to incoming media.
+    /// Returns the remote broadcast for the given kind, if announced.
     ///
-    /// Returns `None` until the remote peer has announced their broadcast.
-    pub fn remote(&self) -> Option<&RemoteBroadcast> {
+    /// Returns `None` until the remote peer has announced a broadcast of
+    /// that kind. For async waiting, use [`wait_remote`](Self::wait_remote).
+    pub fn remote(&self, kind: impl Into<BroadcastKind>) -> Option<RemoteBroadcast> {
+        todo!()
+    }
+
+    /// Returns all remote broadcasts announced so far.
+    pub fn remotes(&self) -> std::collections::HashMap<BroadcastKind, RemoteBroadcast> {
+        todo!()
+    }
+
+    /// Waits until the remote peer announces a broadcast of the given kind.
+    ///
+    /// Returns `Err` if the call ends before the remote announces.
+    pub async fn wait_remote(
+        &self,
+        kind: impl Into<BroadcastKind>,
+    ) -> Result<RemoteBroadcast> {
+        todo!()
+    }
+
+    /// Waits for the next remote broadcast announcement.
+    ///
+    /// Returns `Ok((kind, broadcast))` each time the remote peer announces
+    /// a new broadcast. Use this in a loop to dynamically subscribe to
+    /// camera, screen, or custom broadcasts as they appear. Returns `Err`
+    /// when the call ends.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// loop {
+    ///     let (kind, broadcast) = call.recv_remote().await?;
+    ///     match kind {
+    ///         Camera => { /* subscribe to camera */ }
+    ///         Screen => { /* subscribe to screen */ }
+    ///         _ => {}
+    ///     }
+    /// }
+    /// ```
+    pub async fn recv_remote(&self) -> Result<(BroadcastKind, RemoteBroadcast)> {
         todo!()
     }
 
@@ -342,8 +544,14 @@ impl Call {
         n0_watcher::Watchable::new(CallState::Connecting).watch()
     }
 
-    /// Hangs up the call gracefully.
-    pub fn hangup(&self) {
+    /// Returns a future that resolves when the call ends.
+    pub fn closed(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        todo!();
+        async {}
+    }
+
+    /// Closes the call gracefully.
+    pub fn close(&self) {
         todo!()
     }
 }
@@ -394,7 +602,7 @@ impl Drop for IncomingCall {
 ## `room.rs` -- Multi-party rooms
 
 ```rust
-//! Multi-party room with participant and publication tracking.
+//! Multi-party room with participant and broadcast tracking.
 
 use std::{collections::HashMap, fmt, str::FromStr, sync::Arc};
 
@@ -403,8 +611,8 @@ use n0_error::Result;
 use n0_watcher::Watcher;
 use serde::{Deserialize, Serialize};
 
-use crate::broadcast::{LocalBroadcast, RemoteBroadcast, SubscribeVideoOptions, SubscribeAudioOptions};
-use crate::types::{DisconnectReason, ParticipantId, PublicationId, RoomId};
+use crate::broadcast::{LocalBroadcast, RemoteBroadcast};
+use crate::types::{BroadcastKind, DisconnectReason, ParticipantId, RoomId};
 
 /// Portable handle for joining or creating a room.
 ///
@@ -449,8 +657,10 @@ impl FromStr for RoomTicket {
 
 /// Discrete events emitted by a [`Room`].
 ///
-/// Delivered through the stream returned by [`Room::events`]. Each variant
-/// represents a state transition that the application should handle.
+/// Delivered through [`Room::recv`]. Each variant represents a state
+/// transition that the application should handle. Broadcasts are the unit
+/// of publication — track-level changes within a broadcast are observable
+/// via the broadcast's catalog watcher.
 #[derive(Debug)]
 pub enum RoomEvent {
     /// A new participant joined the room.
@@ -462,19 +672,26 @@ pub enum RoomEvent {
         /// Reason for departure.
         reason: DisconnectReason,
     },
-    /// A remote participant published a new track.
-    TrackPublished {
+    /// A remote participant published a new broadcast.
+    ///
+    /// The broadcast is immediately available for subscription. Check
+    /// `broadcast.has_video()` / `broadcast.has_audio()` to decide what
+    /// to subscribe to. For track-level updates within a broadcast (e.g.
+    /// video added later), watch `broadcast.catalog()`.
+    BroadcastPublished {
         /// Identity of the publishing participant.
         participant: ParticipantId,
-        /// The new publication.
-        publication: RemoteTrackPublication,
+        /// The broadcast kind (Camera, Screen, or Named).
+        kind: BroadcastKind,
+        /// The broadcast, ready for subscription.
+        broadcast: RemoteBroadcast,
     },
-    /// A remote participant unpublished a track.
-    TrackUnpublished {
+    /// A remote participant removed a broadcast.
+    BroadcastUnpublished {
         /// Identity of the publishing participant.
         participant: ParticipantId,
-        /// Identifier of the removed publication.
-        publication_id: PublicationId,
+        /// The kind of the removed broadcast.
+        kind: BroadcastKind,
     },
 }
 
@@ -523,6 +740,15 @@ impl Room {
         todo!()
     }
 
+    /// Returns a watcher over the remote participant list.
+    ///
+    /// Updates whenever participants join or leave. Useful for reactive UIs
+    /// that re-render on participant changes without polling events.
+    pub fn participants(&self) -> impl Watcher<Value = HashMap<ParticipantId, RemoteParticipant>> {
+        todo!();
+        n0_watcher::Watchable::new(HashMap::new()).watch()
+    }
+
     /// Returns a specific remote participant by ID, if connected.
     pub fn remote_participant(&self, id: &ParticipantId) -> Option<RemoteParticipant> {
         todo!()
@@ -536,9 +762,8 @@ impl Room {
 
 /// Local participant within a room.
 ///
-/// Controls what media the local peer publishes into the room. Publishing
-/// is done by attaching a [`LocalBroadcast`] or by using the convenience
-/// methods that create publications directly.
+/// Controls what media the local peer publishes into the room. Broadcasts
+/// are created lazily on first access and keyed by [`BroadcastKind`].
 #[derive(Debug, Clone)]
 pub struct LocalParticipant {
     inner: Arc<LocalParticipantInner>,
@@ -546,7 +771,7 @@ pub struct LocalParticipant {
 
 #[derive(Debug)]
 struct LocalParticipantInner {
-    // id, broadcast, publications, ...
+    // id, broadcasts: RwLock<HashMap<BroadcastKind, LocalBroadcast>>, ...
 }
 
 impl LocalParticipant {
@@ -555,95 +780,34 @@ impl LocalParticipant {
         todo!()
     }
 
-    /// Returns the underlying [`LocalBroadcast`] for advanced publishing control.
-    pub fn broadcast(&self) -> &LocalBroadcast {
-        todo!()
-    }
-
-    /// Publishes a video track and returns a handle to the publication.
+    /// Returns a broadcast for the given kind, creating it lazily.
     ///
-    /// The `source` can be any type implementing [`moq_media::traits::VideoSource`].
-    /// The `encoder` selects the codec (H.264 or AV1). Multiple renditions are
-    /// encoded automatically based on the provided presets.
-    pub fn publish_video(
-        &self,
-        source: impl moq_media::traits::VideoSource,
-        encoder: impl moq_media::traits::VideoEncoder,
-        presets: impl IntoIterator<Item = moq_media::format::VideoPreset>,
-    ) -> Result<LocalTrackPublication> {
-        todo!()
-    }
-
-    /// Publishes an audio track and returns a handle to the publication.
+    /// # Examples
     ///
-    /// The `source` can be any type implementing [`moq_media::traits::AudioSource`].
-    pub fn publish_audio(
-        &self,
-        source: impl moq_media::traits::AudioSource,
-        presets: impl IntoIterator<Item = moq_media::format::AudioPreset>,
-    ) -> Result<LocalTrackPublication> {
+    /// ```ignore
+    /// use iroh_live::BroadcastKind::*;
+    ///
+    /// // Publish camera video and microphone audio:
+    /// room.local_participant().broadcast(Camera).video().set_source(cam, codec, presets)?;
+    /// room.local_participant().broadcast(Camera).audio().set_source(mic, codec, presets)?;
+    ///
+    /// // Publish screen-share:
+    /// room.local_participant().broadcast(Screen).video().set_source(screen, codec, presets)?;
+    /// ```
+    pub fn broadcast(&self, kind: impl Into<BroadcastKind>) -> LocalBroadcast {
         todo!()
     }
 
-    /// Returns all active local publications.
-    pub fn publications(&self) -> Vec<LocalTrackPublication> {
-        todo!()
-    }
-}
-
-/// Handle to a locally published track.
-///
-/// Dropping the publication unpublishes the track from the room.
-#[derive(Debug, Clone)]
-pub struct LocalTrackPublication {
-    inner: Arc<LocalTrackPublicationInner>,
-}
-
-#[derive(Debug)]
-struct LocalTrackPublicationInner {
-    // id, kind, ...
-}
-
-/// Kind of media carried by a publication.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TrackKind {
-    /// Video track.
-    Video,
-    /// Audio track.
-    Audio,
-}
-
-impl LocalTrackPublication {
-    /// Returns the publication identifier.
-    pub fn id(&self) -> &PublicationId {
-        todo!()
-    }
-
-    /// Returns the kind of media (video or audio).
-    pub fn kind(&self) -> TrackKind {
-        todo!()
-    }
-
-    /// Mutes the publication (stops sending media without unpublishing).
-    pub fn set_muted(&self, muted: bool) {
-        todo!()
-    }
-
-    /// Returns whether the publication is currently muted.
-    pub fn is_muted(&self) -> bool {
-        todo!()
-    }
-
-    /// Unpublishes and stops the track.
-    pub fn unpublish(self) {
+    /// Returns all active local broadcasts.
+    pub fn broadcasts(&self) -> HashMap<BroadcastKind, LocalBroadcast> {
         todo!()
     }
 }
 
 /// Remote participant in a room.
 ///
-/// Provides access to the participant's identity, publications, and their
-/// underlying [`RemoteBroadcast`]. Cloning is cheap (Arc-based).
+/// Provides access to the participant's identity and their broadcasts.
+/// Cloning is cheap (Arc-based).
 #[derive(Debug, Clone)]
 pub struct RemoteParticipant {
     inner: Arc<RemoteParticipantInner>,
@@ -651,7 +815,7 @@ pub struct RemoteParticipant {
 
 #[derive(Debug)]
 struct RemoteParticipantInner {
-    // id, broadcast, publications, ...
+    // id, broadcasts: RwLock<HashMap<BroadcastKind, RemoteBroadcast>>, ...
 }
 
 impl RemoteParticipant {
@@ -660,93 +824,28 @@ impl RemoteParticipant {
         todo!()
     }
 
-    /// Returns the underlying [`RemoteBroadcast`] for advanced subscription control.
-    pub fn broadcast(&self) -> &RemoteBroadcast {
-        todo!()
-    }
-
-    /// Returns all publications from this participant.
-    pub fn publications(&self) -> Vec<RemoteTrackPublication> {
-        todo!()
-    }
-
-    /// Returns a specific publication by name, if available.
-    pub fn publication(&self, name: &str) -> Option<RemoteTrackPublication> {
-        todo!()
-    }
-}
-
-/// Handle to a track published by a remote participant.
-///
-/// Provides both a simple subscription path (call [`subscribe_video`](Self::subscribe_video)
-/// or [`subscribe_audio`](Self::subscribe_audio)) and an advanced path through
-/// the underlying [`RemoteBroadcast`].
-#[derive(Debug, Clone)]
-pub struct RemoteTrackPublication {
-    inner: Arc<RemoteTrackPublicationInner>,
-}
-
-#[derive(Debug)]
-struct RemoteTrackPublicationInner {
-    // id, kind, participant, broadcast, ...
-}
-
-impl RemoteTrackPublication {
-    /// Returns the publication identifier.
-    pub fn id(&self) -> &PublicationId {
-        todo!()
-    }
-
-    /// Returns the kind of media (video or audio).
-    pub fn kind(&self) -> TrackKind {
-        todo!()
-    }
-
-    /// Returns the identity of the publishing participant.
-    pub fn participant(&self) -> ParticipantId {
-        todo!()
-    }
-
-    // -- Simple subscription path --
-
-    /// Subscribes to this video publication with default options.
+    /// Returns all broadcasts from this participant.
     ///
-    /// Uses [`moq_media::codec::DynamicVideoDecoder`] for automatic codec selection.
-    /// Returns a [`moq_media::subscribe::WatchTrack`] that yields decoded frames.
-    /// For explicit decoder selection, use [`RemoteBroadcast::subscribe_video`]
-    /// on the underlying broadcast.
-    pub fn subscribe_video(&self) -> Result<moq_media::subscribe::WatchTrack> {
-        self.subscribe_video_with(Default::default())
-    }
-
-    /// Subscribes to this video publication with custom options.
-    ///
-    /// Uses [`moq_media::codec::DynamicVideoDecoder`] internally. For explicit
-    /// decoder type selection, use the broadcast-layer API via [`RemoteParticipant::broadcast`].
-    pub fn subscribe_video_with(
-        &self,
-        options: SubscribeVideoOptions,
-    ) -> Result<moq_media::subscribe::WatchTrack> {
+    /// A participant typically publishes a `Camera` broadcast (with video+audio)
+    /// and optionally a `Screen` broadcast. Custom workflows may publish
+    /// additional named broadcasts.
+    pub fn broadcasts(&self) -> HashMap<BroadcastKind, RemoteBroadcast> {
         todo!()
     }
 
-    /// Subscribes to this audio publication with default options.
-    ///
-    /// Returns an [`moq_media::subscribe::AudioTrack`] that plays through the
-    /// provided audio backend.
-    pub async fn subscribe_audio(
-        &self,
-        audio_backend: &dyn moq_media::traits::AudioStreamFactory,
-    ) -> Result<moq_media::subscribe::AudioTrack> {
-        self.subscribe_audio_with(Default::default(), audio_backend).await
+    /// Returns a specific broadcast by kind.
+    pub fn broadcast(&self, kind: impl Into<BroadcastKind>) -> Option<RemoteBroadcast> {
+        todo!()
     }
 
-    /// Subscribes to this audio publication with custom options.
-    pub async fn subscribe_audio_with(
+    /// Waits until the participant publishes a broadcast of the given kind.
+    ///
+    /// Returns immediately if the broadcast already exists. Returns `Err`
+    /// if the participant leaves before publishing.
+    pub async fn wait_broadcast(
         &self,
-        options: SubscribeAudioOptions,
-        audio_backend: &dyn moq_media::traits::AudioStreamFactory,
-    ) -> Result<moq_media::subscribe::AudioTrack> {
+        kind: impl Into<BroadcastKind>,
+    ) -> Result<RemoteBroadcast> {
         todo!()
     }
 }
@@ -872,8 +971,14 @@ impl SubscribeAudioOptions {
 /// Local broadcast for publishing media to subscribers.
 ///
 /// Wraps a [`moq_media::publish::PublishBroadcast`] with a higher-level API.
-/// Supports setting video and audio sources, managing renditions, and
-/// obtaining a local preview. Cloning is cheap (Arc-based).
+///
+/// **Why this wrapper exists** (vs using `PublishBroadcast` directly):
+/// - `PublishBroadcast::set_video/set_audio` take `&mut self`; this wrapper
+///   provides `Arc + Mutex` so all methods take `&self` and handles are cloneable.
+/// - Adds the slot abstraction (`LocalVideoSlot`/`LocalAudioSlot`) with
+///   set/clear/enable/mute semantics that `PublishBroadcast` doesn't have.
+/// - Exposes `producer()` for transport integration (`Live::publish_broadcast()`,
+///   room actor, call code).
 #[derive(Debug, Clone)]
 pub struct LocalBroadcast {
     inner: Arc<LocalBroadcastInner>,
@@ -891,18 +996,18 @@ impl LocalBroadcast {
         todo!()
     }
 
-    /// Returns the local video publication slot for this broadcast.
+    /// Returns the local video slot for this broadcast.
     ///
-    /// The returned handle is cheap to clone and provides all video-side
-    /// configuration methods, including source replacement and preview.
+    /// The returned handle is cheap to clone and provides video source
+    /// configuration, enable/disable, and clear.
     pub fn video(&self) -> LocalVideoSlot {
         todo!()
     }
 
-    /// Returns the local audio publication slot for this broadcast.
+    /// Returns the local audio slot for this broadcast.
     ///
-    /// The returned handle is cheap to clone and provides all audio-side
-    /// configuration methods, including source replacement and mute control.
+    /// The returned handle is cheap to clone and provides audio source
+    /// configuration, mute/unmute, and clear.
     pub fn audio(&self) -> LocalAudioSlot {
         todo!()
     }
@@ -913,7 +1018,7 @@ impl LocalBroadcast {
     pub fn preview(
         &self,
         decode_config: moq_media::format::DecodeConfig,
-    ) -> Option<moq_media::subscribe::WatchTrack> {
+    ) -> Option<moq_media::subscribe::VideoTrack> {
         todo!()
     }
 
@@ -928,6 +1033,10 @@ impl LocalBroadcast {
     }
 
     /// Returns the raw [`moq_lite::BroadcastProducer`] for transport-level access.
+    ///
+    /// Used by [`Live::publish_broadcast`], room actors, and call code to
+    /// register this broadcast on the network. `LocalBroadcast` itself is
+    /// a pure media wrapper with no networking knowledge.
     pub fn producer(&self) -> moq_lite::BroadcastProducer {
         todo!()
     }
@@ -935,45 +1044,34 @@ impl LocalBroadcast {
 
 /// Video-side configuration and control for a [`LocalBroadcast`].
 ///
-/// Replacement semantics:
+/// A single method — [`set_source`](Self::set_source) — handles all source
+/// types (camera, screen, file, test pattern). The broadcast's
+/// [`BroadcastKind`] carries the semantic meaning, not the slot.
 ///
-/// - Replacing one camera source with another camera source keeps the same
-///   logical video slot and should preserve publication identity at higher layers.
-/// - Replacing a camera source with a screen-share source is allowed at the
-///   broadcast layer, but higher layers may choose to model that as a distinct
-///   publication based on `TrackSource`.
-/// - Removing video tears down active video encoders and preview state.
+/// Replacement semantics: calling `set_source` again swaps the source
+/// without tearing down the logical video slot (equivalent to WebRTC's
+/// `replaceTrack()`). Call `clear()` to remove video entirely.
 #[derive(Debug, Clone)]
 pub struct LocalVideoSlot {
     // inner: Arc<LocalBroadcastInner>,
 }
 
 impl LocalVideoSlot {
-    /// Publishes a camera source with the provided presets.
-    pub fn publish_camera(
-        &self,
-        source: impl moq_media::traits::VideoSource,
-        presets: impl IntoIterator<Item = moq_media::format::VideoPreset>,
-    ) -> Result<()> {
-        todo!()
-    }
-
-    /// Publishes a screen-share source with the provided presets.
-    pub fn publish_screen(
-        &self,
-        source: impl moq_media::traits::VideoSource,
-        presets: impl IntoIterator<Item = moq_media::format::VideoPreset>,
-    ) -> Result<()> {
-        todo!()
-    }
-
-    /// Replaces the current video source while keeping the slot alive.
+    /// Sets or replaces the video source with the given codec and presets.
     ///
-    /// This is the broadcast-layer equivalent of WebRTC's `replaceTrack()`.
-    /// It should avoid tearing down the logical slot unless the caller clears it.
-    pub fn replace_source(
+    /// Creates renditions from the source, codec, and presets using
+    /// [`moq_media::publish::VideoRenditions::new`]. If a video source is
+    /// already configured, it is replaced without tearing down the logical
+    /// slot. This is the broadcast-layer equivalent of WebRTC's
+    /// `replaceTrack()`.
+    ///
+    /// For advanced codec control (specific encoder types, custom configs),
+    /// use [`LocalBroadcast::producer`] and [`moq_media::publish::PublishBroadcast`]
+    /// directly.
+    pub fn set_source(
         &self,
         source: impl moq_media::traits::VideoSource,
+        codec: moq_media::format::VideoCodec,
         presets: impl IntoIterator<Item = moq_media::format::VideoPreset>,
     ) -> Result<()> {
         todo!()
@@ -984,7 +1082,10 @@ impl LocalVideoSlot {
         todo!()
     }
 
-    /// Mutes or unmutes the video slot without removing it.
+    /// Enables or disables the video slot without removing it.
+    ///
+    /// When disabled, no frames are encoded or sent, but the slot remains
+    /// in the catalog. Re-enabling resumes without a full source setup.
     pub fn set_enabled(&self, enabled: bool) {
         todo!()
     }
@@ -997,31 +1098,24 @@ impl LocalVideoSlot {
 
 /// Audio-side configuration and control for a [`LocalBroadcast`].
 ///
-/// Replacement semantics:
-///
-/// - Replacing one microphone device with another microphone device keeps the
-///   same logical audio slot.
-/// - Muting should not require full teardown or republish.
-/// - Clearing audio tears down active encoders and disconnects sinks cleanly.
+/// A single method — [`set_source`](Self::set_source) — handles all audio
+/// source types (microphone, system audio, file). Call `clear()` to remove
+/// audio entirely.
 #[derive(Debug, Clone)]
 pub struct LocalAudioSlot {
     // inner: Arc<LocalBroadcastInner>,
 }
 
 impl LocalAudioSlot {
-    /// Publishes a microphone source with the provided presets.
-    pub fn publish_microphone(
+    /// Sets or replaces the audio source with the given codec and presets.
+    ///
+    /// Creates renditions from the source, codec, and presets. If an audio
+    /// source is already configured, it is replaced without tearing down
+    /// the logical slot.
+    pub fn set_source(
         &self,
         source: impl moq_media::traits::AudioSource,
-        presets: impl IntoIterator<Item = moq_media::format::AudioPreset>,
-    ) -> Result<()> {
-        todo!()
-    }
-
-    /// Replaces the current audio source while keeping the slot alive.
-    pub fn replace_source(
-        &self,
-        source: impl moq_media::traits::AudioSource,
+        codec: moq_media::format::AudioCodec,
         presets: impl IntoIterator<Item = moq_media::format::AudioPreset>,
     ) -> Result<()> {
         todo!()
@@ -1033,6 +1127,10 @@ impl LocalAudioSlot {
     }
 
     /// Mutes or unmutes the audio slot without removing it.
+    ///
+    /// When muted, silence is sent (or encoding pauses, depending on codec
+    /// DTX support). The slot remains in the catalog. Unmuting resumes
+    /// without full source setup.
     pub fn set_muted(&self, muted: bool) {
         todo!()
     }
@@ -1045,9 +1143,16 @@ impl LocalAudioSlot {
 
 /// Subscribed remote broadcast for consuming media.
 ///
-/// Wraps a [`moq_media::subscribe::SubscribeBroadcast`] with catalog access,
-/// rendition selection, and simple subscription methods. Cloning is cheap
-/// (Arc-based).
+/// Wraps a [`moq_media::subscribe::SubscribeBroadcast`] with additional state.
+///
+/// **Why this wrapper exists** (vs using `SubscribeBroadcast` directly):
+/// - Adds `BroadcastStatus` watchable (Connecting → Live → Ended lifecycle)
+///   that `SubscribeBroadcast` doesn't track.
+/// - Adds selection snapshots (`SelectedVideo`/`SelectedAudio`) remembering
+///   the last successful subscription for UI display and debugging.
+/// - Adds `has_video()`/`has_audio()` convenience derived from catalog.
+///
+/// All `SubscribeBroadcast` methods are available via [`as_inner()`](Self::as_inner).
 #[derive(Debug, Clone)]
 pub struct RemoteBroadcast {
     inner: Arc<RemoteBroadcastInner>,
@@ -1058,10 +1163,15 @@ struct RemoteBroadcastInner {
     // No Mutex needed: SubscribeBroadcast methods all take &self.
     // subscribe: SubscribeBroadcast,
     // status: Watchable<BroadcastStatus>,
+    // selected_video: Watchable<Option<SelectedVideo>>,
+    // selected_audio: Watchable<Option<SelectedAudio>>,
 }
 
 impl RemoteBroadcast {
     /// Returns a watcher for the broadcast status.
+    ///
+    /// Not available on `SubscribeBroadcast` — this wrapper tracks the
+    /// Connecting → Live → Ended lifecycle.
     pub fn status(&self) -> impl Watcher<Value = BroadcastStatus> {
         todo!();
         n0_watcher::Watchable::new(BroadcastStatus::Connecting).watch()
@@ -1093,24 +1203,28 @@ impl RemoteBroadcast {
         todo!()
     }
 
-    // -- Simple subscription path --
+    // -- Subscription --
 
     /// Subscribes to the best available video track with default options.
     ///
     /// Selects the highest-quality rendition from the catalog and starts
-    /// decoding. Returns a [`moq_media::subscribe::WatchTrack`] that yields
-    /// decoded frames. For rendition control, use [`subscribe_video_with`](Self::subscribe_video_with).
+    /// decoding. Returns a [`moq_media::subscribe::VideoTrack`] that yields
+    /// decoded frames via `current_frame()`. For rendition control, use
+    /// [`subscribe_video_with`](Self::subscribe_video_with).
     pub fn subscribe_video<D: moq_media::traits::VideoDecoder>(
         &self,
-    ) -> Result<moq_media::subscribe::WatchTrack> {
+    ) -> Result<moq_media::subscribe::VideoTrack> {
         self.subscribe_video_with::<D>(Default::default())
     }
 
     /// Subscribes to a video track with custom options.
+    ///
+    /// Updates `selected_video()` on success — not available on
+    /// `SubscribeBroadcast`.
     pub fn subscribe_video_with<D: moq_media::traits::VideoDecoder>(
         &self,
         options: SubscribeVideoOptions,
-    ) -> Result<moq_media::subscribe::WatchTrack> {
+    ) -> Result<moq_media::subscribe::VideoTrack> {
         todo!()
     }
 
@@ -1123,6 +1237,9 @@ impl RemoteBroadcast {
     }
 
     /// Subscribes to an audio track with custom options.
+    ///
+    /// Updates `selected_audio()` on success — not available on
+    /// `SubscribeBroadcast`.
     pub async fn subscribe_audio_with<D: moq_media::traits::AudioDecoder>(
         &self,
         options: SubscribeAudioOptions,
@@ -1143,14 +1260,18 @@ impl RemoteBroadcast {
         todo!()
     }
 
-    /// Returns the currently preferred video selection derived from the last
-    /// successful subscription options, if any.
+    /// Returns the currently selected video rendition snapshot, if any.
+    ///
+    /// Updated after each successful `subscribe_video_with` call. Not
+    /// available on `SubscribeBroadcast`.
     pub fn selected_video(&self) -> Option<SelectedVideo> {
         todo!()
     }
 
-    /// Returns the currently preferred audio selection derived from the last
-    /// successful subscription options, if any.
+    /// Returns the currently selected audio rendition snapshot, if any.
+    ///
+    /// Updated after each successful `subscribe_audio_with` call. Not
+    /// available on `SubscribeBroadcast`.
     pub fn selected_audio(&self) -> Option<SelectedAudio> {
         todo!()
     }
