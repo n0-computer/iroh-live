@@ -1,7 +1,7 @@
 //! macOS and iOS capture backends.
 
-#[cfg(feature = "apple")]
+#[cfg(feature = "camera-apple")]
 pub(crate) mod camera;
 
-#[cfg(all(target_os = "macos", feature = "apple-screen"))]
+#[cfg(all(target_os = "macos", feature = "screen-apple"))]
 pub(crate) mod screen;
