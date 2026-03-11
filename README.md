@@ -1,54 +1,67 @@
 # iroh-live
 
-Livestreaming video and audio over iroh
+Real-time video and audio over [iroh](https://github.com/n0-computer/iroh), using [Media over QUIC](https://moq.dev/) for transport.
 
 **Status: experimental / work in progress**
 
-This repository implements a live streaming protocol over iroh with [Media over Quic](https://moq.dev/).
-It uses [moq-rs](https://github.com/kixelated/moq) to transfer audio and video streams over iroh connections.
+## Crates
 
-## Structure of the repository
+| Crate | Description |
+|-------|-------------|
+| [`iroh-live`](iroh-live) | High-level API for live audio/video sessions and rooms |
+| [`iroh-moq`](iroh-moq) | Media-over-QUIC transport — creates and accepts [moq-lite](https://github.com/kixelated/moq/tree/main/rs/moq) sessions over iroh |
+| [`moq-media`](moq-media) | Media capture, encoding, decoding, and processing pipelines |
+| [`rusty-codecs`](rusty-codecs) | Video and audio codecs (H.264, AV1, Opus) with hardware acceleration support |
+| [`rusty-capture`](rusty-capture) | Cross-platform screen and camera capture with DMA-BUF zero-copy support |
+| [`moq-media-egui`](moq-media-egui) | egui integration for video rendering (software and wgpu) |
+| [`moq-media-dioxus`](moq-media-dioxus) | dioxus-native integration for video rendering |
+| [`web-transport-iroh`](web-transport-iroh) | WebTransport implementation over iroh/quinn |
 
-* [**`web-transport-iroh`**](web-transport-iroh): Implements the [web-transport](https://github.com/kixelated/web-transport) traits for iroh connections
-* [**`iroh-moq`**](iroh-moq): Adapters to create and accept [moq-lite](https://github.com/kixelated/moq/tree/main/rs/moq) sessions over iroh
-* [**`iroh-live`**](iroh-live): Native capture, encoding and decoding of audio and video. This is an early preview of a high-level live streaming toolkit for iroh. Currently, it has these features, all subject to change:
-  * Support for [hang](https://github.com/kixelated/moq/blob/main/rs/hang/) catalogs in MoQ sessions
-  * Capture and playout audio (with [firewheel](https://github.com/BillyDM/Firewheel/))
-  * Capture camera (with [nokwha](https://github.com/l1npengtul/nokhwa/))
-  * Capture screens (with [xcap](https://github.com/nashaofu/xcap/))
-  * Encode and decode video (H.264) and audio (Opus) using bundled, pure-Rust or source-compiled codecs ([openh264](https://github.com/ralfbiedert/openh264-rs), [unsafe-libopus](https://github.com/niclas3640/unsafe-libopus)). No system ffmpeg required.
-  * Support multiple renditions and on-demand switching of the encoding
-  
-There's still bugs and a lot of missing optimizations. This is an early, work-in-progress preview!
+### How the pieces fit together
+
+`iroh-live` is the entry point for most applications. It depends on `iroh-moq` for QUIC transport and `moq-media` for the media pipeline. `moq-media` uses `rusty-codecs` for encoding and decoding, and `rusty-capture` for camera and screen input. The egui and dioxus crates are optional rendering integrations — `iroh-live` itself is not coupled to any GUI framework.
 
 ## Building
 
-No system dependencies are required for codec support. All codecs are either pure Rust or compiled from bundled source (openh264 is built via `cc`).
+No system dependencies are required for basic codec support. All codecs are either pure Rust or compiled from bundled C source (openh264 via `cc`, rav1e for AV1).
 
-```
+```sh
 cargo build --workspace
 ```
 
-## Demo and examples
+For hardware-accelerated codecs and capture on Linux, you need PipeWire and VA-API development headers:
 
-Check out the [`rooms`](iroh-live/examples/rooms.rs) example:
+```sh
+# Debian/Ubuntu
+sudo apt install libpipewire-0.3-dev libspa-0.2-dev libclang-dev libva-dev
 
+# Arch
+sudo pacman -S pipewire libclang libva
 ```
+
+Build with all features:
+
+```sh
+cargo build --workspace --all-features
+```
+
+## Demo
+
+The [`rooms`](iroh-live/examples/rooms.rs) example runs a multi-peer video chat:
+
+```sh
 cargo run --release --example rooms
 ```
 
-This will print a *room ticket*. Copy this to another device, and run:
-```
+This prints a room ticket. Copy it to another device and run:
+
+```sh
 cargo run --release --example rooms -- <TICKET>
 ```
 
-Now you're chatting! With video and audio! Over iroh!
+Use `room-publish-file` to publish a video file into a room. The [`publish`](iroh-live/examples/publish.rs) and [`watch`](iroh-live/examples/watch.rs) examples demonstrate one-way streaming without a GUI room.
 
-Use the `room-publish-file` example to publish a video form a file into a room.
-
-There's also a [`publish`](iroh-live/examples/publish.rs) example (publish only, no GUI), and a [`watch`](iroh-live/examples/watch.rs) example (watch a stream from the publish example).
-
-The examples use [`egui`](https://github.com/emilk/egui), however `iroh-live` is not coupled to any GUI framework and should work with anything that can render raw images to the screen.
+The examples use [egui](https://github.com/emilk/egui), but `iroh-live` works with any framework that can render raw images.
 
 ## License
 

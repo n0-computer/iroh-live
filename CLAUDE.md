@@ -10,7 +10,11 @@ Rust workspace for real-time media over iroh (QUIC-based transport).
 |-------|-------------|
 | `iroh-live` | High-level API for live audio/video sessions and rooms |
 | `iroh-moq` | Media-over-QUIC transport protocol |
-| `moq-media` | Media capture, encoding, decoding, and processing |
+| `moq-media` | Media capture, encoding, decoding, and processing pipelines |
+| `rusty-codecs` | Video and audio codecs (H.264, AV1, Opus) with hardware acceleration |
+| `rusty-capture` | Cross-platform screen and camera capture with DMA-BUF zero-copy |
+| `moq-media-egui` | egui integration for video rendering |
+| `moq-media-dioxus` | dioxus-native integration for video rendering |
 | `web-transport-iroh` | WebTransport implementation over iroh/quinn |
 
 ## Build
