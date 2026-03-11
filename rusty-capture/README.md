@@ -2,9 +2,10 @@
 
 Cross-platform screen and camera capture with zero-copy GPU buffer support.
 
-Provides `ScreenCapturer` and `CameraCapturer` types that implement
-`rusty_codecs::traits::VideoSource`, producing `VideoFrame` values ready for
-encoding or rendering.
+Provides platform-specific capturers (`PipeWireScreenCapturer`,
+`V4l2CameraCapturer`, `X11ScreenCapturer`, etc.) that implement the
+`VideoSource` trait from `rusty-codecs`, producing `VideoFrame` values ready
+for encoding or rendering.
 
 ## Platform backends
 

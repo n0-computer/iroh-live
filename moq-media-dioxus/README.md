@@ -49,5 +49,5 @@ The UI lets you switch between:
 | Feature | Description |
 |---------|-------------|
 | `dmabuf-import` | Zero-copy DMA-BUF texture import (Linux/Vulkan) |
-| `capture-camera` | Camera capture via nokhwa |
-| `capture-screen` | Screen capture via xcap |
+| `capture-camera` | Camera capture via rusty-capture |
+| `capture-screen` | Screen capture via rusty-capture |
