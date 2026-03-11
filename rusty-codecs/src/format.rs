@@ -152,7 +152,9 @@ impl GpuFrame {
     }
 
     /// Returns a platform-specific native handle for zero-copy import, if available.
-    pub fn native_handle(&self) -> Option<&NativeFrameHandle> {
+    ///
+    /// The handle is computed on demand — no file descriptors are held per frame.
+    pub fn native_handle(&self) -> Option<NativeFrameHandle> {
         self.inner.native_handle()
     }
 }
@@ -184,7 +186,11 @@ pub trait GpuFrameInner: Send + Sync + fmt::Debug + 'static {
         None
     }
     /// Returns a platform-specific native handle for zero-copy import/export.
-    fn native_handle(&self) -> Option<&NativeFrameHandle> {
+    ///
+    /// Returns an owned handle so that implementations can extract DMA-BUF
+    /// file descriptors on demand (transient export on access, rather than
+    /// storing one FD per buffered frame).
+    fn native_handle(&self) -> Option<NativeFrameHandle> {
         None
     }
 }
@@ -412,7 +418,7 @@ impl VideoFrame {
     }
 
     /// Returns a platform-specific native handle for zero-copy import, if available.
-    pub fn native_handle(&self) -> Option<&NativeFrameHandle> {
+    pub fn native_handle(&self) -> Option<NativeFrameHandle> {
         match &self.data {
             FrameData::Gpu(gpu) => gpu.native_handle(),
             _ => None,

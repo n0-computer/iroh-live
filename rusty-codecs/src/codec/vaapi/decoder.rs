@@ -78,15 +78,19 @@ type VaapiFrame = PooledVideoFrame<GenericDmaVideoFrame>;
 type VaapiH264Decoder = StatelessDecoder<H264, VaapiBackend<VaapiFrame>>;
 
 /// GPU-resident frame backed by DMA-BUF file descriptors from VAAPI decoding.
+///
+/// DMA-BUF export happens on demand in [`native_handle()`](GpuFrameInner::native_handle),
+/// not at decode time. This keeps the per-frame FD cost at zero — matching
+/// the GStreamer/FFmpeg pattern where export FDs are transient handles
+/// created at the point of use and closed immediately after import.
 #[derive(derive_more::Debug)]
 struct VaapiGpuFrame {
     frame: Arc<VaapiFrame>,
     width: u32,
     height: u32,
-    native_handle: Option<NativeFrameHandle>,
-    /// Shared VAAPI display for frame mapping (pre-opened at decoder init).
+    /// Shared VAAPI display for frame mapping and DMA-BUF export.
     #[debug(skip)]
-    mapping_display: Rc<Display>,
+    display: Rc<Display>,
 }
 
 // PooledVideoFrame<GenericDmaVideoFrame> holds owned File descriptors.
@@ -101,7 +105,7 @@ impl VaapiGpuFrame {
     /// (including Intel 4-tile) correctly — unlike GenericDmaVideoFrame::map()
     /// which only supports linear and Y-tile.
     fn derive_nv12_planes(&self) -> Result<Nv12Planes> {
-        let display = &self.mapping_display;
+        let display = &self.display;
         let surface = self
             .frame
             .to_native_handle(display)
@@ -183,8 +187,8 @@ impl GpuFrameInner for VaapiGpuFrame {
         Some(self.derive_nv12_planes())
     }
 
-    fn native_handle(&self) -> Option<&NativeFrameHandle> {
-        self.native_handle.as_ref()
+    fn native_handle(&self) -> Option<NativeFrameHandle> {
+        extract_dma_buf_info(&self.display, &self.frame, self.width, self.height)
     }
 }
 
@@ -308,11 +312,11 @@ pub struct VaapiDecoder {
     decoder: VaapiH264Decoder,
     #[debug(skip)]
     framepool: Arc<Mutex<FramePool<GenericDmaVideoFrame>>>,
+    /// Shared VAAPI display for frame mapping, DMA-BUF export, and
+    /// `vaDeriveImage`. Cloned into each `VaapiGpuFrame` so frames can
+    /// export on demand independently of the decoder.
     #[debug(skip)]
     display: Rc<Display>,
-    /// Pre-opened VAAPI display for GPU→CPU frame mapping (vaDeriveImage).
-    #[debug(skip)]
-    mapping_display: Rc<Display>,
     /// NAL framing format of incoming packets.
     nal_format: NalFormat,
     pending_frames: VecDeque<VideoFrame>,
@@ -351,14 +355,11 @@ impl VaapiDecoder {
                     let h = display_res.height;
                     let frame_arc = handle.video_frame();
 
-                    let native_handle = extract_dma_buf_info(&self.display, &frame_arc, w, h);
-
                     let gpu_frame = VaapiGpuFrame {
                         frame: frame_arc,
                         width: w,
                         height: h,
-                        native_handle,
-                        mapping_display: self.mapping_display.clone(),
+                        display: self.display.clone(),
                     };
 
                     let timestamp = self.last_timestamp.unwrap_or_default();
@@ -404,22 +405,17 @@ impl VideoDecoder for VaapiDecoder {
             NalFormat::Avcc
         };
 
-        let display =
+        let decoder_display =
             Display::open().context("failed to open VAAPI display — no GPU or driver found")?;
 
-        let decoder = VaapiH264Decoder::new_vaapi(display, BlockingMode::Blocking)
+        let decoder = VaapiH264Decoder::new_vaapi(decoder_display, BlockingMode::Blocking)
             .map_err(|e| anyhow::anyhow!("failed to create VAAPI H.264 decoder: {e:?}"))?;
 
-        // Keep a second Display for re-exporting frames as PRIME descriptors.
-        let export_display =
-            Display::open().context("failed to open second VAAPI display for frame export")?;
-
-        // Pre-open a third Display for GPU→CPU frame mapping (vaDeriveImage)
-        // and frame pool allocation. Sharing displays avoids the driver
-        // serialization deadlock that occurs when Display::open() is called
-        // while other displays are actively decoding.
-        let mapping_display =
-            Display::open().context("failed to open VAAPI display for frame mapping")?;
+        // Second Display for frame mapping (vaDeriveImage), DMA-BUF export,
+        // and frame pool allocation. Separate from the decoder's display to
+        // avoid driver serialization when mapping while decoding.
+        let display =
+            Display::open().context("failed to open VAAPI display for frame operations")?;
 
         // Verify VA surface allocation + DMA-BUF export works on this GPU.
         {
@@ -435,7 +431,7 @@ impl VideoDecoder for VaapiDecoder {
                 },
                 min_num_frames: 1,
             };
-            let _test_frame = alloc_va_dma_frame(&mapping_display, &test_info);
+            let _test_frame = alloc_va_dma_frame(&display, &test_info);
         }
 
         // FramePool requires Send, but Rc<Display> is !Send. Store the display
@@ -457,8 +453,7 @@ impl VideoDecoder for VaapiDecoder {
         let mut this = Self {
             decoder,
             framepool,
-            display: export_display,
-            mapping_display,
+            display,
             nal_format,
             pending_frames: VecDeque::new(),
             last_timestamp: None,
