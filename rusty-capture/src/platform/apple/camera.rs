@@ -33,15 +33,14 @@
 //! compiles for both macOS and iOS.
 
 use std::sync::mpsc;
-use std::time::Duration;
 
-use anyhow::{Context, Result};
-use tracing::{info, warn};
+use anyhow::Result;
+use tracing::warn;
 
 use rusty_codecs::format::{PixelFormat, VideoFormat, VideoFrame};
 use rusty_codecs::traits::VideoSource;
 
-use crate::types::{CameraConfig, CameraInfo, CapturePixelFormat};
+use crate::types::{CameraConfig, CameraInfo};
 
 /// Lists available cameras via AVFoundation.
 pub fn cameras() -> Result<Vec<CameraInfo>> {
@@ -94,8 +93,8 @@ impl AppleCameraCapturer {
     pub fn new(info: &CameraInfo, config: &CameraConfig) -> Result<Self> {
         use crate::CameraSelector;
 
-        let (frame_tx, frame_rx) = mpsc::channel();
-        let (stop_tx, stop_rx) = mpsc::channel();
+        let (_frame_tx, frame_rx) = mpsc::channel();
+        let (stop_tx, _stop_rx) = mpsc::channel();
 
         // Derive requested resolution from the selector strategy.
         let (width, height) = if let Some(fmt) = config.select_format(&info.supported_formats) {
@@ -106,7 +105,7 @@ impl AppleCameraCapturer {
                 _ => (1280, 720),
             }
         };
-        let device_id = info.id.clone();
+        let _device_id = &info.id;
 
         // TODO: Implement AVFoundation capture session.
         //

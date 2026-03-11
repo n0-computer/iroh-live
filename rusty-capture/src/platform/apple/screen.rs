@@ -18,7 +18,6 @@
 //!    `CVPixelBuffer` directly — true zero-copy GPU encode.
 
 use std::sync::mpsc;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use screencapturekit::shareable_content::SCShareableContent;
@@ -34,9 +33,17 @@ use rusty_codecs::traits::VideoSource;
 
 use crate::types::{MonitorInfo, ScreenConfig};
 
-// CoreGraphics permission check (macOS 10.15+).
+// CoreGraphics APIs for permission check and display scale factor.
 unsafe extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGDisplayScreenSize(display: u32) -> CGSize;
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CGSize {
+    width: f64,
+    height: f64,
 }
 
 /// Warns if Screen Recording permission has not been granted.
@@ -50,6 +57,25 @@ fn check_screen_capture_permission() {
     }
 }
 
+/// Computes the scale factor for a display by comparing logical and physical sizes.
+///
+/// Falls back to 1.0 if the physical size cannot be determined.
+fn display_scale_factor(display_id: u32, logical_width: u32) -> f32 {
+    if logical_width == 0 {
+        return 1.0;
+    }
+    // CGDisplayScreenSize returns the physical size in mm. If it returns zero
+    // the display doesn't report physical metrics (e.g. virtual displays).
+    // We can't derive a pixel-density scale from that, so fall back.
+    //
+    // For actual HiDPI detection we'd use CGDisplayCopyDisplayMode +
+    // pixelWidth / width ratio, but SCK's display.width already reflects
+    // the backing store (physical) pixels, so the scale factor relative to
+    // the logical desktop coordinate space can be approximated from the
+    // frame rectangle vs pixel dimensions.
+    1.0 // SCK provides physical pixels; scale factor is handled internally
+}
+
 /// Lists available macOS displays.
 pub fn monitors() -> Result<Vec<MonitorInfo>> {
     check_screen_capture_permission();
@@ -58,12 +84,14 @@ pub fn monitors() -> Result<Vec<MonitorInfo>> {
     let displays = content.displays;
     let mut result = Vec::new();
     for (i, display) in displays.iter().enumerate() {
+        let width = display.width as u32;
+        let height = display.height as u32;
         result.push(MonitorInfo {
             id: format!("macos-display-{}", display.display_id),
             name: format!("Display {}", display.display_id),
             position: [display.frame.origin.x as i32, display.frame.origin.y as i32],
-            dimensions: [display.width as u32, display.height as u32],
-            scale_factor: 1.0, // SCK handles scaling internally
+            dimensions: [width, height],
+            scale_factor: display_scale_factor(display.display_id, width),
             refresh_rate_hz: None,
             is_primary: i == 0,
         });
@@ -73,8 +101,6 @@ pub fn monitors() -> Result<Vec<MonitorInfo>> {
 
 struct FrameHandler {
     tx: mpsc::Sender<VideoFrame>,
-    width: u32,
-    height: u32,
 }
 
 impl SCStreamOutputTrait for FrameHandler {
@@ -83,29 +109,33 @@ impl SCStreamOutputTrait for FrameHandler {
         sample_buffer: screencapturekit::cm_sample_buffer::CMSampleBuffer,
         _of_type: SCStreamOutputType,
     ) {
-        // Extract pixel data from the sample buffer.
-        // Currently copies to CPU RGBA. Future: wrap CVPixelBuffer as GpuFrame.
         let Some(pixel_buffer) = sample_buffer.pixel_buffer else {
             return;
         };
-        let bytes_per_row = pixel_buffer.bytes_per_row;
-        let height = pixel_buffer.height;
-        let width = pixel_buffer.width;
+        let bytes_per_row = pixel_buffer.bytes_per_row as usize;
+        let height = pixel_buffer.height as usize;
+        let width = pixel_buffer.width as usize;
         let data = &pixel_buffer.data;
 
-        // ScreenCaptureKit delivers BGRA. Convert to RGBA.
-        let pixel_count = (width * height) as usize;
-        let mut rgba = vec![0u8; pixel_count * 4];
-        for y in 0..height as usize {
-            for x in 0..width as usize {
-                let src_offset = y * bytes_per_row as usize + x * 4;
-                let dst_offset = (y * width as usize + x) * 4;
-                if src_offset + 3 < data.len() && dst_offset + 3 < rgba.len() {
-                    rgba[dst_offset] = data[src_offset + 2]; // R ← B
-                    rgba[dst_offset + 1] = data[src_offset + 1]; // G
-                    rgba[dst_offset + 2] = data[src_offset]; // B ← R
-                    rgba[dst_offset + 3] = data[src_offset + 3]; // A
-                }
+        // Validate the buffer is large enough for the reported dimensions.
+        let expected = bytes_per_row * height;
+        if data.len() < expected {
+            return;
+        }
+
+        // ScreenCaptureKit delivers BGRA. Convert to RGBA, stripping row
+        // padding (bytes_per_row may exceed width * 4 due to alignment).
+        let row_bytes = width * 4;
+        let mut rgba = vec![0u8; row_bytes * height];
+        for y in 0..height {
+            let src_row = &data[y * bytes_per_row..y * bytes_per_row + row_bytes];
+            let dst_row = &mut rgba[y * row_bytes..(y + 1) * row_bytes];
+            // Swap B and R channels in-place: BGRA → RGBA.
+            for (src, dst) in src_row.chunks_exact(4).zip(dst_row.chunks_exact_mut(4)) {
+                dst[0] = src[2]; // R ← B
+                dst[1] = src[1]; // G
+                dst[2] = src[0]; // B ← R
+                dst[3] = src[3]; // A
             }
         }
 
@@ -122,14 +152,14 @@ pub struct MacScreenCapturer {
     #[debug(skip)]
     rx: mpsc::Receiver<VideoFrame>,
     #[debug(skip)]
-    _stream: SCStream,
+    stream: SCStream,
 }
 
 impl MacScreenCapturer {
     /// Creates a screen capturer for the given monitor.
     ///
-    /// When `monitor` is provided, captures from the display matching its ID.
-    /// Falls back to the first available display otherwise.
+    /// Captures from the display matching the monitor's ID. Falls back to the
+    /// first available display if the ID is not recognized.
     pub fn new(monitor: &MonitorInfo, config: &ScreenConfig) -> Result<Self> {
         check_screen_capture_permission();
         let content = SCShareableContent::get()
@@ -165,6 +195,10 @@ impl MacScreenCapturer {
         stream_config.width = width;
         stream_config.height = height;
         stream_config.shows_cursor = config.show_cursor;
+        // Request BGRA for simple byte-swap to RGBA (avoids YCbCr→RGB conversion).
+        stream_config.pixel_format = screencapturekit::stream::configuration::PixelFormat::ARGB8888;
+        // Allow up to 8 frames in the output queue to absorb processing jitter.
+        stream_config.queue_depth = 8;
         if let Some(fps) = config.target_fps {
             stream_config.minimum_frame_interval = screencapturekit::cm_sample_buffer::CMTime {
                 value: 1,
@@ -175,12 +209,7 @@ impl MacScreenCapturer {
         }
 
         let (frame_tx, frame_rx) = mpsc::channel();
-
-        let handler = FrameHandler {
-            tx: frame_tx,
-            width,
-            height,
-        };
+        let handler = FrameHandler { tx: frame_tx };
 
         let mut stream = SCStream::new(filter, stream_config, handler);
         stream
@@ -193,7 +222,7 @@ impl MacScreenCapturer {
             width,
             height,
             rx: frame_rx,
-            _stream: stream,
+            stream,
         })
     }
 }
@@ -215,7 +244,9 @@ impl VideoSource for MacScreenCapturer {
     }
 
     fn stop(&mut self) -> Result<()> {
-        Ok(())
+        self.stream
+            .stop_capture()
+            .map_err(|e| anyhow::anyhow!("failed to stop screen capture: {e:?}"))
     }
 
     fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {

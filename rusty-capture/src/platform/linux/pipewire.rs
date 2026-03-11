@@ -304,14 +304,27 @@ fn nv12_passthrough(data: &[u8], width: u32, height: u32, stride: u32) -> Option
 
 /// Converts YUY2 (packed YUYV 4:2:2) to RGBA using integer BT.601 math.
 fn yuy2_to_rgba(data: &[u8], width: u32, height: u32, stride: u32) -> Option<VideoFrame> {
-    let w = width as usize;
+    // YUY2 requires even width (2-pixel pairs).
+    let w = (width & !1) as usize;
     let h = height as usize;
     let s = stride as usize;
+    let expected = h * s;
+    if data.len() < expected || w == 0 {
+        warn!(
+            data_len = data.len(),
+            expected, width, "YUY2 buffer too small or invalid width"
+        );
+        return None;
+    }
     let mut rgba = vec![0u8; w * h * 4];
     for y in 0..h {
-        let row = &data[y * s..];
+        let row_start = y * s;
+        let row = &data[row_start..row_start + s];
         for x in (0..w).step_by(2) {
             let base = x * 2;
+            if base + 3 >= row.len() {
+                break;
+            }
             let y0 = row[base] as i32;
             let cb = row[base + 1] as i32 - 128;
             let y1 = row[base + 2] as i32;
@@ -329,7 +342,7 @@ fn yuy2_to_rgba(data: &[u8], width: u32, height: u32, stride: u32) -> Option<Vid
             }
         }
     }
-    Some(VideoFrame::new_rgba(rgba.into(), width, height))
+    Some(VideoFrame::new_rgba(rgba.into(), w as u32, height))
 }
 
 /// Mmaps a DMA-BUF fd, copies the data, and unmaps immediately.
@@ -346,7 +359,7 @@ fn dmabuf_to_frame(
 ) -> Option<VideoFrame> {
     use nix::sys::mman::{MapFlags, MmapAdvise, ProtFlags, madvise, mmap, munmap};
 
-    if size == 0 {
+    if size == 0 || offset >= size {
         return None;
     }
 
