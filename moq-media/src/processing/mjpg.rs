@@ -2,7 +2,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use image::ImageFormat;
 
-use crate::format::{PixelFormat, VideoFormat, VideoFrame};
+use crate::format::VideoFrame;
 
 /// Stateless MJPEG decoder using the `image` crate.
 #[derive(Debug)]
@@ -18,13 +18,7 @@ impl MjpgDecoder {
         let img = image::load_from_memory_with_format(data, ImageFormat::Jpeg)?;
         let rgba = img.to_rgba8();
         let (w, h) = (rgba.width(), rgba.height());
-        Ok(VideoFrame {
-            format: VideoFormat {
-                pixel_format: PixelFormat::Rgba,
-                dimensions: [w, h],
-            },
-            raw: Bytes::from(rgba.into_raw()),
-        })
+        Ok(VideoFrame::new_rgba(Bytes::from(rgba.into_raw()), w, h))
     }
 }
 
@@ -49,15 +43,15 @@ mod tests {
         let jpeg_data = make_jpeg(16, 16, 255, 0, 0);
         let mut decoder = MjpgDecoder::new().unwrap();
         let frame = decoder.decode_frame(&jpeg_data).unwrap();
-        assert_eq!(frame.format.dimensions, [16, 16]);
-        assert_eq!(frame.format.pixel_format, PixelFormat::Rgba);
+        assert_eq!(frame.dimensions, [16, 16]);
+        let img = frame.rgba_image();
         // RGBA data: 16*16*4 bytes
-        assert_eq!(frame.raw.len(), 16 * 16 * 4);
+        assert_eq!(img.as_raw().len(), 16 * 16 * 4);
         // Check first pixel is approximately red (JPEG is lossy)
-        assert!(frame.raw[0] > 200, "R channel should be high");
-        assert!(frame.raw[1] < 50, "G channel should be low");
-        assert!(frame.raw[2] < 50, "B channel should be low");
-        assert_eq!(frame.raw[3], 255, "A channel should be 255");
+        assert!(img.as_raw()[0] > 200, "R channel should be high");
+        assert!(img.as_raw()[1] < 50, "G channel should be low");
+        assert!(img.as_raw()[2] < 50, "B channel should be low");
+        assert_eq!(img.as_raw()[3], 255, "A channel should be 255");
     }
 
     #[test]
@@ -66,7 +60,7 @@ mod tests {
         for (w, h) in [(1, 1), (16, 16), (320, 240)] {
             let jpeg_data = make_jpeg(w, h, 128, 128, 128);
             let frame = decoder.decode_frame(&jpeg_data).unwrap();
-            assert_eq!(frame.format.dimensions, [w, h]);
+            assert_eq!(frame.dimensions, [w, h]);
         }
     }
 

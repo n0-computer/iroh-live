@@ -1,9 +1,6 @@
 use crate::{
     config::VideoConfig,
-    format::{
-        DecodeConfig, DecodedVideoFrame, EncodedFrame, MediaPacket, PixelFormat, VideoFormat,
-        VideoFrame,
-    },
+    format::{DecodeConfig, EncodedFrame, MediaPacket, VideoFrame},
     traits::{VideoDecoder, VideoEncoder},
 };
 
@@ -19,17 +16,11 @@ pub fn encoded_frames_to_media_packets(input: Vec<EncodedFrame>) -> Vec<MediaPac
         .collect()
 }
 
-/// Create a solid-color RGBA frame.
+/// Creates a solid-color RGBA frame.
 pub fn make_rgba_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> VideoFrame {
     let pixel = [r, g, b, 255u8];
     let raw: Vec<u8> = pixel.repeat((w * h) as usize);
-    VideoFrame {
-        format: VideoFormat {
-            pixel_format: PixelFormat::Rgba,
-            dimensions: [w, h],
-        },
-        raw: raw.into(),
-    }
+    VideoFrame::new_rgba(raw.into(), w, h)
 }
 
 /// Create a synthetic test pattern frame with spatial detail and per-frame variation.
@@ -85,13 +76,7 @@ pub fn make_test_pattern(w: u32, h: u32, frame_index: u32) -> VideoFrame {
         }
     }
 
-    VideoFrame {
-        format: VideoFormat {
-            pixel_format: PixelFormat::Rgba,
-            dimensions: [w, h],
-        },
-        raw: raw.into(),
-    }
+    VideoFrame::new_rgba(raw.into(), w, h)
 }
 
 /// Encode `n` solid-color frames with any VideoEncoder, return packets.
@@ -139,7 +124,7 @@ pub fn video_encode_pattern(
 pub fn video_decode<D: VideoDecoder>(
     config: &VideoConfig,
     packets: Vec<MediaPacket>,
-) -> Vec<DecodedVideoFrame> {
+) -> Vec<VideoFrame> {
     let decode_config = DecodeConfig::default();
     let mut dec = D::new(config, &decode_config).unwrap();
     let mut frames = Vec::new();
@@ -159,7 +144,7 @@ pub fn video_decode<D: VideoDecoder>(
     reason = "test helper with clear parameters"
 )]
 pub fn assert_video_roundtrip(
-    frames: &[DecodedVideoFrame],
+    frames: &[VideoFrame],
     w: u32,
     h: u32,
     expected_r: u8,
@@ -202,7 +187,7 @@ pub fn assert_video_roundtrip(
     dead_code,
     reason = "shared test utility, not all callers always compiled"
 )]
-pub fn assert_video_not_black(frames: &[DecodedVideoFrame], w: u32, h: u32, min_frames: usize) {
+pub fn assert_video_not_black(frames: &[VideoFrame], w: u32, h: u32, min_frames: usize) {
     assert!(
         frames.len() >= min_frames,
         "expected >= {min_frames} frames, got {}",

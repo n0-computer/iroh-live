@@ -1,4 +1,4 @@
-use crate::format::{PixelFormat, VideoFormat, VideoFrame};
+use crate::format::VideoFrame;
 
 /// Horizontal gradient: black on left, white on right.
 ///
@@ -138,13 +138,7 @@ pub(super) fn test_resolutions() -> Vec<(&'static str, u32, u32)> {
 }
 
 fn make_frame(w: u32, h: u32, raw: Vec<u8>) -> VideoFrame {
-    VideoFrame {
-        format: VideoFormat {
-            pixel_format: PixelFormat::Rgba,
-            dimensions: [w, h],
-        },
-        raw: raw.into(),
-    }
+    VideoFrame::new_rgba(raw.into(), w, h)
 }
 
 fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {

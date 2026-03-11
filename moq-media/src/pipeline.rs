@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, info_span, trace, warn};
 
 use crate::{
-    format::{AudioFormat, DecodeConfig, DecodedVideoFrame, MediaPacket, VideoFormat, VideoFrame},
+    format::{AudioFormat, DecodeConfig, MediaPacket, VideoFrame},
     processing::scale::{Scaler, fit_within},
     traits::{
         AudioDecoder, AudioEncoder, AudioSink, AudioSinkHandle, AudioSource, AudioStreamFactory,
@@ -51,7 +51,7 @@ pub(crate) async fn forward_packets(
 /// A standalone video decoder pipeline.
 ///
 /// Reads encoded packets from any [`PacketSource`], decodes on an OS thread,
-/// and outputs [`DecodedVideoFrame`]s via an mpsc channel.
+/// and outputs [`VideoFrame`]s via an mpsc channel.
 ///
 /// This can be used without MoQ networking — e.g., with a [`PipeSource`](crate::transport::PipeSource)
 /// for local encode→decode pipelines.
@@ -64,12 +64,12 @@ pub struct VideoDecoderPipeline {
 /// Receiving end of decoded frames from a [`VideoDecoderPipeline`].
 #[derive(Debug)]
 pub struct VideoDecoderFrames {
-    rx: mpsc::Receiver<DecodedVideoFrame>,
+    rx: mpsc::Receiver<VideoFrame>,
 }
 
 impl VideoDecoderFrames {
     /// Returns the most recent decoded frame, draining any older buffered frames.
-    pub fn current_frame(&mut self) -> Option<DecodedVideoFrame> {
+    pub fn current_frame(&mut self) -> Option<VideoFrame> {
         let mut latest = None;
         while let Ok(frame) = self.rx.try_recv() {
             latest = Some(frame);
@@ -78,12 +78,12 @@ impl VideoDecoderFrames {
     }
 
     /// Receives the next decoded frame, blocking until one is available.
-    pub fn recv_blocking(&mut self) -> Option<DecodedVideoFrame> {
+    pub fn recv_blocking(&mut self) -> Option<VideoFrame> {
         self.rx.blocking_recv()
     }
 
     /// Consumes this and returns the underlying receiver.
-    pub fn into_rx(self) -> mpsc::Receiver<DecodedVideoFrame> {
+    pub fn into_rx(self) -> mpsc::Receiver<VideoFrame> {
         self.rx
     }
 }
@@ -251,17 +251,11 @@ impl VideoEncoderPipeline {
                     };
                     if let Some(frame) = frame {
                         let frame = match scaler.scale_rgba(
-                            &frame.raw,
-                            frame.format.dimensions[0],
-                            frame.format.dimensions[1],
+                            frame.rgba_image().as_raw(),
+                            frame.dimensions[0],
+                            frame.dimensions[1],
                         ) {
-                            Ok(Some((data, w, h))) => VideoFrame {
-                                format: VideoFormat {
-                                    pixel_format: frame.format.pixel_format,
-                                    dimensions: [w, h],
-                                },
-                                raw: data.into(),
-                            },
+                            Ok(Some((data, w, h))) => VideoFrame::new_rgba(data.into(), w, h),
                             Ok(None) => frame,
                             Err(err) => {
                                 error!("video frame scaling failed: {err:#}");
@@ -330,7 +324,7 @@ impl Drop for VideoEncoderPipeline {
 fn decode_loop(
     shutdown: &CancellationToken,
     mut input_rx: mpsc::Receiver<MediaPacket>,
-    output_tx: mpsc::Sender<DecodedVideoFrame>,
+    output_tx: mpsc::Sender<VideoFrame>,
     mut viewport_watcher: n0_watcher::Direct<(u32, u32)>,
     mut decoder: impl VideoDecoder,
 ) -> Result<()> {

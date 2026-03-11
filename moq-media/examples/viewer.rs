@@ -24,10 +24,7 @@ use moq_media::capture::CameraCapturer;
 use moq_media::capture::ScreenCapturer;
 use moq_media::{
     codec::{DynamicVideoDecoder, VideoCodec},
-    format::{
-        DecodeConfig, DecodedVideoFrame, DecoderBackend, PixelFormat, VideoFormat, VideoFrame,
-        VideoPreset,
-    },
+    format::{DecodeConfig, DecoderBackend, PixelFormat, VideoFormat, VideoFrame, VideoPreset},
     pipeline::{VideoDecoderPipeline, VideoEncoderPipeline},
     traits::{VideoEncoder, VideoSource},
     transport::media_pipe,
@@ -227,10 +224,11 @@ impl VideoSource for TestPatternSource {
         Self::stamp_ball(&mut self.buffer, w, h, self.frame_index * 4);
         self.frame_index += 1;
 
-        Ok(Some(VideoFrame {
-            format: self.format.clone(),
-            raw: bytes::Bytes::copy_from_slice(&self.buffer),
-        }))
+        Ok(Some(VideoFrame::new_rgba(
+            bytes::Bytes::copy_from_slice(&self.buffer),
+            w,
+            h,
+        )))
     }
 }
 
@@ -276,7 +274,7 @@ struct Stats {
 }
 
 impl Stats {
-    fn update(&mut self, frame: &DecodedVideoFrame) {
+    fn update(&mut self, frame: &VideoFrame) {
         let now = Instant::now();
         self.fps_samples.push_back(now);
         while self
@@ -293,7 +291,7 @@ impl Stats {
         let pts_delta = frame.timestamp.saturating_sub(base_pts);
         self.delay_ms = wall_delta.saturating_sub(pts_delta).as_secs_f32() * 1000.0;
 
-        let (w, h) = frame.dimensions();
+        let (w, h) = (frame.width(), frame.height());
         self.width = w;
         self.height = h;
     }
@@ -333,14 +331,14 @@ impl VideoView {
         }
     }
 
-    fn render_frame(&mut self, frame: &DecodedVideoFrame) {
+    fn render_frame(&mut self, frame: &VideoFrame) {
         #[cfg(feature = "wgpu")]
         if let Some(ref mut r) = self.egui_renderer {
             r.render(frame);
             return;
         }
 
-        let (w, h) = frame.dimensions();
+        let (w, h) = (frame.width(), frame.height());
         let image = egui::ColorImage::from_rgba_unmultiplied(
             [w as usize, h as usize],
             frame.img().as_raw(),

@@ -187,10 +187,7 @@ impl VideoSource for CameraCapturer {
                 let image = frame
                     .decode_image::<RgbAFormat>()
                     .context("Failed to decode camera frame")?;
-                VideoFrame {
-                    format: self.format(),
-                    raw: image.into_raw().into(),
-                }
+                VideoFrame::new_rgba(image.into_raw().into(), self.width, self.height)
             }
         };
         trace!("pop frame: decode took {:?}", start.elapsed());

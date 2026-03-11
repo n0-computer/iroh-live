@@ -478,8 +478,18 @@ impl VideoEncoder for VaapiEncoder {
     }
 
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
-        let [w, h] = frame.format.dimensions;
-        let nv12_data = pixel_format_to_nv12(&frame.raw, w, h, frame.format.pixel_format)?;
+        let [w, h] = frame.dimensions;
+        let nv12_data = match &frame.data {
+            crate::format::FrameData::Packed { pixel_format, data } => {
+                pixel_format_to_nv12(data, w, h, *pixel_format)?
+            }
+            _ => {
+                // GPU, I420, or NV12 frames: fall back through RGBA for now.
+                // TODO: accept NV12/Gpu frames directly for zero-copy encode.
+                let img = frame.rgba_image();
+                pixel_format_to_nv12(img.as_raw(), w, h, crate::format::PixelFormat::Rgba)?
+            }
+        };
 
         // Wrap NV12 data in our VideoFrame impl.
         let nv12_frame = Nv12Frame {

@@ -26,8 +26,8 @@ use crate::{
     codec::h264::annexb::{avcc_to_annex_b, length_prefixed_to_annex_b},
     config::{VideoCodec, VideoConfig},
     format::{
-        CpuFrame, DecodeConfig, DecodedVideoFrame, DmaBufInfo, DmaBufPlaneInfo, GpuFrame,
-        GpuFrameInner, GpuPixelFormat, MediaPacket, NalFormat, Nv12Planes, PixelFormat,
+        DecodeConfig, DmaBufInfo, DmaBufPlaneInfo, GpuFrame, GpuFrameInner, GpuPixelFormat,
+        MediaPacket, NalFormat, NativeFrameHandle, Nv12Planes, VideoFrame,
     },
     processing::convert::nv12_to_rgba_data,
     traits::VideoDecoder,
@@ -83,7 +83,7 @@ struct VaapiGpuFrame {
     frame: Arc<VaapiFrame>,
     width: u32,
     height: u32,
-    dma_info: Option<DmaBufInfo>,
+    native_handle: Option<NativeFrameHandle>,
     /// Shared VAAPI display for frame mapping (pre-opened at decoder init).
     #[debug(skip)]
     mapping_display: Rc<Display>,
@@ -156,7 +156,7 @@ impl VaapiGpuFrame {
 }
 
 impl GpuFrameInner for VaapiGpuFrame {
-    fn download(&self) -> Result<CpuFrame> {
+    fn download_rgba(&self) -> Result<image::RgbaImage> {
         let planes = self.derive_nv12_planes()?;
         let rgba = nv12_to_rgba_data(
             &planes.y_data,
@@ -167,12 +167,8 @@ impl GpuFrameInner for VaapiGpuFrame {
             planes.height,
         )?;
 
-        let image = image::RgbaImage::from_raw(self.width, self.height, rgba)
-            .context("RGBA data size does not match dimensions")?;
-        Ok(CpuFrame {
-            image,
-            pixel_format: PixelFormat::Rgba,
-        })
+        image::RgbaImage::from_raw(self.width, self.height, rgba)
+            .context("RGBA data size does not match dimensions")
     }
 
     fn gpu_pixel_format(&self) -> GpuPixelFormat {
@@ -187,8 +183,8 @@ impl GpuFrameInner for VaapiGpuFrame {
         Some(self.derive_nv12_planes())
     }
 
-    fn dma_buf_info(&self) -> Option<&DmaBufInfo> {
-        self.dma_info.as_ref()
+    fn native_handle(&self) -> Option<&NativeFrameHandle> {
+        self.native_handle.as_ref()
     }
 }
 
@@ -202,7 +198,7 @@ fn extract_dma_buf_info(
     frame: &VaapiFrame,
     display_w: u32,
     display_h: u32,
-) -> Option<DmaBufInfo> {
+) -> Option<NativeFrameHandle> {
     let surface = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         frame.to_native_handle(display)
     })) {
@@ -212,8 +208,10 @@ fn extract_dma_buf_info(
             return None;
         }
         Err(_) => {
-            tracing::error!("FD exhaustion (EMFILE) during DMA-BUF frame clone — \
-                             skipping zero-copy path for this frame");
+            tracing::error!(
+                "FD exhaustion (EMFILE) during DMA-BUF frame clone — \
+                             skipping zero-copy path for this frame"
+            );
             return None;
         }
     };
@@ -236,7 +234,7 @@ fn extract_dma_buf_info(
 
     let fd = object.fd.try_clone().ok()?;
 
-    Some(DmaBufInfo {
+    Some(NativeFrameHandle::DmaBuf(DmaBufInfo {
         fd,
         modifier: object.drm_format_modifier,
         drm_format: desc.fourcc,
@@ -250,7 +248,7 @@ fn extract_dma_buf_info(
                 pitch: layer.pitch[i],
             })
             .collect(),
-    })
+    }))
 }
 
 /// Allocate a `GenericDmaVideoFrame` by creating a VA surface and exporting
@@ -317,7 +315,7 @@ pub struct VaapiDecoder {
     mapping_display: Rc<Display>,
     /// NAL framing format of incoming packets.
     nal_format: NalFormat,
-    pending_frames: VecDeque<DecodedVideoFrame>,
+    pending_frames: VecDeque<VideoFrame>,
     last_timestamp: Option<Duration>,
     timestamp_counter: u64,
 }
@@ -340,20 +338,20 @@ impl VaapiDecoder {
                     let h = display_res.height;
                     let frame_arc = handle.video_frame();
 
-                    let dma_info = extract_dma_buf_info(&self.display, &frame_arc, w, h);
+                    let native_handle = extract_dma_buf_info(&self.display, &frame_arc, w, h);
 
                     let gpu_frame = VaapiGpuFrame {
                         frame: frame_arc,
                         width: w,
                         height: h,
-                        dma_info,
+                        native_handle,
                         mapping_display: self.mapping_display.clone(),
                     };
 
                     let timestamp = self.last_timestamp.unwrap_or_default();
 
                     let decoded =
-                        DecodedVideoFrame::new_gpu(GpuFrame::new(Arc::new(gpu_frame)), timestamp);
+                        VideoFrame::new_gpu(GpuFrame::new(Arc::new(gpu_frame)), timestamp);
                     self.pending_frames.push_back(decoded);
                 }
                 DecoderEvent::FormatChanged => {
@@ -519,7 +517,7 @@ impl VideoDecoder for VaapiDecoder {
         Ok(())
     }
 
-    fn pop_frame(&mut self) -> Result<Option<DecodedVideoFrame>> {
+    fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {
         Ok(self.pending_frames.pop_front())
     }
 }
@@ -558,7 +556,7 @@ mod tests {
     fn vaapi_encoder_decoder_roundtrip() {
         use crate::{
             codec::vaapi::encoder::VaapiEncoder,
-            format::{PixelFormat, VideoFormat, VideoFrame, VideoPreset},
+            format::VideoPreset,
             traits::{VideoEncoder, VideoEncoderFactory},
         };
 
@@ -571,13 +569,7 @@ mod tests {
         let w = 640u32;
         let h = 360u32;
         let rgba = vec![128u8; (w * h * 4) as usize];
-        let frame = VideoFrame {
-            format: VideoFormat {
-                pixel_format: PixelFormat::Rgba,
-                dimensions: [w, h],
-            },
-            raw: rgba.into(),
-        };
+        let frame = VideoFrame::new_rgba(rgba.into(), w, h);
 
         let mut total_decoded = 0;
         let mut all_packets = Vec::new();

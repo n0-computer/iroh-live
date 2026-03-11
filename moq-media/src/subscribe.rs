@@ -19,7 +19,7 @@ use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{debug, warn};
 
 use crate::{
-    format::{DecodeConfig, DecodedVideoFrame, PlaybackConfig, Quality},
+    format::{DecodeConfig, PlaybackConfig, Quality, VideoFrame},
     pipeline::{AudioDecoderPipeline, VideoDecoderHandle, VideoDecoderPipeline},
     processing::scale::Scaler,
     traits::{
@@ -312,7 +312,7 @@ impl AudioTrack {
 #[derive(derive_more::Debug)]
 pub struct WatchTrack {
     #[debug(skip)]
-    rx: mpsc::Receiver<DecodedVideoFrame>,
+    rx: mpsc::Receiver<VideoFrame>,
     inner: WatchTrackInner,
 }
 
@@ -363,7 +363,7 @@ impl WatchTrack {
         _decode_config: DecodeConfig,
     ) -> Self {
         let viewport = Watchable::new((1u32, 1u32));
-        let (frame_tx, frame_rx) = mpsc::channel::<DecodedVideoFrame>(2);
+        let (frame_tx, frame_rx) = mpsc::channel::<VideoFrame>(2);
         let thread_name = format!("vpr-{:>4}-{:>4}", source.name(), rendition);
         let thread = spawn_thread(thread_name, {
             let mut viewport = viewport.watch();
@@ -388,23 +388,20 @@ impl WatchTrack {
                     }
                     match source.pop_frame() {
                         Ok(Some(frame)) => {
-                            let [w, h] = frame.format.dimensions;
-                            let pixel_format = frame.format.pixel_format;
-                            let (data, fw, fh) = match scaler.scale_rgba(&frame.raw, w, h) {
-                                Ok(Some((scaled, sw, sh))) => (scaled, sw, sh),
-                                Ok(None) => (frame.raw.to_vec(), w, h),
-                                Err(err) => {
-                                    warn!("scaler error: {err:#}");
-                                    (frame.raw.to_vec(), w, h)
+                            let [w, h] = frame.dimensions;
+                            let rgba = frame.rgba_image();
+                            let decoded = match scaler.scale_rgba(rgba.as_raw(), w, h) {
+                                Ok(Some((scaled, sw, sh))) => {
+                                    let mut f = VideoFrame::new_rgba(scaled.into(), sw, sh);
+                                    f.timestamp = start.elapsed();
+                                    f
+                                }
+                                Ok(None) | Err(_) => {
+                                    let mut f = frame;
+                                    f.timestamp = start.elapsed();
+                                    f
                                 }
                             };
-                            let decoded = DecodedVideoFrame::new_cpu_with_format(
-                                data,
-                                fw,
-                                fh,
-                                start.elapsed(),
-                                pixel_format,
-                            );
                             let _ = frame_tx.blocking_send(decoded);
                         }
                         Ok(None) => {}
@@ -480,7 +477,7 @@ impl WatchTrack {
     }
 
     /// Returns the most recent decoded frame, draining any older buffered frames.
-    pub fn current_frame(&mut self) -> Option<DecodedVideoFrame> {
+    pub fn current_frame(&mut self) -> Option<VideoFrame> {
         let mut out = None;
         while let Ok(item) = self.rx.try_recv() {
             out = Some(item);
@@ -489,7 +486,7 @@ impl WatchTrack {
     }
 
     /// Returns the next decoded frame, waiting if none is buffered.
-    pub async fn next_frame(&mut self) -> Option<DecodedVideoFrame> {
+    pub async fn next_frame(&mut self) -> Option<VideoFrame> {
         if let Some(frame) = self.current_frame() {
             Some(frame)
         } else {

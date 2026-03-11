@@ -333,7 +333,7 @@ impl VideoView {
             self.track.set_viewport(w, h);
         }
         if let Some(frame) = self.track.current_frame() {
-            let (w, h) = frame.dimensions();
+            let (w, h) = (frame.width(), frame.height());
             let image = egui::ColorImage::from_rgba_unmultiplied(
                 [w as usize, h as usize],
                 frame.img().as_raw(),
