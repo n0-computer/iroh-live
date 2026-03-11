@@ -22,20 +22,28 @@
 //! | Linux (PipeWire) | `pipewire` feature | `pipewire` feature | DMA-BUF (NV12) |
 //! | Linux (X11) | `x11` feature | — | No (MIT-SHM CPU) |
 //! | Linux (V4L2) | — | `v4l2` feature | DMA-BUF via EXPBUF |
-//! | macOS | `apple-screen` feature | `apple` feature | IOSurface (planned) |
-//! | iOS | — | `apple` feature | IOSurface (planned) |
+//! | macOS | `screen-apple` feature | `camera-apple` feature | IOSurface (planned) |
+//! | iOS | — | `camera-apple` feature | IOSurface (planned) |
 //! | Windows | — (stub) | — (stub) | D3D11 (planned) |
 //! | Android | — (stub) | — (stub) | AHardwareBuffer (planned) |
 //!
 //! # Feature Flags
 //!
+//! High-level capability features (recommended):
+//! - **`camera`** — Camera capture on all platforms.
+//! - **`screen`** — Screen capture on all platforms.
+//!
+//! Platform bundles:
+//! - **`camera-linux`** — `pipewire` + `v4l2`.
+//! - **`camera-apple`** — AVFoundation camera on macOS/iOS.
+//! - **`screen-linux`** — `pipewire` + `x11`.
+//! - **`screen-apple`** — ScreenCaptureKit screen capture on macOS 12.3+.
+//!
+//! Low-level backend features:
 //! - **`pipewire`** — PipeWire screen + camera capture on Linux (Wayland + libcamera).
 //!   Requires `libpipewire-0.3-dev` at build time.
-//! - **`v4l2`** — V4L2 camera capture on Linux. Works on all Raspberry Pi models
-//!   (Pi 1–5, Zero) and USB cameras. Zero-copy DMA-BUF export when the driver supports it.
-//! - **`x11`** — X11 screen capture via MIT-SHM. CPU-only fallback for non-Wayland systems.
-//! - **`apple`** — AVFoundation camera capture on macOS and iOS.
-//! - **`apple-screen`** — ScreenCaptureKit screen capture on macOS 12.3+.
+//! - **`v4l2`** — V4L2 camera capture on Linux.
+//! - **`x11`** — X11 screen capture via MIT-SHM.
 
 pub mod types;
 
@@ -58,11 +66,13 @@ pub use platform::linux::v4l2::V4l2CameraCapturer;
 #[cfg(all(target_os = "linux", feature = "x11"))]
 pub use platform::linux::x11::X11ScreenCapturer;
 
-#[cfg(all(target_os = "macos", feature = "apple-screen"))]
+#[cfg(all(target_os = "macos", feature = "screen-apple"))]
 pub use platform::apple::screen::MacScreenCapturer;
 
-#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "apple"))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple"))]
 pub use platform::apple::camera::AppleCameraCapturer;
+
+// ── Monitor listing ─────────────────────────────────────────────────
 
 /// Lists available monitors for screen capture.
 ///
@@ -92,7 +102,7 @@ fn cfg_dispatch_monitors() -> anyhow::Result<Vec<MonitorInfo>> {
     platform::linux::x11::monitors()
 }
 
-#[cfg(all(target_os = "macos", feature = "apple-screen"))]
+#[cfg(all(target_os = "macos", feature = "screen-apple"))]
 fn cfg_dispatch_monitors() -> anyhow::Result<Vec<MonitorInfo>> {
     platform::apple::screen::monitors()
 }
@@ -100,13 +110,15 @@ fn cfg_dispatch_monitors() -> anyhow::Result<Vec<MonitorInfo>> {
 #[cfg(not(any(
     all(target_os = "linux", feature = "x11"),
     all(target_os = "linux", feature = "pipewire"),
-    all(target_os = "macos", feature = "apple-screen"),
+    all(target_os = "macos", feature = "screen-apple"),
 )))]
 fn cfg_dispatch_monitors() -> anyhow::Result<Vec<MonitorInfo>> {
     anyhow::bail!(
-        "no screen capture backend available (enable `x11`, `pipewire`, or `apple-screen` feature)"
+        "no screen capture backend available (enable `screen` or a platform-specific feature)"
     )
 }
+
+// ── Camera listing ──────────────────────────────────────────────────
 
 /// Lists available cameras for capture.
 ///
@@ -136,7 +148,7 @@ fn cfg_dispatch_cameras() -> anyhow::Result<Vec<CameraInfo>> {
     platform::linux::v4l2::cameras()
 }
 
-#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "apple",))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple",))]
 fn cfg_dispatch_cameras() -> anyhow::Result<Vec<CameraInfo>> {
     platform::apple::camera::cameras()
 }
@@ -144,21 +156,17 @@ fn cfg_dispatch_cameras() -> anyhow::Result<Vec<CameraInfo>> {
 #[cfg(not(any(
     all(target_os = "linux", feature = "v4l2"),
     all(target_os = "linux", feature = "pipewire"),
-    all(any(target_os = "macos", target_os = "ios"), feature = "apple"),
+    all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple"),
 )))]
 fn cfg_dispatch_cameras() -> anyhow::Result<Vec<CameraInfo>> {
     anyhow::bail!(
-        "no camera capture backend available (enable `v4l2`, `pipewire`, or `apple` feature)"
+        "no camera capture backend available (enable `camera` or a platform-specific feature)"
     )
 }
 
 // ── PipeWire runtime detection ──────────────────────────────────────
 
-#[cfg(all(
-    target_os = "linux",
-    feature = "pipewire",
-    any(feature = "x11", feature = "v4l2")
-))]
+#[cfg(all(target_os = "linux", feature = "pipewire"))]
 fn pipewire_available() -> bool {
     // Check if the PipeWire daemon is running by looking for its socket.
     // The runtime directory is typically $XDG_RUNTIME_DIR/pipewire-0.
@@ -348,7 +356,7 @@ fn create_camera_backend(
     }
 }
 
-#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "apple",))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple",))]
 fn create_camera_backend(
     info: &CameraInfo,
     config: &CameraConfig,
@@ -359,7 +367,7 @@ fn create_camera_backend(
 
 #[cfg(not(any(
     all(target_os = "linux", any(feature = "pipewire", feature = "v4l2")),
-    all(any(target_os = "macos", target_os = "ios"), feature = "apple"),
+    all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple"),
 )))]
 fn create_camera_backend(
     _info: &CameraInfo,
@@ -371,7 +379,7 @@ fn create_camera_backend(
 #[cfg(all(target_os = "linux", any(feature = "pipewire", feature = "x11")))]
 fn create_screen_backend(config: &ScreenConfig) -> anyhow::Result<Box<dyn VideoSource>> {
     #[cfg(feature = "pipewire")]
-    if screen_pipewire_available() {
+    if pipewire_available() {
         let capturer = PipeWireScreenCapturer::new(config)?;
         return Ok(Box::new(capturer));
     }
@@ -391,7 +399,7 @@ fn create_screen_backend(config: &ScreenConfig) -> anyhow::Result<Box<dyn VideoS
     }
 }
 
-#[cfg(all(target_os = "macos", feature = "apple-screen"))]
+#[cfg(all(target_os = "macos", feature = "screen-apple"))]
 fn create_screen_backend(config: &ScreenConfig) -> anyhow::Result<Box<dyn VideoSource>> {
     let mons = monitors()?;
     let mon = mons
@@ -403,27 +411,8 @@ fn create_screen_backend(config: &ScreenConfig) -> anyhow::Result<Box<dyn VideoS
 
 #[cfg(not(any(
     all(target_os = "linux", any(feature = "pipewire", feature = "x11")),
-    all(target_os = "macos", feature = "apple-screen"),
+    all(target_os = "macos", feature = "screen-apple"),
 )))]
 fn create_screen_backend(_config: &ScreenConfig) -> anyhow::Result<Box<dyn VideoSource>> {
     anyhow::bail!("no screen capture backend available on this platform")
-}
-
-/// PipeWire availability check for the screen capturer dispatch.
-/// Separate from the `pipewire_available()` used by `monitors()`/`cameras()`
-/// which is gated on both pipewire + a fallback feature.
-#[cfg(all(target_os = "linux", feature = "pipewire"))]
-fn screen_pipewire_available() -> bool {
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        let socket = std::path::Path::new(&runtime_dir).join("pipewire-0");
-        if socket.exists() {
-            return true;
-        }
-    }
-    std::process::Command::new("pidof")
-        .arg("pipewire")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
 }
