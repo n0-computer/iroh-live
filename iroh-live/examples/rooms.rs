@@ -198,7 +198,7 @@ impl eframe::App for App {
             });
     }
 
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    fn on_exit(&mut self) {
         let router = self.router.clone();
         self.rt.block_on(async move {
             if let Err(err) = router.shutdown().await {
