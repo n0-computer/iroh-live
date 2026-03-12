@@ -13,8 +13,9 @@ use openh264::{
 use super::annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b};
 use crate::{
     config::{H264, VideoCodec, VideoConfig},
-    format::{EncodedFrame, NalFormat, VideoEncoderConfig, VideoFrame},
+    format::{EncodedFrame, NalFormat, ScaleMode, VideoEncoderConfig, VideoFrame},
     processing::convert::{YuvData, pixel_format_to_yuv420},
+    processing::scale::Scaler,
     traits::{VideoEncoder, VideoEncoderFactory},
 };
 
@@ -28,6 +29,9 @@ pub struct H264Encoder {
     bitrate: u64,
     frame_count: u64,
     nal_format: NalFormat,
+    scale_mode: ScaleMode,
+    #[debug(skip)]
+    scaler: Scaler,
     /// avcC description, populated after first successful encode (avcC mode only).
     avcc: Option<Vec<u8>>,
     /// Encoded packets ready for collection.
@@ -105,9 +109,34 @@ impl H264Encoder {
             bitrate,
             frame_count: 0,
             nal_format,
+            scale_mode: config.scale_mode,
+            scaler: Scaler::new(Some((width, height))),
             avcc,
             packet_buf: std::collections::VecDeque::new(),
         })
+    }
+}
+
+impl H264Encoder {
+    /// Scales the frame to encoder dimensions if needed, based on the
+    /// configured [`ScaleMode`].
+    fn scale_if_needed(&mut self, frame: VideoFrame) -> Result<VideoFrame> {
+        let [fw, fh] = frame.dimensions;
+        if fw == self.width && fh == self.height {
+            return Ok(frame);
+        }
+        // Compute actual target dims using the scale mode.
+        let (tw, th) = self.scale_mode.resolve((fw, fh), (self.width, self.height));
+        if tw == fw && th == fh {
+            return Ok(frame);
+        }
+        // Update scaler target in case source resolution changed.
+        self.scaler.set_target_dimensions(tw, th);
+        let img = frame.rgba_image();
+        match self.scaler.scale_rgba(img.as_raw(), fw, fh)? {
+            Some((data, w, h)) => Ok(VideoFrame::new_rgba(data.into(), w, h)),
+            None => Ok(frame),
+        }
     }
 }
 
@@ -166,6 +195,8 @@ impl VideoEncoder for H264Encoder {
     }
 
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
+        // Scale frame to encoder dimensions if needed.
+        let frame = self.scale_if_needed(frame)?;
         let [w, h] = frame.dimensions;
         let yuv = match &frame.data {
             crate::format::FrameData::Packed { pixel_format, data } => {

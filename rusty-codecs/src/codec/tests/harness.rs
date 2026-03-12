@@ -22,13 +22,16 @@ use std::{f32::consts::PI, time::Duration};
 
 use metrics::{FrameMetrics, compute_metrics};
 
-use super::{test_util::video_encode, *};
+use super::{
+    test_util::{make_rgba_frame, video_encode},
+    *,
+};
 use crate::{
     codec::test_util::encoded_frames_to_media_packets,
     config::{AudioConfig, VideoConfig},
     format::{
         AudioFormat, AudioPreset, DecodeConfig, DecoderBackend, EncodedFrame, MediaPacket,
-        VideoFrame, VideoPreset,
+        ScaleMode, VideoEncoderConfig, VideoFrame, VideoPreset,
     },
     traits::{
         AudioDecoder, AudioEncoder, AudioEncoderFactory, Decoders, VideoDecoder, VideoEncoder,
@@ -84,6 +87,7 @@ struct TestEncoder {
     min_frames: usize,
     create: fn(VideoPreset) -> Option<Box<dyn VideoEncoder>>,
     create_with_dims: fn(u32, u32) -> Option<Box<dyn VideoEncoder>>,
+    create_with_config: fn(VideoEncoderConfig) -> Option<Box<dyn VideoEncoder>>,
 }
 
 /// Describes a video decoder for matrix tests.
@@ -115,10 +119,12 @@ fn all_encoders() -> Vec<TestEncoder> {
                 height: h,
                 framerate: 30,
                 bitrate: None,
+                scale_mode: Default::default(),
                 nal_format: Default::default(),
             };
             Some(Box::new(H264Encoder::with_config(config).ok()?))
         },
+        create_with_config: |config| Some(Box::new(H264Encoder::with_config(config).ok()?)),
     });
 
     // NOTE: AV1 (rav1e) encoder omitted — too slow for routine testing.
@@ -136,10 +142,12 @@ fn all_encoders() -> Vec<TestEncoder> {
                 height: h,
                 framerate: 30,
                 bitrate: None,
+                scale_mode: Default::default(),
                 nal_format: Default::default(),
             };
             Some(Box::new(VaapiEncoder::with_config(config).ok()?))
         },
+        create_with_config: |config| Some(Box::new(VaapiEncoder::with_config(config).ok()?)),
     });
 
     #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
@@ -154,10 +162,12 @@ fn all_encoders() -> Vec<TestEncoder> {
                 height: h,
                 framerate: 30,
                 bitrate: None,
+                scale_mode: Default::default(),
                 nal_format: Default::default(),
             };
             Some(Box::new(VtbEncoder::with_config(config).ok()?))
         },
+        create_with_config: |config| Some(Box::new(VtbEncoder::with_config(config).ok()?)),
     });
 
     encoders
@@ -973,5 +983,189 @@ fn audio_pipeline_mono_encode_stereo_decode_lq() {
         assert_eq!(decoded.len(), 96000);
         let left = extract_channel(&decoded, 0, 2);
         assert_energy_preserved(&sine, &left);
+    });
+}
+
+// ── Encoder scaling tests ────────────────────────────────────────────
+
+/// Encodes frames at a different resolution than the encoder target and
+/// verifies the encoder handles it (via internal scaling).
+fn scaling_test(
+    enc_info: &TestEncoder,
+    enc_width: u32,
+    enc_height: u32,
+    frame_width: u32,
+    frame_height: u32,
+    scale_mode: ScaleMode,
+    min_frames: usize,
+) -> Option<()> {
+    let config = VideoEncoderConfig {
+        width: enc_width,
+        height: enc_height,
+        framerate: 30,
+        bitrate: None,
+        scale_mode,
+        nal_format: Default::default(),
+    };
+    let mut enc = (enc_info.create_with_config)(config)?;
+
+    let mut got_packet = false;
+    for _ in 0..min_frames {
+        let frame = make_rgba_frame(frame_width, frame_height, 200, 100, 50);
+        enc.push_frame(frame).unwrap();
+        while let Some(_pkt) = enc.pop_packet().unwrap() {
+            got_packet = true;
+        }
+    }
+    assert!(
+        got_packet,
+        "{}: expected packets encoding {frame_width}x{frame_height} → {enc_width}x{enc_height} ({scale_mode:?})",
+        enc_info.name,
+    );
+    Some(())
+}
+
+/// Fit mode: source smaller than target → encoder uses source dims (no upscale).
+#[test]
+fn scale_fit_no_upscale() {
+    with_timeout(TEST_TIMEOUT, || {
+        for enc_info in &all_encoders() {
+            // Encoder configured for 640×360, source is 320×180 → should encode at 320×180
+            scaling_test(
+                enc_info,
+                640,
+                360,
+                320,
+                180,
+                ScaleMode::Fit,
+                enc_info.min_frames,
+            );
+        }
+    });
+}
+
+/// Fit mode: source larger than target → encoder downscales to fit.
+#[test]
+fn scale_fit_downscale() {
+    with_timeout(TEST_TIMEOUT, || {
+        for enc_info in &all_encoders() {
+            // Encoder configured for 320×180, source is 640×360 → should downscale to 320×180
+            scaling_test(
+                enc_info,
+                320,
+                180,
+                640,
+                360,
+                ScaleMode::Fit,
+                enc_info.min_frames,
+            );
+        }
+    });
+}
+
+/// Fit mode: source has different aspect ratio → encoder fits within target.
+#[test]
+fn scale_fit_different_aspect() {
+    with_timeout(TEST_TIMEOUT, || {
+        for enc_info in &all_encoders() {
+            // 4:3 source into 16:9 target → should fit to width, shrink height
+            scaling_test(
+                enc_info,
+                640,
+                360,
+                800,
+                600,
+                ScaleMode::Fit,
+                enc_info.min_frames,
+            );
+        }
+    });
+}
+
+/// Stretch mode: source forced to target dimensions regardless of aspect ratio.
+#[test]
+fn scale_stretch() {
+    with_timeout(TEST_TIMEOUT, || {
+        for enc_info in &all_encoders() {
+            scaling_test(
+                enc_info,
+                640,
+                360,
+                320,
+                180,
+                ScaleMode::Stretch,
+                enc_info.min_frames,
+            );
+        }
+    });
+}
+
+/// Cover mode: source scaled to cover target dimensions.
+#[test]
+fn scale_cover() {
+    with_timeout(TEST_TIMEOUT, || {
+        for enc_info in &all_encoders() {
+            scaling_test(
+                enc_info,
+                640,
+                360,
+                320,
+                180,
+                ScaleMode::Cover,
+                enc_info.min_frames,
+            );
+        }
+    });
+}
+
+/// Fit mode with resolve_for_source: encoder config adjusts to source dims.
+#[test]
+fn scale_resolve_for_source() {
+    with_timeout(TEST_TIMEOUT, || {
+        for enc_info in &all_encoders() {
+            // Simulate the viewer pattern: preset is 720p but source is 360p.
+            // resolve_for_source should keep encoder at 640×360 (no upscale in Fit mode).
+            let config =
+                VideoEncoderConfig::from_preset(VideoPreset::P720).resolve_for_source(640, 360);
+            assert_eq!(config.width, 640);
+            assert_eq!(config.height, 360);
+
+            let Some(mut enc) = (enc_info.create_with_config)(config) else {
+                continue;
+            };
+            let frame = make_rgba_frame(640, 360, 200, 100, 50);
+            enc.push_frame(frame).unwrap();
+            let mut got_packet = false;
+            for _ in 0..enc_info.min_frames {
+                let frame = make_rgba_frame(640, 360, 200, 100, 50);
+                enc.push_frame(frame).unwrap();
+                while let Some(_pkt) = enc.pop_packet().unwrap() {
+                    got_packet = true;
+                }
+            }
+            assert!(
+                got_packet,
+                "{}: resolve_for_source should produce packets",
+                enc_info.name
+            );
+        }
+    });
+}
+
+/// Source matches target exactly — no scaling needed (fast path).
+#[test]
+fn scale_identity() {
+    with_timeout(TEST_TIMEOUT, || {
+        for enc_info in &all_encoders() {
+            scaling_test(
+                enc_info,
+                640,
+                360,
+                640,
+                360,
+                ScaleMode::Fit,
+                enc_info.min_frames,
+            );
+        }
     });
 }

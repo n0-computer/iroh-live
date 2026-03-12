@@ -26,7 +26,10 @@ use moq_media::capture::ScreenCapturer;
 use moq_media::capture::{PipeWireCameraCapturer, V4l2CameraCapturer};
 use moq_media::{
     codec::{DynamicVideoDecoder, VideoCodec},
-    format::{DecodeConfig, DecoderBackend, PixelFormat, VideoFormat, VideoFrame, VideoPreset},
+    format::{
+        DecodeConfig, DecoderBackend, PixelFormat, VideoEncoderConfig, VideoFormat, VideoFrame,
+        VideoPreset,
+    },
     pipeline::{VideoDecoderPipeline, VideoEncoderPipeline},
     traits::{VideoEncoder, VideoSource},
     transport::media_pipe,
@@ -431,11 +434,13 @@ impl Tile {
             }
         };
 
-        let encoder = match self
-            .settings
-            .codec
-            .create_encoder_from_preset(self.settings.preset)
-        {
+        // Resolve encoder dimensions for the actual source format.
+        // With ScaleMode::Fit (default), this ensures we never upscale:
+        // if the source is smaller than the preset, the encoder is created
+        // at source resolution.
+        let enc_config = VideoEncoderConfig::from_preset(self.settings.preset)
+            .resolve_for_source(source.format().dimensions[0], source.format().dimensions[1]);
+        let encoder = match self.settings.codec.create_encoder(enc_config) {
             Ok(e) => e,
             Err(e) => {
                 self.error_msg = Some(format!("Encoder: {e:#}"));

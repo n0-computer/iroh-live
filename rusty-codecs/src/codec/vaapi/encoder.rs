@@ -19,8 +19,9 @@ use cros_codecs::{
 use crate::{
     codec::h264::annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b},
     config::{H264, VideoCodec, VideoConfig},
-    format::{EncodedFrame, NalFormat, VideoEncoderConfig, VideoFrame},
+    format::{EncodedFrame, NalFormat, ScaleMode, VideoEncoderConfig, VideoFrame},
     processing::convert::{YuvData, pixel_format_to_nv12},
+    processing::scale::Scaler,
     traits::{VideoEncoder, VideoEncoderFactory},
 };
 
@@ -201,6 +202,9 @@ pub struct VaapiEncoder {
     bitrate: u64,
     frame_count: u64,
     nal_format: NalFormat,
+    scale_mode: ScaleMode,
+    #[debug(skip)]
+    scaler: Scaler,
     /// avcC description, populated after first keyframe (avcC mode only).
     avcc: Option<Vec<u8>>,
     /// Encoded packets ready for collection.
@@ -337,6 +341,8 @@ impl VaapiEncoder {
             bitrate,
             frame_count: 0,
             nal_format,
+            scale_mode: config.scale_mode,
+            scaler: Scaler::new(Some((width, height))),
             avcc,
             packet_buf: std::collections::VecDeque::new(),
         })
@@ -344,6 +350,28 @@ impl VaapiEncoder {
 
     /// Convert I420 planar YUV to NV12 semi-planar format.
     /// NV12 = Y plane followed by interleaved UV plane.
+    /// Scales the frame to encoder dimensions if needed, based on the
+    /// configured [`ScaleMode`].
+    ///
+    /// Currently uses CPU-side scaling via [`Scaler`]. A future optimization
+    /// can replace this with VAAPI VPP hardware scaling for zero-copy frames.
+    fn scale_if_needed(&mut self, frame: VideoFrame) -> Result<VideoFrame> {
+        let [fw, fh] = frame.dimensions;
+        if fw == self.width && fh == self.height {
+            return Ok(frame);
+        }
+        let (tw, th) = self.scale_mode.resolve((fw, fh), (self.width, self.height));
+        if tw == fw && th == fh {
+            return Ok(frame);
+        }
+        self.scaler.set_target_dimensions(tw, th);
+        let img = frame.rgba_image();
+        match self.scaler.scale_rgba(img.as_raw(), fw, fh)? {
+            Some((data, w, h)) => Ok(VideoFrame::new_rgba(data.into(), w, h)),
+            None => Ok(frame),
+        }
+    }
+
     fn i420_to_nv12(y: &[u8], u: &[u8], v: &[u8], width: u32, height: u32) -> Vec<u8> {
         let w = width as usize;
         let h = height as usize;
@@ -478,6 +506,7 @@ impl VideoEncoder for VaapiEncoder {
     }
 
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
+        let frame = self.scale_if_needed(frame)?;
         let [w, h] = frame.dimensions;
         let nv12_data = match &frame.data {
             crate::format::FrameData::Packed { pixel_format, data } => {
@@ -498,11 +527,36 @@ impl VideoEncoder for VaapiEncoder {
             height: h,
         };
 
-        // Build frame metadata.
+        // Build frame metadata. Use the frame's actual dimensions for the
+        // layout so strides and plane offsets match the NV12 data, even if
+        // the encoder was configured at a different resolution.
         let timestamp_us = (self.frame_count * 1_000_000) / self.framerate as u64;
+        let layout = if w == self.width && h == self.height {
+            self.frame_layout.clone()
+        } else {
+            FrameLayout {
+                format: self.frame_layout.format,
+                size: Resolution {
+                    width: w,
+                    height: h,
+                },
+                planes: vec![
+                    PlaneLayout {
+                        buffer_index: 0,
+                        offset: 0,
+                        stride: w as usize,
+                    },
+                    PlaneLayout {
+                        buffer_index: 0,
+                        offset: (w * h) as usize,
+                        stride: w as usize,
+                    },
+                ],
+            }
+        };
         let meta = FrameMetadata {
             timestamp: timestamp_us,
-            layout: self.frame_layout.clone(),
+            layout,
             force_keyframe: false,
         };
 

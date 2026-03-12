@@ -9,6 +9,8 @@ use std::{
 use image::RgbaImage;
 use strum::{Display, EnumString, VariantNames};
 
+pub use crate::processing::scale::ScaleMode;
+
 /// Describes an audio stream's sample rate and channel layout.
 #[derive(Copy, Clone, Debug)]
 pub struct AudioFormat {
@@ -600,6 +602,8 @@ pub struct VideoEncoderConfig {
     /// Target bitrate in bits per second.
     /// `None` uses a codec-specific default based on resolution and framerate.
     pub bitrate: Option<u64>,
+    /// How source frames are scaled to match the encoder dimensions.
+    pub scale_mode: crate::processing::scale::ScaleMode,
     /// H.264 NAL framing format. Ignored by non-H.264 codecs.
     pub(crate) nal_format: NalFormat,
 }
@@ -613,6 +617,7 @@ impl VideoEncoderConfig {
             height,
             framerate: preset.fps(),
             bitrate: None,
+            scale_mode: Default::default(),
             nal_format: NalFormat::default(),
         }
     }
@@ -638,6 +643,26 @@ impl VideoEncoderConfig {
     /// Sets the target bitrate in bits per second.
     pub fn bitrate(mut self, bitrate: u64) -> Self {
         self.bitrate = Some(bitrate);
+        self
+    }
+
+    /// Sets the scale mode.
+    pub fn scale_mode(mut self, mode: crate::processing::scale::ScaleMode) -> Self {
+        self.scale_mode = mode;
+        self
+    }
+
+    /// Adjusts width and height for the given source dimensions using the
+    /// configured [`ScaleMode`](crate::processing::scale::ScaleMode).
+    ///
+    /// Call this after creating the config from a preset and before creating
+    /// the encoder so that the encoder is sized correctly for the source.
+    pub fn resolve_for_source(mut self, source_width: u32, source_height: u32) -> Self {
+        let (w, h) = self
+            .scale_mode
+            .resolve((source_width, source_height), (self.width, self.height));
+        self.width = w;
+        self.height = h;
         self
     }
 
