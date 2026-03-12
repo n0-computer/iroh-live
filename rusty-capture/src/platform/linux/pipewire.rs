@@ -197,6 +197,8 @@ struct CaptureState {
     width: u32,
     height: u32,
     spa_format: u32,
+    /// Log buffer type once on first successful frame delivery.
+    logged_buffer_type: bool,
 }
 
 /// Builds an `EnumFormat` pod requesting common video formats.
@@ -662,6 +664,7 @@ fn run_pipewire_stream(
         width: 0,
         height: 0,
         spa_format: 0,
+        logged_buffer_type: false,
     };
 
     // Spawn a stopper thread that quits the mainloop when stop is requested.
@@ -754,12 +757,33 @@ fn run_pipewire_stream(
                     state.height,
                     state.spa_format,
                 ) {
+                    if !state.logged_buffer_type {
+                        let path = if frame.is_gpu() {
+                            "DMA-BUF zero-copy (GPU frame)"
+                        } else {
+                            "DMA-BUF with CPU mmap+copy (non-NV12 format)"
+                        };
+                        info!(
+                            width = state.width,
+                            height = state.height,
+                            "PipeWire capture: {path}"
+                        );
+                        state.logged_buffer_type = true;
+                    }
                     let _ = state.frame_tx.send(frame);
                 } else {
                     debug!("DMA-BUF frame extraction failed");
                 }
             } else if let Some(slice) = data.data() {
                 // CPU-mapped buffer path (MemPtr / MemFd with MAP_BUFFERS).
+                if !state.logged_buffer_type {
+                    info!(
+                        width = state.width,
+                        height = state.height,
+                        "PipeWire capture: CPU-mapped buffer (shared memory)"
+                    );
+                    state.logged_buffer_type = true;
+                }
                 let start = offset.min(slice.len());
                 let end = (offset + size).min(slice.len());
                 let usable = &slice[start..end];

@@ -474,6 +474,8 @@ impl VideoDecoder for VaapiDecoder {
             this.drain_events();
         }
 
+        tracing::info!("H.264 hardware decoder ready (VAAPI)");
+
         Ok(this)
     }
 

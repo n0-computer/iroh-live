@@ -348,6 +348,8 @@ pub struct VaapiEncoder {
     avcc: Option<Vec<u8>>,
     /// Encoded packets ready for collection.
     packet_buf: std::collections::VecDeque<EncodedFrame>,
+    /// Whether the frame input path has been logged (log once on first frame).
+    logged_frame_path: bool,
 }
 
 impl VaapiEncoder {
@@ -471,6 +473,14 @@ impl VaapiEncoder {
         // Create a fresh encoder for actual use.
         let (encoder, _) = Self::create_encoder(width, height, framerate, bitrate)?;
 
+        tracing::info!(
+            width,
+            height,
+            framerate,
+            bitrate,
+            "H.264 hardware encoder ready (VAAPI)"
+        );
+
         Ok(Self {
             encoder,
             frame_layout,
@@ -484,6 +494,7 @@ impl VaapiEncoder {
             scaler: Scaler::new(Some((width, height))),
             avcc,
             packet_buf: std::collections::VecDeque::new(),
+            logged_frame_path: false,
         })
     }
 
@@ -674,12 +685,29 @@ impl VideoEncoder for VaapiEncoder {
                 && info.coded_height == self.height
                 && info.planes.len() <= 4
             {
+                if !self.logged_frame_path {
+                    tracing::info!("VAAPI encode: zero-copy DMA-BUF import (no CPU copy)");
+                    self.logged_frame_path = true;
+                }
                 VaapiInputFrame::DmaBuf(info)
             } else {
-                // DMA-BUF with wrong dimensions or too many planes: CPU path.
+                if !self.logged_frame_path {
+                    tracing::info!(
+                        src_w = info.coded_width,
+                        src_h = info.coded_height,
+                        enc_w = self.width,
+                        enc_h = self.height,
+                        "VAAPI encode: DMA-BUF dimension mismatch, using CPU NV12 upload"
+                    );
+                    self.logged_frame_path = true;
+                }
                 self.build_nv12_input(frame)?
             }
         } else {
+            if !self.logged_frame_path {
+                tracing::info!("VAAPI encode: CPU NV12 upload (no DMA-BUF available)");
+                self.logged_frame_path = true;
+            }
             self.build_nv12_input(frame)?
         };
 

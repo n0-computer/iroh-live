@@ -65,6 +65,14 @@ impl Av1Encoder {
 
         let seq_header = ctx.container_sequence_header();
 
+        tracing::info!(
+            width,
+            height,
+            framerate,
+            bitrate,
+            "AV1 software encoder ready (rav1e)"
+        );
+
         Ok(Self {
             ctx,
             width,
