@@ -133,7 +133,12 @@ impl H264Encoder {
         // Update scaler target in case source resolution changed.
         self.scaler.set_target_dimensions(tw, th);
         let img = frame.rgba_image();
-        match self.scaler.scale_rgba(img.as_raw(), fw, fh)? {
+        let scaled = if self.scale_mode == ScaleMode::Cover {
+            self.scaler.scale_cover_rgba(img.as_raw(), fw, fh)?
+        } else {
+            self.scaler.scale_rgba(img.as_raw(), fw, fh)?
+        };
+        match scaled {
             Some((data, w, h)) => Ok(VideoFrame::new_rgba(data.into(), w, h)),
             None => Ok(frame),
         }

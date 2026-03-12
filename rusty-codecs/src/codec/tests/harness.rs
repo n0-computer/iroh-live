@@ -1133,8 +1133,6 @@ fn scale_resolve_for_source() {
             let Some(mut enc) = (enc_info.create_with_config)(config) else {
                 continue;
             };
-            let frame = make_rgba_frame(640, 360, 200, 100, 50);
-            enc.push_frame(frame).unwrap();
             let mut got_packet = false;
             for _ in 0..enc_info.min_frames {
                 let frame = make_rgba_frame(640, 360, 200, 100, 50);

@@ -81,7 +81,16 @@ impl SurfaceMemoryDescriptor for VaapiInputFrame {
 }
 
 /// Builds a `VADRMPRIMESurfaceDescriptor` from our `DmaBufInfo`.
+///
+/// VA-API layer arrays are fixed at 4 elements, so at most 4 planes are
+/// supported (NV12 = 2, I420 = 3).
 fn build_prime_descriptor(info: &DmaBufInfo) -> VADRMPRIMESurfaceDescriptor {
+    debug_assert!(
+        info.planes.len() <= 4,
+        "DMA-BUF has {} planes, VA-API supports at most 4",
+        info.planes.len()
+    );
+
     let mut objects: [VADRMPRIMESurfaceDescriptorObject; 4] = Default::default();
     objects[0] = VADRMPRIMESurfaceDescriptorObject {
         fd: info.fd.as_raw_fd(),
@@ -129,6 +138,8 @@ struct Nv12WriteMapping;
 
 impl<'a> WriteMapping<'a> for Nv12WriteMapping {
     fn get(&self) -> Vec<RefCell<&'a mut [u8]>> {
+        // No-op: NV12 frames are uploaded via `upload_nv12_to_surface` and
+        // DMA-BUF frames are imported directly — neither uses write mappings.
         vec![]
     }
 }
@@ -512,7 +523,12 @@ impl VaapiEncoder {
         }
         self.scaler.set_target_dimensions(tw, th);
         let img = frame.rgba_image();
-        match self.scaler.scale_rgba(img.as_raw(), fw, fh)? {
+        let scaled = if self.scale_mode == ScaleMode::Cover {
+            self.scaler.scale_cover_rgba(img.as_raw(), fw, fh)?
+        } else {
+            self.scaler.scale_rgba(img.as_raw(), fw, fh)?
+        };
+        match scaled {
             Some((data, w, h)) => Ok(VideoFrame::new_rgba(data.into(), w, h)),
             None => Ok(frame),
         }
@@ -654,10 +670,13 @@ impl VideoEncoder for VaapiEncoder {
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
         // Check for zero-copy DMA-BUF path before any CPU-side scaling.
         let input_frame = if let Some(NativeFrameHandle::DmaBuf(info)) = frame.native_handle() {
-            if info.coded_width == self.width && info.coded_height == self.height {
+            if info.coded_width == self.width
+                && info.coded_height == self.height
+                && info.planes.len() <= 4
+            {
                 VaapiInputFrame::DmaBuf(info)
             } else {
-                // DMA-BUF with wrong dimensions: fall through to CPU path.
+                // DMA-BUF with wrong dimensions or too many planes: CPU path.
                 self.build_nv12_input(frame)?
             }
         } else {
@@ -670,22 +689,30 @@ impl VideoEncoder for VaapiEncoder {
         // Build frame metadata with layout matching the input frame.
         let timestamp_us = (self.frame_count * 1_000_000) / self.framerate as u64;
         let layout = match &input_frame {
-            VaapiInputFrame::DmaBuf(info) => FrameLayout {
-                format: (Fourcc::from(b"NV12"), info.modifier),
-                size: Resolution {
-                    width: w,
-                    height: h,
-                },
-                planes: info
-                    .planes
-                    .iter()
-                    .map(|p| PlaneLayout {
-                        buffer_index: 0,
-                        offset: p.offset as usize,
-                        stride: p.pitch as usize,
-                    })
-                    .collect(),
-            },
+            VaapiInputFrame::DmaBuf(info) => {
+                // Only NV12 DMA-BUFs are accepted (checked at import site).
+                debug_assert_eq!(
+                    info.drm_format,
+                    u32::from_le_bytes(*b"NV12"),
+                    "VAAPI encoder only accepts NV12 DMA-BUFs"
+                );
+                FrameLayout {
+                    format: (Fourcc::from(b"NV12"), info.modifier),
+                    size: Resolution {
+                        width: w,
+                        height: h,
+                    },
+                    planes: info
+                        .planes
+                        .iter()
+                        .map(|p| PlaneLayout {
+                            buffer_index: 0,
+                            offset: p.offset as usize,
+                            stride: p.pitch as usize,
+                        })
+                        .collect(),
+                }
+            }
             VaapiInputFrame::Nv12 { .. } if w == self.width && h == self.height => {
                 self.frame_layout.clone()
             }

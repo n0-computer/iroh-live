@@ -116,6 +116,10 @@ enum PipelineMode {
 // Direct capture (no encode/decode)
 // ---------------------------------------------------------------------------
 
+/// Captures frames directly from a source (no encode/decode).
+///
+/// The capture thread exits when this struct is dropped because the
+/// `sync_channel` receiver is dropped, causing the sender to fail.
 struct DirectCapture {
     rx: mpsc::Receiver<VideoFrame>,
     current: Option<VideoFrame>,

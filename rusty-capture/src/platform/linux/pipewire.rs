@@ -107,7 +107,7 @@ struct PipeWireDmaBufFrame {
     width: u32,
     height: u32,
     stride: u32,
-    offset: u32,
+    offset: usize,
     /// Total mappable size (for mmap fallback).
     map_size: usize,
     /// Original SPA format for CPU fallback conversion.
@@ -133,7 +133,13 @@ impl GpuFrameInner for PipeWireDmaBufFrame {
         };
 
         let slice = unsafe { std::slice::from_raw_parts(ptr.as_ptr() as *const u8, self.map_size) };
-        let data = &slice[self.offset as usize..];
+        anyhow::ensure!(
+            self.offset <= self.map_size,
+            "DMA-BUF offset ({}) exceeds map size ({})",
+            self.offset,
+            self.map_size
+        );
+        let data = &slice[self.offset..];
         let frame = buffer_to_frame(data, self.width, self.height, self.stride, self.spa_format);
 
         unsafe {
@@ -148,6 +154,7 @@ impl GpuFrameInner for PipeWireDmaBufFrame {
     }
 
     fn gpu_pixel_format(&self) -> GpuPixelFormat {
+        // Only NV12 DMA-BUFs take this path (see `dmabuf_to_frame`).
         GpuPixelFormat::Nv12
     }
 
@@ -168,7 +175,7 @@ impl GpuFrameInner for PipeWireDmaBufFrame {
             display_width: self.width,
             display_height: self.height,
             planes: vec![DmaBufPlaneInfo {
-                offset: self.offset,
+                offset: self.offset as u32,
                 pitch: self.stride,
             }],
         }))
@@ -524,9 +531,10 @@ fn yuy2_to_rgba(data: &[u8], width: u32, height: u32, stride: u32) -> Option<Vid
 
 /// Creates a zero-copy GPU frame from a DMA-BUF, or falls back to mmap+copy.
 ///
-/// When the SPA format has a known DRM fourcc, a `GpuFrame` wrapping the
-/// dup'd DMA-BUF FD is returned. The VAAPI encoder can then import it
-/// directly without any CPU round-trip.
+/// Only NV12 DMA-BUFs take the zero-copy GPU path (wrapped as `GpuFrame`).
+/// Other formats fall back to mmap+copy because `GpuPixelFormat` currently
+/// only supports NV12, and non-NV12 DMA-BUFs would be misinterpreted by
+/// downstream consumers.
 ///
 /// Falls back to mmap+copy for formats without a known DRM mapping.
 fn dmabuf_to_frame(
@@ -542,8 +550,11 @@ fn dmabuf_to_frame(
         return None;
     }
 
-    // Try zero-copy path: dup the FD and wrap as a GpuFrame.
-    if let Some(drm_format) = spa_format_to_drm_fourcc(spa_format) {
+    // Zero-copy path: only for NV12, which is the sole GpuPixelFormat variant.
+    // Other formats fall back to mmap+copy to avoid misreporting the pixel format.
+    if spa_format == SpaVideoFormat::NV12.as_raw()
+        && let Some(drm_format) = spa_format_to_drm_fourcc(spa_format)
+    {
         let dup_fd = unsafe { BorrowedFd::borrow_raw(fd) }
             .try_clone_to_owned()
             .ok()?;
@@ -553,7 +564,7 @@ fn dmabuf_to_frame(
             width,
             height,
             stride,
-            offset: offset as u32,
+            offset,
             map_size: size,
             spa_format,
         };
@@ -563,7 +574,7 @@ fn dmabuf_to_frame(
         ));
     }
 
-    // Fallback: mmap + copy for unknown formats.
+    // Fallback: mmap + copy for non-NV12 or unknown formats.
     dmabuf_to_frame_cpu(fd, size, offset, stride, width, height, spa_format)
 }
 
