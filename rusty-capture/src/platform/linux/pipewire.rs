@@ -137,6 +137,35 @@ fn build_enum_format_pod(preferred_size: Rectangle, preferred_fps: Fraction) -> 
     Ok(cursor.into_inner())
 }
 
+/// Extracts an [`Id`] from a [`Value`], handling both fixed values and
+/// single-element choices (some PipeWire producers wrap negotiated formats
+/// in a `Choice::None`).
+fn extract_id(value: &Value) -> Option<Id> {
+    match value {
+        Value::Id(id) => Some(*id),
+        Value::Choice(ChoiceValue::Id(Choice(_, enum_val))) => match enum_val {
+            ChoiceEnum::None(default) => Some(*default),
+            ChoiceEnum::Enum { default, .. } => Some(*default),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Extracts a [`Rectangle`] from a [`Value`], handling both fixed values
+/// and single-element choices.
+fn extract_rectangle(value: &Value) -> Option<Rectangle> {
+    match value {
+        Value::Rectangle(r) => Some(*r),
+        Value::Choice(ChoiceValue::Rectangle(Choice(_, enum_val))) => match enum_val {
+            ChoiceEnum::None(default) => Some(*default),
+            ChoiceEnum::Range { default, .. } => Some(*default),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Parses a negotiated `Format` pod into `(width, height, spa_video_format)`.
 fn parse_format_pod(pod: &Pod) -> Option<(u32, u32, u32)> {
     // Get pod bytes: header (8 bytes) + body.
@@ -144,8 +173,15 @@ fn parse_format_pod(pod: &Pod) -> Option<(u32, u32, u32)> {
     let total_size = unsafe { std::mem::size_of::<libspa::sys::spa_pod>() + (*raw).size as usize };
     let bytes = unsafe { std::slice::from_raw_parts(raw as *const u8, total_size) };
 
-    let (_, value) =
-        libspa::pod::deserialize::PodDeserializer::deserialize_from::<Value>(bytes).ok()?;
+    let (_, value) = match libspa::pod::deserialize::PodDeserializer::deserialize_from::<Value>(
+        bytes,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("failed to deserialize PipeWire format pod: {e:?}");
+            return None;
+        }
+    };
 
     if let Value::Object(obj) = value {
         let mut width = 0u32;
@@ -153,21 +189,29 @@ fn parse_format_pod(pod: &Pod) -> Option<(u32, u32, u32)> {
         let mut format = 0u32;
 
         for prop in &obj.properties {
-            if prop.key == FormatProperties::VideoFormat.as_raw()
-                && let Value::Id(id) = &prop.value
-            {
-                format = id.0;
-            } else if prop.key == FormatProperties::VideoSize.as_raw()
-                && let Value::Rectangle(rect) = &prop.value
-            {
-                width = rect.width;
-                height = rect.height;
+            if prop.key == FormatProperties::VideoFormat.as_raw() {
+                if let Some(id) = extract_id(&prop.value) {
+                    format = id.0;
+                } else {
+                    debug!(key = prop.key, "VideoFormat property has unexpected Value type");
+                }
+            } else if prop.key == FormatProperties::VideoSize.as_raw() {
+                if let Some(rect) = extract_rectangle(&prop.value) {
+                    width = rect.width;
+                    height = rect.height;
+                } else {
+                    debug!(key = prop.key, "VideoSize property has unexpected Value type");
+                }
             }
         }
 
         if width > 0 && height > 0 {
             return Some((width, height, format));
         }
+
+        warn!(width, height, format, "PipeWire format pod missing size");
+    } else {
+        warn!("PipeWire format pod is not an Object");
     }
 
     None
@@ -479,6 +523,8 @@ fn run_pipewire_stream(
                 if let Some(tx) = state.init_tx.take() {
                     let _ = tx.send(Ok((w, h)));
                 }
+            } else {
+                warn!("PipeWire param_changed(Format) failed to parse pod");
             }
         })
         .process(|stream, state| {
