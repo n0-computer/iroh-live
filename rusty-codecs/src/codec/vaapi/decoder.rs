@@ -580,7 +580,7 @@ mod tests {
         let w = 640u32;
         let h = 360u32;
         let rgba = vec![128u8; (w * h * 4) as usize];
-        let frame = VideoFrame::new_rgba(rgba.into(), w, h);
+        let frame = VideoFrame::new_rgba(rgba.into(), w, h, Duration::ZERO);
 
         let mut total_decoded = 0;
         let mut all_packets = Vec::new();

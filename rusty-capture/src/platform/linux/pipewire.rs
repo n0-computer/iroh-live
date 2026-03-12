@@ -34,7 +34,7 @@ use std::os::unix::io::BorrowedFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use libspa::buffer::DataType;
@@ -98,7 +98,8 @@ fn portal_runtime() -> &'static tokio::runtime::Handle {
                 rt.block_on(std::future::pending::<()>());
             })
             .expect("failed to spawn portal runtime thread");
-        rx.recv().expect("portal runtime thread died before sending handle")
+        rx.recv()
+            .expect("portal runtime thread died before sending handle")
     })
 }
 
@@ -173,7 +174,14 @@ impl GpuFrameInner for PipeWireDmaBufFrame {
             self.map_size
         );
         let data = &slice[self.offset..];
-        let frame = buffer_to_frame(data, self.width, self.height, self.stride, self.spa_format);
+        let frame = buffer_to_frame(
+            data,
+            self.width,
+            self.height,
+            self.stride,
+            self.spa_format,
+            Duration::ZERO,
+        );
 
         unsafe {
             let _ = munmap(ptr, self.map_size);
@@ -232,6 +240,8 @@ struct CaptureState {
     spa_format: u32,
     /// Log buffer type once on first successful frame delivery.
     logged_buffer_type: bool,
+    /// Timestamp origin for elapsed capture timestamps.
+    capture_start: Instant,
 }
 
 /// Builds an `EnumFormat` pod requesting common video formats.
@@ -420,13 +430,14 @@ fn buffer_to_frame(
     height: u32,
     stride: u32,
     spa_format: u32,
+    timestamp: Duration,
 ) -> Option<VideoFrame> {
     let w = width as usize;
     let h = height as usize;
     let s = stride as usize;
 
     if spa_format == SpaVideoFormat::NV12.as_raw() {
-        return nv12_passthrough(data, width, height, stride);
+        return nv12_passthrough(data, width, height, stride, timestamp);
     }
 
     if spa_format == SpaVideoFormat::BGRA.as_raw() {
@@ -437,7 +448,7 @@ fn buffer_to_frame(
             width,
             height,
             PixelFormat::Bgra,
-            Duration::ZERO,
+            timestamp,
         ));
     }
 
@@ -452,13 +463,18 @@ fn buffer_to_frame(
             width,
             height,
             PixelFormat::Bgra,
-            Duration::ZERO,
+            timestamp,
         ));
     }
 
     if spa_format == SpaVideoFormat::RGBA.as_raw() {
         let packed = copy_rows(data, w, h, s, 4);
-        return Some(VideoFrame::new_rgba(packed.into(), width, height));
+        return Some(VideoFrame::new_rgba(
+            packed.into(),
+            width,
+            height,
+            timestamp,
+        ));
     }
 
     if spa_format == SpaVideoFormat::RGBx.as_raw() {
@@ -466,11 +482,16 @@ fn buffer_to_frame(
         for pixel in packed.chunks_exact_mut(4) {
             pixel[3] = 255;
         }
-        return Some(VideoFrame::new_rgba(packed.into(), width, height));
+        return Some(VideoFrame::new_rgba(
+            packed.into(),
+            width,
+            height,
+            timestamp,
+        ));
     }
 
     if spa_format == SpaVideoFormat::YUY2.as_raw() {
-        return yuy2_to_rgba(data, width, height, stride);
+        return yuy2_to_rgba(data, width, height, stride, timestamp);
     }
 
     warn!(spa_format, "unsupported PipeWire video format");
@@ -498,7 +519,13 @@ fn copy_rows(data: &[u8], w: usize, h: usize, stride: usize, bpp: usize) -> Vec<
 }
 
 /// Passes NV12 data through as `VideoFrame::new_nv12` without color conversion.
-fn nv12_passthrough(data: &[u8], width: u32, height: u32, stride: u32) -> Option<VideoFrame> {
+fn nv12_passthrough(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    stride: u32,
+    timestamp: Duration,
+) -> Option<VideoFrame> {
     let h = height as usize;
     let s = stride as usize;
     let y_size = s * h;
@@ -511,18 +538,27 @@ fn nv12_passthrough(data: &[u8], width: u32, height: u32, stride: u32) -> Option
         );
         return None;
     }
-    Some(VideoFrame::new_nv12(Nv12Planes {
-        y_data: data[..y_size].to_vec(),
-        y_stride: stride,
-        uv_data: data[y_size..y_size + uv_size].to_vec(),
-        uv_stride: stride,
-        width,
-        height,
-    }))
+    Some(VideoFrame::new_nv12(
+        Nv12Planes {
+            y_data: data[..y_size].to_vec(),
+            y_stride: stride,
+            uv_data: data[y_size..y_size + uv_size].to_vec(),
+            uv_stride: stride,
+            width,
+            height,
+        },
+        timestamp,
+    ))
 }
 
 /// Converts YUY2 (packed YUYV 4:2:2) to RGBA using integer BT.601 math.
-fn yuy2_to_rgba(data: &[u8], width: u32, height: u32, stride: u32) -> Option<VideoFrame> {
+fn yuy2_to_rgba(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    stride: u32,
+    timestamp: Duration,
+) -> Option<VideoFrame> {
     // YUY2 requires even width (2-pixel pairs).
     let w = (width & !1) as usize;
     let h = height as usize;
@@ -561,7 +597,12 @@ fn yuy2_to_rgba(data: &[u8], width: u32, height: u32, stride: u32) -> Option<Vid
             }
         }
     }
-    Some(VideoFrame::new_rgba(rgba.into(), w as u32, height))
+    Some(VideoFrame::new_rgba(
+        rgba.into(),
+        w as u32,
+        height,
+        timestamp,
+    ))
 }
 
 /// Creates a zero-copy GPU frame from a DMA-BUF, or falls back to mmap+copy.
@@ -572,6 +613,10 @@ fn yuy2_to_rgba(data: &[u8], width: u32, height: u32, stride: u32) -> Option<Vid
 /// downstream consumers.
 ///
 /// Falls back to mmap+copy for formats without a known DRM mapping.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "low-level helper with DMA-BUF layout params"
+)]
 fn dmabuf_to_frame(
     fd: std::os::unix::io::RawFd,
     size: usize,
@@ -580,6 +625,7 @@ fn dmabuf_to_frame(
     width: u32,
     height: u32,
     spa_format: u32,
+    timestamp: Duration,
 ) -> Option<VideoFrame> {
     if size == 0 || offset >= size {
         return None;
@@ -605,15 +651,21 @@ fn dmabuf_to_frame(
         };
         return Some(VideoFrame::new_gpu(
             GpuFrame::new(Arc::new(gpu_frame)),
-            std::time::Duration::ZERO,
+            timestamp,
         ));
     }
 
     // Fallback: mmap + copy for non-NV12 or unknown formats.
-    dmabuf_to_frame_cpu(fd, size, offset, stride, width, height, spa_format)
+    dmabuf_to_frame_cpu(
+        fd, size, offset, stride, width, height, spa_format, timestamp,
+    )
 }
 
 /// Fallback: mmap a DMA-BUF, copy pixel data to CPU, and unmap.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "low-level helper with DMA-BUF layout params"
+)]
 fn dmabuf_to_frame_cpu(
     fd: std::os::unix::io::RawFd,
     size: usize,
@@ -622,6 +674,7 @@ fn dmabuf_to_frame_cpu(
     width: u32,
     height: u32,
     spa_format: u32,
+    timestamp: Duration,
 ) -> Option<VideoFrame> {
     use nix::sys::mman::{MapFlags, MmapAdvise, ProtFlags, madvise, mmap, munmap};
 
@@ -644,7 +697,7 @@ fn dmabuf_to_frame_cpu(
     let slice = unsafe { std::slice::from_raw_parts(ptr.as_ptr() as *const u8, size) };
     let data = &slice[offset..];
 
-    let frame = buffer_to_frame(data, width, height, stride, spa_format);
+    let frame = buffer_to_frame(data, width, height, stride, spa_format, timestamp);
 
     unsafe {
         let _ = munmap(ptr, size);
@@ -698,6 +751,7 @@ fn run_pipewire_stream(
         height: 0,
         spa_format: 0,
         logged_buffer_type: false,
+        capture_start: Instant::now(),
     };
 
     // Spawn a stopper thread that quits the mainloop when stop is requested.
@@ -776,6 +830,8 @@ fn run_pipewire_stream(
             let offset = chunk.offset() as usize;
             let data_type = data.type_();
 
+            let timestamp = state.capture_start.elapsed();
+
             if data_type == DataType::DmaBuf {
                 // DMA-BUF path: data.data() returns None — mmap the fd.
                 let fd = data.fd();
@@ -789,6 +845,7 @@ fn run_pipewire_stream(
                     state.width,
                     state.height,
                     state.spa_format,
+                    timestamp,
                 ) {
                     if !state.logged_buffer_type {
                         let path = if frame.is_gpu() {
@@ -820,9 +877,14 @@ fn run_pipewire_stream(
                 let start = offset.min(slice.len());
                 let end = (offset + size).min(slice.len());
                 let usable = &slice[start..end];
-                if let Some(frame) =
-                    buffer_to_frame(usable, state.width, state.height, stride, state.spa_format)
-                {
+                if let Some(frame) = buffer_to_frame(
+                    usable,
+                    state.width,
+                    state.height,
+                    stride,
+                    state.spa_format,
+                    timestamp,
+                ) {
                     let _ = state.frame_tx.send(frame);
                 }
             } else {

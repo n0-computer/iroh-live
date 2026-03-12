@@ -31,7 +31,7 @@
 use std::fs::OpenOptions;
 use std::os::unix::io::AsRawFd;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
@@ -329,6 +329,8 @@ fn capture_loop(
     // Start streaming.
     ioctl::streamon(&dev, QueueType::VideoCapture)?;
 
+    let capture_start = Instant::now();
+
     loop {
         if stop_rx.try_recv().is_ok() {
             debug!("V4L2 capture stopping");
@@ -359,7 +361,7 @@ fn capture_loop(
         };
         let data: &[u8] = mapping;
 
-        let frame = convert_frame(data, width, height, capture_format)?;
+        let frame = convert_frame(data, width, height, capture_format, capture_start.elapsed())?;
 
         // Re-queue the buffer before sending the frame.
         let mut qbuf = ioctl::QBuffer::<MmapHandle>::new(QueueType::VideoCapture, buf_idx as u32);
@@ -394,6 +396,7 @@ fn convert_frame(
     width: u32,
     height: u32,
     capture_format: CapturePixelFormat,
+    timestamp: Duration,
 ) -> Result<VideoFrame> {
     Ok(match capture_format {
         CapturePixelFormat::Nv12 => {
@@ -406,14 +409,17 @@ fn convert_frame(
                 data.len(),
                 y_size + uv_size
             );
-            VideoFrame::new_nv12(Nv12Planes {
-                y_data: data[..y_size].to_vec(),
-                y_stride: width,
-                uv_data: data[y_size..y_size + uv_size].to_vec(),
-                uv_stride: width,
-                width,
-                height,
-            })
+            VideoFrame::new_nv12(
+                Nv12Planes {
+                    y_data: data[..y_size].to_vec(),
+                    y_stride: width,
+                    uv_data: data[y_size..y_size + uv_size].to_vec(),
+                    uv_stride: width,
+                    width,
+                    height,
+                },
+                timestamp,
+            )
         }
         CapturePixelFormat::I420 => {
             let y_size = (width * height) as usize;
@@ -431,33 +437,37 @@ fn convert_frame(
                 bytes::Bytes::copy_from_slice(&data[y_size + uv_size..y_size + uv_size * 2]),
                 width,
                 height,
+                timestamp,
             )
         }
         CapturePixelFormat::Yuyv => {
             let rgba = yuyv_to_rgba(data, width, height);
-            VideoFrame::new_rgba(rgba.into(), width, height)
+            VideoFrame::new_rgba(rgba.into(), width, height, timestamp)
         }
         CapturePixelFormat::Rgb => {
             let rgba = rgb_to_rgba(data, width, height);
-            VideoFrame::new_rgba(rgba.into(), width, height)
+            VideoFrame::new_rgba(rgba.into(), width, height, timestamp)
         }
         CapturePixelFormat::Mjpeg => {
             let rgba = mjpeg_to_rgba(data, width, height)?;
-            VideoFrame::new_rgba(rgba.into(), width, height)
+            VideoFrame::new_rgba(rgba.into(), width, height, timestamp)
         }
         CapturePixelFormat::Gray => {
             let rgba = gray_to_rgba(data, width, height);
-            VideoFrame::new_rgba(rgba.into(), width, height)
+            VideoFrame::new_rgba(rgba.into(), width, height, timestamp)
         }
-        CapturePixelFormat::Rgba => {
-            VideoFrame::new_rgba(bytes::Bytes::copy_from_slice(data), width, height)
-        }
+        CapturePixelFormat::Rgba => VideoFrame::new_rgba(
+            bytes::Bytes::copy_from_slice(data),
+            width,
+            height,
+            timestamp,
+        ),
         CapturePixelFormat::Bgra => VideoFrame::new_packed(
             bytes::Bytes::copy_from_slice(data),
             width,
             height,
             PixelFormat::Bgra,
-            Duration::ZERO,
+            timestamp,
         ),
     })
 }
@@ -556,20 +566,16 @@ impl VideoSource for V4l2CameraCapturer {
     fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {
         // Drain to latest frame (don't build up latency).
         let mut latest = None;
-        while let Ok(frame) = self.rx.try_recv() {
-            latest = Some(frame);
-        }
-        if latest.is_some() {
-            return Ok(latest);
-        }
-        // Block briefly for the next frame if none buffered.
-        match self.rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(frame) => Ok(Some(frame)),
-            Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                anyhow::bail!("V4L2 capture thread exited")
+        loop {
+            match self.rx.try_recv() {
+                Ok(frame) => latest = Some(frame),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    anyhow::bail!("V4L2 capture thread exited")
+                }
             }
         }
+        Ok(latest)
     }
 }
 

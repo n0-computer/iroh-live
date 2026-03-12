@@ -312,6 +312,7 @@ impl VideoSource for TestPatternSource {
             bytes::Bytes::copy_from_slice(&self.buffer),
             w,
             h,
+            std::time::Duration::ZERO,
         )))
     }
 }

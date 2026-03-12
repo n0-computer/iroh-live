@@ -18,6 +18,7 @@
 //!    `CVPixelBuffer` directly — true zero-copy GPU encode.
 
 use std::sync::mpsc;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use screencapturekit::shareable_content::SCShareableContent;
@@ -101,6 +102,7 @@ pub fn monitors() -> Result<Vec<MonitorInfo>> {
 
 struct FrameHandler {
     tx: mpsc::Sender<VideoFrame>,
+    capture_start: Instant,
 }
 
 impl SCStreamOutputTrait for FrameHandler {
@@ -139,7 +141,12 @@ impl SCStreamOutputTrait for FrameHandler {
             }
         }
 
-        let frame = VideoFrame::new_rgba(rgba.into(), width as u32, height as u32);
+        let frame = VideoFrame::new_rgba(
+            rgba.into(),
+            width as u32,
+            height as u32,
+            self.capture_start.elapsed(),
+        );
         let _ = self.tx.send(frame);
     }
 }
@@ -209,7 +216,10 @@ impl MacScreenCapturer {
         }
 
         let (frame_tx, frame_rx) = mpsc::channel();
-        let handler = FrameHandler { tx: frame_tx };
+        let handler = FrameHandler {
+            tx: frame_tx,
+            capture_start: Instant::now(),
+        };
 
         let mut stream = SCStream::new(filter, stream_config, handler);
         stream
