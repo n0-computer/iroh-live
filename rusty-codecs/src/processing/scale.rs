@@ -58,7 +58,9 @@ impl Scaler {
         self.target_height = Some(h);
     }
 
-    /// Scale an RGBA buffer. Returns `None` if no scaling is needed (pass-through).
+    /// Scales an RGBA buffer to the target dimensions.
+    ///
+    /// Returns `None` if no scaling is needed (pass-through).
     /// Returns `Some((scaled_data, new_w, new_h))` when scaling was performed.
     pub fn scale_rgba(
         &self,
@@ -76,6 +78,54 @@ impl Scaler {
         self.scaler.resize_rgba(&src_store, &mut dst_store, false)?;
 
         let out = dst_store.as_bytes().to_vec();
+        Ok(Some((out, tw, th)))
+    }
+
+    /// Scales an RGBA buffer using cover mode: scale up preserving aspect ratio
+    /// to fully cover the target, then center-crop to the exact target size.
+    ///
+    /// Returns `None` if no scaling is needed (pass-through).
+    pub fn scale_cover_rgba(
+        &self,
+        src: &[u8],
+        src_w: u32,
+        src_h: u32,
+    ) -> Result<Option<(Vec<u8>, u32, u32)>> {
+        let (tw, th) = match (self.target_width, self.target_height) {
+            (Some(w), Some(h)) if w != src_w || h != src_h => (w, h),
+            _ => return Ok(None),
+        };
+
+        // Scale to cover: pick the larger ratio so both axes >= target.
+        let ratio_w = tw as f64 / src_w as f64;
+        let ratio_h = th as f64 / src_h as f64;
+        let ratio = ratio_w.max(ratio_h);
+        let scaled_w = (src_w as f64 * ratio).ceil() as u32;
+        let scaled_h = (src_h as f64 * ratio).ceil() as u32;
+
+        // Scale to intermediate (cover) dimensions.
+        let src_store = ImageStore::<u8, 4>::from_slice(src, src_w as usize, src_h as usize)?;
+        let mut mid_store = ImageStoreMut::<u8, 4>::alloc(scaled_w as usize, scaled_h as usize);
+        self.scaler.resize_rgba(&src_store, &mut mid_store, false)?;
+
+        // Center-crop to target.
+        if scaled_w == tw && scaled_h == th {
+            let out = mid_store.as_bytes().to_vec();
+            return Ok(Some((out, tw, th)));
+        }
+
+        let mid_data = mid_store.as_bytes();
+        let mid_stride = scaled_w as usize * 4;
+        let x_off = ((scaled_w - tw) / 2) as usize;
+        let y_off = ((scaled_h - th) / 2) as usize;
+        let mut out = vec![0u8; (tw * th * 4) as usize];
+        let row_bytes = tw as usize * 4;
+        for row in 0..th as usize {
+            let src_start = (y_off + row) * mid_stride + x_off * 4;
+            let dst_start = row * row_bytes;
+            out[dst_start..dst_start + row_bytes]
+                .copy_from_slice(&mid_data[src_start..src_start + row_bytes]);
+        }
         Ok(Some((out, tw, th)))
     }
 }
