@@ -6060,6 +6060,7 @@ name = "moq-media"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "buf-list",
  "byte-unit",
  "bytemuck",
  "bytes",
@@ -6090,6 +6091,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "wgpu 27.0.1",
 ]
 
 [[package]]

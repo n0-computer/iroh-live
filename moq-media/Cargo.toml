@@ -42,6 +42,7 @@ cros-codecs = { version = "0.0.6", optional = true, features = ["vaapi"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 
 [dev-dependencies]
+buf-list = "1.1"
 clap = { version = "4.5", features = ["derive"] }
 eframe = { version = "0.33.0", default-features = false, features = ["default_fonts", "wayland", "x11", "wgpu"] }
 egui-wgpu = "0.33.0"
@@ -49,8 +50,10 @@ moq-media-egui = { path = "../moq-media-egui" }
 pollster = "0.4"
 image = { version = "0.25", features = ["jpeg"] }
 postcard = "1.1.3"
+rusty-capture = { path = "../rusty-capture" }
 tokio = { version = "1.48.0", features = ["full"] }
 tracing-subscriber = "0.3.20"
+wgpu = { version = "27", default-features = false, features = ["wgsl", "vulkan"] }
 
 [features]
 default = ["h264", "opus", "av1", "capture"]

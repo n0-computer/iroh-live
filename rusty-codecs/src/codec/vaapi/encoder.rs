@@ -4,15 +4,17 @@ use anyhow::{Context, Result};
 use cros_codecs::{
     BlockingMode, Fourcc, FrameLayout, PlaneLayout, Resolution,
     backend::vaapi::encoder::VaapiBackend,
+    codec::h264::parser::Level,
     encoder::{
         CodedBitstreamBuffer, FrameMetadata, PredictionStructure, RateControl, Tunings,
         VideoEncoder as CrosVideoEncoder, h264::EncoderConfig,
         stateless::h264::StatelessEncoder as H264StatelessEncoder,
     },
     libva::{
-        Display, Image, MemoryType, Surface, SurfaceMemoryDescriptor, UsageHint, VA_FOURCC_NV12,
-        VA_RT_FORMAT_YUV420, VADRMPRIMESurfaceDescriptor, VADRMPRIMESurfaceDescriptorLayer,
-        VADRMPRIMESurfaceDescriptorObject, VAEntrypoint, VAProfile, VASurfaceAttrib,
+        self as va, Display, Image, MemoryType, Surface, SurfaceMemoryDescriptor, UsageHint,
+        VA_FOURCC_NV12, VA_RT_FORMAT_YUV420, VADRMPRIMESurfaceDescriptor,
+        VADRMPRIMESurfaceDescriptorLayer, VADRMPRIMESurfaceDescriptorObject, VAEntrypoint,
+        VAProfile, VASurfaceAttrib,
     },
     video_frame::{ReadMapping, VideoFrame as CrosVideoFrame, WriteMapping},
 };
@@ -321,6 +323,385 @@ fn upload_nv12_to_surface(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// VAAPI VPP color-space converter
+// ---------------------------------------------------------------------------
+
+/// VA RT format for RGB32 surfaces (BGRx/XRGB8888).
+const VA_RT_FORMAT_RGB32: u32 = 0x0002_0000;
+
+/// VA RT format for YUV422 surfaces (YUYV).
+const VA_RT_FORMAT_YUV422: u32 = 0x0000_0002;
+
+/// DRM fourcc constants.
+const DRM_FORMAT_XRGB8888: u32 = u32::from_le_bytes(*b"XR24");
+const DRM_FORMAT_ARGB8888: u32 = u32::from_le_bytes(*b"AR24");
+const DRM_FORMAT_YUYV: u32 = u32::from_le_bytes(*b"YUYV");
+const DRM_FORMAT_NV12: u32 = u32::from_le_bytes(*b"NV12");
+
+/// VAProcPipelineParameterBuffer from va/va_vpp.h.
+///
+/// Not included in cros-libva's generated bindings.
+#[repr(C)]
+struct VaProcPipelineParameterBuffer {
+    surface: va::VASurfaceID,
+    surface_region: *const va::VARectangle,
+    surface_color_standard: u32,
+    output_region: *const va::VARectangle,
+    output_background_color: u32,
+    output_color_standard: u32,
+    pipeline_flags: u32,
+    filter_flags: u32,
+    filters: *mut va::VABufferID,
+    num_filters: u32,
+    forward_references: *mut va::VASurfaceID,
+    num_forward_references: u32,
+    backward_references: *mut va::VASurfaceID,
+    num_backward_references: u32,
+    rotation_state: u32,
+    blend_state: *const std::ffi::c_void,
+    mirror_state: u32,
+    additional_outputs: *mut va::VASurfaceID,
+    num_additional_outputs: u32,
+    input_surface_flag: u32,
+    output_surface_flag: u32,
+    _pad: [u8; 256],
+}
+
+/// Checks a VAStatus and returns an error on failure.
+fn vpp_va_check(status: va::VAStatus, op: &str) -> Result<()> {
+    if status != va::VA_STATUS_SUCCESS as i32 {
+        Err(anyhow::anyhow!("{op} failed: VA status {status}"))
+    } else {
+        Ok(())
+    }
+}
+
+/// Maps a DRM fourcc to the VA RT format needed for surface import.
+fn drm_fourcc_to_rt_format(fourcc: u32) -> Option<u32> {
+    match fourcc {
+        DRM_FORMAT_XRGB8888 | DRM_FORMAT_ARGB8888 => Some(VA_RT_FORMAT_RGB32),
+        DRM_FORMAT_YUYV => Some(VA_RT_FORMAT_YUV422),
+        DRM_FORMAT_NV12 => Some(VA_RT_FORMAT_YUV420),
+        _ => None,
+    }
+}
+
+/// VAAPI VPP color-space converter.
+///
+/// Converts DMA-BUF frames (BGRx/YUYV/etc.) to NV12 on the GPU using the
+/// VA-API Video Processing Pipeline, avoiding CPU pixel copies.
+struct VppColorConverter {
+    dpy: va::VADisplay,
+    config_id: va::VAConfigID,
+    _drm_file: std::fs::File,
+    target_width: u32,
+    target_height: u32,
+}
+
+impl VppColorConverter {
+    /// Creates a VPP color converter targeting the given output dimensions.
+    fn new(target_width: u32, target_height: u32) -> Result<Self> {
+        unsafe {
+            for path in ["/dev/dri/renderD128", "/dev/dri/renderD129"] {
+                let Ok(file) = std::fs::File::options().read(true).write(true).open(path) else {
+                    continue;
+                };
+
+                let dpy = va::vaGetDisplayDRM(file.as_raw_fd());
+                if dpy.is_null() {
+                    continue;
+                }
+
+                let mut major = 0i32;
+                let mut minor = 0i32;
+                let st = va::vaInitialize(dpy, &mut major, &mut minor);
+                if st != va::VA_STATUS_SUCCESS as i32 {
+                    continue;
+                }
+
+                // Check VPP support.
+                let mut rt_attr = va::VAConfigAttrib {
+                    type_: va::VAConfigAttribType::VAConfigAttribRTFormat,
+                    value: 0,
+                };
+                vpp_va_check(
+                    va::vaGetConfigAttributes(
+                        dpy,
+                        va::VAProfile::VAProfileNone,
+                        va::VAEntrypoint::VAEntrypointVideoProc,
+                        &mut rt_attr,
+                        1,
+                    ),
+                    "vaGetConfigAttributes(VPP)",
+                )?;
+
+                let mut config_id: va::VAConfigID = 0;
+                vpp_va_check(
+                    va::vaCreateConfig(
+                        dpy,
+                        va::VAProfile::VAProfileNone,
+                        va::VAEntrypoint::VAEntrypointVideoProc,
+                        &mut rt_attr,
+                        1,
+                        &mut config_id,
+                    ),
+                    "vaCreateConfig(VPP)",
+                )?;
+
+                tracing::debug!("VPP color converter initialized on {path}");
+                return Ok(Self {
+                    dpy,
+                    config_id,
+                    _drm_file: file,
+                    target_width,
+                    target_height,
+                });
+            }
+            Err(anyhow::anyhow!(
+                "no VA display found for VPP color converter"
+            ))
+        }
+    }
+
+    /// Converts a DMA-BUF to NV12 at the target encoder dimensions via VPP.
+    ///
+    /// Returns a new `DmaBufInfo` with NV12 format. The caller takes ownership
+    /// of the output FD.
+    fn convert(&self, info: &DmaBufInfo) -> Result<DmaBufInfo> {
+        let input_rt = drm_fourcc_to_rt_format(info.drm_format).ok_or_else(|| {
+            anyhow::anyhow!(
+                "VPP: unsupported input DRM fourcc 0x{:08x}",
+                info.drm_format
+            )
+        })?;
+
+        // Track allocated VA resources for cleanup.
+        struct VppResources {
+            dpy: va::VADisplay,
+            input_surface: va::VASurfaceID,
+            output_surface: va::VASurfaceID,
+            context_id: va::VAContextID,
+            buf_id: va::VABufferID,
+        }
+
+        impl Drop for VppResources {
+            fn drop(&mut self) {
+                unsafe {
+                    if self.buf_id != 0 {
+                        va::vaDestroyBuffer(self.dpy, self.buf_id);
+                    }
+                    if self.context_id != 0 {
+                        va::vaDestroyContext(self.dpy, self.context_id);
+                    }
+                    if self.input_surface != 0 {
+                        va::vaDestroySurfaces(self.dpy, &mut self.input_surface, 1);
+                    }
+                    if self.output_surface != 0 {
+                        va::vaDestroySurfaces(self.dpy, &mut self.output_surface, 1);
+                    }
+                }
+            }
+        }
+
+        unsafe {
+            let mut res = VppResources {
+                dpy: self.dpy,
+                input_surface: 0,
+                output_surface: 0,
+                context_id: 0,
+                buf_id: 0,
+            };
+
+            // Import input DMA-BUF as VA surface.
+            let fd_dup = libc::dup(info.fd.as_raw_fd());
+            if fd_dup < 0 {
+                return Err(anyhow::anyhow!(
+                    "dup input fd: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+
+            {
+                let mut prime_desc: va::VADRMPRIMESurfaceDescriptor = std::mem::zeroed();
+                prime_desc.fourcc = info.drm_format;
+                prime_desc.width = info.coded_width;
+                prime_desc.height = info.coded_height;
+                prime_desc.num_objects = 1;
+                prime_desc.objects[0].fd = fd_dup;
+                prime_desc.objects[0].size = 0;
+                prime_desc.objects[0].drm_format_modifier = info.modifier;
+                prime_desc.num_layers = 1;
+                prime_desc.layers[0].drm_format = info.drm_format;
+                prime_desc.layers[0].num_planes = info.planes.len() as u32;
+                for (i, plane) in info.planes.iter().enumerate() {
+                    prime_desc.layers[0].object_index[i] = 0;
+                    prime_desc.layers[0].offset[i] = plane.offset;
+                    prime_desc.layers[0].pitch[i] = plane.pitch;
+                }
+
+                let mut attribs: [va::VASurfaceAttrib; 2] = std::mem::zeroed();
+                attribs[0].type_ = va::VASurfaceAttribType::VASurfaceAttribMemoryType;
+                attribs[0].flags = va::VA_SURFACE_ATTRIB_SETTABLE;
+                attribs[0].value.type_ = va::VAGenericValueType::VAGenericValueTypeInteger;
+                attribs[0].value.value.i = va::VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 as i32;
+                attribs[1].type_ = va::VASurfaceAttribType::VASurfaceAttribExternalBufferDescriptor;
+                attribs[1].flags = va::VA_SURFACE_ATTRIB_SETTABLE;
+                attribs[1].value.type_ = va::VAGenericValueType::VAGenericValueTypePointer;
+                attribs[1].value.value.p = &mut prime_desc as *mut _ as *mut std::ffi::c_void;
+
+                let status = va::vaCreateSurfaces(
+                    self.dpy,
+                    input_rt,
+                    info.coded_width,
+                    info.coded_height,
+                    &mut res.input_surface,
+                    1,
+                    attribs.as_mut_ptr(),
+                    attribs.len() as u32,
+                );
+                libc::close(fd_dup);
+                if status != va::VA_STATUS_SUCCESS as i32 {
+                    res.input_surface = 0;
+                    return Err(anyhow::anyhow!(
+                        "vaCreateSurfaces(VPP input) failed: VA status {status}"
+                    ));
+                }
+            }
+
+            // Create NV12 output surface at encoder target dimensions.
+            {
+                let mut attribs: [va::VASurfaceAttrib; 2] = std::mem::zeroed();
+                attribs[0].type_ = va::VASurfaceAttribType::VASurfaceAttribPixelFormat;
+                attribs[0].flags = va::VA_SURFACE_ATTRIB_SETTABLE;
+                attribs[0].value.type_ = va::VAGenericValueType::VAGenericValueTypeInteger;
+                attribs[0].value.value.i = va::VA_FOURCC_NV12 as i32;
+                attribs[1].type_ = va::VASurfaceAttribType::VASurfaceAttribUsageHint;
+                attribs[1].flags = va::VA_SURFACE_ATTRIB_SETTABLE;
+                attribs[1].value.type_ = va::VAGenericValueType::VAGenericValueTypeInteger;
+                attribs[1].value.value.i = (va::VA_SURFACE_ATTRIB_USAGE_HINT_VPP_WRITE
+                    | va::VA_SURFACE_ATTRIB_USAGE_HINT_EXPORT)
+                    as i32;
+
+                vpp_va_check(
+                    va::vaCreateSurfaces(
+                        self.dpy,
+                        VA_RT_FORMAT_YUV420,
+                        self.target_width,
+                        self.target_height,
+                        &mut res.output_surface,
+                        1,
+                        attribs.as_mut_ptr(),
+                        attribs.len() as u32,
+                    ),
+                    "vaCreateSurfaces(VPP output)",
+                )?;
+            }
+
+            // Create VPP context.
+            vpp_va_check(
+                va::vaCreateContext(
+                    self.dpy,
+                    self.config_id,
+                    self.target_width as i32,
+                    self.target_height as i32,
+                    0,
+                    &mut res.output_surface,
+                    1,
+                    &mut res.context_id,
+                ),
+                "vaCreateContext(VPP)",
+            )?;
+
+            // Create pipeline parameter buffer (color convert + optional scale).
+            let mut pipeline_param: VaProcPipelineParameterBuffer = std::mem::zeroed();
+            pipeline_param.surface = res.input_surface;
+
+            vpp_va_check(
+                va::vaCreateBuffer(
+                    self.dpy,
+                    res.context_id,
+                    va::VABufferType::VAProcPipelineParameterBufferType,
+                    std::mem::size_of::<VaProcPipelineParameterBuffer>() as u32,
+                    1,
+                    &mut pipeline_param as *mut _ as *mut std::ffi::c_void,
+                    &mut res.buf_id,
+                ),
+                "vaCreateBuffer(VPP)",
+            )?;
+
+            // Execute VPP pipeline.
+            vpp_va_check(
+                va::vaBeginPicture(self.dpy, res.context_id, res.output_surface),
+                "vaBeginPicture(VPP)",
+            )?;
+            vpp_va_check(
+                va::vaRenderPicture(self.dpy, res.context_id, &mut res.buf_id, 1),
+                "vaRenderPicture(VPP)",
+            )?;
+            vpp_va_check(
+                va::vaEndPicture(self.dpy, res.context_id),
+                "vaEndPicture(VPP)",
+            )?;
+            vpp_va_check(
+                va::vaSyncSurface(self.dpy, res.output_surface),
+                "vaSyncSurface(VPP)",
+            )?;
+
+            // Export NV12 output as DRM_PRIME_2.
+            let mut desc: va::VADRMPRIMESurfaceDescriptor = std::mem::zeroed();
+            vpp_va_check(
+                va::vaExportSurfaceHandle(
+                    self.dpy,
+                    res.output_surface,
+                    va::VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                    va::VA_EXPORT_SURFACE_READ_ONLY | va::VA_EXPORT_SURFACE_COMPOSED_LAYERS,
+                    &mut desc as *mut _ as *mut std::ffi::c_void,
+                ),
+                "vaExportSurfaceHandle(VPP output)",
+            )?;
+
+            // Take ownership of the primary FD, close any extras.
+            use std::os::fd::{FromRawFd, OwnedFd};
+            let primary_fd = OwnedFd::from_raw_fd(desc.objects[0].fd);
+            for i in 1..desc.num_objects as usize {
+                libc::close(desc.objects[i].fd);
+            }
+
+            let layer = &desc.layers[0];
+            let result = DmaBufInfo {
+                fd: primary_fd,
+                modifier: desc.objects[0].drm_format_modifier,
+                drm_format: desc.fourcc,
+                coded_width: desc.width,
+                coded_height: desc.height,
+                display_width: self.target_width,
+                display_height: self.target_height,
+                planes: (0..layer.num_planes as usize)
+                    .map(|i| crate::format::DmaBufPlaneInfo {
+                        offset: layer.offset[i],
+                        pitch: layer.pitch[i],
+                    })
+                    .collect(),
+            };
+
+            Ok(result)
+        }
+    }
+}
+
+impl Drop for VppColorConverter {
+    fn drop(&mut self) {
+        unsafe {
+            va::vaDestroyConfig(self.dpy, self.config_id);
+            va::vaTerminate(self.dpy);
+        }
+    }
+}
+
+// Safety: VppColorConverter is only accessed from the encoder's single thread.
+unsafe impl Send for VppColorConverter {}
+
 /// The concrete H264 VAAPI encoder type.
 type VaapiH264Encoder =
     H264StatelessEncoder<VaapiInputFrame, VaapiBackend<VaapiInputFrame, Surface<VaapiInputFrame>>>;
@@ -350,6 +731,58 @@ pub struct VaapiEncoder {
     packet_buf: std::collections::VecDeque<EncodedFrame>,
     /// Whether the frame input path has been logged (log once on first frame).
     logged_frame_path: bool,
+    /// VPP color-space converter for non-NV12 DMA-BUF frames.
+    /// Lazily initialized on first non-NV12 DMA-BUF frame.
+    #[debug(skip)]
+    vpp: Option<VppColorConverter>,
+    /// Set when VPP init or conversion fails — prevents re-init every frame.
+    vpp_disabled: bool,
+}
+
+/// Computes the H.264 level that minimizes decoder DPB buffering.
+///
+/// The decoder derives its DPB (decoded picture buffer) size from the level.
+/// A too-high level (e.g. Level 4.0 for 360p) causes the decoder to allocate
+/// 16+ DPB slots and buffer that many frames before output, adding ~500ms of
+/// latency. The cros-codecs encoder sets `max_num_ref_frames=1` in the SPS
+/// but doesn't set VUI `max_dec_frame_buffering`, so decoders fall back to
+/// the level-derived DPB size.
+///
+/// We pick the level whose `max_dpb_mbs / frame_mbs` yields the smallest
+/// DPB that's still >= 2 (1 reference + 1 output). The level is a signaling
+/// field — the VAAPI hardware encodes whatever resolution is given regardless.
+fn min_dpb_h264_level(width: u32, height: u32) -> Level {
+    let w_mb = width.div_ceil(16);
+    let h_mb = height.div_ceil(16);
+    let frame_mbs = w_mb * h_mb;
+
+    // H.264 Table A-1: (max_dpb_mbs, Level)
+    // Sorted by max_dpb_mbs ascending.
+    let levels: &[(u32, Level)] = &[
+        (396, Level::L1),
+        (900, Level::L1_1),
+        (2376, Level::L1_2),
+        (2376, Level::L1_3),
+        (2376, Level::L2_0),
+        (4752, Level::L2_1),
+        (8100, Level::L2_2),
+        (8100, Level::L3),
+        (18000, Level::L3_1),
+        (20480, Level::L3_2),
+        (32768, Level::L4),
+        (32768, Level::L4_1),
+        (34816, Level::L4_2),
+        (110400, Level::L5),
+    ];
+
+    for &(max_dpb_mbs, level) in levels {
+        // DPB slots = max_dpb_mbs / frame_mbs, need >= 2 for decode to work.
+        let dpb = max_dpb_mbs / frame_mbs;
+        if dpb >= 2 {
+            return level;
+        }
+    }
+    Level::L5
 }
 
 impl VaapiEncoder {
@@ -371,8 +804,11 @@ impl VaapiEncoder {
             .unwrap_or_default();
         let low_power = entrypoints.contains(&VAEntrypoint::VAEntrypointEncSliceLP);
 
+        let level = min_dpb_h264_level(width, height);
+
         let config = EncoderConfig {
             resolution: coded_size,
+            level,
             initial_tunings: Tunings {
                 rate_control: RateControl::ConstantBitrate(bitrate),
                 framerate,
@@ -495,6 +931,8 @@ impl VaapiEncoder {
             avcc,
             packet_buf: std::collections::VecDeque::new(),
             logged_frame_path: false,
+            vpp: None,
+            vpp_disabled: false,
         })
     }
 
@@ -519,6 +957,65 @@ impl VaapiEncoder {
             width: w,
             height: h,
         })
+    }
+
+    /// Attempts VPP GPU color conversion for a non-NV12 DMA-BUF frame.
+    /// Falls back to CPU NV12 upload if VPP init or conversion fails.
+    fn vpp_convert_or_cpu(
+        &mut self,
+        info: DmaBufInfo,
+        frame: VideoFrame,
+    ) -> Result<VaapiInputFrame> {
+        // Permanently disabled after a failed attempt.
+        if self.vpp_disabled {
+            return self.build_nv12_input(frame);
+        }
+
+        // Lazy-init VPP converter.
+        if self.vpp.is_none() {
+            match VppColorConverter::new(self.width, self.height) {
+                Ok(vpp) => self.vpp = Some(vpp),
+                Err(e) => {
+                    self.vpp_disabled = true;
+                    let fourcc_bytes = info.drm_format.to_le_bytes();
+                    let fourcc_str = std::str::from_utf8(&fourcc_bytes).unwrap_or("????");
+                    tracing::info!(
+                        drm_format = fourcc_str,
+                        error = %e,
+                        "VAAPI encode: VPP init failed, using CPU NV12 upload"
+                    );
+                    self.logged_frame_path = true;
+                    return self.build_nv12_input(frame);
+                }
+            }
+        }
+
+        let vpp = self.vpp.as_ref().unwrap();
+        match vpp.convert(&info) {
+            Ok(nv12_info) => {
+                if !self.logged_frame_path {
+                    let fourcc_bytes = info.drm_format.to_le_bytes();
+                    let fourcc_str = std::str::from_utf8(&fourcc_bytes).unwrap_or("????");
+                    tracing::info!(
+                        drm_format = fourcc_str,
+                        "VAAPI encode: zero-copy VPP convert ({fourcc_str} → NV12)"
+                    );
+                    self.logged_frame_path = true;
+                }
+                Ok(VaapiInputFrame::DmaBuf(nv12_info))
+            }
+            Err(e) => {
+                // Disable VPP permanently — don't re-init every frame.
+                self.vpp_disabled = true;
+                self.vpp = None;
+                tracing::warn!(
+                    error = %e,
+                    "VAAPI encode: VPP convert failed, falling back to CPU NV12 upload"
+                );
+                self.logged_frame_path = true;
+                self.build_nv12_input(frame)
+            }
+        }
     }
 
     /// Scales the frame to encoder dimensions if needed, based on the
@@ -694,20 +1191,8 @@ impl VideoEncoder for VaapiEncoder {
                 }
                 VaapiInputFrame::DmaBuf(info)
             } else {
-                if !self.logged_frame_path {
-                    let fourcc_bytes = info.drm_format.to_le_bytes();
-                    let fourcc_str = std::str::from_utf8(&fourcc_bytes).unwrap_or("????");
-                    tracing::info!(
-                        drm_format = fourcc_str,
-                        src_w = info.coded_width,
-                        src_h = info.coded_height,
-                        enc_w = self.width,
-                        enc_h = self.height,
-                        "VAAPI encode: DMA-BUF not directly importable, using CPU NV12 upload"
-                    );
-                    self.logged_frame_path = true;
-                }
-                self.build_nv12_input(frame)?
+                // Non-NV12 or dimension mismatch — try VPP GPU conversion.
+                self.vpp_convert_or_cpu(info, frame)?
             }
         } else {
             if !self.logged_frame_path {

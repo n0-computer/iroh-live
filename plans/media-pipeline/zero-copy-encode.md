@@ -1,6 +1,6 @@
 # Zero-Copy Capture → Encode Pipeline
 
-## Status: Phase 1 Done, Phase 2 In Progress
+## Status: Phase 1 Done, Phase 2 Done
 
 ## Background
 
@@ -135,3 +135,26 @@ Not all VAAPI drivers support all input formats for VPP. Check at init:
 | Screen (Mutter BGRx) → VAAPI | DMA-BUF → VPP BGRx→NV12 → encode (**zero-copy**) |
 | Camera (NV12) → VAAPI | DMA-BUF → direct import → encode (**zero-copy**, unchanged) |
 | Any source → software encoder | CPU path (unchanged) |
+
+### Phase 2 Implementation Notes
+
+**File**: `rusty-codecs/src/codec/vaapi/encoder.rs`
+
+**`VppColorConverter`**: Opens its own `VADisplay` (cros-libva's `Display::handle()`
+is `pub(crate)`, so can't reuse the encoder's). Creates a `VAProfileNone +
+VAEntrypointVideoProc` config. The `convert()` method:
+
+1. Maps input DRM fourcc → VA RT format (`XR24`/`AR24` → `VA_RT_FORMAT_RGB32`,
+   `YUYV` → `VA_RT_FORMAT_YUV422`)
+2. Imports input DMA-BUF as VA surface via `DRM_PRIME_2` with the correct RT format
+3. Creates NV12 output surface at encoder target dimensions (handles scaling)
+4. Runs VPP pipeline (vaBeginPicture/vaRenderPicture/vaEndPicture/vaSyncSurface)
+5. Exports output as `DRM_PRIME_2` → new `DmaBufInfo` (NV12)
+6. Existing encoder zero-copy DMA-BUF import path handles the rest
+
+**Integration**: `vpp_convert_or_cpu()` lazy-inits the converter on first non-NV12
+DMA-BUF frame. Falls back to CPU path if VPP init or conversion fails (disables
+VPP on failure to avoid retrying every frame).
+
+**`VaProcPipelineParameterBuffer`**: Manually defined from `va/va_vpp.h` (not in
+cros-libva bindings). Same struct used by `VppRetiler` in `dmabuf_import.rs`.
