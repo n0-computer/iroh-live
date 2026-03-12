@@ -12,14 +12,14 @@
 //! # DMA-BUF Zero-Copy
 //!
 //! When PipeWire delivers DMA-BUF-backed buffers (`SPA_DATA_DmaBuf`),
-//! `data.data()` returns `None` because the kernel does not automatically
-//! map them. We mmap the DMA-BUF fd to extract pixel data within the
-//! process callback, then unmap immediately. This avoids the
-//! compositor→SHM copy overhead while keeping the buffer lifecycle simple.
+//! the FD is dup'd and wrapped in a [`GpuFrame`] with a
+//! [`NativeFrameHandle::DmaBuf`]. This allows the VAAPI encoder to import
+//! the buffer directly as a VA surface — no CPU round-trip.
 //!
-//! True zero-copy (holding the PipeWire buffer across frames) would require
-//! more complex buffer management to prevent the producer from recycling
-//! the buffer before the consumer finishes.
+//! The dup'd FD is independent of PipeWire's buffer lifecycle, so the
+//! producer can recycle its buffer immediately while the frame remains
+//! valid until dropped. For rendering or software encode fallback, the
+//! frame's `download_rgba()` mmaps the FD on demand.
 //!
 //! # Raspberry Pi
 //!
@@ -48,7 +48,10 @@ use pipewire as pw;
 use pw::stream::StreamFlags;
 use tracing::{debug, info, warn};
 
-use rusty_codecs::format::{Nv12Planes, PixelFormat, VideoFormat, VideoFrame};
+use rusty_codecs::format::{
+    DmaBufInfo, DmaBufPlaneInfo, GpuFrame, GpuFrameInner, GpuPixelFormat, NativeFrameHandle,
+    Nv12Planes, PixelFormat, VideoFormat, VideoFrame,
+};
 use rusty_codecs::traits::VideoSource;
 
 use crate::types::{CameraConfig, ScreenConfig};
@@ -65,6 +68,120 @@ fn ensure_pw_init() {
     static INIT: Once = Once::new();
     INIT.call_once(pw::init);
 }
+
+/// Maps a SPA video format to a DRM fourcc code, if known.
+fn spa_format_to_drm_fourcc(spa_format: u32) -> Option<u32> {
+    // DRM fourcc constants (from drm_fourcc.h)
+    const DRM_FORMAT_ARGB8888: u32 = u32::from_le_bytes(*b"AR24");
+    const DRM_FORMAT_XRGB8888: u32 = u32::from_le_bytes(*b"XR24");
+    const DRM_FORMAT_ABGR8888: u32 = u32::from_le_bytes(*b"AB24");
+    const DRM_FORMAT_XBGR8888: u32 = u32::from_le_bytes(*b"XB24");
+    const DRM_FORMAT_NV12: u32 = u32::from_le_bytes(*b"NV12");
+    const DRM_FORMAT_YUYV: u32 = u32::from_le_bytes(*b"YUYV");
+
+    if spa_format == SpaVideoFormat::BGRA.as_raw() {
+        Some(DRM_FORMAT_ARGB8888)
+    } else if spa_format == SpaVideoFormat::BGRx.as_raw() {
+        Some(DRM_FORMAT_XRGB8888)
+    } else if spa_format == SpaVideoFormat::RGBA.as_raw() {
+        Some(DRM_FORMAT_ABGR8888)
+    } else if spa_format == SpaVideoFormat::RGBx.as_raw() {
+        Some(DRM_FORMAT_XBGR8888)
+    } else if spa_format == SpaVideoFormat::NV12.as_raw() {
+        Some(DRM_FORMAT_NV12)
+    } else if spa_format == SpaVideoFormat::YUY2.as_raw() {
+        Some(DRM_FORMAT_YUYV)
+    } else {
+        None
+    }
+}
+
+/// A DMA-BUF-backed GPU frame from PipeWire.
+///
+/// Holds a dup'd file descriptor so the PipeWire buffer can be recycled
+/// independently. The FD is closed when the frame is dropped.
+#[derive(Debug)]
+struct PipeWireDmaBufFrame {
+    fd: OwnedFd,
+    drm_format: u32,
+    width: u32,
+    height: u32,
+    stride: u32,
+    offset: u32,
+    /// Total mappable size (for mmap fallback).
+    map_size: usize,
+    /// Original SPA format for CPU fallback conversion.
+    spa_format: u32,
+}
+
+impl GpuFrameInner for PipeWireDmaBufFrame {
+    fn download_rgba(&self) -> anyhow::Result<image::RgbaImage> {
+        use nix::sys::mman::{MapFlags, ProtFlags, mmap, munmap};
+        use std::os::unix::io::AsFd;
+
+        let ptr = unsafe {
+            mmap(
+                None,
+                std::num::NonZeroUsize::new(self.map_size)
+                    .ok_or_else(|| anyhow::anyhow!("zero-size DMA-BUF"))?,
+                ProtFlags::PROT_READ,
+                MapFlags::MAP_SHARED,
+                self.fd.as_fd(),
+                0,
+            )
+            .map_err(|e| anyhow::anyhow!("DMA-BUF mmap failed: {e}"))?
+        };
+
+        let slice = unsafe { std::slice::from_raw_parts(ptr.as_ptr() as *const u8, self.map_size) };
+        let data = &slice[self.offset as usize..];
+        let frame = buffer_to_frame(data, self.width, self.height, self.stride, self.spa_format);
+
+        unsafe {
+            let _ = munmap(ptr, self.map_size);
+        }
+
+        frame
+            .ok_or_else(|| anyhow::anyhow!("DMA-BUF pixel conversion failed"))?
+            .rgba_image()
+            .clone()
+            .pipe(Ok)
+    }
+
+    fn gpu_pixel_format(&self) -> GpuPixelFormat {
+        GpuPixelFormat::Nv12
+    }
+
+    fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    fn native_handle(&self) -> Option<NativeFrameHandle> {
+        use std::os::unix::io::AsFd;
+
+        let dup_fd = self.fd.as_fd().try_clone_to_owned().ok()?;
+        Some(NativeFrameHandle::DmaBuf(DmaBufInfo {
+            fd: dup_fd,
+            modifier: 0, // LINEAR assumed for PipeWire DMA-BUFs
+            drm_format: self.drm_format,
+            coded_width: self.width,
+            coded_height: self.height,
+            display_width: self.width,
+            display_height: self.height,
+            planes: vec![DmaBufPlaneInfo {
+                offset: self.offset,
+                pitch: self.stride,
+            }],
+        }))
+    }
+}
+
+/// Pipe adapter for method chaining in expressions.
+trait Pipe: Sized {
+    fn pipe<R>(self, f: impl FnOnce(Self) -> R) -> R {
+        f(self)
+    }
+}
+impl<T: Sized> Pipe for T {}
 
 /// State shared between PipeWire callbacks.
 struct CaptureState {
@@ -405,10 +522,53 @@ fn yuy2_to_rgba(data: &[u8], width: u32, height: u32, stride: u32) -> Option<Vid
     Some(VideoFrame::new_rgba(rgba.into(), w as u32, height))
 }
 
-/// Mmaps a DMA-BUF fd, copies the data, and unmaps immediately.
+/// Creates a zero-copy GPU frame from a DMA-BUF, or falls back to mmap+copy.
 ///
-/// Returns `None` if the mmap or data extraction fails.
+/// When the SPA format has a known DRM fourcc, a `GpuFrame` wrapping the
+/// dup'd DMA-BUF FD is returned. The VAAPI encoder can then import it
+/// directly without any CPU round-trip.
+///
+/// Falls back to mmap+copy for formats without a known DRM mapping.
 fn dmabuf_to_frame(
+    fd: std::os::unix::io::RawFd,
+    size: usize,
+    offset: usize,
+    stride: u32,
+    width: u32,
+    height: u32,
+    spa_format: u32,
+) -> Option<VideoFrame> {
+    if size == 0 || offset >= size {
+        return None;
+    }
+
+    // Try zero-copy path: dup the FD and wrap as a GpuFrame.
+    if let Some(drm_format) = spa_format_to_drm_fourcc(spa_format) {
+        let dup_fd = unsafe { BorrowedFd::borrow_raw(fd) }
+            .try_clone_to_owned()
+            .ok()?;
+        let gpu_frame = PipeWireDmaBufFrame {
+            fd: dup_fd,
+            drm_format,
+            width,
+            height,
+            stride,
+            offset: offset as u32,
+            map_size: size,
+            spa_format,
+        };
+        return Some(VideoFrame::new_gpu(
+            GpuFrame::new(Arc::new(gpu_frame)),
+            std::time::Duration::ZERO,
+        ));
+    }
+
+    // Fallback: mmap + copy for unknown formats.
+    dmabuf_to_frame_cpu(fd, size, offset, stride, width, height, spa_format)
+}
+
+/// Fallback: mmap a DMA-BUF, copy pixel data to CPU, and unmap.
+fn dmabuf_to_frame_cpu(
     fd: std::os::unix::io::RawFd,
     size: usize,
     offset: usize,
@@ -419,11 +579,6 @@ fn dmabuf_to_frame(
 ) -> Option<VideoFrame> {
     use nix::sys::mman::{MapFlags, MmapAdvise, ProtFlags, madvise, mmap, munmap};
 
-    if size == 0 || offset >= size {
-        return None;
-    }
-
-    // Safety: we mmap the DMA-BUF fd read-only and copy out within this scope.
     let ptr = unsafe {
         mmap(
             None,
@@ -436,7 +591,6 @@ fn dmabuf_to_frame(
         .ok()?
     };
 
-    // Hint to the kernel that we'll read sequentially.
     unsafe {
         let _ = madvise(ptr, size, MmapAdvise::MADV_SEQUENTIAL);
     }
