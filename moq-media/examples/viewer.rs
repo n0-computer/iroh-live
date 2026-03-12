@@ -832,9 +832,8 @@ impl eframe::App for ViewerApp {
 fn main() -> eframe::Result<()> {
     tracing_subscriber::fmt::init();
 
-    // Create the tokio runtime *before* eframe so that accesskit (which uses
-    // zbus → tokio spawn_blocking under the hood) finds a reactor context
-    // throughout the eframe event loop.
+    // Create the tokio runtime *before* eframe so that capture backends and
+    // other async operations find a reactor context during the event loop.
     let rt = Runtime::new().expect("tokio runtime");
     let _guard = rt.enter();
 
