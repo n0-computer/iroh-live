@@ -80,4 +80,35 @@ mod pipewire_reopen {
         );
         eprintln!("second camera open OK");
     }
+
+    #[test]
+    fn camera_delivers_dmabuf_frames() {
+        let Some(mut cap) = open_camera() else {
+            return;
+        };
+        cap.start().ok();
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            match cap.pop_frame() {
+                Ok(Some(frame)) => {
+                    eprintln!(
+                        "Frame: {}x{}, is_gpu={}",
+                        frame.width(),
+                        frame.height(),
+                        frame.is_gpu()
+                    );
+                    // DMA-BUF should be negotiated on machines with
+                    // PipeWire + V4L2 EXPBUF support.
+                    assert!(
+                        frame.is_gpu(),
+                        "expected DMA-BUF GPU frame from PipeWire camera"
+                    );
+                    return;
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+                Err(e) => panic!("pop_frame error: {e}"),
+            }
+        }
+        panic!("no frame within 5s");
+    }
 }
