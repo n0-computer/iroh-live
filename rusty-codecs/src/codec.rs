@@ -193,3 +193,7 @@ impl VideoCodec {
 #[cfg(all(test, feature = "opus"))]
 #[path = "codec/tests/harness.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "h264"))]
+#[path = "codec/tests/latency.rs"]
+mod latency_tests;

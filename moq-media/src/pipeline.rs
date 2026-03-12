@@ -341,18 +341,27 @@ fn decode_loop(
         }
         trace!(t=?t.elapsed(), "pipeline: push_packet");
 
-        match decoder.pop_frame() {
-            Ok(Some(frame)) => {
-                trace!(t=?t.elapsed(), "pipeline: pop frame");
-                if output_tx.blocking_send(frame).is_err() {
-                    debug!("pipeline: frame receiver dropped");
+        // Drain all available frames from the decoder. Hardware decoders
+        // (e.g. VAAPI) can produce multiple frames per push_packet due to
+        // internal pipelining. Send all frames to the channel — the render
+        // side's `current_frame()` skips to the latest, so intermediates
+        // are harmlessly discarded there rather than accumulating in the
+        // decoder's internal queue.
+        loop {
+            match decoder.pop_frame() {
+                Ok(Some(frame)) => {
+                    trace!(t=?t.elapsed(), "pipeline: pop frame");
+                    if output_tx.blocking_send(frame).is_err() {
+                        debug!("pipeline: frame receiver dropped");
+                        return Ok(());
+                    }
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    warn!("failed to pop video frame, waiting for next keyframe: {err:#}");
+                    waiting_for_keyframe = true;
                     break;
                 }
-            }
-            Ok(None) => {}
-            Err(err) => {
-                warn!("failed to pop video frame, waiting for next keyframe: {err:#}");
-                waiting_for_keyframe = true;
             }
         }
     }
