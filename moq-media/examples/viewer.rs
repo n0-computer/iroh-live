@@ -22,6 +22,8 @@ use eframe::egui;
 use moq_media::capture::CameraCapturer;
 #[cfg(feature = "capture-screen")]
 use moq_media::capture::ScreenCapturer;
+#[cfg(all(target_os = "linux", feature = "capture-camera"))]
+use moq_media::capture::{PipeWireCameraCapturer, V4l2CameraCapturer};
 use moq_media::{
     codec::{DynamicVideoDecoder, VideoCodec},
     format::{DecodeConfig, DecoderBackend, PixelFormat, VideoFormat, VideoFrame, VideoPreset},
@@ -44,6 +46,12 @@ enum SourceKind {
     TestPattern,
     #[cfg(feature = "capture-camera")]
     Camera,
+    #[cfg(all(target_os = "linux", feature = "capture-camera"))]
+    #[strum(serialize = "Camera (PipeWire)")]
+    CameraPipeWire,
+    #[cfg(all(target_os = "linux", feature = "capture-camera"))]
+    #[strum(serialize = "Camera (V4L2)")]
+    CameraV4l2,
     #[cfg(feature = "capture-screen")]
     Screen,
 }
@@ -55,6 +63,10 @@ impl SourceKind {
             Self::TestPattern => Ok(Box::new(TestPatternSource::new(w, h))),
             #[cfg(feature = "capture-camera")]
             Self::Camera => Ok(Box::new(CameraCapturer::new()?)),
+            #[cfg(all(target_os = "linux", feature = "capture-camera"))]
+            Self::CameraPipeWire => Ok(Box::new(PipeWireCameraCapturer::new(&Default::default())?)),
+            #[cfg(all(target_os = "linux", feature = "capture-camera"))]
+            Self::CameraV4l2 => Ok(Box::new(V4l2CameraCapturer::open_default()?)),
             #[cfg(feature = "capture-screen")]
             Self::Screen => Ok(Box::new(ScreenCapturer::new()?)),
         }
