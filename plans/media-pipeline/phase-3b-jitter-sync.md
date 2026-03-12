@@ -2,7 +2,7 @@
 
 ## Goal
 
-Smooth playout timing, adaptive latency control, and audio/video synchronization. After this phase, playback survives network jitter without glitches, audio and video stay in lip-sync, and the user can control the latency/smoothness tradeoff.
+Smooth playout timing, adaptive latency control, and audio/video synchronization. After this phase, playback survives network jitter without glitches, audio and video stay in lip-sync, and the user can choose between low-latency live mode and reliable delivery mode.
 
 ## Prerequisites
 
@@ -26,6 +26,55 @@ hang's `TrackConsumer` manages **group-level** latency:
 - No jitter measurement
 
 **Our job**: Add frame-level playout discipline on top of hang's group-level management.
+
+## Key Design Decision: Live vs Reliable
+
+Two fundamentally different use cases drive the design:
+
+- **Live**: Real-time conferencing, live streaming. Skip stale data to stay close to
+  the sender's clock. A dropped frame is better than accumulating latency. This is what
+  `current_frame()` (render-side skip-to-latest) and hang's `max_latency` group-skip
+  already approximate — we formalize it.
+
+- **Reliable**: Recordings, file transfer over MoQ, non-interactive playback. Every
+  frame must be delivered. Higher latency is acceptable. hang's group-skip is disabled
+  (or set very high), and the playout buffer delivers frames in order without skipping.
+
+These map to a `PlayoutMode` enum that replaces the previous Auto/Fixed design:
+
+```rust
+pub enum PlayoutMode {
+    /// Minimize latency: skip stale groups/frames to stay near real-time.
+    /// `max_latency` controls how far behind the sender we tolerate before
+    /// skipping. Propagated to hang's `TrackConsumer::set_max_latency()`.
+    /// Default: 150ms (matches current DEFAULT_MAX_LATENCY).
+    Live { max_latency: Duration },
+
+    /// Deliver every frame in order, no skipping. Latency grows if the
+    /// network can't keep up. hang's max_latency set to Duration::MAX.
+    Reliable,
+}
+```
+
+### Configurable DEFAULT_MAX_LATENCY
+
+Currently hardcoded as `const DEFAULT_MAX_LATENCY: Duration = Duration::from_millis(150)`
+in `moq-media/src/subscribe.rs:32`. This needs to become configurable:
+
+1. Move into `PlaybackConfig` (or a new `SubscribeConfig`) so callers can set it
+2. `PlayoutMode::Live { max_latency }` carries the value
+3. Default remains 150ms — good balance for conferencing over typical networks
+4. Propagated to `OrderedConsumer::new()` at subscribe time AND updated at runtime
+   via `set_max_latency()` when the user changes mode
+
+### Interaction with existing skip mechanisms
+
+| Layer | Live mode | Reliable mode |
+|-------|-----------|---------------|
+| hang `max_latency` group-skip | Active (e.g. 150ms) | Disabled (`Duration::MAX`) |
+| `current_frame()` render-side skip | Active (returns latest) | Still active but buffer rarely has >1 frame |
+| PlayoutBuffer frame-level timing | Targets `max_latency` depth | Delivers frames ASAP in PTS order |
+| A/V sync | Skip video if behind audio | Wait (never skip) |
 
 ## Architecture
 
@@ -67,13 +116,8 @@ pub struct PlayoutClock {
 }
 
 struct PlayoutClockInner {
-    /// Latency mode: auto-adapt or user-controlled.
+    /// Live vs Reliable mode.
     mode: PlayoutMode,
-
-    /// Current target buffer depth.
-    /// In Auto mode, adapts between min and max.
-    /// In Fixed mode, this is the user-set value.
-    target_latency: Duration,
 
     /// Observed inter-arrival jitter (EMA-smoothed, RFC 3550 style).
     smoothed_jitter: Duration,
@@ -91,27 +135,21 @@ struct TrackSync {
     last_arrival: Instant,
 }
 
-/// Controls playout buffer latency.
+/// Controls playout buffer behavior.
 #[derive(Debug, Clone)]
 pub enum PlayoutMode {
-    /// Adapt buffer depth based on observed jitter.
-    /// `min`: floor latency — never buffer less than this (default: 20ms).
-    /// `max`: ceiling latency — never buffer more than this (default: 500ms).
-    /// Low jitter → latency converges toward `min`, high jitter → toward `max`.
-    Auto {
-        min: Duration,
-        max: Duration,
-    },
-    /// Fixed latency target set by user.
-    /// Lower values may stutter, higher values are smoother.
-    Fixed(Duration),
+    /// Minimize latency: skip stale groups/frames to stay near real-time.
+    /// `max_latency` controls the staleness threshold (default: 150ms).
+    Live { max_latency: Duration },
+
+    /// Deliver every frame in order, no skipping. Accepts higher latency.
+    Reliable,
 }
 
 impl Default for PlayoutMode {
     fn default() -> Self {
-        Self::Auto {
-            min: Duration::from_millis(20),
-            max: Duration::from_millis(500),
+        Self::Live {
+            max_latency: Duration::from_millis(150),
         }
     }
 }
@@ -121,47 +159,49 @@ impl Default for PlayoutMode {
 
 ```rust
 impl PlayoutClock {
-    pub fn new() -> Self { ... }
+    pub fn new(mode: PlayoutMode) -> Self { ... }
 
     // --- User-facing control ---
 
-    /// Set playout mode. Changes take effect within ~100ms.
+    /// Set playout mode. In Live mode, propagates max_latency to hang's
+    /// TrackConsumer via set_max_latency(). In Reliable mode, sets
+    /// hang's max_latency to Duration::MAX (disable group-skip).
     pub fn set_mode(&self, mode: PlayoutMode) { ... }
 
     /// Current mode.
     pub fn mode(&self) -> PlayoutMode { ... }
 
-    /// Current target latency (auto-computed or fixed).
-    pub fn target_latency(&self) -> Duration { ... }
+    /// Current effective max_latency (Live: user-set value, Reliable: MAX).
+    pub fn max_latency(&self) -> Duration { ... }
 
     /// Current observed jitter (informational, for UI display).
     pub fn jitter(&self) -> Duration { ... }
 
     // --- Internal, called by decoder threads ---
 
-    /// Record frame arrival. Updates jitter estimate and adaptive target.
+    /// Record frame arrival. Updates jitter estimate.
     fn observe_arrival(&self, track_id: &str, pts: hang::container::Timestamp) { ... }
 
     /// When should the frame with this PTS be played out?
-    /// Returns wall clock time. If in the past, play immediately.
+    /// Live: base_wall + (pts - base_pts), where base_wall = first_arrival + max_latency.
+    /// Reliable: base_wall + (pts - base_pts), where base_wall = first_arrival (no extra buffering).
     fn playout_time(&self, pts: hang::container::Timestamp) -> Instant { ... }
 
     /// Report that a frame was played out. Updates sync tracking.
     fn report_playout(&self, track_id: &str, pts: hang::container::Timestamp) { ... }
 
     /// Check if this track is behind the sync target.
-    /// Returns frames to skip if too far behind.
+    /// Live: may return Skip if behind. Reliable: never returns Skip.
     fn sync_check(&self, track_id: &str, pts: hang::container::Timestamp) -> SyncAction { ... }
 
     /// Current max_latency value to propagate to hang's TrackConsumer.
-    /// Called by the adaptation task when target_latency changes.
     fn current_max_latency(&self) -> Duration { ... }
 }
 
 enum SyncAction {
     /// Play this frame normally.
     Play,
-    /// Skip this frame — track is behind sync target.
+    /// Skip this frame — track is behind sync target (Live mode only).
     Skip,
     /// Wait this long before playing — track is ahead.
     Wait(Duration),
@@ -232,7 +272,7 @@ enum PopResult {
     Empty,
     /// Frame not ready yet, wait this long.
     Wait(Duration),
-    /// Frame is behind sync target, skip it.
+    /// Frame is behind sync target, skip it (Live mode only).
     Skip,
 }
 ```
@@ -256,37 +296,45 @@ For each frame arrival:
     smoothed_jitter = smoothed_jitter + (jitter_sample - smoothed_jitter) / 16
 ```
 
-**Adaptive target** (Auto mode):
-```
-target_latency = clamp(smoothed_jitter * 3, min, max)
-```
-- Multiplier of 3 covers ~99% of jitter distribution (assuming roughly Gaussian)
-- EMA with factor 1/16 smooths over ~16 frames
-- Ramps up quickly on jitter spikes, decays slowly
-
 **Playout time** calculation:
 ```
-On first frame: base_wall = now + target_latency, base_pts = frame.pts
-For subsequent: playout_time = base_wall + (frame.pts - base_pts)
-```
-This establishes a linear mapping from media timestamps to wall clock, offset by the target latency. The initial buffering period (first `target_latency` worth of frames) fills the buffer.
+Live mode:
+  On first frame: base_wall = now + max_latency, base_pts = frame.pts
+  For subsequent: playout_time = base_wall + (frame.pts - base_pts)
+  Initial buffering period fills max_latency worth of frames, then plays at real-time.
 
-**Coordination with hang**: When `target_latency` changes, update hang's `TrackConsumer` via `set_max_latency()`. The adaptation task (from Phase 3a) polls `clock.current_max_latency()` and propagates. Set hang's max_latency slightly higher than our target (e.g. `target_latency * 1.5`) so hang doesn't skip groups we still want to buffer.
+Reliable mode:
+  On first frame: base_wall = now, base_pts = frame.pts
+  For subsequent: playout_time = base_wall + (frame.pts - base_pts)
+  No extra buffering — frames play as soon as PTS order allows.
+```
+
+**Coordination with hang**: `set_mode()` propagates to hang's `TrackConsumer` via
+`set_max_latency()`. Live mode passes `max_latency` (e.g. 150ms). Reliable mode
+passes `Duration::MAX` to disable group-skip entirely. The adaptation task (from
+Phase 3a) polls `clock.current_max_latency()` and propagates changes.
 
 **A/V sync** strategy:
 - Both tracks report playout PTS via `report_playout()`
 - `sync_check()` compares a track's PTS against the other track's latest PTS
-- If a track is more than `target_latency / 2` behind the other → `SyncAction::Skip`
-- If a track is more than `target_latency / 4` ahead → `SyncAction::Wait`
-- Otherwise → `SyncAction::Play`
-- Audio is the sync master (audio skips sound worse than video skips, so video adapts more aggressively)
+- **Live mode**:
+  - Video behind audio by > `max_latency / 2` → `SyncAction::Skip`
+  - Video ahead of audio by > `max_latency / 4` → `SyncAction::Wait`
+  - Otherwise → `SyncAction::Play`
+  - Audio is the sync master (audio skips sound worse than video skips)
+- **Reliable mode**:
+  - Never returns `Skip` — all frames delivered
+  - Wait if ahead, play otherwise
+  - Audio still sync master but drift handled by waiting, not skipping
 
 **Tests**:
 - Jitter measurement: feed arrivals with known jitter, verify `smoothed_jitter` converges
 - Playout timing: verify frames are scheduled at correct wall clock times
 - Sync: simulate audio ahead of video, verify video catches up. Vice versa.
-- Mode switch: `Auto { .. }` → `Fixed(..)`, verify target_latency changes immediately
-- Bounds: verify target stays within [min, max] in Auto mode
+- Mode switch: `Live { 150ms }` → `Reliable`, verify hang max_latency goes to MAX
+- Mode switch: `Reliable` → `Live { 100ms }`, verify hang max_latency updated
+- Live skip: verify stale frames are skipped when behind
+- Reliable no-skip: verify NO frames are skipped even under jitter
 
 ---
 
@@ -520,8 +568,66 @@ End-to-end manual verification:
 ## Commits
 
 One commit per step:
-- `feat(media): add PlayoutClock with adaptive jitter measurement and A/V sync`
+- `feat(media): add PlayoutClock with Live/Reliable modes and A/V sync`
 - `feat(media): add PlayoutBuffer for frame-level playout timing`
 - `feat(media): integrate playout buffer into WatchTrack decoder loop`
 - `feat(media): integrate playout buffer into AudioTrack decoder loop`
 - `feat(media): expose .clock() API on tracks for latency control`
+
+## Implementation Notes
+
+### Existing Skip Mechanisms to Preserve
+
+There are currently **two** skip-to-latest mechanisms, at different layers:
+
+1. **hang `OrderedConsumer` group-skip** (`moq-media/src/subscribe.rs`):
+   - `OrderedConsumer::new(inner, max_latency)` — constructed with `DEFAULT_MAX_LATENCY` (150ms)
+   - `read_frame()` computes `cutoff = max_timestamp + max_latency` and skips stale groups
+   - Used at lines 198 and 233 in `subscribe.rs` for video and audio track consumers
+   - **Change needed**: Accept `max_latency` from `PlayoutMode` instead of hardcoded constant
+
+2. **`current_frame()` render-side skip** (various):
+   - Drains the mpsc channel and returns only the newest frame
+   - Used by viewer/watch examples and `VideoDecoderPipeline`
+   - Cheap last-mile catchup — keep as-is in both modes
+
+### Making DEFAULT_MAX_LATENCY Configurable
+
+Current: `const DEFAULT_MAX_LATENCY: Duration = Duration::from_millis(150)` in `subscribe.rs`.
+
+Plan:
+1. Add `playout_mode: PlayoutMode` field to `PlaybackConfig` (or new `SubscribeConfig`)
+2. `SubscribeBroadcast::watch_and_listen()` reads mode → passes to `OrderedConsumer::new()`
+3. `PlayoutClock::set_mode()` calls `consumer.set_max_latency()` at runtime
+4. Default stays `PlayoutMode::Live { max_latency: 150ms }`
+
+### Jitter Measurement Simplification
+
+The original plan had adaptive target_latency that auto-adjusts between min/max based
+on jitter. With Live/Reliable, we simplify:
+
+- **Live mode**: `max_latency` is user-set (not auto-adapted). Jitter measurement is
+  still useful for UI display and future adaptive bitrate decisions, but doesn't drive
+  the buffer depth directly. This is simpler and more predictable.
+- **Reliable mode**: Jitter measurement still runs (informational) but doesn't affect
+  playout — frames are delivered in order regardless.
+- **Future**: Can add `PlayoutMode::Adaptive { min, max }` later if auto-adaptation
+  proves valuable. Start simple.
+
+### Initial Buffering ("Priming Period")
+
+In Live mode, the first `max_latency` worth of frames are buffered before playout
+starts (the `base_wall = now + max_latency` offset). After this initial fill, playback
+runs at real-time. If the stream starts mid-group, the first keyframe may arrive with
+a burst of frames — the buffer absorbs this naturally.
+
+The user said they don't care about the first second — the priming period is acceptable.
+What matters is lowest latency once live.
+
+### Keyframe Interval Interaction
+
+Keyframe interval (now configurable, default = framerate = 1 GOP/sec) interacts with
+group-skip: hang skips entire groups, each starting with a keyframe. Shorter keyframe
+intervals = more frequent skip opportunities = lower worst-case latency in Live mode.
+For live conferencing, 1-second GOPs are standard. For reliable delivery, GOP size is
+irrelevant since nothing is skipped.

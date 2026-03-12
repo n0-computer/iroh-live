@@ -35,6 +35,7 @@ use moq_media::{
     traits::{VideoEncoder, VideoSource},
     transport::media_pipe,
 };
+use moq_media_egui::format_bitrate;
 #[cfg(feature = "wgpu")]
 use moq_media_egui::{EguiVideoRenderer, create_egui_wgpu_config};
 use strum::VariantArray;
@@ -464,6 +465,7 @@ struct Tile {
     stats: Stats,
     encoder_name: String,
     decoder_name: String,
+    encoder_bitrate: Option<u64>,
     error_msg: Option<String>,
 }
 
@@ -491,6 +493,7 @@ impl Tile {
             stats: Stats::default(),
             encoder_name: String::new(),
             decoder_name: String::new(),
+            encoder_bitrate: None,
             error_msg: None,
         };
         tile.start_pipeline(rt);
@@ -538,6 +541,7 @@ impl Tile {
 
                 self.encoder_name = encoder.name().to_string();
                 let config = encoder.config();
+                self.encoder_bitrate = config.bitrate;
                 let (sink, pipe_source) = media_pipe(32);
                 let enc = VideoEncoderPipeline::new(source, encoder, sink);
 
@@ -584,13 +588,18 @@ impl Tile {
                 )
             }
             PipelineMode::EncodeDecode => {
+                let bitrate = self
+                    .encoder_bitrate
+                    .map(|b| format_bitrate(b as f64))
+                    .unwrap_or_default();
                 format!(
-                    "enc: {} dec: {} render: {} fps: {:.0} delay: {:.0}ms",
+                    "enc: {} dec: {} render: {} fps: {:.0} delay: {:.0}ms bitrate: {}",
                     self.encoder_name,
                     self.decoder_name,
                     self.settings.render_mode.short_name(),
                     self.stats.fps,
                     self.stats.delay_ms,
+                    bitrate,
                 )
             }
         }

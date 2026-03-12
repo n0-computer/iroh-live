@@ -29,6 +29,19 @@ use std::fmt;
 pub use egui_wgpu;
 pub use epaint;
 pub use moq_media;
+
+/// Formats a bitrate in bits per second as a human-readable string.
+///
+/// Returns values like "1.5 Mbps", "320 kbps", "64 bps".
+pub fn format_bitrate(bits_per_second: f64) -> String {
+    if bits_per_second >= 1_000_000.0 {
+        format!("{:.1} Mbps", bits_per_second / 1_000_000.0)
+    } else if bits_per_second >= 1_000.0 {
+        format!("{:.0} kbps", bits_per_second / 1_000.0)
+    } else {
+        format!("{:.0} bps", bits_per_second)
+    }
+}
 #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
 use moq_media::render::create_device_with_dmabuf_extensions;
 use moq_media::{format::VideoFrame, render::WgpuVideoRenderer};
