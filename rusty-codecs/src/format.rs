@@ -219,10 +219,13 @@ pub struct DmaBufPlaneInfo {
     pub pitch: u32,
 }
 
-/// Native GPU pixel formats from hardware decoders.
-#[derive(Debug, Clone, Copy)]
+/// Native GPU pixel formats for DMA-BUF frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuPixelFormat {
+    /// Semi-planar YUV 4:2:0 — VAAPI decoders and some camera sources.
     Nv12,
+    /// Packed 32-bit BGRx (X = padding) — compositor screen capture.
+    Bgrx,
 }
 
 /// Backing storage for a video frame.

@@ -195,8 +195,11 @@ impl GpuFrameInner for PipeWireDmaBufFrame {
     }
 
     fn gpu_pixel_format(&self) -> GpuPixelFormat {
-        // Only NV12 DMA-BUFs take this path (see `dmabuf_to_frame`).
-        GpuPixelFormat::Nv12
+        if self.spa_format == SpaVideoFormat::NV12.as_raw() {
+            GpuPixelFormat::Nv12
+        } else {
+            GpuPixelFormat::Bgrx
+        }
     }
 
     fn dimensions(&self) -> (u32, u32) {
@@ -313,6 +316,41 @@ fn build_enum_format_pod(preferred_size: Rectangle, preferred_fps: Fraction) -> 
 
     let (cursor, _) = PodSerializer::serialize(Cursor::new(Vec::new()), &Value::Object(obj))
         .map_err(|e| anyhow::anyhow!("failed to serialize format pod: {e:?}"))?;
+
+    Ok(cursor.into_inner())
+}
+
+/// Builds a `SPA_TYPE_OBJECT_ParamBuffers` pod declaring support for DMA-BUF,
+/// MemFd, and MemPtr buffer data types.
+///
+/// PipeWire only negotiates DMA-BUF buffers when the consumer explicitly
+/// declares support via `SPA_PARAM_BUFFERS_dataType`. Without this, the
+/// producer defaults to shared memory.
+fn build_buffer_params_pod() -> Result<Vec<u8>> {
+    // spa_param_buffers enum values (from spa/param/buffers.h).
+    const SPA_PARAM_BUFFERS_DATA_TYPE: u32 = 6;
+    // Data type flags: 1 << SPA_DATA_xxx (from spa/buffer/buffer.h).
+    const DATA_FLAG_MEM_PTR: i32 = 1 << 1;
+    const DATA_FLAG_MEM_FD: i32 = 1 << 2;
+    const DATA_FLAG_DMA_BUF: i32 = 1 << 3;
+
+    let obj = Object {
+        type_: SpaTypes::ObjectParamBuffers.as_raw(),
+        id: ParamType::Buffers.as_raw(),
+        properties: vec![Property::new(
+            SPA_PARAM_BUFFERS_DATA_TYPE,
+            Value::Choice(ChoiceValue::Int(Choice(
+                ChoiceFlags::empty(),
+                ChoiceEnum::Flags {
+                    default: DATA_FLAG_DMA_BUF | DATA_FLAG_MEM_FD | DATA_FLAG_MEM_PTR,
+                    flags: vec![DATA_FLAG_DMA_BUF, DATA_FLAG_MEM_FD, DATA_FLAG_MEM_PTR],
+                },
+            ))),
+        )],
+    };
+
+    let (cursor, _) = PodSerializer::serialize(Cursor::new(Vec::new()), &Value::Object(obj))
+        .map_err(|e| anyhow::anyhow!("failed to serialize buffer params pod: {e:?}"))?;
 
     Ok(cursor.into_inner())
 }
@@ -631,11 +669,11 @@ fn dmabuf_to_frame(
         return None;
     }
 
-    // Zero-copy path: only for NV12, which is the sole GpuPixelFormat variant.
-    // Other formats fall back to mmap+copy to avoid misreporting the pixel format.
-    if spa_format == SpaVideoFormat::NV12.as_raw()
-        && let Some(drm_format) = spa_format_to_drm_fourcc(spa_format)
-    {
+    // Zero-copy path: preserve DMA-BUF as GPU frame for formats the
+    // downstream pipeline can handle. NV12 goes directly to the VAAPI
+    // encoder; BGRx/BGRA from compositors avoids a GPU→SHM readback on
+    // the producer side (encoder will VPP-convert or mmap as needed).
+    if let Some(drm_format) = spa_format_to_drm_fourcc(spa_format) {
         let dup_fd = unsafe { BorrowedFd::borrow_raw(fd) }
             .try_clone_to_owned()
             .ok()?;
@@ -742,7 +780,12 @@ fn run_pipewire_stream(
 
     // Build format negotiation pod.
     let format_bytes = build_enum_format_pod(preferred_size, preferred_fps)?;
-    let pod = Pod::from_bytes(&format_bytes).context("invalid format pod")?;
+    let format_pod = Pod::from_bytes(&format_bytes).context("invalid format pod")?;
+
+    // Build buffer params pod requesting DMA-BUF support.
+    // Without this, PipeWire defaults to shared memory (MemPtr/MemFd).
+    let buffers_bytes = build_buffer_params_pod()?;
+    let buffers_pod = Pod::from_bytes(&buffers_bytes).context("invalid buffer params pod")?;
 
     let state = CaptureState {
         frame_tx,
@@ -908,7 +951,7 @@ fn run_pipewire_stream(
             libspa::utils::Direction::Input,
             node_id,
             StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS,
-            &mut [pod],
+            &mut [format_pod, buffers_pod],
         )
         .map_err(|e| anyhow::anyhow!("failed to connect PipeWire stream: {e}"))?;
 

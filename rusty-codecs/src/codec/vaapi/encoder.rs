@@ -679,9 +679,12 @@ impl VideoEncoder for VaapiEncoder {
     }
 
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
+        const NV12_FOURCC: u32 = u32::from_le_bytes(*b"NV12");
+
         // Check for zero-copy DMA-BUF path before any CPU-side scaling.
         let input_frame = if let Some(NativeFrameHandle::DmaBuf(info)) = frame.native_handle() {
-            if info.coded_width == self.width
+            if info.drm_format == NV12_FOURCC
+                && info.coded_width == self.width
                 && info.coded_height == self.height
                 && info.planes.len() <= 4
             {
@@ -692,12 +695,15 @@ impl VideoEncoder for VaapiEncoder {
                 VaapiInputFrame::DmaBuf(info)
             } else {
                 if !self.logged_frame_path {
+                    let fourcc_bytes = info.drm_format.to_le_bytes();
+                    let fourcc_str = std::str::from_utf8(&fourcc_bytes).unwrap_or("????");
                     tracing::info!(
+                        drm_format = fourcc_str,
                         src_w = info.coded_width,
                         src_h = info.coded_height,
                         enc_w = self.width,
                         enc_h = self.height,
-                        "VAAPI encode: DMA-BUF dimension mismatch, using CPU NV12 upload"
+                        "VAAPI encode: DMA-BUF not directly importable, using CPU NV12 upload"
                     );
                     self.logged_frame_path = true;
                 }
@@ -718,12 +724,7 @@ impl VideoEncoder for VaapiEncoder {
         let timestamp_us = (self.frame_count * 1_000_000) / self.framerate as u64;
         let layout = match &input_frame {
             VaapiInputFrame::DmaBuf(info) => {
-                // Only NV12 DMA-BUFs are accepted (checked at import site).
-                debug_assert_eq!(
-                    info.drm_format,
-                    u32::from_le_bytes(*b"NV12"),
-                    "VAAPI encoder only accepts NV12 DMA-BUFs"
-                );
+                // Only NV12 DMA-BUFs reach here (format checked in push_frame).
                 FrameLayout {
                     format: (Fourcc::from(b"NV12"), info.modifier),
                     size: Resolution {
