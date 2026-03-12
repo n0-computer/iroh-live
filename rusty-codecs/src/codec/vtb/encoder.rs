@@ -32,8 +32,9 @@ use objc2_video_toolbox::{
 use crate::{
     codec::h264::annexb::{build_avcc, length_prefixed_to_annex_b},
     config::{H264, VideoCodec, VideoConfig},
-    format::{EncodedFrame, NalFormat, VideoEncoderConfig, VideoFrame, VideoPreset},
+    format::{EncodedFrame, NalFormat, ScaleMode, VideoEncoderConfig, VideoFrame, VideoPreset},
     processing::convert::{YuvData, pixel_format_to_yuv420},
+    processing::scale::Scaler,
     traits::{VideoEncoder, VideoEncoderFactory},
 };
 
@@ -59,6 +60,9 @@ pub struct VtbEncoder {
     framerate: u32,
     bitrate: u64,
     nal_format: NalFormat,
+    scale_mode: ScaleMode,
+    #[debug(skip)]
+    scaler: Scaler,
     /// Force the next encoded frame to be a keyframe. Set after priming so
     /// the first real frame is an IDR instead of waiting MaxKeyFrameInterval.
     force_next_keyframe: bool,
@@ -174,8 +178,30 @@ impl VtbEncoder {
             framerate,
             bitrate,
             nal_format,
+            scale_mode: config.scale_mode,
+            scaler: Scaler::new(Some((width, height))),
             force_next_keyframe: false,
         })
+    }
+}
+
+impl VtbEncoder {
+    /// Scales the frame to encoder dimensions if needed.
+    fn scale_if_needed(&mut self, frame: VideoFrame) -> Result<VideoFrame> {
+        let [fw, fh] = frame.dimensions;
+        if fw == self.width && fh == self.height {
+            return Ok(frame);
+        }
+        let (tw, th) = self.scale_mode.resolve((fw, fh), (self.width, self.height));
+        if tw == fw && th == fh {
+            return Ok(frame);
+        }
+        self.scaler.set_target_dimensions(tw, th);
+        let img = frame.rgba_image();
+        match self.scaler.scale_rgba(img.as_raw(), fw, fh)? {
+            Some((data, w, h)) => Ok(VideoFrame::new_rgba(data.into(), w, h)),
+            None => Ok(frame),
+        }
     }
 }
 
@@ -235,6 +261,7 @@ impl VideoEncoder for VtbEncoder {
     }
 
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
+        let frame = self.scale_if_needed(frame)?;
         let [w, h] = frame.dimensions;
         let yuv = match &frame.data {
             crate::format::FrameData::Packed { pixel_format, data } => {

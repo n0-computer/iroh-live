@@ -14,7 +14,6 @@ use tracing::{debug, error, info, info_span, trace, warn};
 
 use crate::{
     format::{AudioFormat, DecodeConfig, MediaPacket, VideoFrame},
-    processing::scale::{Scaler, fit_within},
     traits::{
         AudioDecoder, AudioEncoder, AudioSink, AudioSinkHandle, AudioSource, AudioStreamFactory,
         VideoDecoder, VideoEncoder, VideoSource,
@@ -225,15 +224,6 @@ impl VideoEncoderPipeline {
                 let enc_config = encoder.config();
                 info!(src_format = ?format, "encode start");
                 debug!(dst_config = ?enc_config);
-                // Set up scaler to downscale source frames to encoder dimensions.
-                let scaler_dims = match (enc_config.coded_width, enc_config.coded_height) {
-                    (Some(w), Some(h)) => {
-                        let target = fit_within(format.dimensions[0], format.dimensions[1], w, h);
-                        Some(target)
-                    }
-                    _ => None,
-                };
-                let scaler = Scaler::new(scaler_dims);
                 let framerate = enc_config.framerate.unwrap_or(30.0);
                 let interval = Duration::from_secs_f64(1. / framerate);
                 let mut sink_closed = false;
@@ -250,18 +240,9 @@ impl VideoEncoderPipeline {
                         }
                     };
                     if let Some(frame) = frame {
-                        let frame = match scaler.scale_rgba(
-                            frame.rgba_image().as_raw(),
-                            frame.dimensions[0],
-                            frame.dimensions[1],
-                        ) {
-                            Ok(Some((data, w, h))) => VideoFrame::new_rgba(data.into(), w, h),
-                            Ok(None) => frame,
-                            Err(err) => {
-                                error!("video frame scaling failed: {err:#}");
-                                break;
-                            }
-                        };
+                        // Frames are passed to the encoder at source resolution.
+                        // The encoder handles any needed scaling internally
+                        // (VAAPI: GPU-side VPP, software: CPU scaler).
                         if let Err(err) = encoder.push_frame(frame) {
                             error!("encoder push_frame failed: {err:#}");
                             break;

@@ -1,6 +1,36 @@
 use anyhow::Result;
 use pic_scale::{ImageStore, ImageStoreMut, ResamplingFunction, Scaler as PicScaler, Scaling};
 
+/// Controls how source frames are scaled relative to the encoder target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScaleMode {
+    /// Fits within the target box preserving aspect ratio. Never upscales —
+    /// if the source is smaller than the target, the source dimensions are
+    /// used as-is. This is the default.
+    #[default]
+    Fit,
+    /// Scales to the exact target dimensions, potentially distorting
+    /// the aspect ratio.
+    Stretch,
+    /// Scales to cover the target box preserving aspect ratio, then crops
+    /// the excess. Both output axes match the target exactly.
+    Cover,
+}
+
+impl ScaleMode {
+    /// Computes the actual encode dimensions for the given source and target.
+    ///
+    /// The result is always even in both axes (required by most codecs).
+    pub fn resolve(&self, source: (u32, u32), target: (u32, u32)) -> (u32, u32) {
+        let (w, h) = match self {
+            Self::Fit => fit_within(source.0, source.1, target.0, target.1),
+            Self::Stretch | Self::Cover => target,
+        };
+        // Ensure even dimensions (H.264, AV1, VAAPI all require this).
+        (w & !1, h & !1)
+    }
+}
+
 /// Image scaler wrapping pic-scale.
 ///
 /// Optionally scales RGBA frames to target dimensions using bilinear filtering.

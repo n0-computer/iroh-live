@@ -5,8 +5,9 @@ use rav1e::prelude::*;
 
 use crate::{
     config::{AV1, VideoCodec, VideoConfig},
-    format::{EncodedFrame, VideoEncoderConfig, VideoFrame},
+    format::{EncodedFrame, ScaleMode, VideoEncoderConfig, VideoFrame},
     processing::convert::pixel_format_to_yuv420,
+    processing::scale::Scaler,
     traits::{VideoEncoder, VideoEncoderFactory},
 };
 
@@ -19,6 +20,9 @@ pub struct Av1Encoder {
     framerate: u32,
     bitrate: u64,
     frame_count: u64,
+    scale_mode: ScaleMode,
+    #[debug(skip)]
+    scaler: Scaler,
     /// AV1 sequence header, populated after context creation.
     seq_header: Vec<u8>,
     /// Encoded packets ready for collection.
@@ -34,6 +38,7 @@ impl Av1Encoder {
         let height = config.height;
         let framerate = config.framerate;
         let bitrate = config.bitrate_or_default(AV1_BPP);
+        let scale_mode = config.scale_mode;
 
         let mut enc_config = EncoderConfig::with_speed_preset(10);
         enc_config.width = width as usize;
@@ -67,9 +72,29 @@ impl Av1Encoder {
             framerate,
             bitrate,
             frame_count: 0,
+            scale_mode,
+            scaler: Scaler::new(Some((width, height))),
             seq_header,
             packet_buf: std::collections::VecDeque::new(),
         })
+    }
+
+    /// Scales the frame to encoder dimensions if needed.
+    fn scale_if_needed(&mut self, frame: VideoFrame) -> Result<VideoFrame> {
+        let [fw, fh] = frame.dimensions;
+        if fw == self.width && fh == self.height {
+            return Ok(frame);
+        }
+        let (tw, th) = self.scale_mode.resolve((fw, fh), (self.width, self.height));
+        if tw == fw && th == fh {
+            return Ok(frame);
+        }
+        self.scaler.set_target_dimensions(tw, th);
+        let img = frame.rgba_image();
+        match self.scaler.scale_rgba(img.as_raw(), fw, fh)? {
+            Some((data, w, h)) => Ok(VideoFrame::new_rgba(data.into(), w, h)),
+            None => Ok(frame),
+        }
     }
 
     /// Drain all available packets from the encoder context.
@@ -176,6 +201,7 @@ impl VideoEncoder for Av1Encoder {
     }
 
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
+        let frame = self.scale_if_needed(frame)?;
         let [w, h] = frame.dimensions;
         let yuv = match &frame.data {
             crate::format::FrameData::Packed { pixel_format, data } => {
