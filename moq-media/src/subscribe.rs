@@ -392,7 +392,8 @@ impl WatchTrack {
                             let rgba = frame.rgba_image();
                             let decoded = match scaler.scale_rgba(rgba.as_raw(), w, h) {
                                 Ok(Some((scaled, sw, sh))) => {
-                                    let mut f = VideoFrame::new_rgba(scaled.into(), sw, sh);
+                                    let mut f =
+                                        VideoFrame::new_rgba(scaled.into(), sw, sh, Duration::ZERO);
                                     f.timestamp = start.elapsed();
                                     f
                                 }

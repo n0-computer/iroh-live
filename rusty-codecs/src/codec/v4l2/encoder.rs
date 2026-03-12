@@ -174,7 +174,7 @@ impl V4l2Encoder {
             self.scaler.scale_rgba(img.as_raw(), fw, fh)?
         };
         match scaled {
-            Some((data, w, h)) => Ok(VideoFrame::new_rgba(data.into(), w, h)),
+            Some((data, w, h)) => Ok(VideoFrame::new_rgba(data.into(), w, h, frame.timestamp)),
             None => Ok(frame),
         }
     }

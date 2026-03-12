@@ -20,7 +20,7 @@ pub fn encoded_frames_to_media_packets(input: Vec<EncodedFrame>) -> Vec<MediaPac
 pub fn make_rgba_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> VideoFrame {
     let pixel = [r, g, b, 255u8];
     let raw: Vec<u8> = pixel.repeat((w * h) as usize);
-    VideoFrame::new_rgba(raw.into(), w, h)
+    VideoFrame::new_rgba(raw.into(), w, h, std::time::Duration::ZERO)
 }
 
 /// Create a synthetic test pattern frame with spatial detail and per-frame variation.
@@ -76,7 +76,7 @@ pub fn make_test_pattern(w: u32, h: u32, frame_index: u32) -> VideoFrame {
         }
     }
 
-    VideoFrame::new_rgba(raw.into(), w, h)
+    VideoFrame::new_rgba(raw.into(), w, h, std::time::Duration::ZERO)
 }
 
 /// Encode `n` solid-color frames with any VideoEncoder, return packets.

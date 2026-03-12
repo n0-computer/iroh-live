@@ -18,7 +18,12 @@ impl MjpgDecoder {
         let img = image::load_from_memory_with_format(data, ImageFormat::Jpeg)?;
         let rgba = img.to_rgba8();
         let (w, h) = (rgba.width(), rgba.height());
-        Ok(VideoFrame::new_rgba(Bytes::from(rgba.into_raw()), w, h))
+        Ok(VideoFrame::new_rgba(
+            Bytes::from(rgba.into_raw()),
+            w,
+            h,
+            std::time::Duration::ZERO,
+        ))
     }
 }
 

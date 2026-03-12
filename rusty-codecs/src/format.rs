@@ -288,14 +288,14 @@ impl Clone for VideoFrame {
 
 impl VideoFrame {
     /// Creates a packed RGBA frame (common path for camera/screen capture).
-    pub fn new_rgba(data: bytes::Bytes, width: u32, height: u32) -> Self {
+    pub fn new_rgba(data: bytes::Bytes, width: u32, height: u32, timestamp: Duration) -> Self {
         Self {
             dimensions: [width, height],
             data: FrameData::Packed {
                 pixel_format: PixelFormat::Rgba,
                 data,
             },
-            timestamp: Duration::ZERO,
+            timestamp,
             cached_rgba: OnceLock::new(),
         }
     }
@@ -358,13 +358,13 @@ impl VideoFrame {
     }
 
     /// Creates a frame with NV12 (semi-planar YUV 4:2:0) CPU data.
-    pub fn new_nv12(planes: Nv12Planes) -> Self {
+    pub fn new_nv12(planes: Nv12Planes, timestamp: Duration) -> Self {
         let w = planes.width;
         let h = planes.height;
         Self {
             dimensions: [w, h],
             data: FrameData::Nv12(planes),
-            timestamp: Duration::ZERO,
+            timestamp,
             cached_rgba: OnceLock::new(),
         }
     }
@@ -376,11 +376,12 @@ impl VideoFrame {
         v: bytes::Bytes,
         width: u32,
         height: u32,
+        timestamp: Duration,
     ) -> Self {
         Self {
             dimensions: [width, height],
             data: FrameData::I420 { y, u, v },
-            timestamp: Duration::ZERO,
+            timestamp,
             cached_rgba: OnceLock::new(),
         }
     }
@@ -805,7 +806,7 @@ mod tests {
     #[test]
     fn new_rgba_capture_frame() {
         let data = vec![255u8; 8 * 4 * 4];
-        let frame = VideoFrame::new_rgba(data.into(), 8, 4);
+        let frame = VideoFrame::new_rgba(data.into(), 8, 4, Duration::ZERO);
         assert_eq!(frame.timestamp, Duration::ZERO);
         assert_eq!(frame.dimensions, [8, 4]);
         assert!(!frame.is_gpu());
@@ -814,7 +815,7 @@ mod tests {
     #[test]
     fn rgba_image_round_trip() {
         let data = vec![42u8; 2 * 2 * 4];
-        let frame = VideoFrame::new_rgba(data.clone().into(), 2, 2);
+        let frame = VideoFrame::new_rgba(data.clone().into(), 2, 2, Duration::ZERO);
         let img = frame.rgba_image();
         assert_eq!(img.width(), 2);
         assert_eq!(img.height(), 2);

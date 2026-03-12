@@ -243,6 +243,7 @@ fn capture_loop_shm(
         libc::shmctl(shm_id, libc::IPC_RMID, std::ptr::null_mut());
     }
 
+    let capture_start = Instant::now();
     let mut last_capture = Instant::now();
 
     loop {
@@ -287,7 +288,8 @@ fn capture_loop_shm(
                     dst[3] = 255; // A (X ignored)
                 }
 
-                let frame = VideoFrame::new_rgba(rgba.into(), width, height);
+                let frame =
+                    VideoFrame::new_rgba(rgba.into(), width, height, capture_start.elapsed());
                 if tx.send(frame).is_err() {
                     debug!("X11 frame receiver dropped");
                     break;

@@ -138,7 +138,7 @@ pub(super) fn test_resolutions() -> Vec<(&'static str, u32, u32)> {
 }
 
 fn make_frame(w: u32, h: u32, raw: Vec<u8>) -> VideoFrame {
-    VideoFrame::new_rgba(raw.into(), w, h)
+    VideoFrame::new_rgba(raw.into(), w, h, std::time::Duration::ZERO)
 }
 
 fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {

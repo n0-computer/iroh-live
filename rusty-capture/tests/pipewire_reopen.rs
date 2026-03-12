@@ -28,10 +28,7 @@ mod pipewire_reopen {
         }
     }
 
-    fn wait_for_frame(
-        cap: &mut PipeWireCameraCapturer,
-        timeout: Duration,
-    ) -> bool {
+    fn wait_for_frame(cap: &mut PipeWireCameraCapturer, timeout: Duration) -> bool {
         let start = Instant::now();
         while start.elapsed() < timeout {
             match cap.pop_frame() {
