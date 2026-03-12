@@ -608,6 +608,9 @@ pub struct VideoEncoderConfig {
     pub bitrate: Option<u64>,
     /// How source frames are scaled to match the encoder dimensions.
     pub scale_mode: crate::processing::scale::ScaleMode,
+    /// Keyframe (IDR) interval in frames.
+    /// `None` defaults to one keyframe per second (`framerate` frames).
+    pub keyframe_interval: Option<u32>,
     /// H.264 NAL framing format. Ignored by non-H.264 codecs.
     pub(crate) nal_format: NalFormat,
 }
@@ -622,6 +625,7 @@ impl VideoEncoderConfig {
             framerate: preset.fps(),
             bitrate: None,
             scale_mode: Default::default(),
+            keyframe_interval: None,
             nal_format: NalFormat::default(),
         }
     }
@@ -654,6 +658,19 @@ impl VideoEncoderConfig {
     pub fn scale_mode(mut self, mode: crate::processing::scale::ScaleMode) -> Self {
         self.scale_mode = mode;
         self
+    }
+
+    /// Sets the keyframe (IDR) interval in frames.
+    ///
+    /// Defaults to one keyframe per second if not set.
+    pub fn keyframe_interval(mut self, frames: u32) -> Self {
+        self.keyframe_interval = Some(frames);
+        self
+    }
+
+    /// Returns the keyframe interval, defaulting to one per second.
+    pub fn keyframe_interval_or_default(&self) -> u32 {
+        self.keyframe_interval.unwrap_or(self.framerate)
     }
 
     /// Adjusts width and height for the given source dimensions using the

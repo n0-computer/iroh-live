@@ -63,6 +63,7 @@ impl V4l2Encoder {
         let height = config.height;
         let framerate = config.framerate;
         let bitrate = config.bitrate_or_default(Self::H264_BPP);
+        let keyframe_interval = config.keyframe_interval_or_default();
         let nal_format = config.nal_format;
 
         let device_path = super::encoder_device_path()
@@ -80,8 +81,8 @@ impl V4l2Encoder {
                     device_path_owned,
                     width,
                     height,
-                    framerate,
                     bitrate,
+                    keyframe_interval,
                     input_rx,
                     output_tx,
                     init_tx,
@@ -302,8 +303,8 @@ fn encoder_thread(
     device_path: std::path::PathBuf,
     width: u32,
     height: u32,
-    framerate: u32,
     bitrate: u64,
+    keyframe_interval: u32,
     input_rx: Receiver<EncoderCmd>,
     output_tx: SyncSender<EncodedOutput>,
     init_tx: SyncSender<Result<()>>,
@@ -320,7 +321,7 @@ fn encoder_thread(
     let result: Result<()> = (|| {
         // Set H.264 encoder controls via a separate FD (best-effort).
         // Must be done before the encoder's internal streaming starts.
-        set_encoder_controls(&device_path, bitrate, framerate);
+        set_encoder_controls(&device_path, bitrate, keyframe_interval);
 
         let encoder = Encoder::open(&device_path)
             .map_err(|e| anyhow::anyhow!("failed to open V4L2 encoder {device_path:?}: {e}"))?;
@@ -432,7 +433,7 @@ fn encoder_thread(
 ///
 /// Opens the device separately for control setup. Not all controls are
 /// supported by all hardware — errors are logged at debug level.
-fn set_encoder_controls(device_path: &std::path::Path, bitrate: u64, framerate: u32) {
+fn set_encoder_controls(device_path: &std::path::Path, bitrate: u64, keyframe_interval: u32) {
     use std::os::unix::io::AsRawFd;
     use v4l2r::controls::{ExtControlTrait as _, codec};
 
@@ -451,8 +452,8 @@ fn set_encoder_controls(device_path: &std::path::Path, bitrate: u64, framerate: 
         tracing::debug!("V4L2: could not set bitrate: {e}");
     }
 
-    // V4L2_CID_MPEG_VIDEO_GOP_SIZE (keyframe interval = framerate = ~1 second)
-    if let Err(e) = v4l2r::ioctl::s_ctrl(&fd, codec::VideoGopSize::ID, framerate as i32) {
+    // V4L2_CID_MPEG_VIDEO_GOP_SIZE
+    if let Err(e) = v4l2r::ioctl::s_ctrl(&fd, codec::VideoGopSize::ID, keyframe_interval as i32) {
         tracing::debug!("V4L2: could not set GOP size: {e}");
     }
 

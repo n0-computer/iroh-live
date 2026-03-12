@@ -154,9 +154,8 @@ fn pipeline_latency_h264_software() {
     let encoder = h264::H264Encoder::with_preset(preset).expect("H264Encoder init");
     let config = encoder.config();
 
-    let report = measure_pipeline_latency::<_, h264::decoder::H264VideoDecoder>(
-        encoder, &config, w, h, 60,
-    );
+    let report =
+        measure_pipeline_latency::<_, h264::decoder::H264VideoDecoder>(encoder, &config, w, h, 60);
     eprintln!("{report}");
 
     assert!(
@@ -213,9 +212,7 @@ mod vaapi_latency {
         let encoder = vaapi::VaapiEncoder::with_preset(preset).expect("VAAPI encoder init");
         let config = encoder.config();
 
-        let report = measure_pipeline_latency::<_, vaapi::VaapiDecoder>(
-            encoder, &config, w, h, 60,
-        );
+        let report = measure_pipeline_latency::<_, vaapi::VaapiDecoder>(encoder, &config, w, h, 60);
         eprintln!("{report}");
 
         assert!(
@@ -238,9 +235,7 @@ mod vaapi_latency {
         let encoder = h264::H264Encoder::with_preset(preset).expect("H264Encoder init");
         let config = encoder.config();
 
-        let report = measure_pipeline_latency::<_, vaapi::VaapiDecoder>(
-            encoder, &config, w, h, 60,
-        );
+        let report = measure_pipeline_latency::<_, vaapi::VaapiDecoder>(encoder, &config, w, h, 60);
         eprintln!("{report}");
 
         assert!(
@@ -288,9 +283,7 @@ mod vaapi_latency {
         {
             let enc = h264::H264Encoder::with_preset(preset).unwrap();
             let config = enc.config();
-            let r = measure_pipeline_latency::<_, vaapi::VaapiDecoder>(
-                enc, &config, w, h, 60,
-            );
+            let r = measure_pipeline_latency::<_, vaapi::VaapiDecoder>(enc, &config, w, h, 60);
             eprintln!("  {r}");
         }
 
@@ -298,9 +291,7 @@ mod vaapi_latency {
         {
             let enc = vaapi::VaapiEncoder::with_preset(preset).unwrap();
             let config = enc.config();
-            let r = measure_pipeline_latency::<_, vaapi::VaapiDecoder>(
-                enc, &config, w, h, 60,
-            );
+            let r = measure_pipeline_latency::<_, vaapi::VaapiDecoder>(enc, &config, w, h, 60);
             eprintln!("  {r}");
         }
 

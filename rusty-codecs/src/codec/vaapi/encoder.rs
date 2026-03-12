@@ -792,6 +792,7 @@ impl VaapiEncoder {
         height: u32,
         framerate: u32,
         bitrate: u64,
+        keyframe_interval: u32,
     ) -> Result<(VaapiH264Encoder, bool)> {
         let display =
             Display::open().context("failed to open VAAPI display — no GPU or driver found")?;
@@ -819,8 +820,10 @@ impl VaapiEncoder {
                 min_quality: 18,
                 max_quality: 36,
             },
+            // H.264 requires log2_max_frame_num_minus4 >= 0, so max_frame_num >= 16.
+            // cros-codecs derives max_frame_num from the LowDelay limit, so clamp it.
             pred_structure: PredictionStructure::LowDelay {
-                limit: framerate as u16,
+                limit: keyframe_interval.max(16) as u16,
             },
             ..EncoderConfig::default()
         };
@@ -846,6 +849,7 @@ impl VaapiEncoder {
         let height = config.height;
         let framerate = config.framerate;
         let bitrate = config.bitrate_or_default(Self::H264_BPP);
+        let keyframe_interval = config.keyframe_interval_or_default();
         let nal_format = config.nal_format;
 
         let coded_size = Resolution { width, height };
@@ -871,7 +875,8 @@ impl VaapiEncoder {
         let avcc = if nal_format == NalFormat::Avcc {
             // Extract avcC by priming a temporary encoder with a black IDR frame.
             // cros-codecs only emits SPS/PPS in the first IDR (counter=0).
-            let (mut primer, _) = Self::create_encoder(width, height, framerate, bitrate)?;
+            let (mut primer, _) =
+                Self::create_encoder(width, height, framerate, bitrate, keyframe_interval)?;
             let yuv = YuvData::black(width, height);
             let nv12 = Self::i420_to_nv12(&yuv.y, &yuv.u, &yuv.v, width, height);
             let black = VaapiInputFrame::Nv12 {
@@ -907,7 +912,8 @@ impl VaapiEncoder {
         };
 
         // Create a fresh encoder for actual use.
-        let (encoder, _) = Self::create_encoder(width, height, framerate, bitrate)?;
+        let (encoder, _) =
+            Self::create_encoder(width, height, framerate, bitrate, keyframe_interval)?;
 
         tracing::info!(
             width,
