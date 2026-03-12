@@ -158,3 +158,31 @@ VPP on failure to avoid retrying every frame).
 
 **`VaProcPipelineParameterBuffer`**: Manually defined from `va/va_vpp.h` (not in
 cros-libva bindings). Same struct used by `VppRetiler` in `dmabuf_import.rs`.
+
+### Phase 3 TODO: Packed SPS with VUI `max_dec_frame_buffering`
+
+**Problem**: cros-codecs sets `max_num_ref_frames=1` in the SPS but does NOT
+set VUI `bitstream_restriction_flag` or `max_dec_frame_buffering`. Decoders
+fall back to the H.264 level-derived DPB size (e.g. Level 4.0 at 640×360 →
+DPB=16 → 533ms of buffering before first output).
+
+**Current workaround**: `min_dpb_h264_level()` picks the lowest level where
+DPB≥2 (e.g. Level 1.2 for 640×360). Same approach used by wl-screenrec
+(hardcodes Level 3.0).
+
+**Proper fix (what FFmpeg and GStreamer do)**: Generate packed SPS headers
+with VUI fields and submit as `VAEncPackedHeaderSequence`:
+
+- FFmpeg (`hw_base_encode_h264.c`): Sets `sps->vui.bitstream_restriction_flag=1`,
+  `max_dec_frame_buffering = max_b_depth + 1` (= 1 for IP-only streams).
+- GStreamer (`gstvah264enc.c`): Same — writes `max_dec_frame_buffering` into
+  SPS VUI via `gst_h264_bit_writer_sps()`, submits as packed header.
+
+Both generate the *entire* SPS from scratch rather than patching the
+driver-generated one.
+
+**Applies to H.264 and H.265** (HEVC has analogous VPS/SPS DPB signaling).
+
+**Implementation path**: Either contribute VUI support upstream to cros-codecs,
+or generate our own packed SPS NALU with correct VUI and submit it alongside
+the encoder's output.
