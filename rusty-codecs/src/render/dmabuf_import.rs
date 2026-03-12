@@ -1018,9 +1018,10 @@ impl VppRetiler {
                     attribs.as_mut_ptr(),
                     attribs.len() as u32,
                 );
+                // Close the dup'd FD — the VA driver imports the DMA-BUF handle
+                // during vaCreateSurfaces and does not take ownership of the FD.
+                libc::close(fd_dup);
                 if status != va::VA_STATUS_SUCCESS as i32 {
-                    // Driver did not take ownership of fd_dup on failure.
-                    libc::close(fd_dup);
                     res.input_surface = 0; // not created
                     return Err(anyhow::anyhow!(
                         "vaCreateSurfaces(VPP input) failed: VA status {status}"
