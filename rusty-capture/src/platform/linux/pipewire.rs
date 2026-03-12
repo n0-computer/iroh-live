@@ -69,6 +69,39 @@ fn ensure_pw_init() {
     INIT.call_once(pw::init);
 }
 
+/// Returns a shared tokio runtime for portal D-Bus interactions.
+///
+/// ashpd caches the D-Bus session connection in a process-global `OnceLock`.
+/// That connection is bound to the tokio runtime that first created it. If
+/// each portal call spins up its own short-lived runtime, the cached
+/// connection dies when the first runtime shuts down, causing subsequent
+/// `Camera::new()` / `Screencast::new()` calls to hang forever.
+///
+/// This function lazily creates a single-threaded tokio runtime (on a
+/// dedicated OS thread) that lives for the entire process, keeping the
+/// D-Bus connection alive across capture sessions.
+fn portal_runtime() -> &'static tokio::runtime::Handle {
+    use std::sync::OnceLock;
+    static RT: OnceLock<tokio::runtime::Handle> = OnceLock::new();
+    RT.get_or_init(|| {
+        let (tx, rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("pw-dbus-rt".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("failed to create portal tokio runtime");
+                tx.send(rt.handle().clone())
+                    .expect("failed to send portal runtime handle");
+                // Block forever — runtime must outlive the process.
+                rt.block_on(std::future::pending::<()>());
+            })
+            .expect("failed to spawn portal runtime thread");
+        rx.recv().expect("portal runtime thread died before sending handle")
+    })
+}
+
 /// Maps a SPA video format to a DRM fourcc code, if known.
 fn spa_format_to_drm_fourcc(spa_format: u32) -> Option<u32> {
     // DRM fourcc constants (from drm_fourcc.h)
@@ -886,16 +919,7 @@ fn portal_screen_capture_thread(
     result_tx: mpsc::Sender<Result<(OwnedFd, u32)>>,
     close_rx: mpsc::Receiver<()>,
 ) {
-    let rt = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(rt) => rt,
-        Err(e) => {
-            let _ = result_tx.send(Err(e.into()));
-            return;
-        }
-    };
+    let rt = portal_runtime();
 
     rt.block_on(async {
         use ashpd::desktop::PersistMode;
@@ -1012,10 +1036,7 @@ fn portal_camera_capture() -> Result<OwnedFd> {
 }
 
 fn portal_camera_capture_inner() -> Result<OwnedFd> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("failed to create tokio runtime for portal")?;
+    let rt = portal_runtime();
 
     rt.block_on(async {
         use ashpd::desktop::camera::Camera;
@@ -1052,8 +1073,6 @@ fn portal_camera_capture_inner() -> Result<OwnedFd> {
 
         info!("Camera portal negotiated");
 
-        // Drop proxy while the tokio runtime is still active so that any
-        // D-Bus cleanup messages are flushed before the runtime shuts down.
         drop(proxy);
 
         Ok(fd)
