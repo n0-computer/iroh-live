@@ -634,98 +634,161 @@ fn run_pipewire_stream(
 const PORTAL_INFRA_TIMEOUT: Duration = Duration::from_secs(10);
 const PORTAL_DIALOG_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Handle that keeps a portal session alive in a background thread.
+///
+/// The ScreenCast portal session controls the compositor's screen sharing.
+/// Dropping the session tells the compositor to stop, which destroys the
+/// PipeWire source node. The session must therefore live as long as the
+/// PipeWire stream that consumes it.
+///
+/// On drop, signals the background thread to close the session via D-Bus
+/// and shut down its tokio runtime cleanly.
+struct PortalSessionGuard {
+    close_tx: Option<mpsc::Sender<()>>,
+}
+
+impl Drop for PortalSessionGuard {
+    fn drop(&mut self) {
+        if let Some(tx) = self.close_tx.take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
 /// Runs the ashpd ScreenCast portal negotiation on a dedicated thread.
 ///
-/// Portal D-Bus calls happen on a temporary tokio runtime that lives only for
-/// the duration of the negotiation. Each D-Bus round-trip is wrapped in a
-/// timeout to prevent hangs if the compositor drops the response signal
-/// (see <https://github.com/nashaofu/xcap/pull/246>).
-fn portal_screen_capture(show_cursor: bool) -> Result<(OwnedFd, u32)> {
-    // Run portal on a dedicated thread so we never block an async runtime.
-    let (tx, rx) = mpsc::channel();
+/// Portal D-Bus calls happen on a tokio runtime that lives in the background
+/// thread, keeping the portal session alive until the returned
+/// [`PortalSessionGuard`] is dropped.
+fn portal_screen_capture(show_cursor: bool) -> Result<(OwnedFd, u32, PortalSessionGuard)> {
+    let (result_tx, result_rx) = mpsc::channel();
+    let (close_tx, close_rx) = mpsc::channel();
+
     std::thread::Builder::new()
         .name("pw-portal-screen".into())
         .spawn(move || {
-            let result = portal_screen_capture_inner(show_cursor);
-            let _ = tx.send(result);
+            portal_screen_capture_thread(show_cursor, result_tx, close_rx);
         })
         .context("failed to spawn portal thread")?;
 
-    rx.recv_timeout(PORTAL_DIALOG_TIMEOUT + PORTAL_INFRA_TIMEOUT * 3)
-        .context("portal thread did not respond")?
+    let (fd, node_id) = result_rx
+        .recv_timeout(PORTAL_DIALOG_TIMEOUT + PORTAL_INFRA_TIMEOUT * 3)
+        .context("portal thread did not respond")??;
+
+    let guard = PortalSessionGuard {
+        close_tx: Some(close_tx),
+    };
+    Ok((fd, node_id, guard))
 }
 
-fn portal_screen_capture_inner(show_cursor: bool) -> Result<(OwnedFd, u32)> {
-    let rt = tokio::runtime::Builder::new_current_thread()
+fn portal_screen_capture_thread(
+    show_cursor: bool,
+    result_tx: mpsc::Sender<Result<(OwnedFd, u32)>>,
+    close_rx: mpsc::Receiver<()>,
+) {
+    let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .context("failed to create tokio runtime for portal")?;
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            let _ = result_tx.send(Err(e.into()));
+            return;
+        }
+    };
 
     rt.block_on(async {
         use ashpd::desktop::PersistMode;
         use ashpd::desktop::screencast::{CursorMode, Screencast, SourceType};
         use tokio::time::timeout;
 
-        debug!("creating ScreenCast proxy");
-        let proxy = timeout(PORTAL_INFRA_TIMEOUT, Screencast::new())
-            .await
-            .context("timeout creating ScreenCast proxy")?
-            .context("failed to create ScreenCast proxy")?;
+        let result = async {
+            debug!("creating ScreenCast proxy");
+            let proxy = timeout(PORTAL_INFRA_TIMEOUT, Screencast::new())
+                .await
+                .context("timeout creating ScreenCast proxy")?
+                .context("failed to create ScreenCast proxy")?;
 
-        debug!("creating ScreenCast session");
-        let session = timeout(PORTAL_INFRA_TIMEOUT, proxy.create_session())
-            .await
-            .context("timeout creating session")?
-            .context("failed to create ScreenCast session")?;
+            debug!("creating ScreenCast session");
+            let session = timeout(PORTAL_INFRA_TIMEOUT, proxy.create_session())
+                .await
+                .context("timeout creating session")?
+                .context("failed to create ScreenCast session")?;
 
-        let cursor_mode = if show_cursor {
-            CursorMode::Embedded
-        } else {
-            CursorMode::Hidden
+            let cursor_mode = if show_cursor {
+                CursorMode::Embedded
+            } else {
+                CursorMode::Hidden
+            };
+
+            debug!("selecting sources (waiting for user to pick a screen)");
+            timeout(
+                PORTAL_DIALOG_TIMEOUT,
+                proxy.select_sources(
+                    &session,
+                    cursor_mode,
+                    SourceType::Monitor.into(),
+                    false,
+                    None,
+                    PersistMode::DoNot,
+                ),
+            )
+            .await
+            .context("timeout waiting for select_sources")?
+            .context("select_sources failed")?
+            .response()
+            .context("select_sources response failed (permission denied?)")?;
+
+            debug!("starting ScreenCast (waiting for user confirmation)");
+            let streams = timeout(PORTAL_DIALOG_TIMEOUT, proxy.start(&session, None))
+                .await
+                .context("timeout waiting for start")?
+                .context("start failed")?
+                .response()
+                .context("start response failed (user cancelled?)")?;
+
+            let stream = streams
+                .streams()
+                .first()
+                .context("no streams returned from ScreenCast portal")?;
+
+            let node_id = stream.pipe_wire_node_id();
+
+            debug!(node_id, "opening PipeWire remote");
+            let fd = timeout(PORTAL_INFRA_TIMEOUT, proxy.open_pipe_wire_remote(&session))
+                .await
+                .context("timeout opening PipeWire remote")?
+                .context("failed to open PipeWire remote")?;
+
+            info!(node_id, "ScreenCast portal negotiated");
+            Ok((fd, node_id, session))
+        }
+        .await;
+
+        let session = match result {
+            Ok((fd, node_id, session)) => {
+                let _ = result_tx.send(Ok((fd, node_id)));
+                session
+            }
+            Err(e) => {
+                let _ = result_tx.send(Err(e));
+                return;
+            }
         };
 
-        debug!("selecting sources (waiting for user to pick a screen)");
-        timeout(
-            PORTAL_DIALOG_TIMEOUT,
-            proxy.select_sources(
-                &session,
-                cursor_mode,
-                SourceType::Monitor.into(),
-                false,
-                None,
-                PersistMode::DoNot,
-            ),
-        )
-        .await
-        .context("timeout waiting for select_sources")?
-        .context("select_sources failed")?
-        .response()
-        .context("select_sources response failed (permission denied?)")?;
+        // Keep the session alive until the capturer signals us to close.
+        // The portal session controls the compositor's screen sharing —
+        // dropping it stops the PipeWire source node.
+        let _ = tokio::task::spawn_blocking(move || {
+            let _ = close_rx.recv();
+        })
+        .await;
 
-        debug!("starting ScreenCast (waiting for user confirmation)");
-        let streams = timeout(PORTAL_DIALOG_TIMEOUT, proxy.start(&session, None))
-            .await
-            .context("timeout waiting for start")?
-            .context("start failed")?
-            .response()
-            .context("start response failed (user cancelled?)")?;
-
-        let stream = streams
-            .streams()
-            .first()
-            .context("no streams returned from ScreenCast portal")?;
-
-        let node_id = stream.pipe_wire_node_id();
-
-        debug!(node_id, "opening PipeWire remote");
-        let fd = timeout(PORTAL_INFRA_TIMEOUT, proxy.open_pipe_wire_remote(&session))
-            .await
-            .context("timeout opening PipeWire remote")?
-            .context("failed to open PipeWire remote")?;
-
-        info!(node_id, "ScreenCast portal negotiated");
-        Ok((fd, node_id))
-    })
+        debug!("closing ScreenCast portal session");
+        if let Err(e) = session.close().await {
+            debug!("failed to close ScreenCast session: {e}");
+        }
+    });
 }
 
 /// Runs the ashpd Camera portal negotiation on a dedicated thread.
@@ -801,6 +864,8 @@ pub struct PipeWireScreenCapturer {
     rx: mpsc::Receiver<VideoFrame>,
     #[debug(skip)]
     should_stop: Arc<AtomicBool>,
+    #[debug(skip)]
+    _portal_guard: PortalSessionGuard,
 }
 
 impl PipeWireScreenCapturer {
@@ -815,7 +880,7 @@ impl PipeWireScreenCapturer {
         let preferred_fps = config.target_fps.unwrap_or(30.0);
 
         // Portal negotiation runs on its own thread (inside portal_screen_capture).
-        let (fd, node_id) = portal_screen_capture(show_cursor)?;
+        let (fd, node_id, portal_guard) = portal_screen_capture(show_cursor)?;
 
         let (frame_tx, frame_rx) = mpsc::channel();
         let (init_tx, init_rx) = mpsc::channel();
@@ -858,6 +923,7 @@ impl PipeWireScreenCapturer {
             height,
             rx: frame_rx,
             should_stop,
+            _portal_guard: portal_guard,
         })
     }
 }
