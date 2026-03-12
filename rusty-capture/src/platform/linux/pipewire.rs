@@ -173,15 +173,14 @@ fn parse_format_pod(pod: &Pod) -> Option<(u32, u32, u32)> {
     let total_size = unsafe { std::mem::size_of::<libspa::sys::spa_pod>() + (*raw).size as usize };
     let bytes = unsafe { std::slice::from_raw_parts(raw as *const u8, total_size) };
 
-    let (_, value) = match libspa::pod::deserialize::PodDeserializer::deserialize_from::<Value>(
-        bytes,
-    ) {
-        Ok(v) => v,
-        Err(e) => {
-            warn!("failed to deserialize PipeWire format pod: {e:?}");
-            return None;
-        }
-    };
+    let (_, value) =
+        match libspa::pod::deserialize::PodDeserializer::deserialize_from::<Value>(bytes) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("failed to deserialize PipeWire format pod: {e:?}");
+                return None;
+            }
+        };
 
     if let Value::Object(obj) = value {
         let mut width = 0u32;
@@ -193,14 +192,20 @@ fn parse_format_pod(pod: &Pod) -> Option<(u32, u32, u32)> {
                 if let Some(id) = extract_id(&prop.value) {
                     format = id.0;
                 } else {
-                    debug!(key = prop.key, "VideoFormat property has unexpected Value type");
+                    debug!(
+                        key = prop.key,
+                        "VideoFormat property has unexpected Value type"
+                    );
                 }
             } else if prop.key == FormatProperties::VideoSize.as_raw() {
                 if let Some(rect) = extract_rectangle(&prop.value) {
                     width = rect.width;
                     height = rect.height;
                 } else {
-                    debug!(key = prop.key, "VideoSize property has unexpected Value type");
+                    debug!(
+                        key = prop.key,
+                        "VideoSize property has unexpected Value type"
+                    );
                 }
             }
         }
