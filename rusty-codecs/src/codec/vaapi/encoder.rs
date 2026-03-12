@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, os::fd::AsRawFd, rc::Rc};
 
 use anyhow::{Context, Result};
 use cros_codecs::{
@@ -10,8 +10,9 @@ use cros_codecs::{
         stateless::h264::StatelessEncoder as H264StatelessEncoder,
     },
     libva::{
-        Display, Image, Surface, UsageHint, VA_FOURCC_NV12, VA_RT_FORMAT_YUV420, VAEntrypoint,
-        VAProfile,
+        Display, Image, MemoryType, Surface, SurfaceMemoryDescriptor, UsageHint, VA_FOURCC_NV12,
+        VA_RT_FORMAT_YUV420, VADRMPRIMESurfaceDescriptor, VADRMPRIMESurfaceDescriptorLayer,
+        VADRMPRIMESurfaceDescriptorObject, VAEntrypoint, VAProfile, VASurfaceAttrib,
     },
     video_frame::{ReadMapping, VideoFrame as CrosVideoFrame, WriteMapping},
 };
@@ -19,21 +20,98 @@ use cros_codecs::{
 use crate::{
     codec::h264::annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b},
     config::{H264, VideoCodec, VideoConfig},
-    format::{EncodedFrame, NalFormat, ScaleMode, VideoEncoderConfig, VideoFrame},
+    format::{
+        DmaBufInfo, EncodedFrame, NalFormat, NativeFrameHandle, ScaleMode, VideoEncoderConfig,
+        VideoFrame,
+    },
     processing::convert::{YuvData, pixel_format_to_nv12},
     processing::scale::Scaler,
     traits::{VideoEncoder, VideoEncoderFactory},
 };
 
-/// An NV12 frame that implements the `cros_codecs::video_frame::VideoFrame` trait.
+/// Encoder input frame — either CPU NV12 data or a zero-copy DMA-BUF handle.
 ///
-/// This allows us to use the cros-codecs stateless encoder API, which requires
-/// input frames to implement `VideoFrame` so they can be imported to VA surfaces.
-#[derive(Debug, Clone)]
-struct Nv12Frame {
-    data: Vec<u8>,
-    width: u32,
-    height: u32,
+/// Implements `cros_codecs::video_frame::VideoFrame` so it can be submitted to
+/// the stateless encoder. The NV12 variant uploads pixel data via image mapping;
+/// the DMA-BUF variant imports the buffer directly as a VA surface, avoiding any
+/// CPU copy.
+#[derive(Debug)]
+enum VaapiInputFrame {
+    /// CPU-side NV12 pixel data.
+    Nv12 {
+        data: Vec<u8>,
+        width: u32,
+        height: u32,
+    },
+    /// Zero-copy DMA-BUF from capture source.
+    DmaBuf(DmaBufInfo),
+}
+
+impl VaapiInputFrame {
+    fn width(&self) -> u32 {
+        match self {
+            Self::Nv12 { width, .. } => *width,
+            Self::DmaBuf(info) => info.coded_width,
+        }
+    }
+
+    fn height(&self) -> u32 {
+        match self {
+            Self::Nv12 { height, .. } => *height,
+            Self::DmaBuf(info) => info.coded_height,
+        }
+    }
+}
+
+/// Implements `SurfaceMemoryDescriptor` so the frame can control how the VA
+/// surface is backed: driver-allocated for NV12 (same as `()`), or imported
+/// from DMA-BUF via `DRM_PRIME_2` for zero-copy.
+impl SurfaceMemoryDescriptor for VaapiInputFrame {
+    fn add_attrs(&mut self, attrs: &mut Vec<VASurfaceAttrib>) -> Option<Box<dyn std::any::Any>> {
+        match self {
+            Self::Nv12 { .. } => None,
+            Self::DmaBuf(info) => {
+                let mut desc = build_prime_descriptor(info);
+                attrs.push(VASurfaceAttrib::new_memory_type(MemoryType::DrmPrime2));
+                attrs.push(VASurfaceAttrib::new_buffer_descriptor(&mut desc));
+                Some(Box::new(desc))
+            }
+        }
+    }
+}
+
+/// Builds a `VADRMPRIMESurfaceDescriptor` from our `DmaBufInfo`.
+fn build_prime_descriptor(info: &DmaBufInfo) -> VADRMPRIMESurfaceDescriptor {
+    let mut objects: [VADRMPRIMESurfaceDescriptorObject; 4] = Default::default();
+    objects[0] = VADRMPRIMESurfaceDescriptorObject {
+        fd: info.fd.as_raw_fd(),
+        size: 0, // driver calculates
+        drm_format_modifier: info.modifier,
+    };
+
+    let mut layer = VADRMPRIMESurfaceDescriptorLayer {
+        drm_format: info.drm_format,
+        num_planes: info.planes.len() as u32,
+        ..Default::default()
+    };
+    for (i, plane) in info.planes.iter().enumerate() {
+        layer.object_index[i] = 0;
+        layer.offset[i] = plane.offset;
+        layer.pitch[i] = plane.pitch;
+    }
+
+    let mut layers: [VADRMPRIMESurfaceDescriptorLayer; 4] = Default::default();
+    layers[0] = layer;
+
+    VADRMPRIMESurfaceDescriptor {
+        fourcc: info.drm_format,
+        width: info.coded_width,
+        height: info.coded_height,
+        num_objects: 1,
+        objects,
+        num_layers: 1,
+        layers,
+    }
 }
 
 struct Nv12ReadMapping<'a> {
@@ -51,14 +129,13 @@ struct Nv12WriteMapping;
 
 impl<'a> WriteMapping<'a> for Nv12WriteMapping {
     fn get(&self) -> Vec<RefCell<&'a mut [u8]>> {
-        // The encoder imports frames via `to_native_handle`, not by writing through mappings.
         vec![]
     }
 }
 
-impl CrosVideoFrame for Nv12Frame {
-    type MemDescriptor = ();
-    type NativeHandle = Surface<()>;
+impl CrosVideoFrame for VaapiInputFrame {
+    type MemDescriptor = Self;
+    type NativeHandle = Surface<Self>;
 
     fn fourcc(&self) -> Fourcc {
         Fourcc::from(b"NV12")
@@ -66,27 +143,41 @@ impl CrosVideoFrame for Nv12Frame {
 
     fn resolution(&self) -> Resolution {
         Resolution {
-            width: self.width,
-            height: self.height,
+            width: self.width(),
+            height: self.height(),
         }
     }
 
     fn get_plane_size(&self) -> Vec<usize> {
-        let y_size = (self.width * self.height) as usize;
-        let uv_size = (self.width * self.height.div_ceil(2)) as usize;
+        let w = self.width();
+        let h = self.height();
+        let y_size = (w * h) as usize;
+        let uv_size = (w * h.div_ceil(2)) as usize;
         vec![y_size, uv_size]
     }
 
     fn get_plane_pitch(&self) -> Vec<usize> {
-        vec![self.width as usize, self.width as usize]
+        match self {
+            Self::Nv12 { width, .. } => vec![*width as usize, *width as usize],
+            Self::DmaBuf(info) => info.planes.iter().map(|p| p.pitch as usize).collect(),
+        }
     }
 
     fn map<'a>(&'a self) -> Result<Box<dyn ReadMapping<'a> + 'a>, String> {
-        let y_size = (self.width * self.height) as usize;
-        Ok(Box::new(Nv12ReadMapping {
-            y_plane: &self.data[..y_size],
-            uv_plane: &self.data[y_size..],
-        }))
+        match self {
+            Self::Nv12 {
+                data,
+                width,
+                height,
+            } => {
+                let y_size = (*width as usize) * (*height as usize);
+                Ok(Box::new(Nv12ReadMapping {
+                    y_plane: &data[..y_size],
+                    uv_plane: &data[y_size..],
+                }))
+            }
+            Self::DmaBuf(_) => Err("DMA-BUF frames cannot be CPU-mapped".to_string()),
+        }
     }
 
     fn map_mut<'a>(&'a mut self) -> Result<Box<dyn WriteMapping<'a> + 'a>, String> {
@@ -94,32 +185,70 @@ impl CrosVideoFrame for Nv12Frame {
     }
 
     fn to_native_handle(&self, display: &Rc<Display>) -> Result<Self::NativeHandle, String> {
-        // Create a VA surface and upload NV12 data to it.
-        let mut surfaces = display
-            .create_surfaces(
-                VA_RT_FORMAT_YUV420,
-                Some(VA_FOURCC_NV12),
-                self.width,
-                self.height,
-                Some(UsageHint::USAGE_HINT_ENCODER),
-                vec![()],
-            )
-            .map_err(|e| format!("failed to create VA surface: {e:?}"))?;
-
-        let surface = surfaces.pop().ok_or("no surface created")?;
-
-        // Upload NV12 data via image mapping.
-        upload_nv12_to_surface(display, &surface, &self.data, self.width, self.height)
-            .map_err(|e| format!("failed to upload NV12 data: {e:?}"))?;
-
-        Ok(surface)
+        match self {
+            Self::Nv12 {
+                data,
+                width,
+                height,
+            } => {
+                // Create a driver-allocated VA surface and upload NV12 data.
+                let dummy = Self::Nv12 {
+                    data: Vec::new(),
+                    width: *width,
+                    height: *height,
+                };
+                let mut surfaces = display
+                    .create_surfaces(
+                        VA_RT_FORMAT_YUV420,
+                        Some(VA_FOURCC_NV12),
+                        *width,
+                        *height,
+                        Some(UsageHint::USAGE_HINT_ENCODER),
+                        vec![dummy],
+                    )
+                    .map_err(|e| format!("failed to create VA surface: {e:?}"))?;
+                let surface = surfaces.pop().ok_or("no surface created")?;
+                upload_nv12_to_surface(display, &surface, data, *width, *height)
+                    .map_err(|e| format!("failed to upload NV12 data: {e:?}"))?;
+                Ok(surface)
+            }
+            Self::DmaBuf(info) => {
+                // Import the DMA-BUF directly as a VA surface — zero-copy.
+                let frame = Self::DmaBuf(DmaBufInfo {
+                    fd: info
+                        .fd
+                        .try_clone()
+                        .map_err(|e| format!("failed to dup DMA-BUF fd: {e}"))?,
+                    modifier: info.modifier,
+                    drm_format: info.drm_format,
+                    coded_width: info.coded_width,
+                    coded_height: info.coded_height,
+                    display_width: info.display_width,
+                    display_height: info.display_height,
+                    planes: info.planes.clone(),
+                });
+                let mut surfaces = display
+                    .create_surfaces(
+                        VA_RT_FORMAT_YUV420,
+                        Some(info.drm_format),
+                        info.coded_width,
+                        info.coded_height,
+                        Some(UsageHint::USAGE_HINT_ENCODER),
+                        vec![frame],
+                    )
+                    .map_err(|e| format!("failed to import DMA-BUF as VA surface: {e:?}"))?;
+                surfaces
+                    .pop()
+                    .ok_or_else(|| "no surface created".to_string())
+            }
+        }
     }
 }
 
 /// Upload raw NV12 data to a VA surface using image mapping.
 fn upload_nv12_to_surface(
     display: &Rc<Display>,
-    surface: &Surface<()>,
+    surface: &Surface<VaapiInputFrame>,
     nv12: &[u8],
     width: u32,
     height: u32,
@@ -182,15 +311,14 @@ fn upload_nv12_to_surface(
 }
 
 /// The concrete H264 VAAPI encoder type.
-/// Handle = Nv12Frame, Backend = VaapiBackend<(), Surface<()>>.
-type VaapiH264Encoder = H264StatelessEncoder<Nv12Frame, VaapiBackend<(), Surface<()>>>;
+type VaapiH264Encoder =
+    H264StatelessEncoder<VaapiInputFrame, VaapiBackend<VaapiInputFrame, Surface<VaapiInputFrame>>>;
 
 /// VAAPI hardware-accelerated H.264 encoder for Linux.
 ///
 /// Uses the `cros-codecs` crate to interface with the VA-API backend.
-/// The encoder accepts RGBA/BGRA frames, converts to NV12, wraps in
-/// an `Nv12Frame` (implementing `VideoFrame`), and submits to the
-/// stateless H.264 encoder.
+/// Accepts DMA-BUF GPU frames for zero-copy encode, or falls back to
+/// CPU NV12 conversion for RGBA/BGRA/I420 input.
 #[derive(derive_more::Debug)]
 pub struct VaapiEncoder {
     #[debug(skip)]
@@ -297,7 +425,7 @@ impl VaapiEncoder {
             let (mut primer, _) = Self::create_encoder(width, height, framerate, bitrate)?;
             let yuv = YuvData::black(width, height);
             let nv12 = Self::i420_to_nv12(&yuv.y, &yuv.u, &yuv.v, width, height);
-            let black = Nv12Frame {
+            let black = VaapiInputFrame::Nv12 {
                 data: nv12,
                 width,
                 height,
@@ -350,11 +478,29 @@ impl VaapiEncoder {
 
     /// Convert I420 planar YUV to NV12 semi-planar format.
     /// NV12 = Y plane followed by interleaved UV plane.
+    /// Converts a `VideoFrame` to an NV12 `VaapiInputFrame` via CPU path
+    /// (scale + color convert).
+    fn build_nv12_input(&mut self, frame: VideoFrame) -> Result<VaapiInputFrame> {
+        let frame = self.scale_if_needed(frame)?;
+        let [w, h] = frame.dimensions;
+        let nv12_data = match &frame.data {
+            crate::format::FrameData::Packed { pixel_format, data } => {
+                pixel_format_to_nv12(data, w, h, *pixel_format)?
+            }
+            _ => {
+                let img = frame.rgba_image();
+                pixel_format_to_nv12(img.as_raw(), w, h, crate::format::PixelFormat::Rgba)?
+            }
+        };
+        Ok(VaapiInputFrame::Nv12 {
+            data: nv12_data.into_contiguous(),
+            width: w,
+            height: h,
+        })
+    }
+
     /// Scales the frame to encoder dimensions if needed, based on the
     /// configured [`ScaleMode`].
-    ///
-    /// Currently uses CPU-side scaling via [`Scaler`]. A future optimization
-    /// can replace this with VAAPI VPP hardware scaling for zero-copy frames.
     fn scale_if_needed(&mut self, frame: VideoFrame) -> Result<VideoFrame> {
         let [fw, fh] = frame.dimensions;
         if fw == self.width && fh == self.height {
@@ -506,35 +652,44 @@ impl VideoEncoder for VaapiEncoder {
     }
 
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
-        let frame = self.scale_if_needed(frame)?;
-        let [w, h] = frame.dimensions;
-        let nv12_data = match &frame.data {
-            crate::format::FrameData::Packed { pixel_format, data } => {
-                pixel_format_to_nv12(data, w, h, *pixel_format)?
+        // Check for zero-copy DMA-BUF path before any CPU-side scaling.
+        let input_frame = if let Some(NativeFrameHandle::DmaBuf(info)) = frame.native_handle() {
+            if info.coded_width == self.width && info.coded_height == self.height {
+                VaapiInputFrame::DmaBuf(info)
+            } else {
+                // DMA-BUF with wrong dimensions: fall through to CPU path.
+                self.build_nv12_input(frame)?
             }
-            _ => {
-                // GPU, I420, or NV12 frames: fall back through RGBA for now.
-                // TODO: accept NV12/Gpu frames directly for zero-copy encode.
-                let img = frame.rgba_image();
-                pixel_format_to_nv12(img.as_raw(), w, h, crate::format::PixelFormat::Rgba)?
-            }
-        };
-
-        // Wrap NV12 data in our VideoFrame impl.
-        let nv12_frame = Nv12Frame {
-            data: nv12_data.into_contiguous(),
-            width: w,
-            height: h,
-        };
-
-        // Build frame metadata. Use the frame's actual dimensions for the
-        // layout so strides and plane offsets match the NV12 data, even if
-        // the encoder was configured at a different resolution.
-        let timestamp_us = (self.frame_count * 1_000_000) / self.framerate as u64;
-        let layout = if w == self.width && h == self.height {
-            self.frame_layout.clone()
         } else {
-            FrameLayout {
+            self.build_nv12_input(frame)?
+        };
+
+        let w = input_frame.width();
+        let h = input_frame.height();
+
+        // Build frame metadata with layout matching the input frame.
+        let timestamp_us = (self.frame_count * 1_000_000) / self.framerate as u64;
+        let layout = match &input_frame {
+            VaapiInputFrame::DmaBuf(info) => FrameLayout {
+                format: (Fourcc::from(b"NV12"), info.modifier),
+                size: Resolution {
+                    width: w,
+                    height: h,
+                },
+                planes: info
+                    .planes
+                    .iter()
+                    .map(|p| PlaneLayout {
+                        buffer_index: 0,
+                        offset: p.offset as usize,
+                        stride: p.pitch as usize,
+                    })
+                    .collect(),
+            },
+            VaapiInputFrame::Nv12 { .. } if w == self.width && h == self.height => {
+                self.frame_layout.clone()
+            }
+            VaapiInputFrame::Nv12 { .. } => FrameLayout {
                 format: self.frame_layout.format,
                 size: Resolution {
                     width: w,
@@ -552,7 +707,7 @@ impl VideoEncoder for VaapiEncoder {
                         stride: w as usize,
                     },
                 ],
-            }
+            },
         };
         let meta = FrameMetadata {
             timestamp: timestamp_us,
@@ -562,7 +717,7 @@ impl VideoEncoder for VaapiEncoder {
 
         // Submit frame to encoder.
         self.encoder
-            .encode(meta, nv12_frame)
+            .encode(meta, input_frame)
             .map_err(|e| anyhow::anyhow!("VAAPI encode failed: {e:?}"))?;
 
         self.frame_count += 1;
