@@ -14,6 +14,7 @@
 
 use std::{
     collections::VecDeque,
+    sync::mpsc,
     time::{Duration, Instant},
 };
 
@@ -95,6 +96,70 @@ impl RenderMode {
             #[cfg(feature = "wgpu")]
             Self::Wgpu => "wgpu",
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline mode
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, strum::Display, strum::VariantArray)]
+enum PipelineMode {
+    /// Raw capture → display (no encoding/decoding).
+    Direct,
+    /// Capture → encode → decode → display.
+    #[strum(serialize = "Encode/Decode")]
+    EncodeDecode,
+}
+
+// ---------------------------------------------------------------------------
+// Direct capture (no encode/decode)
+// ---------------------------------------------------------------------------
+
+struct DirectCapture {
+    rx: mpsc::Receiver<VideoFrame>,
+    current: Option<VideoFrame>,
+    #[allow(dead_code, reason = "kept for diagnostics")]
+    source_name: String,
+    _thread: std::thread::JoinHandle<()>,
+}
+
+impl DirectCapture {
+    fn new(mut source: Box<dyn VideoSource>) -> anyhow::Result<Self> {
+        let source_name = source.name().to_string();
+        let (tx, rx) = mpsc::sync_channel(2);
+        source.start()?;
+        let thread = std::thread::Builder::new()
+            .name(format!("direct-{source_name}"))
+            .spawn(move || {
+                loop {
+                    match source.pop_frame() {
+                        Ok(Some(frame)) => {
+                            if tx.send(frame).is_err() {
+                                break;
+                            }
+                        }
+                        Ok(None) => std::thread::sleep(Duration::from_millis(1)),
+                        Err(e) => {
+                            tracing::warn!("direct capture error: {e:#}");
+                            break;
+                        }
+                    }
+                }
+            })?;
+        Ok(Self {
+            rx,
+            current: None,
+            source_name,
+            _thread: thread,
+        })
+    }
+
+    fn current_frame(&mut self) -> Option<&VideoFrame> {
+        while let Ok(frame) = self.rx.try_recv() {
+            self.current = Some(frame);
+        }
+        self.current.as_ref()
     }
 }
 
@@ -258,15 +323,19 @@ struct PipelineSettings {
     preset: VideoPreset,
     backend: DecoderBackend,
     render_mode: RenderMode,
+    pipeline_mode: PipelineMode,
 }
 
 // ---------------------------------------------------------------------------
 // Running pipeline
 // ---------------------------------------------------------------------------
 
-struct RunningPipeline {
-    _encoder: VideoEncoderPipeline,
-    decoder: VideoDecoderPipeline,
+enum TilePipeline {
+    EncodeDecode {
+        _encoder: VideoEncoderPipeline,
+        decoder: VideoDecoderPipeline,
+    },
+    Direct(DirectCapture),
 }
 
 // ---------------------------------------------------------------------------
@@ -385,7 +454,7 @@ impl VideoView {
 struct Tile {
     id: u64,
     settings: PipelineSettings,
-    pipeline: Option<RunningPipeline>,
+    pipeline: Option<TilePipeline>,
     video_view: VideoView,
     stats: Stats,
     encoder_name: String,
@@ -434,47 +503,64 @@ impl Tile {
             }
         };
 
-        // Resolve encoder dimensions for the actual source format.
-        // With ScaleMode::Fit (default), this ensures we never upscale:
-        // if the source is smaller than the preset, the encoder is created
-        // at source resolution.
-        let enc_config = VideoEncoderConfig::from_preset(self.settings.preset)
-            .resolve_for_source(source.format().dimensions[0], source.format().dimensions[1]);
-        let encoder = match self.settings.codec.create_encoder(enc_config) {
-            Ok(e) => e,
-            Err(e) => {
-                self.error_msg = Some(format!("Encoder: {e:#}"));
-                return;
+        match self.settings.pipeline_mode {
+            PipelineMode::Direct => {
+                self.encoder_name = "none".to_string();
+                self.decoder_name = "none".to_string();
+                match DirectCapture::new(source) {
+                    Ok(dc) => {
+                        self.pipeline = Some(TilePipeline::Direct(dc));
+                    }
+                    Err(e) => {
+                        self.error_msg = Some(format!("Direct: {e:#}"));
+                        return;
+                    }
+                }
             }
-        };
+            PipelineMode::EncodeDecode => {
+                let enc_config = VideoEncoderConfig::from_preset(self.settings.preset)
+                    .resolve_for_source(
+                        source.format().dimensions[0],
+                        source.format().dimensions[1],
+                    );
+                let encoder = match self.settings.codec.create_encoder(enc_config) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        self.error_msg = Some(format!("Encoder: {e:#}"));
+                        return;
+                    }
+                };
 
-        self.encoder_name = encoder.name().to_string();
-        let config = encoder.config();
-        let (sink, pipe_source) = media_pipe(32);
-        let enc = VideoEncoderPipeline::new(source, encoder, sink);
+                self.encoder_name = encoder.name().to_string();
+                let config = encoder.config();
+                let (sink, pipe_source) = media_pipe(32);
+                let enc = VideoEncoderPipeline::new(source, encoder, sink);
 
-        let decode_config = DecodeConfig {
-            backend: self.settings.backend,
-            ..Default::default()
-        };
-        let dec = match VideoDecoderPipeline::new::<DynamicVideoDecoder>(
-            format!("viewer-{}", self.id),
-            pipe_source,
-            &config,
-            &decode_config,
-        ) {
-            Ok(d) => d,
-            Err(e) => {
-                self.error_msg = Some(format!("Decoder: {e:#}"));
-                return;
+                let decode_config = DecodeConfig {
+                    backend: self.settings.backend,
+                    ..Default::default()
+                };
+                let dec = match VideoDecoderPipeline::new::<DynamicVideoDecoder>(
+                    format!("viewer-{}", self.id),
+                    pipe_source,
+                    &config,
+                    &decode_config,
+                ) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        self.error_msg = Some(format!("Decoder: {e:#}"));
+                        return;
+                    }
+                };
+
+                self.decoder_name = dec.handle.decoder_name().to_string();
+                self.pipeline = Some(TilePipeline::EncodeDecode {
+                    _encoder: enc,
+                    decoder: dec,
+                });
             }
-        };
+        }
 
-        self.decoder_name = dec.handle.decoder_name().to_string();
-        self.pipeline = Some(RunningPipeline {
-            _encoder: enc,
-            decoder: dec,
-        });
         self.stats = Stats::default();
         self.error_msg = None;
     }
@@ -483,14 +569,26 @@ impl Tile {
         if let Some(ref msg) = self.error_msg {
             return msg.clone();
         }
-        format!(
-            "enc: {} dec: {} render: {} fps: {:.0} delay: {:.0}ms",
-            self.encoder_name,
-            self.decoder_name,
-            self.settings.render_mode.short_name(),
-            self.stats.fps,
-            self.stats.delay_ms,
-        )
+        match self.settings.pipeline_mode {
+            PipelineMode::Direct => {
+                format!(
+                    "DIRECT render: {} fps: {:.0} delay: {:.0}ms",
+                    self.settings.render_mode.short_name(),
+                    self.stats.fps,
+                    self.stats.delay_ms,
+                )
+            }
+            PipelineMode::EncodeDecode => {
+                format!(
+                    "enc: {} dec: {} render: {} fps: {:.0} delay: {:.0}ms",
+                    self.encoder_name,
+                    self.decoder_name,
+                    self.settings.render_mode.short_name(),
+                    self.stats.fps,
+                    self.stats.delay_ms,
+                )
+            }
+        }
     }
 
     fn aspect_ratio(&self) -> f32 {
@@ -509,6 +607,7 @@ struct ViewerApp {
     preset: VideoPreset,
     backend: DecoderBackend,
     render_mode: RenderMode,
+    pipeline_mode: PipelineMode,
 
     tiles: Vec<Tile>,
     next_tile_id: u64,
@@ -532,6 +631,7 @@ impl ViewerApp {
             preset: VideoPreset::P360,
             backend: DecoderBackend::Auto,
             render_mode: RenderMode::VARIANTS[0],
+            pipeline_mode: PipelineMode::EncodeDecode,
 
             tiles: Vec::new(),
             next_tile_id: 0,
@@ -551,6 +651,7 @@ impl ViewerApp {
             preset: self.preset,
             backend: self.backend,
             render_mode: self.render_mode,
+            pipeline_mode: self.pipeline_mode,
         }
     }
 
@@ -592,6 +693,7 @@ impl ViewerApp {
                         preset: self.preset,
                         backend,
                         render_mode,
+                        pipeline_mode: PipelineMode::EncodeDecode,
                     });
                 }
             }
@@ -636,43 +738,56 @@ impl eframe::App for ViewerApp {
                         }
                     });
 
-                ui.label("Encoder");
-                egui::ComboBox::from_id_salt("encoder")
-                    .selected_text(self.codec.display_name())
+                ui.label("Mode");
+                egui::ComboBox::from_id_salt("mode")
+                    .selected_text(self.pipeline_mode.to_string())
                     .show_ui(ui, |ui| {
-                        for codec in VideoCodec::available() {
-                            ui.selectable_value(&mut self.codec, codec, codec.display_name());
+                        for mode in PipelineMode::VARIANTS {
+                            ui.selectable_value(&mut self.pipeline_mode, *mode, mode.to_string());
                         }
                     });
 
-                ui.label("Preset");
-                egui::ComboBox::from_id_salt("preset")
-                    .selected_text(self.preset.to_string())
-                    .show_ui(ui, |ui| {
-                        for p in VideoPreset::all() {
-                            ui.selectable_value(&mut self.preset, p, p.to_string());
-                        }
-                    });
+                let is_encode_decode = self.pipeline_mode == PipelineMode::EncodeDecode;
 
-                ui.label("Decoder");
-                let backend_name = match self.backend {
-                    DecoderBackend::Auto => "Auto (HW > SW)",
-                    DecoderBackend::Software => "Software",
-                };
-                egui::ComboBox::from_id_salt("decoder")
-                    .selected_text(backend_name)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.backend,
-                            DecoderBackend::Auto,
-                            "Auto (HW > SW)",
-                        );
-                        ui.selectable_value(
-                            &mut self.backend,
-                            DecoderBackend::Software,
-                            "Software",
-                        );
-                    });
+                if is_encode_decode {
+                    ui.label("Encoder");
+                    egui::ComboBox::from_id_salt("encoder")
+                        .selected_text(self.codec.display_name())
+                        .show_ui(ui, |ui| {
+                            for codec in VideoCodec::available() {
+                                ui.selectable_value(&mut self.codec, codec, codec.display_name());
+                            }
+                        });
+
+                    ui.label("Preset");
+                    egui::ComboBox::from_id_salt("preset")
+                        .selected_text(self.preset.to_string())
+                        .show_ui(ui, |ui| {
+                            for p in VideoPreset::all() {
+                                ui.selectable_value(&mut self.preset, p, p.to_string());
+                            }
+                        });
+
+                    ui.label("Decoder");
+                    let backend_name = match self.backend {
+                        DecoderBackend::Auto => "Auto (HW > SW)",
+                        DecoderBackend::Software => "Software",
+                    };
+                    egui::ComboBox::from_id_salt("decoder")
+                        .selected_text(backend_name)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.backend,
+                                DecoderBackend::Auto,
+                                "Auto (HW > SW)",
+                            );
+                            ui.selectable_value(
+                                &mut self.backend,
+                                DecoderBackend::Software,
+                                "Software",
+                            );
+                        });
+                }
 
                 ui.label("Render");
                 egui::ComboBox::from_id_salt("render")
@@ -738,15 +853,21 @@ impl eframe::App for ViewerApp {
 
                 // Phase 1: update pipelines (mutable borrow)
                 for tile in self.tiles.iter_mut() {
-                    if let Some(ref mut pipeline) = tile.pipeline {
-                        if let Some(frame) = pipeline.decoder.frames.current_frame() {
-                            tile.stats.update(&frame);
-                            tile.video_view.render_frame(&frame);
+                    match tile.pipeline.as_mut() {
+                        Some(TilePipeline::EncodeDecode { decoder, .. }) => {
+                            if let Some(frame) = decoder.frames.current_frame() {
+                                tile.stats.update(&frame);
+                                tile.video_view.render_frame(&frame);
+                            }
+                            decoder.handle.set_viewport(tile_w as u32, tile_h as u32);
                         }
-                        pipeline
-                            .decoder
-                            .handle
-                            .set_viewport(tile_w as u32, tile_h as u32);
+                        Some(TilePipeline::Direct(dc)) => {
+                            if let Some(frame) = dc.current_frame() {
+                                tile.stats.update(frame);
+                                tile.video_view.render_frame(frame);
+                            }
+                        }
+                        None => {}
                     }
                 }
 
