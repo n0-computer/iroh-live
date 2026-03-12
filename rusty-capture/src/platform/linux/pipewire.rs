@@ -55,6 +55,17 @@ use crate::types::{CameraConfig, ScreenConfig};
 
 // ── Shared PipeWire stream infrastructure ───────────────────────────
 
+/// Initializes PipeWire exactly once per process.
+///
+/// `pw_init` is documented as idempotent, but calling it concurrently from
+/// multiple threads can race on global plugin loading. A `Once` guard
+/// removes that concern entirely.
+fn ensure_pw_init() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(pw::init);
+}
+
 /// State shared between PipeWire callbacks.
 struct CaptureState {
     frame_tx: mpsc::Sender<VideoFrame>,
@@ -456,7 +467,7 @@ fn run_pipewire_stream(
     init_tx: mpsc::Sender<Result<(u32, u32)>>,
     should_stop: Arc<AtomicBool>,
 ) -> Result<()> {
-    pw::init();
+    ensure_pw_init();
 
     let mainloop = pw::main_loop::MainLoopRc::new(None)
         .map_err(|e| anyhow::anyhow!("failed to create PipeWire main loop: {e}"))?;
@@ -779,14 +790,17 @@ fn portal_screen_capture_thread(
         // Keep the session alive until the capturer signals us to close.
         // The portal session controls the compositor's screen sharing —
         // dropping it stops the PipeWire source node.
+        // Use recv_timeout as a safety net in case the guard is leaked.
         let _ = tokio::task::spawn_blocking(move || {
-            let _ = close_rx.recv();
+            let _ = close_rx.recv_timeout(Duration::from_secs(600));
         })
         .await;
 
         debug!("closing ScreenCast portal session");
-        if let Err(e) = session.close().await {
-            debug!("failed to close ScreenCast session: {e}");
+        match tokio::time::timeout(Duration::from_secs(2), session.close()).await {
+            Ok(Ok(())) => debug!("ScreenCast portal session closed"),
+            Ok(Err(e)) => debug!("failed to close ScreenCast session: {e}"),
+            Err(_) => debug!("ScreenCast session close timed out, dropping"),
         }
     });
 }
@@ -848,6 +862,11 @@ fn portal_camera_capture_inner() -> Result<OwnedFd> {
             .context("failed to open camera PipeWire remote")?;
 
         info!("Camera portal negotiated");
+
+        // Drop proxy while the tokio runtime is still active so that any
+        // D-Bus cleanup messages are flushed before the runtime shuts down.
+        drop(proxy);
+
         Ok(fd)
     })
 }
