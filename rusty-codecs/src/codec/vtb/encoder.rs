@@ -82,6 +82,7 @@ impl VtbEncoder {
         let height = config.height;
         let framerate = config.framerate;
         let bitrate = config.bitrate_or_default(H264_BPP);
+        let keyframe_interval = config.keyframe_interval_or_default();
         let nal_format = config.nal_format;
 
         let callback_state: SharedPacketBuf = Arc::new(Mutex::new(CallbackState {
@@ -138,7 +139,7 @@ impl VtbEncoder {
                 &bitrate_num,
             )?;
 
-            let kf_interval = CFNumber::new_i64(framerate as i64);
+            let kf_interval = CFNumber::new_i64(keyframe_interval as i64);
             set_number_property(
                 &session,
                 kVTCompressionPropertyKey_MaxKeyFrameInterval,

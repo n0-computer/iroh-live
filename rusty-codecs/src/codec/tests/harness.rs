@@ -120,6 +120,7 @@ fn all_encoders() -> Vec<TestEncoder> {
                 framerate: 30,
                 bitrate: None,
                 scale_mode: Default::default(),
+                keyframe_interval: None,
                 nal_format: Default::default(),
             };
             Some(Box::new(H264Encoder::with_config(config).ok()?))
@@ -143,6 +144,7 @@ fn all_encoders() -> Vec<TestEncoder> {
                 framerate: 30,
                 bitrate: None,
                 scale_mode: Default::default(),
+                keyframe_interval: None,
                 nal_format: Default::default(),
             };
             Some(Box::new(VaapiEncoder::with_config(config).ok()?))
@@ -163,6 +165,7 @@ fn all_encoders() -> Vec<TestEncoder> {
                 framerate: 30,
                 bitrate: None,
                 scale_mode: Default::default(),
+                keyframe_interval: None,
                 nal_format: Default::default(),
             };
             Some(Box::new(VtbEncoder::with_config(config).ok()?))
@@ -1005,6 +1008,7 @@ fn scaling_test(
         framerate: 30,
         bitrate: None,
         scale_mode,
+        keyframe_interval: None,
         nal_format: Default::default(),
     };
     let mut enc = (enc_info.create_with_config)(config)?;
@@ -1163,6 +1167,51 @@ fn scale_identity() {
                 360,
                 ScaleMode::Fit,
                 enc_info.min_frames,
+            );
+        }
+    });
+}
+
+// ── Keyframe interval tests ────────────────────────────────────────────
+
+/// Verifies that `keyframe_interval` is respected by all encoders.
+///
+/// Encodes 90 frames at 30fps with keyframe_interval=15 (every 0.5s)
+/// and checks that at least 5 keyframes appear (90/15 = 6, allowing one
+/// less for pipeline priming).
+#[test]
+fn configurable_keyframe_interval() {
+    with_timeout(TEST_TIMEOUT, || {
+        for enc_info in &all_encoders() {
+            let config = VideoEncoderConfig::from_preset(VideoPreset::P360).keyframe_interval(15);
+            let Some(mut enc) = (enc_info.create_with_config)(config) else {
+                continue;
+            };
+
+            let mut keyframe_count = 0;
+            let mut total_packets = 0;
+            for i in 0..90 {
+                let frame = make_rgba_frame(640, 360, (i * 3) as u8, 128, 128);
+                enc.push_frame(frame).unwrap();
+                while let Some(pkt) = enc.pop_packet().unwrap() {
+                    total_packets += 1;
+                    if pkt.is_keyframe {
+                        keyframe_count += 1;
+                    }
+                }
+            }
+            assert!(
+                keyframe_count >= 5,
+                "{}: expected >= 5 keyframes with interval=15 over 90 frames, \
+                 got {keyframe_count} keyframes in {total_packets} packets",
+                enc_info.name
+            );
+            // Also verify it's more than the default (1 per 30 frames = ~3 keyframes)
+            assert!(
+                keyframe_count > 3,
+                "{}: keyframe_interval=15 should produce more keyframes than default interval=30, \
+                 got {keyframe_count}",
+                enc_info.name
             );
         }
     });

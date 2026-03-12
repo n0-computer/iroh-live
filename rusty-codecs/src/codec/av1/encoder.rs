@@ -38,6 +38,7 @@ impl Av1Encoder {
         let height = config.height;
         let framerate = config.framerate;
         let bitrate = config.bitrate_or_default(AV1_BPP);
+        let keyframe_interval = config.keyframe_interval_or_default();
         let scale_mode = config.scale_mode;
 
         let mut enc_config = EncoderConfig::with_speed_preset(10);
@@ -47,7 +48,7 @@ impl Av1Encoder {
         enc_config.chroma_sampling = ChromaSampling::Cs420;
         enc_config.bitrate = bitrate as i32;
         enc_config.min_key_frame_interval = 0;
-        enc_config.max_key_frame_interval = framerate as u64;
+        enc_config.max_key_frame_interval = keyframe_interval as u64;
         enc_config.low_latency = true;
         enc_config.error_resilient = true;
         enc_config.time_base = Rational::new(1, framerate as u64);

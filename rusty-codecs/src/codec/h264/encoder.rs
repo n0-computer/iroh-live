@@ -75,12 +75,14 @@ impl H264Encoder {
         let bitrate = config.bitrate_or_default(H264_BPP);
         let nal_format = config.nal_format;
 
+        let keyframe_interval = config.keyframe_interval_or_default();
+
         let enc_config = EncoderConfig::new()
             .bitrate(BitRate::from_bps(bitrate as u32))
             .max_frame_rate(FrameRate::from_hz(framerate as f32))
             .usage_type(UsageType::CameraVideoRealTime)
             .rate_control_mode(RateControlMode::Bitrate)
-            .intra_frame_period(IntraFramePeriod::from_num_frames(framerate));
+            .intra_frame_period(IntraFramePeriod::from_num_frames(keyframe_interval));
 
         let api = OpenH264API::from_source();
         let mut encoder = OpenH264Encoder::with_api_config(api, enc_config)?;

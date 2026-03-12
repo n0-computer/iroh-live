@@ -169,6 +169,7 @@ impl VideoCodec {
             framerate: 30,
             bitrate: None,
             scale_mode: Default::default(),
+            keyframe_interval: None,
             nal_format: crate::format::NalFormat::default(),
         })
     }
