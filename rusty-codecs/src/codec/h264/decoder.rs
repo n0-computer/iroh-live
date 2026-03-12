@@ -63,6 +63,8 @@ impl VideoDecoder for H264VideoDecoder {
             let _ = decoder.decode(&annex_b);
         }
 
+        tracing::info!("H.264 software decoder ready (openh264)");
+
         Ok(Self {
             decoder,
             nal_format,

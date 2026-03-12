@@ -101,6 +101,14 @@ impl H264Encoder {
             None
         };
 
+        tracing::info!(
+            width,
+            height,
+            framerate,
+            bitrate,
+            "H.264 software encoder ready (openh264)"
+        );
+
         Ok(Self {
             encoder,
             width,

@@ -52,6 +52,8 @@ impl VideoDecoder for Av1VideoDecoder {
         // metadata — NOT raw OBU data. The actual sequence header OBU is embedded
         // in the first keyframe packet, so dav1d will parse it automatically.
 
+        tracing::info!("AV1 software decoder ready (dav1d)");
+
         Ok(Self {
             decoder,
             scaler: Scaler::new(None),
