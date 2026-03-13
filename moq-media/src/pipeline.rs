@@ -350,34 +350,39 @@ fn decode_loop(
             debug!(t=?push_elapsed, "decode_loop: slow push_packet");
         }
 
-        // Emit one frame per packet to maintain smooth output cadence.
+        // Drain all frames but only send the latest one per packet.
         // Hardware decoders (e.g. VAAPI/cros-codecs) have internal pipeline
-        // delays that cause bursty output (0 frames for some packets, then
-        // multiple at once around keyframes). Emitting 1 per packet absorbs
-        // these bursts — excess frames stay in the decoder's pending queue
-        // and drain naturally with subsequent packets.
-        match decoder.pop_frame() {
-            Ok(Some(frame)) => {
-                let send_t = Instant::now();
-                if output_tx.blocking_send(frame).is_err() {
-                    debug!("pipeline: frame receiver dropped");
-                    return Ok(());
+        // delays that cause bursty output around keyframes. We must drain
+        // all frames to free decoder pool buffers (otherwise the pool runs
+        // out → NotEnoughOutputBuffers), but only send 1 to keep smooth
+        // output cadence. Intermediates are dropped.
+        let mut latest_frame = None;
+        loop {
+            match decoder.pop_frame() {
+                Ok(Some(frame)) => latest_frame = Some(frame),
+                Ok(None) => break,
+                Err(err) => {
+                    warn!("failed to pop video frame, waiting for next keyframe: {err:#}");
+                    waiting_for_keyframe = true;
+                    break;
                 }
-                let send_elapsed = send_t.elapsed();
-                if send_elapsed > Duration::from_millis(10) {
-                    debug!(t=?send_elapsed, "decode_loop: slow blocking_send (backpressure?)");
-                }
-                let gap = last_send.elapsed();
-                if gap > Duration::from_millis(50) {
-                    debug!(gap=?gap, "decode_loop: frame gap (stutter)");
-                }
-                last_send = Instant::now();
             }
-            Ok(None) => {}
-            Err(err) => {
-                warn!("failed to pop video frame, waiting for next keyframe: {err:#}");
-                waiting_for_keyframe = true;
+        }
+        if let Some(frame) = latest_frame {
+            let send_t = Instant::now();
+            if output_tx.blocking_send(frame).is_err() {
+                debug!("pipeline: frame receiver dropped");
+                return Ok(());
             }
+            let send_elapsed = send_t.elapsed();
+            if send_elapsed > Duration::from_millis(10) {
+                debug!(t=?send_elapsed, "decode_loop: slow blocking_send (backpressure?)");
+            }
+            let gap = last_send.elapsed();
+            if gap > Duration::from_millis(50) {
+                debug!(gap=?gap, "decode_loop: frame gap (stutter)");
+            }
+            last_send = Instant::now();
         }
     }
     Ok(())
