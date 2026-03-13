@@ -144,11 +144,6 @@ impl Live {
         self.moq.publish(name, producer).await
     }
 
-    /// Connects to a remote peer and returns the MoQ session.
-    pub async fn connect(&self, remote: impl Into<EndpointAddr>) -> Result<MoqSession> {
-        self.moq.connect(remote).await
-    }
-
     /// Connects to a remote peer and subscribes to a named broadcast,
     /// returning just the [`RemoteBroadcast`].
     pub async fn subscribe(
@@ -161,12 +156,15 @@ impl Live {
     }
 
     /// Connects to a remote peer and subscribes to a named broadcast.
+    ///
+    /// Returns both the session (for stats, closing, etc.) and the broadcast.
+    /// If you only need the broadcast, use [`subscribe`](Self::subscribe).
     pub async fn connect_and_subscribe(
         &self,
         remote: impl Into<EndpointAddr>,
         broadcast_name: &str,
     ) -> Result<(MoqSession, RemoteBroadcast)> {
-        let mut session = self.connect(remote).await?;
+        let mut session = self.moq.connect(remote).await?;
         info!(id=%session.conn().remote_id(), "new peer connected");
         let broadcast = session.subscribe(broadcast_name).await?;
         let broadcast = RemoteBroadcast::new(broadcast_name.to_string(), broadcast).await?;

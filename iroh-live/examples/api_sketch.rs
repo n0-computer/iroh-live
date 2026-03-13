@@ -181,9 +181,8 @@ mod ex_call_with_helper {
             .audio()
             .set(mic, AudioCodec::Opus, [AudioPreset::Hq])?;
 
-        let remote_sub = call.remote().expect("dial waits for remote");
-        let mut video = remote_sub.video()?;
-        let _audio = remote_sub.audio(&audio_ctx).await?;
+        let mut video = call.remote().video()?;
+        let _audio = call.remote().audio(&audio_ctx).await?;
 
         loop {
             if let Some(_frame) = video.current_frame() { /* render */ }
@@ -201,8 +200,7 @@ mod ex_call_with_helper {
                 .video()
                 .set(camera, VideoCodec::best_available(), [VideoPreset::P720])?;
 
-            let remote_sub = call.remote().expect("accept waits for remote");
-            let mut _video = remote_sub.video()?;
+            let mut _video = call.remote().video()?;
         }
         Ok(())
     }

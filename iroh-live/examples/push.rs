@@ -37,7 +37,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let node = LiveNode::spawn_from_env().await?;
-    let session = node.live().connect(cli.target).await?;
+    let session = node.live().transport().connect(cli.target).await?;
 
     let mut input: Pin<Box<dyn AsyncRead + Send + 'static>> = match (cli.file, cli.transcode) {
         (Some(path), true) => Box::pin(transcode(path.clone(), cli.format).await?),
