@@ -348,10 +348,9 @@ impl VaapiDecoder {
                             );
                         }
                     }
-                    if let Err(e) = handle.sync() {
-                        tracing::warn!("VAAPI frame sync failed: {e:#}");
-                        continue;
-                    }
+                    // Skip eager sync — all consumer paths sync before accessing
+                    // frame data (derive_nv12_planes, DMA-BUF import). Blocking
+                    // here stalls the decode thread under GPU contention.
                     let display_res = handle.display_resolution();
                     let w = display_res.width;
                     let h = display_res.height;
@@ -468,6 +467,7 @@ impl VideoDecoder for VaapiDecoder {
             && let Some(mut annex_b) = avcc_to_annex_b(description)
         {
             patch_baseline_constraint_flag(&mut annex_b);
+            // patch_sps_low_latency(&mut annex_b);
             let ts = 0u64;
             let pool = this.framepool.clone();
             let _ = this
@@ -487,36 +487,66 @@ impl VideoDecoder for VaapiDecoder {
 
     fn push_packet(&mut self, mut packet: MediaPacket) -> Result<()> {
         use bytes::Buf;
+        use std::time::Instant;
+
         let payload = packet.payload.copy_to_bytes(packet.payload.remaining());
         let mut annex_b = match self.nal_format {
             NalFormat::AnnexB => payload.to_vec(),
             NalFormat::Avcc => length_prefixed_to_annex_b(&payload),
         };
         patch_baseline_constraint_flag(&mut annex_b);
+        // patch_sps_low_latency(&mut annex_b);
 
         self.last_timestamp = Some(packet.timestamp);
         self.timestamp_counter += 1;
         let ts = self.timestamp_counter;
 
         let pool = self.framepool.clone();
-        let mut alloc = || pool.lock().unwrap().alloc();
+        let mut alloc_count = 0u32;
+        let mut alloc = || {
+            let t = Instant::now();
+            let frame = pool.lock().unwrap().alloc();
+            let elapsed = t.elapsed();
+            alloc_count += 1;
+            if elapsed > Duration::from_millis(5) {
+                tracing::debug!(t=?elapsed, alloc_count, "vaapi: slow frame alloc");
+            }
+            frame
+        };
+
+        let packet_start = Instant::now();
+        let mut decode_calls = 0u32;
+        let mut check_events_count = 0u32;
+        let mut not_enough_bufs_count = 0u32;
 
         let mut remaining = &annex_b[..];
         loop {
             if remaining.is_empty() {
                 break;
             }
+            let decode_t = Instant::now();
             match self.decoder.decode(ts, remaining, &mut alloc) {
                 Ok(bytes_consumed) => {
+                    decode_calls += 1;
+                    let elapsed = decode_t.elapsed();
+                    if elapsed > Duration::from_millis(10) {
+                        tracing::debug!(t=?elapsed, call=decode_calls, "vaapi: slow decode()");
+                    }
                     if bytes_consumed == 0 {
                         break;
                     }
                     remaining = &remaining[bytes_consumed..];
                 }
                 Err(DecodeError::CheckEvents) => {
+                    check_events_count += 1;
                     self.drain_events();
                 }
                 Err(DecodeError::NotEnoughOutputBuffers(_)) => {
+                    not_enough_bufs_count += 1;
+                    tracing::debug!(
+                        pending = self.pending_frames.len(),
+                        "vaapi: NotEnoughOutputBuffers, draining"
+                    );
                     self.drain_events();
                 }
                 Err(e) => {
@@ -525,7 +555,23 @@ impl VideoDecoder for VaapiDecoder {
             }
         }
 
+        let drain_t = Instant::now();
         self.drain_events();
+        let drain_elapsed = drain_t.elapsed();
+
+        let total = packet_start.elapsed();
+        if total > Duration::from_millis(10) {
+            tracing::debug!(
+                total=?total,
+                drain=?drain_elapsed,
+                decode_calls,
+                check_events_count,
+                not_enough_bufs_count,
+                alloc_count,
+                pending = self.pending_frames.len(),
+                "vaapi: slow push_packet"
+            );
+        }
 
         Ok(())
     }

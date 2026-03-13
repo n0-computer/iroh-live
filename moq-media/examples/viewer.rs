@@ -594,9 +594,9 @@ impl ViewerApp {
         Self {
             source: SourceKind::TestPattern,
             codec: VideoCodec::best_available(),
-            preset: VideoPreset::P360,
+            preset: VideoPreset::P720,
             backend: DecoderBackend::Auto,
-            render_mode: RenderMode::VARIANTS[0],
+            render_mode: *RenderMode::VARIANTS.last().unwrap(),
             pipeline_mode: PipelineMode::EncodeDecode,
 
             tiles: Vec::new(),

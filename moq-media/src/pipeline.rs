@@ -310,14 +310,20 @@ fn decode_loop(
     mut decoder: impl VideoDecoder,
 ) -> Result<()> {
     let mut waiting_for_keyframe = false;
+    let mut last_send = Instant::now();
 
     loop {
         if shutdown.is_cancelled() {
             break;
         }
+        let recv_t = Instant::now();
         let Some(packet) = input_rx.blocking_recv() else {
             break;
         };
+        let recv_elapsed = recv_t.elapsed();
+        if recv_elapsed > Duration::from_millis(50) {
+            debug!(t=?recv_elapsed, "decode_loop: slow blocking_recv (starved?)");
+        }
 
         if waiting_for_keyframe {
             if !packet.is_keyframe {
@@ -339,29 +345,38 @@ fn decode_loop(
             waiting_for_keyframe = true;
             continue;
         }
-        trace!(t=?t.elapsed(), "pipeline: push_packet");
+        let push_elapsed = t.elapsed();
+        if push_elapsed > Duration::from_millis(10) {
+            debug!(t=?push_elapsed, "decode_loop: slow push_packet");
+        }
 
-        // Drain all available frames from the decoder. Hardware decoders
-        // (e.g. VAAPI) can produce multiple frames per push_packet due to
-        // internal pipelining. Send all frames to the channel — the render
-        // side's `current_frame()` skips to the latest, so intermediates
-        // are harmlessly discarded there rather than accumulating in the
-        // decoder's internal queue.
-        loop {
-            match decoder.pop_frame() {
-                Ok(Some(frame)) => {
-                    trace!(t=?t.elapsed(), "pipeline: pop frame");
-                    if output_tx.blocking_send(frame).is_err() {
-                        debug!("pipeline: frame receiver dropped");
-                        return Ok(());
-                    }
+        // Emit one frame per packet to maintain smooth output cadence.
+        // Hardware decoders (e.g. VAAPI/cros-codecs) have internal pipeline
+        // delays that cause bursty output (0 frames for some packets, then
+        // multiple at once around keyframes). Emitting 1 per packet absorbs
+        // these bursts — excess frames stay in the decoder's pending queue
+        // and drain naturally with subsequent packets.
+        match decoder.pop_frame() {
+            Ok(Some(frame)) => {
+                let send_t = Instant::now();
+                if output_tx.blocking_send(frame).is_err() {
+                    debug!("pipeline: frame receiver dropped");
+                    return Ok(());
                 }
-                Ok(None) => break,
-                Err(err) => {
-                    warn!("failed to pop video frame, waiting for next keyframe: {err:#}");
-                    waiting_for_keyframe = true;
-                    break;
+                let send_elapsed = send_t.elapsed();
+                if send_elapsed > Duration::from_millis(10) {
+                    debug!(t=?send_elapsed, "decode_loop: slow blocking_send (backpressure?)");
                 }
+                let gap = last_send.elapsed();
+                if gap > Duration::from_millis(50) {
+                    debug!(gap=?gap, "decode_loop: frame gap (stutter)");
+                }
+                last_send = Instant::now();
+            }
+            Ok(None) => {}
+            Err(err) => {
+                warn!("failed to pop video frame, waiting for next keyframe: {err:#}");
+                waiting_for_keyframe = true;
             }
         }
     }

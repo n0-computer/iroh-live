@@ -539,8 +539,8 @@ async fn setup(
 
     // Create broadcast with test pattern + test tone
     let mut broadcast = PublishBroadcast::new();
-    let source = TestPatternSource::new(640, 360);
-    let video = VideoRenditions::new(source, VideoCodec::best_available(), [VideoPreset::P360]);
+    let source = TestPatternSource::new(1280, 720);
+    let video = VideoRenditions::new(source, VideoCodec::best_available(), [VideoPreset::P720]);
     broadcast.set_video(Some(video))?;
     let tone = TestToneSource::new();
     let audio = AudioRenditions::new(tone, AudioCodec::Opus, [AudioPreset::Hq]);
@@ -940,7 +940,7 @@ fn main() -> Result<()> {
         "iroh-live split",
         native_options,
         Box::new(move |cc| {
-            let sub_render_mode = RenderMode::VARIANTS[0];
+            let sub_render_mode = *RenderMode::VARIANTS.last().unwrap();
 
             #[cfg(feature = "wgpu")]
             let wgpu_render_state = cc.wgpu_render_state.clone();
@@ -963,7 +963,7 @@ fn main() -> Result<()> {
                 pub_video_source: VideoSourceKind::TestPattern,
                 pub_audio_source: AudioSourceKind::TestTone,
                 pub_codec: VideoCodec::best_available(),
-                pub_preset: VideoPreset::P360,
+                pub_preset: VideoPreset::P720,
                 broadcast,
                 pub_video_view: None,
                 pub_router,
