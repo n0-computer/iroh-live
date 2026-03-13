@@ -24,6 +24,7 @@ use iroh_live::{
         format::{
             AudioFormat, AudioPreset, DecodeConfig, DecoderBackend, PlaybackConfig, VideoPreset,
         },
+        playout::{PlayoutClock, PlayoutMode},
         publish::{AudioRenditions, LocalBroadcast, VideoRenditions},
         subscribe::{AudioTrack, MediaTracks, RemoteBroadcast, VideoTrack},
     },
@@ -309,6 +310,16 @@ impl AudioSource for TestToneSource {
 }
 
 // ---------------------------------------------------------------------------
+// Playout mode UI
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, strum::Display, strum::VariantArray)]
+enum PlayoutModeKind {
+    Live,
+    Reliable,
+}
+
+// ---------------------------------------------------------------------------
 // App state
 // ---------------------------------------------------------------------------
 
@@ -335,6 +346,14 @@ struct SplitApp {
     remote_backend: DecoderBackend,
     remote_render_mode: RenderMode,
     stats: StatsSmoother,
+
+    // Playout state
+    playout_clock: PlayoutClock,
+    playout_mode_kind: PlayoutModeKind,
+    /// Live: display buffer offset in ms
+    live_buffer_ms: f32,
+    /// Live: hang group-skip ceiling in ms
+    live_max_latency_ms: f32,
 
     // UI state
     local_stats: FrameStats,
@@ -826,6 +845,80 @@ impl eframe::App for SplitApp {
                         });
                 });
 
+                // --- Playout mode controls ---
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    let mut mode_changed = false;
+
+                    ui.label("Playout");
+                    egui::ComboBox::from_id_salt("playout_mode")
+                        .selected_text(self.playout_mode_kind.to_string())
+                        .show_ui(ui, |ui| {
+                            for kind in PlayoutModeKind::VARIANTS {
+                                if ui
+                                    .selectable_value(
+                                        &mut self.playout_mode_kind,
+                                        *kind,
+                                        kind.to_string(),
+                                    )
+                                    .changed()
+                                {
+                                    mode_changed = true;
+                                }
+                            }
+                        });
+
+                    match self.playout_mode_kind {
+                        PlayoutModeKind::Live => {
+                            ui.label("buffer");
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut self.live_buffer_ms, 0.0..=200.0)
+                                        .suffix("ms")
+                                        .integer(),
+                                )
+                                .changed()
+                            {
+                                mode_changed = true;
+                            }
+                            ui.label("max");
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut self.live_max_latency_ms, 20.0..=500.0)
+                                        .suffix("ms")
+                                        .integer(),
+                                )
+                                .changed()
+                            {
+                                mode_changed = true;
+                            }
+                        }
+                        PlayoutModeKind::Reliable => {
+                            ui.label("(no latency controls)");
+                        }
+                    }
+
+                    if mode_changed {
+                        let new_mode = match self.playout_mode_kind {
+                            PlayoutModeKind::Live => PlayoutMode::Live {
+                                buffer: Duration::from_millis(self.live_buffer_ms as u64),
+                                max_latency: Duration::from_millis(self.live_max_latency_ms as u64),
+                            },
+                            PlayoutModeKind::Reliable => PlayoutMode::Reliable,
+                        };
+                        self.playout_clock.set_mode(new_mode);
+                    }
+
+                    // Show buffer + jitter diagnostics.
+                    let buf = self.playout_clock.buffer();
+                    let jitter = self.playout_clock.jitter();
+                    ui.label(format!(
+                        "buf: {}ms  jitter: {:.1}ms",
+                        buf.as_millis(),
+                        jitter.as_secs_f64() * 1000.0,
+                    ));
+                });
+
                 ui.separator();
 
                 // --- Remote video ---
@@ -944,6 +1037,7 @@ fn main() -> Result<()> {
             #[cfg(feature = "wgpu")]
             let wgpu_render_state = cc.wgpu_render_state.clone();
 
+            let playout_clock = track.clock().clone();
             let remote_video = track.video.map(|video| {
                 #[cfg(feature = "wgpu")]
                 if remote_render_mode == RenderMode::Wgpu {
@@ -956,7 +1050,6 @@ fn main() -> Result<()> {
                 }
                 VideoTrackView::new(&cc.egui_ctx, "remote-video", video)
             });
-
             let app = SplitApp {
                 rt,
                 local_video_source: VideoSourceKind::TestPattern,
@@ -975,6 +1068,10 @@ fn main() -> Result<()> {
                 remote_backend: DecoderBackend::Auto,
                 remote_render_mode,
                 stats: StatsSmoother::new(),
+                playout_clock,
+                playout_mode_kind: PlayoutModeKind::Live,
+                live_buffer_ms: 80.0,
+                live_max_latency_ms: 150.0,
                 local_stats: FrameStats::default(),
                 remote_stats: FrameStats::default(),
                 needs_republish: false,
