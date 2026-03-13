@@ -164,7 +164,7 @@ impl SubscribeBroadcast {
         AvRemoteTrack::new::<D>(self, audio_backend, playback_config).await
     }
 
-    pub fn watch<D: VideoDecoder>(&self) -> Result<WatchTrack> {
+    pub fn watch<D: VideoDecoder>(&self) -> Result<VideoTrack> {
         self.watch_with::<D>(&Default::default(), Quality::Highest)
     }
 
@@ -172,7 +172,7 @@ impl SubscribeBroadcast {
         &self,
         playback_config: &DecodeConfig,
         quality: Quality,
-    ) -> Result<WatchTrack> {
+    ) -> Result<VideoTrack> {
         let track_name = self.catalog().select_video_rendition(quality)?;
         self.watch_rendition::<D>(playback_config, &track_name)
     }
@@ -181,7 +181,7 @@ impl SubscribeBroadcast {
         &self,
         playback_config: &DecodeConfig,
         track_name: &str,
-    ) -> Result<WatchTrack> {
+    ) -> Result<VideoTrack> {
         let catalog = self.catalog();
         let video = &catalog.video;
         let config = video
@@ -197,7 +197,7 @@ impl SubscribeBroadcast {
                 .anyerr()?,
             DEFAULT_MAX_LATENCY,
         );
-        WatchTrack::from_consumer::<D>(track_name.to_string(), consumer, config, playback_config)
+        VideoTrack::from_consumer::<D>(track_name.to_string(), consumer, config, playback_config)
     }
     pub async fn listen<D: AudioDecoder>(
         &self,
@@ -310,14 +310,14 @@ impl AudioTrack {
 }
 
 #[derive(derive_more::Debug)]
-pub struct WatchTrack {
+pub struct VideoTrack {
     #[debug(skip)]
     rx: mpsc::Receiver<VideoFrame>,
-    inner: WatchTrackInner,
+    inner: VideoTrackInner,
 }
 
 #[derive(derive_more::Debug)]
-enum WatchTrackInner {
+enum VideoTrackInner {
     /// Wraps a [`VideoDecoderPipeline`] (from `from_consumer` / `from_pipeline`).
     Pipeline(VideoDecoderHandle),
     /// Raw video source capture (from `from_video_source`).
@@ -337,7 +337,7 @@ enum WatchTrackInner {
     },
 }
 
-impl WatchTrack {
+impl VideoTrack {
     /// Creates an empty placeholder that never produces frames.
     pub fn empty(rendition: impl ToString) -> Self {
         let (tx, rx) = mpsc::channel(1);
@@ -347,7 +347,7 @@ impl WatchTrack {
         });
         Self {
             rx,
-            inner: WatchTrackInner::Empty {
+            inner: VideoTrackInner::Empty {
                 rendition: rendition.to_string(),
                 viewport: Default::default(),
                 _task: AbortOnDropHandle::new(task),
@@ -421,7 +421,7 @@ impl WatchTrack {
         });
         Self {
             rx: frame_rx,
-            inner: WatchTrackInner::VideoSource {
+            inner: VideoTrackInner::VideoSource {
                 rendition,
                 viewport,
                 _shutdown_guard: shutdown.drop_guard(),
@@ -442,20 +442,20 @@ impl WatchTrack {
         Ok(Self::from_pipeline(pipeline))
     }
 
-    /// Creates a `WatchTrack` from a standalone [`VideoDecoderPipeline`].
+    /// Creates a `VideoTrack` from a standalone [`VideoDecoderPipeline`].
     pub fn from_pipeline(pipeline: VideoDecoderPipeline) -> Self {
         let VideoDecoderPipeline { frames, handle } = pipeline;
         Self {
             rx: frames.into_rx(),
-            inner: WatchTrackInner::Pipeline(handle),
+            inner: VideoTrackInner::Pipeline(handle),
         }
     }
 
     pub fn set_viewport(&self, w: u32, h: u32) {
         match &self.inner {
-            WatchTrackInner::Pipeline(handle) => handle.set_viewport(w, h),
-            WatchTrackInner::VideoSource { viewport, .. }
-            | WatchTrackInner::Empty { viewport, .. } => {
+            VideoTrackInner::Pipeline(handle) => handle.set_viewport(w, h),
+            VideoTrackInner::VideoSource { viewport, .. }
+            | VideoTrackInner::Empty { viewport, .. } => {
                 viewport.set((w, h)).ok();
             }
         }
@@ -463,17 +463,17 @@ impl WatchTrack {
 
     pub fn rendition(&self) -> &str {
         match &self.inner {
-            WatchTrackInner::Pipeline(handle) => handle.rendition(),
-            WatchTrackInner::VideoSource { rendition, .. }
-            | WatchTrackInner::Empty { rendition, .. } => rendition,
+            VideoTrackInner::Pipeline(handle) => handle.rendition(),
+            VideoTrackInner::VideoSource { rendition, .. }
+            | VideoTrackInner::Empty { rendition, .. } => rendition,
         }
     }
 
     pub fn decoder_name(&self) -> &str {
         match &self.inner {
-            WatchTrackInner::Pipeline(handle) => handle.decoder_name(),
-            WatchTrackInner::VideoSource { .. } => "capture",
-            WatchTrackInner::Empty { .. } => "",
+            VideoTrackInner::Pipeline(handle) => handle.decoder_name(),
+            VideoTrackInner::VideoSource { .. } => "capture",
+            VideoTrackInner::Empty { .. } => "",
         }
     }
 
@@ -499,7 +499,7 @@ impl WatchTrack {
 #[derive(derive_more::Debug)]
 pub struct AvRemoteTrack {
     pub broadcast: SubscribeBroadcast,
-    pub video: Option<WatchTrack>,
+    pub video: Option<VideoTrack>,
     pub audio: Option<AudioTrack>,
 }
 

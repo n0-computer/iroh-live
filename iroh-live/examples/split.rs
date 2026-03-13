@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use iroh::{Endpoint, Watcher, protocol::Router};
 use iroh_live::media::capture::{CameraCapturer, ScreenCapturer};
+use iroh_live::media::traits::{AudioSource, VideoSource};
 use iroh_live::{
     ALPN, Live,
     media::{
@@ -24,12 +25,12 @@ use iroh_live::{
             AudioFormat, AudioPreset, DecodeConfig, DecoderBackend, PlaybackConfig, VideoPreset,
         },
         publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
-        subscribe::{AudioTrack, AvRemoteTrack, SubscribeBroadcast, WatchTrack},
+        subscribe::{AudioTrack, AvRemoteTrack, SubscribeBroadcast, VideoTrack},
     },
     moq::MoqSession,
     util::StatsSmoother,
 };
-use moq_media_egui::{WatchTrackView, create_egui_wgpu_config, format_bitrate};
+use moq_media_egui::{VideoTrackView, create_egui_wgpu_config, format_bitrate};
 use n0_error::{Result, anyerr};
 use strum::VariantArray;
 use tracing::{info, warn};
@@ -206,7 +207,7 @@ impl TestPatternSource {
     }
 }
 
-impl iroh_live::media::traits::VideoSource for TestPatternSource {
+impl VideoSource for TestPatternSource {
     fn name(&self) -> &str {
         "test-pattern"
     }
@@ -267,8 +268,8 @@ impl TestToneSource {
     }
 }
 
-impl iroh_live::media::traits::AudioSource for TestToneSource {
-    fn cloned_boxed(&self) -> Box<dyn iroh_live::media::traits::AudioSource> {
+impl AudioSource for TestToneSource {
+    fn cloned_boxed(&self) -> Box<dyn AudioSource> {
         Box::new(Self {
             format: self.format,
             phase: 0.0,
@@ -320,7 +321,7 @@ struct SplitApp {
     pub_codec: VideoCodec,
     pub_preset: VideoPreset,
     broadcast: PublishBroadcast,
-    pub_video_view: Option<WatchTrackView>,
+    pub_video_view: Option<VideoTrackView>,
     pub_router: Router,
     #[allow(dead_code, reason = "kept alive for protocol handler")]
     pub_live: Live,
@@ -329,7 +330,7 @@ struct SplitApp {
     // Subscriber state
     session: MoqSession,
     sub_broadcast: SubscribeBroadcast,
-    sub_video: Option<WatchTrackView>,
+    sub_video: Option<VideoTrackView>,
     _sub_audio: Option<AudioTrack>,
     sub_backend: DecoderBackend,
     sub_render_mode: RenderMode,
@@ -412,7 +413,7 @@ impl SplitApp {
     fn create_video_source(
         kind: VideoSourceKind,
         preset: VideoPreset,
-    ) -> anyhow::Result<Box<dyn iroh_live::media::traits::VideoSource>> {
+    ) -> anyhow::Result<Box<dyn VideoSource>> {
         let (w, h) = preset.dimensions();
         match kind {
             VideoSourceKind::TestPattern => Ok(Box::new(TestPatternSource::new(w, h))),
@@ -473,7 +474,7 @@ impl SplitApp {
         self.pub_video_view = None;
 
         // Re-subscribe on the sub side: the old encoder tracks were torn down,
-        // so the subscriber needs a fresh WatchTrack from the new catalog.
+        // so the subscriber needs a fresh VideoTrack from the new catalog.
         self.resubscribe_video(ctx);
     }
 
@@ -503,17 +504,17 @@ impl SplitApp {
         }
     }
 
-    fn make_sub_video_view(&self, ctx: &egui::Context, track: WatchTrack) -> WatchTrackView {
+    fn make_sub_video_view(&self, ctx: &egui::Context, track: VideoTrack) -> VideoTrackView {
         #[cfg(feature = "wgpu")]
         if self.sub_render_mode == RenderMode::Wgpu {
-            return WatchTrackView::new_wgpu(
+            return VideoTrackView::new_wgpu(
                 ctx,
                 "sub-video",
                 track,
                 self.wgpu_render_state.as_ref(),
             );
         }
-        WatchTrackView::new(ctx, "sub-video", track)
+        VideoTrackView::new(ctx, "sub-video", track)
     }
 
     fn pub_aspect_ratio(&self) -> f32 {
@@ -681,7 +682,7 @@ impl eframe::App for SplitApp {
                 if self.pub_video_view.is_none()
                     && let Some(track) = self.broadcast.watch_local(DecodeConfig::default())
                 {
-                    self.pub_video_view = Some(WatchTrackView::new(ctx, "pub-video", track));
+                    self.pub_video_view = Some(VideoTrackView::new(ctx, "pub-video", track));
                 }
 
                 if let Some(ref mut view) = self.pub_video_view {
@@ -947,14 +948,14 @@ fn main() -> Result<()> {
             let sub_video = track.video.map(|video| {
                 #[cfg(feature = "wgpu")]
                 if sub_render_mode == RenderMode::Wgpu {
-                    return WatchTrackView::new_wgpu(
+                    return VideoTrackView::new_wgpu(
                         &cc.egui_ctx,
                         "sub-video",
                         video,
                         cc.wgpu_render_state.as_ref(),
                     );
                 }
-                WatchTrackView::new(&cc.egui_ctx, "sub-video", video)
+                VideoTrackView::new(&cc.egui_ctx, "sub-video", video)
             });
 
             let app = SplitApp {

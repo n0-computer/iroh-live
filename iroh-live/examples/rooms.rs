@@ -18,7 +18,7 @@ use iroh_live::{
     rooms::{Room, RoomEvent, RoomTicket},
     util::StatsSmoother,
 };
-use moq_media_egui::WatchTrackView;
+use moq_media_egui::VideoTrackView;
 use n0_error::{Result, StdResultExt, anyerr};
 use tracing::{info, warn};
 
@@ -60,7 +60,7 @@ fn main() -> Result<()> {
                 peers: vec![],
                 self_video: broadcast
                     .watch_local(Default::default())
-                    .map(|track| WatchTrackView::new(&cc.egui_ctx, "self-video", track)),
+                    .map(|track| VideoTrackView::new(&cc.egui_ctx, "self-video", track)),
                 router,
                 _broadcast: broadcast,
                 audio_ctx,
@@ -120,7 +120,7 @@ async fn setup(cli: Cli, audio_ctx: AudioBackend) -> Result<(Router, PublishBroa
 struct App {
     room: Room,
     peers: Vec<RemoteTrackView>,
-    self_video: Option<WatchTrackView>,
+    self_video: Option<VideoTrackView>,
     router: Router,
     _broadcast: PublishBroadcast,
     audio_ctx: AudioBackend,
@@ -212,7 +212,7 @@ impl eframe::App for App {
 
 struct RemoteTrackView {
     id: usize,
-    video: Option<WatchTrackView>,
+    video: Option<VideoTrackView>,
     _audio_track: Option<AudioTrack>,
     session: MoqSession,
     broadcast: SubscribeBroadcast,
@@ -224,7 +224,7 @@ impl RemoteTrackView {
         Self {
             video: track
                 .video
-                .map(|video| WatchTrackView::new(ctx, &format!("video-{id}"), video)),
+                .map(|video| VideoTrackView::new(ctx, &format!("video-{id}"), video)),
             stats: StatsSmoother::new(),
             broadcast: track.broadcast,
             id,
@@ -286,7 +286,7 @@ impl RemoteTrackView {
                             if let Some(video) = self.video.as_mut() {
                                 video.set_track(track);
                             } else {
-                                self.video = Some(WatchTrackView::new(
+                                self.video = Some(VideoTrackView::new(
                                     ui.ctx(),
                                     &format!("video-{}", self.id),
                                     track,

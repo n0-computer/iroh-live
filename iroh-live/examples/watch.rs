@@ -15,7 +15,7 @@ use iroh_live::{
     ticket::LiveTicket,
     util::StatsSmoother,
 };
-use moq_media_egui::{WatchTrackView, create_egui_wgpu_config};
+use moq_media_egui::{VideoTrackView, create_egui_wgpu_config};
 use n0_error::{Result, anyerr};
 use tracing::info;
 
@@ -114,14 +114,15 @@ fn main() -> Result<()> {
 
             let video = track.video.map(|video| {
                 if use_wgpu {
-                    return WatchTrackView::new_wgpu(
+                    VideoTrackView::new_wgpu(
                         &cc.egui_ctx,
                         "video",
                         video,
                         cc.wgpu_render_state.as_ref(),
-                    );
+                    )
+                } else {
+                    VideoTrackView::new(&cc.egui_ctx, "video", video)
                 }
-                WatchTrackView::new(&cc.egui_ctx, "video", video)
             });
 
             let app = App {
@@ -144,7 +145,7 @@ fn main() -> Result<()> {
 }
 
 struct App {
-    video: Option<WatchTrackView>,
+    video: Option<VideoTrackView>,
     _audio: Option<AudioTrack>,
     _audio_ctx: AudioBackend,
     endpoint: Endpoint,
@@ -230,7 +231,7 @@ impl App {
                                 .broadcast
                                 .watch_rendition::<DynamicVideoDecoder>(&Default::default(), name)
                         {
-                            self.video = Some(WatchTrackView::new(ctx, "video", track));
+                            self.video = Some(VideoTrackView::new(ctx, "video", track));
                         }
                     }
                 });

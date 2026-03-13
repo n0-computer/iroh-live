@@ -18,7 +18,7 @@ use moq_media::{
     codec::{DynamicVideoDecoder, VideoCodec},
     format::{DecodeConfig, DecoderBackend},
     pipeline::{VideoDecoderPipeline, VideoEncoderPipeline},
-    subscribe::WatchTrack,
+    subscribe::VideoTrack,
     traits::{VideoEncoder, VideoSource},
     transport::media_pipe,
 };
@@ -230,12 +230,12 @@ fn start_pipeline(
     mode: PipelineMode,
     codec: VideoCodec,
     backend: DecoderBackend,
-) -> Result<(WatchTrack, String, Option<VideoEncoderPipeline>), String> {
+) -> Result<(VideoTrack, String, Option<VideoEncoderPipeline>), String> {
     let source = source_kind.create()?;
 
     match mode {
         PipelineMode::Direct => {
-            let track = WatchTrack::from_video_source(
+            let track = VideoTrack::from_video_source(
                 "direct".into(),
                 Default::default(),
                 source,
@@ -264,7 +264,7 @@ fn start_pipeline(
             )
             .map_err(|e| format!("Decoder: {e:#}"))?;
             let decoder_name = dec.handle.decoder_name().to_string();
-            let track = WatchTrack::from_pipeline(dec);
+            let track = VideoTrack::from_pipeline(dec);
 
             Ok((
                 track,
