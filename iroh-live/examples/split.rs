@@ -315,30 +315,30 @@ impl AudioSource for TestToneSource {
 struct SplitApp {
     rt: tokio::runtime::Runtime,
 
-    // Publisher state
-    pub_video_source: VideoSourceKind,
-    pub_audio_source: AudioSourceKind,
-    pub_codec: VideoCodec,
-    pub_preset: VideoPreset,
+    // Local (publisher) state
+    local_video_source: VideoSourceKind,
+    local_audio_source: AudioSourceKind,
+    local_codec: VideoCodec,
+    local_preset: VideoPreset,
     broadcast: LocalBroadcast,
-    pub_video_view: Option<VideoTrackView>,
-    pub_router: Router,
+    local_video_view: Option<VideoTrackView>,
+    router: Router,
     #[allow(dead_code, reason = "kept alive for protocol handler")]
-    pub_live: Live,
+    live: Live,
     audio_ctx: AudioBackend,
 
-    // Subscriber state
+    // Remote (subscriber) state
     session: MoqSession,
-    sub_broadcast: RemoteBroadcast,
-    sub_video: Option<VideoTrackView>,
-    _sub_audio: Option<AudioTrack>,
-    sub_backend: DecoderBackend,
-    sub_render_mode: RenderMode,
+    remote_broadcast: RemoteBroadcast,
+    remote_video: Option<VideoTrackView>,
+    _remote_audio: Option<AudioTrack>,
+    remote_backend: DecoderBackend,
+    remote_render_mode: RenderMode,
     stats: StatsSmoother,
 
     // UI state
-    pub_stats: FrameStats,
-    sub_stats: FrameStats,
+    local_stats: FrameStats,
+    remote_stats: FrameStats,
     needs_republish: bool,
     error_msg: Option<String>,
 
@@ -427,14 +427,14 @@ impl SplitApp {
         self.error_msg = None;
 
         // Video
-        let source = match Self::create_video_source(self.pub_video_source, self.pub_preset) {
+        let source = match Self::create_video_source(self.local_video_source, self.local_preset) {
             Ok(s) => s,
             Err(e) => {
                 self.error_msg = Some(format!("Video source: {e:#}"));
                 return;
             }
         };
-        let video = VideoRenditions::new(source, self.pub_codec, [self.pub_preset]);
+        let video = VideoRenditions::new(source, self.local_codec, [self.local_preset]);
         if let Err(e) = self.broadcast.video().set_renditions(video) {
             self.error_msg = Some(format!("Set video: {e:#}"));
             return;
@@ -442,7 +442,7 @@ impl SplitApp {
 
         // Audio
         let _guard = self.rt.enter();
-        match self.pub_audio_source {
+        match self.local_audio_source {
             AudioSourceKind::TestTone => {
                 let tone = TestToneSource::new();
                 let audio = AudioRenditions::new(tone, AudioCodec::Opus, [AudioPreset::Hq]);
@@ -471,7 +471,7 @@ impl SplitApp {
         }
 
         // Reset pub preview — will be re-created from preview next frame
-        self.pub_video_view = None;
+        self.local_video_view = None;
 
         // Re-subscribe on the sub side: the old encoder tracks were torn down,
         // so the subscriber needs a fresh VideoTrack from the new catalog.
@@ -480,22 +480,22 @@ impl SplitApp {
 
     fn resubscribe_video(&mut self, ctx: &egui::Context) {
         let renditions: Vec<String> = self
-            .sub_broadcast
+            .remote_broadcast
             .catalog()
             .video_renditions()
             .map(|s| s.to_owned())
             .collect();
         if let Some(name) = renditions.first() {
             let decode_config = DecodeConfig {
-                backend: self.sub_backend,
+                backend: self.remote_backend,
                 ..Default::default()
             };
             match self
-                .sub_broadcast
+                .remote_broadcast
                 .video_rendition::<DynamicVideoDecoder>(&decode_config, name)
             {
                 Ok(track) => {
-                    self.sub_video = Some(self.make_sub_video_view(ctx, track));
+                    self.remote_video = Some(self.make_remote_video_view(ctx, track));
                 }
                 Err(e) => {
                     warn!("re-subscribe failed: {e:#}");
@@ -504,21 +504,21 @@ impl SplitApp {
         }
     }
 
-    fn make_sub_video_view(&self, ctx: &egui::Context, track: VideoTrack) -> VideoTrackView {
+    fn make_remote_video_view(&self, ctx: &egui::Context, track: VideoTrack) -> VideoTrackView {
         #[cfg(feature = "wgpu")]
-        if self.sub_render_mode == RenderMode::Wgpu {
+        if self.remote_render_mode == RenderMode::Wgpu {
             return VideoTrackView::new_wgpu(
                 ctx,
-                "sub-video",
+                "remote-video",
                 track,
                 self.wgpu_render_state.as_ref(),
             );
         }
-        VideoTrackView::new(ctx, "sub-video", track)
+        VideoTrackView::new(ctx, "remote-video", track)
     }
 
-    fn pub_aspect_ratio(&self) -> f32 {
-        let (w, h) = self.pub_preset.dimensions();
+    fn local_aspect_ratio(&self) -> f32 {
+        let (w, h) = self.local_preset.dimensions();
         w as f32 / h as f32
     }
 }
@@ -530,11 +530,11 @@ impl SplitApp {
 async fn setup(
     audio_ctx: AudioBackend,
 ) -> Result<(Router, Live, LocalBroadcast, MoqSession, MediaTracks)> {
-    // Publisher endpoint
-    let pub_endpoint = Endpoint::bind().await?;
-    let pub_live = Live::new(pub_endpoint.clone());
-    let pub_router = Router::builder(pub_endpoint.clone())
-        .accept(ALPN, pub_live.protocol_handler())
+    // Local (publisher) endpoint
+    let local_endpoint = Endpoint::bind().await?;
+    let live = Live::new(local_endpoint.clone());
+    let router = Router::builder(local_endpoint.clone())
+        .accept(ALPN, live.protocol_handler())
         .spawn();
 
     // Create broadcast with test pattern + test tone
@@ -546,20 +546,20 @@ async fn setup(
     let audio = AudioRenditions::new(tone, AudioCodec::Opus, [AudioPreset::Hq]);
     broadcast.audio().set_renditions(audio)?;
 
-    pub_live.publish(BROADCAST_NAME, &broadcast).await?;
-    info!("publishing on {}", pub_endpoint.id().fmt_short());
+    live.publish(BROADCAST_NAME, &broadcast).await?;
+    info!("publishing on {}", local_endpoint.id().fmt_short());
 
-    // Subscriber endpoint
-    let pub_addr = pub_endpoint.addr();
-    let sub_endpoint = Endpoint::bind().await?;
-    let sub_live = Live::new(sub_endpoint.clone());
+    // Remote (subscriber) endpoint
+    let local_addr = local_endpoint.addr();
+    let remote_endpoint = Endpoint::bind().await?;
+    let remote_live = Live::new(remote_endpoint.clone());
     let playback_config = PlaybackConfig::default();
-    let (session, track) = sub_live
-        .media::<DefaultDecoders>(pub_addr, BROADCAST_NAME, &audio_ctx, playback_config)
+    let (session, track) = remote_live
+        .media::<DefaultDecoders>(local_addr, BROADCAST_NAME, &audio_ctx, playback_config)
         .await?;
     info!("subscriber connected");
 
-    Ok((pub_router, pub_live, broadcast, session, track))
+    Ok((router, live, broadcast, session, track))
 }
 
 // ---------------------------------------------------------------------------
@@ -585,19 +585,19 @@ impl eframe::App for SplitApp {
             .resizable(false)
             .frame(egui::Frame::new().inner_margin(0.0))
             .show(ctx, |ui| {
-                // --- Pub controls ---
+                // --- Local controls ---
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     let mut changed = false;
 
                     ui.label("Source");
                     egui::ComboBox::from_id_salt("pub_source")
-                        .selected_text(self.pub_video_source.to_string())
+                        .selected_text(self.local_video_source.to_string())
                         .show_ui(ui, |ui| {
                             for kind in VideoSourceKind::VARIANTS {
                                 if ui
                                     .selectable_value(
-                                        &mut self.pub_video_source,
+                                        &mut self.local_video_source,
                                         *kind,
                                         kind.to_string(),
                                     )
@@ -610,12 +610,12 @@ impl eframe::App for SplitApp {
 
                     ui.label("Audio");
                     egui::ComboBox::from_id_salt("pub_audio")
-                        .selected_text(self.pub_audio_source.to_string())
+                        .selected_text(self.local_audio_source.to_string())
                         .show_ui(ui, |ui| {
                             for kind in AudioSourceKind::VARIANTS {
                                 if ui
                                     .selectable_value(
-                                        &mut self.pub_audio_source,
+                                        &mut self.local_audio_source,
                                         *kind,
                                         kind.to_string(),
                                     )
@@ -627,13 +627,13 @@ impl eframe::App for SplitApp {
                         });
 
                     ui.label("Codec");
-                    egui::ComboBox::from_id_salt("pub_codec")
-                        .selected_text(self.pub_codec.display_name())
+                    egui::ComboBox::from_id_salt("local_codec")
+                        .selected_text(self.local_codec.display_name())
                         .show_ui(ui, |ui| {
                             for codec in VideoCodec::available() {
                                 if ui
                                     .selectable_value(
-                                        &mut self.pub_codec,
+                                        &mut self.local_codec,
                                         codec,
                                         codec.display_name(),
                                     )
@@ -645,12 +645,12 @@ impl eframe::App for SplitApp {
                         });
 
                     ui.label("Preset");
-                    egui::ComboBox::from_id_salt("pub_preset")
-                        .selected_text(self.pub_preset.to_string())
+                    egui::ComboBox::from_id_salt("local_preset")
+                        .selected_text(self.local_preset.to_string())
                         .show_ui(ui, |ui| {
                             for p in VideoPreset::all() {
                                 if ui
-                                    .selectable_value(&mut self.pub_preset, p, p.to_string())
+                                    .selectable_value(&mut self.local_preset, p, p.to_string())
                                     .changed()
                                 {
                                     changed = true;
@@ -669,21 +669,21 @@ impl eframe::App for SplitApp {
 
                 ui.separator();
 
-                // --- Pub video preview ---
+                // --- Local video preview ---
                 let avail = ui.available_size();
                 let bar_h = 36.0; // two status bars
                 let video_avail = egui::vec2(avail.x, (avail.y - bar_h).max(1.0));
-                let aspect = self.pub_aspect_ratio();
+                let aspect = self.local_aspect_ratio();
                 let video_size = fit_to_aspect(video_avail, aspect);
 
                 // Initialize pub video if needed
-                if self.pub_video_view.is_none()
+                if self.local_video_view.is_none()
                     && let Some(track) = self.broadcast.preview(DecodeConfig::default())
                 {
-                    self.pub_video_view = Some(VideoTrackView::new(ctx, "pub-video", track));
+                    self.local_video_view = Some(VideoTrackView::new(ctx, "pub-video", track));
                 }
 
-                if let Some(ref mut view) = self.pub_video_view {
+                if let Some(ref mut view) = self.local_video_view {
                     let (img, frame_ts) = view.render(ctx, video_size);
                     // Center the video in available space
                     let x_pad = (video_avail.x - video_size.x) / 2.0;
@@ -694,7 +694,7 @@ impl eframe::App for SplitApp {
                         ui.add_sized(video_size, img);
                     });
                     ui.add_space(y_pad.max(0.0));
-                    self.pub_stats.tick(frame_ts);
+                    self.local_stats.tick(frame_ts);
                 } else {
                     ui.allocate_space(video_avail);
                     ui.centered_and_justified(|ui| {
@@ -704,7 +704,7 @@ impl eframe::App for SplitApp {
 
                 // Publisher status bar
                 let enc_bitrate = self
-                    .sub_broadcast
+                    .remote_broadcast
                     .catalog()
                     .video
                     .renditions
@@ -715,10 +715,10 @@ impl eframe::App for SplitApp {
                     .unwrap_or_default();
                 let pub_text = format!(
                     "PUB  codec: {}  preset: {}  fps: {:.0}  delay: {:.0}ms  bitrate: {}",
-                    self.pub_codec.display_name(),
-                    self.pub_preset,
-                    self.pub_stats.fps,
-                    self.pub_stats.delay_ms,
+                    self.local_codec.display_name(),
+                    self.local_preset,
+                    self.local_stats.fps,
+                    self.local_stats.delay_ms,
                     enc_bitrate,
                 );
                 overlay_bar(ui, &pub_text);
@@ -733,13 +733,13 @@ impl eframe::App for SplitApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().inner_margin(0.0))
             .show(ctx, |ui| {
-                // --- Sub controls ---
+                // --- Remote controls ---
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
 
                     // Rendition selector
                     let selected_rendition = self
-                        .sub_video
+                        .remote_video
                         .as_ref()
                         .map(|v| v.track().rendition().to_owned());
                     egui::ComboBox::from_id_salt("sub_rendition")
@@ -749,7 +749,7 @@ impl eframe::App for SplitApp {
                                 .unwrap_or_else(|| "rendition".into()),
                         )
                         .show_ui(ui, |ui| {
-                            for name in self.sub_broadcast.catalog().video_renditions() {
+                            for name in self.remote_broadcast.catalog().video_renditions() {
                                 if ui
                                     .selectable_label(
                                         selected_rendition.as_deref() == Some(name),
@@ -758,16 +758,18 @@ impl eframe::App for SplitApp {
                                     .clicked()
                                 {
                                     let decode_config = DecodeConfig {
-                                        backend: self.sub_backend,
+                                        backend: self.remote_backend,
                                         ..Default::default()
                                     };
-                                    match self.sub_broadcast.video_rendition::<DynamicVideoDecoder>(
-                                        &decode_config,
-                                        name,
-                                    ) {
+                                    match self
+                                        .remote_broadcast
+                                        .video_rendition::<DynamicVideoDecoder>(
+                                            &decode_config,
+                                            name,
+                                        ) {
                                         Ok(track) => {
-                                            self.sub_video =
-                                                Some(self.make_sub_video_view(ctx, track));
+                                            self.remote_video =
+                                                Some(self.make_remote_video_view(ctx, track));
                                         }
                                         Err(e) => {
                                             warn!("rendition switch failed: {e:#}");
@@ -778,7 +780,7 @@ impl eframe::App for SplitApp {
                         });
 
                     ui.label("Decoder");
-                    let backend_name = match self.sub_backend {
+                    let backend_name = match self.remote_backend {
                         DecoderBackend::Auto => "Auto",
                         DecoderBackend::Software => "SW",
                     };
@@ -787,14 +789,14 @@ impl eframe::App for SplitApp {
                         .show_ui(ui, |ui| {
                             if ui
                                 .selectable_value(
-                                    &mut self.sub_backend,
+                                    &mut self.remote_backend,
                                     DecoderBackend::Auto,
                                     "Auto",
                                 )
                                 .changed()
                                 || ui
                                     .selectable_value(
-                                        &mut self.sub_backend,
+                                        &mut self.remote_backend,
                                         DecoderBackend::Software,
                                         "Software",
                                     )
@@ -806,12 +808,12 @@ impl eframe::App for SplitApp {
 
                     ui.label("Render");
                     egui::ComboBox::from_id_salt("sub_render")
-                        .selected_text(self.sub_render_mode.to_string())
+                        .selected_text(self.remote_render_mode.to_string())
                         .show_ui(ui, |ui| {
                             for mode in RenderMode::VARIANTS {
                                 if ui
                                     .selectable_value(
-                                        &mut self.sub_render_mode,
+                                        &mut self.remote_render_mode,
                                         *mode,
                                         mode.to_string(),
                                     )
@@ -826,16 +828,16 @@ impl eframe::App for SplitApp {
 
                 ui.separator();
 
-                // --- Sub video ---
+                // --- Remote video ---
                 let avail = ui.available_size();
                 let bar_h = 36.0; // two status bars
                 let video_avail = egui::vec2(avail.x, (avail.y - bar_h).max(1.0));
 
                 // Use preset aspect ratio (same source dimensions)
-                let aspect = self.pub_aspect_ratio();
+                let aspect = self.local_aspect_ratio();
                 let video_size = fit_to_aspect(video_avail, aspect);
 
-                if let Some(ref mut view) = self.sub_video {
+                if let Some(ref mut view) = self.remote_video {
                     let (img, frame_ts) = view.render(ctx, video_size);
                     let x_pad = (video_avail.x - video_size.x) / 2.0;
                     let y_pad = (video_avail.y - video_size.y) / 2.0;
@@ -845,23 +847,23 @@ impl eframe::App for SplitApp {
                         ui.add_sized(video_size, img);
                     });
                     ui.add_space(y_pad.max(0.0));
-                    self.sub_stats.tick(frame_ts);
+                    self.remote_stats.tick(frame_ts);
                 } else {
                     ui.allocate_space(video_avail);
                 }
 
                 // Subscriber decode bar (rend first, then dec)
                 let rendition = self
-                    .sub_video
+                    .remote_video
                     .as_ref()
                     .map(|v| v.track().rendition().to_owned())
                     .unwrap_or_default();
                 let decoder_name = self
-                    .sub_video
+                    .remote_video
                     .as_ref()
                     .map(|v| v.track().decoder_name().to_owned())
                     .unwrap_or_default();
-                let renderer = if self.sub_video.as_ref().is_some_and(|v| v.is_wgpu()) {
+                let renderer = if self.remote_video.as_ref().is_some_and(|v| v.is_wgpu()) {
                     "wgpu"
                 } else {
                     "cpu"
@@ -875,8 +877,8 @@ impl eframe::App for SplitApp {
                     rendition,
                     decoder_name,
                     renderer,
-                    self.sub_stats.fps,
-                    self.sub_stats.delay_ms,
+                    self.remote_stats.fps,
+                    self.remote_stats.delay_ms,
                     format_bitrate(stats.down.rate as f64),
                 );
                 overlay_bar(ui, &sub_text);
@@ -894,9 +896,9 @@ impl eframe::App for SplitApp {
 
     fn on_exit(&mut self) {
         info!("shutting down");
-        self.sub_broadcast.shutdown();
+        self.remote_broadcast.shutdown();
         self.session.close(0, b"bye");
-        let router = self.pub_router.clone();
+        let router = self.router.clone();
         self.rt.block_on(async move {
             if let Err(e) = router.shutdown().await {
                 warn!("shutdown: {e:#}");
@@ -918,8 +920,7 @@ fn main() -> Result<()> {
         .unwrap();
 
     let audio_ctx = AudioBackend::default();
-    let (pub_router, pub_live, broadcast, session, track) =
-        rt.block_on(setup(audio_ctx.clone()))?;
+    let (router, live, broadcast, session, track) = rt.block_on(setup(audio_ctx.clone()))?;
 
     let _guard = rt.enter();
 
@@ -938,44 +939,44 @@ fn main() -> Result<()> {
         "iroh-live split",
         native_options,
         Box::new(move |cc| {
-            let sub_render_mode = *RenderMode::VARIANTS.last().unwrap();
+            let remote_render_mode = *RenderMode::VARIANTS.last().unwrap();
 
             #[cfg(feature = "wgpu")]
             let wgpu_render_state = cc.wgpu_render_state.clone();
 
-            let sub_video = track.video.map(|video| {
+            let remote_video = track.video.map(|video| {
                 #[cfg(feature = "wgpu")]
-                if sub_render_mode == RenderMode::Wgpu {
+                if remote_render_mode == RenderMode::Wgpu {
                     return VideoTrackView::new_wgpu(
                         &cc.egui_ctx,
-                        "sub-video",
+                        "remote-video",
                         video,
                         cc.wgpu_render_state.as_ref(),
                     );
                 }
-                VideoTrackView::new(&cc.egui_ctx, "sub-video", video)
+                VideoTrackView::new(&cc.egui_ctx, "remote-video", video)
             });
 
             let app = SplitApp {
                 rt,
-                pub_video_source: VideoSourceKind::TestPattern,
-                pub_audio_source: AudioSourceKind::TestTone,
-                pub_codec: VideoCodec::best_available(),
-                pub_preset: VideoPreset::P720,
+                local_video_source: VideoSourceKind::TestPattern,
+                local_audio_source: AudioSourceKind::TestTone,
+                local_codec: VideoCodec::best_available(),
+                local_preset: VideoPreset::P720,
                 broadcast,
-                pub_video_view: None,
-                pub_router,
-                pub_live,
+                local_video_view: None,
+                router,
+                live,
                 audio_ctx,
                 session,
-                sub_broadcast: track.broadcast,
-                sub_video,
-                _sub_audio: track.audio,
-                sub_backend: DecoderBackend::Auto,
-                sub_render_mode,
+                remote_broadcast: track.broadcast,
+                remote_video,
+                _remote_audio: track.audio,
+                remote_backend: DecoderBackend::Auto,
+                remote_render_mode,
                 stats: StatsSmoother::new(),
-                pub_stats: FrameStats::default(),
-                sub_stats: FrameStats::default(),
+                local_stats: FrameStats::default(),
+                remote_stats: FrameStats::default(),
                 needs_republish: false,
                 error_msg: None,
                 #[cfg(feature = "wgpu")]

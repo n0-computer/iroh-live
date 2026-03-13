@@ -108,6 +108,11 @@ impl Call {
         self.session.remote_id()
     }
 
+    /// Closes the call, ending the session.
+    pub fn close(&self) {
+        self.session.close(0u32, b"call ended");
+    }
+
     /// Waits until the call ends.
     pub async fn closed(&self) -> DisconnectReason {
         let _ = self.session.closed().await;
