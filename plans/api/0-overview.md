@@ -39,17 +39,15 @@ types within a single crate:
 
 ### Naming Changes
 
-| Current (moq-media) | Proposed | Rationale |
+| Current (moq-media) | New | Rationale |
 |---|---|---|
-| `PublishBroadcast` | `Broadcast` | It's your broadcast. The verb is in the action, not the type name. |
-| `SubscribeBroadcast` | `Subscription` | It's your subscription to someone's broadcast. |
+| `PublishBroadcast` | `LocalBroadcast` | Symmetric with `RemoteBroadcast`. "Local" = ours. |
+| `SubscribeBroadcast` | `RemoteBroadcast` | Symmetric with `LocalBroadcast`. "Remote" = theirs. |
 | `WatchTrack` | `VideoTrack` | Matches `AudioTrack`. Describes what it is, not how you got it. |
 | `AvRemoteTrack` | `MediaTracks` | Simple struct `{ video, audio }`. |
-| `watch()` | `video()` / `video_with()` | On `Subscription`. Parallel with `audio()`. |
+| `watch()` | `video()` / `video_with()` | On `RemoteBroadcast`. Parallel with `audio()`. |
 | `listen()` | `audio()` / `audio_with()` | Consistent with `video()`. |
 | `watch_local()` | `preview()` | Self-documenting. |
-| `watch_rendition()` | `video_rendition()` | Consistent prefix. |
-| `listen_rendition()` | `audio_rendition()` | Consistent prefix. |
 | `CatalogWrapper` | `CatalogSnapshot` | Describes what it is. |
 
 ### moq-media (broadcast + media layer)
@@ -57,14 +55,15 @@ types within a single crate:
 The primary API for all media operations. Usable standalone without iroh-live
 for non-RTC use cases.
 
-- `Broadcast` — publish media. Sub-handles: `video()` → `VideoPublisher`, `audio()` → `AudioPublisher`
-- `Subscription` — subscribe to remote media. Methods: `video()`, `audio()`, catalog access
-- `VideoTrack` / `AudioTrack` — decoded media from a subscription
+- `LocalBroadcast` — publish media. Sub-handles: `video()` → `VideoPublisher`, `audio()` → `AudioPublisher`
+- `RemoteBroadcast` — subscribe to remote media. Stores `MoqSession`, constructor takes `(session, name)`.
+- `VideoTrack` / `AudioTrack` — decoded media from a remote broadcast
 - `VideoTarget` — declarative quality selection: `max_pixels`, `max_bitrate`
-- `Broadcast::relay(subscription)` — zero-transcode relay (forward packets without decode)
+- `LocalBroadcast::relay(remote)` — zero-transcode relay (forward packets without decode)
 - `VideoTrack` implements `VideoSource` — enables transcode relay (decode → re-encode)
 - All `&self` (interior mutability). All `Clone` (Arc-based). Drop-based cleanup.
-- Domain-specific error types: `PublishError`, `SubscribeError`, `CodecError`
+- Domain-specific error types: `PublishError`, `SubscribeError`
+- Status/catalog via `n0_watcher::Direct<T>` — `.get()` for snapshot, `.updated().await` for changes
 
 ### iroh-live (product layer)
 
@@ -72,14 +71,15 @@ Adds signaling, identity, and room semantics. Re-exports moq-media types.
 Only wraps where genuinely new concepts are at play (participants, calls).
 
 - `Live` — entry point (builder-based construction), manages transport + gossip
-- `Call` / `IncomingCall` — one-to-one sessions
-- `Room` — multi-party with participant model, `events() → impl Stream<Item = RoomEvent>`
-- `LocalParticipant` → `.broadcast()` returns `&Broadcast`
-- `RemoteParticipant` → `.subscription()` returns `&Subscription`
-- Tickets: `CallTicket`, `RoomTicket`
+- `Call` — one-to-one call helper (sugar over MoQ primitives)
+- `Room` — multi-party with participant model, `events() → RoomEventStream`
+- `LocalParticipant` → `.broadcast(TrackName)` returns `&LocalBroadcast`
+- `RemoteParticipant` → `.broadcast(TrackName)` returns `Option<&RemoteBroadcast>`
+- `TrackName` — enum `{ Camera, Screen, Other(String) }` for room track disambiguation
+- Tickets: `RoomTicket`
 - IDs: `ParticipantId`, `RoomId` (newtype wrappers, `Copy`, `Hash`, `Eq`)
 - Structured errors: `CallError`, `RoomError`
-- Prelude module for ergonomic imports
+- No prelude module
 
 ### iroh-moq (transport, mostly unchanged)
 
@@ -113,26 +113,25 @@ Two complementary patterns, used consistently across all stateful types:
 
 | Pattern | Used for | Example |
 |---|---|---|
-| `Watcher` (n0_watcher) | Continuous state — always has a current value | `call.state()`, `sub.status()`, `sub.catalog_watcher()` |
-| `impl Stream` (futures) | Discrete events — sequence of one-time occurrences | `room.events()`, `live.incoming_calls()` |
+| `Direct<T>` (n0_watcher) | Continuous state — always has a current value | `sub.status()`, `sub.catalog()`, `room.remote_participants()` |
+| Event stream | Discrete events — sequence of one-time occurrences | `room.events()`, `moq.incoming_sessions()` |
 
-**Dual-accessor convention:** stateful types expose both a snapshot method and a
-watcher method. Example: `sub.catalog()` → `CatalogSnapshot` (current value),
-`sub.catalog_watcher()` → `impl Watcher<Value = CatalogSnapshot>` (subscribe to
-changes).
+**Watcher convention:** stateful types return `Direct<T>`. Call `.get()` for a
+snapshot, `.updated().await` to wait for the next change. No dual-accessor
+pattern — a single method returns the watcher, and `.get()` gives the snapshot.
 
 ## Use Case Coverage
 
 | Use case | Crate | Key types |
 |---|---|---|
-| Video/audio call | iroh-live | `Call`, `LocalParticipant`, `RemoteParticipant` |
-| Multi-party room | iroh-live | `Room`, `RoomEvent` |
-| Live streaming | moq-media | `Broadcast`, `Subscription` |
-| Zero-transcode relay | moq-media | `Subscription` → `Broadcast::relay()` |
-| Transcoding relay | moq-media | `Subscription::video()` → `Broadcast` (re-encode) |
-| Camera dashboard | moq-media | N × `Subscription` with `VideoTarget::max_pixels()` |
-| Recording pipeline | moq-media | `Subscription` → `VideoTrack::frames()` stream |
-| Audio studio link | moq-media | `Broadcast` (audio only), `Subscription` (audio only) |
+| Video/audio call | iroh-live | `Call`, `LocalBroadcast`, `RemoteBroadcast` |
+| Multi-party room | iroh-live | `Room`, `RoomEvent`, `TrackName` |
+| Live streaming | moq-media | `LocalBroadcast`, `RemoteBroadcast` |
+| Zero-transcode relay | moq-media | `RemoteBroadcast` → `LocalBroadcast::relay()` |
+| Transcoding relay | moq-media | `RemoteBroadcast::video()` → `LocalBroadcast` (re-encode) |
+| Camera dashboard | moq-media | N × `RemoteBroadcast` with `VideoTarget::max_pixels()` |
+| Recording pipeline | moq-media | `RemoteBroadcast` → `VideoTrack::frames()` stream |
+| Audio studio link | moq-media | `LocalBroadcast` (audio only), `RemoteBroadcast` (audio only) |
 | Custom codec pipeline | moq-media | `VideoEncoderPipeline`, `VideoDecoderPipeline` |
 
 ## Documents
@@ -145,13 +144,20 @@ changes).
 - `5-examples.md` — example code against the proposed API
 - `6-relay.md` — relay server integration (moq-relay, SFU rooms, CDN)
 
+## Canonical API Sketch
+
+The full compiling API sketch is in `iroh-live/examples/api_sketch.rs`. It
+defines all types as stubs with `todo!()` bodies and includes ~18 usage examples.
+This is the single source of truth for the target API surface.
+
 ## Migration Strategy
 
-1. Rename + improve moq-media types (`Broadcast`, `Subscription`, `VideoTrack`)
-2. Add slot sub-handles (`VideoPublisher`, `AudioPublisher`)
-3. Add `VideoTarget`, `VideoOptions`, `AudioOptions` to subscription
-4. Add relay support (`Broadcast::relay()`, `VideoTrack: VideoSource`)
-5. Add `IncomingSession` to iroh-moq
-6. Add `Live::builder()`, `Call` / `IncomingCall` to iroh-live
-7. Redesign `Room` around participants with `impl Stream<Item = RoomEvent>`
-8. Add domain error types, prelude, polish
+1. Rename moq-media types (`LocalBroadcast`, `RemoteBroadcast`, `VideoTrack`, `CatalogSnapshot`)
+2. Add slot sub-handles (`VideoPublisher`, `AudioPublisher`) with `&self`
+3. Add `VideoTarget`, `VideoOptions`, `AudioOptions`, status watchers on `RemoteBroadcast`
+4. Add domain error types (`PublishError`, `SubscribeError`)
+5. Add relay support (`LocalBroadcast::relay()`, `VideoTrack: VideoSource`)
+6. Add `IncomingSession`/`IncomingSessionStream` to iroh-moq
+7. Add `Live::builder()`, `Call`, `TrackName` to iroh-live
+8. Redesign `Room` around participants with `TrackName`-keyed broadcasts
+9. Wire api_sketch.rs to use real crate imports, remove stubs
