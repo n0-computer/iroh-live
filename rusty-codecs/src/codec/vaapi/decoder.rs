@@ -543,11 +543,14 @@ impl VideoDecoder for VaapiDecoder {
                 }
                 Err(DecodeError::NotEnoughOutputBuffers(_)) => {
                     not_enough_bufs_count += 1;
-                    tracing::debug!(
-                        pending = self.pending_frames.len(),
-                        "vaapi: NotEnoughOutputBuffers, draining"
-                    );
                     self.drain_events();
+                    if not_enough_bufs_count > 30 {
+                        tracing::warn!(
+                            pending = self.pending_frames.len(),
+                            "vaapi: NotEnoughOutputBuffers after 30 retries, dropping packet"
+                        );
+                        break;
+                    }
                 }
                 Err(e) => {
                     bail!("VAAPI decode error: {e:?}");
