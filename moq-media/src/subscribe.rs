@@ -293,7 +293,7 @@ impl RemoteBroadcast {
     }
 
     /// Returns a watcher for the catalog (renditions added/removed).
-    pub fn catalog_watcher(&mut self) -> n0_watcher::Direct<CatalogSnapshot> {
+    pub fn catalog_watcher(&self) -> n0_watcher::Direct<CatalogSnapshot> {
         self.catalog_watchable.watch()
     }
 

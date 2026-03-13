@@ -12,7 +12,7 @@
 //! let (handle, paint_source_id) = use_video_renderer();
 //!
 //! // Set or swap the video track at any time:
-//! handle.set(watch_track);
+//! handle.set(video_track);
 //!
 //! // In RSX:
 //! rsx!(canvas { "src": paint_source_id })
