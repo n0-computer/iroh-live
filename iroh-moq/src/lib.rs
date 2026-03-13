@@ -89,7 +89,7 @@ impl Moq {
 
     pub async fn publish(&self, name: impl ToString, producer: BroadcastProducer) -> Result<()> {
         self.tx
-            .send(ActorMessage::PublishBroadcast {
+            .send(ActorMessage::LocalBroadcast {
                 broadcast_name: name.to_string(),
                 producer,
             })
@@ -300,7 +300,7 @@ enum ActorMessage {
     HandleSession {
         session: Box<MoqSession>,
     },
-    PublishBroadcast {
+    LocalBroadcast {
         broadcast_name: BroadcastName,
         producer: BroadcastProducer,
     },
@@ -384,7 +384,7 @@ impl Actor {
     fn handle_message(&mut self, msg: ActorMessage) {
         match msg {
             ActorMessage::HandleSession { session: msg } => self.handle_incoming_session(*msg),
-            ActorMessage::PublishBroadcast {
+            ActorMessage::LocalBroadcast {
                 broadcast_name: name,
                 producer,
             } => self.handle_publish_broadcast(name, producer),

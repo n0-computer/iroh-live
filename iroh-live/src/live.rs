@@ -3,7 +3,7 @@ use iroh_moq::{Moq, MoqProtocolHandler, MoqSession};
 use moq_lite::BroadcastProducer;
 use moq_media::{
     format::PlaybackConfig,
-    subscribe::{AvRemoteTrack, SubscribeBroadcast},
+    subscribe::{MediaTracks, RemoteBroadcast},
     traits::{AudioStreamFactory, Decoders},
 };
 use n0_error::Result;
@@ -29,24 +29,24 @@ impl Live {
         &self,
         remote: impl Into<EndpointAddr>,
         broadcast_name: &str,
-    ) -> Result<(MoqSession, SubscribeBroadcast)> {
+    ) -> Result<(MoqSession, RemoteBroadcast)> {
         let mut session = self.connect(remote).await?;
         info!(id=%session.conn().remote_id(), "new peer connected");
         let broadcast = session.subscribe(broadcast_name).await?;
-        let broadcast = SubscribeBroadcast::new(broadcast_name.to_string(), broadcast).await?;
+        let broadcast = RemoteBroadcast::new(broadcast_name.to_string(), broadcast).await?;
         Ok((session, broadcast))
     }
 
-    pub async fn watch_and_listen<D: Decoders>(
+    pub async fn media<D: Decoders>(
         &self,
         remote: impl Into<EndpointAddr>,
         broadcast_name: &str,
         audio_backend: &dyn AudioStreamFactory,
         config: PlaybackConfig,
-    ) -> Result<(MoqSession, AvRemoteTrack)> {
+    ) -> Result<(MoqSession, MediaTracks)> {
         let (session, broadcast) = self.connect_and_subscribe(remote, broadcast_name).await?;
         let track = broadcast
-            .watch_and_listen::<D>(audio_backend, config)
+            .media::<D>(audio_backend, config)
             .await?;
         Ok((session, track))
     }

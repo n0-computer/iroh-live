@@ -57,7 +57,7 @@ struct VideoRenditionEntry {
 }
 
 #[derive(derive_more::Debug)]
-pub struct PublishBroadcast {
+pub struct LocalBroadcast {
     #[debug(skip)]
     producer: BroadcastProducer,
     #[debug(skip)]
@@ -68,13 +68,13 @@ pub struct PublishBroadcast {
     _task: Arc<AbortOnDropHandle<()>>,
 }
 
-impl Default for PublishBroadcast {
+impl Default for LocalBroadcast {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl PublishBroadcast {
+impl LocalBroadcast {
     pub fn new() -> Self {
         let mut producer = BroadcastProducer::default();
         let catalog = CatalogProducer::new(&mut producer).expect("not closed");
@@ -132,7 +132,7 @@ impl PublishBroadcast {
     }
 
     /// Create a local VideoTrack from the current video source, if present.
-    pub fn watch_local(&self, decode_config: DecodeConfig) -> Option<VideoTrack> {
+    pub fn preview(&self, decode_config: DecodeConfig) -> Option<VideoTrack> {
         let (source, shutdown) = {
             let state = self.state.lock().expect("poisoned");
             let source = state
@@ -203,7 +203,7 @@ impl PublishBroadcast {
     }
 }
 
-impl Drop for PublishBroadcast {
+impl Drop for LocalBroadcast {
     fn drop(&mut self) {
         self.state.lock().expect("poisoned").shutdown_token.cancel();
         // TODO: Do we need to close explicitly here?
@@ -722,12 +722,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn watch_local_produces_frames() {
-        let mut broadcast = PublishBroadcast::new();
+    async fn preview_produces_frames() {
+        let mut broadcast = LocalBroadcast::new();
         broadcast.set_video(Some(make_renditions())).unwrap();
         let watch = broadcast
-            .watch_local(DecodeConfig::default())
-            .expect("watch_local should return Some when video is set");
+            .preview(DecodeConfig::default())
+            .expect("preview should return Some when video is set");
         // The watch track exists — it will produce decoded frames once the
         // decode loop runs, but here we just verify it was created successfully.
         drop(watch);
@@ -735,19 +735,19 @@ mod tests {
 
     #[tokio::test]
     async fn set_video_stops_old_local_watch() {
-        let mut broadcast = PublishBroadcast::new();
+        let mut broadcast = LocalBroadcast::new();
         broadcast.set_video(Some(make_renditions())).unwrap();
         let watch = broadcast
-            .watch_local(DecodeConfig::default())
+            .preview(DecodeConfig::default())
             .expect("should have watch");
 
         // Replace video — old local watches should be cancelled.
         broadcast.set_video(Some(make_renditions())).unwrap();
 
         // The old watch's cancellation token should now be cancelled.
-        // We can verify by checking that a new watch_local still works.
+        // We can verify by checking that a new preview still works.
         let watch2 = broadcast
-            .watch_local(DecodeConfig::default())
+            .preview(DecodeConfig::default())
             .expect("new watch should work after replacement");
         drop(watch);
         drop(watch2);
@@ -755,28 +755,28 @@ mod tests {
 
     #[tokio::test]
     async fn set_video_new_source_produces_frames() {
-        let mut broadcast = PublishBroadcast::new();
+        let mut broadcast = LocalBroadcast::new();
         broadcast.set_video(Some(make_renditions())).unwrap();
         broadcast.set_video(Some(make_renditions())).unwrap();
 
         let watch = broadcast
-            .watch_local(DecodeConfig::default())
+            .preview(DecodeConfig::default())
             .expect("watch should work with replacement video");
         drop(watch);
     }
 
     #[tokio::test]
     async fn set_video_none_stops_local_watch() {
-        let mut broadcast = PublishBroadcast::new();
+        let mut broadcast = LocalBroadcast::new();
         broadcast.set_video(Some(make_renditions())).unwrap();
         let _watch = broadcast
-            .watch_local(DecodeConfig::default())
+            .preview(DecodeConfig::default())
             .expect("should have watch");
 
         broadcast.set_video(None).unwrap();
         assert!(
-            broadcast.watch_local(DecodeConfig::default()).is_none(),
-            "watch_local should return None after set_video(None)"
+            broadcast.preview(DecodeConfig::default()).is_none(),
+            "preview should return None after set_video(None)"
         );
     }
 
@@ -785,7 +785,7 @@ mod tests {
     /// forever because nothing called unpark() on shutdown.
     #[tokio::test]
     async fn replace_video_while_source_parked() {
-        let mut broadcast = PublishBroadcast::new();
+        let mut broadcast = LocalBroadcast::new();
 
         // Set video but never create a local watch — source thread will be parked.
         broadcast.set_video(Some(make_renditions())).unwrap();
@@ -801,14 +801,14 @@ mod tests {
 
         // Verify the new video works.
         let watch = broadcast
-            .watch_local(DecodeConfig::default())
+            .preview(DecodeConfig::default())
             .expect("new watch should work after replacing parked video");
         drop(watch);
     }
 
     #[tokio::test]
     async fn source_thread_stops_on_video_removal() {
-        let mut broadcast = PublishBroadcast::new();
+        let mut broadcast = LocalBroadcast::new();
         broadcast.set_video(Some(make_renditions())).unwrap();
 
         // Give source thread time to start and park.
@@ -821,7 +821,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Verify no video available.
-        assert!(broadcast.watch_local(DecodeConfig::default()).is_none());
+        assert!(broadcast.preview(DecodeConfig::default()).is_none());
     }
 
     // --- Real encoder pipeline tests ---
@@ -903,7 +903,7 @@ mod tests {
     /// based on the catalog will get "rendition not available" errors.
     #[tokio::test]
     async fn set_video_renditions_available_before_catalog() {
-        let mut broadcast = PublishBroadcast::new();
+        let mut broadcast = LocalBroadcast::new();
         let renditions = make_renditions();
         let rendition_names: Vec<String> = renditions.renditions.keys().cloned().collect();
 

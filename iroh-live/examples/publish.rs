@@ -7,7 +7,7 @@ use iroh_live::{
         capture::CameraCapturer,
         codec::{AudioCodec, VideoCodec},
         format::{AudioPreset, VideoPreset},
-        publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
+        publish::{AudioRenditions, LocalBroadcast, VideoRenditions},
     },
     ticket::LiveTicket,
 };
@@ -34,7 +34,7 @@ async fn main() -> n0_error::Result {
         .spawn();
 
     // Create a publish broadcast.
-    let mut broadcast = PublishBroadcast::new();
+    let mut broadcast = LocalBroadcast::new();
 
     // Capture audio, and encode with the cli-provided preset.
     if !cli.no_audio {

@@ -9,7 +9,7 @@ use iroh_live::{
         audio_backend::AudioBackend,
         codec::{DefaultDecoders, DynamicVideoDecoder},
         format::{DecodeConfig, DecoderBackend, PlaybackConfig},
-        subscribe::{AudioTrack, SubscribeBroadcast},
+        subscribe::{AudioTrack, RemoteBroadcast},
     },
     moq::MoqSession,
     ticket::LiveTicket,
@@ -77,7 +77,7 @@ fn main() -> Result<()> {
                 ..Default::default()
             };
             let (session, track) = live
-                .watch_and_listen::<DefaultDecoders>(
+                .media::<DefaultDecoders>(
                     ticket.endpoint,
                     &ticket.broadcast_name,
                     &audio_ctx,
@@ -150,7 +150,7 @@ struct App {
     _audio_ctx: AudioBackend,
     endpoint: Endpoint,
     session: MoqSession,
-    broadcast: SubscribeBroadcast,
+    broadcast: RemoteBroadcast,
     stats: StatsSmoother,
     rt: tokio::runtime::Runtime,
     frame_count: u64,
@@ -229,7 +229,7 @@ impl App {
                             .clicked()
                             && let Ok(track) = self
                                 .broadcast
-                                .watch_rendition::<DynamicVideoDecoder>(&Default::default(), name)
+                                .video_rendition::<DynamicVideoDecoder>(&Default::default(), name)
                         {
                             self.video = Some(VideoTrackView::new(ctx, "video", track));
                         }
