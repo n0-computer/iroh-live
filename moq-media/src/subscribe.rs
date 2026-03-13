@@ -409,7 +409,7 @@ impl RemoteBroadcast {
     pub fn video_with(&self, opts: VideoOptions) -> Result<VideoTrack> {
         use crate::codec::DynamicVideoDecoder;
         let decode_config = opts.decode_config();
-        if let Some(ref rendition) = opts.target.as_ref().and_then(|t| t.rendition.as_ref()) {
+        if let Some(rendition) = opts.target.as_ref().and_then(|t| t.rendition.as_ref()) {
             return self.video_rendition::<DynamicVideoDecoder>(&decode_config, rendition);
         }
         let quality = opts.resolve_quality();

@@ -1,3 +1,4 @@
+mod call;
 mod live;
 mod node;
 pub mod rooms;
@@ -11,6 +12,7 @@ pub use iroh_moq::ALPN;
 pub use moq_media as media;
 
 pub use self::{
+    call::{Call, CallError},
     live::{Live, LiveBuilder},
     node::LiveNode,
     types::{DisconnectReason, ParticipantId, TrackKind, TrackName},
