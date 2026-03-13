@@ -199,7 +199,7 @@ impl PublishCaptureController {
         let index_changed = enable && cur.camera && capture.camera_index != self.prev.camera_index;
         let codec_changed = enable && cur.camera && capture.video_codec != self.prev.video_codec;
         if cur.camera != enable || index_changed || codec_changed {
-            let mut camera = self.camera.lock().expect("poisoned");
+            let camera = self.camera.lock().expect("poisoned");
             if enable {
                 let capturer = match capture.camera_index {
                     Some(index) => CameraCapturer::with_index(index)?,
@@ -244,7 +244,7 @@ impl PublishCaptureController {
                     .video_codec
                     .unwrap_or_else(VideoCodec::best_available);
                 let renditions = VideoRenditions::new(screen, codec, VideoPreset::all());
-                self.screen.as_mut().unwrap().set_video(Some(renditions))?;
+                self.screen.as_ref().unwrap().set_video(Some(renditions))?;
 
                 Ok(new_producer)
             } else {

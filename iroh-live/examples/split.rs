@@ -435,7 +435,7 @@ impl SplitApp {
             }
         };
         let video = VideoRenditions::new(source, self.pub_codec, [self.pub_preset]);
-        if let Err(e) = self.broadcast.set_video(Some(video)) {
+        if let Err(e) = self.broadcast.video().set_renditions(video) {
             self.error_msg = Some(format!("Set video: {e:#}"));
             return;
         }
@@ -446,7 +446,7 @@ impl SplitApp {
             AudioSourceKind::TestTone => {
                 let tone = TestToneSource::new();
                 let audio = AudioRenditions::new(tone, AudioCodec::Opus, [AudioPreset::Hq]);
-                if let Err(e) = self.broadcast.set_audio(Some(audio)) {
+                if let Err(e) = self.broadcast.audio().set_renditions(audio) {
                     self.error_msg = Some(format!("Set audio: {e:#}"));
                     return;
                 }
@@ -460,13 +460,13 @@ impl SplitApp {
                     }
                 };
                 let audio = AudioRenditions::new(mic, AudioCodec::Opus, [AudioPreset::Hq]);
-                if let Err(e) = self.broadcast.set_audio(Some(audio)) {
+                if let Err(e) = self.broadcast.audio().set_renditions(audio) {
                     self.error_msg = Some(format!("Set audio: {e:#}"));
                     return;
                 }
             }
             AudioSourceKind::None => {
-                let _ = self.broadcast.set_audio(None::<AudioRenditions>);
+                self.broadcast.audio().clear();
             }
         }
 
@@ -538,13 +538,13 @@ async fn setup(
         .spawn();
 
     // Create broadcast with test pattern + test tone
-    let mut broadcast = LocalBroadcast::new();
+    let broadcast = LocalBroadcast::new();
     let source = TestPatternSource::new(1280, 720);
     let video = VideoRenditions::new(source, VideoCodec::best_available(), [VideoPreset::P720]);
-    broadcast.set_video(Some(video))?;
+    broadcast.video().set_renditions(video)?;
     let tone = TestToneSource::new();
     let audio = AudioRenditions::new(tone, AudioCodec::Opus, [AudioPreset::Hq]);
-    broadcast.set_audio(Some(audio))?;
+    broadcast.audio().set_renditions(audio)?;
 
     pub_live
         .publish(BROADCAST_NAME, broadcast.producer())
