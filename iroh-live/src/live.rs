@@ -1,14 +1,21 @@
-use std::sync::Arc;
+use std::{env, sync::Arc};
 
 use iroh::{
-    Endpoint, EndpointAddr,
+    Endpoint, EndpointAddr, SecretKey,
     protocol::{Router, RouterBuilder},
 };
 use iroh_gossip::Gossip;
 use iroh_moq::{Moq, MoqProtocolHandler, MoqSession};
-use moq_media::{publish::LocalBroadcast, subscribe::RemoteBroadcast};
+use moq_media::{
+    format::PlaybackConfig,
+    publish::LocalBroadcast,
+    subscribe::{MediaTracks, RemoteBroadcast},
+    traits::AudioStreamFactory,
+};
 use n0_error::Result;
-use tracing::info;
+use tracing::{error, info};
+
+use crate::rooms::{Room, RoomTicket};
 
 /// Entry point for iroh-live. Manages the iroh endpoint, MoQ transport,
 /// and optionally gossip for room membership.
@@ -17,7 +24,7 @@ pub struct Live {
     endpoint: Endpoint,
     moq: Arc<Moq>,
     gossip: Option<Arc<Gossip>>,
-    _router: Option<Arc<Router>>,
+    router: Option<Arc<Router>>,
 }
 
 impl std::fmt::Debug for Live {
@@ -62,7 +69,7 @@ impl LiveBuilder {
             endpoint: self.endpoint,
             moq: Arc::new(moq),
             gossip: self.gossip,
-            _router: None,
+            router: None,
         }
     }
 
@@ -74,7 +81,7 @@ impl LiveBuilder {
         let endpoint = self.endpoint.clone();
         let mut live = self.spawn();
         let router = live.register_protocols(Router::builder(endpoint));
-        live._router = Some(Arc::new(router.spawn()));
+        live.router = Some(Arc::new(router.spawn()));
         live
     }
 }
@@ -93,6 +100,21 @@ impl Live {
     /// Equivalent to `Live::builder(endpoint).spawn()`.
     pub fn new(endpoint: Endpoint) -> Self {
         Self::builder(endpoint).spawn()
+    }
+
+    /// Creates a new node from environment variables.
+    ///
+    /// Reads `IROH_SECRET` for the secret key (generates one if unset),
+    /// binds an endpoint, and spawns with gossip and a protocol router.
+    pub async fn from_env() -> Result<Self> {
+        let endpoint = Endpoint::builder()
+            .secret_key(secret_key_from_env()?)
+            .bind()
+            .await?;
+        info!(endpoint_id=%endpoint.id(), "endpoint bound");
+
+        let live = Self::builder(endpoint).enable_gossip().spawn_with_router();
+        Ok(live)
     }
 
     /// Mounts Live's protocol handlers on a RouterBuilder.
@@ -144,48 +166,63 @@ impl Live {
         self.moq.publish(name, producer).await
     }
 
-    /// Connects to a remote peer and subscribes to a named broadcast,
-    /// returning just the [`RemoteBroadcast`].
-    pub async fn subscribe(
-        &self,
-        remote: impl Into<EndpointAddr>,
-        broadcast_name: &str,
-    ) -> Result<RemoteBroadcast> {
-        let (_session, broadcast) = self.connect_and_subscribe(remote, broadcast_name).await?;
-        Ok(broadcast)
-    }
-
     /// Connects to a remote peer and subscribes to a named broadcast.
     ///
     /// Returns both the session (for stats, closing, etc.) and the broadcast.
     /// If you only need the broadcast, use [`subscribe`](Self::subscribe).
-    pub async fn connect_and_subscribe(
+    // rr: rename subscribe
+    pub async fn subscribe(
         &self,
         remote: impl Into<EndpointAddr>,
         broadcast_name: &str,
     ) -> Result<(MoqSession, RemoteBroadcast)> {
         let mut session = self.moq.connect(remote).await?;
         info!(id=%session.conn().remote_id(), "new peer connected");
-        let broadcast = session.subscribe(broadcast_name).await?;
-        let broadcast = RemoteBroadcast::new(broadcast_name.to_string(), broadcast).await?;
+        let consumer = session.subscribe(broadcast_name).await?;
+        let broadcast = RemoteBroadcast::new(broadcast_name, consumer).await?;
         Ok((session, broadcast))
     }
 
     /// Connects to a remote peer, subscribes, and decodes video+audio in one step.
-    pub async fn media<D: moq_media::traits::Decoders>(
+    // rr: remove, inline at call sites.
+    pub async fn subscribe_media_track<D: moq_media::traits::Decoders>(
         &self,
         remote: impl Into<EndpointAddr>,
         broadcast_name: &str,
-        audio_backend: &dyn moq_media::traits::AudioStreamFactory,
-        config: moq_media::format::PlaybackConfig,
-    ) -> Result<(MoqSession, moq_media::subscribe::MediaTracks)> {
-        let (session, broadcast) = self.connect_and_subscribe(remote, broadcast_name).await?;
+        audio_backend: &dyn AudioStreamFactory,
+        config: PlaybackConfig,
+    ) -> Result<(MoqSession, MediaTracks)> {
+        let (session, broadcast) = self.subscribe(remote, broadcast_name).await?;
         let track = broadcast.media::<D>(audio_backend, config).await?;
         Ok((session, track))
     }
 
-    /// Shuts down the Live instance, closing all sessions.
-    pub fn shutdown(&self) {
-        self.moq.shutdown();
+    /// Joins a room using the given ticket.
+    pub async fn join_room(&self, ticket: RoomTicket) -> Result<Room> {
+        Room::new(self, ticket).await
     }
+
+    /// Shuts down the Live instance, closing all sessions.
+    pub async fn shutdown(&self) {
+        self.moq.shutdown();
+        if let Some(router) = self.router.as_ref()
+            && let Err(err) = router.shutdown().await
+        {
+            error!("Error while shutting down the iroh router: {err:#}");
+        }
+    }
+}
+
+fn secret_key_from_env() -> Result<SecretKey> {
+    Ok(match env::var("IROH_SECRET") {
+        Ok(key) => key.parse()?,
+        Err(_) => {
+            let key = SecretKey::generate(&mut rand::rng());
+            println!(
+                "Created new secret. Reuse with IROH_SECRET={}",
+                data_encoding::HEXLOWER.encode(&key.to_bytes())
+            );
+            key
+        }
+    })
 }

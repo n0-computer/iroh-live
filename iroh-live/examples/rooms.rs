@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use clap::Parser;
 use eframe::egui::{self, Id, Vec2};
-use iroh::{Endpoint, Watcher, protocol::Router};
-use iroh_gossip::{Gossip, TopicId};
+use iroh::{Endpoint, Watcher};
+use iroh_gossip::TopicId;
 use iroh_live::{
     Live,
     media::{
@@ -47,7 +47,7 @@ fn main() -> Result<()> {
         .unwrap();
 
     let audio_ctx = AudioBackend::default();
-    let (router, broadcast, room) = rt.block_on(setup(cli, audio_ctx.clone()))?;
+    let (live, broadcast, room) = rt.block_on(setup(cli, audio_ctx.clone()))?;
 
     let _guard = rt.enter();
     eframe::run_native(
@@ -61,7 +61,7 @@ fn main() -> Result<()> {
                 self_video: broadcast
                     .preview(Default::default())
                     .map(|track| VideoTrackView::new(&cc.egui_ctx, "self-video", track)),
-                router,
+                live,
                 _broadcast: broadcast,
                 audio_ctx,
             };
@@ -71,20 +71,14 @@ fn main() -> Result<()> {
     .map_err(|err| anyerr!("eframe failed: {err:#}"))
 }
 
-async fn setup(cli: Cli, audio_ctx: AudioBackend) -> Result<(Router, LocalBroadcast, Room)> {
+async fn setup(cli: Cli, audio_ctx: AudioBackend) -> Result<(Live, LocalBroadcast, Room)> {
     let endpoint = Endpoint::builder()
         .secret_key(secret_key_from_env()?)
         .bind()
         .await?;
     info!(endpoint_id=%endpoint.id(), "endpoint bound");
 
-    let gossip = Gossip::builder().spawn(endpoint.clone());
-    let live = Live::new(endpoint.clone());
-
-    let router = Router::builder(endpoint)
-        .accept(iroh_gossip::ALPN, gossip.clone())
-        .accept(iroh_moq::ALPN, live.protocol_handler())
-        .spawn();
+    let live = Live::builder(endpoint).enable_gossip().spawn_with_router();
 
     // Publish ourselves.
     let broadcast = {
@@ -109,19 +103,19 @@ async fn setup(cli: Cli, audio_ctx: AudioBackend) -> Result<(Router, LocalBroadc
         Some(ticket) => ticket,
     };
 
-    let room = Room::new(router.endpoint(), gossip, live, ticket).await?;
+    let room = live.join_room(ticket).await?;
     room.publish(BROADCAST_NAME, broadcast.producer()).await?;
 
     println!("room ticket: {}", room.ticket());
 
-    Ok((router, broadcast, room))
+    Ok((live, broadcast, room))
 }
 
 struct App {
     room: Room,
     peers: Vec<RemoteTrackView>,
     self_video: Option<VideoTrackView>,
-    router: Router,
+    live: Live,
     _broadcast: LocalBroadcast,
     audio_ctx: AudioBackend,
     rt: tokio::runtime::Runtime,
@@ -198,12 +192,8 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
-        let router = self.router.clone();
-        self.rt.block_on(async move {
-            if let Err(err) = router.shutdown().await {
-                warn!("shutdown error: {err:?}");
-            }
-        });
+        let live = self.live.clone();
+        self.rt.block_on(async move { live.shutdown().await });
     }
 }
 

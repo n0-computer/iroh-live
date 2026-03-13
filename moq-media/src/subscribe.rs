@@ -270,16 +270,17 @@ impl RemoteBroadcast {
     /// Waits for the initial catalog before returning. Spawns a background
     /// task that watches for catalog updates. A shared [`PlayoutClock`] is
     /// created from the given mode and passed to all tracks for A/V sync.
-    pub async fn new(broadcast_name: String, broadcast: BroadcastConsumer) -> Result<Self> {
+    pub async fn new(broadcast_name: impl ToString, broadcast: BroadcastConsumer) -> Result<Self> {
         Self::with_playout(broadcast_name, broadcast, PlayoutMode::default()).await
     }
 
     /// Creates a new remote broadcast subscription with a specific [`PlayoutMode`].
     pub async fn with_playout(
-        broadcast_name: String,
+        broadcast_name: impl ToString,
         broadcast: BroadcastConsumer,
         playout_mode: PlayoutMode,
     ) -> Result<Self> {
+        let broadcast_name = broadcast_name.to_string();
         let clock = PlayoutClock::new(playout_mode);
         let shutdown = CancellationToken::new();
 

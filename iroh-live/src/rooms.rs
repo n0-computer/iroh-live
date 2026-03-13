@@ -1,14 +1,13 @@
 use std::{collections::HashSet, pin::Pin, sync::Arc, time::Duration};
 
 use bytes::Bytes;
-use iroh::{Endpoint, EndpointId, SecretKey};
+use iroh::{EndpointId, SecretKey};
 use iroh_gossip::Gossip;
 use iroh_moq::MoqSession;
 use iroh_smol_kv::{ExpiryConfig, Filter, SignedValue, Subscribe, SubscribeMode, WriteScope};
 use moq_lite::BroadcastProducer;
-pub use moq_media::publish::{PublishOpts, PublishUpdateError, StreamKind};
 use moq_media::subscribe::RemoteBroadcast;
-use n0_error::{Result, StdResultExt, anyerr};
+use n0_error::{Result, StackResultExt, StdResultExt, anyerr};
 use n0_future::{FuturesUnordered, StreamExt, task::AbortOnDropHandle};
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -59,19 +58,19 @@ impl RoomHandle {
 }
 
 impl Room {
-    pub async fn new(
-        endpoint: &Endpoint,
-        gossip: Gossip,
-        live: Live,
-        ticket: RoomTicket,
-    ) -> Result<Self> {
+    pub async fn new(live: &Live, ticket: RoomTicket) -> Result<Self> {
+        let gossip = live
+            .gossip()
+            .context("Cannot join room: Gossip is disabled")?
+            .clone();
+        let endpoint = live.endpoint();
         let endpoint_id = endpoint.id();
         let (actor_tx, actor_rx) = mpsc::channel(16);
         let (event_tx, event_rx) = mpsc::channel(16);
 
         let actor = Actor::new(
             endpoint.secret_key(),
-            live,
+            live.clone(),
             event_tx,
             gossip,
             ticket.clone(),
@@ -289,7 +288,7 @@ impl Actor {
             }
             let live = self.live.clone();
             self.connecting.push(Box::pin(async move {
-                let session = live.connect_and_subscribe(remote, &name).await;
+                let session = live.subscribe(remote, &name).await;
                 (id, session)
             }));
         }

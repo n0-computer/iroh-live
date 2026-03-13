@@ -1,5 +1,4 @@
 pub mod audio_backend;
-pub mod capture;
 pub mod pipeline;
 pub mod playout;
 mod processing;
@@ -10,6 +9,7 @@ mod util;
 
 pub use audio_backend::{AudioBackend, AudioBackendOpts, AudioDevice};
 // Re-export from rusty-codecs
+pub use rusty_capture as capture;
 pub use rusty_codecs::codec;
 #[cfg(feature = "wgpu")]
 pub use rusty_codecs::render;

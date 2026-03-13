@@ -1,17 +1,16 @@
 use clap::Parser;
-use iroh::{Endpoint, SecretKey, protocol::Router};
+use iroh::{Endpoint, SecretKey};
 use iroh_live::{
     Live,
     media::{
-        audio_backend::AudioBackend,
+        AudioBackend,
         capture::CameraCapturer,
         codec::{AudioCodec, VideoCodec},
         format::{AudioPreset, VideoPreset},
-        publish::{AudioRenditions, LocalBroadcast, VideoRenditions},
+        publish::LocalBroadcast,
     },
     ticket::LiveTicket,
 };
-use n0_error::StdResultExt;
 
 mod common;
 
@@ -28,10 +27,7 @@ async fn main() -> n0_error::Result {
         .secret_key(secret_key_from_env()?)
         .bind()
         .await?;
-    let live = Live::new(endpoint.clone());
-    let router = Router::builder(endpoint)
-        .accept(iroh_live::ALPN, live.protocol_handler())
-        .spawn();
+    let live = Live::builder(endpoint).spawn_with_router();
 
     // Create a publish broadcast.
     let broadcast = LocalBroadcast::new();
@@ -39,15 +35,17 @@ async fn main() -> n0_error::Result {
     // Capture audio, and encode with the cli-provided preset.
     if !cli.no_audio {
         let mic = audio_ctx.default_input().await?;
-        let audio = AudioRenditions::new(mic, AudioCodec::Opus, [cli.audio_preset]);
-        broadcast.audio().set_renditions(audio)?;
+        broadcast
+            .audio()
+            .set(mic, AudioCodec::Opus, [cli.audio_preset])?;
     }
 
     // Capture camera, and encode with the cli-provided presets.
     if !cli.no_video {
         let camera = CameraCapturer::new()?;
-        let video = VideoRenditions::new(camera, cli.codec, cli.video_presets);
-        broadcast.video().set_renditions(video)?;
+        broadcast
+            .video()
+            .set(camera, cli.codec, cli.video_presets)?;
     }
 
     // Publish under the name "hello".
@@ -55,15 +53,12 @@ async fn main() -> n0_error::Result {
     live.publish(name, &broadcast).await?;
 
     // Create a ticket string and print
-    let ticket = LiveTicket::new(router.endpoint().id(), name);
+    let ticket = LiveTicket::new(live.endpoint().id(), name);
     println!("publishing at {ticket}");
-    let long_ticket = LiveTicket::new(router.endpoint().addr(), name);
-    println!("\nticket with addrs: {long_ticket}");
 
     // Wait for ctrl-c and then shutdown.
     tokio::signal::ctrl_c().await?;
-    live.shutdown();
-    router.shutdown().await.std_context("router shutdown")?;
+    live.shutdown().await;
 
     Ok(())
 }

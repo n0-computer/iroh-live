@@ -1,7 +1,7 @@
 use std::{path::PathBuf, pin::Pin};
 
 use clap::Parser;
-use iroh_live::{LiveNode, rooms::RoomTicket};
+use iroh_live::{Live, rooms::RoomTicket};
 use moq_lite::BroadcastProducer;
 use n0_error::Result;
 use tokio::io::AsyncRead;
@@ -39,8 +39,8 @@ async fn main() -> Result<()> {
         None => RoomTicket::new_from_env()?,
     };
 
-    let node = LiveNode::spawn_from_env().await?;
-    let room = node.join_room(ticket).await?;
+    let live = Live::from_env().await?;
+    let room = live.join_room(ticket).await?;
 
     let mut input: Pin<Box<dyn AsyncRead + Send + 'static>> = match (cli.file, cli.transcode) {
         (Some(path), true) => Box::pin(transcode(path.clone(), cli.format).await?),
@@ -69,6 +69,6 @@ async fn main() -> Result<()> {
         _ = tokio::signal::ctrl_c() => {}
     };
     drop(room);
-    node.shutdown();
+    live.shutdown().await;
     Ok(())
 }

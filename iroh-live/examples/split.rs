@@ -574,7 +574,12 @@ async fn setup(
     let remote_live = Live::new(remote_endpoint.clone());
     let playback_config = PlaybackConfig::default();
     let (session, track) = remote_live
-        .media::<DefaultDecoders>(local_addr, BROADCAST_NAME, &audio_ctx, playback_config)
+        .subscribe_media_track::<DefaultDecoders>(
+            local_addr,
+            BROADCAST_NAME,
+            &audio_ctx,
+            playback_config,
+        )
         .await?;
     info!("subscriber connected");
 
