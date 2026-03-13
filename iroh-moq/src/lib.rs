@@ -22,6 +22,7 @@ use tracing::{Instrument, debug, error_span, field, info, instrument};
 use web_transport_iroh::SessionError;
 
 // TODO: Use export from moq_lite after next update
+/// The ALPN protocol identifier for MoQ-lite connections.
 pub const ALPN: &[u8] = b"moq-lite-03";
 
 #[stack_error(derive, add_meta, from_sources)]
@@ -60,6 +61,10 @@ impl From<mpsc::error::SendError<ActorMessage>> for LiveActorDiedError {
     }
 }
 
+/// MoQ transport layer managing sessions, broadcasts, and subscriptions.
+///
+/// Runs an internal actor that handles connection lifecycle, broadcast
+/// announcements, and subscription routing.
 #[derive(Debug, Clone)]
 pub struct Moq {
     tx: mpsc::Sender<ActorMessage>,
@@ -69,6 +74,7 @@ pub struct Moq {
 }
 
 impl Moq {
+    /// Creates a new MoQ transport bound to the given endpoint.
     pub fn new(endpoint: Endpoint) -> Self {
         let (tx, rx) = mpsc::channel(16);
         let (incoming_session_tx, _) = broadcast::channel(16);
@@ -84,12 +90,14 @@ impl Moq {
         }
     }
 
+    /// Returns a protocol handler for accepting incoming connections via a [`Router`](iroh::protocol::Router).
     pub fn protocol_handler(&self) -> MoqProtocolHandler {
         MoqProtocolHandler {
             tx: self.tx.clone(),
         }
     }
 
+    /// Publishes a broadcast with the given name, making it available to all connected peers.
     pub async fn publish(&self, name: impl ToString, producer: BroadcastProducer) -> Result<()> {
         self.tx
             .send(ActorMessage::LocalBroadcast {
@@ -101,6 +109,7 @@ impl Moq {
         Ok(())
     }
 
+    /// Returns the names of all currently published broadcasts.
     pub async fn published_broadcasts(&self) -> Vec<String> {
         let (reply, reply_rx) = oneshot::channel();
         if self
@@ -114,6 +123,7 @@ impl Moq {
         reply_rx.await.unwrap_or_default()
     }
 
+    /// Connects to a remote peer and returns a [`MoqSession`] for publish/subscribe.
     pub async fn connect(&self, remote: impl Into<EndpointAddr>) -> Result<MoqSession, AnyError> {
         // MoqSession::connect(&self.endpoint, addr).await
         let (reply, reply_rx) = oneshot::channel();
@@ -137,11 +147,16 @@ impl Moq {
         }
     }
 
+    /// Shuts down the transport, closing all sessions.
     pub fn shutdown(&self) {
         self.shutdown_token.cancel();
     }
 }
 
+/// Protocol handler for accepting incoming MoQ connections.
+///
+/// Register with a [`Router`](iroh::protocol::Router) via
+/// `.accept(ALPN, handler)`.
 #[derive(Debug, Clone)]
 pub struct MoqProtocolHandler {
     tx: mpsc::Sender<ActorMessage>,
@@ -219,6 +234,10 @@ impl IncomingSession {
     }
 }
 
+/// A MoQ session with a remote peer.
+///
+/// Supports publishing local broadcasts and subscribing to remote ones.
+/// Created via [`Moq::connect`] or from an [`IncomingSession`].
 #[derive(Clone)]
 pub struct MoqSession {
     wt_session: web_transport_iroh::Session,
@@ -280,14 +299,19 @@ impl MoqSession {
         })
     }
 
+    /// Returns the remote peer's endpoint ID.
     pub fn remote_id(&self) -> EndpointId {
         self.wt_session.remote_id()
     }
 
+    /// Returns a reference to the underlying QUIC connection.
     pub fn conn(&self) -> &Connection {
         self.wt_session.conn()
     }
 
+    /// Subscribes to a named broadcast from the remote peer.
+    ///
+    /// Waits for the remote to announce the broadcast if not yet available.
     pub async fn subscribe(&mut self, name: &str) -> Result<BroadcastConsumer, SubscribeError> {
         if let Some(reason) = self.conn().close_reason() {
             return Err(SessionError::from(reason).into());
@@ -310,14 +334,17 @@ impl MoqSession {
         }
     }
 
+    /// Publishes a broadcast on this session, making it available to the remote peer.
     pub fn publish(&self, name: String, broadcast: BroadcastConsumer) {
         self.publish.publish_broadcast(name, broadcast);
     }
 
+    /// Closes the session with an error code and reason.
     pub fn close(&self, error_code: u32, reason: &[u8]) {
         self.wt_session.close(error_code, reason);
     }
 
+    /// Waits until the session is closed by either side.
     pub async fn closed(&self) -> web_transport_iroh::SessionError {
         self.wt_session.closed().await
     }
