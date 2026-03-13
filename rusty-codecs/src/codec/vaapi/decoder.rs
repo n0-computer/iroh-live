@@ -336,13 +336,15 @@ impl VaapiDecoder {
             match event {
                 DecoderEvent::FrameReady(handle) => {
                     self.fd_log_counter += 1;
-                    if self.fd_log_counter % 120 == 0 {
-                        if let Ok(entries) = std::fs::read_dir("/proc/self/fd") {
-                            let count = entries.count();
-                            tracing::debug!(
+                    if self.fd_log_counter.is_multiple_of(120)
+                        && let Ok(entries) = std::fs::read_dir("/proc/self/fd")
+                    {
+                        let count = entries.count();
+                        if count > 512 {
+                            tracing::warn!(
                                 fd_count = count,
                                 pending = self.pending_frames.len(),
-                                "VAAPI decoder FD status"
+                                "VAAPI decoder FD count high"
                             );
                         }
                     }
