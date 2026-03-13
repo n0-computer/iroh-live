@@ -369,9 +369,9 @@ impl AudioPublisher<'_> {
 
 impl Drop for LocalBroadcast {
     fn drop(&mut self) {
-        self.state.lock().expect("poisoned").shutdown_token.cancel();
-        // TODO: Do we need to close explicitly here?
-        // self.producer.close();
+        if let Ok(state) = self.state.lock() {
+            state.shutdown_token.cancel();
+        }
     }
 }
 
