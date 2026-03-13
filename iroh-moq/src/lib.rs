@@ -219,37 +219,6 @@ impl IncomingSession {
     }
 }
 
-// TODO: resubscribing session?
-// struct MoqSession2 {
-//     session: MoqSession,
-//     tx: mpsc::Sender<ActorMessage>,
-//     remote: EndpointAddr,
-// }
-
-// impl MoqSession2 {
-//     pub async fn subscribe(&mut self, name: &str) -> Result<BroadcastConsumer> {
-//         match self.session.subscribe(name).await {
-//             Ok(consumer) => return Ok(consumer),
-//             Err(err) => {
-//                 warn!("first attempt to subscribe failed, retrying. reason: {err:#}");
-//                 let (reply, reply_rx) = oneshot::channel();
-//                 self.tx
-//                     .send(ActorMessage::Connect {
-//                         remote: self.remote.clone(),
-//                         reply,
-//                     })
-//                     .await
-//                     .map_err(|_| LiveActorDiedError)?;
-//                 self.session = reply_rx
-//                     .await
-//                     .map_err(|_| LiveActorDiedError)?
-//                     .map_err(|err| anyerr!(err))?;
-//                 self.session.subscribe(name).await.map_err(Into::into)
-//             }
-//         }
-//     }
-// }
-
 #[derive(Clone)]
 pub struct MoqSession {
     wt_session: web_transport_iroh::Session,
