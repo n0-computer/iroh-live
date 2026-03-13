@@ -2,87 +2,156 @@
 
 ## Goal
 
-Redesign the `iroh-live` public API to be ergonomic, idiomatic Rust, and usable across both RTC (rooms, calls) and non-RTC (streaming, studio links, pipelines) use cases.
+Redesign the public API across `moq-media` and `iroh-live` to be ergonomic,
+idiomatic Rust, and usable across RTC (rooms, calls) and non-RTC (streaming,
+studio links, relays, pipelines) use cases.
 
 ## Current State
 
-The existing stack has strong low-level building blocks (`moq-media` codecs/pipelines, `iroh-moq` transport, `moq-lite`/`hang` broadcast primitives) but the public API is transport-shaped rather than product-shaped. Users must reason about `MoqSession`, `BroadcastProducer`/`BroadcastConsumer`, catalog entries, and actor split handles before they can express simple intents like "join a room" or "subscribe to a stream".
+Strong low-level building blocks (`moq-media` codecs/pipelines, `iroh-moq`
+transport, `moq-lite`/`hang` broadcast primitives) but the public API is
+transport-shaped. Users must reason about `MoqSession`,
+`BroadcastProducer`/`BroadcastConsumer`, catalog entries, and actor split
+handles before they can express simple intents.
 
-## Chosen Direction: Three-Layer API (Alternative D)
+Naming is also inconsistent: `PublishBroadcast` / `SubscribeBroadcast` are
+verbose, `watch()` / `listen()` are asymmetric and non-obvious, `WatchTrack`
+doesn't match `AudioTrack` in naming convention.
 
-> codex: This is the right choice. A room/call-only API would underserve manual media users, and a broadcast-only API would keep product ergonomics too low. The three-layer split matches the actual goals of the repo.
+## Direction: Rename + Improve In-Place, Re-Export Up
 
-### Layer 1: Product API (`iroh_live`)
+The original plan called for three wrapper layers. In practice that creates
+duplication: `LocalBroadcast` wrapping `PublishBroadcast`, `RemoteBroadcast`
+wrapping `SubscribeBroadcast`, option types duplicated across crates.
 
-For app authors building calls, rooms, and interactive sessions.
+Instead: **rename and improve moq-media's API directly**, then **re-export from
+iroh-live** and add only what requires signaling (rooms, calls, participants).
 
-- `Live` — entry point, builder-based
-- `Call` / `IncomingCall` — one-to-one sessions with accept/reject
-- `Room` / `RoomEvent` — multi-party with participant and publication model
-- `LocalParticipant` / `RemoteParticipant` — first-class participant identity
-- `LocalTrackPublication` / `RemoteTrackPublication` — publish/subscribe through publications
-- `CallTicket` / `RoomTicket` — portable join handles
+The three logical layers still exist, but as crate boundaries, not as wrapper
+types within a single crate:
 
-### Layer 2: Broadcast API (`iroh_live::broadcast`)
+1. **moq-media** — broadcast/media layer. All publish/subscribe/codec types
+   live here. Usable standalone for non-RTC use cases.
+2. **iroh-live** — product layer. Rooms, calls, participants. Re-exports
+   moq-media types and adds signaling/identity.
+3. **iroh-moq** — transport layer. Raw MoQ protocol. Exposed via
+   `iroh_live::transport` escape hatch.
 
-For advanced users who want direct media composition without room/call semantics. Also the primary API for non-RTC use cases (streaming, studio links, dashboards, pipelines).
+### Naming Changes
 
-- `LocalBroadcast` / `RemoteBroadcast` — cohesive broadcast objects
-- `BroadcastTicket` — standalone broadcast join handle
-- `VideoTarget` / `SubscribeVideoOptions` — declarative selection
-- Catalog access, rendition selection, preview
+| Current (moq-media) | Proposed | Rationale |
+|---|---|---|
+| `PublishBroadcast` | `Broadcast` | It's your broadcast. The verb is in the action, not the type name. |
+| `SubscribeBroadcast` | `Subscription` | It's your subscription to someone's broadcast. |
+| `WatchTrack` | `VideoTrack` | Matches `AudioTrack`. Describes what it is, not how you got it. |
+| `AvRemoteTrack` | `MediaTracks` | Simple struct `{ video, audio }`. |
+| `watch()` | `video()` / `video_with()` | On `Subscription`. Parallel with `audio()`. |
+| `listen()` | `audio()` / `audio_with()` | Consistent with `video()`. |
+| `watch_local()` | `preview()` | Self-documenting. |
+| `watch_rendition()` | `video_rendition()` | Consistent prefix. |
+| `listen_rendition()` | `audio_rendition()` | Consistent prefix. |
+| `CatalogWrapper` | `CatalogSnapshot` | Describes what it is. |
 
-> codex: This middle layer is where the toolkit can become genuinely distinctive. If `RemoteBroadcast` and `LocalBroadcast` are excellent, the project can be both an ergonomic app SDK and a serious media toolkit.
+### moq-media (broadcast + media layer)
 
-### Layer 3: Raw Transport + Media (`iroh_live::transport`, `moq-media`)
+The primary API for all media operations. Usable standalone without iroh-live
+for non-RTC use cases.
 
-For systems work, custom pipelines, and experimentation.
+- `Broadcast` — publish media. Sub-handles: `video()` → `VideoPublisher`, `audio()` → `AudioPublisher`
+- `Subscription` — subscribe to remote media. Methods: `video()`, `audio()`, catalog access
+- `VideoTrack` / `AudioTrack` — decoded media from a subscription
+- `VideoTarget` — declarative quality selection: `max_pixels`, `max_bitrate`
+- `Broadcast::relay(subscription)` — zero-transcode relay (forward packets without decode)
+- `VideoTrack` implements `VideoSource` — enables transcode relay (decode → re-encode)
+- All `&self` (interior mutability). All `Clone` (Arc-based). Drop-based cleanup.
+- Domain-specific error types: `PublishError`, `SubscribeError`, `CodecError`
 
-- `MoqSession` — direct transport access
-- `BroadcastProducer` / `BroadcastConsumer` — raw publish/subscribe
-- Media pipelines, codecs, sources, sinks
+### iroh-live (product layer)
 
-## Key Design Principles
+Adds signaling, identity, and room semantics. Re-exports moq-media types.
+Only wraps where genuinely new concepts are at play (participants, calls).
 
-1. **Product-first top layer, systems-first lower layers.** Simple path stays in layer 1.
-2. **Stable, cheaply-cloneable object model.** All handles are `Arc`-based + `Clone`.
-3. **Drop-based cleanup.** Dropping a `Call` closes it, dropping a subscription unsubscribes.
-4. **Command-query split.** Methods mutate (`&self` + interior mutability), queries return owned snapshots, events via `Stream`.
-5. **Watchers for continuous state, streams for discrete events.** Using `n0_watcher::Watchable` (already in codebase).
-6. **Broadcast layer is first-class.** Not just an implementation detail — it's the universal mid-level API for all use cases.
-7. **Accepting inbound is first-class.** `IncomingCall` with type-safe accept/reject, auto-reject on drop.
-8. **Manual processing remains first-class.** Custom sources, encoders, decoders, frame processing — behind explicit advanced APIs.
+- `Live` — entry point (builder-based construction), manages transport + gossip
+- `Call` / `IncomingCall` — one-to-one sessions
+- `Room` — multi-party with participant model, `events() → impl Stream<Item = RoomEvent>`
+- `LocalParticipant` → `.broadcast()` returns `&Broadcast`
+- `RemoteParticipant` → `.subscription()` returns `&Subscription`
+- Tickets: `CallTicket`, `RoomTicket`
+- IDs: `ParticipantId`, `RoomId` (newtype wrappers, `Copy`, `Hash`, `Eq`)
+- Structured errors: `CallError`, `RoomError`
+- Prelude module for ergonomic imports
+
+### iroh-moq (transport, mostly unchanged)
+
+- Add `IncomingSession` stream for accept/reject
+- `MoqSession`, `BroadcastProducer`/`BroadcastConsumer` stay as-is
+
+## Design Principles
+
+1. **No wrapper duplication.** moq-media types are used directly. iroh-live
+   only adds types for genuinely new concepts (participants, rooms, calls).
+2. **`&self` everywhere.** Interior mutability. No `&mut self` on public types.
+3. **Drop-based cleanup.** Drop a `Call` → closes. Drop a `Subscription` → unsubscribes.
+4. **Relay is first-class.** Zero-transcode relay via `Broadcast::relay()`.
+   Transcode relay via `VideoTrack` as `VideoSource`.
+5. **Consistent naming.** Publish: `Broadcast`, `VideoPublisher`, `AudioPublisher`.
+   Subscribe: `Subscription`, `VideoTrack`, `AudioTrack`.
+6. **moq-media is standalone.** Non-RTC users never touch iroh-live.
+7. **Watcher for continuous state, Stream for discrete events.** Connection
+   quality, active rendition → `Watcher`. Participant joined, track published →
+   `impl Stream`. Both are idiomatic async Rust.
+8. **Declarative intent, not mechanism.** `VideoTarget { max_pixels: 1280*720 }`
+   instead of manually selecting rendition strings.
+9. **Self-contained events.** Events carry handles (e.g., `RemoteParticipant`),
+   not just IDs that require follow-up lookups.
+10. **Queries return owned snapshots.** `remote_participants()` returns `Vec<RemoteParticipant>`
+    (cheap Arc clone), not borrowed references. Safe in async code.
+
+## Reactivity Patterns
+
+Two complementary patterns, used consistently across all stateful types:
+
+| Pattern | Used for | Example |
+|---|---|---|
+| `Watcher` (n0_watcher) | Continuous state — always has a current value | `call.state()`, `sub.status()`, `sub.catalog_watcher()` |
+| `impl Stream` (futures) | Discrete events — sequence of one-time occurrences | `room.events()`, `live.incoming_calls()` |
+
+**Dual-accessor convention:** stateful types expose both a snapshot method and a
+watcher method. Example: `sub.catalog()` → `CatalogSnapshot` (current value),
+`sub.catalog_watcher()` → `impl Watcher<Value = CatalogSnapshot>` (subscribe to
+changes).
 
 ## Use Case Coverage
 
-| Use case | Primary layer | Key types |
+| Use case | Crate | Key types |
 |---|---|---|
-| Video/audio call | Product | `Call`, `LocalParticipant`, `RemoteTrackPublication` |
-| Multi-party room | Product | `Room`, `RoomEvent`, `Participant` |
-| Live streaming | Broadcast | `LocalBroadcast`, `RemoteBroadcast` |
-| Audio studio link | Broadcast | `LocalBroadcast` (audio-only) |
-| Camera dashboard | Broadcast | N × `RemoteBroadcast` |
-| Recording pipeline | Broadcast + Raw | `RemoteBroadcast`, frame access |
-| Transcoding relay | Broadcast + Raw | `RemoteBroadcast` + `LocalBroadcast` + codec API |
+| Video/audio call | iroh-live | `Call`, `LocalParticipant`, `RemoteParticipant` |
+| Multi-party room | iroh-live | `Room`, `RoomEvent` |
+| Live streaming | moq-media | `Broadcast`, `Subscription` |
+| Zero-transcode relay | moq-media | `Subscription` → `Broadcast::relay()` |
+| Transcoding relay | moq-media | `Subscription::video()` → `Broadcast` (re-encode) |
+| Camera dashboard | moq-media | N × `Subscription` with `VideoTarget::max_pixels()` |
+| Recording pipeline | moq-media | `Subscription` → `VideoTrack::frames()` stream |
+| Audio studio link | moq-media | `Broadcast` (audio only), `Subscription` (audio only) |
+| Custom codec pipeline | moq-media | `VideoEncoderPipeline`, `VideoDecoderPipeline` |
 
 ## Documents
 
 - `0-overview.md` — this file
 - `1-review.md` — detailed review of current API with inline comments
 - `2-research.md` — survey of LiveKit, Hang, WebRTC, GStreamer, OBS APIs
-- `3-sketch.md` — Rust code sketch of the proposed API (all todo!())
-- `4-impl.md` — phased implementation plan with concrete steps
-- `5-risks-and-future.md` — redesign risks, future work, and success criteria
-- `6-examples.md` — rewritten examples against the proposed API, with async/sync boundaries
+- `3-sketch.md` — Rust code sketch of the proposed API
+- `4-impl.md` — phased implementation plan
+- `5-examples.md` — example code against the proposed API
+- `6-relay.md` — relay server integration (moq-relay, SFU rooms, CDN)
 
 ## Migration Strategy
 
-1. Add broadcast object layer (`LocalBroadcast` / `RemoteBroadcast`) wrapping existing types
-2. Add incoming call acceptance primitives (`Moq::incoming()`, `Live::accept_call()`)
-3. Define participant/publication object model
-4. Redesign room events around participants and tracks
-5. Redesign local publish APIs around `LocalParticipant`
-6. Hide transport-first types from default surface
-7. Clean up naming
-
-> codex: The ordering matters. We should not jump directly to `Call` and `Room` wrappers if the broadcast layer is still thin, or we will just bake today's rough edges into tomorrow's API.
+1. Rename + improve moq-media types (`Broadcast`, `Subscription`, `VideoTrack`)
+2. Add slot sub-handles (`VideoPublisher`, `AudioPublisher`)
+3. Add `VideoTarget`, `VideoOptions`, `AudioOptions` to subscription
+4. Add relay support (`Broadcast::relay()`, `VideoTrack: VideoSource`)
+5. Add `IncomingSession` to iroh-moq
+6. Add `Live::builder()`, `Call` / `IncomingCall` to iroh-live
+7. Redesign `Room` around participants with `impl Stream<Item = RoomEvent>`
+8. Add domain error types, prelude, polish
