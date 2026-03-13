@@ -46,9 +46,13 @@ use crate::{
 /// Errors from publish operations.
 #[derive(Debug)]
 pub enum PublishError {
+    /// No video source has been configured.
     NoVideoSource,
+    /// No audio source has been configured.
     NoAudioSource,
+    /// The requested codec is not available on this platform.
     CodecUnavailable(String),
+    /// The encoder failed to initialize or process media.
     EncoderFailed(anyhow::Error),
 }
 
@@ -84,6 +88,12 @@ struct VideoRenditionEntry {
     factory: MakeVideoEncoder,
 }
 
+/// A local media broadcast that encodes and publishes video and audio tracks.
+///
+/// Configure video via [`video()`](Self::video) and audio via
+/// [`audio()`](Self::audio). The broadcast manages encoder lifecycles
+/// and publishes a catalog that subscribers use to discover available
+/// renditions.
 #[derive(derive_more::Debug, Clone)]
 pub struct LocalBroadcast {
     #[debug(skip)]
@@ -101,6 +111,7 @@ impl Default for LocalBroadcast {
 }
 
 impl LocalBroadcast {
+    /// Creates a new empty broadcast with no video or audio tracks.
     pub fn new() -> Self {
         let mut producer = BroadcastProducer::default();
         let catalog = CatalogProducer::new(&mut producer).expect("not closed");
@@ -115,6 +126,7 @@ impl LocalBroadcast {
         }
     }
 
+    /// Returns a clone of the underlying [`BroadcastProducer`].
     pub fn producer(&self) -> BroadcastProducer {
         self.producer.clone()
     }
@@ -129,6 +141,7 @@ impl LocalBroadcast {
         AudioPublisher { broadcast: self }
     }
 
+    /// Returns `true` if video renditions are currently configured.
     pub fn has_video(&self) -> bool {
         self.state
             .lock()
@@ -137,6 +150,7 @@ impl LocalBroadcast {
             .is_some()
     }
 
+    /// Returns `true` if audio renditions are currently configured.
     pub fn has_audio(&self) -> bool {
         self.state
             .lock()
@@ -276,7 +290,7 @@ impl VideoPublisher<'_> {
         let _ = self.broadcast.set_video(None);
     }
 
-    /// Returns the current rendition names.
+    /// Returns the names of all currently configured video renditions.
     pub fn renditions(&self) -> Vec<String> {
         self.broadcast
             .state
@@ -461,6 +475,10 @@ impl State {
     }
 }
 
+/// A set of audio encoding renditions sharing a single audio source.
+///
+/// Each rendition pairs a codec configuration with an encoder factory.
+/// Used by [`AudioPublisher::set_renditions`] for advanced control.
 #[derive(derive_more::Debug)]
 pub struct AudioRenditions {
     #[debug(skip)]
@@ -470,6 +488,7 @@ pub struct AudioRenditions {
 }
 
 impl AudioRenditions {
+    /// Creates audio renditions with a dynamically-selected encoder.
     #[cfg(any_audio_codec)]
     pub fn new(
         source: impl AudioSource,
@@ -483,6 +502,7 @@ impl AudioRenditions {
         this
     }
 
+    /// Creates audio renditions with a statically-typed encoder factory.
     pub fn new_from_generic<E: AudioEncoderFactory>(
         source: impl AudioSource,
         presets: impl IntoIterator<Item = AudioPreset>,
@@ -494,6 +514,7 @@ impl AudioRenditions {
         this
     }
 
+    /// Creates an empty rendition set with the given audio source and no presets.
     pub fn empty(source: impl AudioSource) -> Self {
         Self {
             source: Box::new(source),
@@ -501,6 +522,7 @@ impl AudioRenditions {
         }
     }
 
+    /// Adds a rendition using a dynamically-selected encoder for the given codec and preset.
     #[cfg(any_audio_codec)]
     pub fn add(&mut self, codec: AudioCodec, preset: AudioPreset) {
         match codec {
@@ -509,6 +531,7 @@ impl AudioRenditions {
         }
     }
 
+    /// Adds a rendition using a statically-typed encoder factory.
     pub fn add_with_generic<E: AudioEncoderFactory>(&mut self, preset: AudioPreset) {
         let name = format!("audio/{}-{preset}", E::ID);
         let format = self.source.format();
@@ -523,6 +546,7 @@ impl AudioRenditions {
         );
     }
 
+    /// Adds a rendition with a custom encoder factory callback.
     pub fn add_with_callback<E: AudioEncoder>(
         &mut self,
         name: impl Into<String>,
@@ -539,6 +563,7 @@ impl AudioRenditions {
         );
     }
 
+    /// Returns all configured renditions as a map of name to [`AudioConfig`].
     pub fn available_renditions(&self) -> Result<BTreeMap<String, AudioConfig>> {
         let mut renditions = BTreeMap::new();
         for (name, entry) in self.renditions.iter() {
@@ -547,10 +572,12 @@ impl AudioRenditions {
         Ok(renditions)
     }
 
+    /// Returns `true` if a rendition with the given name exists.
     pub fn contains_rendition(&self, name: &str) -> bool {
         self.renditions.contains_key(name)
     }
 
+    /// Starts the encoder pipeline for the named rendition, writing to the given producer.
     pub fn start_encoder(
         &mut self,
         name: &str,
@@ -570,6 +597,10 @@ impl AudioRenditions {
     }
 }
 
+/// A set of video encoding renditions (simulcast layers) sharing a single video source.
+///
+/// Each rendition pairs a codec configuration with an encoder factory.
+/// Used by [`VideoPublisher::set_renditions`] for advanced control.
 #[derive(derive_more::Debug)]
 pub struct VideoRenditions {
     source: SharedVideoSource,
@@ -593,6 +624,7 @@ impl VideoRenditions {
         this
     }
 
+    /// Creates video renditions with a statically-typed encoder factory.
     pub fn new_from_generic<E: VideoEncoderFactory>(
         source: impl VideoSource,
         presets: impl IntoIterator<Item = VideoPreset>,
@@ -604,6 +636,7 @@ impl VideoRenditions {
         this
     }
 
+    /// Creates an empty rendition set with the given video source and no presets.
     pub fn empty(source: impl VideoSource) -> Self {
         let shutdown_token = CancellationToken::new();
         let source = SharedVideoSource::new(source, shutdown_token.clone());
@@ -614,6 +647,7 @@ impl VideoRenditions {
         }
     }
 
+    /// Adds a rendition using a dynamically-selected encoder for the given codec and preset.
     #[cfg(any_video_codec)]
     pub fn add(&mut self, codec: VideoCodec, preset: VideoPreset) {
         match codec {
@@ -630,6 +664,7 @@ impl VideoRenditions {
         }
     }
 
+    /// Adds a rendition using a statically-typed encoder factory.
     pub fn add_with_generic<E: VideoEncoderFactory>(&mut self, preset: VideoPreset) {
         let name = format!("video/{}-{}", E::ID, preset);
         let enc_config = VideoEncoderConfig::from_preset(preset);
@@ -643,6 +678,7 @@ impl VideoRenditions {
         );
     }
 
+    /// Adds a rendition with a custom encoder factory callback.
     pub fn add_with_callback<E: VideoEncoder>(
         &mut self,
         name: impl ToString,
@@ -658,6 +694,7 @@ impl VideoRenditions {
         );
     }
 
+    /// Returns all configured renditions as a map of name to [`VideoConfig`].
     pub fn available_renditions(&self) -> Result<BTreeMap<String, VideoConfig>> {
         let mut renditions = BTreeMap::new();
         for (name, entry) in self.renditions.iter() {
@@ -666,10 +703,12 @@ impl VideoRenditions {
         Ok(renditions)
     }
 
+    /// Returns `true` if a rendition with the given name exists.
     pub fn contains_rendition(&self, name: &str) -> bool {
         self.renditions.contains_key(name)
     }
 
+    /// Starts the encoder pipeline for the named rendition, writing to the given producer.
     pub fn start_encoder(
         &mut self,
         name: &str,

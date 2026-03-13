@@ -45,10 +45,12 @@ pub struct VideoTarget {
 }
 
 impl VideoTarget {
+    /// Limits the maximum pixel count (width × height) for rendition selection.
     pub fn max_pixels(mut self, pixels: u32) -> Self {
         self.max_pixels = Some(pixels);
         self
     }
+    /// Limits the maximum bitrate in kilobits per second for rendition selection.
     pub fn max_bitrate_kbps(mut self, kbps: u32) -> Self {
         self.max_bitrate_kbps = Some(kbps);
         self
@@ -80,18 +82,22 @@ pub struct VideoOptions {
 }
 
 impl VideoOptions {
+    /// Sets the rendition selection target.
     pub fn target(mut self, target: impl Into<VideoTarget>) -> Self {
         self.target = Some(target.into());
         self
     }
+    /// Sets the desired quality level for rendition selection.
     pub fn quality(mut self, quality: Quality) -> Self {
         self.target = Some(quality.into());
         self
     }
+    /// Sets the viewport dimensions for resolution-aware decoding.
     pub fn viewport(mut self, w: u32, h: u32) -> Self {
         self.viewport = Some((w, h));
         self
     }
+    /// Sets the decoder configuration (backend, etc.).
     pub fn playback(mut self, config: DecodeConfig) -> Self {
         self.playback = Some(config);
         self
@@ -141,10 +147,15 @@ impl AudioOptions {
 /// Errors from subscription operations.
 #[derive(Debug)]
 pub enum SubscribeError {
+    /// The requested broadcast was not found.
     NotFound,
+    /// No catalog was received from the broadcast.
     NoCatalog,
+    /// The requested rendition does not exist.
     RenditionNotFound(String),
+    /// The decoder failed to initialize or process media.
     DecoderFailed(anyhow::Error),
+    /// The broadcast ended.
     Ended,
 }
 
@@ -177,6 +188,11 @@ pub enum BroadcastStatus {
     Ended,
 }
 
+/// Subscribes to a remote broadcast and provides access to its media tracks.
+///
+/// Wraps a [`BroadcastConsumer`] and watches the catalog for available
+/// video and audio renditions. Create individual [`VideoTrack`] or
+/// [`AudioTrack`] handles to start decoding.
 #[derive(derive_more::Debug, Clone)]
 pub struct RemoteBroadcast {
     broadcast_name: String,
@@ -188,6 +204,10 @@ pub struct RemoteBroadcast {
     _catalog_task: Arc<AbortOnDropHandle<()>>,
 }
 
+/// A point-in-time snapshot of a broadcast's catalog.
+///
+/// Derefs to [`Catalog`] for direct access to video/audio configuration.
+/// Each snapshot carries a sequence number for change detection.
 #[derive(Debug, derive_more::PartialEq, derive_more::Eq, Default, Clone, derive_more::Deref)]
 pub struct CatalogSnapshot {
     #[eq(skip)]
@@ -204,6 +224,7 @@ impl CatalogSnapshot {
         }
     }
 
+    /// Returns an iterator over video rendition names, sorted by width (ascending).
     pub fn video_renditions(&self) -> impl Iterator<Item = &str> {
         let mut renditions: Vec<_> = self
             .inner
@@ -216,10 +237,12 @@ impl CatalogSnapshot {
         renditions.into_iter().map(|(name, _w)| name)
     }
 
+    /// Returns an iterator over audio rendition names.
     pub fn audio_renditions(&self) -> impl Iterator<Item = &str> + '_ {
         self.inner.audio.renditions.keys().map(|name| name.as_str())
     }
 
+    /// Selects the best video rendition for the given quality level.
     pub fn select_video_rendition(&self, quality: Quality) -> Result<String> {
         let video = &self.inner.video;
         let track_name =
@@ -227,6 +250,7 @@ impl CatalogSnapshot {
         Ok(track_name)
     }
 
+    /// Selects the best audio rendition for the given quality level.
     pub fn select_audio_rendition(&self, quality: Quality) -> Result<String> {
         let audio = &self.inner.audio;
         let track_name =
@@ -234,12 +258,17 @@ impl CatalogSnapshot {
         Ok(track_name)
     }
 
+    /// Consumes the snapshot and returns the inner [`Catalog`].
     pub fn into_inner(self) -> Arc<Catalog> {
         self.inner
     }
 }
 
 impl RemoteBroadcast {
+    /// Creates a new remote broadcast subscription.
+    ///
+    /// Waits for the initial catalog before returning. Spawns a background
+    /// task that watches for catalog updates.
     pub async fn new(broadcast_name: String, broadcast: BroadcastConsumer) -> Result<Self> {
         let shutdown = CancellationToken::new();
 
@@ -288,6 +317,7 @@ impl RemoteBroadcast {
         })
     }
 
+    /// Returns the name of this broadcast.
     pub fn broadcast_name(&self) -> &str {
         &self.broadcast_name
     }
@@ -477,6 +507,10 @@ fn select_audio_rendition<T>(renditions: &BTreeMap<String, T>, q: Quality) -> Op
     select_rendition(renditions, &order)
 }
 
+/// A decoded audio track from a remote broadcast.
+///
+/// Wraps an [`AudioDecoderPipeline`] that decodes incoming audio packets
+/// and routes them to the audio output backend.
 #[derive(derive_more::Debug)]
 pub struct AudioTrack {
     #[debug(skip)]
@@ -496,19 +530,27 @@ impl AudioTrack {
         Ok(Self { pipeline })
     }
 
+    /// Returns a future that completes when the audio pipeline stops.
     pub fn stopped(&self) -> impl Future<Output = ()> + 'static {
         self.pipeline.stopped()
     }
 
+    /// Returns the rendition name for this audio track.
     pub fn rendition(&self) -> &str {
         self.pipeline.name()
     }
 
+    /// Returns a handle to the audio sink for playback control.
     pub fn handle(&self) -> &dyn AudioSinkHandle {
         self.pipeline.handle()
     }
 }
 
+/// A decoded video track from a remote broadcast.
+///
+/// Produces [`VideoFrame`]s via [`current_frame`](Self::current_frame) (non-blocking)
+/// or [`next_frame`](Self::next_frame) (async). Can also wrap a raw [`VideoSource`]
+/// for local preview.
 #[derive(derive_more::Debug)]
 pub struct VideoTrack {
     #[debug(skip)]
@@ -651,6 +693,7 @@ impl VideoTrack {
         }
     }
 
+    /// Updates the viewport dimensions for resolution-aware scaling.
     pub fn set_viewport(&self, w: u32, h: u32) {
         match &self.inner {
             VideoTrackInner::Pipeline(handle) => handle.set_viewport(w, h),
@@ -661,6 +704,7 @@ impl VideoTrack {
         }
     }
 
+    /// Returns the rendition name for this video track.
     pub fn rendition(&self) -> &str {
         match &self.inner {
             VideoTrackInner::Pipeline(handle) => handle.rendition(),
@@ -669,6 +713,7 @@ impl VideoTrack {
         }
     }
 
+    /// Returns the name of the decoder backend in use.
     pub fn decoder_name(&self) -> &str {
         match &self.inner {
             VideoTrackInner::Pipeline(handle) => handle.decoder_name(),
@@ -696,14 +741,22 @@ impl VideoTrack {
     }
 }
 
+/// Combined video and audio tracks from a [`RemoteBroadcast`].
+///
+/// Convenience type that holds the broadcast alongside its decoded
+/// media tracks.
 #[derive(derive_more::Debug)]
 pub struct MediaTracks {
+    /// The underlying broadcast subscription.
     pub broadcast: RemoteBroadcast,
+    /// The decoded video track, if the broadcast has video.
     pub video: Option<VideoTrack>,
+    /// The decoded audio track, if the broadcast has audio.
     pub audio: Option<AudioTrack>,
 }
 
 impl MediaTracks {
+    /// Creates media tracks by subscribing to both video and audio from the broadcast.
     pub async fn new<D: Decoders>(
         broadcast: RemoteBroadcast,
         audio_backend: &dyn AudioStreamFactory,
