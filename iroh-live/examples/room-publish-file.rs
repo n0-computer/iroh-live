@@ -69,6 +69,6 @@ async fn main() -> Result<()> {
         _ = tokio::signal::ctrl_c() => {}
     };
     drop(room);
-    node.shutdown().await?;
+    node.shutdown();
     Ok(())
 }

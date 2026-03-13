@@ -546,9 +546,7 @@ async fn setup(
     let audio = AudioRenditions::new(tone, AudioCodec::Opus, [AudioPreset::Hq]);
     broadcast.audio().set_renditions(audio)?;
 
-    pub_live
-        .publish(BROADCAST_NAME, broadcast.producer())
-        .await?;
+    pub_live.publish(BROADCAST_NAME, &broadcast).await?;
     info!("publishing on {}", pub_endpoint.id().fmt_short());
 
     // Subscriber endpoint

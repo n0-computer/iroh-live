@@ -16,7 +16,7 @@ use n0_future::{
     boxed::BoxFuture,
     task::{AbortOnDropHandle, JoinSet, spawn},
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error_span, field, info, instrument};
 use web_transport_iroh::SessionError;
@@ -63,6 +63,7 @@ impl From<mpsc::error::SendError<ActorMessage>> for LiveActorDiedError {
 #[derive(Debug, Clone)]
 pub struct Moq {
     tx: mpsc::Sender<ActorMessage>,
+    incoming_session_tx: broadcast::Sender<MoqSession>,
     shutdown_token: CancellationToken,
     _actor_handle: Arc<AbortOnDropHandle<()>>,
 }
@@ -70,13 +71,15 @@ pub struct Moq {
 impl Moq {
     pub fn new(endpoint: Endpoint) -> Self {
         let (tx, rx) = mpsc::channel(16);
-        let actor = Actor::new(endpoint);
+        let (incoming_session_tx, _) = broadcast::channel(16);
+        let actor = Actor::new(endpoint, incoming_session_tx.clone());
         let shutdown_token = actor.shutdown_token.clone();
         let actor_task =
             spawn(async move { actor.run(rx).instrument(error_span!("LiveActor")).await });
         Self {
             shutdown_token,
             tx,
+            incoming_session_tx,
             _actor_handle: Arc::new(AbortOnDropHandle::new(actor_task)),
         }
     }
@@ -127,6 +130,13 @@ impl Moq {
             .map_err(|err| anyerr!(err))
     }
 
+    /// Returns a stream of incoming MoQ sessions from remote peers.
+    pub fn incoming_sessions(&self) -> IncomingSessionStream {
+        IncomingSessionStream {
+            rx: self.incoming_session_tx.subscribe(),
+        }
+    }
+
     pub fn shutdown(&self) {
         self.shutdown_token.cancel();
     }
@@ -158,6 +168,54 @@ impl ProtocolHandler for MoqProtocolHandler {
             .await
             .map_err(AnyError::from)?;
         Ok(())
+    }
+}
+
+/// Stream of incoming MoQ sessions.
+#[derive(Debug)]
+pub struct IncomingSessionStream {
+    rx: broadcast::Receiver<MoqSession>,
+}
+
+impl IncomingSessionStream {
+    /// Returns the next incoming session, or `None` if the transport is shut down.
+    pub async fn next(&mut self) -> Option<IncomingSession> {
+        loop {
+            match self.rx.recv().await {
+                Ok(session) => return Some(IncomingSession { session }),
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    info!("incoming session stream lagged, skipped {n} sessions");
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    }
+}
+
+/// An incoming MoQ session, not yet fully accepted by the application.
+///
+/// The MoQ handshake has already completed. The application can inspect
+/// the remote peer's identity before deciding to accept or reject.
+#[derive(Debug)]
+pub struct IncomingSession {
+    session: MoqSession,
+}
+
+impl IncomingSession {
+    /// Returns the remote peer's endpoint ID.
+    pub fn remote_id(&self) -> EndpointId {
+        self.session.remote_id()
+    }
+
+    /// Accepts the session, returning the [`MoqSession`] for publish/subscribe.
+    pub fn accept(self) -> MoqSession {
+        self.session
+    }
+
+    /// Rejects the session, closing the connection.
+    pub fn reject(self) {
+        self.session.close(1u32, b"rejected");
     }
 }
 
@@ -320,6 +378,7 @@ type PendingConnects = HashMap<EndpointId, Vec<oneshot::Sender<Result<MoqSession
 struct Actor {
     endpoint: Endpoint,
     shutdown_token: CancellationToken,
+    incoming_session_tx: broadcast::Sender<MoqSession>,
     publishing: HashMap<BroadcastName, BroadcastProducer>,
     publishing_closed_futs: FuturesUnordered<BoxFuture<BroadcastName>>,
     sessions: HashMap<EndpointId, MoqSession>,
@@ -329,10 +388,14 @@ struct Actor {
 }
 
 impl Actor {
-    pub(crate) fn new(endpoint: Endpoint) -> Self {
+    pub(crate) fn new(
+        endpoint: Endpoint,
+        incoming_session_tx: broadcast::Sender<MoqSession>,
+    ) -> Self {
         Self {
             endpoint,
             shutdown_token: CancellationToken::new(),
+            incoming_session_tx,
             publishing: Default::default(),
             publishing_closed_futs: Default::default(),
             sessions: Default::default(),
@@ -403,6 +466,8 @@ impl Actor {
             session.publish(name.to_string(), producer.consume());
         }
         self.sessions.insert(remote, session.clone());
+        // Notify incoming session subscribers (best-effort, ok if no receivers).
+        self.incoming_session_tx.send(session.clone()).ok();
         for reply in self.pending_connects.remove(&remote).into_iter().flatten() {
             reply.send(Ok(session.clone())).ok();
         }
