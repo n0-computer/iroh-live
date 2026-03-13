@@ -35,9 +35,9 @@ use moq_media::{
     traits::{VideoEncoder, VideoSource},
     transport::media_pipe,
 };
-use moq_media_egui::format_bitrate;
 #[cfg(feature = "wgpu")]
-use moq_media_egui::{EguiVideoRenderer, create_egui_wgpu_config};
+use moq_media_egui::create_egui_wgpu_config;
+use moq_media_egui::{FrameView, format_bitrate};
 use strum::VariantArray;
 use tokio::runtime::Runtime;
 
@@ -391,66 +391,18 @@ impl Stats {
 // Video view (software + wgpu rendering)
 // ---------------------------------------------------------------------------
 
-struct VideoView {
-    texture: egui::TextureHandle,
+fn new_frame_view(
+    ctx: &egui::Context,
+    id: u64,
+    #[allow(unused_variables, reason = "used only with wgpu feature")] render_mode: RenderMode,
+    #[cfg(feature = "wgpu")] wgpu_render_state: Option<&egui_wgpu::RenderState>,
+) -> FrameView {
+    let name = format!("video-{id}");
     #[cfg(feature = "wgpu")]
-    egui_renderer: Option<EguiVideoRenderer>,
-}
-
-impl VideoView {
-    fn new(
-        ctx: &egui::Context,
-        id: u64,
-        #[allow(unused_variables, reason = "used only with wgpu feature")] render_mode: RenderMode,
-        #[cfg(feature = "wgpu")] wgpu_render_state: Option<&egui_wgpu::RenderState>,
-    ) -> Self {
-        let placeholder = egui::ColorImage::filled([1, 1], egui::Color32::BLACK);
-        let texture = ctx.load_texture(format!("video-{id}"), placeholder, Default::default());
-
-        #[cfg(feature = "wgpu")]
-        let egui_renderer = if render_mode == RenderMode::Wgpu {
-            wgpu_render_state.map(EguiVideoRenderer::new)
-        } else {
-            None
-        };
-
-        Self {
-            texture,
-            #[cfg(feature = "wgpu")]
-            egui_renderer,
-        }
+    if render_mode == RenderMode::Wgpu {
+        return FrameView::new_wgpu(ctx, &name, wgpu_render_state);
     }
-
-    fn render_frame(&mut self, frame: &VideoFrame) {
-        #[cfg(feature = "wgpu")]
-        if let Some(ref mut r) = self.egui_renderer {
-            r.render(frame);
-            return;
-        }
-
-        let (w, h) = (frame.width(), frame.height());
-        let image = egui::ColorImage::from_rgba_unmultiplied(
-            [w as usize, h as usize],
-            frame.img().as_raw(),
-        );
-        self.texture.set(image, Default::default());
-    }
-
-    fn texture_info(&self) -> Option<(egui::TextureId, egui::Vec2)> {
-        #[cfg(feature = "wgpu")]
-        if let Some(ref r) = self.egui_renderer
-            && let Some((id, (w, h))) = r.last_texture()
-        {
-            return Some((id, egui::vec2(w as f32, h as f32)));
-        }
-
-        let size = self.texture.size_vec2();
-        if size.x > 0.0 && size.y > 0.0 {
-            Some((self.texture.id(), size))
-        } else {
-            None
-        }
-    }
+    FrameView::new(ctx, &name)
 }
 
 // ---------------------------------------------------------------------------
@@ -461,7 +413,7 @@ struct Tile {
     id: u64,
     settings: PipelineSettings,
     pipeline: Option<TilePipeline>,
-    video_view: VideoView,
+    video_view: FrameView,
     stats: Stats,
     encoder_name: String,
     decoder_name: String,
@@ -477,7 +429,7 @@ impl Tile {
         rt: &Runtime,
         #[cfg(feature = "wgpu")] wgpu_render_state: Option<&egui_wgpu::RenderState>,
     ) -> Self {
-        let video_view = VideoView::new(
+        let video_view = new_frame_view(
             ctx,
             id,
             settings.render_mode,
