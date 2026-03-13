@@ -34,25 +34,25 @@ const VIDEO_PRIORITY: u8 = 1u8;
 const AUDIO_PRIORITY: u8 = 2u8;
 
 #[derive(derive_more::Debug, Clone)]
-pub struct SubscribeBroadcast {
+pub struct RemoteBroadcast {
     broadcast_name: String,
     #[debug("BroadcastConsumer")]
     broadcast: BroadcastConsumer,
-    // catalog_watcher: n0_watcher::Direct<CatalogWrapper>,
-    catalog_watchable: Watchable<CatalogWrapper>,
+    // catalog_watcher: n0_watcher::Direct<CatalogSnapshot>,
+    catalog_watchable: Watchable<CatalogSnapshot>,
     shutdown: CancellationToken,
     _catalog_task: Arc<AbortOnDropHandle<()>>,
 }
 
 #[derive(Debug, derive_more::PartialEq, derive_more::Eq, Default, Clone, derive_more::Deref)]
-pub struct CatalogWrapper {
+pub struct CatalogSnapshot {
     #[eq(skip)]
     #[deref]
     inner: Arc<Catalog>,
     seq: usize,
 }
 
-impl CatalogWrapper {
+impl CatalogSnapshot {
     fn new(inner: Catalog, seq: usize) -> Self {
         Self {
             inner: Arc::new(inner),
@@ -95,7 +95,7 @@ impl CatalogWrapper {
     }
 }
 
-impl SubscribeBroadcast {
+impl RemoteBroadcast {
     pub async fn new(broadcast_name: String, broadcast: BroadcastConsumer) -> Result<Self> {
         let shutdown = CancellationToken::new();
 
@@ -109,7 +109,7 @@ impl SubscribeBroadcast {
                 .await
                 .std_context("Broadcast closed before receiving catalog")?
                 .context("Catalog track closed before receiving catalog")?;
-            let watchable = Watchable::new(CatalogWrapper::new(initial_catalog, 0));
+            let watchable = Watchable::new(CatalogSnapshot::new(initial_catalog, 0));
 
             let task = tokio::spawn({
                 let shutdown = shutdown.clone();
@@ -118,7 +118,7 @@ impl SubscribeBroadcast {
                     for seq in 1.. {
                         match consumer.next().await {
                             Ok(Some(catalog)) => {
-                                watchable.set(CatalogWrapper::new(catalog, seq)).ok();
+                                watchable.set(CatalogSnapshot::new(catalog, seq)).ok();
                             }
                             Ok(None) => {
                                 debug!("subscribed broadcast catalog track ended");
@@ -148,36 +148,36 @@ impl SubscribeBroadcast {
         &self.broadcast_name
     }
 
-    pub fn catalog_watcher(&mut self) -> n0_watcher::Direct<CatalogWrapper> {
+    pub fn catalog_watcher(&mut self) -> n0_watcher::Direct<CatalogSnapshot> {
         self.catalog_watchable.watch()
     }
 
-    pub fn catalog(&self) -> CatalogWrapper {
+    pub fn catalog(&self) -> CatalogSnapshot {
         self.catalog_watchable.get()
     }
 
-    pub async fn watch_and_listen<D: Decoders>(
+    pub async fn media<D: Decoders>(
         self,
         audio_backend: &dyn AudioStreamFactory,
         playback_config: PlaybackConfig,
-    ) -> Result<AvRemoteTrack> {
-        AvRemoteTrack::new::<D>(self, audio_backend, playback_config).await
+    ) -> Result<MediaTracks> {
+        MediaTracks::new::<D>(self, audio_backend, playback_config).await
     }
 
-    pub fn watch<D: VideoDecoder>(&self) -> Result<VideoTrack> {
-        self.watch_with::<D>(&Default::default(), Quality::Highest)
+    pub fn video<D: VideoDecoder>(&self) -> Result<VideoTrack> {
+        self.video_with::<D>(&Default::default(), Quality::Highest)
     }
 
-    pub fn watch_with<D: VideoDecoder>(
+    pub fn video_with<D: VideoDecoder>(
         &self,
         playback_config: &DecodeConfig,
         quality: Quality,
     ) -> Result<VideoTrack> {
         let track_name = self.catalog().select_video_rendition(quality)?;
-        self.watch_rendition::<D>(playback_config, &track_name)
+        self.video_rendition::<D>(playback_config, &track_name)
     }
 
-    pub fn watch_rendition<D: VideoDecoder>(
+    pub fn video_rendition<D: VideoDecoder>(
         &self,
         playback_config: &DecodeConfig,
         track_name: &str,
@@ -199,23 +199,23 @@ impl SubscribeBroadcast {
         );
         VideoTrack::from_consumer::<D>(track_name.to_string(), consumer, config, playback_config)
     }
-    pub async fn listen<D: AudioDecoder>(
+    pub async fn audio<D: AudioDecoder>(
         &self,
         audio_backend: &dyn AudioStreamFactory,
     ) -> Result<AudioTrack> {
-        self.listen_with::<D>(Quality::Highest, audio_backend).await
+        self.audio_with::<D>(Quality::Highest, audio_backend).await
     }
 
-    pub async fn listen_with<D: AudioDecoder>(
+    pub async fn audio_with<D: AudioDecoder>(
         &self,
         quality: Quality,
         audio_backend: &dyn AudioStreamFactory,
     ) -> Result<AudioTrack> {
         let track_name = self.catalog().select_audio_rendition(quality)?;
-        self.listen_rendition::<D>(&track_name, audio_backend).await
+        self.audio_rendition::<D>(&track_name, audio_backend).await
     }
 
-    pub async fn listen_rendition<D: AudioDecoder>(
+    pub async fn audio_rendition<D: AudioDecoder>(
         &self,
         name: &str,
         audio_backend: &dyn AudioStreamFactory,
@@ -497,25 +497,25 @@ impl VideoTrack {
 }
 
 #[derive(derive_more::Debug)]
-pub struct AvRemoteTrack {
-    pub broadcast: SubscribeBroadcast,
+pub struct MediaTracks {
+    pub broadcast: RemoteBroadcast,
     pub video: Option<VideoTrack>,
     pub audio: Option<AudioTrack>,
 }
 
-impl AvRemoteTrack {
+impl MediaTracks {
     pub async fn new<D: Decoders>(
-        broadcast: SubscribeBroadcast,
+        broadcast: RemoteBroadcast,
         audio_backend: &dyn AudioStreamFactory,
         playback_config: PlaybackConfig,
     ) -> Result<Self> {
         let audio = broadcast
-            .listen_with::<D::Audio>(playback_config.quality, audio_backend)
+            .audio_with::<D::Audio>(playback_config.quality, audio_backend)
             .await
             .inspect_err(|err| tracing::warn!("no audio track: {err}"))
             .ok();
         let video = broadcast
-            .watch_with::<D::Video>(&playback_config.decode_config, playback_config.quality)
+            .video_with::<D::Video>(&playback_config.decode_config, playback_config.quality)
             .inspect_err(|err| tracing::warn!("no video track: {err}"))
             .ok();
         Ok(Self {

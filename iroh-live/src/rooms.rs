@@ -7,7 +7,7 @@ use iroh_moq::MoqSession;
 use iroh_smol_kv::{ExpiryConfig, Filter, SignedValue, Subscribe, SubscribeMode, WriteScope};
 use moq_lite::BroadcastProducer;
 pub use moq_media::publish::{PublishOpts, PublishUpdateError, StreamKind};
-use moq_media::subscribe::SubscribeBroadcast;
+use moq_media::subscribe::RemoteBroadcast;
 use n0_error::{Result, StdResultExt, anyerr};
 use n0_future::{FuturesUnordered, StreamExt, task::AbortOnDropHandle};
 use serde::{Deserialize, Serialize};
@@ -132,7 +132,7 @@ pub enum RoomEvent {
     },
     BroadcastSubscribed {
         session: MoqSession,
-        broadcast: SubscribeBroadcast,
+        broadcast: RemoteBroadcast,
     },
 }
 
@@ -144,7 +144,7 @@ struct PeerState {
 }
 
 type ConnectingFutures =
-    FuturesUnordered<BoxFuture<(BroadcastId, Result<(MoqSession, SubscribeBroadcast)>)>>;
+    FuturesUnordered<BoxFuture<(BroadcastId, Result<(MoqSession, RemoteBroadcast)>)>>;
 type KvEntry = (EndpointId, Bytes, SignedValue);
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, derive_more::Display)]

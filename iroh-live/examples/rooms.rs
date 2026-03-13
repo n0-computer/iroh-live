@@ -11,8 +11,8 @@ use iroh_live::{
         capture::{CameraCapturer, ScreenCapturer},
         codec::{AudioCodec, DefaultDecoders, DynamicVideoDecoder, VideoCodec},
         format::{AudioPreset, VideoPreset},
-        publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
-        subscribe::{AudioTrack, AvRemoteTrack, SubscribeBroadcast},
+        publish::{AudioRenditions, LocalBroadcast, VideoRenditions},
+        subscribe::{AudioTrack, MediaTracks, RemoteBroadcast},
     },
     moq::MoqSession,
     rooms::{Room, RoomEvent, RoomTicket},
@@ -59,7 +59,7 @@ fn main() -> Result<()> {
                 room,
                 peers: vec![],
                 self_video: broadcast
-                    .watch_local(Default::default())
+                    .preview(Default::default())
                     .map(|track| VideoTrackView::new(&cc.egui_ctx, "self-video", track)),
                 router,
                 _broadcast: broadcast,
@@ -71,7 +71,7 @@ fn main() -> Result<()> {
     .map_err(|err| anyerr!("eframe failed: {err:#}"))
 }
 
-async fn setup(cli: Cli, audio_ctx: AudioBackend) -> Result<(Router, PublishBroadcast, Room)> {
+async fn setup(cli: Cli, audio_ctx: AudioBackend) -> Result<(Router, LocalBroadcast, Room)> {
     let endpoint = Endpoint::builder()
         .secret_key(secret_key_from_env()?)
         .bind()
@@ -88,7 +88,7 @@ async fn setup(cli: Cli, audio_ctx: AudioBackend) -> Result<(Router, PublishBroa
 
     // Publish ourselves.
     let broadcast = {
-        let mut broadcast = PublishBroadcast::new();
+        let mut broadcast = LocalBroadcast::new();
         if !cli.no_audio {
             let mic = audio_ctx.default_input().await?;
             let audio = AudioRenditions::new(mic, AudioCodec::Opus, [AudioPreset::Hq]);
@@ -122,7 +122,7 @@ struct App {
     peers: Vec<RemoteTrackView>,
     self_video: Option<VideoTrackView>,
     router: Router,
-    _broadcast: PublishBroadcast,
+    _broadcast: LocalBroadcast,
     audio_ctx: AudioBackend,
     rt: tokio::runtime::Runtime,
 }
@@ -154,7 +154,7 @@ impl eframe::App for App {
                     );
                     let track = match self.rt.block_on(async {
                         broadcast
-                            .watch_and_listen::<DefaultDecoders>(
+                            .media::<DefaultDecoders>(
                                 &self.audio_ctx,
                                 Default::default(),
                             )
@@ -215,12 +215,12 @@ struct RemoteTrackView {
     video: Option<VideoTrackView>,
     _audio_track: Option<AudioTrack>,
     session: MoqSession,
-    broadcast: SubscribeBroadcast,
+    broadcast: RemoteBroadcast,
     stats: StatsSmoother,
 }
 
 impl RemoteTrackView {
-    fn new(ctx: &egui::Context, session: MoqSession, track: AvRemoteTrack, id: usize) -> Self {
+    fn new(ctx: &egui::Context, session: MoqSession, track: MediaTracks, id: usize) -> Self {
         Self {
             video: track
                 .video
@@ -281,7 +281,7 @@ impl RemoteTrackView {
                             .clicked()
                             && let Ok(track) = self
                                 .broadcast
-                                .watch_rendition::<DynamicVideoDecoder>(&Default::default(), name)
+                                .video_rendition::<DynamicVideoDecoder>(&Default::default(), name)
                         {
                             if let Some(video) = self.video.as_mut() {
                                 video.set_track(track);

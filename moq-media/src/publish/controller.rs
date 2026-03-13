@@ -11,7 +11,7 @@ use tracing::info;
 
 use crate::{
     audio_backend::{AudioBackend, DeviceId},
-    publish::PublishBroadcast,
+    publish::LocalBroadcast,
 };
 #[cfg(any_video_codec)]
 use crate::{
@@ -100,7 +100,7 @@ impl Error for PublishUpdateError {}
 /// Controls media capture and publish pipelines.
 ///
 /// Manages camera, screen, and audio capture sources and their associated
-/// [`PublishBroadcast`]s. The camera/main broadcast is created eagerly (it
+/// [`LocalBroadcast`]s. The camera/main broadcast is created eagerly (it
 /// carries both video and audio). The screen broadcast is created lazily on
 /// first enable.
 ///
@@ -110,8 +110,8 @@ impl Error for PublishUpdateError {}
 #[derive(Debug)]
 pub struct PublishCaptureController {
     audio_ctx: AudioBackend,
-    camera: Arc<Mutex<PublishBroadcast>>,
-    screen: Option<PublishBroadcast>,
+    camera: Arc<Mutex<LocalBroadcast>>,
+    screen: Option<LocalBroadcast>,
     state: Watchable<PublishOpts>,
     prev: CaptureConfig,
 }
@@ -123,7 +123,7 @@ impl PublishCaptureController {
     pub fn new(audio_ctx: AudioBackend) -> Self {
         Self {
             audio_ctx,
-            camera: Arc::new(Mutex::new(PublishBroadcast::new())),
+            camera: Arc::new(Mutex::new(LocalBroadcast::new())),
             screen: None,
             state: Watchable::new(PublishOpts::default()),
             prev: CaptureConfig::default(),
@@ -182,12 +182,12 @@ impl PublishCaptureController {
     }
 
     /// Shared handle to the camera/main broadcast (e.g. for local preview).
-    pub fn camera_broadcast(&self) -> Arc<Mutex<PublishBroadcast>> {
+    pub fn camera_broadcast(&self) -> Arc<Mutex<LocalBroadcast>> {
         self.camera.clone()
     }
 
     /// Direct access to the screen broadcast, if it exists.
-    pub fn screen_broadcast(&self) -> Option<&PublishBroadcast> {
+    pub fn screen_broadcast(&self) -> Option<&LocalBroadcast> {
         self.screen.as_ref()
     }
 
@@ -234,7 +234,7 @@ impl PublishCaptureController {
             if enable {
                 let mut new_producer = None;
                 if self.screen.is_none() {
-                    let broadcast = PublishBroadcast::new();
+                    let broadcast = LocalBroadcast::new();
                     new_producer = Some(broadcast.producer());
                     self.screen = Some(broadcast);
                 }

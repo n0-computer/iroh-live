@@ -24,8 +24,8 @@ use iroh_live::{
         format::{
             AudioFormat, AudioPreset, DecodeConfig, DecoderBackend, PlaybackConfig, VideoPreset,
         },
-        publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
-        subscribe::{AudioTrack, AvRemoteTrack, SubscribeBroadcast, VideoTrack},
+        publish::{AudioRenditions, LocalBroadcast, VideoRenditions},
+        subscribe::{AudioTrack, MediaTracks, RemoteBroadcast, VideoTrack},
     },
     moq::MoqSession,
     util::StatsSmoother,
@@ -320,7 +320,7 @@ struct SplitApp {
     pub_audio_source: AudioSourceKind,
     pub_codec: VideoCodec,
     pub_preset: VideoPreset,
-    broadcast: PublishBroadcast,
+    broadcast: LocalBroadcast,
     pub_video_view: Option<VideoTrackView>,
     pub_router: Router,
     #[allow(dead_code, reason = "kept alive for protocol handler")]
@@ -329,7 +329,7 @@ struct SplitApp {
 
     // Subscriber state
     session: MoqSession,
-    sub_broadcast: SubscribeBroadcast,
+    sub_broadcast: RemoteBroadcast,
     sub_video: Option<VideoTrackView>,
     _sub_audio: Option<AudioTrack>,
     sub_backend: DecoderBackend,
@@ -470,7 +470,7 @@ impl SplitApp {
             }
         }
 
-        // Reset pub preview — will be re-created from watch_local next frame
+        // Reset pub preview — will be re-created from preview next frame
         self.pub_video_view = None;
 
         // Re-subscribe on the sub side: the old encoder tracks were torn down,
@@ -492,7 +492,7 @@ impl SplitApp {
             };
             match self
                 .sub_broadcast
-                .watch_rendition::<DynamicVideoDecoder>(&decode_config, name)
+                .video_rendition::<DynamicVideoDecoder>(&decode_config, name)
             {
                 Ok(track) => {
                     self.sub_video = Some(self.make_sub_video_view(ctx, track));
@@ -529,7 +529,7 @@ impl SplitApp {
 
 async fn setup(
     audio_ctx: AudioBackend,
-) -> Result<(Router, Live, PublishBroadcast, MoqSession, AvRemoteTrack)> {
+) -> Result<(Router, Live, LocalBroadcast, MoqSession, MediaTracks)> {
     // Publisher endpoint
     let pub_endpoint = Endpoint::bind().await?;
     let pub_live = Live::new(pub_endpoint.clone());
@@ -538,7 +538,7 @@ async fn setup(
         .spawn();
 
     // Create broadcast with test pattern + test tone
-    let mut broadcast = PublishBroadcast::new();
+    let mut broadcast = LocalBroadcast::new();
     let source = TestPatternSource::new(1280, 720);
     let video = VideoRenditions::new(source, VideoCodec::best_available(), [VideoPreset::P720]);
     broadcast.set_video(Some(video))?;
@@ -557,7 +557,7 @@ async fn setup(
     let sub_live = Live::new(sub_endpoint.clone());
     let playback_config = PlaybackConfig::default();
     let (session, track) = sub_live
-        .watch_and_listen::<DefaultDecoders>(pub_addr, BROADCAST_NAME, &audio_ctx, playback_config)
+        .media::<DefaultDecoders>(pub_addr, BROADCAST_NAME, &audio_ctx, playback_config)
         .await?;
     info!("subscriber connected");
 
@@ -680,7 +680,7 @@ impl eframe::App for SplitApp {
 
                 // Initialize pub video if needed
                 if self.pub_video_view.is_none()
-                    && let Some(track) = self.broadcast.watch_local(DecodeConfig::default())
+                    && let Some(track) = self.broadcast.preview(DecodeConfig::default())
                 {
                     self.pub_video_view = Some(VideoTrackView::new(ctx, "pub-video", track));
                 }
@@ -763,7 +763,7 @@ impl eframe::App for SplitApp {
                                         backend: self.sub_backend,
                                         ..Default::default()
                                     };
-                                    match self.sub_broadcast.watch_rendition::<DynamicVideoDecoder>(
+                                    match self.sub_broadcast.video_rendition::<DynamicVideoDecoder>(
                                         &decode_config,
                                         name,
                                     ) {
