@@ -33,6 +33,118 @@ const DEFAULT_MAX_LATENCY: Duration = Duration::from_millis(150);
 const VIDEO_PRIORITY: u8 = 1u8;
 const AUDIO_PRIORITY: u8 = 2u8;
 
+// ── Subscription options ────────────────────────────────────────────────
+
+/// Viewport-aware rendition selection target. Subscribers describe what they
+/// need rather than naming specific renditions.
+#[derive(Debug, Clone, Default)]
+pub struct VideoTarget {
+    pub max_pixels: Option<u32>,
+    pub max_bitrate_kbps: Option<u32>,
+    pub rendition: Option<String>,
+}
+
+impl VideoTarget {
+    pub fn max_pixels(mut self, pixels: u32) -> Self {
+        self.max_pixels = Some(pixels);
+        self
+    }
+    pub fn max_bitrate_kbps(mut self, kbps: u32) -> Self {
+        self.max_bitrate_kbps = Some(kbps);
+        self
+    }
+    /// Pins to a specific rendition by name, bypassing automatic selection.
+    pub fn rendition(mut self, name: impl Into<String>) -> Self {
+        self.rendition = Some(name.into());
+        self
+    }
+}
+
+impl From<Quality> for VideoTarget {
+    fn from(q: Quality) -> Self {
+        match q {
+            Quality::Highest => Self::default(),
+            Quality::High => Self::default().max_pixels(1280 * 720),
+            Quality::Mid => Self::default().max_pixels(640 * 480),
+            Quality::Low => Self::default().max_pixels(320 * 240),
+        }
+    }
+}
+
+/// Options for video subscription.
+#[derive(Debug, Clone, Default)]
+pub struct VideoOptions {
+    pub playback: Option<DecodeConfig>,
+    pub target: Option<VideoTarget>,
+    pub viewport: Option<(u32, u32)>,
+}
+
+impl VideoOptions {
+    pub fn target(mut self, target: impl Into<VideoTarget>) -> Self {
+        self.target = Some(target.into());
+        self
+    }
+    pub fn quality(mut self, quality: Quality) -> Self {
+        self.target = Some(quality.into());
+        self
+    }
+    pub fn viewport(mut self, w: u32, h: u32) -> Self {
+        self.viewport = Some((w, h));
+        self
+    }
+    pub fn playback(mut self, config: DecodeConfig) -> Self {
+        self.playback = Some(config);
+        self
+    }
+
+    fn decode_config(&self) -> DecodeConfig {
+        self.playback.clone().unwrap_or_default()
+    }
+
+    fn resolve_quality(&self) -> Quality {
+        // If a specific rendition is pinned, we'll use video_rendition() directly.
+        // Otherwise map VideoTarget to Quality for the existing selection logic.
+        match &self.target {
+            Some(t) if t.max_pixels.is_some() => {
+                let px = t.max_pixels.unwrap();
+                if px <= 320 * 240 {
+                    Quality::Low
+                } else if px <= 640 * 480 {
+                    Quality::Mid
+                } else if px <= 1280 * 720 {
+                    Quality::High
+                } else {
+                    Quality::Highest
+                }
+            }
+            _ => Quality::Highest,
+        }
+    }
+}
+
+/// Options for audio subscription.
+#[derive(Debug, Clone, Default)]
+pub struct AudioOptions {
+    pub rendition: Option<String>,
+}
+
+impl AudioOptions {
+    /// Pins to a specific audio rendition by name.
+    pub fn rendition(mut self, name: impl Into<String>) -> Self {
+        self.rendition = Some(name.into());
+        self
+    }
+}
+
+/// Lifecycle state of a remote broadcast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BroadcastStatus {
+    /// Actively receiving media.
+    Live,
+    /// Producer closed the broadcast.
+    Ended,
+}
+
 #[derive(derive_more::Debug, Clone)]
 pub struct RemoteBroadcast {
     broadcast_name: String,
@@ -148,14 +260,29 @@ impl RemoteBroadcast {
         &self.broadcast_name
     }
 
+    /// Returns a watcher for the catalog (renditions added/removed).
     pub fn catalog_watcher(&mut self) -> n0_watcher::Direct<CatalogSnapshot> {
         self.catalog_watchable.watch()
     }
 
+    /// Returns the current catalog snapshot.
     pub fn catalog(&self) -> CatalogSnapshot {
         self.catalog_watchable.get()
     }
 
+    /// Returns true if the catalog has video renditions.
+    pub fn has_video(&self) -> bool {
+        !self.catalog().video.renditions.is_empty()
+    }
+
+    /// Returns true if the catalog has audio renditions.
+    pub fn has_audio(&self) -> bool {
+        !self.catalog().audio.renditions.is_empty()
+    }
+
+    // -- Generic subscription methods (for custom decoders) --
+
+    /// Subscribes to both video and audio with a custom decoder type.
     pub async fn media<D: Decoders>(
         self,
         audio_backend: &dyn AudioStreamFactory,
@@ -164,11 +291,13 @@ impl RemoteBroadcast {
         MediaTracks::new::<D>(self, audio_backend, playback_config).await
     }
 
+    /// Subscribes to video with automatic rendition selection and a custom decoder.
     pub fn video<D: VideoDecoder>(&self) -> Result<VideoTrack> {
-        self.video_with::<D>(&Default::default(), Quality::Highest)
+        self.video_with_decoder::<D>(&Default::default(), Quality::Highest)
     }
 
-    pub fn video_with<D: VideoDecoder>(
+    /// Subscribes to video with explicit config and a custom decoder.
+    pub fn video_with_decoder<D: VideoDecoder>(
         &self,
         playback_config: &DecodeConfig,
         quality: Quality,
@@ -177,6 +306,7 @@ impl RemoteBroadcast {
         self.video_rendition::<D>(playback_config, &track_name)
     }
 
+    /// Subscribes to a specific video rendition with a custom decoder.
     pub fn video_rendition<D: VideoDecoder>(
         &self,
         playback_config: &DecodeConfig,
@@ -199,14 +329,18 @@ impl RemoteBroadcast {
         );
         VideoTrack::from_consumer::<D>(track_name.to_string(), consumer, config, playback_config)
     }
+
+    /// Subscribes to audio with automatic rendition selection and a custom decoder.
     pub async fn audio<D: AudioDecoder>(
         &self,
         audio_backend: &dyn AudioStreamFactory,
     ) -> Result<AudioTrack> {
-        self.audio_with::<D>(Quality::Highest, audio_backend).await
+        self.audio_with_decoder::<D>(Quality::Highest, audio_backend)
+            .await
     }
 
-    pub async fn audio_with<D: AudioDecoder>(
+    /// Subscribes to audio with explicit quality and a custom decoder.
+    pub async fn audio_with_decoder<D: AudioDecoder>(
         &self,
         quality: Quality,
         audio_backend: &dyn AudioStreamFactory,
@@ -215,6 +349,7 @@ impl RemoteBroadcast {
         self.audio_rendition::<D>(&track_name, audio_backend).await
     }
 
+    /// Subscribes to a specific audio rendition with a custom decoder.
     pub async fn audio_rendition<D: AudioDecoder>(
         &self,
         name: &str,
@@ -235,11 +370,46 @@ impl RemoteBroadcast {
         AudioTrack::spawn::<D>(name.to_string(), consumer, config.clone(), audio_backend).await
     }
 
+    // -- Options-based subscription (uses VideoOptions/AudioOptions) --
+
+    /// Subscribes to video with options (non-generic, uses dynamic decoder dispatch).
+    #[cfg(any_video_codec)]
+    pub fn video_with(&self, opts: VideoOptions) -> Result<VideoTrack> {
+        use crate::codec::DynamicVideoDecoder;
+        let decode_config = opts.decode_config();
+        if let Some(ref target) = opts.target {
+            if let Some(ref rendition) = target.rendition {
+                return self.video_rendition::<DynamicVideoDecoder>(&decode_config, rendition);
+            }
+        }
+        let quality = opts.resolve_quality();
+        self.video_with_decoder::<DynamicVideoDecoder>(&decode_config, quality)
+    }
+
+    /// Subscribes to audio with options (non-generic, uses dynamic decoder dispatch).
+    #[cfg(any_audio_codec)]
+    pub async fn audio_with(
+        &self,
+        opts: AudioOptions,
+        audio_backend: &dyn AudioStreamFactory,
+    ) -> Result<AudioTrack> {
+        use crate::codec::DynamicAudioDecoder;
+        if let Some(ref rendition) = opts.rendition {
+            self.audio_rendition::<DynamicAudioDecoder>(rendition, audio_backend)
+                .await
+        } else {
+            self.audio_with_decoder::<DynamicAudioDecoder>(Quality::Highest, audio_backend)
+                .await
+        }
+    }
+
+    /// Waits until the broadcast closes.
     pub fn closed(&self) -> impl Future<Output = moq_lite::Error> + 'static {
         let broadcast = self.broadcast.clone();
         async move { broadcast.closed().await }
     }
 
+    /// Shuts down this remote broadcast subscription.
     pub fn shutdown(&self) {
         self.shutdown.cancel();
     }
@@ -510,12 +680,12 @@ impl MediaTracks {
         playback_config: PlaybackConfig,
     ) -> Result<Self> {
         let audio = broadcast
-            .audio_with::<D::Audio>(playback_config.quality, audio_backend)
+            .audio_with_decoder::<D::Audio>(playback_config.quality, audio_backend)
             .await
             .inspect_err(|err| tracing::warn!("no audio track: {err}"))
             .ok();
         let video = broadcast
-            .video_with::<D::Video>(&playback_config.decode_config, playback_config.quality)
+            .video_with_decoder::<D::Video>(&playback_config.decode_config, playback_config.quality)
             .inspect_err(|err| tracing::warn!("no video track: {err}"))
             .ok();
         Ok(Self {
