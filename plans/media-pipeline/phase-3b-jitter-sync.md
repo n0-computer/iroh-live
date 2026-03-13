@@ -76,29 +76,55 @@ in `moq-media/src/subscribe.rs:32`. This needs to become configurable:
 | PlayoutBuffer frame-level timing | Targets `max_latency` depth | Delivers frames ASAP in PTS order |
 | A/V sync | Skip video if behind audio | Wait (never skip) |
 
+## Lesson Learned: Decoder DPB Burst Timing
+
+Investigation of VAAPI/cros-codecs stutter (2026-03-13) revealed that the primary
+source of uneven frame output is NOT network jitter but **decoder-internal DPB
+(Decoded Picture Buffer) burst timing**:
+
+- cros-codecs holds frames in the DPB until the next NAL arrives (`current_pic`
+  pipeline delay). For Baseline H.264 with a 5-frame DPB (level 3.1, 720p), this
+  causes bursty output at keyframe boundaries: the DPB flushes ~3 frames at once,
+  then produces 0 frames for the next 2-3 packets while it refills.
+- Upstream cros-codecs' `max_num_order_frames()` returns `max_dpb_frames()` for
+  Baseline profile when VUI `bitstream_restriction_flag` is absent (should return 0
+  since Baseline has no B-frames). This is a spec-correctness bug but fixing it alone
+  doesn't eliminate the burst because the DPB still has a 1-frame pipeline delay.
+- The only proper fix is a **post-decoder playout buffer** that absorbs burst output
+  and releases frames at a steady cadence.
+
+Approaches tried without a playout buffer:
+1. Send 1 frame per packet → pool exhaustion (frames held in pending queue)
+2. Drain all, send latest → 100ms gaps (discarded frames needed for DPB refill)
+3. Send all frames → works but bursty (current state, acceptable for now)
+
+**Key architecture change**: The PlayoutBuffer must sit AFTER the decoder (between
+decoder output and render channel), not before it. The decoder needs all packets
+immediately to keep its DPB fed. The buffer smooths the decoder's bursty output.
+
 ## Architecture
 
 ```
 TrackConsumer::read_frame()     hang layer: group-level latency
          │                      (skips stale groups)
          ▼
-    forward_frames()            async → sync bridge
+    forward_packets()           async → sync bridge
          │
          ▼ mpsc
+      decoder                   push_packet → pop_frame (bursty)
+         │
+         ▼
   ┌──────────────┐
-  │ PlayoutBuffer │             frame-level playout timing
-  │ (in decoder  │              (holds frames until playout time)
-  │  thread)     │
+  │ PlayoutBuffer │             post-decoder frame smoothing
+  │ (in decoder  │              (absorbs DPB bursts, releases
+  │  thread)     │               at steady cadence)
   └──────┬───────┘
          │
     PlayoutClock  ◄────────────── shared between audio + video
     (Arc<Mutex>)                   via .clock() on tracks
          │
          ▼
-      decoder
-         │
-         ▼
-    output channel
+    output channel              render picks up via current_frame()
 ```
 
 ### PlayoutClock
@@ -340,76 +366,154 @@ Phase 3a) polls `clock.current_max_latency()` and propagates changes.
 
 ### Step 2: PlayoutBuffer
 
-**Goal**: Per-thread frame buffer with playout discipline.
+**Goal**: Per-thread **post-decoder** frame buffer with playout discipline.
 
 **File**: `moq-media/src/playout.rs`
 
+The PlayoutBuffer holds **decoded VideoFrames** (not raw packets). It sits between
+the decoder's bursty `pop_frame()` output and the render output channel. Frames
+are inserted as they come from the decoder and released when their playout time
+arrives.
+
+```rust
+/// Post-decoder frame buffer that smooths bursty decoder output.
+struct PlayoutBuffer {
+    /// Decoded frames waiting for playout, ordered by timestamp.
+    buffer: VecDeque<VideoFrame>,
+    /// Maximum frames to buffer (safety valve).
+    max_frames: usize,
+    /// Reference to shared clock.
+    clock: PlayoutClock,
+    /// Track identifier for sync reporting.
+    track_id: String,
+}
+
+impl PlayoutBuffer {
+    fn new(clock: PlayoutClock, track_id: String) -> Self { ... }
+
+    /// Insert a decoded frame from the decoder.
+    fn push(&mut self, frame: VideoFrame) {
+        self.clock.observe_arrival(&self.track_id, frame.timestamp);
+        self.buffer.push_back(frame);
+        // Safety valve: drop oldest if over limit.
+        while self.buffer.len() > self.max_frames {
+            self.buffer.pop_front();
+        }
+    }
+
+    /// Pop the next frame ready for playout, if any.
+    fn pop_ready(&mut self) -> Option<VideoFrame> {
+        let front = self.buffer.front()?;
+        let playout = self.clock.playout_time(front.timestamp);
+        if Instant::now() >= playout {
+            self.buffer.pop_front()
+        } else {
+            None
+        }
+    }
+
+    /// How long until the next frame is ready for playout.
+    fn next_playout_wait(&self) -> Option<Duration> {
+        let front = self.buffer.front()?;
+        let playout = self.clock.playout_time(front.timestamp);
+        let now = Instant::now();
+        if now >= playout {
+            Some(Duration::ZERO)
+        } else {
+            Some(playout - now)
+        }
+    }
+}
+```
+
 **Buffer sizing**:
-- `max_frames = 60` (2 seconds at 30fps) — safety valve, should never fill in normal operation
-- In practice, buffer holds `target_latency / frame_duration` frames (e.g. 150ms / 33ms ≈ 5 frames)
+- `max_frames = 30` (1 second at 30fps) — safety valve
+- In practice, buffer holds 3-5 frames (DPB burst size)
 - Overflow drops oldest frames (they're too late anyway)
 
 **Tests**:
-- Push 10 frames with 33ms PTS spacing, pop with clock → frames released at correct intervals
-- Push frames with jitter → buffer absorbs, output is smooth
+- Push 10 frames with 33ms PTS spacing, pop_ready with advancing clock → frames released at correct intervals
+- Push burst of 3 frames (simulating DPB flush) → released at PTS intervals, not all at once
 - Overflow: push 100 frames without popping → oldest dropped, no unbounded growth
-- Empty pop → `PopResult::Empty`
+- Empty pop → None
+- next_playout_wait accuracy: matches expected PTS-based timing
 
 ---
 
 ### Step 3: Video Integration
 
-**Goal**: Integrate PlayoutBuffer into VideoTrack's decoder thread.
+**Goal**: Integrate PlayoutBuffer into the video decode loop as a **post-decoder**
+buffer that smooths DPB burst output.
 
-**Files**: `moq-media/src/subscribe.rs`
+**Files**: `moq-media/src/pipeline.rs`
 
-Replace current `VideoTrack::run_loop()`:
+The buffer sits between `decoder.pop_frame()` and `output_tx.blocking_send()`.
+The decode loop feeds all packets to the decoder immediately (keeping the DPB fed),
+drains all decoded frames into the PlayoutBuffer, then releases frames from the
+buffer at the correct playout time.
 
 ```rust
-fn run_loop(
+fn decode_loop(
     shutdown: &CancellationToken,
-    mut input_rx: mpsc::Receiver<hang::Frame>,
-    output_tx: mpsc::Sender<DecodedFrame>,
-    mut viewport_watcher: Watcher<(u32, u32)>,
+    mut input_rx: mpsc::Receiver<MediaPacket>,
+    output_tx: mpsc::Sender<VideoFrame>,
+    mut viewport_watcher: n0_watcher::Direct<(u32, u32)>,
     mut decoder: impl VideoDecoder,
-    target_pixel_format: PixelFormat,
     clock: PlayoutClock,
     track_id: String,
 ) -> Result<()> {
-    let mut buffer = PlayoutBuffer::new(clock.clone(), track_id);
+    let mut playout = PlayoutBuffer::new(clock, track_id);
+    let mut waiting_for_keyframe = false;
 
     loop {
         if shutdown.is_cancelled() { break; }
 
-        // Determine wait time: either next playout or poll interval.
-        let timeout = match buffer.peek_wait() {
-            Some(wait) => wait.min(Duration::from_millis(5)),
-            None => Duration::from_millis(50),  // idle poll
+        // Wait for next packet or playout deadline, whichever is sooner.
+        let timeout = playout.next_playout_wait()
+            .unwrap_or(Duration::from_millis(50));
+
+        let packet = match recv_timeout(&mut input_rx, timeout) {
+            Some(pkt) => Some(pkt),
+            None => None, // timeout — check playout buffer below
         };
 
-        // Try to receive new frames (non-blocking or with timeout).
-        match input_rx.recv_timeout(timeout) {
-            Ok(packet) => buffer.push(packet),
-            Err(RecvTimeoutError::Timeout) => {},
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
+        // Feed packet to decoder if we got one.
+        if let Some(packet) = packet {
+            if waiting_for_keyframe && !packet.is_keyframe {
+                continue;
+            }
+            waiting_for_keyframe = false;
 
-        // Pop and decode all ready frames.
-        loop {
-            match buffer.pop() {
-                PopResult::Frame(packet) => {
-                    if viewport_watcher.update() {
-                        let (w, h) = viewport_watcher.peek();
-                        decoder.set_viewport(*w, *h);
-                    }
-                    decoder.push_packet(packet)?;
-                    while let Some(frame) = decoder.pop_frame()? {
-                        // pixel format conversion...
-                        let _ = output_tx.blocking_send(frame);
+            if viewport_watcher.update() {
+                let (w, h) = viewport_watcher.peek();
+                decoder.set_viewport(*w, *h);
+            }
+
+            if let Err(err) = decoder.push_packet(packet) {
+                warn!("decode error, waiting for keyframe: {err:#}");
+                waiting_for_keyframe = true;
+                continue;
+            }
+
+            // Drain ALL decoded frames into the playout buffer.
+            // This frees decoder pool buffers immediately.
+            loop {
+                match decoder.pop_frame() {
+                    Ok(Some(frame)) => playout.push(frame),
+                    Ok(None) => break,
+                    Err(err) => {
+                        warn!("pop_frame error: {err:#}");
+                        waiting_for_keyframe = true;
+                        break;
                     }
                 }
-                PopResult::Skip => continue,
-                PopResult::Wait(_) | PopResult::Empty => break,
+            }
+        }
+
+        // Release frames whose playout time has arrived.
+        while let Some(frame) = playout.pop_ready() {
+            if output_tx.blocking_send(frame).is_err() {
+                return Ok(());
             }
         }
     }
@@ -417,12 +521,22 @@ fn run_loop(
 }
 ```
 
-**Frame freeze**: When no frames arrive, the timeout keeps the loop alive. The UI's `current_frame()` returns the last decoded frame. No explicit freeze logic needed — the output channel simply has no new frames.
+**Key behaviors**:
+- Packets are fed to the decoder immediately (DPB stays fed, no pool exhaustion)
+- Decoded frames go into PlayoutBuffer (absorbs bursts)
+- `pop_ready()` releases frames at steady cadence based on PTS timing
+- `recv_timeout` uses the next playout deadline so frames release on time even
+  when no new packets are arriving
+
+**DPB burst absorption**: When a keyframe causes the DPB to flush 3 frames at once,
+all 3 go into the PlayoutBuffer. They're released at their correct PTS intervals
+(~33ms apart at 30fps), covering the DPB refill period smoothly.
 
 **Tests**:
-- End-to-end: encode 30 frames → transport → VideoTrack with PlayoutClock → decoded frames arrive with smooth timing
-- Jitter: add ±30ms random delay to frame delivery → output is smoother than input
-- Gap: inject 200ms gap → no panic, last frame held
+- End-to-end: encode 30 frames → decode with PlayoutBuffer → frames arrive at steady ~33ms intervals
+- DPB burst: push 3 frames at once into buffer → released at PTS-correct intervals
+- Gap: no input for 200ms → no panic, buffer drains normally, last frame held by renderer
+- Pool safety: decoder frames are drained into buffer immediately, pool never exhausts
 
 ---
 
@@ -631,3 +745,26 @@ group-skip: hang skips entire groups, each starting with a keyframe. Shorter key
 intervals = more frequent skip opportunities = lower worst-case latency in Live mode.
 For live conferencing, 1-second GOPs are standard. For reliable delivery, GOP size is
 irrelevant since nothing is skipped.
+
+### DPB Burst Pattern (VAAPI/cros-codecs)
+
+Measured on Intel MTL with VAAPI Baseline H.264 720p @ 30fps, keyframe interval = 30:
+
+- DPB size = 5 frames (level 3.1: `18000 / (80*45) = 5`)
+- At keyframe: DPB flushes ~3 frames simultaneously, then 2-3 packets produce 0 output
+- Steady state: 1 frame per packet (33ms cadence) — smooth
+- Without PlayoutBuffer: the burst → gap pattern causes visible stutter every 1s
+
+The PlayoutBuffer's `playout_time()` calculation absorbs this naturally: when 3 frames
+arrive at once, they have PTS values ~33ms apart, so they're released at ~33ms intervals.
+During the DPB refill (0-frame packets), the buffer has frames ready to release from
+the earlier burst. The buffer depth only needs to be ~3-5 frames to absorb DPB bursts.
+
+### cros-codecs Upstream Consideration
+
+`max_num_order_frames()` in `cros-codecs/src/codec/h264/parser.rs` returns
+`max_dpb_frames()` for Baseline profile when VUI `bitstream_restriction_flag` is
+absent. FFmpeg returns 0 in this case (Baseline has no B-frames, no reordering).
+This is a spec-correctness fix worth upstreaming, but alone doesn't eliminate the
+1-frame pipeline delay (`current_pic` held until next NAL). The PlayoutBuffer is
+the robust fix regardless of upstream changes.
