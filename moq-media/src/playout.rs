@@ -89,9 +89,15 @@ impl PlayoutClock {
     }
 
     /// Sets the playout mode.
+    ///
+    /// Resets the base wall-clock mapping so playout times are recalculated
+    /// relative to the next frame arrival with the new mode's offset.
     pub fn set_mode(&self, mode: PlayoutMode) {
         let mut inner = self.inner.lock().expect("lock");
         inner.mode = mode;
+        // Reset base so the new mode's offset (Live vs Reliable) takes effect.
+        inner.base_wall = None;
+        inner.base_pts = None;
     }
 
     /// Returns the effective max_latency for hang's `TrackConsumer`.
@@ -154,7 +160,6 @@ impl PlayoutClock {
 
     /// Resets the clock's base mapping. Called when switching tracks or
     /// recovering from errors.
-    #[allow(dead_code, reason = "useful for track switching, used by tests")]
     pub(crate) fn reset(&self) {
         let mut inner = self.inner.lock().expect("lock");
         inner.base_wall = None;
@@ -231,6 +236,11 @@ impl PlayoutBuffer {
     /// Clears all buffered frames.
     pub(crate) fn clear(&mut self) {
         self.buffer.clear();
+    }
+
+    /// Resets the clock's base mapping for a fresh PTS sequence.
+    pub(crate) fn reset_clock(&self) {
+        self.clock.reset();
     }
 }
 
@@ -436,6 +446,57 @@ mod tests {
 
         let reliable = PlayoutMode::Reliable;
         assert_eq!(reliable.hang_max_latency(), Duration::MAX);
+    }
+
+    #[test]
+    fn playout_clock_set_mode_resets_base() {
+        let clock = PlayoutClock::new(PlayoutMode::Live {
+            max_latency: Duration::from_millis(100),
+        });
+
+        // Establish base mapping.
+        clock.observe_arrival(Duration::ZERO);
+        assert!(clock.playout_time(Duration::ZERO).is_some());
+
+        // Switch mode → base should reset.
+        clock.set_mode(PlayoutMode::Reliable);
+        assert!(
+            clock.playout_time(Duration::ZERO).is_none(),
+            "base should be cleared after set_mode"
+        );
+
+        // Next arrival re-establishes with new mode.
+        clock.observe_arrival(Duration::from_millis(100));
+        let t = clock
+            .playout_time(Duration::from_millis(100))
+            .expect("should have base after re-observe");
+        // Reliable mode: base_wall ≈ now (no offset).
+        let now = Instant::now();
+        let diff = if t > now {
+            t.duration_since(now)
+        } else {
+            now.duration_since(t)
+        };
+        assert!(
+            diff < Duration::from_millis(10),
+            "reliable mode should have near-zero offset, got {diff:?}"
+        );
+    }
+
+    #[test]
+    fn playout_buffer_reset_clock_clears_base() {
+        let clock = PlayoutClock::new(PlayoutMode::Reliable);
+        let mut buf = PlayoutBuffer::new(clock.clone());
+
+        buf.push(make_test_frame(Duration::ZERO));
+        assert!(clock.playout_time(Duration::ZERO).is_some());
+
+        buf.clear();
+        buf.reset_clock();
+        assert!(
+            clock.playout_time(Duration::ZERO).is_none(),
+            "clock base should be reset"
+        );
     }
 
     #[test]

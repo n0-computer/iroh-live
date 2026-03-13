@@ -443,7 +443,23 @@ fn decode_loop_buffered(
         let packet = match crate::playout::recv_timeout(input_rx, timeout) {
             RecvResult::Value(pkt) => Some(pkt),
             RecvResult::Timeout => None,
-            RecvResult::Disconnected => break,
+            RecvResult::Disconnected => {
+                // Input closed. Drain remaining buffered frames before exiting.
+                while let Some(wait) = playout.next_playout_wait() {
+                    if shutdown.is_cancelled() {
+                        break;
+                    }
+                    if !wait.is_zero() {
+                        std::thread::sleep(wait);
+                    }
+                    while let Some(frame) = playout.pop_ready() {
+                        if output_tx.blocking_send(frame).is_err() {
+                            return Ok(());
+                        }
+                    }
+                }
+                break;
+            }
         };
 
         // Feed packet to decoder if we got one.
@@ -456,6 +472,7 @@ fn decode_loop_buffered(
                     info!("received keyframe, resuming decode");
                     waiting_for_keyframe = false;
                     playout.clear();
+                    playout.reset_clock();
                 }
             }
 
@@ -985,5 +1002,52 @@ mod tests {
             assert!(img.width() <= 320, "width {} > 320", img.width());
             assert!(img.height() <= 180, "height {} > 180", img.height());
         }
+    }
+
+    #[tokio::test]
+    async fn video_decoder_pipeline_with_playout_clock() {
+        use crate::playout::{PlayoutClock, PlayoutMode};
+
+        let w = 320u32;
+        let h = 180u32;
+        let (config, packets) = encode_h264_packets(w, h, 10, VideoPreset::P180);
+        assert!(!packets.is_empty());
+
+        let decode_config = DecodeConfig::default();
+        let (sink, source) = media_pipe(64);
+        let clock = PlayoutClock::new(PlayoutMode::Reliable);
+
+        let pipeline = VideoDecoderPipeline::with_clock::<H264VideoDecoder>(
+            "test-clock".into(),
+            source,
+            &config,
+            &decode_config,
+            Some(clock.clone()),
+        )
+        .unwrap();
+
+        tokio::task::spawn_blocking(move || {
+            for pkt in packets {
+                sink.send_blocking(pkt).unwrap();
+            }
+        });
+
+        let mut frames = pipeline.frames;
+        let mut count = 0;
+        while let Some(frame) = frames.rx.recv().await {
+            let img = frame.img();
+            assert_eq!(img.width(), w);
+            assert_eq!(img.height(), h);
+            count += 1;
+        }
+        assert!(count >= 5, "expected >= 5 decoded frames, got {count}");
+
+        // Jitter should be measurable after processing frames.
+        let jitter = clock.jitter();
+        // In a local pipeline, jitter is near-zero but non-negative.
+        assert!(
+            jitter < Duration::from_millis(100),
+            "jitter unreasonably high: {jitter:?}"
+        );
     }
 }
