@@ -198,7 +198,6 @@ pub struct RemoteBroadcast {
     broadcast_name: String,
     #[debug("BroadcastConsumer")]
     broadcast: BroadcastConsumer,
-    // catalog_watcher: n0_watcher::Direct<CatalogSnapshot>,
     catalog_watchable: Watchable<CatalogSnapshot>,
     clock: PlayoutClock,
     shutdown: CancellationToken,
@@ -376,11 +375,6 @@ impl RemoteBroadcast {
         MediaTracks::new::<D>(self, audio_backend, playback_config).await
     }
 
-    /// Subscribes to video with automatic rendition selection and a custom decoder.
-    pub fn video<D: VideoDecoder>(&self) -> Result<VideoTrack> {
-        self.video_with_decoder::<D>(&Default::default(), Quality::Highest)
-    }
-
     /// Subscribes to video with explicit config and a custom decoder.
     pub fn video_with_decoder<D: VideoDecoder>(
         &self,
@@ -423,15 +417,6 @@ impl RemoteBroadcast {
         )
     }
 
-    /// Subscribes to audio with automatic rendition selection and a custom decoder.
-    pub async fn audio<D: AudioDecoder>(
-        &self,
-        audio_backend: &dyn AudioStreamFactory,
-    ) -> Result<AudioTrack> {
-        self.audio_with_decoder::<D>(Quality::Highest, audio_backend)
-            .await
-    }
-
     /// Subscribes to audio with explicit quality and a custom decoder.
     pub async fn audio_with_decoder<D: AudioDecoder>(
         &self,
@@ -472,7 +457,25 @@ impl RemoteBroadcast {
         .await
     }
 
-    // -- Options-based subscription (uses VideoOptions/AudioOptions) --
+    // -- Non-generic convenience methods (dynamic decoder dispatch) ──────
+
+    /// Subscribes to the best-quality video rendition.
+    ///
+    /// Uses dynamic decoder dispatch based on the codec in the catalog.
+    /// For explicit decoder selection, use [`video_with_decoder`](Self::video_with_decoder).
+    #[cfg(any_video_codec)]
+    pub fn video(&self) -> Result<VideoTrack> {
+        self.video_with(Default::default())
+    }
+
+    /// Subscribes to the best-quality audio rendition.
+    ///
+    /// Uses dynamic decoder dispatch based on the codec in the catalog.
+    /// For explicit decoder selection, use [`audio_with_decoder`](Self::audio_with_decoder).
+    #[cfg(any_audio_codec)]
+    pub async fn audio(&self, audio_backend: &dyn AudioStreamFactory) -> Result<AudioTrack> {
+        self.audio_with(Default::default(), audio_backend).await
+    }
 
     /// Subscribes to video with options (non-generic, uses dynamic decoder dispatch).
     #[cfg(any_video_codec)]
