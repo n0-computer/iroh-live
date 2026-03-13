@@ -149,6 +149,17 @@ impl Live {
         self.moq.connect(remote).await
     }
 
+    /// Connects to a remote peer and subscribes to a named broadcast,
+    /// returning just the [`RemoteBroadcast`].
+    pub async fn subscribe(
+        &self,
+        remote: impl Into<EndpointAddr>,
+        broadcast_name: &str,
+    ) -> Result<RemoteBroadcast> {
+        let (_session, broadcast) = self.connect_and_subscribe(remote, broadcast_name).await?;
+        Ok(broadcast)
+    }
+
     /// Connects to a remote peer and subscribes to a named broadcast.
     pub async fn connect_and_subscribe(
         &self,

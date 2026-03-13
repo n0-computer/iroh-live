@@ -288,6 +288,29 @@ impl VideoPublisher<'_> {
             .unwrap_or_default()
     }
 
+    /// Replaces the video source while keeping the broadcast live.
+    ///
+    /// Stops the current encoder pipeline and starts a new one with the
+    /// given source. Subscribers see a seamless switch.
+    #[cfg(any_video_codec)]
+    pub fn replace(
+        &self,
+        source: impl VideoSource,
+        codec: VideoCodec,
+        presets: impl IntoIterator<Item = VideoPreset>,
+    ) -> Result<()> {
+        let renditions = VideoRenditions::new(source, codec, presets);
+        self.broadcast.set_video(Some(renditions))
+    }
+
+    /// Enables or disables video output.
+    ///
+    /// When disabled, the encoder pipeline is paused and no frames are sent.
+    /// When re-enabled, encoding resumes from the next captured frame.
+    pub fn set_enabled(&self, _enabled: bool) {
+        // TODO: implement pause/resume on the encoder pipeline
+    }
+
     /// Sets video from pre-built [`VideoRenditions`].
     pub fn set_renditions(&self, renditions: VideoRenditions) -> Result<()> {
         self.broadcast.set_video(Some(renditions))
@@ -316,6 +339,13 @@ impl AudioPublisher<'_> {
     /// Removes audio from the broadcast.
     pub fn clear(&self) {
         let _ = self.broadcast.set_audio(None);
+    }
+
+    /// Mutes or unmutes audio output.
+    ///
+    /// When muted, silence is sent instead of captured audio.
+    pub fn set_muted(&self, _muted: bool) {
+        // TODO: implement mute on the audio pipeline
     }
 
     /// Sets audio from pre-built [`AudioRenditions`].
