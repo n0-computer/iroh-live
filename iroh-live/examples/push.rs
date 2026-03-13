@@ -2,7 +2,7 @@ use std::{path::PathBuf, pin::Pin};
 
 use clap::Parser;
 use iroh::EndpointId;
-use iroh_live::LiveNode;
+use iroh_live::Live;
 use moq_lite::BroadcastProducer;
 use n0_error::Result;
 use tokio::io::AsyncRead;
@@ -36,8 +36,8 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
 
-    let node = LiveNode::spawn_from_env().await?;
-    let session = node.live().transport().connect(cli.target).await?;
+    let live = Live::from_env().await?;
+    let session = live.transport().connect(cli.target).await?;
 
     let mut input: Pin<Box<dyn AsyncRead + Send + 'static>> = match (cli.file, cli.transcode) {
         (Some(path), true) => Box::pin(transcode(path.clone(), cli.format).await?),
@@ -65,6 +65,6 @@ async fn main() -> Result<()> {
         }
         _ = tokio::signal::ctrl_c() => {}
     };
-    node.shutdown();
+    live.shutdown().await;
     Ok(())
 }

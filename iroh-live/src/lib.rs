@@ -6,7 +6,6 @@
 
 mod call;
 mod live;
-mod node;
 /// Multi-party room coordination over gossip.
 pub mod rooms;
 /// Ticket types for sharing connection info.
@@ -23,6 +22,5 @@ pub use moq_media as media;
 pub use self::{
     call::{Call, CallError},
     live::{Live, LiveBuilder},
-    node::LiveNode,
     types::{DisconnectReason, ParticipantId, TrackKind, TrackName},
 };

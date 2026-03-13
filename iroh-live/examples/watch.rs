@@ -36,6 +36,7 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
     let cli = Cli::parse();
     let ticket = match (&cli.ticket, &cli.endpoint_id, &cli.name) {
         (Some(ticket), None, None) => ticket.clone(),
@@ -56,7 +57,6 @@ fn main() -> Result<()> {
         }
     };
 
-    tracing_subscriber::fmt::init();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -77,7 +77,7 @@ fn main() -> Result<()> {
                 ..Default::default()
             };
             let (session, track) = live
-                .media::<DefaultDecoders>(
+                .subscribe_media_track::<DefaultDecoders>(
                     ticket.endpoint,
                     &ticket.broadcast_name,
                     &audio_ctx,
