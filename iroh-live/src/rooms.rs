@@ -259,7 +259,10 @@ impl Actor {
         match msg {
             ApiMessage::Publish { name, producer } => {
                 let consume = producer.consume();
-                self.live.publish(name.clone(), producer).await.ok();
+                self.live
+                    .publish_producer(name.clone(), producer)
+                    .await
+                    .ok();
                 self.active_publish.insert(name.clone());
                 self.publish_closed.push(Box::pin(async move {
                     consume.closed().await;

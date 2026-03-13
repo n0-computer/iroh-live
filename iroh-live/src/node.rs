@@ -1,8 +1,7 @@
 use std::env;
 
-use iroh::{Endpoint, protocol::Router};
-use iroh_gossip::Gossip;
-use n0_error::{Result, StdResultExt};
+use iroh::Endpoint;
+use n0_error::Result;
 use tracing::info;
 
 use crate::{
@@ -10,11 +9,12 @@ use crate::{
     rooms::{Room, RoomTicket},
 };
 
+/// Convenience type that creates an endpoint, gossip, MoQ transport, and router.
+///
+/// For more control, use [`Live::builder()`] directly.
 #[derive(Debug, Clone)]
 pub struct LiveNode {
-    router: Router,
-    pub live: Live,
-    pub gossip: Gossip,
+    live: Live,
 }
 
 impl LiveNode {
@@ -25,34 +25,30 @@ impl LiveNode {
             .await?;
         info!(endpoint_id=%endpoint.id(), "endpoint bound");
 
-        let gossip = Gossip::builder().spawn(endpoint.clone());
-        let live = Live::new(endpoint.clone());
+        let live = Live::builder(endpoint).enable_gossip().spawn_with_router();
 
-        let router = Router::builder(endpoint)
-            .accept(iroh_gossip::ALPN, gossip.clone())
-            .accept(iroh_moq::ALPN, live.protocol_handler())
-            .spawn();
-
-        Ok(Self {
-            router,
-            gossip,
-            live,
-        })
+        Ok(Self { live })
     }
 
-    pub async fn shutdown(&self) -> Result<()> {
+    pub fn shutdown(&self) {
         self.live.shutdown();
-        self.router.shutdown().await.anyerr()
     }
 
     pub fn endpoint(&self) -> &Endpoint {
-        self.router.endpoint()
+        self.live.endpoint()
+    }
+
+    pub fn live(&self) -> &Live {
+        &self.live
     }
 
     pub async fn join_room(&self, ticket: RoomTicket) -> Result<Room> {
         Room::new(
             self.endpoint(),
-            self.gossip.clone(),
+            self.live
+                .gossip()
+                .expect("LiveNode always has gossip enabled")
+                .clone(),
             self.live.clone(),
             ticket,
         )
