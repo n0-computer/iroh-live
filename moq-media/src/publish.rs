@@ -43,6 +43,34 @@ use crate::{
     util::spawn_thread,
 };
 
+/// Errors from publish operations.
+#[derive(Debug)]
+pub enum PublishError {
+    NoVideoSource,
+    NoAudioSource,
+    CodecUnavailable(String),
+    EncoderFailed(anyhow::Error),
+}
+
+impl std::fmt::Display for PublishError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoVideoSource => write!(f, "no video source"),
+            Self::NoAudioSource => write!(f, "no audio source"),
+            Self::CodecUnavailable(name) => write!(f, "codec unavailable: {name}"),
+            Self::EncoderFailed(err) => write!(f, "encoder failed: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for PublishError {}
+
+impl From<anyhow::Error> for PublishError {
+    fn from(err: anyhow::Error) -> Self {
+        Self::EncoderFailed(err)
+    }
+}
+
 type MakeAudioEncoder = Box<dyn Fn() -> Result<Box<dyn AudioEncoder>> + Send + 'static>;
 type MakeVideoEncoder = Box<dyn Fn() -> Result<Box<dyn VideoEncoder>> + Send + 'static>;
 
