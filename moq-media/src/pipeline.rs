@@ -157,7 +157,6 @@ impl VideoDecoderPipeline {
 
         let thread_name = format!("vdec-{name}");
         let decoder_name_for_handle = decoder_name;
-        let track_id = name.clone();
         let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             move || {
@@ -170,7 +169,6 @@ impl VideoDecoderPipeline {
                     viewport_watcher,
                     decoder,
                     clock,
-                    track_id,
                 ) {
                     error!("decoder failed: {err:#}");
                 }
@@ -337,7 +335,6 @@ fn decode_loop(
     mut viewport_watcher: n0_watcher::Direct<(u32, u32)>,
     mut decoder: impl VideoDecoder,
     clock: Option<PlayoutClock>,
-    track_id: String,
 ) -> Result<()> {
     let mut waiting_for_keyframe = false;
     let mut last_send = Instant::now();
@@ -353,7 +350,7 @@ fn decode_loop(
         );
     };
 
-    let mut playout = PlayoutBuffer::new(clock, track_id);
+    let mut playout = PlayoutBuffer::new(clock);
 
     loop {
         if shutdown.is_cancelled() {
@@ -646,14 +643,13 @@ impl AudioDecoderPipeline {
         let (packet_tx, packet_rx) = mpsc::channel(32);
         let thread_name = format!("adec-{}", name);
         let config = config.clone();
-        let track_id = name.clone();
         let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             move || {
                 let _guard = span.enter();
                 info!(?config, "decode start");
                 if let Err(err) =
-                    audio_decode_loop(&shutdown, packet_rx, decoder, sink, clock, track_id)
+                    audio_decode_loop(&shutdown, packet_rx, decoder, sink, clock)
                 {
                     error!("decoder failed: {err:#}");
                 }
@@ -698,16 +694,14 @@ impl Drop for AudioDecoderPipeline {
 /// Uses 10ms tick-based polling (`try_recv`) to ensure regular sample delivery
 /// regardless of packet arrival timing. This is critical for smooth audio playback.
 ///
-/// When a [`PlayoutClock`] is provided, reports arrival and playout timestamps
-/// for A/V sync. Audio acts as the sync master — video tracks check the
-/// clock to decide whether to skip or wait.
+/// When a [`PlayoutClock`] is provided, reports arrival timestamps
+/// so audio and video share the same time base for playout.
 fn audio_decode_loop(
     shutdown: &CancellationToken,
     mut input_rx: mpsc::Receiver<MediaPacket>,
     mut decoder: impl AudioDecoder,
     mut sink: impl AudioSink,
     clock: Option<PlayoutClock>,
-    track_id: String,
 ) -> Result<()> {
     use bytes::Buf as _;
     use mpsc::error::TryRecvError;
@@ -743,7 +737,6 @@ fn audio_decode_loop(
                         trace!(payload_bytes = packet.payload.remaining(), ts=?packet.timestamp, ?loop_elapsed, ?remote_elapsed, ?diff_ms, "recv packet");
                     }
 
-                    let pkt_timestamp = packet.timestamp;
                     if !sink.is_paused() {
                         if let Err(err) = decoder.push_packet(packet) {
                             consecutive_errors += 1;
@@ -759,9 +752,6 @@ fn audio_decode_loop(
                             Ok(Some(samples)) => {
                                 consecutive_errors = 0;
                                 sink.push_samples(samples)?;
-                                if let Some(ref clock) = clock {
-                                    clock.report_playout(&track_id, pkt_timestamp);
-                                }
                             }
                             Ok(None) => {
                                 consecutive_errors = 0;
