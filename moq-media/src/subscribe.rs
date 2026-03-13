@@ -21,6 +21,7 @@ use tracing::{debug, warn};
 use crate::{
     format::{DecodeConfig, PlaybackConfig, Quality, VideoFrame},
     pipeline::{AudioDecoderPipeline, VideoDecoderHandle, VideoDecoderPipeline},
+    playout::{PlayoutClock, PlayoutMode},
     processing::scale::Scaler,
     traits::{
         AudioDecoder, AudioSinkHandle, AudioStreamFactory, Decoders, VideoDecoder, VideoSource,
@@ -374,6 +375,20 @@ impl RemoteBroadcast {
         playback_config: &DecodeConfig,
         track_name: &str,
     ) -> Result<VideoTrack> {
+        self.video_rendition_with_clock::<D>(playback_config, track_name, None)
+    }
+
+    /// Subscribes to a specific video rendition with a shared [`PlayoutClock`].
+    pub fn video_rendition_with_clock<D: VideoDecoder>(
+        &self,
+        playback_config: &DecodeConfig,
+        track_name: &str,
+        clock: Option<PlayoutClock>,
+    ) -> Result<VideoTrack> {
+        let max_latency = clock
+            .as_ref()
+            .map(|c| c.hang_max_latency())
+            .unwrap_or(DEFAULT_MAX_LATENCY);
         let catalog = self.catalog();
         let video = &catalog.video;
         let config = video
@@ -387,9 +402,15 @@ impl RemoteBroadcast {
                     priority: VIDEO_PRIORITY,
                 })
                 .anyerr()?,
-            DEFAULT_MAX_LATENCY,
+            max_latency,
         );
-        VideoTrack::from_consumer::<D>(track_name.to_string(), consumer, config, playback_config)
+        VideoTrack::from_consumer::<D>(
+            track_name.to_string(),
+            consumer,
+            config,
+            playback_config,
+            clock,
+        )
     }
 
     /// Subscribes to audio with automatic rendition selection and a custom decoder.
@@ -677,10 +698,17 @@ impl VideoTrack {
         consumer: OrderedConsumer,
         config: &VideoConfig,
         playback_config: &DecodeConfig,
+        clock: Option<PlayoutClock>,
     ) -> Result<Self> {
         let source = MoqPacketSource(consumer);
         let config: rusty_codecs::config::VideoConfig = config.clone().into();
-        let pipeline = VideoDecoderPipeline::new::<D>(rendition, source, &config, playback_config)?;
+        let pipeline = VideoDecoderPipeline::with_clock::<D>(
+            rendition,
+            source,
+            &config,
+            playback_config,
+            clock,
+        )?;
         Ok(Self::from_pipeline(pipeline))
     }
 
@@ -744,7 +772,8 @@ impl VideoTrack {
 /// Combined video and audio tracks from a [`RemoteBroadcast`].
 ///
 /// Convenience type that holds the broadcast alongside its decoded
-/// media tracks.
+/// media tracks. Shares a [`PlayoutClock`] between audio and video
+/// for A/V synchronization and playout timing.
 #[derive(derive_more::Debug)]
 pub struct MediaTracks {
     /// The underlying broadcast subscription.
@@ -753,6 +782,8 @@ pub struct MediaTracks {
     pub video: Option<VideoTrack>,
     /// The decoded audio track, if the broadcast has audio.
     pub audio: Option<AudioTrack>,
+    /// Shared playout clock for A/V sync and latency control.
+    clock: PlayoutClock,
 }
 
 impl MediaTracks {
@@ -762,19 +793,52 @@ impl MediaTracks {
         audio_backend: &dyn AudioStreamFactory,
         playback_config: PlaybackConfig,
     ) -> Result<Self> {
+        Self::with_playout::<D>(
+            broadcast,
+            audio_backend,
+            playback_config,
+            PlayoutMode::default(),
+        )
+        .await
+    }
+
+    /// Creates media tracks with a specific [`PlayoutMode`] for timing control.
+    pub async fn with_playout<D: Decoders>(
+        broadcast: RemoteBroadcast,
+        audio_backend: &dyn AudioStreamFactory,
+        playback_config: PlaybackConfig,
+        playout_mode: PlayoutMode,
+    ) -> Result<Self> {
+        let clock = PlayoutClock::new(playout_mode);
         let audio = broadcast
             .audio_with_decoder::<D::Audio>(playback_config.quality, audio_backend)
             .await
             .inspect_err(|err| tracing::warn!("no audio track: {err}"))
             .ok();
-        let video = broadcast
-            .video_with_decoder::<D::Video>(&playback_config.decode_config, playback_config.quality)
-            .inspect_err(|err| tracing::warn!("no video track: {err}"))
+        let track_name = broadcast
+            .catalog()
+            .select_video_rendition(playback_config.quality)
             .ok();
+        let video = track_name.and_then(|name| {
+            broadcast
+                .video_rendition_with_clock::<D::Video>(
+                    &playback_config.decode_config,
+                    &name,
+                    Some(clock.clone()),
+                )
+                .inspect_err(|err| tracing::warn!("no video track: {err}"))
+                .ok()
+        });
         Ok(Self {
             broadcast,
             audio,
             video,
+            clock,
         })
+    }
+
+    /// Returns the shared playout clock for latency control and A/V sync.
+    pub fn clock(&self) -> &PlayoutClock {
+        &self.clock
     }
 }

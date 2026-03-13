@@ -651,12 +651,27 @@ Step 1: PlayoutClock ──> Step 2: PlayoutBuffer ──┬──> Step 3: Vide
 
 All steps are sequential (each builds on the previous).
 
+## Refinements from Review (2026-03-13)
+
+**Type corrections** (discovered during implementation review):
+- `VideoFrame.timestamp` is `Duration`, not `hang::container::Timestamp` — PlayoutBuffer/Clock use `Duration`
+- Codebase has `MediaTracks` (not `AvRemoteTrack`) — add `.clock()` there
+- No `recv_timeout` helper exists — implement via `try_recv` + `thread::sleep` polling (1ms resolution is fine for 33ms frame intervals)
+- Audio doesn't need full PlayoutBuffer — CPAL sinks handle ring buffer timing. Audio integration is lightweight: report timestamps to PlayoutClock for A/V sync only.
+
+**Industry review alignment**:
+- FFmpeg frame_timer pattern matches PlayoutBuffer approach (scheduled display time per frame)
+- GStreamer separates jitter buffer from playout (hang = jitter, PlayoutBuffer = playout) — matches our architecture
+- Audio master clock is industry standard — matches plan
+- moqtail-ts PullPlayoutBuffer uses similar targetLatency/maxLatency with GOP-aware dropping
+
 ## Files
 
 | File | Change |
 |---|---|
-| `moq-media/src/playout.rs` | **New**: `PlayoutClock`, `PlayoutBuffer`, `PlayoutMode`, `SyncAction` |
-| `moq-media/src/subscribe.rs` | Integrate buffer into VideoTrack/AudioTrack run loops, add `.clock()` |
+| `moq-media/src/playout.rs` | **New**: `PlayoutClock`, `PlayoutBuffer`, `PlayoutMode` |
+| `moq-media/src/pipeline.rs` | Integrate PlayoutBuffer into video decode_loop, add recv_timeout |
+| `moq-media/src/subscribe.rs` | Pass clock through VideoTrack/AudioTrack, add `.clock()` to MediaTracks |
 | `moq-media/src/lib.rs` | Export `playout` module |
 
 ## Verification
