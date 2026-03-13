@@ -1031,7 +1031,15 @@ impl VaapiEncoder {
         if fw == self.width && fh == self.height {
             return Ok(frame);
         }
-        let (tw, th) = self.scale_mode.resolve((fw, fh), (self.width, self.height));
+        let (mut tw, mut th) = self.scale_mode.resolve((fw, fh), (self.width, self.height));
+        // VAAPI surfaces are fixed-size — frames MUST match encoder dimensions.
+        // If resolve() returned smaller dims (e.g. Fit mode refusing to upscale),
+        // force-scale to encoder dimensions to avoid green padding from
+        // uninitialized surface pixels.
+        if tw != self.width || th != self.height {
+            tw = self.width;
+            th = self.height;
+        }
         if tw == fw && th == fh {
             return Ok(frame);
         }
