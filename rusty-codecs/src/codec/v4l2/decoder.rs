@@ -234,7 +234,7 @@ fn decoder_thread(
                     });
 
                     Ok(FormatChangedReply {
-                        provider: MmapProvider::new(&format),
+                        provider: MmapProvider::new(format),
                         mem_type: MemoryType::Mmap,
                         num_buffers: min_num_buffers + 4,
                     })
@@ -263,10 +263,10 @@ fn decoder_thread(
         }
 
         // Feed initial SPS/PPS data.
-        if let Some(data) = &initial_data {
-            if let Err(e) = feed_data!(decoder, data) {
-                tracing::warn!("V4L2: initial SPS/PPS feed failed: {e}");
-            }
+        if let Some(data) = &initial_data
+            && let Err(e) = feed_data!(decoder, data)
+        {
+            tracing::warn!("V4L2: initial SPS/PPS feed failed: {e}");
         }
 
         // Signal successful init.

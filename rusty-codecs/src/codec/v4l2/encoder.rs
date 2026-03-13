@@ -298,7 +298,10 @@ impl Drop for V4l2Encoder {
 }
 
 /// Runs the V4L2 stateful encoder. All v4l2r type-state generics are local.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "V4L2 encoder setup needs many params"
+)]
 fn encoder_thread(
     device_path: std::path::PathBuf,
     width: u32,
@@ -485,7 +488,7 @@ fn set_encoder_controls(device_path: &std::path::Path, bitrate: u64, keyframe_in
 fn nv12_planes_to_contiguous(planes: &crate::format::Nv12Planes) -> Vec<u8> {
     let w = planes.width as usize;
     let h = planes.height as usize;
-    let uv_h = (h + 1) / 2;
+    let uv_h = h.div_ceil(2);
     let y_stride = planes.y_stride as usize;
     let uv_stride = planes.uv_stride as usize;
 

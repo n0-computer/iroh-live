@@ -553,6 +553,11 @@ impl SharedVideoSource {
             move || {
                 let frame_time = Duration::from_secs_f32(1. / 30.);
                 let start = Instant::now();
+                // Track whether the source has ever been started. Some sources
+                // (e.g. PipeWire capturers) cannot survive a stop() before their
+                // first start() because stop() permanently kills the capture
+                // thread and start() is a no-op.
+                let mut ever_started = false;
                 for i in 0.. {
                     if shutdown.is_cancelled() {
                         break;
@@ -562,7 +567,7 @@ impl SharedVideoSource {
                         if running.load(Ordering::Relaxed) {
                             break;
                         }
-                        if let Err(err) = source.stop() {
+                        if ever_started && let Err(err) = source.stop() {
                             warn!("Failed to stop video source: {err:#}");
                         }
                         if shutdown.is_cancelled() {
@@ -575,6 +580,7 @@ impl SharedVideoSource {
                         if let Err(err) = source.start() {
                             warn!("Failed to start video source: {err:#}");
                         }
+                        ever_started = true;
                     }
                     if shutdown.is_cancelled() {
                         break;
