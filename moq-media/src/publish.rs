@@ -56,12 +56,10 @@ struct VideoRenditionEntry {
     factory: MakeVideoEncoder,
 }
 
-#[derive(derive_more::Debug)]
+#[derive(derive_more::Debug, Clone)]
 pub struct LocalBroadcast {
     #[debug(skip)]
     producer: BroadcastProducer,
-    #[debug(skip)]
-    catalog: CatalogProducer,
     #[debug(skip)]
     state: Arc<Mutex<State>>,
     #[debug(skip)]
@@ -79,12 +77,11 @@ impl LocalBroadcast {
         let mut producer = BroadcastProducer::default();
         let catalog = CatalogProducer::new(&mut producer).expect("not closed");
 
-        let state = Arc::new(Mutex::new(State::default()));
+        let state = Arc::new(Mutex::new(State::new(catalog)));
         let task_handle = tokio::spawn(Self::run(state.clone(), producer.clone()));
 
         Self {
             producer,
-            catalog,
             state,
             _task: Arc::new(AbortOnDropHandle::new(task_handle)),
         }
@@ -92,6 +89,37 @@ impl LocalBroadcast {
 
     pub fn producer(&self) -> BroadcastProducer {
         self.producer.clone()
+    }
+
+    /// Returns the video publishing handle.
+    pub fn video(&self) -> VideoPublisher<'_> {
+        VideoPublisher { broadcast: self }
+    }
+
+    /// Returns the audio publishing handle.
+    pub fn audio(&self) -> AudioPublisher<'_> {
+        AudioPublisher { broadcast: self }
+    }
+
+    pub fn has_video(&self) -> bool {
+        self.state
+            .lock()
+            .expect("poisoned")
+            .available_video
+            .is_some()
+    }
+
+    pub fn has_audio(&self) -> bool {
+        self.state
+            .lock()
+            .expect("poisoned")
+            .available_audio
+            .is_some()
+    }
+
+    /// Returns a consumer that reads from this broadcast's producer.
+    pub fn consume(&self) -> moq_lite::BroadcastConsumer {
+        self.producer.consume()
     }
 
     async fn run(state: Arc<Mutex<State>>, producer: BroadcastProducer) {
@@ -131,7 +159,7 @@ impl LocalBroadcast {
         }
     }
 
-    /// Create a local VideoTrack from the current video source, if present.
+    /// Returns a local preview video track (decode our own output).
     pub fn preview(&self, decode_config: DecodeConfig) -> Option<VideoTrack> {
         let (source, shutdown) = {
             let state = self.state.lock().expect("poisoned");
@@ -149,7 +177,8 @@ impl LocalBroadcast {
         ))
     }
 
-    pub fn set_video(&mut self, renditions: Option<VideoRenditions>) -> Result<()> {
+    pub(crate) fn set_video(&self, renditions: Option<VideoRenditions>) -> Result<()> {
+        let mut state = self.state.lock().expect("poisoned");
         match renditions {
             Some(renditions) => {
                 let configs = renditions.available_renditions()?;
@@ -162,44 +191,108 @@ impl LocalBroadcast {
                 // Tear down existing video, set new renditions, then publish catalog.
                 // Order matters: renditions must be available before the catalog is
                 // published, otherwise subscribers may request tracks we can't serve.
-                let mut state = self.state.lock().expect("poisoned");
                 state.remove_video();
                 state.available_video = Some(renditions);
-                drop(state);
-                self.catalog.set_video(video)?;
+                state.catalog.set_video(video)?;
             }
             None => {
-                // Clear catalog and stop any active video encoders
-                self.state.lock().expect("poisoned").remove_video();
-                self.catalog.set_video(Default::default())?;
+                state.remove_video();
+                state.catalog.set_video(Default::default())?;
             }
         }
         Ok(())
     }
 
-    pub fn set_audio(&mut self, renditions: Option<AudioRenditions>) -> Result<()> {
+    pub(crate) fn set_audio(&self, renditions: Option<AudioRenditions>) -> Result<()> {
+        let mut state = self.state.lock().expect("poisoned");
         match renditions {
             Some(renditions) => {
                 let configs = renditions.available_renditions()?;
                 let audio = Audio {
                     renditions: configs,
                 };
-                // Tear down existing audio, set new renditions, then publish catalog.
-                // Order matters: renditions must be available before the catalog is
-                // published, otherwise subscribers may request tracks we can't serve.
-                let mut state = self.state.lock().expect("poisoned");
                 state.remove_audio();
                 state.available_audio = Some(renditions);
-                drop(state);
-                self.catalog.set_audio(audio)?;
+                state.catalog.set_audio(audio)?;
             }
             None => {
-                // Clear catalog and stop any active audio encoders
-                self.state.lock().expect("poisoned").remove_audio();
-                self.catalog.set_audio(Default::default())?;
+                state.remove_audio();
+                state.catalog.set_audio(Default::default())?;
             }
         }
         Ok(())
+    }
+}
+
+/// Handle for configuring the video track(s) of a [`LocalBroadcast`].
+#[derive(Debug)]
+pub struct VideoPublisher<'a> {
+    broadcast: &'a LocalBroadcast,
+}
+
+impl VideoPublisher<'_> {
+    /// Sets the video source, codec, and encoding presets (simulcast renditions).
+    #[cfg(any_video_codec)]
+    pub fn set(
+        &self,
+        source: impl VideoSource,
+        codec: VideoCodec,
+        presets: impl IntoIterator<Item = VideoPreset>,
+    ) -> Result<()> {
+        let renditions = VideoRenditions::new(source, codec, presets);
+        self.broadcast.set_video(Some(renditions))
+    }
+
+    /// Removes video from the broadcast.
+    pub fn clear(&self) {
+        let _ = self.broadcast.set_video(None);
+    }
+
+    /// Returns the current rendition names.
+    pub fn renditions(&self) -> Vec<String> {
+        self.broadcast
+            .state
+            .lock()
+            .expect("poisoned")
+            .available_video
+            .as_ref()
+            .map(|v| v.renditions.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Sets video from pre-built [`VideoRenditions`].
+    pub fn set_renditions(&self, renditions: VideoRenditions) -> Result<()> {
+        self.broadcast.set_video(Some(renditions))
+    }
+}
+
+/// Handle for configuring the audio track(s) of a [`LocalBroadcast`].
+#[derive(Debug)]
+pub struct AudioPublisher<'a> {
+    broadcast: &'a LocalBroadcast,
+}
+
+impl AudioPublisher<'_> {
+    /// Sets the audio source, codec, and encoding presets.
+    #[cfg(any_audio_codec)]
+    pub fn set(
+        &self,
+        source: impl AudioSource,
+        codec: AudioCodec,
+        presets: impl IntoIterator<Item = AudioPreset>,
+    ) -> Result<()> {
+        let renditions = AudioRenditions::new(source, codec, presets);
+        self.broadcast.set_audio(Some(renditions))
+    }
+
+    /// Removes audio from the broadcast.
+    pub fn clear(&self) {
+        let _ = self.broadcast.set_audio(None);
+    }
+
+    /// Sets audio from pre-built [`AudioRenditions`].
+    pub fn set_renditions(&self, renditions: AudioRenditions) -> Result<()> {
+        self.broadcast.set_audio(Some(renditions))
     }
 }
 
@@ -245,14 +338,28 @@ impl CatalogProducer {
     }
 }
 
-#[derive(Default)]
 struct State {
+    catalog: CatalogProducer,
     shutdown_token: CancellationToken,
     local_video_token: CancellationToken,
     available_video: Option<VideoRenditions>,
     available_audio: Option<AudioRenditions>,
     active_video: HashMap<String, VideoEncoderPipeline>,
     active_audio: HashMap<String, AudioEncoderPipeline>,
+}
+
+impl State {
+    fn new(catalog: CatalogProducer) -> Self {
+        Self {
+            catalog,
+            shutdown_token: CancellationToken::new(),
+            local_video_token: CancellationToken::new(),
+            available_video: None,
+            available_audio: None,
+            active_video: HashMap::new(),
+            active_audio: HashMap::new(),
+        }
+    }
 }
 
 impl State {
@@ -723,7 +830,7 @@ mod tests {
 
     #[tokio::test]
     async fn preview_produces_frames() {
-        let mut broadcast = LocalBroadcast::new();
+        let broadcast = LocalBroadcast::new();
         broadcast.set_video(Some(make_renditions())).unwrap();
         let watch = broadcast
             .preview(DecodeConfig::default())
@@ -735,7 +842,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_video_stops_old_local_watch() {
-        let mut broadcast = LocalBroadcast::new();
+        let broadcast = LocalBroadcast::new();
         broadcast.set_video(Some(make_renditions())).unwrap();
         let watch = broadcast
             .preview(DecodeConfig::default())
@@ -755,7 +862,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_video_new_source_produces_frames() {
-        let mut broadcast = LocalBroadcast::new();
+        let broadcast = LocalBroadcast::new();
         broadcast.set_video(Some(make_renditions())).unwrap();
         broadcast.set_video(Some(make_renditions())).unwrap();
 
@@ -767,7 +874,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_video_none_stops_local_watch() {
-        let mut broadcast = LocalBroadcast::new();
+        let broadcast = LocalBroadcast::new();
         broadcast.set_video(Some(make_renditions())).unwrap();
         let _watch = broadcast
             .preview(DecodeConfig::default())
@@ -785,7 +892,7 @@ mod tests {
     /// forever because nothing called unpark() on shutdown.
     #[tokio::test]
     async fn replace_video_while_source_parked() {
-        let mut broadcast = LocalBroadcast::new();
+        let broadcast = LocalBroadcast::new();
 
         // Set video but never create a local watch — source thread will be parked.
         broadcast.set_video(Some(make_renditions())).unwrap();
@@ -808,7 +915,7 @@ mod tests {
 
     #[tokio::test]
     async fn source_thread_stops_on_video_removal() {
-        let mut broadcast = LocalBroadcast::new();
+        let broadcast = LocalBroadcast::new();
         broadcast.set_video(Some(make_renditions())).unwrap();
 
         // Give source thread time to start and park.
@@ -903,7 +1010,7 @@ mod tests {
     /// based on the catalog will get "rendition not available" errors.
     #[tokio::test]
     async fn set_video_renditions_available_before_catalog() {
-        let mut broadcast = LocalBroadcast::new();
+        let broadcast = LocalBroadcast::new();
         let renditions = make_renditions();
         let rendition_names: Vec<String> = renditions.renditions.keys().cloned().collect();
 

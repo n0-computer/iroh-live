@@ -88,11 +88,11 @@ async fn setup(cli: Cli, audio_ctx: AudioBackend) -> Result<(Router, LocalBroadc
 
     // Publish ourselves.
     let broadcast = {
-        let mut broadcast = LocalBroadcast::new();
+        let broadcast = LocalBroadcast::new();
         if !cli.no_audio {
             let mic = audio_ctx.default_input().await?;
             let audio = AudioRenditions::new(mic, AudioCodec::Opus, [AudioPreset::Hq]);
-            broadcast.set_audio(Some(audio))?;
+            broadcast.audio().set_renditions(audio)?;
         }
         let video = if cli.screen {
             let screen = ScreenCapturer::new()?;
@@ -101,7 +101,7 @@ async fn setup(cli: Cli, audio_ctx: AudioBackend) -> Result<(Router, LocalBroadc
             let camera = CameraCapturer::new()?;
             VideoRenditions::new(camera, cli.codec, VideoPreset::all())
         };
-        broadcast.set_video(Some(video))?;
+        broadcast.video().set_renditions(video)?;
         broadcast
     };
     let ticket = match cli.join {
@@ -154,10 +154,7 @@ impl eframe::App for App {
                     );
                     let track = match self.rt.block_on(async {
                         broadcast
-                            .media::<DefaultDecoders>(
-                                &self.audio_ctx,
-                                Default::default(),
-                            )
+                            .media::<DefaultDecoders>(&self.audio_ctx, Default::default())
                             .await
                     }) {
                         Ok(track) => track,

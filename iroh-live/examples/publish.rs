@@ -34,20 +34,20 @@ async fn main() -> n0_error::Result {
         .spawn();
 
     // Create a publish broadcast.
-    let mut broadcast = LocalBroadcast::new();
+    let broadcast = LocalBroadcast::new();
 
     // Capture audio, and encode with the cli-provided preset.
     if !cli.no_audio {
         let mic = audio_ctx.default_input().await?;
         let audio = AudioRenditions::new(mic, AudioCodec::Opus, [cli.audio_preset]);
-        broadcast.set_audio(Some(audio))?;
+        broadcast.audio().set_renditions(audio)?;
     }
 
     // Capture camera, and encode with the cli-provided presets.
     if !cli.no_video {
         let camera = CameraCapturer::new()?;
         let video = VideoRenditions::new(camera, cli.codec, cli.video_presets);
-        broadcast.set_video(Some(video))?;
+        broadcast.video().set_renditions(video)?;
     }
 
     // Publish under the name "hello".

@@ -45,9 +45,7 @@ impl Live {
         config: PlaybackConfig,
     ) -> Result<(MoqSession, MediaTracks)> {
         let (session, broadcast) = self.connect_and_subscribe(remote, broadcast_name).await?;
-        let track = broadcast
-            .media::<D>(audio_backend, config)
-            .await?;
+        let track = broadcast.media::<D>(audio_backend, config).await?;
         Ok((session, track))
     }
 

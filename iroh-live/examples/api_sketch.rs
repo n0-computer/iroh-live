@@ -1699,22 +1699,25 @@ mod ex_room_with_screenshare {
 
         // Camera + mic
         let camera = CameraCapture::open(0)?;
-        room.local()
-            .broadcast(TrackName::Camera)
-            .video()
-            .set(camera, VideoCodec::H264, [VideoPreset::P720])?;
+        room.local().broadcast(TrackName::Camera).video().set(
+            camera,
+            VideoCodec::H264,
+            [VideoPreset::P720],
+        )?;
         let mic = audio_backend.default_input().await?;
-        room.local()
-            .broadcast(TrackName::Camera)
-            .audio()
-            .set(mic, AudioCodec::Opus, [AudioPreset::Hq])?;
+        room.local().broadcast(TrackName::Camera).audio().set(
+            mic,
+            AudioCodec::Opus,
+            [AudioPreset::Hq],
+        )?;
 
         // Screen share — just another TrackName
         let screen = ScreenCapture::open().await?;
-        room.local()
-            .broadcast(TrackName::Screen)
-            .video()
-            .set(screen, VideoCodec::H264, [VideoPreset::P1080])?;
+        room.local().broadcast(TrackName::Screen).video().set(
+            screen,
+            VideoCodec::H264,
+            [VideoPreset::P1080],
+        )?;
 
         let mut events = room.events();
         while let Some(event) = events.next().await {
@@ -1754,15 +1757,17 @@ mod ex_room {
         let audio_backend = AudioBackend::new();
 
         let camera = CameraCapture::open(0)?;
-        room.local()
-            .broadcast(TrackName::Camera)
-            .video()
-            .set(camera, VideoCodec::H264, [VideoPreset::P720])?;
+        room.local().broadcast(TrackName::Camera).video().set(
+            camera,
+            VideoCodec::H264,
+            [VideoPreset::P720],
+        )?;
         let mic = audio_backend.default_input().await?;
-        room.local()
-            .broadcast(TrackName::Camera)
-            .audio()
-            .set(mic, AudioCodec::Opus, [AudioPreset::Hq])?;
+        room.local().broadcast(TrackName::Camera).audio().set(
+            mic,
+            AudioCodec::Opus,
+            [AudioPreset::Hq],
+        )?;
 
         println!("Room ID: {}, share ticket: {:?}", room.id(), room.ticket());
 
@@ -1945,15 +1950,17 @@ mod ex_room_via_relay {
 
         let audio_backend = AudioBackend::new();
         let camera = CameraCapture::open(0)?;
-        room.local()
-            .broadcast(TrackName::Camera)
-            .video()
-            .set(camera, VideoCodec::H264, [VideoPreset::P720])?;
+        room.local().broadcast(TrackName::Camera).video().set(
+            camera,
+            VideoCodec::H264,
+            [VideoPreset::P720],
+        )?;
         let mic = audio_backend.default_input().await?;
-        room.local()
-            .broadcast(TrackName::Camera)
-            .audio()
-            .set(mic, AudioCodec::Opus, [AudioPreset::Hq])?;
+        room.local().broadcast(TrackName::Camera).audio().set(
+            mic,
+            AudioCodec::Opus,
+            [AudioPreset::Hq],
+        )?;
 
         let mut events = room.events();
         while let Some(event) = events.next().await {
