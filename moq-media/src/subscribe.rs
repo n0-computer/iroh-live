@@ -136,6 +136,38 @@ impl AudioOptions {
     }
 }
 
+// ── Error types ─────────────────────────────────────────────────────────
+
+/// Errors from subscription operations.
+#[derive(Debug)]
+pub enum SubscribeError {
+    NotFound,
+    NoCatalog,
+    RenditionNotFound(String),
+    DecoderFailed(anyhow::Error),
+    Ended,
+}
+
+impl std::fmt::Display for SubscribeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => write!(f, "broadcast not found"),
+            Self::NoCatalog => write!(f, "no catalog received"),
+            Self::RenditionNotFound(name) => write!(f, "rendition not found: {name}"),
+            Self::DecoderFailed(err) => write!(f, "decoder failed: {err}"),
+            Self::Ended => write!(f, "broadcast ended"),
+        }
+    }
+}
+
+impl std::error::Error for SubscribeError {}
+
+impl From<anyhow::Error> for SubscribeError {
+    fn from(err: anyhow::Error) -> Self {
+        Self::DecoderFailed(err)
+    }
+}
+
 /// Lifecycle state of a remote broadcast.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BroadcastStatus {
