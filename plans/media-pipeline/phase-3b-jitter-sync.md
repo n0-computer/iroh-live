@@ -108,7 +108,7 @@ The central shared state for latency control and A/V sync. Both audio and video 
 ```rust
 /// Shared playout clock for A/V synchronization and latency control.
 ///
-/// Returned by `.clock()` on AvRemoteTrack, AudioTrack, and WatchTrack.
+/// Returned by `.clock()` on AvRemoteTrack, AudioTrack, and VideoTrack.
 /// All tracks in a broadcast share the same clock instance.
 #[derive(Clone)]
 pub struct PlayoutClock {
@@ -359,11 +359,11 @@ Phase 3a) polls `clock.current_max_latency()` and propagates changes.
 
 ### Step 3: Video Integration
 
-**Goal**: Integrate PlayoutBuffer into WatchTrack's decoder thread.
+**Goal**: Integrate PlayoutBuffer into VideoTrack's decoder thread.
 
 **Files**: `moq-media/src/subscribe.rs`
 
-Replace current `WatchTrack::run_loop()`:
+Replace current `VideoTrack::run_loop()`:
 
 ```rust
 fn run_loop(
@@ -420,7 +420,7 @@ fn run_loop(
 **Frame freeze**: When no frames arrive, the timeout keeps the loop alive. The UI's `current_frame()` returns the last decoded frame. No explicit freeze logic needed — the output channel simply has no new frames.
 
 **Tests**:
-- End-to-end: encode 30 frames → transport → WatchTrack with PlayoutClock → decoded frames arrive with smooth timing
+- End-to-end: encode 30 frames → transport → VideoTrack with PlayoutClock → decoded frames arrive with smooth timing
 - Jitter: add ±30ms random delay to frame delivery → output is smoother than input
 - Gap: inject 200ms gap → no panic, last frame held
 
@@ -503,11 +503,11 @@ Audio keeps its 10ms tick cadence (needed for smooth audio output). The PlayoutB
 **Files**: `moq-media/src/subscribe.rs`
 
 ```rust
-impl WatchTrack {
+impl VideoTrack {
     pub fn clock(&self) -> &PlayoutClock { &self.handle.clock }
 }
 
-impl WatchTrackHandle {
+impl VideoTrackHandle {
     pub fn clock(&self) -> &PlayoutClock { &self.clock }
 }
 
@@ -542,7 +542,7 @@ All steps are sequential (each builds on the previous).
 | File | Change |
 |---|---|
 | `moq-media/src/playout.rs` | **New**: `PlayoutClock`, `PlayoutBuffer`, `PlayoutMode`, `SyncAction` |
-| `moq-media/src/subscribe.rs` | Integrate buffer into WatchTrack/AudioTrack run loops, add `.clock()` |
+| `moq-media/src/subscribe.rs` | Integrate buffer into VideoTrack/AudioTrack run loops, add `.clock()` |
 | `moq-media/src/lib.rs` | Export `playout` module |
 
 ## Verification
@@ -570,7 +570,7 @@ End-to-end manual verification:
 One commit per step:
 - `feat(media): add PlayoutClock with Live/Reliable modes and A/V sync`
 - `feat(media): add PlayoutBuffer for frame-level playout timing`
-- `feat(media): integrate playout buffer into WatchTrack decoder loop`
+- `feat(media): integrate playout buffer into VideoTrack decoder loop`
 - `feat(media): integrate playout buffer into AudioTrack decoder loop`
 - `feat(media): expose .clock() API on tracks for latency control`
 

@@ -313,8 +313,8 @@ The current room actor stays but gets a new public face.
 - Inner: `Arc<_>` with `PublicationId`, `TrackKind`, reference to `RemoteBroadcast`
 - Methods:
   - `id()`, `kind()`, `participant()`
-  - `subscribe_video() -> Result<WatchTrack>`
-  - `subscribe_video_with(opts) -> Result<WatchTrack>`
+  - `subscribe_video() -> Result<VideoTrack>`
+  - `subscribe_video_with(opts) -> Result<VideoTrack>`
   - `subscribe_audio(backend) -> Result<AudioTrack>`
   - `subscribe_audio_with(opts, backend) -> Result<AudioTrack>`
 
@@ -530,7 +530,7 @@ After 1-2 releases, remove deprecated items in a semver-major bump.
    audio-only calls or custom subscription logic.
 
 2. **Should `RemoteBroadcast` cache subscriptions?** If you call `subscribe_video()`
-   twice, should it return the same `WatchTrack` or create a new one? Current plan:
+   twice, should it return the same `VideoTrack` or create a new one? Current plan:
    create new one each time (caller manages lifetime).
 
 3. **Should `Room` auto-subscribe to all participants?** Current room behavior is

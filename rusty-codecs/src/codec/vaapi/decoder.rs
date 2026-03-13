@@ -327,7 +327,7 @@ pub struct VaapiDecoder {
 }
 
 // VaapiH264Decoder uses Rc<Display> internally (not Send).
-// Safety: The decoder is only used on a single OS thread (WatchTrack decode thread).
+// Safety: The decoder is only used on a single OS thread (VideoTrack decode thread).
 unsafe impl Send for VaapiDecoder {}
 
 impl VaapiDecoder {

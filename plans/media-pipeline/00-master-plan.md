@@ -137,7 +137,7 @@ Backend selector tries HW first, falls back to openh264.
 ### Phase 3: AV Resilience
 Subscriber-side and publisher-side media quality improvements, structured as four sub-phases:
 
-**Phase 3a: Adaptive Rendition Switching** — WatchTrack and AudioTrack switch renditions on-demand based on injected network signals (RTT, loss, bandwidth). Catalog-aware selection inspects metadata (resolution, bitrate, codec). Seamless switching runs old and new decoders in parallel during handoff.
+**Phase 3a: Adaptive Rendition Switching** — VideoTrack and AudioTrack switch renditions on-demand based on injected network signals (RTT, loss, bandwidth). Catalog-aware selection inspects metadata (resolution, bitrate, codec). Seamless switching runs old and new decoders in parallel during handoff.
 
 **Phase 3b: Jitter Buffer & A/V Sync** — Frame-level playout timing on top of hang's group-level management. PlayoutClock (shared `Arc<Mutex>`) coordinates A/V sync. PlayoutMode: `Auto { min, max }` (adapts to jitter) / `Fixed(Duration)` (user-controlled). Audio is sync master.
 

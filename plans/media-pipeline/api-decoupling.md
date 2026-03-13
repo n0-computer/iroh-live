@@ -250,8 +250,8 @@ These are the high-level public types that own encode/decode threads:
 /// A video decoder pipeline. Reads packets from any PacketSource,
 /// decodes on an OS thread, outputs DecodedVideoFrames.
 pub struct VideoDecoderPipeline {
-    pub frames: WatchTrackFrames,
-    pub handle: WatchTrackHandle,
+    pub frames: VideoTrackFrames,
+    pub handle: VideoTrackHandle,
 }
 
 impl VideoDecoderPipeline {
@@ -284,7 +284,7 @@ impl VideoDecoderPipeline {
             let shutdown = shutdown.clone();
             let viewport_watcher = viewport.watch();
             move || {
-                WatchTrack::run_loop(
+                VideoTrack::run_loop(
                     &shutdown, packet_rx, frame_tx,
                     viewport_watcher, decoder, target_pixel_format,
                 ).ok();
@@ -292,10 +292,10 @@ impl VideoDecoderPipeline {
             }
         });
 
-        let guard = WatchTrackGuard { /* ... */ };
+        let guard = VideoTrackGuard { /* ... */ };
         Ok(Self {
-            frames: WatchTrackFrames { rx: frame_rx },
-            handle: WatchTrackHandle {
+            frames: VideoTrackFrames { rx: frame_rx },
+            handle: VideoTrackHandle {
                 rendition: name,
                 decoder_name,
                 viewport,
@@ -344,9 +344,9 @@ pub struct AudioEncoderPipeline { /* ... */ }
 ### Layer 6: Refactor subscribe.rs & publish.rs
 
 **subscribe.rs:**
-- `WatchTrack::from_consumer` becomes a thin wrapper that creates a `MoqPacketSource` and delegates to `VideoDecoderPipeline::new`
+- `VideoTrack::from_consumer` becomes a thin wrapper that creates a `MoqPacketSource` and delegates to `VideoDecoderPipeline::new`
 - `forward_frames` replaced by generic `forward_packets` that works with any `PacketSource`
-- `WatchTrack::run_loop` stays as-is (it already takes `mpsc::Receiver<MediaPacket>` after the trait change)
+- `VideoTrack::run_loop` stays as-is (it already takes `mpsc::Receiver<MediaPacket>` after the trait change)
 
 **publish.rs:**
 - `EncoderThread::spawn_video` becomes a thin wrapper that creates a `MoqPacketSink` and delegates to `VideoEncoderPipeline::new`
@@ -417,7 +417,7 @@ Each step leaves everything compiling + tests passing.
 - Generic `forward_packets` async fn
 
 ### Step 6: Refactor `subscribe.rs`
-- `WatchTrack::from_consumer` delegates to `VideoDecoderPipeline`
+- `VideoTrack::from_consumer` delegates to `VideoDecoderPipeline`
 - `AudioTrack::spawn` delegates to `AudioDecoderPipeline`
 - Remove direct `OrderedFrame`/`OrderedConsumer` usage from decode loops
 

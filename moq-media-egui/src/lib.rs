@@ -1,7 +1,7 @@
 //! Egui integration for moq-media video rendering.
 //!
 //! Provides [`FrameView`] for rendering raw [`VideoFrame`]s into egui, and
-//! [`WatchTrackView`] which wraps a [`WatchTrack`] with viewport management.
+//! [`VideoTrackView`] which wraps a [`VideoTrack`] with viewport management.
 //! Both support optional wgpu-accelerated rendering via [`EguiVideoRenderer`]
 //! (requires `wgpu-render` feature).
 //!
@@ -11,9 +11,9 @@
 //! # Example
 //!
 //! ```ignore
-//! use moq_media_egui::WatchTrackView;
+//! use moq_media_egui::VideoTrackView;
 //!
-//! let mut view = WatchTrackView::new(&ctx, "video", track);
+//! let mut view = VideoTrackView::new(&ctx, "video", track);
 //! // in update loop:
 //! let (image, frame_ts) = view.render(&ctx, available_size);
 //! ui.add(image);
@@ -23,7 +23,7 @@ use std::{fmt, time::Duration};
 
 pub use moq_media;
 use moq_media::format::VideoFrame;
-use moq_media::subscribe::WatchTrack;
+use moq_media::subscribe::VideoTrack;
 
 #[cfg(feature = "wgpu-render")]
 pub use egui_wgpu;
@@ -53,8 +53,8 @@ pub fn format_bitrate(bits_per_second: f64) -> String {
 /// The wgpu path requires the `wgpu-render` feature and is selected at
 /// construction time via [`FrameView::new_wgpu`].
 ///
-/// This is a low-level building block. For [`WatchTrack`]-based rendering
-/// with automatic viewport management, use [`WatchTrackView`] instead.
+/// This is a low-level building block. For [`VideoTrack`]-based rendering
+/// with automatic viewport management, use [`VideoTrackView`] instead.
 pub struct FrameView {
     texture: egui::TextureHandle,
     #[cfg(feature = "wgpu-render")]
@@ -158,30 +158,30 @@ impl FrameView {
 }
 
 // ---------------------------------------------------------------------------
-// WatchTrackView — FrameView + WatchTrack with viewport management
+// VideoTrackView — FrameView + VideoTrack with viewport management
 // ---------------------------------------------------------------------------
 
-/// Renders a [`WatchTrack`] into an egui UI.
+/// Renders a [`VideoTrack`] into an egui UI.
 ///
 /// Wraps a [`FrameView`] with automatic viewport scaling and frame polling.
 /// Supports both CPU and wgpu-accelerated rendering.
-pub struct WatchTrackView {
-    track: WatchTrack,
+pub struct VideoTrackView {
+    track: VideoTrack,
     frame_view: FrameView,
     size: egui::Vec2,
 }
 
-impl fmt::Debug for WatchTrackView {
+impl fmt::Debug for VideoTrackView {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("WatchTrackView")
+        f.debug_struct("VideoTrackView")
             .field("size", &self.size)
             .finish_non_exhaustive()
     }
 }
 
-impl WatchTrackView {
+impl VideoTrackView {
     /// Creates a new CPU-only view.
-    pub fn new(ctx: &egui::Context, name: &str, track: WatchTrack) -> Self {
+    pub fn new(ctx: &egui::Context, name: &str, track: VideoTrack) -> Self {
         Self {
             track,
             frame_view: FrameView::new(ctx, name),
@@ -194,7 +194,7 @@ impl WatchTrackView {
     pub fn new_wgpu(
         ctx: &egui::Context,
         name: &str,
-        track: WatchTrack,
+        track: VideoTrack,
         render_state: Option<&egui_wgpu::RenderState>,
     ) -> Self {
         Self {
@@ -205,17 +205,17 @@ impl WatchTrackView {
     }
 
     /// Returns a reference to the underlying track.
-    pub fn track(&self) -> &WatchTrack {
+    pub fn track(&self) -> &VideoTrack {
         &self.track
     }
 
     /// Returns a mutable reference to the underlying track.
-    pub fn track_mut(&mut self) -> &mut WatchTrack {
+    pub fn track_mut(&mut self) -> &mut VideoTrack {
         &mut self.track
     }
 
     /// Replaces the underlying track.
-    pub fn set_track(&mut self, track: WatchTrack) {
+    pub fn set_track(&mut self, track: VideoTrack) {
         self.track = track;
     }
 

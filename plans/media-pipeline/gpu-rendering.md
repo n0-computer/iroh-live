@@ -203,11 +203,11 @@ pub struct VaapiDecoder {
 }
 ```
 
-**Note**: `StatelessDecoder` uses `Rc<Display>` internally (not `Send`). The decoder runs on the WatchTrack OS thread which is single-threaded. The output `GenericDmaVideoFrame` IS `Send + Sync` since it holds owned `File` (DMA-BUF fds). So the `VaapiDecoder` itself can be `!Send` on the decode thread, but `DecodedVideoFrame` with `GpuFrame` wrapping the DMA-BUF data IS `Send`.
+**Note**: `StatelessDecoder` uses `Rc<Display>` internally (not `Send`). The decoder runs on the VideoTrack OS thread which is single-threaded. The output `GenericDmaVideoFrame` IS `Send + Sync` since it holds owned `File` (DMA-BUF fds). So the `VaapiDecoder` itself can be `!Send` on the decode thread, but `DecodedVideoFrame` with `GpuFrame` wrapping the DMA-BUF data IS `Send`.
 
 **Problem**: The `VideoDecoder` trait requires `Send + 'static`. But `Rc<Display>` is `!Send`. Solutions:
 1. Wrap in an `unsafe impl Send` newtype (same pattern as `VaapiEncoder` — see encoder.rs:511: `unsafe impl Send for VaapiEncoder {}`)
-2. Justification: single-threaded access guaranteed by WatchTrack's OS thread architecture
+2. Justification: single-threaded access guaranteed by VideoTrack's OS thread architecture
 
 ### VaapiGpuFrame
 
@@ -629,7 +629,7 @@ Also: `update_egui_texture_from_wgpu_texture()` for reusing an existing TextureI
 
 ```rust
 struct VideoView {
-    track: WatchTrack,
+    track: VideoTrack,
     texture: egui::TextureHandle,
     size: egui::Vec2,
     #[cfg(feature = "wgpu")]
@@ -718,8 +718,8 @@ wgpu = ["moq-media/wgpu"]
 
 ## What Stays the Same
 - `VideoDecoder` trait signature — unchanged
-- `WatchTrack` / `WatchTrackFrames` channel architecture — unchanged
-- `WatchTrackHandle` API — unchanged
+- `VideoTrack` / `VideoTrackFrames` channel architecture — unchanged
+- `VideoTrackHandle` API — unchanged
 - OS thread decode loop structure — small BGRA guard added
 - Audio pipeline — completely unaffected
 - Existing encoders — unaffected

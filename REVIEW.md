@@ -70,7 +70,7 @@
 
 ### Testing
 
-- [ ] **T1: No `subscribe.rs` tests** — `SubscribeBroadcast`, `WatchTrack`, `AudioTrack` untested
+- [ ] **T1: No `subscribe.rs` tests** — `SubscribeBroadcast`, `VideoTrack`, `AudioTrack` untested
 - [ ] **T2: No audio decode loop tests** — `audio_decode_loop` in `pipeline.rs` untested
 - [ ] **T3: No `render.rs` tests** — `WgpuVideoRenderer` untested (needs GPU)
 - [ ] **T4: No integration tests** — no end-to-end encode→transport→decode
@@ -120,7 +120,7 @@ lib.rs
 ├── audio_backend.rs   — Firewheel audio I/O + AEC
 ├── publish.rs         — PublishBroadcast, VideoRenditions, AudioRenditions
 ├── publish/controller.rs — PublishCaptureController
-├── subscribe.rs       — SubscribeBroadcast, WatchTrack, AudioTrack
+├── subscribe.rs       — SubscribeBroadcast, VideoTrack, AudioTrack
 ├── render.rs          — wgpu NV12→RGBA renderer
 │   └── dmabuf_import.rs — Zero-copy DMA-BUF Vulkan import
 └── util.rs            — spawn_thread helper
@@ -415,7 +415,7 @@ Each `VaapiDecoder` opens 4 `Display::open()` calls (decode, export, mapping, fr
 
 **File**: `subscribe.rs:396`
 
-`WatchTrack::from_video_source` calls `frame.raw.to_vec()` when the scaler returns `None` (no scaling needed). Since `frame.raw` is `bytes::Bytes`, this copies the entire frame. Could accept `Bytes` in `DecodedVideoFrame::new_cpu_with_format` or use `Bytes::into()` to avoid the copy.
+`VideoTrack::from_video_source` calls `frame.raw.to_vec()` when the scaler returns `None` (no scaling needed). Since `frame.raw` is `bytes::Bytes`, this copies the entire frame. Could accept `Bytes` in `DecodedVideoFrame::new_cpu_with_format` or use `Bytes::into()` to avoid the copy.
 
 ### P20: VAAPI encoder `query_image_formats` per frame upload
 

@@ -2,7 +2,7 @@
 
 ## Goal
 
-WatchTrack and AudioTrack become catalog-aware and switch renditions on-demand. Network signals (RTT, loss, bandwidth) are injected via `SubscribeBroadcast` from the transport layer. Rendition selection inspects catalog metadata (resolution, bitrate, codec), not labels. Switching is seamless: new decoder starts in parallel, output swaps on first decoded frame, then the old decoder stops.
+VideoTrack and AudioTrack become catalog-aware and switch renditions on-demand. Network signals (RTT, loss, bandwidth) are injected via `SubscribeBroadcast` from the transport layer. Rendition selection inspects catalog metadata (resolution, bitrate, codec), not labels. Switching is seamless: new decoder starts in parallel, output swaps on first decoded frame, then the old decoder stops.
 
 ## Prerequisites
 
@@ -19,7 +19,7 @@ iroh-live                                  moq-media
 │ (polls conn.stats()     │    │ SubscribeBroadcast                             │
 │  every 200ms)           │───>│   signals: Option<Watcher<NetworkSignals>>     │
 └─────────────────────────┘    │   │                                            │
-                               │   ├──> WatchTrack                              │
+                               │   ├──> VideoTrack                              │
                                │   │    .set_rendition(Auto / Fixed)            │
                                │   │    .rendition_mode() -> RenditionMode      │
                                │   │    .selected_rendition() -> VideoRendition │
@@ -310,31 +310,31 @@ pub async fn connect_and_subscribe(
 
 ---
 
-### Step 4: WatchTrack Rendition Switching
+### Step 4: VideoTrack Rendition Switching
 
-**Goal**: WatchTrack switches its active rendition on-demand. Output channel stays stable. Switching is seamless: new decoder starts before old stops.
+**Goal**: VideoTrack switches its active rendition on-demand. Output channel stays stable. Switching is seamless: new decoder starts before old stops.
 
 **Files**: `moq-media/src/subscribe.rs`
 
 #### Design
 
-WatchTrack holds `SubscribeBroadcast` internally, enabling it to create new consumers for different renditions:
+VideoTrack holds `SubscribeBroadcast` internally, enabling it to create new consumers for different renditions:
 
 ```rust
-pub struct WatchTrack {
-    video_frames: WatchTrackFrames,     // stable output — rx never changes
-    handle: WatchTrackHandle,
+pub struct VideoTrack {
+    video_frames: VideoTrackFrames,     // stable output — rx never changes
+    handle: VideoTrackHandle,
 }
 
-pub struct WatchTrackHandle {
+pub struct VideoTrackHandle {
     selected_rendition: Arc<Mutex<VideoRendition>>,
     rendition_mode: Arc<Mutex<RenditionMode>>,
     viewport: Watchable<(u32, u32)>,
     mode_tx: mpsc::Sender<RenditionMode>,
-    _guard: WatchTrackGuard,
+    _guard: VideoTrackGuard,
 }
 
-pub struct WatchTrackFrames {
+pub struct VideoTrackFrames {
     rx: mpsc::Receiver<DecodedFrame>,   // never replaced across switches
 }
 ```
@@ -363,7 +363,7 @@ The adaptation task manages decoder thread lifecycle. On rendition change, old a
                                   output_tx (stable)
                                        │
                                   ┌────▼────┐
-                                  │ rx      │ (WatchTrackFrames)
+                                  │ rx      │ (VideoTrackFrames)
                                   └─────────┘
 ```
 
@@ -373,10 +373,10 @@ On `RenditionMode::Auto` without signals → pick middle quality from catalog an
 On `RenditionMode::Auto` with signals → use `VideoRenditionSelector` to adapt.
 On `RenditionMode::Fixed(key)` → subscribe to that specific rendition.
 
-#### WatchTrackHandle API
+#### VideoTrackHandle API
 
 ```rust
-impl WatchTrackHandle {
+impl VideoTrackHandle {
     /// Set rendition mode: Auto (adaptive) or Fixed (pinned).
     pub fn set_rendition(&self, mode: RenditionMode) {
         self.mode_tx.try_send(mode).ok();
@@ -399,7 +399,7 @@ impl WatchTrackHandle {
 #### Constructors
 
 ```rust
-impl WatchTrack {
+impl VideoTrack {
     /// Create from consumer (current behavior, no switching).
     pub(crate) fn from_consumer<D: VideoDecoder>(...) -> Result<Self> { ... }
 
@@ -423,11 +423,11 @@ impl WatchTrack {
 
 ### Step 5: AudioTrack Rendition Switching
 
-**Goal**: AudioTrack switches its active rendition on-demand. Same seamless switching pattern as WatchTrack.
+**Goal**: AudioTrack switches its active rendition on-demand. Same seamless switching pattern as VideoTrack.
 
 **Files**: `moq-media/src/subscribe.rs`
 
-Same adaptation task pattern as WatchTrack, with a staging channel for seamless switching:
+Same adaptation task pattern as VideoTrack, with a staging channel for seamless switching:
 
 ```rust
 pub struct AudioTrack {
@@ -523,7 +523,7 @@ Signals live on `SubscribeBroadcast`, so the existing constructor works for both
 Step 1: NetworkSignals + Rendition types ──┐
                                            ├──> Step 3: SubscribeBroadcast signals
 Step 2: Selection traits                 ──┘         │
-                                                Step 4: WatchTrack switching ──┐
+                                                Step 4: VideoTrack switching ──┐
                                                 Step 5: AudioTrack switching ──┼──> Step 6: AvRemoteTrack
                                                                                │
                                                                           iroh-live wiring
@@ -535,7 +535,7 @@ Step 2: Selection traits                 ──┘         │
 |---|---|
 | `moq-media/src/net.rs` | **New**: `NetworkSignals` struct |
 | `moq-media/src/rendition.rs` | **New**: `RenditionMode`, `VideoRendition`, `AudioRendition`, selection traits, default selectors |
-| `moq-media/src/subscribe.rs` | `SubscribeBroadcast` signals arg, WatchTrack/AudioTrack adaptive switching with seamless decoder handoff |
+| `moq-media/src/subscribe.rs` | `SubscribeBroadcast` signals arg, VideoTrack/AudioTrack adaptive switching with seamless decoder handoff |
 | `moq-media/src/av.rs` | `AudioSink::cloned_boxed()` addition |
 | `moq-media/src/lib.rs` | Export new modules |
 | `iroh-live/src/live.rs` | `connect_and_subscribe` injects signals automatically |
@@ -568,6 +568,6 @@ One commit per step:
 - `feat(media): add NetworkSignals, RenditionMode, and rendition wrapper types`
 - `feat(media): add rendition selection traits with bandwidth-primary default selectors`
 - `feat(media): inject optional network signals into SubscribeBroadcast`
-- `feat(media): add seamless rendition switching to WatchTrack`
+- `feat(media): add seamless rendition switching to VideoTrack`
 - `feat(media): add seamless rendition switching to AudioTrack`
 - `feat(media): wire rendition switching into AvRemoteTrack and iroh-live`

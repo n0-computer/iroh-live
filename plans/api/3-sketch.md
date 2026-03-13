@@ -712,10 +712,10 @@ impl RemoteTrackPublication {
     /// Subscribes to this video publication with default options.
     ///
     /// Uses [`moq_media::codec::DynamicVideoDecoder`] for automatic codec selection.
-    /// Returns a [`moq_media::subscribe::WatchTrack`] that yields decoded frames.
+    /// Returns a [`moq_media::subscribe::VideoTrack`] that yields decoded frames.
     /// For explicit decoder selection, use [`RemoteBroadcast::subscribe_video`]
     /// on the underlying broadcast.
-    pub fn subscribe_video(&self) -> Result<moq_media::subscribe::WatchTrack> {
+    pub fn subscribe_video(&self) -> Result<moq_media::subscribe::VideoTrack> {
         self.subscribe_video_with(Default::default())
     }
 
@@ -726,7 +726,7 @@ impl RemoteTrackPublication {
     pub fn subscribe_video_with(
         &self,
         options: SubscribeVideoOptions,
-    ) -> Result<moq_media::subscribe::WatchTrack> {
+    ) -> Result<moq_media::subscribe::VideoTrack> {
         todo!()
     }
 
@@ -913,7 +913,7 @@ impl LocalBroadcast {
     pub fn preview(
         &self,
         decode_config: moq_media::format::DecodeConfig,
-    ) -> Option<moq_media::subscribe::WatchTrack> {
+    ) -> Option<moq_media::subscribe::VideoTrack> {
         todo!()
     }
 
@@ -1098,11 +1098,11 @@ impl RemoteBroadcast {
     /// Subscribes to the best available video track with default options.
     ///
     /// Selects the highest-quality rendition from the catalog and starts
-    /// decoding. Returns a [`moq_media::subscribe::WatchTrack`] that yields
+    /// decoding. Returns a [`moq_media::subscribe::VideoTrack`] that yields
     /// decoded frames. For rendition control, use [`subscribe_video_with`](Self::subscribe_video_with).
     pub fn subscribe_video<D: moq_media::traits::VideoDecoder>(
         &self,
-    ) -> Result<moq_media::subscribe::WatchTrack> {
+    ) -> Result<moq_media::subscribe::VideoTrack> {
         self.subscribe_video_with::<D>(Default::default())
     }
 
@@ -1110,7 +1110,7 @@ impl RemoteBroadcast {
     pub fn subscribe_video_with<D: moq_media::traits::VideoDecoder>(
         &self,
         options: SubscribeVideoOptions,
-    ) -> Result<moq_media::subscribe::WatchTrack> {
+    ) -> Result<moq_media::subscribe::VideoTrack> {
         todo!()
     }
 

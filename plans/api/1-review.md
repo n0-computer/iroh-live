@@ -268,7 +268,7 @@ This forces apps to reconstruct their own higher-level model. The GPUI app is ef
 Examples:
 
 - `PublishBroadcast` vs `SubscribeBroadcast`
-- `WatchTrack` vs `AudioTrack` vs `AvRemoteTrack`
+- `VideoTrack` vs `AudioTrack` vs `AvRemoteTrack`
 - `PublishOpts` controlling local capture state
 - `RoomPublisherSync` doing async publication by spawning tasks
 - `broadcast_name` at the top level, but track/rendition names below that
@@ -1431,7 +1431,7 @@ That matches both LiveKit's shape and common RTC expectations.
 >
 > This is a clean ownership model: the publication handle is a lightweight view (Arc-based, Clone), while the subscription is an owned resource with drop semantics. It means "unsubscribe" is just `drop(subscription)` — no explicit `unsubscribe()` needed (though providing one for clarity is fine).
 >
-> The `VideoSubscription` type should expose frame access the same way `WatchTrack` does today:
+> The `VideoSubscription` type should expose frame access the same way `VideoTrack` does today:
 >
 > ```rust
 > impl VideoSubscription {
@@ -1845,7 +1845,7 @@ impl CaptureState {
 | `PublishBroadcast` | `LocalPublicationSet` or internal | Users think in publications/tracks, not broadcasts |
 | `SubscribeBroadcast` | `RemotePublicationSet` or internal | Same reason |
 | `AvRemoteTrack` | `RemoteMediaTracks` or remove | Current name is awkward |
-| `WatchTrack` | `RemoteVideoTrack` / `VideoSubscription` | "watch" is UI jargon |
+| `VideoTrack` | `RemoteVideoTrack` / `VideoSubscription` | "watch" is UI jargon |
 | `AudioTrack` | `RemoteAudioTrack` / `AudioSubscription` | Align naming |
 | `PublishCaptureController` | `CaptureManager` / `LocalMediaManager` | More product-shaped |
 | `PublishOpts` | `CaptureState` / `LocalMediaState` | More extensible |
@@ -2271,9 +2271,9 @@ prefer:
 
 That is what users mean.
 
-> **[Note]:** The current `watch_local()` implementation is clever — it creates a `WatchTrack::from_video_source()` that taps the same source before encoding. The renamed `preview()` should preserve this: it should return the *pre-encode* frames (native resolution, no compression artifacts), not round-trip through encode/decode. This matters for camera viewfinders.
+> **[Note]:** The current `watch_local()` implementation is clever — it creates a `VideoTrack::from_video_source()` that taps the same source before encoding. The renamed `preview()` should preserve this: it should return the *pre-encode* frames (native resolution, no compression artifacts), not round-trip through encode/decode. This matters for camera viewfinders.
 >
-> The return type should be the same `VideoSubscription` (or `WatchTrack`) as remote video — same `current_frame()` / `next_frame()` interface. This is good for UI code that doesn't care whether it's rendering local or remote video.
+> The return type should be the same `VideoSubscription` (or `VideoTrack`) as remote video — same `current_frame()` / `next_frame()` interface. This is good for UI code that doesn't care whether it's rendering local or remote video.
 
 ## Additional Current-to-Proposed Mapping
 

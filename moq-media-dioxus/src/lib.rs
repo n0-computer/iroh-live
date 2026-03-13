@@ -25,7 +25,7 @@ use anyrender_vello::{CustomPaintCtx, CustomPaintSource, TextureHandle};
 pub use dioxus_native;
 use dioxus_native::{prelude::dioxus_core::use_hook, use_wgpu};
 pub use moq_media;
-use moq_media::{render::WgpuVideoRenderer, subscribe::WatchTrack};
+use moq_media::{render::WgpuVideoRenderer, subscribe::VideoTrack};
 pub use wgpu_context;
 use wgpu_context::DeviceHandle;
 
@@ -52,7 +52,7 @@ pub fn use_video_renderer() -> (VideoTrackHandle, u64) {
 /// This is `Clone` and `Send`, so it can be stored in dioxus hooks and
 /// cloned into `use_effect` closures. All clones share the same underlying state.
 #[derive(Clone, Debug)]
-pub struct VideoTrackHandle(Arc<Mutex<Option<WatchTrack>>>);
+pub struct VideoTrackHandle(Arc<Mutex<Option<VideoTrack>>>);
 
 impl VideoTrackHandle {
     /// Creates a new empty handle.
@@ -61,7 +61,7 @@ impl VideoTrackHandle {
     }
 
     /// Sets or replaces the active video track.
-    pub fn set(&self, track: WatchTrack) {
+    pub fn set(&self, track: VideoTrack) {
         *self.0.lock().expect("poisoned") = Some(track);
     }
 

@@ -18,7 +18,7 @@ Extracted from both examples (identical logic):
 
 ```rust
 pub struct VideoView {
-    track: WatchTrack,
+    track: VideoTrack,
     size: egui::Vec2,
     texture: egui::TextureHandle,
 }

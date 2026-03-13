@@ -34,7 +34,7 @@ use crate::{
         VideoFormat, VideoFrame, VideoPreset,
     },
     pipeline::{AudioEncoderPipeline, VideoEncoderPipeline},
-    subscribe::WatchTrack,
+    subscribe::VideoTrack,
     traits::{
         AudioEncoder, AudioEncoderFactory, AudioSource, VideoEncoder, VideoEncoderFactory,
         VideoSource,
@@ -131,8 +131,8 @@ impl PublishBroadcast {
         }
     }
 
-    /// Create a local WatchTrack from the current video source, if present.
-    pub fn watch_local(&self, decode_config: DecodeConfig) -> Option<WatchTrack> {
+    /// Create a local VideoTrack from the current video source, if present.
+    pub fn watch_local(&self, decode_config: DecodeConfig) -> Option<VideoTrack> {
         let (source, shutdown) = {
             let state = self.state.lock().expect("poisoned");
             let source = state
@@ -141,7 +141,7 @@ impl PublishBroadcast {
                 .map(|video| video.source.clone())?;
             Some((source, state.local_video_token.child_token()))
         }?;
-        Some(WatchTrack::from_video_source(
+        Some(VideoTrack::from_video_source(
             "local".to_string(),
             shutdown,
             source,

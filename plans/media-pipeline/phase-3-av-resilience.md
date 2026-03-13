@@ -27,7 +27,7 @@ Publisher                          Subscriber
 │ VideoEncoder │                  │ SubscribeBroadcast                   │
 │  set_bitrate │◄──── 3d ────────│   signals: Watcher<NetworkSignals>   │
 │  force_kf    │                  │   │                                  │
-│              │                  │   ├──> WatchTrack                    │
+│              │                  │   ├──> VideoTrack                    │
 │ AudioEncoder │                  │   │    rendition switching (3a)      │
 │  FEC/DTX     │◄──── 3c ────────│   │    playout buffer (3b)           │
 │              │                  │   │                                  │
