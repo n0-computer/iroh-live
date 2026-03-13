@@ -1,6 +1,7 @@
 pub mod audio_backend;
 pub mod capture;
 pub mod pipeline;
+pub mod playout;
 mod processing;
 pub mod publish;
 pub mod subscribe;
