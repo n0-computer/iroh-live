@@ -29,7 +29,7 @@ use iroh_live::{
     moq::MoqSession,
     util::StatsSmoother,
 };
-use moq_media_egui::{EguiVideoRenderer, create_egui_wgpu_config, format_bitrate};
+use moq_media_egui::{WatchTrackView, create_egui_wgpu_config, format_bitrate};
 use n0_error::{Result, anyerr};
 use strum::VariantArray;
 use tracing::{info, warn};
@@ -56,6 +56,18 @@ enum AudioSourceKind {
     TestTone,
     Microphone,
     None,
+}
+
+// ---------------------------------------------------------------------------
+// Render mode
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, strum::Display, strum::VariantArray)]
+enum RenderMode {
+    Software,
+    #[cfg(feature = "wgpu")]
+    #[strum(serialize = "wgpu")]
+    Wgpu,
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +320,7 @@ struct SplitApp {
     pub_codec: VideoCodec,
     pub_preset: VideoPreset,
     broadcast: PublishBroadcast,
-    pub_video_view: Option<PubVideoView>,
+    pub_video_view: Option<WatchTrackView>,
     pub_router: Router,
     #[allow(dead_code, reason = "kept alive for protocol handler")]
     pub_live: Live,
@@ -317,40 +329,33 @@ struct SplitApp {
     // Subscriber state
     session: MoqSession,
     sub_broadcast: SubscribeBroadcast,
-    sub_video: Option<SubVideoView>,
+    sub_video: Option<WatchTrackView>,
     _sub_audio: Option<AudioTrack>,
     sub_backend: DecoderBackend,
+    sub_render_mode: RenderMode,
     stats: StatsSmoother,
 
     // UI state
-    pub_fps: FpsCounter,
-    sub_fps: FpsCounter,
+    pub_stats: FrameStats,
+    sub_stats: FrameStats,
     needs_republish: bool,
     error_msg: Option<String>,
-}
 
-struct PubVideoView {
-    track: WatchTrack,
-    texture: egui::TextureHandle,
-    size: egui::Vec2,
-}
-
-struct SubVideoView {
-    track: WatchTrack,
-    texture: egui::TextureHandle,
-    size: egui::Vec2,
-    egui_renderer: Option<EguiVideoRenderer>,
+    #[cfg(feature = "wgpu")]
+    wgpu_render_state: Option<egui_wgpu::RenderState>,
 }
 
 #[derive(Default)]
-struct FpsCounter {
+struct FrameStats {
     count: u64,
     last_update: Option<Instant>,
     fps: f32,
+    delay_ms: f32,
+    baseline: Option<(Instant, Duration)>,
 }
 
-impl FpsCounter {
-    fn tick(&mut self) {
+impl FrameStats {
+    fn tick(&mut self, frame_ts: Option<Duration>) {
         self.count += 1;
         let now = Instant::now();
         let last = *self.last_update.get_or_insert(now);
@@ -360,7 +365,47 @@ impl FpsCounter {
             self.count = 0;
             self.last_update = Some(now);
         }
+        if let Some(ts) = frame_ts {
+            let (base_wall, base_pts) = *self.baseline.get_or_insert((now, ts));
+            let wall_delta = now.duration_since(base_wall);
+            let pts_delta = ts.saturating_sub(base_pts);
+            self.delay_ms = wall_delta.saturating_sub(pts_delta).as_secs_f32() * 1000.0;
+        }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Fits a rectangle of the given aspect ratio into `available`, preserving aspect.
+fn fit_to_aspect(available: egui::Vec2, aspect: f32) -> egui::Vec2 {
+    let h_by_width = available.x / aspect;
+    if h_by_width <= available.y {
+        egui::vec2(available.x, h_by_width)
+    } else {
+        let w_by_height = available.y * aspect;
+        egui::vec2(w_by_height, available.y)
+    }
+}
+
+fn overlay_bar(ui: &mut egui::Ui, text: &str) {
+    let font = egui::FontId::monospace(11.0);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), font, egui::Color32::WHITE);
+    let bar_rect = egui::Rect::from_min_size(
+        ui.cursor().min,
+        egui::vec2(ui.available_width(), galley.size().y + 4.0),
+    );
+    ui.painter()
+        .rect_filled(bar_rect, 0.0, egui::Color32::from_black_alpha(180));
+    ui.painter().galley(
+        bar_rect.min + egui::vec2(4.0, 2.0),
+        galley,
+        egui::Color32::WHITE,
+    );
+    ui.allocate_space(bar_rect.size());
 }
 
 impl SplitApp {
@@ -376,7 +421,7 @@ impl SplitApp {
         }
     }
 
-    fn republish(&mut self) {
+    fn republish(&mut self, ctx: &egui::Context) {
         self.needs_republish = false;
         self.error_msg = None;
 
@@ -424,10 +469,56 @@ impl SplitApp {
             }
         }
 
-        // Update local preview
-        self.pub_video_view = None; // drop old track
-        // watch_local needs the video to be set first
-        // It returns a WatchTrack that shows raw capture
+        // Reset pub preview — will be re-created from watch_local next frame
+        self.pub_video_view = None;
+
+        // Re-subscribe on the sub side: the old encoder tracks were torn down,
+        // so the subscriber needs a fresh WatchTrack from the new catalog.
+        self.resubscribe_video(ctx);
+    }
+
+    fn resubscribe_video(&mut self, ctx: &egui::Context) {
+        let renditions: Vec<String> = self
+            .sub_broadcast
+            .catalog()
+            .video_renditions()
+            .map(|s| s.to_owned())
+            .collect();
+        if let Some(name) = renditions.first() {
+            let decode_config = DecodeConfig {
+                backend: self.sub_backend,
+                ..Default::default()
+            };
+            match self
+                .sub_broadcast
+                .watch_rendition::<DynamicVideoDecoder>(&decode_config, name)
+            {
+                Ok(track) => {
+                    self.sub_video = Some(self.make_sub_video_view(ctx, track));
+                }
+                Err(e) => {
+                    warn!("re-subscribe failed: {e:#}");
+                }
+            }
+        }
+    }
+
+    fn make_sub_video_view(&self, ctx: &egui::Context, track: WatchTrack) -> WatchTrackView {
+        #[cfg(feature = "wgpu")]
+        if self.sub_render_mode == RenderMode::Wgpu {
+            return WatchTrackView::new_wgpu(
+                ctx,
+                "sub-video",
+                track,
+                self.wgpu_render_state.as_ref(),
+            );
+        }
+        WatchTrackView::new(ctx, "sub-video", track)
+    }
+
+    fn pub_aspect_ratio(&self) -> f32 {
+        let (w, h) = self.pub_preset.dimensions();
+        w as f32 / h as f32
     }
 }
 
@@ -473,134 +564,6 @@ async fn setup(
 }
 
 // ---------------------------------------------------------------------------
-// Video views
-// ---------------------------------------------------------------------------
-
-impl PubVideoView {
-    fn new(ctx: &egui::Context, track: WatchTrack) -> Self {
-        let placeholder = egui::ColorImage::filled([1, 1], egui::Color32::BLACK);
-        let texture = ctx.load_texture("pub-video", placeholder, Default::default());
-        Self {
-            track,
-            texture,
-            size: egui::vec2(100.0, 100.0),
-        }
-    }
-
-    fn render(&mut self, ctx: &egui::Context, available_size: egui::Vec2) -> egui::Image<'_> {
-        if available_size != self.size {
-            self.size = available_size;
-            let ppp = ctx.pixels_per_point();
-            let w = (available_size.x * ppp) as u32;
-            let h = (available_size.y * ppp) as u32;
-            self.track.set_viewport(w, h);
-        }
-        if let Some(frame) = self.track.current_frame() {
-            let (w, h) = (frame.width(), frame.height());
-            let image = egui::ColorImage::from_rgba_unmultiplied(
-                [w as usize, h as usize],
-                frame.img().as_raw(),
-            );
-            self.texture.set(image, Default::default());
-        }
-        egui::Image::from_texture(&self.texture).shrink_to_fit()
-    }
-}
-
-impl SubVideoView {
-    fn new(ctx: &egui::Context, track: WatchTrack) -> Self {
-        let placeholder = egui::ColorImage::filled([1, 1], egui::Color32::BLACK);
-        let texture = ctx.load_texture("sub-video", placeholder, Default::default());
-        Self {
-            track,
-            texture,
-            size: egui::vec2(100.0, 100.0),
-            egui_renderer: None,
-        }
-    }
-
-    fn new_wgpu(cc: &eframe::CreationContext<'_>, track: WatchTrack) -> Self {
-        let placeholder = egui::ColorImage::filled([1, 1], egui::Color32::BLACK);
-        let texture = cc
-            .egui_ctx
-            .load_texture("sub-video", placeholder, Default::default());
-        let egui_renderer = cc.wgpu_render_state.as_ref().map(EguiVideoRenderer::new);
-        Self {
-            track,
-            texture,
-            size: egui::vec2(100.0, 100.0),
-            egui_renderer,
-        }
-    }
-
-    fn set_track(&mut self, track: WatchTrack) {
-        self.track = track;
-    }
-
-    fn render(&mut self, ctx: &egui::Context, available_size: egui::Vec2) -> egui::Image<'_> {
-        if available_size != self.size {
-            self.size = available_size;
-            let ppp = ctx.pixels_per_point();
-            let w = (available_size.x * ppp) as u32;
-            let h = (available_size.y * ppp) as u32;
-            self.track.set_viewport(w, h);
-        }
-
-        if let Some(frame) = self.track.current_frame() {
-            if let Some(ref mut r) = self.egui_renderer {
-                let (id, (w, h)) = r.render(&frame);
-                return egui::Image::from_texture(egui::load::SizedTexture::new(
-                    id,
-                    [w as f32, h as f32],
-                ))
-                .shrink_to_fit();
-            }
-            let (w, h) = (frame.width(), frame.height());
-            let image = egui::ColorImage::from_rgba_unmultiplied(
-                [w as usize, h as usize],
-                frame.img().as_raw(),
-            );
-            self.texture.set(image, Default::default());
-        }
-
-        if let Some(ref r) = self.egui_renderer
-            && let Some((id, (w, h))) = r.last_texture()
-        {
-            return egui::Image::from_texture(egui::load::SizedTexture::new(
-                id,
-                [w as f32, h as f32],
-            ))
-            .shrink_to_fit();
-        }
-
-        egui::Image::from_texture(&self.texture).shrink_to_fit()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// UI helpers
-// ---------------------------------------------------------------------------
-
-fn overlay_bar(ui: &mut egui::Ui, text: &str) {
-    let font = egui::FontId::monospace(11.0);
-    let galley = ui
-        .painter()
-        .layout_no_wrap(text.to_string(), font, egui::Color32::WHITE);
-    let bar_rect = egui::Rect::from_min_size(
-        ui.cursor().min,
-        egui::vec2(ui.available_width(), galley.size().y + 4.0),
-    );
-    ui.painter()
-        .rect_filled(bar_rect, 0.0, egui::Color32::from_black_alpha(180));
-    ui.painter().galley(
-        bar_rect.min + egui::vec2(4.0, 2.0),
-        galley,
-        egui::Color32::WHITE,
-    );
-    ui.allocate_space(bar_rect.size());
-}
-
-// ---------------------------------------------------------------------------
 // eframe App impl
 // ---------------------------------------------------------------------------
 
@@ -610,265 +573,323 @@ impl eframe::App for SplitApp {
 
         // Handle deferred republish
         if self.needs_republish {
-            self.republish();
+            self.republish(ctx);
         }
 
-        // --- Top controls panel ---
-        egui::TopBottomPanel::top("controls").show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                // Publisher controls
-                ui.label("PUB:");
-                let mut changed = false;
+        let panel_width = ctx.input(|i| i.viewport_rect().width()) / 2.0;
 
-                ui.label("Source");
-                egui::ComboBox::from_id_salt("pub_source")
-                    .selected_text(self.pub_video_source.to_string())
-                    .show_ui(ui, |ui| {
-                        for kind in VideoSourceKind::VARIANTS {
-                            if ui
-                                .selectable_value(
-                                    &mut self.pub_video_source,
-                                    *kind,
-                                    kind.to_string(),
-                                )
-                                .changed()
-                            {
-                                changed = true;
+        // =====================================================================
+        // LEFT HALF: Publisher
+        // =====================================================================
+        egui::SidePanel::left("pub_panel")
+            .exact_width(panel_width)
+            .resizable(false)
+            .frame(egui::Frame::new().inner_margin(0.0))
+            .show(ctx, |ui| {
+                // --- Pub controls ---
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    let mut changed = false;
+
+                    ui.label("Source");
+                    egui::ComboBox::from_id_salt("pub_source")
+                        .selected_text(self.pub_video_source.to_string())
+                        .show_ui(ui, |ui| {
+                            for kind in VideoSourceKind::VARIANTS {
+                                if ui
+                                    .selectable_value(
+                                        &mut self.pub_video_source,
+                                        *kind,
+                                        kind.to_string(),
+                                    )
+                                    .changed()
+                                {
+                                    changed = true;
+                                }
                             }
-                        }
-                    });
+                        });
 
-                ui.label("Audio");
-                egui::ComboBox::from_id_salt("pub_audio")
-                    .selected_text(self.pub_audio_source.to_string())
-                    .show_ui(ui, |ui| {
-                        for kind in AudioSourceKind::VARIANTS {
-                            if ui
-                                .selectable_value(
-                                    &mut self.pub_audio_source,
-                                    *kind,
-                                    kind.to_string(),
-                                )
-                                .changed()
-                            {
-                                changed = true;
+                    ui.label("Audio");
+                    egui::ComboBox::from_id_salt("pub_audio")
+                        .selected_text(self.pub_audio_source.to_string())
+                        .show_ui(ui, |ui| {
+                            for kind in AudioSourceKind::VARIANTS {
+                                if ui
+                                    .selectable_value(
+                                        &mut self.pub_audio_source,
+                                        *kind,
+                                        kind.to_string(),
+                                    )
+                                    .changed()
+                                {
+                                    changed = true;
+                                }
                             }
-                        }
-                    });
+                        });
 
-                ui.label("Codec");
-                egui::ComboBox::from_id_salt("pub_codec")
-                    .selected_text(self.pub_codec.display_name())
-                    .show_ui(ui, |ui| {
-                        for codec in VideoCodec::available() {
-                            if ui
-                                .selectable_value(&mut self.pub_codec, codec, codec.display_name())
-                                .changed()
-                            {
-                                changed = true;
+                    ui.label("Codec");
+                    egui::ComboBox::from_id_salt("pub_codec")
+                        .selected_text(self.pub_codec.display_name())
+                        .show_ui(ui, |ui| {
+                            for codec in VideoCodec::available() {
+                                if ui
+                                    .selectable_value(
+                                        &mut self.pub_codec,
+                                        codec,
+                                        codec.display_name(),
+                                    )
+                                    .changed()
+                                {
+                                    changed = true;
+                                }
                             }
-                        }
-                    });
+                        });
 
-                ui.label("Preset");
-                egui::ComboBox::from_id_salt("pub_preset")
-                    .selected_text(self.pub_preset.to_string())
-                    .show_ui(ui, |ui| {
-                        for p in VideoPreset::all() {
-                            if ui
-                                .selectable_value(&mut self.pub_preset, p, p.to_string())
-                                .changed()
-                            {
-                                changed = true;
+                    ui.label("Preset");
+                    egui::ComboBox::from_id_salt("pub_preset")
+                        .selected_text(self.pub_preset.to_string())
+                        .show_ui(ui, |ui| {
+                            for p in VideoPreset::all() {
+                                if ui
+                                    .selectable_value(&mut self.pub_preset, p, p.to_string())
+                                    .changed()
+                                {
+                                    changed = true;
+                                }
                             }
-                        }
-                    });
+                        });
 
-                if changed || ui.button("Restart").clicked() {
-                    self.needs_republish = true;
-                }
+                    if changed || ui.button("Restart").clicked() {
+                        self.needs_republish = true;
+                    }
+
+                    if let Some(ref msg) = self.error_msg {
+                        ui.colored_label(egui::Color32::RED, msg);
+                    }
+                });
 
                 ui.separator();
 
-                // Subscriber controls
-                ui.label("SUB:");
+                // --- Pub video preview ---
+                let avail = ui.available_size();
+                let bar_h = 36.0; // two status bars
+                let video_avail = egui::vec2(avail.x, (avail.y - bar_h).max(1.0));
+                let aspect = self.pub_aspect_ratio();
+                let video_size = fit_to_aspect(video_avail, aspect);
 
-                // Rendition selector
-                let selected_rendition = self
-                    .sub_video
-                    .as_ref()
-                    .map(|v| v.track.rendition().to_owned());
-                egui::ComboBox::from_id_salt("sub_rendition")
-                    .selected_text(
-                        selected_rendition
-                            .clone()
-                            .unwrap_or_else(|| "rendition".into()),
-                    )
-                    .show_ui(ui, |ui| {
-                        for name in self.sub_broadcast.catalog().video_renditions() {
-                            if ui
-                                .selectable_label(selected_rendition.as_deref() == Some(name), name)
-                                .clicked()
-                            {
-                                let decode_config = DecodeConfig {
-                                    backend: self.sub_backend,
-                                    ..Default::default()
-                                };
-                                match self
-                                    .sub_broadcast
-                                    .watch_rendition::<DynamicVideoDecoder>(&decode_config, name)
-                                {
-                                    Ok(track) => {
-                                        if let Some(v) = self.sub_video.as_mut() {
-                                            v.set_track(track);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        warn!("rendition switch failed: {e:#}");
-                                    }
-                                }
-                            }
-                        }
-                    });
-
-                ui.label("Decoder");
-                let backend_name = match self.sub_backend {
-                    DecoderBackend::Auto => "Auto",
-                    DecoderBackend::Software => "SW",
-                };
-                egui::ComboBox::from_id_salt("sub_decoder")
-                    .selected_text(backend_name)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.sub_backend, DecoderBackend::Auto, "Auto");
-                        ui.selectable_value(
-                            &mut self.sub_backend,
-                            DecoderBackend::Software,
-                            "Software",
-                        );
-                    });
-
-                if let Some(ref msg) = self.error_msg {
-                    ui.colored_label(egui::Color32::RED, msg);
+                // Initialize pub video if needed
+                if self.pub_video_view.is_none()
+                    && let Some(track) = self.broadcast.watch_local(DecodeConfig::default())
+                {
+                    self.pub_video_view = Some(WatchTrackView::new(ctx, "pub-video", track));
                 }
-            });
-        });
 
-        // --- Central panel: split into left (pub) and right (sub) ---
+                if let Some(ref mut view) = self.pub_video_view {
+                    let (img, frame_ts) = view.render(ctx, video_size);
+                    // Center the video in available space
+                    let x_pad = (video_avail.x - video_size.x) / 2.0;
+                    let y_pad = (video_avail.y - video_size.y) / 2.0;
+                    ui.add_space(y_pad.max(0.0));
+                    ui.horizontal(|ui| {
+                        ui.add_space(x_pad.max(0.0));
+                        ui.add_sized(video_size, img);
+                    });
+                    ui.add_space(y_pad.max(0.0));
+                    self.pub_stats.tick(frame_ts);
+                } else {
+                    ui.allocate_space(video_avail);
+                    ui.centered_and_justified(|ui| {
+                        ui.label("No publisher video");
+                    });
+                }
+
+                // Publisher status bar
+                let enc_bitrate = self
+                    .sub_broadcast
+                    .catalog()
+                    .video
+                    .renditions
+                    .values()
+                    .next()
+                    .and_then(|c| c.bitrate)
+                    .map(|b| format_bitrate(b as f64))
+                    .unwrap_or_default();
+                let pub_text = format!(
+                    "PUB  codec: {}  preset: {}  fps: {:.0}  delay: {:.0}ms  bitrate: {}",
+                    self.pub_codec.display_name(),
+                    self.pub_preset,
+                    self.pub_stats.fps,
+                    self.pub_stats.delay_ms,
+                    enc_bitrate,
+                );
+                overlay_bar(ui, &pub_text);
+
+                // Placeholder NET bar (no pub-side connection stats yet)
+                overlay_bar(ui, "NET  (local)");
+            });
+
+        // =====================================================================
+        // RIGHT HALF: Subscriber
+        // =====================================================================
         egui::CentralPanel::default()
             .frame(egui::Frame::new().inner_margin(0.0))
             .show(ctx, |ui| {
-                let avail = ui.available_size();
-                let half_w = avail.x / 2.0;
+                // --- Sub controls ---
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
 
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-
-                    // Left: publisher preview
-                    ui.vertical(|ui| {
-                        ui.set_width(half_w);
-                        ui.set_height(avail.y);
-
-                        // Initialize pub video if needed
-                        if self.pub_video_view.is_none()
-                            && let Some(track) = self.broadcast.watch_local(DecodeConfig::default())
-                        {
-                            self.pub_video_view = Some(PubVideoView::new(ctx, track));
-                        }
-
-                        if let Some(ref mut view) = self.pub_video_view {
-                            let bar_h = 18.0;
-                            let video_h = avail.y - bar_h;
-                            let img = view.render(ctx, egui::vec2(half_w, video_h));
-                            ui.add_sized([half_w, video_h], img);
-                            self.pub_fps.tick();
-                        } else {
-                            ui.centered_and_justified(|ui| {
-                                ui.label("No publisher video");
-                            });
-                        }
-
-                        // Publisher status bar
-                        let codec_name = self.pub_codec.display_name();
-                        let preset = self.pub_preset.to_string();
-                        let pub_text = format!(
-                            "PUB  codec: {}  preset: {}  fps: {:.0}",
-                            codec_name, preset, self.pub_fps.fps,
-                        );
-                        overlay_bar(ui, &pub_text);
-                    });
-
-                    // Divider
-                    let painter = ui.painter();
-                    let x = ui.cursor().min.x;
-                    painter.line_segment(
-                        [
-                            egui::pos2(x, ui.clip_rect().top()),
-                            egui::pos2(x, ui.clip_rect().bottom()),
-                        ],
-                        egui::Stroke::new(1.0, egui::Color32::DARK_GRAY),
-                    );
-
-                    // Right: subscriber view
-                    ui.vertical(|ui| {
-                        ui.set_width(half_w);
-                        ui.set_height(avail.y);
-
-                        if let Some(ref mut view) = self.sub_video {
-                            let bar_h = 36.0; // two bars
-                            let video_h = avail.y - bar_h;
-                            let img = view.render(ctx, egui::vec2(half_w, video_h));
-                            ui.add_sized([half_w, video_h], img);
-                            self.sub_fps.tick();
-                        } else {
-                            ui.centered_and_justified(|ui| {
-                                ui.label("Waiting for video...");
-                            });
-                        }
-
-                        // Subscriber decode bar
-                        let decoder_name = self
-                            .sub_video
-                            .as_ref()
-                            .map(|v| v.track.decoder_name().to_owned())
-                            .unwrap_or_default();
-                        let rendition = self
-                            .sub_video
-                            .as_ref()
-                            .map(|v| v.track.rendition().to_owned())
-                            .unwrap_or_default();
-                        let renderer = if self
-                            .sub_video
-                            .as_ref()
-                            .is_some_and(|v| v.egui_renderer.is_some())
-                        {
-                            "wgpu"
-                        } else {
-                            "cpu"
-                        };
-                        let stats = self.stats.smoothed(|| {
-                            let conn = self.session.conn();
-                            (conn.stats(), conn.paths().get())
+                    // Rendition selector
+                    let selected_rendition = self
+                        .sub_video
+                        .as_ref()
+                        .map(|v| v.track().rendition().to_owned());
+                    egui::ComboBox::from_id_salt("sub_rendition")
+                        .selected_text(
+                            selected_rendition
+                                .clone()
+                                .unwrap_or_else(|| "rendition".into()),
+                        )
+                        .show_ui(ui, |ui| {
+                            for name in self.sub_broadcast.catalog().video_renditions() {
+                                if ui
+                                    .selectable_label(
+                                        selected_rendition.as_deref() == Some(name),
+                                        name,
+                                    )
+                                    .clicked()
+                                {
+                                    let decode_config = DecodeConfig {
+                                        backend: self.sub_backend,
+                                        ..Default::default()
+                                    };
+                                    match self.sub_broadcast.watch_rendition::<DynamicVideoDecoder>(
+                                        &decode_config,
+                                        name,
+                                    ) {
+                                        Ok(track) => {
+                                            self.sub_video =
+                                                Some(self.make_sub_video_view(ctx, track));
+                                        }
+                                        Err(e) => {
+                                            warn!("rendition switch failed: {e:#}");
+                                        }
+                                    }
+                                }
+                            }
                         });
-                        let sub_text = format!(
-                            "SUB  dec: {}  rend: {}  render: {}  fps: {:.0}  bitrate: {}",
-                            decoder_name,
-                            rendition,
-                            renderer,
-                            self.sub_fps.fps,
-                            format_bitrate(stats.down.rate as f64),
-                        );
-                        overlay_bar(ui, &sub_text);
 
-                        // Connection stats bar
-                        let conn_text = format!(
-                            "NET  up: {}  down: {}  rtt: {}ms",
-                            stats.up.rate_str,
-                            stats.down.rate_str,
-                            stats.rtt.as_millis(),
-                        );
-                        overlay_bar(ui, &conn_text);
-                    });
+                    ui.label("Decoder");
+                    let backend_name = match self.sub_backend {
+                        DecoderBackend::Auto => "Auto",
+                        DecoderBackend::Software => "SW",
+                    };
+                    egui::ComboBox::from_id_salt("sub_decoder")
+                        .selected_text(backend_name)
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_value(
+                                    &mut self.sub_backend,
+                                    DecoderBackend::Auto,
+                                    "Auto",
+                                )
+                                .changed()
+                                || ui
+                                    .selectable_value(
+                                        &mut self.sub_backend,
+                                        DecoderBackend::Software,
+                                        "Software",
+                                    )
+                                    .changed()
+                            {
+                                self.resubscribe_video(ctx);
+                            }
+                        });
+
+                    ui.label("Render");
+                    egui::ComboBox::from_id_salt("sub_render")
+                        .selected_text(self.sub_render_mode.to_string())
+                        .show_ui(ui, |ui| {
+                            for mode in RenderMode::VARIANTS {
+                                if ui
+                                    .selectable_value(
+                                        &mut self.sub_render_mode,
+                                        *mode,
+                                        mode.to_string(),
+                                    )
+                                    .changed()
+                                {
+                                    // Recreate sub view with new render mode
+                                    self.resubscribe_video(ctx);
+                                }
+                            }
+                        });
                 });
+
+                ui.separator();
+
+                // --- Sub video ---
+                let avail = ui.available_size();
+                let bar_h = 36.0; // two status bars
+                let video_avail = egui::vec2(avail.x, (avail.y - bar_h).max(1.0));
+
+                // Use preset aspect ratio (same source dimensions)
+                let aspect = self.pub_aspect_ratio();
+                let video_size = fit_to_aspect(video_avail, aspect);
+
+                if let Some(ref mut view) = self.sub_video {
+                    let (img, frame_ts) = view.render(ctx, video_size);
+                    let x_pad = (video_avail.x - video_size.x) / 2.0;
+                    let y_pad = (video_avail.y - video_size.y) / 2.0;
+                    ui.add_space(y_pad.max(0.0));
+                    ui.horizontal(|ui| {
+                        ui.add_space(x_pad.max(0.0));
+                        ui.add_sized(video_size, img);
+                    });
+                    ui.add_space(y_pad.max(0.0));
+                    self.sub_stats.tick(frame_ts);
+                } else {
+                    ui.allocate_space(video_avail);
+                }
+
+                // Subscriber decode bar (rend first, then dec)
+                let rendition = self
+                    .sub_video
+                    .as_ref()
+                    .map(|v| v.track().rendition().to_owned())
+                    .unwrap_or_default();
+                let decoder_name = self
+                    .sub_video
+                    .as_ref()
+                    .map(|v| v.track().decoder_name().to_owned())
+                    .unwrap_or_default();
+                let renderer = if self.sub_video.as_ref().is_some_and(|v| v.is_wgpu()) {
+                    "wgpu"
+                } else {
+                    "cpu"
+                };
+                let stats = self.stats.smoothed(|| {
+                    let conn = self.session.conn();
+                    (conn.stats(), conn.paths().get())
+                });
+                let sub_text = format!(
+                    "SUB  rend: {}  dec: {}  render: {}  fps: {:.0}  delay: {:.0}ms  bitrate: {}",
+                    rendition,
+                    decoder_name,
+                    renderer,
+                    self.sub_stats.fps,
+                    self.sub_stats.delay_ms,
+                    format_bitrate(stats.down.rate as f64),
+                );
+                overlay_bar(ui, &sub_text);
+
+                // Connection stats bar
+                let conn_text = format!(
+                    "NET  up: {}  down: {}  rtt: {}ms",
+                    stats.up.rate_str,
+                    stats.down.rate_str,
+                    stats.rtt.as_millis(),
+                );
+                overlay_bar(ui, &conn_text);
             });
     }
 
@@ -918,12 +939,22 @@ fn main() -> Result<()> {
         "iroh-live split",
         native_options,
         Box::new(move |cc| {
+            let sub_render_mode = RenderMode::VARIANTS[0];
+
+            #[cfg(feature = "wgpu")]
+            let wgpu_render_state = cc.wgpu_render_state.clone();
+
             let sub_video = track.video.map(|video| {
-                if use_wgpu {
-                    SubVideoView::new_wgpu(cc, video)
-                } else {
-                    SubVideoView::new(&cc.egui_ctx, video)
+                #[cfg(feature = "wgpu")]
+                if sub_render_mode == RenderMode::Wgpu {
+                    return WatchTrackView::new_wgpu(
+                        &cc.egui_ctx,
+                        "sub-video",
+                        video,
+                        cc.wgpu_render_state.as_ref(),
+                    );
                 }
+                WatchTrackView::new(&cc.egui_ctx, "sub-video", video)
             });
 
             let app = SplitApp {
@@ -942,11 +973,14 @@ fn main() -> Result<()> {
                 sub_video,
                 _sub_audio: track.audio,
                 sub_backend: DecoderBackend::Auto,
+                sub_render_mode,
                 stats: StatsSmoother::new(),
-                pub_fps: FpsCounter::default(),
-                sub_fps: FpsCounter::default(),
+                pub_stats: FrameStats::default(),
+                sub_stats: FrameStats::default(),
                 needs_republish: false,
                 error_msg: None,
+                #[cfg(feature = "wgpu")]
+                wgpu_render_state,
             };
             Ok(Box::new(app))
         }),
