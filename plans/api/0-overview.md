@@ -1,5 +1,11 @@
 # API Redesign Overview
 
+## Status
+
+**Mostly complete.** Core API (phases 1-4, 6-7, 9) is implemented and compiling.
+Remaining: relay support (phase 5), room redesign (phase 8), set_enabled/set_muted stubs.
+See `4-impl.md` for detailed checklist.
+
 ## Goal
 
 Redesign the public API across `moq-media` and `iroh-live` to be ergonomic,

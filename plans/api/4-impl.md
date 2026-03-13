@@ -4,6 +4,41 @@ Step-by-step plan for the API redesign. Each phase compiles and passes tests.
 
 See `0-overview.md` for direction, `iroh-live/examples/api_sketch.rs` for target API.
 
+## Status Checklist
+
+- [x] Phase 1: Rename types (moq-media)
+- [x] Phase 2: Slot API — VideoPublisher/AudioPublisher, `&self` (moq-media)
+- [x] Phase 3: Subscription options + status watchers (moq-media) — partial, see notes
+- [x] Phase 4: Domain error types (moq-media)
+- [ ] Phase 5: Relay support (moq-media)
+- [x] Phase 6: Incoming session support (iroh-moq)
+- [x] Phase 7: Live builder + Call + TrackName (iroh-live) — partial, see notes
+- [ ] Phase 8: Room participant model + events (iroh-live)
+- [x] Phase 9: Wire api_sketch.rs to real imports
+
+### Phase 3 notes
+
+- [x] 3.2 VideoTarget + options (VideoTarget, VideoOptions, AudioOptions, Quality)
+- [x] 3.3 Status watchers — catalog_watcher(), catalog(), has_video(), has_audio(), video_renditions(), audio_renditions()
+- [x] 3.4 VideoTrack improvements — current_frame(), next_frame(), set_viewport()
+- [ ] 3.1 Constructor change — RemoteBroadcast takes BroadcastConsumer, not MoqSession (layering: moq-media can't depend on iroh-moq)
+- [ ] 3.3 BroadcastStatus watcher — status() not yet implemented
+- [ ] 3.4 VideoTrack::frames() Stream — not yet implemented
+
+### Phase 7 notes
+
+- [x] 7.1 LiveBuilder — builder, spawn, spawn_with_router, register_protocols
+- [x] 7.2 Call — dial, accept, local(), remote(), close(), session(), closed()
+- [x] 7.3 TrackName — Camera, Screen, Other(String)
+- [ ] 7.4 Relay convenience — connect_relay, publish_to_relay, subscribe_from_relay
+
+### Phase 2 notes
+
+- [x] VideoPublisher — set(), replace(), clear(), set_enabled() (stub), renditions(), set_renditions()
+- [x] AudioPublisher — set(), clear(), set_muted() (stub), set_renditions()
+- [ ] set_enabled() — stub, needs encoder pipeline pause/resume
+- [ ] set_muted() — stub, needs audio pipeline mute support
+
 ## Principles
 
 - **Each phase compiles and passes tests.**

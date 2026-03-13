@@ -1,4 +1,19 @@
-# Media Pipeline Overhaul — Master Plan
+# Media Pipeline Overhaul — Quick Reference
+
+## Status Checklist
+
+- [x] Phase 1: Codec swap (openh264, unsafe-libopus, yuvutils, pic-scale, rubato)
+- [x] Phase 2: AV1 codec support (rav1e + rav1d)
+- [x] Phase 2b: HW acceleration (VAAPI, VideoToolbox, V4L2)
+- [x] GPU rendering (wgpu, DMA-BUF zero-copy, VAAPI VPP retiler)
+- [x] API decoupling (MediaPacket, PacketSource/PacketSink traits)
+- [x] Standalone viewer example
+- [ ] Phase 3: AV resilience — overview only, no impl
+- [ ] Phase 3a: Adaptive rendition switching — not started
+- [ ] Phase 3b: Jitter buffer & A/V sync — not started
+- [ ] Phase 3c: Forward error correction — future
+- [ ] Phase 3d: Adaptive encoding — future
+- [x] Phase 3e: Audio device switching — partial (basic switching, hot-swap pending)
 
 ## Goal
 
