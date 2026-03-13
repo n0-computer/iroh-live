@@ -41,7 +41,7 @@ impl std::error::Error for CallError {}
 pub struct Call {
     session: MoqSession,
     local: LocalBroadcast,
-    remote: Option<RemoteBroadcast>,
+    remote: RemoteBroadcast,
 }
 
 const CALL_BROADCAST_NAME: &str = "call";
@@ -69,7 +69,7 @@ impl Call {
         Ok(Self {
             session,
             local,
-            remote: Some(remote),
+            remote,
         })
     }
 
@@ -89,7 +89,7 @@ impl Call {
         Ok(Self {
             session,
             local,
-            remote: Some(remote),
+            remote,
         })
     }
 
@@ -99,13 +99,18 @@ impl Call {
     }
 
     /// Returns the remote broadcast (subscribe to video/audio here).
-    pub fn remote(&self) -> Option<&RemoteBroadcast> {
-        self.remote.as_ref()
+    pub fn remote(&self) -> &RemoteBroadcast {
+        &self.remote
     }
 
     /// Returns the remote peer's endpoint ID.
     pub fn remote_id(&self) -> EndpointId {
         self.session.remote_id()
+    }
+
+    /// Returns a reference to the underlying [`MoqSession`].
+    pub fn session(&self) -> &MoqSession {
+        &self.session
     }
 
     /// Closes the call, ending the session.

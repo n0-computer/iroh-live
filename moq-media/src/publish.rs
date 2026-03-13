@@ -304,8 +304,8 @@ impl VideoPublisher<'_> {
 
     /// Replaces the video source while keeping the broadcast live.
     ///
-    /// Stops the current encoder pipeline and starts a new one with the
-    /// given source. Subscribers see a seamless switch.
+    /// Equivalent to [`set`](Self::set) — stops the current encoder pipeline
+    /// and starts a new one. Subscribers see a seamless switch.
     #[cfg(any_video_codec)]
     pub fn replace(
         &self,
@@ -313,8 +313,7 @@ impl VideoPublisher<'_> {
         codec: VideoCodec,
         presets: impl IntoIterator<Item = VideoPreset>,
     ) -> Result<()> {
-        let renditions = VideoRenditions::new(source, codec, presets);
-        self.broadcast.set_video(Some(renditions))
+        self.set(source, codec, presets)
     }
 
     /// Enables or disables video output.
@@ -551,14 +550,14 @@ impl AudioRenditions {
         &mut self,
         name: impl Into<String>,
         config: AudioConfig,
-        callback: impl Fn(AudioFormat) -> anyhow::Result<E> + Send + 'static,
+        encoder_factory: impl Fn(AudioFormat) -> anyhow::Result<E> + Send + 'static,
     ) {
         let format = self.source.format();
         self.renditions.insert(
             name.into(),
             AudioRenditionEntry {
                 config,
-                factory: Box::new(move || Ok(Box::new(callback(format)?))),
+                factory: Box::new(move || Ok(Box::new(encoder_factory(format)?))),
             },
         );
     }
@@ -681,12 +680,12 @@ impl VideoRenditions {
     /// Adds a rendition with a custom encoder factory callback.
     pub fn add_with_callback<E: VideoEncoder>(
         &mut self,
-        name: impl ToString,
+        name: impl Into<String>,
         config: VideoConfig,
         encoder_factory: impl Fn() -> anyhow::Result<E> + Send + 'static,
     ) {
         self.renditions.insert(
-            name.to_string(),
+            name.into(),
             VideoRenditionEntry {
                 config,
                 factory: Box::new(move || Ok(Box::new(encoder_factory()?))),
