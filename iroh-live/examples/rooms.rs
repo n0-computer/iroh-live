@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use clap::Parser;
-use eframe::egui::{self, Color32, Id, Vec2};
+use eframe::egui::{self, Id, Vec2};
 use iroh::{Endpoint, Watcher, protocol::Router};
 use iroh_gossip::{Gossip, TopicId};
 use iroh_live::{
@@ -12,12 +12,13 @@ use iroh_live::{
         codec::{AudioCodec, DefaultDecoders, DynamicVideoDecoder, VideoCodec},
         format::{AudioPreset, VideoPreset},
         publish::{AudioRenditions, PublishBroadcast, VideoRenditions},
-        subscribe::{AudioTrack, AvRemoteTrack, SubscribeBroadcast, WatchTrack},
+        subscribe::{AudioTrack, AvRemoteTrack, SubscribeBroadcast},
     },
     moq::MoqSession,
     rooms::{Room, RoomEvent, RoomTicket},
     util::StatsSmoother,
 };
+use moq_media_egui::WatchTrackView;
 use n0_error::{Result, StdResultExt, anyerr};
 use tracing::{info, warn};
 
@@ -59,7 +60,7 @@ fn main() -> Result<()> {
                 peers: vec![],
                 self_video: broadcast
                     .watch_local(Default::default())
-                    .map(|track| VideoView::new(&cc.egui_ctx, track, usize::MAX)),
+                    .map(|track| WatchTrackView::new(&cc.egui_ctx, "self-video", track)),
                 router,
                 _broadcast: broadcast,
                 audio_ctx,
@@ -119,7 +120,7 @@ async fn setup(cli: Cli, audio_ctx: AudioBackend) -> Result<(Router, PublishBroa
 struct App {
     room: Room,
     peers: Vec<RemoteTrackView>,
-    self_video: Option<VideoView>,
+    self_video: Option<WatchTrackView>,
     router: Router,
     _broadcast: PublishBroadcast,
     audio_ctx: AudioBackend,
@@ -191,7 +192,8 @@ impl eframe::App for App {
                                 .show(ui, |ui| {
                                     ui.set_width(size.0);
                                     ui.set_height(size.1);
-                                    ui.add_sized(size, self_view.render_image(ctx, size.into()));
+                                    let (img, _) = self_view.render(ctx, size.into());
+                                    ui.add_sized(size, img);
                                 });
                         });
                 }
@@ -210,7 +212,7 @@ impl eframe::App for App {
 
 struct RemoteTrackView {
     id: usize,
-    video: Option<VideoView>,
+    video: Option<WatchTrackView>,
     _audio_track: Option<AudioTrack>,
     session: MoqSession,
     broadcast: SubscribeBroadcast,
@@ -220,7 +222,9 @@ struct RemoteTrackView {
 impl RemoteTrackView {
     fn new(ctx: &egui::Context, session: MoqSession, track: AvRemoteTrack, id: usize) -> Self {
         Self {
-            video: track.video.map(|video| VideoView::new(ctx, video, id)),
+            video: track
+                .video
+                .map(|video| WatchTrackView::new(ctx, &format!("video-{id}"), video)),
             stats: StatsSmoother::new(),
             broadcast: track.broadcast,
             id,
@@ -240,7 +244,7 @@ impl RemoteTrackView {
     ) -> Option<egui::Image<'_>> {
         self.video
             .as_mut()
-            .map(|video| video.render_image(ctx, available_size))
+            .map(|video| video.render(ctx, available_size).0)
     }
 
     fn render_overlay_in_rect(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
@@ -264,7 +268,10 @@ impl RemoteTrackView {
 
     fn render_overlay(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
-            let selected = self.video.as_ref().map(|v| v.track.rendition().to_owned());
+            let selected = self
+                .video
+                .as_ref()
+                .map(|v| v.track().rendition().to_owned());
             egui::ComboBox::from_id_salt(format!("video{}", self.id))
                 .selected_text(selected.clone().unwrap_or_default())
                 .show_ui(ui, |ui| {
@@ -279,7 +286,11 @@ impl RemoteTrackView {
                             if let Some(video) = self.video.as_mut() {
                                 video.set_track(track);
                             } else {
-                                self.video = Some(VideoView::new(ui.ctx(), track, self.id))
+                                self.video = Some(WatchTrackView::new(
+                                    ui.ctx(),
+                                    &format!("video-{}", self.id),
+                                    track,
+                                ))
                             }
                         }
                     }
@@ -297,50 +308,6 @@ impl RemoteTrackView {
             ui.label(format!("BW down: {}", stats.down.rate_str));
             ui.label(format!("RTT:     {}ms", stats.rtt.as_millis()));
         });
-    }
-}
-
-struct VideoView {
-    track: WatchTrack,
-    size: egui::Vec2,
-    texture: egui::TextureHandle,
-}
-
-impl VideoView {
-    fn new(ctx: &egui::Context, track: WatchTrack, id: usize) -> Self {
-        let texture_name = format!("video-texture-{}", id);
-        let size = egui::vec2(100., 100.);
-        let color_image =
-            egui::ColorImage::filled([size.x as usize, size.y as usize], Color32::BLACK);
-        let texture = ctx.load_texture(&texture_name, color_image, egui::TextureOptions::default());
-        Self {
-            size,
-            texture,
-            track,
-        }
-    }
-
-    fn set_track(&mut self, track: WatchTrack) {
-        self.track = track;
-    }
-
-    fn render_image(&mut self, ctx: &egui::Context, available_size: Vec2) -> egui::Image<'_> {
-        if available_size != self.size {
-            self.size = available_size;
-            let ppp = ctx.pixels_per_point();
-            let w = (available_size.x * ppp) as u32;
-            let h = (available_size.y * ppp) as u32;
-            self.track.set_viewport(w, h);
-        }
-        if let Some(frame) = self.track.current_frame() {
-            let (w, h) = (frame.width(), frame.height());
-            let image = egui::ColorImage::from_rgba_unmultiplied(
-                [w as usize, h as usize],
-                frame.img().as_raw(),
-            );
-            self.texture.set(image, Default::default());
-        }
-        egui::Image::from_texture(&self.texture).shrink_to_fit()
     }
 }
 

@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use clap::Parser;
-use eframe::egui::{self, Color32, Id, Vec2};
+use eframe::egui::{self, Id};
 use iroh::{Endpoint, EndpointId, Watcher};
 use iroh_live::{
     Live,
@@ -9,13 +9,13 @@ use iroh_live::{
         audio_backend::AudioBackend,
         codec::{DefaultDecoders, DynamicVideoDecoder},
         format::{DecodeConfig, DecoderBackend, PlaybackConfig},
-        subscribe::{AudioTrack, SubscribeBroadcast, WatchTrack},
+        subscribe::{AudioTrack, SubscribeBroadcast},
     },
     moq::MoqSession,
     ticket::LiveTicket,
     util::StatsSmoother,
 };
-use moq_media_egui::{EguiVideoRenderer, create_egui_wgpu_config};
+use moq_media_egui::{WatchTrackView, create_egui_wgpu_config};
 use n0_error::{Result, anyerr};
 use tracing::info;
 
@@ -114,9 +114,14 @@ fn main() -> Result<()> {
 
             let video = track.video.map(|video| {
                 if use_wgpu {
-                    return VideoView::new_wgpu(cc, video);
+                    return WatchTrackView::new_wgpu(
+                        &cc.egui_ctx,
+                        "video",
+                        video,
+                        cc.wgpu_render_state.as_ref(),
+                    );
                 }
-                VideoView::new(&cc.egui_ctx, video)
+                WatchTrackView::new(&cc.egui_ctx, "video", video)
             });
 
             let app = App {
@@ -128,7 +133,6 @@ fn main() -> Result<()> {
                 stats: StatsSmoother::new(),
                 endpoint,
                 rt,
-                use_wgpu,
                 frame_count: 0,
                 fps_last_update: Instant::now(),
                 fps: 0.0,
@@ -140,7 +144,7 @@ fn main() -> Result<()> {
 }
 
 struct App {
-    video: Option<VideoView>,
+    video: Option<WatchTrackView>,
     _audio: Option<AudioTrack>,
     _audio_ctx: AudioBackend,
     endpoint: Endpoint,
@@ -148,7 +152,6 @@ struct App {
     broadcast: SubscribeBroadcast,
     stats: StatsSmoother,
     rt: tokio::runtime::Runtime,
-    use_wgpu: bool,
     frame_count: u64,
     fps_last_update: Instant,
     fps: f32,
@@ -177,7 +180,8 @@ impl eframe::App for App {
 
                 let avail = ui.available_size();
                 if let Some(video) = self.video.as_mut() {
-                    ui.add_sized(avail, video.render(ctx, avail));
+                    let (img, _) = video.render(ctx, avail);
+                    ui.add_sized(avail, img);
                 }
 
                 egui::Area::new(Id::new("overlay"))
@@ -214,7 +218,7 @@ impl App {
             let selected = self
                 .video
                 .as_ref()
-                .map(|video| video.track.rendition().to_owned());
+                .map(|video| video.track().rendition().to_owned());
             egui::ComboBox::from_id_salt("rendition")
                 .selected_text(selected.clone().unwrap_or_default())
                 .show_ui(ui, |ui| {
@@ -226,7 +230,7 @@ impl App {
                                 .broadcast
                                 .watch_rendition::<DynamicVideoDecoder>(&Default::default(), name)
                         {
-                            self.video = Some(VideoView::new(ctx, track));
+                            self.video = Some(WatchTrackView::new(ctx, "video", track));
                         }
                     }
                 });
@@ -234,9 +238,13 @@ impl App {
             let decoder_name = self
                 .video
                 .as_ref()
-                .map(|v| v.track.decoder_name().to_owned())
+                .map(|v| v.track().decoder_name().to_owned())
                 .unwrap_or_default();
-            let renderer = if self.use_wgpu { "wgpu" } else { "cpu" };
+            let renderer = if self.video.as_ref().is_some_and(|v| v.is_wgpu()) {
+                "wgpu"
+            } else {
+                "cpu"
+            };
 
             let stats = self.stats.smoothed(|| {
                 let conn = self.session.conn();
@@ -253,83 +261,5 @@ impl App {
             ui.label(format!("BW down: {}", stats.down.rate_str));
             ui.label(format!("RTT:     {}ms", stats.rtt.as_millis()));
         });
-    }
-}
-
-struct VideoView {
-    track: WatchTrack,
-    texture: egui::TextureHandle,
-    size: egui::Vec2,
-    egui_renderer: Option<EguiVideoRenderer>,
-}
-
-impl VideoView {
-    fn new(ctx: &egui::Context, track: WatchTrack) -> Self {
-        let placeholder = egui::ColorImage::filled([1, 1], Color32::BLACK);
-        let texture = ctx.load_texture("video", placeholder, Default::default());
-        Self {
-            size: egui::vec2(100., 100.),
-            texture,
-            track,
-            egui_renderer: None,
-        }
-    }
-
-    fn new_wgpu(cc: &eframe::CreationContext<'_>, track: WatchTrack) -> Self {
-        let placeholder = egui::ColorImage::filled([1, 1], Color32::BLACK);
-        let texture = cc
-            .egui_ctx
-            .load_texture("video", placeholder, Default::default());
-
-        let egui_renderer = cc.wgpu_render_state.as_ref().map(EguiVideoRenderer::new);
-
-        Self {
-            size: egui::vec2(100., 100.),
-            texture,
-            track,
-            egui_renderer,
-        }
-    }
-
-    fn render(&mut self, ctx: &egui::Context, available_size: Vec2) -> egui::Image<'_> {
-        if available_size != self.size {
-            self.size = available_size;
-            let ppp = ctx.pixels_per_point();
-            let w = (available_size.x * ppp) as u32;
-            let h = (available_size.y * ppp) as u32;
-            self.track.set_viewport(w, h);
-        }
-
-        if let Some(frame) = self.track.current_frame() {
-            if let Some(ref mut r) = self.egui_renderer {
-                let (id, (w, h)) = r.render(&frame);
-                return egui::Image::from_texture(egui::load::SizedTexture::new(
-                    id,
-                    [w as f32, h as f32],
-                ))
-                .shrink_to_fit();
-            }
-
-            // CPU fallback
-            let (w, h) = (frame.width(), frame.height());
-            let image = egui::ColorImage::from_rgba_unmultiplied(
-                [w as usize, h as usize],
-                frame.img().as_raw(),
-            );
-            self.texture.set(image, Default::default());
-        }
-
-        // Return last wgpu texture even if no new frame arrived.
-        if let Some(ref r) = self.egui_renderer
-            && let Some((id, (w, h))) = r.last_texture()
-        {
-            return egui::Image::from_texture(egui::load::SizedTexture::new(
-                id,
-                [w as f32, h as f32],
-            ))
-            .shrink_to_fit();
-        }
-
-        egui::Image::from_texture(&self.texture).shrink_to_fit()
     }
 }

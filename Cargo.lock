@@ -6113,6 +6113,7 @@ dependencies = [
 name = "moq-media-egui"
 version = "0.1.0"
 dependencies = [
+ "egui",
  "egui-wgpu",
  "epaint",
  "moq-media",
