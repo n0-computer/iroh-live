@@ -30,7 +30,6 @@ use crate::{
     util::spawn_thread,
 };
 
-const DEFAULT_MAX_LATENCY: Duration = Duration::from_millis(150);
 const VIDEO_PRIORITY: u8 = 1u8;
 const AUDIO_PRIORITY: u8 = 2u8;
 
@@ -201,6 +200,7 @@ pub struct RemoteBroadcast {
     broadcast: BroadcastConsumer,
     // catalog_watcher: n0_watcher::Direct<CatalogSnapshot>,
     catalog_watchable: Watchable<CatalogSnapshot>,
+    clock: PlayoutClock,
     shutdown: CancellationToken,
     _catalog_task: Arc<AbortOnDropHandle<()>>,
 }
@@ -269,8 +269,19 @@ impl RemoteBroadcast {
     /// Creates a new remote broadcast subscription.
     ///
     /// Waits for the initial catalog before returning. Spawns a background
-    /// task that watches for catalog updates.
+    /// task that watches for catalog updates. A shared [`PlayoutClock`] is
+    /// created from the given mode and passed to all tracks for A/V sync.
     pub async fn new(broadcast_name: String, broadcast: BroadcastConsumer) -> Result<Self> {
+        Self::with_playout(broadcast_name, broadcast, PlayoutMode::default()).await
+    }
+
+    /// Creates a new remote broadcast subscription with a specific [`PlayoutMode`].
+    pub async fn with_playout(
+        broadcast_name: String,
+        broadcast: BroadcastConsumer,
+        playout_mode: PlayoutMode,
+    ) -> Result<Self> {
+        let clock = PlayoutClock::new(playout_mode);
         let shutdown = CancellationToken::new();
 
         let (catalog_watchable, catalog_task) = {
@@ -313,6 +324,7 @@ impl RemoteBroadcast {
             broadcast_name,
             broadcast,
             catalog_watchable,
+            clock,
             _catalog_task: Arc::new(AbortOnDropHandle::new(catalog_task)),
             shutdown,
         })
@@ -341,6 +353,16 @@ impl RemoteBroadcast {
     /// Returns true if the catalog has audio renditions.
     pub fn has_audio(&self) -> bool {
         !self.catalog().audio.renditions.is_empty()
+    }
+
+    /// Returns the shared playout clock for A/V sync and latency control.
+    pub fn clock(&self) -> &PlayoutClock {
+        &self.clock
+    }
+
+    /// Sets the playout mode, updating the shared clock.
+    pub fn set_playout_mode(&self, mode: PlayoutMode) {
+        self.clock.set_mode(mode);
     }
 
     // -- Generic subscription methods (for custom decoders) --
@@ -375,20 +397,8 @@ impl RemoteBroadcast {
         playback_config: &DecodeConfig,
         track_name: &str,
     ) -> Result<VideoTrack> {
-        self.video_rendition_with_clock::<D>(playback_config, track_name, None)
-    }
-
-    /// Subscribes to a specific video rendition with a shared [`PlayoutClock`].
-    pub fn video_rendition_with_clock<D: VideoDecoder>(
-        &self,
-        playback_config: &DecodeConfig,
-        track_name: &str,
-        clock: Option<PlayoutClock>,
-    ) -> Result<VideoTrack> {
-        let max_latency = clock
-            .as_ref()
-            .map(|c| c.hang_max_latency())
-            .unwrap_or(DEFAULT_MAX_LATENCY);
+        let clock = self.clock.clone();
+        let max_latency = clock.hang_max_latency();
         let catalog = self.catalog();
         let video = &catalog.video;
         let config = video
@@ -409,7 +419,7 @@ impl RemoteBroadcast {
             consumer,
             config,
             playback_config,
-            clock,
+            Some(clock),
         )
     }
 
@@ -438,6 +448,8 @@ impl RemoteBroadcast {
         name: &str,
         audio_backend: &dyn AudioStreamFactory,
     ) -> Result<AudioTrack> {
+        let clock = self.clock.clone();
+        let max_latency = clock.hang_max_latency();
         let catalog = self.catalog();
         let audio = &catalog.audio;
         let config = audio.renditions.get(name).context("rendition not found")?;
@@ -448,9 +460,16 @@ impl RemoteBroadcast {
                     priority: AUDIO_PRIORITY,
                 })
                 .anyerr()?,
-            DEFAULT_MAX_LATENCY,
+            max_latency,
         );
-        AudioTrack::spawn::<D>(name.to_string(), consumer, config.clone(), audio_backend).await
+        AudioTrack::spawn::<D>(
+            name.to_string(),
+            consumer,
+            config.clone(),
+            audio_backend,
+            Some(clock),
+        )
+        .await
     }
 
     // -- Options-based subscription (uses VideoOptions/AudioOptions) --
@@ -544,10 +563,13 @@ impl AudioTrack {
         consumer: OrderedConsumer,
         config: AudioConfig,
         audio_backend: &dyn AudioStreamFactory,
+        clock: Option<PlayoutClock>,
     ) -> Result<Self> {
         let source = MoqPacketSource(consumer);
         let config: rusty_codecs::config::AudioConfig = config.into();
-        let pipeline = AudioDecoderPipeline::new::<D>(name, source, &config, audio_backend).await?;
+        let pipeline =
+            AudioDecoderPipeline::with_clock::<D>(name, source, &config, audio_backend, clock)
+                .await?;
         Ok(Self { pipeline })
     }
 
@@ -772,8 +794,8 @@ impl VideoTrack {
 /// Combined video and audio tracks from a [`RemoteBroadcast`].
 ///
 /// Convenience type that holds the broadcast alongside its decoded
-/// media tracks. Shares a [`PlayoutClock`] between audio and video
-/// for A/V synchronization and playout timing.
+/// media tracks. The broadcast's shared [`PlayoutClock`] is used for
+/// A/V synchronization and playout timing.
 #[derive(derive_more::Debug)]
 pub struct MediaTracks {
     /// The underlying broadcast subscription.
@@ -782,50 +804,37 @@ pub struct MediaTracks {
     pub video: Option<VideoTrack>,
     /// The decoded audio track, if the broadcast has audio.
     pub audio: Option<AudioTrack>,
-    /// Shared playout clock for A/V sync and latency control.
-    clock: PlayoutClock,
 }
 
 impl MediaTracks {
     /// Creates media tracks by subscribing to both video and audio from the broadcast.
+    ///
+    /// Uses the broadcast's playout clock for A/V sync. To change the playout
+    /// mode, call [`RemoteBroadcast::set_playout_mode`] before or after.
     pub async fn new<D: Decoders>(
         broadcast: RemoteBroadcast,
         audio_backend: &dyn AudioStreamFactory,
         playback_config: PlaybackConfig,
     ) -> Result<Self> {
-        Self::with_playout::<D>(
-            broadcast,
-            audio_backend,
-            playback_config,
-            PlayoutMode::default(),
-        )
-        .await
-    }
-
-    /// Creates media tracks with a specific [`PlayoutMode`] for timing control.
-    pub async fn with_playout<D: Decoders>(
-        broadcast: RemoteBroadcast,
-        audio_backend: &dyn AudioStreamFactory,
-        playback_config: PlaybackConfig,
-        playout_mode: PlayoutMode,
-    ) -> Result<Self> {
-        let clock = PlayoutClock::new(playout_mode);
-        let audio = broadcast
-            .audio_with_decoder::<D::Audio>(playback_config.quality, audio_backend)
-            .await
-            .inspect_err(|err| tracing::warn!("no audio track: {err}"))
+        let audio_track_name = broadcast
+            .catalog()
+            .select_audio_rendition(playback_config.quality)
             .ok();
+        let audio = match audio_track_name {
+            Some(name) => broadcast
+                .audio_rendition::<D::Audio>(&name, audio_backend)
+                .await
+                .inspect_err(|err| tracing::warn!("no audio track: {err}"))
+                .ok(),
+            None => None,
+        };
         let track_name = broadcast
             .catalog()
             .select_video_rendition(playback_config.quality)
             .ok();
         let video = track_name.and_then(|name| {
             broadcast
-                .video_rendition_with_clock::<D::Video>(
-                    &playback_config.decode_config,
-                    &name,
-                    Some(clock.clone()),
-                )
+                .video_rendition::<D::Video>(&playback_config.decode_config, &name)
                 .inspect_err(|err| tracing::warn!("no video track: {err}"))
                 .ok()
         });
@@ -833,12 +842,11 @@ impl MediaTracks {
             broadcast,
             audio,
             video,
-            clock,
         })
     }
 
     /// Returns the shared playout clock for latency control and A/V sync.
     pub fn clock(&self) -> &PlayoutClock {
-        &self.clock
+        self.broadcast.clock()
     }
 }

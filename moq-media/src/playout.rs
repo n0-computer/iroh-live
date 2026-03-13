@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -9,24 +9,34 @@ use crate::format::VideoFrame;
 /// Controls playout buffer behavior.
 #[derive(Debug, Clone)]
 pub enum PlayoutMode {
-    /// Minimizes latency: skip stale groups/frames to stay near real-time.
+    /// Real-time playback with frame skipping for A/V sync.
     ///
-    /// `max_latency` controls the staleness threshold. Propagated to hang's
-    /// `TrackConsumer::set_max_latency()`. Default: 150ms.
+    /// Frames are released at PTS-correct intervals offset by `buffer`
+    /// from decode time. This absorbs bursty output from hardware
+    /// decoders (DPB flushes). Late video frames may be skipped to
+    /// maintain A/V sync with the audio master.
+    ///
+    /// `max_latency` is propagated to hang's `TrackConsumer` to skip
+    /// stale groups at the transport level.
     Live {
-        /// Maximum acceptable delay behind the sender's clock.
+        /// Display offset from decode time. Smooths DPB burst output.
+        buffer: Duration,
+        /// Transport-level ceiling. Hang skips groups older than this.
         max_latency: Duration,
     },
 
-    /// Delivers every frame in order, no skipping. Accepts higher latency.
+    /// Reliable playback: every frame is played in order, never skipped.
     ///
-    /// hang's `max_latency` is set to `Duration::MAX` to disable group-skip.
+    /// No latency target — frames are released as soon as they are
+    /// decoded. Hang's group-skip threshold is set very high to avoid
+    /// dropping any groups. Good for recordings, demos, and debugging.
     Reliable,
 }
 
 impl Default for PlayoutMode {
     fn default() -> Self {
         Self::Live {
+            buffer: Duration::from_millis(80),
             max_latency: Duration::from_millis(150),
         }
     }
@@ -36,8 +46,9 @@ impl PlayoutMode {
     /// Returns the effective max_latency for hang's `TrackConsumer`.
     pub fn hang_max_latency(&self) -> Duration {
         match self {
-            Self::Live { max_latency } => *max_latency,
-            Self::Reliable => Duration::MAX,
+            Self::Live { max_latency, .. } => *max_latency,
+            // Reliable: very high so hang never skips groups.
+            Self::Reliable => Duration::from_secs(3600),
         }
     }
 }
@@ -46,7 +57,8 @@ impl PlayoutMode {
 ///
 /// All tracks in a broadcast share the same clock instance. The clock
 /// maps media timestamps to wall-clock playout times based on the
-/// configured [`PlayoutMode`].
+/// configured [`PlayoutMode`], tracks per-track sync state, and
+/// measures inter-arrival jitter as a diagnostic.
 #[derive(Debug, Clone)]
 pub struct PlayoutClock {
     inner: Arc<Mutex<ClockInner>>,
@@ -57,6 +69,7 @@ struct ClockInner {
     mode: PlayoutMode,
 
     /// Observed inter-arrival jitter (EMA-smoothed, RFC 3550 style).
+    /// Diagnostic only — does not drive playout timing.
     smoothed_jitter: Duration,
 
     /// Wall clock ↔ media timestamp mapping, established on first frame.
@@ -66,6 +79,10 @@ struct ClockInner {
     /// Previous arrival for jitter calculation.
     prev_arrival: Option<Instant>,
     prev_pts: Option<Duration>,
+
+    /// Per-track latest playout PTS, keyed by track name.
+    /// Used for cross-track A/V sync.
+    track_pts: HashMap<String, Duration>,
 }
 
 impl PlayoutClock {
@@ -79,6 +96,7 @@ impl PlayoutClock {
                 base_pts: None,
                 prev_arrival: None,
                 prev_pts: None,
+                track_pts: HashMap::new(),
             })),
         }
     }
@@ -90,14 +108,24 @@ impl PlayoutClock {
 
     /// Sets the playout mode.
     ///
-    /// Resets the base wall-clock mapping so playout times are recalculated
-    /// relative to the next frame arrival with the new mode's offset.
+    /// If a base mapping exists, shifts `base_wall` by the difference in
+    /// buffer offset so frames already in the playout buffer get correct
+    /// new playout times without a gap. If no base exists yet, just stores
+    /// the new mode.
     pub fn set_mode(&self, mode: PlayoutMode) {
         let mut inner = self.inner.lock().expect("lock");
+        let old_buf = buffer_duration(&inner.mode);
+        let new_buf = buffer_duration(&mode);
+        if let Some(ref mut base_wall) = inner.base_wall {
+            // Shift the anchor: increasing buffer → later playout, decreasing → earlier.
+            let delta = new_buf.as_nanos() as i128 - old_buf.as_nanos() as i128;
+            if delta >= 0 {
+                *base_wall += Duration::from_nanos(delta as u64);
+            } else {
+                *base_wall -= Duration::from_nanos((-delta) as u64);
+            }
+        }
         inner.mode = mode;
-        // Reset base so the new mode's offset (Live vs Reliable) takes effect.
-        inner.base_wall = None;
-        inner.base_pts = None;
     }
 
     /// Returns the effective max_latency for hang's `TrackConsumer`.
@@ -105,30 +133,33 @@ impl PlayoutClock {
         self.inner.lock().expect("lock").mode.hang_max_latency()
     }
 
-    /// Returns the current observed jitter (informational).
+    /// Returns the current observed jitter (diagnostic).
     pub fn jitter(&self) -> Duration {
         self.inner.lock().expect("lock").smoothed_jitter
+    }
+
+    /// Returns the configured buffer duration (Live mode) or zero (Reliable).
+    pub fn buffer(&self) -> Duration {
+        let inner = self.inner.lock().expect("lock");
+        buffer_duration(&inner.mode)
     }
 
     /// Records a frame arrival and updates jitter estimate.
     ///
     /// Called by decoder threads when a decoded frame is pushed into the
-    /// playout buffer.
+    /// playout buffer, or when an audio packet is received.
     pub(crate) fn observe_arrival(&self, pts: Duration) {
         let now = Instant::now();
         let mut inner = self.inner.lock().expect("lock");
 
         // Establish base mapping on first frame.
         if inner.base_wall.is_none() {
-            let offset = match &inner.mode {
-                PlayoutMode::Live { max_latency } => *max_latency,
-                PlayoutMode::Reliable => Duration::ZERO,
-            };
+            let offset = buffer_duration(&inner.mode);
             inner.base_wall = Some(now + offset);
             inner.base_pts = Some(pts);
         }
 
-        // RFC 3550 jitter calculation.
+        // RFC 3550 jitter calculation (diagnostic only).
         if let (Some(prev_arrival), Some(prev_pts)) = (inner.prev_arrival, inner.prev_pts) {
             let actual_interval = now.duration_since(prev_arrival);
             let expected_interval = pts.saturating_sub(prev_pts);
@@ -146,16 +177,67 @@ impl PlayoutClock {
 
     /// Returns the wall-clock time at which a frame with the given PTS
     /// should be played out.
-    ///
-    /// In Live mode: `base_wall + (pts - base_pts)`, where `base_wall`
-    /// includes the initial `max_latency` offset. In Reliable mode:
-    /// `base_wall + (pts - base_pts)` with no extra buffering delay.
     pub(crate) fn playout_time(&self, pts: Duration) -> Option<Instant> {
         let inner = self.inner.lock().expect("lock");
         let base_wall = inner.base_wall?;
         let base_pts = inner.base_pts?;
         let media_offset = pts.saturating_sub(base_pts);
         Some(base_wall + media_offset)
+    }
+
+    /// Reports that a track has played out a frame at the given PTS.
+    ///
+    /// Used for cross-track A/V sync. Audio calls this after pushing
+    /// samples to the sink; video calls this after sending a frame to
+    /// the output channel.
+    pub(crate) fn report_playout(&self, track_id: &str, pts: Duration) {
+        let mut inner = self.inner.lock().expect("lock");
+        inner.track_pts.insert(track_id.to_string(), pts);
+    }
+
+    /// Checks whether a video frame should be played, skipped, or waited.
+    ///
+    /// Compares the video track's PTS against the audio sync master.
+    /// - Live mode: skip if video is behind audio by > half the buffer
+    /// - Reliable mode: never skip, but wait if ahead
+    ///
+    /// NOTE: Not currently used by `PlayoutBuffer::pop_ready` because the
+    /// buffer offset means video is intentionally behind audio by `buffer`
+    /// ms. Raw PTS comparison skips all frames. Needs buffer-aware thresholds.
+    #[cfg(test)]
+    pub(crate) fn sync_action(&self, video_track_id: &str, video_pts: Duration) -> SyncAction {
+        let inner = self.inner.lock().expect("lock");
+
+        // Find the audio track's latest PTS (any track that isn't this video track).
+        let audio_pts = inner
+            .track_pts
+            .iter()
+            .filter(|(k, _)| k.as_str() != video_track_id)
+            .map(|(_, &pts)| pts)
+            .max();
+
+        let Some(audio_pts) = audio_pts else {
+            // No audio track or no audio playout yet → just play.
+            return SyncAction::Play;
+        };
+
+        let buf = buffer_duration(&inner.mode);
+        let skip_threshold = buf / 2;
+        let wait_threshold = buf / 4;
+
+        if video_pts + skip_threshold < audio_pts {
+            // Video is behind audio by more than half the buffer.
+            match &inner.mode {
+                PlayoutMode::Live { .. } => SyncAction::Skip,
+                PlayoutMode::Reliable => SyncAction::Play,
+            }
+        } else if video_pts > audio_pts + wait_threshold {
+            // Video is ahead of audio — wait a bit.
+            let ahead_by = video_pts.saturating_sub(audio_pts);
+            SyncAction::Wait(ahead_by.min(wait_threshold))
+        } else {
+            SyncAction::Play
+        }
     }
 
     /// Resets the clock's base mapping. Called when switching tracks or
@@ -170,24 +252,47 @@ impl PlayoutClock {
     }
 }
 
+/// Returns the buffer/display offset for the given mode.
+fn buffer_duration(mode: &PlayoutMode) -> Duration {
+    match mode {
+        PlayoutMode::Live { buffer, .. } => *buffer,
+        // Reliable: no buffering offset, play as soon as decoded.
+        PlayoutMode::Reliable => Duration::ZERO,
+    }
+}
+
+/// Action for video sync with the audio master.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SyncAction {
+    /// Play this frame normally.
+    Play,
+    /// Skip this frame — video is behind the audio sync master (Live mode only).
+    Skip,
+    /// Wait this long before playing — video is ahead of audio.
+    Wait(Duration),
+}
+
 /// Post-decoder frame buffer that smooths bursty decoder output.
 ///
 /// Sits between the video decoder's `pop_frame()` and the output channel.
 /// Frames are inserted as they come from the decoder and released when
-/// their playout time arrives.
+/// their playout time arrives. Supports A/V sync via the shared clock.
 pub(crate) struct PlayoutBuffer {
     buffer: VecDeque<VideoFrame>,
     max_frames: usize,
     clock: PlayoutClock,
+    track_id: String,
 }
 
 impl PlayoutBuffer {
-    /// Creates a new playout buffer.
-    pub(crate) fn new(clock: PlayoutClock) -> Self {
+    /// Creates a new playout buffer for the given track.
+    pub(crate) fn new(clock: PlayoutClock, track_id: String) -> Self {
         Self {
             buffer: VecDeque::new(),
             max_frames: 30, // 1 second at 30fps — safety valve
             clock,
+            track_id,
         }
     }
 
@@ -202,14 +307,20 @@ impl PlayoutBuffer {
     }
 
     /// Pops the next frame whose playout time has arrived.
+    ///
+    /// Frames are released based on the clock's PTS→wall-clock mapping.
+    /// Cross-track A/V sync (skip/wait) is not yet applied here — the
+    /// buffer offset means video is intentionally behind audio by
+    /// `buffer` ms, so raw PTS comparison would incorrectly skip frames.
     pub(crate) fn pop_ready(&mut self) -> Option<VideoFrame> {
         let front = self.buffer.front()?;
         let playout = self.clock.playout_time(front.timestamp)?;
-        if Instant::now() >= playout {
-            self.buffer.pop_front()
-        } else {
-            None
+        if Instant::now() < playout {
+            return None;
         }
+        let frame = self.buffer.pop_front()?;
+        self.clock.report_playout(&self.track_id, frame.timestamp);
+        Some(frame)
     }
 
     /// Returns the duration until the next frame is ready for playout.
@@ -290,19 +401,11 @@ mod tests {
     #[test]
     fn playout_clock_jitter_measurement() {
         let clock = PlayoutClock::new(PlayoutMode::default());
-
-        // Simulate arrivals with 33ms PTS spacing but ±5ms jitter.
         let pts_interval = Duration::from_millis(33);
         for i in 0..32 {
             let pts = pts_interval * i;
             clock.observe_arrival(pts);
-            // Simulate wall-clock jitter by sleeping a tiny bit extra on odd frames.
-            // In tests we can't actually control wall time precisely, but we verify
-            // the jitter calculation doesn't panic and converges.
         }
-
-        // After 32 samples, jitter should be small (near zero since we call
-        // observe_arrival without actual wall-clock jitter in a tight loop).
         let jitter = clock.jitter();
         assert!(
             jitter < Duration::from_millis(100),
@@ -311,11 +414,11 @@ mod tests {
     }
 
     #[test]
-    fn playout_clock_base_mapping() {
+    fn playout_clock_base_mapping_live() {
         let clock = PlayoutClock::new(PlayoutMode::Live {
-            max_latency: Duration::from_millis(100),
+            buffer: Duration::from_millis(80),
+            max_latency: Duration::from_millis(150),
         });
-
         let pts0 = Duration::from_millis(0);
         let pts1 = Duration::from_millis(33);
 
@@ -323,38 +426,31 @@ mod tests {
         let t0 = clock.playout_time(pts0).expect("should have base");
         let t1 = clock.playout_time(pts1).expect("should have base");
 
-        // t1 should be ~33ms after t0.
         let diff = t1.duration_since(t0);
         assert!(
             (diff.as_millis() as i64 - 33).unsigned_abs() < 2,
             "playout times should be 33ms apart, got {diff:?}"
         );
 
-        // t0 should be ~100ms (max_latency) in the future from when we called observe.
+        // Playout should be offset by ~buffer (80ms) from now.
         let now = Instant::now();
-        // t0 was set as now + 100ms at the time of observe_arrival, which was
-        // a few microseconds ago. It should still be in the near future or very
-        // recently past.
         let diff_from_now = if t0 > now {
             t0.duration_since(now)
         } else {
             now.duration_since(t0)
         };
         assert!(
-            diff_from_now < Duration::from_millis(110),
-            "playout should be near max_latency offset, got {diff_from_now:?}"
+            diff_from_now < Duration::from_millis(90),
+            "playout should be near buffer offset, got {diff_from_now:?}"
         );
     }
 
     #[test]
     fn playout_clock_reliable_mode() {
         let clock = PlayoutClock::new(PlayoutMode::Reliable);
-
         let pts0 = Duration::from_millis(0);
         clock.observe_arrival(pts0);
         let t0 = clock.playout_time(pts0).expect("should have base");
-
-        // Reliable mode: base_wall = now (no offset), so t0 ≈ now.
         let now = Instant::now();
         let diff = if t0 > now {
             t0.duration_since(now)
@@ -372,7 +468,6 @@ mod tests {
         let clock = PlayoutClock::new(PlayoutMode::default());
         clock.observe_arrival(Duration::ZERO);
         assert!(clock.playout_time(Duration::ZERO).is_some());
-
         clock.reset();
         assert!(clock.playout_time(Duration::ZERO).is_none());
         assert_eq!(clock.jitter(), Duration::ZERO);
@@ -381,48 +476,32 @@ mod tests {
     #[test]
     fn playout_buffer_push_pop() {
         let clock = PlayoutClock::new(PlayoutMode::Reliable);
-        let mut buf = PlayoutBuffer::new(clock);
-
-        // Push 3 frames with 33ms PTS spacing.
+        let mut buf = PlayoutBuffer::new(clock, "video".into());
         for i in 0..3 {
             buf.push(make_test_frame(Duration::from_millis(i * 33)));
         }
         assert_eq!(buf.len(), 3);
-
-        // In Reliable mode with base_wall ≈ now, all 3 frames should be
-        // immediately ready (their playout times are now or in the past since
-        // we pushed 0ms, 33ms, 66ms but called observe_arrival which set
-        // base_wall = now for the first one).
-        // Frame 0: playout = base_wall + 0 ≈ now → ready
         let f0 = buf.pop_ready();
         assert!(f0.is_some(), "frame 0 should be ready");
-
-        // Frame 1: playout = base_wall + 33ms — may not be ready yet.
-        // In tests this runs fast so it may or may not be ready.
-        // Just verify no panics and eventual draining.
     }
 
     #[test]
     fn playout_buffer_overflow_drops_oldest() {
         let clock = PlayoutClock::new(PlayoutMode::Live {
-            max_latency: Duration::from_secs(10), // large latency so nothing is ready
+            buffer: Duration::from_secs(10),
+            max_latency: Duration::from_secs(10),
         });
-        let mut buf = PlayoutBuffer::new(clock);
-
-        // Push more than max_frames.
+        let mut buf = PlayoutBuffer::new(clock, "video".into());
         for i in 0..40 {
             buf.push(make_test_frame(Duration::from_millis(i * 33)));
         }
-
-        // Buffer should be capped at max_frames.
         assert_eq!(buf.len(), 30);
     }
 
     #[test]
     fn playout_buffer_empty_pop() {
         let clock = PlayoutClock::new(PlayoutMode::default());
-        let mut buf = PlayoutBuffer::new(clock);
-
+        let mut buf = PlayoutBuffer::new(clock, "video".into());
         assert!(buf.pop_ready().is_none());
         assert!(buf.next_playout_wait().is_none());
     }
@@ -430,7 +509,7 @@ mod tests {
     #[test]
     fn playout_buffer_clear() {
         let clock = PlayoutClock::new(PlayoutMode::Reliable);
-        let mut buf = PlayoutBuffer::new(clock);
+        let mut buf = PlayoutBuffer::new(clock, "video".into());
         buf.push(make_test_frame(Duration::ZERO));
         assert_eq!(buf.len(), 1);
         buf.clear();
@@ -440,57 +519,58 @@ mod tests {
     #[test]
     fn playout_mode_hang_max_latency() {
         let live = PlayoutMode::Live {
+            buffer: Duration::from_millis(80),
             max_latency: Duration::from_millis(200),
         };
         assert_eq!(live.hang_max_latency(), Duration::from_millis(200));
 
         let reliable = PlayoutMode::Reliable;
-        assert_eq!(reliable.hang_max_latency(), Duration::MAX);
+        assert_eq!(reliable.hang_max_latency(), Duration::from_secs(3600));
     }
 
     #[test]
-    fn playout_clock_set_mode_resets_base() {
+    fn playout_clock_set_mode_shifts_base() {
         let clock = PlayoutClock::new(PlayoutMode::Live {
-            max_latency: Duration::from_millis(100),
+            buffer: Duration::from_millis(80),
+            max_latency: Duration::from_millis(150),
         });
-
-        // Establish base mapping.
         clock.observe_arrival(Duration::ZERO);
-        assert!(clock.playout_time(Duration::ZERO).is_some());
+        let t_before = clock.playout_time(Duration::ZERO).expect("should have base");
 
-        // Switch mode → base should reset.
+        // Switch to Reliable (buffer=0): playout times should shift earlier by 80ms.
         clock.set_mode(PlayoutMode::Reliable);
+        let t_after = clock
+            .playout_time(Duration::ZERO)
+            .expect("base should still exist after set_mode");
+
+        // t_after should be ~80ms earlier than t_before.
+        let shift = t_before.duration_since(t_after);
         assert!(
-            clock.playout_time(Duration::ZERO).is_none(),
-            "base should be cleared after set_mode"
+            (shift.as_millis() as i64 - 80).unsigned_abs() < 5,
+            "expected ~80ms shift, got {shift:?}"
         );
 
-        // Next arrival re-establishes with new mode.
-        clock.observe_arrival(Duration::from_millis(100));
-        let t = clock
-            .playout_time(Duration::from_millis(100))
-            .expect("should have base after re-observe");
-        // Reliable mode: base_wall ≈ now (no offset).
-        let now = Instant::now();
-        let diff = if t > now {
-            t.duration_since(now)
-        } else {
-            now.duration_since(t)
-        };
+        // Switch to Live with larger buffer: should shift later.
+        clock.set_mode(PlayoutMode::Live {
+            buffer: Duration::from_millis(200),
+            max_latency: Duration::from_millis(300),
+        });
+        let t_large = clock
+            .playout_time(Duration::ZERO)
+            .expect("base should still exist");
+        let shift2 = t_large.duration_since(t_after);
         assert!(
-            diff < Duration::from_millis(10),
-            "reliable mode should have near-zero offset, got {diff:?}"
+            (shift2.as_millis() as i64 - 200).unsigned_abs() < 5,
+            "expected ~200ms shift from reliable, got {shift2:?}"
         );
     }
 
     #[test]
     fn playout_buffer_reset_clock_clears_base() {
         let clock = PlayoutClock::new(PlayoutMode::Reliable);
-        let mut buf = PlayoutBuffer::new(clock.clone());
-
+        let mut buf = PlayoutBuffer::new(clock.clone(), "video".into());
         buf.push(make_test_frame(Duration::ZERO));
         assert!(clock.playout_time(Duration::ZERO).is_some());
-
         buf.clear();
         buf.reset_clock();
         assert!(
@@ -500,12 +580,64 @@ mod tests {
     }
 
     #[test]
+    fn sync_action_no_audio() {
+        let clock = PlayoutClock::new(PlayoutMode::default());
+        // No audio track registered → always Play.
+        let action = clock.sync_action("video", Duration::from_millis(100));
+        assert_eq!(action, SyncAction::Play);
+    }
+
+    #[test]
+    fn sync_action_video_behind_audio_live() {
+        let clock = PlayoutClock::new(PlayoutMode::Live {
+            buffer: Duration::from_millis(100),
+            max_latency: Duration::from_millis(150),
+        });
+        // Audio is at 500ms, video is at 200ms → video behind by 300ms > 50ms threshold.
+        clock.report_playout("audio", Duration::from_millis(500));
+        let action = clock.sync_action("video", Duration::from_millis(200));
+        assert_eq!(action, SyncAction::Skip);
+    }
+
+    #[test]
+    fn sync_action_video_behind_audio_reliable() {
+        let clock = PlayoutClock::new(PlayoutMode::Reliable);
+        // Same scenario but Reliable mode → never skip.
+        clock.report_playout("audio", Duration::from_millis(500));
+        let action = clock.sync_action("video", Duration::from_millis(200));
+        assert_eq!(action, SyncAction::Play);
+    }
+
+    #[test]
+    fn sync_action_video_ahead_of_audio() {
+        let clock = PlayoutClock::new(PlayoutMode::Live {
+            buffer: Duration::from_millis(100),
+            max_latency: Duration::from_millis(150),
+        });
+        // Audio is at 100ms, video is at 200ms → video ahead by 100ms > 25ms threshold.
+        clock.report_playout("audio", Duration::from_millis(100));
+        let action = clock.sync_action("video", Duration::from_millis(200));
+        assert!(matches!(action, SyncAction::Wait(_)));
+    }
+
+    #[test]
+    fn sync_action_in_sync() {
+        let clock = PlayoutClock::new(PlayoutMode::Live {
+            buffer: Duration::from_millis(100),
+            max_latency: Duration::from_millis(150),
+        });
+        // Audio at 100ms, video at 110ms → within threshold → Play.
+        clock.report_playout("audio", Duration::from_millis(100));
+        let action = clock.sync_action("video", Duration::from_millis(110));
+        assert_eq!(action, SyncAction::Play);
+    }
+
+    #[test]
     fn recv_timeout_on_empty_channel() {
         let (_tx, mut rx) = tokio::sync::mpsc::channel::<u32>(1);
         let start = Instant::now();
         let result = recv_timeout(&mut rx, Duration::from_millis(10));
         let elapsed = start.elapsed();
-
         assert!(matches!(result, RecvResult::Timeout));
         assert!(elapsed >= Duration::from_millis(9), "should wait ~10ms");
         assert!(

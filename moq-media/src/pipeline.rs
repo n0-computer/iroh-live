@@ -157,6 +157,7 @@ impl VideoDecoderPipeline {
 
         let thread_name = format!("vdec-{name}");
         let decoder_name_for_handle = decoder_name;
+        let track_id = name.clone();
         let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             move || {
@@ -169,6 +170,7 @@ impl VideoDecoderPipeline {
                     viewport_watcher,
                     decoder,
                     clock,
+                    track_id,
                 ) {
                     error!("decoder failed: {err:#}");
                 }
@@ -322,8 +324,12 @@ impl Drop for VideoEncoderPipeline {
 /// drains decoded frames into the [`PlayoutBuffer`], and releases them
 /// to the output channel at PTS-correct intervals.
 ///
-/// When no [`PlayoutClock`] is provided, frames are sent immediately
-/// (legacy behavior for local pipelines without MoQ transport).
+/// The playout buffer smooths bursty DPB output from hardware decoders.
+/// In [`PlayoutMode::Reliable`] (buffer=0), frames are released immediately
+/// after decode — equivalent to the original direct-send path.
+///
+/// Uses `blocking_recv()` when the buffer is empty (zero CPU overhead),
+/// and timed waits only when frames are buffered and awaiting playout.
 fn decode_loop(
     shutdown: &CancellationToken,
     mut input_rx: mpsc::Receiver<MediaPacket>,
@@ -331,134 +337,62 @@ fn decode_loop(
     mut viewport_watcher: n0_watcher::Direct<(u32, u32)>,
     mut decoder: impl VideoDecoder,
     clock: Option<PlayoutClock>,
+    track_id: String,
 ) -> Result<()> {
     let mut waiting_for_keyframe = false;
     let mut last_send = Instant::now();
 
-    // When a clock is provided, use the playout buffer for smooth timing.
-    // Otherwise fall through to direct-send (legacy path).
-    if let Some(clock) = clock {
-        return decode_loop_buffered(
+    // When no clock is provided (local pipelines), send frames directly.
+    let Some(clock) = clock else {
+        return decode_loop_direct(
             shutdown,
             &mut input_rx,
             &output_tx,
             &mut viewport_watcher,
             &mut decoder,
-            clock,
         );
-    }
+    };
 
-    loop {
-        if shutdown.is_cancelled() {
-            break;
-        }
-        let recv_t = Instant::now();
-        let Some(packet) = input_rx.blocking_recv() else {
-            break;
-        };
-        let recv_elapsed = recv_t.elapsed();
-        if recv_elapsed > Duration::from_millis(50) {
-            debug!(t=?recv_elapsed, "decode_loop: slow blocking_recv (starved?)");
-        }
-
-        if waiting_for_keyframe {
-            if !packet.is_keyframe {
-                trace!("skipping non-keyframe packet while waiting for recovery");
-                continue;
-            }
-            info!("received keyframe, resuming decode");
-            waiting_for_keyframe = false;
-        }
-
-        if viewport_watcher.update() {
-            let (w, h) = viewport_watcher.peek();
-            decoder.set_viewport(*w, *h);
-        }
-
-        let t = Instant::now();
-        if let Err(err) = decoder.push_packet(packet) {
-            warn!("failed to push video packet, waiting for next keyframe: {err:#}");
-            waiting_for_keyframe = true;
-            continue;
-        }
-        let push_elapsed = t.elapsed();
-        if push_elapsed > Duration::from_millis(10) {
-            debug!(t=?push_elapsed, "decode_loop: slow push_packet");
-        }
-
-        // Drain all frames and send them to the output channel.
-        // Hardware decoders (e.g. VAAPI/cros-codecs) buffer frames in
-        // the DPB and release them in bursts at keyframe boundaries.
-        loop {
-            match decoder.pop_frame() {
-                Ok(Some(frame)) => {
-                    if output_tx.blocking_send(frame).is_err() {
-                        debug!("pipeline: frame receiver dropped");
-                        return Ok(());
-                    }
-                    let gap = last_send.elapsed();
-                    if gap > Duration::from_millis(50) {
-                        debug!(gap=?gap, "decode_loop: frame gap (stutter)");
-                    }
-                    last_send = Instant::now();
-                }
-                Ok(None) => break,
-                Err(err) => {
-                    warn!("failed to pop video frame, waiting for next keyframe: {err:#}");
-                    waiting_for_keyframe = true;
-                    break;
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Buffered decode loop with playout timing.
-///
-/// Drains decoded frames into a [`PlayoutBuffer`] and releases them at
-/// PTS-correct intervals, absorbing DPB burst output from hardware decoders.
-fn decode_loop_buffered(
-    shutdown: &CancellationToken,
-    input_rx: &mut mpsc::Receiver<MediaPacket>,
-    output_tx: &mpsc::Sender<VideoFrame>,
-    viewport_watcher: &mut n0_watcher::Direct<(u32, u32)>,
-    decoder: &mut impl VideoDecoder,
-    clock: PlayoutClock,
-) -> Result<()> {
-    let mut playout = PlayoutBuffer::new(clock);
-    let mut waiting_for_keyframe = false;
-    let mut last_send = Instant::now();
+    let mut playout = PlayoutBuffer::new(clock, track_id);
 
     loop {
         if shutdown.is_cancelled() {
             break;
         }
 
-        // Wait for next packet or playout deadline, whichever is sooner.
-        let timeout = playout
-            .next_playout_wait()
-            .unwrap_or(Duration::from_millis(50));
-
-        let packet = match crate::playout::recv_timeout(input_rx, timeout) {
-            RecvResult::Value(pkt) => Some(pkt),
-            RecvResult::Timeout => None,
-            RecvResult::Disconnected => {
-                // Input closed. Drain remaining buffered frames before exiting.
-                while let Some(wait) = playout.next_playout_wait() {
-                    if shutdown.is_cancelled() {
+        // Receive next packet. When the playout buffer has frames waiting,
+        // use a timed wait so we can release them on time. When empty,
+        // use blocking_recv() for zero-overhead waiting.
+        let packet = match playout.next_playout_wait() {
+            Some(wait) if !wait.is_zero() => {
+                // Buffer has frames not yet ready. Wait for the shorter of
+                // the next playout deadline or a new packet arriving.
+                match crate::playout::recv_timeout(&mut input_rx, wait) {
+                    RecvResult::Value(pkt) => Some(pkt),
+                    RecvResult::Timeout => None,
+                    RecvResult::Disconnected => {
+                        drain_playout_buffer(shutdown, &mut playout, &output_tx);
                         break;
                     }
-                    if !wait.is_zero() {
-                        std::thread::sleep(wait);
-                    }
-                    while let Some(frame) = playout.pop_ready() {
-                        if output_tx.blocking_send(frame).is_err() {
-                            return Ok(());
-                        }
+                }
+            }
+            Some(_zero) => {
+                // Frames are ready right now — don't block, just try to get a packet.
+                match input_rx.try_recv() {
+                    Ok(pkt) => Some(pkt),
+                    Err(mpsc::error::TryRecvError::Empty) => None,
+                    Err(mpsc::error::TryRecvError::Disconnected) => {
+                        drain_playout_buffer(shutdown, &mut playout, &output_tx);
+                        break;
                     }
                 }
-                break;
+            }
+            None => {
+                // Buffer is empty — block efficiently until a packet arrives.
+                match input_rx.blocking_recv() {
+                    Some(pkt) => Some(pkt),
+                    None => break,
+                }
             }
         };
 
@@ -467,7 +401,6 @@ fn decode_loop_buffered(
             if waiting_for_keyframe {
                 if !packet.is_keyframe {
                     trace!("skipping non-keyframe packet while waiting for recovery");
-                    // Still release ready frames below.
                 } else {
                     info!("received keyframe, resuming decode");
                     waiting_for_keyframe = false;
@@ -525,6 +458,105 @@ fn decode_loop_buffered(
     Ok(())
 }
 
+/// Drains remaining buffered frames before exit.
+fn drain_playout_buffer(
+    shutdown: &CancellationToken,
+    playout: &mut PlayoutBuffer,
+    output_tx: &mpsc::Sender<VideoFrame>,
+) {
+    while let Some(wait) = playout.next_playout_wait() {
+        if shutdown.is_cancelled() {
+            break;
+        }
+        if !wait.is_zero() {
+            std::thread::sleep(wait);
+        }
+        while let Some(frame) = playout.pop_ready() {
+            if output_tx.blocking_send(frame).is_err() {
+                return;
+            }
+        }
+    }
+}
+
+/// Direct-send decode loop for local pipelines without a clock.
+///
+/// Identical to the pre-clock decode loop: `blocking_recv` → decode →
+/// `blocking_send`. No buffering or playout timing.
+fn decode_loop_direct(
+    shutdown: &CancellationToken,
+    input_rx: &mut mpsc::Receiver<MediaPacket>,
+    output_tx: &mpsc::Sender<VideoFrame>,
+    viewport_watcher: &mut n0_watcher::Direct<(u32, u32)>,
+    decoder: &mut impl VideoDecoder,
+) -> Result<()> {
+    let mut waiting_for_keyframe = false;
+    let mut last_send = Instant::now();
+
+    loop {
+        if shutdown.is_cancelled() {
+            break;
+        }
+        let recv_t = Instant::now();
+        let Some(packet) = input_rx.blocking_recv() else {
+            break;
+        };
+        let recv_elapsed = recv_t.elapsed();
+        if recv_elapsed > Duration::from_millis(50) {
+            debug!(t=?recv_elapsed, "decode_loop: slow blocking_recv (starved?)");
+        }
+
+        if waiting_for_keyframe {
+            if !packet.is_keyframe {
+                trace!("skipping non-keyframe packet while waiting for recovery");
+                continue;
+            }
+            info!("received keyframe, resuming decode");
+            waiting_for_keyframe = false;
+        }
+
+        if viewport_watcher.update() {
+            let (w, h) = viewport_watcher.peek();
+            decoder.set_viewport(*w, *h);
+        }
+
+        let t = Instant::now();
+        if let Err(err) = decoder.push_packet(packet) {
+            warn!("failed to push video packet, waiting for next keyframe: {err:#}");
+            waiting_for_keyframe = true;
+            continue;
+        }
+        let push_elapsed = t.elapsed();
+        if push_elapsed > Duration::from_millis(10) {
+            debug!(t=?push_elapsed, "decode_loop: slow push_packet");
+        }
+
+        // Drain all frames and send directly to the output channel.
+        loop {
+            match decoder.pop_frame() {
+                Ok(Some(frame)) => {
+                    if output_tx.blocking_send(frame).is_err() {
+                        debug!("pipeline: frame receiver dropped");
+                        return Ok(());
+                    }
+                    let gap = last_send.elapsed();
+                    if gap > Duration::from_millis(50) {
+                        debug!(gap=?gap, "decode_loop: frame gap (stutter)");
+                    }
+                    last_send = Instant::now();
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    warn!("failed to pop video frame, waiting for next keyframe: {err:#}");
+                    waiting_for_keyframe = true;
+                    break;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Audio Decoder Pipeline
 // ---------------------------------------------------------------------------
@@ -560,10 +592,22 @@ impl AudioDecoderPipeline {
         config: &AudioConfig,
         audio_backend: &dyn AudioStreamFactory,
     ) -> Result<Self> {
+        Self::with_clock::<D>(name, source, config, audio_backend, None).await
+    }
+
+    /// Creates a new audio decoder pipeline with a shared [`PlayoutClock`]
+    /// for A/V sync reporting.
+    pub async fn with_clock<D: AudioDecoder>(
+        name: String,
+        source: impl PacketSource,
+        config: &AudioConfig,
+        audio_backend: &dyn AudioStreamFactory,
+        clock: Option<PlayoutClock>,
+    ) -> Result<Self> {
         let target_format = AudioFormat::from_config(config);
         let sink = audio_backend.create_output(target_format).await?;
         let handle = sink.handle();
-        Self::build::<D>(name, source, config, sink, handle)
+        Self::build::<D>(name, source, config, sink, handle, clock)
     }
 
     /// Creates a new audio decoder pipeline with a pre-made [`AudioSink`].
@@ -583,7 +627,7 @@ impl AudioDecoderPipeline {
             "audio sink format mismatch: sink has {output_format:?}, decoder expects {expected:?}"
         );
         let handle = sink.handle();
-        Self::build::<D>(name, source, config, sink, handle)
+        Self::build::<D>(name, source, config, sink, handle, None)
     }
 
     fn build<D: AudioDecoder>(
@@ -592,6 +636,7 @@ impl AudioDecoderPipeline {
         config: &AudioConfig,
         sink: impl AudioSink,
         handle: Box<dyn AudioSinkHandle>,
+        clock: Option<PlayoutClock>,
     ) -> Result<Self> {
         let shutdown = CancellationToken::new();
         let span = info_span!("audiodec", %name);
@@ -601,12 +646,15 @@ impl AudioDecoderPipeline {
         let (packet_tx, packet_rx) = mpsc::channel(32);
         let thread_name = format!("adec-{}", name);
         let config = config.clone();
+        let track_id = name.clone();
         let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             move || {
                 let _guard = span.enter();
                 info!(?config, "decode start");
-                if let Err(err) = audio_decode_loop(&shutdown, packet_rx, decoder, sink) {
+                if let Err(err) =
+                    audio_decode_loop(&shutdown, packet_rx, decoder, sink, clock, track_id)
+                {
                     error!("decoder failed: {err:#}");
                 }
                 info!("decode stop");
@@ -650,13 +698,16 @@ impl Drop for AudioDecoderPipeline {
 /// Uses 10ms tick-based polling (`try_recv`) to ensure regular sample delivery
 /// regardless of packet arrival timing. This is critical for smooth audio playback.
 ///
-/// Includes pause support, consecutive error tracking with bail after
-/// `MAX_CONSECUTIVE_ERRORS`, and timestamp trace logging for timing diagnostics.
+/// When a [`PlayoutClock`] is provided, reports arrival and playout timestamps
+/// for A/V sync. Audio acts as the sync master — video tracks check the
+/// clock to decide whether to skip or wait.
 fn audio_decode_loop(
     shutdown: &CancellationToken,
     mut input_rx: mpsc::Receiver<MediaPacket>,
     mut decoder: impl AudioDecoder,
     mut sink: impl AudioSink,
+    clock: Option<PlayoutClock>,
+    track_id: String,
 ) -> Result<()> {
     use bytes::Buf as _;
     use mpsc::error::TryRecvError;
@@ -680,6 +731,10 @@ fn audio_decode_loop(
                 Ok(packet) => {
                     let remote_start = *remote_start.get_or_insert(packet.timestamp);
 
+                    if let Some(ref clock) = clock {
+                        clock.observe_arrival(packet.timestamp);
+                    }
+
                     if tracing::enabled!(tracing::Level::TRACE) {
                         let loop_elapsed = tick.duration_since(loop_start);
                         let remote_elapsed = packet.timestamp.saturating_sub(remote_start);
@@ -688,6 +743,7 @@ fn audio_decode_loop(
                         trace!(payload_bytes = packet.payload.remaining(), ts=?packet.timestamp, ?loop_elapsed, ?remote_elapsed, ?diff_ms, "recv packet");
                     }
 
+                    let pkt_timestamp = packet.timestamp;
                     if !sink.is_paused() {
                         if let Err(err) = decoder.push_packet(packet) {
                             consecutive_errors += 1;
@@ -703,6 +759,9 @@ fn audio_decode_loop(
                             Ok(Some(samples)) => {
                                 consecutive_errors = 0;
                                 sink.push_samples(samples)?;
+                                if let Some(ref clock) = clock {
+                                    clock.report_playout(&track_id, pkt_timestamp);
+                                }
                             }
                             Ok(None) => {
                                 consecutive_errors = 0;
