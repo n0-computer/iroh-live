@@ -31,6 +31,10 @@ cargo test --workspace
 cargo test --workspace --all-features
 ```
 
+Integration tests in `moq-media/tests/pipeline_integration.rs` use the
+`test-util` feature for deterministic video/audio sources. They run with
+default features (h264 + av1 + opus).
+
 ## Lint
 
 ```sh
@@ -47,7 +51,38 @@ cargo fmt --check
 - Small incremental commits, each leaving all crates compiling
 - `cargo clippy --locked --workspace --all-targets --all-features` must be clean (no warnings)
 - `cargo fmt --check` must pass
-- Concise commit messages
+- Commit messages: start with *why* (motivation), then briefly cover *what*
+- When working through a multi-step prompt, add "(step N of current prompt)" as the last line
+
+## Key types
+
+### moq-media publish side
+
+- `LocalBroadcast` — owns a `BroadcastProducer`, manages encoder pipelines
+- `VideoPublisher` / `AudioPublisher` — slot handles for `set()`, `replace()`, `clear()`
+- `VideoRenditions` / `AudioRenditions` — simulcast layer sets sharing a source
+- `SharedVideoSource` — thread-safe wrapper that parks when no subscribers
+
+### moq-media subscribe side
+
+- `RemoteBroadcast` — wraps `BroadcastConsumer`, watches catalog, owns `PlayoutClock`
+- `VideoTrack` / `AudioTrack` — decoded media tracks (frame channel + decoder handle)
+- `MediaTracks` — convenience: broadcast + optional video + optional audio
+- `CatalogSnapshot` — point-in-time catalog with rendition selection helpers
+- `AdaptiveVideoTrack` — auto-switches renditions based on `NetworkSignals`
+
+### Playout and sync
+
+- `PlayoutClock` — PTS→wall-clock mapping, jitter measurement, buffer re-anchoring
+- `PlayoutBuffer` — post-decoder frame buffer gated on playout time
+- `PlayoutMode::Live { buffer, max_latency }` — real-time with frame skipping
+- `PlayoutMode::Reliable` — every frame in order, no latency target (tests, recordings)
+
+### Transport
+
+- `MediaPacket` / `PacketSource` / `PacketSink` — codec-agnostic transport boundary
+- `MoqPacketSource` / `MoqPacketSink` — moq-lite implementations
+- `OrderedConsumer` — hang group ordering with max_latency skip
 
 ## iroh Connection & Path Stats
 
@@ -55,35 +90,39 @@ Access chain: `MoqSession::conn()` → `&Connection<HandshakeCompleted>` (from `
 
 ### Connection-level
 
-- `conn.stats()` → `ConnectionStats { udp_tx: UdpStats, udp_rx: UdpStats, frame_tx: FrameStats, frame_rx: FrameStats }`
-- `conn.remote_id()` → `EndpointId`
-- `conn.close_reason()` → `Option<SessionError>` (via web-transport-iroh Session wrapper)
-- `conn.paths()` → `impl Watcher<Value = PathInfoList>` — call `.get()` for current snapshot
+- `conn.stats()` → `ConnectionStats { udp_tx, udp_rx, frame_tx, frame_rx }`
+- `conn.paths()` → `impl Watcher<Value = PathInfoList>` — `.get()` for snapshot
 
 ### Per-path stats
 
-`conn.paths().get()` → `PathInfoList`, iterate with `.iter()` → `PathInfo`:
+`conn.paths().get()` → `PathInfoList` → `.iter()` → `PathInfo`:
 
-- `path_info.remote_addr()` → `TransportAddr` (`.is_ip()` / `.is_relay()`)
-- `path_info.is_selected()` → `bool` (true = currently used for transmission)
-- `path_info.rtt()` → `Duration`
-- `path_info.stats()` → `PathStats` (from `iroh_quinn_proto`):
-  - `rtt: Duration`
-  - `udp_tx: UdpStats { datagrams: u64, bytes: u64, ios: u64 }`
-  - `udp_rx: UdpStats { datagrams: u64, bytes: u64, ios: u64 }`
-  - `cwnd: u64` — congestion window
-  - `congestion_events: u64`
-  - `lost_packets: u64`
-  - `lost_bytes: u64`
-  - `sent_plpmtud_probes: u64`
-  - `lost_plpmtud_probes: u64`
-  - `black_holes_detected: u64`
-  - `current_mtu: u16`
+- `rtt()`, `is_selected()`, `remote_addr()`
+- `stats()` → `PathStats { rtt, cwnd, lost_packets, lost_bytes, current_mtu, ... }`
 
-### Loss rate calculation
+### Loss rate
 
-`loss_rate = lost_packets / (udp_tx.datagrams + lost_packets)` (from selected path)
+`loss_rate = lost_packets / (udp_tx.datagrams + lost_packets)` (selected path)
 
 ### StatsSmoother
 
-`iroh_live::util::StatsSmoother` — smooths bandwidth/RTT over 1s intervals. Call `smoothed(|| conn.stats())` → `SmoothedStats { rtt, up: &Rate, down: &Rate }` where `Rate { total: u64, rate: f32, rate_str: String }`.
+`iroh_live::util::StatsSmoother` — smooths bandwidth/RTT over 1s intervals.
+
+## Plans and docs
+
+- `plans/PLANS.md` — master index of all plans with completion status
+- `plans/future.md` — potential future features with use cases and effort estimates
+- `plans/platforms.md` — platform support matrix (codecs, capture, GPU rendering)
+
+## Platform testing
+
+Currently tested only on Linux (Intel Meteor Lake, software codecs, VAAPI,
+PipeWire capture, V4L2 capture). macOS, Windows, Android, and iOS have
+varying levels of code but no confirmed test results. See `plans/platforms.md`
+for the full matrix.
+
+When testing a new platform, the workflow is:
+1. Run `cargo check --all-features --workspace --tests --examples`
+2. Run `cargo test -p moq-media --features test-util` for codec pipeline tests
+3. Run platform-specific codec tests with appropriate feature flags
+4. Update `plans/platforms.md` with results
