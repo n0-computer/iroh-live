@@ -36,6 +36,19 @@ jobs:
         continue-on-error: true
         run: cargo test -p moq-media --features vaapi -- --ignored
 
+  windows-media-foundation:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check -p rusty-codecs --features media-foundation
+      - run: cargo check -p rusty-codecs --features "h264,media-foundation"
+      - run: cargo clippy -p rusty-codecs --features "h264,media-foundation" -- -D warnings
+      # TODO: run on self-hosted runner with real GPU for HW encode/decode tests
+      - name: Run MF HW tests
+        continue-on-error: true
+        run: cargo test -p rusty-codecs --features "h264,media-foundation" -- --ignored
+
   compile-check:
     strategy:
       matrix:
@@ -46,10 +59,13 @@ jobs:
           - os: ubuntu-latest
             features: vaapi
             install: sudo apt-get update && sudo apt-get install -y libva-dev libtool automake libpipewire-0.3-dev libclang-dev libasound2-dev libegl-dev libgbm-dev libdrm-dev nasm
+          - os: windows-latest
+            features: media-foundation
+            install: echo "no extra deps needed"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: ${{ matrix.install }}
-      - run: cargo check -p moq-media --features ${{ matrix.features }}
-      - run: cargo check -p moq-media
+      - run: cargo check -p rusty-codecs --features ${{ matrix.features }}
+      - run: cargo check -p rusty-codecs

@@ -62,4 +62,5 @@ videotoolbox = ["dep:objc2-video-toolbox", "dep:objc2-core-media", "dep:objc2-co
 vaapi = ["dep:cros-codecs", "cros-codecs/vaapi"]
 v4l2 = ["dep:v4l2r"]
 wgpu = ["dep:wgpu"]
+media-foundation = []
 dmabuf-import = ["wgpu", "dep:ash", "dep:gbm", "dep:drm-fourcc"]
