@@ -642,7 +642,10 @@ mod tests {
         // set_buffer should be a no-op in Reliable mode.
         clock.set_buffer(Duration::from_millis(100));
         let t_after = clock.playout_time(Duration::ZERO).unwrap();
-        assert_eq!(t_before, t_after, "set_buffer should be no-op in Reliable mode");
+        assert_eq!(
+            t_before, t_after,
+            "set_buffer should be no-op in Reliable mode"
+        );
         assert_eq!(clock.buffer(), Duration::ZERO);
     }
 

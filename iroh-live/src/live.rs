@@ -170,7 +170,6 @@ impl Live {
     ///
     /// Returns both the session (for stats, closing, etc.) and the broadcast.
     /// If you only need the broadcast, use [`subscribe`](Self::subscribe).
-    // rr: rename subscribe
     pub async fn subscribe(
         &self,
         remote: impl Into<EndpointAddr>,
@@ -184,7 +183,6 @@ impl Live {
     }
 
     /// Connects to a remote peer, subscribes, and decodes video+audio in one step.
-    // rr: remove, inline at call sites.
     pub async fn subscribe_media_track<D: moq_media::traits::Decoders>(
         &self,
         remote: impl Into<EndpointAddr>,
