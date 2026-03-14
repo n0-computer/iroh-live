@@ -1,91 +1,149 @@
-# Plans Overview
+# Plans
 
-Index of all plans with implementation status.
+Index of all plans, grouped by completion status. Each section links to the
+detailed plan document and summarizes what remains.
 
-## Complete
+## Done
 
-Plans where all work is done.
+### Codec replacement (phases 1–2)
 
-### Media Pipeline — Track A: Codec Replacement
+Replaced ffmpeg with pure-Rust codecs: openh264, rav1e/rav1d, unsafe-libopus.
+All codecs are feature-gated and routed through `DynamicVideoDecoder`.
 
-| Plan | Description |
-|------|-------------|
-| [phase-1-codec-swap](media-pipeline/phase-1-codec-swap.md) | Remove ffmpeg, add openh264 + unsafe-libopus + yuvutils + pic-scale + rubato. 72 tests. |
-| [phase-2-av1](media-pipeline/phase-2-av1.md) | AV1 encode (rav1e) + decode (rav1d) behind `av1` feature. DynamicVideoDecoder auto-routing. 84 tests. |
-| [phase-2b-hw-accel](media-pipeline/phase-2b-hw-accel.md) | HW encoder backends: VAAPI (Linux), VideoToolbox (macOS), V4L2 (RPi). Feature-gated. |
-| [phase-2b-linux-vaapi](media-pipeline/phase-2b-linux-vaapi.md) | VAAPI H.264 stateless encoder via cros-codecs. |
-| [phase-2b-macos-videotoolbox](media-pipeline/phase-2b-macos-videotoolbox.md) | VideoToolbox H.264 encoder via objc2-video-toolbox. |
-| [phase-2b-windows-media-foundation](media-pipeline/phase-2b-windows-media-foundation.md) | Windows MFT H.264 encoder (design only, not yet built). |
-| [api-decoupling](media-pipeline/api-decoupling.md) | MediaPacket, PacketSource/PacketSink traits for transport-independent pipelines. |
-| [gpu-rendering](media-pipeline/gpu-rendering.md) | wgpu rendering, DMA-BUF zero-copy import, VAAPI VPP retiler for Y-tiled→CCS. |
-| [standalone-viewer-example](media-pipeline/standalone-viewer-example.md) | Egui viewer with source/codec/decoder/render backend selectors. |
-| [zero-copy-encode](media-pipeline/zero-copy-encode.md) | PipeWire DMA-BUF negotiation (phase 1 done). VAAPI VPP color-space conversion (phase 2 design). |
+- [phase-1-codec-swap](media-pipeline/phase-1-codec-swap.md) — remove ffmpeg, add software codecs
+- [phase-2-av1](media-pipeline/phase-2-av1.md) — AV1 encode/decode behind `av1` feature
+
+### Hardware acceleration (phase 2b)
+
+VAAPI (Linux), VideoToolbox (macOS), and V4L2 (RPi) encoder backends, each
+behind a feature flag. Decoder side: VAAPI stateless H.264 decoder via
+cros-codecs, V4L2 stateful decoder.
+
+- [phase-2b-hw-accel](media-pipeline/phase-2b-hw-accel.md) — overview and architecture
+- [phase-2b-linux-vaapi](media-pipeline/phase-2b-linux-vaapi.md) — VAAPI H.264 encoder via cros-codecs
+- [phase-2b-macos-videotoolbox](media-pipeline/phase-2b-macos-videotoolbox.md) — VideoToolbox H.264 encoder
+
+### Transport decoupling
+
+`MediaPacket`, `PacketSource`/`PacketSink` traits decouple encode/decode
+pipelines from the transport layer.
+
+- [api-decoupling](media-pipeline/api-decoupling.md)
+
+### GPU rendering and zero-copy decode
+
+wgpu rendering with NV12 shader, DMA-BUF import from VAAPI decoder, VPP
+retiler for Y-tiled to CCS conversion on Intel.
+
+- [gpu-rendering](media-pipeline/gpu-rendering.md) — wgpu renderer, DMA-BUF import, VPP retiler
+- [zerocopy-vaapi-wgpu](gpu-rendering/zerocopy-vaapi-wgpu.md) — VAAPI→Vulkan DMA-BUF deep dive
+
+### Zero-copy capture→encode
+
+PipeWire DMA-BUF negotiation and VAAPI VPP color-space conversion for
+end-to-end GPU capture→encode without CPU round-trips.
+
+- [zero-copy-encode](media-pipeline/zero-copy-encode.md)
+- [zerocopy-capture](gpu-rendering/zerocopy-capture.md)
+
+### Playout clock and A/V sync (phase 3b)
+
+`PlayoutClock` maps PTS to wall-clock playout times with jitter measurement,
+buffer underrun re-anchoring, and `PlayoutBuffer` for smoothing decoder bursts.
+
+- [phase-3b-jitter-sync](media-pipeline/phase-3b-jitter-sync.md)
+
+### Adaptive rendition switching (phase 3a)
+
+`AdaptiveVideoTrack` switches renditions based on `NetworkSignals` (bandwidth,
+RTT, loss). Bandwidth-primary selection with asymmetric hold timers.
+
+- [phase-3a-rendition-switching](media-pipeline/phase-3a-rendition-switching.md)
+
+### Standalone viewer example
+
+Egui viewer with source, codec, decoder, and render backend selectors.
+
+- [standalone-viewer-example](media-pipeline/standalone-viewer-example.md)
+
+### API redesign (phases 1–4, 6–7, 9)
+
+Renamed types (`LocalBroadcast`, `RemoteBroadcast`, `CatalogSnapshot`), added
+`VideoPublisher`/`AudioPublisher` slot API, subscription options with
+`VideoTarget`/`Quality`, domain error types, and `Live` builder in iroh-live.
+
+- [0-overview](api/0-overview.md) — direction and design principles
+- [1-review](api/1-review.md) — pre-redesign API review
+- [2-research](api/2-research.md) — survey of LiveKit, WebRTC, GStreamer APIs
+- [3-sketch](api/3-sketch.md) — target API sketch
+- [4-impl](api/4-impl.md) — 9-phase plan with status checklist
+- [5-examples](api/5-examples.md) — example patterns against the proposed API
+- [6-relay](api/6-relay.md) — relay server integration design
 
 ## Partial
 
-Plans where some work is done but items remain.
+### API redesign — remaining phases
 
-### API Redesign
+The core API is in place. Several advanced features remain as stubs or
+unimplemented.
 
-**Summary**: Redesign public API across moq-media and iroh-live for ergonomic, idiomatic Rust. Rename types, add sub-handles, options, domain errors, builder patterns.
+- [ ] Phase 5: relay support — `LocalBroadcast::relay()`, zero-transcode forwarding
+- [ ] Phase 7.4: relay convenience methods on `Live`
+- [ ] Phase 8: room participant model — `LocalParticipant`, `RemoteParticipant`, `RoomEvent`
+- [ ] `set_enabled()` / `set_muted()` — stubs, need encoder pipeline pause/resume
+- [ ] `BroadcastStatus` watcher, `VideoTrack::frames()` stream
 
-**Missing**:
-- Phase 5: Relay support — `LocalBroadcast::relay()` zero-transcode relay, `VideoTrack` as `VideoSource` for transcode relay
-- Phase 7.4: Relay URL convenience methods on Live (`connect_relay`, `publish_to_relay`, `subscribe_from_relay`)
-- Phase 8: Room participant model redesign (LocalParticipant, RemoteParticipant, RoomEvent stream)
-- `set_enabled()` / `set_muted()` — stubs exist, need encoder pipeline support
+### Audio device switching (phase 3e)
 
-| Plan | Description |
-|------|-------------|
-| [0-overview](api/0-overview.md) | Direction, naming, design principles, use case matrix |
-| [1-review](api/1-review.md) | Detailed review of pre-redesign API with inline comments |
-| [2-research](api/2-research.md) | Survey of LiveKit, Hang, WebRTC, GStreamer, OBS APIs |
-| [3-sketch](api/3-sketch.md) | Points to `iroh-live/examples/api_sketch.rs` (compiling) |
-| [4-impl](api/4-impl.md) | 9-phase implementation plan with detailed status checklist |
-| [5-examples](api/5-examples.md) | 16 example patterns against the proposed API |
-| [6-relay](api/6-relay.md) | Relay server integration design (moq-relay, SFU, CDN) |
+Runtime audio input/output device switching is partially implemented.
+`SwitchDevice` message and `AudioDriverOpts` exist; hot-swap on disconnect
+and auto-fallback to default device are missing.
 
-### Media Pipeline — Audio Device Switching
+- [phase-3e-audio-device-switching](media-pipeline/phase-3e-audio-device-switching.md)
+- [ ] Hot-swap on device disconnect
+- [ ] Auto-fallback to default device
 
-**Summary**: Runtime audio input/output device switching with hot-swap and auto-fallback.
+### Windows Media Foundation (phase 2b)
 
-**Missing**: Hot-swap on device disconnect, auto-fallback to default device.
+Design document exists but no code has been written.
 
-| Plan | Description |
-|------|-------------|
-| [phase-3e-audio-device-switching](media-pipeline/phase-3e-audio-device-switching.md) | AudioDriverOpts, SwitchDevice message, swappable handle indirection |
+- [phase-2b-windows-media-foundation](media-pipeline/phase-2b-windows-media-foundation.md)
+- [ ] Implement MFT H.264 encoder
 
 ## Open
 
-Plans that have not been started yet.
+### Opus FEC and PLC (phase 3c)
 
-### Media Pipeline — Track B: AV Resilience
+Opus in-band FEC, packet loss concealment with comfort noise, and DTX
+bandwidth savings.
 
-| Plan | Description |
-|------|-------------|
-| [phase-3-av-resilience](media-pipeline/phase-3-av-resilience.md) | Overview of phases 3a–3d, architecture diagram, dependency graph |
-| [phase-3a-rendition-switching](media-pipeline/phase-3a-rendition-switching.md) | Adaptive video/audio rendition switching based on network signals. Bandwidth-primary selection, asymmetric timers, seamless decoder handoff. |
-| [phase-3b-jitter-sync](media-pipeline/phase-3b-jitter-sync.md) | Frame-level playout timing with PlayoutClock. PlayoutBuffer for scheduling. A/V sync via audio master. |
-| [phase-3c-fec](media-pipeline/phase-3c-fec.md) | Opus in-band FEC, PLC comfort noise, DTX bandwidth savings. Future. |
-| [phase-3d-adaptive-encoding](media-pipeline/phase-3d-adaptive-encoding.md) | Encoder rate control, bandwidth estimation from QUIC PathStats, quality state machine. Future. |
+- [phase-3c-fec](media-pipeline/phase-3c-fec.md)
 
-### GPU, Capture & V4L2
+### Adaptive encoding (phase 3d)
 
-| Plan | Description |
-|------|-------------|
-| [zerocopy-vaapi-wgpu](gpu-rendering/zerocopy-vaapi-wgpu.md) | Deep dive on Y-tiled NV12 VAAPI→Vulkan import via VK_EXT_image_drm_format_modifier |
-| [zerocopy-capture](gpu-rendering/zerocopy-capture.md) | Zero-copy screen/camera capture via PipeWire DMA-BUF, ScreenCaptureKit IOSurface |
-| [v4l2-future](media-pipeline/v4l2-future.md) | Stateless V4L2 decoder for Rockchip/Allwinner/MediaTek SBCs. Stateful encoder/decoder already done (`rusty-codecs/src/codec/v4l2/`). |
+Encoder rate control driven by QUIC `PathStats` bandwidth estimation. Quality
+state machine for dynamic bitrate adjustment.
+
+- [phase-3d-adaptive-encoding](media-pipeline/phase-3d-adaptive-encoding.md)
+
+### Stateless V4L2 decoder
+
+Stateless V4L2 decoder for Rockchip, Allwinner, and MediaTek SBCs. The
+stateful V4L2 encoder and decoder already exist in `rusty-codecs/src/codec/v4l2/`.
+
+- [v4l2-future](media-pipeline/v4l2-future.md)
 
 ### Devtools
 
-| Plan | Description |
-|------|-------------|
-| [devtools](devtools/00-main.md) | Egui examples refactor: extract common_egui module, multi-endpoint splitscreen dev example with rich debug overlay |
+Extract shared `common_egui` module from examples, build multi-endpoint
+splitscreen dev example with debug overlay.
 
-### Master Plans (reference)
+- [devtools](devtools/00-main.md)
 
-| Plan | Description |
-|------|-------------|
-| [media-pipeline master](media-pipeline/00-master-plan.md) | Full context, phase overview, architecture, module structure |
-| [media-pipeline quick ref](media-pipeline/00-main.md) | Phase table with status and plan links |
+## Reference
+
+Architecture overviews and context documents, not actionable work items.
+
+- [media-pipeline master](media-pipeline/00-master-plan.md) — full phase overview
+- [media-pipeline quick ref](media-pipeline/00-main.md) — phase table with links
+- [phase-3-av-resilience](media-pipeline/phase-3-av-resilience.md) — phases 3a–3d overview
