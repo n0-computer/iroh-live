@@ -540,8 +540,8 @@ The VTB compression callback uses `Arc::into_raw()` to pass state to the C callb
 ### Bugs
 
 - [ ] **MQ1: Two `.expect()` panics in actor run loop** (`lib.rs:414, 422`) — `"session task panicked"` and `"connect task panicked"`. If a tokio task panics, the actor crashes. Should log and continue or return an error.
-- [ ] **MQ2: Malformed doc comment** (`lib.rs:93`) — `/ Returns a protocol handler` starts with `/` instead of `///`.
-- [ ] **MQ3: Commented-out code** (`lib.rs:128`) — `// MoqSession::connect(&self.endpoint, addr).await` should be removed.
+- [x] **MQ2: ~~Malformed doc comment~~** (`lib.rs:93`) — false positive; comment is correctly `///`.
+- [x] **MQ3: Commented-out code** (`lib.rs:128`) — removed dead `MoqSession::connect` comment.
 
 ### Design
 
@@ -563,14 +563,14 @@ The VTB compression callback uses `Arc::into_raw()` to pass state to the C callb
 ### Bugs
 
 - [ ] **IL1: `Call::closed()` always returns `RemoteClose`** (`call.rs:122-125`) — ignores actual disconnect reason. Should check `session.close_reason()` to distinguish local from remote close.
-- [ ] **IL2: `Bit::from_f32(rate).unwrap()` can panic on NaN** (`util.rs:93`) — rate is computed from division; edge-case floats can produce NaN. Use `.unwrap_or_default()`.
+- [x] **IL2: `Bit::from_f32(rate).unwrap()` can panic on NaN** (`util.rs:93`) — changed to `.unwrap_or_default()`.
 
 ### Design
 
 - [ ] **IL3: `postcard::to_stdvec().unwrap()` in 4 places** (`ticket.rs:23, 36`, `rooms.rs:307, 386`) — serialization can fail. Should return `Result` or use `.expect()` with rationale.
-- [ ] **IL4: `// rr: rename subscribe` and `// rr: remove, inline at call sites.`** (`live.rs:173, 187`) — stale TODO comments on public API methods. Either act on them or remove.
+- [x] **IL4: `// rr: rename subscribe` and `// rr: remove, inline at call sites.`** (`live.rs:173, 187`) — removed stale TODO comments.
 - [ ] **IL5: Room actor silently drops events on send failure** (`rooms.rs:233, 298`) — `event_tx.send().ok()` discards errors when receiver is dropped. Actor should detect this and shut down.
-- [ ] **IL6: Unnecessary `broadcasts.clone()` in room actor** (`rooms.rs:284`) — clones entire broadcast list for iteration. Should iterate by reference.
+- [ ] **IL6: `broadcasts.clone()` in room actor** (`rooms.rs:284`) — clone is required because `broadcasts` is consumed by `RoomEvent::RemoteAnnounced` after the loop. Could restructure to iterate by reference and clone individual names, but savings are marginal.
 
 ### Documentation
 

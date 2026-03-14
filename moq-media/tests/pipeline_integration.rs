@@ -318,7 +318,11 @@ async fn two_subscribers_receive_frames() {
     let (w, h) = VideoPreset::P180.dimensions();
     broadcast
         .video()
-        .set(TestVideoSource::new(w, h), VideoCodec::H264, [VideoPreset::P180])
+        .set(
+            TestVideoSource::new(w, h),
+            VideoCodec::H264,
+            [VideoPreset::P180],
+        )
         .unwrap();
 
     let remote1 = RemoteBroadcast::with_playout("s1", consumer1, PlayoutMode::Reliable)

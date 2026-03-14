@@ -125,7 +125,6 @@ impl Moq {
 
     /// Connects to a remote peer and returns a [`MoqSession`] for publish/subscribe.
     pub async fn connect(&self, remote: impl Into<EndpointAddr>) -> Result<MoqSession, AnyError> {
-        // MoqSession::connect(&self.endpoint, addr).await
         let (reply, reply_rx) = oneshot::channel();
         self.tx
             .send(ActorMessage::Connect {

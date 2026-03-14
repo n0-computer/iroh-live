@@ -90,7 +90,7 @@ impl Rate {
         } else {
             0.0
         };
-        let bit = Bit::from_f32(rate).unwrap();
+        let bit = Bit::from_f32(rate).unwrap_or_default();
         let adjusted = bit.get_appropriate_unit(UnitType::Decimal);
         self.rate = rate;
         self.rate_str = format!("{adjusted:.2}/s");
