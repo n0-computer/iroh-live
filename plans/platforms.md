@@ -30,7 +30,9 @@ confirmed it works on real hardware.
 - **Windows**: Media Foundation H.264 encoder and decoder. Design exists in
   `plans/media-pipeline/phase-2b-windows-media-foundation.md`, no code yet.
 - **macOS**: VideoToolbox H.264 encoder and decoder both implemented, not yet tested.
-- **Android**: MediaCodec H.264 encoder and decoder via JNI or `ndk-media`.
+- **Android**: MediaCodec H.264 encoder and decoder via `mediacodec` crate
+  (MIT, NDK wrapper) in synchronous ByteBuffer mode. Plan in
+  `plans/media-pipeline/android-mediacodec.md`.
 - **VAAPI AV1**: cros-codecs supports AV1 stateless decode on Intel Gen12+.
   Encoder would require a `libva` AV1 encode entrypoint (Intel Arc).
 - **V4L2 stateless decoder**: for Rockchip/Allwinner/MediaTek SBCs. Plan
@@ -53,7 +55,9 @@ confirmed it works on real hardware.
 
 - **Windows**: Screen capture via DXGI Desktop Duplication or Windows.Graphics.Capture.
   Camera capture via Media Foundation. No plan or code exists.
-- **Android**: Camera2 API via JNI or `ndk-camera`. No plan or code exists.
+- **Android**: Camera2 API via JNI (`jni-rs` + Kotlin helper). NDK-only
+  `AImageReader` possible on API 24+. Plan in
+  `plans/media-pipeline/android-mediacodec.md`.
 - **Linux X11**: `x11rb` SHM capture is partially wired (`x11` feature in
   rusty-capture) but not integrated into the main capture path.
 
@@ -65,7 +69,7 @@ confirmed it works on real hardware.
 | DMA-BUF import | Vulkan + VPP retiler | Linux + Intel | Yes | Intel MTL |
 | wgpu NV12 shader | Metal | macOS | Yes | — |
 | wgpu NV12 shader | DX12 | Windows | Yes | — |
-| DMA-BUF import | — | Android | — | — |
+| AHardwareBuffer import | Vulkan | Android (API 26+) | — | — |
 
 The wgpu renderer is cross-platform by design (Vulkan, Metal, DX12). The
 DMA-BUF zero-copy path is Linux-only. macOS could use IOSurface import for
@@ -117,10 +121,22 @@ should use Media Foundation.
 
 ### Android
 
-No platform-specific code exists. MediaCodec (via `ndk-media` or JNI) is the
-path for hardware H.264/AV1 encode and decode. Camera2 API for camera capture.
-Screen capture requires `MediaProjection` from the Android framework, which
-needs a Java/Kotlin wrapper.
+No platform-specific code exists. Detailed plan in
+`plans/media-pipeline/android-mediacodec.md`.
+
+- **Codecs**: `mediacodec` crate (MIT, NDK `AMediaCodec` wrapper) for H.264
+  encode and decode. Synchronous ByteBuffer mode first, Surface mode later for
+  zero-copy. Minimum API 21.
+- **Camera**: Camera2 via JNI (`jni-rs`) with Kotlin helper class. Pure-NDK
+  `AImageReader` path possible on API 24+.
+- **Screen capture**: `MediaProjection` requires Activity context and user
+  permission grant — inherently Java/Kotlin. Lower priority.
+- **GPU rendering**: wgpu works on Android via Vulkan. Zero-copy decode→render
+  possible via `AHardwareBuffer` Vulkan import (API 26+,
+  `VK_ANDROID_external_memory_android_hardware_buffer`).
+
+Inspiration: FFmpeg `mediacodec*.c`, GStreamer `androidmedia` plugin,
+WebRTC Android codec modules (all MIT/Apache-2.0 compatible).
 
 ### iOS
 
