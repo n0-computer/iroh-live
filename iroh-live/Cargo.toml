@@ -32,6 +32,7 @@ tokio-util = "0.7.17"
 tracing = "0.1.41"
 bytes = "1.11.0"
 iroh-smol-kv = { git = "https://github.com/Frando/iroh-smol-kv", branch = "iroh-096", default-features = false }
+throttled-tracing = "0.1.0"
 
 
 [dev-dependencies]

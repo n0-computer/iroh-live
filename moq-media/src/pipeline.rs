@@ -157,6 +157,7 @@ impl VideoDecoderPipeline {
 
         let thread_name = format!("vdec-{name}");
         let decoder_name_for_handle = decoder_name;
+        let framerate = config.framerate.unwrap_or(30.0);
         let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             move || {
@@ -169,6 +170,7 @@ impl VideoDecoderPipeline {
                     viewport_watcher,
                     decoder,
                     clock,
+                    framerate,
                 ) {
                     error!("decoder failed: {err:#}");
                 }
@@ -335,9 +337,12 @@ fn decode_loop(
     mut viewport_watcher: n0_watcher::Direct<(u32, u32)>,
     mut decoder: impl VideoDecoder,
     clock: Option<PlayoutClock>,
+    framerate: f64,
 ) -> Result<()> {
     let mut waiting_for_keyframe = false;
     let mut last_send = Instant::now();
+    let mut frames_pushed = 0u64;
+    let mut frames_popped = 0u64;
 
     // When no clock is provided (local pipelines), send frames directly.
     let Some(clock) = clock else {
@@ -350,7 +355,23 @@ fn decode_loop(
         );
     };
 
-    let mut playout = PlayoutBuffer::new(clock);
+    // Set buffer duration from the decoder's burst size. Hardware decoders
+    // (e.g. VAAPI) flush multiple frames at once from their DPB — the
+    // playout buffer must be large enough to smooth these bursts.
+    let burst = decoder.burst_size();
+    if burst > 0 && framerate > 0.0 {
+        let frame_interval = Duration::from_secs_f64(1.0 / framerate);
+        let buffer = frame_interval * burst as u32;
+        info!(
+            burst_size = burst,
+            framerate,
+            buffer_ms = buffer.as_millis(),
+            "playout buffer sized from decoder burst"
+        );
+        clock.set_buffer(buffer);
+    }
+
+    let mut playout = PlayoutBuffer::new(clock.clone());
 
     loop {
         if shutdown.is_cancelled() {
@@ -426,7 +447,15 @@ fn decode_loop(
                     // This frees decoder pool buffers immediately.
                     loop {
                         match decoder.pop_frame() {
-                            Ok(Some(frame)) => playout.push(frame),
+                            Ok(Some(frame)) => {
+                                trace!(
+                                    pts_ms = frame.timestamp.as_millis(),
+                                    buf_len = playout.buf_len(),
+                                    "decode_loop: push frame to playout"
+                                );
+                                playout.push(frame);
+                                frames_pushed += 1;
+                            }
                             Ok(None) => break,
                             Err(err) => {
                                 warn!("pop_frame error, waiting for keyframe: {err:#}");
@@ -441,15 +470,39 @@ fn decode_loop(
 
         // Release frames whose playout time has arrived.
         while let Some(frame) = playout.pop_ready() {
+            trace!(
+                pts_ms = frame.timestamp.as_millis(),
+                buf_len = playout.buf_len(),
+                "decode_loop: pop frame from playout"
+            );
             if output_tx.blocking_send(frame).is_err() {
                 debug!("pipeline: frame receiver dropped");
                 return Ok(());
             }
+            frames_popped += 1;
             let gap = last_send.elapsed();
             if gap > Duration::from_millis(50) {
-                debug!(gap=?gap, "decode_loop: frame gap (stutter)");
+                debug!(gap=?gap, buf_len=playout.buf_len(), "decode_loop: frame gap (stutter)");
             }
             last_send = Instant::now();
+        }
+
+        // Periodic status log (~every 5s).
+        {
+            let (drift, reanchors) = clock.reanchor_stats();
+            let jitter = clock.jitter();
+            let buf = clock.buffer();
+            throttled_tracing::debug_every!(
+                Duration::from_secs(5),
+                frames_pushed,
+                frames_popped,
+                buf_len = playout.buf_len(),
+                buffer_ms = buf.as_millis(),
+                jitter_ms = jitter.as_millis(),
+                total_drift_ms = drift.as_millis(),
+                reanchor_count = reanchors,
+                "decode_loop: status"
+            );
         }
     }
     Ok(())
@@ -699,7 +752,7 @@ fn audio_decode_loop(
     mut input_rx: mpsc::Receiver<MediaPacket>,
     mut decoder: impl AudioDecoder,
     mut sink: impl AudioSink,
-    clock: Option<PlayoutClock>,
+    _clock: Option<PlayoutClock>,
 ) -> Result<()> {
     use bytes::Buf as _;
     use mpsc::error::TryRecvError;
@@ -723,9 +776,12 @@ fn audio_decode_loop(
                 Ok(packet) => {
                     let remote_start = *remote_start.get_or_insert(packet.timestamp);
 
-                    if let Some(ref clock) = clock {
-                        clock.observe_arrival(packet.timestamp);
-                    }
+                    // Note: we intentionally do NOT call clock.observe_arrival()
+                    // here. The clock base must be anchored by the video playout
+                    // buffer, not audio. Audio arrives much earlier (near-zero
+                    // pipeline delay) and would set base_wall too early, making
+                    // all video playout times arrive "in the past" and defeating
+                    // the buffer entirely.
 
                     if tracing::enabled!(tracing::Level::TRACE) {
                         let loop_elapsed = tick.duration_since(loop_start);

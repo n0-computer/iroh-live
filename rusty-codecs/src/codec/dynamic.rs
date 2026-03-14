@@ -131,6 +131,21 @@ impl VideoDecoder for DynamicVideoDecoder {
             _ => unreachable!(),
         }
     }
+
+    fn burst_size(&self) -> usize {
+        match self {
+            #[cfg(feature = "h264")]
+            Self::H264(d) => d.burst_size(),
+            #[cfg(feature = "av1")]
+            Self::Av1(d) => d.burst_size(),
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            Self::VaapiH264(d) => d.burst_size(),
+            #[cfg(all(target_os = "linux", feature = "v4l2"))]
+            Self::V4l2H264(d) => d.burst_size(),
+            #[cfg(not(any(feature = "h264", feature = "av1")))]
+            _ => unreachable!(),
+        }
+    }
 }
 
 /// An audio decoder that dispatches to the appropriate codec-specific decoder

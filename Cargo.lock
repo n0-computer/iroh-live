@@ -5060,6 +5060,7 @@ dependencies = [
  "rand 0.9.2",
  "serde",
  "strum 0.28.0",
+ "throttled-tracing",
  "tokio",
  "tokio-util",
  "tracing",
@@ -6078,6 +6079,7 @@ dependencies = [
  "serde",
  "sonora",
  "strum 0.28.0",
+ "throttled-tracing",
  "tokio",
  "tokio-util",
  "tracing",
@@ -8831,6 +8833,7 @@ dependencies = [
  "rubato 1.0.1",
  "serde",
  "strum 0.28.0",
+ "throttled-tracing",
  "tracing",
  "unsafe-libopus",
  "v4l2r",
@@ -10199,6 +10202,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "throttled-tracing"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c8ec74140dfae112d4da4003f2cabdfd9b5efc84e8a4d610d87fc681280b642"
+dependencies = [
+ "fastrand",
+ "parking_lot",
+ "tracing",
 ]
 
 [[package]]

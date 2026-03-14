@@ -320,7 +320,8 @@ pub struct VaapiDecoder {
     /// NAL framing format of incoming packets.
     nal_format: NalFormat,
     pending_frames: VecDeque<VideoFrame>,
-    last_timestamp: Option<Duration>,
+    /// FIFO of timestamps from pushed packets, consumed as frames are decoded.
+    timestamp_queue: VecDeque<Duration>,
     timestamp_counter: u64,
     /// Frame counter for periodic FD diagnostics.
     fd_log_counter: u64,
@@ -363,7 +364,7 @@ impl VaapiDecoder {
                         display: self.display.clone(),
                     };
 
-                    let timestamp = self.last_timestamp.unwrap_or_default();
+                    let timestamp = self.timestamp_queue.pop_front().unwrap_or_default();
 
                     let decoded =
                         VideoFrame::new_gpu(GpuFrame::new(Arc::new(gpu_frame)), timestamp);
@@ -371,14 +372,23 @@ impl VaapiDecoder {
                 }
                 DecoderEvent::FormatChanged => {
                     if let Some(stream_info) = self.decoder.stream_info() {
+                        // Request extra surfaces beyond the codec minimum so the
+                        // downstream playout buffer can hold a few decoded frames
+                        // without starving the decoder's surface pool. This is the
+                        // same approach mpv uses (--hwdec-extra-frames).
+                        let mut info = stream_info.clone();
+                        let extra = 8;
+                        info.min_num_frames += extra;
                         tracing::info!(
-                            "VAAPI decoder: format changed to {}x{} (coded {}x{})",
+                            "VAAPI decoder: format changed to {}x{} (coded {}x{}), pool {} (+{} extra)",
                             stream_info.display_resolution.width,
                             stream_info.display_resolution.height,
                             stream_info.coded_resolution.width,
                             stream_info.coded_resolution.height,
+                            info.min_num_frames,
+                            extra,
                         );
-                        self.framepool.lock().unwrap().resize(stream_info);
+                        self.framepool.lock().unwrap().resize(&info);
                     }
                 }
             }
@@ -457,7 +467,7 @@ impl VideoDecoder for VaapiDecoder {
             display,
             nal_format,
             pending_frames: VecDeque::new(),
-            last_timestamp: None,
+            timestamp_queue: VecDeque::new(),
             timestamp_counter: 0,
             fd_log_counter: 0,
         };
@@ -485,6 +495,10 @@ impl VideoDecoder for VaapiDecoder {
         // VAAPI decodes at full resolution; scaling happens in the renderer.
     }
 
+    fn burst_size(&self) -> usize {
+        3
+    }
+
     fn push_packet(&mut self, mut packet: MediaPacket) -> Result<()> {
         use bytes::Buf;
         use std::time::Instant;
@@ -497,7 +511,7 @@ impl VideoDecoder for VaapiDecoder {
         patch_baseline_constraint_flag(&mut annex_b);
         // patch_sps_low_latency(&mut annex_b);
 
-        self.last_timestamp = Some(packet.timestamp);
+        self.timestamp_queue.push_back(packet.timestamp);
         self.timestamp_counter += 1;
         let ts = self.timestamp_counter;
 
@@ -545,7 +559,8 @@ impl VideoDecoder for VaapiDecoder {
                     not_enough_bufs_count += 1;
                     self.drain_events();
                     if not_enough_bufs_count > 30 {
-                        tracing::warn!(
+                        throttled_tracing::warn_every!(
+                            std::time::Duration::from_secs(1),
                             pending = self.pending_frames.len(),
                             "vaapi: NotEnoughOutputBuffers after 30 retries, dropping packet"
                         );

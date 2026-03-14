@@ -305,4 +305,13 @@ pub trait VideoDecoder: Send + 'static {
     fn push_packet(&mut self, packet: MediaPacket) -> Result<()>;
     /// Sets the target viewport dimensions for optional downscaling.
     fn set_viewport(&mut self, w: u32, h: u32);
+    /// Returns the maximum number of frames the decoder may output in a
+    /// single burst (DPB flush). Hardware decoders with a decode picture
+    /// buffer return a value > 0; software decoders that emit one frame
+    /// per packet return 0.
+    ///
+    /// Used by the playout buffer to size its smoothing window.
+    fn burst_size(&self) -> usize {
+        0
+    }
 }

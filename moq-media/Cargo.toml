@@ -30,6 +30,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 strum = { version = "0.28", features = ["derive"] }
 tokio = { version = "1.48.0", features = ["sync"] }
 tokio-util = "0.7.17"
+throttled-tracing = "0.1.0"
 tracing = "0.1.41"
 rusty-capture = { path = "../rusty-capture", optional = true }
 sonora = { version = "0.1" }
