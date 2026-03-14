@@ -105,10 +105,16 @@ and auto-fallback to default device are missing.
 
 ### Windows Media Foundation (phase 2b)
 
-Design document exists but no code has been written.
+Design document and implementation plan exist. No code has been written.
+Crate research complete: `windows` (MIT), `windows-capture` (MIT),
+`nokhwa` (Apache-2.0).
 
-- [phase-2b-windows-media-foundation](media-pipeline/phase-2b-windows-media-foundation.md)
-- [ ] Implement MFT H.264 encoder
+- [phase-2b-windows-media-foundation](media-pipeline/phase-2b-windows-media-foundation.md) — MFT encoder design
+- [phase-2b-windows-impl](media-pipeline/phase-2b-windows-impl.md) — full implementation plan with crate selection
+- [ ] Screen capture via `windows-capture`
+- [ ] Camera capture via `nokhwa`
+- [ ] MFT H.264 encoder
+- [ ] MFT H.264 decoder
 
 ## Open
 
