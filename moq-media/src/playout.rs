@@ -36,7 +36,7 @@ pub enum PlayoutMode {
 impl Default for PlayoutMode {
     fn default() -> Self {
         Self::Live {
-            buffer: Duration::from_millis(80),
+            buffer: Duration::ZERO,
             max_latency: Duration::from_millis(150),
         }
     }
@@ -84,6 +84,12 @@ struct ClockInner {
     /// Previous arrival for jitter calculation.
     prev_arrival: Option<Instant>,
     prev_pts: Option<Duration>,
+
+    /// Total accumulated drift from re-anchoring (diagnostic).
+    /// Positive = we shifted forward (frames were late).
+    total_reanchor_drift: Duration,
+    /// Number of times the clock has been re-anchored.
+    reanchor_count: u32,
 }
 
 impl PlayoutClock {
@@ -97,6 +103,8 @@ impl PlayoutClock {
                 base_pts: None,
                 prev_arrival: None,
                 prev_pts: None,
+                total_reanchor_drift: Duration::ZERO,
+                reanchor_count: 0,
             })),
         }
     }
@@ -125,6 +133,12 @@ impl PlayoutClock {
                 *base_wall -= Duration::from_nanos((-delta) as u64);
             }
         }
+        tracing::debug!(
+            old_buffer_ms = old_buf.as_millis(),
+            new_buffer_ms = new_buf.as_millis(),
+            has_base = inner.base_wall.is_some(),
+            "playout clock: mode changed"
+        );
         inner.mode = mode;
     }
 
@@ -144,19 +158,88 @@ impl PlayoutClock {
         buffer_duration(&inner.mode)
     }
 
-    /// Records a frame arrival and updates jitter estimate.
+    /// Sets the buffer duration for Live mode.
     ///
-    /// Called by decoder threads when a decoded frame is pushed into the
-    /// playout buffer, or when an audio packet is received.
+    /// No-op if the clock is in Reliable mode. If a base mapping exists,
+    /// shifts it so frames already in the buffer get correct playout times.
+    pub fn set_buffer(&self, new_buffer: Duration) {
+        let mut inner = self.inner.lock().expect("lock");
+        let old = buffer_duration(&inner.mode);
+        if old == new_buffer {
+            return;
+        }
+        if !matches!(inner.mode, PlayoutMode::Live { .. }) {
+            return;
+        }
+        // Shift the anchor to account for the buffer change.
+        if let Some(ref mut base_wall) = inner.base_wall {
+            let delta = new_buffer.as_nanos() as i128 - old.as_nanos() as i128;
+            if delta >= 0 {
+                *base_wall += Duration::from_nanos(delta as u64);
+            } else {
+                *base_wall -= Duration::from_nanos((-delta) as u64);
+            }
+        }
+        tracing::debug!(
+            old_buffer_ms = old.as_millis(),
+            new_buffer_ms = new_buffer.as_millis(),
+            "playout clock: buffer updated"
+        );
+        if let PlayoutMode::Live { ref mut buffer, .. } = inner.mode {
+            *buffer = new_buffer;
+        }
+    }
+
+    /// Returns the total accumulated drift from re-anchoring and the count.
+    pub fn reanchor_stats(&self) -> (Duration, u32) {
+        let inner = self.inner.lock().expect("lock");
+        (inner.total_reanchor_drift, inner.reanchor_count)
+    }
+
+    /// Records a frame arrival and updates the playout timeline.
+    ///
+    /// On the first call, establishes the PTS→wall-clock mapping. On
+    /// subsequent calls, re-anchors if the frame would play in the past
+    /// (i.e. the buffer ran dry due to a stall). This ensures the buffer
+    /// self-heals after transient disruptions instead of permanently
+    /// collapsing to zero depth.
     pub(crate) fn observe_arrival(&self, pts: Duration) {
         let now = Instant::now();
         let mut inner = self.inner.lock().expect("lock");
+        let offset = buffer_duration(&inner.mode);
 
-        // Establish base mapping on first frame.
         if inner.base_wall.is_none() {
-            let offset = buffer_duration(&inner.mode);
+            // First frame: establish base mapping.
             inner.base_wall = Some(now + offset);
             inner.base_pts = Some(pts);
+            tracing::debug!(
+                buffer_ms = offset.as_millis(),
+                pts_ms = pts.as_millis(),
+                "playout clock: anchored (first frame)"
+            );
+        } else {
+            // Check if this frame would play in the past (buffer underrun).
+            // If so, re-anchor so the buffer refills from this point.
+            let base_wall = inner.base_wall.unwrap();
+            let base_pts = inner.base_pts.unwrap();
+            let media_offset = pts.saturating_sub(base_pts);
+            let playout = base_wall + media_offset;
+            if now >= playout {
+                // Frame is late — shift base_wall forward to restore buffer depth.
+                let late_by = now - playout;
+                inner.base_wall = Some(now + offset);
+                inner.base_pts = Some(pts);
+                inner.total_reanchor_drift += late_by;
+                inner.reanchor_count += 1;
+                tracing::debug!(
+                    late_by_ms = late_by.as_millis(),
+                    buffer_ms = offset.as_millis(),
+                    total_drift_ms = inner.total_reanchor_drift.as_millis(),
+                    reanchor_count = inner.reanchor_count,
+                    pts_ms = pts.as_millis(),
+                    "playout clock: re-anchored after buffer underrun"
+                );
+            }
         }
 
         // RFC 3550 jitter calculation (diagnostic only).
@@ -187,13 +270,20 @@ impl PlayoutClock {
 
     /// Resets the clock's base mapping. Called when switching tracks or
     /// recovering from errors.
-    pub(crate) fn reset(&self) {
+    pub fn reset(&self) {
         let mut inner = self.inner.lock().expect("lock");
+        tracing::debug!(
+            total_drift_ms = inner.total_reanchor_drift.as_millis(),
+            reanchor_count = inner.reanchor_count,
+            "playout clock: reset"
+        );
         inner.base_wall = None;
         inner.base_pts = None;
         inner.prev_arrival = None;
         inner.prev_pts = None;
         inner.smoothed_jitter = Duration::ZERO;
+        inner.total_reanchor_drift = Duration::ZERO;
+        inner.reanchor_count = 0;
     }
 }
 
@@ -269,6 +359,11 @@ impl PlayoutBuffer {
     /// Returns the number of frames currently in the buffer.
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
+        self.buffer.len()
+    }
+
+    /// Returns the number of frames currently in the buffer.
+    pub(crate) fn buf_len(&self) -> usize {
         self.buffer.len()
     }
 
