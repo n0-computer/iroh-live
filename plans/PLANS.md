@@ -77,8 +77,12 @@ Renamed types (`LocalBroadcast`, `RemoteBroadcast`, `CatalogSnapshot`), added
 - [2-research](api/2-research.md) — survey of LiveKit, WebRTC, GStreamer APIs
 - [3-sketch](api/3-sketch.md) — target API sketch
 - [4-impl](api/4-impl.md) — 9-phase plan with status checklist
+- [3a-glossary](api/3a-glossary.md) — glossary of API terms and concepts
 - [5-examples](api/5-examples.md) — example patterns against the proposed API
+- [5-risks-and-future](api/5-risks-and-future.md) — risks, trade-offs, and future work
+- [6-examples](api/6-examples.md) — example code rewrites against proposed API
 - [6-relay](api/6-relay.md) — relay server integration design
+- [7-relay](api/7-relay.md) — relay support for iroh-live sessions
 
 ## Partial
 
@@ -132,6 +136,17 @@ state machine for dynamic bitrate adjustment.
 
 - [phase-3d-adaptive-encoding](media-pipeline/phase-3d-adaptive-encoding.md)
 
+### Android MediaCodec
+
+NDK `AMediaCodec` H.264 encode and decode, Camera2 capture via JNI, and
+an Android demo app skeleton.
+
+- [android-mediacodec](media-pipeline/android-mediacodec.md) — codec integration plan
+- [android-demo-app](media-pipeline/android-demo-app.md) — Kotlin/JNI demo app architecture
+- [ ] ByteBuffer encoder and decoder
+- [ ] Camera2 capture via JNI
+- [ ] Surface mode for zero-copy
+
 ### Stateless V4L2 decoder
 
 Stateless V4L2 decoder for Rockchip, Allwinner, and MediaTek SBCs. The
@@ -150,6 +165,8 @@ splitscreen dev example with debug overlay.
 
 Architecture overviews and context documents, not actionable work items.
 
+- [platforms](platforms.md) — platform support matrix for codecs, capture, and rendering
+- [netsim-testing](media-pipeline/netsim-testing.md) — network simulation testing with patchbay
 - [media-pipeline master](media-pipeline/00-master-plan.md) — full phase overview
 - [media-pipeline quick ref](media-pipeline/00-main.md) — phase table with links
 - [phase-3-av-resilience](media-pipeline/phase-3-av-resilience.md) — phases 3a–3d overview
