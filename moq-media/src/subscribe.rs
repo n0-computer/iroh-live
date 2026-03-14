@@ -14,12 +14,14 @@ use moq_lite::{BroadcastConsumer, Track};
 use n0_error::{Result, StackResultExt, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{debug, warn};
 
 use crate::{
+    adaptive::{AdaptiveConfig, AdaptiveVideoTrack},
     format::{DecodeConfig, PlaybackConfig, Quality, VideoFrame},
+    net::NetworkSignals,
     pipeline::{AudioDecoderPipeline, VideoDecoderHandle, VideoDecoderPipeline},
     playout::{PlayoutClock, PlayoutMode},
     processing::scale::Scaler,
@@ -511,6 +513,44 @@ impl RemoteBroadcast {
     pub fn closed(&self) -> impl Future<Output = moq_lite::Error> + 'static {
         let broadcast = self.broadcast.clone();
         async move { broadcast.closed().await }
+    }
+
+    /// Returns the shutdown token for this broadcast.
+    ///
+    /// Useful for tying the lifetime of auxiliary tasks (e.g. signal
+    /// producers) to this broadcast subscription.
+    pub fn shutdown_token(&self) -> CancellationToken {
+        self.shutdown.clone()
+    }
+
+    /// Subscribes to an adaptive video track that automatically switches
+    /// renditions based on network conditions.
+    ///
+    /// Uses dynamic decoder dispatch and default [`AdaptiveConfig`].
+    /// Pass a [`NetworkSignals`] receiver produced by a signal poller
+    /// (e.g. from polling QUIC connection stats).
+    #[cfg(any_video_codec)]
+    pub fn adaptive_video(
+        &self,
+        signals: watch::Receiver<NetworkSignals>,
+    ) -> anyhow::Result<AdaptiveVideoTrack> {
+        AdaptiveVideoTrack::new(
+            self.clone(),
+            signals,
+            AdaptiveConfig::default(),
+            DecodeConfig::default(),
+        )
+    }
+
+    /// Subscribes to an adaptive video track with custom configuration.
+    #[cfg(any_video_codec)]
+    pub fn adaptive_video_with(
+        &self,
+        signals: watch::Receiver<NetworkSignals>,
+        config: AdaptiveConfig,
+        decode_config: DecodeConfig,
+    ) -> anyhow::Result<AdaptiveVideoTrack> {
+        AdaptiveVideoTrack::new(self.clone(), signals, config, decode_config)
     }
 
     /// Shuts down this remote broadcast subscription.

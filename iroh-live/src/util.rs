@@ -4,7 +4,11 @@ use std::{
 };
 
 use byte_unit::{Bit, UnitType};
-use iroh::endpoint::{ConnectionStats, PathInfoList};
+use iroh::endpoint::{Connection, ConnectionStats, PathInfoList};
+use moq_media::net::NetworkSignals;
+use n0_watcher::Watcher;
+use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 /// Spawn a named OS thread and panic if spawning fails.
 pub fn spawn_thread<F, T>(name: impl ToString, f: F) -> thread::JoinHandle<T>
@@ -99,4 +103,71 @@ pub struct SmoothedStats<'a> {
     pub rtt: Duration,
     pub down: &'a Rate,
     pub up: &'a Rate,
+}
+
+/// Spawns a background task that polls connection stats and produces
+/// [`NetworkSignals`] for adaptive rendition selection.
+///
+/// The task runs until `shutdown` is cancelled or the connection closes.
+/// Returns a `watch::Receiver<NetworkSignals>` that the caller can pass
+/// to [`RemoteBroadcast::adaptive_video()`](moq_media::subscribe::RemoteBroadcast::adaptive_video).
+pub fn spawn_signal_producer(
+    conn: &Connection,
+    shutdown: CancellationToken,
+) -> watch::Receiver<NetworkSignals> {
+    let (tx, rx) = watch::channel(NetworkSignals::default());
+    let conn = conn.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(200));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut prev_lost: u64 = 0;
+        let mut prev_sent: u64 = 0;
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = shutdown.cancelled() => break,
+            }
+
+            let paths = conn.paths().get();
+            let Some(selected) = paths.iter().find(|p| p.is_selected()) else {
+                continue;
+            };
+
+            let stats = selected.stats();
+            let rtt = selected.rtt();
+
+            // Delta-based loss rate.
+            let total_lost = stats.lost_packets;
+            let total_sent = stats.udp_tx.datagrams;
+            let delta_lost = total_lost.saturating_sub(prev_lost);
+            let delta_sent = total_sent.saturating_sub(prev_sent);
+            prev_lost = total_lost;
+            prev_sent = total_sent;
+
+            let loss_rate = if delta_sent + delta_lost > 0 {
+                delta_lost as f64 / (delta_sent + delta_lost) as f64
+            } else {
+                0.0
+            };
+
+            // Available bandwidth estimate from congestion window.
+            let available_bps = if rtt.as_nanos() > 0 {
+                (stats.cwnd as u128 * 8 * 1_000_000_000 / rtt.as_nanos()) as u64
+            } else {
+                0
+            };
+
+            let signals = NetworkSignals {
+                rtt,
+                loss_rate,
+                available_bps,
+                congestion_events: stats.congestion_events,
+            };
+
+            if tx.send(signals).is_err() {
+                break; // all receivers dropped
+            }
+        }
+    });
+    rx
 }
