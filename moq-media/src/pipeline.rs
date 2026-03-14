@@ -648,9 +648,7 @@ impl AudioDecoderPipeline {
             move || {
                 let _guard = span.enter();
                 info!(?config, "decode start");
-                if let Err(err) =
-                    audio_decode_loop(&shutdown, packet_rx, decoder, sink, clock)
-                {
+                if let Err(err) = audio_decode_loop(&shutdown, packet_rx, decoder, sink, clock) {
                     error!("decoder failed: {err:#}");
                 }
                 info!("decode stop");

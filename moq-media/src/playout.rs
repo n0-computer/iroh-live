@@ -463,7 +463,9 @@ mod tests {
             max_latency: Duration::from_millis(150),
         });
         clock.observe_arrival(Duration::ZERO);
-        let t_before = clock.playout_time(Duration::ZERO).expect("should have base");
+        let t_before = clock
+            .playout_time(Duration::ZERO)
+            .expect("should have base");
 
         // Switch to Reliable (buffer=0): playout times should shift earlier by 80ms.
         clock.set_mode(PlayoutMode::Reliable);

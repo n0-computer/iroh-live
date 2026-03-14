@@ -1,4 +1,6 @@
+pub mod adaptive;
 pub mod audio_backend;
+pub mod net;
 pub mod pipeline;
 pub mod playout;
 mod processing;
