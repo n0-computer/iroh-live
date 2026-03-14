@@ -5,6 +5,9 @@
 //! renders. Useful for testing the full encode → transport → decode pipeline
 //! without needing two separate processes.
 //!
+//! `PublishView` and `SubscribeView` are fully independent — they share
+//! nothing except the publisher's endpoint address.
+//!
 //! ```sh
 //! cargo run -p iroh-live --example split
 //! cargo run -p iroh-live --example split --features "vaapi,wgpu"
@@ -13,7 +16,7 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use iroh::{Endpoint, Watcher, protocol::Router};
+use iroh::{Endpoint, EndpointAddr, SecretKey, Watcher, protocol::Router};
 use iroh_live::media::capture::{CameraCapturer, ScreenCapturer};
 use iroh_live::media::traits::{AudioSource, VideoSource};
 use iroh_live::{
@@ -26,7 +29,7 @@ use iroh_live::{
         },
         playout::PlayoutClock,
         publish::{AudioRenditions, LocalBroadcast, VideoRenditions},
-        subscribe::{AudioTrack, MediaTracks, RemoteBroadcast, VideoTrack},
+        subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
     },
     moq::MoqSession,
     util::StatsSmoother,
@@ -73,7 +76,7 @@ enum RenderMode {
 }
 
 // ---------------------------------------------------------------------------
-// SMPTE test pattern source (reused from viewer)
+// SMPTE test pattern source
 // ---------------------------------------------------------------------------
 
 const SMPTE_BARS: [[u8; 3]; 7] = [
@@ -188,7 +191,6 @@ impl TestPatternSource {
         }
     }
 
-    /// Stamps a flash indicator in the bottom-right corner, synced to the beep cadence.
     fn stamp_beep_indicator(buf: &mut [u8], w: u32, h: u32, beep_active: bool) {
         if !beep_active {
             return;
@@ -199,7 +201,7 @@ impl TestPatternSource {
         for y in y0..h.min(y0 + size) {
             for x in x0..w.min(x0 + size) {
                 let idx = ((y * w + x) * 4) as usize;
-                buf[idx] = 255; // bright yellow flash
+                buf[idx] = 255;
                 buf[idx + 1] = 255;
                 buf[idx + 2] = 0;
                 buf[idx + 3] = 255;
@@ -233,7 +235,6 @@ impl VideoSource for TestPatternSource {
         self.buffer.copy_from_slice(&self.background);
         Self::stamp_ball(&mut self.buffer, w, h, self.frame_index * 4);
 
-        // Flash indicator synced to beep cadence (first 100ms of each second)
         let elapsed = self.start_time.elapsed().as_secs_f64();
         let beep_active = (elapsed % 1.0) < 0.1;
         Self::stamp_beep_indicator(&mut self.buffer, w, h, beep_active);
@@ -310,45 +311,8 @@ impl AudioSource for TestToneSource {
 }
 
 // ---------------------------------------------------------------------------
-// App state
+// Shared helpers
 // ---------------------------------------------------------------------------
-
-struct SplitApp {
-    rt: tokio::runtime::Runtime,
-
-    // Local (publisher) state
-    local_video_source: VideoSourceKind,
-    local_audio_source: AudioSourceKind,
-    local_codec: VideoCodec,
-    local_preset: VideoPreset,
-    broadcast: LocalBroadcast,
-    local_video_view: Option<VideoTrackView>,
-    router: Router,
-    #[allow(dead_code, reason = "kept alive for protocol handler")]
-    live: Live,
-    audio_ctx: AudioBackend,
-
-    // Remote (subscriber) state
-    session: MoqSession,
-    remote_broadcast: RemoteBroadcast,
-    remote_video: Option<VideoTrackView>,
-    _remote_audio: Option<AudioTrack>,
-    remote_backend: DecoderBackend,
-    remote_render_mode: RenderMode,
-    stats: StatsSmoother,
-
-    // Playout state
-    playout_clock: PlayoutClock,
-
-    // UI state
-    local_stats: FrameStats,
-    remote_stats: FrameStats,
-    needs_republish: bool,
-    error_msg: Option<String>,
-
-    #[cfg(feature = "wgpu")]
-    wgpu_render_state: Option<egui_wgpu::RenderState>,
-}
 
 #[derive(Default)]
 struct FrameStats {
@@ -379,11 +343,6 @@ impl FrameStats {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Fits a rectangle of the given aspect ratio into `available`, preserving aspect.
 fn fit_to_aspect(available: egui::Vec2, aspect: f32) -> egui::Vec2 {
     let h_by_width = available.x / aspect;
     if h_by_width <= available.y {
@@ -413,41 +372,98 @@ fn overlay_bar(ui: &mut egui::Ui, text: &str) {
     ui.allocate_space(bar_rect.size());
 }
 
-impl SplitApp {
-    fn create_video_source(
-        kind: VideoSourceKind,
-        preset: VideoPreset,
-    ) -> anyhow::Result<Box<dyn VideoSource>> {
-        let (w, h) = preset.dimensions();
-        match kind {
-            VideoSourceKind::TestPattern => Ok(Box::new(TestPatternSource::new(w, h))),
-            VideoSourceKind::Camera => Ok(Box::new(CameraCapturer::new()?)),
-            VideoSourceKind::Screen => Ok(Box::new(ScreenCapturer::new()?)),
-        }
+fn create_video_source(
+    kind: VideoSourceKind,
+    preset: VideoPreset,
+) -> anyhow::Result<Box<dyn VideoSource>> {
+    let (w, h) = preset.dimensions();
+    match kind {
+        VideoSourceKind::TestPattern => Ok(Box::new(TestPatternSource::new(w, h))),
+        VideoSourceKind::Camera => Ok(Box::new(CameraCapturer::new()?)),
+        VideoSourceKind::Screen => Ok(Box::new(ScreenCapturer::new()?)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PublishView
+// ---------------------------------------------------------------------------
+
+struct PublishView {
+    router: Router,
+    #[allow(dead_code, reason = "kept alive for protocol handler")]
+    live: Live,
+    broadcast: LocalBroadcast,
+    audio_ctx: AudioBackend,
+
+    video_source: VideoSourceKind,
+    audio_source: AudioSourceKind,
+    codec: VideoCodec,
+    preset: VideoPreset,
+
+    preview: Option<VideoTrackView>,
+    stats: FrameStats,
+    needs_republish: bool,
+    error_msg: Option<String>,
+}
+
+impl PublishView {
+    async fn new(secret_key: SecretKey, audio_ctx: AudioBackend) -> Result<Self> {
+        let endpoint = Endpoint::builder().secret_key(secret_key).bind().await?;
+        let live = Live::new(endpoint.clone());
+        let router = Router::builder(endpoint.clone())
+            .accept(ALPN, live.protocol_handler())
+            .spawn();
+
+        let broadcast = LocalBroadcast::new();
+        let source = TestPatternSource::new(1280, 720);
+        let video = VideoRenditions::new(source, VideoCodec::best_available(), [VideoPreset::P720]);
+        broadcast.video().set_renditions(video)?;
+        let tone = TestToneSource::new();
+        let audio = AudioRenditions::new(tone, AudioCodec::Opus, [AudioPreset::Hq]);
+        broadcast.audio().set_renditions(audio)?;
+
+        live.publish(BROADCAST_NAME, &broadcast).await?;
+        info!("publishing on {}", endpoint.id().fmt_short());
+
+        Ok(Self {
+            router,
+            live,
+            broadcast,
+            audio_ctx,
+            video_source: VideoSourceKind::TestPattern,
+            audio_source: AudioSourceKind::TestTone,
+            codec: VideoCodec::best_available(),
+            preset: VideoPreset::P720,
+            preview: None,
+            stats: FrameStats::default(),
+            needs_republish: false,
+            error_msg: None,
+        })
     }
 
-    fn republish(&mut self, ctx: &egui::Context) {
+    fn addr(&self) -> EndpointAddr {
+        self.router.endpoint().addr()
+    }
+
+    fn republish(&mut self, rt: &tokio::runtime::Runtime) {
         self.needs_republish = false;
         self.error_msg = None;
-        self.playout_clock.reset();
 
-        // Video
-        let source = match Self::create_video_source(self.local_video_source, self.local_preset) {
+        let source = match create_video_source(self.video_source, self.preset) {
             Ok(s) => s,
             Err(e) => {
                 self.error_msg = Some(format!("Video source: {e:#}"));
                 return;
             }
         };
-        let video = VideoRenditions::new(source, self.local_codec, [self.local_preset]);
+        let video = VideoRenditions::new(source, self.codec, [self.preset]);
         if let Err(e) = self.broadcast.video().set_renditions(video) {
             self.error_msg = Some(format!("Set video: {e:#}"));
             return;
         }
 
-        // Audio
-        let _guard = self.rt.enter();
-        match self.local_audio_source {
+        let _guard = rt.enter();
+        match self.audio_source {
             AudioSourceKind::TestTone => {
                 let tone = TestToneSource::new();
                 let audio = AudioRenditions::new(tone, AudioCodec::Opus, [AudioPreset::Hq]);
@@ -457,7 +473,7 @@ impl SplitApp {
                 }
             }
             AudioSourceKind::Microphone => {
-                let mic = match self.rt.block_on(self.audio_ctx.default_input()) {
+                let mic = match rt.block_on(self.audio_ctx.default_input()) {
                     Ok(m) => m,
                     Err(e) => {
                         self.error_msg = Some(format!("Microphone: {e:#}"));
@@ -475,43 +491,245 @@ impl SplitApp {
             }
         }
 
-        // Reset pub preview — will be re-created from preview next frame
-        self.local_video_view = None;
+        self.preview = None;
+    }
 
-        // Re-subscribe on the sub side: the old encoder tracks were torn down,
-        // so the subscriber needs a fresh VideoTrack from the new catalog.
-        self.resubscribe_video(ctx);
+    fn aspect_ratio(&self) -> f32 {
+        let (w, h) = self.preset.dimensions();
+        w as f32 / h as f32
+    }
+
+    fn ui(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        // Controls
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let mut changed = false;
+
+            ui.label("Source");
+            egui::ComboBox::from_id_salt("pub_source")
+                .selected_text(self.video_source.to_string())
+                .show_ui(ui, |ui| {
+                    for kind in VideoSourceKind::VARIANTS {
+                        if ui
+                            .selectable_value(&mut self.video_source, *kind, kind.to_string())
+                            .changed()
+                        {
+                            changed = true;
+                        }
+                    }
+                });
+
+            ui.label("Audio");
+            egui::ComboBox::from_id_salt("pub_audio")
+                .selected_text(self.audio_source.to_string())
+                .show_ui(ui, |ui| {
+                    for kind in AudioSourceKind::VARIANTS {
+                        if ui
+                            .selectable_value(&mut self.audio_source, *kind, kind.to_string())
+                            .changed()
+                        {
+                            changed = true;
+                        }
+                    }
+                });
+
+            ui.label("Codec");
+            egui::ComboBox::from_id_salt("local_codec")
+                .selected_text(self.codec.display_name())
+                .show_ui(ui, |ui| {
+                    for codec in VideoCodec::available() {
+                        if ui
+                            .selectable_value(&mut self.codec, codec, codec.display_name())
+                            .changed()
+                        {
+                            changed = true;
+                        }
+                    }
+                });
+
+            ui.label("Preset");
+            egui::ComboBox::from_id_salt("local_preset")
+                .selected_text(self.preset.to_string())
+                .show_ui(ui, |ui| {
+                    for p in VideoPreset::all() {
+                        if ui
+                            .selectable_value(&mut self.preset, p, p.to_string())
+                            .changed()
+                        {
+                            changed = true;
+                        }
+                    }
+                });
+
+            if changed {
+                info!(
+                    source = %self.video_source,
+                    audio = %self.audio_source,
+                    codec = self.codec.display_name(),
+                    preset = %self.preset,
+                    "UI: publisher settings changed"
+                );
+                self.needs_republish = true;
+            }
+            if ui.button("Restart").clicked() {
+                info!("UI: restart button clicked");
+                self.needs_republish = true;
+            }
+
+            if let Some(ref msg) = self.error_msg {
+                ui.colored_label(egui::Color32::RED, msg);
+            }
+        });
+
+        ui.separator();
+
+        // Video preview
+        let avail = ui.available_size();
+        let bar_h = 36.0;
+        let video_avail = egui::vec2(avail.x, (avail.y - bar_h).max(1.0));
+        let aspect = self.aspect_ratio();
+        let video_size = fit_to_aspect(video_avail, aspect);
+
+        if self.preview.is_none()
+            && let Some(track) = self.broadcast.preview(DecodeConfig::default())
+        {
+            self.preview = Some(VideoTrackView::new(ctx, "pub-video", track));
+        }
+
+        if let Some(ref mut view) = self.preview {
+            let (img, frame_ts) = view.render(ctx, video_size);
+            let x_pad = (video_avail.x - video_size.x) / 2.0;
+            let y_pad = (video_avail.y - video_size.y) / 2.0;
+            ui.add_space(y_pad.max(0.0));
+            ui.horizontal(|ui| {
+                ui.add_space(x_pad.max(0.0));
+                ui.add_sized(video_size, img);
+            });
+            ui.add_space(y_pad.max(0.0));
+            self.stats.tick(frame_ts);
+        } else {
+            ui.allocate_space(video_avail);
+            ui.centered_and_justified(|ui| {
+                ui.label("No publisher video");
+            });
+        }
+
+        // Status bars
+        let pub_text = format!(
+            "PUB  codec: {}  preset: {}  fps: {:.0}  delay: {:.0}ms",
+            self.codec.display_name(),
+            self.preset,
+            self.stats.fps,
+            self.stats.delay_ms,
+        );
+        overlay_bar(ui, &pub_text);
+        overlay_bar(ui, "NET  (local)");
+    }
+
+    fn shutdown(&self, rt: &tokio::runtime::Runtime) {
+        let router = self.router.clone();
+        rt.block_on(async move {
+            if let Err(e) = router.shutdown().await {
+                warn!("shutdown: {e:#}");
+            }
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SubscribeView
+// ---------------------------------------------------------------------------
+
+struct SubscribeView {
+    session: MoqSession,
+    broadcast: RemoteBroadcast,
+    catalog_watcher: n0_watcher::Direct<iroh_live::media::subscribe::CatalogSnapshot>,
+
+    pending_video: Option<VideoTrack>,
+    video: Option<VideoTrackView>,
+    _audio: Option<AudioTrack>,
+    backend: DecoderBackend,
+    render_mode: RenderMode,
+
+    playout_clock: PlayoutClock,
+    net_stats: StatsSmoother,
+    stats: FrameStats,
+
+    #[cfg(feature = "wgpu")]
+    wgpu_render_state: Option<egui_wgpu::RenderState>,
+}
+
+impl SubscribeView {
+    async fn new(publisher_addr: EndpointAddr, audio_ctx: &AudioBackend) -> Result<Self> {
+        let endpoint = Endpoint::bind().await?;
+        let live = Live::new(endpoint);
+        let (session, broadcast) = live.subscribe(publisher_addr, BROADCAST_NAME).await?;
+        info!("subscriber connected");
+
+        let playout_clock = broadcast.clock().clone();
+        let catalog_watcher = broadcast.catalog_watcher();
+
+        let playback_config = PlaybackConfig::default();
+        let tracks = broadcast
+            .media::<DefaultDecoders>(audio_ctx, playback_config)
+            .await?;
+
+        Ok(Self {
+            session,
+            broadcast: tracks.broadcast,
+            catalog_watcher,
+            pending_video: tracks.video,
+            video: None,
+            _audio: tracks.audio,
+            backend: DecoderBackend::Auto,
+            render_mode: *RenderMode::VARIANTS.last().unwrap(),
+            playout_clock,
+            net_stats: StatsSmoother::new(),
+            stats: FrameStats::default(),
+            #[cfg(feature = "wgpu")]
+            wgpu_render_state: None,
+        })
+    }
+
+    #[cfg(feature = "wgpu")]
+    fn set_wgpu_render_state(&mut self, state: Option<egui_wgpu::RenderState>) {
+        self.wgpu_render_state = state;
     }
 
     fn resubscribe_video(&mut self, ctx: &egui::Context) {
+        self.playout_clock.reset();
         let renditions: Vec<String> = self
-            .remote_broadcast
+            .broadcast
             .catalog()
             .video_renditions()
             .map(|s| s.to_owned())
             .collect();
         if let Some(name) = renditions.first() {
             let decode_config = DecodeConfig {
-                backend: self.remote_backend,
+                backend: self.backend,
                 ..Default::default()
             };
             match self
-                .remote_broadcast
+                .broadcast
                 .video_rendition::<DynamicVideoDecoder>(&decode_config, name)
             {
                 Ok(track) => {
-                    self.remote_video = Some(self.make_remote_video_view(ctx, track));
+                    info!(rendition = name, "subscriber: resubscribed to video");
+                    self.video = Some(self.make_video_view(ctx, track));
                 }
                 Err(e) => {
                     warn!("re-subscribe failed: {e:#}");
+                    self.video = None;
                 }
             }
+        } else {
+            self.video = None;
         }
     }
 
-    fn make_remote_video_view(&self, ctx: &egui::Context, track: VideoTrack) -> VideoTrackView {
+    fn make_video_view(&self, ctx: &egui::Context, track: VideoTrack) -> VideoTrackView {
         #[cfg(feature = "wgpu")]
-        if self.remote_render_mode == RenderMode::Wgpu {
+        if self.render_mode == RenderMode::Wgpu {
             return VideoTrackView::new_wgpu(
                 ctx,
                 "remote-video",
@@ -522,426 +740,223 @@ impl SplitApp {
         VideoTrackView::new(ctx, "remote-video", track)
     }
 
-    fn local_aspect_ratio(&self) -> f32 {
-        let (w, h) = self.local_preset.dimensions();
-        w as f32 / h as f32
+    fn ui(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        // Convert pending video track to view (deferred until we have egui context)
+        if let Some(track) = self.pending_video.take() {
+            self.video = Some(self.make_video_view(ctx, track));
+        }
+
+        // Auto-detect catalog changes from publisher
+        if self.catalog_watcher.update() {
+            info!("subscriber: catalog changed, resubscribing");
+            self.resubscribe_video(ctx);
+        }
+
+        // Controls
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+
+            // Rendition selector
+            let selected_rendition = self
+                .video
+                .as_ref()
+                .map(|v| v.track().rendition().to_owned());
+            egui::ComboBox::from_id_salt("sub_rendition")
+                .selected_text(
+                    selected_rendition
+                        .clone()
+                        .unwrap_or_else(|| "rendition".into()),
+                )
+                .show_ui(ui, |ui| {
+                    for name in self.broadcast.catalog().video_renditions() {
+                        if ui
+                            .selectable_label(selected_rendition.as_deref() == Some(name), name)
+                            .clicked()
+                        {
+                            info!(rendition = name, "UI: rendition switched");
+                            let decode_config = DecodeConfig {
+                                backend: self.backend,
+                                ..Default::default()
+                            };
+                            match self
+                                .broadcast
+                                .video_rendition::<DynamicVideoDecoder>(&decode_config, name)
+                            {
+                                Ok(track) => {
+                                    self.video = Some(self.make_video_view(ctx, track));
+                                }
+                                Err(e) => {
+                                    warn!("rendition switch failed: {e:#}");
+                                }
+                            }
+                        }
+                    }
+                });
+
+            ui.label("Decoder");
+            let backend_name = match self.backend {
+                DecoderBackend::Auto => "Auto",
+                DecoderBackend::Software => "SW",
+            };
+            egui::ComboBox::from_id_salt("sub_decoder")
+                .selected_text(backend_name)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_value(&mut self.backend, DecoderBackend::Auto, "Auto")
+                        .changed()
+                        || ui
+                            .selectable_value(
+                                &mut self.backend,
+                                DecoderBackend::Software,
+                                "Software",
+                            )
+                            .changed()
+                    {
+                        info!(backend = ?self.backend, "UI: decoder backend changed");
+                        self.resubscribe_video(ctx);
+                    }
+                });
+
+            ui.label("Render");
+            egui::ComboBox::from_id_salt("sub_render")
+                .selected_text(self.render_mode.to_string())
+                .show_ui(ui, |ui| {
+                    for mode in RenderMode::VARIANTS {
+                        if ui
+                            .selectable_value(&mut self.render_mode, *mode, mode.to_string())
+                            .changed()
+                        {
+                            info!(mode = %self.render_mode, "UI: render mode changed");
+                            self.resubscribe_video(ctx);
+                        }
+                    }
+                });
+        });
+
+        // Playout diagnostics
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let buf = self.playout_clock.buffer();
+            let jitter = self.playout_clock.jitter();
+            let (drift, reanchors) = self.playout_clock.reanchor_stats();
+            ui.label(format!(
+                "buf: {}ms  jitter: {:.1}ms  drift: {}ms ({}x)",
+                buf.as_millis(),
+                jitter.as_secs_f64() * 1000.0,
+                drift.as_millis(),
+                reanchors,
+            ));
+        });
+
+        ui.separator();
+
+        // Video
+        let avail = ui.available_size();
+        let bar_h = 36.0;
+        let video_avail = egui::vec2(avail.x, (avail.y - bar_h).max(1.0));
+        let aspect = 16.0 / 9.0; // default aspect, actual comes from video
+        let video_size = fit_to_aspect(video_avail, aspect);
+
+        if let Some(ref mut view) = self.video {
+            let (img, frame_ts) = view.render(ctx, video_size);
+            let x_pad = (video_avail.x - video_size.x) / 2.0;
+            let y_pad = (video_avail.y - video_size.y) / 2.0;
+            ui.add_space(y_pad.max(0.0));
+            ui.horizontal(|ui| {
+                ui.add_space(x_pad.max(0.0));
+                ui.add_sized(video_size, img);
+            });
+            ui.add_space(y_pad.max(0.0));
+            self.stats.tick(frame_ts);
+        } else {
+            ui.allocate_space(video_avail);
+        }
+
+        // Status bars
+        let rendition = self
+            .video
+            .as_ref()
+            .map(|v| v.track().rendition().to_owned())
+            .unwrap_or_default();
+        let decoder_name = self
+            .video
+            .as_ref()
+            .map(|v| v.track().decoder_name().to_owned())
+            .unwrap_or_default();
+        let renderer = if self.video.as_ref().is_some_and(|v| v.is_wgpu()) {
+            "wgpu"
+        } else {
+            "cpu"
+        };
+        let net = self.net_stats.smoothed(|| {
+            let conn = self.session.conn();
+            (conn.stats(), conn.paths().get())
+        });
+        let sub_text = format!(
+            "SUB  rend: {}  dec: {}  render: {}  fps: {:.0}  delay: {:.0}ms  bitrate: {}",
+            rendition,
+            decoder_name,
+            renderer,
+            self.stats.fps,
+            self.stats.delay_ms,
+            format_bitrate(net.down.rate as f64),
+        );
+        overlay_bar(ui, &sub_text);
+
+        let conn_text = format!(
+            "NET  up: {}  down: {}  rtt: {}ms",
+            net.up.rate_str,
+            net.down.rate_str,
+            net.rtt.as_millis(),
+        );
+        overlay_bar(ui, &conn_text);
+    }
+
+    fn shutdown(&self) {
+        self.broadcast.shutdown();
+        self.session.close(0, b"bye");
     }
 }
 
 // ---------------------------------------------------------------------------
-// Setup
+// App
 // ---------------------------------------------------------------------------
 
-async fn setup(
-    audio_ctx: AudioBackend,
-) -> Result<(Router, Live, LocalBroadcast, MoqSession, MediaTracks)> {
-    // Local (publisher) endpoint
-    let local_endpoint = Endpoint::bind().await?;
-    let live = Live::new(local_endpoint.clone());
-    let router = Router::builder(local_endpoint.clone())
-        .accept(ALPN, live.protocol_handler())
-        .spawn();
-
-    // Create broadcast with test pattern + test tone
-    let broadcast = LocalBroadcast::new();
-    let source = TestPatternSource::new(1280, 720);
-    let video = VideoRenditions::new(source, VideoCodec::best_available(), [VideoPreset::P720]);
-    broadcast.video().set_renditions(video)?;
-    let tone = TestToneSource::new();
-    let audio = AudioRenditions::new(tone, AudioCodec::Opus, [AudioPreset::Hq]);
-    broadcast.audio().set_renditions(audio)?;
-
-    live.publish(BROADCAST_NAME, &broadcast).await?;
-    info!("publishing on {}", local_endpoint.id().fmt_short());
-
-    // Remote (subscriber) endpoint
-    let local_addr = local_endpoint.addr();
-    let remote_endpoint = Endpoint::bind().await?;
-    let remote_live = Live::new(remote_endpoint.clone());
-    let playback_config = PlaybackConfig::default();
-    let (session, track) = remote_live
-        .subscribe_media_track::<DefaultDecoders>(
-            local_addr,
-            BROADCAST_NAME,
-            &audio_ctx,
-            playback_config,
-        )
-        .await?;
-    info!("subscriber connected");
-
-    Ok((router, live, broadcast, session, track))
+struct SplitApp {
+    rt: tokio::runtime::Runtime,
+    publish: PublishView,
+    subscribe: SubscribeView,
 }
-
-// ---------------------------------------------------------------------------
-// eframe App impl
-// ---------------------------------------------------------------------------
 
 impl eframe::App for SplitApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(16));
 
-        // Handle deferred republish
-        if self.needs_republish {
-            self.republish(ctx);
+        if self.publish.needs_republish {
+            self.publish.republish(&self.rt);
         }
 
         let panel_width = ctx.input(|i| i.viewport_rect().width()) / 2.0;
 
-        // =====================================================================
-        // LEFT HALF: Publisher
-        // =====================================================================
         egui::SidePanel::left("pub_panel")
             .exact_width(panel_width)
             .resizable(false)
             .frame(egui::Frame::new().inner_margin(0.0))
             .show(ctx, |ui| {
-                // --- Local controls ---
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    let mut changed = false;
-
-                    ui.label("Source");
-                    egui::ComboBox::from_id_salt("pub_source")
-                        .selected_text(self.local_video_source.to_string())
-                        .show_ui(ui, |ui| {
-                            for kind in VideoSourceKind::VARIANTS {
-                                if ui
-                                    .selectable_value(
-                                        &mut self.local_video_source,
-                                        *kind,
-                                        kind.to_string(),
-                                    )
-                                    .changed()
-                                {
-                                    changed = true;
-                                }
-                            }
-                        });
-
-                    ui.label("Audio");
-                    egui::ComboBox::from_id_salt("pub_audio")
-                        .selected_text(self.local_audio_source.to_string())
-                        .show_ui(ui, |ui| {
-                            for kind in AudioSourceKind::VARIANTS {
-                                if ui
-                                    .selectable_value(
-                                        &mut self.local_audio_source,
-                                        *kind,
-                                        kind.to_string(),
-                                    )
-                                    .changed()
-                                {
-                                    changed = true;
-                                }
-                            }
-                        });
-
-                    ui.label("Codec");
-                    egui::ComboBox::from_id_salt("local_codec")
-                        .selected_text(self.local_codec.display_name())
-                        .show_ui(ui, |ui| {
-                            for codec in VideoCodec::available() {
-                                if ui
-                                    .selectable_value(
-                                        &mut self.local_codec,
-                                        codec,
-                                        codec.display_name(),
-                                    )
-                                    .changed()
-                                {
-                                    changed = true;
-                                }
-                            }
-                        });
-
-                    ui.label("Preset");
-                    egui::ComboBox::from_id_salt("local_preset")
-                        .selected_text(self.local_preset.to_string())
-                        .show_ui(ui, |ui| {
-                            for p in VideoPreset::all() {
-                                if ui
-                                    .selectable_value(&mut self.local_preset, p, p.to_string())
-                                    .changed()
-                                {
-                                    changed = true;
-                                }
-                            }
-                        });
-
-                    if changed {
-                        info!(
-                            source = %self.local_video_source,
-                            audio = %self.local_audio_source,
-                            codec = self.local_codec.display_name(),
-                            preset = %self.local_preset,
-                            "UI: publisher settings changed"
-                        );
-                        self.needs_republish = true;
-                    }
-                    if ui.button("Restart").clicked() {
-                        info!("UI: restart button clicked");
-                        self.needs_republish = true;
-                    }
-
-                    if let Some(ref msg) = self.error_msg {
-                        ui.colored_label(egui::Color32::RED, msg);
-                    }
-                });
-
-                ui.separator();
-
-                // --- Local video preview ---
-                let avail = ui.available_size();
-                let bar_h = 36.0; // two status bars
-                let video_avail = egui::vec2(avail.x, (avail.y - bar_h).max(1.0));
-                let aspect = self.local_aspect_ratio();
-                let video_size = fit_to_aspect(video_avail, aspect);
-
-                // Initialize pub video if needed
-                if self.local_video_view.is_none()
-                    && let Some(track) = self.broadcast.preview(DecodeConfig::default())
-                {
-                    self.local_video_view = Some(VideoTrackView::new(ctx, "pub-video", track));
-                }
-
-                if let Some(ref mut view) = self.local_video_view {
-                    let (img, frame_ts) = view.render(ctx, video_size);
-                    // Center the video in available space
-                    let x_pad = (video_avail.x - video_size.x) / 2.0;
-                    let y_pad = (video_avail.y - video_size.y) / 2.0;
-                    ui.add_space(y_pad.max(0.0));
-                    ui.horizontal(|ui| {
-                        ui.add_space(x_pad.max(0.0));
-                        ui.add_sized(video_size, img);
-                    });
-                    ui.add_space(y_pad.max(0.0));
-                    self.local_stats.tick(frame_ts);
-                } else {
-                    ui.allocate_space(video_avail);
-                    ui.centered_and_justified(|ui| {
-                        ui.label("No publisher video");
-                    });
-                }
-
-                // Publisher status bar
-                let enc_bitrate = self
-                    .remote_broadcast
-                    .catalog()
-                    .video
-                    .renditions
-                    .values()
-                    .next()
-                    .and_then(|c| c.bitrate)
-                    .map(|b| format_bitrate(b as f64))
-                    .unwrap_or_default();
-                let pub_text = format!(
-                    "PUB  codec: {}  preset: {}  fps: {:.0}  delay: {:.0}ms  bitrate: {}",
-                    self.local_codec.display_name(),
-                    self.local_preset,
-                    self.local_stats.fps,
-                    self.local_stats.delay_ms,
-                    enc_bitrate,
-                );
-                overlay_bar(ui, &pub_text);
-
-                // Placeholder NET bar (no pub-side connection stats yet)
-                overlay_bar(ui, "NET  (local)");
+                self.publish.ui(ctx, ui);
             });
 
-        // =====================================================================
-        // RIGHT HALF: Subscriber
-        // =====================================================================
         egui::CentralPanel::default()
             .frame(egui::Frame::new().inner_margin(0.0))
             .show(ctx, |ui| {
-                // --- Remote controls ---
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-
-                    // Rendition selector
-                    let selected_rendition = self
-                        .remote_video
-                        .as_ref()
-                        .map(|v| v.track().rendition().to_owned());
-                    egui::ComboBox::from_id_salt("sub_rendition")
-                        .selected_text(
-                            selected_rendition
-                                .clone()
-                                .unwrap_or_else(|| "rendition".into()),
-                        )
-                        .show_ui(ui, |ui| {
-                            for name in self.remote_broadcast.catalog().video_renditions() {
-                                if ui
-                                    .selectable_label(
-                                        selected_rendition.as_deref() == Some(name),
-                                        name,
-                                    )
-                                    .clicked()
-                                {
-                                    info!(rendition = name, "UI: rendition switched");
-                                    let decode_config = DecodeConfig {
-                                        backend: self.remote_backend,
-                                        ..Default::default()
-                                    };
-                                    match self
-                                        .remote_broadcast
-                                        .video_rendition::<DynamicVideoDecoder>(
-                                            &decode_config,
-                                            name,
-                                        ) {
-                                        Ok(track) => {
-                                            self.remote_video =
-                                                Some(self.make_remote_video_view(ctx, track));
-                                        }
-                                        Err(e) => {
-                                            warn!("rendition switch failed: {e:#}");
-                                        }
-                                    }
-                                }
-                            }
-                        });
-
-                    ui.label("Decoder");
-                    let backend_name = match self.remote_backend {
-                        DecoderBackend::Auto => "Auto",
-                        DecoderBackend::Software => "SW",
-                    };
-                    egui::ComboBox::from_id_salt("sub_decoder")
-                        .selected_text(backend_name)
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_value(
-                                    &mut self.remote_backend,
-                                    DecoderBackend::Auto,
-                                    "Auto",
-                                )
-                                .changed()
-                                || ui
-                                    .selectable_value(
-                                        &mut self.remote_backend,
-                                        DecoderBackend::Software,
-                                        "Software",
-                                    )
-                                    .changed()
-                            {
-                                info!(backend = ?self.remote_backend, "UI: decoder backend changed");
-                                self.resubscribe_video(ctx);
-                            }
-                        });
-
-                    ui.label("Render");
-                    egui::ComboBox::from_id_salt("sub_render")
-                        .selected_text(self.remote_render_mode.to_string())
-                        .show_ui(ui, |ui| {
-                            for mode in RenderMode::VARIANTS {
-                                if ui
-                                    .selectable_value(
-                                        &mut self.remote_render_mode,
-                                        *mode,
-                                        mode.to_string(),
-                                    )
-                                    .changed()
-                                {
-                                    info!(mode = %self.remote_render_mode, "UI: render mode changed");
-                                    self.resubscribe_video(ctx);
-                                }
-                            }
-                        });
-                });
-
-                // --- Playout diagnostics ---
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    let buf = self.playout_clock.buffer();
-                    let jitter = self.playout_clock.jitter();
-                    let (drift, reanchors) = self.playout_clock.reanchor_stats();
-                    ui.label(format!(
-                        "buf: {}ms  jitter: {:.1}ms  drift: {}ms ({}x)",
-                        buf.as_millis(),
-                        jitter.as_secs_f64() * 1000.0,
-                        drift.as_millis(),
-                        reanchors,
-                    ));
-                });
-
-                ui.separator();
-
-                // --- Remote video ---
-                let avail = ui.available_size();
-                let bar_h = 36.0; // two status bars
-                let video_avail = egui::vec2(avail.x, (avail.y - bar_h).max(1.0));
-
-                // Use preset aspect ratio (same source dimensions)
-                let aspect = self.local_aspect_ratio();
-                let video_size = fit_to_aspect(video_avail, aspect);
-
-                if let Some(ref mut view) = self.remote_video {
-                    let (img, frame_ts) = view.render(ctx, video_size);
-                    let x_pad = (video_avail.x - video_size.x) / 2.0;
-                    let y_pad = (video_avail.y - video_size.y) / 2.0;
-                    ui.add_space(y_pad.max(0.0));
-                    ui.horizontal(|ui| {
-                        ui.add_space(x_pad.max(0.0));
-                        ui.add_sized(video_size, img);
-                    });
-                    ui.add_space(y_pad.max(0.0));
-                    self.remote_stats.tick(frame_ts);
-                } else {
-                    ui.allocate_space(video_avail);
-                }
-
-                // Subscriber decode bar (rend first, then dec)
-                let rendition = self
-                    .remote_video
-                    .as_ref()
-                    .map(|v| v.track().rendition().to_owned())
-                    .unwrap_or_default();
-                let decoder_name = self
-                    .remote_video
-                    .as_ref()
-                    .map(|v| v.track().decoder_name().to_owned())
-                    .unwrap_or_default();
-                let renderer = if self.remote_video.as_ref().is_some_and(|v| v.is_wgpu()) {
-                    "wgpu"
-                } else {
-                    "cpu"
-                };
-                let stats = self.stats.smoothed(|| {
-                    let conn = self.session.conn();
-                    (conn.stats(), conn.paths().get())
-                });
-                let sub_text = format!(
-                    "SUB  rend: {}  dec: {}  render: {}  fps: {:.0}  delay: {:.0}ms  bitrate: {}",
-                    rendition,
-                    decoder_name,
-                    renderer,
-                    self.remote_stats.fps,
-                    self.remote_stats.delay_ms,
-                    format_bitrate(stats.down.rate as f64),
-                );
-                overlay_bar(ui, &sub_text);
-
-                // Connection stats bar
-                let conn_text = format!(
-                    "NET  up: {}  down: {}  rtt: {}ms",
-                    stats.up.rate_str,
-                    stats.down.rate_str,
-                    stats.rtt.as_millis(),
-                );
-                overlay_bar(ui, &conn_text);
+                self.subscribe.ui(ctx, ui);
             });
     }
 
     fn on_exit(&mut self) {
         info!("shutting down");
-        self.remote_broadcast.shutdown();
-        self.session.close(0, b"bye");
-        let router = self.router.clone();
-        self.rt.block_on(async move {
-            if let Err(e) = router.shutdown().await {
-                warn!("shutdown: {e:#}");
-            }
-        });
+        self.subscribe.shutdown();
+        self.publish.shutdown(&self.rt);
     }
 }
 
@@ -958,7 +973,11 @@ fn main() -> Result<()> {
         .unwrap();
 
     let audio_ctx = AudioBackend::default();
-    let (router, live, broadcast, session, track) = rt.block_on(setup(audio_ctx.clone()))?;
+    let secret_key = SecretKey::generate(&mut rand::rng());
+
+    let publish = rt.block_on(PublishView::new(secret_key, audio_ctx.clone()))?;
+    let publisher_addr = publish.addr();
+    let mut subscribe = rt.block_on(SubscribeView::new(publisher_addr, &audio_ctx))?;
 
     let _guard = rt.enter();
 
@@ -977,51 +996,18 @@ fn main() -> Result<()> {
         "iroh-live split",
         native_options,
         Box::new(move |cc| {
-            let remote_render_mode = *RenderMode::VARIANTS.last().unwrap();
-
             #[cfg(feature = "wgpu")]
-            let wgpu_render_state = cc.wgpu_render_state.clone();
+            subscribe.set_wgpu_render_state(cc.wgpu_render_state.clone());
 
-            let playout_clock = track.clock().clone();
-            let remote_video = track.video.map(|video| {
-                #[cfg(feature = "wgpu")]
-                if remote_render_mode == RenderMode::Wgpu {
-                    return VideoTrackView::new_wgpu(
-                        &cc.egui_ctx,
-                        "remote-video",
-                        video,
-                        cc.wgpu_render_state.as_ref(),
-                    );
-                }
-                VideoTrackView::new(&cc.egui_ctx, "remote-video", video)
-            });
-            let app = SplitApp {
+            // Publish preview and subscribe video are created lazily on
+            // first ui() call via pending_video / preview fields, so we
+            // don't need the egui context here.
+
+            Ok(Box::new(SplitApp {
                 rt,
-                local_video_source: VideoSourceKind::TestPattern,
-                local_audio_source: AudioSourceKind::TestTone,
-                local_codec: VideoCodec::best_available(),
-                local_preset: VideoPreset::P720,
-                broadcast,
-                local_video_view: None,
-                router,
-                live,
-                audio_ctx,
-                session,
-                remote_broadcast: track.broadcast,
-                remote_video,
-                _remote_audio: track.audio,
-                remote_backend: DecoderBackend::Auto,
-                remote_render_mode,
-                stats: StatsSmoother::new(),
-                playout_clock,
-                local_stats: FrameStats::default(),
-                remote_stats: FrameStats::default(),
-                needs_republish: false,
-                error_msg: None,
-                #[cfg(feature = "wgpu")]
-                wgpu_render_state,
-            };
-            Ok(Box::new(app))
+                publish,
+                subscribe,
+            }))
         }),
     )
     .map_err(|err| anyerr!("eframe failed: {err:#}"))
