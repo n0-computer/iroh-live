@@ -6,6 +6,8 @@ pub mod playout;
 mod processing;
 pub mod publish;
 pub mod subscribe;
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_util;
 pub mod transport;
 mod util;
 

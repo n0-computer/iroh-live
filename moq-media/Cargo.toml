@@ -58,6 +58,7 @@ wgpu = { version = "27", default-features = false, features = ["wgsl", "vulkan"]
 
 [features]
 default = ["h264", "opus", "av1", "capture"]
+test-util = []
 h264 = ["rusty-codecs/h264"]
 opus = ["rusty-codecs/opus"]
 av1 = ["rusty-codecs/av1"]
