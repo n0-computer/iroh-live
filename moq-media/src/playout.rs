@@ -633,4 +633,72 @@ mod tests {
         let result = recv_timeout(&mut rx, Duration::from_millis(100));
         assert!(matches!(result, RecvResult::Value(42)));
     }
+
+    #[test]
+    fn set_buffer_noop_in_reliable_mode() {
+        let clock = PlayoutClock::new(PlayoutMode::Reliable);
+        clock.observe_arrival(Duration::ZERO);
+        let t_before = clock.playout_time(Duration::ZERO).unwrap();
+        // set_buffer should be a no-op in Reliable mode.
+        clock.set_buffer(Duration::from_millis(100));
+        let t_after = clock.playout_time(Duration::ZERO).unwrap();
+        assert_eq!(t_before, t_after, "set_buffer should be no-op in Reliable mode");
+        assert_eq!(clock.buffer(), Duration::ZERO);
+    }
+
+    #[test]
+    fn set_buffer_shifts_anchor_in_live_mode() {
+        let clock = PlayoutClock::new(PlayoutMode::Live {
+            buffer: Duration::from_millis(50),
+            max_latency: Duration::from_millis(150),
+        });
+        clock.observe_arrival(Duration::ZERO);
+        let t_before = clock.playout_time(Duration::ZERO).unwrap();
+
+        // Increase buffer by 100ms — playout should shift later.
+        clock.set_buffer(Duration::from_millis(150));
+        let t_after = clock.playout_time(Duration::ZERO).unwrap();
+        let shift = t_after.duration_since(t_before);
+        assert!(
+            (shift.as_millis() as i64 - 100).unsigned_abs() < 5,
+            "expected ~100ms shift, got {shift:?}"
+        );
+        assert_eq!(clock.buffer(), Duration::from_millis(150));
+    }
+
+    #[test]
+    fn set_buffer_same_value_is_noop() {
+        let clock = PlayoutClock::new(PlayoutMode::Live {
+            buffer: Duration::from_millis(80),
+            max_latency: Duration::from_millis(150),
+        });
+        clock.observe_arrival(Duration::ZERO);
+        let t_before = clock.playout_time(Duration::ZERO).unwrap();
+        clock.set_buffer(Duration::from_millis(80));
+        let t_after = clock.playout_time(Duration::ZERO).unwrap();
+        assert_eq!(t_before, t_after, "same buffer value should be no-op");
+    }
+
+    #[test]
+    fn observe_arrival_reanchors_on_late_frame() {
+        let clock = PlayoutClock::new(PlayoutMode::Live {
+            buffer: Duration::from_millis(50),
+            max_latency: Duration::from_millis(200),
+        });
+        // First frame anchors the clock.
+        clock.observe_arrival(Duration::ZERO);
+        let (drift_before, count_before) = clock.reanchor_stats();
+        assert_eq!(count_before, 0);
+        assert_eq!(drift_before, Duration::ZERO);
+
+        // Sleep long enough that the next frame's playout time is in the past.
+        std::thread::sleep(Duration::from_millis(100));
+
+        // Second frame with PTS=33ms — playout time would be base_wall + 33ms,
+        // which is ~50ms in the past. Should trigger re-anchor.
+        clock.observe_arrival(Duration::from_millis(33));
+        let (drift_after, count_after) = clock.reanchor_stats();
+        assert_eq!(count_after, 1, "should have re-anchored once");
+        assert!(drift_after > Duration::ZERO, "drift should be positive");
+    }
 }

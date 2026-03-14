@@ -307,3 +307,217 @@ async fn clear_video_updates_catalog() {
 
     assert!(!remote.has_video(), "video should be gone after clear");
 }
+
+// ── Group G: Two subscribers on same broadcast ────────────────────
+
+#[cfg(feature = "h264")]
+#[tokio::test]
+async fn two_subscribers_receive_frames() {
+    let (broadcast, consumer1) = setup_broadcast().await;
+    let consumer2 = broadcast.consume();
+    let (w, h) = VideoPreset::P180.dimensions();
+    broadcast
+        .video()
+        .set(TestVideoSource::new(w, h), VideoCodec::H264, [VideoPreset::P180])
+        .unwrap();
+
+    let remote1 = RemoteBroadcast::with_playout("s1", consumer1, PlayoutMode::Reliable)
+        .await
+        .unwrap();
+    let remote2 = RemoteBroadcast::with_playout("s2", consumer2, PlayoutMode::Reliable)
+        .await
+        .unwrap();
+
+    let mut track1 = remote1.video().unwrap();
+    let mut track2 = remote2.video().unwrap();
+
+    let f1 = tokio::time::timeout(TIMEOUT, track1.next_frame())
+        .await
+        .expect("timeout s1")
+        .expect("closed s1");
+    let f2 = tokio::time::timeout(TIMEOUT, track2.next_frame())
+        .await
+        .expect("timeout s2")
+        .expect("closed s2");
+
+    assert!(f1.dimensions[0] > 0);
+    assert!(f2.dimensions[0] > 0);
+}
+
+// ── Group H: Publisher resolution change ──────────────────────────
+
+#[cfg(feature = "h264")]
+#[tokio::test]
+async fn publisher_resolution_change_updates_subscriber() {
+    let (broadcast, consumer) = setup_broadcast().await;
+    broadcast
+        .video()
+        .set(
+            TestVideoSource::new(320, 180),
+            VideoCodec::H264,
+            [VideoPreset::P180],
+        )
+        .unwrap();
+
+    let remote = RemoteBroadcast::with_playout("test", consumer, PlayoutMode::Reliable)
+        .await
+        .unwrap();
+
+    // Drain a frame from the initial rendition
+    let mut track = remote.video().unwrap();
+    tokio::time::timeout(TIMEOUT, track.next_frame())
+        .await
+        .expect("timeout")
+        .expect("closed");
+    drop(track);
+
+    let mut watcher = remote.catalog_watcher();
+
+    // Replace with higher resolution
+    broadcast
+        .video()
+        .replace(
+            TestVideoSource::new(640, 360),
+            VideoCodec::H264,
+            [VideoPreset::P360],
+        )
+        .unwrap();
+
+    // Wait for catalog update
+    tokio::time::timeout(TIMEOUT, watcher.updated())
+        .await
+        .expect("timeout waiting for catalog update")
+        .expect("catalog watcher disconnected");
+
+    // Verify catalog now has 360p rendition
+    let catalog = remote.catalog();
+    let renditions: Vec<&str> = catalog.video_renditions().collect();
+    assert!(
+        renditions.iter().any(|r| r.contains("360")),
+        "expected 360p rendition, got {renditions:?}"
+    );
+
+    // Subscribe to new rendition and verify frames arrive
+    let mut track = remote.video().unwrap();
+    let frame = tokio::time::timeout(TIMEOUT, track.next_frame())
+        .await
+        .expect("timeout")
+        .expect("closed");
+    assert!(frame.dimensions[0] > 0);
+}
+
+// ── Group I: Audio clear while video continues ────────────────────
+
+#[cfg(all(feature = "h264", feature = "opus"))]
+#[tokio::test]
+async fn audio_clear_while_video_continues() {
+    let (broadcast, consumer) = setup_broadcast().await;
+    broadcast
+        .video()
+        .set(
+            TestVideoSource::new(320, 180),
+            VideoCodec::H264,
+            [VideoPreset::P180],
+        )
+        .unwrap();
+    broadcast
+        .audio()
+        .set(
+            TestAudioSource::new(AudioFormat::mono_48k()),
+            moq_media::codec::AudioCodec::Opus,
+            [AudioPreset::Hq],
+        )
+        .unwrap();
+
+    let remote = RemoteBroadcast::with_playout("test", consumer, PlayoutMode::Reliable)
+        .await
+        .unwrap();
+
+    assert!(remote.has_video());
+    assert!(remote.has_audio());
+
+    let mut watcher = remote.catalog_watcher();
+
+    // Clear audio only
+    broadcast.audio().clear();
+
+    // Wait for catalog update
+    tokio::time::timeout(TIMEOUT, watcher.updated())
+        .await
+        .expect("timeout waiting for catalog update")
+        .expect("catalog watcher disconnected");
+
+    assert!(remote.has_video(), "video should still be available");
+    assert!(!remote.has_audio(), "audio should be gone after clear");
+
+    // Video should still work
+    let mut track = remote.video().unwrap();
+    let frame = tokio::time::timeout(TIMEOUT, track.next_frame())
+        .await
+        .expect("timeout")
+        .expect("closed");
+    assert!(frame.dimensions[0] > 0);
+}
+
+// ── Group J: Multiple rapid republishes ───────────────────────────
+
+#[cfg(feature = "h264")]
+#[tokio::test]
+async fn rapid_republish_does_not_panic() {
+    let (broadcast, consumer) = setup_broadcast().await;
+
+    // Rapid-fire video replacements
+    for _ in 0..5 {
+        broadcast
+            .video()
+            .set(
+                TestVideoSource::new(320, 180),
+                VideoCodec::H264,
+                [VideoPreset::P180],
+            )
+            .unwrap();
+    }
+
+    // Should still be able to subscribe and get frames
+    let remote = RemoteBroadcast::with_playout("test", consumer, PlayoutMode::Reliable)
+        .await
+        .unwrap();
+
+    let mut track = remote.video().unwrap();
+    let frame = tokio::time::timeout(TIMEOUT, track.next_frame())
+        .await
+        .expect("timeout")
+        .expect("closed");
+    assert!(frame.dimensions[0] > 0);
+}
+
+// ── Group K: Playout clock shared across tracks ───────────────────
+
+#[cfg(feature = "h264")]
+#[tokio::test]
+async fn playout_clock_reset_on_resubscribe() {
+    let (_broadcast, remote) = publish_and_subscribe(VideoCodec::H264, VideoPreset::P180).await;
+
+    // Drain a few frames so the clock establishes a base mapping
+    let mut track = remote.video().unwrap();
+    for _ in 0..3 {
+        tokio::time::timeout(TIMEOUT, track.next_frame())
+            .await
+            .expect("timeout")
+            .expect("closed");
+    }
+
+    // Clock should have non-zero jitter or at least an established base
+    let jitter_before = remote.clock().jitter();
+    let _ = jitter_before; // just verify it doesn't panic
+
+    // Reset clock (as split.rs does on resubscribe)
+    remote.clock().reset();
+
+    // Jitter should be zero after reset
+    assert_eq!(
+        remote.clock().jitter(),
+        std::time::Duration::ZERO,
+        "jitter should be zero after reset"
+    );
+}
