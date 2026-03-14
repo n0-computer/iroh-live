@@ -1,6 +1,11 @@
-# moq-media Codebase Review
+# Workspace Codebase Review
 
-## Recommendations
+Covers all four main crates: moq-media, iroh-moq, iroh-live, and rusty-codecs.
+Items marked `[x]` are fixed; unchecked items remain open.
+
+## moq-media
+
+### Recommendations
 
 ### API Decoupling (D1, D2)
 
@@ -481,7 +486,7 @@ The VTB compression callback uses `Arc::into_raw()` to pass state to the C callb
 - **T1**: `subscribe.rs` — `SubscribeBroadcast`, audio forward path untested
 - **T2**: `AudioTrack::run_loop` — no tests
 - **T3**: `render.rs` — `WgpuVideoRenderer` no unit tests (needs GPU)
-- **T4**: No end-to-end encode→transport→decode integration test
+- [x] **T4**: ~~No end-to-end encode→transport→decode integration test~~ — 15 integration tests in `moq-media/tests/pipeline_integration.rs` (multi-subscriber, resolution change, audio clear, rapid republish, playout clock reset, etc.)
 - **T5**: `PublishCaptureController::set_opts` — no tests
 - **T6**: No fuzz tests for codec decoders with malformed input
 - **T7**: `VideoDecoderPipeline` / `VideoEncoderPipeline` — new modules have no tests
@@ -509,3 +514,87 @@ The VTB compression callback uses `Arc::into_raw()` to pass state to the C callb
 - **A4**: `DecodeConfig` minimal — only `pixel_format` and `backend`
 - **A5**: VideoToolbox decoder is stub only — macOS HW decode not available
 - **A7**: `AudioEncoderFactory::with_preset(format, ..)` does not define whether encoders must honor `format.sample_rate` or may coerce internally. Current Opus impl hardcodes 48k, so callers can pass incompatible formats without explicit error.
+
+---
+
+## moq-media: Additional Findings
+
+### Audio Backend
+
+- [ ] **AB1: ~30 `.unwrap()` calls in `audio_backend.rs`** — `AudioDriver::new()` and stream initialization paths (lines 482, 489, 500–507, 709, 801, 864) use `.unwrap()` on Firewheel operations that can fail when no audio device is present. Should propagate `Result` instead.
+- [ ] **AB2: `.expect("poisoned")` on every mutex lock in `OutputStream`** (lines 265, 270, 276, 278, 286, 302, 315, 345, 371) — acceptable for private internal locks, but Firewheel callbacks could panic and poison them.
+
+### Transport
+
+- [ ] **TR1: Missing doc comments on `media_pipe()`, `PipeSink`, `PipeSource`** (`transport.rs:83, 90, 118`)
+
+### Stubs
+
+- [ ] **ST1: `VideoPublisher::set_enabled()` is a no-op** (`publish.rs:324`) — `TODO: implement pause/resume on the encoder pipeline`
+- [ ] **ST2: `AudioPublisher::set_muted()` is a no-op** (`publish.rs:361`) — `TODO: implement mute on the audio pipeline`
+
+---
+
+## iroh-moq
+
+### Bugs
+
+- [ ] **MQ1: Two `.expect()` panics in actor run loop** (`lib.rs:414, 422`) — `"session task panicked"` and `"connect task panicked"`. If a tokio task panics, the actor crashes. Should log and continue or return an error.
+- [ ] **MQ2: Malformed doc comment** (`lib.rs:93`) — `/ Returns a protocol handler` starts with `/` instead of `///`.
+- [ ] **MQ3: Commented-out code** (`lib.rs:128`) — `// MoqSession::connect(&self.endpoint, addr).await` should be removed.
+
+### Design
+
+- [ ] **MQ4: `MoqSession::subscribe(&mut self)` takes `&mut self` unnecessarily** — only reads from `self.subscribe` and `self.conn()`. Prevents concurrent subscriptions from the same session handle.
+- [ ] **MQ5: `publish()` takes `String` by value** (`lib.rs:338`) — inconsistent with `subscribe(&str)`. Should take `&str` or `impl Into<String>`.
+- [ ] **MQ6: Channel capacities hardcoded** (`lib.rs:79-80`) — `mpsc::channel(16)` for actor inbox, `broadcast::channel(16)` for incoming sessions. No documentation on sizing rationale. High-churn scenarios silently drop sessions.
+- [ ] **MQ7: Error context lost in conversions** (`lib.rs:165, 184-185`) — `Error` → `AnyError` → `AcceptError` chains discard specific error variants. Hinders debugging.
+- [ ] **MQ8: `handle_publish_broadcast` clones name per session** (`lib.rs:493-496`) — allocates `name.clone()` + `producer.consume()` for each connected session. Should clone name once outside the loop.
+
+### Documentation
+
+- [ ] **MQ9: No module-level doc comment** — `lib.rs` has no `//!` module docs.
+- [ ] **MQ10: `session_connect()` and `session_accept()` undocumented** (`lib.rs:270, 286`) — public methods with no doc comments.
+
+---
+
+## iroh-live
+
+### Bugs
+
+- [ ] **IL1: `Call::closed()` always returns `RemoteClose`** (`call.rs:122-125`) — ignores actual disconnect reason. Should check `session.close_reason()` to distinguish local from remote close.
+- [ ] **IL2: `Bit::from_f32(rate).unwrap()` can panic on NaN** (`util.rs:93`) — rate is computed from division; edge-case floats can produce NaN. Use `.unwrap_or_default()`.
+
+### Design
+
+- [ ] **IL3: `postcard::to_stdvec().unwrap()` in 4 places** (`ticket.rs:23, 36`, `rooms.rs:307, 386`) — serialization can fail. Should return `Result` or use `.expect()` with rationale.
+- [ ] **IL4: `// rr: rename subscribe` and `// rr: remove, inline at call sites.`** (`live.rs:173, 187`) — stale TODO comments on public API methods. Either act on them or remove.
+- [ ] **IL5: Room actor silently drops events on send failure** (`rooms.rs:233, 298`) — `event_tx.send().ok()` discards errors when receiver is dropped. Actor should detect this and shut down.
+- [ ] **IL6: Unnecessary `broadcasts.clone()` in room actor** (`rooms.rs:284`) — clones entire broadcast list for iteration. Should iterate by reference.
+
+### Documentation
+
+- [ ] **IL7: Missing docs on most public items** — `RoomHandle`, `Room`, `RoomTicket`, `LiveTicket` methods, `Rate`, `SmoothedStats` fields all lack doc comments.
+
+---
+
+## rusty-codecs
+
+### Bugs
+
+- [ ] **RC1: `unimplemented!()` in public `VideoFrame::rgba_image()`** (`format.rs:461`) — panics on I420/NV12 CPU frames. Should implement YUV→RGBA conversion or return `Result`.
+- [ ] **RC2: `panic!()` in `VideoCodec::best_available()`** (`codec.rs:112`) — panics when no codecs are compiled in. Should return `Result`.
+- [ ] **RC3: `.expect()` calls in `alloc_va_dma_frame()`** (`vaapi/decoder.rs:277-305`) — 4 expects on VAAPI surface creation/export that can fail in production. Should return `Result`.
+- [ ] **RC4: `.expect()` in `WgpuVideoRenderer::render()`** (`render.rs:204`) — GPU frame download failure panics the renderer. Should propagate error.
+- [ ] **RC5: Multiple `.unwrap()` on `output_texture`** (`render.rs:246, 272, 282, 319, 352, 368`) — assumes texture always initialized. Fragile if call order changes.
+
+### Design
+
+- [ ] **RC6: VTB encoder CFDictionary `.expect()`** (`vtb/encoder.rs:419, 451`) — FFI calls that can legitimately fail should return `Result`.
+- [ ] **RC7: `take_owned()` assumes `BufferStoreMut::Owned`** (`processing/convert.rs:46`) — `unreachable!()` branch relies on undocumented internal invariant. Needs safety comment.
+
+### Safety
+
+Findings S1–S4 from the original review still apply. Additional:
+
+- [ ] **RC8: `NonNull::new().unwrap()` in rav1d_safe** (`av1/rav1d_safe.rs:58`) — could use `.expect("non-null pointer")` for clarity.
