@@ -998,30 +998,34 @@ impl Drop for PortalSessionGuard {
 /// Portal D-Bus calls happen on a tokio runtime that lives in the background
 /// thread, keeping the portal session alive until the returned
 /// [`PortalSessionGuard`] is dropped.
-fn portal_screen_capture(show_cursor: bool) -> Result<(OwnedFd, u32, PortalSessionGuard)> {
+fn portal_screen_capture(
+    show_cursor: bool,
+    restore_token: Option<String>,
+) -> Result<(OwnedFd, u32, Option<String>, PortalSessionGuard)> {
     let (result_tx, result_rx) = mpsc::channel();
     let (close_tx, close_rx) = mpsc::channel();
 
     std::thread::Builder::new()
         .name("pw-portal-screen".into())
         .spawn(move || {
-            portal_screen_capture_thread(show_cursor, result_tx, close_rx);
+            portal_screen_capture_thread(show_cursor, restore_token, result_tx, close_rx);
         })
         .context("failed to spawn portal thread")?;
 
-    let (fd, node_id) = result_rx
+    let (fd, node_id, new_token) = result_rx
         .recv_timeout(PORTAL_DIALOG_TIMEOUT + PORTAL_INFRA_TIMEOUT * 3)
         .context("portal thread did not respond")??;
 
     let guard = PortalSessionGuard {
         close_tx: Some(close_tx),
     };
-    Ok((fd, node_id, guard))
+    Ok((fd, node_id, new_token, guard))
 }
 
 fn portal_screen_capture_thread(
     show_cursor: bool,
-    result_tx: mpsc::Sender<Result<(OwnedFd, u32)>>,
+    restore_token: Option<String>,
+    result_tx: mpsc::Sender<Result<(OwnedFd, u32, Option<String>)>>,
     close_rx: mpsc::Receiver<()>,
 ) {
     let rt = portal_runtime();
@@ -1050,7 +1054,10 @@ fn portal_screen_capture_thread(
                 CursorMode::Hidden
             };
 
-            debug!("selecting sources (waiting for user to pick a screen)");
+            debug!(
+                has_restore_token = restore_token.is_some(),
+                "selecting sources (waiting for user to pick a screen)"
+            );
             timeout(
                 PORTAL_DIALOG_TIMEOUT,
                 proxy.select_sources(
@@ -1058,8 +1065,8 @@ fn portal_screen_capture_thread(
                     cursor_mode,
                     SourceType::Monitor.into(),
                     false,
-                    None,
-                    PersistMode::DoNot,
+                    restore_token.as_deref(),
+                    PersistMode::ExplicitlyRevoked,
                 ),
             )
             .await
@@ -1076,6 +1083,8 @@ fn portal_screen_capture_thread(
                 .response()
                 .context("start response failed (user cancelled?)")?;
 
+            let new_token = streams.restore_token().map(ToOwned::to_owned);
+
             let stream = streams
                 .streams()
                 .first()
@@ -1090,13 +1099,13 @@ fn portal_screen_capture_thread(
                 .context("failed to open PipeWire remote")?;
 
             info!(node_id, "ScreenCast portal negotiated");
-            Ok((fd, node_id, session))
+            Ok((fd, node_id, new_token, session))
         }
         .await;
 
         let session = match result {
-            Ok((fd, node_id, session)) => {
-                let _ = result_tx.send(Ok((fd, node_id)));
+            Ok((fd, node_id, new_token, session)) => {
+                let _ = result_tx.send(Ok((fd, node_id, new_token)));
                 session
             }
             Err(e) => {
@@ -1198,6 +1207,8 @@ pub struct PipeWireScreenCapturer {
     should_stop: Arc<AtomicBool>,
     #[debug(skip)]
     _portal_guard: PortalSessionGuard,
+    /// Restore token returned by the portal for session persistence.
+    restore_token: Option<String>,
 }
 
 impl PipeWireScreenCapturer {
@@ -1212,7 +1223,8 @@ impl PipeWireScreenCapturer {
         let preferred_fps = config.target_fps.unwrap_or(30.0);
 
         // Portal negotiation runs on its own thread (inside portal_screen_capture).
-        let (fd, node_id, portal_guard) = portal_screen_capture(show_cursor)?;
+        let (fd, node_id, restore_token, portal_guard) =
+            portal_screen_capture(show_cursor, config.pipewire_restore_token.clone())?;
 
         let (frame_tx, frame_rx) = mpsc::channel();
         let (init_tx, init_rx) = mpsc::channel();
@@ -1256,7 +1268,16 @@ impl PipeWireScreenCapturer {
             rx: frame_rx,
             should_stop,
             _portal_guard: portal_guard,
+            restore_token,
         })
+    }
+
+    /// Returns the restore token from the portal, if one was issued.
+    ///
+    /// Pass this token back via [`ScreenConfig::restore_token`] on the next
+    /// session to skip the user dialog.
+    pub fn pipewire_restore_token(&self) -> Option<&str> {
+        self.restore_token.as_deref()
     }
 }
 

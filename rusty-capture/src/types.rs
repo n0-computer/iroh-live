@@ -250,6 +250,13 @@ pub struct ScreenConfig {
     pub target_fps: Option<f32>,
     /// Whether to include the cursor in captured frames.
     pub show_cursor: bool,
+    /// Optional restore token from a previous PipeWire ScreenCast portal session.
+    ///
+    /// When provided, the portal may skip the user dialog and reuse the
+    /// previous source selection. Obtain the token from
+    /// [`PipeWireScreenCapturer::pipewire_restore_token`] after a successful
+    /// session.
+    pub pipewire_restore_token: Option<String>,
 }
 
 impl Default for ScreenConfig {
@@ -257,6 +264,7 @@ impl Default for ScreenConfig {
         Self {
             target_fps: Some(30.0),
             show_cursor: true,
+            pipewire_restore_token: None,
         }
     }
 }
