@@ -173,6 +173,48 @@ fn all_encoders() -> Vec<TestEncoder> {
         create_with_config: |config| Some(Box::new(VtbEncoder::with_config(config).ok()?)),
     });
 
+    #[cfg(all(target_os = "linux", feature = "v4l2"))]
+    encoders.push(TestEncoder {
+        name: "h264-v4l2",
+        family: CodecFamily::H264,
+        min_frames: 10,
+        create: |preset| Some(Box::new(V4l2Encoder::with_preset(preset).ok()?)),
+        create_with_dims: |w, h| {
+            let config = crate::format::VideoEncoderConfig {
+                width: w,
+                height: h,
+                framerate: 30,
+                bitrate: None,
+                scale_mode: Default::default(),
+                keyframe_interval: None,
+                nal_format: Default::default(),
+            };
+            Some(Box::new(V4l2Encoder::with_config(config).ok()?))
+        },
+        create_with_config: |config| Some(Box::new(V4l2Encoder::with_config(config).ok()?)),
+    });
+
+    #[cfg(all(target_os = "windows", feature = "media-foundation"))]
+    encoders.push(TestEncoder {
+        name: "h264-mf",
+        family: CodecFamily::H264,
+        min_frames: 10,
+        create: |preset| Some(Box::new(MfEncoder::with_preset(preset).ok()?)),
+        create_with_dims: |w, h| {
+            let config = crate::format::VideoEncoderConfig {
+                width: w,
+                height: h,
+                framerate: 30,
+                bitrate: None,
+                scale_mode: Default::default(),
+                keyframe_interval: None,
+                nal_format: Default::default(),
+            };
+            Some(Box::new(MfEncoder::with_config(config).ok()?))
+        },
+        create_with_config: |config| Some(Box::new(MfEncoder::with_config(config).ok()?)),
+    });
+
     encoders
 }
 
@@ -251,6 +293,36 @@ fn all_decoders() -> Vec<TestDecoder> {
             },
         });
     }
+
+    #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+    decoders.push(TestDecoder {
+        name: "h264-vtb",
+        family: CodecFamily::H264,
+        decode: |config, dc, pkts| {
+            let mut dec = vtb::VtbDecoder::new(config, dc).ok()?;
+            Some(decode_all(&mut dec, pkts))
+        },
+    });
+
+    #[cfg(all(target_os = "linux", feature = "v4l2"))]
+    decoders.push(TestDecoder {
+        name: "h264-v4l2",
+        family: CodecFamily::H264,
+        decode: |config, dc, pkts| {
+            let mut dec = v4l2::V4l2Decoder::new(config, dc).ok()?;
+            Some(decode_all(&mut dec, pkts))
+        },
+    });
+
+    #[cfg(all(target_os = "windows", feature = "media-foundation"))]
+    decoders.push(TestDecoder {
+        name: "h264-mf",
+        family: CodecFamily::H264,
+        decode: |config, dc, pkts| {
+            let mut dec = mf::MfDecoder::new(config, dc).ok()?;
+            Some(decode_all(&mut dec, pkts))
+        },
+    });
 
     decoders
 }
