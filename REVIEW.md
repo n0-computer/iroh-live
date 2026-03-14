@@ -512,7 +512,7 @@ The VTB compression callback uses `Arc::into_raw()` to pass state to the C callb
 - ~~**A2**: No builder pattern for encoder/decoder configuration~~ — `VideoEncoderConfig`/`AudioEncoderConfig` added with `from_preset()` + builder methods
 - **A3**: Quality enum coarse — 4 fixed presets, no custom resolution/bitrate
 - **A4**: `DecodeConfig` minimal — only `pixel_format` and `backend`
-- **A5**: VideoToolbox decoder is stub only — macOS HW decode not available
+- ~~**A5**: VideoToolbox decoder is stub only~~ — VTB decoder implemented with NV12 GpuFrame output, dynamic decoder routing, and mid-stream resolution change support
 - **A7**: `AudioEncoderFactory::with_preset(format, ..)` does not define whether encoders must honor `format.sample_rate` or may coerce internally. Current Opus impl hardcodes 48k, so callers can pass incompatible formats without explicit error.
 
 ---

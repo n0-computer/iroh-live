@@ -17,7 +17,7 @@ confirmed it works on real hardware.
 | H.264 decode | V4L2 (stateful) | Linux + RPi / Rockchip | Yes | — |
 | H.264 encode | Media Foundation | Windows | — | — |
 | H.264 decode | Media Foundation | Windows | — | — |
-| H.264 decode | VideoToolbox | macOS / iOS | — | — |
+| H.264 decode | VideoToolbox | macOS / iOS | Yes | — |
 | H.264 encode/decode | MediaCodec | Android | — | — |
 | AV1 encode | rav1e (software) | All | Yes | Linux only |
 | AV1 decode | rav1d (software) | All | Yes | Linux only |
@@ -29,7 +29,7 @@ confirmed it works on real hardware.
 
 - **Windows**: Media Foundation H.264 encoder and decoder. Design exists in
   `plans/media-pipeline/phase-2b-windows-media-foundation.md`, no code yet.
-- **macOS**: VideoToolbox H.264 *decoder*. Encoder exists, decoder does not.
+- **macOS**: VideoToolbox H.264 encoder and decoder both implemented, not yet tested.
 - **Android**: MediaCodec H.264 encoder and decoder via JNI or `ndk-media`.
 - **VAAPI AV1**: cros-codecs supports AV1 stateless decode on Intel Gen12+.
   Encoder would require a `libva` AV1 encode entrypoint (Intel Arc).
@@ -103,9 +103,10 @@ Same V4L2 path as RPi 4. The VideoCore VII GPU supports Vulkan 1.2 via the
 
 ### macOS (Apple Silicon)
 
-VideoToolbox H.264 encoder compiles. Capture (ScreenCaptureKit + AVFoundation)
-compiles. Neither has been tested on hardware. Metal rendering via wgpu should
-work out of the box.
+VideoToolbox H.264 encoder and decoder both compile. Capture (ScreenCaptureKit +
+AVFoundation) compiles. Neither has been tested on hardware. Metal rendering via
+wgpu should work out of the box. The decoder produces NV12 `GpuFrame` outputs
+for deferred CPU readback, matching the VAAPI decoder pattern.
 
 ### Windows
 
