@@ -40,6 +40,7 @@ clap = { version = "4.5", features = ["derive"] }
 eframe = { version = "0.33.0", default-features = false, features = ["default_fonts", "wayland", "x11", "wgpu"] }
 egui-wgpu = "0.33.0"
 moq-media-egui = { path = "../moq-media-egui" }
+moq-media = { path = "../moq-media", features = ["test-util"] }
 wgpu = "27"
 winit = "0.30"
 pollster = "0.4"

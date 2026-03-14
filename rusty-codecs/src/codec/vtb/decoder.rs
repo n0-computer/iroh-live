@@ -30,9 +30,10 @@ use objc2_core_media::{
 };
 use objc2_core_video::{
     CVImageBuffer, CVPixelBuffer, CVPixelBufferGetBaseAddressOfPlane,
-    CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeightOfPlane, CVPixelBufferGetWidthOfPlane,
-    CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
-    kCVPixelBufferHeightKey, kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferWidthKey,
+    CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeightOfPlane,
+    CVPixelBufferGetWidthOfPlane, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags,
+    CVPixelBufferUnlockBaseAddress, kCVPixelBufferHeightKey, kCVPixelBufferPixelFormatTypeKey,
+    kCVPixelBufferWidthKey,
 };
 use objc2_video_toolbox::{
     VTDecodeFrameFlags, VTDecodeInfoFlags, VTDecompressionOutputCallback,
@@ -41,7 +42,9 @@ use objc2_video_toolbox::{
 };
 
 use crate::{
-    codec::h264::annexb::{annex_b_to_length_prefixed, avcc_to_annex_b, parse_annex_b, extract_sps_pps},
+    codec::h264::annexb::{
+        annex_b_to_length_prefixed, avcc_to_annex_b, extract_sps_pps, parse_annex_b,
+    },
     config::{VideoCodec, VideoConfig},
     format::{
         DecodeConfig, GpuFrame, GpuFrameInner, GpuPixelFormat, MediaPacket, NalFormat, Nv12Planes,
@@ -103,8 +106,7 @@ impl VideoDecoder for VtbDecoder {
 
         // Extract SPS/PPS from avcC description if available.
         let (sps, pps) = if let Some(desc) = &config.description {
-            let annex_b = avcc_to_annex_b(desc)
-                .context("failed to parse avcC description")?;
+            let annex_b = avcc_to_annex_b(desc).context("failed to parse avcC description")?;
             let nals = parse_annex_b(&annex_b);
             extract_sps_pps(&nals).context("no SPS/PPS in avcC")?
         } else {
@@ -154,9 +156,8 @@ impl VideoDecoder for VtbDecoder {
                         let (new_session, new_fmt) = create_session(&sps, &pps)?;
                         // Flush pending frames from old session.
                         unsafe {
-                            let _ = VTDecompressionSession::wait_for_asynchronous_frames(
-                                &self.session,
-                            );
+                            let _ =
+                                VTDecompressionSession::wait_for_asynchronous_frames(&self.session);
                             VTDecompressionSession::invalidate(&self.session);
                         }
                         self.session = new_session;
@@ -275,7 +276,14 @@ impl fmt::Debug for VtbGpuFrame {
 impl GpuFrameInner for VtbGpuFrame {
     fn download_rgba(&self) -> Result<RgbaImage> {
         let nv12 = self.download_nv12_inner()?;
-        let rgba = nv12_to_rgba_data(&nv12.y_data, nv12.y_stride, &nv12.uv_data, nv12.uv_stride, nv12.width, nv12.height)?;
+        let rgba = nv12_to_rgba_data(
+            &nv12.y_data,
+            nv12.y_stride,
+            &nv12.uv_data,
+            nv12.uv_stride,
+            nv12.width,
+            nv12.height,
+        )?;
         RgbaImage::from_raw(nv12.width, nv12.height, rgba)
             .context("failed to create RgbaImage from NV12 conversion")
     }
@@ -298,8 +306,7 @@ impl VtbGpuFrame {
         let pb = &*self.pixel_buffer;
 
         // Lock for read-only access.
-        let status =
-            unsafe { CVPixelBufferLockBaseAddress(pb, CVPixelBufferLockFlags(1)) }; // 1 = kCVPixelBufferLock_ReadOnly
+        let status = unsafe { CVPixelBufferLockBaseAddress(pb, CVPixelBufferLockFlags(1)) }; // 1 = kCVPixelBufferLock_ReadOnly
         if status != 0 {
             bail!("CVPixelBufferLockBaseAddress failed with status {status}");
         }
@@ -386,8 +393,7 @@ fn create_session(
     if status != 0 || format_desc.is_null() {
         bail!("CMVideoFormatDescriptionCreateFromH264ParameterSets failed: {status}");
     }
-    let format_desc =
-        unsafe { CFRetained::from_raw(NonNull::new(format_desc as *mut _).unwrap()) };
+    let format_desc = unsafe { CFRetained::from_raw(NonNull::new(format_desc as *mut _).unwrap()) };
 
     // Destination pixel buffer attributes: request NV12 output.
     let dest_attrs = build_dest_image_attrs();
@@ -396,11 +402,11 @@ fn create_session(
     let mut session_ptr: *mut VTDecompressionSession = ptr::null_mut();
     let status = unsafe {
         VTDecompressionSession::create(
-            None,            // allocator
+            None, // allocator
             &format_desc,
-            None,            // decoder specification
+            None, // decoder specification
             Some(&*dest_attrs),
-            ptr::null(),     // output callback (we pass per-frame instead)
+            ptr::null(), // output callback (we pass per-frame instead)
             NonNull::new(&mut session_ptr).unwrap(),
         )
     };
@@ -412,7 +418,11 @@ fn create_session(
     // Enable real-time decoding for low latency.
     unsafe {
         let cf_true: &CFType = objc2_core_foundation::CFBoolean::new(true);
-        let _ = VTSessionSetProperty(&session, kVTDecompressionPropertyKey_RealTime, Some(cf_true));
+        let _ = VTSessionSetProperty(
+            &session,
+            kVTDecompressionPropertyKey_RealTime,
+            Some(cf_true),
+        );
     }
 
     Ok((session, format_desc))
@@ -444,14 +454,14 @@ fn create_block_buffer(data: &[u8]) -> Result<CFRetained<CMBlockBuffer>> {
     let mut block_buffer: *mut CMBlockBuffer = ptr::null_mut();
     let status = unsafe {
         CMBlockBuffer::create_with_memory_block(
-            None,                              // allocator
+            None,                                  // allocator
             NonNull::new(data.as_ptr() as *mut _), // memory block (borrowed)
             data.len(),
-            None,                              // block allocator (no dealloc needed)
-            ptr::null(),                       // custom block source
-            0,                                 // offset
+            None,        // block allocator (no dealloc needed)
+            ptr::null(), // custom block source
+            0,           // offset
             data.len(),
-            0,                                 // flags
+            0, // flags
             NonNull::new(&mut block_buffer).unwrap(),
         )
     };
@@ -482,16 +492,16 @@ fn create_sample_buffer(
     let mut sample_buffer: *mut CMSampleBuffer = ptr::null_mut();
     let status = unsafe {
         CMSampleBuffer::create(
-            None,                    // allocator
+            None, // allocator
             Some(block_buffer),
-            true.into(),             // data ready
-            None,                    // make-data-ready callback
-            ptr::null_mut(),         // make-data-ready refcon
+            true.into(),     // data ready
+            None,            // make-data-ready callback
+            ptr::null_mut(), // make-data-ready refcon
             Some(format_desc),
-            1,                       // num samples
-            1,                       // num timing entries
+            1, // num samples
+            1, // num timing entries
             &mut timing,
-            1,                       // num size entries
+            1, // num size entries
             &mut size,
             NonNull::new(&mut sample_buffer).unwrap(),
         )
