@@ -149,7 +149,10 @@ impl AudioBackend {
 
     pub fn new(opts: AudioBackendOpts) -> Self {
         let (tx, rx) = mpsc::channel(32);
-        let _handle = spawn_thread("audiodriver", move || AudioDriver::new(rx, opts).run());
+        let weak_tx = tx.downgrade();
+        let _handle = spawn_thread("audiodriver", move || {
+            AudioDriver::new(rx, weak_tx, opts).run()
+        });
         Self { tx }
     }
 
@@ -162,11 +165,12 @@ impl AudioBackend {
         self.tx
             .send(DriverMessage::InputStream { format, reply })
             .await?;
-        let handle = reply_rx.await??;
+        let (handle, drop_guard) = reply_rx.await??;
         Ok(InputStream {
             handle,
             format,
             inactive_count: 0,
+            _drop_guard: drop_guard,
         })
     }
 
@@ -179,8 +183,8 @@ impl AudioBackend {
         self.tx
             .send(DriverMessage::OutputStream { format, reply })
             .await?;
-        let handle = reply_rx.await??;
-        Ok(handle)
+        let stream = reply_rx.await??;
+        Ok(stream)
     }
 
     /// Switch the input device. `None` = system default.
@@ -254,6 +258,8 @@ pub struct OutputStream {
     peaks: Arc<Mutex<PeakMeterSmoother<2>>>,
     #[debug(skip)]
     normalizer: DbMeterNormalizer,
+    #[debug(skip)]
+    _drop_guard: Arc<StreamDropGuard>,
 }
 
 impl AudioSinkHandle for OutputStream {
@@ -355,6 +361,8 @@ pub struct InputStream {
     /// Count of consecutive inactive reads, used to rate-limit warnings.
     #[debug(skip)]
     inactive_count: u32,
+    #[debug(skip)]
+    _drop_guard: Arc<StreamDropGuard>,
 }
 
 impl AudioSource for InputStream {
@@ -419,6 +427,25 @@ impl AudioSource for InputStream {
     }
 }
 
+/// Signals the audio driver to remove a stream node when the last handle is dropped.
+///
+/// Uses a [`mpsc::WeakSender`] so that holding a stream open does not prevent
+/// the [`AudioBackend`] actor from shutting down when all strong senders are dropped.
+struct StreamDropGuard {
+    node_id: NodeID,
+    tx: mpsc::WeakSender<DriverMessage>,
+}
+
+impl Drop for StreamDropGuard {
+    fn drop(&mut self) {
+        if let Some(tx) = self.tx.upgrade() {
+            let _ = tx.try_send(DriverMessage::RemoveStream {
+                node_id: self.node_id,
+            });
+        }
+    }
+}
+
 #[derive(derive_more::Debug)]
 enum DriverMessage {
     OutputStream {
@@ -429,7 +456,7 @@ enum DriverMessage {
     InputStream {
         format: AudioFormat,
         #[debug("Sender")]
-        reply: oneshot::Sender<Result<StreamReaderHandle>>,
+        reply: oneshot::Sender<Result<(StreamReaderHandle, Arc<StreamDropGuard>)>>,
     },
     SwitchDevice {
         /// `None` = don't change, `Some(None)` = system default, `Some(Some(id))` = specific device.
@@ -438,6 +465,9 @@ enum DriverMessage {
         output_device: Option<Option<DeviceId>>,
         #[debug("Sender")]
         reply: oneshot::Sender<Result<()>>,
+    },
+    RemoveStream {
+        node_id: NodeID,
     },
 }
 
@@ -449,6 +479,7 @@ struct TrackedInputStream {
 
 struct TrackedOutputStream {
     node_id: NodeID,
+    peak_meter_node_id: NodeID,
     format: AudioFormat,
     handle: StreamWriterHandle,
 }
@@ -456,6 +487,10 @@ struct TrackedOutputStream {
 struct AudioDriver {
     cx: FirewheelContext,
     rx: mpsc::Receiver<DriverMessage>,
+    /// Weak sender for creating [`StreamDropGuard`]s. Does not keep the
+    /// channel open — the actor shuts down when all [`AudioBackend`] clones
+    /// (strong senders) are dropped.
+    tx: mpsc::WeakSender<DriverMessage>,
     aec_processor: AecProcessor,
     aec_render_node: NodeID,
     aec_capture_node: NodeID,
@@ -480,7 +515,11 @@ impl fmt::Debug for AudioDriver {
 }
 
 impl AudioDriver {
-    fn new(rx: mpsc::Receiver<DriverMessage>, opts: AudioBackendOpts) -> Self {
+    fn new(
+        rx: mpsc::Receiver<DriverMessage>,
+        tx: mpsc::WeakSender<DriverMessage>,
+        opts: AudioBackendOpts,
+    ) -> Self {
         let config = FirewheelConfig {
             num_graph_inputs: ChannelCount::new(1).unwrap(),
             ..Default::default()
@@ -521,6 +560,7 @@ impl AudioDriver {
         Self {
             cx,
             rx,
+            tx,
             aec_processor,
             aec_render_node,
             aec_capture_node,
@@ -693,6 +733,25 @@ impl AudioDriver {
                 };
                 let res = self.switch_device_internal(input, output);
                 reply.send(res).ok();
+            }
+            DriverMessage::RemoveStream { node_id } => {
+                // Remove tracked output stream and its associated peak meter node.
+                if let Some(pos) = self
+                    .output_streams
+                    .iter()
+                    .position(|s| s.node_id == node_id)
+                {
+                    let tracked = self.output_streams.remove(pos);
+                    self.peak_meters.remove(&tracked.peak_meter_node_id);
+                    if let Err(e) = self.cx.remove_node(tracked.peak_meter_node_id) {
+                        debug!("failed to remove peak meter node: {e:?}");
+                    }
+                }
+                self.input_streams.retain(|s| s.node_id != node_id);
+                if let Err(e) = self.cx.remove_node(node_id) {
+                    debug!("failed to remove stream node: {e:?}");
+                }
+                debug!(?node_id, "removed stream node");
             }
         }
     }
@@ -961,18 +1020,27 @@ impl AudioDriver {
         );
         self.output_streams.push(TrackedOutputStream {
             node_id: stream_writer_id,
+            peak_meter_node_id: peak_meter_id,
             format,
             handle: handle.clone(),
+        });
+        let drop_guard = Arc::new(StreamDropGuard {
+            node_id: stream_writer_id,
+            tx: self.tx.clone(),
         });
         Ok(OutputStream {
             handle,
             paused: Arc::new(AtomicBool::new(false)),
             peaks: peak_meter_smoother,
             normalizer: DbMeterNormalizer::new(-60., 0., -20.),
+            _drop_guard: drop_guard,
         })
     }
 
-    fn input_stream(&mut self, format: AudioFormat) -> Result<StreamReaderHandle> {
+    fn input_stream(
+        &mut self,
+        format: AudioFormat,
+    ) -> Result<(StreamReaderHandle, Arc<StreamDropGuard>)> {
         let stream_reader_id = self.cx.add_node(
             StreamReaderNode,
             Some(StreamReaderConfig {
@@ -1027,6 +1095,10 @@ impl AudioDriver {
             format,
             handle: handle.clone(),
         });
-        Ok(handle)
+        let drop_guard = Arc::new(StreamDropGuard {
+            node_id: stream_reader_id,
+            tx: self.tx.clone(),
+        });
+        Ok((handle, drop_guard))
     }
 }

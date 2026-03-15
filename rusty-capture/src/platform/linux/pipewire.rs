@@ -32,6 +32,7 @@ use std::io::Cursor;
 use std::os::fd::OwnedFd;
 use std::os::unix::io::BorrowedFd;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -236,7 +237,9 @@ impl<T: Sized> Pipe for T {}
 
 /// State shared between PipeWire callbacks.
 struct CaptureState {
-    frame_tx: mpsc::Sender<VideoFrame>,
+    frame_tx: mpsc::SyncSender<VideoFrame>,
+    /// Counts frames dropped because the bounded channel was full.
+    frames_dropped: Arc<AtomicU64>,
     init_tx: Option<mpsc::Sender<Result<(u32, u32)>>>,
     width: u32,
     height: u32,
@@ -754,7 +757,7 @@ fn run_pipewire_stream(
     node_id: Option<u32>,
     preferred_size: Rectangle,
     preferred_fps: Fraction,
-    frame_tx: mpsc::Sender<VideoFrame>,
+    frame_tx: mpsc::SyncSender<VideoFrame>,
     init_tx: mpsc::Sender<Result<(u32, u32)>>,
     should_stop: Arc<AtomicBool>,
 ) -> Result<()> {
@@ -789,6 +792,7 @@ fn run_pipewire_stream(
 
     let state = CaptureState {
         frame_tx,
+        frames_dropped: Arc::new(AtomicU64::new(0)),
         init_tx: Some(init_tx),
         width: 0,
         height: 0,
@@ -903,7 +907,15 @@ fn run_pipewire_stream(
                         );
                         state.logged_buffer_type = true;
                     }
-                    let _ = state.frame_tx.send(frame);
+                    if state.frame_tx.try_send(frame).is_err() {
+                        let n = state.frames_dropped.fetch_add(1, Ordering::Relaxed) + 1;
+                        if n.is_power_of_two() || n % 100 == 0 {
+                            debug!(
+                                total_dropped = n,
+                                "PipeWire frame dropped (consumer too slow)"
+                            );
+                        }
+                    }
                 } else {
                     debug!("DMA-BUF frame extraction failed");
                 }
@@ -927,8 +939,15 @@ fn run_pipewire_stream(
                     stride,
                     state.spa_format,
                     timestamp,
-                ) {
-                    let _ = state.frame_tx.send(frame);
+                ) && state.frame_tx.try_send(frame).is_err()
+                {
+                    let n = state.frames_dropped.fetch_add(1, Ordering::Relaxed) + 1;
+                    if n.is_power_of_two() || n % 100 == 0 {
+                        debug!(
+                            total_dropped = n,
+                            "PipeWire frame dropped (consumer too slow)"
+                        );
+                    }
                 }
             } else {
                 debug!(?data_type, "unsupported PipeWire buffer data type");
@@ -1206,6 +1225,8 @@ pub struct PipeWireScreenCapturer {
     #[debug(skip)]
     should_stop: Arc<AtomicBool>,
     #[debug(skip)]
+    thread: Option<std::thread::JoinHandle<()>>,
+    #[debug(skip)]
     _portal_guard: PortalSessionGuard,
     /// Restore token returned by the portal for session persistence.
     restore_token: Option<String>,
@@ -1226,12 +1247,12 @@ impl PipeWireScreenCapturer {
         let (fd, node_id, restore_token, portal_guard) =
             portal_screen_capture(show_cursor, config.pipewire_restore_token.clone())?;
 
-        let (frame_tx, frame_rx) = mpsc::channel();
+        let (frame_tx, frame_rx) = mpsc::sync_channel(2);
         let (init_tx, init_rx) = mpsc::channel();
         let should_stop = Arc::new(AtomicBool::new(false));
         let stop_flag = should_stop.clone();
 
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("pw-screen".into())
             .spawn(move || {
                 let result = run_pipewire_stream(
@@ -1267,6 +1288,7 @@ impl PipeWireScreenCapturer {
             height,
             rx: frame_rx,
             should_stop,
+            thread: Some(thread),
             _portal_guard: portal_guard,
             restore_token,
         })
@@ -1314,6 +1336,9 @@ impl VideoSource for PipeWireScreenCapturer {
 impl Drop for PipeWireScreenCapturer {
     fn drop(&mut self) {
         self.should_stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.thread.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -1329,6 +1354,8 @@ pub struct PipeWireCameraCapturer {
     rx: mpsc::Receiver<VideoFrame>,
     #[debug(skip)]
     should_stop: Arc<AtomicBool>,
+    #[debug(skip)]
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl PipeWireCameraCapturer {
@@ -1373,12 +1400,12 @@ impl PipeWireCameraCapturer {
         // Portal negotiation runs on its own thread (inside portal_camera_capture).
         let fd = portal_camera_capture()?;
 
-        let (frame_tx, frame_rx) = mpsc::channel();
+        let (frame_tx, frame_rx) = mpsc::sync_channel(2);
         let (init_tx, init_rx) = mpsc::channel();
         let should_stop = Arc::new(AtomicBool::new(false));
         let stop_flag = should_stop.clone();
 
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("pw-camera".into())
             .spawn(move || {
                 // node_id = None → PW_ID_ANY, AUTOCONNECT routes to camera.
@@ -1409,6 +1436,7 @@ impl PipeWireCameraCapturer {
             height,
             rx: frame_rx,
             should_stop,
+            thread: Some(thread),
         })
     }
 }
@@ -1446,5 +1474,8 @@ impl VideoSource for PipeWireCameraCapturer {
 impl Drop for PipeWireCameraCapturer {
     fn drop(&mut self) {
         self.should_stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.thread.take() {
+            let _ = handle.join();
+        }
     }
 }
