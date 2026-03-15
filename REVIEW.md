@@ -533,6 +533,23 @@ The VTB compression callback uses `Arc::into_raw()` to pass state to the C callb
 - [ ] **ST1: `VideoPublisher::set_enabled()` is a no-op** (`publish.rs:324`) — `TODO: implement pause/resume on the encoder pipeline`
 - [ ] **ST2: `AudioPublisher::set_muted()` is a no-op** (`publish.rs:361`) — `TODO: implement mute on the audio pipeline`
 
+### Concurrency (moq-media)
+
+- [ ] **CC1: `SharedVideoSource` park/unpark race** (`publish.rs:737-859`) — `thread::park()` without timeout. If broadcast drops while thread is parked, `VideoRenditions::drop()` calls `unpark()` but if the thread misses it, it hangs. The `replace_video_while_source_parked` test confirms this was a real issue.
+- [ ] **CC2: PlayoutClock mutex acquired every frame** (`playout.rs:206-259`) — `observe_arrival()` holds mutex for entire jitter calculation. Lock contention if clock is shared across tracks. Could use lock-free atomics for `smoothed_jitter` (diagnostic only).
+- [ ] **CC3: AEC ring buffer `.unwrap()` in tight loop** (`audio_backend/aec.rs:306-331`) — `self.in_ring_l.pop_front().unwrap()` in per-sample loop. Should validate ring buffer capacity before loop or handle gracefully.
+
+### Performance (moq-media additional)
+
+- [ ] **PP1: `PlayoutClock::mode()` clones entire `PlayoutMode` on every call** (`playout.rs:114`) — called frequently from decode loops. Could return `&PlayoutMode` with guard or use cheap clone.
+- [ ] **PP2: `AudioBackendOpts` fully cloned for device switching** (`audio_backend.rs:697-699`) — clones entire struct just to modify two fields.
+
+### Error Handling (moq-media additional)
+
+- [ ] **EH1: Adaptive rendition switch failures logged but not recovered** (`adaptive.rs:455-456, 516, 535`) — `switch_rendition()` errors logged with `warn!` but state not reset. Could lead to stuck rendition selections.
+- [ ] **EH2: `AudioDriver::new()` unwraps on CPAL stream start** (`audio_backend.rs:489`) — `cx.start_stream(cpal_config).unwrap()` panics if audio device unavailable. Should return `Result`.
+- [ ] **EH3: Inconsistent lock panic messages** — mixed use of `expect("poisoned")` vs `expect("lock")` vs bare `.unwrap()` across `publish.rs`, `playout.rs`, `audio_backend.rs`. Should be consistent.
+
 ---
 
 ## iroh-moq
@@ -556,6 +573,16 @@ The VTB compression callback uses `Arc::into_raw()` to pass state to the C callb
 - [ ] **MQ9: No module-level doc comment** — `lib.rs` has no `//!` module docs.
 - [ ] **MQ10: `session_connect()` and `session_accept()` undocumented** (`lib.rs:270, 286`) — public methods with no doc comments.
 
+### Error Handling (iroh-moq)
+
+- [ ] **MQ11: `published_broadcasts()` swallows actor death** (`lib.rs:123`) — `reply_rx.await.unwrap_or_default()` returns empty vec if actor dies. Caller cannot distinguish "no broadcasts" from "actor crashed". Should return `Result`.
+- [ ] **MQ12: Silent `.ok()` on critical oneshot sends** (`lib.rs:433, 453, 466, 468, 511`) — connect failure replies, published broadcasts replies, and incoming session notifications all silently discard send errors.
+- [ ] **MQ13: `subscribe()` loops forever if name never announced** (`lib.rs:322-334`) — no timeout or cancellation. Only unblocked by session close.
+
+### Code Quality (iroh-moq)
+
+- [ ] **MQ14: Empty `#[derive()]` on Actor struct** (`lib.rs:373`) — should add `Debug` or remove the empty attribute.
+
 ---
 
 ## iroh-live
@@ -571,6 +598,12 @@ The VTB compression callback uses `Arc::into_raw()` to pass state to the C callb
 - [x] **IL4: `// rr: rename subscribe` and `// rr: remove, inline at call sites.`** (`live.rs:173, 187`) — removed stale TODO comments.
 - [ ] **IL5: Room actor silently drops events on send failure** (`rooms.rs:233, 298`) — `event_tx.send().ok()` discards errors when receiver is dropped. Actor should detect this and shut down.
 - [ ] **IL6: `broadcasts.clone()` in room actor** (`rooms.rs:284`) — clone is required because `broadcasts` is consumed by `RoomEvent::RemoteAnnounced` after the loop. Could restructure to iterate by reference and clone individual names, but savings are marginal.
+
+### Design (iroh-live additional)
+
+- [ ] **IL8: `RoomEvent::RemoteConnected` defined but never emitted** (`rooms.rs:129, 205-313`) — the actor run loop has no logic to emit this event. Callers waiting on it will never receive it.
+- [ ] **IL9: `Call::dial()` and `Call::accept()` duplicate code** (`call.rs:51-74 vs 77-94`) — both methods duplicate LocalBroadcast creation, session publish, subscription, and RemoteBroadcast wrapping. Should extract shared helper.
+- [ ] **IL10: `spawn_thread()` always panics on failure** (`util.rs:23`) — `.unwrap_or_else(|e| panic!(...))` on thread spawn. Should return `Result<JoinHandle>` or document the panic guarantee.
 
 ### Documentation
 
@@ -598,3 +631,18 @@ The VTB compression callback uses `Arc::into_raw()` to pass state to the C callb
 Findings S1–S4 from the original review still apply. Additional:
 
 - [ ] **RC8: `NonNull::new().unwrap()` in rav1d_safe** (`av1/rav1d_safe.rs:58`) — could use `.expect("non-null pointer")` for clarity.
+
+### Concurrency
+
+- [ ] **RC9: Lock poison not handled in V4L2 encoder** (`v4l2/encoder.rs:382, 397`) — `ts_cb.lock().unwrap()` and `timestamps.lock().unwrap()` will panic if the lock is poisoned by a panic on the callback thread.
+- [ ] **RC10: Lock poison not handled in VAAPI decoder** (`vaapi/decoder.rs:391, 485, 522`) — same issue as RC9 in decode hot paths. Should handle `PoisonError` or use `parking_lot::Mutex` (no poisoning).
+
+### Performance (rusty-codecs)
+
+- [ ] **RC11: Ash Device/Instance cloned in DMA-BUF importer** (`render/dmabuf_import.rs:83, 85`) — `hal_device.raw_device().clone()` and `raw_instance().clone()` clone Ash wrappers. Could use `Arc` or borrow.
+- [ ] **RC12: Per-frame TextureView + BindGroup in imported NV12 path** (`render.rs:225-244`) — `render_imported_nv12()` creates new `TextureView` and `BindGroup` every frame for imported DMA-BUF textures. Should cache when fd/modifier match.
+- [ ] **RC13: `Bit::from_f32().unwrap()` timestamp overflow** (`config.rs:338`) — `.expect("timestamp overflow")` in `to_hang_frame()`. Duration-to-microsecond conversion could overflow for extreme PTS values. Should propagate error.
+
+### Documentation (rusty-codecs)
+
+- [ ] **RC14: Minimal SAFETY comments on VAAPI encoder unsafe blocks** (`vaapi/encoder.rs:405, 490, 507, 695`) — unsafe blocks lack detailed safety justification.
