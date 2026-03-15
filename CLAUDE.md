@@ -51,8 +51,9 @@ cargo fmt --check
 - Small incremental commits, each leaving all crates compiling
 - `cargo clippy --locked --workspace --all-targets --all-features` must be clean (no warnings)
 - `cargo fmt --check` must pass
-- Commit messages: start with *why* (motivation), then briefly cover *what*
-- When working through a multi-step prompt, add "(step N of current prompt)" as the last line
+- Commit messages: start with *why* (motivation), then any decisions and their reasoning, then cover *what*, then points of note. 
+- follow ./.agents/writing.md for all prose, including commit messages.
+- When working through a multi-step prompt, add "(phase Xb of current prompt)" as the last line
 
 ## Key types
 

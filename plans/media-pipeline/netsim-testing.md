@@ -64,16 +64,11 @@ async fn adaptive_under_real_loss() {
 }
 ```
 
-### Blockers
+### Notes 
 
 - Patchbay requires Linux user namespaces (`patchbay::init_userns()`).
   CI runners must support unprivileged user namespaces.
-- Tests must be `#[serial_test::serial]` to avoid namespace conflicts.
-- Each test creates real network interfaces and tc rules, so they are
-  slow (seconds per topology setup).
-- The publisher and subscriber run in isolated namespaces, so passing
-  data back (e.g. "which rendition is active?") requires IPC (channels,
-  shared memory, or return values from `spawn()`).
+- Tests should initially be `#[serial_test::serial]` to not exhaust fd and namespace limits on ci runners.
 
 ### Priority
 
