@@ -495,7 +495,245 @@ async fn rapid_republish_does_not_panic() {
     assert!(frame.dimensions[0] > 0);
 }
 
-// ── Group K: Playout clock shared across tracks ───────────────────
+// ── Group K: Audio source switching ────────────────────────────────
+
+#[cfg(all(feature = "h264", feature = "opus"))]
+#[tokio::test]
+async fn audio_replace_source_subscriber_still_receives() {
+    let (broadcast, consumer) = setup_broadcast().await;
+    broadcast
+        .video()
+        .set(
+            TestVideoSource::new(320, 180),
+            VideoCodec::H264,
+            [VideoPreset::P180],
+        )
+        .unwrap();
+    broadcast
+        .audio()
+        .set(
+            TestAudioSource::new(AudioFormat::mono_48k()),
+            moq_media::codec::AudioCodec::Opus,
+            [AudioPreset::Hq],
+        )
+        .unwrap();
+
+    let remote = RemoteBroadcast::with_playout("test", consumer, PlayoutMode::Reliable)
+        .await
+        .unwrap();
+
+    assert!(remote.has_audio());
+
+    let mut watcher = remote.catalog_watcher();
+
+    // Replace audio source with a fresh one
+    broadcast
+        .audio()
+        .set(
+            TestAudioSource::new(AudioFormat::mono_48k()),
+            moq_media::codec::AudioCodec::Opus,
+            [AudioPreset::Hq],
+        )
+        .unwrap();
+
+    // Wait for catalog update from the replacement
+    tokio::time::timeout(TIMEOUT, watcher.updated())
+        .await
+        .expect("timeout waiting for catalog update after audio replace")
+        .expect("catalog watcher disconnected");
+
+    assert!(
+        remote.has_audio(),
+        "audio should still be present after replace"
+    );
+
+    let audio = remote.audio(&NullAudioBackend).await.unwrap();
+    assert!(!audio.rendition().is_empty());
+}
+
+#[cfg(all(feature = "h264", feature = "opus"))]
+#[tokio::test]
+async fn audio_clear_and_readd_works() {
+    let (broadcast, consumer) = setup_broadcast().await;
+    broadcast
+        .video()
+        .set(
+            TestVideoSource::new(320, 180),
+            VideoCodec::H264,
+            [VideoPreset::P180],
+        )
+        .unwrap();
+    broadcast
+        .audio()
+        .set(
+            TestAudioSource::new(AudioFormat::mono_48k()),
+            moq_media::codec::AudioCodec::Opus,
+            [AudioPreset::Hq],
+        )
+        .unwrap();
+
+    let remote = RemoteBroadcast::with_playout("test", consumer, PlayoutMode::Reliable)
+        .await
+        .unwrap();
+
+    assert!(remote.has_audio());
+
+    let mut watcher = remote.catalog_watcher();
+
+    // Clear audio
+    broadcast.audio().clear();
+
+    tokio::time::timeout(TIMEOUT, watcher.updated())
+        .await
+        .expect("timeout waiting for catalog update after audio clear")
+        .expect("catalog watcher disconnected");
+
+    assert!(!remote.has_audio(), "audio should be gone after clear");
+
+    // Re-add audio
+    broadcast
+        .audio()
+        .set(
+            TestAudioSource::new(AudioFormat::mono_48k()),
+            moq_media::codec::AudioCodec::Opus,
+            [AudioPreset::Hq],
+        )
+        .unwrap();
+
+    tokio::time::timeout(TIMEOUT, watcher.updated())
+        .await
+        .expect("timeout waiting for catalog update after audio re-add")
+        .expect("catalog watcher disconnected");
+
+    assert!(remote.has_audio(), "audio should be back after re-add");
+
+    let audio = remote.audio(&NullAudioBackend).await.unwrap();
+    assert!(!audio.rendition().is_empty());
+}
+
+#[cfg(all(feature = "h264", feature = "opus"))]
+#[tokio::test]
+async fn video_source_switch_preserves_audio() {
+    let (broadcast, consumer) = setup_broadcast().await;
+    broadcast
+        .video()
+        .set(
+            TestVideoSource::new(320, 180),
+            VideoCodec::H264,
+            [VideoPreset::P180],
+        )
+        .unwrap();
+    broadcast
+        .audio()
+        .set(
+            TestAudioSource::new(AudioFormat::mono_48k()),
+            moq_media::codec::AudioCodec::Opus,
+            [AudioPreset::Hq],
+        )
+        .unwrap();
+
+    let remote = RemoteBroadcast::with_playout("test", consumer, PlayoutMode::Reliable)
+        .await
+        .unwrap();
+
+    // Drain one video frame to confirm the pipeline is running
+    let mut track = remote.video().unwrap();
+    tokio::time::timeout(TIMEOUT, track.next_frame())
+        .await
+        .expect("timeout")
+        .expect("no initial frame");
+    drop(track);
+
+    let mut watcher = remote.catalog_watcher();
+
+    // Replace video with a different source
+    broadcast
+        .video()
+        .replace(
+            TestVideoSource::new(640, 360),
+            VideoCodec::H264,
+            [VideoPreset::P360],
+        )
+        .unwrap();
+
+    tokio::time::timeout(TIMEOUT, watcher.updated())
+        .await
+        .expect("timeout waiting for catalog update after video replace")
+        .expect("catalog watcher disconnected");
+
+    // Audio should still be present
+    assert!(
+        remote.has_audio(),
+        "audio should survive video source switch"
+    );
+
+    // Video frames should arrive from the new source
+    let mut track = remote.video().unwrap();
+    let frame = tokio::time::timeout(TIMEOUT, track.next_frame())
+        .await
+        .expect("timeout waiting for frame after video replace")
+        .expect("track closed after video replace");
+    assert!(frame.dimensions[0] > 0);
+}
+
+#[cfg(all(feature = "h264", feature = "opus"))]
+#[tokio::test]
+async fn rapid_audio_switches_do_not_panic() {
+    let (broadcast, consumer) = setup_broadcast().await;
+    broadcast
+        .video()
+        .set(
+            TestVideoSource::new(320, 180),
+            VideoCodec::H264,
+            [VideoPreset::P180],
+        )
+        .unwrap();
+    broadcast
+        .audio()
+        .set(
+            TestAudioSource::new(AudioFormat::mono_48k()),
+            moq_media::codec::AudioCodec::Opus,
+            [AudioPreset::Hq],
+        )
+        .unwrap();
+
+    let remote = RemoteBroadcast::with_playout("test", consumer, PlayoutMode::Reliable)
+        .await
+        .unwrap();
+
+    // Rapid-fire audio clear + re-add cycles
+    for _ in 0..5 {
+        broadcast.audio().clear();
+        broadcast
+            .audio()
+            .set(
+                TestAudioSource::new(AudioFormat::mono_48k()),
+                moq_media::codec::AudioCodec::Opus,
+                [AudioPreset::Hq],
+            )
+            .unwrap();
+    }
+
+    // Let the catalog settle — drain updates until we see audio present
+    let mut watcher = remote.catalog_watcher();
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    while !remote.has_audio() {
+        tokio::time::timeout_at(deadline, watcher.updated())
+            .await
+            .expect("timeout waiting for audio after rapid switches")
+            .expect("catalog watcher disconnected");
+    }
+
+    assert!(
+        remote.has_audio(),
+        "audio should be available after rapid switches"
+    );
+
+    let audio = remote.audio(&NullAudioBackend).await.unwrap();
+    assert!(!audio.rendition().is_empty());
+}
+
+// ── Group L: Playout clock shared across tracks ───────────────────
 
 #[cfg(feature = "h264")]
 #[tokio::test]
