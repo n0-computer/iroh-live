@@ -18,6 +18,10 @@ pub enum CaptureBackend {
     ScreenCaptureKit,
     /// AVFoundation (macOS/iOS). Camera only.
     AVFoundation,
+    /// xcap cross-platform screen capture (Linux X11/Wayland, macOS, Windows).
+    Xcap,
+    /// nokhwa cross-platform camera capture (Linux, macOS, Windows).
+    Nokhwa,
 }
 
 impl std::fmt::Display for CaptureBackend {
@@ -28,6 +32,8 @@ impl std::fmt::Display for CaptureBackend {
             Self::X11 => write!(f, "X11"),
             Self::ScreenCaptureKit => write!(f, "ScreenCaptureKit"),
             Self::AVFoundation => write!(f, "AVFoundation"),
+            Self::Xcap => write!(f, "xcap"),
+            Self::Nokhwa => write!(f, "nokhwa"),
         }
     }
 }
