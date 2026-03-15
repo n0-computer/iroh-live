@@ -465,6 +465,9 @@ struct AudioDriver {
     current_output_device: Option<DeviceId>,
     input_streams: Vec<TrackedInputStream>,
     output_streams: Vec<TrackedOutputStream>,
+    /// Cooldown: earliest instant at which the next stream restart may be
+    /// attempted. Prevents hammering a broken device every 10ms.
+    next_restart_allowed: Instant,
 }
 
 impl fmt::Debug for AudioDriver {
@@ -527,6 +530,7 @@ impl AudioDriver {
             current_output_device: output_device,
             input_streams: Vec::new(),
             output_streams: Vec::new(),
+            next_restart_allowed: Instant::now(),
         }
     }
 
@@ -591,7 +595,28 @@ impl AudioDriver {
             }
 
             if let Err(e) = self.cx.update() {
-                error!("audio backend error: {:?}", &e);
+                error!("audio backend error: {e:?}");
+                // The CPAL stream may have died (e.g. BufferUnderrun). Attempt
+                // to restart, but respect the cooldown to avoid hammering a
+                // persistently broken device.
+                if Instant::now() >= self.next_restart_allowed {
+                    match self.try_restart_stream() {
+                        Ok(()) => {
+                            // Reset cooldown on success.
+                            self.next_restart_allowed = Instant::now();
+                        }
+                        Err(restart_err) => {
+                            error!("failed to restart audio stream: {restart_err:#}");
+                            // Exponential-ish backoff: 500ms, 1s, 2s, 4s (capped).
+                            let wait = (self
+                                .next_restart_allowed
+                                .saturating_duration_since(Instant::now()))
+                            .max(Duration::from_millis(500))
+                            .min(Duration::from_secs(4));
+                            self.next_restart_allowed = Instant::now() + wait * 2;
+                        }
+                    }
+                }
             }
 
             if let Some(info) = self.cx.stream_info() {
@@ -769,6 +794,120 @@ impl AudioDriver {
         Ok(())
     }
 
+    /// Restarts the CPAL stream using the current device configuration.
+    ///
+    /// Waits for the old stream's processor to be returned, then starts a fresh
+    /// stream and re-activates all tracked input/output streams with swapped
+    /// handles.
+    fn try_restart_stream(&mut self) -> Result<()> {
+        if self.cx.stream_info().is_some() {
+            // Stream is still alive, nothing to do.
+            return Ok(());
+        }
+        warn!("CPAL stream died, attempting restart");
+        self.cx.stop_stream();
+
+        // Wait (bounded) for the audio thread to return the processor.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !self.cx.can_start_stream() {
+            if Instant::now() > deadline {
+                anyhow::bail!("timed out waiting for audio processor to be returned");
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        let (resolved_input, resolved_output) = Self::resolve_devices(&AudioBackendOpts {
+            input_device: self.current_input_device.clone(),
+            output_device: self.current_output_device.clone(),
+            ..self.opts.clone()
+        });
+        let cpal_config = Self::build_cpal_config(&resolved_input, &resolved_output);
+        self.cx
+            .start_stream(cpal_config)
+            .context("failed to restart CPAL stream")?;
+
+        let stream_sample_rate = self
+            .cx
+            .stream_info()
+            .context("stream_info still None after restart")?
+            .sample_rate;
+
+        // Re-activate output streams.
+        for tracked in &self.output_streams {
+            let state = self
+                .cx
+                .node_state_mut::<StreamWriterState>(tracked.node_id)
+                .context("output stream node missing after restart")?;
+            let event = state
+                .start_stream(
+                    tracked.format.sample_rate.try_into().unwrap(),
+                    stream_sample_rate,
+                    ResamplingChannelConfig {
+                        capacity_seconds: 3.,
+                        ..Default::default()
+                    },
+                )
+                .map_err(|()| anyhow::anyhow!("failed to restart output stream"))?;
+            self.cx.queue_event_for(tracked.node_id, event.into());
+            let fresh = self
+                .cx
+                .node_state::<StreamWriterState>(tracked.node_id)
+                .context("output stream node missing")?
+                .handle();
+            *tracked.handle.lock().unwrap() = fresh.into_inner().unwrap();
+        }
+
+        // Re-activate input streams.
+        for tracked in &self.input_streams {
+            let state = self
+                .cx
+                .node_state_mut::<StreamReaderState>(tracked.node_id)
+                .context("input stream node missing after restart")?;
+            let event = state
+                .start_stream(
+                    tracked.format.sample_rate.try_into().unwrap(),
+                    stream_sample_rate,
+                    ResamplingChannelConfig {
+                        capacity_seconds: 3.,
+                        ..Default::default()
+                    },
+                )
+                .map_err(|()| anyhow::anyhow!("failed to restart input stream"))?;
+            self.cx.queue_event_for(tracked.node_id, event.into());
+            let fresh = self
+                .cx
+                .node_state::<StreamReaderState>(tracked.node_id)
+                .context("input stream node missing")?
+                .handle();
+            *tracked.handle.lock().unwrap() = fresh.into_inner().unwrap();
+        }
+
+        // Update AEC delay for the restarted stream.
+        if let Some(info) = self.cx.stream_info() {
+            let delay_ms = (info.input_to_output_latency_seconds * 1000.) as u32;
+            info!("update processor delay to {delay_ms}ms after stream restart");
+            self.aec_processor.set_stream_delay(delay_ms);
+        }
+
+        info!("CPAL stream restarted successfully");
+        Ok(())
+    }
+
+    /// Ensures the CPAL stream is alive, restarting it if necessary.
+    ///
+    /// Returns the stream sample rate on success.
+    fn ensure_stream_sample_rate(&mut self) -> Result<std::num::NonZeroU32> {
+        if let Some(info) = self.cx.stream_info() {
+            return Ok(info.sample_rate);
+        }
+        self.try_restart_stream()?;
+        Ok(self
+            .cx
+            .stream_info()
+            .context("audio stream unavailable after restart attempt")?
+            .sample_rate)
+    }
+
     fn output_stream(&mut self, format: AudioFormat) -> Result<OutputStream> {
         let stream_writer_id = self.cx.add_node(
             StreamWriterNode,
@@ -798,7 +937,7 @@ impl AudioDriver {
         self.cx
             .connect(stream_writer_id, peak_meter_id, layout, false)
             .unwrap();
-        let output_stream_sample_rate = self.cx.stream_info().unwrap().sample_rate;
+        let output_stream_sample_rate = self.ensure_stream_sample_rate()?;
         let event = self
             .cx
             .node_state_mut::<StreamWriterState>(stream_writer_id)
@@ -861,7 +1000,7 @@ impl AudioDriver {
             .connect(graph_in_node_id, stream_reader_id, layout, false)
             .unwrap();
 
-        let input_stream_sample_rate = self.cx.stream_info().unwrap().sample_rate;
+        let input_stream_sample_rate = self.ensure_stream_sample_rate()?;
         let event = self
             .cx
             .node_state_mut::<StreamReaderState>(stream_reader_id)

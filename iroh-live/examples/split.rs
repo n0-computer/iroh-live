@@ -23,7 +23,9 @@ use iroh_live::{
     ALPN, Live,
     media::{
         audio_backend::AudioBackend,
-        codec::{AudioCodec, DefaultDecoders, DynamicVideoDecoder, VideoCodec},
+        codec::{
+            AudioCodec, DefaultDecoders, DynamicAudioDecoder, DynamicVideoDecoder, VideoCodec,
+        },
         format::{
             AudioFormat, AudioPreset, DecodeConfig, DecoderBackend, PlaybackConfig, VideoPreset,
         },
@@ -645,6 +647,7 @@ struct SubscribeView {
     broadcast: RemoteBroadcast,
     catalog_watcher: n0_watcher::Direct<iroh_live::media::subscribe::CatalogSnapshot>,
 
+    audio_ctx: AudioBackend,
     pending_video: Option<VideoTrack>,
     video: Option<VideoTrackView>,
     _audio: Option<AudioTrack>,
@@ -678,6 +681,7 @@ impl SubscribeView {
             session,
             broadcast: tracks.broadcast,
             catalog_watcher,
+            audio_ctx: audio_ctx.clone(),
             pending_video: tracks.video,
             video: None,
             _audio: tracks.audio,
@@ -696,15 +700,17 @@ impl SubscribeView {
         self.wgpu_render_state = state;
     }
 
-    fn resubscribe_video(&mut self, ctx: &egui::Context) {
+    fn resubscribe(&mut self, ctx: &egui::Context) {
         self.playout_clock.reset();
-        let renditions: Vec<String> = self
+
+        // Resubscribe video.
+        let video_renditions: Vec<String> = self
             .broadcast
             .catalog()
             .video_renditions()
             .map(|s| s.to_owned())
             .collect();
-        if let Some(name) = renditions.first() {
+        if let Some(name) = video_renditions.first() {
             let decode_config = DecodeConfig {
                 backend: self.backend,
                 ..Default::default()
@@ -718,12 +724,39 @@ impl SubscribeView {
                     self.video = Some(self.make_video_view(ctx, track));
                 }
                 Err(e) => {
-                    warn!("re-subscribe failed: {e:#}");
+                    warn!("video re-subscribe failed: {e:#}");
                     self.video = None;
                 }
             }
         } else {
             self.video = None;
+        }
+
+        // Resubscribe audio. The old AudioTrack is dropped, stopping its
+        // decoder thread, before starting a fresh one from the new catalog.
+        let audio_renditions: Vec<String> = self
+            .broadcast
+            .catalog()
+            .audio_renditions()
+            .map(|s| s.to_owned())
+            .collect();
+        if let Some(name) = audio_renditions.first() {
+            let handle = tokio::runtime::Handle::current();
+            match handle.block_on(
+                self.broadcast
+                    .audio_rendition::<DynamicAudioDecoder>(name, &self.audio_ctx),
+            ) {
+                Ok(track) => {
+                    info!(rendition = name, "subscriber: resubscribed to audio");
+                    self._audio = Some(track);
+                }
+                Err(e) => {
+                    warn!("audio re-subscribe failed: {e:#}");
+                    self._audio = None;
+                }
+            }
+        } else {
+            self._audio = None;
         }
     }
 
@@ -749,7 +782,7 @@ impl SubscribeView {
         // Auto-detect catalog changes from publisher
         if self.catalog_watcher.update() {
             info!("subscriber: catalog changed, resubscribing");
-            self.resubscribe_video(ctx);
+            self.resubscribe(ctx);
         }
 
         // Controls
@@ -813,7 +846,7 @@ impl SubscribeView {
                             .changed()
                     {
                         info!(backend = ?self.backend, "UI: decoder backend changed");
-                        self.resubscribe_video(ctx);
+                        self.resubscribe(ctx);
                     }
                 });
 
@@ -827,7 +860,7 @@ impl SubscribeView {
                             .changed()
                         {
                             info!(mode = %self.render_mode, "UI: render mode changed");
-                            self.resubscribe_video(ctx);
+                            self.resubscribe(ctx);
                         }
                     }
                 });
@@ -977,6 +1010,7 @@ fn main() -> Result<()> {
 
     let publish = rt.block_on(PublishView::new(secret_key, audio_ctx.clone()))?;
     let publisher_addr = publish.addr();
+    #[allow(unused_mut, reason = "mut needed when wgpu feature is enabled")]
     let mut subscribe = rt.block_on(SubscribeView::new(publisher_addr, &audio_ctx))?;
 
     let _guard = rt.enter();
@@ -995,9 +1029,9 @@ fn main() -> Result<()> {
     eframe::run_native(
         "iroh-live split",
         native_options,
-        Box::new(move |cc| {
+        Box::new(move |_cc| {
             #[cfg(feature = "wgpu")]
-            subscribe.set_wgpu_render_state(cc.wgpu_render_state.clone());
+            subscribe.set_wgpu_render_state(_cc.wgpu_render_state.clone());
 
             // Publish preview and subscribe video are created lazily on
             // first ui() call via pending_video / preview fields, so we
