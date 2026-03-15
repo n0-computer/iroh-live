@@ -18,6 +18,11 @@ tracing = "0.1.41"
 
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
+# Cross-platform screen capture (Linux X11/Wayland, macOS, Windows).
+xcap = { version = "0.9", optional = true }
+# Cross-platform webcam capture (Linux V4L2, macOS AVFoundation, Windows Media Foundation).
+nokhwa = { version = "0.10", optional = true, features = ["input-native"] }
+
 # Core types from rusty-codecs (no codec features enabled).
 rusty-codecs = { path = "../rusty-codecs", default-features = false }
 
@@ -62,7 +67,7 @@ dispatch2 = { version = "0.3", optional = true }
 screencapturekit = { version = "1.5", optional = true }
 
 [features]
-default = ["camera", "screen"]
+default = ["camera", "screen", "xcap", "nokhwa"]
 
 # Capability features — what consumers should use.
 camera = ["camera-linux", "camera-apple"]
@@ -81,3 +86,5 @@ screen-apple = ["camera-apple", "dep:screencapturekit"]
 pipewire = ["dep:pipewire", "dep:libspa", "dep:ashpd", "dep:nix", "dep:tokio"]
 v4l2 = ["dep:v4l2r", "dep:nix"]
 x11 = ["dep:x11rb"]
+xcap = ["dep:xcap"]
+nokhwa = ["dep:nokhwa"]

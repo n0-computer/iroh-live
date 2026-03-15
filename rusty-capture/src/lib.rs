@@ -19,6 +19,7 @@
 //! | Linux (V4L2) | — | `v4l2` feature | DMA-BUF via EXPBUF |
 //! | macOS | `screen-apple` feature | `camera-apple` feature | IOSurface (planned) |
 //! | iOS | — | `camera-apple` feature | IOSurface (planned) |
+//! | Cross-platform | `xcap` feature | `nokhwa` feature | No (CPU only) |
 //!
 //! # Feature Flags
 //!
@@ -31,6 +32,10 @@
 //! - **`camera-apple`** — AVFoundation camera on macOS/iOS.
 //! - **`screen-linux`** — `pipewire` (x11 not included by default).
 //! - **`screen-apple`** — ScreenCaptureKit screen capture on macOS 12.3+.
+//!
+//! Cross-platform backends (default, CPU-only fallback):
+//! - **`xcap`** — Screen capture via the `xcap` crate. Linux (X11/Wayland), macOS, Windows.
+//! - **`nokhwa`** — Camera capture via the `nokhwa` crate. Linux, macOS, Windows.
 //!
 //! Low-level backend features:
 //! - **`pipewire`** — PipeWire screen + camera capture on Linux (Wayland + libcamera).
@@ -68,6 +73,12 @@ pub use platform::apple::screen::MacScreenCapturer;
 
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple"))]
 pub use platform::apple::camera::AppleCameraCapturer;
+
+#[cfg(feature = "xcap")]
+pub use platform::xcap_impl::XcapScreenCapturer;
+
+#[cfg(feature = "nokhwa")]
+pub use platform::nokhwa_impl::NokhwaCameraCapturer;
 
 // ── PipeWire runtime detection ──────────────────────────────────────
 
@@ -130,6 +141,10 @@ fn list_monitors() -> anyhow::Result<Vec<MonitorInfo>> {
     {
         return platform::apple::screen::monitors();
     }
+    #[cfg(feature = "xcap")]
+    {
+        return platform::xcap_impl::monitors();
+    }
     anyhow::bail!(
         "no screen capture backend available (enable `screen` or a platform-specific feature)"
     )
@@ -151,6 +166,10 @@ fn list_cameras() -> anyhow::Result<Vec<CameraInfo>> {
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple"))]
     {
         return platform::apple::camera::cameras();
+    }
+    #[cfg(feature = "nokhwa")]
+    {
+        return platform::nokhwa_impl::cameras();
     }
     anyhow::bail!(
         "no camera capture backend available (enable `camera` or a platform-specific feature)"
@@ -176,6 +195,10 @@ fn create_camera_backend(
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple"))]
     {
         return Ok(Box::new(AppleCameraCapturer::new(info, config)?));
+    }
+    #[cfg(feature = "nokhwa")]
+    if info.backend == CaptureBackend::Nokhwa {
+        return Ok(Box::new(NokhwaCameraCapturer::new(info, config)?));
     }
     let _ = (info, config);
     anyhow::bail!("no camera capture backend available on this platform")
@@ -215,6 +238,17 @@ fn create_screen_backend(
         };
         return Ok(Box::new(MacScreenCapturer::new(&mon, config)?));
     }
+    #[cfg(feature = "xcap")]
+    {
+        let mon = match monitor {
+            Some(m) => m.clone(),
+            None => list_monitors()?
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("no monitors available"))?,
+        };
+        return Ok(Box::new(XcapScreenCapturer::new(&mon, config)?));
+    }
     let _ = (monitor, config);
     anyhow::bail!("no screen capture backend available on this platform")
 }
@@ -244,6 +278,8 @@ impl CameraCapturer {
         backends.push(CaptureBackend::V4l2);
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple"))]
         backends.push(CaptureBackend::AVFoundation);
+        #[cfg(feature = "nokhwa")]
+        backends.push(CaptureBackend::Nokhwa);
         backends
     }
 
@@ -372,6 +408,8 @@ impl ScreenCapturer {
         backends.push(CaptureBackend::X11);
         #[cfg(all(target_os = "macos", feature = "screen-apple"))]
         backends.push(CaptureBackend::ScreenCaptureKit);
+        #[cfg(feature = "xcap")]
+        backends.push(CaptureBackend::Xcap);
         backends
     }
 
