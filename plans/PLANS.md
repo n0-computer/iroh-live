@@ -161,6 +161,14 @@ splitscreen dev example with debug overlay.
 
 - [devtools](devtools/00-main.md)
 
+### Future features
+
+Feature gap analysis covering recording, data channels, noise suppression,
+HLS egress, relay/SFU, E2EE, virtual backgrounds, stats API, SVC, and
+multi-codec negotiation.
+
+- [future](future.md) — prioritized feature list with effort estimates
+
 ## Reference
 
 Architecture overviews and context documents, not actionable work items.
