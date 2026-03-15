@@ -161,6 +161,17 @@ splitscreen dev example with debug overlay.
 
 - [devtools](devtools/00-main.md)
 
+### Network simulation testing
+
+Patchbay integration for realistic link impairment, NAT traversal, and
+relay fallback testing. Synthetic signal injection tests exist; real
+kernel-level impairment does not.
+
+- [netsim-testing](media-pipeline/netsim-testing.md) — patchbay plan and integration sketch
+- [ ] Patchbay lab setup with publisher/subscriber namespaces
+- [ ] Dynamic link degradation mid-session
+- [ ] NAT traversal and relay fallback tests
+
 ### Future features
 
 Feature gap analysis covering recording, data channels, noise suppression,
@@ -174,7 +185,6 @@ multi-codec negotiation.
 Architecture overviews and context documents, not actionable work items.
 
 - [platforms](platforms.md) — platform support matrix for codecs, capture, and rendering
-- [netsim-testing](media-pipeline/netsim-testing.md) — network simulation testing with patchbay
 - [media-pipeline master](media-pipeline/00-master-plan.md) — full phase overview
 - [media-pipeline quick ref](media-pipeline/00-main.md) — phase table with links
 - [phase-3-av-resilience](media-pipeline/phase-3-av-resilience.md) — phases 3a–3d overview
