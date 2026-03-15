@@ -139,6 +139,16 @@ Before adding significant amounts of code, verify:
 
 Complexity is fine when warranted — this is a genuinely complex project. The point is to be deliberate.
 
+## Tracing
+
+This repo will be maintained for years. Tracing is a first-class concern.
+
+- Use `tracing::instrument` or manual spans where they add context (per-stream, per-track, per-connection).
+- Use all levels deliberately: `error!` for breakage, `warn!` for degraded-but-recoverable, `info!` for lifecycle events, `debug!` for operational detail, `trace!` for per-frame detail.
+- Use `throttled-tracing` for high-frequency logs (frame-level, per-packet) to avoid flooding output.
+- Prefer structured fields (`info!(width, height, "capture started")`) over string interpolation.
+- Write log messages as if you will read them at 3 AM debugging a production issue two years from now.
+
 ## Key types
 
 ### moq-media publish side
