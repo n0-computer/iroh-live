@@ -39,6 +39,7 @@ pub fn monitors() -> Result<Vec<MonitorInfo>> {
     let mut monitors = Vec::new();
     for (i, screen) in setup.roots.iter().enumerate() {
         monitors.push(MonitorInfo {
+            backend: crate::CaptureBackend::X11,
             id: format!("x11-screen-{i}"),
             name: format!("Screen {i}"),
             position: [0, 0],
@@ -107,6 +108,7 @@ fn monitors_randr(
             .filter(|r| *r > 0.0);
 
         monitors.push(MonitorInfo {
+            backend: crate::CaptureBackend::X11,
             id: format!("x11-screen-{screen_num}"),
             name,
             position: [crtc.x as i32, crtc.y as i32],

@@ -88,6 +88,7 @@ pub fn monitors() -> Result<Vec<MonitorInfo>> {
         let width = display.width as u32;
         let height = display.height as u32;
         result.push(MonitorInfo {
+            backend: crate::CaptureBackend::ScreenCaptureKit,
             id: format!("macos-display-{}", display.display_id),
             name: format!("Display {}", display.display_id),
             position: [display.frame.origin.x as i32, display.frame.origin.y as i32],

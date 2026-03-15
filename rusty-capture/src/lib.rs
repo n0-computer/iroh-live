@@ -90,6 +90,7 @@ fn pipewire_available() -> bool {
 #[cfg(all(target_os = "linux", feature = "pipewire"))]
 fn pipewire_monitor_placeholder() -> MonitorInfo {
     MonitorInfo {
+        backend: CaptureBackend::PipeWire,
         id: "pipewire-portal".into(),
         name: "PipeWire Screen Share".into(),
         position: [0, 0],
@@ -103,6 +104,7 @@ fn pipewire_monitor_placeholder() -> MonitorInfo {
 #[cfg(all(target_os = "linux", feature = "pipewire"))]
 fn pipewire_camera_placeholder() -> CameraInfo {
     CameraInfo {
+        backend: CaptureBackend::PipeWire,
         id: "pipewire-portal".into(),
         name: "PipeWire Camera".into(),
         supported_formats: vec![],
@@ -230,6 +232,21 @@ pub struct CameraCapturer {
 }
 
 impl CameraCapturer {
+    /// Returns the capture backends that are compiled in and available at runtime
+    /// for camera capture.
+    pub fn list_backends() -> Vec<CaptureBackend> {
+        let mut backends = Vec::new();
+        #[cfg(all(target_os = "linux", feature = "pipewire"))]
+        if pipewire_available() {
+            backends.push(CaptureBackend::PipeWire);
+        }
+        #[cfg(all(target_os = "linux", feature = "v4l2"))]
+        backends.push(CaptureBackend::V4l2);
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple"))]
+        backends.push(CaptureBackend::AVFoundation);
+        backends
+    }
+
     /// Lists available cameras.
     pub fn list() -> anyhow::Result<Vec<CameraInfo>> {
         list_cameras()
@@ -272,6 +289,24 @@ impl CameraCapturer {
         };
         let inner = create_camera_backend(info, &config)?;
         Ok(Self { inner })
+    }
+
+    /// Opens a camera using a specific backend with default config.
+    ///
+    /// Returns an error if the backend is not available or does not support camera capture.
+    pub fn with_backend(backend: CaptureBackend, config: &CameraConfig) -> anyhow::Result<Self> {
+        let cameras = list_cameras()?;
+        let cam = cameras
+            .iter()
+            .find(|c| c.backend == backend)
+            .or_else(|| cameras.last());
+        match cam {
+            Some(info) if info.backend == backend => {
+                let inner = create_camera_backend(info, config)?;
+                Ok(Self { inner })
+            }
+            _ => anyhow::bail!("camera backend {backend} is not available"),
+        }
     }
 
     /// Opens a camera with full configuration control.
@@ -325,6 +360,21 @@ pub struct ScreenCapturer {
 }
 
 impl ScreenCapturer {
+    /// Returns the capture backends that are compiled in and available at runtime
+    /// for screen capture.
+    pub fn list_backends() -> Vec<CaptureBackend> {
+        let mut backends = Vec::new();
+        #[cfg(all(target_os = "linux", feature = "pipewire"))]
+        if pipewire_available() {
+            backends.push(CaptureBackend::PipeWire);
+        }
+        #[cfg(all(target_os = "linux", feature = "x11"))]
+        backends.push(CaptureBackend::X11);
+        #[cfg(all(target_os = "macos", feature = "screen-apple"))]
+        backends.push(CaptureBackend::ScreenCaptureKit);
+        backends
+    }
+
     /// Lists available monitors for screen capture.
     pub fn list() -> anyhow::Result<Vec<MonitorInfo>> {
         list_monitors()
@@ -335,6 +385,26 @@ impl ScreenCapturer {
         let config = ScreenConfig::default();
         let inner = create_screen_backend(None, &config)?;
         Ok(Self { inner })
+    }
+
+    /// Opens the default screen using a specific backend.
+    ///
+    /// Returns an error if the backend is not available or does not support screen capture.
+    pub fn with_backend(backend: CaptureBackend, config: &ScreenConfig) -> anyhow::Result<Self> {
+        let monitors = list_monitors()?;
+        let mon = monitors.iter().find(|m| m.backend == backend);
+        match (backend, mon) {
+            #[cfg(all(target_os = "linux", feature = "pipewire"))]
+            (CaptureBackend::PipeWire, _) if pipewire_available() => {
+                let inner = create_screen_backend(None, config)?;
+                Ok(Self { inner })
+            }
+            (_, Some(mon)) if mon.backend == backend => {
+                let inner = create_screen_backend(Some(mon), config)?;
+                Ok(Self { inner })
+            }
+            _ => anyhow::bail!("screen backend {backend} is not available"),
+        }
     }
 
     /// Opens a specific monitor for screen capture.
