@@ -68,6 +68,7 @@ pub fn cameras() -> Result<Vec<CameraInfo>> {
         let name = caps.card.clone();
         let formats = enumerate_formats(&fd);
         result.push(CameraInfo {
+            backend: crate::CaptureBackend::V4l2,
             id: path,
             name,
             supported_formats: formats,

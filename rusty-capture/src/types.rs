@@ -1,8 +1,42 @@
 //! Capture device metadata and configuration types.
 
+/// Identifies a capture backend.
+///
+/// Each variant corresponds to a platform-specific implementation. Use
+/// [`CameraCapturer::list_backends`](crate::CameraCapturer::list_backends) or
+/// [`ScreenCapturer::list_backends`](crate::ScreenCapturer::list_backends) to
+/// discover which backends are compiled in and available at runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CaptureBackend {
+    /// PipeWire portal (Linux Wayland). Supports screen + camera with DMA-BUF zero-copy.
+    PipeWire,
+    /// Video4Linux2 (Linux). Camera only, MMAP + optional DMA-BUF export.
+    V4l2,
+    /// X11 MIT-SHM (Linux). Screen only, CPU-mapped shared memory.
+    X11,
+    /// ScreenCaptureKit (macOS 12.3+). Screen only.
+    ScreenCaptureKit,
+    /// AVFoundation (macOS/iOS). Camera only.
+    AVFoundation,
+}
+
+impl std::fmt::Display for CaptureBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PipeWire => write!(f, "PipeWire"),
+            Self::V4l2 => write!(f, "V4L2"),
+            Self::X11 => write!(f, "X11"),
+            Self::ScreenCaptureKit => write!(f, "ScreenCaptureKit"),
+            Self::AVFoundation => write!(f, "AVFoundation"),
+        }
+    }
+}
+
 /// Describes a display monitor available for screen capture.
 #[derive(Debug, Clone)]
 pub struct MonitorInfo {
+    /// Which capture backend provides this monitor.
+    pub backend: CaptureBackend,
     /// Platform-specific identifier (e.g. X11 screen number, PipeWire node id).
     pub id: String,
     /// Human-readable display name.
@@ -22,6 +56,8 @@ pub struct MonitorInfo {
 /// Describes a camera device available for capture.
 #[derive(Debug, Clone)]
 pub struct CameraInfo {
+    /// Which capture backend provides this camera.
+    pub backend: CaptureBackend,
     /// Platform-specific identifier (e.g. `/dev/video0`, AVFoundation uniqueID).
     pub id: String,
     /// Human-readable device name.

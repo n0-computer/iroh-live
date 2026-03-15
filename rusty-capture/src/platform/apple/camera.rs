@@ -68,6 +68,7 @@ pub fn cameras() -> Result<Vec<CameraInfo>> {
     //
     // For now, return a placeholder for the default camera.
     Ok(vec![CameraInfo {
+        backend: crate::CaptureBackend::AVFoundation,
         id: "default".into(),
         name: "Default Camera".into(),
         supported_formats: vec![],
@@ -178,6 +179,7 @@ impl AppleCameraCapturer {
     pub fn open_default() -> Result<Self> {
         Self::new(
             &CameraInfo {
+                backend: crate::CaptureBackend::AVFoundation,
                 id: "default".into(),
                 name: "Default Camera".into(),
                 supported_formats: vec![],
