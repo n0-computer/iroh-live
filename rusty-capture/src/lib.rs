@@ -138,13 +138,13 @@ fn list_monitors() -> anyhow::Result<Vec<MonitorInfo>> {
     reason = "cfg-gated returns may make trailing code unreachable"
 )]
 fn list_cameras() -> anyhow::Result<Vec<CameraInfo>> {
-    #[cfg(all(target_os = "linux", feature = "pipewire"))]
-    if pipewire_available() {
-        return Ok(vec![pipewire_camera_placeholder()]);
-    }
     #[cfg(all(target_os = "linux", feature = "v4l2"))]
     {
         return platform::linux::v4l2::cameras();
+    }
+    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    if pipewire_available() {
+        return Ok(vec![pipewire_camera_placeholder()]);
     }
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple"))]
     {
