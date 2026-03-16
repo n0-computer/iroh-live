@@ -57,7 +57,7 @@ async fn roundtrip_video(
     n: usize,
 ) -> Vec<moq_media::format::VideoFrame> {
     let (_broadcast, remote) = publish_and_subscribe(codec, preset).await;
-    let mut track = remote.video().unwrap();
+    let mut track = remote.video_ready().await.unwrap();
     let mut frames = Vec::with_capacity(n);
     for _ in 0..n {
         let frame = tokio::time::timeout(TIMEOUT, track.next_frame())
@@ -106,6 +106,7 @@ async fn publish_av1_subscriber_receives_frames() {
 async fn catalog_lists_published_renditions() {
     let (_broadcast, remote) = publish_and_subscribe(VideoCodec::H264, VideoPreset::P180).await;
 
+    remote.ready().await;
     let catalog = remote.catalog();
     let renditions: Vec<&str> = catalog.video_renditions().collect();
     assert!(
@@ -131,6 +132,7 @@ async fn multiple_renditions_subscriber_selects_each() {
         .await
         .unwrap();
 
+    remote.ready().await;
     let catalog = remote.catalog();
     let renditions: Vec<String> = catalog.video_renditions().map(String::from).collect();
     assert!(
@@ -177,6 +179,7 @@ async fn multiple_renditions_have_distinct_dimensions() {
         .await
         .unwrap();
 
+    remote.ready().await;
     let catalog = remote.catalog();
     let renditions: Vec<String> = catalog.video_renditions().map(String::from).collect();
     assert!(
@@ -239,7 +242,7 @@ async fn publisher_replace_triggers_catalog_update() {
     let mut watcher = remote.catalog_watcher();
 
     // Drain initial frame to confirm pipeline is running
-    let mut track = remote.video().unwrap();
+    let mut track = remote.video_ready().await.unwrap();
     tokio::time::timeout(TIMEOUT, track.next_frame())
         .await
         .expect("timeout")
@@ -263,7 +266,7 @@ async fn publisher_replace_triggers_catalog_update() {
         .expect("catalog watcher disconnected");
 
     // Subscribe to new rendition and verify frames
-    let mut track = remote.video().unwrap();
+    let mut track = remote.video_ready().await.unwrap();
     let frame = tokio::time::timeout(TIMEOUT, track.next_frame())
         .await
         .expect("timeout")
@@ -298,11 +301,8 @@ async fn audio_and_video_roundtrip() {
         .await
         .unwrap();
 
-    assert!(remote.has_video());
-    assert!(remote.has_audio());
-
     // Video frames arrive
-    let mut video = remote.video().unwrap();
+    let mut video = remote.video_ready().await.unwrap();
     let frame = tokio::time::timeout(TIMEOUT, video.next_frame())
         .await
         .expect("timeout")
@@ -310,7 +310,7 @@ async fn audio_and_video_roundtrip() {
     assert!(frame.dimensions[0] > 0);
 
     // Audio track starts
-    let audio = remote.audio(&NullAudioBackend).await.unwrap();
+    let audio = remote.audio_ready(&NullAudioBackend).await.unwrap();
     assert!(!audio.rendition().is_empty());
 }
 
@@ -335,7 +335,7 @@ async fn playout_reliable_frames_have_monotonic_timestamps() {
 async fn playout_clock_reports_jitter_after_frames() {
     let (_broadcast, remote) = publish_and_subscribe(VideoCodec::H264, VideoPreset::P180).await;
 
-    let mut track = remote.video().unwrap();
+    let mut track = remote.video_ready().await.unwrap();
     // Drain a few frames so the clock has data
     for _ in 0..5 {
         tokio::time::timeout(TIMEOUT, track.next_frame())
@@ -362,7 +362,7 @@ async fn publisher_drop_closes_subscriber() {
     let closed = remote.closed();
 
     // Drain one frame to ensure pipeline is active
-    let mut track = remote.video().unwrap();
+    let mut track = remote.video_ready().await.unwrap();
     tokio::time::timeout(TIMEOUT, track.next_frame())
         .await
         .expect("timeout")
@@ -384,6 +384,7 @@ async fn publisher_drop_closes_subscriber() {
 async fn clear_video_updates_catalog() {
     let (broadcast, remote) = publish_and_subscribe(VideoCodec::H264, VideoPreset::P180).await;
 
+    remote.ready().await;
     assert!(remote.has_video());
 
     let mut watcher = remote.catalog_watcher();
@@ -424,8 +425,8 @@ async fn two_subscribers_receive_frames() {
         .await
         .unwrap();
 
-    let mut track1 = remote1.video().unwrap();
-    let mut track2 = remote2.video().unwrap();
+    let mut track1 = remote1.video_ready().await.unwrap();
+    let mut track2 = remote2.video_ready().await.unwrap();
 
     let f1 = tokio::time::timeout(TIMEOUT, track1.next_frame())
         .await
@@ -460,7 +461,7 @@ async fn publisher_resolution_change_updates_subscriber() {
         .unwrap();
 
     // Drain a frame from the initial rendition
-    let mut track = remote.video().unwrap();
+    let mut track = remote.video_ready().await.unwrap();
     tokio::time::timeout(TIMEOUT, track.next_frame())
         .await
         .expect("timeout")
@@ -494,7 +495,7 @@ async fn publisher_resolution_change_updates_subscriber() {
     );
 
     // Subscribe to new rendition and verify frames arrive
-    let mut track = remote.video().unwrap();
+    let mut track = remote.video_ready().await.unwrap();
     let frame = tokio::time::timeout(TIMEOUT, track.next_frame())
         .await
         .expect("timeout")
@@ -529,6 +530,7 @@ async fn audio_clear_while_video_continues() {
         .await
         .unwrap();
 
+    remote.ready().await;
     assert!(remote.has_video());
     assert!(remote.has_audio());
 
@@ -547,7 +549,7 @@ async fn audio_clear_while_video_continues() {
     assert!(!remote.has_audio(), "audio should be gone after clear");
 
     // Video should still work
-    let mut track = remote.video().unwrap();
+    let mut track = remote.video_ready().await.unwrap();
     let frame = tokio::time::timeout(TIMEOUT, track.next_frame())
         .await
         .expect("timeout")
@@ -579,7 +581,7 @@ async fn rapid_republish_does_not_panic() {
         .await
         .unwrap();
 
-    let mut track = remote.video().unwrap();
+    let mut track = remote.video_ready().await.unwrap();
     let frame = tokio::time::timeout(TIMEOUT, track.next_frame())
         .await
         .expect("timeout")
@@ -614,6 +616,7 @@ async fn audio_replace_source_subscriber_still_receives() {
         .await
         .unwrap();
 
+    remote.ready().await;
     assert!(remote.has_audio());
 
     let mut watcher = remote.catalog_watcher();
@@ -668,6 +671,7 @@ async fn audio_clear_and_readd_works() {
         .await
         .unwrap();
 
+    remote.ready().await;
     assert!(remote.has_audio());
 
     let mut watcher = remote.catalog_watcher();
@@ -729,7 +733,7 @@ async fn video_source_switch_preserves_audio() {
         .unwrap();
 
     // Drain one video frame to confirm the pipeline is running
-    let mut track = remote.video().unwrap();
+    let mut track = remote.video_ready().await.unwrap();
     tokio::time::timeout(TIMEOUT, track.next_frame())
         .await
         .expect("timeout")
@@ -760,7 +764,7 @@ async fn video_source_switch_preserves_audio() {
     );
 
     // Video frames should arrive from the new source
-    let mut track = remote.video().unwrap();
+    let mut track = remote.video_ready().await.unwrap();
     let frame = tokio::time::timeout(TIMEOUT, track.next_frame())
         .await
         .expect("timeout waiting for frame after video replace")
@@ -858,10 +862,10 @@ async fn audio_data_flows_through_pipeline() {
     let backend = CapturingAudioBackend::new();
     let captured = backend.captured_samples();
 
-    let _audio = remote.audio(&backend).await.unwrap();
+    let _audio = remote.audio_ready(&backend).await.unwrap();
 
     // Drain some video frames to give the audio pipeline time to produce output.
-    let mut track = remote.video().unwrap();
+    let mut track = remote.video_ready().await.unwrap();
     for _ in 0..10 {
         tokio::time::timeout(TIMEOUT, track.next_frame())
             .await
@@ -895,7 +899,7 @@ async fn playout_clock_reset_on_resubscribe() {
     let (_broadcast, remote) = publish_and_subscribe(VideoCodec::H264, VideoPreset::P180).await;
 
     // Drain a few frames so the clock establishes a base mapping
-    let mut track = remote.video().unwrap();
+    let mut track = remote.video_ready().await.unwrap();
     for _ in 0..3 {
         tokio::time::timeout(TIMEOUT, track.next_frame())
             .await

@@ -23,7 +23,7 @@ async fn main() -> n0_error::Result {
     let audio_ctx = AudioBackend::default();
 
     // Setup iroh and iroh-live.
-    let endpoint = Endpoint::builder()
+    let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
         .secret_key(secret_key_from_env()?)
         .bind()
         .await?;

@@ -17,9 +17,9 @@ byte-unit = { version = "5.1", features = ["bit"] }
 data-encoding = "2.9.0"
 derive_more = { version = "2.0.1", features = ["display", "debug", "eq", "deref"] }
 firewheel = { version = "0.10.0", features = ["cpal", "peak_meter_node", "std", "stream_nodes", "cpal_resample_inputs"] }
-hang = "0.15"
+hang = { workspace = true }
 image = { version = "0.25", default-features = false }
-moq-lite = "0.15"
+moq-lite = { workspace = true }
 n0-error = { version = "0.1.2", features = ["anyhow"] }
 n0-future = "0.3.1"
 n0-watcher = "0.6.0"

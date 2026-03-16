@@ -2,6 +2,7 @@ use std::{env, sync::Arc};
 
 use iroh::{
     Endpoint, EndpointAddr, SecretKey,
+    endpoint::presets,
     protocol::{Router, RouterBuilder},
 };
 use iroh_gossip::Gossip;
@@ -107,7 +108,7 @@ impl Live {
     /// Reads `IROH_SECRET` for the secret key (generates one if unset),
     /// binds an endpoint, and spawns with gossip and a protocol router.
     pub async fn from_env() -> Result<Self> {
-        let endpoint = Endpoint::builder()
+        let endpoint = Endpoint::builder(presets::N0)
             .secret_key(secret_key_from_env()?)
             .bind()
             .await?;

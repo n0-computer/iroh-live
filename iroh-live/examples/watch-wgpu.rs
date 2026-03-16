@@ -84,7 +84,7 @@ fn main() -> Result<()> {
     let (_endpoint, session, video_track) = rt.block_on({
         let audio_ctx = audio_ctx.clone();
         async move {
-            let endpoint = Endpoint::bind().await?;
+            let endpoint = Endpoint::bind(iroh::endpoint::presets::N0).await?;
             let live = Live::new(endpoint.clone());
             let playback_config = PlaybackConfig {
                 decode_config: DecodeConfig {
@@ -235,7 +235,7 @@ impl WgpuApp {
             let rtt = path_list
                 .iter()
                 .find(|p| p.is_selected())
-                .map(|p| p.rtt())
+                .and_then(|p| p.rtt())
                 .unwrap_or_default();
             println!(
                 "fps: {:.0}  rtt: {}ms  decoder: {}",

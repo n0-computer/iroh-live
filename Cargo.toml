@@ -5,15 +5,27 @@ members = [
     "moq-media",
     "moq-media-android",
     "moq-media-dioxus",
-    "rusty-codecs",
-    "rusty-capture",
     "moq-media-egui",
+    "rusty-capture",
+    "rusty-codecs",
     "android-demo/rust",
 ]
 resolver = "2"
 
 [profile.release]
 debug = true
+
+[workspace.dependencies]
+iroh = "0.97.0"
+iroh-gossip = "0.97.0"
+iroh-tickets = "0.4.0"
+iroh-smol-kv = { git = "https://github.com/n0-computer/iroh-smol-kv.git", branch = "iroh-097", default-features = false }
+hang = { git = "https://github.com/moq-dev/moq.git", branch = "main" }
+moq-lite = { git = "https://github.com/moq-dev/moq.git", branch = "main" }
+moq-mux = { git = "https://github.com/moq-dev/moq.git", branch = "main" }
+web-transport-iroh = { git = "https://github.com/n0-computer/web-transport-iroh.git", branch = "main" }
+# web-transport-trait = { git = "https://github.com/Frando/web-transport.git", branch = "feat/iroh" }
+# web-transport-proto = { git = "https://github.com/Frando/web-transport.git", branch = "feat/iroh" }
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "deny", check-cfg = ["cfg(docsrs)", "cfg(any_audio_codec)", "cfg(any_video_codec)", "cfg(any_codec)"] }

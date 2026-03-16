@@ -152,7 +152,10 @@ struct PublishView {
 
 impl PublishView {
     async fn new(secret_key: SecretKey, audio_ctx: AudioBackend) -> Result<Self> {
-        let endpoint = Endpoint::builder().secret_key(secret_key).bind().await?;
+        let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
+            .secret_key(secret_key)
+            .bind()
+            .await?;
         let live = Live::new(endpoint.clone());
         let router = Router::builder(endpoint.clone())
             .accept(ALPN, live.protocol_handler())
@@ -428,7 +431,7 @@ struct SubscribeView {
 
 impl SubscribeView {
     async fn new(publisher_addr: EndpointAddr, audio_ctx: &AudioBackend) -> Result<Self> {
-        let endpoint = Endpoint::bind().await?;
+        let endpoint = Endpoint::bind(iroh::endpoint::presets::N0).await?;
         let live = Live::new(endpoint);
         let (session, broadcast) = live.subscribe(publisher_addr, BROADCAST_NAME).await?;
         info!("subscriber connected");

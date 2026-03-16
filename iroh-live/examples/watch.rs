@@ -67,7 +67,7 @@ fn main() -> Result<()> {
     let (endpoint, session, track) = rt.block_on({
         let audio_ctx = audio_ctx.clone();
         async move {
-            let endpoint = Endpoint::bind().await?;
+            let endpoint = Endpoint::bind(iroh::endpoint::presets::N0).await?;
             let live = Live::new(endpoint.clone());
             let playback_config = PlaybackConfig {
                 decode_config: DecodeConfig {

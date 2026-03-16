@@ -12,6 +12,8 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
+
+[target.'cfg(target_os = "android")'.dependencies]
 iroh-live = { path = "../../iroh-live", default-features = false }
 moq-media = { path = "../../moq-media", default-features = false, features = ["h264", "opus", "android"] }
 moq-media-android = { path = "../../moq-media-android" }
