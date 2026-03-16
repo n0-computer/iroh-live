@@ -355,23 +355,22 @@ fn fit_to_aspect(available: egui::Vec2, aspect: f32) -> egui::Vec2 {
     }
 }
 
-fn overlay_bar(ui: &mut egui::Ui, text: &str) {
+/// Height of a single overlay bar (text + padding).
+const OVERLAY_BAR_H: f32 = 15.0;
+
+/// Paints a translucent overlay bar with monospace text at the given rect.
+///
+/// Does NOT allocate egui layout space — the bar is painted over existing
+/// content (typically the video).
+fn overlay_bar(painter: &egui::Painter, rect: egui::Rect, text: &str) {
     let font = egui::FontId::monospace(11.0);
-    let galley = ui
-        .painter()
-        .layout_no_wrap(text.to_string(), font, egui::Color32::WHITE);
-    let bar_rect = egui::Rect::from_min_size(
-        ui.cursor().min,
-        egui::vec2(ui.available_width(), galley.size().y + 4.0),
-    );
-    ui.painter()
-        .rect_filled(bar_rect, 0.0, egui::Color32::from_black_alpha(180));
-    ui.painter().galley(
-        bar_rect.min + egui::vec2(4.0, 2.0),
+    let galley = painter.layout_no_wrap(text.to_string(), font, egui::Color32::WHITE);
+    painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(160));
+    painter.galley(
+        rect.min + egui::vec2(4.0, 1.0),
         galley,
         egui::Color32::WHITE,
     );
-    ui.allocate_space(bar_rect.size());
 }
 
 fn create_video_source(
@@ -587,10 +586,8 @@ impl PublishView {
 
         // Video preview
         let avail = ui.available_size();
-        let bar_h = 36.0;
-        let video_avail = egui::vec2(avail.x, (avail.y - bar_h).max(1.0));
         let aspect = self.aspect_ratio();
-        let video_size = fit_to_aspect(video_avail, aspect);
+        let video_size = fit_to_aspect(avail, aspect);
 
         if self.preview.is_none()
             && let Some(track) = self.broadcast.preview(DecodeConfig::default())
@@ -598,10 +595,13 @@ impl PublishView {
             self.preview = Some(VideoTrackView::new(ctx, "pub-video", track));
         }
 
+        // Track the video's top-left for overlay positioning.
+        let x_pad = (avail.x - video_size.x) / 2.0;
+        let y_pad = (avail.y - video_size.y) / 2.0;
+        let video_origin = ui.cursor().min + egui::vec2(x_pad.max(0.0), y_pad.max(0.0));
+
         if let Some(ref mut view) = self.preview {
             let (img, frame_ts) = view.render(ctx, video_size);
-            let x_pad = (video_avail.x - video_size.x) / 2.0;
-            let y_pad = (video_avail.y - video_size.y) / 2.0;
             ui.add_space(y_pad.max(0.0));
             ui.horizontal(|ui| {
                 ui.add_space(x_pad.max(0.0));
@@ -610,13 +610,25 @@ impl PublishView {
             ui.add_space(y_pad.max(0.0));
             self.stats.tick(frame_ts);
         } else {
-            ui.allocate_space(video_avail);
+            ui.allocate_space(avail);
             ui.centered_and_justified(|ui| {
                 ui.label("No publisher video");
             });
         }
 
-        // Status bars
+        // Overlay bars painted on top of the video's bottom edge.
+        let video_rect = egui::Rect::from_min_size(video_origin, video_size);
+        let painter = ui.painter();
+
+        let bar1_rect = egui::Rect::from_min_size(
+            egui::pos2(video_rect.min.x, video_rect.max.y - 2.0 * OVERLAY_BAR_H),
+            egui::vec2(video_rect.width(), OVERLAY_BAR_H),
+        );
+        let bar2_rect = egui::Rect::from_min_size(
+            egui::pos2(video_rect.min.x, video_rect.max.y - OVERLAY_BAR_H),
+            egui::vec2(video_rect.width(), OVERLAY_BAR_H),
+        );
+
         let pub_text = format!(
             "PUB  codec: {}  preset: {}  fps: {:.0}  delay: {:.0}ms",
             self.codec.display_name(),
@@ -624,8 +636,8 @@ impl PublishView {
             self.stats.fps,
             self.stats.delay_ms,
         );
-        overlay_bar(ui, &pub_text);
-        overlay_bar(ui, "NET  (local)");
+        overlay_bar(painter, bar1_rect, &pub_text);
+        overlay_bar(painter, bar2_rect, "NET  (local)");
     }
 
     fn shutdown(&self, rt: &tokio::runtime::Runtime) {
@@ -866,34 +878,20 @@ impl SubscribeView {
                 });
         });
 
-        // Playout diagnostics
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            let buf = self.playout_clock.buffer();
-            let jitter = self.playout_clock.jitter();
-            let (drift, reanchors) = self.playout_clock.reanchor_stats();
-            ui.label(format!(
-                "buf: {}ms  jitter: {:.1}ms  drift: {}ms ({}x)",
-                buf.as_millis(),
-                jitter.as_secs_f64() * 1000.0,
-                drift.as_millis(),
-                reanchors,
-            ));
-        });
-
         ui.separator();
 
         // Video
         let avail = ui.available_size();
-        let bar_h = 36.0;
-        let video_avail = egui::vec2(avail.x, (avail.y - bar_h).max(1.0));
         let aspect = 16.0 / 9.0; // default aspect, actual comes from video
-        let video_size = fit_to_aspect(video_avail, aspect);
+        let video_size = fit_to_aspect(avail, aspect);
+
+        // Track the video's top-left for overlay positioning.
+        let x_pad = (avail.x - video_size.x) / 2.0;
+        let y_pad = (avail.y - video_size.y) / 2.0;
+        let video_origin = ui.cursor().min + egui::vec2(x_pad.max(0.0), y_pad.max(0.0));
 
         if let Some(ref mut view) = self.video {
             let (img, frame_ts) = view.render(ctx, video_size);
-            let x_pad = (video_avail.x - video_size.x) / 2.0;
-            let y_pad = (video_avail.y - video_size.y) / 2.0;
             ui.add_space(y_pad.max(0.0));
             ui.horizontal(|ui| {
                 ui.add_space(x_pad.max(0.0));
@@ -902,10 +900,22 @@ impl SubscribeView {
             ui.add_space(y_pad.max(0.0));
             self.stats.tick(frame_ts);
         } else {
-            ui.allocate_space(video_avail);
+            ui.allocate_space(avail);
         }
 
-        // Status bars
+        // Overlay bars painted on top of the video's bottom edge.
+        let video_rect = egui::Rect::from_min_size(video_origin, video_size);
+        let painter = ui.painter();
+
+        let bar1_rect = egui::Rect::from_min_size(
+            egui::pos2(video_rect.min.x, video_rect.max.y - 2.0 * OVERLAY_BAR_H),
+            egui::vec2(video_rect.width(), OVERLAY_BAR_H),
+        );
+        let bar2_rect = egui::Rect::from_min_size(
+            egui::pos2(video_rect.min.x, video_rect.max.y - OVERLAY_BAR_H),
+            egui::vec2(video_rect.width(), OVERLAY_BAR_H),
+        );
+
         let rendition = self
             .video
             .as_ref()
@@ -921,20 +931,24 @@ impl SubscribeView {
         } else {
             "cpu"
         };
+        let buf = self.playout_clock.buffer();
+        let jitter = self.playout_clock.jitter();
         let net = self.net_stats.smoothed(|| {
             let conn = self.session.conn();
             (conn.stats(), conn.paths().get())
         });
         let sub_text = format!(
-            "SUB  rend: {}  dec: {}  render: {}  fps: {:.0}  delay: {:.0}ms  bitrate: {}",
+            "SUB  rend: {}  dec: {}  render: {}  fps: {:.0}  delay: {:.0}ms  buf: {}ms  jitter: {:.1}ms  bitrate: {}",
             rendition,
             decoder_name,
             renderer,
             self.stats.fps,
             self.stats.delay_ms,
+            buf.as_millis(),
+            jitter.as_secs_f64() * 1000.0,
             format_bitrate(net.down.rate as f64),
         );
-        overlay_bar(ui, &sub_text);
+        overlay_bar(painter, bar1_rect, &sub_text);
 
         let conn_text = format!(
             "NET  up: {}  down: {}  rtt: {}ms",
@@ -942,7 +956,7 @@ impl SubscribeView {
             net.down.rate_str,
             net.rtt.as_millis(),
         );
-        overlay_bar(ui, &conn_text);
+        overlay_bar(painter, bar2_rect, &conn_text);
     }
 
     fn shutdown(&self) {
