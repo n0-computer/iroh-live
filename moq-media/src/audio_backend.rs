@@ -438,10 +438,12 @@ struct StreamDropGuard {
 
 impl Drop for StreamDropGuard {
     fn drop(&mut self) {
-        if let Some(tx) = self.tx.upgrade() {
-            let _ = tx.try_send(DriverMessage::RemoveStream {
+        if let Some(tx) = self.tx.upgrade()
+            && let Err(e) = tx.try_send(DriverMessage::RemoveStream {
                 node_id: self.node_id,
-            });
+            })
+        {
+            debug!(node_id = ?self.node_id, error = %e, "failed to send stream removal on drop");
         }
     }
 }
@@ -503,6 +505,9 @@ struct AudioDriver {
     /// Cooldown: earliest instant at which the next stream restart may be
     /// attempted. Prevents hammering a broken device every 10ms.
     next_restart_allowed: Instant,
+    /// Current backoff duration for restart attempts. Doubles on each
+    /// failure (capped at 4s) and resets to 500ms on success.
+    restart_backoff: Duration,
 }
 
 impl fmt::Debug for AudioDriver {
@@ -571,6 +576,7 @@ impl AudioDriver {
             input_streams: Vec::new(),
             output_streams: Vec::new(),
             next_restart_allowed: Instant::now(),
+            restart_backoff: Duration::from_millis(500),
         }
     }
 
@@ -642,18 +648,16 @@ impl AudioDriver {
                 if Instant::now() >= self.next_restart_allowed {
                     match self.try_restart_stream() {
                         Ok(()) => {
-                            // Reset cooldown on success.
+                            // Reset backoff on success.
+                            self.restart_backoff = Duration::from_millis(500);
                             self.next_restart_allowed = Instant::now();
                         }
                         Err(restart_err) => {
                             error!("failed to restart audio stream: {restart_err:#}");
-                            // Exponential-ish backoff: 500ms, 1s, 2s, 4s (capped).
-                            let wait = (self
-                                .next_restart_allowed
-                                .saturating_duration_since(Instant::now()))
-                            .max(Duration::from_millis(500))
-                            .min(Duration::from_secs(4));
-                            self.next_restart_allowed = Instant::now() + wait * 2;
+                            self.next_restart_allowed = Instant::now() + self.restart_backoff;
+                            // Double the backoff for next failure, capped at 4s.
+                            self.restart_backoff =
+                                (self.restart_backoff * 2).min(Duration::from_secs(4));
                         }
                     }
                 }

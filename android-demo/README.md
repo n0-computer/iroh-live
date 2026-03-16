@@ -65,10 +65,10 @@ android-demo/
     src/main/java/com/n0/irohlive/demo/
       MainActivity.kt   # UI and lifecycle
       IrohBridge.kt     # Kotlin-side JNI declarations
-      CameraHelper.kt   # CameraX integration for frame capture
+      CameraHelper.kt   # Camera2 camera capture
 ```
 
-The Kotlin side captures camera frames via CameraX and pushes them into the
+The Kotlin side captures camera frames via Camera2 and pushes them into the
 Rust layer through JNI. The Rust side uses `moq-media` to encode (Android
 MediaCodec H.264) and publish through `iroh-live` sessions.
 

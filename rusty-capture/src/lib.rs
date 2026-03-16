@@ -332,16 +332,12 @@ impl CameraCapturer {
     /// Returns an error if the backend is not available or does not support camera capture.
     pub fn with_backend(backend: CaptureBackend, config: &CameraConfig) -> anyhow::Result<Self> {
         let cameras = list_cameras()?;
-        let cam = cameras
-            .iter()
-            .find(|c| c.backend == backend)
-            .or_else(|| cameras.last());
-        match cam {
-            Some(info) if info.backend == backend => {
+        match cameras.iter().find(|c| c.backend == backend) {
+            Some(info) => {
                 let inner = create_camera_backend(info, config)?;
                 Ok(Self { inner })
             }
-            _ => anyhow::bail!("camera backend {backend} is not available"),
+            None => anyhow::bail!("camera backend {backend} is not available"),
         }
     }
 

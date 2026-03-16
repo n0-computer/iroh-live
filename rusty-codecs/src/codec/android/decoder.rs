@@ -4,7 +4,7 @@
 //! H.264 packets are fed in, and NV12 frames are produced as output. The
 //! decoder handles `INFO_OUTPUT_FORMAT_CHANGED` for resolution changes.
 
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use ndk::media::media_codec::{
@@ -48,9 +48,9 @@ pub struct AndroidDecoder {
     stride: u32,
     /// Output buffer slice height (may be > height).
     slice_height: u32,
-    /// Decoded frame waiting to be collected via `pop_frame`.
+    /// Decoded frames waiting to be collected via `pop_frame`.
     #[debug(skip)]
-    pending_frame: Option<VideoFrame>,
+    pending_frames: VecDeque<VideoFrame>,
 }
 
 // Safety: MediaCodec instances are thread-safe in the NDK.
@@ -114,7 +114,7 @@ impl VideoDecoder for AndroidDecoder {
             decoded_height: height,
             stride: width,
             slice_height: height,
-            pending_frame: None,
+            pending_frames: VecDeque::new(),
         })
     }
 
@@ -150,7 +150,7 @@ impl VideoDecoder for AndroidDecoder {
         // Try one more drain before returning.
         let _ = self.drain_output();
 
-        let Some(mut frame) = self.pending_frame.take() else {
+        let Some(mut frame) = self.pending_frames.pop_front() else {
             return Ok(None);
         };
 
@@ -278,13 +278,14 @@ impl AndroidDecoder {
                     };
 
                     let timestamp = Duration::from_micros(presentation_time_us);
-                    self.pending_frame = Some(VideoFrame::new_cpu_with_format(
-                        pixels,
-                        w,
-                        h,
-                        timestamp,
-                        self.pixel_format,
-                    ));
+                    self.pending_frames
+                        .push_back(VideoFrame::new_cpu_with_format(
+                            pixels,
+                            w,
+                            h,
+                            timestamp,
+                            self.pixel_format,
+                        ));
                 }
                 DequeuedOutputBufferInfoResult::OutputFormatChanged => {
                     let format = self.codec.output_format();
