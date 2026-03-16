@@ -72,7 +72,7 @@ fn main() -> Result<()> {
 }
 
 async fn setup(cli: Cli, audio_ctx: AudioBackend) -> Result<(Live, LocalBroadcast, Room)> {
-    let endpoint = Endpoint::builder()
+    let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
         .secret_key(secret_key_from_env()?)
         .bind()
         .await?;

@@ -553,6 +553,62 @@ impl RemoteBroadcast {
         AdaptiveVideoTrack::new(self.clone(), signals, config, decode_config)
     }
 
+    /// Waits until the catalog contains at least one video or audio rendition.
+    pub async fn ready(&self) {
+        let mut watcher = self.catalog_watcher();
+        loop {
+            if self.has_video() || self.has_audio() {
+                return;
+            }
+            if watcher.updated().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Waits for video renditions to appear, then subscribes to the best quality.
+    ///
+    /// Async counterpart of [`video`](Self::video): blocks until the catalog
+    /// advertises at least one video rendition, then behaves identically.
+    #[cfg(any_video_codec)]
+    pub async fn video_ready(&self) -> Result<VideoTrack> {
+        self.wait_for_video().await;
+        self.video()
+    }
+
+    /// Waits for audio renditions to appear, then subscribes to the best quality.
+    ///
+    /// Async counterpart of [`audio`](Self::audio).
+    #[cfg(any_audio_codec)]
+    pub async fn audio_ready(&self, audio_backend: &dyn AudioStreamFactory) -> Result<AudioTrack> {
+        self.wait_for_audio().await;
+        self.audio(audio_backend).await
+    }
+
+    async fn wait_for_video(&self) {
+        let mut watcher = self.catalog_watcher();
+        loop {
+            if self.has_video() {
+                return;
+            }
+            if watcher.updated().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    async fn wait_for_audio(&self) {
+        let mut watcher = self.catalog_watcher();
+        loop {
+            if self.has_audio() {
+                return;
+            }
+            if watcher.updated().await.is_err() {
+                return;
+            }
+        }
+    }
+
     /// Shuts down this remote broadcast subscription.
     pub fn shutdown(&self) {
         self.shutdown.cancel();

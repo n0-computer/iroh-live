@@ -1,3 +1,4 @@
+#![cfg(target_os = "android")]
 //! JNI bridge for the iroh-live Android demo app.
 //!
 //! Exposes a minimal set of functions to Kotlin: connect to a broadcast,
@@ -567,7 +568,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getStatusLine<'a>(
                 .get()
                 .iter()
                 .find(|p| p.is_selected())
-                .map(|p| p.rtt())
+                .and_then(|p| p.rtt())
                 .unwrap_or_default();
             format!("rtt:{}ms", rtt.as_millis())
         })

@@ -168,15 +168,11 @@ impl LocalBroadcast {
         let mut producer = producer.dynamic();
         loop {
             let track = match producer.requested_track().await {
-                Ok(None) => {
-                    debug!("broadcast producer: closed");
-                    break;
-                }
+                Ok(track) => track,
                 Err(err) => {
-                    warn!("broadcast producer: closed {err:#}");
+                    debug!("broadcast producer: closed ({err:#})");
                     break;
                 }
-                Ok(Some(track)) => track,
             };
             let name = track.info.name.clone();
             if state

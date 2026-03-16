@@ -60,7 +60,7 @@ impl StatsSmoother {
             self.rtt = paths
                 .iter()
                 .find(|p| p.is_selected())
-                .map(|p| p.rtt())
+                .and_then(|p| p.rtt())
                 .unwrap_or_default();
         }
         SmoothedStats {
@@ -133,8 +133,12 @@ pub fn spawn_signal_producer(
                 continue;
             };
 
-            let stats = selected.stats();
-            let rtt = selected.rtt();
+            let Some(stats) = selected.stats() else {
+                continue;
+            };
+            let Some(rtt) = selected.rtt() else {
+                continue;
+            };
 
             // Delta-based loss rate.
             let total_lost = stats.lost_packets;

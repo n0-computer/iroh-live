@@ -15,7 +15,7 @@ use moq_media::{
 
 /// Creates an endpoint bound to localhost with a random secret key.
 async fn make_endpoint() -> Endpoint {
-    Endpoint::builder()
+    Endpoint::builder(iroh::endpoint::presets::N0)
         .secret_key(SecretKey::generate(&mut rand::rng()))
         .bind()
         .await

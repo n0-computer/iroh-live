@@ -11,12 +11,12 @@ license = "MIT OR Apache-2.0"
 workspace = true
 
 [dependencies]
-iroh = "0.96.1"
-moq-lite = "0.15"
+iroh = { workspace = true }
+moq-lite = { workspace = true }
 n0-error = { version = "0.1.2", features = ["anyhow"] }
 n0-future = "0.3.1"
 tokio = { version = "1.48.0", features = ["sync"] }
 tokio-util = "0.7.17"
 tracing = "0.1.41"
 url = "2.5.7"
-web-transport-iroh = { version = "0.2.1" }
+web-transport-iroh = { workspace = true }
