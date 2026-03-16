@@ -7,6 +7,7 @@
 /// [`ScreenCapturer::list_backends`](crate::ScreenCapturer::list_backends) to
 /// discover which backends are compiled in and available at runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum CaptureBackend {
     /// PipeWire portal (Linux Wayland). Supports screen + camera with DMA-BUF zero-copy.
     PipeWire,
