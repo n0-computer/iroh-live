@@ -76,9 +76,34 @@ pub enum NativeFrameHandle {
     /// Linux DMA-BUF file descriptor and layout metadata.
     #[cfg(target_os = "linux")]
     DmaBuf(DmaBufInfo),
+    /// Android HardwareBuffer handle for zero-copy GPU import.
+    #[cfg(target_os = "android")]
+    HardwareBuffer(HardwareBufferInfo),
     // Future variants:
     // #[cfg(target_os = "macos")] IoSurface(IoSurfaceInfo),
     // #[cfg(target_os = "windows")] D3D11Texture(D3D11TextureInfo),
+}
+
+/// Android HardwareBuffer metadata for zero-copy GPU frame import.
+///
+/// Contains a reference-counted [`ndk::hardware_buffer::HardwareBufferRef`]
+/// along with NV12 plane layout info needed for GL/Vulkan import on the
+/// consumer side.
+#[cfg(target_os = "android")]
+#[derive(Debug, Clone)]
+pub struct HardwareBufferInfo {
+    /// Reference-counted handle to the underlying `AHardwareBuffer`.
+    pub buffer: ndk::hardware_buffer::HardwareBufferRef,
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// Row stride of the Y plane in bytes.
+    pub y_stride: u32,
+    /// Byte offset of the UV plane within the locked buffer.
+    pub uv_offset: u32,
+    /// Row stride of the UV plane in bytes.
+    pub uv_stride: u32,
 }
 
 /// An encoded media packet, independent of transport.
@@ -434,8 +459,9 @@ impl VideoFrame {
     /// Returns the frame as a CPU RGBA image.
     ///
     /// For packed RGBA frames the data is wrapped without copying. For GPU
-    /// frames the pixels are downloaded on first call and cached. Other
-    /// layouts are not yet supported and will panic.
+    /// frames the pixels are downloaded on first call and cached. NV12
+    /// frames are converted via BT.601 on first call and cached. I420
+    /// frames are not yet supported and will panic.
     pub fn rgba_image(&self) -> &RgbaImage {
         self.cached_rgba.get_or_init(|| {
             let [w, h] = self.dimensions;
@@ -457,8 +483,21 @@ impl VideoFrame {
                         .expect("pixel data size does not match dimensions")
                 }
                 FrameData::Gpu(gpu) => gpu.download_rgba().expect("GPU frame download failed"),
-                FrameData::I420 { .. } | FrameData::Nv12(_) => {
-                    unimplemented!("rgba_image() for YUV CPU frames")
+                FrameData::Nv12(planes) => {
+                    let rgba = crate::processing::convert::nv12_to_rgba_data(
+                        &planes.y_data,
+                        planes.y_stride,
+                        &planes.uv_data,
+                        planes.uv_stride,
+                        w,
+                        h,
+                    )
+                    .expect("NV12→RGBA conversion failed");
+                    RgbaImage::from_raw(w, h, rgba)
+                        .expect("RGBA data size does not match dimensions")
+                }
+                FrameData::I420 { .. } => {
+                    unimplemented!("rgba_image() for I420 CPU frames")
                 }
             }
         })

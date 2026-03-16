@@ -42,7 +42,7 @@ drm-fourcc = { version = "2.2", optional = true }
 v4l2r = { version = "0.0.7", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
-ndk = { version = "0.9", optional = true, features = ["media"] }
+ndk = { version = "0.9", optional = true, features = ["media", "api-level-26"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-video-toolbox = { version = "0.3", optional = true, features = ["VTCompressionSession", "VTDecompressionSession", "VTErrors"] }

@@ -31,6 +31,8 @@ pub enum DynamicVideoDecoder {
     #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
     VtbH264(Box<super::vtb::VtbDecoder>),
     #[cfg(all(target_os = "android", feature = "android"))]
+    AndroidHwH264(Box<super::android::AndroidHwDecoder>),
+    #[cfg(all(target_os = "android", feature = "android"))]
     AndroidH264(Box<super::android::AndroidDecoder>),
 }
 
@@ -65,11 +67,17 @@ impl VideoDecoder for DynamicVideoDecoder {
                     return Ok(Self::VtbH264(Box::new(dec)));
                 }
                 #[cfg(all(target_os = "android", feature = "android"))]
-                if matches!(playback_config.backend, crate::format::DecoderBackend::Auto)
-                    && let Ok(dec) = super::android::AndroidDecoder::new(config, playback_config)
-                {
-                    tracing::info!("using Android MediaCodec H.264 decoder");
-                    return Ok(Self::AndroidH264(Box::new(dec)));
+                if matches!(playback_config.backend, crate::format::DecoderBackend::Auto) {
+                    // Prefer zero-copy HW decoder; fall back to ByteBuffer decoder.
+                    if let Ok(dec) = super::android::AndroidHwDecoder::new(config, playback_config)
+                    {
+                        tracing::info!("using Android MediaCodec HW decoder (ImageReader)");
+                        return Ok(Self::AndroidHwH264(Box::new(dec)));
+                    }
+                    if let Ok(dec) = super::android::AndroidDecoder::new(config, playback_config) {
+                        tracing::info!("using Android MediaCodec decoder (ByteBuffer)");
+                        return Ok(Self::AndroidH264(Box::new(dec)));
+                    }
                 }
                 tracing::info!("using software H.264 decoder");
                 Ok(Self::H264(super::H264VideoDecoder::new(
@@ -103,6 +111,8 @@ impl VideoDecoder for DynamicVideoDecoder {
             #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
             Self::VtbH264(d) => d.name(),
             #[cfg(all(target_os = "android", feature = "android"))]
+            Self::AndroidHwH264(d) => d.name(),
+            #[cfg(all(target_os = "android", feature = "android"))]
             Self::AndroidH264(d) => d.name(),
             #[cfg(not(any(feature = "h264", feature = "av1")))]
             _ => unreachable!(),
@@ -121,6 +131,8 @@ impl VideoDecoder for DynamicVideoDecoder {
             Self::V4l2H264(d) => d.push_packet(packet),
             #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
             Self::VtbH264(d) => d.push_packet(packet),
+            #[cfg(all(target_os = "android", feature = "android"))]
+            Self::AndroidHwH264(d) => d.push_packet(packet),
             #[cfg(all(target_os = "android", feature = "android"))]
             Self::AndroidH264(d) => d.push_packet(packet),
             #[cfg(not(any(feature = "h264", feature = "av1")))]
@@ -141,6 +153,8 @@ impl VideoDecoder for DynamicVideoDecoder {
             #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
             Self::VtbH264(d) => d.pop_frame(),
             #[cfg(all(target_os = "android", feature = "android"))]
+            Self::AndroidHwH264(d) => d.pop_frame(),
+            #[cfg(all(target_os = "android", feature = "android"))]
             Self::AndroidH264(d) => d.pop_frame(),
             #[cfg(not(any(feature = "h264", feature = "av1")))]
             _ => unreachable!(),
@@ -160,6 +174,8 @@ impl VideoDecoder for DynamicVideoDecoder {
             #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
             Self::VtbH264(d) => d.set_viewport(w, h),
             #[cfg(all(target_os = "android", feature = "android"))]
+            Self::AndroidHwH264(d) => d.set_viewport(w, h),
+            #[cfg(all(target_os = "android", feature = "android"))]
             Self::AndroidH264(d) => d.set_viewport(w, h),
             #[cfg(not(any(feature = "h264", feature = "av1")))]
             _ => unreachable!(),
@@ -178,6 +194,8 @@ impl VideoDecoder for DynamicVideoDecoder {
             Self::V4l2H264(d) => d.burst_size(),
             #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
             Self::VtbH264(d) => d.burst_size(),
+            #[cfg(all(target_os = "android", feature = "android"))]
+            Self::AndroidHwH264(d) => d.burst_size(),
             #[cfg(all(target_os = "android", feature = "android"))]
             Self::AndroidH264(d) => d.burst_size(),
             #[cfg(not(any(feature = "h264", feature = "av1")))]
