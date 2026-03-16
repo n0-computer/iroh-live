@@ -6,6 +6,7 @@ appcompat = "1.7.0"
 activity-ktx = "1.9.3"
 lifecycle = "2.8.7"
 coroutines = "1.9.0"
+camerax = "1.4.1"
 
 [libraries]
 core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "core-ktx" }
@@ -13,6 +14,10 @@ appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "a
 activity-ktx = { group = "androidx.activity", name = "activity-ktx", version.ref = "activity-ktx" }
 lifecycle-runtime = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
 coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+camerax-core = { group = "androidx.camera", name = "camera-core", version.ref = "camerax" }
+camerax-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "camerax" }
+camerax-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camerax" }
+camerax-view = { group = "androidx.camera", name = "camera-view", version.ref = "camerax" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

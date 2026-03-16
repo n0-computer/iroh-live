@@ -15,7 +15,7 @@
         android:inputType="text"
         android:singleLine="true" />
 
-    <!-- Connect / Disconnect buttons -->
+    <!-- Connect / Dial / Disconnect buttons -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -27,7 +27,14 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="Connect" />
+            android:text="Watch" />
+
+        <Button
+            android:id="@+id/dialButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Call" />
 
         <Button
             android:id="@+id/disconnectButton"
@@ -38,13 +45,22 @@
             android:enabled="false" />
     </LinearLayout>
 
-    <!-- Video surface -->
+    <!-- Remote video surface -->
     <SurfaceView
         android:id="@+id/videoSurface"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
+        android:layout_weight="3"
         android:layout_marginTop="8dp" />
+
+    <!-- Local camera preview (small, bottom-right overlay) -->
+    <androidx.camera.view.PreviewView
+        android:id="@+id/cameraPreview"
+        android:layout_width="120dp"
+        android:layout_height="160dp"
+        android:layout_gravity="end"
+        android:layout_marginTop="4dp"
+        android:visibility="gone" />
 
     <!-- Status label -->
     <TextView

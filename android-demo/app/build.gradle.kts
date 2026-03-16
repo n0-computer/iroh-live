@@ -5,24 +5,27 @@ plugins {
 
 android {
     namespace = "com.n0.irohlive.demo"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.n0.irohlive.demo"
-        minSdk = 21
+        minSdk = 26
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
 
         ndk {
             // Build the Rust cdylib for these ABIs.
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            abiFilters += listOf("arm64-v8a")
         }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            // Use the debug signing key so the release APK can be installed
+            // directly on device without setting up a keystore.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
@@ -42,6 +45,10 @@ dependencies {
     implementation(libs.activity.ktx)
     implementation(libs.lifecycle.runtime)
     implementation(libs.coroutines.android)
+    implementation(libs.camerax.core)
+    implementation(libs.camerax.camera2)
+    implementation(libs.camerax.lifecycle)
+    implementation(libs.camerax.view)
 }
 
 // cargo-ndk integration: builds the Rust cdylib before assembling the APK.

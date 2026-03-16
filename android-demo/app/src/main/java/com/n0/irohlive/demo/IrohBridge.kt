@@ -1,7 +1,5 @@
 package com.n0.irohlive.demo
 
-import java.nio.ByteBuffer
-
 /**
  * JNI bridge to the Rust iroh-live library.
  *
@@ -21,12 +19,40 @@ object IrohBridge {
     external fun connect(ticket: String): Long
 
     /**
-     * Polls for the next decoded video frame.
-     *
-     * If a new RGBA frame is available, copies it into [buffer] and returns true.
-     * The buffer must be a direct ByteBuffer large enough for width * height * 4 bytes.
+     * Returns video dimensions packed as `(width shl 32) or height`, or 0 if unknown.
      */
-    external fun nextFrame(handle: Long, buffer: ByteBuffer): Boolean
+    external fun getVideoDimensions(handle: Long): Long
+
+    /**
+     * Returns a raw AHardwareBuffer pointer for the latest decoded frame.
+     *
+     * The buffer has an acquired reference and must be released via
+     * [releaseHardwareBuffer] when the caller is done (after GL import
+     * and rendering).
+     *
+     * Returns 0 if no GPU frame is available.
+     */
+    external fun nextHardwareBuffer(handle: Long): Long
+
+    /**
+     * Releases an AHardwareBuffer previously returned by [nextHardwareBuffer].
+     *
+     * Must be called exactly once per non-zero return from [nextHardwareBuffer].
+     */
+    external fun releaseHardwareBuffer(bufferPtr: Long)
+
+    /**
+     * Dials a remote peer using a call ticket string.
+     *
+     * Sets up camera publishing (720p H.264 HW encoding) and microphone
+     * audio, then subscribes to the remote peer's media.
+     *
+     * Returns an opaque session handle (non-zero on success, 0 on failure).
+     *
+     * [cameraWidth] and [cameraHeight] configure the encoder for the
+     * camera resolution that will be pushed via [pushCameraFrame].
+     */
+    external fun dial(ticket: String, cameraWidth: Int, cameraHeight: Int): Long
 
     /**
      * Starts publishing a broadcast with the given name.
@@ -41,6 +67,27 @@ object IrohBridge {
      * [data] must contain width * height * 4 bytes of RGBA pixel data.
      */
     external fun pushCameraFrame(handle: Long, data: ByteArray, width: Int, height: Int)
+
+    /**
+     * Pushes a camera frame as NV12 planes into the publish pipeline.
+     *
+     * [yData] is the luminance plane, [uvData] is the interleaved chroma plane.
+     * Strides may differ from width due to hardware padding.
+     */
+    external fun pushCameraNv12(
+        handle: Long,
+        yData: ByteArray, uvData: ByteArray,
+        width: Int, height: Int,
+        yStride: Int, uvStride: Int
+    )
+
+    /**
+     * Returns a human-readable status string with encode/decode stats.
+     *
+     * Returns an empty string if the handle is invalid or no stats are
+     * available yet.
+     */
+    external fun getStatusLine(handle: Long): String
 
     /**
      * Disconnects and frees the session handle.
