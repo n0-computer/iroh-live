@@ -18,12 +18,12 @@ mod patterns;
 #[cfg(feature = "h264")]
 mod vectors;
 
-use std::{f32::consts::PI, time::Duration};
+use std::time::Duration;
 
 use metrics::{FrameMetrics, compute_metrics};
 
 use super::{
-    test_util::{make_rgba_frame, video_encode},
+    test_util::{make_rgba_frame, make_sine, video_encode},
     *,
 };
 use crate::{
@@ -863,12 +863,6 @@ fn default_decoders_types() {
 
 // ── Audio roundtrip helpers ──────────────────────────────────────────
 
-fn make_sine(num_samples: usize, freq: f32, sample_rate: f32) -> Vec<f32> {
-    (0..num_samples)
-        .map(|i| (2.0 * PI * freq * i as f32 / sample_rate).sin())
-        .collect()
-}
-
 fn audio_encode(enc: &mut OpusEncoder, samples: &[f32]) -> Vec<EncodedFrame> {
     enc.push_samples(samples).unwrap();
     let mut packets = Vec::new();
@@ -925,7 +919,7 @@ fn audio_roundtrip_mono_hq() {
         let format = AudioFormat::mono_48k();
         let mut enc = OpusEncoder::with_preset(format, AudioPreset::Hq).unwrap();
         let config = enc.config();
-        let sine = make_sine(48000, 440.0, 48000.0);
+        let sine = make_sine(440.0, 48000, 48000);
         let packets = audio_encode(&mut enc, &sine);
         assert_eq!(packets.len(), 50);
         let packets = encoded_frames_to_media_packets(packets);
@@ -941,7 +935,7 @@ fn audio_roundtrip_mono_lq() {
         let format = AudioFormat::mono_48k();
         let mut enc = OpusEncoder::with_preset(format, AudioPreset::Lq).unwrap();
         let config = enc.config();
-        let sine = make_sine(48000, 440.0, 48000.0);
+        let sine = make_sine(440.0, 48000, 48000);
         let packets = audio_encode(&mut enc, &sine);
         assert_eq!(packets.len(), 50);
         let packets = encoded_frames_to_media_packets(packets);
@@ -957,7 +951,7 @@ fn audio_roundtrip_stereo_hq() {
         let format = AudioFormat::stereo_48k();
         let mut enc = OpusEncoder::with_preset(format, AudioPreset::Hq).unwrap();
         let config = enc.config();
-        let sine = make_sine(96000, 440.0, 48000.0);
+        let sine = make_sine(440.0, 48000, 96000);
         let packets = audio_encode(&mut enc, &sine);
         assert_eq!(packets.len(), 50);
         let packets = encoded_frames_to_media_packets(packets);
@@ -973,7 +967,7 @@ fn audio_roundtrip_stereo_lq() {
         let format = AudioFormat::stereo_48k();
         let mut enc = OpusEncoder::with_preset(format, AudioPreset::Lq).unwrap();
         let config = enc.config();
-        let sine = make_sine(96000, 440.0, 48000.0);
+        let sine = make_sine(440.0, 48000, 96000);
         let packets = audio_encode(&mut enc, &sine);
         assert_eq!(packets.len(), 50);
         let packets = encoded_frames_to_media_packets(packets);
@@ -995,7 +989,7 @@ fn audio_pipeline_mono_encode_stereo_decode() {
         let config = enc.config();
         assert_eq!(config.channel_count, 1);
 
-        let sine = make_sine(48000, 440.0, 48000.0);
+        let sine = make_sine(440.0, 48000, 48000);
         let packets = audio_encode(&mut enc, &sine);
         assert_eq!(packets.len(), 50);
 
@@ -1027,7 +1021,7 @@ fn audio_pipeline_stereo_encode_mono_decode() {
         let config = enc.config();
         assert_eq!(config.channel_count, 2);
 
-        let sine = make_sine(96000, 440.0, 48000.0);
+        let sine = make_sine(440.0, 48000, 96000);
         let packets = audio_encode(&mut enc, &sine);
         assert_eq!(packets.len(), 50);
 
@@ -1050,7 +1044,7 @@ fn audio_pipeline_mono_encode_stereo_decode_lq() {
         let mut enc = OpusEncoder::with_preset(enc_format, AudioPreset::Lq).unwrap();
         let config = enc.config();
 
-        let sine = make_sine(48000, 440.0, 48000.0);
+        let sine = make_sine(440.0, 48000, 48000);
         let packets = audio_encode(&mut enc, &sine);
         let packets = encoded_frames_to_media_packets(packets);
         let decoded = audio_decode(&config, dec_format, packets);

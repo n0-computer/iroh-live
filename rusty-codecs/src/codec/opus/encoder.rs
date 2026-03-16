@@ -216,19 +216,12 @@ fn build_opus_head(channel_count: u32, sample_rate: u32) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use std::f32::consts::PI;
-
     use super::*;
     use crate::{
+        codec::test_util::make_sine,
         format::{AudioFormat, AudioPreset},
         traits::AudioEncoderFactory,
     };
-
-    fn make_sine(num_samples: usize, freq: f32, sample_rate: f32) -> Vec<f32> {
-        (0..num_samples)
-            .map(|i| (2.0 * PI * freq * i as f32 / sample_rate).sin())
-            .collect()
-    }
 
     #[test]
     fn encode_silence_mono() {
@@ -251,7 +244,7 @@ mod tests {
     fn encode_sine_mono() {
         let format = AudioFormat::mono_48k();
         let mut enc = OpusEncoder::with_preset(format, AudioPreset::Hq).unwrap();
-        let sine = make_sine(960, 440.0, 48000.0);
+        let sine = make_sine(440.0, 48000, 960);
         enc.push_samples(&sine).unwrap();
         let packet = enc.pop_packet().unwrap().unwrap();
         // At 128kbps, a 20ms packet should be ~50-320 bytes
@@ -277,7 +270,7 @@ mod tests {
         let format = AudioFormat::mono_48k();
         let mut enc = OpusEncoder::with_preset(format, AudioPreset::Hq).unwrap();
         // Push 3 frames worth
-        let samples = make_sine(960 * 3, 440.0, 48000.0);
+        let samples = make_sine(440.0, 48000, 960 * 3);
         enc.push_samples(&samples).unwrap();
         for i in 0..3 {
             assert!(enc.pop_packet().unwrap().is_some(), "missing packet {i}");
@@ -311,7 +304,7 @@ mod tests {
     fn timestamps_increase() {
         let format = AudioFormat::mono_48k();
         let mut enc = OpusEncoder::with_preset(format, AudioPreset::Hq).unwrap();
-        let samples = make_sine(960 * 3, 440.0, 48000.0);
+        let samples = make_sine(440.0, 48000, 960 * 3);
         enc.push_samples(&samples).unwrap();
         let mut prev_ts = None;
         for _ in 0..3 {
