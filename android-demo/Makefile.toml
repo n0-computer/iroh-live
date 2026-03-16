@@ -1,0 +1,129 @@
+# Android demo build pipeline.
+#
+# Requires:
+#   - ANDROID_HOME (e.g. ~/Android/Sdk)
+#   - cargo-ndk:  cargo install cargo-ndk
+#   - Rust target: rustup target add aarch64-linux-android
+#
+# Usage:
+#   cd android-demo
+#   cargo make apk                  # full build → debug APK
+#   cargo make install               # build + install on connected device
+#   cargo make run-on-device         # build, install, launch, stream logs
+#   cargo make run-on-device-release # same but with release Gradle build
+#   cargo make logcat                # stream filtered app logs
+#   cargo make clean-jni             # remove built native libs
+
+[env]
+# Auto-detect NDK: pick the highest version directory under $ANDROID_HOME/ndk.
+ANDROID_NDK_HOME = { script = ["ls -1d ${ANDROID_HOME}/ndk/*/ 2>/dev/null | sort -V | tail -1 | sed 's:/$::'"] }
+NDK_STRIP = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+ADB = "${ANDROID_HOME}/platform-tools/adb"
+JNILIBS = "app/src/main/jniLibs"
+API_LEVEL = "26"
+APK_PATH = "app/build/outputs/apk/debug/app-debug.apk"
+RELEASE_APK_PATH = "app/build/outputs/apk/release/app-release.apk"
+APP_ID = "com.n0.irohlive.demo"
+
+# ---------- tasks ----------
+
+[tasks.ndk-build]
+description = "Build the Rust cdylib for arm64-v8a via cargo-ndk."
+command = "cargo"
+args = [
+    "ndk", "-t", "arm64-v8a",
+    "-P", "${API_LEVEL}",
+    "--link-libcxx-shared",
+    "-o", "${JNILIBS}",
+    "build", "-p", "iroh-live-android", "--release",
+]
+
+[tasks.clean-jni]
+description = "Remove extra .so files that cargo-ndk copies from dependencies."
+script_runner = "@shell"
+script = [
+    "find ${JNILIBS} -name '*.so' ! -name 'libiroh_live_android.so' ! -name 'libc++_shared.so' -delete",
+]
+
+[tasks.strip]
+description = "Strip debug symbols from the native library."
+dependencies = ["clean-jni"]
+command = "${NDK_STRIP}"
+args = ["${JNILIBS}/arm64-v8a/libiroh_live_android.so"]
+
+[tasks.gradle-apk]
+description = "Build the debug APK with Gradle."
+dependencies = ["strip"]
+command = "./gradlew"
+args = ["assembleDebug"]
+
+[tasks.apk]
+description = "Full pipeline: cargo-ndk build → clean → strip → Gradle APK."
+dependencies = ["ndk-build", "gradle-apk"]
+script_runner = "@shell"
+script = ["echo \"APK ready: ${APK_PATH}\""]
+
+[tasks.install]
+description = "Build APK and install on connected device."
+dependencies = ["apk"]
+command = "${ADB}"
+args = ["install", "-r", "${APK_PATH}"]
+
+[tasks.run-on-device]
+description = "Build, install, launch the app, and stream logs to terminal."
+dependencies = ["install"]
+script_runner = "@shell"
+script = [
+    # Force-stop any existing instance so we get a clean logcat.
+    "${ADB} shell am force-stop ${APP_ID}",
+    # Clear logcat buffer before launch.
+    "${ADB} logcat -c",
+    # Launch the main activity.
+    "${ADB} shell am start -n ${APP_ID}/.MainActivity",
+    # Stream filtered logs — Ctrl-C to stop.
+    "${ADB} logcat 'iroh_live:V' 'IrohBridge:V' 'IrohLiveDemo:V' 'AndroidRuntime:E' 'System.err:W' '*:S'",
+]
+
+[tasks.gradle-release-apk]
+description = "Build the release APK with Gradle."
+dependencies = ["strip"]
+command = "./gradlew"
+args = ["assembleRelease"]
+
+[tasks.apk-release]
+description = "Full pipeline: cargo-ndk build → clean → strip → Gradle release APK."
+dependencies = ["ndk-build", "gradle-release-apk"]
+script_runner = "@shell"
+script = ["echo \"Release APK ready: ${RELEASE_APK_PATH}\""]
+
+[tasks.install-release]
+description = "Build release APK and install on connected device."
+dependencies = ["apk-release"]
+command = "${ADB}"
+args = ["install", "-r", "${RELEASE_APK_PATH}"]
+
+[tasks.run-on-device-release]
+description = "Build release, install, launch the app, and stream logs to terminal."
+dependencies = ["install-release"]
+script_runner = "@shell"
+script = [
+    "${ADB} shell am force-stop ${APP_ID}",
+    "${ADB} logcat -c",
+    "${ADB} shell am start -n ${APP_ID}/.MainActivity",
+    "${ADB} logcat 'iroh_live:V' 'IrohBridge:V' 'IrohLiveDemo:V' 'AndroidRuntime:E' 'System.err:W' '*:S'",
+]
+
+[tasks.logcat]
+description = "Stream logs filtered to the demo app."
+script_runner = "@shell"
+script = [
+    "${ADB} logcat -c",
+    "${ADB} logcat 'iroh_live:V' 'IrohBridge:V' 'IrohLiveDemo:V' 'AndroidRuntime:E' 'System.err:W' '*:S'",
+]
+
+[tasks.logcat-pid]
+description = "Stream all logs for the running app process."
+script_runner = "@shell"
+script = [
+    "${ADB} logcat --pid=$(${ADB} shell pidof -s ${APP_ID})",
+]
