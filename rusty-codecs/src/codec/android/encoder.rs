@@ -7,16 +7,13 @@
 use std::{collections::VecDeque, time::Duration};
 
 use anyhow::{Context, Result};
-use ndk::media::{
-    media_codec::{
-        DequeuedInputBufferResult, DequeuedOutputBufferInfoResult, MediaCodec, MediaCodecDirection,
-    },
-    media_format::MediaFormat,
+use ndk::media::media_codec::{
+    DequeuedInputBufferResult, DequeuedOutputBufferInfoResult, MediaCodec, MediaCodecDirection,
 };
 
 use super::format::{
-    BUFFER_FLAG_CODEC_CONFIG, BUFFER_FLAG_KEY_FRAME, DEQUEUE_TIMEOUT, H264_BPP, KEY_BIT_RATE,
-    encoder_format, extract_csd_from_format,
+    BUFFER_FLAG_CODEC_CONFIG, BUFFER_FLAG_KEY_FRAME, DEQUEUE_TIMEOUT, H264_BPP, encoder_format,
+    extract_csd_from_format,
 };
 use crate::{
     codec::h264::annexb::{build_avcc, extract_sps_pps, parse_annex_b},
@@ -200,6 +197,11 @@ impl AndroidEncoder {
                         continue;
                     }
 
+                    // Extract SPS/PPS from first keyframe if not yet available.
+                    if is_keyframe && self.avcc.is_none() {
+                        self.try_extract_sps_pps_from_data(&data);
+                    }
+
                     // Convert to the requested NAL format.
                     let payload: bytes::Bytes = match self.nal_format {
                         NalFormat::AnnexB => data.into(),
@@ -207,11 +209,6 @@ impl AndroidEncoder {
                             crate::codec::h264::annexb::annex_b_to_length_prefixed(&data).into()
                         }
                     };
-
-                    // Extract SPS/PPS from first keyframe if not yet available.
-                    if is_keyframe && self.avcc.is_none() {
-                        self.try_extract_sps_pps_from_data(&data);
-                    }
 
                     self.packet_buf.push_back(EncodedFrame {
                         is_keyframe,
@@ -378,16 +375,14 @@ impl VideoEncoder for AndroidEncoder {
     }
 
     fn set_bitrate(&mut self, bitrate: u64) -> Result<()> {
-        // AMediaCodec_setParameters requires API level 26+.
-        #[cfg(feature = "api-level-26")]
-        {
-            let mut params = MediaFormat::new();
-            params.set_i32(KEY_BIT_RATE, bitrate as i32);
-            self.codec
-                .set_parameters(params)
-                .map_err(|e| anyhow::anyhow!("set_parameters failed: {e:?}"))?;
-        }
+        // AMediaCodec_setParameters requires API level 26+. Without the
+        // ndk/api-level-26 feature we cannot call it at compile time, so
+        // we store the new target and apply it on the next codec reset.
         self.bitrate = bitrate;
+        tracing::debug!(
+            bitrate,
+            "encoder bitrate target updated (applied on next reset)"
+        );
         Ok(())
     }
 }
