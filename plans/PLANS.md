@@ -120,6 +120,20 @@ Crate research complete: `windows` (MIT), `windows-capture` (MIT),
 - [ ] MFT H.264 encoder
 - [ ] MFT H.264 decoder
 
+### Android MediaCodec
+
+NDK `AMediaCodec` H.264 encode and decode via `ndk` crate (0.9), Camera2
+capture via JNI, and an Android demo app skeleton. Cross-compilation verified
+with `cargo ndk`.
+
+- [android-mediacodec](media-pipeline/android-mediacodec.md) — codec integration plan
+- [android-demo-app](media-pipeline/android-demo-app.md) — Kotlin/JNI demo app architecture
+- [x] ByteBuffer encoder and decoder
+- [x] Camera2 capture via JNI (Kotlin helper + Rust bridge)
+- [x] Demo app skeleton (Kotlin/Gradle + Rust cdylib)
+- [ ] Surface mode for zero-copy
+- [ ] End-to-end device testing
+
 ## Open
 
 ### Opus FEC and PLC (phase 3c)
@@ -135,17 +149,6 @@ Encoder rate control driven by QUIC `PathStats` bandwidth estimation. Quality
 state machine for dynamic bitrate adjustment.
 
 - [phase-3d-adaptive-encoding](media-pipeline/phase-3d-adaptive-encoding.md)
-
-### Android MediaCodec
-
-NDK `AMediaCodec` H.264 encode and decode, Camera2 capture via JNI, and
-an Android demo app skeleton.
-
-- [android-mediacodec](media-pipeline/android-mediacodec.md) — codec integration plan
-- [android-demo-app](media-pipeline/android-demo-app.md) — Kotlin/JNI demo app architecture
-- [ ] ByteBuffer encoder and decoder
-- [ ] Camera2 capture via JNI
-- [ ] Surface mode for zero-copy
 
 ### Stateless V4L2 decoder
 
