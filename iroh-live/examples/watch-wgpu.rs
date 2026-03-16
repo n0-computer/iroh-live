@@ -18,7 +18,7 @@ use iroh_live::{
     media::{
         audio_backend::AudioBackend,
         codec::DefaultDecoders,
-        format::{DecodeConfig, DecoderBackend, PlaybackConfig},
+        format::{DecodeConfig, DecoderBackend, PlaybackConfig, VideoFrame},
         render::WgpuVideoRenderer,
         subscribe::VideoTrack,
     },
@@ -29,10 +29,14 @@ use n0_error::Result;
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, KeyEvent, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{Key, NamedKey},
     window::{Fullscreen, Window, WindowId},
 };
+
+/// Target repaint interval — polls for new frames at this rate instead of
+/// spinning in a busy-loop.
+const REPAINT_INTERVAL: Duration = Duration::from_millis(4);
 
 #[derive(Debug, Parser)]
 struct Cli {
@@ -114,6 +118,7 @@ fn main() -> Result<()> {
         frame_count: 0,
         fps_last_update: Instant::now(),
         fps: 0.0,
+        last_frame_ts: None,
     };
     event_loop.run_app(&mut app).expect("event loop failed");
     Ok(())
@@ -128,7 +133,79 @@ struct GpuState {
     renderer: WgpuVideoRenderer,
     blit_pipeline: wgpu::RenderPipeline,
     blit_bind_group_layout: wgpu::BindGroupLayout,
+    blit_bind_group: Option<wgpu::BindGroup>,
     sampler: wgpu::Sampler,
+}
+
+impl GpuState {
+    /// Uploads a new frame to the video texture and rebuilds the blit bind group.
+    fn upload_frame(&mut self, frame: &VideoFrame) {
+        let video_view = self.renderer.render(frame);
+        self.blit_bind_group = Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("blit_bind_group"),
+            layout: &self.blit_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(video_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        }));
+    }
+
+    /// Blits the current video texture to the surface. Returns `false` if no
+    /// frame has been uploaded yet or the surface is unavailable.
+    fn present(&mut self) -> bool {
+        let Some(bind_group) = &self.blit_bind_group else {
+            return false;
+        };
+
+        let output = match self.surface.get_current_texture() {
+            Ok(t) => t,
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                self.surface.configure(&self.device, &self.surface_config);
+                return false;
+            }
+            Err(e) => {
+                eprintln!("surface error: {e}");
+                return false;
+            }
+        };
+        let surface_view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("blit_encoder"),
+            });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("blit_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &surface_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.blit_pipeline);
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        self.queue.submit([encoder.finish()]);
+        output.present();
+        true
+    }
 }
 
 struct WgpuApp {
@@ -141,6 +218,7 @@ struct WgpuApp {
     frame_count: u64,
     fps_last_update: Instant,
     fps: f32,
+    last_frame_ts: Option<Duration>,
 }
 
 impl WgpuApp {
@@ -165,6 +243,14 @@ impl WgpuApp {
                 rtt.as_millis(),
                 self.video_track.decoder_name(),
             );
+        }
+    }
+
+    /// Schedules the next redraw after [`REPAINT_INTERVAL`].
+    fn schedule_redraw(&self, event_loop: &ActiveEventLoop) {
+        event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + REPAINT_INTERVAL));
+        if let Some(state) = &self.state {
+            state.window.request_redraw();
         }
     }
 }
@@ -296,6 +382,7 @@ impl ApplicationHandler for WgpuApp {
             renderer,
             blit_pipeline,
             blit_bind_group_layout,
+            blit_bind_group: None,
             sampler,
         });
     }
@@ -323,90 +410,42 @@ impl ApplicationHandler for WgpuApp {
                     state
                         .surface
                         .configure(&state.device, &state.surface_config);
+                    // Invalidate cached bind group — output texture may be recreated.
+                    state.blit_bind_group = None;
                     state.window.request_redraw();
                 }
             }
             WindowEvent::RedrawRequested => {
-                self.update_fps();
+                // Poll for a new decoded frame.
+                let frame = self.video_track.current_frame();
+
+                // Check if this is a genuinely new frame.
+                let is_new = frame
+                    .as_ref()
+                    .is_some_and(|f| self.last_frame_ts.is_none_or(|prev| f.timestamp != prev));
+
+                if is_new && let Some(frame) = &frame {
+                    self.last_frame_ts = Some(frame.timestamp);
+                    self.update_fps();
+                }
 
                 let Some(state) = &mut self.state else {
                     return;
                 };
 
-                // Get latest decoded frame.
-                let Some(frame) = self.video_track.current_frame() else {
-                    state.window.request_redraw();
-                    return;
-                };
-
-                // Update viewport.
-                self.video_track
-                    .set_viewport(state.surface_config.width, state.surface_config.height);
-
-                // Render frame to video texture.
-                let video_view = state.renderer.render(&frame);
-
-                // Blit video texture to surface.
-                let output = match state.surface.get_current_texture() {
-                    Ok(t) => t,
-                    Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                        state
-                            .surface
-                            .configure(&state.device, &state.surface_config);
-                        state.window.request_redraw();
-                        return;
-                    }
-                    Err(e) => {
-                        eprintln!("surface error: {e}");
-                        return;
-                    }
-                };
-                let surface_view = output
-                    .texture
-                    .create_view(&wgpu::TextureViewDescriptor::default());
-
-                let bind_group = state.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("blit_bind_group"),
-                    layout: &state.blit_bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(video_view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&state.sampler),
-                        },
-                    ],
-                });
-
-                let mut encoder =
-                    state
-                        .device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("blit_encoder"),
-                        });
-                {
-                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("blit_pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &surface_view,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                                store: wgpu::StoreOp::Store,
-                            },
-                            depth_slice: None,
-                        })],
-                        ..Default::default()
-                    });
-                    pass.set_pipeline(&state.blit_pipeline);
-                    pass.set_bind_group(0, &bind_group, &[]);
-                    pass.draw(0..3, 0..1);
+                if is_new && let Some(frame) = &frame {
+                    self.video_track
+                        .set_viewport(state.surface_config.width, state.surface_config.height);
+                    state.upload_frame(frame);
                 }
-                state.queue.submit([encoder.finish()]);
-                output.present();
-                state.window.request_redraw();
+
+                // Present the current frame (or re-present the last one).
+                if !state.present() {
+                    // No frame rendered yet or surface error — schedule next poll.
+                }
+
+                // Schedule next frame poll instead of spinning.
+                self.schedule_redraw(event_loop);
             }
             _ => {}
         }
