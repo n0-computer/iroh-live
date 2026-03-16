@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 iroh-live = { path = "../../iroh-live", default-features = false }
-moq-media = { path = "../../moq-media", default-features = false, features = ["h264", "opus"] }
+moq-media = { path = "../../moq-media", default-features = false, features = ["h264", "opus", "android"] }
 rusty-codecs = { path = "../../rusty-codecs", default-features = false, features = ["h264", "opus", "hang", "android"] }
 jni = "0.21"
 tokio = { version = "1.48.0", features = ["rt-multi-thread", "sync", "macros"] }

@@ -660,6 +660,8 @@ impl VideoRenditions {
             VideoCodec::VaapiH264 => self.add_with_generic::<codec::VaapiEncoder>(preset),
             #[cfg(all(target_os = "linux", feature = "v4l2"))]
             VideoCodec::V4l2H264 => self.add_with_generic::<codec::V4l2Encoder>(preset),
+            #[cfg(all(target_os = "android", feature = "android"))]
+            VideoCodec::AndroidH264 => self.add_with_generic::<codec::AndroidEncoder>(preset),
         }
     }
 
