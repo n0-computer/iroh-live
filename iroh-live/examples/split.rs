@@ -13,30 +13,30 @@
 //! cargo run -p iroh-live --example split --features "vaapi,wgpu"
 //! ```
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use eframe::egui;
 use iroh::{Endpoint, EndpointAddr, SecretKey, Watcher, protocol::Router};
-use iroh_live::media::capture::{CameraCapturer, ScreenCapturer};
-use iroh_live::media::traits::{AudioSource, VideoSource};
+use iroh_live::media::capture::{CameraCapturer, CaptureBackend, ScreenCapturer};
+use iroh_live::media::test_sources::{TestPatternSource, TestToneSource};
+use iroh_live::media::traits::VideoSource;
 use iroh_live::{
     ALPN, Live,
     media::{
         audio_backend::AudioBackend,
-        codec::{
-            AudioCodec, DefaultDecoders, DynamicAudioDecoder, DynamicVideoDecoder, VideoCodec,
-        },
-        format::{
-            AudioFormat, AudioPreset, DecodeConfig, DecoderBackend, PlaybackConfig, VideoPreset,
-        },
+        codec::{AudioCodec, DefaultDecoders, DynamicVideoDecoder, VideoCodec},
+        format::{AudioPreset, DecodeConfig, DecoderBackend, PlaybackConfig, VideoPreset},
         playout::PlayoutClock,
-        publish::{AudioRenditions, LocalBroadcast, VideoRenditions},
+        publish::LocalBroadcast,
         subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
     },
     moq::MoqSession,
     util::StatsSmoother,
 };
-use moq_media_egui::{VideoTrackView, create_egui_wgpu_config, format_bitrate};
+use moq_media_egui::{
+    VideoTrackView, create_egui_wgpu_config, format_bitrate,
+    overlay::{FrameStats, OVERLAY_BAR_H, fit_to_aspect, overlay_bar},
+};
 use n0_error::{Result, anyerr};
 use strum::VariantArray;
 use tracing::{info, warn};
@@ -49,12 +49,62 @@ const BROADCAST_NAME: &str = "split";
 // Source selection
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, strum::Display, strum::VariantArray)]
-enum VideoSourceKind {
-    #[strum(serialize = "Test Pattern")]
+/// A video source option discovered at runtime from available backends.
+#[derive(Debug, Clone, PartialEq)]
+enum DiscoveredVideoSource {
     TestPattern,
-    Camera,
-    Screen,
+    Camera {
+        backend: CaptureBackend,
+        name: String,
+    },
+    Screen {
+        backend: CaptureBackend,
+    },
+}
+
+impl std::fmt::Display for DiscoveredVideoSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TestPattern => write!(f, "Test Pattern"),
+            Self::Camera { backend, name } => write!(f, "{name} ({backend})"),
+            Self::Screen { backend } => write!(f, "Screen ({backend})"),
+        }
+    }
+}
+
+impl DiscoveredVideoSource {
+    fn create(&self, preset: VideoPreset) -> anyhow::Result<Box<dyn VideoSource>> {
+        let (w, h) = preset.dimensions();
+        match self {
+            Self::TestPattern => Ok(Box::new(TestPatternSource::new(w, h))),
+            Self::Camera { backend, .. } => {
+                let config = iroh_live::media::capture::CameraConfig::default();
+                Ok(Box::new(CameraCapturer::with_backend(*backend, &config)?))
+            }
+            Self::Screen { backend } => {
+                let config = iroh_live::media::capture::ScreenConfig::default();
+                Ok(Box::new(ScreenCapturer::with_backend(*backend, &config)?))
+            }
+        }
+    }
+}
+
+/// Discovers all available video sources across all compiled backends.
+fn discover_video_sources() -> Vec<DiscoveredVideoSource> {
+    let mut sources = vec![DiscoveredVideoSource::TestPattern];
+
+    for backend in ScreenCapturer::list_backends() {
+        sources.push(DiscoveredVideoSource::Screen { backend });
+    }
+
+    for cam in CameraCapturer::list().unwrap_or_default() {
+        sources.push(DiscoveredVideoSource::Camera {
+            backend: cam.backend,
+            name: cam.name,
+        });
+    }
+
+    sources
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, strum::Display, strum::VariantArray)]
@@ -78,314 +128,6 @@ enum RenderMode {
 }
 
 // ---------------------------------------------------------------------------
-// SMPTE test pattern source
-// ---------------------------------------------------------------------------
-
-const SMPTE_BARS: [[u8; 3]; 7] = [
-    [255, 255, 255],
-    [255, 255, 0],
-    [0, 255, 255],
-    [0, 255, 0],
-    [255, 0, 255],
-    [255, 0, 0],
-    [0, 0, 255],
-];
-
-const BALL_RADIUS: u32 = 15;
-const BALL_BORDER: u32 = 3;
-
-struct TestPatternSource {
-    format: iroh_live::media::format::VideoFormat,
-    frame_index: u64,
-    started: bool,
-    buffer: Vec<u8>,
-    background: Vec<u8>,
-    start_time: Instant,
-}
-
-impl TestPatternSource {
-    fn new(width: u32, height: u32) -> Self {
-        let size = (width * height * 4) as usize;
-        let background = Self::render_background(width, height);
-        Self {
-            format: iroh_live::media::format::VideoFormat {
-                pixel_format: iroh_live::media::format::PixelFormat::Rgba,
-                dimensions: [width, height],
-            },
-            frame_index: 0,
-            started: false,
-            buffer: vec![0u8; size],
-            background,
-            start_time: Instant::now(),
-        }
-    }
-
-    fn render_background(w: u32, h: u32) -> Vec<u8> {
-        let mut data = vec![0u8; (w * h * 4) as usize];
-        let bar_end = h * 70 / 100;
-        let ramp_end = h * 85 / 100;
-
-        for y in 0..h {
-            for x in 0..w {
-                let idx = ((y * w + x) * 4) as usize;
-                let (r, g, b) = if y < bar_end {
-                    let bar_idx = (x * 7 / w) as usize;
-                    let bar_idx = bar_idx.min(6);
-                    let c = SMPTE_BARS[bar_idx];
-                    (c[0], c[1], c[2])
-                } else if y < ramp_end {
-                    let v = (x * 255 / w.max(1)) as u8;
-                    (v, v, v)
-                } else {
-                    (0, 0, 0)
-                };
-                data[idx] = r;
-                data[idx + 1] = g;
-                data[idx + 2] = b;
-                data[idx + 3] = 255;
-            }
-        }
-        data
-    }
-
-    fn stamp_ball(buf: &mut [u8], w: u32, h: u32, frame_index: u64) {
-        let radius = BALL_RADIUS.min(w / 4).min(h / 4);
-        if radius == 0 {
-            return;
-        }
-        let outer = radius + BALL_BORDER;
-        let range = w.saturating_sub(2 * outer).max(1);
-        let period = 2 * range as u64;
-        let pos_in_period = frame_index % period.max(1);
-        let ball_x = if pos_in_period < range as u64 {
-            outer + pos_in_period as u32
-        } else {
-            outer + (period - pos_in_period) as u32
-        };
-        let ball_y = h / 2;
-
-        let outer_r2 = (outer * outer) as i64;
-        let inner_r2 = (radius * radius) as i64;
-        let y_min = ball_y.saturating_sub(outer);
-        let y_max = (ball_y + outer).min(h);
-        let x_min = ball_x.saturating_sub(outer);
-        let x_max = (ball_x + outer).min(w);
-
-        for y in y_min..y_max {
-            let dy = y as i64 - ball_y as i64;
-            for x in x_min..x_max {
-                let dx = x as i64 - ball_x as i64;
-                let d2 = dx * dx + dy * dy;
-                if d2 <= outer_r2 {
-                    let idx = ((y * w + x) * 4) as usize;
-                    if d2 <= inner_r2 {
-                        buf[idx] = 255;
-                        buf[idx + 1] = 255;
-                        buf[idx + 2] = 255;
-                    } else {
-                        buf[idx] = 0;
-                        buf[idx + 1] = 0;
-                        buf[idx + 2] = 0;
-                    }
-                    buf[idx + 3] = 255;
-                }
-            }
-        }
-    }
-
-    fn stamp_beep_indicator(buf: &mut [u8], w: u32, h: u32, beep_active: bool) {
-        if !beep_active {
-            return;
-        }
-        let size = 20u32.min(w / 8).min(h / 8);
-        let x0 = w.saturating_sub(size + 10);
-        let y0 = h.saturating_sub(size + 10);
-        for y in y0..h.min(y0 + size) {
-            for x in x0..w.min(x0 + size) {
-                let idx = ((y * w + x) * 4) as usize;
-                buf[idx] = 255;
-                buf[idx + 1] = 255;
-                buf[idx + 2] = 0;
-                buf[idx + 3] = 255;
-            }
-        }
-    }
-}
-
-impl VideoSource for TestPatternSource {
-    fn name(&self) -> &str {
-        "test-pattern"
-    }
-    fn format(&self) -> iroh_live::media::format::VideoFormat {
-        self.format.clone()
-    }
-    fn start(&mut self) -> anyhow::Result<()> {
-        self.started = true;
-        self.frame_index = 0;
-        self.start_time = Instant::now();
-        Ok(())
-    }
-    fn stop(&mut self) -> anyhow::Result<()> {
-        self.started = false;
-        Ok(())
-    }
-    fn pop_frame(&mut self) -> anyhow::Result<Option<iroh_live::media::format::VideoFrame>> {
-        if !self.started {
-            return Ok(None);
-        }
-        let [w, h] = self.format.dimensions;
-        self.buffer.copy_from_slice(&self.background);
-        Self::stamp_ball(&mut self.buffer, w, h, self.frame_index * 4);
-
-        let elapsed = self.start_time.elapsed().as_secs_f64();
-        let beep_active = (elapsed % 1.0) < 0.1;
-        Self::stamp_beep_indicator(&mut self.buffer, w, h, beep_active);
-
-        self.frame_index += 1;
-
-        Ok(Some(iroh_live::media::format::VideoFrame::new_rgba(
-            bytes::Bytes::copy_from_slice(&self.buffer),
-            w,
-            h,
-            Duration::ZERO,
-        )))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Test tone audio source (880 Hz beep, 100ms every second)
-// ---------------------------------------------------------------------------
-
-struct TestToneSource {
-    format: AudioFormat,
-    phase: f64,
-    sample_index: u64,
-}
-
-impl TestToneSource {
-    fn new() -> Self {
-        Self {
-            format: AudioFormat::mono_48k(),
-            phase: 0.0,
-            sample_index: 0,
-        }
-    }
-}
-
-impl AudioSource for TestToneSource {
-    fn cloned_boxed(&self) -> Box<dyn AudioSource> {
-        Box::new(Self {
-            format: self.format,
-            phase: 0.0,
-            sample_index: 0,
-        })
-    }
-
-    fn format(&self) -> AudioFormat {
-        self.format
-    }
-
-    fn pop_samples(&mut self, buf: &mut [f32]) -> anyhow::Result<Option<usize>> {
-        let sample_rate = self.format.sample_rate as f64;
-        let channels = self.format.channel_count as usize;
-        let frames = buf.len() / channels;
-
-        for i in 0..frames {
-            let t = self.sample_index as f64 / sample_rate;
-            let in_beep = (t % 1.0) < 0.1;
-            let sample = if in_beep {
-                (self.phase * std::f64::consts::TAU).sin() as f32 * 0.3
-            } else {
-                0.0
-            };
-            if in_beep {
-                self.phase += 880.0 / sample_rate;
-            } else {
-                self.phase = 0.0;
-            }
-            for ch in 0..channels {
-                buf[i * channels + ch] = sample;
-            }
-            self.sample_index += 1;
-        }
-        Ok(Some(frames))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
-
-#[derive(Default)]
-struct FrameStats {
-    count: u64,
-    last_update: Option<Instant>,
-    fps: f32,
-    delay_ms: f32,
-    baseline: Option<(Instant, Duration)>,
-}
-
-impl FrameStats {
-    fn tick(&mut self, frame_ts: Option<Duration>) {
-        self.count += 1;
-        let now = Instant::now();
-        let last = *self.last_update.get_or_insert(now);
-        let elapsed = now.duration_since(last);
-        if elapsed >= Duration::from_secs(1) {
-            self.fps = self.count as f32 / elapsed.as_secs_f32();
-            self.count = 0;
-            self.last_update = Some(now);
-        }
-        if let Some(ts) = frame_ts {
-            let (base_wall, base_pts) = *self.baseline.get_or_insert((now, ts));
-            let wall_delta = now.duration_since(base_wall);
-            let pts_delta = ts.saturating_sub(base_pts);
-            self.delay_ms = wall_delta.saturating_sub(pts_delta).as_secs_f32() * 1000.0;
-        }
-    }
-}
-
-fn fit_to_aspect(available: egui::Vec2, aspect: f32) -> egui::Vec2 {
-    let h_by_width = available.x / aspect;
-    if h_by_width <= available.y {
-        egui::vec2(available.x, h_by_width)
-    } else {
-        let w_by_height = available.y * aspect;
-        egui::vec2(w_by_height, available.y)
-    }
-}
-
-/// Height of a single overlay bar (text + padding).
-const OVERLAY_BAR_H: f32 = 15.0;
-
-/// Paints a translucent overlay bar with monospace text at the given rect.
-///
-/// Does NOT allocate egui layout space — the bar is painted over existing
-/// content (typically the video).
-fn overlay_bar(painter: &egui::Painter, rect: egui::Rect, text: &str) {
-    let font = egui::FontId::monospace(11.0);
-    let galley = painter.layout_no_wrap(text.to_string(), font, egui::Color32::WHITE);
-    painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(160));
-    painter.galley(
-        rect.min + egui::vec2(4.0, 1.0),
-        galley,
-        egui::Color32::WHITE,
-    );
-}
-
-fn create_video_source(
-    kind: VideoSourceKind,
-    preset: VideoPreset,
-) -> anyhow::Result<Box<dyn VideoSource>> {
-    let (w, h) = preset.dimensions();
-    match kind {
-        VideoSourceKind::TestPattern => Ok(Box::new(TestPatternSource::new(w, h))),
-        VideoSourceKind::Camera => Ok(Box::new(CameraCapturer::new()?)),
-        VideoSourceKind::Screen => Ok(Box::new(ScreenCapturer::new()?)),
-    }
-}
-
-// ---------------------------------------------------------------------------
 // PublishView
 // ---------------------------------------------------------------------------
 
@@ -396,7 +138,8 @@ struct PublishView {
     broadcast: LocalBroadcast,
     audio_ctx: AudioBackend,
 
-    video_source: VideoSourceKind,
+    available_sources: Vec<DiscoveredVideoSource>,
+    video_source_idx: usize,
     audio_source: AudioSourceKind,
     codec: VideoCodec,
     preset: VideoPreset,
@@ -416,12 +159,14 @@ impl PublishView {
             .spawn();
 
         let broadcast = LocalBroadcast::new();
-        let source = TestPatternSource::new(1280, 720);
-        let video = VideoRenditions::new(source, VideoCodec::best_available(), [VideoPreset::P720]);
-        broadcast.video().set_renditions(video)?;
-        let tone = TestToneSource::new();
-        let audio = AudioRenditions::new(tone, AudioCodec::Opus, [AudioPreset::Hq]);
-        broadcast.audio().set_renditions(audio)?;
+        broadcast.video().set(
+            TestPatternSource::new(1280, 720),
+            VideoCodec::best_available(),
+            [VideoPreset::P720],
+        )?;
+        broadcast
+            .audio()
+            .set(TestToneSource::new(), AudioCodec::Opus, [AudioPreset::Hq])?;
 
         live.publish(BROADCAST_NAME, &broadcast).await?;
         info!("publishing on {}", endpoint.id().fmt_short());
@@ -431,7 +176,8 @@ impl PublishView {
             live,
             broadcast,
             audio_ctx,
-            video_source: VideoSourceKind::TestPattern,
+            available_sources: discover_video_sources(),
+            video_source_idx: 0,
             audio_source: AudioSourceKind::TestTone,
             codec: VideoCodec::best_available(),
             preset: VideoPreset::P720,
@@ -450,15 +196,18 @@ impl PublishView {
         self.needs_republish = false;
         self.error_msg = None;
 
-        let source = match create_video_source(self.video_source, self.preset) {
+        let source = match self.available_sources[self.video_source_idx].create(self.preset) {
             Ok(s) => s,
             Err(e) => {
                 self.error_msg = Some(format!("Video source: {e:#}"));
                 return;
             }
         };
-        let video = VideoRenditions::new(source, self.codec, [self.preset]);
-        if let Err(e) = self.broadcast.video().set_renditions(video) {
+        if let Err(e) = self
+            .broadcast
+            .video()
+            .set(source, self.codec, [self.preset])
+        {
             self.error_msg = Some(format!("Set video: {e:#}"));
             return;
         }
@@ -466,9 +215,11 @@ impl PublishView {
         let _guard = rt.enter();
         match self.audio_source {
             AudioSourceKind::TestTone => {
-                let tone = TestToneSource::new();
-                let audio = AudioRenditions::new(tone, AudioCodec::Opus, [AudioPreset::Hq]);
-                if let Err(e) = self.broadcast.audio().set_renditions(audio) {
+                if let Err(e) = self.broadcast.audio().set(
+                    TestToneSource::new(),
+                    AudioCodec::Opus,
+                    [AudioPreset::Hq],
+                ) {
                     self.error_msg = Some(format!("Set audio: {e:#}"));
                     return;
                 }
@@ -481,8 +232,11 @@ impl PublishView {
                         return;
                     }
                 };
-                let audio = AudioRenditions::new(mic, AudioCodec::Opus, [AudioPreset::Hq]);
-                if let Err(e) = self.broadcast.audio().set_renditions(audio) {
+                if let Err(e) = self
+                    .broadcast
+                    .audio()
+                    .set(mic, AudioCodec::Opus, [AudioPreset::Hq])
+                {
                     self.error_msg = Some(format!("Set audio: {e:#}"));
                     return;
                 }
@@ -508,11 +262,11 @@ impl PublishView {
 
             ui.label("Source");
             egui::ComboBox::from_id_salt("pub_source")
-                .selected_text(self.video_source.to_string())
+                .selected_text(self.available_sources[self.video_source_idx].to_string())
                 .show_ui(ui, |ui| {
-                    for kind in VideoSourceKind::VARIANTS {
+                    for (i, src) in self.available_sources.iter().enumerate() {
                         if ui
-                            .selectable_value(&mut self.video_source, *kind, kind.to_string())
+                            .selectable_value(&mut self.video_source_idx, i, src.to_string())
                             .changed()
                         {
                             changed = true;
@@ -564,7 +318,7 @@ impl PublishView {
 
             if changed {
                 info!(
-                    source = %self.video_source,
+                    source = %self.available_sources[self.video_source_idx],
                     audio = %self.audio_source,
                     codec = self.codec.display_name(),
                     preset = %self.preset,
@@ -657,8 +411,6 @@ impl PublishView {
 struct SubscribeView {
     session: MoqSession,
     broadcast: RemoteBroadcast,
-    catalog_watcher: n0_watcher::Direct<iroh_live::media::subscribe::CatalogSnapshot>,
-
     audio_ctx: AudioBackend,
     pending_video: Option<VideoTrack>,
     video: Option<VideoTrackView>,
@@ -682,7 +434,6 @@ impl SubscribeView {
         info!("subscriber connected");
 
         let playout_clock = broadcast.clock().clone();
-        let catalog_watcher = broadcast.catalog_watcher();
 
         let playback_config = PlaybackConfig::default();
         let tracks = broadcast
@@ -692,7 +443,6 @@ impl SubscribeView {
         Ok(Self {
             session,
             broadcast: tracks.broadcast,
-            catalog_watcher,
             audio_ctx: audio_ctx.clone(),
             pending_video: tracks.video,
             video: None,
@@ -715,60 +465,33 @@ impl SubscribeView {
     fn resubscribe(&mut self, ctx: &egui::Context) {
         self.playout_clock.reset();
 
-        // Resubscribe video.
-        let video_renditions: Vec<String> = self
-            .broadcast
-            .catalog()
-            .video_renditions()
-            .map(|s| s.to_owned())
-            .collect();
-        if let Some(name) = video_renditions.first() {
-            let decode_config = DecodeConfig {
-                backend: self.backend,
-                ..Default::default()
-            };
-            match self
-                .broadcast
-                .video_rendition::<DynamicVideoDecoder>(&decode_config, name)
-            {
-                Ok(track) => {
-                    info!(rendition = name, "subscriber: resubscribed to video");
-                    self.video = Some(self.make_video_view(ctx, track));
-                }
-                Err(e) => {
-                    warn!("video re-subscribe failed: {e:#}");
-                    self.video = None;
-                }
+        // Resubscribe video with default quality selection.
+        match self.broadcast.video() {
+            Ok(track) => {
+                info!(
+                    rendition = track.rendition(),
+                    "subscriber: resubscribed to video"
+                );
+                self.video = Some(self.make_video_view(ctx, track));
             }
-        } else {
-            self.video = None;
+            Err(e) => {
+                warn!("video re-subscribe failed: {e:#}");
+                self.video = None;
+            }
         }
 
         // Resubscribe audio. The old AudioTrack is dropped, stopping its
         // decoder thread, before starting a fresh one from the new catalog.
-        let audio_renditions: Vec<String> = self
-            .broadcast
-            .catalog()
-            .audio_renditions()
-            .map(|s| s.to_owned())
-            .collect();
-        if let Some(name) = audio_renditions.first() {
-            let handle = tokio::runtime::Handle::current();
-            match handle.block_on(
-                self.broadcast
-                    .audio_rendition::<DynamicAudioDecoder>(name, &self.audio_ctx),
-            ) {
-                Ok(track) => {
-                    info!(rendition = name, "subscriber: resubscribed to audio");
-                    self._audio = Some(track);
-                }
-                Err(e) => {
-                    warn!("audio re-subscribe failed: {e:#}");
-                    self._audio = None;
-                }
+        let handle = tokio::runtime::Handle::current();
+        match handle.block_on(self.broadcast.audio(&self.audio_ctx)) {
+            Ok(track) => {
+                info!("subscriber: resubscribed to audio");
+                self._audio = Some(track);
             }
-        } else {
-            self._audio = None;
+            Err(e) => {
+                warn!("audio re-subscribe failed: {e:#}");
+                self._audio = None;
+            }
         }
     }
 
@@ -791,9 +514,12 @@ impl SubscribeView {
             self.video = Some(self.make_video_view(ctx, track));
         }
 
-        // Auto-detect catalog changes from publisher
-        if self.catalog_watcher.update() {
-            info!("subscriber: catalog changed, resubscribing");
+        // When the publisher switches source, the old track closes before
+        // the new one is ready. Wait for the close, then resubscribe from
+        // the current catalog (which already reflects the new source).
+        let video_closed = self.video.as_ref().is_some_and(|v| v.track().is_closed());
+        if video_closed {
+            info!("subscriber: video track closed, resubscribing from current catalog");
             self.resubscribe(ctx);
         }
 

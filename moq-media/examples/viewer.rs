@@ -23,8 +23,6 @@ use eframe::egui;
 use moq_media::capture::CameraCapturer;
 #[cfg(feature = "capture-screen")]
 use moq_media::capture::ScreenCapturer;
-#[cfg(all(target_os = "linux", feature = "capture-camera"))]
-use moq_media::capture::{PipeWireCameraCapturer, V4l2CameraCapturer};
 use moq_media::{
     codec::{DynamicVideoDecoder, VideoCodec},
     format::{
@@ -42,40 +40,97 @@ use strum::VariantArray;
 use tokio::runtime::Runtime;
 
 // ---------------------------------------------------------------------------
-// Source selection
+// Source selection — dynamically discovered from compiled backends
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, strum::Display, strum::VariantArray)]
-enum SourceKind {
-    #[strum(serialize = "Test Pattern")]
+#[cfg(any(feature = "capture-camera", feature = "capture-screen"))]
+use moq_media::capture::CaptureBackend;
+
+/// A video source option discovered at runtime from available backends.
+#[derive(Debug, Clone, PartialEq)]
+enum DiscoveredSource {
     TestPattern,
     #[cfg(feature = "capture-camera")]
-    Camera,
-    #[cfg(all(target_os = "linux", feature = "capture-camera"))]
-    #[strum(serialize = "Camera (PipeWire)")]
-    CameraPipeWire,
-    #[cfg(all(target_os = "linux", feature = "capture-camera"))]
-    #[strum(serialize = "Camera (V4L2)")]
-    CameraV4l2,
+    Camera {
+        backend: CaptureBackend,
+        name: String,
+    },
     #[cfg(feature = "capture-screen")]
-    Screen,
+    Screen {
+        backend: CaptureBackend,
+    },
 }
 
-impl SourceKind {
-    fn create(self, preset: VideoPreset) -> anyhow::Result<Box<dyn VideoSource>> {
+impl std::fmt::Display for DiscoveredSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TestPattern => write!(f, "Test Pattern"),
+            #[cfg(feature = "capture-camera")]
+            Self::Camera { backend, name } => write!(f, "{name} ({backend})"),
+            #[cfg(feature = "capture-screen")]
+            Self::Screen { backend } => write!(f, "Screen ({backend})"),
+        }
+    }
+}
+
+impl DiscoveredSource {
+    fn create(&self, preset: VideoPreset) -> anyhow::Result<Box<dyn VideoSource>> {
         let (w, h) = preset.dimensions();
         match self {
             Self::TestPattern => Ok(Box::new(TestPatternSource::new(w, h))),
             #[cfg(feature = "capture-camera")]
-            Self::Camera => Ok(Box::new(CameraCapturer::new()?)),
-            #[cfg(all(target_os = "linux", feature = "capture-camera"))]
-            Self::CameraPipeWire => Ok(Box::new(PipeWireCameraCapturer::new(&Default::default())?)),
-            #[cfg(all(target_os = "linux", feature = "capture-camera"))]
-            Self::CameraV4l2 => Ok(Box::new(V4l2CameraCapturer::open_default()?)),
+            Self::Camera { backend, .. } => {
+                let config = moq_media::capture::CameraConfig::default();
+                Ok(Box::new(CameraCapturer::with_backend(*backend, &config)?))
+            }
             #[cfg(feature = "capture-screen")]
-            Self::Screen => Ok(Box::new(ScreenCapturer::new()?)),
+            Self::Screen { backend } => {
+                let config = moq_media::capture::ScreenConfig::default();
+                Ok(Box::new(ScreenCapturer::with_backend(*backend, &config)?))
+            }
         }
     }
+}
+
+/// Discovers all available video sources from compiled capture backends.
+fn discover_sources() -> Vec<DiscoveredSource> {
+    let mut sources = vec![DiscoveredSource::TestPattern];
+
+    #[cfg(feature = "capture-screen")]
+    for backend in ScreenCapturer::list_backends() {
+        sources.push(DiscoveredSource::Screen { backend });
+    }
+
+    #[cfg(feature = "capture-camera")]
+    {
+        // Group cameras by backend so we can label them.
+        if let Ok(cameras) = CameraCapturer::list() {
+            for cam in cameras {
+                sources.push(DiscoveredSource::Camera {
+                    backend: cam.backend,
+                    name: cam.name,
+                });
+            }
+        }
+        // Add backends that have no enumerable cameras but can open a default.
+        let listed_backends: Vec<_> = sources
+            .iter()
+            .filter_map(|s| match s {
+                DiscoveredSource::Camera { backend, .. } => Some(*backend),
+                _ => None,
+            })
+            .collect();
+        for backend in CameraCapturer::list_backends() {
+            if !listed_backends.contains(&backend) {
+                sources.push(DiscoveredSource::Camera {
+                    backend,
+                    name: "Camera".into(),
+                });
+            }
+        }
+    }
+
+    sources
 }
 
 // ---------------------------------------------------------------------------
@@ -324,7 +379,7 @@ impl VideoSource for TestPatternSource {
 
 #[derive(Clone, PartialEq)]
 struct PipelineSettings {
-    source: SourceKind,
+    source: DiscoveredSource,
     codec: VideoCodec,
     preset: VideoPreset,
     backend: DecoderBackend,
@@ -568,7 +623,8 @@ impl Tile {
 // ---------------------------------------------------------------------------
 
 struct ViewerApp {
-    source: SourceKind,
+    available_sources: Vec<DiscoveredSource>,
+    source_idx: usize,
     codec: VideoCodec,
     preset: VideoPreset,
     backend: DecoderBackend,
@@ -591,8 +647,10 @@ impl ViewerApp {
         #[allow(unused_variables, reason = "used only with wgpu feature")]
         cc: &eframe::CreationContext<'_>,
     ) -> Self {
+        let available_sources = discover_sources();
         Self {
-            source: SourceKind::TestPattern,
+            available_sources,
+            source_idx: 0,
             codec: VideoCodec::best_available(),
             preset: VideoPreset::P720,
             backend: DecoderBackend::Auto,
@@ -610,9 +668,13 @@ impl ViewerApp {
         }
     }
 
+    fn selected_source(&self) -> &DiscoveredSource {
+        &self.available_sources[self.source_idx]
+    }
+
     fn current_settings(&self) -> PipelineSettings {
         PipelineSettings {
-            source: self.source,
+            source: self.selected_source().clone(),
             codec: self.codec,
             preset: self.preset,
             backend: self.backend,
@@ -654,7 +716,7 @@ impl ViewerApp {
             for &backend in &backends {
                 for &render_mode in &render_modes {
                     settings.push(PipelineSettings {
-                        source: self.source,
+                        source: self.selected_source().clone(),
                         codec,
                         preset: self.preset,
                         backend,
@@ -697,10 +759,10 @@ impl eframe::App for ViewerApp {
 
                 ui.label("Source");
                 egui::ComboBox::from_id_salt("source")
-                    .selected_text(self.source.to_string())
+                    .selected_text(self.selected_source().to_string())
                     .show_ui(ui, |ui| {
-                        for kind in SourceKind::VARIANTS {
-                            ui.selectable_value(&mut self.source, *kind, kind.to_string());
+                        for (i, src) in self.available_sources.iter().enumerate() {
+                            ui.selectable_value(&mut self.source_idx, i, src.to_string());
                         }
                     });
 
