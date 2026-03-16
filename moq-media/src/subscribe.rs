@@ -273,11 +273,11 @@ impl RemoteBroadcast {
     /// task that watches for catalog updates. A shared [`PlayoutClock`] is
     /// created from the given mode and passed to all tracks for A/V sync.
     pub async fn new(broadcast_name: impl ToString, broadcast: BroadcastConsumer) -> Result<Self> {
-        Self::with_playout(broadcast_name, broadcast, PlayoutMode::default()).await
+        Self::with_playout_mode(broadcast_name, broadcast, PlayoutMode::default()).await
     }
 
     /// Creates a new remote broadcast subscription with a specific [`PlayoutMode`].
-    pub async fn with_playout(
+    pub async fn with_playout_mode(
         broadcast_name: impl ToString,
         broadcast: BroadcastConsumer,
         playout_mode: PlayoutMode,
@@ -289,9 +289,9 @@ impl RemoteBroadcast {
         let (catalog_watchable, catalog_task) = {
             let track = broadcast
                 .subscribe_track(&Catalog::default_track())
-                .anyerr()?;
-            let mut consumer = CatalogConsumer::new(track);
-            let initial_catalog = consumer
+                .std_context("missing catalog track")?;
+            let mut catalog_consumer = CatalogConsumer::new(track);
+            let initial_catalog = catalog_consumer
                 .next()
                 .await
                 .std_context("Broadcast closed before receiving catalog")?
@@ -303,7 +303,7 @@ impl RemoteBroadcast {
                 let watchable = watchable.clone();
                 async move {
                     for seq in 1.. {
-                        match consumer.next().await {
+                        match catalog_consumer.next().await {
                             Ok(Some(catalog)) => {
                                 watchable.set(CatalogSnapshot::new(catalog, seq)).ok();
                             }
@@ -371,11 +371,11 @@ impl RemoteBroadcast {
 
     /// Subscribes to both video and audio with a custom decoder type.
     pub async fn media<D: Decoders>(
-        self,
+        &self,
         audio_backend: &dyn AudioStreamFactory,
         playback_config: PlaybackConfig,
     ) -> Result<MediaTracks> {
-        MediaTracks::new::<D>(self, audio_backend, playback_config).await
+        MediaTracks::new::<D>(self.clone(), audio_backend, playback_config).await
     }
 
     /// Subscribes to video with explicit config and a custom decoder.
@@ -814,6 +814,11 @@ impl VideoTrack {
             VideoTrackInner::VideoSource { .. } => "capture",
             VideoTrackInner::Empty { .. } => "",
         }
+    }
+
+    /// Returns `true` if the track's frame channel has been closed (producer stopped).
+    pub fn is_closed(&self) -> bool {
+        self.rx.is_closed()
     }
 
     /// Returns the most recent decoded frame, draining any older buffered frames.

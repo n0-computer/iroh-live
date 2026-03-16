@@ -9,14 +9,18 @@ use n0_error::{AnyError, Result};
 use n0_watcher::{Direct, Watchable};
 use tracing::info;
 
+#[cfg(any_video_codec)]
+use crate::codec::VideoCodec;
 use crate::{
     audio_backend::{AudioBackend, DeviceId},
     publish::LocalBroadcast,
 };
-#[cfg(any_video_codec)]
+#[cfg(all(
+    any_video_codec,
+    any(feature = "capture-camera", feature = "capture-screen")
+))]
 use crate::{
     capture::{CameraCapturer, ScreenCapturer},
-    codec::VideoCodec,
     format::VideoPreset,
     publish::VideoRenditions,
 };
@@ -193,7 +197,7 @@ impl PublishCaptureController {
 
     // --- Internal helpers ---
 
-    #[cfg(any_video_codec)]
+    #[cfg(all(any_video_codec, feature = "capture-camera"))]
     fn apply_camera(&mut self, enable: bool, capture: &CaptureConfig) -> Result<()> {
         let cur = self.state.get();
         let index_changed = enable && cur.camera && capture.camera_index != self.prev.camera_index;
@@ -217,12 +221,12 @@ impl PublishCaptureController {
         Ok(())
     }
 
-    #[cfg(not(any_video_codec))]
+    #[cfg(not(all(any_video_codec, feature = "capture-camera")))]
     fn apply_camera(&mut self, _enable: bool, _capture: &CaptureConfig) -> Result<()> {
         Ok(())
     }
 
-    #[cfg(any_video_codec)]
+    #[cfg(all(any_video_codec, feature = "capture-screen"))]
     fn apply_screen(
         &mut self,
         enable: bool,
@@ -256,7 +260,7 @@ impl PublishCaptureController {
         }
     }
 
-    #[cfg(not(any_video_codec))]
+    #[cfg(not(all(any_video_codec, feature = "capture-screen")))]
     fn apply_screen(
         &mut self,
         _enable: bool,

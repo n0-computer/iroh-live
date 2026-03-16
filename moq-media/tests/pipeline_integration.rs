@@ -11,7 +11,9 @@ use moq_media::format::{AudioFormat, AudioPreset, VideoPreset};
 use moq_media::playout::PlayoutMode;
 use moq_media::publish::LocalBroadcast;
 use moq_media::subscribe::RemoteBroadcast;
-use moq_media::test_util::{NullAudioBackend, TestAudioSource, TestVideoSource};
+use moq_media::test_util::{
+    CapturingAudioBackend, NullAudioBackend, SineAudioSource, TestAudioSource, TestVideoSource,
+};
 use n0_watcher::Watcher as _;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -42,7 +44,7 @@ async fn publish_and_subscribe(
         .set(TestVideoSource::new(w, h), codec, [preset])
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout("test", consumer, PlayoutMode::Reliable)
+    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
         .await
         .unwrap();
     (broadcast, remote)
@@ -125,7 +127,7 @@ async fn multiple_renditions_subscriber_selects_each() {
         )
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout("test", consumer, PlayoutMode::Reliable)
+    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
         .await
         .unwrap();
 
@@ -171,7 +173,7 @@ async fn multiple_renditions_have_distinct_dimensions() {
         )
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout("test", consumer, PlayoutMode::Reliable)
+    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
         .await
         .unwrap();
 
@@ -292,7 +294,7 @@ async fn audio_and_video_roundtrip() {
         )
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout("test", consumer, PlayoutMode::Reliable)
+    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
         .await
         .unwrap();
 
@@ -415,10 +417,10 @@ async fn two_subscribers_receive_frames() {
         )
         .unwrap();
 
-    let remote1 = RemoteBroadcast::with_playout("s1", consumer1, PlayoutMode::Reliable)
+    let remote1 = RemoteBroadcast::with_playout_mode("s1", consumer1, PlayoutMode::Reliable)
         .await
         .unwrap();
-    let remote2 = RemoteBroadcast::with_playout("s2", consumer2, PlayoutMode::Reliable)
+    let remote2 = RemoteBroadcast::with_playout_mode("s2", consumer2, PlayoutMode::Reliable)
         .await
         .unwrap();
 
@@ -453,7 +455,7 @@ async fn publisher_resolution_change_updates_subscriber() {
         )
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout("test", consumer, PlayoutMode::Reliable)
+    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
         .await
         .unwrap();
 
@@ -523,7 +525,7 @@ async fn audio_clear_while_video_continues() {
         )
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout("test", consumer, PlayoutMode::Reliable)
+    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
         .await
         .unwrap();
 
@@ -573,7 +575,7 @@ async fn rapid_republish_does_not_panic() {
     }
 
     // Should still be able to subscribe and get frames
-    let remote = RemoteBroadcast::with_playout("test", consumer, PlayoutMode::Reliable)
+    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
         .await
         .unwrap();
 
@@ -608,7 +610,7 @@ async fn audio_replace_source_subscriber_still_receives() {
         )
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout("test", consumer, PlayoutMode::Reliable)
+    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
         .await
         .unwrap();
 
@@ -662,7 +664,7 @@ async fn audio_clear_and_readd_works() {
         )
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout("test", consumer, PlayoutMode::Reliable)
+    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
         .await
         .unwrap();
 
@@ -722,7 +724,7 @@ async fn video_source_switch_preserves_audio() {
         )
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout("test", consumer, PlayoutMode::Reliable)
+    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
         .await
         .unwrap();
 
@@ -787,7 +789,7 @@ async fn rapid_audio_switches_do_not_panic() {
         )
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout("test", consumer, PlayoutMode::Reliable)
+    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
         .await
         .unwrap();
 
@@ -823,7 +825,69 @@ async fn rapid_audio_switches_do_not_panic() {
     assert!(!audio.rendition().is_empty());
 }
 
-// ── Group L: Playout clock shared across tracks ───────────────────
+// ── Group L: Audio data plane verification ────────────────────────
+
+#[cfg(all(feature = "h264", feature = "opus"))]
+#[tokio::test]
+async fn audio_data_flows_through_pipeline() {
+    let (broadcast, consumer) = setup_broadcast().await;
+
+    // Publish with a sine wave source instead of silence.
+    broadcast
+        .video()
+        .set(
+            TestVideoSource::new(320, 180),
+            VideoCodec::H264,
+            [VideoPreset::P180],
+        )
+        .unwrap();
+    broadcast
+        .audio()
+        .set(
+            SineAudioSource::new(AudioFormat::mono_48k()),
+            moq_media::codec::AudioCodec::Opus,
+            [AudioPreset::Hq],
+        )
+        .unwrap();
+
+    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
+        .await
+        .unwrap();
+
+    // Subscribe with a capturing backend to record decoded samples.
+    let backend = CapturingAudioBackend::new();
+    let captured = backend.captured_samples();
+
+    let _audio = remote.audio(&backend).await.unwrap();
+
+    // Drain some video frames to give the audio pipeline time to produce output.
+    let mut track = remote.video().unwrap();
+    for _ in 0..10 {
+        tokio::time::timeout(TIMEOUT, track.next_frame())
+            .await
+            .expect("timeout")
+            .expect("closed");
+    }
+
+    // Give audio decoder a moment to push samples.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let samples = captured.lock().unwrap();
+    assert!(
+        !samples.is_empty(),
+        "expected captured audio samples, got none — audio data did not flow through pipeline"
+    );
+
+    // Verify the captured samples are not all silent (Opus should preserve
+    // the sine wave energy through encode→decode).
+    let rms: f32 = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+    assert!(
+        rms > 0.01,
+        "captured audio RMS {rms:.6} is too low — expected non-silent sine wave after Opus roundtrip"
+    );
+}
+
+// ── Group M: Playout clock shared across tracks ───────────────────
 
 #[cfg(feature = "h264")]
 #[tokio::test]
