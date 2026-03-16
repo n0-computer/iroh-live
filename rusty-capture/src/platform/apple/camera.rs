@@ -86,7 +86,7 @@ pub struct AppleCameraCapturer {
     #[debug(skip)]
     rx: mpsc::Receiver<VideoFrame>,
     #[debug(skip)]
-    stop_tx: Option<mpsc::Sender<()>>,
+    stop_tx: Option<mpsc::SyncSender<()>>,
 }
 
 impl AppleCameraCapturer {
@@ -94,8 +94,8 @@ impl AppleCameraCapturer {
     pub fn new(info: &CameraInfo, config: &CameraConfig) -> Result<Self> {
         use crate::CameraSelector;
 
-        let (_frame_tx, frame_rx) = mpsc::channel();
-        let (stop_tx, _stop_rx) = mpsc::channel();
+        let (_frame_tx, frame_rx) = mpsc::sync_channel(2);
+        let (stop_tx, _stop_rx) = mpsc::sync_channel(1);
 
         // Derive requested resolution from the selector strategy.
         let (width, height) = if let Some(fmt) = config.select_format(&info.supported_formats) {

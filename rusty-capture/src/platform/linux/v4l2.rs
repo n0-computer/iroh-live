@@ -13,28 +13,22 @@
 //! - **DMABUF export** (when supported): After MMAP allocation, calls
 //!   `VIDIOC_EXPBUF` via [`v4l2r::ioctl::expbuf`] to get DMA-BUF file
 //!   descriptors. These can be imported directly by VAAPI or V4L2 M2M
-//!   encoders for zero-copy encode. Produces `FrameData::Gpu` with
-//!   `NativeFrameHandle::DmaBuf`.
+//!   encoders without CPU-touching the pixels.
 //!
-//! # Raspberry Pi Compatibility
+//! # Threading Model
 //!
-//! | Model | Driver | MMAP | DMABUF | HW Encode |
-//! |-------|--------|------|--------|-----------|
-//! | Pi 1/Zero | bcm2835-v4l2 (legacy) | Yes | No* | MMAL (GPU) |
-//! | Pi 2/3/Zero 2 | bcm2835-v4l2 (legacy) | Yes | No* | MMAL (GPU) |
-//! | Pi 4 | libcamera (unicam+ISP) | Yes | Yes | V4L2 M2M `/dev/video11` |
-//! | Pi 5 | libcamera (rp1-cfe+PiSP) | Yes | Yes | None (software only) |
-//! | USB (any Pi) | uvcvideo | Yes | No | N/A |
-//!
-//! *bcm2835-v4l2 requires a kernel patch for EXPBUF. Without it, falls back to MMAP.
+//! No internal thread. The moq-media encode pipeline already runs capture on
+//! its own thread via `spawn_thread`. `pop_frame()` calls `dqbuf` directly,
+//! which blocks on the kernel until a frame is available. This is the
+//! intended usage: one blocking call per frame, driven by the caller's
+//! thread.
 
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use v4l2r::PixelFormat as V4l2PixelFormat;
 use v4l2r::ioctl::{self, FormatIterator, PlaneMapping, QueryBuffer};
 use v4l2r::memory::{MemoryType, MmapHandle};
@@ -145,22 +139,36 @@ fn enumerate_frame_intervals(
     fps_list
 }
 
+const NUM_BUFFERS: u32 = 4;
+
 /// V4L2 camera capturer.
 ///
 /// Captures frames via MMAP streaming. When the driver supports
 /// `VIDIOC_EXPBUF`, attempts DMA-BUF export for zero-copy downstream
 /// encoding (e.g. V4L2 M2M H.264 on Raspberry Pi 4).
+///
+/// No internal thread — `pop_frame()` blocks on the kernel's `dqbuf` ioctl
+/// directly. The caller (moq-media encode pipeline) drives the capture loop
+/// from its own thread.
 #[derive(derive_more::Debug)]
 pub struct V4l2CameraCapturer {
     width: u32,
     height: u32,
     #[allow(dead_code, reason = "used for future DMABUF format selection")]
     capture_format: CapturePixelFormat,
-    #[debug(skip)]
-    rx: mpsc::Receiver<VideoFrame>,
-    #[debug(skip)]
-    stop_tx: Option<mpsc::Sender<()>>,
     device_name: String,
+    /// Device fd, mmap buffers, and capture state. `None` before `start()` /
+    /// after `stop()`.
+    #[debug(skip)]
+    state: Option<CaptureState>,
+    /// Held between `new()` and `start()` so we can re-open the device.
+    device_path: String,
+}
+
+struct CaptureState {
+    dev: File,
+    mappings: Vec<PlaneMapping>,
+    capture_start: Instant,
 }
 
 impl V4l2CameraCapturer {
@@ -227,169 +235,159 @@ impl V4l2CameraCapturer {
             "V4L2 camera opened"
         );
 
-        let (frame_tx, frame_rx) = mpsc::channel();
-        let (stop_tx, stop_rx) = mpsc::channel();
-
-        let device_path = path.to_string();
-        let zero_copy = config.zero_copy;
-        std::thread::Builder::new()
-            .name(format!("v4l2-{name}"))
-            .spawn(move || {
-                if let Err(e) = capture_loop(
-                    &device_path,
-                    width,
-                    height,
-                    capture_format,
-                    zero_copy,
-                    frame_tx,
-                    stop_rx,
-                ) {
-                    warn!("V4L2 capture loop exited: {e}");
-                }
-            })
-            .context("failed to spawn V4L2 capture thread")?;
-
         Ok(Self {
             width,
             height,
             capture_format,
-            rx: frame_rx,
-            stop_tx: Some(stop_tx),
             device_name: name.to_string(),
+            state: None,
+            device_path: path.to_string(),
         })
+    }
+
+    /// Sets up MMAP buffers and starts V4L2 streaming.
+    fn start_streaming(&mut self) -> Result<()> {
+        if self.state.is_some() {
+            return Ok(());
+        }
+
+        let mut dev = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.device_path)
+            .context("failed to reopen V4L2 device for capture")?;
+
+        // Re-set the format on the new fd.
+        let desired = Format {
+            width: self.width,
+            height: self.height,
+            pixelformat: V4l2PixelFormat::from_fourcc(&self.capture_format.to_v4l2_fourcc()),
+            plane_fmt: vec![],
+        };
+        let _actual: Format = ioctl::s_fmt(&mut dev, (QueueType::VideoCapture, &desired))?;
+
+        // Allocate MMAP buffers.
+        let num_bufs: usize = ioctl::reqbufs(
+            &dev,
+            QueueType::VideoCapture,
+            MemoryType::Mmap,
+            NUM_BUFFERS,
+            ioctl::MemoryConsistency::empty(),
+        )?;
+
+        // Query and mmap each buffer.
+        let mut mappings: Vec<PlaneMapping> = Vec::with_capacity(num_bufs);
+        for i in 0..num_bufs {
+            let buf_info: QueryBuffer = ioctl::querybuf(&dev, QueueType::VideoCapture, i)?;
+            let plane = buf_info.planes.first().context("no planes in buffer")?;
+            let mapping = ioctl::mmap(&dev, plane.mem_offset, plane.length)?;
+            mappings.push(mapping);
+        }
+
+        // Queue all buffers.
+        for i in 0..num_bufs {
+            let mut qbuf = ioctl::QBuffer::<MmapHandle>::new(QueueType::VideoCapture, i as u32);
+            qbuf.planes.push(ioctl::QBufPlane::new(0));
+            ioctl::qbuf::<_, ()>(&dev, qbuf)?;
+        }
+
+        // Start streaming.
+        ioctl::streamon(&dev, QueueType::VideoCapture)?;
+
+        self.state = Some(CaptureState {
+            dev,
+            mappings,
+            capture_start: Instant::now(),
+        });
+
+        debug!(device = %self.device_path, "V4L2 streaming started");
+        Ok(())
+    }
+
+    /// Stops V4L2 streaming and frees buffers.
+    fn stop_streaming(&mut self) {
+        if let Some(state) = self.state.take() {
+            ioctl::streamoff(&state.dev, QueueType::VideoCapture).ok();
+            // Free buffers by requesting 0.
+            let _ = ioctl::reqbufs::<()>(
+                &state.dev,
+                QueueType::VideoCapture,
+                MemoryType::Mmap,
+                0,
+                ioctl::MemoryConsistency::empty(),
+            );
+            debug!(device = %self.device_path, "V4L2 streaming stopped");
+        }
     }
 }
 
-fn capture_loop(
-    path: &str,
-    width: u32,
-    height: u32,
-    capture_format: CapturePixelFormat,
-    _zero_copy: bool,
-    tx: mpsc::Sender<VideoFrame>,
-    stop_rx: mpsc::Receiver<()>,
-) -> Result<()> {
-    let mut dev = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)
-        .context("failed to reopen V4L2 device for capture")?;
-
-    // Set the same format on this new fd.
-    let desired = Format {
-        width,
-        height,
-        pixelformat: V4l2PixelFormat::from_fourcc(&capture_format.to_v4l2_fourcc()),
-        plane_fmt: vec![],
-    };
-    let _actual: Format = ioctl::s_fmt(&mut dev, (QueueType::VideoCapture, &desired))?;
-
-    // TODO(zero-copy): When `_zero_copy` is true and the driver supports
-    // VIDIOC_EXPBUF, export MMAP buffers as DMA-BUF fds:
-    //
-    //   use std::os::unix::io::OwnedFd;
-    //   let fd: OwnedFd = ioctl::expbuf(
-    //       &dev,
-    //       QueueType::VideoCapture,
-    //       buffer_index,
-    //       0, // plane
-    //       ioctl::ExpbufFlags::CLOEXEC | ioctl::ExpbufFlags::RDWR,
-    //   )?;
-    //
-    // This enables zero-copy to V4L2 M2M encoders (Pi 4 /dev/video11) and
-    // VAAPI encoders that accept DMA-BUF import. Falls back to MMAP CPU
-    // path if EXPBUF returns EINVAL or ENOTTY.
-
-    const NUM_BUFFERS: u32 = 4;
-
-    // Allocate MMAP buffers.
-    let num_bufs: usize = ioctl::reqbufs(
-        &dev,
-        QueueType::VideoCapture,
-        MemoryType::Mmap,
-        NUM_BUFFERS,
-        ioctl::MemoryConsistency::empty(),
-    )?;
-
-    // Query and mmap each buffer.
-    let mut mappings: Vec<PlaneMapping> = Vec::with_capacity(num_bufs);
-    for i in 0..num_bufs {
-        let buf_info: QueryBuffer = ioctl::querybuf(&dev, QueueType::VideoCapture, i)?;
-        let plane = buf_info.planes.first().context("no planes in buffer")?;
-        let mapping = ioctl::mmap(&dev, plane.mem_offset, plane.length)?;
-        mappings.push(mapping);
+impl VideoSource for V4l2CameraCapturer {
+    fn name(&self) -> &str {
+        &self.device_name
     }
 
-    // Queue all buffers.
-    for i in 0..num_bufs {
-        let mut qbuf = ioctl::QBuffer::<MmapHandle>::new(QueueType::VideoCapture, i as u32);
-        qbuf.planes.push(ioctl::QBufPlane::new(0));
-        ioctl::qbuf::<_, ()>(&dev, qbuf)?;
-    }
-
-    // Start streaming.
-    ioctl::streamon(&dev, QueueType::VideoCapture)?;
-
-    let capture_start = Instant::now();
-
-    loop {
-        if stop_rx.try_recv().is_ok() {
-            debug!("V4L2 capture stopping");
-            break;
+    fn format(&self) -> VideoFormat {
+        VideoFormat {
+            pixel_format: PixelFormat::Rgba,
+            dimensions: [self.width, self.height],
         }
+    }
 
-        // Dequeue a filled buffer.
-        let dqbuf: QueryBuffer = match ioctl::dqbuf(&dev, QueueType::VideoCapture) {
+    fn start(&mut self) -> Result<()> {
+        self.start_streaming()
+    }
+
+    fn stop(&mut self) -> Result<()> {
+        self.stop_streaming();
+        Ok(())
+    }
+
+    fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {
+        let Some(state) = &self.state else {
+            return Ok(None);
+        };
+
+        // dqbuf: blocks until a frame is ready (kernel-side wait).
+        let dqbuf: QueryBuffer = match ioctl::dqbuf(&state.dev, QueueType::VideoCapture) {
             Ok(buf) => buf,
             Err(ioctl::DqBufError::IoctlError(ioctl::DqBufIoctlError::NotReady)) => {
-                std::thread::sleep(Duration::from_millis(1));
-                continue;
+                return Ok(None);
             }
             Err(e) => {
-                warn!("V4L2 dqbuf error: {e}");
-                break;
+                anyhow::bail!("V4L2 dqbuf error: {e}");
             }
         };
 
         let buf_idx = dqbuf.index;
-        let Some(mapping) = mappings.get(buf_idx) else {
-            warn!(
-                buf_idx,
-                num_bufs = mappings.len(),
-                "V4L2 dqbuf returned invalid index"
+        let Some(mapping) = state.mappings.get(buf_idx) else {
+            anyhow::bail!(
+                "V4L2 dqbuf returned invalid index {buf_idx} (have {} buffers)",
+                state.mappings.len()
             );
-            break;
         };
         let data: &[u8] = mapping;
 
-        let frame = convert_frame(data, width, height, capture_format, capture_start.elapsed())?;
+        let frame = convert_frame(
+            data,
+            self.width,
+            self.height,
+            self.capture_format,
+            state.capture_start.elapsed(),
+        )?;
 
-        // Re-queue the buffer before sending the frame.
+        // Re-queue the buffer now that we've copied the data.
         let mut qbuf = ioctl::QBuffer::<MmapHandle>::new(QueueType::VideoCapture, buf_idx as u32);
         qbuf.planes.push(ioctl::QBufPlane::new(0));
-        if let Err(e) = ioctl::qbuf::<_, ()>(&dev, qbuf) {
-            warn!("V4L2 qbuf error: {e}");
-            break;
-        }
+        ioctl::qbuf::<_, ()>(&state.dev, qbuf)?;
 
-        if tx.send(frame).is_err() {
-            debug!("V4L2 frame receiver dropped");
-            break;
-        }
+        Ok(Some(frame))
     }
+}
 
-    // Stop streaming.
-    ioctl::streamoff(&dev, QueueType::VideoCapture).ok();
-    // Free buffers by requesting 0.
-    let _ = ioctl::reqbufs::<()>(
-        &dev,
-        QueueType::VideoCapture,
-        MemoryType::Mmap,
-        0,
-        ioctl::MemoryConsistency::empty(),
-    );
-
-    Ok(())
+impl Drop for V4l2CameraCapturer {
+    fn drop(&mut self) {
+        self.stop_streaming();
+    }
 }
 
 fn convert_frame(
@@ -539,51 +537,4 @@ fn mjpeg_to_rgba(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
         height
     );
     Ok(img.to_rgba8().into_raw())
-}
-
-impl VideoSource for V4l2CameraCapturer {
-    fn name(&self) -> &str {
-        &self.device_name
-    }
-
-    fn format(&self) -> VideoFormat {
-        VideoFormat {
-            pixel_format: PixelFormat::Rgba,
-            dimensions: [self.width, self.height],
-        }
-    }
-
-    fn start(&mut self) -> Result<()> {
-        Ok(())
-    }
-
-    fn stop(&mut self) -> Result<()> {
-        if let Some(tx) = self.stop_tx.take() {
-            let _ = tx.send(());
-        }
-        Ok(())
-    }
-
-    fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {
-        // Drain to latest frame (don't build up latency).
-        let mut latest = None;
-        loop {
-            match self.rx.try_recv() {
-                Ok(frame) => latest = Some(frame),
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    anyhow::bail!("V4L2 capture thread exited")
-                }
-            }
-        }
-        Ok(latest)
-    }
-}
-
-impl Drop for V4l2CameraCapturer {
-    fn drop(&mut self) {
-        if let Some(tx) = self.stop_tx.take() {
-            let _ = tx.send(());
-        }
-    }
 }

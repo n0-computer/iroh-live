@@ -3,11 +3,12 @@
 //! Works on Linux (V4L2), macOS (AVFoundation), and Windows (Media
 //! Foundation). Produces CPU-backed RGBA frames — no zero-copy path.
 //!
-//! Because `nokhwa::Camera` is not `Send`, capture runs on a dedicated
-//! OS thread. The camera is created, opened, and driven entirely within
-//! that thread; the main thread communicates via bounded channels.
+//! # Threading Model
+//!
+//! No internal thread. The `camera-sync-impl` nokhwa feature makes
+//! `Camera` `Send`, so `pop_frame()` calls `camera.frame()` directly on
+//! the caller's thread (moq-media's encode pipeline thread).
 
-use std::sync::mpsc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -95,30 +96,16 @@ fn parse_camera_index(id: &str) -> CameraIndex {
     }
 }
 
-/// Command sent from the [`VideoSource`] methods to the capture thread.
-enum CaptureCmd {
-    Start,
-    Stop,
-    Shutdown,
-}
-
-/// Result sent back from the capture thread after initialization.
-struct InitResult {
-    dimensions: [u32; 2],
-    fps: u32,
-}
-
 /// Camera capturer backed by [`nokhwa`].
 ///
-/// Runs capture on a dedicated OS thread because `nokhwa::Camera` is not
-/// `Send`. The camera is created and driven entirely on that thread;
-/// frames flow back through a bounded channel.
+/// No internal thread — `pop_frame()` calls `camera.frame()` directly on
+/// the caller's thread. Requires the `camera-sync-impl` nokhwa feature.
 pub struct NokhwaCameraCapturer {
     camera_name: String,
     dimensions: [u32; 2],
-    frame_rx: mpsc::Receiver<VideoFrame>,
-    cmd_tx: mpsc::SyncSender<CaptureCmd>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    camera: Camera,
+    streaming: bool,
+    start_time: Instant,
 }
 
 impl std::fmt::Debug for NokhwaCameraCapturer {
@@ -126,6 +113,7 @@ impl std::fmt::Debug for NokhwaCameraCapturer {
         f.debug_struct("NokhwaCameraCapturer")
             .field("camera_name", &self.camera_name)
             .field("dimensions", &self.dimensions)
+            .field("streaming", &self.streaming)
             .finish_non_exhaustive()
     }
 }
@@ -149,157 +137,29 @@ impl NokhwaCameraCapturer {
             }
         };
         let req_format = RequestedFormat::new::<RgbAFormat>(requested);
+
+        let camera = Camera::new(index, req_format).context("nokhwa: failed to open camera")?;
+
+        let cf = camera.camera_format();
+        let dimensions = [cf.resolution().width(), cf.resolution().height()];
+        let fps = cf.frame_rate();
         let camera_name = info.name.clone();
-
-        // Bounded channel: 2 frames of buffering keeps latency low.
-        let (frame_tx, frame_rx) = mpsc::sync_channel::<VideoFrame>(2);
-        let (cmd_tx, cmd_rx) = mpsc::sync_channel::<CaptureCmd>(4);
-        // One-shot channel for the camera init result.
-        let (init_tx, init_rx) = mpsc::sync_channel::<Result<InitResult>>(1);
-
-        let thread_name = format!("nokhwa-{camera_name}");
-        let thread = std::thread::Builder::new()
-            .name(thread_name)
-            .spawn(move || capture_thread(index, req_format, init_tx, cmd_rx, frame_tx))
-            .context("nokhwa: failed to spawn capture thread")?;
-
-        // Wait for the camera to be created on the capture thread.
-        let init = init_rx
-            .recv()
-            .map_err(|_| anyhow::anyhow!("nokhwa: capture thread exited during init"))??;
 
         debug!(
             name = %camera_name,
-            width = init.dimensions[0],
-            height = init.dimensions[1],
-            fps = init.fps,
+            width = dimensions[0],
+            height = dimensions[1],
+            fps,
             "nokhwa camera capturer created"
         );
 
         Ok(Self {
             camera_name,
-            dimensions: init.dimensions,
-            frame_rx,
-            cmd_tx,
-            thread: Some(thread),
+            dimensions,
+            camera,
+            streaming: false,
+            start_time: Instant::now(),
         })
-    }
-}
-
-/// Entry point for the capture thread. Creates the camera here so it
-/// never crosses a thread boundary.
-fn capture_thread(
-    index: CameraIndex,
-    req_format: RequestedFormat<'static>,
-    init_tx: mpsc::SyncSender<Result<InitResult>>,
-    cmd_rx: mpsc::Receiver<CaptureCmd>,
-    frame_tx: mpsc::SyncSender<VideoFrame>,
-) {
-    let camera = match Camera::new(index, req_format) {
-        Ok(c) => c,
-        Err(e) => {
-            let _ = init_tx.send(Err(anyhow::anyhow!("nokhwa: failed to open camera: {e}")));
-            return;
-        }
-    };
-
-    let cf = camera.camera_format();
-    let dimensions = [cf.resolution().width(), cf.resolution().height()];
-    let fps = cf.frame_rate();
-
-    if init_tx.send(Ok(InitResult { dimensions, fps })).is_err() {
-        return;
-    }
-
-    capture_loop(camera, cmd_rx, frame_tx);
-}
-
-/// Drives the camera, responding to commands and forwarding frames.
-fn capture_loop(
-    mut camera: Camera,
-    cmd_rx: mpsc::Receiver<CaptureCmd>,
-    frame_tx: mpsc::SyncSender<VideoFrame>,
-) {
-    let mut streaming = false;
-    let mut start_time = Instant::now();
-
-    loop {
-        // Drain commands (non-blocking).
-        while let Ok(cmd) = cmd_rx.try_recv() {
-            match cmd {
-                CaptureCmd::Start => {
-                    if !streaming {
-                        if let Err(e) = camera.open_stream() {
-                            warn!(error = %e, "nokhwa: open_stream failed");
-                        } else {
-                            streaming = true;
-                            start_time = Instant::now();
-                        }
-                    }
-                }
-                CaptureCmd::Stop => {
-                    if streaming {
-                        if let Err(e) = camera.stop_stream() {
-                            warn!(error = %e, "nokhwa: stop_stream failed");
-                        }
-                        streaming = false;
-                    }
-                }
-                CaptureCmd::Shutdown => {
-                    if streaming {
-                        let _ = camera.stop_stream();
-                    }
-                    return;
-                }
-            }
-        }
-
-        if !streaming {
-            // Block until a command arrives instead of busy-looping.
-            match cmd_rx.recv() {
-                Ok(CaptureCmd::Start) => {
-                    if let Err(e) = camera.open_stream() {
-                        warn!(error = %e, "nokhwa: open_stream failed");
-                    } else {
-                        streaming = true;
-                        start_time = Instant::now();
-                    }
-                }
-                Ok(CaptureCmd::Shutdown) | Err(_) => return,
-                Ok(CaptureCmd::Stop) => {}
-            }
-            continue;
-        }
-
-        // Capture a frame.
-        let buffer = match camera.frame() {
-            Ok(b) => b,
-            Err(e) => {
-                warn!(error = %e, "nokhwa: frame capture failed");
-                continue;
-            }
-        };
-
-        let timestamp = start_time.elapsed();
-        let res = buffer.resolution();
-        let w = res.width();
-        let h = res.height();
-
-        let rgba_image = match buffer.decode_image::<RgbAFormat>() {
-            Ok(img) => img,
-            Err(e) => {
-                warn!(error = %e, "nokhwa: frame decode failed");
-                continue;
-            }
-        };
-
-        let data: bytes::Bytes = rgba_image.into_raw().into();
-        let frame = VideoFrame::new_rgba(data, w, h, timestamp);
-
-        // Non-blocking send: drop the frame if the consumer is too slow.
-        if frame_tx.try_send(frame).is_err() {
-            // Consumer is behind; drop the frame to keep latency low.
-        }
     }
 }
 
@@ -316,33 +176,61 @@ impl VideoSource for NokhwaCameraCapturer {
     }
 
     fn start(&mut self) -> Result<()> {
-        self.cmd_tx
-            .send(CaptureCmd::Start)
-            .map_err(|_| anyhow::anyhow!("nokhwa: capture thread exited"))
+        if !self.streaming {
+            self.camera
+                .open_stream()
+                .map_err(|e| anyhow::anyhow!("nokhwa: open_stream failed: {e}"))?;
+            self.streaming = true;
+            self.start_time = Instant::now();
+        }
+        Ok(())
     }
 
     fn stop(&mut self) -> Result<()> {
-        self.cmd_tx
-            .send(CaptureCmd::Stop)
-            .map_err(|_| anyhow::anyhow!("nokhwa: capture thread exited"))
+        if self.streaming {
+            self.camera
+                .stop_stream()
+                .map_err(|e| anyhow::anyhow!("nokhwa: stop_stream failed: {e}"))?;
+            self.streaming = false;
+        }
+        Ok(())
     }
 
     fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {
-        match self.frame_rx.try_recv() {
-            Ok(frame) => Ok(Some(frame)),
-            Err(mpsc::TryRecvError::Empty) => Ok(None),
-            Err(mpsc::TryRecvError::Disconnected) => {
-                anyhow::bail!("nokhwa: capture thread exited unexpectedly")
-            }
+        if !self.streaming {
+            return Ok(None);
         }
+
+        let buffer = match self.camera.frame() {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(error = %e, "nokhwa: frame capture failed");
+                return Ok(None);
+            }
+        };
+
+        let timestamp = self.start_time.elapsed();
+        let res = buffer.resolution();
+        let w = res.width();
+        let h = res.height();
+
+        let rgba_image = match buffer.decode_image::<RgbAFormat>() {
+            Ok(img) => img,
+            Err(e) => {
+                warn!(error = %e, "nokhwa: frame decode failed");
+                return Ok(None);
+            }
+        };
+
+        let data: bytes::Bytes = rgba_image.into_raw().into();
+        Ok(Some(VideoFrame::new_rgba(data, w, h, timestamp)))
     }
 }
 
 impl Drop for NokhwaCameraCapturer {
     fn drop(&mut self) {
-        let _ = self.cmd_tx.send(CaptureCmd::Shutdown);
-        if let Some(handle) = self.thread.take() {
-            let _ = handle.join();
+        if self.streaming {
+            let _ = self.camera.stop_stream();
         }
     }
 }

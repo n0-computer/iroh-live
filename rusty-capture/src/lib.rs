@@ -353,7 +353,7 @@ impl CameraCapturer {
                 if cams.is_empty() {
                     anyhow::bail!("no cameras available");
                 }
-                owned = cams.into_iter().last().unwrap();
+                owned = cams.into_iter().next().unwrap();
                 &owned
             }
         };
