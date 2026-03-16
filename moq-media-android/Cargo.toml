@@ -1,0 +1,20 @@
+[package]
+name = "moq-media-android"
+version = "0.1.0"
+edition = "2024"
+description = "Android integration for moq-media: camera sources, EGL HardwareBuffer rendering"
+authors = ["Franz Heinzmann <frando@n0.computer>"]
+repository = "https://github.com/n0-computer/iroh-live"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+moq-media = { path = "../moq-media", default-features = false }
+anyhow = "1.0"
+tracing = "0.1"
+
+[target.'cfg(target_os = "android")'.dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true

@@ -3,6 +3,7 @@ members = [
     "iroh-live",
     "iroh-moq",
     "moq-media",
+    "moq-media-android",
     "moq-media-dioxus",
     "rusty-codecs",
     "rusty-capture",
