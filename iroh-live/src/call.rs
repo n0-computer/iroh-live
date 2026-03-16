@@ -1,39 +1,39 @@
+use std::str::FromStr;
+
 use iroh::{EndpointAddr, EndpointId};
 use iroh_moq::MoqSession;
 use moq_media::{publish::LocalBroadcast, subscribe::RemoteBroadcast};
-use n0_error::Result;
+use n0_error::{AnyError, Result, StackErrorExt, StdResultExt, stack_error};
+use serde::{Deserialize, Serialize};
 
 use crate::{Live, types::DisconnectReason};
 
 /// Errors from call operations.
-#[derive(Debug)]
+#[stack_error(derive)]
 pub enum CallError {
+    #[error("failed to connect")]
     /// Failed to connect to the remote peer.
-    ConnectionFailed(n0_error::AnyError),
+    ConnectionFailed(#[error(source)] AnyError),
     /// Remote peer rejected the call or closed before subscribing.
-    Rejected,
+    #[error("call rejected")]
+    Rejected(#[error(source)] AnyError),
     /// Call ended.
+    #[error("call ended ({_0})")]
     Ended(DisconnectReason),
 }
-
-impl std::fmt::Display for CallError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ConnectionFailed(e) => write!(f, "connection failed: {e}"),
-            Self::Rejected => write!(f, "call rejected"),
-            Self::Ended(r) => write!(f, "call ended: {r}"),
-        }
-    }
-}
-impl std::error::Error for CallError {}
 
 /// Standalone 1:1 call helper. Pure sugar over MoQ primitives.
 ///
 /// What it does internally:
 /// 1. Connects to remote peer (or accepts incoming session)
-/// 2. Creates + publishes a [`LocalBroadcast`] named "call"
+/// 2. Publishes the caller's [`LocalBroadcast`] named "call" on the session
 /// 3. Subscribes to the remote's broadcast -> [`RemoteBroadcast`]
 /// 4. Wraps both in a handle with state tracking
+///
+/// The caller provides a [`LocalBroadcast`] with video/audio already
+/// configured. Call publishes it on the session — do **not** also call
+/// [`Live::publish`] with the same name, as that would cause a
+/// double-publish conflict.
 ///
 /// Everything Call does can be done directly with
 /// [`Live::transport()`] + [`LocalBroadcast`] + [`RemoteBroadcast`].
@@ -46,25 +46,88 @@ pub struct Call {
 
 const CALL_BROADCAST_NAME: &str = "call";
 
+/// Shareable ticket for 1:1 calls.
+///
+/// Wraps an [`EndpointAddr`] with a fixed broadcast name. Serializes to a
+/// compact base32 string suitable for copy-paste or QR codes.
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, Serialize, Deserialize)]
+#[display("{}", self.serialize())]
+pub struct CallTicket {
+    /// Remote peer address.
+    pub endpoint: EndpointAddr,
+}
+
+impl CallTicket {
+    /// Creates a new call ticket for the given endpoint.
+    pub fn new(endpoint: impl Into<EndpointAddr>) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+        }
+    }
+
+    /// Converts this ticket to a [`crate::ticket::LiveTicket`].
+    pub fn into_live_ticket(self) -> crate::ticket::LiveTicket {
+        crate::ticket::LiveTicket::new(self.endpoint, CALL_BROADCAST_NAME)
+    }
+
+    /// Serializes to a compact string.
+    fn serialize(&self) -> String {
+        let bytes = postcard::to_stdvec(&self.endpoint).unwrap();
+        data_encoding::BASE32_NOPAD
+            .encode(&bytes)
+            .to_ascii_lowercase()
+    }
+
+    /// Deserializes from a string produced by [`serialize`](Self::serialize).
+    pub fn deserialize(s: &str) -> Result<Self> {
+        let bytes = data_encoding::BASE32_NOPAD_NOCASE
+            .decode(s.trim().as_bytes())
+            .std_context("invalid base32")?;
+        let endpoint =
+            postcard::from_bytes(&bytes).std_context("failed to parse endpoint address")?;
+        Ok(Self { endpoint })
+    }
+}
+
+impl From<CallTicket> for EndpointAddr {
+    fn from(ticket: CallTicket) -> Self {
+        ticket.endpoint
+    }
+}
+
+impl FromStr for CallTicket {
+    type Err = AnyError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::deserialize(s)
+    }
+}
+
 impl Call {
-    /// Dials a remote peer. Connects, publishes local, subscribes to remote.
-    pub async fn dial(live: &Live, remote: impl Into<EndpointAddr>) -> Result<Self, CallError> {
+    /// Dials a remote peer. Connects, publishes the local broadcast, subscribes to remote.
+    ///
+    /// The `local` broadcast should have video/audio already configured.
+    /// It is published on the session as "call" — do **not** also publish
+    /// it via [`Live::publish`].
+    pub async fn dial(
+        live: &Live,
+        remote: impl Into<EndpointAddr>,
+        local: LocalBroadcast,
+    ) -> Result<Self, CallError> {
         let mut session = live
             .transport()
             .connect(remote)
             .await
             .map_err(CallError::ConnectionFailed)?;
 
-        let local = LocalBroadcast::new();
         session.publish(CALL_BROADCAST_NAME.to_string(), local.consume());
 
         let consumer = session
             .subscribe(CALL_BROADCAST_NAME)
             .await
-            .map_err(|_| CallError::Rejected)?;
+            .map_err(|err| CallError::Rejected(err.into()))?;
         let remote = RemoteBroadcast::new(CALL_BROADCAST_NAME.to_string(), consumer)
             .await
-            .map_err(|_| CallError::Rejected)?;
+            .map_err(CallError::Rejected)?;
 
         Ok(Self {
             session,
@@ -74,17 +137,20 @@ impl Call {
     }
 
     /// Accepts an incoming session as a call.
-    pub async fn accept(mut session: MoqSession) -> Result<Self, CallError> {
-        let local = LocalBroadcast::new();
+    ///
+    /// The `local` broadcast should have video/audio already configured.
+    /// It is published on the session as "call" — do **not** also publish
+    /// it via [`Live::publish`].
+    pub async fn accept(mut session: MoqSession, local: LocalBroadcast) -> Result<Self, CallError> {
         session.publish(CALL_BROADCAST_NAME.to_string(), local.consume());
 
         let consumer = session
             .subscribe(CALL_BROADCAST_NAME)
             .await
-            .map_err(|_| CallError::Rejected)?;
+            .map_err(|err| CallError::Rejected(err.context("subscribe failed")))?;
         let remote = RemoteBroadcast::new(CALL_BROADCAST_NAME.to_string(), consumer)
             .await
-            .map_err(|_| CallError::Rejected)?;
+            .map_err(|err| CallError::Rejected(err.context("establish failed")))?;
 
         Ok(Self {
             session,

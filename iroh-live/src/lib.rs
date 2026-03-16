@@ -20,7 +20,7 @@ pub use iroh_moq::ALPN;
 pub use moq_media as media;
 
 pub use self::{
-    call::{Call, CallError},
+    call::{Call, CallError, CallTicket},
     live::{Live, LiveBuilder},
     types::{DisconnectReason, ParticipantId, TrackKind, TrackName},
 };
