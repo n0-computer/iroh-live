@@ -102,7 +102,7 @@ pub fn monitors() -> Result<Vec<MonitorInfo>> {
 }
 
 struct FrameHandler {
-    tx: mpsc::Sender<VideoFrame>,
+    tx: mpsc::SyncSender<VideoFrame>,
     capture_start: Instant,
 }
 
@@ -148,7 +148,9 @@ impl SCStreamOutputTrait for FrameHandler {
             height as u32,
             self.capture_start.elapsed(),
         );
-        let _ = self.tx.send(frame);
+        // Drop frame if channel is full — backpressure from the callback
+        // thread. The consumer drains to latest anyway.
+        let _ = self.tx.try_send(frame);
     }
 }
 
@@ -158,7 +160,7 @@ pub struct MacScreenCapturer {
     width: u32,
     height: u32,
     #[debug(skip)]
-    rx: mpsc::Receiver<VideoFrame>,
+    rx: mpsc::Receiver<VideoFrame>, // bounded via SyncSender
     #[debug(skip)]
     stream: SCStream,
 }
@@ -216,7 +218,9 @@ impl MacScreenCapturer {
             };
         }
 
-        let (frame_tx, frame_rx) = mpsc::channel();
+        // Bounded: 2-frame buffer. The callback drops frames via try_send
+        // when the consumer falls behind.
+        let (frame_tx, frame_rx) = mpsc::sync_channel(2);
         let handler = FrameHandler {
             tx: frame_tx,
             capture_start: Instant::now(),

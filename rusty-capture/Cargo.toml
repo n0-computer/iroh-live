@@ -21,7 +21,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg"] }
 # Cross-platform screen capture (Linux X11/Wayland, macOS, Windows).
 xcap = { version = "0.9", optional = true }
 # Cross-platform webcam capture (Linux V4L2, macOS AVFoundation, Windows Media Foundation).
-nokhwa = { version = "0.10", optional = true, features = ["input-native"] }
+nokhwa = { version = "0.10", optional = true, features = ["input-native", "camera-sync-impl"] }
 
 # Core types from rusty-codecs (no codec features enabled).
 rusty-codecs = { path = "../rusty-codecs", default-features = false }
