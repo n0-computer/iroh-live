@@ -44,6 +44,10 @@ pub struct AndroidDecoder {
     /// Current decoded frame dimensions (updated on format change).
     decoded_width: u32,
     decoded_height: u32,
+    /// Output buffer stride (may be > width due to alignment padding).
+    stride: u32,
+    /// Output buffer slice height (may be > height).
+    slice_height: u32,
     /// Decoded frame waiting to be collected via `pop_frame`.
     #[debug(skip)]
     pending_frame: Option<VideoFrame>,
@@ -108,6 +112,8 @@ impl VideoDecoder for AndroidDecoder {
             last_timestamp: None,
             decoded_width: width,
             decoded_height: height,
+            stride: width,
+            slice_height: height,
             pending_frame: None,
         })
     }
@@ -186,7 +192,14 @@ impl AndroidDecoder {
         {
             DequeuedInputBufferResult::Buffer(mut input_buf) => {
                 let buf = input_buf.buffer_mut();
-                let copy_len = data.len().min(buf.len());
+                if data.len() > buf.len() {
+                    anyhow::bail!(
+                        "encoded packet ({} bytes) exceeds MediaCodec input buffer ({} bytes)",
+                        data.len(),
+                        buf.len()
+                    );
+                }
+                let copy_len = data.len();
                 unsafe {
                     std::ptr::copy_nonoverlapping(
                         data.as_ptr(),
@@ -227,32 +240,41 @@ impl AndroidDecoder {
                     }
 
                     let raw = output_buf.buffer().to_vec();
-                    let presentation_time_us = info.presentation_time_us() as u64;
+                    let presentation_time_us = info.presentation_time_us().max(0) as u64;
 
                     self.codec
                         .release_output_buffer(output_buf, false)
                         .map_err(|e| anyhow::anyhow!("decoder release output failed: {e:?}"))?;
 
                     // Convert NV12 output to the requested pixel format.
+                    // MediaCodec may pad rows to alignment boundaries, so
+                    // stride and slice_height can be larger than width/height.
                     let w = self.decoded_width;
                     let h = self.decoded_height;
-                    let y_size = (w * h) as usize;
+                    let stride = self.stride;
+                    let slice_h = self.slice_height;
+                    let y_plane_size = (stride * slice_h) as usize;
+                    let uv_plane_size = (stride * slice_h / 2) as usize;
 
-                    if raw.len() < y_size + y_size / 2 {
+                    if raw.len() < y_plane_size + uv_plane_size {
                         tracing::warn!(
                             len = raw.len(),
-                            expected = y_size + y_size / 2,
+                            expected = y_plane_size + uv_plane_size,
                             "decoder output buffer too small for NV12"
                         );
                         continue;
                     }
 
-                    let y_data = &raw[..y_size];
-                    let uv_data = &raw[y_size..y_size + y_size / 2];
+                    let y_data = &raw[..y_plane_size];
+                    let uv_data = &raw[y_plane_size..y_plane_size + uv_plane_size];
 
                     let pixels = match self.pixel_format {
-                        PixelFormat::Rgba => nv12_to_rgba_data(y_data, w, uv_data, w, w, h)?,
-                        PixelFormat::Bgra => nv12_to_bgra_data(y_data, w, uv_data, w, w, h)?,
+                        PixelFormat::Rgba => {
+                            nv12_to_rgba_data(y_data, stride, uv_data, stride, w, h)?
+                        }
+                        PixelFormat::Bgra => {
+                            nv12_to_bgra_data(y_data, stride, uv_data, stride, w, h)?
+                        }
                     };
 
                     let timestamp = Duration::from_micros(presentation_time_us);
@@ -272,9 +294,24 @@ impl AndroidDecoder {
                     if let Some(h) = format.i32(KEY_HEIGHT) {
                         self.decoded_height = h as u32;
                     }
+                    // Stride/slice-height may differ from width/height due to
+                    // alignment padding. These are needed to correctly extract
+                    // NV12 planes from the output buffer.
+                    if let Some(s) = format.i32("stride") {
+                        self.stride = s as u32;
+                    } else {
+                        self.stride = self.decoded_width;
+                    }
+                    if let Some(sh) = format.i32("slice-height") {
+                        self.slice_height = sh as u32;
+                    } else {
+                        self.slice_height = self.decoded_height;
+                    }
                     tracing::debug!(
                         width = self.decoded_width,
                         height = self.decoded_height,
+                        stride = self.stride,
+                        slice_height = self.slice_height,
                         "decoder output format changed"
                     );
                 }
