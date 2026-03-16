@@ -247,7 +247,7 @@ fn all_decoders() -> Vec<TestDecoder> {
                 if VAAPI_DECODE_DISABLED.load(Ordering::Relaxed) {
                     return None;
                 }
-                // VAAPI decode + GPU→CPU download (.img()) can hang in test environments.
+                // VAAPI decode + GPU→CPU download (.rgba_image()) can hang in test environments.
                 // Wrap in a thread with a per-decode timeout to avoid blocking the test suite.
                 let config = config.clone();
                 let dc = dc.clone();
@@ -265,7 +265,7 @@ fn all_decoders() -> Vec<TestDecoder> {
                             dec.push_packet(pkt).unwrap();
                             if let Some(f) = dec.pop_frame().unwrap() {
                                 // Download to CPU and drop GPU frame to free pool slot
-                                let img = f.img().clone();
+                                let img = f.rgba_image().clone();
                                 let w = img.width();
                                 let h = img.height();
                                 let ts = f.timestamp;
@@ -379,7 +379,7 @@ fn solid_color_roundtrip(
     // Compare last decoded frame against the solid-color reference.
     let original: Vec<u8> = [r, g, b, 255].repeat((w * h) as usize);
     let last = frames.last().unwrap();
-    let img = last.img();
+    let img = last.rgba_image();
     let m = compute_metrics(&original, img.as_raw());
     Some((frames, m))
 }
@@ -399,7 +399,7 @@ fn pattern_roundtrip(
         return None;
     }
     let last = frames.last().unwrap();
-    let img = last.img();
+    let img = last.rgba_image();
     let m = compute_metrics(frame.rgba_image().as_raw(), img.as_raw());
     Some((frames, m))
 }
@@ -698,8 +698,8 @@ fn cross_backend_h264_decoder_parity() {
             }
 
             // Compare last frames from each decoder.
-            let sw_img = sw_frames.last().unwrap().img();
-            let hw_img = hw_frames.last().unwrap().img();
+            let sw_img = sw_frames.last().unwrap().rgba_image();
+            let hw_img = hw_frames.last().unwrap().rgba_image();
 
             // Dimensions must match.
             assert_eq!(
@@ -781,8 +781,8 @@ fn cross_backend_h264_encoder_parity() {
                 continue;
             }
 
-            let sw_img = sw_frames.last().unwrap().img();
-            let hw_img = hw_frames.last().unwrap().img();
+            let sw_img = sw_frames.last().unwrap().rgba_image();
+            let hw_img = hw_frames.last().unwrap().rgba_image();
 
             // Reference is the solid color, not the SW-decoded frame, because both
             // encoders introduce their own codec artifacts.

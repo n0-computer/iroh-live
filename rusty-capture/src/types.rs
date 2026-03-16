@@ -73,7 +73,7 @@ pub struct CameraInfo {
     pub supported_formats: Vec<CameraFormat>,
 }
 
-/// A resolution + frame rate + pixel format combination a camera supports.
+/// Resolution, frame rate, and pixel format combination a camera supports.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CameraFormat {
     /// Frame dimensions `[width, height]`.

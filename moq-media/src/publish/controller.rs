@@ -109,15 +109,15 @@ impl Error for PublishUpdateError {}
 /// first enable.
 ///
 /// State is exposed via [`n0_watcher::Watchable`] for reactive observation.
-/// This type is transport-agnostic — the caller connects broadcast producers
-/// to whatever transport layer they use (rooms, direct connections, etc.).
+/// Transport-agnostic — the caller connects broadcast producers to whatever
+/// transport layer they use (rooms, direct connections, etc.).
 #[derive(Debug)]
 pub struct PublishCaptureController {
     audio_ctx: AudioBackend,
     camera: Arc<Mutex<LocalBroadcast>>,
     screen: Option<LocalBroadcast>,
     state: Watchable<PublishOpts>,
-    prev: CaptureConfig,
+    previous_capture: CaptureConfig,
 }
 
 impl PublishCaptureController {
@@ -130,7 +130,7 @@ impl PublishCaptureController {
             camera: Arc::new(Mutex::new(LocalBroadcast::new())),
             screen: None,
             state: Watchable::new(PublishOpts::default()),
-            prev: CaptureConfig::default(),
+            previous_capture: CaptureConfig::default(),
         }
     }
 
@@ -175,7 +175,7 @@ impl PublishCaptureController {
             }
         };
 
-        self.prev = opts.capture.clone();
+        self.previous_capture = opts.capture.clone();
         self.state.set(opts).ok();
 
         if errors.is_empty() {
@@ -200,8 +200,10 @@ impl PublishCaptureController {
     #[cfg(all(any_video_codec, feature = "capture-camera"))]
     fn apply_camera(&mut self, enable: bool, capture: &CaptureConfig) -> Result<()> {
         let cur = self.state.get();
-        let index_changed = enable && cur.camera && capture.camera_index != self.prev.camera_index;
-        let codec_changed = enable && cur.camera && capture.video_codec != self.prev.video_codec;
+        let index_changed =
+            enable && cur.camera && capture.camera_index != self.previous_capture.camera_index;
+        let codec_changed =
+            enable && cur.camera && capture.video_codec != self.previous_capture.video_codec;
         if cur.camera != enable || index_changed || codec_changed {
             let camera = self.camera.lock().expect("poisoned");
             if enable {
@@ -233,7 +235,8 @@ impl PublishCaptureController {
         capture: &CaptureConfig,
     ) -> Result<Option<BroadcastProducer>> {
         let cur = self.state.get();
-        let codec_changed = enable && cur.screen && capture.video_codec != self.prev.video_codec;
+        let codec_changed =
+            enable && cur.screen && capture.video_codec != self.previous_capture.video_codec;
         if cur.screen != enable || codec_changed {
             if enable {
                 let mut new_producer = None;
@@ -272,7 +275,8 @@ impl PublishCaptureController {
     #[cfg(any_audio_codec)]
     fn apply_audio(&mut self, enable: bool, capture: &CaptureConfig) -> Result<()> {
         let cur = self.state.get();
-        let device_changed = enable && cur.audio && capture.audio_device != self.prev.audio_device;
+        let device_changed =
+            enable && cur.audio && capture.audio_device != self.previous_capture.audio_device;
         if cur.audio != enable || device_changed {
             if device_changed {
                 // Disable current audio first before re-enabling with the new device.

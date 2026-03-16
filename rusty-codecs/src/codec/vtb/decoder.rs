@@ -105,8 +105,9 @@ impl VideoDecoder for VtbDecoder {
         };
 
         // Extract SPS/PPS from avcC description if available.
-        let (sps, pps) = if let Some(desc) = &config.description {
-            let annex_b = avcc_to_annex_b(desc).context("failed to parse avcC description")?;
+        let (sps, pps) = if let Some(description) = &config.description {
+            let annex_b =
+                avcc_to_annex_b(description).context("failed to parse avcC description")?;
             let nals = parse_annex_b(&annex_b);
             extract_sps_pps(&nals).context("no SPS/PPS in avcC")?
         } else {

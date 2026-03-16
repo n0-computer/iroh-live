@@ -207,7 +207,7 @@ impl IncomingSessionStream {
     }
 }
 
-/// An incoming MoQ session, not yet fully accepted by the application.
+/// Incoming MoQ session, not yet fully accepted by the application.
 ///
 /// The MoQ handshake has already completed. The application can inspect
 /// the remote peer's identity before deciding to accept or reject.
@@ -233,7 +233,7 @@ impl IncomingSession {
     }
 }
 
-/// A MoQ session with a remote peer.
+/// MoQ session with a remote peer.
 ///
 /// Supports publishing local broadcasts and subscribing to remote ones.
 /// Created via [`Moq::connect`] or from an [`IncomingSession`].

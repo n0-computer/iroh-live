@@ -752,8 +752,8 @@ mod tests {
         for pkt in packets {
             dec.push_packet(pkt).unwrap();
             if let Some(frame) = dec.pop_frame().unwrap() {
-                assert_eq!(frame.img().width(), 640);
-                assert_eq!(frame.img().height(), 360);
+                assert_eq!(frame.rgba_image().width(), 640);
+                assert_eq!(frame.rgba_image().height(), 360);
                 decoded_count += 1;
             }
         }

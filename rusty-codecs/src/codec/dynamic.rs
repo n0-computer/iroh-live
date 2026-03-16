@@ -14,7 +14,7 @@ impl Decoders for DefaultDecoders {
     type Video = DynamicVideoDecoder;
 }
 
-/// A video decoder that dispatches to the appropriate codec-specific decoder
+/// Video decoder that dispatches to the appropriate codec-specific decoder
 /// based on the `VideoConfig::codec` field.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -204,7 +204,7 @@ impl VideoDecoder for DynamicVideoDecoder {
     }
 }
 
-/// An audio decoder that dispatches to the appropriate codec-specific decoder
+/// Audio decoder that dispatches to the appropriate codec-specific decoder
 /// based on the `AudioConfig::codec` field.
 #[cfg(any_audio_codec)]
 #[derive(Debug)]

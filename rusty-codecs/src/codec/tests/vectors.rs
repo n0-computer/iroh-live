@@ -218,7 +218,7 @@ fn decode_external_idr_16x16_blue() {
     let frames = decode_all(&config, packets);
     assert!(!frames.is_empty(), "decoder produced no frames");
 
-    let img = frames[0].img();
+    let img = frames[0].rgba_image();
     assert_eq!(img.width(), 16);
     assert_eq!(img.height(), 16);
     let pixel = img.get_pixel(8, 8);
@@ -237,7 +237,7 @@ fn decode_external_idr_32x32_red() {
     let frames = decode_all(&config, packets);
     assert!(!frames.is_empty());
 
-    let img = frames[0].img();
+    let img = frames[0].rgba_image();
     assert_eq!(img.width(), 32);
     assert_eq!(img.height(), 32);
     let pixel = img.get_pixel(16, 16);
@@ -267,7 +267,7 @@ fn decode_external_sequence_green_6f() {
 
     // Check last frame (decoder fully warmed up).
     let last = frames.last().unwrap();
-    let img = last.img();
+    let img = last.rgba_image();
     assert_eq!(img.width(), 32);
     assert_eq!(img.height(), 32);
     let pixel = img.get_pixel(16, 16);
@@ -290,7 +290,7 @@ fn decode_external_main_profile_3f() {
         "decoder should handle Main profile (CABAC) bitstreams"
     );
 
-    let img = frames.last().unwrap().img();
+    let img = frames.last().unwrap().rgba_image();
     assert_eq!(img.width(), 32);
     assert_eq!(img.height(), 32);
     // Yellow: R high, G high, B low
@@ -316,7 +316,7 @@ fn decode_external_pattern_64x64_5f() {
 
     // Pattern frame should not be all black.
     let last = frames.last().unwrap();
-    let img = last.img();
+    let img = last.rgba_image();
     assert_eq!(img.width(), 64);
     assert_eq!(img.height(), 64);
     let mut total_brightness: u64 = 0;

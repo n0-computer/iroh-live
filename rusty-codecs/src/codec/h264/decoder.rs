@@ -221,7 +221,7 @@ mod tests {
         for pkt in packets {
             dec.push_packet(pkt).unwrap();
             if let Some(frame) = dec.pop_frame().unwrap() {
-                let img = frame.img();
+                let img = frame.rgba_image();
                 assert_eq!(img.width(), w);
                 assert_eq!(img.height(), h);
                 decoded_count += 1;
@@ -252,7 +252,7 @@ mod tests {
         for pkt in packets {
             dec.push_packet(pkt).unwrap();
             if let Some(frame) = dec.pop_frame().unwrap() {
-                let img = frame.img();
+                let img = frame.rgba_image();
                 assert!(img.width() <= 320, "width {} > 320", img.width());
                 assert!(img.height() <= 180, "height {} > 180", img.height());
             }
@@ -305,7 +305,7 @@ mod tests {
         }
 
         let frame = last_frame.expect("should have decoded at least one frame");
-        let img = frame.img();
+        let img = frame.rgba_image();
         let pixel = img.get_pixel(w / 2, h / 2);
         assert!(pixel[0] > 150, "R={} should be high", pixel[0]);
         assert!(pixel[1] < 100, "G={} should be low", pixel[1]);
