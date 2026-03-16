@@ -78,7 +78,7 @@ fn ensure_pw_init() {
 /// connection dies when the first runtime shuts down, causing subsequent
 /// `Camera::new()` / `Screencast::new()` calls to hang forever.
 ///
-/// This function lazily creates a single-threaded tokio runtime (on a
+/// Lazily creates a single-threaded tokio runtime (on a
 /// dedicated OS thread) that lives for the entire process, keeping the
 /// D-Bus connection alive across capture sessions.
 fn portal_runtime() -> &'static tokio::runtime::Handle {
@@ -131,7 +131,7 @@ fn spa_format_to_drm_fourcc(spa_format: u32) -> Option<u32> {
     }
 }
 
-/// A DMA-BUF-backed GPU frame from PipeWire.
+/// DMA-BUF-backed GPU frame from PipeWire.
 ///
 /// Holds a dup'd file descriptor so the PipeWire buffer can be recycled
 /// independently. The FD is closed when the frame is dropped.

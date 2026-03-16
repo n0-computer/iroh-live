@@ -88,7 +88,7 @@ struct VideoRenditionEntry {
     factory: MakeVideoEncoder,
 }
 
-/// A local media broadcast that encodes and publishes video and audio tracks.
+/// Local media broadcast that encodes and publishes video and audio tracks.
 ///
 /// Configure video via [`video()`](Self::video) and audio via
 /// [`audio()`](Self::audio). The broadcast manages encoder lifecycles
@@ -478,7 +478,7 @@ impl State {
     }
 }
 
-/// A set of audio encoding renditions sharing a single audio source.
+/// Set of audio encoding renditions sharing a single audio source.
 ///
 /// Each rendition pairs a codec configuration with an encoder factory.
 /// Used by [`AudioPublisher::set_renditions`] for advanced control.
@@ -600,7 +600,7 @@ impl AudioRenditions {
     }
 }
 
-/// A set of video encoding renditions (simulcast layers) sharing a single video source.
+/// Set of video encoding renditions (simulcast layers) sharing a single video source.
 ///
 /// Each rendition pairs a codec configuration with an encoder factory.
 /// Used by [`VideoPublisher::set_renditions`] for advanced control.

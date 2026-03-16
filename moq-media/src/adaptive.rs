@@ -88,7 +88,7 @@ impl Default for AdaptiveConfig {
 
 // ── Rendition ranking ───────────────────────────────────────────────────
 
-/// A rendition ranked by quality. Index 0 = highest quality.
+/// Rendition ranked by quality. Index 0 = highest quality.
 #[derive(Debug, Clone)]
 pub(crate) struct RankedRendition {
     /// Catalog key (track name).
@@ -234,7 +234,7 @@ pub(crate) fn should_abort_probe(
 
 // ── AdaptiveVideoTrack ──────────────────────────────────────────────────
 
-/// A video track that automatically switches renditions based on network
+/// Video track that automatically switches renditions based on network
 /// conditions.
 ///
 /// Wraps a [`RemoteBroadcast`] and manages rendition switching in a

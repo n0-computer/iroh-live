@@ -55,8 +55,8 @@ pub fn format_bitrate(bits_per_second: f64) -> String {
 /// The wgpu path requires the `wgpu-render` feature and is selected at
 /// construction time via [`FrameView::new_wgpu`].
 ///
-/// This is a low-level building block. For [`VideoTrack`]-based rendering
-/// with automatic viewport management, use [`VideoTrackView`] instead.
+/// Low-level building block. For [`VideoTrack`]-based rendering with
+/// automatic viewport management, use [`VideoTrackView`] instead.
 pub struct FrameView {
     texture: egui::TextureHandle,
     #[cfg(feature = "wgpu-render")]
@@ -120,7 +120,7 @@ impl FrameView {
         let (w, h) = (frame.width(), frame.height());
         let image = egui::ColorImage::from_rgba_unmultiplied(
             [w as usize, h as usize],
-            frame.img().as_raw(),
+            frame.rgba_image().as_raw(),
         );
         self.texture.set(image, Default::default());
     }

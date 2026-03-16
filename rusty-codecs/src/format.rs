@@ -106,7 +106,7 @@ pub struct HardwareBufferInfo {
     pub uv_stride: u32,
 }
 
-/// An encoded media packet, independent of transport.
+/// Encoded media packet, independent of transport.
 #[derive(Clone, Debug)]
 pub struct MediaPacket {
     /// Presentation timestamp.
@@ -126,7 +126,7 @@ impl MediaPacket {
     }
 }
 
-/// A single compressed video or audio frame produced by an encoder.
+/// Single compressed video or audio frame produced by an encoder.
 #[derive(Debug)]
 pub struct EncodedFrame {
     /// Whether this frame can be decoded independently (I-frame / IDR).
@@ -283,7 +283,7 @@ pub enum FrameData {
     Gpu(GpuFrame),
 }
 
-/// A video frame that may reside in CPU or GPU memory.
+/// Video frame that may reside in CPU or GPU memory.
 ///
 /// Unifies the capture and decode paths into a single type. Capture sources
 /// produce `Packed` RGBA frames, software decoders produce `Packed` or `I420`
@@ -484,28 +484,31 @@ impl VideoFrame {
                 }
                 FrameData::Gpu(gpu) => gpu.download_rgba().expect("GPU frame download failed"),
                 FrameData::Nv12(planes) => {
-                    let rgba = crate::processing::convert::nv12_to_rgba_data(
-                        &planes.y_data,
-                        planes.y_stride,
-                        &planes.uv_data,
-                        planes.uv_stride,
-                        w,
-                        h,
-                    )
-                    .expect("NV12→RGBA conversion failed");
-                    RgbaImage::from_raw(w, h, rgba)
-                        .expect("RGBA data size does not match dimensions")
+                    #[cfg(any(feature = "h264", feature = "av1"))]
+                    {
+                        let rgba = crate::processing::convert::nv12_to_rgba_data(
+                            &planes.y_data,
+                            planes.y_stride,
+                            &planes.uv_data,
+                            planes.uv_stride,
+                            w,
+                            h,
+                        )
+                        .expect("NV12→RGBA conversion failed");
+                        RgbaImage::from_raw(w, h, rgba)
+                            .expect("RGBA data size does not match dimensions")
+                    }
+                    #[cfg(not(any(feature = "h264", feature = "av1")))]
+                    {
+                        let _ = planes;
+                        unimplemented!("rgba_image() for NV12 requires the `h264` or `av1` feature")
+                    }
                 }
                 FrameData::I420 { .. } => {
                     unimplemented!("rgba_image() for I420 CPU frames")
                 }
             }
         })
-    }
-
-    /// Backward-compat alias for [`rgba_image`](Self::rgba_image).
-    pub fn img(&self) -> &RgbaImage {
-        self.rgba_image()
     }
 }
 

@@ -206,7 +206,7 @@ pub struct RemoteBroadcast {
     _catalog_task: Arc<AbortOnDropHandle<()>>,
 }
 
-/// A point-in-time snapshot of a broadcast's catalog.
+/// Point-in-time snapshot of a broadcast's catalog.
 ///
 /// Derefs to [`Catalog`] for direct access to video/audio configuration.
 /// Each snapshot carries a sequence number for change detection.
@@ -591,7 +591,7 @@ fn select_audio_rendition<T>(renditions: &BTreeMap<String, T>, q: Quality) -> Op
     select_rendition(renditions, &order)
 }
 
-/// A decoded audio track from a remote broadcast.
+/// Decoded audio track from a remote broadcast.
 ///
 /// Wraps an [`AudioDecoderPipeline`] that decodes incoming audio packets
 /// and routes them to the audio output backend.
@@ -633,7 +633,7 @@ impl AudioTrack {
     }
 }
 
-/// A decoded video track from a remote broadcast.
+/// Decoded video track from a remote broadcast.
 ///
 /// Produces [`VideoFrame`]s via [`current_frame`](Self::current_frame) (non-blocking)
 /// or [`next_frame`](Self::next_frame) (async). Can also wrap a raw [`VideoSource`]

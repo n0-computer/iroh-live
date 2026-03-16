@@ -352,7 +352,7 @@ impl OutputStream {
     }
 }
 
-/// A simple AudioSource that reads from the default microphone via Firewheel.
+/// Reads audio from the default microphone via Firewheel.
 #[derive(Clone, derive_more::Debug)]
 pub struct InputStream {
     #[debug(skip)]

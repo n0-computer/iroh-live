@@ -169,7 +169,7 @@ pub fn assert_video_roundtrip(
     );
     // Check the last frame (encoder has stabilized by then)
     let last = frames.last().unwrap();
-    let img = last.img();
+    let img = last.rgba_image();
     assert_eq!(img.width(), w);
     assert_eq!(img.height(), h);
     let pixel = img.get_pixel(w / 2, h / 2);
@@ -203,7 +203,7 @@ pub fn assert_video_not_black(frames: &[VideoFrame], w: u32, h: u32, min_frames:
         frames.len()
     );
     let last = frames.last().unwrap();
-    let img = last.img();
+    let img = last.rgba_image();
     assert_eq!(img.width(), w);
     assert_eq!(img.height(), h);
     // Sample several pixels across the frame and check they're not all zero.

@@ -135,7 +135,7 @@ impl Drop for Decoder {
     }
 }
 
-/// A decoded picture. Calls `dav1d_picture_unref` on drop.
+/// Decoded picture. Calls `dav1d_picture_unref` on drop.
 pub(crate) struct Picture {
     inner: Dav1dPicture,
 }

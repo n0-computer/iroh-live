@@ -7,14 +7,15 @@ use tokio::sync::mpsc;
 
 use crate::format::{EncodedFrame, MediaPacket};
 
-/// Provides async reads of encoded media packets.
+/// Reads encoded media packets asynchronously.
 ///
 /// Implemented by [`MoqPacketSource`] (network) and [`PipeSource`] (local).
 pub trait PacketSource: Send + 'static {
+    /// Returns the next packet, or `None` when the stream ends.
     fn read(&mut self) -> impl Future<Output = Result<Option<MediaPacket>>> + Send;
 }
 
-/// Accepts encoded media packets synchronously.
+/// Writes encoded media packets synchronously.
 ///
 /// Implemented by [`MoqPacketSink`] (network) and [`PipeSink`] (local).
 pub trait PacketSink: Send + 'static {

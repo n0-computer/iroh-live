@@ -48,12 +48,11 @@ pub(crate) async fn forward_packets(
     }
 }
 
-/// A standalone video decoder pipeline.
+/// Standalone video decoder pipeline.
 ///
 /// Reads encoded packets from any [`PacketSource`], decodes on an OS thread,
-/// and outputs [`VideoFrame`]s via an mpsc channel.
-///
-/// This can be used without MoQ networking — e.g., with a [`PipeSource`](crate::transport::PipeSource)
+/// and outputs [`VideoFrame`]s via an mpsc channel. Works without MoQ
+/// networking — e.g., with a [`PipeSource`](crate::transport::PipeSource)
 /// for local encode→decode pipelines.
 #[derive(Debug)]
 pub struct VideoDecoderPipeline {
@@ -203,14 +202,12 @@ impl VideoDecoderPipeline {
 // Video Encoder Pipeline
 // ---------------------------------------------------------------------------
 
-/// A standalone video encoder pipeline.
+/// Standalone video encoder pipeline.
 ///
 /// Captures frames from a [`VideoSource`], encodes them on an OS thread,
-/// and sends encoded packets to any [`PacketSink`].
-///
-/// This can be used without MoQ networking — e.g., paired with a
-/// [`VideoDecoderPipeline`] via [`media_pipe`](crate::transport::media_pipe)
-/// for local encode→decode loops.
+/// and sends encoded packets to any [`PacketSink`]. Works without MoQ
+/// networking — e.g., paired with a [`VideoDecoderPipeline`] via
+/// [`media_pipe`](crate::transport::media_pipe) for local encode→decode loops.
 #[derive(derive_more::Debug)]
 pub struct VideoEncoderPipeline {
     shutdown: CancellationToken,
@@ -611,13 +608,12 @@ fn decode_loop_direct(
 // Audio Decoder Pipeline
 // ---------------------------------------------------------------------------
 
-/// A standalone audio decoder pipeline.
+/// Standalone audio decoder pipeline.
 ///
 /// Reads encoded packets from any [`PacketSource`], decodes on an OS thread,
-/// and pushes decoded samples to an [`AudioSink`].
-///
-/// This can be used without MoQ networking — e.g., with a
-/// [`PipeSource`](crate::transport::PipeSource) for local encode→decode pipelines.
+/// and pushes decoded samples to an [`AudioSink`]. Works without MoQ
+/// networking — e.g., with a [`PipeSource`](crate::transport::PipeSource)
+/// for local encode→decode pipelines.
 #[derive(derive_more::Debug)]
 pub struct AudioDecoderPipeline {
     name: String,
@@ -846,14 +842,12 @@ fn audio_decode_loop(
 // Audio Encoder Pipeline
 // ---------------------------------------------------------------------------
 
-/// A standalone audio encoder pipeline.
+/// Standalone audio encoder pipeline.
 ///
 /// Captures samples from an [`AudioSource`], encodes them on an OS thread,
-/// and sends encoded packets to any [`PacketSink`].
-///
-/// This can be used without MoQ networking — e.g., paired with an
-/// [`AudioDecoderPipeline`] via [`media_pipe`](crate::transport::media_pipe)
-/// for local encode→decode loops.
+/// and sends encoded packets to any [`PacketSink`]. Works without MoQ
+/// networking — e.g., paired with an [`AudioDecoderPipeline`] via
+/// [`media_pipe`](crate::transport::media_pipe) for local encode→decode loops.
 #[derive(derive_more::Debug)]
 pub struct AudioEncoderPipeline {
     shutdown: CancellationToken,
@@ -1049,7 +1043,7 @@ mod tests {
         let mut frames = pipeline.frames;
         let mut count = 0;
         while let Some(frame) = frames.rx.recv().await {
-            let img = frame.img();
+            let img = frame.rgba_image();
             assert_eq!(img.width(), w);
             assert_eq!(img.height(), h);
             count += 1;
@@ -1101,7 +1095,7 @@ mod tests {
 
         let mut frames = pipeline.frames;
         while let Some(frame) = frames.rx.recv().await {
-            let img = frame.img();
+            let img = frame.rgba_image();
             assert!(img.width() <= 320, "width {} > 320", img.width());
             assert!(img.height() <= 180, "height {} > 180", img.height());
         }
@@ -1138,7 +1132,7 @@ mod tests {
         let mut frames = pipeline.frames;
         let mut count = 0;
         while let Some(frame) = frames.rx.recv().await {
-            let img = frame.img();
+            let img = frame.rgba_image();
             assert_eq!(img.width(), w);
             assert_eq!(img.height(), h);
             count += 1;
