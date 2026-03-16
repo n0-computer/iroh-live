@@ -351,7 +351,8 @@ struct InCallState {
     remote: RemoteBroadcast,
     pending_video: Option<VideoTrack>,
     remote_video: Option<VideoTrackView>,
-    _remote_audio: Option<AudioTrack>,
+    #[allow(dead_code, reason = "kept alive to sustain audio playout")]
+    remote_audio: Option<AudioTrack>,
     remote_stats: FrameStats,
     net_stats: StatsSmoother,
 }
@@ -574,11 +575,11 @@ impl InCallState {
         match rt.block_on(self.remote.audio(&self.audio_ctx)) {
             Ok(track) => {
                 info!("resubscribed to remote audio");
-                self._remote_audio = Some(track);
+                self.remote_audio = Some(track);
             }
             Err(e) => {
                 warn!("remote audio resubscribe failed: {e:#}");
-                self._remote_audio = None;
+                self.remote_audio = None;
             }
         }
     }
@@ -692,7 +693,7 @@ impl CallApp {
             remote: result.remote,
             pending_video: result.video,
             remote_video: None,
-            _remote_audio: result.audio,
+            remote_audio: result.audio,
             remote_stats: FrameStats::default(),
             net_stats: StatsSmoother::new(),
         }));
@@ -787,19 +788,7 @@ async fn dial_call(
 ) -> std::result::Result<CallResult, CallError> {
     info!(remote = %ticket, "dialing");
     let call = Call::dial(live, ticket, broadcast).await?;
-    let playback_config = PlaybackConfig::default();
-    let tracks = call
-        .remote()
-        .media::<DefaultDecoders>(audio_ctx, playback_config)
-        .await
-        .map_err(CallError::ConnectionFailed)?;
-
-    Ok(CallResult {
-        remote: tracks.broadcast,
-        video: tracks.video,
-        audio: tracks.audio,
-        call,
-    })
+    subscribe_call(call, audio_ctx).await
 }
 
 async fn accept_call(
@@ -817,13 +806,21 @@ async fn accept_call(
     let call = Call::accept(session, broadcast)
         .await
         .map_err(|e| format!("accept failed: {e:#}"))?;
-    let playback_config = PlaybackConfig::default();
+    subscribe_call(call, audio_ctx)
+        .await
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// Subscribes to a call's remote media and returns everything needed for the UI.
+async fn subscribe_call(
+    call: Call,
+    audio_ctx: &AudioBackend,
+) -> std::result::Result<CallResult, CallError> {
     let tracks = call
         .remote()
-        .media::<DefaultDecoders>(audio_ctx, playback_config)
+        .media::<DefaultDecoders>(audio_ctx, PlaybackConfig::default())
         .await
-        .map_err(|e| format!("subscribe failed: {e:#}"))?;
-
+        .map_err(CallError::ConnectionFailed)?;
     Ok(CallResult {
         remote: tracks.broadcast,
         video: tracks.video,
@@ -864,7 +861,7 @@ fn main() -> Result<()> {
             .audio()
             .set(TestToneSource::new(), AudioCodec::Opus, [AudioPreset::Hq])?;
 
-        Ok::<_, n0_error::AnyError>((live, broadcast))
+        n0_error::Ok((live, broadcast))
     })?;
 
     let our_ticket = rt.block_on(async {

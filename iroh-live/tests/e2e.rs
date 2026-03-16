@@ -420,4 +420,3 @@ async fn call_dial_accept() {
     caller_ep.close().await;
     callee_ep.close().await;
 }
-

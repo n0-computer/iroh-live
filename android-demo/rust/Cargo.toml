@@ -13,8 +13,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 iroh-live = { path = "../../iroh-live", default-features = false }
-n0-watcher = "0.6"
 moq-media = { path = "../../moq-media", default-features = false, features = ["h264", "opus", "android"] }
+moq-media-android = { path = "../../moq-media-android" }
 rusty-codecs = { path = "../../rusty-codecs", default-features = false, features = ["h264", "opus", "hang", "android"] }
 jni = "0.21"
 ndk = { version = "0.9", features = ["api-level-26"] }

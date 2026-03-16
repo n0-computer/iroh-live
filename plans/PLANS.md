@@ -122,17 +122,21 @@ Crate research complete: `windows` (MIT), `windows-capture` (MIT),
 
 ### Android MediaCodec
 
-NDK `AMediaCodec` H.264 encode and decode via `ndk` crate (0.9), Camera2
-capture via JNI, and an Android demo app skeleton. Cross-compilation verified
-with `cargo ndk`.
+NDK `AMediaCodec` H.264 encode and decode via `ndk` crate (0.9), CameraX
+capture via JNI, bidirectional call demo, and `moq-media-android` reusable
+SDK crate. Tested on real device with 1:1 video/audio calls (Android↔desktop).
 
 - [android-mediacodec](media-pipeline/android-mediacodec.md) — codec integration plan
 - [android-demo-app](media-pipeline/android-demo-app.md) — Kotlin/JNI demo app architecture
+- [android-zero-copy-rendering](../android-zero-copy-rendering.md) — HW decoder + EGL rendering design
 - [x] ByteBuffer encoder and decoder
-- [x] Camera2 capture via JNI (Kotlin helper + Rust bridge)
-- [x] Demo app skeleton (Kotlin/Gradle + Rust cdylib)
-- [ ] Surface mode for zero-copy
-- [ ] End-to-end device testing
+- [x] ImageReader HW decoder (surface mode decode, HardwareBuffer output)
+- [x] CameraX NV12 capture via JNI
+- [x] Demo app with bidirectional call mode (dial, camera+mic publish, remote A/V playback)
+- [x] EGL HardwareBuffer→texture rendering pipeline
+- [x] `moq-media-android` SDK crate (camera source, EGL helpers, logcat, JNI handle utils)
+- [x] End-to-end device testing (Android↔Linux desktop)
+- [ ] Surface mode for zero-copy encode (CPU NV12→RGBA→scale→NV12 round-trip today)
 
 ## Open
 

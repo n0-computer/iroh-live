@@ -683,3 +683,77 @@ Items marked `[x]` were fixed in commit 1687b72. Remaining items are deferred.
 - [ ] **ON21: Commit 83d0b16 bundles unrelated changes** — noted for future practice, no action needed.
 - [x] **ON22: `bitrate as i32` clamped** — now uses `.min(i32::MAX as u64)`.
 - [ ] **ON23: UI thread blocking in split.rs `resubscribe()`** — `block_on()` in egui UI method. Pre-existing pattern, acceptable for example code.
+
+---
+
+## moq-media-android (SDK extraction)
+
+Extracted reusable Android building blocks from `android-demo/rust` into
+`moq-media-android` crate. Demo shrank from ~1257 to ~710 lines.
+
+### Modules
+
+| Module | Lines | Purpose |
+|--------|-------|---------|
+| `camera` | ~110 | `CameraFrameSource` / `SharedCameraSource` — push-based `VideoSource` for NV12 frames from CameraX |
+| `egl` | ~172 | Safe wrappers around EGL/GLES extension functions for HardwareBuffer → EGLImage → GL texture |
+| `handle` | ~37 | `Arc<Mutex<T>>` ↔ `i64` JNI handle helpers (`to_i64`, `from_i64`, `take_i64`) |
+
+### Design decisions
+
+- **Logcat stays in demo** — the tracing filter string and log tag are
+  app-specific choices, not SDK policy. Demo has `logcat.rs` module with
+  parameterised `init(filter)`.
+- **`egl` module cfg-gated** — `#[cfg(target_os = "android")]` because it uses
+  `dlopen("libEGL.so")` and Android-only EGL extensions.
+- **`handle` module is generic** — uses `i64` not `jni::sys::jlong` to avoid
+  pulling in the `jni` crate dependency. Works for any `Arc<Mutex<T>>`.
+- **No `jni` dependency in SDK** — keeps the crate usable from both JNI and
+  pure-NDK contexts.
+
+### Open items
+
+- [ ] **MA1: `CameraFrameSource` allocates per-frame** — `push_frame` creates
+  a new `VideoFrame` with owned `Vec<u8>` data each call. Could pool frame
+  buffers when camera resolution is stable.
+- [ ] **MA2: `SharedCameraSource` uses `std::sync::Mutex`** — held briefly, but
+  `parking_lot::Mutex` would avoid poisoning concerns and be slightly faster.
+- [ ] **MA3: EGL function pointers resolved lazily via `OnceLock`** — correct,
+  but no error recovery if `dlopen` or `eglGetProcAddress` fails at runtime
+  (returns `anyhow::Error`). Could cache a `Result` instead and provide a
+  `check_egl_support()` probe function.
+- [ ] **MA4: No unit tests** — camera source, handle helpers, and EGL wrappers
+  are all untested. Handle helpers could be tested on any platform; camera and
+  EGL need Android or mocks.
+
+---
+
+## android-demo cleanup (review pass)
+
+### Changes applied
+
+- **`SessionHandle` field naming** — renamed `_session`/`_call`/`_broadcast`/
+  `_audio`/`_audio_backend` to `session`/`call`/`remote`/`audio`/`audio_backend`
+  with `#[allow(dead_code, reason = "...")]` explaining why each is kept alive.
+- **JNI helper consolidation** — `handle_to_jlong`→`to_jlong`,
+  `handle_from_jlong`→`borrow_handle`, `handle_take`→`take_handle`. New
+  `read_jstring` helper eliminates repeated `get_string`+`into` boilerplate.
+- **`getStatusLine` simplified** — removed `RefCell` hack, uses plain `&mut env`.
+- **EGL JNI wrappers** — replaced `match` with `.map_or(0, |p| p as jlong)`.
+- **`get_native_handle`** — `.and_then` chain instead of nested `match`.
+- **`connect_impl`** — `.inspect_err().ok()` for optional audio subscription.
+- **Section headers** — clear comment separators for JNI entry points.
+
+### Open items (android-demo)
+
+- [ ] **AD1: `connect_impl` still ~90 lines** — could extract publish setup and
+  subscribe setup into separate functions for readability.
+- [ ] **AD2: `renderFrame` does GL calls without EGL context check** — assumes
+  the caller has made the correct EGL context current. A debug-mode
+  `eglGetCurrentContext() != EGL_NO_CONTEXT` assertion would catch misuse.
+- [ ] **AD3: `JNI_OnLoad` initialises ndk-context and logcat but not cpal** —
+  cpal/Oboe initialisation happens lazily on first audio use, which can cause
+  a latency spike on first call connect. Could warm up in `JNI_OnLoad`.
+- [ ] **AD4: No JNI exception checking** — same as ON14, still open.
+- [ ] **AD5: Hardcoded 640×480 camera resolution** — `startPublish` uses fixed
+  dimensions. Should accept from Kotlin or negotiate with CameraX.

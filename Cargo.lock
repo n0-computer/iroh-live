@@ -5326,7 +5326,7 @@ dependencies = [
  "jni 0.21.1",
  "libc",
  "moq-media",
- "n0-watcher",
+ "moq-media-android",
  "ndk",
  "ndk-context",
  "rusty-codecs",
@@ -6393,6 +6393,16 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wgpu 27.0.1",
+]
+
+[[package]]
+name = "moq-media-android"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "moq-media",
+ "tracing",
 ]
 
 [[package]]
