@@ -4,4 +4,5 @@ pub mod format;
 pub mod processing;
 #[cfg(feature = "wgpu")]
 pub mod render;
+pub mod test_sources;
 pub mod traits;

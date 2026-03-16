@@ -98,7 +98,11 @@ impl AndroidEncoder {
             bitrate,
             keyframe_interval_secs,
             nal_format,
-            scale_mode: config.scale_mode,
+            // MediaCodec ByteBuffer mode requires input to match configured
+            // dimensions exactly. Cover mode scales and center-crops to fill
+            // the target, avoiding the stride mismatch that Fit mode causes
+            // when the source aspect ratio differs (e.g. 4:3 camera → 16:9 encode).
+            scale_mode: ScaleMode::Cover,
             scaler: Scaler::new(Some((width, height))),
             avcc: None,
             packet_buf: VecDeque::new(),
