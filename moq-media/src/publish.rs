@@ -381,10 +381,14 @@ struct CatalogProducer {
 }
 
 impl CatalogProducer {
-    fn new(broadcast: &mut BroadcastProducer) -> Result<Self, moq_lite::Error> {
-        let track = broadcast.create_track(hang::Catalog::default_track())?;
+    fn new(broadcast: &mut BroadcastProducer) -> Result<Self> {
+        let track = broadcast
+            .create_track(hang::Catalog::default_track())
+            .anyerr()?;
         let catalog = Catalog::default();
-        Ok(Self { track, catalog })
+        let mut this = Self { track, catalog };
+        this.publish()?;
+        Ok(this)
     }
 
     fn set_video(&mut self, video: Video) -> Result<()> {

@@ -12,9 +12,10 @@ pub mod transport;
 mod util;
 
 pub use audio_backend::{AudioBackend, AudioBackendOpts, AudioDevice};
-// Re-export from rusty-codecs
+// Re-export from rusty-capture
+#[cfg(any(feature = "capture-camera", feature = "capture-screen"))]
 pub use rusty_capture as capture;
 pub use rusty_codecs::codec;
 #[cfg(feature = "wgpu")]
 pub use rusty_codecs::render;
-pub use rusty_codecs::{config, format, traits};
+pub use rusty_codecs::{config, format, test_sources, traits};
