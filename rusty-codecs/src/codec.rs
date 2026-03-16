@@ -1,3 +1,5 @@
+#[cfg(all(target_os = "android", feature = "android"))]
+pub(crate) mod android;
 #[cfg(feature = "av1")]
 pub(crate) mod av1;
 #[cfg(any_codec)]
@@ -13,6 +15,8 @@ pub(crate) mod vaapi;
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
 pub(crate) mod vtb;
 
+#[cfg(all(target_os = "android", feature = "android"))]
+pub use android::*;
 #[cfg(feature = "av1")]
 pub use av1::*;
 #[cfg(any_codec)]
@@ -67,6 +71,10 @@ pub enum VideoCodec {
     #[strum(serialize = "h264-v4l2")]
     #[cfg(all(target_os = "linux", feature = "v4l2"))]
     V4l2H264,
+    /// Hardware H.264 via Android MediaCodec.
+    #[strum(serialize = "h264-android")]
+    #[cfg(all(target_os = "android", feature = "android"))]
+    AndroidH264,
 }
 
 #[cfg(any_video_codec)]
@@ -84,6 +92,8 @@ impl VideoCodec {
             Self::VaapiH264,
             #[cfg(all(target_os = "linux", feature = "v4l2"))]
             Self::V4l2H264,
+            #[cfg(all(target_os = "android", feature = "android"))]
+            Self::AndroidH264,
         ]
     }
 
@@ -105,6 +115,10 @@ impl VideoCodec {
         {
             return Self::V4l2H264;
         }
+        #[cfg(all(target_os = "android", feature = "android"))]
+        {
+            return Self::AndroidH264;
+        }
         #[cfg(feature = "h264")]
         {
             return Self::H264;
@@ -125,6 +139,8 @@ impl VideoCodec {
             Self::VaapiH264 => true,
             #[cfg(all(target_os = "linux", feature = "v4l2"))]
             Self::V4l2H264 => true,
+            #[cfg(all(target_os = "android", feature = "android"))]
+            Self::AndroidH264 => true,
         }
     }
 
@@ -145,6 +161,8 @@ impl VideoCodec {
             Self::VaapiH264 => Ok(Box::new(VaapiEncoder::with_config(config)?)),
             #[cfg(all(target_os = "linux", feature = "v4l2"))]
             Self::V4l2H264 => Ok(Box::new(V4l2Encoder::with_config(config)?)),
+            #[cfg(all(target_os = "android", feature = "android"))]
+            Self::AndroidH264 => Ok(Box::new(AndroidEncoder::with_config(config)?)),
         }
     }
 
@@ -187,6 +205,8 @@ impl VideoCodec {
             Self::VaapiH264 => "H.264 (VAAPI)",
             #[cfg(all(target_os = "linux", feature = "v4l2"))]
             Self::V4l2H264 => "H.264 (V4L2)",
+            #[cfg(all(target_os = "android", feature = "android"))]
+            Self::AndroidH264 => "H.264 (Android MediaCodec)",
         }
     }
 }

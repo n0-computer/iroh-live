@@ -247,8 +247,8 @@ impl Nv12Data {
 
 /// Convert RGBA pixel data directly to NV12 bi-planar format (BT.601).
 #[cfg_attr(
-    not(feature = "vaapi"),
-    allow(dead_code, reason = "used by vaapi encoder")
+    not(any(feature = "vaapi", feature = "android")),
+    allow(dead_code, reason = "used by vaapi and android encoders")
 )]
 pub fn rgba_to_nv12_data(src: &[u8], w: u32, h: u32) -> Result<Nv12Data> {
     let mut bi = YuvBiPlanarImageMut::<u8>::alloc(w, h, YuvChromaSubsampling::Yuv420);
@@ -274,8 +274,8 @@ pub fn rgba_to_nv12_data(src: &[u8], w: u32, h: u32) -> Result<Nv12Data> {
 
 /// Convert BGRA pixel data directly to NV12 bi-planar format (BT.601).
 #[cfg_attr(
-    not(feature = "vaapi"),
-    allow(dead_code, reason = "used by vaapi encoder")
+    not(any(feature = "vaapi", feature = "android")),
+    allow(dead_code, reason = "used by vaapi and android encoders")
 )]
 pub fn bgra_to_nv12_data(src: &[u8], w: u32, h: u32) -> Result<Nv12Data> {
     use yuvutils_rs::bgra_to_yuv_nv12;
@@ -300,10 +300,10 @@ pub fn bgra_to_nv12_data(src: &[u8], w: u32, h: u32) -> Result<Nv12Data> {
     })
 }
 
-/// Dispatch pixel-format-aware RGBA/BGRA → NV12 conversion.
+/// Dispatch pixel-format-aware RGBA/BGRA -> NV12 conversion.
 #[cfg_attr(
-    not(feature = "vaapi"),
-    allow(dead_code, reason = "used by vaapi encoder")
+    not(any(feature = "vaapi", feature = "android")),
+    allow(dead_code, reason = "used by vaapi and android encoders")
 )]
 pub fn pixel_format_to_nv12(src: &[u8], w: u32, h: u32, format: PixelFormat) -> Result<Nv12Data> {
     match format {
@@ -316,8 +316,8 @@ pub fn pixel_format_to_nv12(src: &[u8], w: u32, h: u32, format: PixelFormat) -> 
 ///
 /// `y_plane` and `uv_plane` are separate slices with their own strides.
 #[cfg_attr(
-    not(any(feature = "vaapi", target_os = "macos")),
-    allow(dead_code, reason = "used by vaapi and future vtb decoders")
+    not(any(feature = "vaapi", feature = "android", target_os = "macos")),
+    allow(dead_code, reason = "used by vaapi, android, and future vtb decoders")
 )]
 pub fn nv12_to_rgba_data(
     y_plane: &[u8],
@@ -349,7 +349,13 @@ pub fn nv12_to_rgba_data(
 }
 
 /// Convert NV12 bi-planar data to BGRA (BT.601 limited range).
-#[allow(dead_code, reason = "symmetric with nv12_to_rgba_data; future use")]
+#[cfg_attr(
+    not(feature = "android"),
+    allow(
+        dead_code,
+        reason = "symmetric with nv12_to_rgba_data; used by android decoder"
+    )
+)]
 pub fn nv12_to_bgra_data(
     y_plane: &[u8],
     y_stride: u32,

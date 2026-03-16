@@ -41,6 +41,9 @@ gbm = { version = "0.18", optional = true }
 drm-fourcc = { version = "2.2", optional = true }
 v4l2r = { version = "0.0.7", optional = true }
 
+[target.'cfg(target_os = "android")'.dependencies]
+ndk = { version = "0.9", optional = true, features = ["media"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-video-toolbox = { version = "0.3", optional = true, features = ["VTCompressionSession", "VTDecompressionSession", "VTErrors"] }
 objc2-core-media = { version = "0.3", optional = true, features = ["CMTime", "CMSampleBuffer", "CMFormatDescription", "CMBlockBuffer"] }
@@ -63,4 +66,5 @@ vaapi = ["dep:cros-codecs", "cros-codecs/vaapi"]
 v4l2 = ["dep:v4l2r"]
 wgpu = ["dep:wgpu"]
 media-foundation = []
+android = ["dep:ndk"]
 dmabuf-import = ["wgpu", "dep:ash", "dep:gbm", "dep:drm-fourcc"]
