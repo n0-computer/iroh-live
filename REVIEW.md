@@ -615,7 +615,7 @@ The VTB compression callback uses `Arc::into_raw()` to pass state to the C callb
 
 ### Bugs
 
-- [ ] **RC1: `unimplemented!()` in public `VideoFrame::rgba_image()`** (`format.rs:461`) — panics on I420/NV12 CPU frames. Should implement YUV→RGBA conversion or return `Result`.
+- [ ] **RC1: `unimplemented!()` in public `VideoFrame::rgba_image()`** (`format.rs:461`) — NV12 now implemented via `nv12_to_rgba_data()`; I420 still panics. Should return `Result` instead of panicking.
 - [ ] **RC2: `panic!()` in `VideoCodec::best_available()`** (`codec.rs:112`) — panics when no codecs are compiled in. Should return `Result`.
 - [ ] **RC3: `.expect()` calls in `alloc_va_dma_frame()`** (`vaapi/decoder.rs:277-305`) — 4 expects on VAAPI surface creation/export that can fail in production. Should return `Result`.
 - [ ] **RC4: `.expect()` in `WgpuVideoRenderer::render()`** (`render.rs:204`) — GPU frame download failure panics the renderer. Should propagate error.
@@ -639,6 +639,7 @@ Findings S1–S4 from the original review still apply. Additional:
 
 ### Performance (rusty-codecs)
 
+- [ ] **RC15: Android MediaCodec encoder uses ByteBuffer mode with CPU scaling** — when camera resolution differs from encoder target (common: CameraX picks closest sensor crop), the NV12→RGBA→scale→RGBA→NV12 round-trip runs per frame on CPU. Should switch to MediaCodec Surface input mode: camera writes to encoder's input Surface directly, GPU handles color conversion and scaling, zero CPU copies. This is the standard Android encode path (used by CameraX VideoCapture, WebRTC, etc.).
 - [ ] **RC11: Ash Device/Instance cloned in DMA-BUF importer** (`render/dmabuf_import.rs:83, 85`) — `hal_device.raw_device().clone()` and `raw_instance().clone()` clone Ash wrappers. Could use `Arc` or borrow.
 - [ ] **RC12: Per-frame TextureView + BindGroup in imported NV12 path** (`render.rs:225-244`) — `render_imported_nv12()` creates new `TextureView` and `BindGroup` every frame for imported DMA-BUF textures. Should cache when fd/modifier match.
 - [ ] **RC13: `Bit::from_f32().unwrap()` timestamp overflow** (`config.rs:338`) — `.expect("timestamp overflow")` in `to_hang_frame()`. Duration-to-microsecond conversion could overflow for extreme PTS values. Should propagate error.
