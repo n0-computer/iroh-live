@@ -5317,6 +5317,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "iroh-live-android"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "iroh-live",
+ "jni 0.21.1",
+ "moq-media",
+ "rusty-codecs",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "iroh-metrics"
 version = "0.38.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
