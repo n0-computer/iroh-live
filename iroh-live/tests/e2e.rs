@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use iroh::{Endpoint, SecretKey};
-use iroh_live::Live;
+use iroh_live::{Call, Live};
 use moq_media::{
     format::VideoPreset,
     publish::LocalBroadcast,
@@ -307,3 +307,117 @@ async fn adaptive_rendition_switching() {
     publisher.shutdown().await;
     sub_ep.close().await;
 }
+
+/// 1:1 call using [`Call::dial`] and [`Call::accept`].
+///
+/// Both sides create a broadcast with video, one dials the other,
+/// and both receive video frames from the remote peer.
+#[tokio::test]
+async fn call_dial_accept() {
+    use moq_media::codec::VideoCodec;
+
+    let _ = tracing_subscriber::fmt::try_init();
+
+    // --- Caller side ---
+    let caller_ep = make_endpoint().await;
+    let caller_live = Live::builder(caller_ep.clone()).spawn_with_router();
+
+    let caller_broadcast = LocalBroadcast::new();
+    tokio::task::yield_now().await;
+    let source = TestVideoSource::new(320, 240).with_fps(30.0);
+    caller_broadcast
+        .video()
+        .set(source, VideoCodec::best_available(), [VideoPreset::P180])
+        .expect("failed to set caller video");
+
+    // --- Callee side ---
+    let callee_ep = make_endpoint().await;
+    let callee_live = Live::builder(callee_ep.clone()).spawn_with_router();
+
+    let callee_broadcast = LocalBroadcast::new();
+    tokio::task::yield_now().await;
+    let source = TestVideoSource::new(320, 240).with_fps(30.0);
+    callee_broadcast
+        .video()
+        .set(source, VideoCodec::best_available(), [VideoPreset::P180])
+        .expect("failed to set callee video");
+
+    // Spawn the callee's accept loop in the background.
+    let callee_live_clone = callee_live.clone();
+    let accept_handle = tokio::spawn(async move {
+        let mut incoming = callee_live_clone.transport().incoming_sessions();
+        let session = incoming
+            .next()
+            .await
+            .expect("transport shut down before incoming session");
+        let session = session.accept();
+        Call::accept(session, callee_broadcast).await
+    });
+
+    // Caller dials the callee.
+    let callee_addr = callee_ep.addr();
+
+    let caller_call = tokio::time::timeout(
+        Duration::from_secs(10),
+        Call::dial(&caller_live, callee_addr, caller_broadcast),
+    )
+    .await
+    .expect("timed out dialing")
+    .expect("Call::dial failed");
+
+    // Wait for callee to accept.
+    let callee_call = tokio::time::timeout(Duration::from_secs(10), accept_handle)
+        .await
+        .expect("timed out waiting for accept")
+        .expect("accept task panicked")
+        .expect("Call::accept failed");
+
+    // Both sides should see each other's video.
+    assert!(
+        caller_call.remote().has_video(),
+        "caller should see callee's video"
+    );
+    assert!(
+        callee_call.remote().has_video(),
+        "callee should see caller's video"
+    );
+
+    // Caller receives a frame from callee.
+    let mut caller_video = caller_call
+        .remote()
+        .video()
+        .expect("caller: failed to create video track");
+    let frame = tokio::time::timeout(Duration::from_secs(10), caller_video.next_frame())
+        .await
+        .expect("caller: timed out waiting for video frame")
+        .expect("caller: video track closed");
+    assert!(
+        frame.width() > 0 && frame.height() > 0,
+        "caller: frame dimensions should be non-zero"
+    );
+
+    // Callee receives a frame from caller.
+    let mut callee_video = callee_call
+        .remote()
+        .video()
+        .expect("callee: failed to create video track");
+    let frame = tokio::time::timeout(Duration::from_secs(10), callee_video.next_frame())
+        .await
+        .expect("callee: timed out waiting for video frame")
+        .expect("callee: video track closed");
+    assert!(
+        frame.width() > 0 && frame.height() > 0,
+        "callee: frame dimensions should be non-zero"
+    );
+
+    // Clean up.
+    caller_call.close();
+    callee_call.close();
+    drop(caller_video);
+    drop(callee_video);
+    caller_live.shutdown().await;
+    callee_live.shutdown().await;
+    caller_ep.close().await;
+    callee_ep.close().await;
+}
+
