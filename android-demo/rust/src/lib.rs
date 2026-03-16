@@ -43,6 +43,9 @@ fn runtime() -> &'static Runtime {
 // ── Session handle ──────────────────────────────────────────────────
 
 /// Opaque handle stored as a `jlong` on the Kotlin side.
+///
+/// Wrapped in `Arc<Mutex<>>` so that concurrent JNI calls from different
+/// threads (render loop vs camera callback) are safe.
 struct SessionHandle {
     live: Live,
     _session: iroh_live::moq::MoqSession,
@@ -54,22 +57,37 @@ struct SessionHandle {
     camera_source: Option<Arc<Mutex<CameraFrameSource>>>,
 }
 
-impl SessionHandle {
-    fn into_jlong(self) -> jlong {
-        let boxed = Box::new(self);
-        Box::into_raw(boxed) as jlong
-    }
+/// Thread-safe wrapper around `SessionHandle` stored as a raw pointer.
+type SharedHandle = Arc<Mutex<SessionHandle>>;
 
-    /// Recovers a mutable reference from a `jlong`.
-    ///
-    /// # Safety
-    ///
-    /// The pointer must have been created by [`into_jlong`](Self::into_jlong)
-    /// and must not have been freed yet.
-    unsafe fn from_jlong(handle: jlong) -> &'static mut Self {
-        // SAFETY: the caller guarantees the pointer is valid.
-        unsafe { &mut *(handle as *mut Self) }
-    }
+fn handle_to_jlong(handle: SharedHandle) -> jlong {
+    let raw = Arc::into_raw(handle);
+    raw as jlong
+}
+
+/// Recovers a cloned `Arc` from a `jlong` without consuming the original.
+///
+/// # Safety
+///
+/// The pointer must have been created by [`handle_to_jlong`] and must not
+/// have been freed yet.
+unsafe fn handle_from_jlong(handle: jlong) -> SharedHandle {
+    // Reconstruct the Arc, then clone it so the original stays alive.
+    let arc = unsafe { Arc::from_raw(handle as *const Mutex<SessionHandle>) };
+    let cloned = Arc::clone(&arc);
+    // Leak the original back so it isn't dropped.
+    std::mem::forget(arc);
+    cloned
+}
+
+/// Takes ownership of the handle, dropping the `Arc` reference.
+///
+/// # Safety
+///
+/// The pointer must have been created by [`handle_to_jlong`] and must not
+/// be used after this call.
+unsafe fn handle_take(handle: jlong) -> SharedHandle {
+    unsafe { Arc::from_raw(handle as *const Mutex<SessionHandle>) }
 }
 
 // ── Camera frame source ─────────────────────────────────────────────
@@ -186,7 +204,7 @@ async fn connect_impl(ticket_str: String) -> Result<jlong> {
         camera_source: None,
     };
 
-    Ok(handle.into_jlong())
+    Ok(handle_to_jlong(Arc::new(Mutex::new(handle))))
 }
 
 /// Polls for the next decoded video frame.
@@ -210,9 +228,12 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_nextFrame(
     }
 
     // SAFETY: handle was created by connect and has not been freed.
-    let session = unsafe { SessionHandle::from_jlong(handle) };
+    let session = unsafe { handle_from_jlong(handle) };
+    let Ok(mut guard) = session.lock() else {
+        return JNI_FALSE;
+    };
 
-    let Some(video) = session.video.as_mut() else {
+    let Some(video) = guard.video.as_mut() else {
         return JNI_FALSE;
     };
 
@@ -232,6 +253,14 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_nextFrame(
         tracing::error!("failed to get direct ByteBuffer capacity");
         return JNI_FALSE;
     };
+
+    if rgba_bytes.len() > buf_len {
+        tracing::warn!(
+            frame_size = rgba_bytes.len(),
+            buf_size = buf_len,
+            "frame larger than ByteBuffer, truncating"
+        );
+    }
 
     let copy_len = rgba_bytes.len().min(buf_len);
 
@@ -271,26 +300,35 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_startPublish(
     };
 
     // SAFETY: handle was created by connect and has not been freed.
-    let session = unsafe { SessionHandle::from_jlong(handle) };
+    let session = unsafe { handle_from_jlong(handle) };
 
-    if let Err(e) = runtime().block_on(start_publish_impl(session, broadcast_name)) {
+    if let Err(e) = runtime().block_on(async {
+        // Clone the Live handle while holding the lock briefly, then
+        // release before the async publish call.
+        let live = {
+            let guard = session
+                .lock()
+                .map_err(|_| anyhow::anyhow!("session lock poisoned"))?;
+            guard.live.clone()
+        };
+
+        let broadcast = LocalBroadcast::new();
+        live.publish(&broadcast_name, &broadcast)
+            .await
+            .context("failed to announce broadcast")?;
+
+        info!(name = %broadcast_name, "publishing broadcast");
+
+        // Re-acquire lock to store the broadcast.
+        session
+            .lock()
+            .map_err(|_| anyhow::anyhow!("session lock poisoned"))?
+            ._publish_broadcast = Some(broadcast);
+
+        anyhow::Ok(())
+    }) {
         tracing::error!("startPublish failed: {e:#}");
     }
-}
-
-async fn start_publish_impl(session: &mut SessionHandle, name: String) -> Result<()> {
-    let broadcast = LocalBroadcast::new();
-
-    session
-        .live
-        .publish(&name, &broadcast)
-        .await
-        .context("failed to announce broadcast")?;
-
-    info!(name = %name, "publishing broadcast");
-
-    session._publish_broadcast = Some(broadcast);
-    Ok(())
 }
 
 /// Pushes a camera frame (RGBA byte array) into the publish pipeline.
@@ -314,7 +352,10 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_pushCameraFrame(
     }
 
     // SAFETY: handle was created by connect and has not been freed.
-    let session = unsafe { SessionHandle::from_jlong(handle) };
+    let session = unsafe { handle_from_jlong(handle) };
+    let Ok(guard) = session.lock() else {
+        return;
+    };
 
     let Ok(bytes) = env.convert_byte_array(data) else {
         tracing::error!("failed to read camera frame byte array");
@@ -328,7 +369,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_pushCameraFrame(
         Duration::ZERO,
     );
 
-    if let Some(source) = session.camera_source.as_ref()
+    if let Some(source) = guard.camera_source.as_ref()
         && let Ok(mut src) = source.lock()
     {
         src.push_frame(frame);
@@ -351,12 +392,16 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
         return;
     }
 
-    // SAFETY: handle was created by connect and is being freed here.
-    let session = unsafe { Box::from_raw(handle as *mut SessionHandle) };
+    // SAFETY: handle was created by connect and is being consumed here.
+    let session = unsafe { handle_take(handle) };
 
-    runtime().block_on(async {
-        session.live.shutdown().await;
-    });
+    // The Arc may still have clones if another JNI call is in progress.
+    // We try to lock and shut down; if we can't, the Drop will clean up.
+    if let Ok(guard) = session.lock() {
+        runtime().block_on(async {
+            guard.live.shutdown().await;
+        });
+    }
 
     info!("disconnected");
 }

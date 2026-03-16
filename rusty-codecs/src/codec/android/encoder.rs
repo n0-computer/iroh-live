@@ -44,6 +44,7 @@ pub struct AndroidEncoder {
     height: u32,
     framerate: u32,
     bitrate: u64,
+    keyframe_interval_secs: f32,
     frame_count: u64,
     nal_format: NalFormat,
     scale_mode: ScaleMode,
@@ -98,6 +99,7 @@ impl AndroidEncoder {
             height,
             framerate,
             bitrate,
+            keyframe_interval_secs,
             frame_count: 0,
             nal_format,
             scale_mode: config.scale_mode,
@@ -140,7 +142,14 @@ impl AndroidEncoder {
         {
             DequeuedInputBufferResult::Buffer(mut input_buf) => {
                 let buf = input_buf.buffer_mut();
-                let copy_len = nv12.len().min(buf.len());
+                if nv12.len() > buf.len() {
+                    anyhow::bail!(
+                        "NV12 frame ({} bytes) exceeds MediaCodec input buffer ({} bytes)",
+                        nv12.len(),
+                        buf.len()
+                    );
+                }
+                let copy_len = nv12.len();
                 // Safety: writing valid NV12 bytes into MaybeUninit buffer.
                 unsafe {
                     std::ptr::copy_nonoverlapping(
@@ -178,7 +187,7 @@ impl AndroidEncoder {
                     let is_keyframe = (flags & BUFFER_FLAG_KEY_FRAME) != 0;
 
                     let data = output_buf.buffer().to_vec();
-                    let presentation_time_us = info.presentation_time_us() as u64;
+                    let presentation_time_us = info.presentation_time_us().max(0) as u64;
 
                     // Release the buffer back to the codec before processing.
                     self.codec
@@ -248,7 +257,7 @@ impl AndroidEncoder {
             self.height,
             self.bitrate,
             self.framerate,
-            self.framerate as f32 / self.framerate as f32, // 1-second keyframe interval
+            self.keyframe_interval_secs,
         )?;
         self.codec
             .configure(&format, None, MediaCodecDirection::Encoder)
