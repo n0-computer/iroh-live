@@ -79,10 +79,15 @@ pub(crate) fn encoder_format(
     format.set_str(KEY_MIME, MIME_AVC);
     format.set_i32(KEY_WIDTH, width as i32);
     format.set_i32(KEY_HEIGHT, height as i32);
-    format.set_i32(KEY_BIT_RATE, bitrate as i32);
+    // Clamp bitrate to i32 range (MediaCodec API uses signed 32-bit).
+    format.set_i32(KEY_BIT_RATE, (bitrate.min(i32::MAX as u64)) as i32);
     format.set_i32(KEY_FRAME_RATE, framerate as i32);
     format.set_i32(KEY_COLOR_FORMAT, COLOR_FORMAT_YUV420_SEMI_PLANAR);
-    format.set_i32(KEY_I_FRAME_INTERVAL, keyframe_interval_secs as i32);
+    // Round to nearest second, minimum 1 (0 means every-frame IDR).
+    format.set_i32(
+        KEY_I_FRAME_INTERVAL,
+        (keyframe_interval_secs.round() as i32).max(1),
+    );
     format.set_i32(KEY_BITRATE_MODE, BITRATE_MODE_CBR);
     Ok(format)
 }

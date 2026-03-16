@@ -53,7 +53,9 @@ pub struct AndroidDecoder {
     pending_frames: VecDeque<VideoFrame>,
 }
 
-// Safety: MediaCodec instances are thread-safe in the NDK.
+// SAFETY: MediaCodec can be moved between threads. The NDK requires callers
+// to serialize access (no concurrent calls), which is upheld because
+// AndroidDecoder takes `&mut self` for all operations.
 unsafe impl Send for AndroidDecoder {}
 
 impl VideoDecoder for AndroidDecoder {

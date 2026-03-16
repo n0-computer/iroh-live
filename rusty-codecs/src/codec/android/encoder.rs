@@ -54,8 +54,9 @@ pub struct AndroidEncoder {
     consecutive_errors: u32,
 }
 
-// Safety: MediaCodec instances are thread-safe in the NDK. The synchronous
-// ByteBuffer API can be called from any single thread.
+// SAFETY: MediaCodec can be moved between threads. The NDK requires callers
+// to serialize access (no concurrent calls), which is upheld because
+// AndroidEncoder takes `&mut self` for all operations.
 unsafe impl Send for AndroidEncoder {}
 
 impl AndroidEncoder {

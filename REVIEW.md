@@ -646,3 +646,39 @@ Findings S1–S4 from the original review still apply. Additional:
 ### Documentation (rusty-codecs)
 
 - [ ] **RC14: Minimal SAFETY comments on VAAPI encoder unsafe blocks** (`vaapi/encoder.rs:405, 490, 507, 695`) — unsafe blocks lack detailed safety justification.
+
+## Overnight Review (589b15b..HEAD)
+
+Items marked `[x]` were fixed in commit 1687b72. Remaining items are deferred.
+
+### Fixed
+
+- [x] **ON1: Audio restart backoff never grows** — `saturating_duration_since` always yielded zero. Added `restart_backoff` field with proper exponential growth.
+- [x] **ON2: xcap `pop_frame` blocks with `thread::sleep`** — violates non-blocking `VideoSource` contract. Now returns `None` if interval hasn't elapsed.
+- [x] **ON3: Dead fallback in `CameraCapturer::with_backend`** — `.or_else(|| cameras.last())` was dead code.
+- [x] **ON4: `StreamDropGuard::drop` silent failure** — added `debug!` logging on `try_send` failure.
+- [x] **ON5: Android decoder drops intermediate frames** — `pending_frame` overwrote in loop. Changed to `VecDeque<VideoFrame>`.
+- [x] **ON6: Android encoder uses synthetic timestamps** — now uses actual `frame.timestamp`.
+- [x] **ON7: JNI `nextFrame` returns true on truncated data** — now returns `JNI_FALSE`.
+- [x] **ON8: JNI `pushCameraFrame` no size validation** — added `width * height * 4` check.
+- [x] **ON9: JNI `handle_from_jlong` panic safety** — `ManuallyDrop` instead of `forget`.
+- [x] **ON10: README says CameraX, code uses Camera2** — fixed.
+
+### Open — Android
+
+- [ ] **ON11: Hardcoded H.264 profile/level in Android encoder `config()`** — returns `0x42`/`0x1E` regardless of what MediaCodec negotiated. Could cause decoder failures if actual profile differs. Fix: query output format after start for actual profile/level.
+- [x] **ON12: `keyframe_interval_secs as i32` truncation** — fixed: `round().max(1)` prevents truncation to 0.
+- [ ] **ON13: `set_bitrate` never takes effect** — stores value but only applies on codec reset, which only happens after 3 consecutive errors. Need either API-level-26 `setParameters` call or periodic reset path.
+- [ ] **ON14: JNI exception checking** — no `exception_check()`/`exception_clear()` after JNI calls. Pending exception + continued JNI calls = undefined behavior.
+- [ ] **ON15: Kotlin `MainActivity` races with render loop** — `sessionHandle` set to 0 before render loop cancelled, creating a use-after-free window.
+- [ ] **ON16: Kotlin `yuvToRgba` is pixel-by-pixel CPU loop** — will cause ANR at production resolutions. Needs RenderScript/GPU shader or libyuv.
+- [ ] **ON17: TOCTOU in JNI `startPublish`** — lock released, async call, re-acquire; another thread can `disconnect` in between.
+
+### Open — General
+
+- [ ] **ON18: PipeWire thread `join()` in Drop blocks indefinitely** — no timeout. If PipeWire main loop stalls, dropping the capturer hangs. Consider bounded wait.
+- [x] **ON19: `unsafe impl Send` SAFETY comments** — fixed: comments now explain `&mut self` serialization.
+- [x] **ON20: `CaptureBackend` `#[non_exhaustive]`** — added.
+- [ ] **ON21: Commit 83d0b16 bundles unrelated changes** — noted for future practice, no action needed.
+- [x] **ON22: `bitrate as i32` clamped** — now uses `.min(i32::MAX as u64)`.
+- [ ] **ON23: UI thread blocking in split.rs `resubscribe()`** — `block_on()` in egui UI method. Pre-existing pattern, acceptable for example code.
