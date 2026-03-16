@@ -19,6 +19,8 @@
 //! ui.add(image);
 //! ```
 
+pub mod overlay;
+
 use std::{fmt, time::Duration};
 
 pub use moq_media;
