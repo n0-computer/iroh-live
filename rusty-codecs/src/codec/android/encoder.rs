@@ -42,7 +42,6 @@ pub struct AndroidEncoder {
     framerate: u32,
     bitrate: u64,
     keyframe_interval_secs: f32,
-    frame_count: u64,
     nal_format: NalFormat,
     scale_mode: ScaleMode,
     #[debug(skip)]
@@ -97,7 +96,6 @@ impl AndroidEncoder {
             framerate,
             bitrate,
             keyframe_interval_secs,
-            frame_count: 0,
             nal_format,
             scale_mode: config.scale_mode,
             scaler: Scaler::new(Some((width, height))),
@@ -345,7 +343,7 @@ impl VideoEncoder for AndroidEncoder {
             }
         };
 
-        let timestamp_us = (self.frame_count * 1_000_000) / self.framerate as u64;
+        let timestamp_us = frame.timestamp.as_micros() as u64;
 
         if let Err(e) = self.submit_input(&nv12_buf, timestamp_us) {
             self.consecutive_errors += 1;
@@ -354,7 +352,6 @@ impl VideoEncoder for AndroidEncoder {
             }
             return Err(e);
         }
-        self.frame_count += 1;
 
         // Drain any available output.
         if let Err(e) = self.drain_output() {

@@ -139,10 +139,10 @@ impl VideoSource for XcapScreenCapturer {
             return Ok(None);
         }
 
-        // Frame rate limiting: sleep until the next frame is due.
-        let elapsed = self.last_capture.elapsed();
-        if elapsed < self.target_interval {
-            std::thread::sleep(self.target_interval - elapsed);
+        // Frame rate limiting: return None if the interval hasn't elapsed yet.
+        // The caller is responsible for polling at the appropriate rate.
+        if self.last_capture.elapsed() < self.target_interval {
+            return Ok(None);
         }
 
         let img = self

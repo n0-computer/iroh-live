@@ -5,6 +5,7 @@
 //! A global tokio runtime drives all async work.
 
 use std::{
+    mem::ManuallyDrop,
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
@@ -72,12 +73,9 @@ fn handle_to_jlong(handle: SharedHandle) -> jlong {
 /// The pointer must have been created by [`handle_to_jlong`] and must not
 /// have been freed yet.
 unsafe fn handle_from_jlong(handle: jlong) -> SharedHandle {
-    // Reconstruct the Arc, then clone it so the original stays alive.
-    let arc = unsafe { Arc::from_raw(handle as *const Mutex<SessionHandle>) };
-    let cloned = Arc::clone(&arc);
-    // Leak the original back so it isn't dropped.
-    std::mem::forget(arc);
-    cloned
+    // Wrap in ManuallyDrop so the original Arc is never dropped.
+    let arc = ManuallyDrop::new(unsafe { Arc::from_raw(handle as *const Mutex<SessionHandle>) });
+    Arc::clone(&arc)
 }
 
 /// Takes ownership of the handle, dropping the `Arc` reference.
@@ -258,11 +256,12 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_nextFrame(
         tracing::warn!(
             frame_size = rgba_bytes.len(),
             buf_size = buf_len,
-            "frame larger than ByteBuffer, truncating"
+            "frame larger than ByteBuffer, skipping"
         );
+        return JNI_FALSE;
     }
 
-    let copy_len = rgba_bytes.len().min(buf_len);
+    let copy_len = rgba_bytes.len();
 
     // SAFETY: buf_ptr points to a valid direct ByteBuffer of at least buf_len bytes.
     unsafe {
@@ -361,6 +360,16 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_pushCameraFrame(
         tracing::error!("failed to read camera frame byte array");
         return;
     };
+
+    let expected_len = (width * height * 4) as usize;
+    if bytes.len() != expected_len {
+        tracing::warn!(
+            actual = bytes.len(),
+            expected = expected_len,
+            "camera frame data length mismatch, skipping"
+        );
+        return;
+    }
 
     let frame = VideoFrame::new_rgba(
         bytes::Bytes::from(bytes),
