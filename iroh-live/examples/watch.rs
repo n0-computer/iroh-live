@@ -17,7 +17,7 @@ use iroh_live::{
 };
 use moq_media_egui::{VideoTrackView, create_egui_wgpu_config};
 use n0_error::{Result, anyerr};
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Debug, Parser)]
 struct Cli {
@@ -127,8 +127,8 @@ fn main() -> Result<()> {
 
             let app = App {
                 video,
-                _audio_ctx: audio_ctx,
-                _audio: track.audio,
+                audio_ctx,
+                audio: track.audio,
                 broadcast: track.broadcast,
                 session,
                 stats: StatsSmoother::new(),
@@ -146,8 +146,8 @@ fn main() -> Result<()> {
 
 struct App {
     video: Option<VideoTrackView>,
-    _audio: Option<AudioTrack>,
-    _audio_ctx: AudioBackend,
+    audio: Option<AudioTrack>,
+    audio_ctx: AudioBackend,
     endpoint: Endpoint,
     session: MoqSession,
     broadcast: RemoteBroadcast,
@@ -168,12 +168,46 @@ impl App {
             self.fps_last_update = Instant::now();
         }
     }
+
+    fn resubscribe(&mut self, ctx: &egui::Context) {
+        match self.broadcast.video() {
+            Ok(track) => {
+                info!(rendition = track.rendition(), "resubscribed to video");
+                self.video = Some(VideoTrackView::new(ctx, "video", track));
+            }
+            Err(e) => {
+                warn!("video resubscribe failed: {e:#}");
+                self.video = None;
+            }
+        }
+
+        let handle = tokio::runtime::Handle::current();
+        match handle.block_on(self.broadcast.audio(&self.audio_ctx)) {
+            Ok(track) => {
+                info!("resubscribed to audio");
+                self.audio = Some(track);
+            }
+            Err(e) => {
+                warn!("audio resubscribe failed: {e:#}");
+                self.audio = None;
+            }
+        }
+    }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(30)); // min 30 fps
         self.update_fps();
+
+        // When the remote publisher switches source, the old track closes.
+        // Resubscribe from the current catalog to pick up the new source.
+        let video_closed = self.video.as_ref().is_some_and(|v| v.track().is_closed());
+        if video_closed {
+            info!("video track closed, resubscribing from current catalog");
+            self.resubscribe(ctx);
+        }
+
         egui::CentralPanel::default()
             .frame(egui::Frame::new().inner_margin(0.0).outer_margin(0.0))
             .show(ctx, |ui| {
