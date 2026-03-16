@@ -67,13 +67,19 @@ async fn roundtrip_video(
     frames
 }
 
-/// Publishes video, subscribes, and asserts frames arrive.
+/// Publishes video, subscribes, and asserts frames arrive with correct dimensions.
 async fn assert_codec_roundtrip(codec: VideoCodec) {
-    let frames = roundtrip_video(codec, VideoPreset::P180, 3).await;
+    let preset = VideoPreset::P180;
+    let (expected_w, expected_h) = preset.dimensions();
+    let frames = roundtrip_video(codec, preset, 3).await;
     assert_eq!(frames.len(), 3);
-    for frame in &frames {
-        assert!(frame.dimensions[0] > 0);
-        assert!(frame.dimensions[1] > 0);
+    for (i, frame) in frames.iter().enumerate() {
+        assert_eq!(
+            frame.dimensions,
+            [expected_w, expected_h],
+            "frame {i} dimensions mismatch: expected [{expected_w}, {expected_h}], got {:?}",
+            frame.dimensions,
+        );
     }
 }
 
@@ -130,7 +136,8 @@ async fn multiple_renditions_subscriber_selects_each() {
         "expected at least 2 renditions, got {renditions:?}"
     );
 
-    // Subscribe to each rendition and verify frames arrive
+    // Subscribe to each rendition and verify frames arrive with correct dimensions.
+    let mut dims_by_rendition = std::collections::HashMap::new();
     for name in &renditions {
         let mut track = remote
             .video_rendition::<moq_media::codec::DynamicVideoDecoder>(&Default::default(), name)
@@ -140,7 +147,86 @@ async fn multiple_renditions_subscriber_selects_each() {
             .expect("timeout")
             .expect("track closed");
         assert!(frame.dimensions[0] > 0, "rendition {name} produced frame");
+        dims_by_rendition.insert(name.clone(), frame.dimensions);
     }
+
+    // The 180p and 360p renditions should produce frames with different dimensions.
+    let all_dims: Vec<[u32; 2]> = dims_by_rendition.values().copied().collect();
+    assert!(
+        all_dims.windows(2).any(|w| w[0] != w[1]),
+        "expected different renditions to produce different dimensions, got {dims_by_rendition:?}"
+    );
+}
+
+#[cfg(feature = "h264")]
+#[tokio::test]
+async fn multiple_renditions_have_distinct_dimensions() {
+    let (broadcast, consumer) = setup_broadcast().await;
+    broadcast
+        .video()
+        .set(
+            TestVideoSource::new(640, 360),
+            VideoCodec::H264,
+            [VideoPreset::P360, VideoPreset::P180],
+        )
+        .unwrap();
+
+    let remote = RemoteBroadcast::with_playout("test", consumer, PlayoutMode::Reliable)
+        .await
+        .unwrap();
+
+    let catalog = remote.catalog();
+    let renditions: Vec<String> = catalog.video_renditions().map(String::from).collect();
+    assert!(
+        renditions.len() >= 2,
+        "expected at least 2 renditions, got {renditions:?}"
+    );
+
+    // Collect 3 frames from each rendition and record their dimensions.
+    let mut dims_by_rendition = std::collections::HashMap::new();
+    for name in &renditions {
+        let mut track = remote
+            .video_rendition::<moq_media::codec::DynamicVideoDecoder>(&Default::default(), name)
+            .unwrap();
+        let mut dims = Vec::new();
+        for _ in 0..3 {
+            let frame = tokio::time::timeout(TIMEOUT, track.next_frame())
+                .await
+                .expect("timeout waiting for frame")
+                .expect("track closed");
+            dims.push(frame.dimensions);
+        }
+        dims_by_rendition.insert(name.clone(), dims);
+    }
+
+    // Find the 360p and 180p renditions by name substring.
+    let r360 = renditions
+        .iter()
+        .find(|r| r.contains("360"))
+        .expect("no 360p rendition");
+    let r180 = renditions
+        .iter()
+        .find(|r| r.contains("180"))
+        .expect("no 180p rendition");
+
+    let dims_360 = &dims_by_rendition[r360];
+    let dims_180 = &dims_by_rendition[r180];
+
+    // All frames within a rendition should have consistent dimensions.
+    for d in dims_360 {
+        assert_eq!(d, &dims_360[0], "360p frame dimensions inconsistent");
+    }
+    for d in dims_180 {
+        assert_eq!(d, &dims_180[0], "180p frame dimensions inconsistent");
+    }
+
+    // 360p should have strictly larger dimensions than 180p.
+    assert!(
+        dims_360[0][0] > dims_180[0][0] && dims_360[0][1] > dims_180[0][1],
+        "360p dims {:?} should be larger than 180p dims {:?}",
+        dims_360[0],
+        dims_180[0],
+    );
 }
 
 #[cfg(feature = "h264")]
@@ -256,8 +342,12 @@ async fn playout_clock_reports_jitter_after_frames() {
             .expect("closed");
     }
 
-    // Clock should have observed arrivals (jitter may be zero in fast tests)
-    let _jitter = remote.clock().jitter();
+    // Clock should have observed arrivals; in-process tests have near-zero jitter.
+    let jitter = remote.clock().jitter();
+    assert!(
+        jitter < Duration::from_millis(500),
+        "jitter too high for in-process test: {jitter:?}"
+    );
 }
 
 // ── Group E: Publisher disconnect ──────────────────────────────────

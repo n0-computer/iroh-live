@@ -179,21 +179,16 @@ fn convert_channels_into(samples: &[f32], from_ch: u32, to_ch: u32, out: &mut Ve
 
 #[cfg(test)]
 mod tests {
-    use std::f32::consts::PI;
-
     use super::*;
     use crate::{
-        codec::{opus::encoder::OpusEncoder, test_util::encoded_frames_to_media_packets},
+        codec::{
+            opus::encoder::OpusEncoder,
+            test_util::{encoded_frames_to_media_packets, make_sine},
+        },
         config::AudioCodec,
         format::AudioPreset,
         traits::{AudioEncoder, AudioEncoderFactory},
     };
-
-    fn make_sine(num_samples: usize, freq: f32, sample_rate: f32) -> Vec<f32> {
-        (0..num_samples)
-            .map(|i| (2.0 * PI * freq * i as f32 / sample_rate).sin())
-            .collect()
-    }
 
     fn encode_frames(enc: &mut OpusEncoder, samples: &[f32]) -> Vec<MediaPacket> {
         enc.push_samples(samples).unwrap();
@@ -210,7 +205,7 @@ mod tests {
         let mut enc = OpusEncoder::with_preset(format, AudioPreset::Hq).unwrap();
         let config = enc.config();
 
-        let sine = make_sine(960, 440.0, 48000.0);
+        let sine = make_sine(440.0, 48000, 960);
         let packets = encode_frames(&mut enc, &sine);
         assert_eq!(packets.len(), 1);
 
@@ -229,7 +224,7 @@ mod tests {
         let config = enc.config();
 
         // Encode 5 frames
-        let sine = make_sine(960 * 5, 440.0, 48000.0);
+        let sine = make_sine(440.0, 48000, 960 * 5);
         let packets = encode_frames(&mut enc, &sine);
         assert_eq!(packets.len(), 5);
 
@@ -251,7 +246,7 @@ mod tests {
         let config = enc.config();
 
         // Stereo: 960 frames * 2 channels
-        let samples = make_sine(960 * 2, 440.0, 48000.0);
+        let samples = make_sine(440.0, 48000, 960 * 2);
         let packets = encode_frames(&mut enc, &samples);
         assert_eq!(packets.len(), 1);
 
@@ -304,7 +299,7 @@ mod tests {
         let mut enc = OpusEncoder::with_preset(format, AudioPreset::Hq).unwrap();
         let config = enc.config();
 
-        let sine = make_sine(960, 440.0, 48000.0);
+        let sine = make_sine(440.0, 48000, 960);
         let packets = encode_frames(&mut enc, &sine);
 
         let mut dec = OpusAudioDecoder::new(&config, format).unwrap();
@@ -324,7 +319,7 @@ mod tests {
         let mut enc = OpusEncoder::with_preset(enc_format, AudioPreset::Hq).unwrap();
         let config = enc.config();
 
-        let sine = make_sine(960, 440.0, 48000.0);
+        let sine = make_sine(440.0, 48000, 960);
         let packets = encode_frames(&mut enc, &sine);
         assert_eq!(packets.len(), 1);
 
@@ -351,7 +346,7 @@ mod tests {
         let config = enc.config();
 
         // 960 frames * 2 channels
-        let samples = make_sine(960 * 2, 440.0, 48000.0);
+        let samples = make_sine(440.0, 48000, 960 * 2);
         let packets = encode_frames(&mut enc, &samples);
         assert_eq!(packets.len(), 1);
 

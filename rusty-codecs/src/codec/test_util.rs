@@ -1,8 +1,17 @@
+use std::f32::consts::PI;
+
 use crate::{
     config::VideoConfig,
     format::{DecodeConfig, EncodedFrame, MediaPacket, VideoFrame},
     traits::{VideoDecoder, VideoEncoder},
 };
+
+/// Generates a sine wave buffer at the given frequency and sample rate.
+pub fn make_sine(frequency: f32, sample_rate: u32, num_samples: usize) -> Vec<f32> {
+    (0..num_samples)
+        .map(|i| (2.0 * PI * frequency * i as f32 / sample_rate as f32).sin())
+        .collect()
+}
 
 /// Converts encoded frames to media packets for decoder testing.
 pub fn encoded_frames_to_media_packets(input: Vec<EncodedFrame>) -> Vec<MediaPacket> {
