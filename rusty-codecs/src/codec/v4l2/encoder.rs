@@ -355,12 +355,15 @@ fn encoder_thread(
     let timestamps: Arc<Mutex<VecDeque<u64>>> = Arc::new(Mutex::new(VecDeque::new()));
 
     let result: Result<()> = (|| {
+        tracing::info!(?device_path, width, height, bitrate, "V4L2 encoder thread: starting init");
+
         // Set H.264 encoder controls via a separate FD (best-effort).
         // Must be done before the encoder's internal streaming starts.
         set_encoder_controls(&device_path, bitrate, keyframe_interval);
 
         let encoder = Encoder::open(&device_path)
             .map_err(|e| anyhow::anyhow!("failed to open V4L2 encoder {device_path:?}: {e}"))?;
+        tracing::info!("V4L2 encoder: device opened");
 
         // Set capture format (H.264 encoded output).
         let encoder = encoder
@@ -426,12 +429,17 @@ fn encoder_thread(
             )
             .map_err(|e| anyhow::anyhow!("failed to start V4L2 encoder: {e}"))?;
 
+        tracing::info!("V4L2 encoder: started (STREAMON done by v4l2r)");
+
         // Signal successful init.
         init_tx
             .send(Ok(()))
             .map_err(|_| anyhow::anyhow!("init channel closed"))?;
 
+        tracing::info!("V4L2 encoder: waiting for frames");
+
         // Process input commands until the channel closes.
+        let mut queued_count = 0u64;
         for cmd in &input_rx {
             match cmd {
                 EncoderCmd::Encode { nv12, timestamp_us } => {
@@ -457,6 +465,11 @@ fn encoder_thread(
 
                     if let Err(e) = qbuf.queue(&[nv12.len()]) {
                         tracing::warn!("V4L2 encoder: queue failed: {e}");
+                    } else {
+                        queued_count += 1;
+                        if queued_count <= 5 || queued_count % 30 == 0 {
+                            tracing::info!(queued_count, nv12_len = nv12.len(), "V4L2 encoder: frame queued to device");
+                        }
                     }
                 }
             }
