@@ -1333,11 +1333,36 @@ impl VideoSource for PipeWireScreenCapturer {
     }
 }
 
+/// Joins a thread with a bounded 2-second timeout. If the thread does not
+/// finish in time, logs a warning and detaches it (the OS will clean up on
+/// process exit). This prevents Drop from blocking indefinitely when the
+/// PipeWire main loop stalls.
+fn join_with_timeout(handle: std::thread::JoinHandle<()>, name: &str) {
+    let start = Instant::now();
+    // Park in a polling loop — std JoinHandle has no timed join.
+    // The thread should exit quickly once should_stop is set.
+    loop {
+        if handle.is_finished() {
+            let _ = handle.join();
+            return;
+        }
+        if start.elapsed() > Duration::from_secs(2) {
+            tracing::warn!(
+                thread = name,
+                "PipeWire thread did not exit within 2 s, detaching"
+            );
+            // Dropping the JoinHandle detaches the thread.
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 impl Drop for PipeWireScreenCapturer {
     fn drop(&mut self) {
         self.should_stop.store(true, Ordering::Relaxed);
         if let Some(handle) = self.thread.take() {
-            let _ = handle.join();
+            join_with_timeout(handle, "pw-screen");
         }
     }
 }
@@ -1475,7 +1500,7 @@ impl Drop for PipeWireCameraCapturer {
     fn drop(&mut self) {
         self.should_stop.store(true, Ordering::Relaxed);
         if let Some(handle) = self.thread.take() {
-            let _ = handle.join();
+            join_with_timeout(handle, "pw-camera");
         }
     }
 }

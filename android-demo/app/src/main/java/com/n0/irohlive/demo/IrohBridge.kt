@@ -55,13 +55,6 @@ object IrohBridge {
     external fun dial(ticket: String, cameraWidth: Int, cameraHeight: Int): Long
 
     /**
-     * Starts publishing a broadcast with the given name.
-     *
-     * After this call, camera frames can be pushed via [pushCameraFrame].
-     */
-    external fun startPublish(handle: Long, name: String)
-
-    /**
      * Pushes a camera frame (RGBA byte array) into the publish pipeline.
      *
      * [data] must contain width * height * 4 bytes of RGBA pixel data.
