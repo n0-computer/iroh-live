@@ -66,7 +66,9 @@ impl LiveTicket {
         } else if s.contains('@') {
             Self::deserialize_legacy(s)
         } else {
-            Err(anyhow::anyhow!("invalid ticket: expected iroh-live: URI or legacy name@addr format"))?
+            Err(anyhow::anyhow!(
+                "invalid ticket: expected iroh-live: URI or legacy name@addr format"
+            ))?
         }
     }
 
@@ -89,9 +91,8 @@ impl LiveTicket {
     }
 
     fn deserialize_legacy(s: &str) -> Result<Self> {
-        let (broadcast_name, encoded_addr) = s
-            .split_once('@')
-            .std_context("invalid ticket: missing @")?;
+        let (broadcast_name, encoded_addr) =
+            s.split_once('@').std_context("invalid ticket: missing @")?;
         let endpoint: EndpointAddr = postcard::from_bytes(
             &data_encoding::BASE32_NOPAD_NOCASE
                 .decode(encoded_addr.as_bytes())

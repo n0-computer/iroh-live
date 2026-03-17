@@ -18,18 +18,26 @@ resolver = "2"
 debug = true
 
 [workspace.dependencies]
+# External
 iroh = "0.97.0"
 iroh-gossip = "0.97.0"
 iroh-tickets = "0.4.0"
 iroh-smol-kv = { git = "https://github.com/n0-computer/iroh-smol-kv.git", branch = "iroh-097", default-features = false }
-hang = { git = "https://github.com/moq-dev/moq.git", branch = "main" }
-moq-lite = { git = "https://github.com/moq-dev/moq.git", branch = "main" }
-moq-mux = { git = "https://github.com/moq-dev/moq.git", branch = "main" }
-moq-relay = { path = "../moq/rs/moq-relay", default-features = false }
-moq-native = { path = "../moq/rs/moq-native", default-features = false }
+hang = { git = "https://github.com/Frando/moq.git", branch = "feat/relay-lib" }
+moq-lite = { git = "https://github.com/Frando/moq.git", branch = "feat/relay-lib" }
+moq-mux = { git = "https://github.com/Frando/moq.git", branch = "feat/relay-lib" }
+moq-relay = { git = "https://github.com/Frando/moq.git", branch = "feat/relay-lib", default-features = false }
+moq-native = { git = "https://github.com/Frando/moq.git", branch = "feat/relay-lib", default-features = false }
 web-transport-iroh = { git = "https://github.com/n0-computer/web-transport-iroh.git", branch = "main" }
-# web-transport-trait = { git = "https://github.com/Frando/web-transport.git", branch = "feat/iroh" }
-# web-transport-proto = { git = "https://github.com/Frando/web-transport.git", branch = "feat/iroh" }
+
+# In-repo crates
+iroh-live = { path = "iroh-live", default-features = false }
+iroh-moq = { path = "iroh-moq" }
+moq-media = { path = "moq-media", default-features = false }
+moq-media-android = { path = "moq-media-android" }
+moq-media-egui = { path = "moq-media-egui" }
+rusty-codecs = { path = "rusty-codecs", default-features = false }
+rusty-capture = { path = "rusty-capture", default-features = false }
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "deny", check-cfg = ["cfg(docsrs)", "cfg(any_audio_codec)", "cfg(any_video_codec)", "cfg(any_codec)"] }

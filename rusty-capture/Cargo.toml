@@ -24,7 +24,7 @@ xcap = { version = "0.9", optional = true }
 nokhwa = { version = "0.10", optional = true, features = ["input-native", "camera-sync-impl"] }
 
 # Core types from rusty-codecs (no codec features enabled).
-rusty-codecs = { path = "../rusty-codecs", default-features = false }
+rusty-codecs = { workspace = true }
 
 # Linux: PipeWire (screen + camera, DMA-BUF zero-copy)
 [target.'cfg(target_os = "linux")'.dependencies]

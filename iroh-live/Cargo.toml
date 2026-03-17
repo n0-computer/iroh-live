@@ -16,10 +16,10 @@ hang = { workspace = true }
 image = { version = "0.25", default-features = false }
 iroh = { workspace = true }
 iroh-gossip = { workspace = true }
-iroh-moq = { path = "../iroh-moq" }
+iroh-moq = { workspace = true }
 iroh-tickets = { workspace = true }
 moq-lite = { workspace = true }
-moq-media = { version = "0.1.0", path = "../moq-media", default-features = false }
+moq-media = { workspace = true }
 n0-error = { version = "0.1.2", features = ["anyhow"] }
 n0-future = "0.3.1"
 n0-watcher = "0.6.0"
@@ -39,8 +39,8 @@ throttled-tracing = "0.1.0"
 clap = { version = "4.5", features = ["derive"] }
 eframe = { version = "0.33.0", default-features = false, features = ["default_fonts", "wayland", "x11", "wgpu"] }
 egui-wgpu = "0.33.0"
-moq-media-egui = { path = "../moq-media-egui" }
-moq-media = { path = "../moq-media", features = ["test-util"] }
+moq-media-egui = { workspace = true }
+moq-media = { workspace = true, features = ["test-util"] }
 wgpu = "27"
 winit = "0.30"
 pollster = "0.4"

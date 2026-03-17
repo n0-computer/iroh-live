@@ -13,13 +13,13 @@ workspace = true
 [dependencies]
 anyrender_vello = "0.7"
 dioxus-native = { git = "https://github.com/DioxusLabs/blitz", features = ["vello", "system-fonts", "prelude"] }
-moq-media = { path = "../moq-media", features = ["wgpu"] }
+moq-media = { workspace = true, features = ["wgpu"] }
 tracing = "0.1"
 wgpu = { version = "27", default-features = false }
 wgpu_context = "0.3"
 
 [dev-dependencies]
-moq-media = { path = "../moq-media", features = ["h264", "av1", "capture"] }
+moq-media = { workspace = true, features = ["h264", "av1", "capture"] }
 strum = { version = "0.28", features = ["derive"] }
 tokio-util = "0.7"
 tracing-subscriber = "0.3"
