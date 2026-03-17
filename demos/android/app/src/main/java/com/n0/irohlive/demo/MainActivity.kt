@@ -116,6 +116,7 @@ class MainActivity : AppCompatActivity() {
 
     // EGL state (initialized on render thread).
     private var eglDisplay: EGLDisplay = EGL14.EGL_NO_DISPLAY
+    private var eglConfig: EGLConfig? = null
     private var eglContext: EGLContext = EGL14.EGL_NO_CONTEXT
     private var eglSurface: EGLSurface = EGL14.EGL_NO_SURFACE
     private var glProgram = 0
@@ -595,37 +596,43 @@ class MainActivity : AppCompatActivity() {
     // ── EGL/GL setup ────────────────────────────────────────────────────
 
     private fun initEgl(holder: SurfaceHolder) {
-        eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
-        check(eglDisplay != EGL14.EGL_NO_DISPLAY) { "eglGetDisplay failed" }
+        // Display + config are process-wide singletons — only initialize once.
+        if (eglDisplay == EGL14.EGL_NO_DISPLAY) {
+            eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
+            check(eglDisplay != EGL14.EGL_NO_DISPLAY) { "eglGetDisplay failed" }
 
-        val version = IntArray(2)
-        check(EGL14.eglInitialize(eglDisplay, version, 0, version, 1)) { "eglInitialize failed" }
+            val version = IntArray(2)
+            check(EGL14.eglInitialize(eglDisplay, version, 0, version, 1)) { "eglInitialize failed" }
 
-        val configAttribs = intArrayOf(
-            EGL14.EGL_RED_SIZE, 8,
-            EGL14.EGL_GREEN_SIZE, 8,
-            EGL14.EGL_BLUE_SIZE, 8,
-            EGL14.EGL_ALPHA_SIZE, 8,
-            EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
-            EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT,
-            EGL14.EGL_NONE,
-        )
-        val configs = arrayOfNulls<EGLConfig>(1)
-        val numConfigs = IntArray(1)
-        check(
-            EGL14.eglChooseConfig(eglDisplay, configAttribs, 0, configs, 0, 1, numConfigs, 0)
-            && numConfigs[0] > 0
-        ) { "eglChooseConfig failed" }
+            val configAttribs = intArrayOf(
+                EGL14.EGL_RED_SIZE, 8,
+                EGL14.EGL_GREEN_SIZE, 8,
+                EGL14.EGL_BLUE_SIZE, 8,
+                EGL14.EGL_ALPHA_SIZE, 8,
+                EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+                EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT,
+                EGL14.EGL_NONE,
+            )
+            val configs = arrayOfNulls<EGLConfig>(1)
+            val numConfigs = IntArray(1)
+            check(
+                EGL14.eglChooseConfig(eglDisplay, configAttribs, 0, configs, 0, 1, numConfigs, 0)
+                && numConfigs[0] > 0
+            ) { "eglChooseConfig failed" }
+            eglConfig = configs[0]!!
+        }
+
+        val config = eglConfig!!
 
         val contextAttribs = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE)
         eglContext = EGL14.eglCreateContext(
-            eglDisplay, configs[0]!!, EGL14.EGL_NO_CONTEXT, contextAttribs, 0
+            eglDisplay, config, EGL14.EGL_NO_CONTEXT, contextAttribs, 0
         )
         check(eglContext != EGL14.EGL_NO_CONTEXT) { "eglCreateContext failed" }
 
         val surfaceAttribs = intArrayOf(EGL14.EGL_NONE)
         eglSurface = EGL14.eglCreateWindowSurface(
-            eglDisplay, configs[0]!!, holder.surface, surfaceAttribs, 0
+            eglDisplay, config, holder.surface, surfaceAttribs, 0
         )
         check(eglSurface != EGL14.EGL_NO_SURFACE) { "eglCreateWindowSurface failed" }
 
@@ -703,10 +710,12 @@ class MainActivity : AppCompatActivity() {
                 EGL14.eglDestroyContext(eglDisplay, eglContext)
                 eglContext = EGL14.EGL_NO_CONTEXT
             }
-            // Don't call eglTerminate here — the Android default display is a
-            // process-wide singleton and terminating it breaks re-initialization
-            // on some drivers. It's cleaned up automatically on process exit.
-            eglDisplay = EGL14.EGL_NO_DISPLAY
+            // Keep eglDisplay and eglConfig alive — they're process-wide
+            // singletons. Re-initializing after eglTerminate fails on some
+            // drivers, and even without terminate, re-calling eglInitialize
+            // + eglChooseConfig + eglCreateWindowSurface on the same native
+            // window can fail. Reusing the display lets us just recreate the
+            // context + surface on the next session.
         }
         if (glTexture != 0) {
             // Texture is invalid after context destruction, just zero it.
