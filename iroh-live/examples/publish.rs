@@ -79,7 +79,7 @@ async fn main() -> n0_error::Result {
 
 #[derive(Parser, Debug)]
 struct Cli {
-    #[arg(long, default_value_t=VideoCodec::best_available(), value_parser = clap_enum_variants!(VideoCodec))]
+    #[arg(long, default_value_t=VideoCodec::best_available().expect("no video codec available"), value_parser = clap_enum_variants!(VideoCodec))]
     codec: VideoCodec,
     #[arg(long, value_delimiter=',', default_values_t=[VideoPreset::P180, VideoPreset::P360, VideoPreset::P720, VideoPreset::P1080])]
     video_presets: Vec<VideoPreset>,

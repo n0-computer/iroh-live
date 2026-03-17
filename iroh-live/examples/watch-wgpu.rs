@@ -140,7 +140,10 @@ struct GpuState {
 impl GpuState {
     /// Uploads a new frame to the video texture and rebuilds the blit bind group.
     fn upload_frame(&mut self, frame: &VideoFrame) {
-        let video_view = self.renderer.render(frame);
+        let Ok(video_view) = self.renderer.render(frame) else {
+            tracing::warn!("wgpu render failed, skipping frame");
+            return;
+        };
         self.blit_bind_group = Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("blit_bind_group"),
             layout: &self.blit_bind_group_layout,

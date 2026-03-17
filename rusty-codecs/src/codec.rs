@@ -97,33 +97,35 @@ impl VideoCodec {
         ]
     }
 
-    /// Returns the best available encoder: hardware if available, otherwise software H.264.
+    /// Returns the best available encoder, preferring hardware over software.
+    ///
+    /// Returns `None` when no video codec feature is enabled at compile time.
     #[allow(
         unreachable_code,
         reason = "cfg-gated returns may make trailing code unreachable"
     )]
-    pub fn best_available() -> Self {
+    pub fn best_available() -> Option<Self> {
         #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
         {
-            return Self::VtbH264;
+            return Some(Self::VtbH264);
         }
         #[cfg(all(target_os = "linux", feature = "vaapi"))]
         {
-            return Self::VaapiH264;
+            return Some(Self::VaapiH264);
         }
         #[cfg(all(target_os = "linux", feature = "v4l2"))]
         {
-            return Self::V4l2H264;
+            return Some(Self::V4l2H264);
         }
         #[cfg(all(target_os = "android", feature = "android"))]
         {
-            return Self::AndroidH264;
+            return Some(Self::AndroidH264);
         }
         #[cfg(feature = "h264")]
         {
-            return Self::H264;
+            return Some(Self::H264);
         }
-        panic!("no video codec available: enable the h264, av1, videotoolbox, or vaapi feature")
+        None
     }
 
     /// Whether this is a hardware-accelerated encoder.

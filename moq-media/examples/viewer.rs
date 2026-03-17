@@ -651,7 +651,7 @@ impl ViewerApp {
         Self {
             available_sources,
             source_idx: 0,
-            codec: VideoCodec::best_available(),
+            codec: VideoCodec::best_available().expect("no video codec available"),
             preset: VideoPreset::P720,
             backend: DecoderBackend::Auto,
             render_mode: *RenderMode::VARIANTS.last().unwrap(),

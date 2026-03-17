@@ -164,7 +164,7 @@ impl PublishView {
         let broadcast = LocalBroadcast::new();
         broadcast.video().set(
             TestPatternSource::new(1280, 720),
-            VideoCodec::best_available(),
+            VideoCodec::best_available().expect("no video codec available"),
             [VideoPreset::P720],
         )?;
         broadcast
@@ -182,7 +182,7 @@ impl PublishView {
             available_sources: discover_video_sources(),
             video_source_idx: 0,
             audio_source: AudioSourceKind::TestTone,
-            codec: VideoCodec::best_available(),
+            codec: VideoCodec::best_available().expect("no video codec available"),
             preset: VideoPreset::P720,
             preview: None,
             stats: FrameStats::default(),

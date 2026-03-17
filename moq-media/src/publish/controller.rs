@@ -213,7 +213,8 @@ impl PublishCaptureController {
                 };
                 let codec = capture
                     .video_codec
-                    .unwrap_or_else(VideoCodec::best_available);
+                    .or_else(VideoCodec::best_available)
+                    .ok_or_else(|| AnyError::from_display("no video codec available"))?;
                 let renditions = VideoRenditions::new(capturer, codec, VideoPreset::all());
                 camera.set_video(Some(renditions))?;
             } else {
@@ -249,7 +250,8 @@ impl PublishCaptureController {
                 let screen = ScreenCapturer::new()?;
                 let codec = capture
                     .video_codec
-                    .unwrap_or_else(VideoCodec::best_available);
+                    .or_else(VideoCodec::best_available)
+                    .ok_or_else(|| AnyError::from_display("no video codec available"))?;
                 let renditions = VideoRenditions::new(screen, codec, VideoPreset::all());
                 self.screen.as_ref().unwrap().set_video(Some(renditions))?;
 

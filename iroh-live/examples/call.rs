@@ -134,7 +134,7 @@ impl DeviceSelectors {
             audio_input: AudioInputKind::TestTone,
             audio_outputs: AudioBackend::list_outputs(),
             audio_output_idx: 0,
-            codec: VideoCodec::best_available(),
+            codec: VideoCodec::best_available().expect("no video codec available"),
             preset: VideoPreset::P720,
             video_dirty: false,
             audio_in_dirty: false,
@@ -854,7 +854,7 @@ fn main() -> Result<()> {
         let broadcast = LocalBroadcast::new();
         broadcast.video().set(
             TestPatternSource::new(1280, 720),
-            VideoCodec::best_available(),
+            VideoCodec::best_available().expect("no video codec available"),
             [VideoPreset::P720],
         )?;
         broadcast

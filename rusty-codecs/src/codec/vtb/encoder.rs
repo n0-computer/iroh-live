@@ -98,7 +98,7 @@ impl VtbEncoder {
 
         // Specify I420 (3-plane planar YUV) as the source pixel format so the
         // pixel buffer pool allocates 3-plane buffers instead of NV12.
-        let source_attrs = build_source_image_attrs(width, height);
+        let source_attrs = build_source_image_attrs(width, height)?;
 
         let mut session_ptr: *mut VTCompressionSession = ptr::null_mut();
         let status = unsafe {
@@ -299,7 +299,7 @@ impl VideoEncoder for VtbEncoder {
         // subscribers don't have to wait MaxKeyFrameInterval frames.
         let frame_props = if self.force_next_keyframe {
             self.force_next_keyframe = false;
-            Some(build_force_keyframe_props())
+            Some(build_force_keyframe_props()?)
         } else {
             None
         };
@@ -402,7 +402,7 @@ fn set_string_property(
 
 /// Build a CFDictionary with `kVTEncodeFrameOptionKey_ForceKeyFrame = true`
 /// to force the next encoded frame to be an IDR keyframe.
-fn build_force_keyframe_props() -> CFRetained<CFDictionary> {
+fn build_force_keyframe_props() -> Result<CFRetained<CFDictionary>> {
     // Safety: accessing extern statics for VideoToolbox property keys.
     unsafe {
         let keys: [*const c_void; 1] =
@@ -416,13 +416,13 @@ fn build_force_keyframe_props() -> CFRetained<CFDictionary> {
             &kCFTypeDictionaryKeyCallBacks,
             &kCFTypeDictionaryValueCallBacks,
         )
-        .expect("CFDictionaryCreate returned null")
+        .context("CFDictionaryCreate returned null for force-keyframe properties")
     }
 }
 
 /// Build a CFDictionary specifying I420 pixel format and dimensions for the
 /// compression session's source image buffer pool.
-fn build_source_image_attrs(width: u32, height: u32) -> CFRetained<CFDictionary> {
+fn build_source_image_attrs(width: u32, height: u32) -> Result<CFRetained<CFDictionary>> {
     let pixel_format = CFNumber::new_i32(kCVPixelFormatType_420YpCbCr8Planar as i32);
     let width_num = CFNumber::new_i32(width as i32);
     let height_num = CFNumber::new_i32(height as i32);
@@ -448,7 +448,7 @@ fn build_source_image_attrs(width: u32, height: u32) -> CFRetained<CFDictionary>
             &kCFTypeDictionaryKeyCallBacks,
             &kCFTypeDictionaryValueCallBacks,
         )
-        .expect("CFDictionaryCreate returned null")
+        .context("CFDictionaryCreate returned null for source image attributes")
     }
 }
 

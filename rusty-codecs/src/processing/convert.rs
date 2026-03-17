@@ -38,8 +38,16 @@ impl YuvData {
     }
 }
 
-/// Extract the owned `Vec` from a `BufferStoreMut::Owned` without copying.
-/// Panics if the buffer is borrowed (only happens when user passes external slices).
+/// Extracts the owned `Vec` from a `BufferStoreMut::Owned` without copying.
+///
+/// # Panics
+///
+/// Panics if the buffer is `Borrowed`.
+///
+/// Invariant: this is only called on buffers produced by `YuvPlanarImageMut::alloc()`,
+/// which allocates each plane as a fresh `Vec<u8>` wrapped in `BufferStoreMut::Owned`.
+/// The `Borrowed` variant only appears when a caller constructs a `YuvPlanarImageMut`
+/// from external slices, which never happens in our conversion functions.
 fn take_owned(buf: BufferStoreMut<'_, u8>) -> Vec<u8> {
     match buf {
         BufferStoreMut::Owned(v) => v,

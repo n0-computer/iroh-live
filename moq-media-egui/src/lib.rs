@@ -113,7 +113,9 @@ impl FrameView {
     pub fn render_frame(&mut self, frame: &VideoFrame) {
         #[cfg(feature = "wgpu-render")]
         if let Some(ref mut r) = self.egui_renderer {
-            r.render(frame);
+            if let Err(e) = r.render(frame) {
+                tracing::warn!("wgpu render failed: {e:#}");
+            }
             return;
         }
 
@@ -300,8 +302,11 @@ impl EguiVideoRenderer {
     }
 
     /// Renders a decoded video frame and returns the egui texture ID and dimensions.
-    pub fn render(&mut self, frame: &VideoFrame) -> (epaint::TextureId, (u32, u32)) {
-        let view = self.renderer.render(frame);
+    pub fn render(
+        &mut self,
+        frame: &VideoFrame,
+    ) -> anyhow::Result<(epaint::TextureId, (u32, u32))> {
+        let view = self.renderer.render(frame)?;
         let device = &self.render_state.device;
         let mut egui_renderer = self.render_state.renderer.write();
 
@@ -321,7 +326,7 @@ impl EguiVideoRenderer {
 
         let dims = (frame.width(), frame.height());
         self.last_frame_size = Some(dims);
-        (id, dims)
+        Ok((id, dims))
     }
 
     /// Returns the last rendered texture ID and dimensions, if any frame has been rendered.
