@@ -200,8 +200,8 @@ impl PreEncodedVideoSource for LibcameraH264Source {
 
         self.remainder.extend_from_slice(&self.buf[..n]);
 
-        // Find the last complete access unit boundary.
-        let split_pos = find_last_au_boundary(&self.remainder);
+        // Find the end of the first complete access unit.
+        let split_pos = find_first_au_end(&self.remainder);
 
         let Some(pos) = split_pos else {
             return Ok(None);
@@ -292,32 +292,44 @@ fn contains_idr_nal(data: &[u8]) -> bool {
     false
 }
 
-/// Finds the byte offset of the last access unit boundary in an Annex-B
-/// bytestream. Returns `None` if the buffer contains fewer than two AUs.
-fn find_last_au_boundary(data: &[u8]) -> Option<usize> {
-    let mut last_boundary = None;
-    let mut i = data.len();
-    while i >= 4 {
-        i -= 1;
-        let (sc_start, nal_start) =
-            if i >= 3 && data[i - 3] == 0 && data[i - 2] == 0 && data[i - 1] == 0 && data[i] == 1 {
-                (i - 3, i + 1)
-            } else if i >= 2 && data[i - 2] == 0 && data[i - 1] == 0 && data[i] == 1 {
-                (i - 2, i + 1)
-            } else {
-                continue;
-            };
+/// Finds the end of the first complete access unit in an Annex-B bytestream.
+///
+/// Scans forward for AU-starting NAL types (SPS=7, IDR=5, non-IDR=1).
+/// Returns the byte offset where the *second* such NAL starts — everything
+/// before that offset is exactly one AU. Returns `None` if the buffer
+/// contains fewer than two AU boundaries (i.e. no complete AU yet).
+fn find_first_au_end(data: &[u8]) -> Option<usize> {
+    let mut found_first = false;
+    let mut i = 0;
+    while i + 3 < data.len() {
+        // Match 4-byte start code first (00 00 00 01), then 3-byte (00 00 01).
+        let (sc_start, nal_start) = if i + 4 <= data.len()
+            && data[i] == 0
+            && data[i + 1] == 0
+            && data[i + 2] == 0
+            && data[i + 3] == 1
+        {
+            (i, i + 4)
+        } else if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
+            (i, i + 3)
+        } else {
+            i += 1;
+            continue;
+        };
 
         if nal_start < data.len() {
             let nal_type = data[nal_start] & 0x1F;
-            // SPS (7), non-IDR slice (1), or IDR slice (5) starts a new AU.
-            if nal_type == 7 || nal_type == 1 || nal_type == 5 {
-                if last_boundary.is_some() {
-                    return last_boundary;
+            // Only VCL NALs (slice types) start a new AU. SPS (7) and PPS (8)
+            // are non-VCL and belong to the same AU as the following slice.
+            // This ensures SPS+PPS+IDR stays together in one packet.
+            if nal_type == 5 || nal_type == 1 {
+                if found_first {
+                    return Some(sc_start);
                 }
-                last_boundary = Some(sc_start);
+                found_first = true;
             }
         }
+        i = nal_start;
     }
     None
 }
@@ -460,24 +472,51 @@ mod tests {
 
     #[test]
     fn au_boundary_empty() {
-        assert_eq!(find_last_au_boundary(&[]), None);
+        assert_eq!(find_first_au_end(&[]), None);
     }
 
     #[test]
     fn au_boundary_single_nal() {
         // Single IDR NAL — no second boundary, returns None.
         let data = [0, 0, 0, 1, 0x65, 0xAA, 0xBB];
-        assert_eq!(find_last_au_boundary(&data), None);
+        assert_eq!(find_first_au_end(&data), None);
     }
 
     #[test]
-    fn au_boundary_two_nals() {
-        // SPS + IDR slice = two AUs.
+    fn au_boundary_two_slices() {
+        // IDR (AU 1) + non-IDR (AU 2) → split at second slice start code.
+        let mut data = vec![0, 0, 0, 1, 0x65, 0xAA, 0xBB]; // IDR NAL (type 5)
+        let second_start = data.len();
+        data.extend_from_slice(&[0, 0, 0, 1, 0x41, 0xCC, 0xDD]); // non-IDR (type 1)
+        assert_eq!(find_first_au_end(&data), Some(second_start));
+    }
+
+    #[test]
+    fn au_boundary_sps_pps_idr_kept_together() {
+        // SPS + PPS + IDR should be ONE AU (SPS/PPS are non-VCL, not AU boundaries).
+        let mut data = vec![0, 0, 0, 1, 0x67, 0x42]; // SPS (type 7)
+        data.extend_from_slice(&[0, 0, 0, 1, 0x68, 0xCE]); // PPS (type 8)
+        data.extend_from_slice(&[0, 0, 0, 1, 0x65, 0xAA]); // IDR (type 5)
+        // Only one VCL NAL (IDR) → no second AU boundary → None
+        assert_eq!(find_first_au_end(&data), None);
+    }
+
+    #[test]
+    fn au_boundary_sps_pps_idr_then_p_frame() {
+        // SPS+PPS+IDR (AU 1) + P-frame (AU 2) → split at P-frame.
         let mut data = vec![0, 0, 0, 1, 0x67, 0x42]; // SPS
-        let idr_start = data.len();
-        data.extend_from_slice(&[0, 0, 0, 1, 0x65, 0xAA, 0xBB]); // IDR
-        let result = find_last_au_boundary(&data);
-        assert_eq!(result, Some(idr_start));
+        data.extend_from_slice(&[0, 0, 0, 1, 0x68, 0xCE]); // PPS
+        data.extend_from_slice(&[0, 0, 0, 1, 0x65, 0xAA]); // IDR
+        let p_start = data.len();
+        data.extend_from_slice(&[0, 0, 0, 1, 0x41, 0xBB]); // P-frame (type 1)
+        assert_eq!(find_first_au_end(&data), Some(p_start));
+    }
+
+    #[test]
+    fn au_boundary_sps_only() {
+        // SPS alone — no VCL NAL, no AU boundary.
+        let data = vec![0, 0, 0, 1, 0x67, 0x42];
+        assert_eq!(find_first_au_end(&data), None);
     }
 
     #[test]
