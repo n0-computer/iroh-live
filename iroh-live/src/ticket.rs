@@ -161,4 +161,20 @@ mod tests {
     fn rejects_garbage() {
         assert!(LiveTicket::deserialize("not-a-ticket").is_err());
     }
+
+    #[test]
+    fn ticket_string_fits_in_qr_code() {
+        // QR codes can hold up to ~4296 alphanumeric characters. Verify
+        // that a ticket with a full EndpointAddr serializes to a string
+        // short enough for a QR code (important for terminal/e-paper display).
+        let ticket = LiveTicket::new(test_endpoint_addr(), "my-stream-name");
+        let s = ticket.to_string();
+        assert!(
+            s.len() < 2000,
+            "ticket string too long for QR: {} bytes",
+            s.len()
+        );
+        // Also verify it starts with the expected scheme.
+        assert!(s.starts_with("iroh-live:"));
+    }
 }
