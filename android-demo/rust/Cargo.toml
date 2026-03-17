@@ -11,12 +11,11 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
-[dependencies]
-
 [target.'cfg(target_os = "android")'.dependencies]
 iroh-live = { path = "../../iroh-live", default-features = false }
 moq-media = { path = "../../moq-media", default-features = false, features = ["h264", "opus", "android"] }
 moq-media-android = { path = "../../moq-media-android" }
+n0-watcher = "0.6.1"
 rusty-codecs = { path = "../../rusty-codecs", default-features = false, features = ["h264", "opus", "hang", "android"] }
 jni = "0.21"
 ndk = { version = "0.9", features = ["api-level-26"] }
