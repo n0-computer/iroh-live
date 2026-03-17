@@ -1,18 +1,25 @@
 /// Raspberry Pi Zero 2 demo: publish a camera stream over iroh and display
 /// the connection ticket as a QR code on a Waveshare 2.13" e-paper HAT.
+/// Also supports watching a remote stream with EGL/GLES2 rendering.
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use iroh::Endpoint;
+use iroh::{Endpoint, EndpointId};
 use iroh_live::{
     Live,
-    media::{codec::VideoCodec, format::VideoPreset, publish::LocalBroadcast},
+    media::{
+        audio_backend::AudioBackend,
+        codec::{DefaultDecoders, VideoCodec},
+        format::{DecodeConfig, DecoderBackend, PlaybackConfig, VideoPreset},
+        publish::LocalBroadcast,
+    },
     ticket::LiveTicket,
 };
 
 mod epaper;
 mod epd_v4;
 mod libcamera;
+mod watch;
 
 /// Per the datasheet, e-paper must be refreshed at least once every 24 h.
 /// We re-display the QR every 12 h to stay well within that limit while
@@ -32,12 +39,38 @@ enum Command {
     EpaperDemo,
     /// Publish the camera stream and show the ticket QR on e-paper.
     Publish(PublishOpts),
+    /// Watch a remote stream, rendering with EGL/GLES2.
+    Watch(WatchOpts),
+    /// Render a test pattern directly to HDMI (no network, no window system).
+    FbDemo,
 }
 
 #[derive(Parser, Debug)]
 struct PublishOpts {
     #[clap(long)]
     epaper: bool,
+}
+
+#[derive(Parser, Debug)]
+struct WatchOpts {
+    /// Connection ticket (alternative to --endpoint-id + --name).
+    #[clap(long, conflicts_with = "endpoint_id")]
+    ticket: Option<LiveTicket>,
+    /// Remote endpoint ID (requires --name).
+    #[clap(long, conflicts_with = "ticket", requires = "name")]
+    endpoint_id: Option<EndpointId>,
+    /// Broadcast name.
+    #[clap(long, conflicts_with = "ticket", requires = "endpoint_id")]
+    name: Option<String>,
+    /// Render direct to HDMI framebuffer via DRM/KMS (no window system).
+    #[clap(long)]
+    fb: bool,
+    /// Start in fullscreen mode (windowed mode only, ignored with --fb).
+    #[clap(long)]
+    fullscreen: bool,
+    /// Decoder backend: "auto" (try HW then SW) or "software".
+    #[clap(long, default_value = "auto")]
+    decoder: String,
 }
 
 #[tokio::main]
@@ -48,6 +81,8 @@ async fn main() -> n0_error::Result {
     match cli.command {
         Command::EpaperDemo => cmd_epaper_demo(),
         Command::Publish(opts) => cmd_publish(opts).await,
+        Command::Watch(opts) => cmd_watch(opts).await,
+        Command::FbDemo => cmd_fb_demo(),
     }
 }
 
@@ -171,6 +206,84 @@ async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     }
 
     live.shutdown().await;
+
+    Ok(())
+}
+
+/// Renders a test pattern directly to HDMI — no network, no window system.
+fn cmd_fb_demo() -> n0_error::Result {
+    use moq_media::format::DecodeConfig;
+    use moq_media::subscribe::VideoTrack;
+    use moq_media::test_util::TestVideoSource;
+    use tokio_util::sync::CancellationToken;
+
+    let source = TestVideoSource::new(640, 480).with_fps(30.0);
+    let shutdown = CancellationToken::new();
+    let video_track = VideoTrack::from_video_source(
+        "test".into(),
+        shutdown,
+        source,
+        DecodeConfig::default(),
+    );
+
+    watch::run_fb_demo(video_track)?;
+    Ok(())
+}
+
+/// Watches a remote broadcast, rendering with EGL/GLES2.
+async fn cmd_watch(opts: WatchOpts) -> n0_error::Result {
+    let ticket = match (&opts.ticket, &opts.endpoint_id, &opts.name) {
+        (Some(t), None, None) => t.clone(),
+        (None, Some(id), Some(name)) => LiveTicket::new(*id, name.clone()),
+        _ => {
+            eprintln!("Usage: watch --ticket <TICKET> or --endpoint-id <ID> --name <NAME>");
+            std::process::exit(1);
+        }
+    };
+    let backend = match opts.decoder.as_str() {
+        "auto" => DecoderBackend::Auto,
+        "software" | "sw" => DecoderBackend::Software,
+        other => {
+            eprintln!("Unknown decoder: {other}. Use 'auto' or 'software'");
+            std::process::exit(1);
+        }
+    };
+
+    let audio_ctx = AudioBackend::default();
+
+    println!("connecting to {ticket} ...");
+    let endpoint = Endpoint::bind(iroh::endpoint::presets::N0).await?;
+    let live = Live::new(endpoint);
+    let playback_config = PlaybackConfig {
+        decode_config: DecodeConfig {
+            backend,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let (session, track) = live
+        .subscribe_media_track::<DefaultDecoders>(
+            ticket.endpoint,
+            &ticket.broadcast_name,
+            &audio_ctx,
+            playback_config,
+        )
+        .await?;
+    println!("connected!");
+
+    let video_track = track.video.expect("no video track in broadcast");
+
+    if opts.fb {
+        watch::run_drm(video_track, session)?;
+    } else {
+        #[cfg(feature = "windowed")]
+        watch::run_windowed(video_track, session, opts.fullscreen)?;
+        #[cfg(not(feature = "windowed"))]
+        {
+            eprintln!("windowed mode not compiled in — use --fb or build with --features windowed");
+            std::process::exit(1);
+        }
+    }
 
     Ok(())
 }

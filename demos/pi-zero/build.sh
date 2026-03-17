@@ -5,7 +5,7 @@
 #   1. Rust aarch64 target:  rustup target add aarch64-unknown-linux-gnu
 #   2. Cross-linker:         sudo pacman -S aarch64-linux-gnu-gcc   (Arch)
 #                            sudo apt install gcc-aarch64-linux-gnu  (Debian/Ubuntu)
-#   3. Pi sysroot with dev libs (libasound2-dev at minimum):
+#   3. Pi sysroot with dev libs (libasound2-dev, libgbm-dev, libdrm-dev, libegl-dev):
 #        mkdir -p ~/pi-sysroot
 #        rsync -az pi@<IP>:/usr/lib/aarch64-linux-gnu ~/pi-sysroot/usr/lib/
 #        rsync -az pi@<IP>:/usr/include ~/pi-sysroot/usr/
@@ -69,9 +69,9 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# Use a stable path so cargo's build cache isn't invalidated on every run
-# (the linker path is part of the cache key).
-WRAPPER="$SCRIPT_DIR/.linker-wrapper.sh"
+# Use a fixed /tmp path so cargo's build cache isn't invalidated when
+# building from different clones (the linker path is part of the cache key).
+WRAPPER="/tmp/rpi-linker.sh"
 cat > "$WRAPPER" <<LINKER_EOF
 #!/bin/sh
 exec aarch64-linux-gnu-gcc --sysroot="$SYSROOT" -L "$LIB_DIR" -L "$LIB_DIR2" "\$@"
