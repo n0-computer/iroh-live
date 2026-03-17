@@ -125,8 +125,9 @@ struct SessionHandle {
     /// Encoder pipeline — kept alive to sustain the H264 debug pipeline.
     #[allow(dead_code, reason = "kept alive to sustain the encoder thread")]
     encoder_pipeline: Option<VideoEncoderPipeline>,
-    /// GLES2 renderer — initialized lazily from the GL thread.
-    renderer: Option<AndroidRenderer>,
+    /// GLES2 renderer — behind its own lock so rendering doesn't block
+    /// camera frame pushes on the SessionHandle mutex.
+    renderer: Arc<Mutex<Option<AndroidRenderer>>>,
     /// Actual decoded frame dimensions (more reliable than catalog).
     frame_dims: Option<(u32, u32)>,
     /// Camera source for pushing frames into the publish pipeline.
@@ -225,7 +226,7 @@ async fn connect_impl(ticket_str: String) -> Result<jlong> {
         broadcast: None,
         ticket: None,
         encoder_pipeline: None,
-        renderer: None,
+        renderer: Arc::new(Mutex::new(None)),
         frame_dims: None,
         camera_source: None,
         cam_frames_pushed: 0,
@@ -326,7 +327,7 @@ async fn dial_impl(ticket_str: String, cam_w: u32, cam_h: u32) -> Result<jlong> 
         broadcast: None,
         ticket: None,
         encoder_pipeline: None,
-        renderer: None,
+        renderer: Arc::new(Mutex::new(None)),
         frame_dims: None,
         camera_source: Some(camera_source),
         cam_frames_pushed: 0,
@@ -384,7 +385,7 @@ fn start_direct_impl(cam_w: u32, cam_h: u32) -> Result<jlong> {
         broadcast: None,
         ticket: None,
         encoder_pipeline: None,
-        renderer: None,
+        renderer: Arc::new(Mutex::new(None)),
         frame_dims: None,
         camera_source: Some(camera_source),
         cam_frames_pushed: 0,
@@ -454,7 +455,7 @@ fn start_h264_impl(cam_w: u32, cam_h: u32) -> Result<jlong> {
         broadcast: None,
         ticket: None,
         encoder_pipeline: Some(encoder_pipeline),
-        renderer: None,
+        renderer: Arc::new(Mutex::new(None)),
         frame_dims: None,
         camera_source: Some(camera_source),
         cam_frames_pushed: 0,
@@ -591,7 +592,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_initRenderer(
         return;
     };
     match unsafe { AndroidRenderer::new(egl_display_ptr as *mut c_void) } {
-        Ok(r) => guard.renderer = Some(r),
+        Ok(r) => *guard.renderer.lock().expect("renderer lock") = Some(r),
         Err(e) => tracing::error!("initRenderer failed: {e:#}"),
     }
 }
@@ -616,31 +617,40 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
         return false;
     }
     let session = unsafe { borrow_handle(handle) };
-    let Ok(mut guard) = session.lock() else {
+
+    // Phase 1: briefly lock the session to extract the next frame.
+    // This keeps the lock time short so camera pushes aren't blocked
+    // during the (potentially slow) GL rendering in phase 2.
+    let (frame, w, h, renderer_arc) = {
+        let Ok(mut guard) = session.lock() else {
+            return false;
+        };
+        let frame = guard.video.as_mut().and_then(|v| v.current_frame());
+        let Some(frame) = frame else { return false };
+        guard.dec_frames_rendered += 1;
+        let (w, h) = (frame.width(), frame.height());
+        if guard.frame_dims != Some((w, h)) {
+            info!(width = w, height = h, "decoded frame dimensions updated");
+            guard.frame_dims = Some((w, h));
+        }
+        let renderer_arc = Arc::clone(&guard.renderer);
+        (frame, w, h, renderer_arc)
+    }; // session mutex released here
+
+    // Phase 2: lock only the renderer for GL rendering.
+    let Ok(renderer_guard) = renderer_arc.lock() else {
         return false;
     };
-
-    // Poll for the next frame.
-    let frame = guard.video.as_mut().and_then(|v| v.current_frame());
-    let Some(frame) = frame else { return false };
-
-    guard.dec_frames_rendered += 1;
-    let (w, h) = (frame.width(), frame.height());
-    if guard.frame_dims != Some((w, h)) {
-        info!(width = w, height = h, "decoded frame dimensions updated");
-        guard.frame_dims = Some((w, h));
-    }
-
-    let Some(renderer) = guard.renderer.as_ref() else {
+    let Some(ref renderer) = *renderer_guard else {
         return false;
     };
+    let rot = rotation_degrees as u32;
 
     // Try GPU HardwareBuffer first (zero-copy from HW decoder).
     if let Some(rusty_codecs::format::NativeFrameHandle::HardwareBuffer(info)) =
         frame.native_handle()
     {
         let raw_ptr = info.buffer.as_ptr();
-        let rot = rotation_degrees as u32;
         unsafe {
             renderer.render_hardware_buffer(
                 raw_ptr as *mut c_void,
@@ -651,13 +661,10 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
                 rot,
             );
         }
-        // info.buffer is an Arc — dropping it decrements the refcount.
-        // The HW decoder holds its own reference, so the buffer stays alive.
         return true;
     }
 
-    // Fast CPU path: upload NV12 planes directly to GL textures (no RGBA conversion).
-    let rot = rotation_degrees as u32;
+    // Fast CPU path: upload NV12 planes directly to GL textures.
     if let rusty_codecs::format::FrameData::Nv12(ref planes) = frame.data {
         unsafe {
             renderer.render_nv12(
@@ -1050,7 +1057,7 @@ async fn publish_impl(name: String, cam_w: u32, cam_h: u32) -> Result<jlong> {
         broadcast: Some(broadcast),
         ticket: Some(ticket_str),
         encoder_pipeline: None,
-        renderer: None,
+        renderer: Arc::new(Mutex::new(None)),
         frame_dims: None,
         camera_source: Some(camera_source),
         cam_frames_pushed: 0,
