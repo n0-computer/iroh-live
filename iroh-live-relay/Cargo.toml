@@ -11,6 +11,9 @@ path = "src/main.rs"
 moq-relay = { workspace = true, default-features = false, features = ["noq", "iroh"] }
 moq-native = { workspace = true, default-features = false, features = ["noq", "iroh", "aws-lc-rs"] }
 moq-lite = { workspace = true }
+iroh = { workspace = true }
+iroh-live = { workspace = true }
+iroh-moq = { workspace = true }
 axum = { version = "0.8", features = ["tokio"] }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }

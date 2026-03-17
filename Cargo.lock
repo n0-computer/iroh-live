@@ -2495,6 +2495,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
+name = "crossterm"
+version = "0.28.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "829d955a0bb380ef178a640b91779e3987da38c9aea133b20614cfed8cdea9c6"
+dependencies = [
+ "bitflags 2.11.0",
+ "crossterm_winapi",
+ "parking_lot",
+ "rustix 0.38.44",
+ "winapi",
+]
+
+[[package]]
+name = "crossterm_winapi"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acdd7c62a3665c7f6830a51635d9ac9b23ed385797f70a83bb8bafe9c572ab2b"
+dependencies = [
+ "winapi",
+]
+
+[[package]]
 name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5288,7 +5310,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.58.0",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -5845,6 +5867,7 @@ dependencies = [
  "n0-watcher",
  "pollster 0.4.0",
  "postcard",
+ "qr2term",
  "rand 0.9.2",
  "serde",
  "strum 0.28.0",
@@ -5890,6 +5913,7 @@ dependencies = [
  "include_dir",
  "iroh 0.97.0",
  "iroh-live",
+ "iroh-moq",
  "moq-lite",
  "moq-media",
  "moq-native",
@@ -9379,6 +9403,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f6d64c71eb498fe9eae14ce4ec935c555749aef511cca85b5568910d6e48001"
 dependencies = [
  "bytemuck",
+]
+
+[[package]]
+name = "qr2term"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6867c60b38e9747a079a19614dbb5981a53f21b9a56c265f3bfdf6011a50a957"
+dependencies = [
+ "crossterm",
+ "qrcode",
 ]
 
 [[package]]

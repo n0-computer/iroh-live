@@ -14,7 +14,6 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 /// Starts a relay (noq server + iroh endpoint + cluster) and returns handles.
 struct TestRelay {
     server_handle: tokio::task::JoinHandle<()>,
-    #[allow(dead_code)]
     cluster: moq_relay::Cluster,
     noq_addr: std::net::SocketAddr,
     iroh_id: Option<String>,
@@ -322,6 +321,124 @@ async fn noq_publish_iroh_subscribe() {
         "noq→iroh subscribe failed after 3 attempts. Last error: {}",
         last_err.unwrap_or_default()
     );
+}
+
+/// Pull mode: remote iroh publisher → relay pulls via ticket → noq subscriber.
+///
+/// This tests the relay's pull mode: a publisher is running independently
+/// (not connected to the relay). The relay connects to it via an iroh-live
+/// ticket, subscribes to its broadcast, and makes it available to noq
+/// (browser) subscribers.
+#[tokio::test]
+#[serial]
+async fn pull_remote_broadcast_via_ticket() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start().await;
+
+    // ── Publisher (standalone iroh, NOT connected to relay) ──
+    let pub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+        .secret_key(iroh::SecretKey::generate(&mut rand::rng()))
+        .bind()
+        .await
+        .expect("bind pub");
+    let publisher = iroh_live::Live::builder(pub_ep.clone()).spawn_with_router();
+    let broadcast = moq_media::publish::LocalBroadcast::new();
+    tokio::task::yield_now().await;
+    let source = moq_media::test_util::TestVideoSource::new(320, 240).with_fps(30.0);
+    broadcast
+        .video()
+        .set(
+            source,
+            moq_media::codec::VideoCodec::best_available().expect("no codec"),
+            [moq_media::format::VideoPreset::P180],
+        )
+        .expect("set video");
+    publisher
+        .publish("remote-stream", &broadcast)
+        .await
+        .expect("publish");
+
+    // Give publisher time to start producing frames.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Create a ticket for this publisher.
+    let ticket = iroh_live::ticket::LiveTicket::new(pub_ep.addr(), "remote-stream");
+
+    // ── Pull: relay connects to publisher and injects broadcast ──
+    // This simulates what the relay's pull module does. Uses a separate
+    // iroh 0.97 endpoint (the relay's moq-native uses iroh 0.96).
+    let pull_ep = iroh::Endpoint::bind(iroh::endpoint::presets::N0)
+        .await
+        .expect("bind pull");
+    let pull_live = iroh_live::Live::new(pull_ep);
+    let mut pull_session = tokio::time::timeout(
+        TIMEOUT,
+        pull_live.transport().connect(ticket.endpoint.clone()),
+    )
+    .await
+    .expect("pull connect timeout")
+    .expect("pull connect");
+
+    let consumer = tokio::time::timeout(TIMEOUT, pull_session.subscribe(&ticket.broadcast_name))
+        .await
+        .expect("pull subscribe timeout")
+        .expect("pull subscribe");
+
+    // Inject into the relay's cluster.
+    relay
+        .cluster
+        .primary
+        .publish_broadcast(&ticket.broadcast_name, consumer);
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // ── Subscriber (noq, simulating browser) ──
+    let sub_origin = Origin::produce();
+    let mut announcements = sub_origin.consume();
+    let mut sub_cfg = moq_native::ClientConfig::default();
+    sub_cfg.tls.disable_verify = Some(true);
+    sub_cfg.backend = Some(moq_native::QuicBackend::Noq);
+    let sub_client = sub_cfg.init().expect("init sub");
+    let sub_url: url::Url = format!("https://localhost:{}", relay.noq_addr.port())
+        .parse()
+        .unwrap();
+    let sub_client = sub_client.with_consume(sub_origin);
+    let _sub_session = tokio::time::timeout(TIMEOUT, sub_client.connect(sub_url))
+        .await
+        .expect("timeout")
+        .expect("connect");
+
+    // Should see the pulled broadcast announced.
+    let (path, bc) = tokio::time::timeout(TIMEOUT, announcements.announced())
+        .await
+        .expect("announce timeout — pull mode may not work")
+        .expect("closed");
+    assert_eq!(path.as_str(), "remote-stream");
+    let bc = bc.expect("announce");
+
+    // Subscribe to a track and verify data arrives.
+    let catalog_track = bc
+        .subscribe_track(&Track::new("catalog.json"))
+        .expect("catalog sub");
+    let mut group = tokio::time::timeout(TIMEOUT, catalog_track.next_group())
+        .await
+        .expect("catalog group timeout")
+        .expect("catalog group err")
+        .expect("catalog group closed");
+    let _frame = tokio::time::timeout(TIMEOUT, group.read_frame())
+        .await
+        .expect("catalog frame timeout")
+        .expect("catalog frame err")
+        .expect("catalog frame closed");
+    tracing::info!("pull mode test: received catalog from pulled broadcast");
+
+    // Cleanup.
+    drop(_sub_session);
+    drop(pull_session);
+    drop(broadcast);
+    publisher.shutdown().await;
+    pub_ep.close().await;
+    relay.server_handle.abort();
 }
 
 /// iroh publish → relay → noq subscribe.
