@@ -10,6 +10,8 @@ use include_dir::{Dir, include_dir};
 use moq_relay::{AuthConfig, Cluster, ClusterConfig, Connection};
 use tower_http::cors::{Any, CorsLayer};
 
+mod pull;
+
 static WEB_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/web/dist");
 
 /// Persistent data directory for certs, iroh key, and relay state.
@@ -136,6 +138,22 @@ async fn main() -> anyhow::Result<()> {
         cluster_handle.run().await.expect("cluster failed");
     });
 
+    // Pull state: enables fetching remote broadcasts via iroh-live tickets.
+    // Uses iroh-live's own iroh endpoint (iroh 0.97) for outgoing pull
+    // connections. This is separate from moq-native's endpoint because
+    // moq-native pins iroh 0.96 via web-transport-iroh.
+    // Pull mode uses iroh-live's endpoint (iroh 0.97) for outgoing
+    // connections. This is separate from moq-native's endpoint which pins
+    // iroh 0.96 via web-transport-iroh. Once moq upgrades to iroh 0.97
+    // these can be unified.
+    let pull_state = if iroh.is_some() {
+        let pull_ep = iroh::Endpoint::bind(iroh::endpoint::presets::N0).await?;
+        let pull_live = iroh_live::Live::new(pull_ep);
+        Some(Arc::new(pull::PullState::new(pull_live, cluster.clone())))
+    } else {
+        None
+    };
+
     // HTTP server: static files + TLS fingerprint
     let http_state = Arc::new(HttpState {
         tls_info: tls_info.clone(),
@@ -189,6 +207,23 @@ async fn main() -> anyhow::Result<()> {
         let transport = request.transport();
         tracing::debug!(conn_id, transport, "accepted connection");
 
+        // Pull mode: if the connection URL contains a `name` query param that
+        // is a valid iroh-live ticket, pull the remote broadcast into the
+        // cluster before the session starts. This way the browser subscriber
+        // finds the broadcast already available when moq-lite resolves it.
+        if let Some(ref pull) = pull_state {
+            if let Some(name) = extract_name_from_url(&request) {
+                if let Ok(ticket) = name.parse::<iroh_live::ticket::LiveTicket>() {
+                    let pull = pull.clone();
+                    tokio::spawn(async move {
+                        if let Err(err) = pull.pull(&ticket).await {
+                            tracing::warn!(%err, "pull failed for ticket in URL");
+                        }
+                    });
+                }
+            }
+        }
+
         let conn = Connection {
             id: conn_id,
             request,
@@ -204,6 +239,14 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Extracts the `name` query parameter from an incoming request's URL.
+fn extract_name_from_url(request: &moq_native::Request) -> Option<String> {
+    let url = request.url()?;
+    url.query_pairs()
+        .find(|(k, _)| k == "name")
+        .map(|(_, v)| v.into_owned())
 }
 
 /// Serves the TLS certificate fingerprint for WebTransport dev mode.
