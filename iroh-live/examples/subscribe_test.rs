@@ -19,7 +19,25 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(%cli.relay, %cli.name, frames = cli.frames, "subscribing");
 
-    let (_session, broadcast) = live.subscribe(id, &cli.name).await?;
+    // Retry subscribe — the publisher may not have announced the catalog yet.
+    let (_session, broadcast) = {
+        let mut last_err = String::new();
+        let mut result = None;
+        for attempt in 0..5 {
+            match live.subscribe(id, &cli.name).await {
+                Ok(r) => {
+                    result = Some(r);
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!(attempt, %e, "subscribe failed, retrying in 1s");
+                    last_err = format!("{e:#}");
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
+        }
+        result.ok_or_else(|| anyhow::anyhow!("subscribe failed after retries: {last_err}"))?
+    };
 
     tracing::info!("subscribed, waiting for video");
     let mut track = broadcast.video_ready().await?;

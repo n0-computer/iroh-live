@@ -13,18 +13,23 @@ test.afterAll(() => {
 });
 
 test("Browser publish → CLI subscribe", async ({ page }) => {
-  // Navigate to publish page with fake camera.
-  // Pass the QUIC URL so <moq-publish> connects via WebTransport.
-  const quicUrl = `https://localhost:${relay.quicPort}/`;
-  const publishUrl = `http://localhost:${relay.httpPort}/publish.html?name=browser-stream&url=${encodeURIComponent(quicUrl)}`;
+  // Log browser console for debugging.
+  page.on("console", (msg) => console.log(`BROWSER [${msg.type()}]: ${msg.text()}`));
+  page.on("pageerror", (err) => console.log(`BROWSER ERROR: ${err}`));
+
+  // Navigate to publish page with fake camera. HTTP and QUIC share the
+  // same port, so the moq-lite fingerprint flow works automatically.
+  const publishUrl = `http://localhost:${relay.httpPort}/publish.html?name=browser-stream`;
   await page.goto(publishUrl);
 
   // Wait for moq-publish element to be attached and publishing
   const publishEl = page.locator("moq-publish");
   await expect(publishEl).toBeAttached({ timeout: 10_000 });
 
-  // Give the browser time to connect and start publishing
-  await page.waitForTimeout(3000);
+  // Wait for the browser to actually publish tracks (not just connect).
+  // The subscribe_test retries if the catalog isn't available yet, but
+  // we need the browser to have published before starting the subscriber.
+  await page.waitForTimeout(5000);
 
   // Subscribe from Rust side: connect to relay, receive 3 frames, exit 0
   const subscriber = spawn("cargo", [
@@ -38,10 +43,14 @@ test("Browser publish → CLI subscribe", async ({ page }) => {
     "browser-stream",
     "--frames",
     "3",
-  ]);
+  ], {
+    env: { ...process.env, RUST_LOG: "info" },
+  });
 
-  const { exitCode } = await waitForExit(subscriber, 30_000);
-  expect(exitCode).toBe(0);
+  const result = await waitForExit(subscriber, 45_000);
+  if (result.exitCode !== 0) {
+    throw new Error(`subscribe_test exited with code ${result.exitCode}. Output:\n${result.output}`);
+  }
 });
 
 /**
@@ -50,7 +59,7 @@ test("Browser publish → CLI subscribe", async ({ page }) => {
 function waitForExit(
   proc: ReturnType<typeof spawn>,
   timeoutMs: number
-): Promise<{ exitCode: number | null }> {
+): Promise<{ exitCode: number | null; output: string }> {
   return new Promise((resolve, reject) => {
     let output = "";
 
@@ -77,7 +86,7 @@ function waitForExit(
 
     proc.on("exit", (code) => {
       clearTimeout(timeout);
-      resolve({ exitCode: code });
+      resolve({ exitCode: code, output });
     });
   });
 }

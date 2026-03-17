@@ -6,7 +6,6 @@ import { join } from "path";
 export interface RelayInfo {
   process: ChildProcess;
   httpPort: number;
-  quicPort: number;
   irohAddr: string;
   dataDir: string;
 }
@@ -39,9 +38,9 @@ export async function startRelay(): Promise<RelayInfo> {
     }
   );
 
-  const { httpPort, quicPort, irohAddr } = await parseStartupOutput(proc);
+  const { httpPort, irohAddr } = await parseStartupOutput(proc);
 
-  return { process: proc, httpPort, quicPort, irohAddr, dataDir };
+  return { process: proc, httpPort, irohAddr, dataDir };
 }
 
 export function stopRelay(relay: RelayInfo) {
@@ -61,10 +60,9 @@ export function stopRelay(relay: RelayInfo) {
  */
 function parseStartupOutput(
   proc: ChildProcess
-): Promise<{ httpPort: number; quicPort: number; irohAddr: string }> {
+): Promise<{ httpPort: number; irohAddr: string }> {
   return new Promise((resolve, reject) => {
     let httpPort: number | null = null;
-    let quicPort: number | null = null;
     let irohAddr: string | null = null;
     let output = "";
 
@@ -77,42 +75,39 @@ function parseStartupOutput(
     }, 30_000);
 
     const checkDone = () => {
-      if (httpPort !== null && irohAddr !== null && quicPort !== null) {
+      if (httpPort !== null && irohAddr !== null) {
         clearTimeout(timeout);
-        resolve({ httpPort, quicPort, irohAddr });
+        resolve({ httpPort, irohAddr });
       }
     };
 
     const processLine = (line: string) => {
       output += line + "\n";
 
-      // Match: http_port=12345 (tracing structured field)
-      const httpMatch = line.match(/http_port\s*=\s*(\d+)/);
+      // The relay prints plain "key: value" lines to stdout for parsing.
+      const httpMatch = line.match(/^http port: (\d+)$/);
       if (httpMatch) {
         httpPort = parseInt(httpMatch[1], 10);
       }
 
-      // Match: endpoint_id=<hex> (tracing structured field)
-      const irohMatch = line.match(/endpoint_id\s*=\s*([a-f0-9]+)/);
+      const irohMatch = line.match(/^iroh endpoint: ([a-f0-9]+)$/);
       if (irohMatch) {
         irohAddr = irohMatch[1];
-      }
-
-      // Match: bind=[::]:12345 or bind = [::]:12345
-      const quicMatch = line.match(/bind\s*=\s*\[::\]:(\d+)/);
-      if (quicMatch) {
-        quicPort = parseInt(quicMatch[1], 10);
       }
 
       checkDone();
     };
 
-    proc.stderr?.on("data", (data: Buffer) => {
-      const text = data.toString();
-      for (const line of text.split("\n")) {
-        if (line.trim()) processLine(line);
-      }
-    });
+    // Relay tracing output may go to stdout or stderr depending on
+    // tracing-subscriber configuration — listen on both.
+    for (const stream of [proc.stdout, proc.stderr]) {
+      stream?.on("data", (data: Buffer) => {
+        const text = data.toString();
+        for (const line of text.split("\n")) {
+          if (line.trim()) processLine(line);
+        }
+      });
+    }
 
     proc.on("error", (err) => {
       clearTimeout(timeout);

@@ -23,5 +23,13 @@ dirs = "6"
 tower-http = { version = "0.6", features = ["cors"] }
 http = "1"
 
+[dev-dependencies]
+iroh = { workspace = true }
+iroh-live = { path = "../iroh-live" }
+moq-media = { path = "../moq-media", features = ["test-util"] }
+rand = "0.9"
+serial_test = "3"
+url = "2"
+
 [lints]
 workspace = true
