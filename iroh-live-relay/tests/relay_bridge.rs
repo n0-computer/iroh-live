@@ -417,7 +417,7 @@ async fn pull_remote_broadcast_via_ticket() {
     let bc = bc.expect("announce");
 
     // Subscribe to a track and verify data arrives.
-    let catalog_track = bc
+    let mut catalog_track = bc
         .subscribe_track(&Track::new("catalog.json"))
         .expect("catalog sub");
     let mut group = tokio::time::timeout(TIMEOUT, catalog_track.next_group())
