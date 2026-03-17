@@ -504,8 +504,23 @@ impl VideoFrame {
                         unimplemented!("rgba_image() for NV12 requires the `h264` or `av1` feature")
                     }
                 }
-                FrameData::I420 { .. } => {
-                    unimplemented!("rgba_image() for I420 CPU frames")
+                FrameData::I420 { y, u, v } => {
+                    #[cfg(any(feature = "h264", feature = "av1"))]
+                    {
+                        let y_stride = w;
+                        let uv_stride = w.div_ceil(2);
+                        let rgba = crate::processing::convert::yuv420_to_rgba_from_slices(
+                            y, y_stride, u, uv_stride, v, uv_stride, w, h,
+                        )
+                        .expect("I420→RGBA conversion failed");
+                        RgbaImage::from_raw(w, h, rgba)
+                            .expect("RGBA data size does not match dimensions")
+                    }
+                    #[cfg(not(any(feature = "h264", feature = "av1")))]
+                    {
+                        let _ = (y, u, v);
+                        unimplemented!("rgba_image() for I420 requires the `h264` or `av1` feature")
+                    }
                 }
             }
         })
