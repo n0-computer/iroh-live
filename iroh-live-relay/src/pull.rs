@@ -77,8 +77,10 @@ impl PullState {
             .await
             .map_err(|e| anyhow::anyhow!("failed to subscribe to broadcast: {e}"))?;
 
-        // Use the ticket's broadcast name as the local name.
-        let local_name = ticket.broadcast_name.clone();
+        // Use the full ticket string as the local name. This matches what the
+        // browser subscribes to (the URL `?name=iroh-live:ADDR/broadcast` passes
+        // the full ticket as the moq-lite broadcast path).
+        let local_name = ticket.to_string();
 
         // Inject the remote broadcast into the relay's cluster.
         self.cluster

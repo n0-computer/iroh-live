@@ -384,11 +384,13 @@ async fn pull_remote_broadcast_via_ticket() {
         .expect("pull subscribe timeout")
         .expect("pull subscribe");
 
-    // Inject into the relay's cluster.
+    // Inject into the relay's cluster under the full ticket string (matches
+    // what the browser subscribes to via `?name=iroh-live:ADDR/broadcast`).
+    let local_name = ticket.to_string();
     relay
         .cluster
         .primary
-        .publish_broadcast(&ticket.broadcast_name, consumer);
+        .publish_broadcast(&local_name, consumer);
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -413,7 +415,11 @@ async fn pull_remote_broadcast_via_ticket() {
         .await
         .expect("announce timeout — pull mode may not work")
         .expect("closed");
-    assert_eq!(path.as_str(), "remote-stream");
+    // The pulled broadcast is published under the full ticket string.
+    assert!(
+        path.as_str().starts_with("iroh-live:"),
+        "expected ticket-shaped name, got: {path}"
+    );
     let bc = bc.expect("announce");
 
     // Subscribe to a track and verify data arrives.
