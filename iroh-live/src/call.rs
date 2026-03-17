@@ -55,6 +55,9 @@ const CALL_BROADCAST_NAME: &str = "call";
 pub struct CallTicket {
     /// Remote peer address.
     pub endpoint: EndpointAddr,
+    /// Optional relay URLs for indirect connectivity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relay_urls: Vec<String>,
 }
 
 impl CallTicket {
@@ -62,12 +65,20 @@ impl CallTicket {
     pub fn new(endpoint: impl Into<EndpointAddr>) -> Self {
         Self {
             endpoint: endpoint.into(),
+            relay_urls: Vec::new(),
         }
+    }
+
+    /// Adds relay URLs to this ticket.
+    pub fn with_relay_urls(mut self, urls: impl IntoIterator<Item = String>) -> Self {
+        self.relay_urls = urls.into_iter().collect();
+        self
     }
 
     /// Converts this ticket to a [`crate::ticket::LiveTicket`].
     pub fn into_live_ticket(self) -> crate::ticket::LiveTicket {
         crate::ticket::LiveTicket::new(self.endpoint, CALL_BROADCAST_NAME)
+            .with_relay_urls(self.relay_urls)
     }
 
     /// Serializes to a compact string.
@@ -85,7 +96,10 @@ impl CallTicket {
             .std_context("invalid base32")?;
         let endpoint =
             postcard::from_bytes(&bytes).std_context("failed to parse endpoint address")?;
-        Ok(Self { endpoint })
+        Ok(Self {
+            endpoint,
+            relay_urls: Vec::new(),
+        })
     }
 }
 
