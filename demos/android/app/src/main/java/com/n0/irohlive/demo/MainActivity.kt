@@ -102,6 +102,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var disconnectButton: Button
     private lateinit var directButton: Button
     private lateinit var h264Button: Button
+    private lateinit var publishButton: Button
+    private lateinit var copyTicketButton: Button
+    private lateinit var renditionSpinner: android.widget.Spinner
     private lateinit var videoSurface: SurfaceView
     private lateinit var cameraPreview: PreviewView
     private lateinit var statusText: TextView
@@ -152,6 +155,9 @@ class MainActivity : AppCompatActivity() {
         disconnectButton = findViewById(R.id.disconnectButton)
         directButton = findViewById(R.id.directButton)
         h264Button = findViewById(R.id.h264Button)
+        publishButton = findViewById(R.id.publishButton)
+        copyTicketButton = findViewById(R.id.copyTicketButton)
+        renditionSpinner = findViewById(R.id.renditionSpinner)
         videoSurface = findViewById(R.id.videoSurface)
         cameraPreview = findViewById(R.id.cameraPreview)
         statusText = findViewById(R.id.statusText)
@@ -184,6 +190,8 @@ class MainActivity : AppCompatActivity() {
         disconnectButton.setOnClickListener { onDisconnect() }
         directButton.setOnClickListener { onDebugDirect() }
         h264Button.setOnClickListener { onDebugH264() }
+        publishButton.setOnClickListener { onPublish() }
+        copyTicketButton.setOnClickListener { onCopyTicket() }
 
         // Handle iroh-live: URI intents (from QR scanner apps, links, etc.)
         intent?.data?.let { uri ->
@@ -330,6 +338,8 @@ class MainActivity : AppCompatActivity() {
         dialButton.isEnabled = false
         directButton.isEnabled = false
         h264Button.isEnabled = false
+        publishButton.isEnabled = false
+        copyTicketButton.isEnabled = false
     }
 
     private fun enableButtons() {
@@ -337,6 +347,71 @@ class MainActivity : AppCompatActivity() {
         dialButton.isEnabled = true
         directButton.isEnabled = true
         h264Button.isEnabled = true
+        publishButton.isEnabled = true
+        copyTicketButton.isEnabled = false
+        renditionSpinner.visibility = View.GONE
+    }
+
+    private fun onPublish() {
+        val name = ticketInput.text.toString().trim().ifEmpty { "hello" }
+        disableAllButtons()
+        statusText.text = "Publishing..."
+        startCamera()
+        lifecycleScope.launch {
+            val handle = withContext(Dispatchers.IO) {
+                IrohBridge.publish(name, CAMERA_WIDTH, CAMERA_HEIGHT)
+            }
+            if (handle == 0L) {
+                statusText.text = "Publish failed"
+                enableButtons()
+                stopCamera()
+                return@launch
+            }
+            sessionHandle = handle
+            val ticket = IrohBridge.getTicket(handle)
+            statusText.text = "Publishing: $name"
+            disconnectButton.isEnabled = true
+            copyTicketButton.isEnabled = true
+            awaitCameraAndPush()
+        }
+    }
+
+    private fun onCopyTicket() {
+        val handle = sessionHandle
+        if (handle == 0L) return
+        val ticket = IrohBridge.getTicket(handle)
+        if (ticket.isEmpty()) return
+
+        // Copy to clipboard.
+        val clipboard = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("iroh-live ticket", ticket))
+
+        // Show QR code dialog.
+        try {
+            val qr = com.google.zxing.BarcodeFormat.QR_CODE
+            val writer = com.google.zxing.MultiFormatWriter()
+            val matrix = writer.encode(ticket, qr, 512, 512)
+            val w = matrix.width
+            val h = matrix.height
+            val pixels = IntArray(w * h)
+            for (y in 0 until h) {
+                for (x in 0 until w) {
+                    pixels[y * w + x] = if (matrix.get(x, y)) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+                }
+            }
+            val bitmap = android.graphics.Bitmap.createBitmap(pixels, w, h, android.graphics.Bitmap.Config.ARGB_8888)
+            val imageView = android.widget.ImageView(this)
+            imageView.setImageBitmap(bitmap)
+            imageView.setPadding(32, 32, 32, 32)
+            android.app.AlertDialog.Builder(this)
+                .setTitle("Ticket copied")
+                .setView(imageView)
+                .setPositiveButton("OK", null)
+                .show()
+        } catch (e: Exception) {
+            Log.w(TAG, "QR generation failed", e)
+            android.widget.Toast.makeText(this, "Ticket copied", android.widget.Toast.LENGTH_SHORT).show()
+        }
     }
 
     /** Waits for CameraX to be ready, then starts pushing frames to Rust. */
@@ -552,13 +627,14 @@ class MainActivity : AppCompatActivity() {
                         continue
                     }
 
-                    // Update status line every ~30 frames (~1s at 30fps).
+                    // Update status line and rendition list every ~30 frames.
                     statusCounter++
                     if (statusCounter % 30 == 0L) {
                         val line = IrohBridge.getStatusLine(h)
                         if (line.isNotEmpty()) {
                             runOnUiThread { statusText.text = line }
                         }
+                        updateRenditionSpinner(h)
                     }
 
                     // Rust renders the frame; we just swap buffers.
@@ -573,6 +649,45 @@ class MainActivity : AppCompatActivity() {
                 }
             } finally {
                 teardownEgl()
+            }
+        }
+    }
+
+    private var currentRenditions: List<String> = emptyList()
+    private var renditionListenerActive = false
+
+    private fun updateRenditionSpinner(handle: Long) {
+        val raw = IrohBridge.getRenditions(handle)
+        val names = if (raw.isBlank()) emptyList() else raw.split("\n")
+        if (names == currentRenditions) return
+        currentRenditions = names
+        runOnUiThread {
+            if (names.size <= 1) {
+                renditionSpinner.visibility = View.GONE
+                return@runOnUiThread
+            }
+            renditionSpinner.visibility = View.VISIBLE
+            val adapter = android.widget.ArrayAdapter(
+                this, android.R.layout.simple_spinner_item, names
+            )
+            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            renditionListenerActive = false
+            renditionSpinner.adapter = adapter
+            // Select current rendition if we have a video track.
+            renditionSpinner.post {
+                renditionListenerActive = true
+                renditionSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                    override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                        if (!renditionListenerActive) return
+                        val h = sessionHandle
+                        if (h != 0L && pos < names.size) {
+                            lifecycleScope.launch(Dispatchers.IO) {
+                                IrohBridge.switchRendition(h, names[pos])
+                            }
+                        }
+                    }
+                    override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+                }
             }
         }
     }

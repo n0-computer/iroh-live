@@ -21,7 +21,7 @@ use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use iroh_live::{Call, CallTicket, Live};
+use iroh_live::{Call, CallTicket, Live, ticket::LiveTicket};
 use moq_media::{
     AudioBackend,
     codec::{AudioCodec, DynamicVideoDecoder, VideoCodec},
@@ -117,6 +117,11 @@ struct SessionHandle {
     /// Audio backend — must outlive audio tracks.
     #[allow(dead_code, reason = "must outlive audio tracks")]
     audio_backend: Option<AudioBackend>,
+    /// Local broadcast for publish mode.
+    #[allow(dead_code, reason = "kept alive to sustain the broadcast")]
+    broadcast: Option<LocalBroadcast>,
+    /// Connection ticket string (set after publish).
+    ticket: Option<String>,
     /// Encoder pipeline — kept alive to sustain the H264 debug pipeline.
     #[allow(dead_code, reason = "kept alive to sustain the encoder thread")]
     encoder_pipeline: Option<VideoEncoderPipeline>,
@@ -217,6 +222,8 @@ async fn connect_impl(ticket_str: String) -> Result<jlong> {
         video,
         audio,
         audio_backend: Some(audio_backend),
+        broadcast: None,
+        ticket: None,
         encoder_pipeline: None,
         renderer: None,
         frame_dims: None,
@@ -316,6 +323,8 @@ async fn dial_impl(ticket_str: String, cam_w: u32, cam_h: u32) -> Result<jlong> 
         video: tracks.video,
         audio: tracks.audio,
         audio_backend: Some(audio_backend),
+        broadcast: None,
+        ticket: None,
         encoder_pipeline: None,
         renderer: None,
         frame_dims: None,
@@ -372,6 +381,8 @@ fn start_direct_impl(cam_w: u32, cam_h: u32) -> Result<jlong> {
         video: Some(video),
         audio: None,
         audio_backend: None,
+        broadcast: None,
+        ticket: None,
         encoder_pipeline: None,
         renderer: None,
         frame_dims: None,
@@ -440,6 +451,8 @@ fn start_h264_impl(cam_w: u32, cam_h: u32) -> Result<jlong> {
         video: Some(video),
         audio: None,
         audio_backend: None,
+        broadcast: None,
+        ticket: None,
         encoder_pipeline: Some(encoder_pipeline),
         renderer: None,
         frame_dims: None,
@@ -959,6 +972,183 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
         }
     }
     info!("disconnected");
+}
+
+// ── JNI: publish ────────────────────────────────────────────────────
+
+/// Publishes camera + mic as a broadcast. Returns a session handle or 0.
+///
+/// # Safety
+/// Must be called from JNI with valid arguments.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_publish(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    name: JString<'_>,
+    camera_width: jint,
+    camera_height: jint,
+) -> jlong {
+    let Some(name_str) = read_jstring(&mut env, &name) else {
+        return 0;
+    };
+    match runtime().block_on(publish_impl(
+        name_str,
+        camera_width as u32,
+        camera_height as u32,
+    )) {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::error!("publish failed: {e:#}");
+            0
+        }
+    }
+}
+
+async fn publish_impl(name: String, cam_w: u32, cam_h: u32) -> Result<jlong> {
+    info!(name = %name, cam_w, cam_h, "publishing broadcast");
+    let live = Live::from_env().await?;
+    info!(id = %live.endpoint().id().fmt_short(), "endpoint ready");
+
+    let broadcast = LocalBroadcast::new();
+    let camera_source = Arc::new(Mutex::new(CameraFrameSource::new(cam_w, cam_h)));
+    let shared_source = SharedCameraSource {
+        inner: Arc::clone(&camera_source),
+    };
+    broadcast
+        .video()
+        .set(
+            shared_source,
+            VideoCodec::best_available().expect("no video codec available"),
+            [VideoPreset::P720],
+        )
+        .context("failed to set video source")?;
+
+    let audio_backend = AudioBackend::default();
+    let mic = audio_backend
+        .default_input()
+        .await
+        .context("failed to open microphone")?;
+    broadcast
+        .audio()
+        .set(mic, AudioCodec::Opus, [AudioPreset::Hq])
+        .context("failed to set audio source")?;
+
+    live.publish(&name, &broadcast).await?;
+
+    let ticket = LiveTicket::new(live.endpoint().id(), &name);
+    let ticket_str = ticket.to_string();
+    info!(ticket = %ticket_str, "broadcast published");
+
+    let handle = SessionHandle {
+        live: Some(live),
+        session: None,
+        call: None,
+        remote: None,
+        video: None,
+        audio: None,
+        audio_backend: Some(audio_backend),
+        broadcast: Some(broadcast),
+        ticket: Some(ticket_str),
+        encoder_pipeline: None,
+        renderer: None,
+        frame_dims: None,
+        camera_source: Some(camera_source),
+        cam_frames_pushed: 0,
+        dec_frames_rendered: 0,
+        created_at: Instant::now(),
+    };
+    Ok(to_jlong(Arc::new(Mutex::new(handle))))
+}
+
+/// Returns the connection ticket string, or empty if not available.
+///
+/// # Safety
+/// `handle` must be a live session handle.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getTicket<'a>(
+    mut env: JNIEnv<'a>,
+    _class: JClass<'a>,
+    handle: jlong,
+) -> jni::objects::JString<'a> {
+    let empty = |env: &mut JNIEnv<'a>| env.new_string("").expect("new_string");
+    if handle == 0 {
+        return empty(&mut env);
+    }
+    let session = unsafe { borrow_handle(handle) };
+    let Ok(guard) = session.lock() else {
+        return empty(&mut env);
+    };
+    let ticket = guard.ticket.as_deref().unwrap_or("");
+    env.new_string(ticket).unwrap_or_else(|_| empty(&mut env))
+}
+
+// ── JNI: rendition selection ────────────────────────────────────────
+
+/// Returns available video rendition names as a `\n`-separated string.
+///
+/// # Safety
+/// `handle` must be a live session handle.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getRenditions<'a>(
+    mut env: JNIEnv<'a>,
+    _class: JClass<'a>,
+    handle: jlong,
+) -> jni::objects::JString<'a> {
+    let empty = |env: &mut JNIEnv<'a>| env.new_string("").expect("new_string");
+    if handle == 0 {
+        return empty(&mut env);
+    }
+    let session = unsafe { borrow_handle(handle) };
+    let Ok(guard) = session.lock() else {
+        return empty(&mut env);
+    };
+    let names = guard
+        .remote
+        .as_ref()
+        .map(|r| {
+            r.catalog()
+                .video_renditions()
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    env.new_string(&names).unwrap_or_else(|_| empty(&mut env))
+}
+
+/// Switches to a different video rendition by name.
+///
+/// # Safety
+/// `handle` must be a live session handle.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_switchRendition(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+    rendition_name: JString<'_>,
+) {
+    if handle == 0 {
+        return;
+    }
+    let Some(name) = read_jstring(&mut env, &rendition_name) else {
+        return;
+    };
+    let session = unsafe { borrow_handle(handle) };
+    let Ok(mut guard) = session.lock() else {
+        return;
+    };
+    let Some(remote) = guard.remote.as_ref() else {
+        return;
+    };
+    match remote.video_rendition::<DynamicVideoDecoder>(&DecodeConfig::default(), &name) {
+        Ok(track) => {
+            info!(rendition = %name, "switched video rendition");
+            guard.video = Some(track);
+            guard.frame_dims = None;
+        }
+        Err(e) => {
+            tracing::error!(rendition = %name, "failed to switch rendition: {e:#}");
+        }
+    }
 }
 
 // ── EGL extension JNI wrappers ──────────────────────────────────────
