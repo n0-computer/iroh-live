@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [dependencies]
-moq-media = { path = "../moq-media", default-features = false }
+moq-media = { workspace = true }
 anyhow = "1.0"
 tracing = "0.1"
 

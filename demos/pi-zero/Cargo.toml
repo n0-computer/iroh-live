@@ -14,18 +14,10 @@ ffmpeg = ["moq-media/ffmpeg"]
 anyhow = "1.0.100"
 iroh = { workspace = true }
 bytes = "1.11.0"
-iroh-live = { path = "../../iroh-live", default-features = false, features = [
-    "h264",
-    "opus",
-] }
-moq-media = { path = "../../moq-media", default-features = false, features = [
-    "h264",
-    "opus",
-    "v4l2",
-    "test-util",
-] }
+iroh-live = { workspace = true, features = ["h264", "opus"] }
+moq-media = { workspace = true, features = ["h264", "opus", "v4l2", "test-util"] }
 tokio-util = "0.7"
-rusty-codecs = { path = "../../rusty-codecs", default-features = false }
+rusty-codecs = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
 n0-error = { version = "0.1.2", features = ["anyhow"] }
 tokio = { version = "1.48.0", features = ["full"] }

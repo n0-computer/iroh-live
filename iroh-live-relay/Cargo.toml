@@ -25,8 +25,8 @@ http = "1"
 
 [dev-dependencies]
 iroh = { workspace = true }
-iroh-live = { path = "../iroh-live" }
-moq-media = { path = "../moq-media", features = ["test-util"] }
+iroh-live = { workspace = true }
+moq-media = { workspace = true, features = ["test-util"] }
 rand = "0.9"
 serial_test = "3"
 url = "2"
