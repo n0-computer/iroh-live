@@ -7047,6 +7047,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "glow 0.16.0",
+ "khronos-egl",
  "libc",
  "moq-media",
  "tracing",

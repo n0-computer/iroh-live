@@ -1,13 +1,6 @@
 package com.n0.irohlive.demo
 
 import android.graphics.ImageFormat
-import android.opengl.EGL14
-import android.opengl.EGLConfig
-import android.opengl.EGLContext
-import android.opengl.EGLDisplay
-import android.opengl.EGLSurface
-import android.opengl.GLES11Ext
-import android.opengl.GLES20
 import android.os.Bundle
 import android.util.Log
 import android.view.SurfaceHolder
@@ -38,8 +31,6 @@ import kotlinx.coroutines.withContext
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.nio.FloatBuffer
 
 /**
  * Main activity for the iroh-live Android demo.
@@ -57,42 +48,6 @@ class MainActivity : AppCompatActivity() {
         private const val TAG = "IrohLiveDemo"
         private const val CAMERA_WIDTH = 1280
         private const val CAMERA_HEIGHT = 720
-
-        // EGL extension constants not in the standard Android SDK.
-        private const val EGL_NATIVE_BUFFER_ANDROID = 0x3140
-        private const val EGL_IMAGE_PRESERVED_KHR = 0x30D2
-        private const val EGL_NO_IMAGE_KHR = 0L
-
-        // Vertex shader: pass-through with texture coordinates.
-        private const val VERTEX_SHADER = """
-            attribute vec4 aPosition;
-            attribute vec2 aTexCoord;
-            varying vec2 vTexCoord;
-            void main() {
-                gl_Position = aPosition;
-                vTexCoord = aTexCoord;
-            }
-        """
-
-        // Fragment shader: samples from an external OES texture.
-        private const val FRAGMENT_SHADER = """
-            #extension GL_OES_EGL_image_external : require
-            precision mediump float;
-            varying vec2 vTexCoord;
-            uniform samplerExternalOES uTexture;
-            void main() {
-                gl_FragColor = texture2D(uTexture, vTexCoord);
-            }
-        """
-
-        // Fullscreen quad vertices (two triangles) with tex coords.
-        private val QUAD_VERTICES = floatArrayOf(
-            // x, y, u, v
-            -1f, -1f, 0f, 1f,
-             1f, -1f, 1f, 1f,
-            -1f,  1f, 0f, 0f,
-             1f,  1f, 1f, 0f,
-        )
     }
 
     private lateinit var ticketInput: EditText
@@ -117,14 +72,7 @@ class MainActivity : AppCompatActivity() {
     /** Camera sensor rotation in degrees (0/90/180/270). */
     private var sensorRotation = 0
 
-    // EGL state (initialized on render thread).
-    private var eglDisplay: EGLDisplay = EGL14.EGL_NO_DISPLAY
-    private var eglConfig: EGLConfig? = null
-    private var eglContext: EGLContext = EGL14.EGL_NO_CONTEXT
-    private var eglSurface: EGLSurface = EGL14.EGL_NO_SURFACE
-    private var glProgram = 0
-    private var glTexture = 0
-    private var vertexBuffer: FloatBuffer? = null
+    // (EGL/GL state is now fully managed in Rust.)
 
     // QR code scanner launcher.
     private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
@@ -589,8 +537,8 @@ class MainActivity : AppCompatActivity() {
     private var surfaceHeight = 0
 
     /**
-     * Render loop: Rust handles frame acquisition, EGL import, and GL drawing.
-     * Kotlin manages the EGL context lifecycle and swaps buffers.
+     * Render loop: Rust owns the full EGL lifecycle and GL rendering.
+     * Kotlin just polls renderNextFrame and updates the status UI.
      */
     private fun startRenderLoop() {
         renderJob = lifecycleScope.launch(Dispatchers.Default) {
@@ -600,21 +548,10 @@ class MainActivity : AppCompatActivity() {
             }
             if (!isActive) return@launch
 
-            val holder = videoSurface.holder
-
-            try {
-                initEgl(holder)
-            } catch (e: Exception) {
-                Log.e(TAG, "EGL init failed", e)
-                return@launch
-            }
-
-            // Initialize the Rust-side GLES2 renderer (must be on the GL thread).
+            // Rust creates the EGL context + GL renderer from the Surface.
             val handle = sessionHandle
-            if (handle != 0L) {
-                val displayPtr = getNativeEglHandle(eglDisplay)
-                IrohBridge.initRenderer(handle, displayPtr)
-            }
+            if (handle == 0L) return@launch
+            IrohBridge.initSurface(handle, videoSurface.holder.surface)
 
             var statusCounter = 0L
             try {
@@ -637,18 +574,18 @@ class MainActivity : AppCompatActivity() {
                         updateRenditionSpinner(h)
                     }
 
-                    // Rust renders the frame; we just swap buffers.
-                    val rendered = IrohBridge.renderNextFrame(
-                        h, surfaceWidth, surfaceHeight, sensorRotation
-                    )
-                    if (rendered) {
-                        EGL14.eglSwapBuffers(eglDisplay, eglSurface)
-                    } else {
+                    // Rust renders + swaps buffers internally.
+                    if (!IrohBridge.renderNextFrame(
+                            h, surfaceWidth, surfaceHeight, sensorRotation
+                        )
+                    ) {
                         delay(2L)
                     }
                 }
             } finally {
-                teardownEgl()
+                if (handle != 0L) {
+                    IrohBridge.teardownSurface(handle)
+                }
             }
         }
     }
@@ -692,167 +629,4 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Extracts the native EGL handle from a Java EGL14 wrapper. */
-    private fun getNativeEglHandle(obj: Any): Long {
-        return try {
-            val method = obj.javaClass.getMethod("getNativeHandle")
-            method.invoke(obj) as Long
-        } catch (_: Exception) {
-            try {
-                val field = obj.javaClass.getDeclaredField("mEGLDisplay")
-                field.isAccessible = true
-                field.getLong(obj)
-            } catch (_: Exception) {
-                0L
-            }
-        }
-    }
-
-    // ── EGL/GL setup ────────────────────────────────────────────────────
-
-    private fun initEgl(holder: SurfaceHolder) {
-        // Display + config are process-wide singletons — only initialize once.
-        if (eglDisplay == EGL14.EGL_NO_DISPLAY) {
-            eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
-            check(eglDisplay != EGL14.EGL_NO_DISPLAY) { "eglGetDisplay failed" }
-
-            val version = IntArray(2)
-            check(EGL14.eglInitialize(eglDisplay, version, 0, version, 1)) { "eglInitialize failed" }
-
-            val configAttribs = intArrayOf(
-                EGL14.EGL_RED_SIZE, 8,
-                EGL14.EGL_GREEN_SIZE, 8,
-                EGL14.EGL_BLUE_SIZE, 8,
-                EGL14.EGL_ALPHA_SIZE, 8,
-                EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
-                EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT,
-                EGL14.EGL_NONE,
-            )
-            val configs = arrayOfNulls<EGLConfig>(1)
-            val numConfigs = IntArray(1)
-            check(
-                EGL14.eglChooseConfig(eglDisplay, configAttribs, 0, configs, 0, 1, numConfigs, 0)
-                && numConfigs[0] > 0
-            ) { "eglChooseConfig failed" }
-            eglConfig = configs[0]!!
-        }
-
-        val config = eglConfig!!
-
-        val contextAttribs = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE)
-        eglContext = EGL14.eglCreateContext(
-            eglDisplay, config, EGL14.EGL_NO_CONTEXT, contextAttribs, 0
-        )
-        check(eglContext != EGL14.EGL_NO_CONTEXT) { "eglCreateContext failed" }
-
-        val surfaceAttribs = intArrayOf(EGL14.EGL_NONE)
-        eglSurface = EGL14.eglCreateWindowSurface(
-            eglDisplay, config, holder.surface, surfaceAttribs, 0
-        )
-        check(eglSurface != EGL14.EGL_NO_SURFACE) { "eglCreateWindowSurface failed" }
-
-        check(
-            EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
-        ) { "eglMakeCurrent failed" }
-
-        Log.i(TAG, "EGL initialized: ${EGL14.eglQueryString(eglDisplay, EGL14.EGL_VERSION)}")
-    }
-
-    private fun initGl() {
-        // Create shader program.
-        val vs = compileShader(GLES20.GL_VERTEX_SHADER, VERTEX_SHADER)
-        val fs = compileShader(GLES20.GL_FRAGMENT_SHADER, FRAGMENT_SHADER)
-        glProgram = GLES20.glCreateProgram()
-        GLES20.glAttachShader(glProgram, vs)
-        GLES20.glAttachShader(glProgram, fs)
-        GLES20.glLinkProgram(glProgram)
-        GLES20.glDeleteShader(vs)
-        GLES20.glDeleteShader(fs)
-
-        val linkStatus = IntArray(1)
-        GLES20.glGetProgramiv(glProgram, GLES20.GL_LINK_STATUS, linkStatus, 0)
-        check(linkStatus[0] == GLES20.GL_TRUE) {
-            val log = GLES20.glGetProgramInfoLog(glProgram)
-            GLES20.glDeleteProgram(glProgram)
-            "Shader link failed: $log"
-        }
-
-        // Create OES texture.
-        val texIds = IntArray(1)
-        GLES20.glGenTextures(1, texIds, 0)
-        glTexture = texIds[0]
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, glTexture)
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-
-        // Vertex buffer.
-        val bb = ByteBuffer.allocateDirect(QUAD_VERTICES.size * 4)
-        bb.order(ByteOrder.nativeOrder())
-        vertexBuffer = bb.asFloatBuffer().apply {
-            put(QUAD_VERTICES)
-            position(0)
-        }
-
-        GLES20.glClearColor(0f, 0f, 0f, 1f)
-
-        Log.i(TAG, "GL initialized: renderer=${GLES20.glGetString(GLES20.GL_RENDERER)}")
-    }
-
-    private fun compileShader(type: Int, source: String): Int {
-        val shader = GLES20.glCreateShader(type)
-        GLES20.glShaderSource(shader, source)
-        GLES20.glCompileShader(shader)
-        val status = IntArray(1)
-        GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, status, 0)
-        check(status[0] == GLES20.GL_TRUE) {
-            val log = GLES20.glGetShaderInfoLog(shader)
-            GLES20.glDeleteShader(shader)
-            "Shader compile failed: $log"
-        }
-        return shader
-    }
-
-    private fun teardownEgl() {
-        if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
-            EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
-            if (eglSurface != EGL14.EGL_NO_SURFACE) {
-                EGL14.eglDestroySurface(eglDisplay, eglSurface)
-                eglSurface = EGL14.EGL_NO_SURFACE
-            }
-            if (eglContext != EGL14.EGL_NO_CONTEXT) {
-                EGL14.eglDestroyContext(eglDisplay, eglContext)
-                eglContext = EGL14.EGL_NO_CONTEXT
-            }
-            // Keep eglDisplay and eglConfig alive — they're process-wide
-            // singletons. Re-initializing after eglTerminate fails on some
-            // drivers, and even without terminate, re-calling eglInitialize
-            // + eglChooseConfig + eglCreateWindowSurface on the same native
-            // window can fail. Reusing the display lets us just recreate the
-            // context + surface on the next session.
-        }
-        if (glTexture != 0) {
-            // Texture is invalid after context destruction, just zero it.
-            glTexture = 0
-        }
-        glProgram = 0
-        vertexBuffer = null
-
-        Log.i(TAG, "EGL teardown complete")
-    }
-
-    // ── Native EGL extension functions ──────────────────────────────────
-    //
-    // These are JNI wrappers around EGL/GLES extension functions that are
-    // not exposed in the Android Java SDK. They call the NDK C functions
-    // via dlsym at runtime.
-
-    private external fun eglGetNativeClientBufferANDROID(hardwareBufferPtr: Long): Long
-    private external fun eglCreateImageKHR(
-        display: EGLDisplay, context: EGLContext,
-        target: Int, clientBuffer: Long, attrs: IntArray
-    ): Long
-    private external fun eglDestroyImageKHR(display: EGLDisplay, image: Long)
-    private external fun glEGLImageTargetTexture2DOES(target: Int, image: Long)
 }
