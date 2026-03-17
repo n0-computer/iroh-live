@@ -209,21 +209,14 @@ async fn main() -> anyhow::Result<()> {
 
         // Pull mode: if the connection URL contains a `name` query param that
         // is a valid iroh-live ticket, pull the remote broadcast into the
-        // cluster before the session starts. This way the browser subscriber
-        // finds the broadcast already available when moq-lite resolves it.
-        if let Some(ref pull) = pull_state {
-            if let Some(name) = extract_name_from_url(&request) {
-                if let Ok(ticket) = name.parse::<iroh_live::ticket::LiveTicket>() {
-                    let pull = pull.clone();
-                    tokio::spawn(async move {
-                        if let Err(err) = pull.pull(&ticket).await {
-                            tracing::warn!(%err, "pull failed for ticket in URL");
-                        }
-                    });
-                }
-            }
-        }
+        // cluster before the session starts. The pull completes before
+        // conn.run() so the broadcast is available when moq-lite resolves it.
+        let ticket = pull_state.as_ref().and_then(|_| {
+            let name = extract_name_from_url(&request)?;
+            name.parse::<iroh_live::ticket::LiveTicket>().ok()
+        });
 
+        let pull_clone = pull_state.clone();
         let conn = Connection {
             id: conn_id,
             request,
@@ -232,6 +225,12 @@ async fn main() -> anyhow::Result<()> {
         };
         conn_id += 1;
         tokio::spawn(async move {
+            // Pull the remote broadcast before serving the session.
+            if let (Some(ticket), Some(pull)) = (ticket, pull_clone) {
+                if let Err(err) = pull.pull(&ticket).await {
+                    tracing::warn!(%err, "pull failed for ticket in URL");
+                }
+            }
             if let Err(err) = conn.run().await {
                 tracing::warn!(%err, "connection closed");
             }
