@@ -33,11 +33,11 @@ use crate::{
         AudioEncoderConfig, AudioFormat, AudioPreset, DecodeConfig, VideoEncoderConfig,
         VideoFormat, VideoFrame, VideoPreset,
     },
-    pipeline::{AudioEncoderPipeline, VideoEncoderPipeline},
+    pipeline::{AudioEncoderPipeline, PreEncodedVideoPipeline, VideoEncoderPipeline},
     subscribe::VideoTrack,
     traits::{
-        AudioEncoder, AudioEncoderFactory, AudioSource, VideoEncoder, VideoEncoderFactory,
-        VideoSource,
+        AudioEncoder, AudioEncoderFactory, AudioSource, PreEncodedVideoSource, VideoEncoder,
+        VideoEncoderFactory, VideoSource,
     },
     transport::MoqPacketSink,
     util::spawn_thread,
@@ -77,6 +77,24 @@ impl From<anyhow::Error> for PublishError {
 
 type MakeAudioEncoder = Box<dyn Fn() -> Result<Box<dyn AudioEncoder>> + Send + 'static>;
 type MakeVideoEncoder = Box<dyn Fn() -> Result<Box<dyn VideoEncoder>> + Send + 'static>;
+
+/// Active video pipeline — either encoding raw frames or passing through
+/// pre-encoded packets.
+#[derive(derive_more::Debug)]
+enum VideoPipeline {
+    Encoder(VideoEncoderPipeline),
+    PreEncoded(PreEncodedVideoPipeline),
+}
+
+type MakePreEncodedSource =
+    Box<dyn Fn() -> anyhow::Result<Box<dyn PreEncodedVideoSource>> + Send + 'static>;
+
+/// Entry for a single pre-encoded video track.
+struct PreEncodedVideoEntry {
+    name: String,
+    config: VideoConfig,
+    factory: MakePreEncodedSource,
+}
 
 struct AudioRenditionEntry {
     config: AudioConfig,
@@ -215,6 +233,30 @@ impl LocalBroadcast {
         ))
     }
 
+    pub(crate) fn set_pre_encoded_video(&self, entry: Option<PreEncodedVideoEntry>) -> Result<()> {
+        let mut state = self.state.lock().expect("poisoned");
+        match entry {
+            Some(entry) => {
+                let mut configs = BTreeMap::new();
+                configs.insert(entry.name.clone(), entry.config.clone());
+                let video = Video {
+                    renditions: configs,
+                    display: None,
+                    rotation: None,
+                    flip: None,
+                };
+                state.remove_video();
+                state.pre_encoded_video = Some(entry);
+                state.catalog.set_video(video)?;
+            }
+            None => {
+                state.remove_video();
+                state.catalog.set_video(Default::default())?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn set_video(&self, renditions: Option<VideoRenditions>) -> Result<()> {
         let mut state = self.state.lock().expect("poisoned");
         match renditions {
@@ -279,6 +321,29 @@ impl VideoPublisher<'_> {
     ) -> Result<()> {
         let renditions = VideoRenditions::new(source, codec, presets);
         self.broadcast.set_video(Some(renditions))
+    }
+
+    /// Publishes pre-encoded video from a source that produces compressed
+    /// packets directly, bypassing the encoder.
+    ///
+    /// Use this when the capture device or an external tool already outputs
+    /// encoded video (e.g. `rpicam-vid --codec h264` on Raspberry Pi).
+    ///
+    /// The `factory` closure creates a fresh source instance for each
+    /// subscriber — it is called each time a subscriber requests this track.
+    pub fn set_pre_encoded(
+        &self,
+        track_name: impl Into<String>,
+        config: impl Into<VideoConfig>,
+        factory: impl Fn() -> anyhow::Result<Box<dyn PreEncodedVideoSource>> + Send + 'static,
+    ) -> Result<()> {
+        let name = track_name.into();
+        let entry = PreEncodedVideoEntry {
+            name: name.clone(),
+            config: config.into(),
+            factory: Box::new(factory),
+        };
+        self.broadcast.set_pre_encoded_video(Some(entry))
     }
 
     /// Removes video from the broadcast.
@@ -414,8 +479,9 @@ struct State {
     shutdown_token: CancellationToken,
     local_video_token: CancellationToken,
     available_video: Option<VideoRenditions>,
+    pre_encoded_video: Option<PreEncodedVideoEntry>,
     available_audio: Option<AudioRenditions>,
-    active_video: HashMap<String, VideoEncoderPipeline>,
+    active_video: HashMap<String, VideoPipeline>,
     active_audio: HashMap<String, AudioEncoderPipeline>,
 }
 
@@ -426,6 +492,7 @@ impl State {
             shutdown_token: CancellationToken::new(),
             local_video_token: CancellationToken::new(),
             available_video: None,
+            pre_encoded_video: None,
             available_audio: None,
             active_video: HashMap::new(),
             active_audio: HashMap::new(),
@@ -451,6 +518,7 @@ impl State {
         self.local_video_token = CancellationToken::new();
         self.active_video.clear();
         self.available_video = None;
+        self.pre_encoded_video = None;
     }
 
     fn start_track(&mut self, track: moq_lite::TrackProducer) -> Result<()> {
@@ -459,7 +527,17 @@ impl State {
             && video.contains_rendition(&name)
         {
             let pipeline = video.start_encoder(&name, track)?;
-            self.active_video.insert(name, pipeline);
+            self.active_video
+                .insert(name, VideoPipeline::Encoder(pipeline));
+            Ok(())
+        } else if let Some(entry) = self.pre_encoded_video.as_ref()
+            && entry.name == name
+        {
+            let source = (entry.factory)()?;
+            let sink = MoqPacketSink::new(track);
+            let pipeline = PreEncodedVideoPipeline::new(source, sink);
+            self.active_video
+                .insert(name, VideoPipeline::PreEncoded(pipeline));
             Ok(())
         } else if let Some(audio) = self.available_audio.as_mut()
             && audio.contains_rendition(&name)

@@ -182,7 +182,7 @@ This repo will be maintained for years. Tracing is a first-class concern.
 ## Feature flags (key crates)
 
 ### rusty-codecs
-`h264`, `opus`, `av1` (default), `vaapi`, `v4l2`, `videotoolbox`, `wgpu`, `dmabuf-import`, `hang`
+`h264`, `opus`, `av1` (default), `vaapi`, `v4l2`, `videotoolbox`, `wgpu`, `dmabuf-import`, `hang`, `raspberry-pi`
 
 ### rusty-capture
 `camera`, `screen` (default) → `pipewire`, `v4l2`, `x11`, `camera-apple`, `screen-apple`
@@ -224,6 +224,8 @@ Access chain: `MoqSession::conn()` → `&Connection<HandshakeCompleted>` (from `
 - `plans/platforms.md` — platform support matrix (codecs, capture, GPU rendering)
 - `plans/media-pipeline/00-main.md` — media pipeline master plan
 - `plans/api/0-overview.md` — API redesign overview
+- `plans/capture-pipeline.md` — capture/encoding pipeline API review and design alternatives
+- `plans/platform/pi.md` — Raspberry Pi technical notes (camera, V4L2, e-paper, cross-compilation)
 - `REVIEW.md` — crate review findings and action items
 
 ## Platform testing
@@ -237,4 +239,12 @@ When testing a new platform, the workflow is:
 1. Run `cargo check --all-features --workspace --tests --examples`
 2. Run `cargo test -p moq-media --features test-util` for codec pipeline tests
 3. Run platform-specific codec tests with appropriate feature flags
+
+### Raspberry Pi Zero 2 W
+
+See `demos/pi-zero/rpi-debugging.md` for setup and usage instructions.
+See `plans/platform/pi.md` for technical investigation notes (camera capture
+via libcamera, V4L2 M2M encoder quirks, e-paper V4 protocol, cross-compilation).
+Build and deploy with `demos/pi-zero/build.sh` or `cargo make deploy` in
+`demos/pi-zero/`.
 4. Update `plans/platforms.md` with results

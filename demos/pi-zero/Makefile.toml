@@ -1,0 +1,75 @@
+# Pi Zero 2 demo — cargo-make tasks.
+#
+# Usage:
+#   cargo make build              # cross-compile for aarch64
+#   cargo make deploy             # build + deploy to PI_HOST
+#   cargo make pi-test            # run #[ignore] tests on Pi via SSH
+#
+# Environment:
+#   PI_HOST  — SSH hostname (default: livepizero)
+
+[env]
+PI_HOST = { value = "livepizero", condition = { env_not_set = ["PI_HOST"] } }
+SCRIPT_DIR = "${CARGO_MAKE_WORKING_DIRECTORY}"
+
+[tasks.build]
+description = "Cross-compile pi-zero-demo for aarch64"
+script = ["${SCRIPT_DIR}/build.sh"]
+
+[tasks.deploy]
+description = "Cross-compile and deploy to Pi"
+script = ["${SCRIPT_DIR}/build.sh --deploy ${PI_HOST}"]
+
+[tasks.pi-test]
+description = "Run Pi-specific tests on-device via SSH"
+script = [
+    '''
+    echo "Running Pi tests on pi@${PI_HOST}..."
+
+    # Build the test binary for aarch64
+    ${SCRIPT_DIR}/build.sh
+
+    # Find the target dir
+    WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+    TARGET_DIR="$(cargo metadata --manifest-path "${WORKSPACE_ROOT}/Cargo.toml" --format-version 1 --no-deps | jq -r '.target_directory')"
+    TARGET="aarch64-unknown-linux-gnu"
+
+    # Build test binary (test harness) — the ignored tests are in rusty-codecs
+    # under the raspberry-pi feature.
+    export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="/tmp/rpi-linker.sh"
+    export PKG_CONFIG_SYSROOT_DIR="${PI_SYSROOT:-$HOME/pi-sysroot}"
+    export PKG_CONFIG_PATH="${PI_SYSROOT:-$HOME/pi-sysroot}/usr/lib/aarch64-linux-gnu/pkgconfig"
+    export PKG_CONFIG_ALLOW_CROSS=1
+    export CC_aarch64_unknown_linux_gnu="aarch64-linux-gnu-gcc"
+    export CFLAGS_aarch64_unknown_linux_gnu="--sysroot=${PI_SYSROOT:-$HOME/pi-sysroot}"
+
+    cargo test \
+        --manifest-path "${WORKSPACE_ROOT}/Cargo.toml" \
+        -p rusty-codecs \
+        --features raspberry-pi,h264 \
+        --target "$TARGET" \
+        --release \
+        --no-run 2>&1 | tee /tmp/pi-test-build.log
+
+    # Find the test binary
+    TEST_BIN=$(grep "Executable" /tmp/pi-test-build.log | head -1 | sed 's/.*(\(.*\))/\1/')
+    if [ -z "$TEST_BIN" ]; then
+        echo "Could not find test binary in build output."
+        echo "Trying to locate it manually..."
+        TEST_BIN=$(find "$TARGET_DIR/$TARGET/release/deps" -name "rusty_codecs-*" -executable -not -name "*.d" | head -1)
+    fi
+
+    if [ -z "$TEST_BIN" ]; then
+        echo "ERROR: Could not find test binary"
+        exit 1
+    fi
+
+    aarch64-linux-gnu-strip "$TEST_BIN"
+    echo "Test binary: $TEST_BIN ($(du -h "$TEST_BIN" | cut -f1))"
+
+    # Deploy and run
+    scp "$TEST_BIN" "pi@${PI_HOST}:~/rusty-codecs-test"
+    echo "Running ignored (Pi-only) tests..."
+    ssh "pi@${PI_HOST}" "~/rusty-codecs-test --ignored --test-threads=1" || true
+    '''
+]

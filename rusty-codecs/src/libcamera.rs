@@ -1,0 +1,520 @@
+//! Raspberry Pi camera capture via `rpicam-vid` (libcamera subprocess).
+//!
+//! On Raspberry Pi OS Bookworm, the CSI camera is only accessible through
+//! the libcamera stack. Direct V4L2 access to `/dev/video0` gives raw Bayer
+//! data from the Unicam sensor, which is unusable without the ISP pipeline.
+//!
+//! Two sources are provided:
+//!
+//! - [`LibcameraH264Source`] — produces pre-encoded H.264 Annex-B packets
+//!   directly from rpicam-vid's internal hardware encoder. Preferred on Pi
+//!   Zero 2 because it avoids the ~10 MB/s raw-YUV pipe and redundant NV12
+//!   conversion, using rpicam-vid's DMABUF zero-copy ISP→encoder path.
+//!
+//! - [`LibcameraYuvSource`] — produces raw I420 frames for use with a
+//!   separate encoder (V4L2 M2M, openh264, etc.).
+
+use std::io::Read;
+use std::process::{Child, Command, Stdio};
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use bytes::Bytes;
+
+use crate::codec::h264::annexb::{build_avcc, extract_sps_pps, parse_annex_b};
+use crate::config::{H264, VideoCodec, VideoConfig};
+use crate::format::{EncodedFrame, PixelFormat, VideoFormat, VideoFrame};
+use crate::traits::{PreEncodedVideoSource, VideoSource};
+
+// ---------------------------------------------------------------------------
+// Pre-encoded H.264 source (preferred on Pi)
+// ---------------------------------------------------------------------------
+
+/// Configuration for [`LibcameraH264Source`].
+///
+/// Cloneable so the publish pipeline can create fresh instances per
+/// subscriber. Each clone spawns its own `rpicam-vid` process.
+#[derive(Debug, Clone)]
+pub struct LibcameraH264Config {
+    /// Capture width in pixels.
+    pub width: u32,
+    /// Capture height in pixels.
+    pub height: u32,
+    /// Capture framerate.
+    pub framerate: u32,
+    /// Target bitrate in bits per second.
+    pub bitrate: u32,
+    /// Keyframe interval in frames.
+    pub keyframe_interval: u32,
+}
+
+impl LibcameraH264Config {
+    /// Creates a configuration with sensible defaults for the given resolution.
+    pub fn new(width: u32, height: u32, framerate: u32) -> Self {
+        Self {
+            width,
+            height,
+            framerate,
+            bitrate: 500_000,
+            keyframe_interval: 60,
+        }
+    }
+
+    /// Sets the target bitrate.
+    pub fn with_bitrate(mut self, bitrate: u32) -> Self {
+        self.bitrate = bitrate;
+        self
+    }
+
+    /// Sets the keyframe interval.
+    pub fn with_keyframe_interval(mut self, frames: u32) -> Self {
+        self.keyframe_interval = frames;
+        self
+    }
+
+    /// Returns the [`VideoConfig`] for catalog/subscriber setup.
+    pub fn video_config(&self) -> VideoConfig {
+        VideoConfig {
+            codec: VideoCodec::H264(H264 {
+                inline: true,
+                profile: 0x42,
+                constraints: 0xE0,
+                level: 0x1E,
+            }),
+            description: None,
+            coded_width: Some(self.width),
+            coded_height: Some(self.height),
+            display_ratio_width: None,
+            display_ratio_height: None,
+            bitrate: Some(self.bitrate as u64),
+            framerate: Some(self.framerate as f64),
+            optimize_for_latency: Some(true),
+        }
+    }
+
+    /// Returns a track name suitable for the MoQ catalog.
+    pub fn track_name(&self) -> String {
+        format!("video/h264-libcamera-{}p", self.height)
+    }
+}
+
+/// Pre-encoded H.264 source via `rpicam-vid --codec h264`.
+///
+/// Each instance owns an `rpicam-vid` subprocess. The source reads the
+/// Annex-B H.264 bytestream from stdout, splits it into access units,
+/// and returns each as an [`EncodedFrame`].
+pub struct LibcameraH264Source {
+    config: LibcameraH264Config,
+    child: Option<Child>,
+    buf: Vec<u8>,
+    remainder: Vec<u8>,
+    frame_count: u64,
+    avcc: Option<Bytes>,
+}
+
+impl LibcameraH264Source {
+    /// Creates a new source from the given configuration.
+    pub fn new(config: LibcameraH264Config) -> Self {
+        Self {
+            config,
+            child: None,
+            buf: vec![0u8; 256 * 1024],
+            remainder: Vec::new(),
+            frame_count: 0,
+            avcc: None,
+        }
+    }
+}
+
+impl PreEncodedVideoSource for LibcameraH264Source {
+    fn name(&self) -> &str {
+        "libcamera-h264"
+    }
+
+    fn config(&self) -> VideoConfig {
+        let mut cfg = self.config.video_config();
+        cfg.description = self.avcc.clone();
+        cfg
+    }
+
+    fn start(&mut self) -> Result<()> {
+        let c = &self.config;
+        tracing::info!(
+            width = c.width,
+            height = c.height,
+            fps = c.framerate,
+            bitrate = c.bitrate,
+            "starting rpicam-vid H.264 capture"
+        );
+
+        let child = Command::new("rpicam-vid")
+            .args([
+                "--codec",
+                "h264",
+                "--width",
+                &c.width.to_string(),
+                "--height",
+                &c.height.to_string(),
+                "--framerate",
+                &c.framerate.to_string(),
+                "--bitrate",
+                &c.bitrate.to_string(),
+                "--intra",
+                &c.keyframe_interval.to_string(),
+                "--profile",
+                "baseline",
+                "--inline",
+                "--timeout",
+                "0",
+                "--nopreview",
+                "-o",
+                "-",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("failed to spawn rpicam-vid — is libcamera installed?")?;
+
+        tracing::info!(pid = child.id(), "rpicam-vid started (H.264 mode)");
+        self.child = Some(child);
+        self.frame_count = 0;
+        self.remainder.clear();
+        self.avcc = None;
+        Ok(())
+    }
+
+    fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
+        let child = self.child.as_mut().context("not started")?;
+        let stdout = child
+            .stdout
+            .as_mut()
+            .context("rpicam-vid stdout unavailable")?;
+
+        // Read a chunk. Blocks until data is available.
+        let n = stdout
+            .read(&mut self.buf)
+            .context("rpicam-vid read failed")?;
+        if n == 0 {
+            anyhow::bail!("rpicam-vid EOF — process exited");
+        }
+
+        self.remainder.extend_from_slice(&self.buf[..n]);
+
+        // Find the last complete access unit boundary.
+        let split_pos = find_last_au_boundary(&self.remainder);
+
+        let Some(pos) = split_pos else {
+            return Ok(None);
+        };
+
+        // Split off the complete AU without an intermediate allocation:
+        // split_off leaves [0..pos) in self.remainder and returns [pos..].
+        let tail = self.remainder.split_off(pos);
+        let frame_data = std::mem::replace(&mut self.remainder, tail);
+        if frame_data.is_empty() {
+            return Ok(None);
+        }
+
+        let is_keyframe = contains_idr_nal(&frame_data);
+
+        // Extract avcC from first keyframe (only parse NALs when needed).
+        if is_keyframe && self.avcc.is_none() {
+            let nals = parse_annex_b(&frame_data);
+            if let Some((sps, pps)) = extract_sps_pps(&nals) {
+                self.avcc = Some(build_avcc(&sps, &pps).into());
+                tracing::debug!(
+                    sps_len = sps.len(),
+                    pps_len = pps.len(),
+                    "extracted SPS/PPS from first keyframe"
+                );
+            }
+        }
+
+        let fps = self.config.framerate as f64;
+        let pts = Duration::from_secs_f64(self.frame_count as f64 / fps);
+        self.frame_count += 1;
+
+        if self.frame_count <= 3 || self.frame_count % 150 == 0 {
+            tracing::debug!(
+                frame = self.frame_count,
+                len = frame_data.len(),
+                is_keyframe,
+                "H.264 frame"
+            );
+        }
+
+        Ok(Some(EncodedFrame {
+            is_keyframe,
+            timestamp: pts,
+            payload: frame_data.into(),
+        }))
+    }
+
+    fn stop(&mut self) -> Result<()> {
+        if let Some(mut child) = self.child.take() {
+            tracing::info!("stopping rpicam-vid");
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        Ok(())
+    }
+}
+
+impl Drop for LibcameraH264Source {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
+
+/// Checks whether an Annex-B bytestream contains an IDR (type 5) NAL unit
+/// without fully parsing all NAL boundaries.
+fn contains_idr_nal(data: &[u8]) -> bool {
+    let mut i = 0;
+    while i + 3 < data.len() {
+        let (sc_len, nal_start) = if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
+            (3, i + 3)
+        } else if i + 4 <= data.len()
+            && data[i] == 0
+            && data[i + 1] == 0
+            && data[i + 2] == 0
+            && data[i + 3] == 1
+        {
+            (4, i + 4)
+        } else {
+            i += 1;
+            continue;
+        };
+        if nal_start < data.len() && (data[nal_start] & 0x1F) == 5 {
+            return true;
+        }
+        i += sc_len;
+    }
+    false
+}
+
+/// Finds the byte offset of the last access unit boundary in an Annex-B
+/// bytestream. Returns `None` if the buffer contains fewer than two AUs.
+fn find_last_au_boundary(data: &[u8]) -> Option<usize> {
+    let mut last_boundary = None;
+    let mut i = data.len();
+    while i >= 4 {
+        i -= 1;
+        let (sc_start, nal_start) =
+            if i >= 3 && data[i - 3] == 0 && data[i - 2] == 0 && data[i - 1] == 0 && data[i] == 1 {
+                (i - 3, i + 1)
+            } else if i >= 2 && data[i - 2] == 0 && data[i - 1] == 0 && data[i] == 1 {
+                (i - 2, i + 1)
+            } else {
+                continue;
+            };
+
+        if nal_start < data.len() {
+            let nal_type = data[nal_start] & 0x1F;
+            // SPS (7), non-IDR slice (1), or IDR slice (5) starts a new AU.
+            if nal_type == 7 || nal_type == 1 || nal_type == 5 {
+                if last_boundary.is_some() {
+                    return last_boundary;
+                }
+                last_boundary = Some(sc_start);
+            }
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Raw I420 source (fallback for software/V4L2 encoder path)
+// ---------------------------------------------------------------------------
+
+/// Raw I420 video source via `rpicam-vid --codec yuv420`.
+///
+/// Produces uncompressed I420 frames for use with a separate encoder.
+pub struct LibcameraYuvSource {
+    width: u32,
+    height: u32,
+    framerate: u32,
+    child: Option<Child>,
+    frame_size: usize,
+    frame_count: u64,
+}
+
+impl LibcameraYuvSource {
+    /// Creates a new raw YUV source at the given resolution and framerate.
+    pub fn new(width: u32, height: u32, framerate: u32) -> Self {
+        let frame_size = (width as usize) * (height as usize) * 3 / 2;
+        Self {
+            width,
+            height,
+            framerate,
+            child: None,
+            frame_size,
+            frame_count: 0,
+        }
+    }
+}
+
+impl VideoSource for LibcameraYuvSource {
+    fn name(&self) -> &str {
+        "libcamera-yuv"
+    }
+
+    fn format(&self) -> VideoFormat {
+        VideoFormat {
+            pixel_format: PixelFormat::Rgba,
+            dimensions: [self.width, self.height],
+        }
+    }
+
+    fn start(&mut self) -> Result<()> {
+        tracing::info!(
+            width = self.width,
+            height = self.height,
+            fps = self.framerate,
+            "starting rpicam-vid capture (YUV420)"
+        );
+
+        let child = Command::new("rpicam-vid")
+            .args([
+                "--codec",
+                "yuv420",
+                "--width",
+                &self.width.to_string(),
+                "--height",
+                &self.height.to_string(),
+                "--framerate",
+                &self.framerate.to_string(),
+                "--timeout",
+                "0",
+                "--nopreview",
+                "-o",
+                "-",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("failed to spawn rpicam-vid — is libcamera installed?")?;
+
+        tracing::info!(pid = child.id(), "rpicam-vid started (YUV420 mode)");
+        self.child = Some(child);
+        self.frame_count = 0;
+        Ok(())
+    }
+
+    fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {
+        let child = self.child.as_mut().context("rpicam-vid not started")?;
+        let stdout = child
+            .stdout
+            .as_mut()
+            .context("rpicam-vid stdout unavailable")?;
+
+        let mut buf = vec![0u8; self.frame_size];
+        stdout
+            .read_exact(&mut buf)
+            .context("rpicam-vid: read failed (process exited?)")?;
+
+        let w = self.width;
+        let h = self.height;
+        let y_size = (w * h) as usize;
+        let uv_size = y_size / 4;
+
+        let all = Bytes::from(buf);
+        let y = all.slice(..y_size);
+        let u = all.slice(y_size..y_size + uv_size);
+        let v = all.slice(y_size + uv_size..y_size + 2 * uv_size);
+
+        let pts = Duration::from_secs_f64(self.frame_count as f64 / self.framerate as f64);
+        self.frame_count += 1;
+
+        if self.frame_count == 1 {
+            tracing::info!(
+                frame_size = self.frame_size,
+                "first YUV frame from rpicam-vid"
+            );
+        }
+        if self.frame_count % (self.framerate as u64 * 5) == 0 {
+            tracing::debug!(frames = self.frame_count, "libcamera YUV capture running");
+        }
+
+        Ok(Some(VideoFrame::new_i420(y, u, v, w, h, pts)))
+    }
+
+    fn stop(&mut self) -> Result<()> {
+        if let Some(mut child) = self.child.take() {
+            tracing::info!("stopping rpicam-vid");
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        Ok(())
+    }
+}
+
+impl Drop for LibcameraYuvSource {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn au_boundary_empty() {
+        assert_eq!(find_last_au_boundary(&[]), None);
+    }
+
+    #[test]
+    fn au_boundary_single_nal() {
+        // Single IDR NAL — no second boundary, returns None.
+        let data = [0, 0, 0, 1, 0x65, 0xAA, 0xBB];
+        assert_eq!(find_last_au_boundary(&data), None);
+    }
+
+    #[test]
+    fn au_boundary_two_nals() {
+        // SPS + IDR slice = two AUs.
+        let mut data = vec![0, 0, 0, 1, 0x67, 0x42]; // SPS
+        let idr_start = data.len();
+        data.extend_from_slice(&[0, 0, 0, 1, 0x65, 0xAA, 0xBB]); // IDR
+        let result = find_last_au_boundary(&data);
+        assert_eq!(result, Some(idr_start));
+    }
+
+    #[test]
+    fn h264_config_defaults() {
+        let cfg = LibcameraH264Config::new(640, 360, 30);
+        assert_eq!(cfg.bitrate, 500_000);
+        assert_eq!(cfg.keyframe_interval, 60);
+        let vc = cfg.video_config();
+        assert_eq!(vc.coded_width, Some(640));
+        assert_eq!(vc.framerate, Some(30.0));
+    }
+
+    #[test]
+    #[ignore = "requires Raspberry Pi with camera"]
+    fn h264_source_produces_frames() {
+        let config = LibcameraH264Config::new(640, 360, 30);
+        let mut source = LibcameraH264Source::new(config);
+        source.start().unwrap();
+        let mut got_keyframe = false;
+        for _ in 0..90 {
+            if let Some(frame) = source.pop_packet().unwrap() {
+                if frame.is_keyframe {
+                    got_keyframe = true;
+                }
+            }
+        }
+        source.stop().unwrap();
+        assert!(got_keyframe, "should have received at least one keyframe");
+    }
+
+    #[test]
+    #[ignore = "requires Raspberry Pi with camera"]
+    fn yuv_source_produces_frames() {
+        let mut source = LibcameraYuvSource::new(640, 360, 30);
+        source.start().unwrap();
+        let frame = source.pop_frame().unwrap();
+        assert!(frame.is_some(), "should produce at least one frame");
+        source.stop().unwrap();
+    }
+}

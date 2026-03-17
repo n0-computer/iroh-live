@@ -17,7 +17,7 @@ use crate::{
     playout::{PlayoutBuffer, PlayoutClock, RecvResult},
     traits::{
         AudioDecoder, AudioEncoder, AudioSink, AudioSinkHandle, AudioSource, AudioStreamFactory,
-        VideoDecoder, VideoEncoder, VideoSource,
+        PreEncodedVideoSource, VideoDecoder, VideoEncoder, VideoSource,
     },
     transport::{PacketSink, PacketSource},
     util::spawn_thread,
@@ -306,6 +306,93 @@ impl VideoEncoderPipeline {
 }
 
 impl Drop for VideoEncoderPipeline {
+    fn drop(&mut self) {
+        self.shutdown.cancel();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pre-Encoded Video Pipeline – passthrough (no encoder)
+// ---------------------------------------------------------------------------
+
+/// Pipeline for pre-encoded video sources that produce compressed packets
+/// directly, bypassing the encoder stage entirely.
+///
+/// Used when the capture device or an external tool already outputs encoded
+/// video (e.g. `rpicam-vid --codec h264` on Raspberry Pi, hardware RTSP
+/// cameras, or file demuxers).
+#[derive(derive_more::Debug)]
+pub struct PreEncodedVideoPipeline {
+    shutdown: CancellationToken,
+    #[debug(skip)]
+    _thread_handle: thread::JoinHandle<()>,
+}
+
+impl PreEncodedVideoPipeline {
+    /// Starts the passthrough pipeline.
+    ///
+    /// Spawns an OS thread that reads encoded frames from `source` and writes
+    /// them to `sink`. No encoding or transcoding happens.
+    pub fn new(mut source: impl PreEncodedVideoSource, mut sink: impl PacketSink) -> Self {
+        let shutdown = CancellationToken::new();
+        let thread_name = format!("vpre-{}", source.name());
+        let span = info_span!("videopre", source = %source.name());
+        let thread = spawn_thread(thread_name, {
+            let shutdown = shutdown.clone();
+            move || {
+                let _guard = span.enter();
+                if let Err(err) = source.start() {
+                    error!("pre-encoded source failed to start: {err:#}");
+                    return;
+                }
+                info!(config = ?source.config(), "pre-encoded pipeline started");
+                let mut first = true;
+                let mut sink_closed = false;
+                loop {
+                    if shutdown.is_cancelled() {
+                        break;
+                    }
+                    match source.pop_packet() {
+                        Ok(Some(pkt)) => {
+                            if first && !pkt.is_keyframe {
+                                debug!("ignoring frame: waiting for first keyframe");
+                                continue;
+                            }
+                            first = false;
+                            if let Err(err) = sink.write(pkt) {
+                                debug!("sink closed: {err:#}");
+                                sink_closed = true;
+                                break;
+                            }
+                        }
+                        Ok(None) => {
+                            // No frame ready — brief yield to avoid busy-spin.
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                        Err(err) => {
+                            error!("pre-encoded source error: {err:#}");
+                            break;
+                        }
+                    }
+                }
+                if !sink_closed {
+                    sink.finish().ok();
+                }
+                if let Err(err) = source.stop() {
+                    warn!("pre-encoded source failed to stop: {err:#}");
+                }
+                info!("pre-encoded pipeline stopped");
+            }
+        });
+
+        Self {
+            shutdown,
+            _thread_handle: thread,
+        }
+    }
+}
+
+impl Drop for PreEncodedVideoPipeline {
     fn drop(&mut self) {
         self.shutdown.cancel();
     }
