@@ -95,8 +95,8 @@ impl DrawTarget for DisplayBuffer {
             let bit_mask = 0x80 >> (x % 8);
 
             match color {
-                BinaryColor::Off => self.buf[byte_idx] |= bit_mask,  // white = 1
-                BinaryColor::On => self.buf[byte_idx] &= !bit_mask,  // black = 0
+                BinaryColor::Off => self.buf[byte_idx] |= bit_mask, // white = 1
+                BinaryColor::On => self.buf[byte_idx] &= !bit_mask, // black = 0
             }
         }
         Ok(())
@@ -174,7 +174,11 @@ pub(crate) fn display_qr(data: &str) -> anyhow::Result<()> {
 
     let colors = code.to_colors();
     let dark_count = colors.iter().filter(|&&c| c == qrcode::Color::Dark).count();
-    tracing::debug!(total_modules = colors.len(), dark_modules = dark_count, "drawing QR modules");
+    tracing::debug!(
+        total_modules = colors.len(),
+        dark_modules = dark_count,
+        "drawing QR modules"
+    );
 
     for (idx, &dark) in colors.iter().enumerate() {
         let mx = idx % modules;
@@ -195,12 +199,15 @@ pub(crate) fn display_qr(data: &str) -> anyhow::Result<()> {
     // Small label below the QR code.
     let label_y = (y_offset + qr_px + 8) as i32;
     let style = MonoTextStyle::new(&FONT_4X6, BinaryColor::On);
-    Text::new("iroh-live", Point::new(x_offset as i32, label_y), style)
-        .draw(&mut display)?;
+    Text::new("iroh-live", Point::new(x_offset as i32, label_y), style).draw(&mut display)?;
 
     let buf = display.buffer();
     let non_ff = buf.iter().filter(|&&b| b != 0xFF).count();
-    tracing::debug!(buffer_len = buf.len(), non_white_bytes = non_ff, "display buffer ready");
+    tracing::debug!(
+        buffer_len = buf.len(),
+        non_white_bytes = non_ff,
+        "display buffer ready"
+    );
 
     tracing::info!("sending frame to EPD (V4 full refresh, ~2 s)");
     epd.display(&mut spi, display.buffer())
@@ -222,12 +229,9 @@ pub(crate) fn display_test_pattern() -> anyhow::Result<()> {
     let mut display = DisplayBuffer::new_white();
 
     // Fill with black first.
-    Rectangle::new(
-        Point::zero(),
-        Size::new(epd_v4::WIDTH, epd_v4::HEIGHT),
-    )
-    .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-    .draw(&mut display)?;
+    Rectangle::new(Point::zero(), Size::new(epd_v4::WIDTH, epd_v4::HEIGHT))
+        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+        .draw(&mut display)?;
 
     // Draw white squares for checkerboard.
     let cell = 20u32;
@@ -249,7 +253,12 @@ pub(crate) fn display_test_pattern() -> anyhow::Result<()> {
     let buf = display.buffer();
     let zeros = buf.iter().filter(|&&b| b == 0x00).count();
     let ffs = buf.iter().filter(|&&b| b == 0xFF).count();
-    tracing::debug!(buffer_len = buf.len(), zero_bytes = zeros, ff_bytes = ffs, "test pattern buffer");
+    tracing::debug!(
+        buffer_len = buf.len(),
+        zero_bytes = zeros,
+        ff_bytes = ffs,
+        "test pattern buffer"
+    );
 
     tracing::info!("sending test pattern to EPD (V4 full refresh, ~2 s)");
     epd.display(&mut spi, display.buffer())

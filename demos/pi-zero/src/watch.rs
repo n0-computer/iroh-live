@@ -55,14 +55,16 @@ impl GlesRenderer {
     /// The GL context must be current on the calling thread.
     unsafe fn new(gl: glow::Context) -> Result<Self> {
         // SAFETY: caller guarantees the GL context is current.
-        let vs = unsafe { gl.create_shader(glow::VERTEX_SHADER) }.map_err(|e| anyhow::anyhow!(e))?;
+        let vs =
+            unsafe { gl.create_shader(glow::VERTEX_SHADER) }.map_err(|e| anyhow::anyhow!(e))?;
         unsafe { gl.shader_source(vs, VERT_SRC) };
         unsafe { gl.compile_shader(vs) };
         if !unsafe { gl.get_shader_compile_status(vs) } {
             bail!("vertex shader: {}", unsafe { gl.get_shader_info_log(vs) });
         }
 
-        let fs = unsafe { gl.create_shader(glow::FRAGMENT_SHADER) }.map_err(|e| anyhow::anyhow!(e))?;
+        let fs =
+            unsafe { gl.create_shader(glow::FRAGMENT_SHADER) }.map_err(|e| anyhow::anyhow!(e))?;
         unsafe { gl.shader_source(fs, FRAG_SRC) };
         unsafe { gl.compile_shader(fs) };
         if !unsafe { gl.get_shader_compile_status(fs) } {
@@ -96,10 +98,34 @@ impl GlesRenderer {
 
         let texture = unsafe { gl.create_texture() }.map_err(|e| anyhow::anyhow!(e))?;
         unsafe { gl.bind_texture(glow::TEXTURE_2D, Some(texture)) };
-        unsafe { gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32) };
-        unsafe { gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32) };
-        unsafe { gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32) };
-        unsafe { gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32) };
+        unsafe {
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MIN_FILTER,
+                glow::LINEAR as i32,
+            )
+        };
+        unsafe {
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MAG_FILTER,
+                glow::LINEAR as i32,
+            )
+        };
+        unsafe {
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_WRAP_S,
+                glow::CLAMP_TO_EDGE as i32,
+            )
+        };
+        unsafe {
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_WRAP_T,
+                glow::CLAMP_TO_EDGE as i32,
+            )
+        };
 
         Ok(Self {
             gl,
@@ -118,9 +144,14 @@ impl GlesRenderer {
         if w != self.tex_width || h != self.tex_height {
             unsafe {
                 self.gl.tex_image_2d(
-                    glow::TEXTURE_2D, 0, glow::RGBA as i32,
-                    w as i32, h as i32, 0,
-                    glow::RGBA, glow::UNSIGNED_BYTE,
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGBA as i32,
+                    w as i32,
+                    h as i32,
+                    0,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
                     glow::PixelUnpackData::Slice(Some(rgba)),
                 );
             }
@@ -129,9 +160,14 @@ impl GlesRenderer {
         } else {
             unsafe {
                 self.gl.tex_sub_image_2d(
-                    glow::TEXTURE_2D, 0, 0, 0,
-                    w as i32, h as i32,
-                    glow::RGBA, glow::UNSIGNED_BYTE,
+                    glow::TEXTURE_2D,
+                    0,
+                    0,
+                    0,
+                    w as i32,
+                    h as i32,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
                     glow::PixelUnpackData::Slice(Some(rgba)),
                 );
             }
@@ -147,7 +183,8 @@ impl GlesRenderer {
 
             self.gl.use_program(Some(self.program));
             self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
-            self.gl.vertex_attrib_pointer_f32(self.a_pos_loc, 2, glow::FLOAT, false, 0, 0);
+            self.gl
+                .vertex_attrib_pointer_f32(self.a_pos_loc, 2, glow::FLOAT, false, 0, 0);
             self.gl.enable_vertex_attrib_array(self.a_pos_loc);
 
             self.gl.active_texture(glow::TEXTURE0);
@@ -253,7 +290,12 @@ impl VtGuard {
             .read(true)
             .write(true)
             .open("/dev/tty0")
-            .or_else(|_| std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty"))
+            .or_else(|_| {
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open("/dev/tty")
+            })
             .context("open /dev/tty0 (run as root or from a linux console)")?;
 
         // KD_GRAPHICS = 0x01, KDSETMODE = 0x4B3A
@@ -297,7 +339,11 @@ impl DrmDisplay {
         let card = {
             let mut found = None;
             for path in ["/dev/dri/card1", "/dev/dri/card0"] {
-                if let Ok(f) = std::fs::OpenOptions::new().read(true).write(true).open(path) {
+                if let Ok(f) = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(path)
+                {
                     found = Some(Card(f));
                     tracing::info!(path, "opened DRM device");
                     break;
@@ -314,7 +360,8 @@ impl DrmDisplay {
                 None
             }
         };
-        card.acquire_master_lock().context("acquire DRM master (try running as root)")?;
+        card.acquire_master_lock()
+            .context("acquire DRM master (try running as root)")?;
 
         // Find a connected output.
         let res = card.resource_handles().context("resource_handles")?;
@@ -328,7 +375,11 @@ impl DrmDisplay {
                 let modes = conn.modes().to_vec();
                 let mode = modes.first().context("connector has no modes")?.clone();
                 let enc = conn.current_encoder().context("no encoder")?;
-                let crtc = card.get_encoder(enc).context("get_encoder")?.crtc().context("no CRTC")?;
+                let crtc = card
+                    .get_encoder(enc)
+                    .context("get_encoder")?
+                    .crtc()
+                    .context("no CRTC")?;
                 tracing::info!(connector = ?ch, mode = ?mode.size(), "found output");
                 result = Some((ch, crtc, mode));
                 break;
@@ -343,14 +394,16 @@ impl DrmDisplay {
         // Force LINEAR modifier for scanout compatibility on vc4.
         let gbm_surface = gbm_device
             .create_surface_with_modifiers::<()>(
-                width, height,
+                width,
+                height,
                 drm_fourcc::DrmFourcc::Xrgb8888,
                 [drm_fourcc::DrmModifier::Linear].iter().copied(),
             )
             .or_else(|_| {
                 // Fallback: no explicit modifier.
                 gbm_device.create_surface::<()>(
-                    width, height,
+                    width,
+                    height,
                     drm_fourcc::DrmFourcc::Xrgb8888,
                     gbm::BufferObjectFlags::SCANOUT | gbm::BufferObjectFlags::RENDERING,
                 )
@@ -362,55 +415,82 @@ impl DrmDisplay {
             khronos_egl::DynamicInstance::<khronos_egl::EGL1_4>::load_required()
                 .context("load EGL")?
         };
-        let egl_display = unsafe {
-            egl.get_display(gbm_device.as_raw() as khronos_egl::NativeDisplayType)
-        }
-        .context("eglGetDisplay")?;
+        let egl_display =
+            unsafe { egl.get_display(gbm_device.as_raw() as khronos_egl::NativeDisplayType) }
+                .context("eglGetDisplay")?;
         egl.initialize(egl_display).context("eglInitialize")?;
 
         let config = egl
-            .choose_first_config(egl_display, &[
-                khronos_egl::RED_SIZE, 8, khronos_egl::GREEN_SIZE, 8,
-                khronos_egl::BLUE_SIZE, 8, khronos_egl::ALPHA_SIZE, 0,
-                khronos_egl::SURFACE_TYPE, khronos_egl::WINDOW_BIT,
-                khronos_egl::RENDERABLE_TYPE, khronos_egl::OPENGL_ES2_BIT,
-                khronos_egl::NONE,
-            ])
+            .choose_first_config(
+                egl_display,
+                &[
+                    khronos_egl::RED_SIZE,
+                    8,
+                    khronos_egl::GREEN_SIZE,
+                    8,
+                    khronos_egl::BLUE_SIZE,
+                    8,
+                    khronos_egl::ALPHA_SIZE,
+                    0,
+                    khronos_egl::SURFACE_TYPE,
+                    khronos_egl::WINDOW_BIT,
+                    khronos_egl::RENDERABLE_TYPE,
+                    khronos_egl::OPENGL_ES2_BIT,
+                    khronos_egl::NONE,
+                ],
+            )
             .context("eglChooseConfig")?
             .context("no matching EGL config")?;
 
-        egl.bind_api(khronos_egl::OPENGL_ES_API).context("eglBindAPI")?;
+        egl.bind_api(khronos_egl::OPENGL_ES_API)
+            .context("eglBindAPI")?;
 
         let context = egl
-            .create_context(egl_display, config, None, &[
-                khronos_egl::CONTEXT_CLIENT_VERSION, 2, khronos_egl::NONE,
-            ])
+            .create_context(
+                egl_display,
+                config,
+                None,
+                &[khronos_egl::CONTEXT_CLIENT_VERSION, 2, khronos_egl::NONE],
+            )
             .context("eglCreateContext")?;
 
         let egl_surface = unsafe {
             egl.create_window_surface(
-                egl_display, config,
-                gbm_surface.as_raw() as khronos_egl::NativeWindowType, None,
+                egl_display,
+                config,
+                gbm_surface.as_raw() as khronos_egl::NativeWindowType,
+                None,
             )
         }
         .context("eglCreateWindowSurface")?;
 
-        egl.make_current(egl_display, Some(egl_surface), Some(egl_surface), Some(context))
-            .context("eglMakeCurrent")?;
+        egl.make_current(
+            egl_display,
+            Some(egl_surface),
+            Some(egl_surface),
+            Some(context),
+        )
+        .context("eglMakeCurrent")?;
 
         // GLES2
         let gl = unsafe {
             glow::Context::from_loader_function(|s| {
-                egl.get_proc_address(s).map(|p| p as *const _).unwrap_or(std::ptr::null())
+                egl.get_proc_address(s)
+                    .map(|p| p as *const _)
+                    .unwrap_or(std::ptr::null())
             })
         };
-        tracing::info!(renderer = unsafe { gl.get_parameter_string(glow::RENDERER) }, "GLES2 ready");
+        tracing::info!(
+            renderer = unsafe { gl.get_parameter_string(glow::RENDERER) },
+            "GLES2 ready"
+        );
 
         let renderer = unsafe { GlesRenderer::new(gl)? };
 
         // Initial black frame → set CRTC mode.
         unsafe { renderer.draw(width as i32, height as i32) };
-        egl.swap_buffers(egl_display, egl_surface).context("initial swap")?;
+        egl.swap_buffers(egl_display, egl_surface)
+            .context("initial swap")?;
 
         let front_bo = unsafe { gbm_surface.lock_front_buffer() }.context("lock")?;
         tracing::info!(
@@ -418,49 +498,69 @@ impl DrmDisplay {
             stride = front_bo.stride(), modifier = ?front_bo.modifier(),
             format = ?front_bo.format(), "front BO"
         );
-        let front_fb = gbm_device.add_planar_framebuffer(&front_bo, drm::control::FbCmd2Flags::MODIFIERS).context("addfb")?;
+        let front_fb = gbm_device
+            .add_planar_framebuffer(&front_bo, drm::control::FbCmd2Flags::MODIFIERS)
+            .context("addfb")?;
         // Get the CRTC's currently active mode (set by the kernel console).
         // Using this exact mode avoids EINVAL from vc4's atomic check — the
         // mode was already validated when the console set it up.
         let crtc_info = gbm_device.get_crtc(crtc).context("get_crtc")?;
         let active_mode = crtc_info.mode().context("CRTC has no active mode")?;
         tracing::info!(?front_fb, ?crtc, ?connector, mode = ?active_mode.size(), "set_crtc");
-        gbm_device.set_crtc(
-            crtc,
-            Some(front_fb),
-            (0, 0),
-            &[connector],
-            Some(active_mode),
-        )
-        .context("set_crtc")?;
+        gbm_device
+            .set_crtc(
+                crtc,
+                Some(front_fb),
+                (0, 0),
+                &[connector],
+                Some(active_mode),
+            )
+            .context("set_crtc")?;
 
         println!("rendering to HDMI ({width}x{height})");
 
         Ok(Self {
-            renderer, egl, egl_display, egl_surface,
-            gbm_device, gbm_surface, connector, crtc,
+            renderer,
+            egl,
+            egl_display,
+            egl_surface,
+            gbm_device,
+            gbm_surface,
+            connector,
+            crtc,
             mode: active_mode,
-            front_bo, front_fb, width, height, _vt: vt,
+            front_bo,
+            front_fb,
+            width,
+            height,
+            _vt: vt,
         })
     }
 
     /// Presents the current GLES2 framebuffer to the display.
     fn flip(&mut self) -> Result<()> {
         unsafe { self.renderer.draw(self.width as i32, self.height as i32) };
-        self.egl.swap_buffers(self.egl_display, self.egl_surface).context("swap")?;
+        self.egl
+            .swap_buffers(self.egl_display, self.egl_surface)
+            .context("swap")?;
 
         let new_bo = unsafe { self.gbm_surface.lock_front_buffer() }.context("lock")?;
-        let new_fb = self.gbm_device.add_planar_framebuffer(
-            &new_bo,
-            drm::control::FbCmd2Flags::MODIFIERS,
-        )
-        .context("addfb")?;
+        let new_fb = self
+            .gbm_device
+            .add_planar_framebuffer(&new_bo, drm::control::FbCmd2Flags::MODIFIERS)
+            .context("addfb")?;
 
         // set_crtc is synchronous (waits for vblank internally).
         // page_flip is async and returns EBUSY if a flip is pending,
         // which requires event-loop integration to handle correctly.
         self.gbm_device
-            .set_crtc(self.crtc, Some(new_fb), (0, 0), &[self.connector], Some(self.mode))
+            .set_crtc(
+                self.crtc,
+                Some(new_fb),
+                (0, 0),
+                &[self.connector],
+                Some(self.mode),
+            )
             .context("flip set_crtc")?;
 
         self.gbm_device.destroy_framebuffer(self.front_fb).ok();
@@ -510,7 +610,8 @@ pub(crate) async fn run_drm(mut video_track: VideoTrack, _session: MoqSession) -
                 frame_count += 1;
                 let rgba = latest.rgba_image();
                 unsafe {
-                    disp.renderer.upload(rgba.as_raw(), rgba.width(), rgba.height());
+                    disp.renderer
+                        .upload(rgba.as_raw(), rgba.width(), rgba.height());
                 }
                 disp.flip()?;
 
@@ -555,7 +656,12 @@ pub(crate) fn run_fb_demo(mut video_track: VideoTrack) -> Result<()> {
     println!("fb-demo running, ctrl-c to quit");
 
     loop {
-        try_upload_frame(&mut disp.renderer, &mut video_track, &mut last_ts, &mut frame_count);
+        try_upload_frame(
+            &mut disp.renderer,
+            &mut video_track,
+            &mut last_ts,
+            &mut frame_count,
+        );
         disp.flip()?;
 
         let elapsed = fps_last.elapsed();
@@ -617,8 +723,7 @@ pub(crate) fn run_windowed(
                 attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(None)));
             }
 
-            let config_template = ConfigTemplateBuilder::new()
-                .with_api(glutin::config::Api::GLES2);
+            let config_template = ConfigTemplateBuilder::new().with_api(glutin::config::Api::GLES2);
 
             let display_builder = DisplayBuilder::new().with_window_attributes(Some(attrs));
 
@@ -647,17 +752,14 @@ pub(crate) fn run_windowed(
                 NonZeroU32::new(size.width.max(1)).unwrap(),
                 NonZeroU32::new(size.height.max(1)).unwrap(),
             );
-            let surface_attrs =
-                SurfaceAttributesBuilder::<WindowSurface>::new().build(raw, w, h);
+            let surface_attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(raw, w, h);
             let surface = unsafe {
                 gl_display
                     .create_window_surface(&gl_config, &surface_attrs)
                     .expect("create window surface")
             };
 
-            let context = not_current
-                .make_current(&surface)
-                .expect("make current");
+            let context = not_current.make_current(&surface).expect("make current");
 
             let gl = unsafe {
                 glow::Context::from_loader_function_cstr(|s| gl_display.get_proc_address(s))
@@ -694,9 +796,7 @@ pub(crate) fn run_windowed(
                 } => event_loop.exit(),
 
                 WindowEvent::Resized(size) => {
-                    if let (Some(surface), Some(context)) =
-                        (&self.surface, &self.context)
-                    {
+                    if let (Some(surface), Some(context)) = (&self.surface, &self.context) {
                         surface.resize(
                             context,
                             NonZeroU32::new(size.width.max(1)).unwrap(),
@@ -733,9 +833,8 @@ pub(crate) fn run_windowed(
                         &mut self.fps_last,
                     );
 
-                    event_loop.set_control_flow(ControlFlow::WaitUntil(
-                        Instant::now() + POLL_INTERVAL,
-                    ));
+                    event_loop
+                        .set_control_flow(ControlFlow::WaitUntil(Instant::now() + POLL_INTERVAL));
                     window.request_redraw();
                 }
 

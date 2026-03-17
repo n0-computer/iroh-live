@@ -2055,7 +2055,7 @@ dependencies = [
 [[package]]
 name = "conducer"
 version = "0.3.1"
-source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#91d137637b2c558f29bd8ed2861ee2e8c9d79e08"
+source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#93bf932be9ff65c246ebdb35fb506f4860ebbaab"
 
 [[package]]
 name = "console"
@@ -4875,7 +4875,7 @@ dependencies = [
 [[package]]
 name = "hang"
 version = "0.15.2"
-source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#91d137637b2c558f29bd8ed2861ee2e8c9d79e08"
+source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#93bf932be9ff65c246ebdb35fb506f4860ebbaab"
 dependencies = [
  "buf-list",
  "bytes",
@@ -5288,7 +5288,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.58.0",
 ]
 
 [[package]]
@@ -6960,8 +6960,8 @@ dependencies = [
 
 [[package]]
 name = "moq-lite"
-version = "0.15.2"
-source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#91d137637b2c558f29bd8ed2861ee2e8c9d79e08"
+version = "0.15.3"
+source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#93bf932be9ff65c246ebdb35fb506f4860ebbaab"
 dependencies = [
  "bytes",
  "conducer",
@@ -7058,7 +7058,7 @@ dependencies = [
 [[package]]
 name = "moq-msf"
 version = "0.1.1"
-source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#91d137637b2c558f29bd8ed2861ee2e8c9d79e08"
+source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#93bf932be9ff65c246ebdb35fb506f4860ebbaab"
 dependencies = [
  "serde",
  "serde_json",
@@ -7068,7 +7068,7 @@ dependencies = [
 [[package]]
 name = "moq-mux"
 version = "0.3.2"
-source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#91d137637b2c558f29bd8ed2861ee2e8c9d79e08"
+source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#93bf932be9ff65c246ebdb35fb506f4860ebbaab"
 dependencies = [
  "anyhow",
  "base64",
@@ -7092,8 +7092,8 @@ dependencies = [
 
 [[package]]
 name = "moq-native"
-version = "0.13.4"
-source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#91d137637b2c558f29bd8ed2861ee2e8c9d79e08"
+version = "0.13.5"
+source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#93bf932be9ff65c246ebdb35fb506f4860ebbaab"
 dependencies = [
  "anyhow",
  "clap",
@@ -7125,8 +7125,8 @@ dependencies = [
 
 [[package]]
 name = "moq-relay"
-version = "0.10.8"
-source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#91d137637b2c558f29bd8ed2861ee2e8c9d79e08"
+version = "0.10.9"
+source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#93bf932be9ff65c246ebdb35fb506f4860ebbaab"
 dependencies = [
  "anyhow",
  "axum",
@@ -7153,7 +7153,7 @@ dependencies = [
 [[package]]
 name = "moq-token"
 version = "0.5.10"
-source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#91d137637b2c558f29bd8ed2861ee2e8c9d79e08"
+source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#93bf932be9ff65c246ebdb35fb506f4860ebbaab"
 dependencies = [
  "anyhow",
  "aws-lc-rs",

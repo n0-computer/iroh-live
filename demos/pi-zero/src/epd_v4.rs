@@ -35,12 +35,7 @@ where
     BUSY: InputPin,
 {
     /// Creates a new driver and performs the full-update initialisation sequence.
-    pub(crate) fn new(
-        spi: &mut SPI,
-        dc: DC,
-        rst: RST,
-        busy: BUSY,
-    ) -> Result<Self, SPI::Error> {
+    pub(crate) fn new(spi: &mut SPI, dc: DC, rst: RST, busy: BUSY) -> Result<Self, SPI::Error> {
         let mut epd = Self {
             dc,
             rst,
@@ -68,12 +63,7 @@ where
         Ok(())
     }
 
-    fn send_command_data(
-        &mut self,
-        spi: &mut SPI,
-        cmd: u8,
-        data: &[u8],
-    ) -> Result<(), SPI::Error> {
+    fn send_command_data(&mut self, spi: &mut SPI, cmd: u8, data: &[u8]) -> Result<(), SPI::Error> {
         self.send_command(spi, cmd)?;
         self.send_data(spi, data)?;
         Ok(())
@@ -131,11 +121,7 @@ where
         x_end: u32,
         y_end: u32,
     ) -> Result<(), SPI::Error> {
-        self.send_command_data(
-            spi,
-            0x44,
-            &[(x_start >> 3) as u8, (x_end >> 3) as u8],
-        )?;
+        self.send_command_data(spi, 0x44, &[(x_start >> 3) as u8, (x_end >> 3) as u8])?;
         self.send_command_data(
             spi,
             0x45,
