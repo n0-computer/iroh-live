@@ -382,7 +382,31 @@ impl AndroidRenderer {
         let uv_h = height.div_ceil(2);
         let uv_w = width / 2;
 
-        // Upload Y plane (LUMINANCE, full res).
+        // GLES2 has no GL_UNPACK_ROW_LENGTH, so when stride > width we must
+        // strip the row padding before upload to avoid a green stripe.
+        let y_stripped;
+        let y_upload: &[u8] = if y_stride == width {
+            y_data
+        } else {
+            y_stripped = strip_stride(y_data, width as usize, y_stride as usize, height as usize);
+            &y_stripped
+        };
+
+        let uv_row_bytes = uv_w * 2; // LUMINANCE_ALPHA = 2 bytes/texel
+        let uv_stripped;
+        let uv_upload: &[u8] = if uv_stride == uv_row_bytes {
+            uv_data
+        } else {
+            uv_stripped = strip_stride(
+                uv_data,
+                uv_row_bytes as usize,
+                uv_stride as usize,
+                uv_h as usize,
+            );
+            &uv_stripped
+        };
+
+        // Upload Y plane (LUMINANCE, full res, no padding).
         unsafe {
             self.gl.active_texture(glow::TEXTURE0);
             self.gl
@@ -391,16 +415,16 @@ impl AndroidRenderer {
                 glow::TEXTURE_2D,
                 0,
                 glow::LUMINANCE as i32,
-                y_stride as i32, // use stride as width — shader UV handles the crop
+                width as i32,
                 height as i32,
                 0,
                 glow::LUMINANCE,
                 glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(y_data)),
+                glow::PixelUnpackData::Slice(Some(y_upload)),
             );
         }
 
-        // Upload UV plane (LUMINANCE_ALPHA, half res).
+        // Upload UV plane (LUMINANCE_ALPHA, half res, no padding).
         unsafe {
             self.gl.active_texture(glow::TEXTURE1);
             self.gl
@@ -409,12 +433,12 @@ impl AndroidRenderer {
                 glow::TEXTURE_2D,
                 0,
                 glow::LUMINANCE_ALPHA as i32,
-                uv_stride as i32 / 2, // 2 bytes per texel
+                uv_w as i32,
                 uv_h as i32,
                 0,
                 glow::LUMINANCE_ALPHA,
                 glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(uv_data)),
+                glow::PixelUnpackData::Slice(Some(uv_upload)),
             );
         }
 
@@ -514,6 +538,26 @@ fn letterbox_viewport(sw: i32, sh: i32, vw: u32, vh: u32) -> (i32, i32, i32, i32
         let vp_w = (sh as f32 * video_aspect) as i32;
         ((sw - vp_w) / 2, 0, vp_w, vp_h)
     }
+}
+
+/// Strips row padding from strided pixel data.
+///
+/// GLES2 lacks `GL_UNPACK_ROW_LENGTH`, so we copy rows into a contiguous
+/// buffer when stride > row width.
+fn strip_stride(data: &[u8], row_bytes: usize, stride: usize, rows: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(row_bytes * rows);
+    for y in 0..rows {
+        let start = y * stride;
+        let end = (start + row_bytes).min(data.len());
+        if start < data.len() {
+            out.extend_from_slice(&data[start..end]);
+            // Pad short last row with zeros.
+            if end - start < row_bytes {
+                out.resize(out.len() + row_bytes - (end - start), 0);
+            }
+        }
+    }
+    out
 }
 
 fn compile_shader(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::Shader> {

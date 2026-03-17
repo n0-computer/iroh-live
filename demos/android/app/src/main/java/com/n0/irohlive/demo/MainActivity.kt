@@ -68,9 +68,12 @@ class MainActivity : AppCompatActivity() {
     private var sessionHandle: Long = 0
     private var renderJob: Job? = null
     private var cameraProvider: ProcessCameraProvider? = null
+    @Volatile
     private var surfaceReady = false
     /** Camera sensor rotation in degrees (0/90/180/270). */
     private var sensorRotation = 0
+    /** Whether to apply sensor rotation when rendering (local camera modes only). */
+    private var applyRotation = false
 
     // (EGL/GL state is now fully managed in Rust.)
 
@@ -151,10 +154,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        // Cancel the render loop before freeing the session handle, so the
-        // loop cannot race with disconnect on the native side.
-        renderJob?.cancel()
+        // Cancel and wait for the render loop before freeing the session
+        // handle, so the loop cannot race with disconnect on the native side.
+        val job = renderJob
         renderJob = null
+        if (job != null) {
+            kotlinx.coroutines.runBlocking { job.cancelAndJoin() }
+        }
         if (sessionHandle != 0L) {
             IrohBridge.disconnect(sessionHandle)
             sessionHandle = 0
@@ -196,6 +202,7 @@ class MainActivity : AppCompatActivity() {
             sessionHandle = handle
             statusText.text = "Connected"
             disconnectButton.isEnabled = true
+            applyRotation = false
 
             startRenderLoop()
         }
@@ -229,6 +236,7 @@ class MainActivity : AppCompatActivity() {
             sessionHandle = handle
             statusText.text = "In call"
             disconnectButton.isEnabled = true
+            applyRotation = false // remote video has its own orientation
 
             // Start pushing camera frames to the Rust encoder.
             startCameraFramePush()
@@ -254,6 +262,7 @@ class MainActivity : AppCompatActivity() {
             sessionHandle = handle
             statusText.text = "Direct"
             disconnectButton.isEnabled = true
+            applyRotation = true
             awaitCameraAndPush()
             startRenderLoop()
         }
@@ -276,6 +285,7 @@ class MainActivity : AppCompatActivity() {
             sessionHandle = handle
             statusText.text = "H264"
             disconnectButton.isEnabled = true
+            applyRotation = true
             awaitCameraAndPush()
             startRenderLoop()
         }
@@ -319,6 +329,7 @@ class MainActivity : AppCompatActivity() {
             val ticket = IrohBridge.getTicket(handle)
             statusText.text = "Publishing: $name"
             disconnectButton.isEnabled = true
+            applyRotation = true
             copyTicketButton.isEnabled = true
             awaitCameraAndPush()
         }
@@ -533,8 +544,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     // Current surface dimensions (updated from surfaceChanged).
-    private var surfaceWidth = 0
-    private var surfaceHeight = 0
+    @Volatile private var surfaceWidth = 0
+    @Volatile private var surfaceHeight = 0
 
     /**
      * Render loop: Rust owns the full EGL lifecycle and GL rendering.
@@ -575,8 +586,9 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     // Rust renders + swaps buffers internally.
+                    val rotation = if (applyRotation) sensorRotation else 0
                     if (!IrohBridge.renderNextFrame(
-                            h, surfaceWidth, surfaceHeight, sensorRotation
+                            h, surfaceWidth, surfaceHeight, rotation
                         )
                     ) {
                         delay(2L)
