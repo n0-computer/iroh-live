@@ -148,8 +148,14 @@ class CameraHelper(private val context: Context) {
     /**
      * Converts a YUV_420_888 Image to an RGBA byte array.
      *
-     * This is a simple conversion for the demo. A production app would use
-     * RenderScript or a GPU shader for better performance.
+     * **Warning: This is a pixel-by-pixel CPU loop and will cause ANR at
+     * production resolutions (720p+).** It exists only for this demo at
+     * 640x480. The main `MainActivity` path uses direct NV12 plane push
+     * instead, which avoids this conversion entirely.
+     *
+     * TODO(perf): Replace with libyuv JNI bindings, Android `ImageFormat`
+     * native conversion, or a GPU compute shader if this code path is ever
+     * used at higher resolutions.
      */
     private fun yuvToRgba(image: android.media.Image): ByteArray {
         val w = image.width

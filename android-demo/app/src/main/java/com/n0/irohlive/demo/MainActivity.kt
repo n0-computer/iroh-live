@@ -165,11 +165,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
+        // Cancel the render loop before freeing the session handle, so the
+        // loop cannot race with disconnect on the native side.
+        renderJob?.cancel()
+        renderJob = null
         if (sessionHandle != 0L) {
             IrohBridge.disconnect(sessionHandle)
             sessionHandle = 0
         }
+        super.onDestroy()
     }
 
     private fun onConnect() {
@@ -378,8 +382,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun onDisconnect() {
         val handle = sessionHandle
-        sessionHandle = 0
-
         val job = renderJob
         renderJob = null
 
@@ -392,9 +394,16 @@ class MainActivity : AppCompatActivity() {
 
         if (handle != 0L) {
             lifecycleScope.launch(Dispatchers.IO) {
+                // Cancel the render loop BEFORE clearing the handle. The render
+                // loop borrows the native session via borrow_handle(); if we set
+                // sessionHandle to 0 and call disconnect (take_handle) while the
+                // render loop still holds a reference, we get a use-after-free.
                 job?.cancelAndJoin()
+                sessionHandle = 0
                 IrohBridge.disconnect(handle)
             }
+        } else {
+            sessionHandle = 0
         }
     }
 
