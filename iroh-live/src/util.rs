@@ -4,11 +4,33 @@ use std::{
 };
 
 use byte_unit::{Bit, UnitType};
-use iroh::endpoint::{Connection, ConnectionStats, PathInfoList};
+use iroh::{
+    SecretKey,
+    endpoint::{Connection, ConnectionStats, PathInfoList},
+};
 use moq_media::net::NetworkSignals;
 use n0_watcher::Watcher;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+
+/// Loads the iroh secret key from the `IROH_SECRET` environment variable,
+/// or generates a new one and prints reuse instructions.
+///
+/// This pattern is shared across examples and applications that need a
+/// stable endpoint identity across restarts.
+pub fn secret_key_from_env() -> n0_error::Result<SecretKey> {
+    Ok(match std::env::var("IROH_SECRET") {
+        Ok(key) => key.parse()?,
+        Err(_) => {
+            let key = SecretKey::generate(&mut rand::rng());
+            tracing::info!(
+                "Generated new secret key. Reuse with IROH_SECRET={}",
+                data_encoding::HEXLOWER.encode(&key.to_bytes())
+            );
+            key
+        }
+    })
+}
 
 /// Spawn a named OS thread and panic if spawning fails.
 pub fn spawn_thread<F, T>(name: impl ToString, f: F) -> thread::JoinHandle<T>
