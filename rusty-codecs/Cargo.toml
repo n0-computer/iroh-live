@@ -34,6 +34,7 @@ rav1e = { version = "0.8", optional = true }
 rav1d = { git = "https://github.com/memorysafety/rav1d", default-features = false, features = ["bitdepth_8", "bitdepth_16", "asm"], optional = true }
 ffmpeg-next = { version = "8", optional = true, default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
 ffmpeg-sys-next = { version = "8", optional = true }
+glow = { version = "0.16", optional = true }
 wgpu = { version = "27", optional = true, default-features = false, features = ["wgsl", "vulkan"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -70,4 +71,5 @@ wgpu = ["dep:wgpu"]
 media-foundation = []
 android = ["dep:ndk"]
 ffmpeg = ["dep:ffmpeg-next", "dep:ffmpeg-sys-next"]
+gles = ["dep:glow"]
 dmabuf-import = ["wgpu", "dep:ash", "dep:gbm", "dep:drm-fourcc"]
