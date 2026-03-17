@@ -8,7 +8,6 @@ use iroh::{Endpoint, EndpointId};
 use iroh_live::{
     Live,
     media::{
-        audio_backend::AudioBackend,
         codec::{DefaultDecoders, VideoCodec},
         format::{DecodeConfig, DecoderBackend, PlaybackConfig, VideoPreset},
         publish::LocalBroadcast,
@@ -145,7 +144,7 @@ async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     live.publish(name, &broadcast).await?;
 
     // --- ticket (always printed, regardless of e-paper) ---
-    let ticket = LiveTicket::new(live.endpoint().id(), name);
+    let ticket = LiveTicket::new(live.endpoint().addr(), name);
     let ticket_str = ticket.to_string();
     println!("publishing at {ticket_str}");
 
@@ -249,7 +248,9 @@ async fn cmd_watch(opts: WatchOpts) -> n0_error::Result {
         }
     };
 
-    let audio_ctx = AudioBackend::default();
+    // Pi Zero has no PipeWire/PulseAudio — use a null audio backend
+    // to avoid panicking on missing audio devices.
+    let audio_ctx = moq_media::test_util::NullAudioBackend;
 
     println!("connecting to {ticket} ...");
     let endpoint = Endpoint::bind(iroh::endpoint::presets::N0).await?;
@@ -274,7 +275,7 @@ async fn cmd_watch(opts: WatchOpts) -> n0_error::Result {
     let video_track = track.video.expect("no video track in broadcast");
 
     if opts.fb {
-        watch::run_drm(video_track, session)?;
+        watch::run_drm(video_track, session).await?;
     } else {
         #[cfg(feature = "windowed")]
         watch::run_windowed(video_track, session, opts.fullscreen)?;

@@ -43,6 +43,7 @@ gpio-cdev = "0.6"
 # EGL/GLES2 rendering (watch command)
 glow = "0.16"
 khronos-egl = { version = "6", features = ["dynamic"] }
+libc = "0.2"
 drm = "0.14"
 drm-fourcc = "2.2"
 gbm = { version = "0.18", features = ["drm-support"] }

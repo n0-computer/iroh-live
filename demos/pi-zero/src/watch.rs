@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result, bail};
 use glow::HasContext;
 use iroh::Watcher;
+use iroh_live::media::format::VideoFrame;
 use iroh_live::media::subscribe::VideoTrack;
 use iroh_live::moq::MoqSession;
 
@@ -175,6 +176,14 @@ fn try_upload_frame(
         if let Some(f) = &frame {
             *last_ts = Some(f.timestamp);
             *frame_count += 1;
+            if *frame_count <= 3 {
+                tracing::info!(
+                    frame = *frame_count,
+                    w = f.width(), h = f.height(),
+                    format = ?std::mem::discriminant(&f.data),
+                    "decoding frame"
+                );
+            }
             let rgba = f.rgba_image();
             unsafe {
                 renderer.upload(rgba.as_raw(), rgba.width(), rgba.height());
@@ -217,6 +226,7 @@ fn print_stats(
 
 // ── DRM display setup (shared by run_drm + run_fb_demo) ───────────
 
+use drm::Device as _;
 use drm::control::Device as ControlDevice;
 use gbm::AsRaw;
 use std::os::fd::AsFd;
@@ -230,6 +240,40 @@ impl AsFd for Card {
 impl drm::Device for Card {}
 impl ControlDevice for Card {}
 
+/// Switches the current VT to graphics mode (hides the console text cursor)
+/// and takes DRM master. Returns the tty fd to restore on drop.
+struct VtGuard(std::fs::File);
+
+impl VtGuard {
+    fn activate() -> Result<Self> {
+        use std::os::unix::io::AsRawFd;
+
+        // Open current tty.
+        let tty = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/tty0")
+            .or_else(|_| std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty"))
+            .context("open /dev/tty0 (run as root or from a linux console)")?;
+
+        // KD_GRAPHICS = 0x01, KDSETMODE = 0x4B3A
+        let ret = unsafe { libc::ioctl(tty.as_raw_fd(), 0x4B3A, 0x01) };
+        if ret != 0 {
+            tracing::warn!("KDSETMODE(KD_GRAPHICS) failed — console text may remain visible");
+        }
+
+        Ok(Self(tty))
+    }
+}
+
+impl Drop for VtGuard {
+    fn drop(&mut self) {
+        use std::os::unix::io::AsRawFd;
+        // KD_TEXT = 0x00
+        unsafe { libc::ioctl(self.0.as_raw_fd(), 0x4B3A, 0x00) };
+    }
+}
+
 /// DRM/KMS + GBM + EGL display — owns all GPU resources for direct HDMI output.
 struct DrmDisplay {
     renderer: GlesRenderer,
@@ -240,10 +284,12 @@ struct DrmDisplay {
     gbm_surface: gbm::Surface<()>,
     connector: drm::control::connector::Handle,
     crtc: drm::control::crtc::Handle,
+    mode: drm::control::Mode,
     front_bo: gbm::BufferObject<()>,
     front_fb: drm::control::framebuffer::Handle,
     width: u32,
     height: u32,
+    _vt: Option<VtGuard>,
 }
 
 impl DrmDisplay {
@@ -259,6 +305,16 @@ impl DrmDisplay {
             }
             found.context("no DRM device found")?
         };
+
+        // Switch VT to graphics mode (hides console text) and grab DRM master.
+        let vt = match VtGuard::activate() {
+            Ok(vt) => Some(vt),
+            Err(e) => {
+                tracing::warn!(%e, "VT switch failed — may need root or a linux console");
+                None
+            }
+        };
+        card.acquire_master_lock().context("acquire DRM master (try running as root)")?;
 
         // Find a connected output.
         let res = card.resource_handles().context("resource_handles")?;
@@ -284,12 +340,21 @@ impl DrmDisplay {
 
         // GBM
         let gbm_device = gbm::Device::new(card).context("gbm::Device::new")?;
+        // Force LINEAR modifier for scanout compatibility on vc4.
         let gbm_surface = gbm_device
-            .create_surface::<()>(
+            .create_surface_with_modifiers::<()>(
                 width, height,
                 drm_fourcc::DrmFourcc::Xrgb8888,
-                gbm::BufferObjectFlags::SCANOUT | gbm::BufferObjectFlags::RENDERING,
+                [drm_fourcc::DrmModifier::Linear].iter().copied(),
             )
+            .or_else(|_| {
+                // Fallback: no explicit modifier.
+                gbm_device.create_surface::<()>(
+                    width, height,
+                    drm_fourcc::DrmFourcc::Xrgb8888,
+                    gbm::BufferObjectFlags::SCANOUT | gbm::BufferObjectFlags::RENDERING,
+                )
+            })
             .context("create_surface")?;
 
         // EGL
@@ -348,16 +413,34 @@ impl DrmDisplay {
         egl.swap_buffers(egl_display, egl_surface).context("initial swap")?;
 
         let front_bo = unsafe { gbm_surface.lock_front_buffer() }.context("lock")?;
-        let front_fb = gbm_device.add_framebuffer(&front_bo, 24, 32).context("addfb")?;
-        gbm_device.set_crtc(crtc, Some(front_fb), (0, 0), &[connector], Some(mode))
-            .context("set_crtc")?;
+        tracing::info!(
+            bo_w = front_bo.width(), bo_h = front_bo.height(),
+            stride = front_bo.stride(), modifier = ?front_bo.modifier(),
+            format = ?front_bo.format(), "front BO"
+        );
+        let front_fb = gbm_device.add_planar_framebuffer(&front_bo, drm::control::FbCmd2Flags::MODIFIERS).context("addfb")?;
+        // Get the CRTC's currently active mode (set by the kernel console).
+        // Using this exact mode avoids EINVAL from vc4's atomic check — the
+        // mode was already validated when the console set it up.
+        let crtc_info = gbm_device.get_crtc(crtc).context("get_crtc")?;
+        let active_mode = crtc_info.mode().context("CRTC has no active mode")?;
+        tracing::info!(?front_fb, ?crtc, ?connector, mode = ?active_mode.size(), "set_crtc");
+        gbm_device.set_crtc(
+            crtc,
+            Some(front_fb),
+            (0, 0),
+            &[connector],
+            Some(active_mode),
+        )
+        .context("set_crtc")?;
 
         println!("rendering to HDMI ({width}x{height})");
 
         Ok(Self {
             renderer, egl, egl_display, egl_surface,
             gbm_device, gbm_surface, connector, crtc,
-            front_bo, front_fb, width, height,
+            mode: active_mode,
+            front_bo, front_fb, width, height, _vt: vt,
         })
     }
 
@@ -367,10 +450,18 @@ impl DrmDisplay {
         self.egl.swap_buffers(self.egl_display, self.egl_surface).context("swap")?;
 
         let new_bo = unsafe { self.gbm_surface.lock_front_buffer() }.context("lock")?;
-        let new_fb = self.gbm_device.add_framebuffer(&new_bo, 24, 32).context("addfb")?;
+        let new_fb = self.gbm_device.add_planar_framebuffer(
+            &new_bo,
+            drm::control::FbCmd2Flags::MODIFIERS,
+        )
+        .context("addfb")?;
+
+        // set_crtc is synchronous (waits for vblank internally).
+        // page_flip is async and returns EBUSY if a flip is pending,
+        // which requires event-loop integration to handle correctly.
         self.gbm_device
-            .set_crtc(self.crtc, Some(new_fb), (0, 0), &[self.connector], None)
-            .context("set_crtc")?;
+            .set_crtc(self.crtc, Some(new_fb), (0, 0), &[self.connector], Some(self.mode))
+            .context("flip set_crtc")?;
 
         self.gbm_device.destroy_framebuffer(self.front_fb).ok();
         let old_bo = std::mem::replace(&mut self.front_bo, new_bo);
@@ -383,20 +474,75 @@ impl DrmDisplay {
 // ── DRM render loops ───────────────────────────────────────────────
 
 /// Renders a remote broadcast to HDMI via DRM/KMS + GBM + EGL + GLES2.
-pub(crate) fn run_drm(mut video_track: VideoTrack, session: MoqSession) -> Result<()> {
-    let mut disp = DrmDisplay::init()?;
-    let mut last_ts: Option<Duration> = None;
-    let mut frame_count = 0u64;
-    let mut fps_last = Instant::now();
+///
+/// Spawns a dedicated render thread so the tokio runtime stays free for
+/// packet ingestion and decode. Frames are forwarded via a bounded channel.
+pub(crate) async fn run_drm(mut video_track: VideoTrack, _session: MoqSession) -> Result<()> {
+    use tokio::sync::mpsc as tokio_mpsc;
 
-    println!("ctrl-c to quit");
+    // Channel from async world (frame producer) to render thread (consumer).
+    let (frame_tx, frame_rx) = tokio_mpsc::channel::<VideoFrame>(4);
 
+    // Render thread — owns DRM display, receives frames, renders.
+    let render_handle = std::thread::Builder::new()
+        .name("drm-render".into())
+        .spawn(move || -> Result<()> {
+            let mut disp = DrmDisplay::init()?;
+            let mut frame_rx = frame_rx;
+            let mut frame_count = 0u64;
+            let mut fps_last = Instant::now();
+
+            println!("ctrl-c to quit");
+
+            loop {
+                // Block until a frame arrives (or channel closes).
+                let frame = match frame_rx.blocking_recv() {
+                    Some(f) => f,
+                    None => break, // channel closed, exit
+                };
+
+                // Drain any newer frames — display the latest.
+                let mut latest = frame;
+                while let Ok(newer) = frame_rx.try_recv() {
+                    latest = newer;
+                }
+
+                frame_count += 1;
+                let rgba = latest.rgba_image();
+                unsafe {
+                    disp.renderer.upload(rgba.as_raw(), rgba.width(), rgba.height());
+                }
+                disp.flip()?;
+
+                let elapsed = fps_last.elapsed();
+                if elapsed >= Duration::from_secs(1) {
+                    let fps = frame_count as f32 / elapsed.as_secs_f32();
+                    frame_count = 0;
+                    fps_last = Instant::now();
+                    println!("fps: {fps:.0}");
+                }
+            }
+
+            Ok(())
+        })
+        .context("spawn render thread")?;
+
+    // Async frame pump — runs on tokio, feeds the render thread.
     loop {
-        try_upload_frame(&mut disp.renderer, &mut video_track, &mut last_ts, &mut frame_count);
-        disp.flip()?;
-        print_stats(&session, &video_track, &mut frame_count, &mut fps_last);
-        std::thread::sleep(POLL_INTERVAL);
+        match video_track.next_frame().await {
+            Some(frame) => {
+                if frame_tx.send(frame).await.is_err() {
+                    break; // render thread exited
+                }
+            }
+            None => break, // track closed
+        }
     }
+
+    render_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("render thread panicked"))??;
+    Ok(())
 }
 
 /// Renders a local [`VideoTrack`] (e.g. TestVideoSource) to HDMI — no network needed.

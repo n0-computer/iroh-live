@@ -8851,6 +8851,7 @@ dependencies = [
  "iroh 0.97.0",
  "iroh-live",
  "khronos-egl",
+ "libc",
  "linux-embedded-hal",
  "moq-media",
  "n0-error",
