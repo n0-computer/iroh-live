@@ -21,30 +21,25 @@ use std::sync::mpsc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use screencapturekit::cm::CMSampleBuffer;
+use screencapturekit::cm::CMTime;
 use screencapturekit::shareable_content::SCShareableContent;
 use screencapturekit::stream::SCStream;
+use screencapturekit::stream::configuration::PixelFormat;
 use screencapturekit::stream::configuration::SCStreamConfiguration;
 use screencapturekit::stream::content_filter::SCContentFilter;
 use screencapturekit::stream::output_trait::SCStreamOutputTrait;
 use screencapturekit::stream::output_type::SCStreamOutputType;
 use tracing::{info, warn};
 
-use rusty_codecs::format::{PixelFormat, VideoFormat, VideoFrame};
+use rusty_codecs::format::{PixelFormat as RcPixelFormat, VideoFormat, VideoFrame};
 use rusty_codecs::traits::VideoSource;
 
 use crate::types::{MonitorInfo, ScreenConfig};
 
-// CoreGraphics APIs for permission check and display scale factor.
+// CoreGraphics APIs for permission check.
 unsafe extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
-    fn CGDisplayScreenSize(display: u32) -> CGSize;
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct CGSize {
-    width: f64,
-    height: f64,
 }
 
 /// Warns if Screen Recording permission has not been granted.
@@ -58,23 +53,10 @@ fn check_screen_capture_permission() {
     }
 }
 
-/// Computes the scale factor for a display by comparing logical and physical sizes.
-///
-/// Falls back to 1.0 if the physical size cannot be determined.
-fn display_scale_factor(display_id: u32, logical_width: u32) -> f32 {
-    if logical_width == 0 {
-        return 1.0;
-    }
-    // CGDisplayScreenSize returns the physical size in mm. If it returns zero
-    // the display doesn't report physical metrics (e.g. virtual displays).
-    // We can't derive a pixel-density scale from that, so fall back.
-    //
-    // For actual HiDPI detection we'd use CGDisplayCopyDisplayMode +
-    // pixelWidth / width ratio, but SCK's display.width already reflects
-    // the backing store (physical) pixels, so the scale factor relative to
-    // the logical desktop coordinate space can be approximated from the
-    // frame rectangle vs pixel dimensions.
-    1.0 // SCK provides physical pixels; scale factor is handled internally
+/// SCK provides physical pixels; scale factor is handled internally.
+/// Returns 1.0 unconditionally for now.
+fn display_scale_factor() -> f32 {
+    1.0
 }
 
 /// Lists available macOS displays.
@@ -82,18 +64,19 @@ pub fn monitors() -> Result<Vec<MonitorInfo>> {
     check_screen_capture_permission();
     let content = SCShareableContent::get()
         .map_err(|e| anyhow::anyhow!("ScreenCaptureKit: failed to get shareable content: {e:?}"))?;
-    let displays = content.displays;
+    let displays = content.displays();
     let mut result = Vec::new();
     for (i, display) in displays.iter().enumerate() {
-        let width = display.width as u32;
-        let height = display.height as u32;
+        let width = display.width();
+        let height = display.height();
+        let frame = display.frame();
         result.push(MonitorInfo {
             backend: crate::CaptureBackend::ScreenCaptureKit,
-            id: format!("macos-display-{}", display.display_id),
-            name: format!("Display {}", display.display_id),
-            position: [display.frame.origin.x as i32, display.frame.origin.y as i32],
+            id: format!("macos-display-{}", display.display_id()),
+            name: format!("Display {}", display.display_id()),
+            position: [frame.x as i32, frame.y as i32],
             dimensions: [width, height],
-            scale_factor: display_scale_factor(display.display_id, width),
+            scale_factor: display_scale_factor(),
             refresh_rate_hz: None,
             is_primary: i == 0,
         });
@@ -109,16 +92,22 @@ struct FrameHandler {
 impl SCStreamOutputTrait for FrameHandler {
     fn did_output_sample_buffer(
         &self,
-        sample_buffer: screencapturekit::cm_sample_buffer::CMSampleBuffer,
+        sample_buffer: CMSampleBuffer,
         _of_type: SCStreamOutputType,
     ) {
-        let Some(pixel_buffer) = sample_buffer.pixel_buffer else {
+        let Some(pixel_buffer) = sample_buffer.image_buffer() else {
             return;
         };
-        let bytes_per_row = pixel_buffer.bytes_per_row as usize;
-        let height = pixel_buffer.height as usize;
-        let width = pixel_buffer.width as usize;
-        let data = &pixel_buffer.data;
+
+        let guard = match pixel_buffer.lock_read_only() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+
+        let bytes_per_row = guard.bytes_per_row();
+        let height = guard.height();
+        let width = guard.width();
+        let data = guard.as_slice();
 
         // Validate the buffer is large enough for the reported dimensions.
         let expected = bytes_per_row * height;
@@ -180,42 +169,37 @@ impl MacScreenCapturer {
             .id
             .strip_prefix("macos-display-")
             .and_then(|s| s.parse().ok());
+        let displays = content.displays();
         let display = if let Some(did) = display_id {
-            content
-                .displays
+            displays
                 .into_iter()
-                .find(|d| d.display_id == did)
+                .find(|d| d.display_id() == did)
                 .context("display not found")?
         } else {
-            content
-                .displays
+            displays
                 .into_iter()
                 .next()
                 .context("no displays available")?
         };
 
-        let width = display.width as u32;
-        let height = display.height as u32;
+        let width = display.width();
+        let height = display.height();
 
-        let filter = SCContentFilter::new(
-            screencapturekit::stream::content_filter::InitParams::Display(display),
-        );
+        let filter = SCContentFilter::create()
+            .with_display(&display)
+            .with_excluding_windows(&[])
+            .build();
 
-        let mut stream_config = SCStreamConfiguration::default();
-        stream_config.width = width;
-        stream_config.height = height;
-        stream_config.shows_cursor = config.show_cursor;
-        // Request BGRA for simple byte-swap to RGBA (avoids YCbCr→RGB conversion).
-        stream_config.pixel_format = screencapturekit::stream::configuration::PixelFormat::ARGB8888;
-        // Allow up to 8 frames in the output queue to absorb processing jitter.
-        stream_config.queue_depth = 8;
+        let mut stream_config = SCStreamConfiguration::new()
+            .with_width(width)
+            .with_height(height)
+            .with_shows_cursor(config.show_cursor)
+            // Request BGRA for simple byte-swap to RGBA (avoids YCbCr→RGB conversion).
+            .with_pixel_format(PixelFormat::BGRA)
+            .with_queue_depth(8);
+
         if let Some(fps) = config.target_fps {
-            stream_config.minimum_frame_interval = screencapturekit::cm_sample_buffer::CMTime {
-                value: 1,
-                timescale: fps as i32,
-                flags: 0,
-                epoch: 0,
-            };
+            stream_config = stream_config.with_minimum_frame_interval(&CMTime::new(1, fps as i32));
         }
 
         // Bounded: 2-frame buffer. The callback drops frames via try_send
@@ -226,7 +210,8 @@ impl MacScreenCapturer {
             capture_start: Instant::now(),
         };
 
-        let mut stream = SCStream::new(filter, stream_config, handler);
+        let mut stream = SCStream::new(&filter, &stream_config);
+        stream.add_output_handler(handler, SCStreamOutputType::Screen);
         stream
             .start_capture()
             .map_err(|e| anyhow::anyhow!("failed to start screen capture: {e:?}"))?;
@@ -249,7 +234,7 @@ impl VideoSource for MacScreenCapturer {
 
     fn format(&self) -> VideoFormat {
         VideoFormat {
-            pixel_format: PixelFormat::Rgba,
+            pixel_format: RcPixelFormat::Rgba,
             dimensions: [self.width, self.height],
         }
     }
