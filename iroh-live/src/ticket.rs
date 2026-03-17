@@ -4,11 +4,16 @@ use iroh::EndpointAddr;
 use n0_error::{Result, StdResultExt};
 use serde::{Deserialize, Serialize};
 
+/// URI scheme prefix for iroh-live tickets.
+pub(crate) const SCHEME: &str = "iroh-live:";
+
 /// Ticket for subscribing to a live broadcast.
 ///
 /// Contains the publisher's endpoint address, the broadcast name, and
 /// optional relay URLs for reaching the publisher through a relay when
 /// direct P2P is unavailable.
+///
+/// Serializes to a URI: `iroh-live:<base64url(postcard(EndpointAddr))>/<name>`
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, Serialize, Deserialize)]
 #[display("{}", self.serialize())]
 pub struct LiveTicket {
@@ -46,29 +51,56 @@ impl LiveTicket {
         Ok(ticket)
     }
 
-    /// Serialize to string.
+    /// Serializes to a URI string: `iroh-live:<addr>/<name>`
     pub fn serialize(&self) -> String {
-        let mut out = self.broadcast_name.clone();
-        out.push('@');
-        data_encoding::BASE32_NOPAD
-            .encode_append(&postcard::to_stdvec(&self.endpoint).unwrap(), &mut out);
-        out.to_ascii_lowercase()
+        let addr_bytes = postcard::to_stdvec(&self.endpoint).unwrap();
+        let addr_encoded = data_encoding::BASE64URL_NOPAD.encode(&addr_bytes);
+        format!("{SCHEME}{addr_encoded}/{}", self.broadcast_name)
     }
 
-    /// Deserialize from a string.
-    pub fn deserialize(str: &str) -> Result<Self> {
-        let (broadcast_name, encoded_addr) = str
-            .split_once("@")
+    /// Deserializes from a URI string. Also accepts the legacy `name@base32` format.
+    pub fn deserialize(s: &str) -> Result<Self> {
+        let s = s.trim();
+        if let Some(rest) = s.strip_prefix(SCHEME) {
+            Self::deserialize_url(rest)
+        } else if s.contains('@') {
+            Self::deserialize_legacy(s)
+        } else {
+            Err(anyhow::anyhow!("invalid ticket: expected iroh-live: URI or legacy name@addr format"))?
+        }
+    }
+
+    fn deserialize_url(rest: &str) -> Result<Self> {
+        let (addr_encoded, broadcast_name) = rest
+            .split_once('/')
+            .std_context("invalid ticket URI: missing / separator")?;
+
+        let addr_bytes = data_encoding::BASE64URL_NOPAD
+            .decode(addr_encoded.as_bytes())
+            .std_context("invalid base64url in ticket")?;
+        let endpoint: EndpointAddr =
+            postcard::from_bytes(&addr_bytes).std_context("invalid endpoint address")?;
+
+        Ok(Self {
+            endpoint,
+            broadcast_name: broadcast_name.to_string(),
+            relay_urls: Vec::new(),
+        })
+    }
+
+    fn deserialize_legacy(s: &str) -> Result<Self> {
+        let (broadcast_name, encoded_addr) = s
+            .split_once('@')
             .std_context("invalid ticket: missing @")?;
-        let endpoint_addr: EndpointAddr = postcard::from_bytes(
-            &(data_encoding::BASE32_NOPAD_NOCASE
+        let endpoint: EndpointAddr = postcard::from_bytes(
+            &data_encoding::BASE32_NOPAD_NOCASE
                 .decode(encoded_addr.as_bytes())
-                .std_context("invalid base32")?),
+                .std_context("invalid base32")?,
         )
         .std_context("failed to parse")?;
         Ok(Self {
             broadcast_name: broadcast_name.to_string(),
-            endpoint: endpoint_addr,
+            endpoint,
             relay_urls: Vec::new(),
         })
     }
@@ -78,5 +110,54 @@ impl FromStr for LiveTicket {
     type Err = n0_error::AnyError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::deserialize(s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iroh::SecretKey;
+
+    fn test_endpoint_addr() -> EndpointAddr {
+        let key = SecretKey::generate(&mut rand::rng());
+        EndpointAddr::from(key.public())
+    }
+
+    #[test]
+    fn round_trip() {
+        let ticket = LiveTicket::new(test_endpoint_addr(), "my-stream");
+        let s = ticket.serialize();
+        assert!(s.starts_with("iroh-live:"), "should start with scheme: {s}");
+        assert!(s.ends_with("/my-stream"), "should end with /name: {s}");
+        let parsed = LiveTicket::deserialize(&s).expect("parse");
+        assert_eq!(parsed.endpoint, ticket.endpoint);
+        assert_eq!(parsed.broadcast_name, "my-stream");
+    }
+
+    #[test]
+    fn display_fromstr_round_trip() {
+        let ticket = LiveTicket::new(test_endpoint_addr(), "test");
+        let s = ticket.to_string();
+        let parsed: LiveTicket = s.parse().expect("parse");
+        assert_eq!(parsed, ticket);
+    }
+
+    #[test]
+    fn legacy_format_still_parses() {
+        // Generate a ticket in the old format: name@BASE32(postcard(EndpointAddr))
+        let addr = test_endpoint_addr();
+        let encoded = data_encoding::BASE32_NOPAD
+            .encode(&postcard::to_stdvec(&addr).unwrap())
+            .to_ascii_lowercase();
+        let legacy = format!("hello@{encoded}");
+
+        let parsed = LiveTicket::deserialize(&legacy).expect("parse legacy");
+        assert_eq!(parsed.broadcast_name, "hello");
+        assert_eq!(parsed.endpoint, addr);
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert!(LiveTicket::deserialize("not-a-ticket").is_err());
     }
 }

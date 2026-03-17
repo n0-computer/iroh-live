@@ -48,8 +48,8 @@ const CALL_BROADCAST_NAME: &str = "call";
 
 /// Shareable ticket for 1:1 calls.
 ///
-/// Wraps an [`EndpointAddr`] with a fixed broadcast name. Serializes to a
-/// compact base32 string suitable for copy-paste or QR codes.
+/// Wraps an [`EndpointAddr`] with a fixed broadcast name (`call`).
+/// Serializes to an `iroh-live:` URI via [`LiveTicket`](crate::ticket::LiveTicket).
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, Serialize, Deserialize)]
 #[display("{}", self.serialize())]
 pub struct CallTicket {
@@ -81,18 +81,26 @@ impl CallTicket {
             .with_relay_urls(self.relay_urls)
     }
 
-    /// Serializes to a compact string.
+    /// Serializes to an `iroh-live:` URI with broadcast name `call`.
     fn serialize(&self) -> String {
-        let bytes = postcard::to_stdvec(&self.endpoint).unwrap();
-        data_encoding::BASE32_NOPAD
-            .encode(&bytes)
-            .to_ascii_lowercase()
+        self.clone().into_live_ticket().serialize()
     }
 
-    /// Deserializes from a string produced by [`serialize`](Self::serialize).
+    /// Deserializes from a string. Accepts `iroh-live:` URIs and the
+    /// legacy base32 format.
     pub fn deserialize(s: &str) -> Result<Self> {
+        let s = s.trim();
+        // Try URI format (iroh-live:...) or legacy LiveTicket format (name@...).
+        if s.starts_with(crate::ticket::SCHEME) || s.contains('@') {
+            let ticket = crate::ticket::LiveTicket::deserialize(s)?;
+            return Ok(Self {
+                endpoint: ticket.endpoint,
+                relay_urls: ticket.relay_urls,
+            });
+        }
+        // Legacy CallTicket format: plain base32.
         let bytes = data_encoding::BASE32_NOPAD_NOCASE
-            .decode(s.trim().as_bytes())
+            .decode(s.as_bytes())
             .std_context("invalid base32")?;
         let endpoint =
             postcard::from_bytes(&bytes).std_context("failed to parse endpoint address")?;
