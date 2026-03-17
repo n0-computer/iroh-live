@@ -643,8 +643,26 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
         return true;
     }
 
-    // CPU fallback: wrap in an AHardwareBuffer, then render via OES.
+    // Fast CPU path: upload NV12 planes directly to GL textures (no RGBA conversion).
     let rot = rotation_degrees as u32;
+    if let rusty_codecs::format::FrameData::Nv12(ref planes) = frame.data {
+        unsafe {
+            renderer.render_nv12(
+                &planes.y_data,
+                planes.y_stride,
+                &planes.uv_data,
+                planes.uv_stride,
+                planes.width,
+                planes.height,
+                surface_width,
+                surface_height,
+                rot,
+            );
+        }
+        return true;
+    }
+
+    // Slowest fallback: RGBA conversion + AHardwareBuffer for non-NV12 CPU frames.
     let img = frame.rgba_image();
     if let Some(ahwb) = create_rgba_hardware_buffer(img.as_raw(), w, h) {
         unsafe {

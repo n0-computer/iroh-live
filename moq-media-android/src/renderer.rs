@@ -52,6 +52,38 @@ void main() {
     gl_FragColor = texture2D(u_tex, uv);
 }";
 
+/// NV12→RGBA fragment shader using `sampler2D` (Y as LUMINANCE, UV as LUMINANCE_ALPHA).
+///
+/// Used for CPU NV12 frames (direct camera passthrough) — avoids the expensive
+/// CPU NV12→RGBA conversion + AHardwareBuffer allocation.
+const NV12_FRAG_SRC: &str = "\
+#version 100
+precision mediump float;
+varying vec2 v_uv;
+uniform sampler2D u_y_tex;
+uniform sampler2D u_uv_tex;
+uniform int u_rotation;
+void main() {
+    vec2 uv = v_uv;
+    if (u_rotation == 90) {
+        uv = vec2(v_uv.y, 1.0 - v_uv.x);
+    } else if (u_rotation == 180) {
+        uv = vec2(1.0 - v_uv.x, 1.0 - v_uv.y);
+    } else if (u_rotation == 270) {
+        uv = vec2(1.0 - v_uv.y, v_uv.x);
+    }
+    float y_raw = texture2D(u_y_tex, uv).r;
+    float u_raw = texture2D(u_uv_tex, uv).r;
+    float v_raw = texture2D(u_uv_tex, uv).a;
+    float y = (y_raw - 16.0 / 255.0) * (255.0 / 219.0);
+    float u = (u_raw - 16.0 / 255.0) * (255.0 / 224.0) - 0.5;
+    float v = (v_raw - 16.0 / 255.0) * (255.0 / 224.0) - 0.5;
+    float r = y + 1.402 * v;
+    float g = y - 0.344136 * u - 0.714136 * v;
+    float b = y + 1.772 * u;
+    gl_FragColor = vec4(clamp(r, 0.0, 1.0), clamp(g, 0.0, 1.0), clamp(b, 0.0, 1.0), 1.0);
+}";
+
 /// Renders `AHardwareBuffer` frames via EGL external texture import.
 ///
 /// Owns a GLES2 shader program for `GL_TEXTURE_EXTERNAL_OES` and handles
@@ -59,10 +91,18 @@ void main() {
 /// is current on the calling thread for all methods.
 pub struct AndroidRenderer {
     gl: glow::Context,
-    program: glow::Program,
-    texture: glow::Texture,
-    a_pos_loc: u32,
-    rotation_loc: Option<glow::UniformLocation>,
+    // OES path (HardwareBuffer frames).
+    oes_program: glow::Program,
+    oes_texture: glow::Texture,
+    oes_a_pos_loc: u32,
+    oes_rotation_loc: Option<glow::UniformLocation>,
+    // NV12 path (CPU camera frames — avoids RGBA conversion).
+    nv12_program: glow::Program,
+    nv12_y_texture: glow::Texture,
+    nv12_uv_texture: glow::Texture,
+    nv12_a_pos_loc: u32,
+    nv12_rotation_loc: Option<glow::UniformLocation>,
+    // Shared.
     vbo: glow::Buffer,
     egl_display: *mut c_void,
 }
@@ -90,44 +130,42 @@ impl AndroidRenderer {
     pub unsafe fn new(egl_display: *mut c_void) -> Result<Self> {
         let gl = unsafe { egl::create_glow_context() };
 
-        // Compile shaders.
+        // Shared vertex shader.
         let vs = compile_shader(&gl, glow::VERTEX_SHADER, VERT_SRC)?;
-        let fs = compile_shader(&gl, glow::FRAGMENT_SHADER, OES_FRAG_SRC)?;
-        let program = link_program(&gl, vs, fs)?;
-        unsafe {
-            gl.delete_shader(vs);
-            gl.delete_shader(fs);
-        }
 
-        let a_pos_loc =
-            unsafe { gl.get_attrib_location(program, "a_pos") }.context("a_pos not found")?;
-        let rotation_loc = unsafe { gl.get_uniform_location(program, "u_rotation") };
+        // OES program (HardwareBuffer frames).
+        let oes_fs = compile_shader(&gl, glow::FRAGMENT_SHADER, OES_FRAG_SRC)?;
+        let oes_program = link_program(&gl, vs, oes_fs)?;
+        unsafe { gl.delete_shader(oes_fs) };
+        let oes_a_pos_loc = unsafe { gl.get_attrib_location(oes_program, "a_pos") }
+            .context("a_pos not found in OES program")?;
+        let oes_rotation_loc = unsafe { gl.get_uniform_location(oes_program, "u_rotation") };
+
+        // NV12 program (CPU camera frames).
+        let nv12_fs = compile_shader(&gl, glow::FRAGMENT_SHADER, NV12_FRAG_SRC)?;
+        let nv12_program = link_program(&gl, vs, nv12_fs)?;
+        unsafe {
+            gl.delete_shader(nv12_fs);
+            gl.delete_shader(vs);
+        }
+        let nv12_a_pos_loc = unsafe { gl.get_attrib_location(nv12_program, "a_pos") }
+            .context("a_pos not found in NV12 program")?;
+        let nv12_rotation_loc = unsafe { gl.get_uniform_location(nv12_program, "u_rotation") };
+        // Bind NV12 sampler uniforms.
+        unsafe { gl.use_program(Some(nv12_program)) };
+        if let Some(loc) = unsafe { gl.get_uniform_location(nv12_program, "u_y_tex") } {
+            unsafe { gl.uniform_1_i32(Some(&loc), 0) };
+        }
+        if let Some(loc) = unsafe { gl.get_uniform_location(nv12_program, "u_uv_tex") } {
+            unsafe { gl.uniform_1_i32(Some(&loc), 1) };
+        }
 
         // OES texture.
-        let texture = unsafe { gl.create_texture() }.map_err(|e| anyhow::anyhow!(e))?;
-        unsafe {
-            gl.bind_texture(GL_TEXTURE_EXTERNAL_OES, Some(texture));
-            gl.tex_parameter_i32(
-                GL_TEXTURE_EXTERNAL_OES,
-                glow::TEXTURE_MIN_FILTER,
-                glow::LINEAR as i32,
-            );
-            gl.tex_parameter_i32(
-                GL_TEXTURE_EXTERNAL_OES,
-                glow::TEXTURE_MAG_FILTER,
-                glow::LINEAR as i32,
-            );
-            gl.tex_parameter_i32(
-                GL_TEXTURE_EXTERNAL_OES,
-                glow::TEXTURE_WRAP_S,
-                glow::CLAMP_TO_EDGE as i32,
-            );
-            gl.tex_parameter_i32(
-                GL_TEXTURE_EXTERNAL_OES,
-                glow::TEXTURE_WRAP_T,
-                glow::CLAMP_TO_EDGE as i32,
-            );
-        }
+        let oes_texture = create_tex(&gl, GL_TEXTURE_EXTERNAL_OES)?;
+
+        // NV12 plane textures (TEXTURE_2D).
+        let nv12_y_texture = create_tex(&gl, glow::TEXTURE_2D)?;
+        let nv12_uv_texture = create_tex(&gl, glow::TEXTURE_2D)?;
 
         // Fullscreen triangle VBO.
         let vertices: [f32; 6] = [0.0, 0.0, 2.0, 0.0, 0.0, 2.0];
@@ -152,10 +190,15 @@ impl AndroidRenderer {
 
         Ok(Self {
             gl,
-            program,
-            texture,
-            a_pos_loc,
-            rotation_loc,
+            oes_program,
+            oes_texture,
+            oes_a_pos_loc,
+            oes_rotation_loc,
+            nv12_program,
+            nv12_y_texture,
+            nv12_uv_texture,
+            nv12_a_pos_loc,
+            nv12_rotation_loc,
             vbo,
             egl_display,
         })
@@ -205,7 +248,7 @@ impl AndroidRenderer {
         unsafe {
             self.gl.active_texture(glow::TEXTURE0);
             self.gl
-                .bind_texture(GL_TEXTURE_EXTERNAL_OES, Some(self.texture));
+                .bind_texture(GL_TEXTURE_EXTERNAL_OES, Some(self.oes_texture));
             egl::image_target_texture_2d(GL_TEXTURE_EXTERNAL_OES, egl_image);
         }
 
@@ -224,21 +267,122 @@ impl AndroidRenderer {
         let (vp_x, vp_y, vp_w, vp_h) = letterbox_viewport(surface_w, surface_h, disp_w, disp_h);
         unsafe {
             self.gl.viewport(vp_x, vp_y, vp_w, vp_h);
-            self.gl.use_program(Some(self.program));
-            if let Some(ref loc) = self.rotation_loc {
+            self.gl.use_program(Some(self.oes_program));
+            if let Some(ref loc) = self.oes_rotation_loc {
                 self.gl.uniform_1_i32(Some(loc), rotation_degrees as i32);
             }
             self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
             self.gl
-                .vertex_attrib_pointer_f32(self.a_pos_loc, 2, glow::FLOAT, false, 0, 0);
-            self.gl.enable_vertex_attrib_array(self.a_pos_loc);
+                .vertex_attrib_pointer_f32(self.oes_a_pos_loc, 2, glow::FLOAT, false, 0, 0);
+            self.gl.enable_vertex_attrib_array(self.oes_a_pos_loc);
             self.gl.draw_arrays(glow::TRIANGLES, 0, 3);
-            self.gl.disable_vertex_attrib_array(self.a_pos_loc);
+            self.gl.disable_vertex_attrib_array(self.oes_a_pos_loc);
         }
 
         // Cleanup.
         unsafe { egl::destroy_image(self.egl_display, egl_image) };
     }
+
+    /// Renders NV12 planes directly to the viewport via GPU shader conversion.
+    ///
+    /// Uploads Y plane as `LUMINANCE` and UV plane as `LUMINANCE_ALPHA`,
+    /// converts to RGBA in the fragment shader. No CPU color conversion or
+    /// AHardwareBuffer allocation needed.
+    ///
+    /// # Safety
+    /// The EGL context must be current on the calling thread.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn render_nv12(
+        &self,
+        y_data: &[u8],
+        y_stride: u32,
+        uv_data: &[u8],
+        uv_stride: u32,
+        width: u32,
+        height: u32,
+        surface_w: i32,
+        surface_h: i32,
+        rotation_degrees: u32,
+    ) {
+        let uv_h = height.div_ceil(2);
+        let uv_w = width / 2;
+
+        // Upload Y plane (LUMINANCE, full res).
+        unsafe {
+            self.gl.active_texture(glow::TEXTURE0);
+            self.gl
+                .bind_texture(glow::TEXTURE_2D, Some(self.nv12_y_texture));
+            self.gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::LUMINANCE as i32,
+                y_stride as i32, // use stride as width — shader UV handles the crop
+                height as i32,
+                0,
+                glow::LUMINANCE,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(y_data)),
+            );
+        }
+
+        // Upload UV plane (LUMINANCE_ALPHA, half res).
+        unsafe {
+            self.gl.active_texture(glow::TEXTURE1);
+            self.gl
+                .bind_texture(glow::TEXTURE_2D, Some(self.nv12_uv_texture));
+            self.gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::LUMINANCE_ALPHA as i32,
+                uv_stride as i32 / 2, // 2 bytes per texel
+                uv_h as i32,
+                0,
+                glow::LUMINANCE_ALPHA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(uv_data)),
+            );
+        }
+
+        // Swap dimensions for 90°/270° rotation.
+        let (disp_w, disp_h) = if rotation_degrees == 90 || rotation_degrees == 270 {
+            (height, width)
+        } else {
+            (width, height)
+        };
+
+        // Clear + letterbox + draw.
+        unsafe {
+            self.gl.viewport(0, 0, surface_w, surface_h);
+            self.gl.clear(glow::COLOR_BUFFER_BIT);
+        }
+        let (vp_x, vp_y, vp_w, vp_h) = letterbox_viewport(surface_w, surface_h, disp_w, disp_h);
+        unsafe {
+            self.gl.viewport(vp_x, vp_y, vp_w, vp_h);
+            self.gl.use_program(Some(self.nv12_program));
+            if let Some(ref loc) = self.nv12_rotation_loc {
+                self.gl.uniform_1_i32(Some(loc), rotation_degrees as i32);
+            }
+            self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
+            self.gl
+                .vertex_attrib_pointer_f32(self.nv12_a_pos_loc, 2, glow::FLOAT, false, 0, 0);
+            self.gl.enable_vertex_attrib_array(self.nv12_a_pos_loc);
+            self.gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            self.gl.disable_vertex_attrib_array(self.nv12_a_pos_loc);
+        }
+    }
+}
+
+/// Creates a texture with LINEAR filtering and CLAMP_TO_EDGE wrapping.
+fn create_tex(gl: &glow::Context, target: u32) -> Result<glow::Texture> {
+    let texture = unsafe { gl.create_texture() }.map_err(|e| anyhow::anyhow!(e))?;
+    unsafe {
+        gl.bind_texture(target, Some(texture));
+        gl.tex_parameter_i32(target, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
+        gl.tex_parameter_i32(target, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+        gl.tex_parameter_i32(target, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+        gl.tex_parameter_i32(target, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+    }
+    Ok(texture)
 }
 
 /// Computes a letterboxed viewport that preserves the video's aspect ratio.
