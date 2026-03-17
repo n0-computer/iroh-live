@@ -11,6 +11,8 @@ pub mod dmabuf_import;
 
 use std::{fmt, iter};
 
+use anyhow::{Context as _, Result};
+
 #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
 pub use dmabuf_import::create_device_with_dmabuf_extensions;
 
@@ -160,7 +162,7 @@ impl WgpuVideoRenderer {
 
     /// Renders a frame to an RGBA texture. Returns a `TextureView` suitable for
     /// registering with egui via `register_native_texture`.
-    pub fn render(&mut self, frame: &VideoFrame) -> &wgpu::TextureView {
+    pub fn render(&mut self, frame: &VideoFrame) -> Result<&wgpu::TextureView> {
         /// Disable DMA-BUF import after this many consecutive failures to avoid
         /// log spam and allocation churn from a fundamentally unsupported path.
         #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
@@ -201,7 +203,7 @@ impl WgpuVideoRenderer {
                     return self.render_nv12(&planes);
                 }
                 // Fallback: download as RGBA
-                let img = gpu.download_rgba().expect("GPU frame download failed");
+                let img = gpu.download_rgba().context("GPU frame download failed")?;
                 self.render_packed(img.as_raw(), img.width(), img.height())
             }
             FrameData::I420 { .. } => {
@@ -217,7 +219,7 @@ impl WgpuVideoRenderer {
     fn render_imported_nv12(
         &mut self,
         imported: dmabuf_import::ImportedNv12Frame,
-    ) -> &wgpu::TextureView {
+    ) -> Result<&wgpu::TextureView> {
         let w = imported.width;
         let h = imported.height;
         self.ensure_output_texture(w, h);
@@ -243,7 +245,10 @@ impl WgpuVideoRenderer {
             ],
         });
 
-        let out = self.output_texture.as_ref().unwrap();
+        let out = self
+            .output_texture
+            .as_ref()
+            .context("output texture not initialized")?;
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -269,17 +274,24 @@ impl WgpuVideoRenderer {
         }
         self.queue.submit(iter::once(encoder.finish()));
 
-        &self.output_texture.as_ref().unwrap().view
+        Ok(&self
+            .output_texture
+            .as_ref()
+            .context("output texture not initialized")?
+            .view)
     }
 
     /// Upload NV12 planes and render to RGBA via shader.
-    fn render_nv12(&mut self, planes: &Nv12Planes) -> &wgpu::TextureView {
+    fn render_nv12(&mut self, planes: &Nv12Planes) -> Result<&wgpu::TextureView> {
         let w = planes.width;
         let h = planes.height;
         self.ensure_output_texture(w, h);
         self.ensure_nv12_planes(w, h);
 
-        let nv12 = self.nv12_planes.as_ref().unwrap();
+        let nv12 = self
+            .nv12_planes
+            .as_ref()
+            .context("NV12 plane textures not initialized")?;
 
         // Upload Y plane data
         self.queue.write_texture(
@@ -316,7 +328,10 @@ impl WgpuVideoRenderer {
         );
 
         // Render fullscreen triangle to convert NV12 → RGBA
-        let out = self.output_texture.as_ref().unwrap();
+        let out = self
+            .output_texture
+            .as_ref()
+            .context("output texture not initialized")?;
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -342,14 +357,26 @@ impl WgpuVideoRenderer {
         }
         self.queue.submit(iter::once(encoder.finish()));
 
-        &self.output_texture.as_ref().unwrap().view
+        Ok(&self
+            .output_texture
+            .as_ref()
+            .context("output texture not initialized")?
+            .view)
     }
 
     /// Uploads packed RGBA pixel data to the output texture.
-    fn render_packed(&mut self, data: &[u8], width: u32, height: u32) -> &wgpu::TextureView {
+    fn render_packed(
+        &mut self,
+        data: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<&wgpu::TextureView> {
         self.ensure_output_texture(width, height);
 
-        let out = self.output_texture.as_ref().unwrap();
+        let out = self
+            .output_texture
+            .as_ref()
+            .context("output texture not initialized")?;
         self.queue.write_texture(
             out.texture.as_image_copy(),
             data,
@@ -365,7 +392,11 @@ impl WgpuVideoRenderer {
             },
         );
 
-        &self.output_texture.as_ref().unwrap().view
+        Ok(&self
+            .output_texture
+            .as_ref()
+            .context("output texture not initialized")?
+            .view)
     }
 
     /// Returns the current output texture view, if any frame has been rendered.

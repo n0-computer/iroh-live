@@ -261,7 +261,7 @@ async fn dial_impl(ticket_str: String, cam_w: u32, cam_h: u32) -> Result<jlong> 
         .video()
         .set(
             shared_source,
-            VideoCodec::best_available(),
+            VideoCodec::best_available().expect("no video codec available"),
             [VideoPreset::P720],
         )
         .context("failed to set video source")?;

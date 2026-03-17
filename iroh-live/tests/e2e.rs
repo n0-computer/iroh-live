@@ -41,7 +41,11 @@ async fn publish_subscribe_video() {
     let source = TestVideoSource::new(320, 240).with_fps(30.0);
     broadcast
         .video()
-        .set(source, VideoCodec::best_available(), [VideoPreset::P180])
+        .set(
+            source,
+            VideoCodec::best_available().expect("no video codec available"),
+            [VideoPreset::P180],
+        )
         .expect("failed to set video");
 
     publisher
@@ -115,7 +119,7 @@ async fn publish_subscribe_audio() {
         .video()
         .set(
             video_source,
-            VideoCodec::best_available(),
+            VideoCodec::best_available().expect("no video codec available"),
             [VideoPreset::P180],
         )
         .expect("failed to set video");
@@ -191,7 +195,7 @@ async fn adaptive_rendition_switching() {
         .video()
         .set(
             source,
-            VideoCodec::best_available(),
+            VideoCodec::best_available().expect("no video codec available"),
             [VideoPreset::P360, VideoPreset::P180],
         )
         .expect("failed to set video");
@@ -327,7 +331,11 @@ async fn call_dial_accept() {
     let source = TestVideoSource::new(320, 240).with_fps(30.0);
     caller_broadcast
         .video()
-        .set(source, VideoCodec::best_available(), [VideoPreset::P180])
+        .set(
+            source,
+            VideoCodec::best_available().expect("no video codec available"),
+            [VideoPreset::P180],
+        )
         .expect("failed to set caller video");
 
     // --- Callee side ---
@@ -339,7 +347,11 @@ async fn call_dial_accept() {
     let source = TestVideoSource::new(320, 240).with_fps(30.0);
     callee_broadcast
         .video()
-        .set(source, VideoCodec::best_available(), [VideoPreset::P180])
+        .set(
+            source,
+            VideoCodec::best_available().expect("no video codec available"),
+            [VideoPreset::P180],
+        )
         .expect("failed to set callee video");
 
     // Spawn the callee's accept loop in the background.

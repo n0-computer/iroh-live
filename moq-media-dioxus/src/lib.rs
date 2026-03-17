@@ -173,7 +173,10 @@ impl CustomPaintSource for DioxusVideoRenderer {
         );
 
         // Render the frame to the WgpuVideoRenderer's internal texture.
-        renderer.render(frame);
+        if let Err(e) = renderer.render(frame) {
+            tracing::warn!("wgpu render failed: {e:#}");
+            return registered.as_ref().map(|r| r.handle.clone());
+        }
 
         let Some((out_w, out_h)) = renderer.output_dimensions() else {
             return registered.as_ref().map(|r| r.handle.clone());

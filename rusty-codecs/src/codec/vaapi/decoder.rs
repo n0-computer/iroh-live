@@ -261,7 +261,10 @@ fn extract_dma_buf_info(
 /// Uses the provided shared Display connection rather than opening a new one
 /// per allocation. The exported DMA-BUF FDs are GPU-global and survive
 /// independently of the Display.
-fn alloc_va_dma_frame(display: &Rc<Display>, stream_info: &StreamInfo) -> GenericDmaVideoFrame {
+fn alloc_va_dma_frame(
+    display: &Rc<Display>,
+    stream_info: &StreamInfo,
+) -> Result<GenericDmaVideoFrame> {
     let w = stream_info.coded_resolution.width;
     let h = stream_info.coded_resolution.height;
 
@@ -274,13 +277,15 @@ fn alloc_va_dma_frame(display: &Rc<Display>, stream_info: &StreamInfo) -> Generi
             Some(UsageHint::USAGE_HINT_DECODER | UsageHint::USAGE_HINT_EXPORT),
             vec![()],
         )
-        .expect("failed to create VA surface for decoder frame pool");
+        .context("failed to create VA surface for decoder frame pool")?;
 
-    let surface = surfaces.pop().expect("no VA surface created");
+    let surface = surfaces
+        .pop()
+        .context("VAAPI returned empty surface list")?;
 
     let desc = surface
         .export_prime()
-        .expect("failed to export VA surface to DMA-BUF");
+        .context("failed to export VA surface to DMA-BUF")?;
 
     let layer = &desc.layers[0];
     let modifier = desc.objects[0].drm_format_modifier;
@@ -302,7 +307,8 @@ fn alloc_va_dma_frame(display: &Rc<Display>, stream_info: &StreamInfo) -> Generi
             .collect(),
     };
 
-    GenericDmaVideoFrame::new(fds, layout).expect("failed to create DMA-BUF frame from VA surface")
+    GenericDmaVideoFrame::new(fds, layout)
+        .map_err(|e| anyhow::anyhow!("failed to create DMA-BUF frame from VA surface: {e}"))
 }
 
 /// VAAPI hardware-accelerated H.264 decoder for Linux.
@@ -442,7 +448,7 @@ impl VideoDecoder for VaapiDecoder {
                 },
                 min_num_frames: 1,
             };
-            let _test_frame = alloc_va_dma_frame(&display, &test_info);
+            let _test_frame = alloc_va_dma_frame(&display, &test_info)?;
         }
 
         // FramePool requires Send, but Rc<Display> is !Send. Store the display
@@ -458,7 +464,10 @@ impl VideoDecoder for VaapiDecoder {
             Display::open().context("failed to open VAAPI display for frame pool")?,
         ));
         let framepool = Arc::new(Mutex::new(FramePool::new(move |info: &StreamInfo| {
+            // FramePool's allocator API is infallible, so we must panic here.
+            // The test allocation above verifies the driver works before we reach this point.
             alloc_va_dma_frame(&pool_display.0, info)
+                .expect("VAAPI surface allocation failed in frame pool")
         })));
 
         let mut this = Self {

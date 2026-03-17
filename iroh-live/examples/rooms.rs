@@ -29,7 +29,7 @@ const BROADCAST_NAME: &str = "cam";
 #[derive(Debug, Parser)]
 struct Cli {
     join: Option<RoomTicket>,
-    #[arg(long, default_value_t=VideoCodec::best_available(), value_parser = clap_enum_variants!(VideoCodec))]
+    #[arg(long, default_value_t=VideoCodec::best_available().expect("no video codec available"), value_parser = clap_enum_variants!(VideoCodec))]
     codec: VideoCodec,
     #[clap(long)]
     screen: bool,
