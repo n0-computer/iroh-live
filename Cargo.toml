@@ -9,7 +9,7 @@ members = [
     "moq-media-egui",
     "rusty-capture",
     "rusty-codecs",
-    "android-demo/rust",
+    "demos/android/rust",
     "demos/pi-zero",
 ]
 resolver = "2"

@@ -1,0 +1,651 @@
+[cargo-make] INFO - cargo make 0.37.24
+[cargo-make] INFO - 
+[cargo-make] INFO - Build File: Makefile.toml
+[cargo-make] INFO - Task: run-on-device
+[cargo-make] INFO - Profile: development
+[cargo-make] INFO - Execute Command: "cargo" "ndk" "-t" "arm64-v8a" "-P" "26" "--link-libcxx-shared" "-o" "app/src/main/jniLibs" "build" "-p" "iroh-live-android" "--release"
+    Building arm64-v8a (aarch64-linux-android)
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.23s
+     Copying libraries to /home/bit/Code/rust/iroh-live/android-demo/app/src/main/jniLibs
+[cargo-make] INFO - Running Task: clean-jni
+[cargo-make] INFO - Execute Command: "/home/bit/Android/Sdk/ndk/28.0.12674087/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" "app/src/main/jniLibs/arm64-v8a/libiroh_live_android.so"
+[cargo-make] INFO - Execute Command: "./gradlew" "assembleDebug"
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preDebugBuild UP-TO-DATE
+> Task :app:mergeDebugNativeDebugMetadata NO-SOURCE
+> Task :app:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :app:checkDebugAarMetadata UP-TO-DATE
+> Task :app:generateDebugResValues UP-TO-DATE
+> Task :app:mapDebugSourceSetPaths UP-TO-DATE
+> Task :app:generateDebugResources UP-TO-DATE
+> Task :app:mergeDebugResources UP-TO-DATE
+> Task :app:packageDebugResources UP-TO-DATE
+> Task :app:parseDebugLocalResources UP-TO-DATE
+> Task :app:createDebugCompatibleScreenManifests UP-TO-DATE
+> Task :app:extractDeepLinksDebug UP-TO-DATE
+> Task :app:processDebugMainManifest UP-TO-DATE
+> Task :app:processDebugManifest UP-TO-DATE
+> Task :app:processDebugManifestForPackage UP-TO-DATE
+> Task :app:processDebugResources UP-TO-DATE
+> Task :app:compileDebugKotlin UP-TO-DATE
+> Task :app:javaPreCompileDebug UP-TO-DATE
+> Task :app:compileDebugJavaWithJavac NO-SOURCE
+> Task :app:mergeDebugShaders UP-TO-DATE
+> Task :app:compileDebugShaders NO-SOURCE
+> Task :app:generateDebugAssets UP-TO-DATE
+> Task :app:mergeDebugAssets UP-TO-DATE
+> Task :app:compressDebugAssets UP-TO-DATE
+> Task :app:desugarDebugFileDependencies UP-TO-DATE
+> Task :app:dexBuilderDebug UP-TO-DATE
+> Task :app:mergeDebugGlobalSynthetics UP-TO-DATE
+> Task :app:processDebugJavaRes UP-TO-DATE
+> Task :app:mergeDebugJavaResource UP-TO-DATE
+> Task :app:checkDebugDuplicateClasses UP-TO-DATE
+> Task :app:mergeExtDexDebug UP-TO-DATE
+> Task :app:mergeLibDexDebug UP-TO-DATE
+> Task :app:mergeProjectDexDebug UP-TO-DATE
+> Task :app:mergeDebugJniLibFolders UP-TO-DATE
+> Task :app:mergeDebugNativeLibs UP-TO-DATE
+> Task :app:stripDebugDebugSymbols UP-TO-DATE
+> Task :app:validateSigningDebug UP-TO-DATE
+> Task :app:writeDebugAppMetadata UP-TO-DATE
+> Task :app:writeDebugSigningConfigVersions UP-TO-DATE
+> Task :app:packageDebug UP-TO-DATE
+> Task :app:createDebugApkListingFileRedirect UP-TO-DATE
+> Task :app:assembleDebug UP-TO-DATE
+
+BUILD SUCCESSFUL in 545ms
+35 actionable tasks: 35 up-to-date
+[cargo-make] INFO - Running Task: apk
+APK ready: app/build/outputs/apk/debug/app-debug.apk
+[cargo-make] INFO - Execute Command: "/home/bit/Android/Sdk/platform-tools/adb" "install" "-r" "app/build/outputs/apk/debug/app-debug.apk"
+Performing Streamed Install
+Success
+[cargo-make] INFO - Running Task: run-on-device
+Starting: Intent { cmp=com.n0.irohlive.demo/.MainActivity }
+--------- beginning of main
+03-16 10:15:08.635 10430 10687 D iroh_live: DEBUG iroh_relay::dns: Failed to read the system's DNS config, using fallback DNS servers. error=proto error: io error: No such file or directory (os error 2)
+03-16 10:15:08.637 10430 10687 D iroh_live: DEBUG iroh::socket::transports::ip: binding addr=0.0.0.0:0
+03-16 10:15:08.638 10430 10687 D iroh_live: DEBUG iroh::socket::transports::ip: successfully bound addr=0.0.0.0:0 local_addr=0.0.0.0:44681
+03-16 10:15:08.638 10430 10687 D iroh_live: DEBUG iroh::socket::transports::ip: binding addr=[::]:0
+03-16 10:15:08.638 10430 10687 D iroh_live: DEBUG iroh::socket::transports::ip: successfully bound addr=[::]:0 local_addr=[::]:42807
+03-16 10:15:08.714 10430 10687 D iroh_live: DEBUG iroh::socket: scheduling periodic_stun to run immediately and in 22s
+03-16 10:15:08.714 10430 10687 D iroh_live: DEBUG iroh::_events::direct_addrs: addrs={DirectAddr { addr: 192.0.0.4:44681, typ: Local }, DirectAddr { addr: 192.168.178.141:44681, typ: Local }, DirectAddr { addr: [2a01:599:b2e:8a85:d5ed:b4fe:c8b6:7998]:42807, typ: Local }, DirectAddr { addr: [2a01:59f:ca0f:7c29:6374:e61a:d65e:a50d]:42807, typ: Local }}
+03-16 10:15:08.714 10430 10687 D iroh_live: DEBUG iroh::endpoint: iroh Endpoint created version="0.96.1"
+03-16 10:15:08.714 10430 10687 D iroh_live: DEBUG iroh::address_lookup::pkarr: creating pkarr publisher that publishes to https://dns.iroh.link/pkarr
+03-16 10:15:08.715 10430 10687 I iroh_live:  INFO iroh_live::live: endpoint bound endpoint_id=1fb6c10acb62c251928d77f1a4a645b3b166f6b53a879b591fbca666d6397bc9
+03-16 10:15:08.715 10430 10692 D iroh_live: DEBUG pkarr_publish{me=1fb6c10acb}: iroh::address_lookup::pkarr: Publish endpoint info to pkarr data=EndpointData { addrs: {Ip(192.0.0.4:44681), Ip(192.168.178.141:44681), Ip([2a01:599:b2e:8a85:d5ed:b4fe:c8b6:7998]:42807), Ip([2a01:59f:ca0f:7c29:6374:e61a:d65e:a50d]:42807)}, user_data: None } pkarr_relay=https://dns.iroh.link/pkarr
+03-16 10:15:08.715 10430 10698 D iroh_live: DEBUG actor: iroh::socket: starting direct addr update (Periodic)
+03-16 10:15:08.715 10430 10698 D iroh_live: DEBUG actor: iroh::socket: requesting net_report report
+03-16 10:15:08.715 10430 10698 D iroh_live: DEBUG actor: iroh::net_report: net_report starting do_full=true
+03-16 10:15:08.716 10430 10698 D iroh_live: DEBUG actor: iroh::net_report: v4 QAD probe relay.url=RelayUrl("https://aps1-1.relay.n0.iroh-canary.iroh.link./")
+03-16 10:15:08.717 10430 10698 D iroh_live: DEBUG actor: iroh::net_report: v6 QAD probe relay.url=RelayUrl("https://aps1-1.relay.n0.iroh-canary.iroh.link./")
+03-16 10:15:08.718 10430 10687 I iroh_live:  INFO iroh_live_android: connecting to broadcast broadcast=hello
+03-16 10:15:08.719 10430 10694 D iroh_live: DEBUG gossip{me=1fb6c10acb}: iroh_gossip::net: handle in_event event=UpdatePeerData(PeerData(58b))
+03-16 10:15:08.720 10430 10698 D iroh_live: DEBUG actor: iroh::net_report: v4 QAD probe relay.url=RelayUrl("https://euc1-1.relay.n0.iroh-canary.iroh.link./")
+03-16 10:15:08.720 10430 10698 D iroh_live: DEBUG actor: iroh::net_report: v6 QAD probe relay.url=RelayUrl("https://euc1-1.relay.n0.iroh-canary.iroh.link./")
+03-16 10:15:08.720 10430 10698 D iroh_live: DEBUG actor: iroh::net_report: v4 QAD probe relay.url=RelayUrl("https://use1-1.relay.n0.iroh-canary.iroh.link./")
+03-16 10:15:08.720 10430 10698 D iroh_live: DEBUG actor: iroh::net_report: v6 QAD probe relay.url=RelayUrl("https://use1-1.relay.n0.iroh-canary.iroh.link./")
+03-16 10:15:08.720 10430 10698 D iroh_live: DEBUG actor: iroh::net_report: v4 QAD probe relay.url=RelayUrl("https://usw1-1.relay.n0.iroh-canary.iroh.link./")
+03-16 10:15:08.720 10430 10698 D iroh_live: DEBUG actor: iroh::net_report: v6 QAD probe relay.url=RelayUrl("https://usw1-1.relay.n0.iroh-canary.iroh.link./")
+03-16 10:15:08.720 10430 10694 D iroh_live: DEBUG gossip{me=1fb6c10acb}: iroh_gossip::net: handle in_event event=UpdatePeerData(PeerData(58b))
+03-16 10:15:08.746 10430 10691 W iroh_live:  WARN actor:QADv6{relay_url=https://aps1-1.relay.n0.iroh-canary.iroh.link./}:drive{id=0}:poll_send{dst=Ip([2a01:4ff:2f0:2403::1]:7842) src=None len=1200}: iroh_quinn_udp: sendmsg error: Os { code: 101, kind: NetworkUnreachable, message: "Network is unreachable" }, Transmit: { destination: [2a01:4ff:2f0:2403::1]:7842, src_ip: None, ecn: Some(Ect0), len: 1200, segment_size: None }
+03-16 10:15:08.920 10430 10691 D iroh_live: DEBUG actor:reportgen-actor:run-probe{proto=Https delay=200ms relay=RelayConfig { url: RelayUrl("https://euc1-1.relay.n0.iroh-canary.iroh.link./"), quic: Some(RelayQuicConfig { port: 7842 }) }}: iroh::net_report::reportgen: starting probe
+03-16 10:15:08.921 10430 10696 D iroh_live: DEBUG actor:reportgen-actor:run-probe{proto=Https delay=200ms relay=RelayConfig { url: RelayUrl("https://aps1-1.relay.n0.iroh-canary.iroh.link./"), quic: Some(RelayQuicConfig { port: 7842 }) }}: iroh::net_report::reportgen: starting probe
+03-16 10:15:08.924 10430 10691 D iroh_live: DEBUG actor:reportgen-actor:run-probe{proto=Https delay=200ms relay=RelayConfig { url: RelayUrl("https://use1-1.relay.n0.iroh-canary.iroh.link./"), quic: Some(RelayQuicConfig { port: 7842 }) }}: iroh::net_report::reportgen: starting probe
+03-16 10:15:08.924 10430 10693 D iroh_live: DEBUG actor:reportgen-actor:run-probe{proto=Https delay=200ms relay=RelayConfig { url: RelayUrl("https://usw1-1.relay.n0.iroh-canary.iroh.link./"), quic: Some(RelayQuicConfig { port: 7842 }) }}: iroh::net_report::reportgen: starting probe
+03-16 10:15:08.983 10430 10699 D iroh_live: DEBUG actor:QADv4{relay_url=https://aps1-1.relay.n0.iroh-canary.iroh.link./}:drive{id=1}: iroh_quinn_proto::connection: ECN not acknowledged by peer
+03-16 10:15:09.012 10430 10697 D iroh_live: DEBUG relay-actor: iroh::socket::transports::relay::actor: Adding relay connection url=RelayUrl("https://euc1-1.relay.n0.iroh-canary.iroh.link./")
+03-16 10:15:09.012 10430 10697 D iroh_live: DEBUG relay-actor: iroh::socket::transports::relay::actor: 0 active relay conns
+03-16 10:15:09.012 10430 10697 D iroh_live: DEBUG relay-actor: iroh::socket::transports::relay::actor: 1 active relay conns: relay-https://euc1-1.relay.n0.iroh-canary.iroh.link./
+03-16 10:15:09.012 10430 10697 D iroh_live: DEBUG relay-actor:active-relay{url=https://euc1-1.relay.n0.iroh-canary.iroh.link./}:dialing: iroh_relay::client: Dialing relay by websocket dial_url=wss://euc1-1.relay.n0.iroh-canary.iroh.link./relay
+03-16 10:15:09.016 10430 10693 D iroh_live: DEBUG actor:QADv4{relay_url=https://euc1-1.relay.n0.iroh-canary.iroh.link./}:drive{id=5}: iroh_quinn_proto::connection: ECN not acknowledged by peer
+03-16 10:15:09.020 10430 10697 D iroh_live: DEBUG actor:reportgen-actor:run-probe{proto=Https delay=300ms relay=RelayConfig { url: RelayUrl("https://euc1-1.relay.n0.iroh-canary.iroh.link./"), quic: Some(RelayQuicConfig { port: 7842 }) }}: iroh::net_report::reportgen: starting probe
+03-16 10:15:09.021 10430 10699 D iroh_live: DEBUG actor:reportgen-actor:run-probe{proto=Https delay=300ms relay=RelayConfig { url: RelayUrl("https://aps1-1.relay.n0.iroh-canary.iroh.link./"), quic: Some(RelayQuicConfig { port: 7842 }) }}: iroh::net_report::reportgen: starting probe
+03-16 10:15:09.024 10430 10693 D iroh_live: DEBUG actor:reportgen-actor:run-probe{proto=Https delay=300ms relay=RelayConfig { url: RelayUrl("https://usw1-1.relay.n0.iroh-canary.iroh.link./"), quic: Some(RelayQuicConfig { port: 7842 }) }}: iroh::net_report::reportgen: starting probe
+03-16 10:15:09.024 10430 10699 D iroh_live: DEBUG actor:reportgen-actor:run-probe{proto=Https delay=300ms relay=RelayConfig { url: RelayUrl("https://use1-1.relay.n0.iroh-canary.iroh.link./"), quic: Some(RelayQuicConfig { port: 7842 }) }}: iroh::net_report::reportgen: starting probe
+03-16 10:15:09.029 10430 10693 D iroh_live: DEBUG actor:QADv4{relay_url=https://aps1-1.relay.n0.iroh-canary.iroh.link./}:drive{id=1}: iroh_quinn_proto::transport_parameters: address discovery enabled for peer role=SendOnly
+03-16 10:15:09.030 10430 10693 D iroh_live: DEBUG actor:QADv4: iroh::net_report: probe report r=QadProbeReport { relay: RelayUrl("https://aps1-1.relay.n0.iroh-canary.iroh.link./"), latency: 183.755249ms, addr: 78.94.215.137:44681 }
+03-16 10:15:09.047 10430 10695 D iroh_live: DEBUG relay-actor:active-relay{url=https://euc1-1.relay.n0.iroh-canary.iroh.link./}:dialing: iroh_relay::client::tls: TCP stream connected server_addr=Ok(162.55.211.167:443) local_addr=192.168.178.141:60534
+03-16 10:15:09.047 10430 10695 D iroh_live: DEBUG relay-actor:active-relay{url=https://euc1-1.relay.n0.iroh-canary.iroh.link./}:dialing: iroh_relay::client::tls: Starting TLS handshake
+03-16 10:15:09.049 10430 10693 D iroh_live: DEBUG actor:QADv4{relay_url=https://euc1-1.relay.n0.iroh-canary.iroh.link./}:drive{id=5}: iroh_quinn_proto::transport_parameters: address discovery enabled for peer role=SendOnly
+03-16 10:15:09.049 10430 10693 D iroh_live: DEBUG actor:QADv4: iroh::net_report: probe report r=QadProbeReport { relay: RelayUrl("https://euc1-1.relay.n0.iroh-canary.iroh.link./"), latency: 54.787435ms, addr: 78.94.215.137:44681 }
+03-16 10:15:09.079 10430 10699 D iroh_live: DEBUG relay-actor:active-relay{url=https://euc1-1.relay.n0.iroh-canary.iroh.link./}:dialing: iroh_relay::client::tls: tls_connector connect success
+03-16 10:15:09.079 10430 10699 D iroh_live: DEBUG relay-actor:active-relay{url=https://euc1-1.relay.n0.iroh-canary.iroh.link./}:dialing: iroh_relay::client: Using TLS key export for relay client authentication
+03-16 10:15:09.118 10430 10699 D iroh_live: DEBUG actor:QADv4{relay_url=https://use1-1.relay.n0.iroh-canary.iroh.link./}:drive{id=7}: iroh_quinn_proto::connection: ECN not acknowledged by peer
+03-16 10:15:09.121 10430 10691 D iroh_live: DEBUG actor:reportgen-actor:run-probe{proto=Https delay=400ms relay=RelayConfig { url: RelayUrl("https://euc1-1.relay.n0.iroh-canary.iroh.link./"), quic: Some(RelayQuicConfig { port: 7842 }) }}: iroh::net_report::reportgen: starting probe
+03-16 10:15:09.121 10430 10699 D iroh_live: DEBUG actor:reportgen-actor:run-probe{proto=Https delay=400ms relay=RelayConfig { url: RelayUrl("https://aps1-1.relay.n0.iroh-canary.iroh.link./"), quic: Some(RelayQuicConfig { port: 7842 }) }}: iroh::net_report::reportgen: starting probe
+03-16 10:15:09.124 10430 10699 D iroh_live: DEBUG actor:reportgen-actor:run-probe{proto=Https delay=400ms relay=RelayConfig { url: RelayUrl("https://usw1-1.relay.n0.iroh-canary.iroh.link./"), quic: Some(RelayQuicConfig { port: 7842 }) }}: iroh::net_report::reportgen: starting probe
+03-16 10:15:09.124 10430 10691 D iroh_live: DEBUG actor:reportgen-actor:run-probe{proto=Https delay=400ms relay=RelayConfig { url: RelayUrl("https://use1-1.relay.n0.iroh-canary.iroh.link./"), quic: Some(RelayQuicConfig { port: 7842 }) }}: iroh::net_report::reportgen: starting probe
+03-16 10:15:09.151 10430 10693 D iroh_live: DEBUG actor:QADv4{relay_url=https://usw1-1.relay.n0.iroh-canary.iroh.link./}:drive{id=2}: iroh_quinn_proto::connection: ECN not acknowledged by peer
+03-16 10:15:09.156 10430 10699 D iroh_live: DEBUG relay-actor:active-relay{url=https://euc1-1.relay.n0.iroh-canary.iroh.link./}:dialing: iroh::_events::net::relay::connected: url=https://euc1-1.relay.n0.iroh-canary.iroh.link./
+03-16 10:15:09.156 10430 10699 D iroh_live: DEBUG relay-actor:active-relay{url=https://euc1-1.relay.n0.iroh-canary.iroh.link./}:connected: iroh::socket::transports::relay::actor: Actor loop: connected to relay
+03-16 10:15:09.156 10430 10699 D iroh_live: DEBUG relay-actor:active-relay{url=https://euc1-1.relay.n0.iroh-canary.iroh.link./}:connected: iroh::_events::relay::connected: url=https://euc1-1.relay.n0.iroh-canary.iroh.link./ home_relay=false
+03-16 10:15:09.157 10430 10691 D iroh_live: DEBUG relay-actor:active-relay{url=https://euc1-1.relay.n0.iroh-canary.iroh.link./}:connected: iroh_relay::ping_tracker: Sending ping to relay server. data=[243, 58, 58, 247, 150, 31, 30, 250]
+03-16 10:15:09.173 10430 10699 D iroh_live: DEBUG actor:QADv4{relay_url=https://use1-1.relay.n0.iroh-canary.iroh.link./}:drive{id=7}: iroh_quinn_proto::transport_parameters: address discovery enabled for peer role=SendOnly
+03-16 10:15:09.173 10430 10699 D iroh_live: DEBUG actor:QADv4: iroh::net_report: probe report r=QadProbeReport { relay: RelayUrl("https://use1-1.relay.n0.iroh-canary.iroh.link./"), latency: 113.981038ms, addr: 78.94.215.137:44681 }
+03-16 10:15:09.207 10430 10699 D iroh_live: DEBUG actor:reportgen-actor:captive-portal: iroh::net_report::reportgen: check_captive_portal url=http://use1-1.relay.n0.iroh-canary.iroh.link./generate_204 status_code=204 No Content valid_response=true
+03-16 10:15:09.237 10430 10693 D iroh_live: DEBUG relay-actor:active-relay{url=https://euc1-1.relay.n0.iroh-canary.iroh.link./}:connected: iroh_relay::ping_tracker: Pong received from relay server data=[243, 58, 58, 247, 150, 31, 30, 250]
+03-16 10:15:09.237 10430 10693 D iroh_live: DEBUG connect{remote=9eb6111fd1}:connect{me=1fb6c10acb alpn="moq-lite-03" remote=9eb6111fd1}:drive{id=8}: iroh_quinn_proto::connection: ECN not acknowledged by peer
+03-16 10:15:09.238 10430 10693 D iroh_live: DEBUG connect{remote=9eb6111fd1}:connect{me=1fb6c10acb alpn="moq-lite-03" remote=9eb6111fd1}:drive{id=8}: iroh_quinn_proto::connection: multipath negotiated initial_max_path_id=12
+03-16 10:15:09.238 10430 10693 D iroh_live: DEBUG connect{remote=9eb6111fd1}:connect{me=1fb6c10acb alpn="moq-lite-03" remote=9eb6111fd1}:drive{id=8}: iroh_quinn_proto::connection: iroh hole punching negotiated max_remote_addresses=12 max_local_addresses=12
+03-16 10:15:09.238 10430 10693 W iroh_live:  WARN connect{remote=9eb6111fd1}:connect{me=1fb6c10acb alpn="moq-lite-03" remote=9eb6111fd1}:drive{id=8}: iroh_quinn_proto::connection: remote server configuration might cause nat traversal issues max_local_addresses=12 remote_cid_limit=5
+03-16 10:15:09.238 10430 10697 D iroh_live: DEBUG RemoteStateActor{me=1fb6c10acb remote=9eb6111fd1}:handle_message{msg=AddConnection(..)}: iroh::_events::path::set_status: remote=9eb6111fd1 path_remote=Relay(https://euc1-1.relay.n0.iroh-canary.iroh.link./, 9eb6111fd1) path_status=Backup conn_id=ConnId(223524763904496) path_id=0 res=Ok(())
+03-16 10:15:09.239 10430 10697 D iroh_live: DEBUG RemoteStateActor{me=1fb6c10acb remote=9eb6111fd1}:handle_message{msg=AddConnection(..)}:select_path: iroh::_events::path::selected: remote=9eb6111fd1 path_remote=Relay(https://euc1-1.relay.n0.iroh-canary.iroh.link./, 9eb6111fd1) rtt=225.709554ms prev_remote=Ok(None)
+03-16 10:15:09.239 10430 10697 D iroh_live: DEBUG RemoteStateActor{me=1fb6c10acb remote=9eb6111fd1}:handle_message{msg=AddConnection(..)}:select_path:open_path{open_addr=Relay(https://euc1-1.relay.n0.iroh-canary.iroh.link./, 9eb6111fd1)}: iroh::_events::path::set_status: remote=9eb6111fd1 open_addr=Relay(https://euc1-1.relay.n0.iroh-canary.iroh.link./, 9eb6111fd1) path_status=Backup conn_id=ConnId(223524763904496) path_id=0 res=Ok(())
+03-16 10:15:09.239 10430 10697 D iroh_live: DEBUG RemoteStateActor{me=1fb6c10acb remote=9eb6111fd1}:handle_message{msg=AddConnection(..)}:do_holepunching: iroh::_events::qnt::init: remote=9eb6111fd1 local_candidates={192.0.0.4:44681, 192.168.178.141:44681, [2a01:599:b2e:8a85:d5ed:b4fe:c8b6:7998]:42807, [2a01:59f:ca0f:7c29:6374:e61a:d65e:a50d]:42807} remote_candidates={}
+03-16 10:15:09.239 10430 10697 D iroh_live: DEBUG connect{remote=9eb6111fd1}: iroh::endpoint: Connection established. me=1fb6c10acb remote=9eb6111fd1 alpn=moq-lite-03
+03-16 10:15:09.239 10430 10697 D iroh_live: DEBUG connect{remote=9eb6111fd1}: moq_lite::client: connected version=Draft03
+03-16 10:15:09.239 10430 10697 I iroh_live:  INFO LiveActor: iroh_moq: connected remote=9eb6111fd1
+03-16 10:15:09.239 10430 10697 I iroh_live:  INFO LiveActor: iroh_moq: handle new incoming session
+03-16 10:15:09.239 10430 10687 I iroh_live:  INFO iroh_live::live: new peer connected id=9eb6111fd1629d54dade96ed97b9fbe7c2a8834e697549bb420f581a7c47f754
+03-16 10:15:09.297 10430 10695 D iroh_live: DEBUG connect{remote=9eb6111fd1}:connect{me=1fb6c10acb alpn="moq-lite-03" remote=9eb6111fd1}:drive{id=8}: iroh_quinn_proto::connection::paths: remote changed path status status=Backup seq=1
+03-16 10:15:09.298 10430 10699 D iroh_live: DEBUG RemoteStateActor{me=1fb6c10acb remote=9eb6111fd1}:do_holepunching: iroh_quinn_proto::connection: path added validated=false path_id=1 network_path=(local: <unspecified>, remote: [::ffff:78.94.215.137]:39949)
+03-16 10:15:09.298 10430 10699 D iroh_live: DEBUG RemoteStateActor{me=1fb6c10acb remote=9eb6111fd1}:do_holepunching: iroh_quinn_proto::connection: path added validated=false path_id=2 network_path=(local: <unspecified>, remote: [::ffff:192.168.178.107]:39949)
+03-16 10:15:09.298 10430 10699 D iroh_live: DEBUG RemoteStateActor{me=1fb6c10acb remote=9eb6111fd1}:do_holepunching: iroh::_events::qnt::init: remote=9eb6111fd1 local_candidates={192.0.0.4:44681, 192.168.178.141:44681, [2a01:599:b2e:8a85:d5ed:b4fe:c8b6:7998]:42807, [2a01:59f:ca0f:7c29:6374:e61a:d65e:a50d]:42807} remote_candidates={78.94.215.137:39949, 192.168.178.107:39949}
+03-16 10:15:09.326 10430 10695 D iroh_live: DEBUG actor:QADv4{relay_url=https://usw1-1.relay.n0.iroh-canary.iroh.link./}:drive{id=2}: iroh_quinn_proto::transport_parameters: address discovery enabled for peer role=SendOnly
+03-16 10:15:09.327 10430 10695 D iroh_live: DEBUG actor:QADv4: iroh::net_report: probe report r=QadProbeReport { relay: RelayUrl("https://usw1-1.relay.n0.iroh-canary.iroh.link./"), latency: 217.174398ms, addr: 78.94.215.137:44681 }
+03-16 10:15:09.429 10430 10695 D iroh_live: DEBUG connect{remote=9eb6111fd1}: moq_lite::lite::subscriber: announce broadcast=hello
+03-16 10:15:09.432 10430 10693 D iroh_live: DEBUG RemoteStateActor{me=1fb6c10acb remote=9eb6111fd1}:handle_path_event{conn_id=ConnId(223524763904496) event=Ok(Opened { id: PathId(2) })}: iroh::_events::path::open: remote=9eb6111fd1 path_remote=Ip(192.168.178.107:39949) conn_id=ConnId(223524763904496) path_id=2
+03-16 10:15:09.432 10430 10693 D iroh_live: DEBUG RemoteStateActor{me=1fb6c10acb remote=9eb6111fd1}:handle_path_event{conn_id=ConnId(223524763904496) event=Ok(Opened { id: PathId(2) })}:select_path: iroh::_events::path::selected: remote=9eb6111fd1 path_remote=Ip(192.168.178.107:39949) rtt=3.618489ms prev_remote=Ok(Some(Relay(https://euc1-1.relay.n0.iroh-canary.iroh.link./, 9eb6111fd1)))
+03-16 10:15:09.432 10430 10687 D iroh_live: DEBUG iroh_moq: peer announced broadcast: hello
+03-16 10:15:09.433 10430 10693 D iroh_live: DEBUG RemoteStateActor{me=1fb6c10acb remote=9eb6111fd1}:handle_path_event{conn_id=ConnId(223524763904496) event=Ok(Opened { id: PathId(2) })}:select_path:open_path{open_addr=Ip(192.168.178.107:39949)}: iroh::_events::path::set_status: remote=9eb6111fd1 open_addr=Ip(192.168.178.107:39949) path_status=Available conn_id=ConnId(223524763904496) path_id=2 res=Ok(())
+03-16 10:15:09.434 10430 10697 I iroh_live:  INFO connect{remote=9eb6111fd1}: moq_lite::lite::subscriber: subscribe started id=0 broadcast=hello track=catalog.json
+03-16 10:15:09.445 10430 10695 I iroh_live:  INFO connect{remote=9eb6111fd1}: moq_lite::lite::subscriber: subscribe started id=1 broadcast=hello track=video/h264-openh264-1080p
+03-16 10:15:09.577 10430 10687 I iroh_live:  INFO rusty_codecs::codec::android::decoder: H.264 Android MediaCodec decoder ready width=1920 height=1080
+03-16 10:15:09.577 10430 10687 I iroh_live:  INFO rusty_codecs::codec::dynamic: using Android MediaCodec H.264 decoder
+03-16 10:15:09.577 10430 10729 I iroh_live:  INFO videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode start
+03-16 10:15:09.577 10430 10729 I iroh_live:  INFO videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: playout buffer sized from decoder burst burst_size=4 framerate=30.0 buffer_ms=133
+03-16 10:15:09.577 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: buffer updated old_buffer_ms=0 new_buffer_ms=133
+03-16 10:15:09.731 10430 10695 W iroh_live:  WARN pkarr_publish{me=1fb6c10acb}: iroh::address_lookup::pkarr: Failed to publish to pkarr err=Error sending http request: error sending request for url (https://dns.iroh.link/pkarr/d65cnnsmcmbfdrwpq9a4jj1fsqasp7ii8kd3sse9z1ugpit3xxro): client error (Connect): dns error: Resolve failed ipv4: deadline has elapsed, ipv6 deadline has elapsed url=https://dns.iroh.link/pkarr retry_after=1s failed_attempts=1
+03-16 10:15:09.812 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=18.592447ms
+03-16 10:15:09.823 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: status frames_pushed=0 frames_popped=0 buf_len=0 buffer_ms=133 jitter_ms=0 total_drift_ms=0 reanchor_count=0
+03-16 10:15:09.831 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: rusty_codecs::codec::android::decoder: decoder output format changed width=1440 height=1080 stride=1472 slice_height=1088
+03-16 10:15:09.855 10430 10729 W iroh_live:  WARN videodec{name=video/h264-openh264-1080p decoder=h264-android}: rusty_codecs::codec::android::decoder: decoder output buffer too small for NV12 len=2402272 expected=2402304
+03-16 10:15:09.856 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: rusty_codecs::codec::android::decoder: decoder output format changed width=1440 height=1080 stride=1440 slice_height=1080
+03-16 10:15:09.885 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=62.129883ms
+03-16 10:15:09.895 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: anchored (first frame) buffer_ms=133 pts_ms=33
+03-16 10:15:09.936 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=30.51416ms
+03-16 10:15:09.984 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=26.835856ms
+03-16 10:15:10.044 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=36.262654ms
+03-16 10:15:10.067 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=489.25175ms buf_len=3
+03-16 10:15:10.101 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=34.028931ms
+03-16 10:15:10.124 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=56.711263ms buf_len=2
+03-16 10:15:10.164 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=40.521281ms
+03-16 10:15:10.189 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=65.145305ms buf_len=2
+03-16 10:15:10.227 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=37.448283ms
+03-16 10:15:10.237 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=8 buffer_ms=133 total_drift_ms=8 reanchor_count=1 pts_ms=233
+03-16 10:15:10.282 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=34.367798ms
+03-16 10:15:10.347 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=42.011841ms
+03-16 10:15:10.407 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=38.382487ms
+03-16 10:15:10.429 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=239.615112ms buf_len=4
+03-16 10:15:10.469 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=40.141399ms
+03-16 10:15:10.491 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=61.728393ms buf_len=2
+03-16 10:15:10.527 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=36.415324ms
+03-16 10:15:10.538 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=0 buffer_ms=133 total_drift_ms=9 reanchor_count=2 pts_ms=400
+03-16 10:15:10.581 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=31.99117ms
+03-16 10:15:10.646 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=43.511068ms
+03-16 10:15:10.681 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.586303ms
+03-16 10:15:10.699 10430 10693 D iroh_live: DEBUG actor:reportgen-actor: iroh::net_report::reportgen: all regular probes done
+03-16 10:15:10.730 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=238.970499ms buf_len=4
+03-16 10:15:10.731 10430 10699 D iroh_live: DEBUG pkarr_publish{me=1fb6c10acb}: iroh::address_lookup::pkarr: Publish endpoint info to pkarr (interval elapsed)
+03-16 10:15:10.731 10430 10699 D iroh_live: DEBUG pkarr_publish{me=1fb6c10acb}: iroh::address_lookup::pkarr: Publish endpoint info to pkarr data=EndpointData { addrs: {Ip(192.0.0.4:44681), Ip(192.168.178.141:44681), Ip([2a01:599:b2e:8a85:d5ed:b4fe:c8b6:7998]:42807), Ip([2a01:59f:ca0f:7c29:6374:e61a:d65e:a50d]:42807)}, user_data: None } pkarr_relay=https://dns.iroh.link/pkarr
+03-16 10:15:10.747 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=17.190674ms
+03-16 10:15:10.794 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=64.159953ms buf_len=2
+03-16 10:15:10.807 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.744426ms
+03-16 10:15:10.847 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=52.763143ms buf_len=1
+03-16 10:15:10.860 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.14856ms
+03-16 10:15:10.891 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=20 buffer_ms=133 total_drift_ms=29 reanchor_count=3 pts_ms=600
+03-16 10:15:10.915 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.032512ms
+03-16 10:15:10.975 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.550334ms
+03-16 10:15:11.037 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.360352ms
+03-16 10:15:11.083 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=236.235392ms buf_len=3
+03-16 10:15:11.097 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.718017ms
+03-16 10:15:11.146 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=62.684896ms buf_len=2
+03-16 10:15:11.161 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.48995ms
+03-16 10:15:11.198 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=6 buffer_ms=133 total_drift_ms=36 reanchor_count=4 pts_ms=766
+03-16 10:15:11.224 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.760702ms
+03-16 10:15:11.293 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.771892ms
+03-16 10:15:11.347 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=200.137166ms buf_len=3
+03-16 10:15:11.359 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.605346ms
+03-16 10:15:11.404 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=57.301554ms buf_len=2
+03-16 10:15:11.419 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.172363ms
+03-16 10:15:11.462 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=57.429484ms buf_len=1
+03-16 10:15:11.475 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.303426ms
+03-16 10:15:11.509 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=10 buffer_ms=133 total_drift_ms=47 reanchor_count=5 pts_ms=933
+03-16 10:15:11.535 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.941406ms
+03-16 10:15:11.595 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.642903ms
+03-16 10:15:11.654 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.437419ms
+03-16 10:15:11.703 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=240.938924ms buf_len=4
+03-16 10:15:11.716 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.07841ms
+03-16 10:15:11.728 10430 10699 D iroh_live: DEBUG actor:QADv6: iroh::net_report: probe timed out
+03-16 10:15:11.728 10430 10699 D iroh_live: DEBUG actor: iroh::net_report: enough probes: 4
+03-16 10:15:11.729 10430 10699 D iroh_live: DEBUG actor: iroh::net_report: generated report in 3013ms report=Report { udp_v4: true, udp_v6: false, mapping_varies_by_dest_ipv4: Some(false), mapping_varies_by_dest_ipv6: None, preferred_relay: Some(RelayUrl("https://euc1-1.relay.n0.iroh-canary.iroh.link./")), relay_latency: RelayLatencies { ipv4: {RelayUrl("https://aps1-1.relay.n0.iroh-canary.iroh.link./"): 183.755249ms, RelayUrl("https://euc1-1.relay.n0.iroh-canary.iroh.link./"): 54.787435ms, RelayUrl("https://use1-1.relay.n0.iroh-canary.iroh.link./"): 113.981038ms, RelayUrl("https://usw1-1.relay.n0.iroh-canary.iroh.link./"): 217.174398ms}, ipv6: {}, https: {RelayUrl("https://aps1-1.relay.n0.iroh-canary.iroh.link./"): 733.70341ms, RelayUrl("https://euc1-1.relay.n0.iroh-canary.iroh.link./"): 132.70756ms, RelayUrl("https://use1-1.relay.n0.iroh-canary.iroh.link./"): 462.047689ms, RelayUrl("https://usw1-1.relay.n0.iroh-canary.iroh.link./"): 759.208333ms} }, global_v4: Some(78.94.215.137:44681), global_v6: None, captive_portal: Some(false) }
+03-16 10:15:11.730 10430 10699 D iroh_live: DEBUG actor: iroh::socket: direct addr update done (Periodic)
+03-16 10:15:11.732 10430 10699 D iroh_live: DEBUG actor: iroh::_events::direct_addrs: addrs={DirectAddr { addr: 78.94.215.137:44681, typ: Qad }, DirectAddr { addr: 192.0.0.4:44681, typ: Local }, DirectAddr { addr: 192.168.178.141:44681, typ: Local }, DirectAddr { addr: [2a01:599:b2e:8a85:d5ed:b4fe:c8b6:7998]:42807, typ: Local }, DirectAddr { addr: [2a01:59f:ca0f:7c29:6374:e61a:d65e:a50d]:42807, typ: Local }}
+03-16 10:15:11.732 10430 10699 D iroh_live: DEBUG actor: iroh::socket: scheduling periodic_stun to run in 23s
+03-16 10:15:11.732 10430 10695 D iroh_live: DEBUG gossip{me=1fb6c10acb}: iroh_gossip::net: handle in_event event=UpdatePeerData(PeerData(66b))
+03-16 10:15:11.732 10430 10693 D iroh_live: DEBUG RemoteStateActor{me=1fb6c10acb remote=9eb6111fd1}:do_holepunching: iroh::_events::qnt::init: remote=9eb6111fd1 local_candidates={78.94.215.137:44681, 192.0.0.4:44681, 192.168.178.141:44681, [2a01:599:b2e:8a85:d5ed:b4fe:c8b6:7998]:42807, [2a01:59f:ca0f:7c29:6374:e61a:d65e:a50d]:42807} remote_candidates={78.94.215.137:39949, 192.168.178.107:39949}
+03-16 10:15:11.733 10430 10697 I iroh_live:  INFO relay-actor: iroh::socket::transports::relay::actor: home is now relay https://euc1-1.relay.n0.iroh-canary.iroh.link./, was None
+03-16 10:15:11.734 10430 10699 D iroh_live: DEBUG pkarr_publish{me=1fb6c10acb}: iroh::address_lookup::pkarr: Publish endpoint info to pkarr (info changed)
+03-16 10:15:11.734 10430 10699 D iroh_live: DEBUG pkarr_publish{me=1fb6c10acb}: iroh::address_lookup::pkarr: Publish endpoint info to pkarr data=EndpointData { addrs: {Relay(RelayUrl("https://euc1-1.relay.n0.iroh-canary.iroh.link./"))}, user_data: None } pkarr_relay=https://dns.iroh.link/pkarr
+03-16 10:15:11.735 10430 10697 D iroh_live: DEBUG relay-actor:active-relay{url=https://euc1-1.relay.n0.iroh-canary.iroh.link./}:connected: iroh::_events::relay::home_changed: url=https://euc1-1.relay.n0.iroh-canary.iroh.link./ home_relay=true
+03-16 10:15:11.737 10430 10691 D iroh_live: DEBUG gossip{me=1fb6c10acb}: iroh_gossip::net: handle in_event event=UpdatePeerData(PeerData(114b))
+03-16 10:15:11.763 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=60.265829ms buf_len=2
+03-16 10:15:11.776 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.404704ms
+03-16 10:15:11.823 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.00236ms
+03-16 10:15:11.854 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=10 buffer_ms=133 total_drift_ms=58 reanchor_count=6 pts_ms=1133
+03-16 10:15:11.878 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.61792ms
+03-16 10:15:11.929 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.004842ms
+03-16 10:15:11.986 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.941732ms
+03-16 10:15:12.029 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=217.324137ms buf_len=3
+03-16 10:15:12.041 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.66219ms
+03-16 10:15:12.088 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=59.829589ms buf_len=2
+03-16 10:15:12.104 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=15.125895ms
+03-16 10:15:12.152 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=63.214274ms buf_len=1
+03-16 10:15:12.165 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.719523ms
+03-16 10:15:12.196 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=8 buffer_ms=133 total_drift_ms=66 reanchor_count=7 pts_ms=1333
+03-16 10:15:12.222 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=15.988118ms
+03-16 10:15:12.282 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.405029ms
+03-16 10:15:12.341 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.513346ms
+03-16 10:15:12.371 10430 10697 D iroh_live: DEBUG connect{remote=9eb6111fd1}:connect{me=1fb6c10acb alpn="moq-lite-03" remote=9eb6111fd1}:drive{id=8}: iroh_quinn_proto::connection: new path validation failed
+03-16 10:15:12.372 10430 10697 D iroh_live: DEBUG RemoteStateActor{me=1fb6c10acb remote=9eb6111fd1}:handle_path_event{conn_id=ConnId(223524763904496) event=Ok(LocallyClosed { id: PathId(1), error: ValidationFailed })}: iroh::socket::remote_map::remote_state: path not in path_id_map
+03-16 10:15:12.387 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=235.467204ms buf_len=4
+03-16 10:15:12.403 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=15.064656ms
+03-16 10:15:12.455 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=67.11613ms buf_len=2
+03-16 10:15:12.470 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=15.401937ms
+03-16 10:15:12.502 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=6 buffer_ms=133 total_drift_ms=72 reanchor_count=8 pts_ms=1500
+03-16 10:15:12.525 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.412028ms
+03-16 10:15:12.584 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.98466ms
+03-16 10:15:12.646 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.250895ms
+03-16 10:15:12.689 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=234.487712ms buf_len=4
+03-16 10:15:12.702 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.193725ms
+03-16 10:15:12.746 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=56.411459ms buf_len=2
+03-16 10:15:12.758 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.040568ms
+03-16 10:15:12.802 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=55.924113ms buf_len=1
+03-16 10:15:12.816 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.415853ms
+03-16 10:15:12.847 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=12 buffer_ms=133 total_drift_ms=85 reanchor_count=9 pts_ms=1700
+03-16 10:15:12.871 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.828084ms
+03-16 10:15:12.932 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.555664ms
+03-16 10:15:12.993 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.104818ms
+03-16 10:15:13.040 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=237.518107ms buf_len=3
+03-16 10:15:13.053 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.903646ms
+03-16 10:15:13.098 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=57.693034ms buf_len=2
+03-16 10:15:13.113 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.968262ms
+03-16 10:15:13.160 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.122721ms
+03-16 10:15:13.190 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=9 buffer_ms=133 total_drift_ms=94 reanchor_count=10 pts_ms=1900
+03-16 10:15:13.213 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.912313ms
+03-16 10:15:13.272 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=16.033244ms
+03-16 10:15:13.332 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.376587ms
+03-16 10:15:13.386 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=237.597575ms buf_len=3
+03-16 10:15:13.401 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=15.426066ms
+03-16 10:15:13.459 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=46.510376ms
+03-16 10:15:13.472 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=15 buffer_ms=133 total_drift_ms=109 reanchor_count=11 pts_ms=2033
+03-16 10:15:13.511 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.455363ms
+03-16 10:15:13.569 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.712077ms
+03-16 10:15:13.627 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=213.594646ms buf_len=4
+03-16 10:15:13.639 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.550577ms
+03-16 10:15:13.701 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=50.723958ms
+03-16 10:15:13.733 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=82.458618ms buf_len=3
+03-16 10:15:13.745 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.453654ms
+03-16 10:15:13.791 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=57.866293ms buf_len=2
+03-16 10:15:13.804 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.676107ms
+03-16 10:15:13.847 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=55.805094ms buf_len=1
+03-16 10:15:13.859 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.476034ms
+03-16 10:15:13.917 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=46.550212ms
+03-16 10:15:13.928 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=56 buffer_ms=133 total_drift_ms=165 reanchor_count=12 pts_ms=2300
+03-16 10:15:13.965 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.333537ms
+03-16 10:15:14.033 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.841472ms
+03-16 10:15:14.081 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=234.187947ms buf_len=3
+03-16 10:15:14.095 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.679443ms
+03-16 10:15:14.133 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=51.759887ms buf_len=3
+03-16 10:15:14.148 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.556356ms
+03-16 10:15:14.190 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=57.00179ms buf_len=2
+03-16 10:15:14.202 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.973918ms
+03-16 10:15:14.244 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=53.542318ms buf_len=2
+03-16 10:15:14.259 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.975667ms
+03-16 10:15:14.296 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=1 buffer_ms=133 total_drift_ms=167 reanchor_count=13 pts_ms=2533
+03-16 10:15:14.323 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.77417ms
+03-16 10:15:14.376 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.143554ms
+03-16 10:15:14.435 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.429687ms
+03-16 10:15:14.479 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=235.402628ms buf_len=4
+03-16 10:15:14.494 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.299845ms
+03-16 10:15:14.538 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=58.035807ms buf_len=2
+03-16 10:15:14.553 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=15.133097ms
+03-16 10:15:14.588 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=50.258301ms buf_len=1
+03-16 10:15:14.600 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.54716ms
+03-16 10:15:14.636 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=6 buffer_ms=133 total_drift_ms=174 reanchor_count=14 pts_ms=2733
+03-16 10:15:14.663 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=15.051351ms
+03-16 10:15:14.729 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.529623ms
+03-16 10:15:14.778 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=190.04187ms buf_len=3
+03-16 10:15:14.798 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=19.664714ms
+03-16 10:15:14.838 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=59.580282ms buf_len=2
+03-16 10:15:14.838 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: status frames_pushed=85 frames_popped=84 buf_len=1 buffer_ms=133 jitter_ms=27 total_drift_ms=174 reanchor_count=14
+03-16 10:15:14.853 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.949707ms
+03-16 10:15:14.901 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=63.154378ms buf_len=1
+03-16 10:15:14.917 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=15.113321ms
+03-16 10:15:14.952 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=16 buffer_ms=133 total_drift_ms=190 reanchor_count=15 pts_ms=2900
+03-16 10:15:14.974 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.224976ms
+03-16 10:15:15.030 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.907837ms
+03-16 10:15:15.091 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=16.703287ms
+03-16 10:15:15.143 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=241.848918ms buf_len=4
+03-16 10:15:15.158 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.787394ms
+03-16 10:15:15.195 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=51.75769ms buf_len=2
+03-16 10:15:15.211 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.984619ms
+03-16 10:15:15.255 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=59.578735ms buf_len=1
+03-16 10:15:15.268 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.98116ms
+03-16 10:15:15.294 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=8 buffer_ms=133 total_drift_ms=199 reanchor_count=16 pts_ms=3100
+03-16 10:15:15.317 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.301391ms
+03-16 10:15:15.359 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.835816ms
+03-16 10:15:15.401 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.553466ms
+03-16 10:15:15.440 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=184.601644ms buf_len=3
+03-16 10:15:15.454 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.219239ms
+03-16 10:15:15.492 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=52.03243ms buf_len=3
+03-16 10:15:15.504 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.858521ms
+03-16 10:15:15.545 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.142985ms
+03-16 10:15:15.593 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.90861ms
+03-16 10:15:15.643 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.025512ms
+03-16 10:15:15.683 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=52.302734ms buf_len=1
+03-16 10:15:15.696 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.662069ms
+03-16 10:15:15.736 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.005655ms
+03-16 10:15:15.766 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=5 buffer_ms=133 total_drift_ms=204 reanchor_count=17 pts_ms=3433
+03-16 10:15:15.789 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.061198ms
+03-16 10:15:15.831 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.031657ms
+03-16 10:15:15.882 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.728719ms
+03-16 10:15:15.911 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=186.701538ms buf_len=4
+03-16 10:15:15.923 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.906779ms
+03-16 10:15:15.965 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.458293ms
+03-16 10:15:16.007 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=53.564657ms buf_len=3
+03-16 10:15:16.019 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.474406ms
+03-16 10:15:16.062 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.07959ms
+03-16 10:15:16.110 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=60.347494ms buf_len=2
+03-16 10:15:16.123 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.683919ms
+03-16 10:15:16.166 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=56.111044ms buf_len=1
+03-16 10:15:16.178 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.076172ms
+03-16 10:15:16.207 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=6 buffer_ms=133 total_drift_ms=211 reanchor_count=18 pts_ms=3733
+03-16 10:15:16.235 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=16.787068ms
+03-16 10:15:16.287 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.066407ms
+03-16 10:15:16.343 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.48051ms
+03-16 10:15:16.385 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=218.376627ms buf_len=3
+03-16 10:15:16.397 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.963908ms
+03-16 10:15:16.441 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=55.919556ms buf_len=2
+03-16 10:15:16.458 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=16.991333ms
+03-16 10:15:16.497 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=56.304729ms buf_len=1
+03-16 10:15:16.511 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.142782ms
+03-16 10:15:16.543 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=3 buffer_ms=133 total_drift_ms=214 reanchor_count=19 pts_ms=3933
+03-16 10:15:16.568 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.516194ms
+03-16 10:15:16.625 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.388306ms
+03-16 10:15:16.681 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.817912ms
+03-16 10:15:16.731 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=233.405233ms buf_len=4
+03-16 10:15:16.733 10430 10699 D iroh_live: DEBUG RemoteStateActor{me=1fb6c10acb remote=9eb6111fd1}:do_holepunching: iroh_quinn_proto::connection: path added validated=false path_id=3 network_path=(local: <unspecified>, remote: [::ffff:78.94.215.137]:39949)
+03-16 10:15:16.733 10430 10699 D iroh_live: DEBUG RemoteStateActor{me=1fb6c10acb remote=9eb6111fd1}:do_holepunching: iroh::_events::qnt::init: remote=9eb6111fd1 local_candidates={78.94.215.137:44681, 192.0.0.4:44681, 192.168.178.141:44681, [2a01:599:b2e:8a85:d5ed:b4fe:c8b6:7998]:42807, [2a01:59f:ca0f:7c29:6374:e61a:d65e:a50d]:42807} remote_candidates={78.94.215.137:39949, 192.168.178.107:39949}
+03-16 10:15:16.745 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.652669ms
+03-16 10:15:16.791 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=59.762085ms buf_len=2
+03-16 10:15:16.805 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.414144ms
+03-16 10:15:16.849 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=58.083619ms buf_len=1
+03-16 10:15:16.862 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.394613ms
+03-16 10:15:16.901 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=24 buffer_ms=133 total_drift_ms=238 reanchor_count=20 pts_ms=4133
+03-16 10:15:16.924 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.42334ms
+03-16 10:15:16.982 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.125692ms
+03-16 10:15:17.042 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=15.111532ms
+03-16 10:15:17.084 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=234.243815ms buf_len=3
+03-16 10:15:17.097 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.959147ms
+03-16 10:15:17.143 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=59.468872ms buf_len=2
+03-16 10:15:17.158 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.650513ms
+03-16 10:15:17.205 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=61.19869ms buf_len=1
+03-16 10:15:17.224 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=18.508626ms
+03-16 10:15:17.261 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=27 buffer_ms=133 total_drift_ms=266 reanchor_count=21 pts_ms=4333
+03-16 10:15:17.289 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.317179ms
+03-16 10:15:17.341 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.134156ms
+03-16 10:15:17.404 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.763427ms
+03-16 10:15:17.458 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=253.26355ms buf_len=3
+03-16 10:15:17.472 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.866781ms
+03-16 10:15:17.522 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=63.450928ms buf_len=2
+03-16 10:15:17.536 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.386067ms
+03-16 10:15:17.567 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=5 buffer_ms=133 total_drift_ms=271 reanchor_count=22 pts_ms=4500
+03-16 10:15:17.591 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.354859ms
+03-16 10:15:17.652 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.103109ms
+03-16 10:15:17.701 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=178.985962ms buf_len=3
+03-16 10:15:17.715 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.598226ms
+03-16 10:15:17.761 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=59.286174ms buf_len=2
+03-16 10:15:17.774 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.050984ms
+03-16 10:15:17.821 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=60.688396ms buf_len=2
+03-16 10:15:17.834 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.427694ms
+03-16 10:15:17.868 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=1 buffer_ms=133 total_drift_ms=273 reanchor_count=23 pts_ms=4666
+03-16 10:15:17.893 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.432455ms
+03-16 10:15:17.952 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.856038ms
+03-16 10:15:18.002 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=180.176066ms buf_len=3
+03-16 10:15:18.017 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.448812ms
+03-16 10:15:18.061 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=59.455485ms buf_len=2
+03-16 10:15:18.076 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.166138ms
+03-16 10:15:18.116 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=54.024618ms buf_len=2
+03-16 10:15:18.129 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.918701ms
+03-16 10:15:18.178 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.440389ms
+03-16 10:15:18.210 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=8 buffer_ms=133 total_drift_ms=281 reanchor_count=24 pts_ms=4866
+03-16 10:15:18.233 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.153117ms
+03-16 10:15:18.278 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.645996ms
+03-16 10:15:18.340 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.072632ms
+03-16 10:15:18.381 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=215.107992ms buf_len=4
+03-16 10:15:18.394 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.398926ms
+03-16 10:15:18.447 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=65.895833ms buf_len=2
+03-16 10:15:18.460 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.344563ms
+03-16 10:15:18.504 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=56.883178ms buf_len=1
+03-16 10:15:18.517 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.978393ms
+03-16 10:15:18.548 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=4 buffer_ms=133 total_drift_ms=286 reanchor_count=25 pts_ms=5066
+03-16 10:15:18.573 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.400146ms
+03-16 10:15:18.633 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.721313ms
+03-16 10:15:18.694 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.662801ms
+03-16 10:15:18.732 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=227.564372ms buf_len=4
+03-16 10:15:18.748 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=15.672078ms
+03-16 10:15:18.789 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=57.199504ms buf_len=2
+03-16 10:15:18.802 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.330037ms
+03-16 10:15:18.846 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=56.831177ms buf_len=1
+03-16 10:15:18.860 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.324341ms
+03-16 10:15:18.891 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=8 buffer_ms=133 total_drift_ms=295 reanchor_count=26 pts_ms=5266
+03-16 10:15:18.913 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.129801ms
+03-16 10:15:18.976 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=15.291301ms
+03-16 10:15:19.036 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.332316ms
+03-16 10:15:19.080 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=233.651734ms buf_len=4
+03-16 10:15:19.092 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.288697ms
+03-16 10:15:19.147 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=67.0837ms buf_len=2
+03-16 10:15:19.162 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.922567ms
+03-16 10:15:19.201 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=10 buffer_ms=133 total_drift_ms=305 reanchor_count=27 pts_ms=5433
+03-16 10:15:19.225 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.179566ms
+03-16 10:15:19.278 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.997355ms
+03-16 10:15:19.332 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.724935ms
+03-16 10:15:19.379 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=232.022949ms buf_len=4
+03-16 10:15:19.393 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.377848ms
+03-16 10:15:19.442 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=62.343221ms buf_len=2
+03-16 10:15:19.455 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.878662ms
+03-16 10:15:19.499 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=57.0083ms buf_len=1
+03-16 10:15:19.515 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=15.647298ms
+03-16 10:15:19.553 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=18 buffer_ms=133 total_drift_ms=324 reanchor_count=28 pts_ms=5633
+03-16 10:15:19.577 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.622558ms
+03-16 10:15:19.633 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.079916ms
+03-16 10:15:19.695 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.068074ms
+03-16 10:15:19.740 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=241.198324ms buf_len=4
+03-16 10:15:19.755 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.438558ms
+03-16 10:15:19.801 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=60.223755ms buf_len=2
+03-16 10:15:19.806 10430 10697 D iroh_live: DEBUG connect{remote=9eb6111fd1}:connect{me=1fb6c10acb alpn="moq-lite-03" remote=9eb6111fd1}:drive{id=8}: iroh_quinn_proto::connection: new path validation failed
+03-16 10:15:19.806 10430 10697 D iroh_live: DEBUG RemoteStateActor{me=1fb6c10acb remote=9eb6111fd1}:handle_path_event{conn_id=ConnId(223524763904496) event=Ok(LocallyClosed { id: PathId(3), error: ValidationFailed })}: iroh::socket::remote_map::remote_state: path not in path_id_map
+03-16 10:15:19.816 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.673787ms
+03-16 10:15:19.861 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=59.467814ms buf_len=1
+03-16 10:15:19.861 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: status frames_pushed=174 frames_popped=174 buf_len=0 buffer_ms=133 jitter_ms=25 total_drift_ms=324 reanchor_count=28
+03-16 10:15:19.874 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.663289ms
+03-16 10:15:19.902 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=15 buffer_ms=133 total_drift_ms=340 reanchor_count=29 pts_ms=5833
+03-16 10:15:19.926 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.318075ms
+03-16 10:15:19.984 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.971965ms
+03-16 10:15:20.041 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.295776ms
+03-16 10:15:20.089 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=228.496786ms buf_len=3
+03-16 10:15:20.103 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.666748ms
+03-16 10:15:20.146 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=56.257934ms buf_len=2
+03-16 10:15:20.159 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.549764ms
+03-16 10:15:20.204 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=1 buffer_ms=133 total_drift_ms=341 reanchor_count=30 pts_ms=6000
+03-16 10:15:20.227 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.628174ms
+03-16 10:15:20.280 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.05953ms
+03-16 10:15:20.338 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.731608ms
+03-16 10:15:20.384 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=238.239136ms buf_len=4
+03-16 10:15:20.397 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.903443ms
+03-16 10:15:20.444 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=59.458822ms buf_len=2
+03-16 10:15:20.457 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.445272ms
+03-16 10:15:20.498 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=53.406982ms buf_len=1
+03-16 10:15:20.510 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.28125ms
+03-16 10:15:20.539 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=1 buffer_ms=133 total_drift_ms=343 reanchor_count=31 pts_ms=6200
+03-16 10:15:20.561 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.024658ms
+03-16 10:15:20.608 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.810344ms
+03-16 10:15:20.661 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.056193ms
+03-16 10:15:20.706 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=207.878988ms buf_len=4
+03-16 10:15:20.717 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.147583ms
+03-16 10:15:20.757 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=50.893229ms buf_len=2
+03-16 10:15:20.769 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.035197ms
+03-16 10:15:20.811 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=54.013997ms buf_len=2
+03-16 10:15:20.823 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.359172ms
+03-16 10:15:20.865 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.803955ms
+03-16 10:15:20.906 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.875692ms
+03-16 10:15:20.940 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=1 buffer_ms=133 total_drift_ms=345 reanchor_count=32 pts_ms=6466
+03-16 10:15:20.963 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.936076ms
+03-16 10:15:21.005 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.746582ms
+03-16 10:15:21.052 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.990071ms
+03-16 10:15:21.092 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=197.432943ms buf_len=4
+03-16 10:15:21.104 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.210408ms
+03-16 10:15:21.148 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=56.114828ms buf_len=3
+03-16 10:15:21.160 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.087768ms
+03-16 10:15:21.203 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.68392ms
+03-16 10:15:21.251 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=60.399495ms buf_len=2
+03-16 10:15:21.263 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.291463ms
+03-16 10:15:21.313 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=62.016358ms buf_len=1
+03-16 10:15:21.325 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.00297ms
+03-16 10:15:21.359 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=18 buffer_ms=133 total_drift_ms=363 reanchor_count=33 pts_ms=6733
+03-16 10:15:21.384 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.006144ms
+03-16 10:15:21.440 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.675292ms
+03-16 10:15:21.495 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.795166ms
+03-16 10:15:21.540 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=227.125244ms buf_len=3
+03-16 10:15:21.553 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.069499ms
+03-16 10:15:21.603 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.211588ms
+03-16 10:15:21.653 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=62.64803ms buf_len=2
+03-16 10:15:21.664 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=10.929688ms
+03-16 10:15:21.705 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.09668ms
+03-16 10:15:21.733 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=7 buffer_ms=133 total_drift_ms=371 reanchor_count=34 pts_ms=6966
+03-16 10:15:21.759 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.506511ms
+03-16 10:15:21.807 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=10.95699ms
+03-16 10:15:21.857 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.227133ms
+03-16 10:15:21.902 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=209.967001ms buf_len=4
+03-16 10:15:21.916 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.539022ms
+03-16 10:15:21.957 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.492473ms
+03-16 10:15:21.999 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=52.915894ms buf_len=2
+03-16 10:15:22.012 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.466553ms
+03-16 10:15:22.065 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=16.887207ms
+03-16 10:15:22.102 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=1 buffer_ms=133 total_drift_ms=373 reanchor_count=35 pts_ms=7200
+03-16 10:15:22.125 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.23584ms
+03-16 10:15:22.178 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.766967ms
+03-16 10:15:22.233 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.638753ms
+03-16 10:15:22.271 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=223.069621ms buf_len=4
+03-16 10:15:22.285 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.090494ms
+03-16 10:15:22.330 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.505982ms
+03-16 10:15:22.371 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=54.924235ms buf_len=2
+03-16 10:15:22.385 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.794922ms
+03-16 10:15:22.422 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=51.15446ms buf_len=1
+03-16 10:15:22.434 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.772949ms
+03-16 10:15:22.475 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=52.591553ms buf_len=1
+03-16 10:15:22.488 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.097005ms
+03-16 10:15:22.521 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=18 buffer_ms=133 total_drift_ms=392 reanchor_count=36 pts_ms=7466
+03-16 10:15:22.543 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.47998ms
+03-16 10:15:22.588 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.162679ms
+03-16 10:15:22.640 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.595012ms
+03-16 10:15:22.677 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=201.370199ms buf_len=3
+03-16 10:15:22.691 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.780151ms
+03-16 10:15:22.737 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.215414ms
+03-16 10:15:22.779 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.327718ms
+03-16 10:15:22.819 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=52.201253ms buf_len=2
+03-16 10:15:22.831 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.365153ms
+03-16 10:15:22.882 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.523234ms
+03-16 10:15:22.926 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=57.720744ms buf_len=1
+03-16 10:15:22.938 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.361369ms
+03-16 10:15:22.965 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=11 buffer_ms=133 total_drift_ms=403 reanchor_count=37 pts_ms=7766
+03-16 10:15:22.988 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.345296ms
+03-16 10:15:23.033 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.411377ms
+03-16 10:15:23.077 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.193522ms
+03-16 10:15:23.109 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=181.680217ms buf_len=3
+03-16 10:15:23.122 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.074707ms
+03-16 10:15:23.169 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=15.825317ms
+03-16 10:15:23.207 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=53.858683ms buf_len=3
+03-16 10:15:23.219 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.537353ms
+03-16 10:15:23.262 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.105428ms
+03-16 10:15:23.309 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.872274ms
+03-16 10:15:23.355 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.094645ms
+03-16 10:15:23.406 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.844808ms
+03-16 10:15:23.470 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=52.828695ms
+03-16 10:15:23.483 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=51 buffer_ms=133 total_drift_ms=454 reanchor_count=38 pts_ms=8100
+03-16 10:15:23.517 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.042603ms
+03-16 10:15:23.569 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.341716ms
+03-16 10:15:23.614 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=15.331218ms
+03-16 10:15:23.647 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=230.146322ms buf_len=4
+03-16 10:15:23.663 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=15.062337ms
+03-16 10:15:23.713 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=65.424154ms buf_len=4
+03-16 10:15:23.731 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=17.522217ms
+03-16 10:15:23.774 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=60.742309ms buf_len=3
+03-16 10:15:23.786 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.630941ms
+03-16 10:15:23.832 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.002197ms
+03-16 10:15:23.876 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=56.485189ms buf_len=1
+03-16 10:15:23.888 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.572429ms
+03-16 10:15:23.918 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=0 buffer_ms=133 total_drift_ms=455 reanchor_count=39 pts_ms=8400
+03-16 10:15:23.941 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.792603ms
+03-16 10:15:23.997 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.696004ms
+03-16 10:15:24.046 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.834839ms
+03-16 10:15:24.082 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=205.688843ms buf_len=4
+03-16 10:15:24.095 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.424764ms
+03-16 10:15:24.139 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=57.031169ms buf_len=3
+03-16 10:15:24.154 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.244832ms
+03-16 10:15:24.199 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.159912ms
+03-16 10:15:24.239 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=52.095744ms buf_len=1
+03-16 10:15:24.251 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.026815ms
+03-16 10:15:24.293 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=54.28768ms buf_len=1
+03-16 10:15:24.306 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.39502ms
+03-16 10:15:24.335 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=17 buffer_ms=133 total_drift_ms=472 reanchor_count=40 pts_ms=8666
+03-16 10:15:24.357 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.850586ms
+03-16 10:15:24.409 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.991821ms
+03-16 10:15:24.465 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.89274ms
+03-16 10:15:24.498 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=204.075806ms buf_len=3
+03-16 10:15:24.510 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.543579ms
+03-16 10:15:24.552 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=54.810954ms buf_len=3
+03-16 10:15:24.564 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.673258ms
+03-16 10:15:24.606 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.696859ms
+03-16 10:15:24.652 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=57.323202ms buf_len=2
+03-16 10:15:24.665 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.469198ms
+03-16 10:15:24.711 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.224365ms
+03-16 10:15:24.747 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=11 buffer_ms=133 total_drift_ms=484 reanchor_count=41 pts_ms=8933
+03-16 10:15:24.769 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.334188ms
+03-16 10:15:24.821 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.958415ms
+03-16 10:15:24.866 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: status frames_pushed=270 frames_popped=266 buf_len=4 buffer_ms=133 jitter_ms=19 total_drift_ms=484 reanchor_count=41
+03-16 10:15:24.878 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.774781ms
+03-16 10:15:24.912 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=215.029256ms buf_len=4
+03-16 10:15:24.928 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=16.36674ms
+03-16 10:15:24.972 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.352092ms
+03-16 10:15:25.013 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=52.96049ms buf_len=2
+03-16 10:15:25.025 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.475138ms
+03-16 10:15:25.075 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=14.133708ms
+03-16 10:15:25.117 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.354859ms
+03-16 10:15:25.159 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.225993ms
+03-16 10:15:25.201 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.376302ms
+03-16 10:15:25.225 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=11 buffer_ms=133 total_drift_ms=496 reanchor_count=42 pts_ms=9266
+03-16 10:15:25.249 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.568929ms
+03-16 10:15:25.303 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.243245ms
+03-16 10:15:25.358 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=16.46582ms
+03-16 10:15:25.397 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=207.047241ms buf_len=3
+03-16 10:15:25.408 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.333171ms
+03-16 10:15:25.450 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.14034ms
+03-16 10:15:25.496 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=58.272421ms buf_len=2
+03-16 10:15:25.510 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=13.967896ms
+03-16 10:15:25.556 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.574056ms
+03-16 10:15:25.602 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.143962ms
+03-16 10:15:25.634 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::playout: playout clock: re-anchored after buffer underrun late_by_ms=9 buffer_ms=133 total_drift_ms=505 reanchor_count=43 pts_ms=9533
+03-16 10:15:25.657 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.15979ms
+03-16 10:15:25.711 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.586996ms
+03-16 10:15:25.765 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.095378ms
+03-16 10:15:25.801 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=210.960856ms buf_len=4
+03-16 10:15:25.812 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.428751ms
+03-16 10:15:25.857 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=55.584025ms buf_len=2
+03-16 10:15:25.869 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=12.680501ms
+03-16 10:15:25.910 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.128214ms
+03-16 10:15:25.952 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: frame gap (stutter) gap=53.415852ms buf_len=2
+03-16 10:15:25.964 10430 10729 D iroh_live: DEBUG videodec{name=video/h264-openh264-1080p decoder=h264-android}: moq_media::pipeline: decode_loop: slow push_packet t=11.571615ms
