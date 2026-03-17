@@ -27,54 +27,65 @@ test("CLI publish → browser watch", async ({ page }) => {
     "--name",
     "hello",
     "--video-presets",
-    "P360",
+    "360p",
   ]);
 
   // Wait for publisher to announce
   await waitForOutput(publisher, "publishing at", 30_000);
 
-  // Navigate browser to relay watch page.
-  // The watch page loads from the HTTP server, but <moq-watch> connects
-  // via WebTransport to the QUIC port. We pass the QUIC URL explicitly.
-  const quicUrl = `https://localhost:${relay.quicPort}/`;
-  const watchUrl = `http://localhost:${relay.httpPort}/?name=hello&url=${encodeURIComponent(quicUrl)}`;
+  // Navigate browser to relay watch page. HTTP and QUIC share the same
+  // port (TCP vs UDP), so the moq-lite fingerprint flow works: it fetches
+  // the fingerprint from http://host:port/certificate.sha256, then connects
+  // via WebTransport to https://host:port/.
+  const watchUrl = `http://localhost:${relay.httpPort}/?name=hello`;
   await page.goto(watchUrl);
 
   // Wait for canvas to be visible
   const canvas = page.locator("moq-watch canvas");
   await expect(canvas).toBeVisible({ timeout: 15_000 });
 
-  // Give the video pipeline time to start producing frames
-  await page.waitForTimeout(3000);
-
-  // Verify canvas has non-zero dimensions (video is rendering)
-  const size = await canvas.evaluate((el: HTMLCanvasElement) => ({
-    w: el.width,
-    h: el.height,
-  }));
-  expect(size.w).toBeGreaterThan(0);
-  expect(size.h).toBeGreaterThan(0);
+  // Wait for actual video content to render on the canvas.
+  // Poll until the canvas buffer has non-zero dimensions and non-black pixels.
+  await expect(async () => {
+    const hasContent = await canvas.evaluate((el: HTMLCanvasElement) => {
+      if (el.width === 0 || el.height === 0) return false;
+      const ctx = el.getContext("2d");
+      if (!ctx) return false;
+      // Sample center pixel
+      const cx = Math.floor(el.width / 2);
+      const cy = Math.floor(el.height / 2);
+      const pixel = ctx.getImageData(cx, cy, 1, 1).data;
+      // Any non-black pixel means video is rendering
+      return pixel[0] + pixel[1] + pixel[2] > 0;
+    });
+    expect(hasContent).toBe(true);
+  }).toPass({ timeout: 20_000, intervals: [500] });
 
   // Verify live video by detecting the blinking yellow marker.
   // The test pattern has a centered yellow square that blinks every 15 frames
-  // (0.5s at 30fps). We capture screenshots every 100ms for 3s and check
+  // (0.5s at 30fps). We capture screenshots every 100ms for 4s and check
   // that the center pixel alternates between yellow and non-yellow.
   const screenshots: Buffer[] = [];
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 40; i++) {
     screenshots.push(await canvas.screenshot());
     await page.waitForTimeout(100);
   }
 
   let sawYellow = false;
   let sawNonYellow = false;
+  const colors: string[] = [];
 
   for (const pngBuf of screenshots) {
-    const isYellow = analyzeCenter(pngBuf);
+    const { isYellow, r, g, b } = analyzeCenter(pngBuf);
+    colors.push(`(${r},${g},${b})`);
     if (isYellow) sawYellow = true;
     else sawNonYellow = true;
   }
 
   // The blinking marker should have appeared and disappeared at least once
+  if (!sawYellow || !sawNonYellow) {
+    console.log(`Yellow detection failed. Center pixel colors: ${colors.join(" ")}`);
+  }
   expect(sawYellow).toBe(true);
   expect(sawNonYellow).toBe(true);
 
@@ -133,7 +144,7 @@ function waitForOutput(
  * Yellow in the test pattern is (255, 255, 0). After codec compression
  * we use generous tolerance.
  */
-function analyzeCenter(pngBuffer: Buffer): boolean {
+function analyzeCenter(pngBuffer: Buffer): { isYellow: boolean; r: number; g: number; b: number } {
   const png = PNG.sync.read(pngBuffer);
   const cx = Math.floor(png.width / 2);
   const cy = Math.floor(png.height / 2);
@@ -143,5 +154,5 @@ function analyzeCenter(pngBuffer: Buffer): boolean {
   const b = png.data[idx + 2];
 
   // Yellow: high R, high G, low B (with tolerance for codec artifacts)
-  return r > 180 && g > 180 && b < 100;
+  return { isYellow: r > 180 && g > 180 && b < 100, r, g, b };
 }

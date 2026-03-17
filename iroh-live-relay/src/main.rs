@@ -62,8 +62,9 @@ struct Cli {
     #[arg(long, default_value = "[::]:4443")]
     bind: SocketAddr,
 
-    /// Bind address for HTTP (static files, fingerprint endpoint)
-    #[arg(long, default_value = "[::]:8080")]
+    /// Bind address for HTTP (static files, fingerprint endpoint).
+    /// Defaults to --bind (same port, TCP alongside QUIC's UDP).
+    #[arg(long, default_value = "[::]:4443")]
     http_bind: SocketAddr,
 }
 
@@ -116,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(ref iroh_ep) = iroh {
         tracing::info!(endpoint_id = %iroh_ep.id(), "iroh endpoint bound");
+        println!("iroh endpoint: {}", iroh_ep.id());
     }
 
     let tls_info = server.tls_info();
@@ -139,6 +141,10 @@ async fn main() -> anyhow::Result<()> {
         tls_info: tls_info.clone(),
     });
 
+    let quic_addr = server.local_addr()?;
+    tracing::info!(bind = %quic_addr, "quic listening");
+    println!("quic port: {}", quic_addr.port());
+
     let static_router = axum::Router::new()
         .route("/certificate.sha256", get(serve_fingerprint))
         .route("/", get(serve_index))
@@ -150,17 +156,25 @@ async fn main() -> anyhow::Result<()> {
         )
         .with_state(http_state);
 
-    let http_listener = tokio::net::TcpListener::bind(cli.http_bind).await?;
+    // Bind HTTP (TCP) to the same port as QUIC (UDP) when defaults match.
+    // This lets browsers fetch the TLS fingerprint and static files from the
+    // same origin they connect to via WebTransport — required for moq-lite's
+    // fingerprint-based dev mode flow.
+    let http_bind = if cli.http_bind == cli.bind {
+        quic_addr
+    } else {
+        cli.http_bind
+    };
+    let http_listener = tokio::net::TcpListener::bind(http_bind).await?;
     let http_port = http_listener.local_addr()?.port();
     tracing::info!(http_port, "http listening");
+    println!("http port: {http_port}");
 
     tokio::spawn(async move {
         axum::serve(http_listener, static_router)
             .await
             .expect("http server failed");
     });
-
-    tracing::info!(bind = %cli.bind, "quic listening");
 
     if let Some(ref iroh_ep) = iroh {
         tracing::info!(
