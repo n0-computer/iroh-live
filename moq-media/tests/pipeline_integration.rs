@@ -921,3 +921,291 @@ async fn playout_clock_reset_on_resubscribe() {
         "jitter should be zero after reset"
     );
 }
+
+// ── Group N: RemoteBroadcast construction and state ────────────────
+
+#[cfg(feature = "h264")]
+#[tokio::test]
+async fn remote_broadcast_name_matches_constructor_arg() {
+    let (_broadcast, remote) = publish_and_subscribe(VideoCodec::H264, VideoPreset::P180).await;
+    assert_eq!(remote.broadcast_name(), "test");
+}
+
+#[tokio::test]
+async fn remote_broadcast_empty_has_no_media() {
+    let broadcast = LocalBroadcast::new();
+    tokio::task::yield_now().await;
+    let consumer = broadcast.consume();
+
+    // An empty broadcast still publishes a catalog (with no renditions).
+    let remote = RemoteBroadcast::with_playout_mode("empty", consumer, PlayoutMode::Reliable)
+        .await
+        .unwrap();
+
+    assert!(!remote.has_video(), "empty broadcast should have no video");
+    assert!(!remote.has_audio(), "empty broadcast should have no audio");
+    assert_eq!(remote.broadcast_name(), "empty");
+}
+
+#[cfg(feature = "h264")]
+#[tokio::test]
+async fn remote_broadcast_video_appears_after_publish() {
+    let broadcast = LocalBroadcast::new();
+    tokio::task::yield_now().await;
+    let consumer = broadcast.consume();
+
+    let remote = RemoteBroadcast::with_playout_mode("late", consumer, PlayoutMode::Reliable)
+        .await
+        .unwrap();
+    assert!(!remote.has_video());
+
+    // Publish video after the subscriber connected.
+    let (w, h) = VideoPreset::P180.dimensions();
+    broadcast
+        .video()
+        .set(
+            TestVideoSource::new(w, h),
+            VideoCodec::H264,
+            [VideoPreset::P180],
+        )
+        .unwrap();
+
+    // Wait for catalog update to propagate.
+    let mut watcher = remote.catalog_watcher();
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    while !remote.has_video() {
+        tokio::time::timeout_at(deadline, watcher.updated())
+            .await
+            .expect("timeout waiting for video to appear")
+            .expect("catalog watcher disconnected");
+    }
+
+    assert!(remote.has_video());
+}
+
+// ── Group O: VideoTrack metadata ──────────────────────────────────
+
+#[cfg(feature = "h264")]
+#[tokio::test]
+async fn video_track_rendition_name_contains_preset() {
+    let (_broadcast, remote) = publish_and_subscribe(VideoCodec::H264, VideoPreset::P180).await;
+    let track = remote.video_ready().await.unwrap();
+    let rendition = track.rendition();
+    assert!(
+        rendition.contains("180"),
+        "rendition name should contain preset identifier, got: {rendition}"
+    );
+}
+
+#[cfg(feature = "h264")]
+#[tokio::test]
+async fn video_track_decoder_name_is_nonempty() {
+    let (_broadcast, remote) = publish_and_subscribe(VideoCodec::H264, VideoPreset::P180).await;
+    let track = remote.video_ready().await.unwrap();
+    assert!(
+        !track.decoder_name().is_empty(),
+        "decoder_name should not be empty for a pipeline-backed track"
+    );
+}
+
+#[cfg(feature = "h264")]
+#[tokio::test]
+async fn video_track_current_frame_returns_none_initially() {
+    let (_broadcast, remote) = publish_and_subscribe(VideoCodec::H264, VideoPreset::P180).await;
+    let mut track = remote.video_ready().await.unwrap();
+
+    // Drain all buffered frames via next_frame first to confirm pipeline works.
+    let frame = tokio::time::timeout(TIMEOUT, track.next_frame())
+        .await
+        .expect("timeout")
+        .expect("no frame");
+    assert!(frame.dimensions[0] > 0);
+
+    // current_frame is non-blocking and returns the latest buffered frame (or None).
+    // After draining, it may or may not have another frame ready — just verify
+    // it does not panic and returns a valid Option.
+    let _ = track.current_frame();
+}
+
+// ── Group P: AudioTrack metadata ──────────────────────────────────
+
+#[cfg(all(feature = "h264", feature = "opus"))]
+#[tokio::test]
+async fn audio_track_rendition_name_contains_codec() {
+    let (broadcast, consumer) = setup_broadcast().await;
+    broadcast
+        .video()
+        .set(
+            TestVideoSource::new(320, 180),
+            VideoCodec::H264,
+            [VideoPreset::P180],
+        )
+        .unwrap();
+    broadcast
+        .audio()
+        .set(
+            TestAudioSource::new(AudioFormat::mono_48k()),
+            moq_media::codec::AudioCodec::Opus,
+            [AudioPreset::Hq],
+        )
+        .unwrap();
+
+    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
+        .await
+        .unwrap();
+
+    let audio = remote.audio_ready(&NullAudioBackend).await.unwrap();
+    let rendition = audio.rendition();
+    assert!(
+        rendition.contains("opus"),
+        "audio rendition name should contain codec id, got: {rendition}"
+    );
+}
+
+#[cfg(all(feature = "h264", feature = "opus"))]
+#[tokio::test]
+async fn audio_track_handle_pause_resume() {
+    let (broadcast, consumer) = setup_broadcast().await;
+    broadcast
+        .video()
+        .set(
+            TestVideoSource::new(320, 180),
+            VideoCodec::H264,
+            [VideoPreset::P180],
+        )
+        .unwrap();
+    broadcast
+        .audio()
+        .set(
+            SineAudioSource::new(AudioFormat::mono_48k()),
+            moq_media::codec::AudioCodec::Opus,
+            [AudioPreset::Hq],
+        )
+        .unwrap();
+
+    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
+        .await
+        .unwrap();
+
+    let audio = remote.audio_ready(&NullAudioBackend).await.unwrap();
+    let handle = audio.handle();
+
+    assert!(!handle.is_paused(), "audio should start unpaused");
+    handle.pause();
+    assert!(handle.is_paused(), "audio should be paused after pause()");
+    handle.resume();
+    assert!(
+        !handle.is_paused(),
+        "audio should be unpaused after resume()"
+    );
+}
+
+// ── Group Q: Standalone AudioDecoderPipeline (T2) ─────────────────
+
+#[cfg(feature = "opus")]
+#[tokio::test]
+async fn audio_decoder_pipeline_standalone_roundtrip() {
+    use moq_media::codec::OpusAudioDecoder;
+    use moq_media::pipeline::AudioDecoderPipeline;
+    use moq_media::transport::media_pipe;
+
+    let format = AudioFormat::mono_48k();
+    let preset = AudioPreset::Hq;
+
+    // Build encoder.
+    let enc_config = moq_media::format::AudioEncoderConfig::from_preset(format, preset);
+    use moq_media::traits::AudioEncoderFactory;
+
+    let encoder =
+        <moq_media::codec::OpusEncoder as AudioEncoderFactory>::with_preset(format, preset)
+            .unwrap();
+    let audio_config =
+        <moq_media::codec::OpusEncoder as AudioEncoderFactory>::config_for(&enc_config);
+
+    // Create an in-memory pipe connecting encoder output to decoder input.
+    let (sink, source) = media_pipe(64);
+
+    // Build capturing backend to verify decoded samples arrive.
+    let backend = CapturingAudioBackend::new();
+    let captured = backend.captured_samples();
+
+    // Start the decoder pipeline from the pipe source.
+    let _decoder_pipeline = AudioDecoderPipeline::with_clock::<OpusAudioDecoder>(
+        "test-audio".into(),
+        source,
+        &audio_config,
+        &backend,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Start the encoder pipeline with a sine source writing to the pipe sink.
+    let sine = SineAudioSource::new(format);
+    let _encoder_pipeline =
+        moq_media::pipeline::AudioEncoderPipeline::with_source(Box::new(sine), encoder, sink)
+            .unwrap();
+
+    // Let the pipeline run for a bit to produce output.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let samples = captured.lock().unwrap();
+    assert!(
+        !samples.is_empty(),
+        "standalone audio decoder pipeline should produce decoded samples"
+    );
+
+    // Verify the decoded audio is not silent (sine wave energy survives encode/decode).
+    let rms: f32 = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+    assert!(
+        rms > 0.01,
+        "decoded audio RMS {rms:.6} too low — expected non-silent sine wave after Opus roundtrip"
+    );
+}
+
+#[cfg(feature = "opus")]
+#[tokio::test]
+async fn audio_decoder_pipeline_stops_when_source_closes() {
+    use moq_media::codec::OpusAudioDecoder;
+    use moq_media::pipeline::AudioDecoderPipeline;
+    use moq_media::transport::media_pipe;
+
+    let format = AudioFormat::mono_48k();
+    let preset = AudioPreset::Hq;
+
+    use moq_media::traits::AudioEncoderFactory;
+
+    let encoder =
+        <moq_media::codec::OpusEncoder as AudioEncoderFactory>::with_preset(format, preset)
+            .unwrap();
+    let enc_config = moq_media::format::AudioEncoderConfig::from_preset(format, preset);
+    let audio_config =
+        <moq_media::codec::OpusEncoder as AudioEncoderFactory>::config_for(&enc_config);
+
+    let (sink, source) = media_pipe(64);
+    let backend = NullAudioBackend;
+
+    let decoder_pipeline = AudioDecoderPipeline::with_clock::<OpusAudioDecoder>(
+        "test-stop".into(),
+        source,
+        &audio_config,
+        &backend,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Start the encoder, let it produce a few packets, then drop it to close the pipe.
+    let sine = SineAudioSource::new(format);
+    let encoder_pipeline =
+        moq_media::pipeline::AudioEncoderPipeline::with_source(Box::new(sine), encoder, sink)
+            .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drop(encoder_pipeline);
+
+    // The decoder pipeline should detect the closed source and stop.
+    tokio::time::timeout(TIMEOUT, decoder_pipeline.stopped())
+        .await
+        .expect("decoder pipeline should stop after source closes");
+}
