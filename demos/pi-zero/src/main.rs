@@ -51,6 +51,10 @@ struct PublishOpts {
     /// Encoder: "hardware" (V4L2/VAAPI/VTB), "software" (openh264), or "ffmpeg".
     #[clap(long, default_value = "hardware")]
     encoder: String,
+    /// Relay's iroh endpoint ID — additionally publishes to the relay so
+    /// browser and non-P2P clients can subscribe.
+    #[clap(long)]
+    relay: Option<EndpointId>,
 }
 
 #[derive(Parser, Debug)]
@@ -157,6 +161,13 @@ async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     // Publish under a fixed name.
     let name = "pi-zero";
     live.publish(name, &broadcast).await?;
+
+    // --- relay (optional) ---
+    if let Some(relay_id) = opts.relay {
+        let session = live.transport().connect(relay_id).await?;
+        session.publish(name.to_string(), broadcast.producer().consume());
+        tracing::info!(%relay_id, "published to relay");
+    }
 
     // --- ticket (always printed, regardless of e-paper) ---
     let ticket = LiveTicket::new(live.endpoint().addr(), name);
