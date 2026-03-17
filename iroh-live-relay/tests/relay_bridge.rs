@@ -179,7 +179,10 @@ async fn iroh_publish_iroh_subscribe() {
             [moq_media::format::VideoPreset::P180],
         )
         .expect("set video");
-    publisher.publish("relay-test", &broadcast).await.expect("publish");
+    publisher
+        .publish("relay-test", &broadcast)
+        .await
+        .expect("publish");
 
     let _pub_session = tokio::time::timeout(TIMEOUT, publisher.transport().connect(relay_id))
         .await
@@ -237,16 +240,22 @@ async fn noq_publish_iroh_subscribe() {
     let mut broadcast = pub_origin.create_broadcast("browser-stream").expect("bc");
 
     // hang catalog format: renditions keyed by track name
-    let mut catalog_track = broadcast.create_track(Track::new("catalog.json")).expect("catalog");
+    let mut catalog_track = broadcast
+        .create_track(Track::new("catalog.json"))
+        .expect("catalog");
     let catalog_json =
         br#"{"video":{"renditions":{"video/h264":{"codec":"avc1.64001f","codedWidth":320,"codedHeight":240,"bitrate":500000,"framerate":30}}}}"#;
     let mut group = catalog_track.append_group().expect("group");
     group.write_frame(catalog_json.as_ref()).expect("write");
     group.finish().expect("finish");
 
-    let mut video_track = broadcast.create_track(Track::new("video/h264")).expect("video");
+    let mut video_track = broadcast
+        .create_track(Track::new("video/h264"))
+        .expect("video");
     let mut vgroup = video_track.append_group().expect("group");
-    vgroup.write_frame(b"keyframe-data".as_ref()).expect("write");
+    vgroup
+        .write_frame(b"keyframe-data".as_ref())
+        .expect("write");
     vgroup.finish().expect("finish");
 
     let mut pub_cfg = moq_native::ClientConfig::default();
@@ -342,7 +351,10 @@ async fn iroh_publish_noq_subscribe() {
             [moq_media::format::VideoPreset::P180],
         )
         .expect("set video");
-    publisher.publish("cli-stream", &broadcast).await.expect("publish");
+    publisher
+        .publish("cli-stream", &broadcast)
+        .await
+        .expect("publish");
 
     let _pub_session = tokio::time::timeout(TIMEOUT, publisher.transport().connect(relay_id))
         .await

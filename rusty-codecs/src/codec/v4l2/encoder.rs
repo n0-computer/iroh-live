@@ -366,10 +366,10 @@ mod raw_v4l2 {
 
     // V4L2 control IDs (from linux/v4l2-controls.h).
     // V4L2_CID_CODEC_BASE = V4L2_CTRL_CLASS_CODEC | 0x900 = 0x00990900
-    const V4L2_CID_MPEG_VIDEO_GOP_SIZE: u32 = 0x00990900 + 203;       // CODEC_BASE+203
-    const V4L2_CID_MPEG_VIDEO_BITRATE: u32 = 0x00990900 + 207;        // CODEC_BASE+207
-    const V4L2_CID_MPEG_VIDEO_H264_LEVEL: u32 = 0x00990900 + 359;     // CODEC_BASE+359
-    const V4L2_CID_MPEG_VIDEO_H264_PROFILE: u32 = 0x00990900 + 363;   // CODEC_BASE+363
+    const V4L2_CID_MPEG_VIDEO_GOP_SIZE: u32 = 0x00990900 + 203; // CODEC_BASE+203
+    const V4L2_CID_MPEG_VIDEO_BITRATE: u32 = 0x00990900 + 207; // CODEC_BASE+207
+    const V4L2_CID_MPEG_VIDEO_H264_LEVEL: u32 = 0x00990900 + 359; // CODEC_BASE+359
+    const V4L2_CID_MPEG_VIDEO_H264_PROFILE: u32 = 0x00990900 + 363; // CODEC_BASE+363
     const V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR: u32 = 0x00990900 + 644; // CODEC_BASE+644
 
     // H264 Baseline profile = 0, Level 3.0 = 9 (V4L2 enum values).
@@ -388,8 +388,8 @@ mod raw_v4l2 {
     /// padding + union, and write fields at known offsets.
     #[repr(C)]
     struct V4l2Format {
-        type_: u32,          // 0..4
-        _rest: [u8; 204],    // 4..208 (4 bytes padding + 200 bytes union)
+        type_: u32,       // 0..4
+        _rest: [u8; 204], // 4..208 (4 bytes padding + 200 bytes union)
     }
 
     /// v4l2_requestbuffers.
@@ -410,10 +410,10 @@ mod raw_v4l2 {
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     struct V4l2Plane {
-        bytesused: u32,   // 0
-        length: u32,      // 4
-        m_offset: u64,    // 8  (union: mem_offset(u32) / userptr(u64) / fd(i32))
-        data_offset: u32, // 16
+        bytesused: u32,      // 0
+        length: u32,         // 4
+        m_offset: u64,       // 8  (union: mem_offset(u32) / userptr(u64) / fd(i32))
+        data_offset: u32,    // 16
         reserved: [u32; 11], // 20..64
     }
 
@@ -424,23 +424,23 @@ mod raw_v4l2 {
     /// 8-byte alignment requirement.
     #[repr(C)]
     struct V4l2Buffer {
-        index: u32,        // 0
-        type_: u32,        // 4
-        bytesused: u32,    // 8
-        flags: u32,        // 12
-        field: u32,        // 16
-        _pad: u32,         // 20 (padding for timeval alignment)
+        index: u32,          // 0
+        type_: u32,          // 4
+        bytesused: u32,      // 8
+        flags: u32,          // 12
+        field: u32,          // 16
+        _pad: u32,           // 20 (padding for timeval alignment)
         timestamp_sec: i64,  // 24
         timestamp_usec: i64, // 32
         timecode: [u32; 4],  // 40
-        sequence: u32,     // 56
-        memory: u32,       // 60
-        m_planes: u64,     // 64 (pointer to v4l2_plane array)
-        length: u32,       // 72 (number of planes)
-        reserved2: u32,    // 76
-        _union: u32,       // 80
-        reserved: u32,     // 84
-    }                      // total: 88 = 0x58
+        sequence: u32,       // 56
+        memory: u32,         // 60
+        m_planes: u64,       // 64 (pointer to v4l2_plane array)
+        length: u32,         // 72 (number of planes)
+        reserved2: u32,      // 76
+        _union: u32,         // 80
+        reserved: u32,       // 84
+    } // total: 88 = 0x58
 
     /// v4l2_control.
     #[repr(C)]
@@ -474,16 +474,24 @@ mod raw_v4l2 {
     impl Drop for RawEncoder {
         fn drop(&mut self) {
             for buf in self.output_bufs.drain(..) {
-                unsafe { libc::munmap(buf.ptr as *mut libc::c_void, buf.length); }
+                unsafe {
+                    libc::munmap(buf.ptr as *mut libc::c_void, buf.length);
+                }
             }
             for buf in self.capture_bufs.drain(..) {
-                unsafe { libc::munmap(buf.ptr as *mut libc::c_void, buf.length); }
+                unsafe {
+                    libc::munmap(buf.ptr as *mut libc::c_void, buf.length);
+                }
             }
             // STREAMOFF both queues.
             let mut type_ = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-            unsafe { libc::ioctl(self.fd.as_raw_fd(), ioctl_nr::VIDIOC_STREAMOFF, &mut type_); }
+            unsafe {
+                libc::ioctl(self.fd.as_raw_fd(), ioctl_nr::VIDIOC_STREAMOFF, &mut type_);
+            }
             type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-            unsafe { libc::ioctl(self.fd.as_raw_fd(), ioctl_nr::VIDIOC_STREAMOFF, &mut type_); }
+            unsafe {
+                libc::ioctl(self.fd.as_raw_fd(), ioctl_nr::VIDIOC_STREAMOFF, &mut type_);
+            }
         }
     }
 
@@ -504,18 +512,42 @@ mod raw_v4l2 {
             let raw_fd = fd.as_raw_fd();
 
             // 1. S_FMT OUTPUT (NV12).
-            Self::s_fmt(raw_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, fourcc(b'N', b'V', b'1', b'2'), width, height)?;
+            Self::s_fmt(
+                raw_fd,
+                V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
+                fourcc(b'N', b'V', b'1', b'2'),
+                width,
+                height,
+            )?;
             tracing::debug!("V4L2 raw: OUTPUT format set to NV12 {width}x{height}");
 
             // 2. S_FMT CAPTURE (H264).
-            Self::s_fmt(raw_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, fourcc(b'H', b'2', b'6', b'4'), width, height)?;
+            Self::s_fmt(
+                raw_fd,
+                V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
+                fourcc(b'H', b'2', b'6', b'4'),
+                width,
+                height,
+            )?;
             tracing::debug!("V4L2 raw: CAPTURE format set to H264 {width}x{height}");
 
             // 3. Set controls (best-effort).
             Self::s_ctrl(raw_fd, V4L2_CID_MPEG_VIDEO_BITRATE, bitrate as i32);
-            Self::s_ctrl(raw_fd, V4L2_CID_MPEG_VIDEO_GOP_SIZE, keyframe_interval as i32);
-            Self::s_ctrl(raw_fd, V4L2_CID_MPEG_VIDEO_H264_PROFILE, V4L2_MPEG_VIDEO_H264_PROFILE_CONSTRAINED_BASELINE);
-            Self::s_ctrl(raw_fd, V4L2_CID_MPEG_VIDEO_H264_LEVEL, V4L2_MPEG_VIDEO_H264_LEVEL_3_0);
+            Self::s_ctrl(
+                raw_fd,
+                V4L2_CID_MPEG_VIDEO_GOP_SIZE,
+                keyframe_interval as i32,
+            );
+            Self::s_ctrl(
+                raw_fd,
+                V4L2_CID_MPEG_VIDEO_H264_PROFILE,
+                V4L2_MPEG_VIDEO_H264_PROFILE_CONSTRAINED_BASELINE,
+            );
+            Self::s_ctrl(
+                raw_fd,
+                V4L2_CID_MPEG_VIDEO_H264_LEVEL,
+                V4L2_MPEG_VIDEO_H264_LEVEL_3_0,
+            );
             Self::s_ctrl(raw_fd, V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR, 1);
 
             // 4. S_PARM (framerate).
@@ -527,8 +559,10 @@ mod raw_v4l2 {
             tracing::info!(n_output, n_capture, "V4L2 raw: buffers allocated");
 
             // 6. MMAP all buffers.
-            let output_bufs = Self::mmap_buffers(raw_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, n_output)?;
-            let capture_bufs = Self::mmap_buffers(raw_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, n_capture)?;
+            let output_bufs =
+                Self::mmap_buffers(raw_fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, n_output)?;
+            let capture_bufs =
+                Self::mmap_buffers(raw_fd, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, n_capture)?;
 
             let output_free: VecDeque<u32> = (0..n_output as u32).collect();
 
@@ -563,9 +597,7 @@ mod raw_v4l2 {
             buf.m_planes = planes.as_mut_ptr() as u64;
             buf.length = 1;
 
-            let ret = unsafe {
-                libc::ioctl(self.fd.as_raw_fd(), ioctl_nr::VIDIOC_DQBUF, &mut buf)
-            };
+            let ret = unsafe { libc::ioctl(self.fd.as_raw_fd(), ioctl_nr::VIDIOC_DQBUF, &mut buf) };
             if ret < 0 {
                 return None;
             }
@@ -595,9 +627,7 @@ mod raw_v4l2 {
             buf.m_planes = planes.as_mut_ptr() as u64;
             buf.length = 1;
 
-            let ret = unsafe {
-                libc::ioctl(self.fd.as_raw_fd(), ioctl_nr::VIDIOC_DQBUF, &mut buf)
-            };
+            let ret = unsafe { libc::ioctl(self.fd.as_raw_fd(), ioctl_nr::VIDIOC_DQBUF, &mut buf) };
             if ret == 0 {
                 self.output_free.push_back(buf.index);
             }
@@ -605,15 +635,23 @@ mod raw_v4l2 {
 
         /// Start streaming: queue first frame, STREAMON OUTPUT, queue all CAPTURE, STREAMON CAPTURE.
         /// This ordering is required by the bcm2835-codec driver.
-        pub fn start_streaming(&mut self, first_nv12: &[u8], timestamp_us: u64) -> anyhow::Result<()> {
+        pub fn start_streaming(
+            &mut self,
+            first_nv12: &[u8],
+            timestamp_us: u64,
+        ) -> anyhow::Result<()> {
             // Queue first OUTPUT buffer before STREAMON (driver requirement).
             self.queue_frame(first_nv12, timestamp_us);
 
             // STREAMON OUTPUT.
             let mut type_ = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-            let ret = unsafe { libc::ioctl(self.fd.as_raw_fd(), ioctl_nr::VIDIOC_STREAMON, &mut type_) };
+            let ret =
+                unsafe { libc::ioctl(self.fd.as_raw_fd(), ioctl_nr::VIDIOC_STREAMON, &mut type_) };
             if ret < 0 {
-                anyhow::bail!("STREAMON OUTPUT failed: {}", std::io::Error::last_os_error());
+                anyhow::bail!(
+                    "STREAMON OUTPUT failed: {}",
+                    std::io::Error::last_os_error()
+                );
             }
             tracing::debug!("V4L2 raw: STREAMON OUTPUT");
 
@@ -624,9 +662,13 @@ mod raw_v4l2 {
 
             // STREAMON CAPTURE.
             type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-            let ret = unsafe { libc::ioctl(self.fd.as_raw_fd(), ioctl_nr::VIDIOC_STREAMON, &mut type_) };
+            let ret =
+                unsafe { libc::ioctl(self.fd.as_raw_fd(), ioctl_nr::VIDIOC_STREAMON, &mut type_) };
             if ret < 0 {
-                anyhow::bail!("STREAMON CAPTURE failed: {}", std::io::Error::last_os_error());
+                anyhow::bail!(
+                    "STREAMON CAPTURE failed: {}",
+                    std::io::Error::last_os_error()
+                );
             }
             tracing::debug!("V4L2 raw: STREAMON CAPTURE");
 
@@ -640,7 +682,9 @@ mod raw_v4l2 {
                 events: libc::POLLIN | libc::POLLOUT,
                 revents: 0,
             };
-            unsafe { libc::poll(&mut pollfd, 1, timeout_ms); }
+            unsafe {
+                libc::poll(&mut pollfd, 1, timeout_ms);
+            }
             let capture_ready = pollfd.revents & libc::POLLIN != 0;
             let output_ready = pollfd.revents & libc::POLLOUT != 0;
             (capture_ready, output_ready)
@@ -653,7 +697,13 @@ mod raw_v4l2 {
         /// Doing G_FMT first ensures all fields have valid defaults (colorspace,
         /// sizeimage, etc.) — S_FMT with a zeroed struct is rejected by
         /// bcm2835-codec.
-        fn s_fmt(fd: RawFd, type_: u32, pixfmt: u32, width: u32, height: u32) -> anyhow::Result<()> {
+        fn s_fmt(
+            fd: RawFd,
+            type_: u32,
+            pixfmt: u32,
+            width: u32,
+            height: u32,
+        ) -> anyhow::Result<()> {
             const VIDIOC_G_FMT: libc::c_ulong = 0xC0D05604; // _IOWR('V', 4, v4l2_format)
 
             let mut fmt: V4l2Format = unsafe { std::mem::zeroed() };
@@ -662,7 +712,10 @@ mod raw_v4l2 {
             // G_FMT to get valid defaults.
             let ret = unsafe { libc::ioctl(fd, VIDIOC_G_FMT, &mut fmt) };
             if ret < 0 {
-                anyhow::bail!("G_FMT type={type_} failed: {}", std::io::Error::last_os_error());
+                anyhow::bail!(
+                    "G_FMT type={type_} failed: {}",
+                    std::io::Error::last_os_error()
+                );
             }
 
             // Modify the fields we care about.
@@ -680,7 +733,10 @@ mod raw_v4l2 {
 
             let ret = unsafe { libc::ioctl(fd, ioctl_nr::VIDIOC_S_FMT, &mut fmt) };
             if ret < 0 {
-                anyhow::bail!("S_FMT type={type_} failed: {}", std::io::Error::last_os_error());
+                anyhow::bail!(
+                    "S_FMT type={type_} failed: {}",
+                    std::io::Error::last_os_error()
+                );
             }
             Ok(())
         }
@@ -717,7 +773,10 @@ mod raw_v4l2 {
             };
             let ret = unsafe { libc::ioctl(fd, ioctl_nr::VIDIOC_REQBUFS, &mut req) };
             if ret < 0 {
-                anyhow::bail!("REQBUFS type={type_} failed: {}", std::io::Error::last_os_error());
+                anyhow::bail!(
+                    "REQBUFS type={type_} failed: {}",
+                    std::io::Error::last_os_error()
+                );
             }
             Ok(req.count as usize)
         }
@@ -733,7 +792,10 @@ mod raw_v4l2 {
 
                 let ret = unsafe { libc::ioctl(fd, ioctl_nr::VIDIOC_QUERYBUF, &mut buf) };
                 if ret < 0 {
-                    anyhow::bail!("QUERYBUF type={type_} idx={i} failed: {}", std::io::Error::last_os_error());
+                    anyhow::bail!(
+                        "QUERYBUF type={type_} idx={i} failed: {}",
+                        std::io::Error::last_os_error()
+                    );
                 }
 
                 let offset = planes[0].m_offset;
@@ -750,7 +812,10 @@ mod raw_v4l2 {
                     )
                 };
                 if ptr == libc::MAP_FAILED {
-                    anyhow::bail!("mmap type={type_} idx={i} failed: {}", std::io::Error::last_os_error());
+                    anyhow::bail!(
+                        "mmap type={type_} idx={i} failed: {}",
+                        std::io::Error::last_os_error()
+                    );
                 }
 
                 bufs.push(MmapBuffer {
@@ -778,7 +843,11 @@ mod raw_v4l2 {
 
             let ret = unsafe { libc::ioctl(self.fd.as_raw_fd(), ioctl_nr::VIDIOC_QBUF, &mut buf) };
             if ret < 0 {
-                tracing::warn!(index, "V4L2 raw: QBUF OUTPUT failed: {}", std::io::Error::last_os_error());
+                tracing::warn!(
+                    index,
+                    "V4L2 raw: QBUF OUTPUT failed: {}",
+                    std::io::Error::last_os_error()
+                );
             }
         }
 
@@ -797,7 +866,11 @@ mod raw_v4l2 {
 
             let ret = unsafe { libc::ioctl(self.fd.as_raw_fd(), ioctl_nr::VIDIOC_QBUF, &mut buf) };
             if ret < 0 {
-                tracing::warn!(index, "V4L2 raw: QBUF CAPTURE failed: {}", std::io::Error::last_os_error());
+                tracing::warn!(
+                    index,
+                    "V4L2 raw: QBUF CAPTURE failed: {}",
+                    std::io::Error::last_os_error()
+                );
             }
         }
 
@@ -838,23 +911,39 @@ fn encoder_thread(
     init_tx: SyncSender<Result<()>>,
 ) {
     let result: Result<()> = (|| {
-        tracing::info!(?device_path, width, height, bitrate, "V4L2 encoder thread: starting init");
+        tracing::info!(
+            ?device_path,
+            width,
+            height,
+            bitrate,
+            "V4L2 encoder thread: starting init"
+        );
 
         let mut enc = raw_v4l2::RawEncoder::open(
-            &device_path, width, height, bitrate, keyframe_interval, framerate,
+            &device_path,
+            width,
+            height,
+            bitrate,
+            keyframe_interval,
+            framerate,
         )?;
 
         tracing::info!("V4L2 encoder: device opened and configured");
 
         // Signal successful init so the encode pipeline can start feeding frames.
-        init_tx.send(Ok(()))
+        init_tx
+            .send(Ok(()))
             .map_err(|_| anyhow::anyhow!("init channel closed"))?;
 
         // Wait for first frame before starting the V4L2 streaming pipeline
         // (the driver requires a queued OUTPUT buffer before STREAMON).
-        let first_cmd = input_rx.recv()
+        let first_cmd = input_rx
+            .recv()
             .map_err(|_| anyhow::anyhow!("input channel closed before first frame"))?;
-        let EncoderCmd::Encode { nv12: first_nv12, timestamp_us: first_ts } = first_cmd;
+        let EncoderCmd::Encode {
+            nv12: first_nv12,
+            timestamp_us: first_ts,
+        } = first_cmd;
 
         enc.start_streaming(&first_nv12, first_ts)?;
         tracing::info!("V4L2 encoder: streaming started");
@@ -877,9 +966,16 @@ fn encoder_thread(
                 if !data.is_empty() {
                     encoded_count += 1;
                     if encoded_count <= 5 || encoded_count % 30 == 0 {
-                        tracing::debug!(encoded_count, len = data.len(), "V4L2 encoder: encoded packet");
+                        tracing::debug!(
+                            encoded_count,
+                            len = data.len(),
+                            "V4L2 encoder: encoded packet"
+                        );
                     }
-                    let _ = output_tx.try_send(EncodedOutput { data, timestamp_us: ts });
+                    let _ = output_tx.try_send(EncodedOutput {
+                        data,
+                        timestamp_us: ts,
+                    });
                 }
             }
 

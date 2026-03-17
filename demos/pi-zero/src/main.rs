@@ -244,12 +244,8 @@ fn cmd_fb_demo() -> n0_error::Result {
 
     let source = TestVideoSource::new(640, 480).with_fps(30.0);
     let shutdown = CancellationToken::new();
-    let video_track = VideoTrack::from_video_source(
-        "test".into(),
-        shutdown,
-        source,
-        DecodeConfig::default(),
-    );
+    let video_track =
+        VideoTrack::from_video_source("test".into(), shutdown, source, DecodeConfig::default());
 
     watch::run_fb_demo(video_track)?;
     Ok(())
