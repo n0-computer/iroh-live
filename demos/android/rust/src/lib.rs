@@ -597,6 +597,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
     handle: jlong,
     surface_width: jint,
     surface_height: jint,
+    rotation_degrees: jint,
 ) -> bool {
     if handle == 0 {
         return false;
@@ -626,6 +627,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
         frame.native_handle()
     {
         let raw_ptr = info.buffer.as_ptr();
+        let rot = rotation_degrees as u32;
         unsafe {
             renderer.render_hardware_buffer(
                 raw_ptr as *mut c_void,
@@ -633,6 +635,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
                 surface_height,
                 w,
                 h,
+                rot,
             );
         }
         // info.buffer is an Arc — dropping it decrements the refcount.
@@ -641,10 +644,11 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
     }
 
     // CPU fallback: wrap in an AHardwareBuffer, then render via OES.
+    let rot = rotation_degrees as u32;
     let img = frame.rgba_image();
     if let Some(ahwb) = create_rgba_hardware_buffer(img.as_raw(), w, h) {
         unsafe {
-            renderer.render_hardware_buffer(ahwb, surface_width, surface_height, w, h);
+            renderer.render_hardware_buffer(ahwb, surface_width, surface_height, w, h, rot);
             AHardwareBuffer_release(ahwb);
         }
         return true;
