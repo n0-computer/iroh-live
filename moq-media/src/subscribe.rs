@@ -774,19 +774,35 @@ impl VideoTrack {
                     match source.pop_frame() {
                         Ok(Some(frame)) => {
                             let [w, h] = frame.dimensions;
-                            let rgba = frame.rgba_image();
-                            let decoded = match scaler.scale_rgba(rgba.as_raw(), w, h) {
-                                Ok(Some((scaled, sw, sh))) => {
-                                    let mut f =
-                                        VideoFrame::new_rgba(scaled.into(), sw, sh, Duration::ZERO);
-                                    f.timestamp = start.elapsed();
-                                    f
+                            // Only convert to RGBA and scale if the viewport
+                            // demands a different size. For passthrough (viewport
+                            // 1×1 or matching source), forward the original frame
+                            // to avoid a costly NV12→RGBA conversion.
+                            let (vw, vh) = *viewport.peek();
+                            let needs_scale = vw > 1 && vh > 1 && (vw != w || vh != h);
+                            let decoded = if needs_scale {
+                                let rgba = frame.rgba_image();
+                                match scaler.scale_rgba(rgba.as_raw(), w, h) {
+                                    Ok(Some((scaled, sw, sh))) => {
+                                        let mut f = VideoFrame::new_rgba(
+                                            scaled.into(),
+                                            sw,
+                                            sh,
+                                            Duration::ZERO,
+                                        );
+                                        f.timestamp = start.elapsed();
+                                        f
+                                    }
+                                    Ok(None) | Err(_) => {
+                                        let mut f = frame;
+                                        f.timestamp = start.elapsed();
+                                        f
+                                    }
                                 }
-                                Ok(None) | Err(_) => {
-                                    let mut f = frame;
-                                    f.timestamp = start.elapsed();
-                                    f
-                                }
+                            } else {
+                                let mut f = frame;
+                                f.timestamp = start.elapsed();
+                                f
                             };
                             let _ = frame_tx.blocking_send(decoded);
                         }
