@@ -116,6 +116,16 @@ pub struct LibcameraH264Source {
     avcc: Option<Bytes>,
 }
 
+impl std::fmt::Debug for LibcameraH264Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LibcameraH264Source")
+            .field("config", &self.config)
+            .field("frame_count", &self.frame_count)
+            .field("running", &self.child.is_some())
+            .finish()
+    }
+}
+
 impl LibcameraH264Source {
     /// Creates a new source from the given configuration.
     pub fn new(config: LibcameraH264Config) -> Self {
@@ -359,6 +369,18 @@ pub struct LibcameraYuvSource {
     child: Option<Child>,
     frame_size: usize,
     frame_count: u64,
+}
+
+impl std::fmt::Debug for LibcameraYuvSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LibcameraYuvSource")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("framerate", &self.framerate)
+            .field("frame_count", &self.frame_count)
+            .field("running", &self.child.is_some())
+            .finish()
+    }
 }
 
 impl LibcameraYuvSource {

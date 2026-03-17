@@ -47,6 +47,7 @@ fn try_upload_frame(
 }
 
 /// Prints FPS and RTT stats every second.
+#[allow(dead_code)]
 fn print_stats(
     session: &MoqSession,
     track: &VideoTrack,

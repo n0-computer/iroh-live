@@ -79,21 +79,22 @@ type MakeAudioEncoder = Box<dyn Fn() -> Result<Box<dyn AudioEncoder>> + Send + '
 type MakeVideoEncoder = Box<dyn Fn() -> Result<Box<dyn VideoEncoder>> + Send + 'static>;
 
 /// Active video pipeline — either encoding raw frames or passing through
-/// pre-encoded packets.
+/// pre-encoded packets. The inner value is held for RAII: dropping the
+/// pipeline cancels the encoder/passthrough thread.
 #[derive(derive_more::Debug)]
 enum VideoPipeline {
-    Encoder(VideoEncoderPipeline),
-    PreEncoded(PreEncodedVideoPipeline),
+    Encoder(#[allow(dead_code)] VideoEncoderPipeline),
+    PreEncoded(#[allow(dead_code)] PreEncodedVideoPipeline),
 }
 
 type MakePreEncodedSource =
     Box<dyn Fn() -> anyhow::Result<Box<dyn PreEncodedVideoSource>> + Send + 'static>;
 
 /// Entry for a single pre-encoded video track.
-struct PreEncodedVideoEntry {
-    name: String,
-    config: VideoConfig,
-    factory: MakePreEncodedSource,
+pub(crate) struct PreEncodedVideoEntry {
+    pub(crate) name: String,
+    pub(crate) config: VideoConfig,
+    pub(crate) factory: MakePreEncodedSource,
 }
 
 struct AudioRenditionEntry {
