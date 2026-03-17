@@ -1666,3 +1666,4 @@ Starting: Intent { cmp=com.n0.irohlive.demo/.MainActivity }
 03-17 15:18:03.105 29913 29913 W System.err: SLF4J(W): No SLF4J providers were found.
 03-17 15:18:03.105 29913 29913 W System.err: SLF4J(W): Defaulting to no-operation (NOP) logger implementation
 03-17 15:18:03.105 29913 29913 W System.err: SLF4J(W): See https://www.slf4j.org/codes.html#noProviders for further details.
+Error while executing command, exit code: 255
