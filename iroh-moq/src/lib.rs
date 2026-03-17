@@ -266,6 +266,7 @@ impl MoqSession {
         Self::session_connect(wt_session).await
     }
 
+    /// Establishes a MoQ session as the client (initiator) over an existing WebTransport session.
     pub async fn session_connect(wt_session: web_transport_iroh::Session) -> Result<Self, Error> {
         let publish_prod = OriginProducer::new();
         let subscribe_prod = OriginProducer::new();
@@ -282,6 +283,7 @@ impl MoqSession {
         })
     }
 
+    /// Accepts a MoQ session as the server (responder) over an existing WebTransport session.
     pub async fn session_accept(wt_session: web_transport_iroh::Session) -> Result<Self, Error> {
         let publish_prod = OriginProducer::new();
         let subscribe_prod = OriginProducer::new();
@@ -336,6 +338,16 @@ impl MoqSession {
     /// Publishes a broadcast on this session, making it available to the remote peer.
     pub fn publish(&self, name: String, broadcast: BroadcastConsumer) {
         self.publish.publish_broadcast(name, broadcast);
+    }
+
+    /// Returns the origin producer for advanced publish operations.
+    pub fn origin_producer(&self) -> &OriginProducer {
+        &self.publish
+    }
+
+    /// Returns the origin consumer for advanced subscribe operations.
+    pub fn origin_consumer(&self) -> &OriginConsumer {
+        &self.subscribe
     }
 
     /// Closes the session with an error code and reason.
