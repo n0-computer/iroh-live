@@ -47,6 +47,11 @@ impl CameraFrameSource {
     pub fn push_frame(&mut self, frame: VideoFrame) {
         self.pending_frame = Some(frame);
     }
+
+    /// Takes the pending frame without requiring the [`VideoSource`] trait.
+    pub fn take_frame(&mut self) -> Option<VideoFrame> {
+        self.pending_frame.take()
+    }
 }
 
 impl VideoSource for CameraFrameSource {

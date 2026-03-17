@@ -5873,6 +5873,7 @@ dependencies = [
  "ndk-context",
  "rusty-codecs",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]

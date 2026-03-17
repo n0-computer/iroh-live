@@ -75,6 +75,20 @@ object IrohBridge {
     )
 
     /**
+     * Starts a direct camera passthrough pipeline (no encode/decode).
+     *
+     * Returns an opaque session handle (non-zero on success, 0 on failure).
+     */
+    external fun startDirect(cameraWidth: Int, cameraHeight: Int): Long
+
+    /**
+     * Starts a local H264 encode→decode pipeline (no network).
+     *
+     * Returns an opaque session handle (non-zero on success, 0 on failure).
+     */
+    external fun startH264(cameraWidth: Int, cameraHeight: Int): Long
+
+    /**
      * Returns a human-readable status string with encode/decode stats.
      *
      * Returns an empty string if the handle is invalid or no stats are
