@@ -56,7 +56,11 @@ impl LibcameraH264Config {
             height,
             framerate,
             bitrate: 500_000,
-            keyframe_interval: 60,
+            // 1-second keyframe interval for fast channel join and
+            // recovery. Shorter intervals increase bitrate slightly but
+            // dramatically improve join latency (subscriber must wait for
+            // the next keyframe before decoding can start).
+            keyframe_interval: framerate,
         }
     }
 
@@ -79,7 +83,7 @@ impl LibcameraH264Config {
                 inline: true,
                 profile: 0x42,
                 constraints: 0xE0,
-                level: 0x1E,
+                level: 0x1F, // 3.1
             }),
             description: None,
             coded_width: Some(self.width),
@@ -118,7 +122,11 @@ impl LibcameraH264Source {
         Self {
             config,
             child: None,
-            buf: vec![0u8; 256 * 1024],
+            // Small read buffer to minimize latency. At 360p baseline H.264
+            // ~500 kbps, a typical frame is 2-8 KB. A 32 KB buffer is large
+            // enough for any single frame while ensuring read() returns
+            // promptly (not waiting to fill a 256 KB buffer).
+            buf: vec![0u8; 32 * 1024],
             remainder: Vec::new(),
             frame_count: 0,
             avcc: None,
@@ -163,7 +171,10 @@ impl PreEncodedVideoSource for LibcameraH264Source {
                 &c.keyframe_interval.to_string(),
                 "--profile",
                 "baseline",
-                "--inline",
+                "--level",
+                "3.1",
+                "--inline", // prepend SPS+PPS before every IDR
+                "--flush",  // flush output after each frame (low latency)
                 "--timeout",
                 "0",
                 "--nopreview",
@@ -523,7 +534,7 @@ mod tests {
     fn h264_config_defaults() {
         let cfg = LibcameraH264Config::new(640, 360, 30);
         assert_eq!(cfg.bitrate, 500_000);
-        assert_eq!(cfg.keyframe_interval, 60);
+        assert_eq!(cfg.keyframe_interval, 30); // 1s at 30fps
         let vc = cfg.video_config();
         assert_eq!(vc.coded_width, Some(640));
         assert_eq!(vc.framerate, Some(30.0));
