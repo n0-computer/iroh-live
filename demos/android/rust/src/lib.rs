@@ -570,40 +570,73 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_releaseHardwareBuffe
 
 // ── JNI: Rust-side rendering ────────────────────────────────────────
 
-/// Initializes the Rust GLES2 renderer on the GL thread.
+/// Creates the EGL context + GL renderer for the given Android Surface.
 ///
-/// Must be called after `eglMakeCurrent` — the EGL context must be current.
-/// `egl_display_ptr` is the native `EGLDisplay` pointer.
+/// Replaces the Kotlin-side EGL setup. The Surface is converted to an
+/// `ANativeWindow` via NDK, then an EGL display/context/surface is
+/// created in Rust. Must be called from the render thread.
 ///
 /// # Safety
-/// `handle` must be a live session handle. EGL context must be current.
+/// `handle` must be a live session handle. `surface` must be a valid
+/// `android.view.Surface` Java object.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_initRenderer(
+pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_initSurface(
+    env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+    surface: jni::objects::JObject<'_>,
+) {
+    if handle == 0 {
+        return;
+    }
+    // ANativeWindow_fromSurface requires the raw JNIEnv pointer.
+    let raw_env = unsafe { env.get_raw() };
+    let raw_surface = surface.as_raw();
+    let native_window =
+        unsafe { ndk::native_window::NativeWindow::from_surface(raw_env, raw_surface) };
+    let Some(native_window) = native_window else {
+        tracing::error!("ANativeWindow_fromSurface returned null");
+        return;
+    };
+
+    let session = unsafe { borrow_handle(handle) };
+    let Ok(guard) = session.lock() else { return };
+    match unsafe { AndroidRenderer::new(native_window.ptr().as_ptr().cast()) } {
+        Ok(r) => *guard.renderer.lock().expect("renderer lock") = Some(r),
+        Err(e) => tracing::error!("initSurface failed: {e:#}"),
+    }
+}
+
+/// Tears down the EGL surface and context. Called when the render loop exits.
+///
+/// # Safety
+/// `handle` must be a live session handle.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_teardownSurface(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
-    egl_display_ptr: jlong,
 ) {
     if handle == 0 {
         return;
     }
     let session = unsafe { borrow_handle(handle) };
-    let Ok(mut guard) = session.lock() else {
+    let Ok(guard) = session.lock() else { return };
+    let Ok(mut renderer_guard) = guard.renderer.lock() else {
         return;
     };
-    match unsafe { AndroidRenderer::new(egl_display_ptr as *mut c_void) } {
-        Ok(r) => *guard.renderer.lock().expect("renderer lock") = Some(r),
-        Err(e) => tracing::error!("initRenderer failed: {e:#}"),
+    if let Some(ref renderer) = *renderer_guard {
+        renderer.teardown();
     }
+    *renderer_guard = None;
 }
 
-/// Polls for the next decoded frame and renders it via the Rust GLES2 renderer.
+/// Polls for the next decoded frame, renders it, and swaps EGL buffers.
 ///
-/// Returns `true` if a frame was rendered (caller should swap buffers),
-/// `false` if no frame was available.
+/// Returns `true` if a frame was rendered, `false` if no frame was available.
 ///
 /// # Safety
-/// `handle` must be a live session handle. EGL context must be current.
+/// `handle` must be a live session handle. Must be called from the render thread.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
     _env: JNIEnv<'_>,
@@ -644,6 +677,8 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
     let Some(ref renderer) = *renderer_guard else {
         return false;
     };
+    // Re-bind the EGL context in case the coroutine dispatcher switched threads.
+    renderer.make_current();
     let rot = rotation_degrees as u32;
 
     // Try GPU HardwareBuffer first (zero-copy from HW decoder).
@@ -661,6 +696,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
                 rot,
             );
         }
+        renderer.swap_buffers();
         return true;
     }
 
@@ -679,6 +715,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
                 rot,
             );
         }
+        renderer.swap_buffers();
         return true;
     }
 
@@ -689,6 +726,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
             renderer.render_hardware_buffer(ahwb, surface_width, surface_height, w, h, rot);
             AHardwareBuffer_release(ahwb);
         }
+        renderer.swap_buffers();
         return true;
     }
 
@@ -1158,111 +1196,4 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_switchRendition(
     }
 }
 
-// ── EGL extension JNI wrappers ──────────────────────────────────────
-//
-// Thin wrappers around moq_media_android::egl. The JNI export names are
-// tied to this demo's class names; the EGL logic is in the library crate.
-
-/// `eglGetNativeClientBufferANDROID`: AHardwareBuffer → EGLClientBuffer.
-///
-/// # Safety
-/// `hardware_buffer_ptr` must be a valid `AHardwareBuffer*`.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_n0_irohlive_demo_MainActivity_eglGetNativeClientBufferANDROID(
-    _env: JNIEnv<'_>,
-    _this: jni::objects::JObject<'_>,
-    hardware_buffer_ptr: jlong,
-) -> jlong {
-    unsafe {
-        moq_media_android::egl::get_native_client_buffer(
-            hardware_buffer_ptr as *const std::ffi::c_void,
-        )
-    }
-    .map_or(0, |p| p as jlong)
-}
-
-/// `eglCreateImageKHR`: EGLClientBuffer → EGLImage.
-///
-/// # Safety
-/// `client_buffer` and `display` must be valid EGL handles.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_n0_irohlive_demo_MainActivity_eglCreateImageKHR(
-    mut env: JNIEnv<'_>,
-    _this: jni::objects::JObject<'_>,
-    display: jni::objects::JObject<'_>,
-    _context: jni::objects::JObject<'_>,
-    target: jint,
-    client_buffer: jlong,
-    attrs: jni::objects::JIntArray<'_>,
-) -> jlong {
-    let egl_display = get_native_handle(&mut env, &display);
-    // SAFETY: attrs is a valid JIntArray from the JVM.
-    let attr_vec = unsafe {
-        env.get_array_elements(&attrs, jni::objects::ReleaseMode::NoCopyBack)
-            .ok()
-    };
-    let attr_ptr = attr_vec
-        .as_ref()
-        .map(|a: &jni::objects::AutoElements<'_, '_, '_, jni::sys::jint>| a.as_ptr())
-        .unwrap_or(std::ptr::null_mut());
-
-    unsafe {
-        moq_media_android::egl::create_image(
-            egl_display as *mut std::ffi::c_void,
-            target as u32,
-            client_buffer as *mut std::ffi::c_void,
-            attr_ptr,
-        )
-    }
-    .map_or(0, |p| p as jlong)
-}
-
-/// `eglDestroyImageKHR`: releases an EGLImage.
-///
-/// # Safety
-/// `image` and `display` must be valid EGL handles.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_n0_irohlive_demo_MainActivity_eglDestroyImageKHR(
-    mut env: JNIEnv<'_>,
-    _this: jni::objects::JObject<'_>,
-    display: jni::objects::JObject<'_>,
-    image: jlong,
-) {
-    let egl_display = get_native_handle(&mut env, &display);
-    unsafe {
-        moq_media_android::egl::destroy_image(
-            egl_display as *mut std::ffi::c_void,
-            image as *mut std::ffi::c_void,
-        );
-    }
-}
-
-/// `glEGLImageTargetTexture2DOES`: binds EGLImage to GL texture.
-///
-/// # Safety
-/// `image` must be valid; a GL context must be current.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_n0_irohlive_demo_MainActivity_glEGLImageTargetTexture2DOES(
-    _env: JNIEnv<'_>,
-    _this: jni::objects::JObject<'_>,
-    target: jint,
-    image: jlong,
-) {
-    unsafe {
-        moq_media_android::egl::image_target_texture_2d(
-            target as u32,
-            image as *mut std::ffi::c_void,
-        );
-    }
-}
-
-/// Extracts the native EGL handle from a Java EGL14 wrapper object.
-fn get_native_handle(env: &mut JNIEnv<'_>, obj: &jni::objects::JObject<'_>) -> jlong {
-    env.call_method(obj, "getNativeHandle", "()J", &[])
-        .and_then(|v| v.j())
-        .or_else(|_| {
-            tracing::warn!("getNativeHandle() unavailable, trying mEGLDisplay field");
-            env.get_field(obj, "mEGLDisplay", "J").and_then(|v| v.j())
-        })
-        .unwrap_or(0)
-}
+// (EGL extension JNI wrappers removed — Rust now owns the full EGL lifecycle.)

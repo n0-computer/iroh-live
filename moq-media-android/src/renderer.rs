@@ -1,13 +1,15 @@
-//! Android GLES2 renderer for HardwareBuffer video frames.
+//! Android GLES2 renderer with EGL context management.
 //!
-//! Imports `AHardwareBuffer` frames as `GL_TEXTURE_EXTERNAL_OES` via EGL,
-//! then draws a fullscreen textured triangle. All GL calls happen in Rust —
-//! the Kotlin side only manages the EGL context lifecycle and swaps buffers.
+//! Owns the full EGL lifecycle (display, context, surface) and renders
+//! `AHardwareBuffer` frames via `GL_TEXTURE_EXTERNAL_OES` or NV12 planes
+//! via `sampler2D`. Kotlin only provides the `Surface` handle — all GL
+//! and EGL calls happen in Rust.
 
 use std::ffi::c_void;
 
 use anyhow::{Context as _, Result, bail};
 use glow::HasContext;
+use khronos_egl as egl_api;
 
 use crate::egl;
 
@@ -84,13 +86,19 @@ void main() {
     gl_FragColor = vec4(clamp(r, 0.0, 1.0), clamp(g, 0.0, 1.0), clamp(b, 0.0, 1.0), 1.0);
 }";
 
-/// Renders `AHardwareBuffer` frames via EGL external texture import.
+/// Renders video frames on Android with full EGL lifecycle ownership.
 ///
-/// Owns a GLES2 shader program for `GL_TEXTURE_EXTERNAL_OES` and handles
-/// the per-frame EGLImage lifecycle. The caller must ensure the EGL context
-/// is current on the calling thread for all methods.
+/// Manages the EGL display, context, and surface internally. The caller
+/// provides a native window (from `ANativeWindow_fromSurface`) at
+/// construction time. All GL and EGL calls happen through this struct.
 pub struct AndroidRenderer {
     gl: glow::Context,
+    // EGL state.
+    egl: egl_api::DynamicInstance<egl_api::EGL1_4>,
+    egl_display: egl_api::Display,
+    egl_config: egl_api::Config,
+    egl_context: egl_api::Context,
+    egl_surface: egl_api::Surface,
     // OES path (HardwareBuffer frames).
     oes_program: glow::Program,
     oes_texture: glow::Texture,
@@ -104,30 +112,93 @@ pub struct AndroidRenderer {
     nv12_rotation_loc: Option<glow::UniformLocation>,
     // Shared.
     vbo: glow::Buffer,
-    egl_display: *mut c_void,
 }
 
-// SAFETY: The raw EGL display pointer is only used from the GL thread,
-// which is guaranteed by the caller contract (EGL context must be current).
+// SAFETY: EGL/GL resources are only used from the GL thread, guaranteed by
+// the caller contract. The EGL instance (libloading::Library) is Send.
 unsafe impl Send for AndroidRenderer {}
 
 impl std::fmt::Debug for AndroidRenderer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AndroidRenderer")
-            .field("egl_display", &self.egl_display)
-            .finish()
+        f.debug_struct("AndroidRenderer").finish()
     }
 }
 
 impl AndroidRenderer {
-    /// Creates the renderer: compiles the OES shader, allocates the texture and VBO.
+    /// Creates a renderer with a full EGL context bound to the given native window.
     ///
-    /// `egl_display` is the native `EGLDisplay` pointer (from Kotlin's
-    /// `EGLDisplay.getNativeHandle()`).
+    /// `native_window` is an `ANativeWindow*` obtained from
+    /// `ANativeWindow_fromSurface`. This function initialises EGL (display,
+    /// config, context, surface), makes it current, compiles shaders, and
+    /// allocates GL resources.
     ///
     /// # Safety
-    /// The EGL context must be current on the calling thread.
-    pub unsafe fn new(egl_display: *mut c_void) -> Result<Self> {
+    /// `native_window` must be a valid `ANativeWindow*`.
+    pub unsafe fn new(native_window: *mut c_void) -> Result<Self> {
+        // ── EGL setup ───────────────────────────────────────────────
+        let egl = unsafe {
+            egl_api::DynamicInstance::<egl_api::EGL1_4>::load_required()
+                .map_err(|e| anyhow::anyhow!("load EGL: {e}"))?
+        };
+
+        let egl_display =
+            unsafe { egl.get_display(egl_api::DEFAULT_DISPLAY) }.context("eglGetDisplay failed")?;
+        egl.initialize(egl_display)
+            .map_err(|e| anyhow::anyhow!("eglInitialize: {e}"))?;
+
+        let config = egl
+            .choose_first_config(
+                egl_display,
+                &[
+                    egl_api::RED_SIZE,
+                    8,
+                    egl_api::GREEN_SIZE,
+                    8,
+                    egl_api::BLUE_SIZE,
+                    8,
+                    egl_api::ALPHA_SIZE,
+                    8,
+                    egl_api::RENDERABLE_TYPE,
+                    egl_api::OPENGL_ES2_BIT,
+                    egl_api::SURFACE_TYPE,
+                    egl_api::WINDOW_BIT,
+                    egl_api::NONE,
+                ],
+            )
+            .map_err(|e| anyhow::anyhow!("eglChooseConfig: {e}"))?
+            .context("no matching EGL config")?;
+
+        egl.bind_api(egl_api::OPENGL_ES_API)
+            .map_err(|e| anyhow::anyhow!("eglBindAPI: {e}"))?;
+
+        let egl_context = egl
+            .create_context(
+                egl_display,
+                config,
+                None,
+                &[egl_api::CONTEXT_CLIENT_VERSION, 2, egl_api::NONE],
+            )
+            .map_err(|e| anyhow::anyhow!("eglCreateContext: {e}"))?;
+
+        let egl_surface = unsafe {
+            egl.create_window_surface(
+                egl_display,
+                config,
+                native_window as egl_api::NativeWindowType,
+                None,
+            )
+        }
+        .map_err(|e| anyhow::anyhow!("eglCreateWindowSurface: {e}"))?;
+
+        egl.make_current(
+            egl_display,
+            Some(egl_surface),
+            Some(egl_surface),
+            Some(egl_context),
+        )
+        .map_err(|e| anyhow::anyhow!("eglMakeCurrent: {e}"))?;
+
+        // ── GL setup ────────────────────────────────────────────────
         let gl = unsafe { egl::create_glow_context() };
 
         // Shared vertex shader.
@@ -190,6 +261,11 @@ impl AndroidRenderer {
 
         Ok(Self {
             gl,
+            egl,
+            egl_display,
+            egl_config: config,
+            egl_context,
+            egl_surface,
             oes_program,
             oes_texture,
             oes_a_pos_loc,
@@ -200,7 +276,6 @@ impl AndroidRenderer {
             nv12_a_pos_loc,
             nv12_rotation_loc,
             vbo,
-            egl_display,
         })
     }
 
@@ -234,7 +309,7 @@ impl AndroidRenderer {
         let attrs = [EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE];
         let Some(egl_image) = (unsafe {
             egl::create_image(
-                self.egl_display,
+                self.egl_display.as_ptr() as *mut c_void,
                 EGL_NATIVE_BUFFER_ANDROID,
                 client_buffer,
                 attrs.as_ptr(),
@@ -280,7 +355,7 @@ impl AndroidRenderer {
         }
 
         // Cleanup.
-        unsafe { egl::destroy_image(self.egl_display, egl_image) };
+        unsafe { egl::destroy_image(self.egl_display.as_ptr() as *mut c_void, egl_image) };
     }
 
     /// Renders NV12 planes directly to the viewport via GPU shader conversion.
@@ -369,6 +444,42 @@ impl AndroidRenderer {
             self.gl.draw_arrays(glow::TRIANGLES, 0, 3);
             self.gl.disable_vertex_attrib_array(self.nv12_a_pos_loc);
         }
+    }
+
+    /// Swaps the EGL front and back buffers (presents the rendered frame).
+    pub fn swap_buffers(&self) {
+        self.egl
+            .swap_buffers(self.egl_display, self.egl_surface)
+            .ok();
+    }
+
+    /// Ensures the EGL context is current on the calling thread.
+    ///
+    /// Coroutine dispatchers may resume on a different thread; this re-binds
+    /// the context if needed. A no-op if already current.
+    pub fn make_current(&self) {
+        self.egl
+            .make_current(
+                self.egl_display,
+                Some(self.egl_surface),
+                Some(self.egl_surface),
+                Some(self.egl_context),
+            )
+            .ok();
+    }
+
+    /// Tears down the EGL surface and context. The display stays alive.
+    pub fn teardown(&self) {
+        self.egl
+            .make_current(self.egl_display, None, None, None)
+            .ok();
+        self.egl
+            .destroy_surface(self.egl_display, self.egl_surface)
+            .ok();
+        self.egl
+            .destroy_context(self.egl_display, self.egl_context)
+            .ok();
+        tracing::info!("EGL teardown complete");
     }
 }
 

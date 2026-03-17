@@ -89,20 +89,22 @@ object IrohBridge {
     external fun startH264(cameraWidth: Int, cameraHeight: Int): Long
 
     /**
-     * Initializes the Rust-side GLES2 renderer on the current GL thread.
+     * Creates the EGL context + GL renderer for the given Android Surface.
      *
-     * Must be called after eglMakeCurrent. [eglDisplayPtr] is the native
-     * EGLDisplay pointer.
+     * Must be called from the render thread. Replaces the Kotlin-side EGL setup.
      */
-    external fun initRenderer(handle: Long, eglDisplayPtr: Long)
+    external fun initSurface(handle: Long, surface: android.view.Surface)
 
     /**
-     * Polls for the next decoded frame and renders it via the Rust renderer.
+     * Tears down the EGL surface and context. Called when the render loop exits.
+     */
+    external fun teardownSurface(handle: Long)
+
+    /**
+     * Polls for the next decoded frame, renders it, and swaps EGL buffers.
      *
-     * [rotationDegrees] is the camera sensor rotation (0/90/180/270) to
-     * correct for sensor orientation.
-     *
-     * Returns true if a frame was rendered (caller should swap buffers).
+     * [rotationDegrees] is the camera sensor rotation (0/90/180/270).
+     * Returns true if a frame was rendered.
      */
     external fun renderNextFrame(
         handle: Long, surfaceWidth: Int, surfaceHeight: Int, rotationDegrees: Int
