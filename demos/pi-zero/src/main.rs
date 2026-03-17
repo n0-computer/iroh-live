@@ -17,7 +17,6 @@ use iroh_live::{
 
 mod epaper;
 mod epd_v4;
-mod libcamera;
 mod watch;
 
 /// Per the datasheet, e-paper must be refreshed at least once every 24 h.
@@ -137,13 +136,41 @@ async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     // Capture camera via rpicam-vid (libcamera). On Pi OS Bookworm the CSI
     // camera is only accessible through libcamera — direct V4L2 gives raw
     // Bayer data from the Unicam sensor, not usable video frames.
-    let camera = libcamera::LibcameraSource::new(640, 360, 30);
+    //
+    // Default "hardware" mode uses rpicam-vid's internal H.264 encoder
+    // (pre-encoded path, ~300 KB/s). "software" falls back to raw YUV
+    // capture + openh264 (~10 MB/s pipe overhead).
+    match opts.encoder.as_str() {
+        "hardware" | "hw" => {
+            use rusty_codecs::libcamera::{LibcameraH264Config, LibcameraH264Source};
 
-    let codec = match opts.encoder.as_str() {
-        "hardware" | "hw" => VideoCodec::best_available().expect("no video codec compiled in"),
-        "software" | "sw" => VideoCodec::H264,
+            let config = LibcameraH264Config::new(640, 360, 30);
+            let track_name = config.track_name();
+            let video_config = config.video_config();
+            tracing::info!("using pre-encoded H.264 from rpicam-vid");
+            broadcast
+                .video()
+                .set_pre_encoded(track_name, video_config, move || {
+                    Ok(Box::new(LibcameraH264Source::new(config.clone())))
+                })?;
+        }
+        "software" | "sw" => {
+            use rusty_codecs::libcamera::LibcameraYuvSource;
+
+            let camera = LibcameraYuvSource::new(640, 360, 30);
+            let codec = VideoCodec::H264;
+            tracing::info!(%codec, "using software encoder with raw YUV capture");
+            broadcast.video().set(camera, codec, [VideoPreset::P360])?;
+        }
         #[cfg(feature = "ffmpeg")]
-        "ffmpeg" => VideoCodec::FfmpegH264,
+        "ffmpeg" => {
+            use rusty_codecs::libcamera::LibcameraYuvSource;
+
+            let camera = LibcameraYuvSource::new(640, 360, 30);
+            let codec = VideoCodec::FfmpegH264;
+            tracing::info!(%codec, "using ffmpeg encoder with raw YUV capture");
+            broadcast.video().set(camera, codec, [VideoPreset::P360])?;
+        }
         #[cfg(not(feature = "ffmpeg"))]
         "ffmpeg" => {
             eprintln!("ffmpeg encoder not compiled in — build with --features ffmpeg");
@@ -153,10 +180,7 @@ async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
             eprintln!("Unknown encoder: {other}. Use 'hardware', 'software', or 'ffmpeg'");
             std::process::exit(1);
         }
-    };
-    tracing::info!(%codec, "selected video codec");
-
-    broadcast.video().set(camera, codec, [VideoPreset::P360])?;
+    }
 
     // Publish under a fixed name.
     let name = "pi-zero";

@@ -219,6 +219,52 @@ impl VideoSource for Box<dyn VideoSource> {
     }
 }
 
+/// Produces already-encoded video packets from an external encoder.
+///
+/// Unlike [`VideoSource`] (raw frames fed to an encoder pipeline), a
+/// pre-encoded source yields [`EncodedFrame`]s directly. This is used when
+/// the capture device or external tool performs hardware encoding internally
+/// (e.g. `rpicam-vid --codec h264` on Raspberry Pi, hardware RTSP cameras,
+/// or file demuxers).
+pub trait PreEncodedVideoSource: Send + 'static {
+    /// Returns the source's display name.
+    fn name(&self) -> &str;
+    /// Returns the codec configuration describing the encoded stream.
+    ///
+    /// Called once after [`start`](Self::start) succeeds. The returned config
+    /// is used for the MoQ catalog entry and subscriber decoder setup.
+    fn config(&self) -> VideoConfig;
+    /// Starts the source. Blocks until the first frame is available or an
+    /// error occurs.
+    fn start(&mut self) -> Result<()>;
+    /// Pops the next encoded frame, or `None` if no frame is ready yet.
+    ///
+    /// Implementations should block briefly (up to one frame interval) if
+    /// no data is available, returning `None` only on temporary gaps.
+    /// Return `Err` on permanent failure (process exit, I/O error).
+    fn pop_packet(&mut self) -> Result<Option<EncodedFrame>>;
+    /// Stops the source and releases resources.
+    fn stop(&mut self) -> Result<()>;
+}
+
+impl PreEncodedVideoSource for Box<dyn PreEncodedVideoSource> {
+    fn name(&self) -> &str {
+        (**self).name()
+    }
+    fn config(&self) -> VideoConfig {
+        (**self).config()
+    }
+    fn start(&mut self) -> Result<()> {
+        (**self).start()
+    }
+    fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
+        (**self).pop_packet()
+    }
+    fn stop(&mut self) -> Result<()> {
+        (**self).stop()
+    }
+}
+
 /// Factory trait for constructing video encoders from configuration or presets.
 ///
 /// Extends [`VideoEncoder`] with static constructor methods and a codec

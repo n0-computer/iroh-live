@@ -46,6 +46,7 @@ winit = "0.30"
 pollster = "0.4"
 moq-mux = { workspace = true }
 postcard = "1.1.3"
+qr2term = "0.3"
 tokio = { version = "1.48.0", features = ["full"] }
 tracing-subscriber = "0.3.20"
 
