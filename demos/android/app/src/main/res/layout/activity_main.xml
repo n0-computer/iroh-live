@@ -52,6 +52,30 @@
             android:enabled="false" />
     </LinearLayout>
 
+    <!-- Debug pipeline buttons -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="4dp">
+
+        <Button
+            android:id="@+id/directButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Direct"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/h264Button"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="H264"
+            android:textSize="12sp" />
+    </LinearLayout>
+
     <!-- Remote video surface -->
     <SurfaceView
         android:id="@+id/videoSurface"

@@ -100,6 +100,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var connectButton: Button
     private lateinit var dialButton: Button
     private lateinit var disconnectButton: Button
+    private lateinit var directButton: Button
+    private lateinit var h264Button: Button
     private lateinit var videoSurface: SurfaceView
     private lateinit var cameraPreview: PreviewView
     private lateinit var statusText: TextView
@@ -145,6 +147,8 @@ class MainActivity : AppCompatActivity() {
         connectButton = findViewById(R.id.connectButton)
         dialButton = findViewById(R.id.dialButton)
         disconnectButton = findViewById(R.id.disconnectButton)
+        directButton = findViewById(R.id.directButton)
+        h264Button = findViewById(R.id.h264Button)
         videoSurface = findViewById(R.id.videoSurface)
         cameraPreview = findViewById(R.id.cameraPreview)
         statusText = findViewById(R.id.statusText)
@@ -175,6 +179,8 @@ class MainActivity : AppCompatActivity() {
         connectButton.setOnClickListener { onConnect() }
         dialButton.setOnClickListener { onDial() }
         disconnectButton.setOnClickListener { onDisconnect() }
+        directButton.setOnClickListener { onDebugDirect() }
+        h264Button.setOnClickListener { onDebugH264() }
 
         // Handle iroh-live: URI intents (from QR scanner apps, links, etc.)
         intent?.data?.let { uri ->
@@ -214,8 +220,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        connectButton.isEnabled = false
-        dialButton.isEnabled = false
+        disableAllButtons()
         statusText.text = "Connecting..."
 
         lifecycleScope.launch {
@@ -225,8 +230,7 @@ class MainActivity : AppCompatActivity() {
 
             if (handle == 0L) {
                 statusText.text = "Connection failed"
-                connectButton.isEnabled = true
-                dialButton.isEnabled = true
+                enableButtons()
                 return@launch
             }
 
@@ -245,8 +249,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        connectButton.isEnabled = false
-        dialButton.isEnabled = false
+        disableAllButtons()
         statusText.text = "Dialing..."
 
         // Start camera first so frames are ready when the encoder starts.
@@ -259,8 +262,7 @@ class MainActivity : AppCompatActivity() {
 
             if (handle == 0L) {
                 statusText.text = "Call failed"
-                connectButton.isEnabled = true
-                dialButton.isEnabled = true
+                enableButtons()
                 stopCamera()
                 return@launch
             }
@@ -274,6 +276,64 @@ class MainActivity : AppCompatActivity() {
 
             startRenderLoop()
         }
+    }
+
+    private fun onDebugDirect() {
+        disableAllButtons()
+        statusText.text = "Direct..."
+        startCamera()
+        lifecycleScope.launch {
+            val handle = withContext(Dispatchers.IO) {
+                IrohBridge.startDirect(CAMERA_WIDTH, CAMERA_HEIGHT)
+            }
+            if (handle == 0L) {
+                statusText.text = "Direct init failed"
+                enableButtons()
+                stopCamera()
+                return@launch
+            }
+            sessionHandle = handle
+            statusText.text = "Direct"
+            disconnectButton.isEnabled = true
+            startCameraFramePush()
+            startRenderLoop()
+        }
+    }
+
+    private fun onDebugH264() {
+        disableAllButtons()
+        statusText.text = "H264..."
+        startCamera()
+        lifecycleScope.launch {
+            val handle = withContext(Dispatchers.IO) {
+                IrohBridge.startH264(CAMERA_WIDTH, CAMERA_HEIGHT)
+            }
+            if (handle == 0L) {
+                statusText.text = "H264 init failed"
+                enableButtons()
+                stopCamera()
+                return@launch
+            }
+            sessionHandle = handle
+            statusText.text = "H264"
+            disconnectButton.isEnabled = true
+            startCameraFramePush()
+            startRenderLoop()
+        }
+    }
+
+    private fun disableAllButtons() {
+        connectButton.isEnabled = false
+        dialButton.isEnabled = false
+        directButton.isEnabled = false
+        h264Button.isEnabled = false
+    }
+
+    private fun enableButtons() {
+        connectButton.isEnabled = true
+        dialButton.isEnabled = true
+        directButton.isEnabled = true
+        h264Button.isEnabled = true
     }
 
     // ── Camera (CameraX) ────────────────────────────────────────────────
@@ -419,8 +479,7 @@ class MainActivity : AppCompatActivity() {
         stopCamera()
 
         disconnectButton.isEnabled = false
-        connectButton.isEnabled = true
-        dialButton.isEnabled = true
+        enableButtons()
         statusText.text = "Disconnected"
 
         if (handle != 0L) {

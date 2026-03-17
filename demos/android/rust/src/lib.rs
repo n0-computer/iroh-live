@@ -7,6 +7,7 @@
 
 mod logcat;
 
+use std::ffi::c_void;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -17,15 +18,20 @@ use jni::{
     sys::{jint, jlong},
 };
 use tokio::runtime::Runtime;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use iroh_live::{Call, CallTicket, Live};
 use moq_media::{
     AudioBackend,
-    codec::{AudioCodec, VideoCodec},
-    format::{AudioPreset, PlaybackConfig, VideoFrame, VideoPreset},
+    codec::{AudioCodec, DynamicVideoDecoder, VideoCodec},
+    format::{
+        AudioPreset, DecodeConfig, PlaybackConfig, VideoEncoderConfig, VideoFrame, VideoPreset,
+    },
+    pipeline::{VideoDecoderPipeline, VideoEncoderPipeline},
     publish::LocalBroadcast,
     subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
+    transport::media_pipe,
 };
 use moq_media_android::{
     camera::{CameraFrameSource, SharedCameraSource},
@@ -92,7 +98,8 @@ fn runtime() -> &'static Runtime {
 /// `Arc<Mutex<..>>` allows concurrent JNI calls from different threads
 /// (render loop vs camera callback).
 struct SessionHandle {
-    live: Live,
+    /// Network session — `None` for local debug pipelines.
+    live: Option<Live>,
     /// Subscribe-only MoQ session (from `connect`).
     #[allow(dead_code, reason = "kept alive to sustain the transport session")]
     session: Option<iroh_live::moq::MoqSession>,
@@ -109,6 +116,9 @@ struct SessionHandle {
     /// Audio backend — must outlive audio tracks.
     #[allow(dead_code, reason = "must outlive audio tracks")]
     audio_backend: Option<AudioBackend>,
+    /// Encoder pipeline — kept alive to sustain the H264 debug pipeline.
+    #[allow(dead_code, reason = "kept alive to sustain the encoder thread")]
+    encoder_pipeline: Option<VideoEncoderPipeline>,
     /// Actual decoded frame dimensions (more reliable than catalog).
     frame_dims: Option<(u32, u32)>,
     /// Camera source for pushing frames into the publish pipeline.
@@ -197,13 +207,14 @@ async fn connect_impl(ticket_str: String) -> Result<jlong> {
         .ok();
 
     let handle = SessionHandle {
-        live,
+        live: Some(live),
         session: Some(session),
         call: None,
         remote: Some(remote),
         video,
         audio,
         audio_backend: Some(audio_backend),
+        encoder_pipeline: None,
         frame_dims: None,
         camera_source: None,
         cam_frames_pushed: 0,
@@ -294,13 +305,136 @@ async fn dial_impl(ticket_str: String, cam_w: u32, cam_h: u32) -> Result<jlong> 
     );
 
     let handle = SessionHandle {
-        live,
+        live: Some(live),
         session: None,
         call: Some(call),
         remote: Some(tracks.broadcast),
         video: tracks.video,
         audio: tracks.audio,
         audio_backend: Some(audio_backend),
+        encoder_pipeline: None,
+        frame_dims: None,
+        camera_source: Some(camera_source),
+        cam_frames_pushed: 0,
+        dec_frames_rendered: 0,
+        created_at: Instant::now(),
+    };
+    Ok(to_jlong(Arc::new(Mutex::new(handle))))
+}
+
+// ── JNI: debug pipelines (local, no network) ────────────────────────
+
+/// Starts a direct camera passthrough pipeline (no encode/decode).
+///
+/// Camera frames pushed via `pushCameraNv12` are rendered directly.
+///
+/// # Safety
+/// Must be called from JNI with valid arguments.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_startDirect(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    camera_width: jint,
+    camera_height: jint,
+) -> jlong {
+    match start_direct_impl(camera_width as u32, camera_height as u32) {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::error!("startDirect failed: {e:#}");
+            0
+        }
+    }
+}
+
+fn start_direct_impl(cam_w: u32, cam_h: u32) -> Result<jlong> {
+    info!(cam_w, cam_h, "starting direct camera pipeline");
+    let camera_source = Arc::new(Mutex::new(CameraFrameSource::new(cam_w, cam_h)));
+    let shared_source = SharedCameraSource {
+        inner: Arc::clone(&camera_source),
+    };
+    let shutdown = CancellationToken::new();
+    let video = VideoTrack::from_video_source(
+        "direct".to_string(),
+        shutdown,
+        shared_source,
+        DecodeConfig::default(),
+    );
+    let handle = SessionHandle {
+        live: None,
+        session: None,
+        call: None,
+        remote: None,
+        video: Some(video),
+        audio: None,
+        audio_backend: None,
+        encoder_pipeline: None,
+        frame_dims: None,
+        camera_source: Some(camera_source),
+        cam_frames_pushed: 0,
+        dec_frames_rendered: 0,
+        created_at: Instant::now(),
+    };
+    Ok(to_jlong(Arc::new(Mutex::new(handle))))
+}
+
+/// Starts a local H264 encode→decode pipeline (no network).
+///
+/// Camera → H264 HW encode → in-memory pipe → H264 HW decode → render.
+///
+/// # Safety
+/// Must be called from JNI with valid arguments.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_startH264(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    camera_width: jint,
+    camera_height: jint,
+) -> jlong {
+    let _guard = runtime().enter();
+    match start_h264_impl(camera_width as u32, camera_height as u32) {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::error!("startH264 failed: {e:#}");
+            0
+        }
+    }
+}
+
+fn start_h264_impl(cam_w: u32, cam_h: u32) -> Result<jlong> {
+    info!(cam_w, cam_h, "starting local H264 pipeline");
+    let camera_source = Arc::new(Mutex::new(CameraFrameSource::new(cam_w, cam_h)));
+    let shared_source = SharedCameraSource {
+        inner: Arc::clone(&camera_source),
+    };
+
+    let enc_config = VideoEncoderConfig::from_preset(VideoPreset::P720);
+    let encoder = VideoCodec::H264
+        .create_encoder(enc_config)
+        .context("failed to create H264 encoder")?;
+    let video_config = encoder.config();
+
+    let (sink, pipe_source) = media_pipe(32);
+    let encoder_pipeline = VideoEncoderPipeline::new(shared_source, encoder, sink);
+
+    let decode_config = DecodeConfig::default();
+    let decoder = VideoDecoderPipeline::new::<DynamicVideoDecoder>(
+        "h264-debug".to_string(),
+        pipe_source,
+        &video_config,
+        &decode_config,
+    )
+    .context("failed to create H264 decoder pipeline")?;
+    let video = VideoTrack::from_pipeline(decoder);
+
+    let handle = SessionHandle {
+        live: None,
+        session: None,
+        call: None,
+        remote: None,
+        video: Some(video),
+        audio: None,
+        audio_backend: None,
+        encoder_pipeline: Some(encoder_pipeline),
         frame_dims: None,
         camera_source: Some(camera_source),
         cam_frames_pushed: 0,
@@ -379,14 +513,21 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_nextHardwareBuffer(
         guard.frame_dims = Some((w, h));
     }
 
-    let native = match frame.native_handle() {
-        Some(rusty_codecs::format::NativeFrameHandle::HardwareBuffer(info)) => info,
-        _ => return 0,
-    };
+    // Fast path: HW decoder produced a GPU-backed HardwareBuffer.
+    if let Some(rusty_codecs::format::NativeFrameHandle::HardwareBuffer(info)) =
+        frame.native_handle()
+    {
+        let raw_ptr = info.buffer.as_ptr();
+        std::mem::forget(info.buffer); // Kotlin owns it now.
+        return raw_ptr as jlong;
+    }
 
-    let raw_ptr = native.buffer.as_ptr();
-    std::mem::forget(native.buffer); // Kotlin owns it now.
-    raw_ptr as jlong
+    // Slow path: CPU frame (direct mode or SW decoder). Convert to RGBA and
+    // wrap in an AHardwareBuffer so the existing EGL render path works.
+    let img = frame.rgba_image();
+    create_rgba_hardware_buffer(img.as_raw(), w, h)
+        .map(|ptr| ptr as jlong)
+        .unwrap_or(0)
 }
 
 /// Releases a HardwareBuffer returned by `nextHardwareBuffer`.
@@ -402,11 +543,89 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_releaseHardwareBuffe
     if buffer_ptr == 0 {
         return;
     }
-    unsafe extern "C" {
-        fn AHardwareBuffer_release(buffer: *mut std::ffi::c_void);
-    }
     // SAFETY: buffer_ptr is a valid AHardwareBuffer* with an acquired reference.
-    unsafe { AHardwareBuffer_release(buffer_ptr as *mut std::ffi::c_void) }
+    unsafe { AHardwareBuffer_release(buffer_ptr as *mut c_void) }
+}
+
+// ── AHardwareBuffer helpers ─────────────────────────────────────────
+
+unsafe extern "C" {
+    fn AHardwareBuffer_allocate(desc: *const AHwbDesc, out: *mut *mut c_void) -> i32;
+    fn AHardwareBuffer_describe(buffer: *const c_void, out_desc: *mut AHwbDesc);
+    fn AHardwareBuffer_lock(
+        buffer: *mut c_void,
+        usage: u64,
+        fence: i32,
+        rect: *const c_void,
+        out: *mut *mut c_void,
+    ) -> i32;
+    fn AHardwareBuffer_unlock(buffer: *mut c_void, fence: *mut i32) -> i32;
+    fn AHardwareBuffer_release(buffer: *mut c_void);
+}
+
+/// NDK `AHardwareBuffer_Desc`.
+#[repr(C)]
+struct AHwbDesc {
+    width: u32,
+    height: u32,
+    layers: u32,
+    format: u32,
+    usage: u64,
+    stride: u32,
+    rfu0: u32,
+    rfu1: u64,
+}
+
+const AHWB_FORMAT_RGBA: u32 = 1; // AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM
+const AHWB_USAGE: u64 = 0x30 | 0x100; // CPU_WRITE_OFTEN | GPU_SAMPLED_IMAGE
+
+/// Allocates an RGBA `AHardwareBuffer`, copies pixel data in, returns the pointer.
+///
+/// Caller owns the returned buffer and must call `AHardwareBuffer_release`.
+fn create_rgba_hardware_buffer(rgba: &[u8], width: u32, height: u32) -> Option<*mut c_void> {
+    unsafe {
+        let desc = AHwbDesc {
+            width,
+            height,
+            layers: 1,
+            format: AHWB_FORMAT_RGBA,
+            usage: AHWB_USAGE,
+            stride: 0,
+            rfu0: 0,
+            rfu1: 0,
+        };
+        let mut buffer = std::ptr::null_mut();
+        if AHardwareBuffer_allocate(&desc, &mut buffer) != 0 {
+            tracing::warn!("AHardwareBuffer_allocate failed");
+            return None;
+        }
+
+        // Query actual stride (may differ from width due to GPU alignment).
+        let mut actual = std::mem::zeroed::<AHwbDesc>();
+        AHardwareBuffer_describe(buffer, &mut actual);
+        let stride_bytes = actual.stride * 4; // RGBA = 4 bytes/pixel
+        let row_bytes = width * 4;
+
+        let mut ptr = std::ptr::null_mut();
+        if AHardwareBuffer_lock(buffer, 0x30, -1, std::ptr::null(), &mut ptr) != 0 {
+            tracing::warn!("AHardwareBuffer_lock failed");
+            AHardwareBuffer_release(buffer);
+            return None;
+        }
+
+        if stride_bytes == row_bytes {
+            std::ptr::copy_nonoverlapping(rgba.as_ptr(), ptr as *mut u8, rgba.len());
+        } else {
+            for y in 0..height {
+                let src = rgba.as_ptr().add((y * row_bytes) as usize);
+                let dst = (ptr as *mut u8).add((y * stride_bytes) as usize);
+                std::ptr::copy_nonoverlapping(src, dst, row_bytes as usize);
+            }
+        }
+
+        AHardwareBuffer_unlock(buffer, std::ptr::null_mut());
+        Some(buffer)
+    }
 }
 
 // ── JNI: camera frame push ──────────────────────────────────────────
@@ -607,7 +826,9 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
     }
     let session = unsafe { take_handle(handle) };
     if let Ok(guard) = session.lock() {
-        runtime().block_on(guard.live.shutdown());
+        if let Some(ref live) = guard.live {
+            runtime().block_on(live.shutdown());
+        }
     }
     info!("disconnected");
 }
