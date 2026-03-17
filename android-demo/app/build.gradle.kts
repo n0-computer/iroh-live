@@ -49,6 +49,7 @@ dependencies {
     implementation(libs.camerax.camera2)
     implementation(libs.camerax.lifecycle)
     implementation(libs.camerax.view)
+    implementation(libs.zxing.embedded)
 }
 
 // cargo-ndk integration: builds the Rust cdylib before assembling the APK.

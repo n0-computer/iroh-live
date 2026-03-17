@@ -35,6 +35,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -94,6 +96,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private lateinit var ticketInput: EditText
+    private lateinit var scanButton: Button
     private lateinit var connectButton: Button
     private lateinit var dialButton: Button
     private lateinit var disconnectButton: Button
@@ -115,6 +118,14 @@ class MainActivity : AppCompatActivity() {
     private var glTexture = 0
     private var vertexBuffer: FloatBuffer? = null
 
+    // QR code scanner launcher.
+    private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
+        if (result.contents != null) {
+            ticketInput.setText(result.contents)
+            onConnect()
+        }
+    }
+
     // Permission launcher for camera and microphone.
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -130,6 +141,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         ticketInput = findViewById(R.id.ticketInput)
+        scanButton = findViewById(R.id.scanButton)
         connectButton = findViewById(R.id.connectButton)
         dialButton = findViewById(R.id.dialButton)
         disconnectButton = findViewById(R.id.disconnectButton)
@@ -159,9 +171,18 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
+        scanButton.setOnClickListener { onScan() }
         connectButton.setOnClickListener { onConnect() }
         dialButton.setOnClickListener { onDial() }
         disconnectButton.setOnClickListener { onDisconnect() }
+
+        // Handle iroh-live: URI intents (from QR scanner apps, links, etc.)
+        intent?.data?.let { uri ->
+            if (uri.scheme == "iroh-live") {
+                ticketInput.setText(uri.toString())
+                onConnect()
+            }
+        }
     }
 
     override fun onDestroy() {
@@ -174,6 +195,16 @@ class MainActivity : AppCompatActivity() {
             sessionHandle = 0
         }
         super.onDestroy()
+    }
+
+    private fun onScan() {
+        val options = ScanOptions().apply {
+            setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+            setPrompt("Scan iroh-live QR code")
+            setBeepEnabled(false)
+            setOrientationLocked(false)
+        }
+        scanLauncher.launch(options)
     }
 
     private fun onConnect() {
