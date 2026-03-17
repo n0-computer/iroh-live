@@ -295,7 +295,7 @@ class MainActivity : AppCompatActivity() {
             sessionHandle = handle
             statusText.text = "Direct"
             disconnectButton.isEnabled = true
-            startCameraFramePush()
+            awaitCameraAndPush()
             startRenderLoop()
         }
     }
@@ -317,7 +317,7 @@ class MainActivity : AppCompatActivity() {
             sessionHandle = handle
             statusText.text = "H264"
             disconnectButton.isEnabled = true
-            startCameraFramePush()
+            awaitCameraAndPush()
             startRenderLoop()
         }
     }
@@ -334,6 +334,16 @@ class MainActivity : AppCompatActivity() {
         dialButton.isEnabled = true
         directButton.isEnabled = true
         h264Button.isEnabled = true
+    }
+
+    /** Waits for CameraX to be ready, then starts pushing frames to Rust. */
+    private suspend fun awaitCameraAndPush() {
+        // startCamera() runs its callback on the main executor; yield until
+        // imageAnalysis is set (typically <200ms).
+        while (imageAnalysis == null) {
+            delay(50)
+        }
+        startCameraFramePush()
     }
 
     // ── Camera (CameraX) ────────────────────────────────────────────────
@@ -690,7 +700,9 @@ class MainActivity : AppCompatActivity() {
                 EGL14.eglDestroyContext(eglDisplay, eglContext)
                 eglContext = EGL14.EGL_NO_CONTEXT
             }
-            EGL14.eglTerminate(eglDisplay)
+            // Don't call eglTerminate here — the Android default display is a
+            // process-wide singleton and terminating it breaks re-initialization
+            // on some drivers. It's cleaned up automatically on process exit.
             eglDisplay = EGL14.EGL_NO_DISPLAY
         }
         if (glTexture != 0) {
