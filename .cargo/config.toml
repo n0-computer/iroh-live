@@ -4,4 +4,4 @@ LLVM_CONFIG_PATH = "/opt/homebrew/opt/llvm/bin/llvm-config"
 BINDGEN_EXTRA_CLANG_ARGS = "-I/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include"
 
 [target.aarch64-apple-darwin]
-rustflags = []
+rustflags = ["-C", "link-arg=-Wl,-rpath,/usr/lib/swift"]

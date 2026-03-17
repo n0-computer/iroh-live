@@ -32,8 +32,8 @@ use objc2_video_toolbox::{
 use crate::{
     codec::h264::annexb::{build_avcc, length_prefixed_to_annex_b},
     config::{H264, VideoCodec, VideoConfig},
-    format::{EncodedFrame, NalFormat, ScaleMode, VideoEncoderConfig, VideoFrame, VideoPreset},
-    processing::convert::{YuvData, pixel_format_to_yuv420},
+    format::{EncodedFrame, NalFormat, ScaleMode, VideoEncoderConfig, VideoFrame},
+    processing::convert::pixel_format_to_yuv420,
     processing::scale::Scaler,
     traits::{VideoEncoder, VideoEncoderFactory},
 };

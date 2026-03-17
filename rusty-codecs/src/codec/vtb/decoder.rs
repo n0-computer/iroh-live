@@ -11,7 +11,7 @@
 
 use std::{
     collections::VecDeque,
-    ffi::{c_int, c_void},
+    ffi::c_void,
     fmt,
     ptr::{self, NonNull},
     sync::{Arc, Mutex},
@@ -30,15 +30,13 @@ use objc2_core_media::{
 };
 use objc2_core_video::{
     CVImageBuffer, CVPixelBuffer, CVPixelBufferGetBaseAddressOfPlane,
-    CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeightOfPlane,
-    CVPixelBufferGetWidthOfPlane, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags,
-    CVPixelBufferUnlockBaseAddress, kCVPixelBufferHeightKey, kCVPixelBufferPixelFormatTypeKey,
-    kCVPixelBufferWidthKey,
+    CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeight, CVPixelBufferGetHeightOfPlane,
+    CVPixelBufferGetWidth, CVPixelBufferGetWidthOfPlane, CVPixelBufferLockBaseAddress,
+    CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVPixelBufferPixelFormatTypeKey,
 };
 use objc2_video_toolbox::{
-    VTDecodeFrameFlags, VTDecodeInfoFlags, VTDecompressionOutputCallback,
-    VTDecompressionOutputCallbackRecord, VTDecompressionSession, VTSessionSetProperty,
-    kVTDecompressionPropertyKey_RealTime,
+    VTDecodeFrameFlags, VTDecodeInfoFlags, VTDecompressionOutputCallbackRecord,
+    VTDecompressionSession, VTSessionSetProperty, kVTDecompressionPropertyKey_RealTime,
 };
 
 use crate::{
@@ -117,11 +115,11 @@ impl VideoDecoder for VtbDecoder {
             bail!("VtbDecoder requires avcC description (SPS/PPS) at construction");
         };
 
-        let (session, format_desc) = create_session(&sps, &pps)?;
-
         let state = Arc::new(Mutex::new(DecoderState {
             frames: VecDeque::new(),
         }));
+
+        let (session, format_desc) = create_session(&sps, &pps, &state)?;
 
         tracing::info!("VideoToolbox H.264 decoder ready");
 
@@ -154,7 +152,7 @@ impl VideoDecoder for VtbDecoder {
                 if new_sps != self.current_sps {
                     let nals = parse_lp_nals(lp_data);
                     if let Some((sps, pps)) = extract_sps_pps_from_lp_nals(&nals) {
-                        let (new_session, new_fmt) = create_session(&sps, &pps)?;
+                        let (new_session, new_fmt) = create_session(&sps, &pps, &self.state)?;
                         // Flush pending frames from old session.
                         unsafe {
                             let _ =
@@ -176,17 +174,11 @@ impl VideoDecoder for VtbDecoder {
         let sample_buffer =
             create_sample_buffer(&block_buffer, &self.format_desc, packet.timestamp)?;
 
-        // Decode synchronously — callback fires before this returns.
-        let state_ptr = Arc::into_raw(self.state.clone()) as *mut c_void;
-        let callback = VTDecompressionOutputCallbackRecord {
-            decompressionOutputCallback: Some(decompression_output_callback),
-            decompressionOutputRefCon: state_ptr,
-        };
-
         // Encode timestamp in the sourceFrameRefCon so the callback can recover it.
         let ts_micros = packet.timestamp.as_micros() as u64;
         let ts_refcon = ts_micros as *mut c_void;
 
+        // Decode synchronously — the session-level callback fires before this returns.
         let mut info_flags = VTDecodeInfoFlags(0);
         let status = unsafe {
             VTDecompressionSession::decode_frame(
@@ -197,12 +189,6 @@ impl VideoDecoder for VtbDecoder {
                 &mut info_flags,
             )
         };
-
-        // The callback increments the Arc ref count, so we need to drop our copy.
-        // But since we passed via into_raw, we must reconstruct and drop.
-        unsafe {
-            drop(Arc::from_raw(state_ptr as *const Mutex<DecoderState>));
-        }
 
         if status != 0 {
             bail!("VTDecompressionSessionDecodeFrame failed with status {status}");
@@ -217,11 +203,8 @@ impl VideoDecoder for VtbDecoder {
             return Ok(None);
         };
 
-        let (w, h) = unsafe {
-            let w = CVPixelBuffer::width(&pixel_buffer) as u32;
-            let h = CVPixelBuffer::height(&pixel_buffer) as u32;
-            (w, h)
-        };
+        let w = CVPixelBufferGetWidth(&pixel_buffer) as u32;
+        let h = CVPixelBufferGetHeight(&pixel_buffer) as u32;
 
         let gpu_frame = GpuFrame::new(Arc::new(VtbGpuFrame {
             pixel_buffer,
@@ -329,7 +312,7 @@ unsafe fn read_nv12_planes(pb: &CVPixelBuffer, width: u32, height: u32) -> Resul
     }
     let y_stride = CVPixelBufferGetBytesPerRowOfPlane(pb, 0);
     let y_height = CVPixelBufferGetHeightOfPlane(pb, 0);
-    let y_data = read_plane(y_base, y_stride, y_height, width as usize);
+    let y_data = unsafe { read_plane(y_base, y_stride, y_height, width as usize) };
 
     // UV plane (index 1)
     let uv_base = CVPixelBufferGetBaseAddressOfPlane(pb, 1);
@@ -339,7 +322,7 @@ unsafe fn read_nv12_planes(pb: &CVPixelBuffer, width: u32, height: u32) -> Resul
     let uv_stride = CVPixelBufferGetBytesPerRowOfPlane(pb, 1);
     let uv_height = CVPixelBufferGetHeightOfPlane(pb, 1);
     let uv_width = CVPixelBufferGetWidthOfPlane(pb, 1) * 2; // interleaved U+V
-    let uv_data = read_plane(uv_base, uv_stride, uv_height, uv_width);
+    let uv_data = unsafe { read_plane(uv_base, uv_stride, uv_height, uv_width) };
 
     Ok(Nv12Planes {
         y_data,
@@ -360,7 +343,7 @@ unsafe fn read_plane(
 ) -> Vec<u8> {
     let mut data = Vec::with_capacity(copy_width * height);
     for row in 0..height {
-        let src = (base as *const u8).add(row * stride);
+        let src = unsafe { (base as *const u8).add(row * stride) };
         let row_bytes = unsafe { std::slice::from_raw_parts(src, copy_width.min(stride)) };
         data.extend_from_slice(row_bytes);
     }
@@ -372,6 +355,7 @@ unsafe fn read_plane(
 fn create_session(
     sps: &[u8],
     pps: &[u8],
+    state: &SharedDecoderState,
 ) -> Result<(
     CFRetained<VTDecompressionSession>,
     CFRetained<CMFormatDescription>,
@@ -399,6 +383,13 @@ fn create_session(
     // Destination pixel buffer attributes: request NV12 output.
     let dest_attrs = build_dest_image_attrs();
 
+    // Set up the output callback with a leaked Arc pointer.
+    let refcon = Arc::into_raw(state.clone()) as *mut c_void;
+    let callback_record = VTDecompressionOutputCallbackRecord {
+        decompressionOutputCallback: Some(decompression_output_callback),
+        decompressionOutputRefCon: refcon,
+    };
+
     // Create the decompression session.
     let mut session_ptr: *mut VTDecompressionSession = ptr::null_mut();
     let status = unsafe {
@@ -407,11 +398,13 @@ fn create_session(
             &format_desc,
             None, // decoder specification
             Some(&*dest_attrs),
-            ptr::null(), // output callback (we pass per-frame instead)
+            &callback_record,
             NonNull::new(&mut session_ptr).unwrap(),
         )
     };
     if status != 0 || session_ptr.is_null() {
+        // Clean up the leaked Arc.
+        unsafe { drop(Arc::from_raw(refcon as *const Mutex<DecoderState>)) };
         bail!("VTDecompressionSessionCreate failed: {status}");
     }
     let session = unsafe { CFRetained::from_raw(NonNull::new(session_ptr).unwrap()) };
@@ -455,8 +448,8 @@ fn create_block_buffer(data: &[u8]) -> Result<CFRetained<CMBlockBuffer>> {
     let mut block_buffer: *mut CMBlockBuffer = ptr::null_mut();
     let status = unsafe {
         CMBlockBuffer::create_with_memory_block(
-            None,                                  // allocator
-            NonNull::new(data.as_ptr() as *mut _), // memory block (borrowed)
+            None,                          // allocator
+            data.as_ptr() as *mut c_void,  // memory block (borrowed)
             data.len(),
             None,        // block allocator (no dealloc needed)
             ptr::null(), // custom block source
@@ -543,8 +536,7 @@ unsafe extern "C-unwind" fn decompression_output_callback(
     let pixel_buffer = image_buffer as *mut CVPixelBuffer;
     // Retain the pixel buffer so it outlives this callback.
     let retained = unsafe {
-        objc2_core_foundation::CFRetain(pixel_buffer as *const _);
-        CFRetained::from_raw(NonNull::new(pixel_buffer).unwrap())
+        CFRetained::retain(NonNull::new(pixel_buffer).unwrap())
     };
 
     // Recover timestamp from refcon.
