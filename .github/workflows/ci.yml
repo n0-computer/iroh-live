@@ -25,7 +25,7 @@ jobs:
         run: >
           sudo apt-get update && sudo apt-get install -y
           libasound2-dev libpipewire-0.3-dev libclang-dev
-          libegl-dev libgbm-dev libdrm-dev
+          libegl-dev libgbm-dev libdrm-dev libfontconfig-dev
           nasm
 
       - run: cargo check --workspace --all-targets
@@ -46,7 +46,7 @@ jobs:
         run: >
           sudo apt-get update && sudo apt-get install -y
           libasound2-dev libpipewire-0.3-dev libclang-dev
-          libegl-dev libgbm-dev libdrm-dev
+          libegl-dev libgbm-dev libdrm-dev libfontconfig-dev
           nasm
 
       # Pre-build so compilation doesn't eat into test timeouts.
@@ -91,7 +91,7 @@ jobs:
               sudo apt-get update && sudo apt-get install -y
               libva-dev vainfo mesa-va-drivers libtool automake
               libpipewire-0.3-dev libclang-dev libasound2-dev
-              libegl-dev libgbm-dev libdrm-dev nasm
+              libegl-dev libgbm-dev libdrm-dev libfontconfig-dev nasm
             check-features: vaapi
             check-pkg: moq-media
           - name: Windows MF
