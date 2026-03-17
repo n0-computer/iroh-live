@@ -109,6 +109,26 @@ object IrohBridge {
     ): Boolean
 
     /**
+     * Publishes camera + mic as a broadcast. Returns a session handle.
+     */
+    external fun publish(name: String, cameraWidth: Int, cameraHeight: Int): Long
+
+    /**
+     * Returns the connection ticket string for a published broadcast.
+     */
+    external fun getTicket(handle: Long): String
+
+    /**
+     * Returns available video rendition names as a newline-separated string.
+     */
+    external fun getRenditions(handle: Long): String
+
+    /**
+     * Switches to a different video rendition by name.
+     */
+    external fun switchRendition(handle: Long, renditionName: String)
+
+    /**
      * Returns a human-readable status string with encode/decode stats.
      *
      * Returns an empty string if the handle is invalid or no stats are

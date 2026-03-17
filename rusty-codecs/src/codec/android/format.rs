@@ -36,6 +36,13 @@ pub(crate) const COLOR_FORMAT_YUV420_SEMI_PLANAR: i32 = 21;
 /// Constant bitrate mode for the encoder.
 pub(crate) const BITRATE_MODE_CBR: i32 = 2;
 
+/// Request low-latency encoding (API 30+, best-effort — ignored on older devices).
+const KEY_LOW_LATENCY: &str = "low-latency";
+/// Encoding priority: 0 = realtime, 1 = non-realtime (API 23+).
+const KEY_PRIORITY: &str = "priority";
+/// Prepend SPS/PPS to every sync frame so each IDR is independently decodable.
+const KEY_PREPEND_HEADER: &str = "prepend-sps-pps-to-idr-frames";
+
 /// Codec-specific data key for SPS (Sequence Parameter Set).
 pub(crate) const KEY_CSD_0: &str = "csd-0";
 /// Codec-specific data key for PPS (Picture Parameter Set).
@@ -89,6 +96,10 @@ pub(crate) fn encoder_format(
         (keyframe_interval_secs.round() as i32).max(1),
     );
     format.set_i32(KEY_BITRATE_MODE, BITRATE_MODE_CBR);
+    // Realtime encoding hints — best-effort, silently ignored on older API levels.
+    format.set_i32(KEY_LOW_LATENCY, 1);
+    format.set_i32(KEY_PRIORITY, 0); // 0 = realtime
+    format.set_i32(KEY_PREPEND_HEADER, 1);
     Ok(format)
 }
 

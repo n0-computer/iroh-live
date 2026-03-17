@@ -52,12 +52,29 @@
             android:enabled="false" />
     </LinearLayout>
 
-    <!-- Debug pipeline buttons -->
+    <!-- Publish + debug buttons -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:layout_marginTop="4dp">
+
+        <Button
+            android:id="@+id/publishButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Publish"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/copyTicketButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Copy Ticket"
+            android:textSize="12sp"
+            android:enabled="false" />
 
         <Button
             android:id="@+id/directButton"
@@ -75,6 +92,14 @@
             android:text="H264"
             android:textSize="12sp" />
     </LinearLayout>
+
+    <!-- Rendition selector (visible when watching with multiple renditions) -->
+    <Spinner
+        android:id="@+id/renditionSpinner"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:visibility="gone" />
 
     <!-- Remote video surface -->
     <SurfaceView
