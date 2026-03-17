@@ -1,0 +1,89 @@
+name: CI
+on:
+  push:
+    branches: [main, android]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: Check & Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system deps
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libasound2-dev libpipewire-0.3-dev libclang-dev
+          libegl-dev libgbm-dev libdrm-dev
+          nasm
+      - run: cargo check --workspace --all-targets
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+
+  test:
+    name: Rust Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system deps
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libasound2-dev libpipewire-0.3-dev libclang-dev
+          libegl-dev libgbm-dev libdrm-dev
+          nasm
+      - run: cargo test --workspace
+      # Relay bridge tests need serial execution (iroh endpoint contention).
+      - run: cargo test -p iroh-live-relay --test relay_bridge -- --test-threads=1
+
+  e2e-browser:
+    name: Playwright E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system deps
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libasound2-dev libpipewire-0.3-dev libclang-dev
+          libegl-dev libgbm-dev libdrm-dev
+          nasm
+      # Pre-build the relay and examples so compilation doesn't eat into test timeouts.
+      - name: Build relay + examples
+        run: |
+          cargo build -p iroh-live-relay
+          cargo build --example publish --example subscribe_test
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install Playwright
+        working-directory: tests/e2e-browser
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Run Playwright tests
+        working-directory: tests/e2e-browser
+        run: npx playwright test --workers=1
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: tests/e2e-browser/test-results/
