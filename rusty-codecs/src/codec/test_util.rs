@@ -85,6 +85,26 @@ pub fn make_test_pattern(w: u32, h: u32, frame_index: u32) -> VideoFrame {
         }
     }
 
+    // Blinking yellow marker: centered square covering ~25% of the frame area,
+    // toggles on/off every 15 frames (0.5s at 30fps). Large and bright enough
+    // to survive codec compression, used by E2E tests to verify live video.
+    let blink_on = (frame_index / 15).is_multiple_of(2);
+    if blink_on {
+        let sq_w = w / 2;
+        let sq_h = h / 2;
+        let x0 = (w - sq_w) / 2;
+        let y0 = (h - sq_h) / 2;
+        for y in y0..(y0 + sq_h) {
+            for x in x0..(x0 + sq_w) {
+                let offset = ((y * w + x) * 4) as usize;
+                raw[offset] = 255;
+                raw[offset + 1] = 255;
+                raw[offset + 2] = 0;
+                raw[offset + 3] = 255;
+            }
+        }
+    }
+
     VideoFrame::new_rgba(raw.into(), w, h, std::time::Duration::ZERO)
 }
 

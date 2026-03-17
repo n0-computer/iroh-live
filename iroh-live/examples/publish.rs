@@ -8,6 +8,7 @@ use iroh_live::{
         codec::{AudioCodec, VideoCodec},
         format::{AudioPreset, VideoPreset},
         publish::LocalBroadcast,
+        test_util::TestVideoSource,
     },
     ticket::LiveTicket,
 };
@@ -18,9 +19,6 @@ mod common;
 async fn main() -> n0_error::Result {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
-
-    // Setup audio backend.
-    let audio_ctx = AudioBackend::default();
 
     // Setup iroh and iroh-live.
     let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
@@ -33,26 +31,42 @@ async fn main() -> n0_error::Result {
     let broadcast = LocalBroadcast::new();
 
     // Capture audio, and encode with the cli-provided preset.
-    if !cli.no_audio {
+    if !cli.no_audio && !cli.test_source {
+        let audio_ctx = AudioBackend::default();
         let mic = audio_ctx.default_input().await?;
         broadcast
             .audio()
             .set(mic, AudioCodec::Opus, [cli.audio_preset])?;
     }
 
-    // Capture camera, and encode with the cli-provided presets.
+    // Capture video: either test source or camera.
     if !cli.no_video {
-        let camera = CameraCapturer::new()?;
-        broadcast
-            .video()
-            .set(camera, cli.codec, cli.video_presets)?;
+        if cli.test_source {
+            let source = TestVideoSource::new(640, 480);
+            broadcast
+                .video()
+                .set(source, cli.codec, cli.video_presets)?;
+        } else {
+            let camera = CameraCapturer::new()?;
+            broadcast
+                .video()
+                .set(camera, cli.codec, cli.video_presets)?;
+        }
     }
 
-    // Publish under the name "hello".
-    let name = "hello";
+    // Publish under the given name (default "hello").
+    let name = cli.name.as_deref().unwrap_or("hello");
     live.publish(name, &broadcast).await?;
 
-    // Create a ticket string and print
+    // Additionally push to relay if specified.
+    if let Some(ref relay_addr) = cli.relay {
+        let id: iroh::EndpointId = relay_addr.parse().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let session = live.transport().connect(id).await?;
+        session.publish(name.to_string(), broadcast.producer().consume());
+        tracing::info!(%relay_addr, "published to relay");
+    }
+
+    // Create a ticket string and print.
     let ticket = LiveTicket::new(live.endpoint().id(), name);
     println!("publishing at {ticket}");
 
@@ -75,6 +89,15 @@ struct Cli {
     no_video: bool,
     #[arg(long)]
     no_audio: bool,
+    /// Use test video source instead of camera (no hardware needed).
+    #[arg(long)]
+    test_source: bool,
+    /// Relay's iroh endpoint address (additionally publishes to relay).
+    #[arg(long)]
+    relay: Option<String>,
+    /// Broadcast name (default: "hello").
+    #[arg(long)]
+    name: Option<String>,
 }
 
 fn secret_key_from_env() -> n0_error::Result<SecretKey> {

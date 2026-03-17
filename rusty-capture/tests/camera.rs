@@ -317,6 +317,7 @@ mod v4l2_device {
     }
 
     #[test]
+    #[ignore = "requires exclusive V4L2 camera access"]
     fn v4l2_open_default() {
         let Some(mut cap) = open_or_skip() else {
             return;
@@ -329,6 +330,7 @@ mod v4l2_device {
     }
 
     #[test]
+    #[ignore = "requires exclusive V4L2 camera access"]
     fn v4l2_format_has_nonzero_dimensions() {
         let Some(mut cap) = open_or_skip() else {
             return;
@@ -343,6 +345,7 @@ mod v4l2_device {
     }
 
     #[test]
+    #[ignore = "requires exclusive V4L2 camera access"]
     fn v4l2_name_is_nonempty() {
         let Some(mut cap) = open_or_skip() else {
             return;
@@ -354,6 +357,7 @@ mod v4l2_device {
     }
 
     #[test]
+    #[ignore = "requires exclusive V4L2 camera access"]
     fn v4l2_capture_one_frame() {
         let Some(mut cap) = open_or_skip() else {
             return;
@@ -369,6 +373,7 @@ mod v4l2_device {
     }
 
     #[test]
+    #[ignore = "requires exclusive V4L2 camera access"]
     fn v4l2_capture_multiple_frames() {
         let Some(mut cap) = open_or_skip() else {
             return;
@@ -390,6 +395,7 @@ mod v4l2_device {
     }
 
     #[test]
+    #[ignore = "requires exclusive V4L2 camera access"]
     fn v4l2_frame_dimensions_match_format() {
         let Some(mut cap) = open_or_skip() else {
             return;
@@ -407,6 +413,7 @@ mod v4l2_device {
     }
 
     #[test]
+    #[ignore = "requires exclusive V4L2 camera access"]
     fn v4l2_stop_is_idempotent() {
         let Some(mut cap) = open_or_skip() else {
             return;
@@ -417,6 +424,7 @@ mod v4l2_device {
     }
 
     #[test]
+    #[ignore = "requires exclusive V4L2 camera access"]
     fn v4l2_drop_stops_cleanly() {
         let Some(cap) = open_or_skip() else {
             return;
@@ -426,6 +434,7 @@ mod v4l2_device {
     }
 
     #[test]
+    #[ignore = "requires exclusive V4L2 camera access"]
     fn v4l2_pop_frame_without_start() {
         let Some(mut cap) = open_or_skip() else {
             return;
@@ -438,6 +447,7 @@ mod v4l2_device {
     }
 
     #[test]
+    #[ignore = "requires exclusive V4L2 camera access"]
     fn v4l2_frames_are_continuous() {
         let Some(mut cap) = open_or_skip() else {
             return;
@@ -465,6 +475,7 @@ mod v4l2_device {
     }
 
     #[test]
+    #[ignore = "requires exclusive V4L2 camera access"]
     fn v4l2_all_frames_have_consistent_dimensions() {
         let Some(mut cap) = open_or_skip() else {
             return;

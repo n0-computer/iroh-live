@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "iroh-live",
+    "iroh-live-relay",
     "iroh-moq",
     "moq-media",
     "moq-media-android",
@@ -23,6 +24,8 @@ iroh-smol-kv = { git = "https://github.com/n0-computer/iroh-smol-kv.git", branch
 hang = { git = "https://github.com/moq-dev/moq.git", branch = "main" }
 moq-lite = { git = "https://github.com/moq-dev/moq.git", branch = "main" }
 moq-mux = { git = "https://github.com/moq-dev/moq.git", branch = "main" }
+moq-relay = { path = "../moq/rs/moq-relay", default-features = false }
+moq-native = { path = "../moq/rs/moq-native", default-features = false }
 web-transport-iroh = { git = "https://github.com/n0-computer/web-transport-iroh.git", branch = "main" }
 # web-transport-trait = { git = "https://github.com/Frando/web-transport.git", branch = "feat/iroh" }
 # web-transport-proto = { git = "https://github.com/Frando/web-transport.git", branch = "feat/iroh" }
