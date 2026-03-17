@@ -99,9 +99,14 @@ object IrohBridge {
     /**
      * Polls for the next decoded frame and renders it via the Rust renderer.
      *
+     * [rotationDegrees] is the camera sensor rotation (0/90/180/270) to
+     * correct for sensor orientation.
+     *
      * Returns true if a frame was rendered (caller should swap buffers).
      */
-    external fun renderNextFrame(handle: Long, surfaceWidth: Int, surfaceHeight: Int): Boolean
+    external fun renderNextFrame(
+        handle: Long, surfaceWidth: Int, surfaceHeight: Int, rotationDegrees: Int
+    ): Boolean
 
     /**
      * Returns a human-readable status string with encode/decode stats.

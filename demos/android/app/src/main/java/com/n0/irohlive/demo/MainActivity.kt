@@ -111,6 +111,8 @@ class MainActivity : AppCompatActivity() {
     private var renderJob: Job? = null
     private var cameraProvider: ProcessCameraProvider? = null
     private var surfaceReady = false
+    /** Camera sensor rotation in degrees (0/90/180/270). */
+    private var sensorRotation = 0
 
     // EGL state (initialized on render thread).
     private var eglDisplay: EGLDisplay = EGL14.EGL_NO_DISPLAY
@@ -379,11 +381,12 @@ class MainActivity : AppCompatActivity() {
 
             try {
                 provider.unbindAll()
-                provider.bindToLifecycle(
+                val camera = provider.bindToLifecycle(
                     this, CameraSelector.DEFAULT_FRONT_CAMERA, preview, analysis
                 )
+                sensorRotation = camera.cameraInfo.sensorRotationDegrees
                 cameraPreview.visibility = View.VISIBLE
-                Log.i(TAG, "CameraX started")
+                Log.i(TAG, "CameraX started, sensorRotation=$sensorRotation")
             } catch (e: Exception) {
                 Log.e(TAG, "CameraX bind failed", e)
             }
@@ -450,13 +453,10 @@ class MainActivity : AppCompatActivity() {
         val uvHeight = height / 2
 
         if (uvPixelStride == 2) {
-            // NV12/NV21: UV data is already interleaved. The U plane buffer
-            // on Android starts at the first U byte; V plane starts 1 byte
-            // earlier (NV21=VU) or 1 byte later (NV12=UV). We use the V plane
-            // which starts at the V byte — for NV21 this gives us VUVU... which
-            // the encoder expects as interleaved chroma. We read from whichever
-            // plane starts first to get the full interleaved buffer.
-            val uvBuf = vPlane.buffer // V plane on Android NV21 starts at V byte
+            // NV12/NV21: UV data is already interleaved. Read from the U plane
+            // buffer which starts at the first U byte — gives UVUV... (NV12
+            // order) that matches what Rust's NV12 path expects.
+            val uvBuf = uvPlane.buffer
             val uvSize = uvStride * uvHeight
             val uvData = ByteArray(uvSize)
             uvBuf.position(0)
@@ -489,21 +489,22 @@ class MainActivity : AppCompatActivity() {
         stopCamera()
 
         disconnectButton.isEnabled = false
-        enableButtons()
-        statusText.text = "Disconnected"
+        statusText.text = "Disconnecting..."
 
-        if (handle != 0L) {
-            lifecycleScope.launch(Dispatchers.IO) {
-                // Cancel the render loop BEFORE clearing the handle. The render
-                // loop borrows the native session via borrow_handle(); if we set
-                // sessionHandle to 0 and call disconnect (take_handle) while the
-                // render loop still holds a reference, we get a use-after-free.
-                job?.cancelAndJoin()
-                sessionHandle = 0
+        lifecycleScope.launch(Dispatchers.IO) {
+            // Cancel the render loop BEFORE clearing the handle. The render
+            // loop borrows the native session via borrow_handle(); if we set
+            // sessionHandle to 0 and call disconnect (take_handle) while the
+            // render loop still holds a reference, we get a use-after-free.
+            job?.cancelAndJoin()
+            sessionHandle = 0
+            if (handle != 0L) {
                 IrohBridge.disconnect(handle)
             }
-        } else {
-            sessionHandle = 0
+            withContext(Dispatchers.Main) {
+                enableButtons()
+                statusText.text = "Disconnected"
+            }
         }
     }
 
@@ -560,7 +561,9 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     // Rust renders the frame; we just swap buffers.
-                    val rendered = IrohBridge.renderNextFrame(h, surfaceWidth, surfaceHeight)
+                    val rendered = IrohBridge.renderNextFrame(
+                        h, surfaceWidth, surfaceHeight, sensorRotation
+                    )
                     if (rendered) {
                         EGL14.eglSwapBuffers(eglDisplay, eglSurface)
                     } else {

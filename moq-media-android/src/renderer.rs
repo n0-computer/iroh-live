@@ -32,13 +32,24 @@ void main() {
 }";
 
 /// Fragment shader using `samplerExternalOES` for HardwareBuffer textures.
+///
+/// Applies sensor rotation via `u_rotation` uniform (0/90/180/270 degrees CW).
 const OES_FRAG_SRC: &str = "\
 #extension GL_OES_EGL_image_external : require
 precision mediump float;
 varying vec2 v_uv;
 uniform samplerExternalOES u_tex;
+uniform int u_rotation;
 void main() {
-    gl_FragColor = texture2D(u_tex, v_uv);
+    vec2 uv = v_uv;
+    if (u_rotation == 90) {
+        uv = vec2(v_uv.y, 1.0 - v_uv.x);
+    } else if (u_rotation == 180) {
+        uv = vec2(1.0 - v_uv.x, 1.0 - v_uv.y);
+    } else if (u_rotation == 270) {
+        uv = vec2(1.0 - v_uv.y, v_uv.x);
+    }
+    gl_FragColor = texture2D(u_tex, uv);
 }";
 
 /// Renders `AHardwareBuffer` frames via EGL external texture import.
@@ -51,6 +62,7 @@ pub struct AndroidRenderer {
     program: glow::Program,
     texture: glow::Texture,
     a_pos_loc: u32,
+    rotation_loc: Option<glow::UniformLocation>,
     vbo: glow::Buffer,
     egl_display: *mut c_void,
 }
@@ -89,6 +101,7 @@ impl AndroidRenderer {
 
         let a_pos_loc =
             unsafe { gl.get_attrib_location(program, "a_pos") }.context("a_pos not found")?;
+        let rotation_loc = unsafe { gl.get_uniform_location(program, "u_rotation") };
 
         // OES texture.
         let texture = unsafe { gl.create_texture() }.map_err(|e| anyhow::anyhow!(e))?;
@@ -142,6 +155,7 @@ impl AndroidRenderer {
             program,
             texture,
             a_pos_loc,
+            rotation_loc,
             vbo,
             egl_display,
         })
@@ -163,6 +177,7 @@ impl AndroidRenderer {
         surface_h: i32,
         video_w: u32,
         video_h: u32,
+        rotation_degrees: u32,
     ) {
         // AHardwareBuffer → EGLClientBuffer.
         let Some(client_buffer) =
@@ -194,15 +209,25 @@ impl AndroidRenderer {
             egl::image_target_texture_2d(GL_TEXTURE_EXTERNAL_OES, egl_image);
         }
 
+        // Swap video dimensions for 90°/270° rotation (frame is sideways).
+        let (disp_w, disp_h) = if rotation_degrees == 90 || rotation_degrees == 270 {
+            (video_h, video_w)
+        } else {
+            (video_w, video_h)
+        };
+
         // Clear full surface, then draw letterboxed.
         unsafe {
             self.gl.viewport(0, 0, surface_w, surface_h);
             self.gl.clear(glow::COLOR_BUFFER_BIT);
         }
-        let (vp_x, vp_y, vp_w, vp_h) = letterbox_viewport(surface_w, surface_h, video_w, video_h);
+        let (vp_x, vp_y, vp_w, vp_h) = letterbox_viewport(surface_w, surface_h, disp_w, disp_h);
         unsafe {
             self.gl.viewport(vp_x, vp_y, vp_w, vp_h);
             self.gl.use_program(Some(self.program));
+            if let Some(ref loc) = self.rotation_loc {
+                self.gl.uniform_1_i32(Some(loc), rotation_degrees as i32);
+            }
             self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
             self.gl
                 .vertex_attrib_pointer_f32(self.a_pos_loc, 2, glow::FLOAT, false, 0, 0);
