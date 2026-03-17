@@ -36,6 +36,7 @@ use moq_media::{
 use moq_media_android::{
     camera::{CameraFrameSource, SharedCameraSource},
     handle,
+    renderer::AndroidRenderer,
 };
 use n0_watcher::Watcher;
 use rusty_codecs::codec::DefaultDecoders;
@@ -119,6 +120,8 @@ struct SessionHandle {
     /// Encoder pipeline — kept alive to sustain the H264 debug pipeline.
     #[allow(dead_code, reason = "kept alive to sustain the encoder thread")]
     encoder_pipeline: Option<VideoEncoderPipeline>,
+    /// GLES2 renderer — initialized lazily from the GL thread.
+    renderer: Option<AndroidRenderer>,
     /// Actual decoded frame dimensions (more reliable than catalog).
     frame_dims: Option<(u32, u32)>,
     /// Camera source for pushing frames into the publish pipeline.
@@ -215,6 +218,7 @@ async fn connect_impl(ticket_str: String) -> Result<jlong> {
         audio,
         audio_backend: Some(audio_backend),
         encoder_pipeline: None,
+        renderer: None,
         frame_dims: None,
         camera_source: None,
         cam_frames_pushed: 0,
@@ -313,6 +317,7 @@ async fn dial_impl(ticket_str: String, cam_w: u32, cam_h: u32) -> Result<jlong> 
         audio: tracks.audio,
         audio_backend: Some(audio_backend),
         encoder_pipeline: None,
+        renderer: None,
         frame_dims: None,
         camera_source: Some(camera_source),
         cam_frames_pushed: 0,
@@ -368,6 +373,7 @@ fn start_direct_impl(cam_w: u32, cam_h: u32) -> Result<jlong> {
         audio: None,
         audio_backend: None,
         encoder_pipeline: None,
+        renderer: None,
         frame_dims: None,
         camera_source: Some(camera_source),
         cam_frames_pushed: 0,
@@ -435,6 +441,7 @@ fn start_h264_impl(cam_w: u32, cam_h: u32) -> Result<jlong> {
         audio: None,
         audio_backend: None,
         encoder_pipeline: Some(encoder_pipeline),
+        renderer: None,
         frame_dims: None,
         camera_source: Some(camera_source),
         cam_frames_pushed: 0,
@@ -545,6 +552,105 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_releaseHardwareBuffe
     }
     // SAFETY: buffer_ptr is a valid AHardwareBuffer* with an acquired reference.
     unsafe { AHardwareBuffer_release(buffer_ptr as *mut c_void) }
+}
+
+// ── JNI: Rust-side rendering ────────────────────────────────────────
+
+/// Initializes the Rust GLES2 renderer on the GL thread.
+///
+/// Must be called after `eglMakeCurrent` — the EGL context must be current.
+/// `egl_display_ptr` is the native `EGLDisplay` pointer.
+///
+/// # Safety
+/// `handle` must be a live session handle. EGL context must be current.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_initRenderer(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+    egl_display_ptr: jlong,
+) {
+    if handle == 0 {
+        return;
+    }
+    let session = unsafe { borrow_handle(handle) };
+    let Ok(mut guard) = session.lock() else {
+        return;
+    };
+    match unsafe { AndroidRenderer::new(egl_display_ptr as *mut c_void) } {
+        Ok(r) => guard.renderer = Some(r),
+        Err(e) => tracing::error!("initRenderer failed: {e:#}"),
+    }
+}
+
+/// Polls for the next decoded frame and renders it via the Rust GLES2 renderer.
+///
+/// Returns `true` if a frame was rendered (caller should swap buffers),
+/// `false` if no frame was available.
+///
+/// # Safety
+/// `handle` must be a live session handle. EGL context must be current.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+    surface_width: jint,
+    surface_height: jint,
+) -> bool {
+    if handle == 0 {
+        return false;
+    }
+    let session = unsafe { borrow_handle(handle) };
+    let Ok(mut guard) = session.lock() else {
+        return false;
+    };
+
+    // Poll for the next frame.
+    let frame = guard.video.as_mut().and_then(|v| v.current_frame());
+    let Some(frame) = frame else { return false };
+
+    guard.dec_frames_rendered += 1;
+    let (w, h) = (frame.width(), frame.height());
+    if guard.frame_dims != Some((w, h)) {
+        info!(width = w, height = h, "decoded frame dimensions updated");
+        guard.frame_dims = Some((w, h));
+    }
+
+    let Some(renderer) = guard.renderer.as_ref() else {
+        return false;
+    };
+
+    // Try GPU HardwareBuffer first (zero-copy from HW decoder).
+    if let Some(rusty_codecs::format::NativeFrameHandle::HardwareBuffer(info)) =
+        frame.native_handle()
+    {
+        let raw_ptr = info.buffer.as_ptr();
+        unsafe {
+            renderer.render_hardware_buffer(
+                raw_ptr as *mut c_void,
+                surface_width,
+                surface_height,
+                w,
+                h,
+            );
+        }
+        // info.buffer is an Arc — dropping it decrements the refcount.
+        // The HW decoder holds its own reference, so the buffer stays alive.
+        return true;
+    }
+
+    // CPU fallback: wrap in an AHardwareBuffer, then render via OES.
+    let img = frame.rgba_image();
+    if let Some(ahwb) = create_rgba_hardware_buffer(img.as_raw(), w, h) {
+        unsafe {
+            renderer.render_hardware_buffer(ahwb, surface_width, surface_height, w, h);
+            AHardwareBuffer_release(ahwb);
+        }
+        return true;
+    }
+
+    false
 }
 
 // ── AHardwareBuffer helpers ─────────────────────────────────────────
