@@ -10378,6 +10378,7 @@ dependencies = [
  "ffmpeg-next",
  "ffmpeg-sys-next",
  "gbm 0.18.0",
+ "glow 0.16.0",
  "hang",
  "image",
  "libc",

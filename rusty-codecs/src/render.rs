@@ -1,16 +1,20 @@
-//! wgpu-based video frame renderer.
+//! Video frame renderers.
 //!
-//! Renders [`VideoFrame`] to a wgpu texture. Packed CPU frames are uploaded
-//! via `queue.write_texture()`. GPU frames (NV12) are converted via a shader.
-//!
-//! On Linux with `dmabuf-import` feature, GPU frames can be imported directly
-//! from DMA-BUF file descriptors via Vulkan, avoiding CPU round-trips.
+//! - `wgpu` feature: [`WgpuVideoRenderer`] — renders to a wgpu RGBA texture.
+//! - `gles` feature: [`gles::GlesRenderer`] — GLES2 fullscreen textured triangle.
+//! - `dmabuf-import` feature: zero-copy Vulkan import from DMA-BUF.
 
 #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
 pub mod dmabuf_import;
 
+#[cfg(feature = "gles")]
+pub mod gles;
+
+// Everything below is the wgpu renderer, gated on the `wgpu` feature.
+#[cfg(feature = "wgpu")]
 use std::{fmt, iter};
 
+#[cfg(feature = "wgpu")]
 use anyhow::{Context as _, Result};
 
 #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
@@ -18,13 +22,17 @@ pub use dmabuf_import::create_device_with_dmabuf_extensions;
 
 #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
 use crate::format::NativeFrameHandle;
+#[cfg(feature = "wgpu")]
 use crate::format::{FrameData, Nv12Planes, VideoFrame};
+
+// ── wgpu renderer (feature = "wgpu") ────────────────────────────────
 
 /// Renders decoded video frames to a wgpu RGBA texture.
 ///
 /// - CPU frames: uploaded directly via `queue.write_texture()`
 /// - GPU frames with DMA-BUF: zero-copy Vulkan import + NV12→RGBA shader
 /// - GPU frames without DMA-BUF: NV12 plane download + upload + shader
+#[cfg(feature = "wgpu")]
 pub struct WgpuVideoRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -42,6 +50,7 @@ pub struct WgpuVideoRenderer {
     dmabuf_failures: u32,
 }
 
+#[cfg(feature = "wgpu")]
 struct OutputTexture {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
@@ -49,6 +58,7 @@ struct OutputTexture {
     height: u32,
 }
 
+#[cfg(feature = "wgpu")]
 struct Nv12PlaneTextures {
     y_texture: wgpu::Texture,
     uv_texture: wgpu::Texture,
@@ -57,6 +67,7 @@ struct Nv12PlaneTextures {
     height: u32,
 }
 
+#[cfg(feature = "wgpu")]
 impl WgpuVideoRenderer {
     /// Create a new renderer from an existing wgpu device and queue.
     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
@@ -546,6 +557,7 @@ impl WgpuVideoRenderer {
     }
 }
 
+#[cfg(feature = "wgpu")]
 impl fmt::Debug for WgpuVideoRenderer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WgpuVideoRenderer")
