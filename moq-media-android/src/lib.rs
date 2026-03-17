@@ -12,3 +12,5 @@ pub mod camera;
 #[cfg(target_os = "android")]
 pub mod egl;
 pub mod handle;
+#[cfg(target_os = "android")]
+pub mod renderer;

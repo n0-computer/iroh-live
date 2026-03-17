@@ -502,9 +502,8 @@ class MainActivity : AppCompatActivity() {
     private var surfaceHeight = 0
 
     /**
-     * Render loop: acquires HardwareBuffer frames from the Rust decoder,
-     * imports them as GL OES textures, and renders a fullscreen quad with
-     * correct aspect ratio (letterboxed).
+     * Render loop: Rust handles frame acquisition, EGL import, and GL drawing.
+     * Kotlin manages the EGL context lifecycle and swaps buffers.
      */
     private fun startRenderLoop() {
         renderJob = lifecycleScope.launch(Dispatchers.Default) {
@@ -518,17 +517,23 @@ class MainActivity : AppCompatActivity() {
 
             try {
                 initEgl(holder)
-                initGl()
             } catch (e: Exception) {
-                Log.e(TAG, "EGL/GL init failed", e)
+                Log.e(TAG, "EGL init failed", e)
                 return@launch
+            }
+
+            // Initialize the Rust-side GLES2 renderer (must be on the GL thread).
+            val handle = sessionHandle
+            if (handle != 0L) {
+                val displayPtr = getNativeEglHandle(eglDisplay)
+                IrohBridge.initRenderer(handle, displayPtr)
             }
 
             var statusCounter = 0L
             try {
                 while (isActive) {
-                    val handle = sessionHandle
-                    if (handle == 0L) break
+                    val h = sessionHandle
+                    if (h == 0L) break
 
                     if (!surfaceReady) {
                         delay(50L)
@@ -538,22 +543,18 @@ class MainActivity : AppCompatActivity() {
                     // Update status line every ~30 frames (~1s at 30fps).
                     statusCounter++
                     if (statusCounter % 30 == 0L) {
-                        val line = IrohBridge.getStatusLine(handle)
+                        val line = IrohBridge.getStatusLine(h)
                         if (line.isNotEmpty()) {
                             runOnUiThread { statusText.text = line }
                         }
                     }
 
-                    val bufferPtr = IrohBridge.nextHardwareBuffer(handle)
-                    if (bufferPtr == 0L) {
+                    // Rust renders the frame; we just swap buffers.
+                    val rendered = IrohBridge.renderNextFrame(h, surfaceWidth, surfaceHeight)
+                    if (rendered) {
+                        EGL14.eglSwapBuffers(eglDisplay, eglSurface)
+                    } else {
                         delay(2L)
-                        continue
-                    }
-
-                    try {
-                        renderHardwareBuffer(handle, bufferPtr)
-                    } finally {
-                        IrohBridge.releaseHardwareBuffer(bufferPtr)
                     }
                 }
             } finally {
@@ -562,95 +563,19 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Imports the AHardwareBuffer as an EGLImage, binds it to the OES
-     * texture, and renders an aspect-correct letterboxed quad.
-     */
-    private fun renderHardwareBuffer(sessionHandle: Long, bufferPtr: Long) {
-        // Get EGLClientBuffer from AHardwareBuffer.
-        val clientBuffer = eglGetNativeClientBufferANDROID(bufferPtr)
-        if (clientBuffer == 0L) {
-            Log.w(TAG, "eglGetNativeClientBufferANDROID returned null")
-            return
-        }
-
-        // Create EGLImage from the client buffer.
-        val attrs = intArrayOf(EGL_IMAGE_PRESERVED_KHR, EGL14.EGL_TRUE, EGL14.EGL_NONE)
-        val eglImage = eglCreateImageKHR(
-            eglDisplay, EGL14.EGL_NO_CONTEXT,
-            EGL_NATIVE_BUFFER_ANDROID, clientBuffer, attrs
-        )
-        if (eglImage == EGL_NO_IMAGE_KHR) {
-            Log.w(TAG, "eglCreateImageKHR failed")
-            return
-        }
-
-        try {
-            // Bind EGLImage to the OES texture.
-            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, glTexture)
-            glEGLImageTargetTexture2DOES(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, eglImage)
-
-            // Compute aspect-correct viewport (letterbox).
-            val sw = surfaceWidth
-            val sh = surfaceHeight
-            val dims = IrohBridge.getVideoDimensions(sessionHandle)
-            val vw = (dims ushr 32).toInt()
-            val vh = (dims and 0xFFFFFFFFL).toInt()
-
-            // Clear full surface to black (letterbox bars).
-            GLES20.glViewport(0, 0, sw.coerceAtLeast(1), sh.coerceAtLeast(1))
-            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-
-            // Set aspect-correct viewport for the video quad.
-            if (sw > 0 && sh > 0 && vw > 0 && vh > 0) {
-                val videoAspect = vw.toFloat() / vh.toFloat()
-                val surfaceAspect = sw.toFloat() / sh.toFloat()
-                val vpX: Int
-                val vpY: Int
-                val vpW: Int
-                val vpH: Int
-                if (videoAspect > surfaceAspect) {
-                    // Video is wider — pillarbox top/bottom.
-                    vpW = sw
-                    vpH = (sw / videoAspect).toInt()
-                    vpX = 0
-                    vpY = (sh - vpH) / 2
-                } else {
-                    // Video is taller — letterbox left/right.
-                    vpH = sh
-                    vpW = (sh * videoAspect).toInt()
-                    vpX = (sw - vpW) / 2
-                    vpY = 0
-                }
-                GLES20.glViewport(vpX, vpY, vpW, vpH)
+    /** Extracts the native EGL handle from a Java EGL14 wrapper. */
+    private fun getNativeEglHandle(obj: Any): Long {
+        return try {
+            val method = obj.javaClass.getMethod("getNativeHandle")
+            method.invoke(obj) as Long
+        } catch (_: Exception) {
+            try {
+                val field = obj.javaClass.getDeclaredField("mEGLDisplay")
+                field.isAccessible = true
+                field.getLong(obj)
+            } catch (_: Exception) {
+                0L
             }
-            GLES20.glUseProgram(glProgram)
-
-            val posLoc = GLES20.glGetAttribLocation(glProgram, "aPosition")
-            val texLoc = GLES20.glGetAttribLocation(glProgram, "aTexCoord")
-            val samplerLoc = GLES20.glGetUniformLocation(glProgram, "uTexture")
-
-            GLES20.glUniform1i(samplerLoc, 0)
-
-            vertexBuffer?.let { vb ->
-                vb.position(0)
-                GLES20.glEnableVertexAttribArray(posLoc)
-                GLES20.glVertexAttribPointer(posLoc, 2, GLES20.GL_FLOAT, false, 16, vb)
-
-                vb.position(2)
-                GLES20.glEnableVertexAttribArray(texLoc)
-                GLES20.glVertexAttribPointer(texLoc, 2, GLES20.GL_FLOAT, false, 16, vb)
-
-                GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-
-                GLES20.glDisableVertexAttribArray(posLoc)
-                GLES20.glDisableVertexAttribArray(texLoc)
-            }
-
-            EGL14.eglSwapBuffers(eglDisplay, eglSurface)
-        } finally {
-            eglDestroyImageKHR(eglDisplay, eglImage)
         }
     }
 

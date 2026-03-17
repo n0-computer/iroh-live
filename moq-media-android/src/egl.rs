@@ -104,6 +104,33 @@ fn get_image_target_texture_fn() -> Option<ImageTargetTextureFn> {
     })
 }
 
+/// Creates a `glow::Context` by resolving GL functions from `eglGetProcAddress`.
+///
+/// Must be called while an EGL context is current on the calling thread.
+///
+/// # Safety
+/// An EGL context must be current.
+pub unsafe fn create_glow_context() -> glow::Context {
+    let get_proc = load_egl_get_proc_address();
+    unsafe {
+        glow::Context::from_loader_function(|name| {
+            let Ok(c_name) = std::ffi::CString::new(name) else {
+                return std::ptr::null();
+            };
+            get_proc
+                .and_then(|f| {
+                    let p = f(c_name.as_ptr());
+                    if p.is_null() {
+                        None
+                    } else {
+                        Some(p as *const _)
+                    }
+                })
+                .unwrap_or(std::ptr::null())
+        })
+    }
+}
+
 /// Converts an `AHardwareBuffer` pointer into an `EGLClientBuffer`.
 ///
 /// Returns `None` if the extension is unavailable or the conversion fails.

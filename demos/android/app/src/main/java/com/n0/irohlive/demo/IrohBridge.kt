@@ -89,6 +89,21 @@ object IrohBridge {
     external fun startH264(cameraWidth: Int, cameraHeight: Int): Long
 
     /**
+     * Initializes the Rust-side GLES2 renderer on the current GL thread.
+     *
+     * Must be called after eglMakeCurrent. [eglDisplayPtr] is the native
+     * EGLDisplay pointer.
+     */
+    external fun initRenderer(handle: Long, eglDisplayPtr: Long)
+
+    /**
+     * Polls for the next decoded frame and renders it via the Rust renderer.
+     *
+     * Returns true if a frame was rendered (caller should swap buffers).
+     */
+    external fun renderNextFrame(handle: Long, surfaceWidth: Int, surfaceHeight: Int): Boolean
+
+    /**
      * Returns a human-readable status string with encode/decode stats.
      *
      * Returns an empty string if the handle is invalid or no stats are
