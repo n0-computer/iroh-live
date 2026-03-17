@@ -662,6 +662,8 @@ impl VideoRenditions {
             VideoCodec::V4l2H264 => self.add_with_generic::<codec::V4l2Encoder>(preset),
             #[cfg(all(target_os = "android", feature = "android"))]
             VideoCodec::AndroidH264 => self.add_with_generic::<codec::AndroidEncoder>(preset),
+            #[cfg(feature = "ffmpeg")]
+            VideoCodec::FfmpegH264 => self.add_with_generic::<codec::FfmpegH264Encoder>(preset),
         }
     }
 

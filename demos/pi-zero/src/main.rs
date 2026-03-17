@@ -48,6 +48,9 @@ enum Command {
 struct PublishOpts {
     #[clap(long)]
     epaper: bool,
+    /// Encoder: "hardware" (V4L2/VAAPI/VTB), "software" (openh264), or "ffmpeg".
+    #[clap(long, default_value = "hardware")]
+    encoder: String,
 }
 
 #[derive(Parser, Debug)]
@@ -67,7 +70,7 @@ struct WatchOpts {
     /// Start in fullscreen mode (windowed mode only, ignored with --fb).
     #[clap(long)]
     fullscreen: bool,
-    /// Decoder backend: "auto" (try HW then SW) or "software".
+    /// Decoder: "auto" (try HW then SW), "software", or "ffmpeg".
     #[clap(long, default_value = "auto")]
     decoder: String,
 }
@@ -130,14 +133,26 @@ async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     // Capture camera via rpicam-vid (libcamera). On Pi OS Bookworm the CSI
     // camera is only accessible through libcamera — direct V4L2 gives raw
     // Bayer data from the Unicam sensor, not usable video frames.
-    let camera = libcamera::LibcameraSource::new(1280, 720, 30);
+    let camera = libcamera::LibcameraSource::new(640, 360, 30);
 
-    // Use the best available H.264 encoder. With the v4l2 feature enabled this
-    // picks the VideoCore hardware encoder; without it, falls back to openh264.
-    let codec = VideoCodec::best_available().expect("no video codec compiled in");
+    let codec = match opts.encoder.as_str() {
+        "hardware" | "hw" => VideoCodec::best_available().expect("no video codec compiled in"),
+        "software" | "sw" => VideoCodec::H264,
+        #[cfg(feature = "ffmpeg")]
+        "ffmpeg" => VideoCodec::FfmpegH264,
+        #[cfg(not(feature = "ffmpeg"))]
+        "ffmpeg" => {
+            eprintln!("ffmpeg encoder not compiled in — build with --features ffmpeg");
+            std::process::exit(1);
+        }
+        other => {
+            eprintln!("Unknown encoder: {other}. Use 'hardware', 'software', or 'ffmpeg'");
+            std::process::exit(1);
+        }
+    };
     tracing::info!(%codec, "selected video codec");
 
-    broadcast.video().set(camera, codec, [VideoPreset::P720])?;
+    broadcast.video().set(camera, codec, [VideoPreset::P360])?;
 
     // Publish under a fixed name.
     let name = "pi-zero";
@@ -240,10 +255,24 @@ async fn cmd_watch(opts: WatchOpts) -> n0_error::Result {
         }
     };
     let backend = match opts.decoder.as_str() {
-        "auto" => DecoderBackend::Auto,
+        "auto" | "hardware" | "hw" => DecoderBackend::Auto,
         "software" | "sw" => DecoderBackend::Software,
+        "ffmpeg" => {
+            // DecoderBackend::Auto will try ffmpeg if compiled in (after
+            // platform HW decoders). Force software for now unless a dedicated
+            // ffmpeg-only backend is added.
+            #[cfg(feature = "ffmpeg")]
+            {
+                DecoderBackend::Auto
+            }
+            #[cfg(not(feature = "ffmpeg"))]
+            {
+                eprintln!("ffmpeg decoder not compiled in — build with --features ffmpeg");
+                std::process::exit(1);
+            }
+        }
         other => {
-            eprintln!("Unknown decoder: {other}. Use 'auto' or 'software'");
+            eprintln!("Unknown decoder: {other}. Use 'auto', 'software', or 'ffmpeg'");
             std::process::exit(1);
         }
     };

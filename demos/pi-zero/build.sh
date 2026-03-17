@@ -21,8 +21,14 @@ set -euo pipefail
 DEPLOY_HOST=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --deploy) DEPLOY_HOST="$2"; shift 2 ;;
-        *) echo "usage: $0 [--deploy HOSTNAME]" >&2; exit 1 ;;
+    --deploy)
+        DEPLOY_HOST="$2"
+        shift 2
+        ;;
+    *)
+        echo "usage: $0 [--deploy HOSTNAME]" >&2
+        exit 1
+        ;;
     esac
 done
 
@@ -72,22 +78,35 @@ WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Use a fixed /tmp path so cargo's build cache isn't invalidated when
 # building from different clones (the linker path is part of the cache key).
 WRAPPER="/tmp/rpi-linker.sh"
-cat > "$WRAPPER" <<LINKER_EOF
+cat >"$WRAPPER" <<LINKER_EOF
 #!/bin/sh
 exec aarch64-linux-gnu-gcc --sysroot="$SYSROOT" -L "$LIB_DIR" -L "$LIB_DIR2" "\$@"
 LINKER_EOF
 chmod +x "$WRAPPER"
 
-# --- pkg-config for build scripts (alsa-sys, etc.) ---
+# --- pkg-config for build scripts (alsa-sys, ffmpeg-sys-next, etc.) ---
 
 export PKG_CONFIG_SYSROOT_DIR="$SYSROOT"
-export PKG_CONFIG_PATH="$LIB_DIR/pkgconfig"
+export PKG_CONFIG_PATH="$LIB_DIR/pkgconfig:$SYSROOT/usr/lib/pkgconfig"
 export PKG_CONFIG_ALLOW_CROSS=1
+
+# --- cross-compiler for C build scripts ---
+# -sys crates (alsa-sys, etc.) may compile C check files. Tell the cc crate
+# to use the cross-compiler for aarch64 targets.
+export CC_aarch64_unknown_linux_gnu="aarch64-linux-gnu-gcc"
+export CFLAGS_aarch64_unknown_linux_gnu="--sysroot=$SYSROOT"
 
 # --- build ---
 
 export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="$WRAPPER"
 
+# The ffmpeg feature is excluded from cross-compilation: ffmpeg-sys-next's
+# build script compiles+runs a host-side feature-check binary but feeds it
+# target (aarch64) include paths from pkg-config. The host compiler can't
+# parse aarch64-specific headers, and even if it could, version differences
+# (host ffmpeg 8.x vs Pi ffmpeg 5.x) produce wrong feature detection.
+# To use ffmpeg, build natively on the Pi. The V4L2 hardware encoder is the
+# recommended path for Pi anyway.
 cargo build \
     --manifest-path "$WORKSPACE_ROOT/Cargo.toml" \
     -p pi-zero-demo \
