@@ -66,15 +66,29 @@ async fn main() -> n0_error::Result {
         tracing::info!(%relay_addr, "published to relay");
     }
 
-    // Create a ticket string and print.
-    let ticket = LiveTicket::new(live.endpoint().id(), name);
-    println!("publishing at {ticket}");
+    // Create a ticket with the full endpoint address (includes direct
+    // addresses for faster P2P connection, not just the node ID).
+    let ticket = LiveTicket::new(live.endpoint().addr(), name);
+    let ticket_str = ticket.to_string();
+    println!("publishing at {ticket_str}");
+
+    // Print a scannable QR code in the terminal.
+    if !cli.no_qr {
+        print_qr(&ticket_str);
+    }
 
     // Wait for ctrl-c and then shutdown.
     tokio::signal::ctrl_c().await?;
     live.shutdown().await;
 
     Ok(())
+}
+
+/// Renders a QR code to the terminal using Unicode block characters.
+fn print_qr(data: &str) {
+    if let Err(e) = qr2term::print_qr(data) {
+        tracing::warn!("could not print QR code: {e}");
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -98,6 +112,9 @@ struct Cli {
     /// Broadcast name (default: "hello").
     #[arg(long)]
     name: Option<String>,
+    /// Suppress QR code display in terminal.
+    #[arg(long)]
+    no_qr: bool,
 }
 
 fn secret_key_from_env() -> n0_error::Result<SecretKey> {
