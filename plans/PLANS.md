@@ -1,197 +1,79 @@
 # Plans
 
-Index of all plans, grouped by completion status. Each section links to the
-detailed plan document and summarizes what remains.
-
-## Done
-
-### Codec replacement (phases 1–2)
-
-Replaced ffmpeg with pure-Rust codecs: openh264, rav1e/rav1d, unsafe-libopus.
-All codecs are feature-gated and routed through `DynamicVideoDecoder`.
-
-- [phase-1-codec-swap](media-pipeline/phase-1-codec-swap.md) — remove ffmpeg, add software codecs
-- [phase-2-av1](media-pipeline/phase-2-av1.md) — AV1 encode/decode behind `av1` feature
-
-### Hardware acceleration (phase 2b)
-
-VAAPI (Linux), VideoToolbox (macOS), and V4L2 (RPi) encoder backends, each
-behind a feature flag. Decoder side: VAAPI stateless H.264 decoder via
-cros-codecs, V4L2 stateful decoder.
-
-- [phase-2b-hw-accel](media-pipeline/phase-2b-hw-accel.md) — overview and architecture
-- [phase-2b-linux-vaapi](media-pipeline/phase-2b-linux-vaapi.md) — VAAPI H.264 encoder via cros-codecs
-- [phase-2b-macos-videotoolbox](media-pipeline/phase-2b-macos-videotoolbox.md) — VideoToolbox H.264 encoder
-
-### Transport decoupling
-
-`MediaPacket`, `PacketSource`/`PacketSink` traits decouple encode/decode
-pipelines from the transport layer.
-
-- [api-decoupling](media-pipeline/api-decoupling.md)
-
-### GPU rendering and zero-copy decode
-
-wgpu rendering with NV12 shader, DMA-BUF import from VAAPI decoder, VPP
-retiler for Y-tiled to CCS conversion on Intel.
-
-- [gpu-rendering](media-pipeline/gpu-rendering.md) — wgpu renderer, DMA-BUF import, VPP retiler
-- [zerocopy-vaapi-wgpu](gpu-rendering/zerocopy-vaapi-wgpu.md) — VAAPI→Vulkan DMA-BUF deep dive
-
-### Zero-copy capture→encode
-
-PipeWire DMA-BUF negotiation and VAAPI VPP color-space conversion for
-end-to-end GPU capture→encode without CPU round-trips.
-
-- [zero-copy-encode](media-pipeline/zero-copy-encode.md)
-- [zerocopy-capture](gpu-rendering/zerocopy-capture.md)
-
-### Playout clock and A/V sync (phase 3b)
-
-`PlayoutClock` maps PTS to wall-clock playout times with jitter measurement,
-buffer underrun re-anchoring, and `PlayoutBuffer` for smoothing decoder bursts.
-
-- [phase-3b-jitter-sync](media-pipeline/phase-3b-jitter-sync.md)
-
-### Adaptive rendition switching (phase 3a)
-
-`AdaptiveVideoTrack` switches renditions based on `NetworkSignals` (bandwidth,
-RTT, loss). Bandwidth-primary selection with asymmetric hold timers.
-
-- [phase-3a-rendition-switching](media-pipeline/phase-3a-rendition-switching.md)
-
-### Standalone viewer example
-
-Egui viewer with source, codec, decoder, and render backend selectors.
-
-- [standalone-viewer-example](media-pipeline/standalone-viewer-example.md)
-
-### API redesign (phases 1–4, 6–7, 9)
-
-Renamed types (`LocalBroadcast`, `RemoteBroadcast`, `CatalogSnapshot`), added
-`VideoPublisher`/`AudioPublisher` slot API, subscription options with
-`VideoTarget`/`Quality`, domain error types, and `Live` builder in iroh-live.
-
-- [0-overview](api/0-overview.md) — direction and design principles
-- [1-review](api/1-review.md) — pre-redesign API review
-- [2-research](api/2-research.md) — survey of LiveKit, WebRTC, GStreamer APIs
-- [3-sketch](api/3-sketch.md) — target API sketch
-- [4-impl](api/4-impl.md) — 9-phase plan with status checklist
-- [3a-glossary](api/3a-glossary.md) — glossary of API terms and concepts
-- [5-examples](api/5-examples.md) — example patterns against the proposed API
-- [5-risks-and-future](api/5-risks-and-future.md) — risks, trade-offs, and future work
-- [6-examples](api/6-examples.md) — example code rewrites against proposed API
-- [6-relay](api/6-relay.md) — relay server integration design
-- [7-relay](api/7-relay.md) — relay support for iroh-live sessions
-
-## Partial
-
-### API redesign — remaining phases
-
-The core API is in place. Several advanced features remain as stubs or
-unimplemented.
-
-- [ ] Phase 5: relay support — `LocalBroadcast::relay()`, zero-transcode forwarding
-- [ ] Phase 7.4: relay convenience methods on `Live`
-- [ ] Phase 8: room participant model — `LocalParticipant`, `RemoteParticipant`, `RoomEvent`
-- [ ] `set_enabled()` / `set_muted()` — stubs, need encoder pipeline pause/resume
-- [ ] `BroadcastStatus` watcher, `VideoTrack::frames()` stream
-
-### Audio device switching (phase 3e)
-
-Runtime audio input/output device switching is partially implemented.
-`SwitchDevice` message and `AudioDriverOpts` exist; hot-swap on disconnect
-and auto-fallback to default device are missing.
-
-- [phase-3e-audio-device-switching](media-pipeline/phase-3e-audio-device-switching.md)
-- [ ] Hot-swap on device disconnect
-- [ ] Auto-fallback to default device
-
-### Windows Media Foundation (phase 2b)
-
-Design document and implementation plan exist. No code has been written.
-Crate research complete: `windows` (MIT), `windows-capture` (MIT),
-`nokhwa` (Apache-2.0).
-
-- [phase-2b-windows-media-foundation](media-pipeline/phase-2b-windows-media-foundation.md) — MFT encoder design
-- [phase-2b-windows-impl](media-pipeline/phase-2b-windows-impl.md) — full implementation plan with crate selection
-- [ ] Screen capture via `windows-capture`
-- [ ] Camera capture via `nokhwa`
-- [ ] MFT H.264 encoder
-- [ ] MFT H.264 decoder
-
-### Android MediaCodec
-
-NDK `AMediaCodec` H.264 encode and decode via `ndk` crate (0.9), CameraX
-capture via JNI, bidirectional call demo, and `moq-media-android` reusable
-SDK crate. Tested on real device with 1:1 video/audio calls (Android↔desktop).
-
-- [android-mediacodec](media-pipeline/android-mediacodec.md) — codec integration plan
-- [android-demo-app](media-pipeline/android-demo-app.md) — Kotlin/JNI demo app architecture
-- [android-zero-copy-rendering](../android-zero-copy-rendering.md) — HW decoder + EGL rendering design
-- [x] ByteBuffer encoder and decoder
-- [x] ImageReader HW decoder (surface mode decode, HardwareBuffer output)
-- [x] CameraX NV12 capture via JNI
-- [x] Demo app with bidirectional call mode (dial, camera+mic publish, remote A/V playback)
-- [x] EGL HardwareBuffer→texture rendering pipeline
-- [x] `moq-media-android` SDK crate (camera source, EGL helpers, logcat, JNI handle utils)
-- [x] End-to-end device testing (Android↔Linux desktop)
-- [ ] Surface mode for zero-copy encode (CPU NV12→RGBA→scale→NV12 round-trip today)
-
 ## Open
 
-### Opus FEC and PLC (phase 3c)
+### Public API
+Relay publishing, room participant model, mute/enable, source replacement, quality refinement.
+- [api.md](api.md)
 
-Opus in-band FEC, packet loss concealment with comfort noise, and DTX
-bandwidth savings.
+### Adaptive encoding
+Sender-side rate control driven by QUIC `PathStats` bandwidth estimation. Quality state machine for dynamic bitrate and resolution adjustment.
+- [adaptive-encoding.md](adaptive-encoding.md)
 
-- [phase-3c-fec](media-pipeline/phase-3c-fec.md)
+### Opus FEC and PLC
+Opus in-band FEC, packet loss concealment, DTX bandwidth savings. Depends on adaptive encoding for loss rate feedback.
+- [opus-fec.md](opus-fec.md)
 
-### Adaptive encoding (phase 3d)
+### Audio refactor
+Replace firewheel audio graph with direct cpal + fixed-resample. Inline AEC, peak meters, simpler threading.
+- [audio-refactor.md](audio-refactor.md)
 
-Encoder rate control driven by QUIC `PathStats` bandwidth estimation. Quality
-state machine for dynamic bitrate adjustment.
+### Capture pipeline
+Unify raw and pre-encoded video source paths, add backpressure signaling, consider pipeline builder pattern.
+- [capture-pipeline.md](capture-pipeline.md)
 
-- [phase-3d-adaptive-encoding](media-pipeline/phase-3d-adaptive-encoding.md)
+### Rendering
+Unified `FrameRenderer` trait across wgpu, GLES2, and Android EGL. NV12 shader for Pi GLES2 path.
+- [rendering.md](rendering.md)
 
-### Stateless V4L2 decoder
-
-Stateless V4L2 decoder for Rockchip, Allwinner, and MediaTek SBCs. The
-stateful V4L2 encoder and decoder already exist in `rusty-codecs/src/codec/v4l2/`.
-
-- [v4l2-future](media-pipeline/v4l2-future.md)
-
-### Devtools
-
-Extract shared `common_egui` module from examples, build multi-endpoint
-splitscreen dev example with debug overlay.
-
-- [devtools](devtools/00-main.md)
+### Relay and browser
+`iroh-live-relay` binary bridging iroh P2P with WebTransport browser clients. ACME certs, Playwright E2E tests.
+- [relay-browser.md](relay-browser.md)
 
 ### Network simulation testing
+Patchbay integration for kernel-level link impairment. NAT traversal and relay fallback testing.
+- [netsim-testing.md](netsim-testing.md)
 
-Patchbay integration for realistic link impairment, NAT traversal, and
-relay fallback testing. Synthetic signal injection tests exist; real
-kernel-level impairment does not.
+### Call example simplification
+Extract reusable demo sources, source discovery, and egui helpers from examples.
+- [call-example-simplification.md](call-example-simplification.md)
 
-- [netsim-testing](media-pipeline/netsim-testing.md) — patchbay plan and integration sketch
-- [ ] Patchbay lab setup with publisher/subscriber namespaces
-- [ ] Dynamic link degradation mid-session
-- [ ] NAT traversal and relay fallback tests
+### Devtools
+Extract shared egui module from examples, build multi-endpoint splitscreen dev tool.
+- [devtools.md](devtools.md)
 
-### Future features
+### PipeWire drop timeout
+Timed thread join in PipeWire capturer `Drop` to prevent indefinite hangs.
+- [pipewire-drop-timeout.md](pipewire-drop-timeout.md)
 
-Feature gap analysis covering recording, data channels, noise suppression,
-HLS egress, relay/SFU, E2EE, virtual backgrounds, stats API, SVC, and
-multi-codec negotiation.
+## Platforms
 
-- [future](future.md) — prioritized feature list with effort estimates
+### Android
+MediaCodec H.264, CameraX capture, zero-copy HardwareBuffer rendering, demo app. Mostly complete — surface-mode encode remaining.
+- [platform/android.md](platform/android.md)
+
+### Raspberry Pi
+V4L2 stateful H.264, DRM rendering, Pi Zero demo. Complete for current hardware. Stateless V4L2 for other SBCs is future work.
+- [platform/raspberry-pi.md](platform/raspberry-pi.md)
+
+### Windows
+Media Foundation H.264, screen/camera capture. Design complete, no code yet.
+- [platform/windows.md](platform/windows.md)
 
 ## Reference
 
-Architecture overviews and context documents, not actionable work items.
+### Platform support matrix
+Codec, capture, and rendering support across all platforms and hardware.
+- [platforms.md](platforms.md)
 
-- [platforms](platforms.md) — platform support matrix for codecs, capture, and rendering
-- [media-pipeline master](media-pipeline/00-master-plan.md) — full phase overview
-- [media-pipeline quick ref](media-pipeline/00-main.md) — phase table with links
-- [phase-3-av-resilience](media-pipeline/phase-3-av-resilience.md) — phases 3a–3d overview
+### Future features
+Feature gap analysis: recording, data channels, noise suppression, HLS egress, E2EE, virtual backgrounds, stats API, SVC.
+- [future.md](future.md)
+
+## Completed
+
+Detailed plans for completed work are in `completed/`. These are kept for historical context.
+
+- `completed/api/` — API redesign phases 1–4, 6–7, 9 (overview, review, research, sketch, impl, examples, relay design)
+- `completed/media-pipeline/` — codec swap (phases 1–2), hardware acceleration (phase 2b), transport decoupling, GPU rendering, zero-copy encode, playout clock (phase 3b), adaptive renditions (phase 3a), audio device switching (phase 3e), standalone viewer
+- `completed/gpu-rendering/` — VAAPI to wgpu DMA-BUF zero-copy, PipeWire capture zero-copy
