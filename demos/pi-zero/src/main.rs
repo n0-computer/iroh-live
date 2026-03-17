@@ -1,28 +1,21 @@
 /// Raspberry Pi Zero 2 demo: publish a camera stream over iroh and display
 /// the connection ticket as a QR code on a Waveshare 2.13" e-paper HAT.
 /// Also supports watching a remote stream with EGL/GLES2 rendering.
-use std::time::Duration;
-
 use clap::{Parser, Subcommand};
 use iroh::{Endpoint, EndpointId};
 use iroh_live::{
     Live,
     media::{
-        codec::{DefaultDecoders, VideoCodec},
-        format::{DecodeConfig, DecoderBackend, PlaybackConfig, VideoPreset},
-        publish::LocalBroadcast,
+        codec::DefaultDecoders,
+        format::{DecodeConfig, DecoderBackend, PlaybackConfig},
     },
     ticket::LiveTicket,
 };
 
 mod epaper;
 mod epd_v4;
+mod publish;
 mod watch;
-
-/// Per the datasheet, e-paper must be refreshed at least once every 24 h.
-/// We re-display the QR every 12 h to stay well within that limit while
-/// respecting the minimum 180 s interval between refreshes.
-const EPAPER_REFRESH_INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
 
 #[derive(Parser)]
 #[command(about = "Pi Zero 2 demo: camera streaming + e-paper QR ticket")]
@@ -36,24 +29,11 @@ enum Command {
     /// Test the e-paper display with a "hello" label and a bogus QR code.
     EpaperDemo,
     /// Publish the camera stream and show the ticket QR on e-paper.
-    Publish(PublishOpts),
+    Publish(publish::PublishOpts),
     /// Watch a remote stream, rendering with EGL/GLES2.
     Watch(WatchOpts),
     /// Render a test pattern directly to HDMI (no network, no window system).
     FbDemo,
-}
-
-#[derive(Parser, Debug)]
-struct PublishOpts {
-    #[clap(long)]
-    epaper: bool,
-    /// Encoder: "hardware" (V4L2/VAAPI/VTB), "software" (openh264), or "ffmpeg".
-    #[clap(long, default_value = "hardware")]
-    encoder: String,
-    /// Relay's iroh endpoint ID — additionally publishes to the relay so
-    /// browser and non-P2P clients can subscribe.
-    #[clap(long)]
-    relay: Option<EndpointId>,
 }
 
 #[derive(Parser, Debug)]
@@ -85,17 +65,13 @@ async fn main() -> n0_error::Result {
 
     match cli.command {
         Command::EpaperDemo => cmd_epaper_demo(),
-        Command::Publish(opts) => cmd_publish(opts).await,
+        Command::Publish(opts) => publish::cmd_publish(opts).await,
         Command::Watch(opts) => cmd_watch(opts).await,
         Command::FbDemo => cmd_fb_demo(),
     }
 }
 
 /// Runs a hardware test sequence on the e-paper HAT.
-///
-/// 1. Checkerboard test pattern (tests basic SPI + display wiring)
-/// 2. QR code with dummy data (tests rendering pipeline)
-/// 3. Clear to white
 fn cmd_epaper_demo() -> n0_error::Result {
     println!("step 1/3: checkerboard test pattern");
     epaper::display_test_pattern()?;
@@ -118,145 +94,6 @@ fn wait_for_enter() {
     println!("  press Enter to continue...");
     let mut buf = String::new();
     std::io::stdin().read_line(&mut buf).ok();
-}
-
-/// Publishes the camera stream and shows the ticket QR on e-paper.
-async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
-    // --- iroh endpoint ---
-    let secret_key = iroh_live::util::secret_key_from_env()?;
-    let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
-        .secret_key(secret_key)
-        .bind()
-        .await?;
-    let live = Live::builder(endpoint).spawn_with_router();
-
-    // --- media broadcast ---
-    let broadcast = LocalBroadcast::new();
-
-    // Capture camera via rpicam-vid (libcamera). On Pi OS Bookworm the CSI
-    // camera is only accessible through libcamera — direct V4L2 gives raw
-    // Bayer data from the Unicam sensor, not usable video frames.
-    //
-    // Default "hardware" mode uses rpicam-vid's internal H.264 encoder
-    // (pre-encoded path, ~300 KB/s). "software" falls back to raw YUV
-    // capture + openh264 (~10 MB/s pipe overhead).
-    match opts.encoder.as_str() {
-        "hardware" | "hw" => {
-            use rusty_codecs::libcamera::{LibcameraH264Config, LibcameraH264Source};
-
-            let config = LibcameraH264Config::new(640, 360, 30);
-            let track_name = config.track_name();
-            let video_config = config.video_config();
-            tracing::info!("using pre-encoded H.264 from rpicam-vid");
-            broadcast
-                .video()
-                .set_pre_encoded(track_name, video_config, move || {
-                    Ok(Box::new(LibcameraH264Source::new(config.clone())))
-                })?;
-        }
-        "software" | "sw" => {
-            use rusty_codecs::libcamera::LibcameraYuvSource;
-
-            let camera = LibcameraYuvSource::new(640, 360, 30);
-            let codec = VideoCodec::H264;
-            tracing::info!(%codec, "using software encoder with raw YUV capture");
-            broadcast.video().set(camera, codec, [VideoPreset::P360])?;
-        }
-        #[cfg(feature = "ffmpeg")]
-        "ffmpeg" => {
-            use rusty_codecs::libcamera::LibcameraYuvSource;
-
-            let camera = LibcameraYuvSource::new(640, 360, 30);
-            let codec = VideoCodec::FfmpegH264;
-            tracing::info!(%codec, "using ffmpeg encoder with raw YUV capture");
-            broadcast.video().set(camera, codec, [VideoPreset::P360])?;
-        }
-        #[cfg(not(feature = "ffmpeg"))]
-        "ffmpeg" => {
-            eprintln!("ffmpeg encoder not compiled in — build with --features ffmpeg");
-            std::process::exit(1);
-        }
-        other => {
-            eprintln!("Unknown encoder: {other}. Use 'hardware', 'software', or 'ffmpeg'");
-            std::process::exit(1);
-        }
-    }
-
-    // Publish under a fixed name.
-    let name = "pi-zero";
-    live.publish(name, &broadcast).await?;
-
-    // --- relay (optional) ---
-    if let Some(relay_id) = opts.relay {
-        let session = live.transport().connect(relay_id).await?;
-        session.publish(name.to_string(), broadcast.producer().consume());
-        tracing::info!(%relay_id, "published to relay");
-    }
-
-    // --- ticket (always printed, regardless of e-paper) ---
-    let ticket = LiveTicket::new(live.endpoint().addr(), name);
-    let ticket_str = ticket.to_string();
-    println!("publishing at {ticket_str}");
-
-    // --- QR code on e-paper (optional, non-fatal) ---
-    let has_epaper = if opts.epaper {
-        match epaper::display_qr(&ticket_str) {
-            Ok(()) => {
-                tracing::info!("QR code displayed on e-paper");
-                true
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = format!("{e:#}"),
-                    "could not display QR on e-paper — is the HAT attached and SPI enabled? \
-                 (the stream is publishing normally, use the ticket above to connect)"
-                );
-                false
-            }
-        }
-    } else {
-        false
-    };
-
-    // Datasheet requires a refresh at least every 24 h. Re-display the QR
-    // periodically if the initial display succeeded. If the HAT isn't present
-    // we skip this entirely — no point retrying in a loop.
-    let refresh_ticket = ticket_str.clone();
-    let refresh_handle = if has_epaper {
-        Some(tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(EPAPER_REFRESH_INTERVAL).await;
-                match epaper::display_qr(&refresh_ticket) {
-                    Ok(()) => tracing::debug!("periodic e-paper refresh complete"),
-                    Err(e) => {
-                        tracing::warn!(error = format!("{e:#}"), "periodic e-paper refresh failed")
-                    }
-                }
-            }
-        }))
-    } else {
-        None
-    };
-
-    // Wait for ctrl-c and then shutdown.
-    tokio::signal::ctrl_c().await?;
-
-    // Cancel the periodic refresh task.
-    if let Some(handle) = refresh_handle {
-        handle.abort();
-    }
-
-    // Clear the e-paper before exit (datasheet: clear before storage).
-    if has_epaper {
-        match epaper::clear_display() {
-            Ok(()) => tracing::info!("e-paper cleared for storage"),
-            Err(e) => tracing::warn!(error = format!("{e:#}"), "could not clear e-paper on exit"),
-        }
-    }
-
-    live.shutdown().await;
-
-    Ok(())
 }
 
 /// Renders a test pattern directly to HDMI — no network, no window system.
@@ -289,9 +126,6 @@ async fn cmd_watch(opts: WatchOpts) -> n0_error::Result {
         "auto" | "hardware" | "hw" => DecoderBackend::Auto,
         "software" | "sw" => DecoderBackend::Software,
         "ffmpeg" => {
-            // DecoderBackend::Auto will try ffmpeg if compiled in (after
-            // platform HW decoders). Force software for now unless a dedicated
-            // ffmpeg-only backend is added.
             #[cfg(feature = "ffmpeg")]
             {
                 DecoderBackend::Auto
@@ -308,8 +142,6 @@ async fn cmd_watch(opts: WatchOpts) -> n0_error::Result {
         }
     };
 
-    // Pi Zero has no PipeWire/PulseAudio — use a null audio backend
-    // to avoid panicking on missing audio devices.
     let audio_ctx = moq_media::test_util::NullAudioBackend;
 
     println!("connecting to {ticket} ...");
