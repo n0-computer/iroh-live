@@ -32,6 +32,8 @@ rubato = { version = "1.0", optional = true }
 audioadapter-buffers = { version = "2.0", optional = true }
 rav1e = { version = "0.8", optional = true }
 rav1d = { git = "https://github.com/memorysafety/rav1d", default-features = false, features = ["bitdepth_8", "bitdepth_16", "asm"], optional = true }
+ffmpeg-next = { version = "8", optional = true, default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
+ffmpeg-sys-next = { version = "8", optional = true }
 wgpu = { version = "27", optional = true, default-features = false, features = ["wgsl", "vulkan"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -56,7 +58,7 @@ image = { version = "0.25", features = ["jpeg"] }
 rand = "0.9"
 
 [features]
-default = ["h264", "opus", "av1"]
+default = ["h264", "opus"]
 hang = ["dep:hang"]
 h264 = ["dep:openh264"]
 opus = ["dep:unsafe-libopus", "dep:rubato", "dep:audioadapter-buffers"]
@@ -67,4 +69,5 @@ v4l2 = ["dep:v4l2r"]
 wgpu = ["dep:wgpu"]
 media-foundation = []
 android = ["dep:ndk"]
+ffmpeg = ["dep:ffmpeg-next", "dep:ffmpeg-sys-next"]
 dmabuf-import = ["wgpu", "dep:ash", "dep:gbm", "dep:drm-fourcc"]

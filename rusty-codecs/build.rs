@@ -8,9 +8,10 @@ fn main() {
     let has_vaapi = std::env::var("CARGO_FEATURE_VAAPI").is_ok();
     let has_v4l2 = std::env::var("CARGO_FEATURE_V4L2").is_ok();
     let has_mf = std::env::var("CARGO_FEATURE_MEDIA_FOUNDATION").is_ok();
+    let has_ffmpeg = std::env::var("CARGO_FEATURE_FFMPEG").is_ok();
 
     let any_video_codec =
-        has_h264 || has_av1 || has_videotoolbox || has_vaapi || has_v4l2 || has_mf;
+        has_h264 || has_av1 || has_videotoolbox || has_vaapi || has_v4l2 || has_mf || has_ffmpeg;
 
     if any_audio_codec {
         println!("cargo::rustc-cfg=any_audio_codec");

@@ -4,6 +4,8 @@ pub(crate) mod android;
 pub(crate) mod av1;
 #[cfg(any_codec)]
 pub(crate) mod dynamic;
+#[cfg(feature = "ffmpeg")]
+pub(crate) mod ffmpeg;
 #[cfg(feature = "h264")]
 pub(crate) mod h264;
 #[cfg(feature = "opus")]
@@ -21,6 +23,8 @@ pub use android::*;
 pub use av1::*;
 #[cfg(any_codec)]
 pub use dynamic::*;
+#[cfg(feature = "ffmpeg")]
+pub use ffmpeg::*;
 #[cfg(all(target_os = "linux", feature = "v4l2"))]
 pub use v4l2::*;
 #[cfg(all(target_os = "linux", feature = "vaapi"))]
@@ -75,6 +79,10 @@ pub enum VideoCodec {
     #[strum(serialize = "h264-android")]
     #[cfg(all(target_os = "android", feature = "android"))]
     AndroidH264,
+    /// H.264 via FFmpeg (auto-selects hardware backend).
+    #[strum(serialize = "h264-ffmpeg")]
+    #[cfg(feature = "ffmpeg")]
+    FfmpegH264,
 }
 
 #[cfg(any_video_codec)]
@@ -94,6 +102,8 @@ impl VideoCodec {
             Self::V4l2H264,
             #[cfg(all(target_os = "android", feature = "android"))]
             Self::AndroidH264,
+            #[cfg(feature = "ffmpeg")]
+            Self::FfmpegH264,
         ]
     }
 
@@ -143,6 +153,10 @@ impl VideoCodec {
             Self::V4l2H264 => true,
             #[cfg(all(target_os = "android", feature = "android"))]
             Self::AndroidH264 => true,
+            // FFmpeg auto-selects HW backends at runtime; report as HW since
+            // it prefers hardware when available.
+            #[cfg(feature = "ffmpeg")]
+            Self::FfmpegH264 => true,
         }
     }
 
@@ -165,6 +179,8 @@ impl VideoCodec {
             Self::V4l2H264 => Ok(Box::new(V4l2Encoder::with_config(config)?)),
             #[cfg(all(target_os = "android", feature = "android"))]
             Self::AndroidH264 => Ok(Box::new(AndroidEncoder::with_config(config)?)),
+            #[cfg(feature = "ffmpeg")]
+            Self::FfmpegH264 => Ok(Box::new(FfmpegH264Encoder::with_config(config)?)),
         }
     }
 
@@ -209,6 +225,8 @@ impl VideoCodec {
             Self::V4l2H264 => "H.264 (V4L2)",
             #[cfg(all(target_os = "android", feature = "android"))]
             Self::AndroidH264 => "H.264 (Android MediaCodec)",
+            #[cfg(feature = "ffmpeg")]
+            Self::FfmpegH264 => "H.264 (FFmpeg)",
         }
     }
 }
