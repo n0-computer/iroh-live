@@ -28,8 +28,8 @@ http = "1"
 
 [dev-dependencies]
 iroh = { workspace = true }
-iroh-live = { workspace = true }
-moq-media = { workspace = true, features = ["test-util"] }
+iroh-live = { workspace = true, features = ["h264"] }
+moq-media = { workspace = true, features = ["test-util", "h264", "opus"] }
 rand = "0.9"
 serial_test = "3"
 url = "2"
