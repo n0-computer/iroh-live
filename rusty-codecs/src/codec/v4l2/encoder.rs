@@ -114,10 +114,19 @@ impl V4l2Encoder {
     }
 
     fn drain_output(&mut self) {
+        let mut count = 0u32;
         while let Ok(out) = self.output_rx.try_recv() {
+            count += 1;
             if let Some(frame) = self.process_output(out) {
                 self.packet_buf.push_back(frame);
             }
+        }
+        if count > 0 {
+            tracing::trace!(
+                drained = count,
+                buffered = self.packet_buf.len(),
+                "V4L2 encoder: drain_output"
+            );
         }
     }
 
@@ -126,8 +135,14 @@ impl V4l2Encoder {
         let end = out.data.iter().rposition(|&b| b != 0).map_or(0, |p| p + 1);
         let annex_b = &out.data[..end];
         if annex_b.is_empty() {
+            tracing::debug!("V4L2 encoder: empty output buffer (all zeros)");
             return None;
         }
+        tracing::trace!(
+            raw_len = out.data.len(),
+            trimmed_len = annex_b.len(),
+            "V4L2 encoder: got encoded output"
+        );
 
         let nals = parse_annex_b(annex_b);
         let is_keyframe = nals
@@ -248,6 +263,20 @@ impl VideoEncoder for V4l2Encoder {
         // the DMA-BUF FD from `NativeFrameHandle::DmaBuf` directly to V4L2.
         let nv12 = match &frame.data {
             crate::format::FrameData::Nv12(planes) => nv12_planes_to_contiguous(planes),
+            crate::format::FrameData::I420 { y, u, v } => {
+                // Fast path: interleave U/V planes into NV12's semi-planar UV.
+                let y_size = (w * h) as usize;
+                let uv_size = y_size / 2; // interleaved UV
+                let mut buf = Vec::with_capacity(y_size + uv_size);
+                buf.extend_from_slice(y);
+                // Interleave U and V bytes.
+                let uv_len = (w as usize / 2) * (h as usize / 2);
+                for i in 0..uv_len {
+                    buf.push(u[i]);
+                    buf.push(v[i]);
+                }
+                buf
+            }
             crate::format::FrameData::Gpu(gpu) => {
                 if let Some(Ok(planes)) = gpu.download_nv12() {
                     nv12_planes_to_contiguous(&planes)
@@ -260,15 +289,19 @@ impl VideoEncoder for V4l2Encoder {
             crate::format::FrameData::Packed { pixel_format, data } => {
                 pixel_format_to_nv12(data, w, h, *pixel_format)?.into_contiguous()
             }
-            _ => {
-                let img = frame.rgba_image();
-                pixel_format_to_nv12(img.as_raw(), w, h, crate::format::PixelFormat::Rgba)?
-                    .into_contiguous()
-            }
         };
 
         let timestamp_us = (self.frame_count * 1_000_000) / self.framerate as u64;
         self.frame_count += 1;
+
+        if self.frame_count <= 3 || self.frame_count % 150 == 0 {
+            tracing::debug!(
+                frame = self.frame_count,
+                nv12_len = nv12.len(),
+                timestamp_us,
+                "V4L2 encoder: sending frame"
+            );
+        }
 
         self.input_tx
             .send(EncoderCmd::Encode { nv12, timestamp_us })
@@ -372,14 +405,22 @@ fn encoder_thread(
                 // Encoded output ready: extract data and send to main thread.
                 move |cap_dqbuf| {
                     let bytes_used = *cap_dqbuf.data.get_first_plane().bytesused as usize;
+                    tracing::debug!(bytes_used, "V4L2 encoder: output callback fired");
                     if bytes_used == 0 {
+                        tracing::debug!("V4L2 encoder: output callback: zero bytes, skipping");
                         return;
                     }
                     let Some(mapping) = cap_dqbuf.get_plane_mapping(0) else {
+                        tracing::warn!("V4L2 encoder: output callback: plane mapping failed");
                         return;
                     };
                     let data = mapping.as_ref()[..bytes_used].to_vec();
                     let timestamp_us = ts_cb.lock().unwrap().pop_front().unwrap_or(0);
+                    tracing::debug!(
+                        encoded_len = data.len(),
+                        timestamp_us,
+                        "V4L2 encoder: encoded packet ready"
+                    );
                     let _ = output_tx_cb.try_send(EncodedOutput { data, timestamp_us });
                 },
             )

@@ -10,6 +10,7 @@ members = [
     "rusty-capture",
     "rusty-codecs",
     "android-demo/rust",
+    "demos/pi-zero",
 ]
 resolver = "2"
 
