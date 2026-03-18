@@ -321,9 +321,18 @@ impl VideoEncoder for VtbEncoder {
         }
 
         // Increment frame count in callback state.
-        {
+        let frame_count = {
             let mut state = self.callback_state.lock().unwrap();
             state.frame_count += 1;
+            let pending = state.packets.len();
+            (state.frame_count, pending)
+        };
+        if frame_count.0 % 30 == 0 {
+            tracing::debug!(
+                frames_in = frame_count.0,
+                pending_packets = frame_count.1,
+                "vtb encoder progress"
+            );
         }
 
         Ok(())
@@ -540,8 +549,10 @@ unsafe extern "C-unwind" fn compression_output_callback(
     sample_buffer: *mut CMSampleBuffer,
 ) {
     if status != 0 || sample_buffer.is_null() {
+        tracing::warn!(status, buf_null = sample_buffer.is_null(), "vtb callback: bad frame");
         return;
     }
+    tracing::trace!("vtb callback: got encoded frame");
 
     let state_ptr = output_callback_ref_con as *const Mutex<CallbackState>;
     // Safety: We increment the Arc ref count rather than taking ownership.
@@ -585,22 +596,61 @@ unsafe fn extract_encoded_packet(
     // Check if this is a keyframe by looking at the first NAL unit type.
     let keyframe = is_keyframe_payload(&lp_payload);
 
-    let guard = state.lock().ok()?;
+    let mut guard = state.lock().ok()?;
     let nal_format = guard.nal_format;
 
-    // In avcC mode, extract SPS/PPS on first keyframe.
-    if nal_format == NalFormat::Avcc && keyframe && guard.avcc.is_none() {
-        drop(guard);
-        if let Some(avcc) = unsafe { extract_avcc_from_sample_buffer(sample_buffer) } {
-            if let Ok(mut guard) = state.lock() {
-                guard.avcc = Some(avcc);
-            }
+    // Extract SPS/PPS from the format description on keyframes.
+    // VTB does NOT include SPS/PPS in the bitstream — they're only
+    // available via CMFormatDescription. In Annex B mode we must
+    // prepend them to every keyframe; in avcC mode we store them
+    // as the decoder configuration record.
+    if keyframe {
+        let sps_pps = unsafe { extract_sps_pps_from_format_desc(sample_buffer) };
+        if nal_format == NalFormat::Avcc
+            && guard.avcc.is_none()
+            && let Some((ref sps, ref pps)) = sps_pps
+        {
+            guard.avcc = Some(build_avcc(sps, pps));
         }
-    } else {
         drop(guard);
+
+        let payload: bytes::Bytes = match nal_format {
+            NalFormat::AnnexB => {
+                let slice_data = length_prefixed_to_annex_b(&lp_payload);
+                if let Some((sps, pps)) = sps_pps {
+                    // Prepend SPS + PPS as Annex B NALs before the slice data.
+                    let mut buf =
+                        Vec::with_capacity(8 + sps.len() + pps.len() + slice_data.len());
+                    buf.extend_from_slice(&[0, 0, 0, 1]);
+                    buf.extend_from_slice(&sps);
+                    buf.extend_from_slice(&[0, 0, 0, 1]);
+                    buf.extend_from_slice(&pps);
+                    buf.extend_from_slice(&slice_data);
+                    buf.into()
+                } else {
+                    slice_data.into()
+                }
+            }
+            NalFormat::Avcc => lp_payload.into(),
+        };
+
+        let pts = unsafe { sample_buffer.presentation_time_stamp() };
+        let timestamp_us = if pts.timescale > 0 {
+            (pts.value as u64 * 1_000_000) / pts.timescale as u64
+        } else {
+            let guard = state.lock().ok()?;
+            (guard.frame_count * 1_000_000) / guard.framerate as u64
+        };
+        return Some(EncodedFrame {
+            is_keyframe: true,
+            timestamp: std::time::Duration::from_micros(timestamp_us),
+            payload,
+        });
     }
 
-    // Convert to Annex B if needed.
+    drop(guard);
+
+    // Non-keyframe: convert format only.
     let payload: bytes::Bytes = match nal_format {
         NalFormat::AnnexB => length_prefixed_to_annex_b(&lp_payload).into(),
         NalFormat::Avcc => lp_payload.into(),
@@ -645,8 +695,10 @@ fn is_keyframe_payload(payload: &[u8]) -> bool {
     false
 }
 
-/// Extract SPS/PPS from the CMSampleBuffer's format description and build an avcC box.
-unsafe fn extract_avcc_from_sample_buffer(sample_buffer: &CMSampleBuffer) -> Option<Vec<u8>> {
+/// Extract raw SPS and PPS NAL units from a CMSampleBuffer's format description.
+unsafe fn extract_sps_pps_from_format_desc(
+    sample_buffer: &CMSampleBuffer,
+) -> Option<(Vec<u8>, Vec<u8>)> {
     let format_desc: CFRetained<CMFormatDescription> =
         unsafe { sample_buffer.format_description()? };
 
@@ -688,7 +740,7 @@ unsafe fn extract_avcc_from_sample_buffer(sample_buffer: &CMSampleBuffer) -> Opt
     }
     let pps = unsafe { slice::from_raw_parts(pps_ptr, pps_size) }.to_vec();
 
-    Some(build_avcc(&sps, &pps))
+    Some((sps, pps))
 }
 
 #[cfg(test)]
@@ -750,7 +802,12 @@ mod tests {
         let mut dec = H264VideoDecoder::new(&config, &decode_config).unwrap();
         let mut decoded_count = 0;
         for pkt in packets {
-            dec.push_packet(pkt).unwrap();
+            let media_pkt = crate::format::MediaPacket {
+                timestamp: pkt.timestamp,
+                payload: pkt.payload.into(),
+                is_keyframe: pkt.is_keyframe,
+            };
+            dec.push_packet(media_pkt).unwrap();
             if let Some(frame) = dec.pop_frame().unwrap() {
                 assert_eq!(frame.rgba_image().width(), 640);
                 assert_eq!(frame.rgba_image().height(), 360);
@@ -772,7 +829,7 @@ mod tests {
             let frame = make_rgba_frame(640, 360, 128, 128, 128);
             enc.push_frame(frame).unwrap();
             while let Some(pkt) = enc.pop_packet().unwrap() {
-                if pkt.keyframe {
+                if pkt.is_keyframe {
                     keyframe_count += 1;
                 }
             }
@@ -818,7 +875,7 @@ mod tests {
             .unwrap()
             .expect("first frame should produce a packet");
         assert!(
-            pkt.keyframe,
+            pkt.is_keyframe,
             "first packet after construction must be a keyframe"
         );
     }
