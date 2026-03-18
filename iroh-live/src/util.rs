@@ -150,9 +150,18 @@ pub fn spawn_stats_recorder(
             metrics.record_rtt_timeline(rtt_ms);
 
             // Path type and address labels.
-            let path_type = if selected.is_relay() { "R" } else { "D" };
+            let path_type = if selected.is_relay() {
+                "relayed"
+            } else {
+                "direct"
+            };
             metrics.set_label(LBL_PATH_TYPE, path_type);
             metrics.set_label(LBL_PATH_ADDR, format!("{:?}", selected.remote_addr()));
+
+            // Path counts.
+            let active = paths.iter().filter(|p| !p.is_closed()).count();
+            metrics.record(NET_PATHS_ACTIVE, active as f64);
+            metrics.record(NET_PATHS_TOTAL, paths.len() as f64);
 
             // Loss rate (same calculation as spawn_signal_producer).
             let total_lost = stats.lost_packets;

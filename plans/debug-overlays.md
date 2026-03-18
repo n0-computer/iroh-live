@@ -326,6 +326,28 @@ painting gives full control over per-frame coloring and is simpler.
   limitation reason, probe state)
 - [x] Freeze detection (`TMG_FREEZES`, gap > 2× frame interval)
 
+### Future: typed metrics refactor
+
+The current string-keyed `MetricsCollector` works but is stringly-typed
+and brittle. A follow-up should introduce typed metric structs:
+
+```rust
+pub struct CaptureMetrics { pub fps: f64, pub encode_ms: f64, ... }
+pub struct RenderMetrics { pub fps: f64, pub decode_ms: f64 }
+pub struct TimingMetrics { pub jitter_ms: f64, pub delay_ms: f64, ... }
+pub struct NetMetrics { pub rtt_ms: f64, pub loss_pct: f64, ... }
+```
+
+The overlay would read these directly instead of doing string lookups.
+The `record(name, value)` API stays for external producers (iroh path
+stats), but pipeline-internal metrics go through typed paths.
+
+Also: `web_transport_trait::Session::stats()` provides transport-level
+metrics accessible from `moq-media` without iroh dependency. This would
+let `RemoteBroadcast` record basic net stats (RTT, loss) natively,
+leaving only iroh-specific path info (relay/direct, address) for the
+external bridge.
+
 ## Estimated effort
 
 | Phase | New lines | Modified lines | Crates touched |

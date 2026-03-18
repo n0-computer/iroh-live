@@ -46,12 +46,17 @@ pub const LBL_RENDERER: &str = "lbl.renderer";
 pub const LBL_RENDITION: &str = "lbl.rendition";
 pub const LBL_CODEC: &str = "lbl.codec";
 pub const LBL_RESOLUTION: &str = "lbl.resolution";
-/// "D" (direct) or "R" (relayed) — set from iroh path info.
+/// "direct" or "relayed" — set from iroh path info.
 pub const LBL_PATH_TYPE: &str = "lbl.path_type";
 /// Full address of the selected path (debug format of TransportAddr).
 pub const LBL_PATH_ADDR: &str = "lbl.path_addr";
 /// Encoder name (for publish/capture side).
 pub const LBL_ENCODER: &str = "lbl.encoder";
+
+/// Number of active (non-closed) paths.
+pub const NET_PATHS_ACTIVE: &str = "net.paths_active";
+/// Total number of paths ever opened.
+pub const NET_PATHS_TOTAL: &str = "net.paths_total";
 
 // ── Timeline data ───────────────────────────────────────────────────
 
@@ -274,6 +279,8 @@ impl MetricsCollector {
         self.register(NET_LOSS_PCT, MetricConfig::smooth("Loss", "%"));
         self.register(NET_BW_DOWN_MBPS, MetricConfig::smooth("Down", "Mbps"));
         self.register(NET_BW_UP_MBPS, MetricConfig::smooth("Up", "Mbps"));
+        self.register(NET_PATHS_ACTIVE, MetricConfig::responsive("Paths", ""));
+        self.register(NET_PATHS_TOTAL, MetricConfig::responsive("Total", ""));
         self.register(CAP_FPS, MetricConfig::responsive("FPS", ""));
         self.register(CAP_ENCODE_MS, MetricConfig::responsive("Encode", "ms"));
         self.register(CAP_BITRATE_KBPS, MetricConfig::smooth("Bitrate", "kbps"));
