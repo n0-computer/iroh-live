@@ -269,23 +269,38 @@ impl VideoEncoder for VtbEncoder {
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
         let frame = self.scale_if_needed(frame)?;
         let [w, h] = frame.dimensions;
-        let yuv = match &frame.data {
-            crate::format::FrameData::Packed { pixel_format, data } => {
-                pixel_format_to_yuv420(data, w, h, *pixel_format)?
-            }
-            _ => {
-                let img = frame.rgba_image();
-                pixel_format_to_yuv420(img.as_raw(), w, h, crate::format::PixelFormat::Rgba)?
-            }
+
+        // Zero-copy fast path: if the frame is a GPU frame backed by a
+        // CVPixelBuffer (e.g. from ScreenCaptureKit or AVFoundation),
+        // pass it directly to VTCompressionSession. No CPU color conversion,
+        // no pool buffer copy — VTB handles BGRA/NV12→H.264 on the GPU.
+        let pixel_buffer = if let crate::format::FrameData::Gpu(ref gpu) = frame.data
+            && let Some(crate::format::NativeFrameHandle::CvPixelBuffer(info)) = gpu.native_handle()
+            && info.width == w
+            && info.height == h
+        {
+            tracing::trace!("vtb zero-copy encode path");
+            // Retain the CVPixelBuffer for encoding. CvPixelBufferInfo already
+            // holds one retain count; we add another for the VTB session.
+            let ptr = NonNull::new(info.as_ptr().cast::<CVPixelBuffer>()).unwrap();
+            unsafe { CFRetained::retain(ptr) }
+        } else {
+            // CPU fallback: convert to I420 and copy into a pool buffer.
+            let yuv = match &frame.data {
+                crate::format::FrameData::Packed { pixel_format, data } => {
+                    pixel_format_to_yuv420(data, w, h, *pixel_format)?
+                }
+                _ => {
+                    let img = frame.rgba_image();
+                    pixel_format_to_yuv420(img.as_raw(), w, h, crate::format::PixelFormat::Rgba)?
+                }
+            };
+            let pool = unsafe { self.session.pixel_buffer_pool() }
+                .context("VTCompressionSession pixel buffer pool is null")?;
+            let pb = create_pixel_buffer_from_pool(&pool)?;
+            copy_yuv_to_pixel_buffer(&pb, &yuv.y, &yuv.u, &yuv.v, w, h)?;
+            pb
         };
-
-        // Get a pixel buffer from the session's pool.
-        let pool = unsafe { self.session.pixel_buffer_pool() }
-            .context("VTCompressionSession pixel buffer pool is null")?;
-        let pixel_buffer = create_pixel_buffer_from_pool(&pool)?;
-
-        // Copy YUV data into the pixel buffer.
-        copy_yuv_to_pixel_buffer(&pixel_buffer, &yuv.y, &yuv.u, &yuv.v, w, h)?;
 
         // Encode.
         let frame_count = {
@@ -295,8 +310,6 @@ impl VideoEncoder for VtbEncoder {
         let pts = unsafe { CMTime::new(frame_count as i64, self.framerate as i32) };
         let duration = unsafe { CMTime::new(1, self.framerate as i32) };
 
-        // After priming, force the first real frame to be a keyframe so
-        // subscribers don't have to wait MaxKeyFrameInterval frames.
         let frame_props = if self.force_next_keyframe {
             self.force_next_keyframe = false;
             Some(build_force_keyframe_props()?)
@@ -311,7 +324,7 @@ impl VideoEncoder for VtbEncoder {
                 pts,
                 duration,
                 frame_props.as_deref(),
-                ptr::null_mut(), // source frame refcon
+                ptr::null_mut(),
                 &mut info_flags,
             )
         };
@@ -549,7 +562,11 @@ unsafe extern "C-unwind" fn compression_output_callback(
     sample_buffer: *mut CMSampleBuffer,
 ) {
     if status != 0 || sample_buffer.is_null() {
-        tracing::warn!(status, buf_null = sample_buffer.is_null(), "vtb callback: bad frame");
+        tracing::warn!(
+            status,
+            buf_null = sample_buffer.is_null(),
+            "vtb callback: bad frame"
+        );
         return;
     }
     tracing::trace!("vtb callback: got encoded frame");
@@ -619,8 +636,7 @@ unsafe fn extract_encoded_packet(
                 let slice_data = length_prefixed_to_annex_b(&lp_payload);
                 if let Some((sps, pps)) = sps_pps {
                     // Prepend SPS + PPS as Annex B NALs before the slice data.
-                    let mut buf =
-                        Vec::with_capacity(8 + sps.len() + pps.len() + slice_data.len());
+                    let mut buf = Vec::with_capacity(8 + sps.len() + pps.len() + slice_data.len());
                     buf.extend_from_slice(&[0, 0, 0, 1]);
                     buf.extend_from_slice(&sps);
                     buf.extend_from_slice(&[0, 0, 0, 1]);

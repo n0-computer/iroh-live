@@ -79,8 +79,10 @@ pub enum NativeFrameHandle {
     /// Android HardwareBuffer handle for zero-copy GPU import.
     #[cfg(target_os = "android")]
     HardwareBuffer(HardwareBufferInfo),
+    /// macOS CVPixelBuffer for zero-copy VideoToolbox encode and Metal render.
+    #[cfg(all(target_os = "macos", feature = "apple-gpu"))]
+    CvPixelBuffer(CvPixelBufferInfo),
     // Future variants:
-    // #[cfg(target_os = "macos")] IoSurface(IoSurfaceInfo),
     // #[cfg(target_os = "windows")] D3D11Texture(D3D11TextureInfo),
 }
 
@@ -104,6 +106,284 @@ pub struct HardwareBufferInfo {
     pub uv_offset: u32,
     /// Row stride of the UV plane in bytes.
     pub uv_stride: u32,
+}
+
+/// macOS CVPixelBuffer handle for zero-copy GPU frame passing.
+///
+/// Wraps a `CFRetained<CVPixelBuffer>` from `objc2-core-video`. Both
+/// `screencapturekit::CVPixelBuffer` and `objc2_core_video::CVPixelBuffer`
+/// are wrappers around the same CF type, bridged via raw pointer.
+#[cfg(all(target_os = "macos", feature = "apple-gpu"))]
+pub struct CvPixelBufferInfo {
+    pixel_buffer: objc2_core_foundation::CFRetained<objc2_core_video::CVPixelBuffer>,
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// Native GPU pixel format (typically BGRA from capture, NV12 from decoder).
+    pub pixel_format: GpuPixelFormat,
+}
+
+#[cfg(all(target_os = "macos", feature = "apple-gpu"))]
+impl CvPixelBufferInfo {
+    /// Creates a new info from a raw `CVPixelBufferRef`, retaining it.
+    ///
+    /// # Safety
+    ///
+    /// `raw` must be a valid, non-null `CVPixelBufferRef`.
+    pub unsafe fn from_raw(
+        raw: *mut std::ffi::c_void,
+        width: u32,
+        height: u32,
+        pixel_format: GpuPixelFormat,
+    ) -> Self {
+        let ptr = std::ptr::NonNull::new(raw.cast::<objc2_core_video::CVPixelBuffer>()).unwrap();
+        let pixel_buffer = unsafe { objc2_core_foundation::CFRetained::retain(ptr) };
+        Self {
+            pixel_buffer,
+            width,
+            height,
+            pixel_format,
+        }
+    }
+
+    /// Creates from an already-retained `CFRetained<CVPixelBuffer>`.
+    pub fn from_retained(
+        pixel_buffer: objc2_core_foundation::CFRetained<objc2_core_video::CVPixelBuffer>,
+        width: u32,
+        height: u32,
+        pixel_format: GpuPixelFormat,
+    ) -> Self {
+        Self {
+            pixel_buffer,
+            width,
+            height,
+            pixel_format,
+        }
+    }
+
+    /// Returns a reference to the inner `CVPixelBuffer`.
+    pub fn pixel_buffer(&self) -> &objc2_core_video::CVPixelBuffer {
+        &self.pixel_buffer
+    }
+
+    /// Returns the raw `CVPixelBufferRef` pointer. Valid for the lifetime of this struct.
+    pub fn as_ptr(&self) -> *mut std::ffi::c_void {
+        ((&*self.pixel_buffer) as *const objc2_core_video::CVPixelBuffer)
+            .cast_mut()
+            .cast()
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "apple-gpu"))]
+impl fmt::Debug for CvPixelBufferInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CvPixelBufferInfo")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("pixel_format", &self.pixel_format)
+            .finish()
+    }
+}
+
+// Safety: CVPixelBuffer is reference-counted and thread-safe.
+#[cfg(all(target_os = "macos", feature = "apple-gpu"))]
+unsafe impl Send for CvPixelBufferInfo {}
+#[cfg(all(target_os = "macos", feature = "apple-gpu"))]
+unsafe impl Sync for CvPixelBufferInfo {}
+
+/// GPU-resident frame backed by a macOS CVPixelBuffer.
+///
+/// Used for zero-copy capture→encode (ScreenCaptureKit/AVFoundation → VTB)
+/// and zero-copy decode→render (VTB → CVMetalTextureCache → wgpu).
+/// Falls back to CPU readback via `download_rgba()` when needed.
+#[cfg(all(target_os = "macos", feature = "apple-gpu"))]
+pub struct AppleGpuFrame {
+    info: CvPixelBufferInfo,
+}
+
+#[cfg(all(target_os = "macos", feature = "apple-gpu"))]
+impl AppleGpuFrame {
+    /// Creates a GPU frame from a raw CVPixelBufferRef, retaining it.
+    ///
+    /// # Safety
+    ///
+    /// `raw` must be a valid, non-null `CVPixelBufferRef`.
+    pub unsafe fn from_raw(
+        raw: *mut std::ffi::c_void,
+        width: u32,
+        height: u32,
+        pixel_format: GpuPixelFormat,
+    ) -> Self {
+        Self {
+            info: unsafe { CvPixelBufferInfo::from_raw(raw, width, height, pixel_format) },
+        }
+    }
+
+    /// Creates from an already-retained `CFRetained<CVPixelBuffer>`.
+    pub fn from_retained(
+        pixel_buffer: objc2_core_foundation::CFRetained<objc2_core_video::CVPixelBuffer>,
+        width: u32,
+        height: u32,
+        pixel_format: GpuPixelFormat,
+    ) -> Self {
+        Self {
+            info: CvPixelBufferInfo::from_retained(pixel_buffer, width, height, pixel_format),
+        }
+    }
+
+    /// Returns a reference to the inner `CVPixelBuffer`.
+    pub fn pixel_buffer(&self) -> &objc2_core_video::CVPixelBuffer {
+        self.info.pixel_buffer()
+    }
+
+    /// Returns the raw `CVPixelBufferRef` pointer.
+    pub fn as_ptr(&self) -> *mut std::ffi::c_void {
+        self.info.as_ptr()
+    }
+
+    /// Downloads BGRA pixel data from a packed CVPixelBuffer.
+    fn download_bgra(&self) -> anyhow::Result<Vec<u8>> {
+        use objc2_core_video::*;
+        let pb = self.info.pixel_buffer();
+        let status = unsafe { CVPixelBufferLockBaseAddress(pb, CVPixelBufferLockFlags(1)) };
+        if status != 0 {
+            anyhow::bail!("CVPixelBufferLockBaseAddress failed: {status}");
+        }
+
+        let result = unsafe {
+            let base = CVPixelBufferGetBaseAddress(pb) as *const u8;
+            let stride = CVPixelBufferGetBytesPerRow(pb);
+            let w = CVPixelBufferGetWidth(pb);
+            let h = CVPixelBufferGetHeight(pb);
+            let row_bytes = w * 4;
+            let mut rgba = vec![0u8; row_bytes * h];
+            for y in 0..h {
+                let src = std::slice::from_raw_parts(base.add(y * stride), row_bytes);
+                let dst = &mut rgba[y * row_bytes..(y + 1) * row_bytes];
+                for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+                    d[0] = s[2]; // R ← B
+                    d[1] = s[1]; // G
+                    d[2] = s[0]; // B ← R
+                    d[3] = s[3]; // A
+                }
+            }
+            rgba
+        };
+
+        unsafe { CVPixelBufferUnlockBaseAddress(pb, CVPixelBufferLockFlags(1)) };
+        Ok(result)
+    }
+
+    /// Downloads NV12 plane data from a planar CVPixelBuffer.
+    fn download_nv12_planes(&self) -> anyhow::Result<Nv12Planes> {
+        use objc2_core_video::*;
+        let pb = self.info.pixel_buffer();
+        let status = unsafe { CVPixelBufferLockBaseAddress(pb, CVPixelBufferLockFlags(1)) };
+        if status != 0 {
+            anyhow::bail!("CVPixelBufferLockBaseAddress failed: {status}");
+        }
+
+        let result = unsafe {
+            let y_base = CVPixelBufferGetBaseAddressOfPlane(pb, 0) as *const u8;
+            let y_stride = CVPixelBufferGetBytesPerRowOfPlane(pb, 0);
+            let y_height = CVPixelBufferGetHeightOfPlane(pb, 0);
+            let y_data = std::slice::from_raw_parts(y_base, y_stride * y_height).to_vec();
+
+            let uv_base = CVPixelBufferGetBaseAddressOfPlane(pb, 1) as *const u8;
+            let uv_stride = CVPixelBufferGetBytesPerRowOfPlane(pb, 1);
+            let uv_height = CVPixelBufferGetHeightOfPlane(pb, 1);
+            let uv_data = std::slice::from_raw_parts(uv_base, uv_stride * uv_height).to_vec();
+
+            Nv12Planes {
+                y_data,
+                y_stride: y_stride as u32,
+                uv_data,
+                uv_stride: uv_stride as u32,
+                width: self.info.width,
+                height: self.info.height,
+            }
+        };
+
+        unsafe { CVPixelBufferUnlockBaseAddress(pb, CVPixelBufferLockFlags(1)) };
+        Ok(result)
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "apple-gpu"))]
+impl fmt::Debug for AppleGpuFrame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AppleGpuFrame")
+            .field("width", &self.info.width)
+            .field("height", &self.info.height)
+            .field("pixel_format", &self.info.pixel_format)
+            .finish()
+    }
+}
+
+// Safety: CVPixelBuffer is reference-counted and thread-safe when retained.
+#[cfg(all(target_os = "macos", feature = "apple-gpu"))]
+unsafe impl Send for AppleGpuFrame {}
+#[cfg(all(target_os = "macos", feature = "apple-gpu"))]
+unsafe impl Sync for AppleGpuFrame {}
+
+#[cfg(all(target_os = "macos", feature = "apple-gpu"))]
+impl GpuFrameInner for AppleGpuFrame {
+    fn download_rgba(&self) -> anyhow::Result<RgbaImage> {
+        match self.info.pixel_format {
+            GpuPixelFormat::Bgra | GpuPixelFormat::Bgrx => {
+                let rgba = self.download_bgra()?;
+                RgbaImage::from_raw(self.info.width, self.info.height, rgba)
+                    .ok_or_else(|| anyhow::anyhow!("RGBA data size mismatch"))
+            }
+            GpuPixelFormat::Nv12 => {
+                #[cfg(any(feature = "h264", feature = "av1"))]
+                {
+                    let planes = self.download_nv12_planes()?;
+                    let rgba = crate::processing::convert::nv12_to_rgba_data(
+                        &planes.y_data,
+                        planes.y_stride,
+                        &planes.uv_data,
+                        planes.uv_stride,
+                        planes.width,
+                        planes.height,
+                    )?;
+                    RgbaImage::from_raw(planes.width, planes.height, rgba)
+                        .ok_or_else(|| anyhow::anyhow!("NV12→RGBA data size mismatch"))
+                }
+                #[cfg(not(any(feature = "h264", feature = "av1")))]
+                anyhow::bail!("NV12→RGBA conversion requires h264 or av1 feature")
+            }
+        }
+    }
+
+    fn gpu_pixel_format(&self) -> GpuPixelFormat {
+        self.info.pixel_format
+    }
+
+    fn dimensions(&self) -> (u32, u32) {
+        (self.info.width, self.info.height)
+    }
+
+    fn download_nv12(&self) -> Option<anyhow::Result<Nv12Planes>> {
+        if self.info.pixel_format == GpuPixelFormat::Nv12 {
+            Some(self.download_nv12_planes())
+        } else {
+            None
+        }
+    }
+
+    fn native_handle(&self) -> Option<NativeFrameHandle> {
+        let info = unsafe {
+            CvPixelBufferInfo::from_raw(
+                self.info.as_ptr(),
+                self.info.width,
+                self.info.height,
+                self.info.pixel_format,
+            )
+        };
+        Some(NativeFrameHandle::CvPixelBuffer(info))
+    }
 }
 
 /// Encoded media packet, independent of transport.
@@ -251,6 +531,8 @@ pub enum GpuPixelFormat {
     Nv12,
     /// Packed 32-bit BGRx (X = padding) — compositor screen capture.
     Bgrx,
+    /// Packed 32-bit BGRA — macOS ScreenCaptureKit / AVFoundation.
+    Bgra,
 }
 
 /// Backing storage for a video frame.

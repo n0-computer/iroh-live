@@ -1,21 +1,9 @@
 //! macOS screen capture via ScreenCaptureKit (macOS 12.3+).
 //!
-//! Produces IOSurface-backed `CVPixelBuffer` frames. Currently copies to CPU
-//! RGBA; the zero-copy IOSurface path (direct to VideoToolbox encoder) is
-//! planned via `NativeFrameHandle::IoSurface`.
-//!
-//! # Zero-Copy Plan
-//!
-//! ScreenCaptureKit delivers `CMSampleBuffer` containing IOSurface-backed
-//! `CVPixelBuffer`. For zero-copy:
-//!
-//! 1. Add `NativeFrameHandle::IoSurface(IoSurfaceRef)` behind `cfg(target_os = "macos")`.
-//! 2. Implement `GpuFrameInner` for an `AppleGpuFrame` that holds the
-//!    `CVPixelBuffer` (preventing the IOSurface from being recycled).
-//! 3. `download_rgba()` calls `CVPixelBufferLockBaseAddress` + memcpy.
-//! 4. `native_handle()` returns the IOSurface ref.
-//! 5. VideoToolbox encoder's `VTCompressionSessionEncodeFrame` accepts the
-//!    `CVPixelBuffer` directly — true zero-copy GPU encode.
+//! Produces IOSurface-backed `CVPixelBuffer` frames wrapped in [`AppleGpuFrame`].
+//! The pixel data stays in GPU memory — no CPU copy. VideoToolbox encoder can
+//! pass the CVPixelBuffer directly to `VTCompressionSessionEncodeFrame`; wgpu
+//! renderer can import via `CVMetalTextureCache`.
 
 use std::sync::mpsc;
 use std::time::Instant;
@@ -32,7 +20,9 @@ use screencapturekit::stream::output_trait::SCStreamOutputTrait;
 use screencapturekit::stream::output_type::SCStreamOutputType;
 use tracing::{info, warn};
 
-use rusty_codecs::format::{PixelFormat as RcPixelFormat, VideoFormat, VideoFrame};
+use rusty_codecs::format::{
+    AppleGpuFrame, GpuFrame, GpuPixelFormat, PixelFormat as RcPixelFormat, VideoFormat, VideoFrame,
+};
 use rusty_codecs::traits::VideoSource;
 
 use crate::types::{MonitorInfo, ScreenConfig};
@@ -99,44 +89,22 @@ impl SCStreamOutputTrait for FrameHandler {
             return;
         };
 
-        let guard = match pixel_buffer.lock_read_only() {
-            Ok(g) => g,
-            Err(_) => return,
+        let width = pixel_buffer.width();
+        let height = pixel_buffer.height();
+
+        // Zero-copy: retain the CVPixelBuffer and wrap it as a GPU frame.
+        // The pixel data stays in IOSurface-backed GPU memory — no CPU copy.
+        // VTB encoder can pass this directly to VTCompressionSessionEncodeFrame;
+        // wgpu renderer can import via CVMetalTextureCache.
+        let raw = pixel_buffer.as_ptr();
+        let gpu_frame = unsafe {
+            AppleGpuFrame::from_raw(raw, width as u32, height as u32, GpuPixelFormat::Bgra)
         };
-
-        let bytes_per_row = guard.bytes_per_row();
-        let height = guard.height();
-        let width = guard.width();
-        let data = guard.as_slice();
-
-        // Validate the buffer is large enough for the reported dimensions.
-        let expected = bytes_per_row * height;
-        if data.len() < expected {
-            return;
-        }
-
-        // ScreenCaptureKit delivers BGRA. Convert to RGBA, stripping row
-        // padding (bytes_per_row may exceed width * 4 due to alignment).
-        let row_bytes = width * 4;
-        let mut rgba = vec![0u8; row_bytes * height];
-        for y in 0..height {
-            let src_row = &data[y * bytes_per_row..y * bytes_per_row + row_bytes];
-            let dst_row = &mut rgba[y * row_bytes..(y + 1) * row_bytes];
-            // Swap B and R channels in-place: BGRA → RGBA.
-            for (src, dst) in src_row.chunks_exact(4).zip(dst_row.chunks_exact_mut(4)) {
-                dst[0] = src[2]; // R ← B
-                dst[1] = src[1]; // G
-                dst[2] = src[0]; // B ← R
-                dst[3] = src[3]; // A
-            }
-        }
-
-        let frame = VideoFrame::new_rgba(
-            rgba.into(),
-            width as u32,
-            height as u32,
+        let frame = VideoFrame::new_gpu(
+            GpuFrame::new(std::sync::Arc::new(gpu_frame)),
             self.capture_start.elapsed(),
         );
+
         // Drop frame if channel is full — backpressure from the callback
         // thread. The consumer drains to latest anyway.
         let _ = self.tx.try_send(frame);
@@ -234,7 +202,7 @@ impl VideoSource for MacScreenCapturer {
 
     fn format(&self) -> VideoFormat {
         VideoFormat {
-            pixel_format: RcPixelFormat::Rgba,
+            pixel_format: RcPixelFormat::Bgra,
             dimensions: [self.width, self.height],
         }
     }
