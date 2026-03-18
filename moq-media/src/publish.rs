@@ -121,7 +121,7 @@ pub struct LocalBroadcast {
     state: Arc<Mutex<State>>,
     #[debug(skip)]
     _task: Arc<AbortOnDropHandle<()>>,
-    metrics: Option<crate::stats::MetricsCollector>,
+    metrics: crate::stats::MetricsCollector,
 }
 
 impl Default for LocalBroadcast {
@@ -136,14 +136,19 @@ impl LocalBroadcast {
         let mut producer = BroadcastProducer::default();
         let catalog = CatalogProducer::new(&mut producer).expect("not closed");
 
-        let state = Arc::new(Mutex::new(State::new(catalog)));
+        let metrics = crate::stats::MetricsCollector::new();
+        metrics.register_defaults();
+
+        let mut state = State::new(catalog);
+        state.metrics = Some(metrics.clone());
+        let state = Arc::new(Mutex::new(state));
         let task_handle = tokio::spawn(Self::run(state.clone(), producer.clone()));
 
         Self {
             producer,
             state,
             _task: Arc::new(AbortOnDropHandle::new(task_handle)),
-            metrics: None,
+            metrics,
         }
     }
 
@@ -152,15 +157,10 @@ impl LocalBroadcast {
         self.producer.clone()
     }
 
-    /// Attaches a metrics collector for encode stats (fps, encode time, bitrate).
-    pub fn set_metrics(&mut self, metrics: crate::stats::MetricsCollector) {
-        self.metrics = Some(metrics.clone());
-        self.state.lock().expect("lock").metrics = Some(metrics);
-    }
-
-    /// Returns the attached metrics collector, if any.
-    pub fn metrics(&self) -> Option<&crate::stats::MetricsCollector> {
-        self.metrics.as_ref()
+    /// Returns the metrics collector. Encode pipelines record into this
+    /// automatically. External producers can record additional metrics.
+    pub fn metrics(&self) -> &crate::stats::MetricsCollector {
+        &self.metrics
     }
 
     /// Returns the video publishing handle.

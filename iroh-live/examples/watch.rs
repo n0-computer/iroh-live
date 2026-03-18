@@ -9,7 +9,6 @@ use iroh_live::{
         audio_backend::AudioBackend,
         codec::DefaultDecoders,
         format::{DecodeConfig, DecoderBackend, PlaybackConfig},
-        stats::MetricsCollector,
         subscribe::{AudioTrack, RemoteBroadcast},
     },
     moq::MoqSession,
@@ -66,13 +65,9 @@ fn main() -> Result<()> {
         .unwrap();
     let audio_ctx = AudioBackend::default();
 
-    let metrics = MetricsCollector::new();
-    metrics.register_defaults();
-
     println!("connecting to {ticket} ...");
     let (endpoint, session, track) = rt.block_on({
         let audio_ctx = audio_ctx.clone();
-        let metrics = metrics.clone();
         async move {
             let endpoint = Endpoint::bind(iroh::endpoint::presets::N0).await?;
             let live = Live::new(endpoint.clone());
@@ -83,22 +78,17 @@ fn main() -> Result<()> {
                 },
                 ..Default::default()
             };
-            let (session, mut track) = live
-                .subscribe_media_track::<DefaultDecoders>(
-                    ticket.endpoint,
-                    &ticket.broadcast_name,
-                    &audio_ctx,
-                    playback_config,
-                )
+            let (session, broadcast) = live
+                .subscribe(ticket.endpoint, &ticket.broadcast_name)
                 .await?;
-            track.broadcast.set_metrics(metrics.clone());
-
-            // Record transport stats into the metrics collector.
             iroh_live::util::spawn_stats_recorder(
                 session.conn(),
-                metrics,
-                track.broadcast.shutdown_token(),
+                broadcast.metrics().clone(),
+                broadcast.shutdown_token(),
             );
+            let track = broadcast
+                .media::<DefaultDecoders>(&audio_ctx, playback_config)
+                .await?;
 
             println!("connected!");
             n0_error::Ok((endpoint, session, track))
@@ -147,7 +137,6 @@ fn main() -> Result<()> {
                 audio: track.audio,
                 broadcast: track.broadcast,
                 session,
-                metrics,
                 overlay: DebugOverlay::new(&[
                     StatCategory::Net,
                     StatCategory::Render,
@@ -169,7 +158,6 @@ struct App {
     endpoint: Endpoint,
     session: MoqSession,
     broadcast: RemoteBroadcast,
-    metrics: MetricsCollector,
     overlay: DebugOverlay,
     rt: tokio::runtime::Runtime,
 }
@@ -224,9 +212,10 @@ impl eframe::App for App {
                 }
 
                 // Update labels from live state.
+                let m = self.broadcast.metrics();
                 if let Some(v) = &self.video {
-                    self.overlay.update_from_track(&self.metrics, v.track());
-                    self.metrics.set_label(
+                    self.overlay.update_from_track(m, v.track());
+                    m.set_label(
                         moq_media::stats::LBL_RENDERER,
                         if v.is_wgpu() {
                             v.render_path_name()
@@ -236,7 +225,7 @@ impl eframe::App for App {
                     );
                 }
 
-                let snap = self.metrics.snapshot();
+                let snap = m.snapshot();
                 self.overlay.show(ui, video_rect, &snap);
             });
     }

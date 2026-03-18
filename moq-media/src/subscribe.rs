@@ -204,7 +204,7 @@ pub struct RemoteBroadcast {
     clock: PlayoutClock,
     shutdown: CancellationToken,
     _catalog_task: Arc<AbortOnDropHandle<()>>,
-    metrics: Option<crate::stats::MetricsCollector>,
+    metrics: crate::stats::MetricsCollector,
 }
 
 /// Point-in-time snapshot of a broadcast's catalog.
@@ -354,7 +354,11 @@ impl RemoteBroadcast {
             clock,
             _catalog_task: Arc::new(AbortOnDropHandle::new(catalog_task)),
             shutdown,
-            metrics: None,
+            metrics: {
+                let m = crate::stats::MetricsCollector::new();
+                m.register_defaults();
+                m
+            },
         })
     }
 
@@ -388,15 +392,12 @@ impl RemoteBroadcast {
         &self.clock
     }
 
-    /// Attaches a metrics collector. Stats from the decode and playout
-    /// pipelines will be recorded into it.
-    pub fn set_metrics(&mut self, metrics: crate::stats::MetricsCollector) {
-        self.metrics = Some(metrics);
-    }
-
-    /// Returns the attached metrics collector, if any.
-    pub fn metrics(&self) -> Option<&crate::stats::MetricsCollector> {
-        self.metrics.as_ref()
+    /// Returns the metrics collector. Decode and playout pipelines
+    /// record into this automatically. External producers (e.g. iroh
+    /// transport stats) can record additional metrics into the same
+    /// collector via [`MetricsCollector::record`] / [`MetricsCollector::set_label`].
+    pub fn metrics(&self) -> &crate::stats::MetricsCollector {
+        &self.metrics
     }
 
     /// Sets the playout mode, updating the shared clock.
@@ -454,7 +455,7 @@ impl RemoteBroadcast {
             config,
             playback_config,
             Some(clock),
-            self.metrics.clone(),
+            Some(self.metrics.clone()),
         )
     }
 
