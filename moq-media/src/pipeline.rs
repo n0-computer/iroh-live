@@ -470,6 +470,8 @@ fn decode_loop(
     let mut frames_pushed = 0u64;
     let mut frames_popped = 0u64;
     let mut frames_skipped = 0u64;
+    let mut freeze_count = 0u64;
+    let frame_interval = Duration::from_secs_f64(1.0 / framerate.max(1.0));
     // Track wall-clock vs PTS progression to estimate hidden latency.
     // If wall_elapsed grows faster than pts_elapsed, we're falling behind.
     // stream_start_wall is set when first_pts is set (first decoded frame),
@@ -596,6 +598,9 @@ fn decode_loop(
                                 skip_active = true;
                             }
                             frames_skipped += 1;
+                            if let Some(ref m) = metrics {
+                                m.record(crate::stats::TMG_FRAMES_SKIPPED, frames_skipped as f64);
+                            }
                             // Still drain output in case the decoder has frames ready.
                             loop {
                                 match decoder.pop_frame() {
@@ -652,9 +657,14 @@ fn decode_loop(
 
                     // Drain ALL decoded frames into the playout buffer.
                     // This frees decoder pool buffers immediately.
+                    let decode_end = Instant::now();
                     loop {
                         match decoder.pop_frame() {
-                            Ok(Some(frame)) => {
+                            Ok(Some(mut frame)) => {
+                                // Stamp timing: decode_start was when push_packet began,
+                                // decode_end is when we started draining output.
+                                frame.timing.decode_start = Some(t);
+                                frame.timing.decode_end = Some(decode_end);
                                 if first_pts.is_none() {
                                     first_pts = Some(frame.timestamp);
                                     stream_start_wall = Some(Instant::now());
@@ -681,7 +691,16 @@ fn decode_loop(
         }
 
         // Release frames whose playout time has arrived.
-        while let Some(frame) = playout.pop_ready() {
+        while let Some(mut frame) = playout.pop_ready() {
+            frame.timing.render_wall = Some(Instant::now());
+            if let Some(ref m) = metrics {
+                m.record_frame_timing(crate::stats::FrameTimingEntry {
+                    pts: frame.timestamp,
+                    receive_wall: frame.timing.receive_wall,
+                    decode_end: frame.timing.decode_end,
+                    render_wall: frame.timing.render_wall,
+                });
+            }
             trace!(
                 pts_ms = frame.timestamp.as_millis(),
                 buf_len = playout.buf_len(),
@@ -693,6 +712,13 @@ fn decode_loop(
             }
             frames_popped += 1;
             let gap = last_send.elapsed();
+            // Freeze detection: no frame for >2× expected interval.
+            if gap > frame_interval * 2 {
+                freeze_count += 1;
+                if let Some(ref m) = metrics {
+                    m.record(crate::stats::TMG_FREEZES, freeze_count as f64);
+                }
+            }
             if let Some(ref m) = metrics {
                 // Record instantaneous fps from inter-frame gap.
                 if !gap.is_zero() {

@@ -305,21 +305,26 @@ painting gives full control over per-frame coloring and is simpler.
 
 ### Phase 3: timeline panel
 
-- [ ] `moq-media-egui/src/timeline.rs` — `TimelinePanel`, custom
-  painting (RTT line, video/audio frame boxes, axis)
-- [ ] `moq-media/src/subscribe.rs` — populate `FrameTiming` on
-  receive and decode
-- [ ] `moq-media/src/playout.rs` — stamp `render_wall` on playout
-- [ ] Feed `TimelineData` from pipeline to egui widget
+- [x] `rusty-codecs/src/format.rs` — `FrameTiming` struct on `VideoFrame`
+  (receive_wall, decode_start/end, render_wall)
+- [x] `moq-media/src/pipeline.rs` — stamp decode_start/end on frames,
+  stamp render_wall on playout release, record `FrameTimingEntry`
+  into collector
+- [x] `moq-media/src/stats.rs` — `TimelineData`, `FrameTimingEntry`,
+  ring buffers in collector, `record_frame_timing()`, `record_rtt_timeline()`
+- [x] `moq-media-egui/src/overlay.rs` — `paint_timeline_panel` with
+  RTT sparkline, video frame boxes (color-coded by decode latency),
+  time axis. Integrated as TIME section expanded view.
+- [x] `iroh-live/src/util.rs` — RTT timeline recording in stats recorder
 
 ### Phase 4: polish
 
 - [ ] A/V sync offset measurement (audio playout time vs video render
   time for matching PTS range)
-- [ ] Drop/skip counters split by cause (network, decode, render)
+- [x] Drop/skip counters (`TMG_FRAMES_SKIPPED` recorded on each skip)
 - [ ] Adaptive algorithm state visibility (current rendition,
   limitation reason, probe state)
-- [ ] Freeze detection (no new frame for >2× expected interval)
+- [x] Freeze detection (`TMG_FREEZES`, gap > 2× frame interval)
 
 ## Estimated effort
 

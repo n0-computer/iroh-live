@@ -8,7 +8,7 @@
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 // ── Well-known metric names ─────────────────────────────────────────
@@ -34,6 +34,10 @@ pub const TMG_DELAY_MS: &str = "tmg.delay";
 pub const TMG_DRIFT_MS: &str = "tmg.drift";
 pub const TMG_REANCHOR_COUNT: &str = "tmg.reanchors";
 pub const TMG_BUF_FRAMES: &str = "tmg.buf_frames";
+/// Frames skipped (decode can't keep up).
+pub const TMG_FRAMES_SKIPPED: &str = "tmg.skipped";
+/// Freeze events (no frame for >2× expected interval).
+pub const TMG_FREEZES: &str = "tmg.freezes";
 
 // String labels (non-numeric metadata)
 pub const LBL_PEER: &str = "lbl.peer";
@@ -48,6 +52,24 @@ pub const LBL_PATH_TYPE: &str = "lbl.path_type";
 pub const LBL_PATH_ADDR: &str = "lbl.path_addr";
 /// Encoder name (for publish/capture side).
 pub const LBL_ENCODER: &str = "lbl.encoder";
+
+// ── Timeline data ───────────────────────────────────────────────────
+
+/// Per-frame timing snapshot stored in the timeline ring buffer.
+#[derive(Debug, Clone)]
+pub struct FrameTimingEntry {
+    pub pts: Duration,
+    pub receive_wall: Option<Instant>,
+    pub decode_end: Option<Instant>,
+    pub render_wall: Option<Instant>,
+}
+
+/// Timeline data for the visual frame timing panel.
+#[derive(Debug, Clone, Default)]
+pub struct TimelineData {
+    pub video_frames: Vec<FrameTimingEntry>,
+    pub rtt_samples: Vec<(Instant, f64)>,
+}
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -105,6 +127,8 @@ pub struct MetricsSnapshot {
     pub metrics: BTreeMap<String, TimeSeries>,
     /// String labels for non-numeric metadata (codec, decoder, render path, etc.).
     pub labels: BTreeMap<String, String>,
+    /// Timeline data for the visual frame timing panel.
+    pub timeline: TimelineData,
 }
 
 impl MetricsSnapshot {
@@ -139,13 +163,15 @@ pub struct MetricsCollector {
 struct CollectorInner {
     metrics: BTreeMap<String, MetricSlot>,
     labels: BTreeMap<String, String>,
+    timeline_video: RingBuf<FrameTimingEntry>,
+    timeline_rtt: RingBuf<(Instant, f64)>,
 }
 
 #[derive(Debug)]
 struct MetricSlot {
     config: MetricConfig,
     current: f64,
-    history: RingBuf,
+    history: RingBuf<(Instant, f64)>,
     sample_count: u64,
 }
 
@@ -161,6 +187,8 @@ impl MetricsCollector {
             inner: Arc::new(Mutex::new(CollectorInner {
                 metrics: BTreeMap::new(),
                 labels: BTreeMap::new(),
+                timeline_video: RingBuf::new(600),
+                timeline_rtt: RingBuf::new(200),
             })),
         }
     }
@@ -189,7 +217,7 @@ impl MetricsCollector {
                 slot.current = a * value + (1.0 - a) * slot.current;
             }
             slot.sample_count += 1;
-            slot.history.push(now, value);
+            slot.history.push_item((now, value));
         }
     }
 
@@ -199,7 +227,13 @@ impl MetricsCollector {
         inner.labels.insert(name.to_string(), value.into());
     }
 
-    /// Returns a snapshot of all registered metrics and labels.
+    /// Records a video frame timing entry for the timeline visualization.
+    pub fn record_frame_timing(&self, entry: FrameTimingEntry) {
+        let mut inner = self.inner.lock().expect("metrics lock");
+        inner.timeline_video.push_item(entry);
+    }
+
+    /// Returns a snapshot of all registered metrics, labels, and timeline data.
     pub fn snapshot(&self) -> MetricsSnapshot {
         let inner = self.inner.lock().expect("metrics lock");
         let metrics = inner
@@ -220,7 +254,18 @@ impl MetricsCollector {
         MetricsSnapshot {
             metrics,
             labels: inner.labels.clone(),
+            timeline: TimelineData {
+                video_frames: inner.timeline_video.to_vec(),
+                rtt_samples: inner.timeline_rtt.to_vec(),
+            },
         }
+    }
+
+    /// Records an RTT sample for the timeline visualization.
+    pub fn record_rtt_timeline(&self, rtt_ms: f64) {
+        let now = Instant::now();
+        let mut inner = self.inner.lock().expect("metrics lock");
+        inner.timeline_rtt.push_item((now, rtt_ms));
     }
 
     /// Registers the standard set of metrics with default configs.
@@ -239,20 +284,22 @@ impl MetricsCollector {
         self.register(TMG_DRIFT_MS, MetricConfig::smooth("Drift", "ms"));
         self.register(TMG_REANCHOR_COUNT, MetricConfig::smooth("Reanchors", ""));
         self.register(TMG_BUF_FRAMES, MetricConfig::responsive("Buffer", ""));
+        self.register(TMG_FRAMES_SKIPPED, MetricConfig::smooth("Skipped", ""));
+        self.register(TMG_FREEZES, MetricConfig::smooth("Freezes", ""));
     }
 }
 
 // ── Ring buffer ─────────────────────────────────────────────────────
 
 #[derive(Debug)]
-struct RingBuf {
-    buf: Vec<(Instant, f64)>,
+struct RingBuf<T> {
+    buf: Vec<T>,
     cap: usize,
     write_pos: usize,
     len: usize,
 }
 
-impl RingBuf {
+impl<T: Clone> RingBuf<T> {
     fn new(cap: usize) -> Self {
         Self {
             buf: Vec::with_capacity(cap),
@@ -262,21 +309,20 @@ impl RingBuf {
         }
     }
 
-    fn push(&mut self, ts: Instant, value: f64) {
+    fn push_item(&mut self, item: T) {
         if self.buf.len() < self.cap {
-            self.buf.push((ts, value));
+            self.buf.push(item);
             self.len = self.buf.len();
         } else {
-            self.buf[self.write_pos] = (ts, value);
+            self.buf[self.write_pos] = item;
         }
         self.write_pos = (self.write_pos + 1) % self.cap;
     }
 
-    fn to_vec(&self) -> Vec<(Instant, f64)> {
+    fn to_vec(&self) -> Vec<T> {
         if self.len < self.cap {
             self.buf.clone()
         } else {
-            // Return in chronological order: write_pos..end, then 0..write_pos
             let mut out = Vec::with_capacity(self.cap);
             out.extend_from_slice(&self.buf[self.write_pos..]);
             out.extend_from_slice(&self.buf[..self.write_pos]);
@@ -316,19 +362,18 @@ mod tests {
 
     #[test]
     fn ring_buffer_wraps() {
-        let mut ring = RingBuf::new(3);
-        let now = Instant::now();
-        ring.push(now, 1.0);
-        ring.push(now, 2.0);
-        ring.push(now, 3.0);
-        ring.push(now, 4.0); // overwrites 1.0
-        ring.push(now, 5.0); // overwrites 2.0
+        let mut ring: RingBuf<f64> = RingBuf::new(3);
+        ring.push_item(1.0);
+        ring.push_item(2.0);
+        ring.push_item(3.0);
+        ring.push_item(4.0); // overwrites 1.0
+        ring.push_item(5.0); // overwrites 2.0
 
         let v = ring.to_vec();
         assert_eq!(v.len(), 3);
         // Should be in chronological order: 3, 4, 5
-        assert_eq!(v[0].1, 3.0);
-        assert_eq!(v[1].1, 4.0);
-        assert_eq!(v[2].1, 5.0);
+        assert_eq!(v[0], 3.0);
+        assert_eq!(v[1], 4.0);
+        assert_eq!(v[2], 5.0);
     }
 }

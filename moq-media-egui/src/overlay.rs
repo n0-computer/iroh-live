@@ -141,8 +141,9 @@ impl StatCategory {
                 stats::TMG_JITTER_MS,
                 stats::TMG_DELAY_MS,
                 stats::TMG_DRIFT_MS,
-                stats::TMG_REANCHOR_COUNT,
                 stats::TMG_BUF_FRAMES,
+                stats::TMG_FRAMES_SKIPPED,
+                stats::TMG_FREEZES,
             ],
         }
     }
@@ -222,29 +223,43 @@ impl DebugOverlay {
         // Expanded detail panels stacked upward from the bottom bar.
         let mut y_cursor = video_rect.max.y - OVERLAY_BAR_H;
         for &cat in enabled.iter().rev() {
-            if self.expanded.get(&cat) == Some(&true) {
-                let label_count = cat
-                    .detail_labels()
-                    .iter()
-                    .filter(|l| snap.label(l).is_some())
-                    .count();
-                let metric_count = cat
-                    .detail_metrics()
-                    .iter()
-                    .filter(|m| snap.series(m).is_some())
-                    .count();
-                let line_count = label_count + metric_count;
-                if line_count == 0 {
-                    continue;
-                }
-                let height = OVERLAY_BAR_H * (line_count as f32 + 0.5);
+            if self.expanded.get(&cat) != Some(&true) {
+                continue;
+            }
+
+            // TIME section shows the timeline panel instead of metrics.
+            if cat == StatCategory::Time {
+                let height = 150.0;
                 y_cursor -= height;
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(video_rect.min.x, y_cursor),
                     egui::vec2(video_rect.width(), height),
                 );
-                paint_detail_panel(ui, rect, cat, snap, &font);
+                paint_timeline_panel(ui, rect, snap);
+                continue;
             }
+
+            let label_count = cat
+                .detail_labels()
+                .iter()
+                .filter(|l| snap.label(l).is_some())
+                .count();
+            let metric_count = cat
+                .detail_metrics()
+                .iter()
+                .filter(|m| snap.series(m).is_some())
+                .count();
+            let line_count = label_count + metric_count;
+            if line_count == 0 {
+                continue;
+            }
+            let height = OVERLAY_BAR_H * (line_count as f32 + 0.5);
+            y_cursor -= height;
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(video_rect.min.x, y_cursor),
+                egui::vec2(video_rect.width(), height),
+            );
+            paint_detail_panel(ui, rect, cat, snap, &font);
         }
 
         // Bottom bar: all sections side by side.
@@ -478,5 +493,153 @@ fn paint_sparkline(
     let stroke = egui::Stroke::new(1.0, color.linear_multiply(0.7));
     for pair in points.windows(2) {
         painter.line_segment([pair[0], pair[1]], stroke);
+    }
+}
+
+// ── Timeline panel ──────────────────────────────────────────────────
+
+const TIMELINE_WINDOW_SECS: f32 = 10.0;
+const RTT_STRIP_H: f32 = 35.0;
+const FRAME_STRIP_H: f32 = 50.0;
+const AXIS_H: f32 = 14.0;
+const RTT_COLOR: egui::Color32 = egui::Color32::from_rgb(0, 200, 200);
+const FRAME_GOOD: egui::Color32 = egui::Color32::from_rgb(68, 170, 68);
+const FRAME_WARN: egui::Color32 = egui::Color32::from_rgb(200, 170, 0);
+const FRAME_BAD: egui::Color32 = egui::Color32::from_rgb(200, 68, 68);
+const GRID_COLOR: egui::Color32 = egui::Color32::from_rgb(50, 50, 50);
+
+/// Paints the timeline panel: RTT line chart + video frame boxes.
+fn paint_timeline_panel(ui: &mut egui::Ui, rect: egui::Rect, snap: &MetricsSnapshot) {
+    let painter = ui.painter();
+    painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(BG_ALPHA));
+
+    let now = Instant::now();
+    let window = Duration::from_secs_f32(TIMELINE_WINDOW_SECS);
+    let t_min = now.checked_sub(window).unwrap_or(now);
+    let px_per_sec = rect.width() / TIMELINE_WINDOW_SECS;
+
+    let time_to_x = |t: Instant| -> f32 {
+        let dt = t.duration_since(t_min).as_secs_f32();
+        rect.min.x + dt * px_per_sec
+    };
+
+    let font = egui::FontId::monospace(9.0);
+
+    // Grid lines (every 2 seconds).
+    for sec in (0..=TIMELINE_WINDOW_SECS as i32).step_by(2) {
+        let x = rect.min.x + sec as f32 * px_per_sec;
+        painter.line_segment(
+            [
+                egui::pos2(x, rect.min.y),
+                egui::pos2(x, rect.max.y - AXIS_H),
+            ],
+            egui::Stroke::new(1.0, GRID_COLOR),
+        );
+    }
+
+    // --- RTT strip (top) ---
+    let rtt_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), RTT_STRIP_H));
+
+    let rtt = &snap.timeline.rtt_samples;
+    if rtt.len() >= 2 {
+        // Filter to visible window.
+        let visible: Vec<_> = rtt.iter().filter(|(t, _)| *t >= t_min).collect();
+        if visible.len() >= 2 {
+            let max_rtt = visible
+                .iter()
+                .map(|(_, v)| *v)
+                .fold(0.0f64, f64::max)
+                .max(1.0);
+
+            let points: Vec<egui::Pos2> = visible
+                .iter()
+                .map(|(t, v)| {
+                    let x = time_to_x(*t);
+                    let y = rtt_rect.max.y - (*v / max_rtt) as f32 * (rtt_rect.height() - 4.0);
+                    egui::pos2(x, y)
+                })
+                .collect();
+
+            let stroke = egui::Stroke::new(1.5, RTT_COLOR);
+            for pair in points.windows(2) {
+                painter.line_segment([pair[0], pair[1]], stroke);
+            }
+
+            // RTT label.
+            let label = format!(
+                "RTT {:.0}ms",
+                visible.last().map(|(_, v)| *v).unwrap_or(0.0)
+            );
+            let galley = painter.layout_no_wrap(label, font.clone(), RTT_COLOR);
+            painter.galley(rtt_rect.min + egui::vec2(4.0, 2.0), galley, RTT_COLOR);
+        }
+    }
+
+    // --- Video frame strip (middle) ---
+    let frame_y = rect.min.y + RTT_STRIP_H;
+    let frame_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x, frame_y),
+        egui::vec2(rect.width(), FRAME_STRIP_H),
+    );
+
+    let frames = &snap.timeline.video_frames;
+    if !frames.is_empty() {
+        // Label.
+        let galley = painter.layout_no_wrap("VIDEO".to_string(), font.clone(), egui::Color32::GRAY);
+        painter.galley(
+            egui::pos2(frame_rect.min.x + 4.0, frame_rect.min.y + 2.0),
+            galley,
+            egui::Color32::GRAY,
+        );
+
+        let box_h = frame_rect.height() - 16.0;
+        let box_y = frame_rect.min.y + 14.0;
+
+        for (i, entry) in frames.iter().enumerate() {
+            let Some(render_wall) = entry.render_wall else {
+                continue;
+            };
+            if render_wall < t_min {
+                continue;
+            }
+
+            let x = time_to_x(render_wall);
+
+            // Box width: gap to next frame, or 3px minimum.
+            let next_x = frames
+                .get(i + 1)
+                .and_then(|e| e.render_wall)
+                .map(|t| time_to_x(t))
+                .unwrap_or(x + 6.0);
+            let box_w = (next_x - x - 1.0).max(3.0).min(20.0);
+
+            // Color based on decode-to-render latency.
+            let color = if let Some(decode_end) = entry.decode_end {
+                let latency_ms = render_wall.duration_since(decode_end).as_secs_f32() * 1000.0;
+                if latency_ms < 5.0 {
+                    FRAME_GOOD
+                } else if latency_ms < 15.0 {
+                    FRAME_WARN
+                } else {
+                    FRAME_BAD
+                }
+            } else {
+                FRAME_GOOD
+            };
+
+            let box_rect =
+                egui::Rect::from_min_size(egui::pos2(x, box_y), egui::vec2(box_w, box_h));
+            painter.rect_filled(box_rect, 1.0, color);
+        }
+    }
+
+    // --- Time axis (bottom) ---
+    let axis_y = rect.max.y - AXIS_H;
+    let axis_color = egui::Color32::from_rgb(120, 120, 120);
+    for sec in (0..=TIMELINE_WINDOW_SECS as i32).step_by(2) {
+        let x = rect.min.x + sec as f32 * px_per_sec;
+        let label = format!("-{}s", TIMELINE_WINDOW_SECS as i32 - sec);
+        let galley = painter.layout_no_wrap(label, font.clone(), axis_color);
+        painter.galley(egui::pos2(x + 2.0, axis_y), galley, axis_color);
     }
 }
