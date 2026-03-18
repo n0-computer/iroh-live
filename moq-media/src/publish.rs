@@ -121,6 +121,7 @@ pub struct LocalBroadcast {
     state: Arc<Mutex<State>>,
     #[debug(skip)]
     _task: Arc<AbortOnDropHandle<()>>,
+    metrics: Option<crate::stats::MetricsCollector>,
 }
 
 impl Default for LocalBroadcast {
@@ -142,12 +143,24 @@ impl LocalBroadcast {
             producer,
             state,
             _task: Arc::new(AbortOnDropHandle::new(task_handle)),
+            metrics: None,
         }
     }
 
     /// Returns a clone of the underlying [`BroadcastProducer`].
     pub fn producer(&self) -> BroadcastProducer {
         self.producer.clone()
+    }
+
+    /// Attaches a metrics collector for encode stats (fps, encode time, bitrate).
+    pub fn set_metrics(&mut self, metrics: crate::stats::MetricsCollector) {
+        self.metrics = Some(metrics.clone());
+        self.state.lock().expect("lock").metrics = Some(metrics);
+    }
+
+    /// Returns the attached metrics collector, if any.
+    pub fn metrics(&self) -> Option<&crate::stats::MetricsCollector> {
+        self.metrics.as_ref()
     }
 
     /// Returns the video publishing handle.
@@ -484,6 +497,7 @@ struct State {
     available_audio: Option<AudioRenditions>,
     active_video: HashMap<String, VideoPipeline>,
     active_audio: HashMap<String, AudioEncoderPipeline>,
+    metrics: Option<crate::stats::MetricsCollector>,
 }
 
 impl State {
@@ -497,6 +511,7 @@ impl State {
             available_audio: None,
             active_video: HashMap::new(),
             active_audio: HashMap::new(),
+            metrics: None,
         }
     }
 }
@@ -527,7 +542,7 @@ impl State {
         if let Some(video) = self.available_video.as_mut()
             && video.contains_rendition(&name)
         {
-            let pipeline = video.start_encoder(&name, track)?;
+            let pipeline = video.start_encoder(&name, track, self.metrics.clone())?;
             self.active_video
                 .insert(name, VideoPipeline::Encoder(pipeline));
             Ok(())
@@ -795,6 +810,7 @@ impl VideoRenditions {
         &mut self,
         name: &str,
         producer: TrackProducer,
+        metrics: Option<crate::stats::MetricsCollector>,
     ) -> Result<VideoEncoderPipeline> {
         let entry = self
             .renditions
@@ -802,10 +818,11 @@ impl VideoRenditions {
             .context("rendition not available")?;
         let encoder = (entry.factory)()?;
         let sink = MoqPacketSink::new(producer);
-        Ok(VideoEncoderPipeline::new(
+        Ok(VideoEncoderPipeline::with_metrics(
             self.source.clone(),
             encoder,
             sink,
+            metrics,
         ))
     }
 }

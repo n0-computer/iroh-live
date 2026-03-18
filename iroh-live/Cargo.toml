@@ -9,7 +9,6 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow = "1.0.100"
-byte-unit = { version = "5.1", features = ["bit"] }
 data-encoding = "2.9.0"
 derive_more = { version = "2.0.1", features = ["display", "debug", "eq"] }
 hang = { workspace = true }

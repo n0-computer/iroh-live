@@ -234,9 +234,19 @@ impl VideoEncoderPipeline {
     /// Spawns an OS thread that captures frames from `source`, encodes them
     /// with `encoder`, and writes the resulting packets to `sink`.
     pub fn new(
+        source: impl VideoSource,
+        encoder: impl VideoEncoder,
+        sink: impl PacketSink,
+    ) -> Self {
+        Self::with_metrics(source, encoder, sink, None)
+    }
+
+    /// Creates a new encoder pipeline with optional metrics recording.
+    pub fn with_metrics(
         mut source: impl VideoSource,
         mut encoder: impl VideoEncoder,
         mut sink: impl PacketSink,
+        metrics: Option<crate::stats::MetricsCollector>,
     ) -> Self {
         let shutdown = CancellationToken::new();
         let thread_name = format!("venc-{:<4}-{:<4}", source.name(), encoder.name());
@@ -257,6 +267,8 @@ impl VideoEncoderPipeline {
                 let framerate = enc_config.framerate.unwrap_or(30.0);
                 let interval = Duration::from_secs_f64(1. / framerate);
                 let mut sink_closed = false;
+                let mut last_frame_time = Instant::now();
+                let mut total_bytes: u64 = 0;
                 'encode: loop {
                     let start = Instant::now();
                     if shutdown.is_cancelled() {
@@ -270,9 +282,7 @@ impl VideoEncoderPipeline {
                         }
                     };
                     if let Some(frame) = frame {
-                        // Frames are passed to the encoder at source resolution.
-                        // The encoder handles any needed scaling internally
-                        // (VAAPI: GPU-side VPP, software: CPU scaler).
+                        let encode_start = Instant::now();
                         if let Err(err) = encoder.push_frame(frame) {
                             error!("encoder push_frame failed: {err:#}");
                             break;
@@ -285,6 +295,7 @@ impl VideoEncoderPipeline {
                                         continue;
                                     }
                                     first = false;
+                                    total_bytes += pkt.payload.len() as u64;
                                     if let Err(err) = sink.write(pkt) {
                                         debug!("sink closed: {err:#}");
                                         sink_closed = true;
@@ -298,6 +309,23 @@ impl VideoEncoderPipeline {
                                 }
                             }
                         }
+
+                        if let Some(ref m) = metrics {
+                            let encode_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
+                            m.record(crate::stats::CAP_ENCODE_MS, encode_ms);
+                            let gap = start.duration_since(last_frame_time);
+                            if !gap.is_zero() {
+                                m.record(crate::stats::CAP_FPS, 1.0 / gap.as_secs_f64());
+                            }
+                            // Bitrate in kbps, smoothed via EMA in the collector.
+                            m.record(
+                                crate::stats::CAP_BITRATE_KBPS,
+                                total_bytes as f64 * 8.0
+                                    / start.elapsed().as_secs_f64().max(0.001)
+                                    / 1000.0,
+                            );
+                        }
+                        last_frame_time = start;
                     }
                     thread::sleep(interval.saturating_sub(start.elapsed()));
                 }
