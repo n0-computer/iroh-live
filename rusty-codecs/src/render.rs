@@ -252,6 +252,12 @@ impl WgpuVideoRenderer {
                 {
                     match importer.import_nv12(&self.device, info) {
                         Ok(imported) => {
+                            if self.last_render_path != RenderPath::DmaBuf {
+                                tracing::info!(
+                                    modifier = format_args!("0x{:x}", info.modifier),
+                                    "DMA-BUF zero-copy import active"
+                                );
+                            }
                             self.dmabuf_failures = 0;
                             self.last_render_path = RenderPath::DmaBuf;
                             return self.render_imported_nv12(imported);

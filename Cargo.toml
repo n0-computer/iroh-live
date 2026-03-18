@@ -11,6 +11,7 @@ members = [
     "rusty-codecs",
     "demos/android/rust",
     "demos/pi-zero",
+    "demos/opengl",
 ]
 resolver = "2"
 

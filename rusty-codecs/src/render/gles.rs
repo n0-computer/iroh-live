@@ -373,6 +373,43 @@ impl GlesRenderer {
             }
         }
     }
+
+    /// Uploads a frame and draws it in one call.
+    ///
+    /// Combines [`upload_frame`](Self::upload_frame) and [`draw`](Self::draw).
+    /// The caller must swap buffers after this call.
+    ///
+    /// # Safety
+    /// The GL context must be current on the calling thread.
+    pub unsafe fn render_frame(&mut self, frame: &VideoFrame, vp_w: i32, vp_h: i32) {
+        unsafe {
+            self.upload_frame(frame);
+            self.draw(vp_w, vp_h);
+        }
+    }
+
+    /// Returns a reference to the underlying `glow::Context`.
+    pub fn gl(&self) -> &glow::Context {
+        &self.gl
+    }
+
+    /// Returns the dimensions of the last uploaded texture.
+    pub fn texture_dimensions(&self) -> (u32, u32) {
+        (self.tex_width, self.tex_height)
+    }
+}
+
+impl Drop for GlesRenderer {
+    fn drop(&mut self) {
+        unsafe {
+            self.gl.delete_texture(self.rgba_texture);
+            self.gl.delete_texture(self.y_texture);
+            self.gl.delete_texture(self.uv_texture);
+            self.gl.delete_program(self.rgba_program);
+            self.gl.delete_program(self.nv12_program);
+            self.gl.delete_buffer(self.vbo);
+        }
+    }
 }
 
 // ── Texture upload helpers ──────────────────────────────────────────

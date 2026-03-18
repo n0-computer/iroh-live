@@ -219,6 +219,14 @@ fn extract_dma_buf_info(
             return None;
         }
     };
+    // Sync before export — vaExportSurfaceHandle does not synchronize.
+    // Without this, the exported DMA-BUF may reference an in-progress
+    // decode, causing visual glitches.
+    if let Err(e) = surface.sync() {
+        tracing::warn!("vaSyncSurface before export failed: {e}");
+        return None;
+    }
+
     let desc = match surface.export_prime() {
         Ok(d) => d,
         Err(e) => {
@@ -495,7 +503,24 @@ impl VideoDecoder for VaapiDecoder {
             this.drain_events();
         }
 
-        tracing::info!("H.264 hardware decoder ready (VAAPI)");
+        // Log vendor string and detect emulation layers (NVDEC, VDPAU).
+        // Emulated VA-API may have limited DMA-BUF export support.
+        match this.display.query_vendor_string() {
+            Ok(vendor) => {
+                let emulated = vendor.contains("NVDEC") || vendor.contains("VDPAU");
+                if emulated {
+                    tracing::warn!(
+                        vendor = %vendor,
+                        "VA-API running through emulation layer, DMA-BUF zero-copy may not work"
+                    );
+                } else {
+                    tracing::info!(vendor = %vendor, "H.264 hardware decoder ready (VAAPI)");
+                }
+            }
+            Err(_) => {
+                tracing::info!("H.264 hardware decoder ready (VAAPI)");
+            }
+        }
 
         Ok(this)
     }
@@ -683,6 +708,64 @@ mod tests {
         assert!(
             total_decoded >= 30,
             "expected at least 30 decoded frames, got {total_decoded}"
+        );
+    }
+
+    /// Validate that decoded VAAPI frames can export DMA-BUF handles with
+    /// vaSyncSurface before export (the path changed by this review).
+    #[test]
+    #[ignore = "requires VAAPI hardware"]
+    fn vaapi_decode_dmabuf_export() {
+        use crate::{
+            codec::vaapi::encoder::VaapiEncoder,
+            format::{FrameData, NativeFrameHandle, VideoPreset},
+            traits::{VideoEncoder, VideoEncoderFactory},
+        };
+
+        let mut encoder = VaapiEncoder::with_preset(VideoPreset::P360).unwrap();
+        let config = encoder.config();
+
+        let decode_config = DecodeConfig::default();
+        let mut decoder = VaapiDecoder::new(&config, &decode_config).unwrap();
+
+        let w = 640u32;
+        let h = 360u32;
+        let rgba = vec![128u8; (w * h * 4) as usize];
+        let frame = VideoFrame::new_rgba(rgba.into(), w, h, Duration::ZERO);
+
+        // Encode enough frames to get decoded output.
+        let mut all_packets = Vec::new();
+        for _ in 0..35 {
+            encoder.push_frame(frame.clone()).unwrap();
+            while let Some(pkt) = encoder.pop_packet().unwrap() {
+                all_packets.push(pkt);
+            }
+        }
+
+        let mut dmabuf_exports = 0;
+        for pkt in all_packets {
+            let media_pkt = MediaPacket {
+                timestamp: pkt.timestamp,
+                payload: pkt.payload.into(),
+                is_keyframe: pkt.is_keyframe,
+            };
+            if decoder.push_packet(media_pkt).is_ok() {
+                while let Ok(Some(decoded)) = decoder.pop_frame() {
+                    if let FrameData::Gpu(gpu) = &decoded.data
+                        && let Some(NativeFrameHandle::DmaBuf(info)) = gpu.native_handle()
+                    {
+                        assert!(info.planes.len() >= 2, "NV12 needs at least 2 planes");
+                        assert!(info.display_width > 0);
+                        assert!(info.display_height > 0);
+                        dmabuf_exports += 1;
+                    }
+                }
+            }
+        }
+
+        assert!(
+            dmabuf_exports >= 20,
+            "expected at least 20 DMA-BUF exports, got {dmabuf_exports}"
         );
     }
 
