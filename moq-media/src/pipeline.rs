@@ -427,6 +427,15 @@ fn decode_loop(
     let mut last_send = Instant::now();
     let mut frames_pushed = 0u64;
     let mut frames_popped = 0u64;
+    let mut frames_skipped = 0u64;
+    // Track wall-clock vs PTS progression to estimate hidden latency.
+    // If wall_elapsed grows faster than pts_elapsed, we're falling behind.
+    // stream_start_wall is set when first_pts is set (first decoded frame),
+    // and both are reset together during skip recovery.
+    let mut stream_start_wall: Option<Instant> = None;
+    let mut first_pts: Option<Duration> = None;
+    let mut latest_pts = Duration::ZERO;
+    let mut skip_active = false;
 
     // When no clock is provided (local pipelines), send frames directly.
     let Some(clock) = clock else {
@@ -500,6 +509,72 @@ fn decode_loop(
 
         // Feed packet to decoder if we got one.
         if let Some(packet) = packet {
+            // Skip frames when the decoder can't keep up. If wall-clock
+            // time has advanced significantly more than PTS, the decoder
+            // is falling behind. Skip non-keyframe packets until the next
+            // keyframe, which lets us jump forward in the stream. The
+            // threshold (500ms) avoids triggering on normal jitter.
+            if !waiting_for_keyframe {
+                if let (Some(fp), Some(wall_start)) = (first_pts, stream_start_wall) {
+                    let wall_elapsed = wall_start.elapsed();
+                    let pts_elapsed = latest_pts.saturating_sub(fp);
+                    let lag = wall_elapsed.saturating_sub(pts_elapsed);
+                    if lag > Duration::from_millis(500) {
+                        if packet.is_keyframe {
+                            // Keyframe while skipping: reset ALL baselines so
+                            // the lag measurement starts fresh from this point.
+                            if skip_active {
+                                info!(
+                                    frames_skipped,
+                                    lag_ms = lag.as_millis(),
+                                    "decode_loop: skip complete, resuming at keyframe"
+                                );
+                                skip_active = false;
+                                // Reset both wall-clock and PTS baselines together.
+                                stream_start_wall = Some(Instant::now());
+                                first_pts = Some(packet.timestamp);
+                                latest_pts = packet.timestamp;
+                                // Reset playout clock for clean restart.
+                                playout.clear();
+                                playout.reset_clock();
+                                // NOTE: audio is not reset here — it runs on an
+                                // independent tick loop and doesn't use the
+                                // PlayoutClock (see audio_decode_loop). After a
+                                // video skip, A/V can be out of sync until the
+                                // next keyframe aligns them. A proper fix would
+                                // require audio-side skip support.
+                            }
+                        } else {
+                            // Skip non-keyframes to catch up.
+                            if !skip_active {
+                                info!(
+                                    lag_ms = lag.as_millis(),
+                                    "decode_loop: decoder behind, skipping to next keyframe"
+                                );
+                                skip_active = true;
+                            }
+                            frames_skipped += 1;
+                            // Still drain output in case the decoder has frames ready.
+                            loop {
+                                match decoder.pop_frame() {
+                                    Ok(Some(frame)) => {
+                                        latest_pts = frame.timestamp;
+                                        playout.push(frame);
+                                        frames_pushed += 1;
+                                    }
+                                    Ok(None) => break,
+                                    Err(_) => break,
+                                }
+                            }
+                            continue;
+                        }
+                    } else if skip_active {
+                        // Lag dropped below threshold without hitting a keyframe.
+                        skip_active = false;
+                    }
+                }
+            }
+
             if waiting_for_keyframe {
                 if !packet.is_keyframe {
                     trace!("skipping non-keyframe packet while waiting for recovery");
@@ -532,6 +607,11 @@ fn decode_loop(
                     loop {
                         match decoder.pop_frame() {
                             Ok(Some(frame)) => {
+                                if first_pts.is_none() {
+                                    first_pts = Some(frame.timestamp);
+                                    stream_start_wall = Some(Instant::now());
+                                }
+                                latest_pts = frame.timestamp;
                                 trace!(
                                     pts_ms = frame.timestamp.as_millis(),
                                     buf_len = playout.buf_len(),
@@ -576,15 +656,28 @@ fn decode_loop(
             let (drift, reanchors) = clock.reanchor_stats();
             let jitter = clock.jitter();
             let buf = clock.buffer();
+            // Wall-clock vs PTS progression: positive means we consumed
+            // wall time faster than PTS advanced (falling behind / adding
+            // latency). This reveals hidden delay from re-anchoring.
+            let wall_vs_pts_lag_ms =
+                if let (Some(fp), Some(wall_start)) = (first_pts, stream_start_wall) {
+                    let wall_elapsed = wall_start.elapsed();
+                    let pts_elapsed = latest_pts.saturating_sub(fp);
+                    wall_elapsed.as_millis() as i64 - pts_elapsed.as_millis() as i64
+                } else {
+                    0
+                };
             throttled_tracing::debug_every!(
                 Duration::from_secs(5),
                 frames_pushed,
                 frames_popped,
+                frames_skipped,
                 buf_len = playout.buf_len(),
                 buffer_ms = buf.as_millis(),
                 jitter_ms = jitter.as_millis(),
                 total_drift_ms = drift.as_millis(),
                 reanchor_count = reanchors,
+                wall_vs_pts_lag_ms,
                 "decode_loop: status"
             );
         }

@@ -12,8 +12,8 @@ use ndk::media::media_codec::{
 };
 
 use super::format::{
-    BUFFER_FLAG_CODEC_CONFIG, BUFFER_FLAG_KEY_FRAME, DEQUEUE_TIMEOUT, H264_BPP, encoder_format,
-    extract_csd_from_format,
+    BUFFER_FLAG_CODEC_CONFIG, BUFFER_FLAG_KEY_FRAME, DEQUEUE_INPUT_TIMEOUT, DEQUEUE_OUTPUT_TIMEOUT,
+    H264_BPP, encoder_format, extract_csd_from_format,
 };
 use crate::{
     codec::h264::annexb::{build_avcc, extract_sps_pps, parse_annex_b},
@@ -137,7 +137,7 @@ impl AndroidEncoder {
     fn submit_input(&self, nv12: &[u8], timestamp_us: u64) -> Result<()> {
         match self
             .codec
-            .dequeue_input_buffer(DEQUEUE_TIMEOUT)
+            .dequeue_input_buffer(DEQUEUE_INPUT_TIMEOUT)
             .map_err(|e| anyhow::anyhow!("dequeue input buffer failed: {e:?}"))?
         {
             DequeuedInputBufferResult::Buffer(mut input_buf) => {
@@ -177,7 +177,7 @@ impl AndroidEncoder {
         loop {
             match self
                 .codec
-                .dequeue_output_buffer(DEQUEUE_TIMEOUT)
+                .dequeue_output_buffer(DEQUEUE_OUTPUT_TIMEOUT)
                 .map_err(|e| anyhow::anyhow!("dequeue output buffer failed: {e:?}"))?
             {
                 DequeuedOutputBufferInfoResult::Buffer(output_buf) => {
