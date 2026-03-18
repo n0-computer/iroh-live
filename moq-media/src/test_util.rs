@@ -6,80 +6,20 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use anyhow::Result;
 use n0_future::boxed::BoxFuture;
 
-use crate::format::{AudioFormat, PixelFormat, VideoFormat, VideoFrame};
-use crate::traits::{AudioSink, AudioSinkHandle, AudioSource, AudioStreamFactory, VideoSource};
-use rusty_codecs::codec::test_util::make_test_pattern;
+use crate::format::AudioFormat;
+use crate::traits::{AudioSink, AudioSinkHandle, AudioSource, AudioStreamFactory};
 
 // ── TestVideoSource ────────────────────────────────────────────────
 
-/// Deterministic video source that produces SMPTE-style test pattern frames.
+/// Animated SMPTE test pattern with bouncing ball and beep indicator.
 ///
-/// Does not sleep — `pop_frame` returns immediately on every call.
-/// Frame timestamps increment by `1/fps` each call.
-#[derive(Debug)]
-pub struct TestVideoSource {
-    format: VideoFormat,
-    started: bool,
-    frame_index: u32,
-    fps: f64,
-}
-
-impl TestVideoSource {
-    /// Creates a new test source with the given dimensions.
-    pub fn new(width: u32, height: u32) -> Self {
-        Self {
-            format: VideoFormat {
-                pixel_format: PixelFormat::Rgba,
-                dimensions: [width, height],
-            },
-            started: false,
-            frame_index: 0,
-            fps: 30.0,
-        }
-    }
-
-    /// Sets the frame rate used for timestamp generation.
-    pub fn with_fps(mut self, fps: f64) -> Self {
-        self.fps = fps;
-        self
-    }
-}
-
-impl VideoSource for TestVideoSource {
-    fn name(&self) -> &str {
-        "test"
-    }
-
-    fn format(&self) -> VideoFormat {
-        self.format.clone()
-    }
-
-    fn start(&mut self) -> Result<()> {
-        self.started = true;
-        Ok(())
-    }
-
-    fn stop(&mut self) -> Result<()> {
-        self.started = false;
-        Ok(())
-    }
-
-    fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {
-        if !self.started {
-            return Ok(None);
-        }
-        let [w, h] = self.format.dimensions;
-        let mut frame = make_test_pattern(w, h, self.frame_index);
-        frame.timestamp = Duration::from_secs_f64(self.frame_index as f64 / self.fps);
-        self.frame_index += 1;
-        Ok(Some(frame))
-    }
-}
+/// Re-exported from [`rusty_codecs::test_sources::TestPatternSource`].
+/// Produces deterministic frame-index-based timestamps (`index / fps`).
+pub type TestVideoSource = rusty_codecs::test_sources::TestPatternSource;
 
 // ── TestAudioSource ────────────────────────────────────────────────
 

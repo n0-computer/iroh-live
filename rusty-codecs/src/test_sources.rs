@@ -5,7 +5,7 @@
 //! Suitable for examples, demos, and integration tests that need a visual
 //! or audible signal without capture hardware.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::Bytes;
 
@@ -38,16 +38,16 @@ const BALL_BORDER: u32 = 3;
 /// - A white ball bouncing left-right at the vertical center
 /// - A yellow square pulsing in the bottom-right corner during the beep window
 ///
-/// Does not sleep — the caller controls frame pacing. Timestamps are derived
-/// from wall-clock time since [`start`](VideoSource::start).
+/// Does not sleep — the caller controls frame pacing. Timestamps are
+/// frame-index based (`index / fps`) for deterministic tests by default.
 #[derive(Debug)]
 pub struct TestPatternSource {
     format: VideoFormat,
     frame_index: u64,
+    fps: f64,
     started: bool,
     buffer: Vec<u8>,
     background: Vec<u8>,
-    start_time: Instant,
 }
 
 impl TestPatternSource {
@@ -61,11 +61,17 @@ impl TestPatternSource {
                 dimensions: [width, height],
             },
             frame_index: 0,
+            fps: 30.0,
             started: false,
             buffer: vec![0u8; size],
             background,
-            start_time: Instant::now(),
         }
+    }
+
+    /// Sets the frame rate used for timestamp generation.
+    pub fn with_fps(mut self, fps: f64) -> Self {
+        self.fps = fps;
+        self
     }
 
     fn render_background(w: u32, h: u32) -> Vec<u8> {
@@ -96,20 +102,25 @@ impl TestPatternSource {
         data
     }
 
-    fn stamp_ball(buf: &mut [u8], w: u32, h: u32, frame_index: u64) {
+    /// Renders a bouncing ball at the vertical center.
+    ///
+    /// Position is derived from `time_secs` so the ball moves at the same
+    /// speed regardless of frame rate (~120 px/s).
+    fn stamp_ball(buf: &mut [u8], w: u32, h: u32, time_secs: f64) {
         let radius = BALL_RADIUS.min(w / 4).min(h / 4);
         if radius == 0 {
             return;
         }
         let outer = radius + BALL_BORDER;
         let range = w.saturating_sub(2 * outer).max(1);
-        let period = 2 * range as u64;
-        let pos_in_period = frame_index % period.max(1);
-        let ball_x = if pos_in_period < range as u64 {
-            outer + pos_in_period as u32
-        } else {
-            outer + (period - pos_in_period) as u32
-        };
+        // Ball speed: ~120 pixels per second, bouncing back and forth.
+        let pixels_per_sec = 120.0_f64;
+        let period = 2.0 * range as f64 / pixels_per_sec;
+        let t_in_period = time_secs % period.max(0.001);
+        let frac = t_in_period / period;
+        // Triangle wave: 0→1→0 over one period.
+        let pos_frac = if frac < 0.5 { frac * 2.0 } else { 2.0 - frac * 2.0 };
+        let ball_x = outer + (pos_frac * range as f64) as u32;
         let ball_y = h / 2;
 
         let outer_r2 = (outer * outer) as i64;
@@ -170,7 +181,6 @@ impl VideoSource for TestPatternSource {
     fn start(&mut self) -> anyhow::Result<()> {
         self.started = true;
         self.frame_index = 0;
-        self.start_time = Instant::now();
         Ok(())
     }
     fn stop(&mut self) -> anyhow::Result<()> {
@@ -182,20 +192,20 @@ impl VideoSource for TestPatternSource {
             return Ok(None);
         }
         let [w, h] = self.format.dimensions;
+        let t = self.frame_index as f64 / self.fps;
         self.buffer.copy_from_slice(&self.background);
-        Self::stamp_ball(&mut self.buffer, w, h, self.frame_index * 4);
-
-        let elapsed = self.start_time.elapsed().as_secs_f64();
-        let beep_active = (elapsed % 1.0) < 0.1;
+        Self::stamp_ball(&mut self.buffer, w, h, t);
+        let beep_active = (t % 1.0) < 0.1;
         Self::stamp_beep_indicator(&mut self.buffer, w, h, beep_active);
 
+        let timestamp = Duration::from_secs_f64(t);
         self.frame_index += 1;
 
         Ok(Some(VideoFrame::new_rgba(
             Bytes::copy_from_slice(&self.buffer),
             w,
             h,
-            Duration::ZERO,
+            timestamp,
         )))
     }
 }
