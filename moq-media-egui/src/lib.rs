@@ -244,6 +244,11 @@ impl VideoTrackView {
         self.frame_view.is_wgpu()
     }
 
+    /// Returns the name of the render path used for the last frame.
+    pub fn render_path_name(&self) -> &'static str {
+        self.frame_view.render_path_name()
+    }
+
     /// Renders the current frame and returns `(image, frame_timestamp)`.
     ///
     /// Updates the viewport when `available_size` changes. The returned

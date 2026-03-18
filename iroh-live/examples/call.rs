@@ -621,6 +621,10 @@ impl InCallState {
 
         ui.separator();
 
+        // Update labels from remote track.
+        if let Some(v) = &self.remote_video {
+            self.overlay.update_from_track(&self.metrics, v.track());
+        }
         // Stats overlay on the available rect below the separator.
         let stats_rect =
             egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 100.0));

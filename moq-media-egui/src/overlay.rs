@@ -10,7 +10,8 @@ use std::{
 };
 
 use egui;
-use moq_media::stats::{self, MetricsSnapshot};
+use moq_media::stats::{self, MetricsCollector, MetricsSnapshot};
+use moq_media::subscribe::VideoTrack;
 
 /// Height of a single overlay bar (text + padding).
 pub const OVERLAY_BAR_H: f32 = 15.0;
@@ -79,7 +80,10 @@ impl FrameStats {
 
 // ── Debug overlay ───────────────────────────────────────────────────
 
-/// Stat bar category with color and associated metrics.
+const BG_ALPHA: u8 = 200;
+const BG_HOVER_ALPHA: u8 = 220;
+
+/// Stat bar category with associated metrics and labels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StatCategory {
     Net,
@@ -98,27 +102,28 @@ impl StatCategory {
         }
     }
 
-    pub fn color(self) -> egui::Color32 {
+    /// Key metrics shown in the bottom bar summary (up to 3).
+    fn summary_metrics(self) -> &'static [&'static str] {
         match self {
-            Self::Net => egui::Color32::from_rgb(80, 140, 255),
-            Self::Capture => egui::Color32::from_rgb(80, 200, 120),
-            Self::Render => egui::Color32::from_rgb(230, 160, 60),
-            Self::Time => egui::Color32::from_rgb(200, 100, 200),
+            Self::Net => &[stats::NET_RTT_MS, stats::NET_BW_DOWN_MBPS],
+            Self::Capture => &[stats::CAP_FPS, stats::CAP_ENCODE_MS],
+            Self::Render => &[stats::RND_FPS, stats::RND_DECODE_MS],
+            Self::Time => &[stats::TMG_JITTER_MS, stats::TMG_DELAY_MS],
         }
     }
 
-    /// The key metric shown when collapsed.
-    fn key_metric(self) -> &'static str {
+    /// Key labels shown in the bottom bar summary.
+    fn summary_labels(self) -> &'static [&'static str] {
         match self {
-            Self::Net => stats::NET_RTT_MS,
-            Self::Capture => stats::CAP_FPS,
-            Self::Render => stats::RND_FPS,
-            Self::Time => stats::TMG_JITTER_MS,
+            Self::Net => &[stats::LBL_PATH_TYPE],
+            Self::Capture => &[stats::LBL_CODEC],
+            Self::Render => &[stats::LBL_RENDERER],
+            Self::Time => &[],
         }
     }
 
-    /// All metrics belonging to this category.
-    fn metrics(self) -> &'static [&'static str] {
+    /// All metrics for the expanded detail panel.
+    fn detail_metrics(self) -> &'static [&'static str] {
         match self {
             Self::Net => &[
                 stats::NET_RTT_MS,
@@ -141,56 +146,48 @@ impl StatCategory {
             ],
         }
     }
-}
 
-/// Display state for a stat bar.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BarState {
-    Collapsed,
-    Expanded,
-    Full,
-}
-
-impl BarState {
-    fn next(self) -> Self {
+    /// All labels for the expanded detail panel.
+    fn detail_labels(self) -> &'static [&'static str] {
         match self {
-            Self::Collapsed => Self::Expanded,
-            Self::Expanded => Self::Full,
-            Self::Full => Self::Collapsed,
+            Self::Net => &[stats::LBL_PEER, stats::LBL_PATH_TYPE, stats::LBL_PATH_ADDR],
+            Self::Capture => &[stats::LBL_CODEC, stats::LBL_ENCODER, stats::LBL_RESOLUTION],
+            Self::Render => &[
+                stats::LBL_DECODER,
+                stats::LBL_RENDERER,
+                stats::LBL_RENDITION,
+                stats::LBL_RESOLUTION,
+            ],
+            Self::Time => &[],
         }
     }
 }
 
-/// Consolidated debug overlay with collapsible stat bars.
+/// Consolidated debug overlay with a persistent bottom bar and
+/// click-to-expand detail panels.
 ///
-/// Renders stats from a [`MetricsSnapshot`] as painted overlay bars on
-/// top of video. Each category (NET, CAPTURE, RENDER, TIME) has three
-/// states cycled by clicking: collapsed (key metric), expanded (all
-/// metrics), full (multi-line with sparklines).
-///
-/// Only categories present in `enabled` are shown. For example, a pure
-/// viewer with no capture has no CAPTURE bar.
+/// The bottom bar always shows all enabled sections side by side, each
+/// with 1-3 key metrics and labels. Clicking a section toggles a detail
+/// panel above the bar with all metrics (including sparklines) and
+/// labels. Multiple sections can be expanded simultaneously.
 #[derive(Debug)]
 pub struct DebugOverlay {
-    states: HashMap<StatCategory, BarState>,
+    expanded: HashMap<StatCategory, bool>,
     enabled: Vec<StatCategory>,
     visible: bool,
-    /// Extra text line for net bar expanded view (e.g. path type, address).
-    pub net_extra: Option<String>,
 }
 
 impl DebugOverlay {
     /// Creates a new overlay with the given categories enabled.
     pub fn new(categories: &[StatCategory]) -> Self {
-        let mut states = HashMap::new();
+        let mut expanded = HashMap::new();
         for &cat in categories {
-            states.insert(cat, BarState::Collapsed);
+            expanded.insert(cat, false);
         }
         Self {
-            states,
+            expanded,
             enabled: categories.to_vec(),
             visible: true,
-            net_extra: None,
         }
     }
 
@@ -199,176 +196,194 @@ impl DebugOverlay {
         self.visible = !self.visible;
     }
 
+    /// Updates labels from a [`VideoTrack`] into the collector.
+    ///
+    /// Call this each frame before [`show`](Self::show) to keep decoder
+    /// name, rendition, and resolution in sync with the current track state.
+    pub fn update_from_track(&self, metrics: &MetricsCollector, track: &VideoTrack) {
+        metrics.set_label(stats::LBL_DECODER, track.decoder_name());
+        metrics.set_label(stats::LBL_RENDITION, track.rendition());
+    }
+
     /// Renders the overlay at the bottom of `video_rect`.
     ///
-    /// Draws over existing content — does not allocate egui layout space.
-    /// Collapsed bars stack left-to-right at the bottom. Expanded/full bars
-    /// stack upward from the bottom, pushing collapsed bars up.
+    /// For labels that can be derived from a `VideoTrack`, call
+    /// [`update_from_track`](Self::update_from_track) before this. For other
+    /// labels (renderer, peer, relay), use [`MetricsCollector::set_label`].
     pub fn show(&mut self, ui: &mut egui::Ui, video_rect: egui::Rect, snap: &MetricsSnapshot) {
         if !self.visible {
             return;
         }
 
-        let mut y_cursor = video_rect.max.y;
         let font = egui::FontId::monospace(11.0);
         let enabled = self.enabled.clone();
-        let net_extra = self.net_extra.clone();
         let mut clicks: Vec<StatCategory> = Vec::new();
 
-        // First pass: expanded/full bars stacked upward from bottom.
+        // Expanded detail panels stacked upward from the bottom bar.
+        let mut y_cursor = video_rect.max.y - OVERLAY_BAR_H;
         for &cat in enabled.iter().rev() {
-            let state = self
-                .states
-                .get(&cat)
-                .copied()
-                .unwrap_or(BarState::Collapsed);
-            match state {
-                BarState::Expanded => {
-                    y_cursor -= OVERLAY_BAR_H;
-                    let rect = egui::Rect::from_min_size(
-                        egui::pos2(video_rect.min.x, y_cursor),
-                        egui::vec2(video_rect.width(), OVERLAY_BAR_H),
-                    );
-                    paint_bar_expanded(ui, rect, cat, snap, &font, &net_extra, &mut clicks);
+            if self.expanded.get(&cat) == Some(&true) {
+                let label_count = cat
+                    .detail_labels()
+                    .iter()
+                    .filter(|l| snap.label(l).is_some())
+                    .count();
+                let metric_count = cat
+                    .detail_metrics()
+                    .iter()
+                    .filter(|m| snap.series(m).is_some())
+                    .count();
+                let line_count = label_count + metric_count;
+                if line_count == 0 {
+                    continue;
                 }
-                BarState::Full => {
-                    let extra_lines = usize::from(cat == StatCategory::Net && net_extra.is_some());
-                    let line_count = cat.metrics().len() + extra_lines;
-                    let height = OVERLAY_BAR_H * (line_count as f32 + 1.0);
-                    y_cursor -= height;
-                    let rect = egui::Rect::from_min_size(
-                        egui::pos2(video_rect.min.x, y_cursor),
-                        egui::vec2(video_rect.width(), height),
-                    );
-                    paint_bar_full(ui, rect, cat, snap, &font, &net_extra, &mut clicks);
-                }
-                BarState::Collapsed => {}
-            }
-        }
-
-        // Second pass: collapsed bars tile left-to-right.
-        y_cursor -= OVERLAY_BAR_H;
-        let mut collapsed_x = video_rect.min.x;
-        for &cat in &enabled {
-            if self.states.get(&cat) == Some(&BarState::Collapsed) {
-                let width = 120.0;
+                let height = OVERLAY_BAR_H * (line_count as f32 + 0.5);
+                y_cursor -= height;
                 let rect = egui::Rect::from_min_size(
-                    egui::pos2(collapsed_x, y_cursor),
-                    egui::vec2(width, OVERLAY_BAR_H),
+                    egui::pos2(video_rect.min.x, y_cursor),
+                    egui::vec2(video_rect.width(), height),
                 );
-                paint_bar_collapsed(ui, rect, cat, snap, &font, &mut clicks);
-                collapsed_x += width + 2.0;
+                paint_detail_panel(ui, rect, cat, snap, &font);
             }
         }
 
-        // Apply collected clicks.
+        // Bottom bar: all sections side by side.
+        let bar_rect = egui::Rect::from_min_size(
+            egui::pos2(video_rect.min.x, video_rect.max.y - OVERLAY_BAR_H),
+            egui::vec2(video_rect.width(), OVERLAY_BAR_H),
+        );
+        let painter = ui.painter();
+        painter.rect_filled(bar_rect, 0.0, egui::Color32::from_black_alpha(BG_ALPHA));
+
+        // Measure section widths, then draw.
+        let sections: Vec<(StatCategory, String)> = enabled
+            .iter()
+            .map(|&cat| {
+                let text = format_section_summary(cat, snap);
+                (cat, text)
+            })
+            .collect();
+
+        let total_text_width: f32 = sections
+            .iter()
+            .map(|(_, text)| {
+                painter
+                    .layout_no_wrap(text.clone(), font.clone(), egui::Color32::WHITE)
+                    .size()
+                    .x
+            })
+            .sum();
+        let separator_width = 12.0 * (sections.len().saturating_sub(1)) as f32;
+        let padding = 8.0;
+        let _total_width = total_text_width + separator_width + padding * 2.0;
+
+        let mut x = bar_rect.min.x + padding;
+        for (i, (cat, text)) in sections.iter().enumerate() {
+            let galley = painter.layout_no_wrap(text.clone(), font.clone(), egui::Color32::WHITE);
+            let section_width = galley.size().x + 8.0;
+            let section_rect = egui::Rect::from_min_size(
+                egui::pos2(x - 4.0, bar_rect.min.y),
+                egui::vec2(section_width, OVERLAY_BAR_H),
+            );
+
+            // Hover effect.
+            let id = egui::Id::new(("dbg_section", cat.label()));
+            let response = ui.interact(section_rect, id, egui::Sense::click());
+            if response.hovered() {
+                painter.rect_filled(
+                    section_rect,
+                    0.0,
+                    egui::Color32::from_black_alpha(BG_HOVER_ALPHA),
+                );
+            }
+            if response.clicked() {
+                clicks.push(*cat);
+            }
+
+            painter.galley(
+                egui::pos2(x, bar_rect.min.y + 1.0),
+                galley,
+                egui::Color32::WHITE,
+            );
+
+            x += section_width;
+
+            // Separator.
+            if i < sections.len() - 1 {
+                let sep_x = x + 2.0;
+                painter.line_segment(
+                    [
+                        egui::pos2(sep_x, bar_rect.min.y + 3.0),
+                        egui::pos2(sep_x, bar_rect.max.y - 3.0),
+                    ],
+                    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(40)),
+                );
+                x += 12.0;
+            }
+        }
+
+        // Apply clicks (toggle expanded).
         for cat in clicks {
-            if let Some(state) = self.states.get_mut(&cat) {
-                *state = state.next();
+            if let Some(exp) = self.expanded.get_mut(&cat) {
+                *exp = !*exp;
             }
         }
     }
 }
 
-fn bar_click(
-    ui: &mut egui::Ui,
-    rect: egui::Rect,
-    cat: StatCategory,
-    clicks: &mut Vec<StatCategory>,
-) {
-    let id = egui::Id::new(("debug_overlay", cat.label()));
-    let response = ui.interact(rect, id, egui::Sense::click());
-    if response.clicked() {
-        clicks.push(cat);
-    }
-}
-
-fn paint_bar_collapsed(
-    ui: &mut egui::Ui,
-    rect: egui::Rect,
-    cat: StatCategory,
-    snap: &MetricsSnapshot,
-    font: &egui::FontId,
-    clicks: &mut Vec<StatCategory>,
-) {
-    let painter = ui.painter();
-    painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(180));
-    let stripe = egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height()));
-    painter.rect_filled(stripe, 0.0, cat.color());
-
-    let key = cat.key_metric();
-    let value = snap.get(key).unwrap_or(0.0);
-    let unit = snap.series(key).map(|s| s.unit).unwrap_or("");
-    let text = format!("{} {:.0}{}", cat.label(), value, unit);
-    let color = metric_color(key, value);
-    let galley = painter.layout_no_wrap(text, font.clone(), color);
-    painter.galley(rect.min + egui::vec2(6.0, 1.0), galley, color);
-
-    bar_click(ui, rect, cat, clicks);
-}
-
-fn paint_bar_expanded(
-    ui: &mut egui::Ui,
-    rect: egui::Rect,
-    cat: StatCategory,
-    snap: &MetricsSnapshot,
-    font: &egui::FontId,
-    net_extra: &Option<String>,
-    clicks: &mut Vec<StatCategory>,
-) {
-    let painter = ui.painter();
-    painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(180));
-    let stripe = egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height()));
-    painter.rect_filled(stripe, 0.0, cat.color());
-
+/// Formats the summary text for a section in the bottom bar.
+fn format_section_summary(cat: StatCategory, snap: &MetricsSnapshot) -> String {
     let mut parts = vec![cat.label().to_string()];
-    for &name in cat.metrics() {
+
+    // Labels first (e.g. "wgpu/dmabuf").
+    for &lbl_name in cat.summary_labels() {
+        if let Some(val) = snap.label(lbl_name) {
+            parts.push(format!(" {val}"));
+        }
+    }
+
+    // Then key metrics.
+    for &name in cat.summary_metrics() {
         if let Some(ts) = snap.series(name) {
             parts.push(format!(" {}:{:.0}{}", ts.label, ts.current, ts.unit));
         }
     }
-    if cat == StatCategory::Net
-        && let Some(extra) = net_extra
-    {
-        parts.push(format!(" {extra}"));
-    }
 
-    let text = parts.join("");
-    let galley = painter.layout_no_wrap(text, font.clone(), egui::Color32::WHITE);
-    painter.galley(
-        rect.min + egui::vec2(6.0, 1.0),
-        galley,
-        egui::Color32::WHITE,
-    );
-
-    bar_click(ui, rect, cat, clicks);
+    parts.join("")
 }
 
-fn paint_bar_full(
+/// Paints the expanded detail panel for a category.
+fn paint_detail_panel(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     cat: StatCategory,
     snap: &MetricsSnapshot,
     font: &egui::FontId,
-    net_extra: &Option<String>,
-    clicks: &mut Vec<StatCategory>,
 ) {
     let painter = ui.painter();
-    painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(180));
-    let stripe = egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height()));
-    painter.rect_filled(stripe, 0.0, cat.color());
+    painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(BG_ALPHA));
 
-    // Header line.
-    let galley = painter.layout_no_wrap(cat.label().to_string(), font.clone(), cat.color());
-    painter.galley(rect.min + egui::vec2(6.0, 1.0), galley, cat.color());
+    let mut y = rect.min.y + 2.0;
+    let dim = egui::Color32::from_rgb(160, 160, 160);
 
-    // One line per metric with inline sparkline.
-    let mut y = rect.min.y + OVERLAY_BAR_H;
-    for &name in cat.metrics() {
+    // Labels.
+    for &lbl_name in cat.detail_labels() {
+        if let Some(val) = snap.label(lbl_name) {
+            // Use the part after "lbl." as the display name.
+            let display_name = lbl_name.strip_prefix("lbl.").unwrap_or(lbl_name);
+            let text = format!("  {display_name}: {val}");
+            let galley = painter.layout_no_wrap(text, font.clone(), dim);
+            painter.galley(egui::pos2(rect.min.x + 6.0, y), galley, dim);
+            y += OVERLAY_BAR_H;
+        }
+    }
+
+    // Metrics with sparklines.
+    for &name in cat.detail_metrics() {
         if let Some(ts) = snap.series(name) {
             let color = metric_color(name, ts.current);
-            let label = format!("  {}:{:.1}{}", ts.label, ts.current, ts.unit);
-            let galley = painter.layout_no_wrap(label, font.clone(), color);
+            let text = format!("  {}:{:.1}{}", ts.label, ts.current, ts.unit);
+            let galley = painter.layout_no_wrap(text, font.clone(), color);
             painter.galley(egui::pos2(rect.min.x + 6.0, y), galley, color);
 
             if ts.history.len() >= 2 {
@@ -385,16 +400,6 @@ fn paint_bar_full(
             y += OVERLAY_BAR_H;
         }
     }
-
-    if cat == StatCategory::Net
-        && let Some(extra) = net_extra
-    {
-        let galley =
-            painter.layout_no_wrap(format!("  {extra}"), font.clone(), egui::Color32::GRAY);
-        painter.galley(egui::pos2(rect.min.x + 6.0, y), galley, egui::Color32::GRAY);
-    }
-
-    bar_click(ui, rect, cat, clicks);
 }
 
 /// Color-codes a metric value: green (good), yellow (warn), red (bad).

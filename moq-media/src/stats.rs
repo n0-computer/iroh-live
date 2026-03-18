@@ -35,6 +35,20 @@ pub const TMG_DRIFT_MS: &str = "tmg.drift";
 pub const TMG_REANCHOR_COUNT: &str = "tmg.reanchors";
 pub const TMG_BUF_FRAMES: &str = "tmg.buf_frames";
 
+// String labels (non-numeric metadata)
+pub const LBL_PEER: &str = "lbl.peer";
+pub const LBL_DECODER: &str = "lbl.decoder";
+pub const LBL_RENDERER: &str = "lbl.renderer";
+pub const LBL_RENDITION: &str = "lbl.rendition";
+pub const LBL_CODEC: &str = "lbl.codec";
+pub const LBL_RESOLUTION: &str = "lbl.resolution";
+/// "D" (direct) or "R" (relayed) — set from iroh path info.
+pub const LBL_PATH_TYPE: &str = "lbl.path_type";
+/// Full address of the selected path (debug format of TransportAddr).
+pub const LBL_PATH_ADDR: &str = "lbl.path_addr";
+/// Encoder name (for publish/capture side).
+pub const LBL_ENCODER: &str = "lbl.encoder";
+
 // ── Types ───────────────────────────────────────────────────────────
 
 /// Configuration for a metric slot.
@@ -89,6 +103,8 @@ pub struct TimeSeries {
 #[derive(Debug, Clone, Default)]
 pub struct MetricsSnapshot {
     pub metrics: BTreeMap<String, TimeSeries>,
+    /// String labels for non-numeric metadata (codec, decoder, render path, etc.).
+    pub labels: BTreeMap<String, String>,
 }
 
 impl MetricsSnapshot {
@@ -100,6 +116,11 @@ impl MetricsSnapshot {
     /// Returns the full time series for a metric.
     pub fn series(&self, name: &str) -> Option<&TimeSeries> {
         self.metrics.get(name)
+    }
+
+    /// Returns a string label value.
+    pub fn label(&self, name: &str) -> Option<&str> {
+        self.labels.get(name).map(|s| s.as_str())
     }
 }
 
@@ -117,6 +138,7 @@ pub struct MetricsCollector {
 #[derive(Debug)]
 struct CollectorInner {
     metrics: BTreeMap<String, MetricSlot>,
+    labels: BTreeMap<String, String>,
 }
 
 #[derive(Debug)]
@@ -138,6 +160,7 @@ impl MetricsCollector {
         Self {
             inner: Arc::new(Mutex::new(CollectorInner {
                 metrics: BTreeMap::new(),
+                labels: BTreeMap::new(),
             })),
         }
     }
@@ -170,7 +193,13 @@ impl MetricsCollector {
         }
     }
 
-    /// Returns a snapshot of all registered metrics.
+    /// Sets a string label (non-numeric metadata like codec name, decoder, etc.).
+    pub fn set_label(&self, name: &str, value: impl Into<String>) {
+        let mut inner = self.inner.lock().expect("metrics lock");
+        inner.labels.insert(name.to_string(), value.into());
+    }
+
+    /// Returns a snapshot of all registered metrics and labels.
     pub fn snapshot(&self) -> MetricsSnapshot {
         let inner = self.inner.lock().expect("metrics lock");
         let metrics = inner
@@ -188,7 +217,10 @@ impl MetricsCollector {
                 )
             })
             .collect();
-        MetricsSnapshot { metrics }
+        MetricsSnapshot {
+            metrics,
+            labels: inner.labels.clone(),
+        }
     }
 
     /// Registers the standard set of metrics with default configs.

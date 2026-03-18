@@ -147,6 +147,11 @@ pub fn spawn_stats_recorder(
 
             metrics.record(NET_RTT_MS, rtt.as_secs_f64() * 1000.0);
 
+            // Path type and address labels.
+            let path_type = if selected.is_relay() { "R" } else { "D" };
+            metrics.set_label(LBL_PATH_TYPE, path_type);
+            metrics.set_label(LBL_PATH_ADDR, format!("{:?}", selected.remote_addr()));
+
             // Loss rate (same calculation as spawn_signal_producer).
             let total_lost = stats.lost_packets;
             let total_sent = stats.udp_tx.datagrams;
