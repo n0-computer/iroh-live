@@ -19,8 +19,8 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use objc2_core_foundation::{
-    CFDictionary, CFNumber, CFRetained, CFString, CFType, kCFTypeDictionaryKeyCallBacks,
-    kCFTypeDictionaryValueCallBacks,
+    CFDictionary, CFNumber, CFRetained, CFString, CFType, kCFAllocatorNull,
+    kCFTypeDictionaryKeyCallBacks, kCFTypeDictionaryValueCallBacks,
 };
 use objc2_core_media::{
     CMBlockBuffer, CMFormatDescription, CMSampleBuffer, CMTime,
@@ -56,12 +56,16 @@ struct DecoderState {
 type SharedDecoderState = Arc<Mutex<DecoderState>>;
 
 /// VideoToolbox H.264 hardware decoder.
+///
+/// Supports both eager initialization (avcC description available at
+/// construction) and deferred initialization (SPS/PPS parsed from the
+/// first keyframe in Annex B streams).
 #[derive(derive_more::Debug)]
 pub struct VtbDecoder {
     #[debug(skip)]
-    session: CFRetained<VTDecompressionSession>,
+    session: Option<CFRetained<VTDecompressionSession>>,
     #[debug(skip)]
-    format_desc: CFRetained<CMFormatDescription>,
+    format_desc: Option<CFRetained<CMFormatDescription>>,
     #[debug(skip)]
     state: SharedDecoderState,
     nal_format: NalFormat,
@@ -94,26 +98,24 @@ impl VideoDecoder for VtbDecoder {
             NalFormat::Avcc
         };
 
-        // Extract SPS/PPS from avcC description if available.
-        let (sps, pps) = if let Some(description) = &config.description {
-            let annex_b =
-                avcc_to_annex_b(description).context("failed to parse avcC description")?;
-            let nals = parse_annex_b(&annex_b);
-            extract_sps_pps(&nals).context("no SPS/PPS in avcC")?
-        } else {
-            // No upfront description — we'll get SPS/PPS from the first keyframe.
-            // Create a minimal placeholder; the session will be recreated on first
-            // keyframe with real parameters.
-            bail!("VtbDecoder requires avcC description (SPS/PPS) at construction");
-        };
-
         let state = Arc::new(Mutex::new(DecoderState {
             frames: VecDeque::new(),
         }));
 
-        let (session, format_desc) = create_session(&sps, &pps, &state)?;
-
-        tracing::info!("VideoToolbox H.264 decoder ready");
+        // Extract SPS/PPS from avcC description if available.
+        // Otherwise defer session creation to the first keyframe.
+        let (session, format_desc, sps) = if let Some(description) = &config.description {
+            let annex_b =
+                avcc_to_annex_b(description).context("failed to parse avcC description")?;
+            let nals = parse_annex_b(&annex_b);
+            let (sps, pps) = extract_sps_pps(&nals).context("no SPS/PPS in avcC")?;
+            let (session, format_desc) = create_session(&sps, &pps, &state)?;
+            tracing::info!("VideoToolbox H.264 decoder ready (eager)");
+            (Some(session), Some(format_desc), sps)
+        } else {
+            tracing::info!("VideoToolbox H.264 decoder created (deferred — waiting for first keyframe)");
+            (None, None, Vec::new())
+        };
 
         Ok(Self {
             session,
@@ -138,33 +140,44 @@ impl VideoDecoder for VtbDecoder {
             }
         };
 
-        // On keyframes, check for SPS changes (resolution change mid-stream).
+        // On keyframes, check for SPS changes or deferred initialization.
         if packet.is_keyframe {
             if let Some(new_sps) = extract_sps_from_lp(lp_data) {
                 if new_sps != self.current_sps {
                     let nals = parse_lp_nals(lp_data);
                     if let Some((sps, pps)) = extract_sps_pps_from_lp_nals(&nals) {
                         let (new_session, new_fmt) = create_session(&sps, &pps, &self.state)?;
-                        // Flush pending frames from old session.
-                        unsafe {
-                            let _ =
-                                VTDecompressionSession::wait_for_asynchronous_frames(&self.session);
-                            VTDecompressionSession::invalidate(&self.session);
+                        // Flush pending frames from old session if one exists.
+                        if let Some(ref old_session) = self.session {
+                            unsafe {
+                                let _ = VTDecompressionSession::wait_for_asynchronous_frames(
+                                    old_session,
+                                );
+                                VTDecompressionSession::invalidate(old_session);
+                            }
                         }
-                        self.session = new_session;
-                        self.format_desc = new_fmt;
+                        self.session = Some(new_session);
+                        self.format_desc = Some(new_fmt);
                         self.current_sps = sps;
+                        if self.current_sps.is_empty() {
+                            tracing::info!("VideoToolbox H.264 decoder initialized from first keyframe");
+                        }
                     }
                 }
             }
         }
 
+        // Not yet initialized — drop packets until we get a keyframe with SPS/PPS.
+        let (session, format_desc) = match (self.session.as_ref(), self.format_desc.as_ref()) {
+            (Some(s), Some(f)) => (s, f),
+            _ => return Ok(()),
+        };
+
         // Build CMBlockBuffer from the length-prefixed NAL data.
         let block_buffer = create_block_buffer(lp_data)?;
 
         // Build CMSampleBuffer with timing info.
-        let sample_buffer =
-            create_sample_buffer(&block_buffer, &self.format_desc, packet.timestamp)?;
+        let sample_buffer = create_sample_buffer(&block_buffer, format_desc, packet.timestamp)?;
 
         // Encode timestamp in the sourceFrameRefCon so the callback can recover it.
         let ts_micros = packet.timestamp.as_micros() as u64;
@@ -174,7 +187,7 @@ impl VideoDecoder for VtbDecoder {
         let mut info_flags = VTDecodeInfoFlags(0);
         let status = unsafe {
             VTDecompressionSession::decode_frame(
-                &self.session,
+                session,
                 &sample_buffer,
                 VTDecodeFrameFlags(0), // synchronous
                 ts_refcon,
@@ -218,9 +231,11 @@ impl VideoDecoder for VtbDecoder {
 
 impl Drop for VtbDecoder {
     fn drop(&mut self) {
-        unsafe {
-            let _ = VTDecompressionSession::wait_for_asynchronous_frames(&self.session);
-            VTDecompressionSession::invalidate(&self.session);
+        if let Some(ref session) = self.session {
+            unsafe {
+                let _ = VTDecompressionSession::wait_for_asynchronous_frames(session);
+                VTDecompressionSession::invalidate(session);
+            }
         }
     }
 }
@@ -325,12 +340,16 @@ fn build_dest_image_attrs() -> CFRetained<CFDictionary> {
 
 fn create_block_buffer(data: &[u8]) -> Result<CFRetained<CMBlockBuffer>> {
     let mut block_buffer: *mut CMBlockBuffer = ptr::null_mut();
+    // Safety: kCFAllocatorNull tells CoreMedia NOT to free our memory.
+    // Without this, CM would use the default allocator to free() Rust-owned
+    // memory when the block buffer is released → crash.
+    let null_allocator = unsafe { kCFAllocatorNull };
     let status = unsafe {
         CMBlockBuffer::create_with_memory_block(
             None,                         // allocator
             data.as_ptr() as *mut c_void, // memory block (borrowed)
             data.len(),
-            None,        // block allocator (no dealloc needed)
+            null_allocator.as_deref(),    // block allocator: kCFAllocatorNull = don't free
             ptr::null(), // custom block source
             0,           // offset
             data.len(),

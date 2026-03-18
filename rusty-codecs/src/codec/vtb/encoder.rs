@@ -623,8 +623,9 @@ unsafe fn extract_encoded_packet(
     // as the decoder configuration record.
     if keyframe {
         let sps_pps = unsafe { extract_sps_pps_from_format_desc(sample_buffer) };
-        if nal_format == NalFormat::Avcc
-            && guard.avcc.is_none()
+        // Always store the avcC record so the decoder config has SPS/PPS,
+        // regardless of the NAL framing format used for the bitstream.
+        if guard.avcc.is_none()
             && let Some((ref sps, ref pps)) = sps_pps
         {
             guard.avcc = Some(build_avcc(sps, pps));

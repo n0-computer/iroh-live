@@ -60,7 +60,7 @@ wgpu = { version = "27", default-features = false, features = ["wgsl", "vulkan"]
 eframe = { version = "0.33.0", default-features = false, features = ["wayland", "x11"] }
 
 [features]
-default = ["h264", "opus", "av1", "capture"]
+default = ["h264", "opus", "av1", "capture", "videotoolbox"]
 test-util = []
 h264 = ["rusty-codecs/h264"]
 opus = ["rusty-codecs/opus"]

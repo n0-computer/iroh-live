@@ -93,9 +93,6 @@ impl SCStreamOutputTrait for FrameHandler {
         let height = pixel_buffer.height();
 
         // Zero-copy: retain the CVPixelBuffer and wrap it as a GPU frame.
-        // The pixel data stays in IOSurface-backed GPU memory — no CPU copy.
-        // VTB encoder can pass this directly to VTCompressionSessionEncodeFrame;
-        // wgpu renderer can import via CVMetalTextureCache.
         let raw = pixel_buffer.as_ptr();
         let gpu_frame = unsafe {
             AppleGpuFrame::from_raw(raw, width as u32, height as u32, GpuPixelFormat::Bgra)
