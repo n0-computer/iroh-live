@@ -30,12 +30,16 @@ use moq_media::{
         VideoPreset,
     },
     pipeline::{VideoDecoderPipeline, VideoEncoderPipeline},
+    subscribe::VideoTrack,
     traits::{VideoEncoder, VideoSource},
     transport::media_pipe,
 };
 #[cfg(feature = "wgpu")]
 use moq_media_egui::create_egui_wgpu_config;
-use moq_media_egui::{FrameView, format_bitrate};
+use moq_media_egui::{
+    FrameView, format_bitrate,
+    overlay::{DebugOverlay, StatCategory},
+};
 use strum::VariantArray;
 use tokio::runtime::Runtime;
 
@@ -458,7 +462,7 @@ struct PipelineSettings {
 enum TilePipeline {
     EncodeDecode {
         _encoder: VideoEncoderPipeline,
-        decoder: VideoDecoderPipeline,
+        video_track: VideoTrack,
     },
     Direct(DirectCapture),
 }
@@ -534,6 +538,8 @@ struct Tile {
     pipeline: Option<TilePipeline>,
     video_view: FrameView,
     stats: Stats,
+    metrics: moq_media::stats::MetricsCollector,
+    overlay: DebugOverlay,
     encoder_name: String,
     decoder_name: String,
     encoder_bitrate: Option<u64>,
@@ -556,12 +562,20 @@ impl Tile {
             wgpu_render_state,
         );
 
+        let metrics = moq_media::stats::MetricsCollector::new();
+        metrics.register_defaults();
         let mut tile = Self {
             id,
             settings,
             pipeline: None,
             video_view,
             stats: Stats::default(),
+            metrics,
+            overlay: DebugOverlay::new(&[
+                StatCategory::Capture,
+                StatCategory::Render,
+                StatCategory::Time,
+            ]),
             encoder_name: String::new(),
             decoder_name: String::new(),
             encoder_bitrate: None,
@@ -614,17 +628,24 @@ impl Tile {
                 let config = encoder.config();
                 self.encoder_bitrate = config.bitrate;
                 let (sink, pipe_source) = media_pipe(32);
-                let enc = VideoEncoderPipeline::new(source, encoder, sink);
+                let enc = VideoEncoderPipeline::with_metrics(
+                    source,
+                    encoder,
+                    sink,
+                    Some(self.metrics.clone()),
+                );
 
                 let decode_config = DecodeConfig {
                     backend: self.settings.backend,
                     ..Default::default()
                 };
-                let dec = match VideoDecoderPipeline::new::<DynamicVideoDecoder>(
+                let dec = match VideoDecoderPipeline::with_clock_and_metrics::<DynamicVideoDecoder>(
                     format!("viewer-{}", self.id),
                     pipe_source,
                     &config,
                     &decode_config,
+                    None,
+                    Some(self.metrics.clone()),
                 ) {
                     Ok(d) => d,
                     Err(e) => {
@@ -634,46 +655,16 @@ impl Tile {
                 };
 
                 self.decoder_name = dec.handle.decoder_name().to_string();
+                let video_track = VideoTrack::from_pipeline(dec);
                 self.pipeline = Some(TilePipeline::EncodeDecode {
                     _encoder: enc,
-                    decoder: dec,
+                    video_track,
                 });
             }
         }
 
         self.stats = Stats::default();
         self.error_msg = None;
-    }
-
-    fn overlay_text(&self) -> String {
-        if let Some(ref msg) = self.error_msg {
-            return msg.clone();
-        }
-        match self.settings.pipeline_mode {
-            PipelineMode::Direct => {
-                format!(
-                    "DIRECT render: {} fps: {:.0} delay: {:.0}ms",
-                    self.video_view.render_path_name(),
-                    self.stats.fps,
-                    self.stats.delay_ms,
-                )
-            }
-            PipelineMode::EncodeDecode => {
-                let bitrate = self
-                    .encoder_bitrate
-                    .map(|b| format_bitrate(b as f64))
-                    .unwrap_or_default();
-                format!(
-                    "enc: {} dec: {} render: {} fps: {:.0} delay: {:.0}ms bitrate: {}",
-                    self.encoder_name,
-                    self.decoder_name,
-                    self.video_view.render_path_name(),
-                    self.stats.fps,
-                    self.stats.delay_ms,
-                    bitrate,
-                )
-            }
-        }
     }
 
     fn aspect_ratio(&self) -> f32 {
@@ -957,12 +948,12 @@ impl eframe::App for ViewerApp {
                 // Phase 1: update pipelines (mutable borrow)
                 for tile in self.tiles.iter_mut() {
                     match tile.pipeline.as_mut() {
-                        Some(TilePipeline::EncodeDecode { decoder, .. }) => {
-                            if let Some(frame) = decoder.frames.current_frame() {
+                        Some(TilePipeline::EncodeDecode { video_track, .. }) => {
+                            if let Some(frame) = video_track.current_frame() {
                                 tile.stats.update(&frame);
                                 tile.video_view.render_frame(&frame);
                             }
-                            decoder.handle.set_viewport(tile_w as u32, tile_h as u32);
+                            video_track.set_viewport(tile_w as u32, tile_h as u32);
                         }
                         Some(TilePipeline::Direct(dc)) => {
                             if let Some(frame) = dc.current_frame() {
@@ -994,9 +985,8 @@ impl eframe::App for ViewerApp {
 
                 // Phase 3: paint tiles and overlays
                 let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-                let overlay_h = 18.0_f32;
 
-                for (i, tile) in self.tiles.iter().enumerate() {
+                for (i, tile) in self.tiles.iter_mut().enumerate() {
                     let col = i % cols;
                     let row = i / cols;
                     let x = origin.x + col as f32 * (tile_w + border);
@@ -1045,25 +1035,29 @@ impl eframe::App for ViewerApp {
                         egui::StrokeKind::Inside,
                     );
 
-                    // Overlay bar at bottom (background)
-                    let overlay_rect = egui::Rect::from_min_size(
-                        egui::pos2(x, y + tile_h - overlay_h),
-                        egui::vec2(tile_w, overlay_h),
-                    );
-                    painter.rect_filled(overlay_rect, 0.0, egui::Color32::from_black_alpha(160));
-
-                    // Selectable overlay text
-                    ui.scope_builder(egui::UiBuilder::new().max_rect(overlay_rect), |ui| {
-                        ui.style_mut().visuals.override_text_color = Some(egui::Color32::WHITE);
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(tile.overlay_text())
-                                    .monospace()
-                                    .size(11.0),
-                            )
-                            .selectable(true),
-                        );
-                    });
+                    // Debug overlay bars at bottom.
+                    {
+                        use moq_media::stats::*;
+                        tile.metrics.set_label(LBL_ENCODER, &tile.encoder_name);
+                        tile.metrics.set_label(LBL_DECODER, &tile.decoder_name);
+                        tile.metrics
+                            .set_label(LBL_RENDERER, tile.video_view.render_path_name());
+                        if let Some(bps) = tile.encoder_bitrate {
+                            tile.metrics.set_label(
+                                LBL_CODEC,
+                                format!(
+                                    "{} {}",
+                                    tile.settings.codec.display_name(),
+                                    format_bitrate(bps as f64),
+                                ),
+                            );
+                        } else {
+                            tile.metrics
+                                .set_label(LBL_CODEC, tile.settings.codec.display_name());
+                        }
+                        let snap = tile.metrics.snapshot();
+                        tile.overlay.show(ui, tile_rect, &snap);
+                    }
 
                     // Close button (X) at top-right
                     let close_rect = egui::Rect::from_min_size(

@@ -81,7 +81,6 @@ impl FrameStats {
 // ── Debug overlay ───────────────────────────────────────────────────
 
 const BG_ALPHA: u8 = 200;
-const BG_HOVER_ALPHA: u8 = 220;
 
 /// Stat bar category with associated metrics and labels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -130,6 +129,7 @@ impl StatCategory {
                 stats::NET_LOSS_PCT,
                 stats::NET_BW_DOWN_MBPS,
                 stats::NET_BW_UP_MBPS,
+                stats::NET_PATHS_ACTIVE,
             ],
             Self::Capture => &[
                 stats::CAP_FPS,
@@ -301,14 +301,14 @@ impl DebugOverlay {
                 egui::vec2(section_width, OVERLAY_BAR_H),
             );
 
-            // Hover effect.
+            // Hover effect: lighter background + bottom border for click affordance.
             let id = egui::Id::new(("dbg_section", cat.label()));
             let response = ui.interact(section_rect, id, egui::Sense::click());
             if response.hovered() {
-                painter.rect_filled(
-                    section_rect,
-                    0.0,
-                    egui::Color32::from_black_alpha(BG_HOVER_ALPHA),
+                painter.rect_filled(section_rect, 2.0, egui::Color32::from_white_alpha(30));
+                painter.line_segment(
+                    [section_rect.left_bottom(), section_rect.right_bottom()],
+                    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(80)),
                 );
             }
             if response.clicked() {
@@ -402,7 +402,7 @@ fn paint_detail_panel(
             painter.galley(egui::pos2(rect.min.x + 6.0, y), galley, color);
 
             if ts.history.len() >= 2 {
-                let spark_w = 60.0;
+                let spark_w = 100.0;
                 let spark_h = OVERLAY_BAR_H - 4.0;
                 let spark_x = rect.max.x - spark_w - 6.0;
                 let spark_rect = egui::Rect::from_min_size(
