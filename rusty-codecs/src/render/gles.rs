@@ -198,16 +198,18 @@ impl GlesRenderer {
     /// The GL context must be current on the calling thread.
     pub unsafe fn upload_rgba(&mut self, rgba: &[u8], w: u32, h: u32) {
         self.active = ActiveMode::Rgba;
-        upload_tex(
-            &self.gl,
-            self.rgba_texture,
-            glow::RGBA,
-            rgba,
-            w,
-            h,
-            &mut self.tex_width,
-            &mut self.tex_height,
-        );
+        unsafe {
+            upload_tex(
+                &self.gl,
+                self.rgba_texture,
+                glow::RGBA,
+                rgba,
+                w,
+                h,
+                &mut self.tex_width,
+                &mut self.tex_height,
+            );
+        }
     }
 
     /// Uploads NV12 planes directly — no CPU color conversion.
@@ -234,53 +236,61 @@ impl GlesRenderer {
         // If stride matches width we can upload directly; otherwise we need to
         // strip padding. GLES2 has no GL_UNPACK_ROW_LENGTH.
         if y_stride == w {
-            upload_tex(
-                &self.gl,
-                self.y_texture,
-                glow::LUMINANCE,
-                &y_data[..(w * h) as usize],
-                w,
-                h,
-                &mut self.tex_width,
-                &mut self.tex_height,
-            );
+            unsafe {
+                upload_tex(
+                    &self.gl,
+                    self.y_texture,
+                    glow::LUMINANCE,
+                    &y_data[..(w * h) as usize],
+                    w,
+                    h,
+                    &mut self.tex_width,
+                    &mut self.tex_height,
+                );
+            }
         } else {
             let stripped = strip_stride(y_data, w as usize, y_stride as usize, h as usize);
-            upload_tex(
-                &self.gl,
-                self.y_texture,
-                glow::LUMINANCE,
-                &stripped,
-                w,
-                h,
-                &mut self.tex_width,
-                &mut self.tex_height,
-            );
+            unsafe {
+                upload_tex(
+                    &self.gl,
+                    self.y_texture,
+                    glow::LUMINANCE,
+                    &stripped,
+                    w,
+                    h,
+                    &mut self.tex_width,
+                    &mut self.tex_height,
+                );
+            }
         }
 
         // UV plane: LUMINANCE_ALPHA, half resolution.
         // Each texel = 2 bytes (U, V), so row = uv_w * 2.
         let uv_row = uv_w * 2;
         if uv_stride == uv_row {
-            upload_tex_uncached(
-                &self.gl,
-                self.uv_texture,
-                glow::LUMINANCE_ALPHA,
-                &uv_data[..(uv_row * uv_h) as usize],
-                uv_w,
-                uv_h,
-            );
+            unsafe {
+                upload_tex_uncached(
+                    &self.gl,
+                    self.uv_texture,
+                    glow::LUMINANCE_ALPHA,
+                    &uv_data[..(uv_row * uv_h) as usize],
+                    uv_w,
+                    uv_h,
+                );
+            }
         } else {
             let stripped =
                 strip_stride(uv_data, uv_row as usize, uv_stride as usize, uv_h as usize);
-            upload_tex_uncached(
-                &self.gl,
-                self.uv_texture,
-                glow::LUMINANCE_ALPHA,
-                &stripped,
-                uv_w,
-                uv_h,
-            );
+            unsafe {
+                upload_tex_uncached(
+                    &self.gl,
+                    self.uv_texture,
+                    glow::LUMINANCE_ALPHA,
+                    &stripped,
+                    uv_w,
+                    uv_h,
+                );
+            }
         }
     }
 
