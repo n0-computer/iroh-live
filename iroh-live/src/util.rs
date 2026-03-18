@@ -145,7 +145,9 @@ pub fn spawn_stats_recorder(
                 continue;
             };
 
-            metrics.record(NET_RTT_MS, rtt.as_secs_f64() * 1000.0);
+            let rtt_ms = rtt.as_secs_f64() * 1000.0;
+            metrics.record(NET_RTT_MS, rtt_ms);
+            metrics.record_rtt_timeline(rtt_ms);
 
             // Path type and address labels.
             let path_type = if selected.is_relay() { "R" } else { "D" };
