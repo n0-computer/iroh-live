@@ -26,17 +26,19 @@ const SMPTE_BARS: [[u8; 3]; 7] = [
     [0, 0, 255],
 ];
 
-const BALL_RADIUS: u32 = 15;
-const BALL_BORDER: u32 = 3;
+/// Width of the vertical scanning line (pixels).
+const LINE_WIDTH: u32 = 4;
+/// Border on each side of the scanning line (pixels).
+const LINE_BORDER: u32 = 2;
 
-/// Animated SMPTE color-bar test pattern with a bouncing ball and beep indicator.
+/// Animated SMPTE color-bar test pattern with a scanning line and beep indicator.
 ///
 /// Renders:
 /// - Top 70%: seven vertical SMPTE color bars
 /// - 70–85%: horizontal grayscale ramp
 /// - 85–100%: black
-/// - A white ball bouncing left-right at the vertical center
-/// - A yellow square pulsing in the bottom-right corner during the beep window
+/// - A white vertical line (top to bottom) bouncing left-right
+/// - A large yellow square pulsing in the center during the beep window
 ///
 /// Does not sleep — the caller controls frame pacing. Timestamps are
 /// frame-index based (`index / fps`) for deterministic tests by default.
@@ -102,65 +104,61 @@ impl TestPatternSource {
         data
     }
 
-    /// Renders a bouncing ball at the vertical center.
+    /// Renders a vertical scanning line from top to bottom, bouncing left-right.
     ///
-    /// Position is derived from `time_secs` so the ball moves at the same
-    /// speed regardless of frame rate (~120 px/s).
-    fn stamp_ball(buf: &mut [u8], w: u32, h: u32, time_secs: f64) {
-        let radius = BALL_RADIUS.min(w / 4).min(h / 4);
-        if radius == 0 {
-            return;
-        }
-        let outer = radius + BALL_BORDER;
-        let range = w.saturating_sub(2 * outer).max(1);
-        // Ball speed: ~120 pixels per second, bouncing back and forth.
+    /// Position is derived from `time_secs` so speed is constant regardless
+    /// of frame rate (~120 px/s). The line has a black border for visibility
+    /// against both light and dark backgrounds.
+    fn stamp_line(buf: &mut [u8], w: u32, h: u32, time_secs: f64) {
+        let half = LINE_WIDTH / 2 + LINE_BORDER;
+        let range = w.saturating_sub(2 * half).max(1);
+        // ~120 pixels per second, bouncing back and forth.
         let pixels_per_sec = 120.0_f64;
         let period = 2.0 * range as f64 / pixels_per_sec;
         let t_in_period = time_secs % period.max(0.001);
         let frac = t_in_period / period;
-        // Triangle wave: 0→1→0 over one period.
         let pos_frac = if frac < 0.5 { frac * 2.0 } else { 2.0 - frac * 2.0 };
-        let ball_x = outer + (pos_frac * range as f64) as u32;
-        let ball_y = h / 2;
+        let center_x = half + (pos_frac * range as f64) as u32;
 
-        let outer_r2 = (outer * outer) as i64;
-        let inner_r2 = (radius * radius) as i64;
-        let y_min = ball_y.saturating_sub(outer);
-        let y_max = (ball_y + outer).min(h);
-        let x_min = ball_x.saturating_sub(outer);
-        let x_max = (ball_x + outer).min(w);
+        let x_min = center_x.saturating_sub(half);
+        let x_max = (center_x + half).min(w);
+        let inner_min = center_x.saturating_sub(LINE_WIDTH / 2);
+        let inner_max = (center_x + LINE_WIDTH / 2).min(w);
 
-        for y in y_min..y_max {
-            let dy = y as i64 - ball_y as i64;
+        for y in 0..h {
             for x in x_min..x_max {
-                let dx = x as i64 - ball_x as i64;
-                let d2 = dx * dx + dy * dy;
-                if d2 <= outer_r2 {
-                    let idx = ((y * w + x) * 4) as usize;
-                    if d2 <= inner_r2 {
-                        buf[idx] = 255;
-                        buf[idx + 1] = 255;
-                        buf[idx + 2] = 255;
-                    } else {
-                        buf[idx] = 0;
-                        buf[idx + 1] = 0;
-                        buf[idx + 2] = 0;
-                    }
-                    buf[idx + 3] = 255;
+                let idx = ((y * w + x) * 4) as usize;
+                if x >= inner_min && x < inner_max {
+                    // White core
+                    buf[idx] = 255;
+                    buf[idx + 1] = 255;
+                    buf[idx + 2] = 255;
+                } else {
+                    // Black border
+                    buf[idx] = 0;
+                    buf[idx + 1] = 0;
+                    buf[idx + 2] = 0;
                 }
+                buf[idx + 3] = 255;
             }
         }
     }
 
+    /// Renders a large yellow square in the center during the beep window.
+    ///
+    /// Covers ~25% of the frame area (half width × half height). Large and
+    /// bright enough to survive codec compression, used by E2E tests to
+    /// verify live video is updating.
     fn stamp_beep_indicator(buf: &mut [u8], w: u32, h: u32, beep_active: bool) {
         if !beep_active {
             return;
         }
-        let size = 20u32.min(w / 8).min(h / 8);
-        let x0 = w.saturating_sub(size + 10);
-        let y0 = h.saturating_sub(size + 10);
-        for y in y0..h.min(y0 + size) {
-            for x in x0..w.min(x0 + size) {
+        let sq_w = w / 2;
+        let sq_h = h / 2;
+        let x0 = (w - sq_w) / 2;
+        let y0 = (h - sq_h) / 2;
+        for y in y0..(y0 + sq_h) {
+            for x in x0..(x0 + sq_w) {
                 let idx = ((y * w + x) * 4) as usize;
                 buf[idx] = 255;
                 buf[idx + 1] = 255;
@@ -194,7 +192,7 @@ impl VideoSource for TestPatternSource {
         let [w, h] = self.format.dimensions;
         let t = self.frame_index as f64 / self.fps;
         self.buffer.copy_from_slice(&self.background);
-        Self::stamp_ball(&mut self.buffer, w, h, t);
+        Self::stamp_line(&mut self.buffer, w, h, t);
         let beep_active = (t % 1.0) < 0.1;
         Self::stamp_beep_indicator(&mut self.buffer, w, h, beep_active);
 
