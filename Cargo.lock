@@ -8592,6 +8592,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
+name = "opengl-viewer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "glow 0.16.0",
+ "glutin",
+ "glutin-winit",
+ "iroh 0.97.0",
+ "iroh-live",
+ "moq-media",
+ "raw-window-handle",
+ "rusty-codecs",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "winit 0.30.13",
+]
+
+[[package]]
 name = "openh264"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

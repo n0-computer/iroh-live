@@ -34,13 +34,46 @@ pub struct DmaBufImporter {
     queue: vk::Queue,
     queue_family_index: u32,
     command_pool: vk::CommandPool,
+    /// Persistent command buffer, reset and reused each frame.
+    command_buffer: vk::CommandBuffer,
+    /// Persistent fence, reset and reused each frame.
+    fence: vk::Fence,
     /// Modifiers supported by Vulkan for the multi-plane NV12 format.
     supported_nv12_modifiers: Vec<u64>,
+    /// Cached R8/RG8 copy-target textures, reused when dimensions match.
+    cached_targets: Option<CachedCopyTargets>,
+    /// Previous frame's NV12 import resources, kept alive until the fence
+    /// signals at the start of the next import. This defers the GPU stall
+    /// so the copy overlaps with the caller's CPU work.
+    in_flight: Option<InFlightImport>,
+    /// DRM render node path matching this Vulkan device (e.g. "/dev/dri/renderD128").
+    /// Used by the VPP retiler to open the correct VA display.
+    #[cfg(feature = "vaapi")]
+    render_node_path: Option<String>,
     /// VAAPI VPP retiler for incompatible modifiers. Lazily initialized on
     /// first use. `None` means not yet attempted; `Some(None)` means init
     /// failed and we shouldn't retry.
     #[cfg(feature = "vaapi")]
     vpp_retiler: Option<Option<VppRetiler>>,
+}
+
+/// Resources from the previous frame's NV12 import that must stay alive
+/// until the GPU copy completes (signaled by the fence).
+struct InFlightImport {
+    nv12_image: vk::Image,
+    nv12_memories: Vec<vk::DeviceMemory>,
+}
+
+/// Cached Vulkan resources for the R8/RG8 copy targets, reused across frames.
+struct CachedCopyTargets {
+    y_image: vk::Image,
+    y_memory: vk::DeviceMemory,
+    uv_image: vk::Image,
+    uv_memory: vk::DeviceMemory,
+    y_width: u32,
+    y_height: u32,
+    uv_width: u32,
+    uv_height: u32,
 }
 
 impl fmt::Debug for DmaBufImporter {
@@ -97,6 +130,23 @@ impl DmaBufImporter {
                 vk::Format::G8_B8R8_2PLANE_420_UNORM,
             );
 
+            // Detect the DRM render node for this Vulkan device so the VPP
+            // retiler opens the same GPU rather than hardcoding renderD128.
+            #[cfg(feature = "vaapi")]
+            let render_node_path = {
+                let mut drm_props = vk::PhysicalDeviceDrmPropertiesEXT::default();
+                let mut props2 = vk::PhysicalDeviceProperties2::default().push_next(&mut drm_props);
+                instance.get_physical_device_properties2(physical_device, &mut props2);
+                if drm_props.has_render != 0 {
+                    let path = format!("/dev/dri/renderD{}", drm_props.render_minor);
+                    debug!("Vulkan device render node: {path}");
+                    Some(path)
+                } else {
+                    debug!("Vulkan device has no render node, VPP will probe");
+                    None
+                }
+            };
+
             debug!(
                 "DMA-BUF importer on {device_name}: NV12 modifiers={:?}",
                 supported_nv12_modifiers
@@ -116,6 +166,30 @@ impl DmaBufImporter {
                 })
                 .ok()?;
 
+            // Allocate a persistent command buffer (reset and reused each frame).
+            let alloc_info = vk::CommandBufferAllocateInfo::default()
+                .command_pool(command_pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1);
+            let command_buffer = raw_device
+                .allocate_command_buffers(&alloc_info)
+                .inspect_err(|e| {
+                    debug!("Failed to allocate command buffer for DMA-BUF import: {e}");
+                    raw_device.destroy_command_pool(command_pool, None);
+                })
+                .ok()?[0];
+
+            // Allocate a persistent fence (reset and reused each frame).
+            let fence_info = vk::FenceCreateInfo::default();
+            let fence = raw_device
+                .create_fence(&fence_info, None)
+                .inspect_err(|e| {
+                    debug!("Failed to create fence for DMA-BUF import: {e}");
+                    raw_device.free_command_buffers(command_pool, &[command_buffer]);
+                    raw_device.destroy_command_pool(command_pool, None);
+                })
+                .ok()?;
+
             Some(Self {
                 device: raw_device,
                 physical_device,
@@ -123,7 +197,13 @@ impl DmaBufImporter {
                 queue,
                 queue_family_index,
                 command_pool,
+                command_buffer,
+                fence,
                 supported_nv12_modifiers,
+                cached_targets: None,
+                in_flight: None,
+                #[cfg(feature = "vaapi")]
+                render_node_path,
                 #[cfg(feature = "vaapi")]
                 vpp_retiler: None, // lazily initialized on first incompatible modifier
             })
@@ -154,9 +234,10 @@ impl DmaBufImporter {
         } else {
             #[cfg(feature = "vaapi")]
             {
+                let render_node = self.render_node_path.as_deref();
                 let retiler_slot =
                     self.vpp_retiler
-                        .get_or_insert_with(|| match VppRetiler::new() {
+                        .get_or_insert_with(|| match VppRetiler::new(render_node) {
                             Ok(r) => {
                                 debug!("Initialized VAAPI VPP retiler for modifier conversion");
                                 Some(r)
@@ -199,28 +280,51 @@ impl DmaBufImporter {
         let w = info.display_width;
         let h = info.display_height;
 
+        // Wait for the previous frame's GPU copy to complete and reclaim its
+        // NV12 import resources. This defers the stall: the GPU copy from the
+        // last call ran in parallel with the caller's CPU work between frames.
+        self.reclaim_in_flight();
+
         // Step 1: Import as multi-plane NV12 VkImage.
         let (nv12_image, nv12_memories) = self.import_nv12_multiplane(info)?;
 
-        // Step 2: Create R8/RG8 destination images and GPU-copy planes.
-        let result = self.copy_planes_to_textures(
-            wgpu_device,
-            nv12_image,
-            info.coded_width,
-            info.coded_height,
-            w,
-            h,
-        );
+        // Step 2: GPU-copy planes into cached R8/RG8 targets.
+        let result = self.copy_planes_to_textures(wgpu_device, nv12_image, w, h);
 
-        // Clean up the NV12 source image (we only needed it for the copy).
-        unsafe {
-            self.device.destroy_image(nv12_image, None);
-            for mem in nv12_memories {
-                self.device.free_memory(mem, None);
+        if result.is_ok() {
+            // Stash the NV12 source resources — they must stay alive until
+            // the GPU copy completes (signaled by the fence at next call).
+            self.in_flight = Some(InFlightImport {
+                nv12_image,
+                nv12_memories,
+            });
+        } else {
+            // On error, clean up immediately since no GPU work was submitted.
+            unsafe {
+                self.device.destroy_image(nv12_image, None);
+                for mem in nv12_memories {
+                    self.device.free_memory(mem, None);
+                }
             }
         }
 
         result
+    }
+
+    /// Waits for the previous frame's GPU copy fence and destroys the
+    /// in-flight NV12 import resources. Called at the start of each import.
+    fn reclaim_in_flight(&mut self) {
+        if let Some(prev) = self.in_flight.take() {
+            unsafe {
+                // Wait for the GPU copy submitted last frame. The copy is
+                // typically already done by now, so this rarely stalls.
+                let _ = self.device.wait_for_fences(&[self.fence], true, u64::MAX);
+                self.device.destroy_image(prev.nv12_image, None);
+                for mem in prev.nv12_memories {
+                    self.device.free_memory(mem, None);
+                }
+            }
+        }
     }
 
     /// Import DMA-BUF as a non-disjoint multi-plane NV12 VkImage.
@@ -287,6 +391,21 @@ impl DmaBufImporter {
                 ));
             }
 
+            // AMD VA-API drivers return size=0 in the PRIME descriptor. The
+            // Vulkan memory requirements may also understate the buffer size
+            // for imported DMA-BUFs. Use lseek to get the actual buffer size
+            // from the kernel and take the maximum. This matches mpv/libplacebo
+            // and GStreamer workarounds.
+            let alloc_size = {
+                let lseek_size = libc::lseek(fd, 0, libc::SEEK_END);
+                if lseek_size > 0 {
+                    libc::lseek(fd, 0, libc::SEEK_SET);
+                    mem_reqs.size.max(lseek_size as u64)
+                } else {
+                    mem_reqs.size
+                }
+            };
+
             let mut import_info = vk::ImportMemoryFdInfoKHR::default()
                 .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
                 .fd(fd);
@@ -302,7 +421,7 @@ impl DmaBufImporter {
                 })?;
 
             let alloc_info = vk::MemoryAllocateInfo::default()
-                .allocation_size(mem_reqs.size)
+                .allocation_size(alloc_size)
                 .memory_type_index(memory_type_index)
                 .push_next(&mut import_info)
                 .push_next(&mut dedicated_info);
@@ -326,109 +445,132 @@ impl DmaBufImporter {
         }
     }
 
-    /// Create R8/RG8 destination textures and GPU-copy planes from the NV12 source.
+    /// GPU-copy NV12 planes to cached R8/RG8 images and wrap as wgpu textures.
     ///
     /// Destination images are created at display size (not coded size) to avoid
     /// a mismatch between the VkImage extent and the wgpu texture descriptor.
     /// Only the display region is copied, cropping codec padding.
+    ///
+    /// The R8/RG8 VkImages and their memory are cached across frames when
+    /// dimensions match, eliminating ~4 Vulkan create/destroy calls per frame.
+    /// The wgpu texture wrappers are non-owning — the underlying Vulkan
+    /// resources are owned by `cached_targets` and cleaned up in `Drop`.
     fn copy_planes_to_textures(
-        &self,
+        &mut self,
         wgpu_device: &wgpu::Device,
         nv12_image: vk::Image,
-        _coded_width: u32,
-        _coded_height: u32,
         display_width: u32,
         display_height: u32,
     ) -> anyhow::Result<ImportedNv12Frame> {
         let uv_display_w = display_width / 2;
         let uv_display_h = display_height.div_ceil(2);
 
-        unsafe {
-            // Create destination Y plane (R8) at display size.
-            let y_image = self.create_optimal_image(
-                vk::Format::R8_UNORM,
-                display_width,
-                display_height,
-                vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
-            )?;
-            let y_memory = self.allocate_and_bind_image(y_image)?;
+        // Ensure cached copy targets exist and match dimensions.
+        let needs_recreate = match &self.cached_targets {
+            Some(t) => {
+                t.y_width != display_width
+                    || t.y_height != display_height
+                    || t.uv_width != uv_display_w
+                    || t.uv_height != uv_display_h
+            }
+            None => true,
+        };
 
-            // Create destination UV plane (RG8) at display size.
-            let uv_image = match self.create_optimal_image(
-                vk::Format::R8G8_UNORM,
-                uv_display_w,
-                uv_display_h,
-                vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
-            ) {
-                Ok(img) => img,
-                Err(e) => {
-                    self.device.destroy_image(y_image, None);
-                    self.device.free_memory(y_memory, None);
-                    return Err(e);
+        if needs_recreate {
+            // Destroy old targets if any.
+            if let Some(old) = self.cached_targets.take() {
+                unsafe {
+                    self.device.destroy_image(old.y_image, None);
+                    self.device.free_memory(old.y_memory, None);
+                    self.device.destroy_image(old.uv_image, None);
+                    self.device.free_memory(old.uv_memory, None);
                 }
-            };
-            let uv_memory = match self.allocate_and_bind_image(uv_image) {
-                Ok(m) => m,
-                Err(e) => {
-                    self.device.destroy_image(y_image, None);
-                    self.device.free_memory(y_memory, None);
-                    self.device.destroy_image(uv_image, None);
-                    return Err(e);
-                }
-            };
-
-            // Copy only the display region (crop codec padding).
-            if let Err(e) = self.record_and_submit_copy(
-                nv12_image,
-                y_image,
-                uv_image,
-                display_width,
-                display_height,
-                uv_display_w,
-                uv_display_h,
-            ) {
-                self.device.destroy_image(y_image, None);
-                self.device.free_memory(y_memory, None);
-                self.device.destroy_image(uv_image, None);
-                self.device.free_memory(uv_memory, None);
-                return Err(e);
             }
 
-            // Wrap as wgpu textures — sizes now match the VkImage dimensions.
-            let y_texture = self.wrap_as_wgpu_texture(
-                wgpu_device,
-                y_image,
-                y_memory,
+            unsafe {
+                let y_image = self.create_optimal_image(
+                    vk::Format::R8_UNORM,
+                    display_width,
+                    display_height,
+                    vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+                )?;
+                let y_memory = self.allocate_and_bind_image(y_image)?;
+
+                let uv_image = match self.create_optimal_image(
+                    vk::Format::R8G8_UNORM,
+                    uv_display_w,
+                    uv_display_h,
+                    vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+                ) {
+                    Ok(img) => img,
+                    Err(e) => {
+                        self.device.destroy_image(y_image, None);
+                        self.device.free_memory(y_memory, None);
+                        return Err(e);
+                    }
+                };
+                let uv_memory = match self.allocate_and_bind_image(uv_image) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        self.device.destroy_image(y_image, None);
+                        self.device.free_memory(y_memory, None);
+                        self.device.destroy_image(uv_image, None);
+                        return Err(e);
+                    }
+                };
+
+                self.cached_targets = Some(CachedCopyTargets {
+                    y_image,
+                    y_memory,
+                    uv_image,
+                    uv_memory,
+                    y_width: display_width,
+                    y_height: display_height,
+                    uv_width: uv_display_w,
+                    uv_height: uv_display_h,
+                });
+            }
+        }
+
+        let targets = self.cached_targets.as_ref().unwrap();
+
+        // GPU-copy planes into the cached targets.
+        unsafe {
+            self.record_and_submit_copy(
+                nv12_image,
+                targets.y_image,
+                targets.uv_image,
                 display_width,
                 display_height,
-                wgpu::TextureFormat::R8Unorm,
-            )?;
-
-            let uv_texture = match self.wrap_as_wgpu_texture(
-                wgpu_device,
-                uv_image,
-                uv_memory,
                 uv_display_w,
                 uv_display_h,
-                wgpu::TextureFormat::Rg8Unorm,
-            ) {
-                Ok(t) => t,
-                Err(e) => {
-                    // y_texture owns y_image/y_memory now, it will be dropped.
-                    // But uv_image/uv_memory need cleanup.
-                    self.device.destroy_image(uv_image, None);
-                    self.device.free_memory(uv_memory, None);
-                    return Err(e);
-                }
-            };
-
-            Ok(ImportedNv12Frame {
-                y_texture,
-                uv_texture,
-                width: display_width,
-                height: display_height,
-            })
+            )?;
         }
+
+        // Wrap as non-owning wgpu textures. The drop callback is a no-op
+        // because the Vulkan resources are owned by cached_targets.
+        let y_texture = self.wrap_as_wgpu_texture_non_owning(
+            wgpu_device,
+            targets.y_image,
+            display_width,
+            display_height,
+            wgpu::TextureFormat::R8Unorm,
+        )?;
+
+        let uv_texture = self.wrap_as_wgpu_texture_non_owning(
+            wgpu_device,
+            targets.uv_image,
+            uv_display_w,
+            uv_display_h,
+            wgpu::TextureFormat::Rg8Unorm,
+        )?;
+
+        Ok(ImportedNv12Frame {
+            y_texture,
+            uv_texture,
+            width: display_width,
+            height: display_height,
+        })
     }
 
     /// Create a VkImage with OPTIMAL tiling.
@@ -514,17 +656,11 @@ impl DmaBufImporter {
         uv_height: u32,
     ) -> anyhow::Result<()> {
         unsafe {
-            // Allocate a one-shot command buffer.
-            let alloc_info = vk::CommandBufferAllocateInfo::default()
-                .command_pool(self.command_pool)
-                .level(vk::CommandBufferLevel::PRIMARY)
-                .command_buffer_count(1);
-
-            let cmd_bufs = self
-                .device
-                .allocate_command_buffers(&alloc_info)
-                .map_err(|e| anyhow::anyhow!("vkAllocateCommandBuffers: {e}"))?;
-            let cmd = cmd_bufs[0];
+            // Reset and reuse the persistent command buffer.
+            self.device
+                .reset_command_buffer(self.command_buffer, vk::CommandBufferResetFlags::empty())
+                .map_err(|e| anyhow::anyhow!("vkResetCommandBuffer: {e}"))?;
+            let cmd = self.command_buffer;
 
             let begin_info = vk::CommandBufferBeginInfo::default()
                 .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
@@ -696,36 +832,37 @@ impl DmaBufImporter {
 
             self.device.end_command_buffer(cmd)?;
 
-            // Submit and wait. We must wait because the NV12 source image will be
-            // destroyed after this call returns.
+            // Submit with the persistent fence. We do NOT wait here — the
+            // NV12 source resources are kept alive in `in_flight` and reclaimed
+            // at the start of the next import call, after the fence signals.
+            // This lets the GPU copy overlap with the caller's CPU work.
+            self.device
+                .reset_fences(&[self.fence])
+                .map_err(|e| anyhow::anyhow!("vkResetFences: {e}"))?;
             let cmd_bufs_to_submit = [cmd];
             let submit_info = vk::SubmitInfo::default().command_buffers(&cmd_bufs_to_submit);
             self.device
-                .queue_submit(self.queue, &[submit_info], vk::Fence::null())
+                .queue_submit(self.queue, &[submit_info], self.fence)
                 .map_err(|e| anyhow::anyhow!("vkQueueSubmit (plane copy): {e}"))?;
-            self.device
-                .queue_wait_idle(self.queue)
-                .map_err(|e| anyhow::anyhow!("vkQueueWaitIdle: {e}"))?;
-
-            self.device
-                .free_command_buffers(self.command_pool, &cmd_bufs_to_submit);
         }
 
         Ok(())
     }
 
-    fn wrap_as_wgpu_texture(
+    /// Wrap a VkImage as a wgpu texture without ownership transfer.
+    ///
+    /// The drop callback is a no-op — the caller retains ownership of the
+    /// VkImage and VkDeviceMemory. The returned texture must not outlive the
+    /// underlying Vulkan resources.
+    fn wrap_as_wgpu_texture_non_owning(
         &self,
         wgpu_device: &wgpu::Device,
         image: vk::Image,
-        memory: vk::DeviceMemory,
         width: u32,
         height: u32,
         format: wgpu::TextureFormat,
     ) -> anyhow::Result<wgpu::Texture> {
         use wgpu::hal::api::Vulkan as VkApi;
-
-        let device_clone = self.device.clone();
 
         let hal_desc = wgpu::hal::TextureDescriptor {
             label: Some(if format == wgpu::TextureFormat::R8Unorm {
@@ -747,10 +884,8 @@ impl DmaBufImporter {
             view_formats: vec![],
         };
 
-        let drop_callback: Box<dyn FnOnce() + Send + Sync> = Box::new(move || unsafe {
-            device_clone.destroy_image(image, None);
-            device_clone.free_memory(memory, None);
-        });
+        // No-op drop callback — Vulkan resources are owned by cached_targets.
+        let drop_callback: Box<dyn FnOnce() + Send + Sync> = Box::new(|| {});
 
         unsafe {
             let hal_device_guard = wgpu_device
@@ -800,6 +935,18 @@ impl DmaBufImporter {
 impl Drop for DmaBufImporter {
     fn drop(&mut self) {
         unsafe {
+            // Reclaim any in-flight NV12 import from the last frame.
+            self.reclaim_in_flight();
+
+            if let Some(targets) = self.cached_targets.take() {
+                self.device.destroy_image(targets.y_image, None);
+                self.device.free_memory(targets.y_memory, None);
+                self.device.destroy_image(targets.uv_image, None);
+                self.device.free_memory(targets.uv_memory, None);
+            }
+
+            self.device.destroy_fence(self.fence, None);
+            // Command buffer is freed implicitly when pool is destroyed.
             self.device.destroy_command_pool(self.command_pool, None);
         }
     }
@@ -867,9 +1014,17 @@ struct VppRetiler {
 
 #[cfg(feature = "vaapi")]
 impl VppRetiler {
-    fn new() -> anyhow::Result<Self> {
+    /// Creates a VPP retiler, preferring the given render node path if
+    /// provided, then falling back to common render node paths.
+    fn new(preferred_render_node: Option<&str>) -> anyhow::Result<Self> {
+        let fallbacks = ["/dev/dri/renderD128", "/dev/dri/renderD129"];
+        let candidates: Vec<&str> = preferred_render_node
+            .into_iter()
+            .chain(fallbacks.iter().copied())
+            .collect();
+
         unsafe {
-            for path in ["/dev/dri/renderD128", "/dev/dri/renderD129"] {
+            for path in candidates {
                 if let Ok(file) = File::options().read(true).write(true).open(path) {
                     let dpy = va::vaGetDisplayDRM(file.as_raw_fd());
                     if dpy.is_null() {

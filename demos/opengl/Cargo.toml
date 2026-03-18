@@ -1,0 +1,27 @@
+[package]
+name = "opengl-viewer"
+version = "0.1.0"
+edition = "2024"
+description = "Minimal GLES2 video viewer — takes a LiveTicket, renders in a window"
+publish = false
+
+[dependencies]
+anyhow = "1.0.100"
+clap = { version = "4.5", features = ["derive"] }
+tokio = { version = "1.48.0", features = ["full"] }
+tracing = "0.1.41"
+tracing-subscriber = "0.3.20"
+
+iroh = { workspace = true }
+iroh-live = { workspace = true, features = ["h264", "opus"] }
+moq-media = { workspace = true, features = ["h264", "opus"] }
+rusty-codecs = { workspace = true, features = ["gles"] }
+
+glow = "0.16"
+winit = "0.30"
+glutin = "0.32"
+glutin-winit = "0.5"
+raw-window-handle = "0.6"
+
+[lints]
+workspace = true

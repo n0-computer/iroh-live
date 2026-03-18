@@ -56,6 +56,14 @@ MediaCodec H.264, CameraX capture, zero-copy HardwareBuffer rendering, demo app.
 V4L2 stateful H.264, DRM rendering, Pi Zero demo. Complete for current hardware. Stateless V4L2 for other SBCs is future work.
 - [platform/raspberry-pi.md](platform/raspberry-pi.md)
 
+### Linux — GNOME Remote Desktop review
+Comparative analysis of GRD's capture/encode pipeline against ours. Actionable items: drain-all-keep-latest dequeue, explicit sync, modifier negotiation, damage detection, encoder pacing, resource pooling.
+- [platform/linux-grd-review.md](platform/linux-grd-review.md)
+
+### Linux — decode→render pipeline review
+Comparative analysis against mpv/libplacebo, GStreamer, Chromium, FFmpeg. Actionable items: texture reuse, AMD size=0 fix, vaSyncSurface placement, command buffer reuse, format probing, dedicated allocations.
+- [platform/linux-decode-render-review.md](platform/linux-decode-render-review.md)
+
 ### Windows
 Media Foundation H.264, screen/camera capture. Design complete, no code yet.
 - [platform/windows.md](platform/windows.md)

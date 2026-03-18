@@ -14,7 +14,7 @@ use moq_media::{
     traits::AudioStreamFactory,
 };
 use n0_error::Result;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::rooms::{Room, RoomTicket};
 
@@ -177,7 +177,7 @@ impl Live {
         broadcast_name: &str,
     ) -> Result<(MoqSession, RemoteBroadcast)> {
         let mut session = self.moq.connect(remote).await?;
-        info!(id=%session.conn().remote_id(), "new peer connected");
+        info!(id=%session.conn().remote_id(), "connected");
         let consumer = session.subscribe(broadcast_name).await?;
         let broadcast = RemoteBroadcast::new(broadcast_name, consumer).await?;
         Ok((session, broadcast))
