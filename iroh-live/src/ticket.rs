@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use iroh::EndpointAddr;
-use n0_error::{Result, StdResultExt};
+use n0_error::{Result, StackResultExt, StdResultExt};
 use serde::{Deserialize, Serialize};
 
 /// URI scheme prefix for iroh-live tickets.
@@ -66,9 +66,8 @@ impl LiveTicket {
         } else if s.contains('@') {
             Self::deserialize_legacy(s)
         } else {
-            Err(anyhow::anyhow!(
-                "invalid ticket: expected iroh-live: URI or legacy name@addr format"
-            ))?
+            Self::deserialize_url(s)
+                .context("invalid ticket: expected iroh-live: URI or legacy name@addr format")
         }
     }
 

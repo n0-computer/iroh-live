@@ -16,7 +16,7 @@ use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::{CancellationToken, DropGuard};
-use tracing::{debug, warn};
+use tracing::{Instrument, debug, warn};
 
 use crate::{
     adaptive::{AdaptiveConfig, AdaptiveVideoTrack},
@@ -277,12 +277,14 @@ impl RemoteBroadcast {
     }
 
     /// Creates a new remote broadcast subscription with a specific [`PlayoutMode`].
+    #[tracing::instrument("RemoteBroadcast", skip_all, fields(name=tracing::field::Empty))]
     pub async fn with_playout_mode(
         broadcast_name: impl ToString,
         broadcast: BroadcastConsumer,
         playout_mode: PlayoutMode,
     ) -> Result<Self> {
         let broadcast_name = broadcast_name.to_string();
+        tracing::Span::current().record("name", tracing::field::display(&broadcast_name));
         let clock = PlayoutClock::new(playout_mode);
         let shutdown = CancellationToken::new();
 
@@ -297,6 +299,7 @@ impl RemoteBroadcast {
                     match broadcast.subscribe_track(&Catalog::default_track()) {
                         Ok(track) => break Ok(track),
                         Err(moq_lite::Error::NotFound) => {
+                            warn!("catalog track not yet available");
                             tokio::time::sleep(Duration::from_millis(10)).await;
                             continue;
                         }
@@ -306,6 +309,7 @@ impl RemoteBroadcast {
             })
             .await
             .std_context("catalog track not started and timeout expired")??;
+            debug!("catalog received");
             // let track = broadcast
             //     .subscribe_track(&Catalog::default_track())
             //     .std_context("missing catalog track")?;
@@ -338,6 +342,7 @@ impl RemoteBroadcast {
                     }
                     shutdown.cancel();
                 }
+                .instrument(tracing::Span::current())
             });
             (watchable, task)
         };

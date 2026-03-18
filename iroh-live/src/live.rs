@@ -14,7 +14,7 @@ use moq_media::{
     traits::AudioStreamFactory,
 };
 use n0_error::Result;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 use crate::rooms::{Room, RoomTicket};
 

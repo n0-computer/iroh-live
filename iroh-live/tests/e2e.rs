@@ -17,6 +17,7 @@ use moq_media::{
 };
 use n0_tracing_test::traced_test;
 use tokio::sync::watch;
+use tracing::{Instrument, info_span};
 
 /// Creates an endpoint bound to localhost with a random secret key.
 async fn endpoint() -> Endpoint {
@@ -32,58 +33,66 @@ async fn endpoint() -> Endpoint {
 #[traced_test]
 async fn publish_subscribe_video() {
     // --- Publisher ---
-    let publisher = Live::builder(endpoint().await).spawn_with_router();
+    let (publisher, _broadcast) = async {
+        let live = Live::builder(endpoint().await).spawn_with_router();
 
-    let broadcast = LocalBroadcast::new();
+        let broadcast = LocalBroadcast::new();
 
-    let source = TestVideoSource::new(320, 240).with_fps(30.0);
-    broadcast
-        .video()
-        .set(
-            source,
-            VideoCodec::best_available().expect("no video codec available"),
-            [VideoPreset::P180],
-        )
-        .expect("failed to set video");
-
-    publisher
-        .publish("test-stream", &broadcast)
-        .await
-        .expect("failed to publish");
+        let source = TestVideoSource::new(320, 240).with_fps(30.0);
+        broadcast
+            .video()
+            .set(
+                source,
+                VideoCodec::best_available().expect("no video codec available"),
+                [VideoPreset::P180],
+            )
+            .expect("failed to set video");
+        live.publish("test-stream", &broadcast)
+            .await
+            .expect("failed to publish");
+        (live, broadcast)
+    }
+    .instrument(info_span!("publisher"))
+    .await;
+    let pub_addr = publisher.endpoint().addr();
 
     // --- Subscriber ---
-    let subscriber = Live::builder(endpoint().await).spawn();
+    let subscriber = async move {
+        let live = Live::builder(endpoint().await).spawn();
 
-    let pub_addr = publisher.endpoint().addr();
-    let (_session, remote) = subscriber
-        .subscribe(pub_addr, "test-stream")
-        .await
-        .expect("failed to subscribe");
+        let (_session, remote) = live
+            .subscribe(pub_addr, "test-stream")
+            .await
+            .expect("failed to subscribe");
 
-    // Wait for catalog to arrive and contain video.
-    assert!(remote.has_video(), "broadcast should have video renditions");
+        // Wait for catalog to arrive and contain video.
+        assert!(remote.has_video(), "broadcast should have video renditions");
 
-    let mut video_track = remote.video().expect("failed to create video track");
+        let mut video_track = remote.video().expect("failed to create video track");
 
-    // Receive a few frames with a generous timeout.
-    let frame = tokio::time::timeout(Duration::from_secs(10), video_track.next_frame())
-        .await
-        .expect("timed out waiting for first video frame")
-        .expect("video track closed without producing a frame");
+        // Receive a few frames with a generous timeout.
+        let frame = tokio::time::timeout(Duration::from_secs(10), video_track.next_frame())
+            .await
+            .expect("timed out waiting for first video frame")
+            .expect("video track closed without producing a frame");
 
-    let [w, h] = frame.dimensions;
-    assert!(w > 0 && h > 0, "frame dimensions should be non-zero");
+        let [w, h] = frame.dimensions;
+        assert!(w > 0 && h > 0, "frame dimensions should be non-zero");
 
-    // Receive a second frame to confirm the pipeline is streaming.
-    let frame2 = tokio::time::timeout(Duration::from_secs(5), video_track.next_frame())
-        .await
-        .expect("timed out waiting for second video frame")
-        .expect("video track closed after first frame");
+        // Receive a second frame to confirm the pipeline is streaming.
+        let frame2 = tokio::time::timeout(Duration::from_secs(5), video_track.next_frame())
+            .await
+            .expect("timed out waiting for second video frame")
+            .expect("video track closed after first frame");
 
-    assert!(
-        frame2.timestamp > frame.timestamp || frame2.timestamp == Duration::ZERO,
-        "second frame should have a later timestamp"
-    );
+        assert!(
+            frame2.timestamp > frame.timestamp || frame2.timestamp == Duration::ZERO,
+            "second frame should have a later timestamp"
+        );
+        live
+    }
+    .instrument(info_span!("subscriber"))
+    .await;
 
     publisher.shutdown().await;
     subscriber.shutdown().await;

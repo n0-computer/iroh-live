@@ -4,10 +4,12 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result};
 use clap::Parser;
 use glow::HasContext;
-use glutin::config::ConfigTemplateBuilder;
-use glutin::context::{ContextAttributesBuilder, NotCurrentGlContext, Version};
-use glutin::display::{GetGlDisplay, GlDisplay};
-use glutin::surface::{GlSurface, SurfaceAttributesBuilder, WindowSurface};
+use glutin::{
+    config::ConfigTemplateBuilder,
+    context::{ContextAttributesBuilder, NotCurrentGlContext, Version},
+    display::{GetGlDisplay, GlDisplay},
+    surface::{GlSurface, SurfaceAttributesBuilder, WindowSurface},
+};
 use glutin_winit::DisplayBuilder;
 use iroh::Endpoint;
 use iroh_live::{
@@ -20,11 +22,13 @@ use iroh_live::{
 };
 use raw_window_handle::HasWindowHandle;
 use rusty_codecs::render::gles::GlesRenderer;
-use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{Key, NamedKey};
-use winit::window::{Window, WindowId};
+use winit::{
+    application::ApplicationHandler,
+    event::{ElementState, KeyEvent, WindowEvent},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    keyboard::{Key, NamedKey},
+    window::{Window, WindowId},
+};
 
 #[derive(Debug, Parser)]
 #[clap(about = "Minimal GLES2 video viewer for iroh-live")]
@@ -43,12 +47,12 @@ fn main() -> Result<()> {
     let audio_ctx = AudioBackend::default();
 
     println!("connecting to {} ...", cli.ticket);
-    let (_endpoint, video_track) = rt.block_on({
+    let (live, video_track) = rt.block_on({
         let audio_ctx = audio_ctx.clone();
         let ticket = cli.ticket.clone();
         async move {
             let endpoint = Endpoint::bind(iroh::endpoint::presets::N0).await?;
-            let live = Live::new(endpoint.clone());
+            let live = Live::new(endpoint);
             let (_session, track) = live
                 .subscribe_media_track::<DefaultDecoders>(
                     ticket.endpoint,
@@ -59,7 +63,7 @@ fn main() -> Result<()> {
                 .await?;
             let video = track.video.context("broadcast has no video track")?;
             println!("connected");
-            anyhow::Ok((endpoint, video))
+            anyhow::Ok((live, video))
         }
     })?;
 
@@ -67,6 +71,7 @@ fn main() -> Result<()> {
 
     let event_loop = EventLoop::new().context("create event loop")?;
     let mut app = App {
+        _live: live,
         renderer: None,
         surface: None,
         context: None,
@@ -85,6 +90,7 @@ struct App {
     surface: Option<glutin::surface::Surface<WindowSurface>>,
     context: Option<glutin::context::PossiblyCurrentContext>,
     window: Option<Window>,
+    _live: Live,
     video_track: VideoTrack,
     last_ts: Option<Duration>,
     frame_count: u64,
