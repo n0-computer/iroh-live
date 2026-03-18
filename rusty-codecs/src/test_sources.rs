@@ -27,9 +27,9 @@ const SMPTE_BARS: [[u8; 3]; 7] = [
 ];
 
 /// Width of the vertical scanning line (pixels).
-const LINE_WIDTH: u32 = 4;
+const LINE_WIDTH: u32 = 10;
 /// Border on each side of the scanning line (pixels).
-const LINE_BORDER: u32 = 2;
+const LINE_BORDER: u32 = 3;
 
 /// Animated SMPTE color-bar test pattern with a scanning line and beep indicator.
 ///
@@ -144,25 +144,35 @@ impl TestPatternSource {
         }
     }
 
-    /// Renders a large yellow square in the center during the beep window.
+    /// Renders a centered yellow square with black border during the beep window.
     ///
-    /// Covers ~25% of the frame area (half width × half height). Large and
-    /// bright enough to survive codec compression, used by E2E tests to
-    /// verify live video is updating.
+    /// The square side is 1/3 of the shorter dimension. Large enough to
+    /// survive codec compression, used by E2E tests to verify live video.
     fn stamp_beep_indicator(buf: &mut [u8], w: u32, h: u32, beep_active: bool) {
         if !beep_active {
             return;
         }
-        let sq_w = w / 2;
-        let sq_h = h / 2;
-        let x0 = (w - sq_w) / 2;
-        let y0 = (h - sq_h) / 2;
-        for y in y0..(y0 + sq_h) {
-            for x in x0..(x0 + sq_w) {
+        let border = 3u32;
+        let side = w.min(h) / 3;
+        let outer = side + 2 * border;
+        let ox = (w.saturating_sub(outer)) / 2;
+        let oy = (h.saturating_sub(outer)) / 2;
+        for y in oy..(oy + outer).min(h) {
+            for x in ox..(ox + outer).min(w) {
                 let idx = ((y * w + x) * 4) as usize;
-                buf[idx] = 255;
-                buf[idx + 1] = 255;
-                buf[idx + 2] = 0;
+                let in_inner = x >= ox + border
+                    && x < ox + border + side
+                    && y >= oy + border
+                    && y < oy + border + side;
+                if in_inner {
+                    buf[idx] = 255;
+                    buf[idx + 1] = 255;
+                    buf[idx + 2] = 0;
+                } else {
+                    buf[idx] = 0;
+                    buf[idx + 1] = 0;
+                    buf[idx + 2] = 0;
+                }
                 buf[idx + 3] = 255;
             }
         }
