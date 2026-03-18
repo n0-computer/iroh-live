@@ -85,6 +85,18 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 - [ ] **EH2**: `AudioDriver::new()` unwraps on CPAL stream start — panics if audio device unavailable (`audio_backend.rs:489`)
 - [ ] **EH3**: Inconsistent lock panic messages — mixed `.expect("poisoned")` vs `.expect("lock")` vs `.unwrap()`
 
+### New findings (2026-03-18)
+
+- [ ] **B12**: `VideoEncoderPipeline` hardcodes 30 fps frame duration — ignores encoder config framerate (`pipeline.rs:260`)
+- [ ] **B13**: `AdaptiveVideoTrack::format()` returns zeroed `[0, 0]` dimensions — breaks callers using format for layout (`adaptive.rs:374-378`)
+- [ ] **D11**: `set_enabled()` / `set_muted()` are public no-ops — should be removed, return `Err`, or implemented (`publish.rs:324,361`)
+- [ ] **D12**: Pipeline thread panics are invisible — no panic hook or error channel, callers see frozen stream (`pipeline.rs`)
+- [ ] **D13**: `VideoPublisher::set()` and `replace()` are identical — confusing duplicate API surface (`publish.rs`)
+- [ ] **D14**: PlayoutClock leaked into public API — users must call `.clock().set_buffer()` instead of `RemoteBroadcast` methods (`subscribe.rs`)
+- [ ] **D15**: `LocalBroadcast::producer()` exposes internal `BroadcastProducer` — bypasses catalog/rendition safety (`publish.rs`)
+- [ ] **D16**: No observability in AdaptiveVideoTrack — no way to query probe state or decision reasons (`adaptive.rs`)
+- [ ] **D17**: Adaptive rendition switch failure loops forever with no backoff (`adaptive.rs:561-570`)
+
 ---
 
 ## iroh-moq
@@ -137,6 +149,14 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 
 - [ ] **IL7**: Missing docs on most public items — `RoomHandle`, `Room`, `RoomTicket`, `LiveTicket`, `Rate`, `SmoothedStats`
 
+### New findings (2026-03-18)
+
+- [ ] **IL11**: `LiveTicket::to_bytes()` and `serialize()` call `.unwrap()` on postcard — panics in `Display` impl are unrecoverable (`ticket.rs:46,56`)
+- [ ] **IL12**: Two serialization APIs on tickets (`to_bytes`/`from_bytes` vs `serialize`/`deserialize`) — confusing, consolidate (`ticket.rs`)
+- [ ] **IL13**: Room gossip dependency is implicit — `Room::new()` fails at runtime if gossip not enabled, no type-level guard (`rooms.rs`)
+- [ ] **IL14**: `Live::subscribe()` returns tuple `(MoqSession, RemoteBroadcast)` — unclear ownership, should wrap (`live.rs`)
+- [ ] **IL15**: `spawn()` vs `spawn_with_router()` fork is confusing — user can forget to mount protocols (`live.rs`)
+
 ---
 
 ## rusty-codecs
@@ -160,6 +180,25 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 ### Documentation
 
 - [ ] **RC14**: Minimal SAFETY comments on VAAPI encoder unsafe blocks (`vaapi/encoder.rs:405, 490, 507, 695`)
+
+### New findings (2026-03-18)
+
+- [ ] **RC16**: VAAPI device path hardcoded to `/dev/dri/renderD128` — multi-GPU or renamed nodes fail silently (`vaapi/encoder.rs`, `vaapi/decoder.rs`, `ffmpeg/decoder.rs:66`)
+- [ ] **RC17**: Opus pre-skip always zero — standard encoder delay is 312 samples, can cause A/V sync drift (`opus/encoder.rs:210`)
+- [ ] **RC18**: Vulkan command pool not destroyed on DmaBufImporter drop — resource leak (`render/dmabuf_import.rs`)
+- [ ] **RC19**: AV1 decoder stride assumption — no assert that `picture.stride() >= width` (`av1/decoder.rs:87-89`)
+- [ ] **RC20**: FFmpeg `get_extradata()` lacks safety comments on raw pointer dereference (`ffmpeg/encoder.rs:612-625`)
+- [ ] **RC21**: V4L2 decoder `copy_plane()` allocates Vec even when stride == width — could return slice (`v4l2/decoder.rs:322-336`)
+- [ ] **RC22**: VAAPI VPP retiler re-initializes on every incompatible frame — should set initialized flag on error to stop retrying (`render/dmabuf_import.rs:157-168`)
+
+### rusty-capture
+
+- [ ] **CAP1**: PipeWire `parse_format_pod()` dereferences raw pointer without bounds validation — malformed pod causes UB (`pipewire.rs:391-405`)
+- [ ] **CAP2**: X11 `stop_capture()` ignores `shm::detach()` and `shmdt()` errors — SHM segment leaked without logging (`x11.rs:269-277`)
+- [ ] **CAP3**: `CameraConfig::select_format()` falls back silently when preferred format unavailable — not documented (`types.rs:277-286`)
+- [ ] **CAP4**: PipeWire frame drop logging at power-of-two intervals — can miss hundreds of drops between messages (`pipewire.rs:910-918`)
+- [ ] **CAP5**: No test for V4L2 DMA-BUF export path (`VIDIOC_EXPBUF`) — regression risk on driver changes
+- [ ] **CAP6**: PipeWire portal thread panics are unobserved — `result_rx.recv_timeout()` catches timeout but not panic (`pipewire.rs:1027-1036`)
 
 ---
 
