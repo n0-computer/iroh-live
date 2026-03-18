@@ -18,11 +18,12 @@ epaint = "0.33"
 moq-media = { workspace = true }
 pollster = { version = "0.4", optional = true }
 tracing = "0.1.41"
-wgpu = { version = "27", default-features = false, features = ["wgsl", "vulkan"], optional = true }
+wgpu = { version = "27", default-features = false, features = ["wgsl"], optional = true }
 
 [dev-dependencies]
 
 [features]
-default = ["wgpu-render"]
+default = ["wgpu-render", "metal-import"]
 wgpu-render = ["dep:egui-wgpu", "dep:wgpu", "dep:pollster", "moq-media/wgpu"]
-dmabuf-import = ["moq-media/dmabuf-import", "wgpu-render"]
+dmabuf-import = ["moq-media/dmabuf-import", "wgpu-render", "wgpu/vulkan"]
+metal-import = ["moq-media/metal-import", "wgpu-render", "wgpu/metal"]
