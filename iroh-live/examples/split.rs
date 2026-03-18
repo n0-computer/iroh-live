@@ -420,6 +420,7 @@ struct SubscribeView {
     _audio: Option<AudioTrack>,
     backend: DecoderBackend,
     render_mode: RenderMode,
+    _live: Live,
 
     playout_clock: PlayoutClock,
     net_stats: StatsSmoother,
@@ -457,6 +458,7 @@ impl SubscribeView {
             stats: FrameStats::default(),
             #[cfg(feature = "wgpu")]
             wgpu_render_state: None,
+            _live: live,
         })
     }
 
@@ -752,9 +754,11 @@ fn main() -> Result<()> {
     let secret_key = SecretKey::generate(&mut rand::rng());
 
     let publish = rt.block_on(PublishView::new(secret_key, audio_ctx.clone()))?;
+    info!(addr=?publish.addr(), "Publish side ready");
     let publisher_addr = publish.addr();
     #[allow(unused_mut, reason = "mut needed when wgpu feature is enabled")]
     let mut subscribe = rt.block_on(SubscribeView::new(publisher_addr, &audio_ctx))?;
+    info!("Subscribe side ready");
 
     let _guard = rt.enter();
 

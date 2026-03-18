@@ -145,16 +145,6 @@ enum RenderMode {
     Wgpu,
 }
 
-impl RenderMode {
-    fn short_name(self) -> &'static str {
-        match self {
-            Self::Software => "cpu",
-            #[cfg(feature = "wgpu")]
-            Self::Wgpu => "wgpu",
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Pipeline mode
 // ---------------------------------------------------------------------------
