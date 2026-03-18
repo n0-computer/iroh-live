@@ -81,7 +81,7 @@ impl Moq {
         let actor = Actor::new(endpoint, incoming_session_tx.clone());
         let shutdown_token = actor.shutdown_token.clone();
         let actor_task =
-            spawn(async move { actor.run(rx).instrument(error_span!("LiveActor")).await });
+            spawn(async move { actor.run(rx).await }.instrument(error_span!("LiveActor")));
         Self {
             shutdown_token,
             tx,
@@ -467,8 +467,8 @@ impl Actor {
     }
 
     fn handle_incoming_session(&mut self, session: MoqSession) {
-        tracing::info!("handle new incoming session");
         let remote = session.remote_id();
+        info!(remote=%remote.fmt_short(), "accepted incoming connection");
         for (name, producer) in self.publishing.iter() {
             session.publish(name.to_string(), producer.consume());
         }

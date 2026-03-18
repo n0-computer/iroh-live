@@ -117,7 +117,11 @@ impl TestPatternSource {
         let period = 2.0 * range as f64 / pixels_per_sec;
         let t_in_period = time_secs % period.max(0.001);
         let frac = t_in_period / period;
-        let pos_frac = if frac < 0.5 { frac * 2.0 } else { 2.0 - frac * 2.0 };
+        let pos_frac = if frac < 0.5 {
+            frac * 2.0
+        } else {
+            2.0 - frac * 2.0
+        };
         let center_x = half + (pos_frac * range as f64) as u32;
 
         let x_min = center_x.saturating_sub(half);

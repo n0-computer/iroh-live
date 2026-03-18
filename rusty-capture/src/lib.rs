@@ -452,6 +452,7 @@ impl ScreenCapturer {
 
     /// Lists available windows for capture (macOS only currently).
     pub fn list_windows() -> anyhow::Result<Vec<WindowInfo>> {
+        #[allow(unused_mut, reason = "empty for some platforms")]
         let mut windows = Vec::new();
         #[cfg(all(target_os = "macos", feature = "screen-apple"))]
         {
@@ -467,6 +468,13 @@ impl ScreenCapturer {
             window_id, config,
         )?);
         Ok(Self { inner })
+    }
+
+    /// Opens a specific window for capture by window ID.
+    // TODO: Don't panic.
+    #[cfg(not(all(target_os = "macos", feature = "screen-apple")))]
+    pub fn with_window(_window_id: u32, _config: &ScreenConfig) -> anyhow::Result<Self> {
+        unimplemented!("The platform doesn't support window captures")
     }
 }
 
