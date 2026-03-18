@@ -4,13 +4,100 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>iroh-live</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100%; width: 100%;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #111; color: #eee;
+    }
+    /* -- landing screen (name input) -- */
+    #landing {
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      height: 100%; gap: 1.2rem; padding: 1rem;
+    }
+    #landing h1 { font-size: 1.4rem; font-weight: 600; }
+    #landing form {
+      display: flex; gap: 0.5rem;
+      width: 100%; max-width: 32rem;
+    }
+    #landing input {
+      flex: 1; padding: 0.6rem 0.8rem;
+      border: 1px solid #444; border-radius: 6px;
+      background: #222; color: #eee;
+      font-size: 0.95rem; font-family: inherit;
+      outline: none;
+    }
+    #landing input:focus { border-color: #6af; }
+    #landing button {
+      padding: 0.6rem 1.4rem;
+      border: none; border-radius: 6px;
+      background: #28a; color: #fff;
+      font-size: 0.95rem; font-family: inherit;
+      cursor: pointer;
+    }
+    #landing button:hover { background: #39b; }
+    #landing .links { font-size: 0.85rem; }
+    #landing .links a { color: #6af; text-decoration: none; }
+    #landing .links a:hover { text-decoration: underline; }
+
+    /* -- watch screen (video) -- */
+    #player {
+      display: none; flex-direction: column;
+      height: 100%; width: 100%;
+    }
+    #player.active { display: flex; }
+    #player moq-watch {
+      flex: 1; min-height: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: #000;
+    }
+    #player moq-watch canvas {
+      max-width: 100%; max-height: 100%;
+      object-fit: contain;
+    }
+    #toolbar {
+      display: flex; align-items: center; gap: 0.6rem;
+      padding: 0.5rem 0.8rem;
+      background: #1a1a1a; border-top: 1px solid #333;
+      font-size: 0.85rem;
+    }
+    #toolbar .name { opacity: 0.6; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #toolbar button {
+      padding: 0.3rem 0.8rem;
+      border: 1px solid #444; border-radius: 4px;
+      background: transparent; color: #eee;
+      font-size: 0.8rem; font-family: inherit;
+      cursor: pointer;
+    }
+    #toolbar button:hover { background: #333; }
+  </style>
 </head>
 <body>
-  <h1>Watch</h1>
-  <moq-watch id="watch" muted reload jitter="100">
-    <canvas style="width: 100%; height: auto;"></canvas>
-  </moq-watch>
-  <p><a href="publish.html">Publish a broadcast</a></p>
+
+  <!-- Landing: name / ticket input -->
+  <div id="landing">
+    <h1>iroh-live watch</h1>
+    <form id="connect-form">
+      <input id="name-input" type="text" placeholder="name or ticket" autofocus autocomplete="off" spellcheck="false">
+      <button type="submit">OK</button>
+    </form>
+    <div class="links"><a href="publish.html">Publish a broadcast</a></div>
+  </div>
+
+  <!-- Player: full-screen video -->
+  <div id="player">
+    <moq-watch id="watch" muted reload jitter="100">
+      <canvas></canvas>
+    </moq-watch>
+    <div id="toolbar">
+      <span id="now-watching" class="name"></span>
+      <button id="btn-back">Back</button>
+    </div>
+  </div>
+
   <script type="module" src="index.ts"></script>
 </body>
 </html>

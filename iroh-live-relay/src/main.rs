@@ -9,6 +9,7 @@ use clap::Parser;
 use include_dir::{Dir, include_dir};
 use moq_relay::{AuthConfig, Cluster, ClusterConfig, Connection};
 use tower_http::cors::{Any, CorsLayer};
+use tracing::debug;
 
 mod pull;
 
@@ -205,7 +206,7 @@ async fn main() -> anyhow::Result<()> {
     let mut conn_id = 0u64;
     while let Some(request) = server.accept().await {
         let transport = request.transport();
-        tracing::debug!(conn_id, transport, "accepted connection");
+        debug!(conn_id, transport, "accepted connection");
 
         // Pull mode: if the connection URL contains a `name` query param that
         // is a valid iroh-live ticket, pull the remote broadcast into the
@@ -213,8 +214,12 @@ async fn main() -> anyhow::Result<()> {
         // conn.run() so the broadcast is available when moq-lite resolves it.
         let ticket = pull_state.as_ref().and_then(|_| {
             let name = extract_name_from_url(&request)?;
-            name.parse::<iroh_live::ticket::LiveTicket>().ok()
+            debug!("path: {name}");
+            let parsed = name.parse::<iroh_live::ticket::LiveTicket>();
+            debug!("parsed: {parsed:?}");
+            parsed.ok()
         });
+        debug!(conn_id, transport, ?ticket, "parsed ticket");
 
         let pull_clone = pull_state.clone();
         let conn = Connection {
@@ -243,9 +248,18 @@ async fn main() -> anyhow::Result<()> {
 /// Extracts the `name` query parameter from an incoming request's URL.
 fn extract_name_from_url(request: &moq_native::Request) -> Option<String> {
     let url = request.url()?;
-    url.query_pairs()
-        .find(|(k, _)| k == "name")
-        .map(|(_, v)| v.into_owned())
+    debug!("url: {url}");
+    if url.path().len() > 1 {
+        Some(url.path()[1..].to_string())
+    } else {
+        None
+    }
+    // let res = url
+    //     .query_pairs()
+    //     .find(|(k, _)| k == "name")
+    //     .map(|(_, v)| v.into_owned());
+    // debug!("res: {res:?}");
+    // res
 }
 
 /// Serves the TLS certificate fingerprint for WebTransport dev mode.
