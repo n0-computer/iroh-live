@@ -208,6 +208,8 @@ impl Live {
             && let Err(err) = router.shutdown().await
         {
             error!("Error while shutting down the iroh router: {err:#}");
+        } else {
+            self.endpoint.close().await
         }
     }
 }
