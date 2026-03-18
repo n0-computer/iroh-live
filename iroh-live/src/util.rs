@@ -197,3 +197,67 @@ pub fn spawn_signal_producer(
     });
     rx
 }
+
+/// Spawns a background task that records connection stats into a
+/// [`MetricsCollector`] for overlay display.
+///
+/// Records RTT, loss rate, and bandwidth estimates every 200ms.
+/// Complements `spawn_signal_producer` — that one feeds adaptive
+/// bitrate, this one feeds the debug overlay.
+pub fn spawn_stats_recorder(
+    conn: &Connection,
+    metrics: moq_media::stats::MetricsCollector,
+    shutdown: CancellationToken,
+) {
+    use moq_media::stats::*;
+    let conn = conn.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(200));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut prev_rx_bytes: u64 = 0;
+        let mut prev_tx_bytes: u64 = 0;
+        let mut prev_time = std::time::Instant::now();
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = shutdown.cancelled() => break,
+            }
+
+            let paths = conn.paths().get();
+            let Some(selected) = paths.iter().find(|p| p.is_selected()) else {
+                continue;
+            };
+            let Some(stats) = selected.stats() else {
+                continue;
+            };
+            let Some(rtt) = selected.rtt() else {
+                continue;
+            };
+
+            metrics.record(NET_RTT_MS, rtt.as_secs_f64() * 1000.0);
+
+            // Loss rate (same calculation as spawn_signal_producer).
+            let total_lost = stats.lost_packets;
+            let total_sent = stats.udp_tx.datagrams;
+            if total_sent + total_lost > 0 {
+                let loss = total_lost as f64 / (total_sent + total_lost) as f64 * 100.0;
+                metrics.record(NET_LOSS_PCT, loss);
+            }
+
+            // Bandwidth from byte deltas.
+            let now = std::time::Instant::now();
+            let dt = now.duration_since(prev_time).as_secs_f64();
+            if dt > 0.0 {
+                let rx = stats.udp_rx.bytes;
+                let tx = stats.udp_tx.bytes;
+                let down_mbps = (rx.saturating_sub(prev_rx_bytes)) as f64 * 8.0 / dt / 1_000_000.0;
+                let up_mbps = (tx.saturating_sub(prev_tx_bytes)) as f64 * 8.0 / dt / 1_000_000.0;
+                metrics.record(NET_BW_DOWN_MBPS, down_mbps);
+                metrics.record(NET_BW_UP_MBPS, up_mbps);
+                prev_rx_bytes = rx;
+                prev_tx_bytes = tx;
+                prev_time = now;
+            }
+        }
+    });
+}

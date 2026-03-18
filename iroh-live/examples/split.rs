@@ -16,7 +16,7 @@
 use std::time::Duration;
 
 use eframe::egui;
-use iroh::{Endpoint, EndpointAddr, SecretKey, Watcher, protocol::Router};
+use iroh::{Endpoint, EndpointAddr, SecretKey, protocol::Router};
 use iroh_live::media::capture::{CameraCapturer, CaptureBackend, ScreenCapturer};
 use iroh_live::media::test_sources::{TestPatternSource, TestToneSource};
 use iroh_live::media::traits::VideoSource;
@@ -28,14 +28,14 @@ use iroh_live::{
         format::{AudioPreset, DecodeConfig, DecoderBackend, PlaybackConfig, VideoPreset},
         playout::PlayoutClock,
         publish::LocalBroadcast,
+        stats::MetricsCollector,
         subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
     },
     moq::MoqSession,
-    util::StatsSmoother,
 };
 use moq_media_egui::{
-    VideoTrackView, create_egui_wgpu_config, format_bitrate,
-    overlay::{FrameStats, OVERLAY_BAR_H, fit_to_aspect, overlay_bar},
+    VideoTrackView, create_egui_wgpu_config,
+    overlay::{DebugOverlay, FrameStats, OVERLAY_BAR_H, StatCategory, fit_to_aspect, overlay_bar},
 };
 use n0_error::{Result, anyerr};
 use strum::VariantArray;
@@ -423,7 +423,8 @@ struct SubscribeView {
     _live: Live,
 
     playout_clock: PlayoutClock,
-    net_stats: StatsSmoother,
+    metrics: MetricsCollector,
+    overlay: DebugOverlay,
     stats: FrameStats,
 
     #[cfg(feature = "wgpu")]
@@ -440,9 +441,18 @@ impl SubscribeView {
         let playout_clock = broadcast.clock().clone();
 
         let playback_config = PlaybackConfig::default();
-        let tracks = broadcast
+        let mut tracks = broadcast
             .media::<DefaultDecoders>(audio_ctx, playback_config)
             .await?;
+
+        let metrics = MetricsCollector::new();
+        metrics.register_defaults();
+        tracks.broadcast.set_metrics(metrics.clone());
+        iroh_live::util::spawn_stats_recorder(
+            session.conn(),
+            metrics.clone(),
+            tracks.broadcast.shutdown_token(),
+        );
 
         Ok(Self {
             session,
@@ -454,7 +464,12 @@ impl SubscribeView {
             backend: DecoderBackend::Auto,
             render_mode: *RenderMode::VARIANTS.last().unwrap(),
             playout_clock,
-            net_stats: StatsSmoother::new(),
+            metrics,
+            overlay: DebugOverlay::new(&[
+                StatCategory::Net,
+                StatCategory::Render,
+                StatCategory::Time,
+            ]),
             stats: FrameStats::default(),
             #[cfg(feature = "wgpu")]
             wgpu_render_state: None,
@@ -634,60 +649,9 @@ impl SubscribeView {
             ui.allocate_space(avail);
         }
 
-        // Overlay bars painted on top of the video's bottom edge.
         let video_rect = egui::Rect::from_min_size(video_origin, video_size);
-        let painter = ui.painter();
-
-        let bar1_rect = egui::Rect::from_min_size(
-            egui::pos2(video_rect.min.x, video_rect.max.y - 2.0 * OVERLAY_BAR_H),
-            egui::vec2(video_rect.width(), OVERLAY_BAR_H),
-        );
-        let bar2_rect = egui::Rect::from_min_size(
-            egui::pos2(video_rect.min.x, video_rect.max.y - OVERLAY_BAR_H),
-            egui::vec2(video_rect.width(), OVERLAY_BAR_H),
-        );
-
-        let rendition = self
-            .video
-            .as_ref()
-            .map(|v| v.track().rendition().to_owned())
-            .unwrap_or_default();
-        let decoder_name = self
-            .video
-            .as_ref()
-            .map(|v| v.track().decoder_name().to_owned())
-            .unwrap_or_default();
-        let renderer = if self.video.as_ref().is_some_and(|v| v.is_wgpu()) {
-            "wgpu"
-        } else {
-            "cpu"
-        };
-        let buf = self.playout_clock.buffer();
-        let jitter = self.playout_clock.jitter();
-        let net = self.net_stats.smoothed(|| {
-            let conn = self.session.conn();
-            (conn.stats(), conn.paths().get())
-        });
-        let sub_text = format!(
-            "SUB  rend: {}  dec: {}  render: {}  fps: {:.0}  delay: {:.0}ms  buf: {}ms  jitter: {:.1}ms  bitrate: {}",
-            rendition,
-            decoder_name,
-            renderer,
-            self.stats.fps,
-            self.stats.delay_ms,
-            buf.as_millis(),
-            jitter.as_secs_f64() * 1000.0,
-            format_bitrate(net.down.rate as f64),
-        );
-        overlay_bar(painter, bar1_rect, &sub_text);
-
-        let conn_text = format!(
-            "NET  up: {}  down: {}  rtt: {}ms",
-            net.up.rate_str,
-            net.down.rate_str,
-            net.rtt.as_millis(),
-        );
-        overlay_bar(painter, bar2_rect, &conn_text);
+        let snap = self.metrics.snapshot();
+        self.overlay.show(ui, video_rect, &snap);
     }
 
     fn shutdown(&self) {

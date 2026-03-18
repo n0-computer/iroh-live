@@ -144,6 +144,18 @@ impl VideoDecoderPipeline {
         decode_config: &DecodeConfig,
         clock: Option<PlayoutClock>,
     ) -> Result<Self> {
+        Self::with_clock_and_metrics::<D>(name, source, config, decode_config, clock, None)
+    }
+
+    /// Creates a new decoder pipeline with playout clock and metrics collector.
+    pub fn with_clock_and_metrics<D: VideoDecoder>(
+        name: String,
+        source: impl PacketSource,
+        config: &VideoConfig,
+        decode_config: &DecodeConfig,
+        clock: Option<PlayoutClock>,
+        metrics: Option<crate::stats::MetricsCollector>,
+    ) -> Result<Self> {
         let shutdown = CancellationToken::new();
         let (packet_tx, packet_rx) = mpsc::channel(32);
         let (frame_tx, frame_rx) = mpsc::channel(32);
@@ -170,6 +182,7 @@ impl VideoDecoderPipeline {
                     decoder,
                     clock,
                     framerate,
+                    metrics,
                 ) {
                     error!("decoder failed: {err:#}");
                 }
@@ -422,6 +435,7 @@ fn decode_loop(
     mut decoder: impl VideoDecoder,
     clock: Option<PlayoutClock>,
     framerate: f64,
+    metrics: Option<crate::stats::MetricsCollector>,
 ) -> Result<()> {
     let mut waiting_for_keyframe = false;
     let mut last_send = Instant::now();
@@ -598,6 +612,12 @@ fn decode_loop(
                     waiting_for_keyframe = true;
                 } else {
                     let push_elapsed = t.elapsed();
+                    if let Some(ref m) = metrics {
+                        m.record(
+                            crate::stats::RND_DECODE_MS,
+                            push_elapsed.as_secs_f64() * 1000.0,
+                        );
+                    }
                     if push_elapsed > Duration::from_millis(10) {
                         debug!(t=?push_elapsed, "decode_loop: slow push_packet");
                     }
@@ -645,20 +665,23 @@ fn decode_loop(
             }
             frames_popped += 1;
             let gap = last_send.elapsed();
+            if let Some(ref m) = metrics {
+                // Record instantaneous fps from inter-frame gap.
+                if !gap.is_zero() {
+                    m.record(crate::stats::RND_FPS, 1.0 / gap.as_secs_f64());
+                }
+            }
             if gap > Duration::from_millis(50) {
                 debug!(gap=?gap, buf_len=playout.buf_len(), "decode_loop: frame gap (stutter)");
             }
             last_send = Instant::now();
         }
 
-        // Periodic status log (~every 5s).
+        // Periodic status log (~every 5s) + metrics recording.
         {
             let (drift, reanchors) = clock.reanchor_stats();
             let jitter = clock.jitter();
             let buf = clock.buffer();
-            // Wall-clock vs PTS progression: positive means we consumed
-            // wall time faster than PTS advanced (falling behind / adding
-            // latency). This reveals hidden delay from re-anchoring.
             let wall_vs_pts_lag_ms =
                 if let (Some(fp), Some(wall_start)) = (first_pts, stream_start_wall) {
                     let wall_elapsed = wall_start.elapsed();
@@ -667,6 +690,15 @@ fn decode_loop(
                 } else {
                     0
                 };
+
+            if let Some(ref m) = metrics {
+                m.record(crate::stats::TMG_JITTER_MS, jitter.as_secs_f64() * 1000.0);
+                m.record(crate::stats::TMG_DRIFT_MS, drift.as_secs_f64() * 1000.0);
+                m.record(crate::stats::TMG_REANCHOR_COUNT, reanchors as f64);
+                m.record(crate::stats::TMG_BUF_FRAMES, playout.buf_len() as f64);
+                m.record(crate::stats::TMG_DELAY_MS, wall_vs_pts_lag_ms as f64);
+            }
+
             throttled_tracing::debug_every!(
                 Duration::from_secs(5),
                 frames_pushed,

@@ -1,21 +1,24 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use clap::Parser;
-use eframe::egui::{self, Id};
-use iroh::{Endpoint, EndpointId, Watcher};
+use eframe::egui;
+use iroh::{Endpoint, EndpointId};
 use iroh_live::{
     Live,
     media::{
         audio_backend::AudioBackend,
-        codec::{DefaultDecoders, DynamicVideoDecoder},
+        codec::DefaultDecoders,
         format::{DecodeConfig, DecoderBackend, PlaybackConfig},
+        stats::MetricsCollector,
         subscribe::{AudioTrack, RemoteBroadcast},
     },
     moq::MoqSession,
     ticket::LiveTicket,
-    util::StatsSmoother,
 };
-use moq_media_egui::{VideoTrackView, create_egui_wgpu_config};
+use moq_media_egui::{
+    VideoTrackView, create_egui_wgpu_config,
+    overlay::{DebugOverlay, StatCategory},
+};
 use n0_error::{Result, anyerr};
 use tracing::{info, warn};
 
@@ -63,9 +66,13 @@ fn main() -> Result<()> {
         .unwrap();
     let audio_ctx = AudioBackend::default();
 
+    let metrics = MetricsCollector::new();
+    metrics.register_defaults();
+
     println!("connecting to {ticket} ...");
     let (endpoint, session, track) = rt.block_on({
         let audio_ctx = audio_ctx.clone();
+        let metrics = metrics.clone();
         async move {
             let endpoint = Endpoint::bind(iroh::endpoint::presets::N0).await?;
             let live = Live::new(endpoint.clone());
@@ -76,7 +83,7 @@ fn main() -> Result<()> {
                 },
                 ..Default::default()
             };
-            let (session, track) = live
+            let (session, mut track) = live
                 .subscribe_media_track::<DefaultDecoders>(
                     ticket.endpoint,
                     &ticket.broadcast_name,
@@ -84,6 +91,15 @@ fn main() -> Result<()> {
                     playback_config,
                 )
                 .await?;
+            track.broadcast.set_metrics(metrics.clone());
+
+            // Record transport stats into the metrics collector.
+            iroh_live::util::spawn_stats_recorder(
+                session.conn(),
+                metrics,
+                track.broadcast.shutdown_token(),
+            );
+
             println!("connected!");
             n0_error::Ok((endpoint, session, track))
         }
@@ -131,12 +147,14 @@ fn main() -> Result<()> {
                 audio: track.audio,
                 broadcast: track.broadcast,
                 session,
-                stats: StatsSmoother::new(),
+                metrics,
+                overlay: DebugOverlay::new(&[
+                    StatCategory::Net,
+                    StatCategory::Render,
+                    StatCategory::Time,
+                ]),
                 endpoint,
                 rt,
-                frame_count: 0,
-                fps_last_update: Instant::now(),
-                fps: 0.0,
             };
             Ok(Box::new(app))
         }),
@@ -151,24 +169,12 @@ struct App {
     endpoint: Endpoint,
     session: MoqSession,
     broadcast: RemoteBroadcast,
-    stats: StatsSmoother,
+    metrics: MetricsCollector,
+    overlay: DebugOverlay,
     rt: tokio::runtime::Runtime,
-    frame_count: u64,
-    fps_last_update: Instant,
-    fps: f32,
 }
 
 impl App {
-    fn update_fps(&mut self) {
-        self.frame_count += 1;
-        let elapsed = self.fps_last_update.elapsed();
-        if elapsed >= Duration::from_secs(1) {
-            self.fps = self.frame_count as f32 / elapsed.as_secs_f32();
-            self.frame_count = 0;
-            self.fps_last_update = Instant::now();
-        }
-    }
-
     fn resubscribe(&mut self, ctx: &egui::Context) {
         match self.broadcast.video() {
             Ok(track) => {
@@ -197,11 +203,8 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.request_repaint_after(Duration::from_millis(30)); // min 30 fps
-        self.update_fps();
+        ctx.request_repaint_after(Duration::from_millis(30));
 
-        // When the remote publisher switches source, the old track closes.
-        // Resubscribe from the current catalog to pick up the new source.
         let video_closed = self.video.as_ref().is_some_and(|v| v.track().is_closed());
         if video_closed {
             info!("video track closed, resubscribing from current catalog");
@@ -214,23 +217,14 @@ impl eframe::App for App {
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
                 let avail = ui.available_size();
+                let video_rect = egui::Rect::from_min_size(ui.cursor().min, avail);
                 if let Some(video) = self.video.as_mut() {
                     let (img, _) = video.render(ctx, avail);
                     ui.add_sized(avail, img);
                 }
 
-                egui::Area::new(Id::new("overlay"))
-                    .anchor(egui::Align2::LEFT_BOTTOM, [8.0, -8.0])
-                    .show(ctx, |ui| {
-                        egui::Frame::new()
-                            .fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 128))
-                            .corner_radius(3.0)
-                            .show(ui, |ui| {
-                                ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-                                ui.set_min_width(100.);
-                                self.render_overlay(ctx, ui);
-                            })
-                    })
+                let snap = self.metrics.snapshot();
+                self.overlay.show(ui, video_rect, &snap);
             });
     }
 
@@ -242,59 +236,6 @@ impl eframe::App for App {
         self.rt.block_on(async move {
             endpoint.close().await;
             info!("endpoint closed");
-        });
-    }
-}
-
-impl App {
-    fn render_overlay(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        ui.vertical(|ui| {
-            // Rendition selector
-            let selected = self
-                .video
-                .as_ref()
-                .map(|video| video.track().rendition().to_owned());
-            egui::ComboBox::from_id_salt("rendition")
-                .selected_text(selected.clone().unwrap_or_default())
-                .show_ui(ui, |ui| {
-                    for name in self.broadcast.catalog().video_renditions() {
-                        if ui
-                            .selectable_label(selected.as_deref() == Some(name), name)
-                            .clicked()
-                            && let Ok(track) = self
-                                .broadcast
-                                .video_rendition::<DynamicVideoDecoder>(&Default::default(), name)
-                        {
-                            self.video = Some(VideoTrackView::new(ctx, "video", track));
-                        }
-                    }
-                });
-
-            let decoder_name = self
-                .video
-                .as_ref()
-                .map(|v| v.track().decoder_name().to_owned())
-                .unwrap_or_default();
-            let renderer = if self.video.as_ref().is_some_and(|v| v.is_wgpu()) {
-                "wgpu"
-            } else {
-                "cpu"
-            };
-
-            let stats = self.stats.smoothed(|| {
-                let conn = self.session.conn();
-                (conn.stats(), conn.paths().get())
-            });
-            ui.label(format!(
-                "peer:    {}",
-                self.session.conn().remote_id().fmt_short()
-            ));
-            ui.label(format!("decoder: {decoder_name}"));
-            ui.label(format!("render:  {renderer}"));
-            ui.label(format!("fps:     {:.0}", self.fps));
-            ui.label(format!("BW up:   {}", stats.up.rate_str));
-            ui.label(format!("BW down: {}", stats.down.rate_str));
-            ui.label(format!("RTT:     {}ms", stats.rtt.as_millis()));
         });
     }
 }
