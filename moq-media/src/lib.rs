@@ -5,6 +5,7 @@ pub mod pipeline;
 pub mod playout;
 mod processing;
 pub mod publish;
+pub mod stats;
 pub mod subscribe;
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;

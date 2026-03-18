@@ -38,6 +38,10 @@ Patchbay integration for kernel-level link impairment. NAT traversal and relay f
 Extract reusable demo sources, source discovery, and egui helpers from examples.
 - [call-example-simplification.md](call-example-simplification.md)
 
+### Debug overlays
+Consolidated stats tracking (`MetricsCollector` in moq-media) and overlay UI (collapsible stat bars, timeline panel) in moq-media-egui. Replaces ad-hoc per-example stats code.
+- [debug-overlays.md](debug-overlays.md)
+
 ### Devtools
 Extract shared egui module from examples, build multi-endpoint splitscreen dev tool.
 - [devtools.md](devtools.md)

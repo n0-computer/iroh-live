@@ -204,6 +204,7 @@ pub struct RemoteBroadcast {
     clock: PlayoutClock,
     shutdown: CancellationToken,
     _catalog_task: Arc<AbortOnDropHandle<()>>,
+    metrics: Option<crate::stats::MetricsCollector>,
 }
 
 /// Point-in-time snapshot of a broadcast's catalog.
@@ -353,6 +354,7 @@ impl RemoteBroadcast {
             clock,
             _catalog_task: Arc::new(AbortOnDropHandle::new(catalog_task)),
             shutdown,
+            metrics: None,
         })
     }
 
@@ -384,6 +386,17 @@ impl RemoteBroadcast {
     /// Returns the shared playout clock for A/V sync and latency control.
     pub fn clock(&self) -> &PlayoutClock {
         &self.clock
+    }
+
+    /// Attaches a metrics collector. Stats from the decode and playout
+    /// pipelines will be recorded into it.
+    pub fn set_metrics(&mut self, metrics: crate::stats::MetricsCollector) {
+        self.metrics = Some(metrics);
+    }
+
+    /// Returns the attached metrics collector, if any.
+    pub fn metrics(&self) -> Option<&crate::stats::MetricsCollector> {
+        self.metrics.as_ref()
     }
 
     /// Sets the playout mode, updating the shared clock.
@@ -441,6 +454,7 @@ impl RemoteBroadcast {
             config,
             playback_config,
             Some(clock),
+            self.metrics.clone(),
         )
     }
 
@@ -861,15 +875,17 @@ impl VideoTrack {
         config: &VideoConfig,
         playback_config: &DecodeConfig,
         clock: Option<PlayoutClock>,
+        metrics: Option<crate::stats::MetricsCollector>,
     ) -> Result<Self> {
         let source = MoqPacketSource(consumer);
         let config: rusty_codecs::config::VideoConfig = config.clone().into();
-        let pipeline = VideoDecoderPipeline::with_clock::<D>(
+        let pipeline = VideoDecoderPipeline::with_clock_and_metrics::<D>(
             rendition,
             source,
             &config,
             playback_config,
             clock,
+            metrics,
         )?;
         Ok(Self::from_pipeline(pipeline))
     }
