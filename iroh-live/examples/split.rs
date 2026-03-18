@@ -378,6 +378,8 @@ impl PublishView {
         }
 
         let video_rect = egui::Rect::from_min_size(video_origin, video_size);
+        self.metrics
+            .set_label(moq_media::stats::LBL_CODEC, self.codec.display_name());
         let snap = self.metrics.snapshot();
         self.overlay.show(ui, video_rect, &snap);
     }
@@ -633,6 +635,17 @@ impl SubscribeView {
         }
 
         let video_rect = egui::Rect::from_min_size(video_origin, video_size);
+        if let Some(v) = &self.video {
+            self.overlay.update_from_track(&self.metrics, v.track());
+            self.metrics.set_label(
+                moq_media::stats::LBL_RENDERER,
+                if v.is_wgpu() {
+                    v.render_path_name()
+                } else {
+                    "cpu"
+                },
+            );
+        }
         let snap = self.metrics.snapshot();
         self.overlay.show(ui, video_rect, &snap);
     }

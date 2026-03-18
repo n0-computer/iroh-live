@@ -223,6 +223,19 @@ impl eframe::App for App {
                     ui.add_sized(avail, img);
                 }
 
+                // Update labels from live state.
+                if let Some(v) = &self.video {
+                    self.overlay.update_from_track(&self.metrics, v.track());
+                    self.metrics.set_label(
+                        moq_media::stats::LBL_RENDERER,
+                        if v.is_wgpu() {
+                            v.render_path_name()
+                        } else {
+                            "cpu"
+                        },
+                    );
+                }
+
                 let snap = self.metrics.snapshot();
                 self.overlay.show(ui, video_rect, &snap);
             });
