@@ -22,7 +22,7 @@ use eframe::egui;
 #[cfg(feature = "capture-camera")]
 use moq_media::capture::CameraCapturer;
 #[cfg(feature = "capture-screen")]
-use moq_media::capture::ScreenCapturer;
+use moq_media::capture::{MonitorInfo, ScreenCapturer, WindowInfo};
 use moq_media::{
     codec::{DynamicVideoDecoder, VideoCodec},
     format::{
@@ -47,7 +47,7 @@ use tokio::runtime::Runtime;
 use moq_media::capture::CaptureBackend;
 
 /// A video source option discovered at runtime from available backends.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 enum DiscoveredSource {
     TestPattern,
     #[cfg(feature = "capture-camera")]
@@ -58,7 +58,45 @@ enum DiscoveredSource {
     #[cfg(feature = "capture-screen")]
     Screen {
         backend: CaptureBackend,
+        monitor: MonitorInfo,
     },
+    #[cfg(feature = "capture-screen")]
+    Window {
+        window: WindowInfo,
+    },
+}
+
+impl PartialEq for DiscoveredSource {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::TestPattern, Self::TestPattern) => true,
+            #[cfg(feature = "capture-camera")]
+            (
+                Self::Camera {
+                    backend: a,
+                    name: na,
+                },
+                Self::Camera {
+                    backend: b,
+                    name: nb,
+                },
+            ) => a == b && na == nb,
+            #[cfg(feature = "capture-screen")]
+            (
+                Self::Screen {
+                    backend: a,
+                    monitor: ma,
+                },
+                Self::Screen {
+                    backend: b,
+                    monitor: mb,
+                },
+            ) => a == b && ma.id == mb.id,
+            #[cfg(feature = "capture-screen")]
+            (Self::Window { window: a }, Self::Window { window: b }) => a.id == b.id,
+            _ => false,
+        }
+    }
 }
 
 impl std::fmt::Display for DiscoveredSource {
@@ -68,7 +106,31 @@ impl std::fmt::Display for DiscoveredSource {
             #[cfg(feature = "capture-camera")]
             Self::Camera { backend, name } => write!(f, "{name} ({backend})"),
             #[cfg(feature = "capture-screen")]
-            Self::Screen { backend } => write!(f, "Screen ({backend})"),
+            Self::Screen { monitor, .. } => {
+                let [w, h] = monitor.dimensions;
+                if monitor.is_primary {
+                    write!(f, "{} (primary, {}x{})", monitor.name, w, h)
+                } else {
+                    write!(f, "{} ({}x{})", monitor.name, w, h)
+                }
+            }
+            #[cfg(feature = "capture-screen")]
+            Self::Window { window } => {
+                let [w, h] = window.dimensions;
+                let display = window
+                    .display_id
+                    .map(|id| format!(" @{id}"))
+                    .unwrap_or_default();
+                if window.app_name.is_empty() || window.app_name == window.title {
+                    write!(f, "{}{display} ({}x{})", window.title, w, h)
+                } else {
+                    write!(
+                        f,
+                        "{}: {}{display} ({}x{})",
+                        window.app_name, window.title, w, h
+                    )
+                }
+            }
         }
     }
 }
@@ -84,9 +146,11 @@ impl DiscoveredSource {
                 Ok(Box::new(CameraCapturer::with_backend(*backend, &config)?))
             }
             #[cfg(feature = "capture-screen")]
-            Self::Screen { backend } => {
+            Self::Screen { monitor, .. } => Ok(Box::new(ScreenCapturer::with_monitor(monitor)?)),
+            #[cfg(feature = "capture-screen")]
+            Self::Window { window } => {
                 let config = moq_media::capture::ScreenConfig::default();
-                Ok(Box::new(ScreenCapturer::with_backend(*backend, &config)?))
+                Ok(Box::new(ScreenCapturer::with_window(window.id, &config)?))
             }
         }
     }
@@ -97,8 +161,18 @@ fn discover_sources() -> Vec<DiscoveredSource> {
     let mut sources = vec![DiscoveredSource::TestPattern];
 
     #[cfg(feature = "capture-screen")]
-    for backend in ScreenCapturer::list_backends() {
-        sources.push(DiscoveredSource::Screen { backend });
+    if let Ok(monitors) = ScreenCapturer::list() {
+        for monitor in monitors {
+            let backend = monitor.backend;
+            sources.push(DiscoveredSource::Screen { backend, monitor });
+        }
+    }
+
+    #[cfg(feature = "capture-screen")]
+    if let Ok(windows) = ScreenCapturer::list_windows() {
+        for window in windows {
+            sources.push(DiscoveredSource::Window { window });
+        }
     }
 
     #[cfg(feature = "capture-camera")]
