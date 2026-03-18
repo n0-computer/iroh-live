@@ -267,25 +267,21 @@ impl VideoEncoder for VtbEncoder {
     }
 
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
-        let frame = self.scale_if_needed(frame)?;
-        let [w, h] = frame.dimensions;
-
         // Zero-copy fast path: if the frame is a GPU frame backed by a
         // CVPixelBuffer (e.g. from ScreenCaptureKit or AVFoundation),
-        // pass it directly to VTCompressionSession. No CPU color conversion,
-        // no pool buffer copy — VTB handles BGRA/NV12→H.264 on the GPU.
+        // pass it directly to VTCompressionSession. VTB handles color
+        // conversion (BGRA→YUV) and scaling on the GPU — no CPU work.
         let pixel_buffer = if let crate::format::FrameData::Gpu(ref gpu) = frame.data
-            && let Some(crate::format::NativeFrameHandle::CvPixelBuffer(info)) = gpu.native_handle()
-            && info.width == w
-            && info.height == h
+            && let Some(crate::format::NativeFrameHandle::CvPixelBuffer(info)) =
+                gpu.native_handle()
         {
             tracing::trace!("vtb zero-copy encode path");
-            // Retain the CVPixelBuffer for encoding. CvPixelBufferInfo already
-            // holds one retain count; we add another for the VTB session.
             let ptr = NonNull::new(info.as_ptr().cast::<CVPixelBuffer>()).unwrap();
             unsafe { CFRetained::retain(ptr) }
         } else {
-            // CPU fallback: convert to I420 and copy into a pool buffer.
+            // CPU fallback: scale if needed, convert to I420, copy into pool buffer.
+            let frame = self.scale_if_needed(frame)?;
+            let [w, h] = frame.dimensions;
             let yuv = match &frame.data {
                 crate::format::FrameData::Packed { pixel_format, data } => {
                     pixel_format_to_yuv420(data, w, h, *pixel_format)?
