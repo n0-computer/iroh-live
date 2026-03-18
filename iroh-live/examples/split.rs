@@ -35,7 +35,7 @@ use iroh_live::{
 };
 use moq_media_egui::{
     VideoTrackView, create_egui_wgpu_config,
-    overlay::{DebugOverlay, FrameStats, OVERLAY_BAR_H, StatCategory, fit_to_aspect, overlay_bar},
+    overlay::{DebugOverlay, StatCategory, fit_to_aspect},
 };
 use n0_error::{Result, anyerr};
 use strum::VariantArray;
@@ -145,7 +145,8 @@ struct PublishView {
     preset: VideoPreset,
 
     preview: Option<VideoTrackView>,
-    stats: FrameStats,
+    metrics: MetricsCollector,
+    overlay: DebugOverlay,
     needs_republish: bool,
     error_msg: Option<String>,
 }
@@ -161,7 +162,10 @@ impl PublishView {
             .accept(ALPN, live.protocol_handler())
             .spawn();
 
-        let broadcast = LocalBroadcast::new();
+        let pub_metrics = MetricsCollector::new();
+        pub_metrics.register_defaults();
+        let mut broadcast = LocalBroadcast::new();
+        broadcast.set_metrics(pub_metrics.clone());
         broadcast.video().set(
             TestPatternSource::new(1280, 720),
             VideoCodec::best_available().expect("no video codec available"),
@@ -185,7 +189,8 @@ impl PublishView {
             codec: VideoCodec::best_available().expect("no video codec available"),
             preset: VideoPreset::P720,
             preview: None,
-            stats: FrameStats::default(),
+            metrics: pub_metrics,
+            overlay: DebugOverlay::new(&[StatCategory::Capture]),
             needs_republish: false,
             error_msg: None,
         })
@@ -358,14 +363,13 @@ impl PublishView {
         let video_origin = ui.cursor().min + egui::vec2(x_pad.max(0.0), y_pad.max(0.0));
 
         if let Some(ref mut view) = self.preview {
-            let (img, frame_ts) = view.render(ctx, video_size);
+            let (img, _frame_ts) = view.render(ctx, video_size);
             ui.add_space(y_pad.max(0.0));
             ui.horizontal(|ui| {
                 ui.add_space(x_pad.max(0.0));
                 ui.add_sized(video_size, img);
             });
             ui.add_space(y_pad.max(0.0));
-            self.stats.tick(frame_ts);
         } else {
             ui.allocate_space(avail);
             ui.centered_and_justified(|ui| {
@@ -373,28 +377,9 @@ impl PublishView {
             });
         }
 
-        // Overlay bars painted on top of the video's bottom edge.
         let video_rect = egui::Rect::from_min_size(video_origin, video_size);
-        let painter = ui.painter();
-
-        let bar1_rect = egui::Rect::from_min_size(
-            egui::pos2(video_rect.min.x, video_rect.max.y - 2.0 * OVERLAY_BAR_H),
-            egui::vec2(video_rect.width(), OVERLAY_BAR_H),
-        );
-        let bar2_rect = egui::Rect::from_min_size(
-            egui::pos2(video_rect.min.x, video_rect.max.y - OVERLAY_BAR_H),
-            egui::vec2(video_rect.width(), OVERLAY_BAR_H),
-        );
-
-        let pub_text = format!(
-            "PUB  codec: {}  preset: {}  fps: {:.0}  delay: {:.0}ms",
-            self.codec.display_name(),
-            self.preset,
-            self.stats.fps,
-            self.stats.delay_ms,
-        );
-        overlay_bar(painter, bar1_rect, &pub_text);
-        overlay_bar(painter, bar2_rect, "NET  (local)");
+        let snap = self.metrics.snapshot();
+        self.overlay.show(ui, video_rect, &snap);
     }
 
     fn shutdown(&self, rt: &tokio::runtime::Runtime) {
@@ -425,7 +410,6 @@ struct SubscribeView {
     playout_clock: PlayoutClock,
     metrics: MetricsCollector,
     overlay: DebugOverlay,
-    stats: FrameStats,
 
     #[cfg(feature = "wgpu")]
     wgpu_render_state: Option<egui_wgpu::RenderState>,
@@ -470,7 +454,6 @@ impl SubscribeView {
                 StatCategory::Render,
                 StatCategory::Time,
             ]),
-            stats: FrameStats::default(),
             #[cfg(feature = "wgpu")]
             wgpu_render_state: None,
             _live: live,
@@ -644,7 +627,7 @@ impl SubscribeView {
                 ui.add_sized(video_size, img);
             });
             ui.add_space(y_pad.max(0.0));
-            self.stats.tick(frame_ts);
+            let _ = frame_ts;
         } else {
             ui.allocate_space(avail);
         }

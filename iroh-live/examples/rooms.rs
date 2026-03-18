@@ -6,6 +6,7 @@ use iroh::{Endpoint, Watcher};
 use iroh_gossip::TopicId;
 use iroh_live::{
     Live,
+    media::stats::MetricsCollector,
     media::{
         audio_backend::AudioBackend,
         capture::{CameraCapturer, ScreenCapturer},
@@ -16,7 +17,6 @@ use iroh_live::{
     },
     moq::MoqSession,
     rooms::{Room, RoomEvent, RoomTicket},
-    util::StatsSmoother,
 };
 use moq_media_egui::VideoTrackView;
 use n0_error::{Result, StdResultExt, anyerr};
@@ -203,16 +203,29 @@ struct RemoteTrackView {
     _audio_track: Option<AudioTrack>,
     session: MoqSession,
     broadcast: RemoteBroadcast,
-    stats: StatsSmoother,
+    metrics: MetricsCollector,
+    overlay: moq_media_egui::overlay::DebugOverlay,
 }
 
 impl RemoteTrackView {
-    fn new(ctx: &egui::Context, session: MoqSession, track: MediaTracks, id: usize) -> Self {
+    fn new(ctx: &egui::Context, session: MoqSession, mut track: MediaTracks, id: usize) -> Self {
+        let metrics = MetricsCollector::new();
+        metrics.register_defaults();
+        track.broadcast.set_metrics(metrics.clone());
+        iroh_live::util::spawn_stats_recorder(
+            session.conn(),
+            metrics.clone(),
+            track.broadcast.shutdown_token(),
+        );
         Self {
             video: track
                 .video
                 .map(|video| VideoTrackView::new(ctx, &format!("video-{id}"), video)),
-            stats: StatsSmoother::new(),
+            metrics,
+            overlay: moq_media_egui::overlay::DebugOverlay::new(&[
+                moq_media_egui::overlay::StatCategory::Net,
+                moq_media_egui::overlay::StatCategory::Render,
+            ]),
             broadcast: track.broadcast,
             id,
             _audio_track: track.audio,
@@ -235,66 +248,8 @@ impl RemoteTrackView {
     }
 
     fn render_overlay_in_rect(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
-        let pos = rect.left_bottom() + egui::vec2(8.0, -8.0);
-        let overlay_id = egui::Id::new(("overlay", self.id));
-
-        egui::Area::new(overlay_id)
-            .order(egui::Order::Foreground)
-            .fixed_pos(pos)
-            .show(ui.ctx(), |ui| {
-                egui::Frame::new()
-                    .fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 128))
-                    .corner_radius(3.0)
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-                        ui.set_min_width(100.);
-                        self.render_overlay(ui);
-                    });
-            });
-    }
-
-    fn render_overlay(&mut self, ui: &mut egui::Ui) {
-        ui.vertical(|ui| {
-            let selected = self
-                .video
-                .as_ref()
-                .map(|v| v.track().rendition().to_owned());
-            egui::ComboBox::from_id_salt(format!("video{}", self.id))
-                .selected_text(selected.clone().unwrap_or_default())
-                .show_ui(ui, |ui| {
-                    for name in self.broadcast.catalog().video_renditions() {
-                        if ui
-                            .selectable_label(selected.as_deref() == Some(name), name)
-                            .clicked()
-                            && let Ok(track) = self
-                                .broadcast
-                                .video_rendition::<DynamicVideoDecoder>(&Default::default(), name)
-                        {
-                            if let Some(video) = self.video.as_mut() {
-                                video.set_track(track);
-                            } else {
-                                self.video = Some(VideoTrackView::new(
-                                    ui.ctx(),
-                                    &format!("video-{}", self.id),
-                                    track,
-                                ))
-                            }
-                        }
-                    }
-                });
-
-            let stats = self.stats.smoothed(|| {
-                let conn = self.session.conn();
-                (conn.stats(), conn.paths().get())
-            });
-            ui.label(format!(
-                "peer:   {}",
-                self.session.conn().remote_id().fmt_short()
-            ));
-            ui.label(format!("BW up:   {}", stats.up.rate_str));
-            ui.label(format!("BW down: {}", stats.down.rate_str));
-            ui.label(format!("RTT:     {}ms", stats.rtt.as_millis()));
-        });
+        let snap = self.metrics.snapshot();
+        self.overlay.show(ui, rect, &snap);
     }
 }
 

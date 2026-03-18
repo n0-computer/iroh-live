@@ -17,7 +17,6 @@
 use std::time::Duration;
 
 use eframe::egui::{self, Id};
-use iroh::Watcher;
 use iroh_live::{
     Call, CallError, CallTicket, Live,
     media::{
@@ -26,16 +25,16 @@ use iroh_live::{
         codec::{AudioCodec, DefaultDecoders, DynamicVideoDecoder, VideoCodec},
         format::{AudioPreset, DecodeConfig, PlaybackConfig, VideoPreset},
         publish::LocalBroadcast,
+        stats::MetricsCollector,
         subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
         test_sources::{TestPatternSource, TestToneSource},
         traits::VideoSource,
     },
     moq::MoqSession,
-    util::StatsSmoother,
 };
 use moq_media_egui::{
     VideoTrackView,
-    overlay::{FrameStats, fit_to_aspect},
+    overlay::{DebugOverlay, StatCategory, fit_to_aspect},
 };
 use n0_error::{Result, anyerr};
 use strum::VariantArray;
@@ -345,7 +344,6 @@ struct InCallState {
 
     // Local preview
     preview: Option<VideoTrackView>,
-    preview_stats: FrameStats,
 
     // Remote
     remote: RemoteBroadcast,
@@ -353,8 +351,9 @@ struct InCallState {
     remote_video: Option<VideoTrackView>,
     #[allow(dead_code, reason = "kept alive to sustain audio playout")]
     remote_audio: Option<AudioTrack>,
-    remote_stats: FrameStats,
-    net_stats: StatsSmoother,
+
+    metrics: MetricsCollector,
+    overlay: DebugOverlay,
 }
 
 // ---------------------------------------------------------------------------
@@ -500,9 +499,8 @@ impl InCallState {
 
         let avail = ui.available_size();
         if let Some(ref mut view) = self.remote_video {
-            let (img, frame_ts) = view.render(ctx, avail);
+            let (img, _frame_ts) = view.render(ctx, avail);
             ui.add_sized(avail, img);
-            self.remote_stats.tick(frame_ts);
         } else {
             ui.centered_and_justified(|ui| {
                 ui.label("Waiting for remote video...");
@@ -529,9 +527,8 @@ impl InCallState {
                     .inner_margin(2.0)
                     .show(ui, |ui| {
                         if let Some(ref mut view) = self.preview {
-                            let (img, frame_ts) = view.render(ctx, pip_size);
+                            let (img, _frame_ts) = view.render(ctx, pip_size);
                             ui.add_sized(pip_size, img);
-                            self.preview_stats.tick(frame_ts);
                         } else {
                             ui.allocate_exact_size(pip_size, egui::Sense::hover());
                         }
@@ -624,32 +621,12 @@ impl InCallState {
 
         ui.separator();
 
-        // Stats
-        let decoder_name = self
-            .remote_video
-            .as_ref()
-            .map(|v| v.track().decoder_name().to_owned())
-            .unwrap_or_default();
-
-        let net = self.net_stats.smoothed(|| {
-            let conn = self.session.conn();
-            (conn.stats(), conn.paths().get())
-        });
-
-        ui.label(format!(
-            "dec: {}  fps: {:.0}  delay: {:.0}ms",
-            decoder_name, self.remote_stats.fps, self.remote_stats.delay_ms,
-        ));
-        ui.label(format!(
-            "up: {}  down: {}  rtt: {}ms",
-            net.up.rate_str,
-            net.down.rate_str,
-            net.rtt.as_millis(),
-        ));
-        ui.label(format!(
-            "local fps: {:.0}  delay: {:.0}ms",
-            self.preview_stats.fps, self.preview_stats.delay_ms,
-        ));
+        // Stats overlay on the available rect below the separator.
+        let stats_rect =
+            egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 100.0));
+        let snap = self.metrics.snapshot();
+        self.overlay.show(ui, stats_rect, &snap);
+        ui.allocate_space(egui::vec2(ui.available_width(), 80.0));
     }
 }
 
@@ -682,6 +659,18 @@ impl CallApp {
             AppState::Setup(s) => s.audio_ctx.clone(),
             AppState::InCall(s) => s.audio_ctx.clone(),
         };
+        let metrics = MetricsCollector::new();
+        metrics.register_defaults();
+
+        let mut remote = result.remote;
+        remote.set_metrics(metrics.clone());
+
+        iroh_live::util::spawn_stats_recorder(
+            session.conn(),
+            metrics.clone(),
+            remote.shutdown_token(),
+        );
+
         self.state = AppState::InCall(Box::new(InCallState {
             session,
             call: result.call,
@@ -689,13 +678,16 @@ impl CallApp {
             audio_ctx,
             devices,
             preview: None,
-            preview_stats: FrameStats::default(),
-            remote: result.remote,
+            remote,
             pending_video: result.video,
             remote_video: None,
             remote_audio: result.audio,
-            remote_stats: FrameStats::default(),
-            net_stats: StatsSmoother::new(),
+            metrics,
+            overlay: DebugOverlay::new(&[
+                StatCategory::Net,
+                StatCategory::Render,
+                StatCategory::Time,
+            ]),
         }));
     }
 }
