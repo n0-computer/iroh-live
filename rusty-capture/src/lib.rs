@@ -449,6 +449,25 @@ impl ScreenCapturer {
         let inner = create_screen_backend(Some(monitor), &config)?;
         Ok(Self { inner })
     }
+
+    /// Lists available windows for capture (macOS only currently).
+    pub fn list_windows() -> anyhow::Result<Vec<WindowInfo>> {
+        let mut windows = Vec::new();
+        #[cfg(all(target_os = "macos", feature = "screen-apple"))]
+        {
+            windows.extend(platform::apple::screen::windows()?);
+        }
+        Ok(windows)
+    }
+
+    /// Opens a specific window for capture by window ID.
+    #[cfg(all(target_os = "macos", feature = "screen-apple"))]
+    pub fn with_window(window_id: u32, config: &ScreenConfig) -> anyhow::Result<Self> {
+        let inner = Box::new(platform::apple::screen::MacScreenCapturer::new_window(
+            window_id, config,
+        )?);
+        Ok(Self { inner })
+    }
 }
 
 impl VideoSource for ScreenCapturer {

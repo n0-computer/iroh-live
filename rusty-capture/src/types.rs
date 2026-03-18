@@ -60,6 +60,25 @@ pub struct MonitorInfo {
     pub is_primary: bool,
 }
 
+/// Describes a window available for screen capture.
+#[derive(Debug, Clone)]
+pub struct WindowInfo {
+    /// Which capture backend provides this window.
+    pub backend: CaptureBackend,
+    /// Platform-specific window identifier.
+    pub id: u32,
+    /// Window title (may be empty for untitled windows).
+    pub title: String,
+    /// Owning application name.
+    pub app_name: String,
+    /// Window dimensions `[width, height]` in points.
+    pub dimensions: [u32; 2],
+    /// Which display the window is on (display ID, if known).
+    pub display_id: Option<u32>,
+    /// Whether the window is currently visible on screen.
+    pub is_on_screen: bool,
+}
+
 /// Describes a camera device available for capture.
 #[derive(Debug, Clone)]
 pub struct CameraInfo {

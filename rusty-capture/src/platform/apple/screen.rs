@@ -74,6 +74,61 @@ pub fn monitors() -> Result<Vec<MonitorInfo>> {
     Ok(result)
 }
 
+/// Lists on-screen windows available for capture.
+pub fn windows() -> Result<Vec<crate::types::WindowInfo>> {
+    check_screen_capture_permission();
+    let content = SCShareableContent::get()
+        .map_err(|e| anyhow::anyhow!("ScreenCaptureKit: failed to get shareable content: {e:?}"))?;
+    // Build display bounds for window→display mapping.
+    let displays = content.displays();
+    let display_bounds: Vec<_> = displays
+        .iter()
+        .map(|d| {
+            let f = d.frame();
+            (d.display_id(), f.x, f.y, f.x + f.width, f.y + f.height)
+        })
+        .collect();
+
+    let mut result = Vec::new();
+    for window in content.windows() {
+        let frame = window.frame();
+        // Skip tiny windows (status bar items, invisible helpers, menu extras)
+        if frame.width < 100.0 || frame.height < 100.0 {
+            continue;
+        }
+        let app_name = window
+            .owning_application()
+            .map(|app| app.application_name())
+            .unwrap_or_default();
+        let title = window.title().unwrap_or_default();
+        let display_title = if title.is_empty() {
+            app_name.clone()
+        } else {
+            title
+        };
+        if display_title.is_empty() {
+            continue;
+        }
+        // Find which display contains the window center.
+        let cx = frame.x + frame.width / 2.0;
+        let cy = frame.y + frame.height / 2.0;
+        let display_id = display_bounds
+            .iter()
+            .find(|(_, x0, y0, x1, y1)| cx >= *x0 && cx < *x1 && cy >= *y0 && cy < *y1)
+            .map(|(id, ..)| *id);
+        result.push(crate::types::WindowInfo {
+            backend: crate::CaptureBackend::ScreenCaptureKit,
+            id: window.window_id(),
+            title: display_title,
+            app_name,
+            dimensions: [frame.width as u32, frame.height as u32],
+            display_id,
+            is_on_screen: window.is_on_screen(),
+        });
+    }
+    Ok(result)
+}
+
 struct FrameHandler {
     tx: mpsc::SyncSender<VideoFrame>,
     capture_start: Instant,
@@ -120,6 +175,27 @@ pub struct MacScreenCapturer {
 }
 
 impl MacScreenCapturer {
+    /// Creates a window capturer for a specific window by ID.
+    pub fn new_window(window_id: u32, config: &ScreenConfig) -> Result<Self> {
+        check_screen_capture_permission();
+        let content = SCShareableContent::get()
+            .map_err(|e| anyhow::anyhow!("ScreenCaptureKit: failed to get content: {e:?}"))?;
+
+        let window = content
+            .windows()
+            .into_iter()
+            .find(|w| w.window_id() == window_id)
+            .context("window not found")?;
+
+        let frame = window.frame();
+        let width = frame.width as u32;
+        let height = frame.height as u32;
+
+        let filter = SCContentFilter::create().with_window(&window).build();
+
+        Self::start_stream(width, height, filter, config)
+    }
+
     /// Creates a screen capturer for the given monitor.
     ///
     /// Captures from the display matching the monitor's ID. Falls back to the
@@ -129,7 +205,6 @@ impl MacScreenCapturer {
         let content = SCShareableContent::get()
             .map_err(|e| anyhow::anyhow!("ScreenCaptureKit: failed to get content: {e:?}"))?;
 
-        // Try to find the display matching the monitor ID, fall back to first.
         let display_id: Option<u32> = monitor
             .id
             .strip_prefix("macos-display-")
@@ -147,19 +222,27 @@ impl MacScreenCapturer {
                 .context("no displays available")?
         };
 
-        let width = display.width();
-        let height = display.height();
+        let width = display.width() as u32;
+        let height = display.height() as u32;
 
         let filter = SCContentFilter::create()
             .with_display(&display)
             .with_excluding_windows(&[])
             .build();
 
+        Self::start_stream(width, height, filter, config)
+    }
+
+    fn start_stream(
+        width: u32,
+        height: u32,
+        filter: SCContentFilter,
+        config: &ScreenConfig,
+    ) -> Result<Self> {
         let mut stream_config = SCStreamConfiguration::new()
             .with_width(width)
             .with_height(height)
             .with_shows_cursor(config.show_cursor)
-            // Request BGRA for simple byte-swap to RGBA (avoids YCbCr→RGB conversion).
             .with_pixel_format(PixelFormat::BGRA)
             .with_queue_depth(8);
 
@@ -167,8 +250,6 @@ impl MacScreenCapturer {
             stream_config = stream_config.with_minimum_frame_interval(&CMTime::new(1, fps as i32));
         }
 
-        // Bounded: 2-frame buffer. The callback drops frames via try_send
-        // when the consumer falls behind.
         let (frame_tx, frame_rx) = mpsc::sync_channel(2);
         let handler = FrameHandler {
             tx: frame_tx,
@@ -184,8 +265,8 @@ impl MacScreenCapturer {
         info!(width, height, "macOS screen capture started");
 
         Ok(Self {
-            width,
-            height,
+            width: width as u32,
+            height: height as u32,
             rx: frame_rx,
             stream,
         })
