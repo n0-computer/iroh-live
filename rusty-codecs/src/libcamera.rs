@@ -83,7 +83,11 @@ impl LibcameraH264Config {
                 inline: true,
                 profile: 0x42,
                 constraints: 0xE0,
-                level: 0x1F, // 3.1
+                // Not hardcoded — rpicam-vid auto-selects level from
+                // resolution/bitrate/framerate. 3.0 is a safe floor that
+                // covers 640×360@30 at 500 kbps; the actual SPS will carry
+                // the real value once the first keyframe arrives.
+                level: 0x1E, // 3.0
             }),
             description: None,
             coded_width: Some(self.width),
@@ -165,43 +169,102 @@ impl PreEncodedVideoSource for LibcameraH264Source {
             "starting rpicam-vid H.264 capture"
         );
 
-        let child = Command::new("rpicam-vid")
-            .args([
-                "--codec",
-                "h264",
-                "--width",
-                &c.width.to_string(),
-                "--height",
-                &c.height.to_string(),
-                "--framerate",
-                &c.framerate.to_string(),
-                "--bitrate",
-                &c.bitrate.to_string(),
-                "--intra",
-                &c.keyframe_interval.to_string(),
-                "--profile",
-                "baseline",
-                "--level",
-                "3.1",
-                "--inline", // prepend SPS+PPS before every IDR
-                "--flush",  // flush output after each frame (low latency)
-                "--timeout",
-                "0",
-                "--nopreview",
-                "-o",
-                "-",
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("failed to spawn rpicam-vid — is libcamera installed?")?;
+        // Retry loop: the Pi has a single camera, and rpicam-vid holds an
+        // exclusive lock on it. When a subscriber disconnects and immediately
+        // reconnects, the new process can race with the dying one. Retry with
+        // backoff so transient "pipeline handler in use" errors resolve once
+        // the old process finishes releasing the camera.
+        const MAX_RETRIES: u32 = 5;
+        const INITIAL_BACKOFF: Duration = Duration::from_millis(500);
 
-        tracing::info!(pid = child.id(), "rpicam-vid started (H.264 mode)");
-        self.child = Some(child);
-        self.frame_count = 0;
-        self.remainder.clear();
-        self.avcc = None;
-        Ok(())
+        for attempt in 0..=MAX_RETRIES {
+            let mut child = Command::new("rpicam-vid")
+                .args([
+                    "--codec",
+                    "h264",
+                    "--width",
+                    &c.width.to_string(),
+                    "--height",
+                    &c.height.to_string(),
+                    "--framerate",
+                    &c.framerate.to_string(),
+                    "--bitrate",
+                    &c.bitrate.to_string(),
+                    "--intra",
+                    &c.keyframe_interval.to_string(),
+                    "--profile",
+                    "baseline",
+                    // Note: do NOT pass --level — rpicam-vid (libcamera v0.3.0)
+                    // rejects the "3.1" format with "no such level 3.1". Let it
+                    // auto-select from resolution/bitrate/framerate instead.
+                    "--inline", // prepend SPS+PPS before every IDR
+                    "--flush",  // flush output after each frame (low latency)
+                    "--timeout",
+                    "0",
+                    "--nopreview",
+                    "-o",
+                    "-",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .context("failed to spawn rpicam-vid — is libcamera installed?")?;
+
+            let pid = child.id();
+            tracing::info!(pid, "rpicam-vid spawned (H.264 mode)");
+
+            // Give rpicam-vid a moment to initialize and potentially fail.
+            // Camera acquisition errors surface within ~1 s on Pi Zero 2.
+            std::thread::sleep(Duration::from_millis(1500));
+
+            // Check if the process already exited (immediate failure).
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    // Process died immediately — read stderr for the reason.
+                    let stderr_msg = child
+                        .stderr
+                        .as_mut()
+                        .and_then(|se| {
+                            let mut buf = String::new();
+                            se.read_to_string(&mut buf).ok().map(|_| buf)
+                        })
+                        .unwrap_or_default();
+
+                    if attempt < MAX_RETRIES
+                        && (stderr_msg.contains("in use by another process")
+                            || stderr_msg.contains("failed to acquire camera"))
+                    {
+                        let backoff = INITIAL_BACKOFF * 2u32.pow(attempt);
+                        tracing::warn!(
+                            attempt,
+                            backoff_ms = backoff.as_millis() as u64,
+                            "camera busy, retrying"
+                        );
+                        std::thread::sleep(backoff);
+                        continue;
+                    }
+
+                    anyhow::bail!(
+                        "rpicam-vid exited immediately (status: {status}, stderr: {:?})",
+                        stderr_msg.trim(),
+                    );
+                }
+                Ok(None) => {
+                    // Still running — camera acquired successfully.
+                    tracing::info!(pid, "rpicam-vid started (H.264 mode)");
+                    self.child = Some(child);
+                    self.frame_count = 0;
+                    self.remainder.clear();
+                    self.avcc = None;
+                    return Ok(());
+                }
+                Err(e) => {
+                    anyhow::bail!("failed to check rpicam-vid status: {e}");
+                }
+            }
+        }
+
+        anyhow::bail!("rpicam-vid failed after {MAX_RETRIES} retries — camera unavailable");
     }
 
     fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
@@ -216,7 +279,26 @@ impl PreEncodedVideoSource for LibcameraH264Source {
             .read(&mut self.buf)
             .context("rpicam-vid read failed")?;
         if n == 0 {
-            anyhow::bail!("rpicam-vid EOF — process exited");
+            // Capture stderr and exit status for diagnostics.
+            let mut child = self.child.take().unwrap();
+            let status = child.wait().ok();
+            let stderr_msg = child
+                .stderr
+                .as_mut()
+                .and_then(|se| {
+                    let mut buf = String::new();
+                    se.read_to_string(&mut buf).ok().map(|_| buf)
+                })
+                .unwrap_or_default();
+            let stderr_trimmed = stderr_msg.trim();
+            if !stderr_trimmed.is_empty() {
+                tracing::error!(stderr = stderr_trimmed, "rpicam-vid stderr");
+            }
+            anyhow::bail!(
+                "rpicam-vid EOF — process exited (status: {}, stderr: {:?})",
+                status.map_or("unknown".into(), |s| format!("{s}")),
+                stderr_trimmed,
+            );
         }
 
         self.remainder.extend_from_slice(&self.buf[..n]);
