@@ -61,13 +61,19 @@ pub(crate) const BUFFER_FLAG_CODEC_CONFIG: u32 = 2;
 /// Bits-per-pixel factor for H.264 default bitrate calculation.
 pub(crate) const H264_BPP: f32 = 0.07;
 
-// ── Dequeue timeout ──────────────────────────────────────────────────
+// ── Dequeue timeouts ─────────────────────────────────────────────────
 
-/// Timeout for dequeue operations in microseconds (10 ms).
-///
-/// Chosen to balance responsiveness and CPU usage in the synchronous
-/// ByteBuffer path.
-pub(crate) const DEQUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(10);
+/// Timeout for dequeuing input buffers (waiting for the decoder to
+/// accept a new packet). 10ms is long enough to cover one decode cycle
+/// on most devices.
+pub(crate) const DEQUEUE_INPUT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Timeout for dequeuing output buffers. Zero = non-blocking poll.
+/// Output draining is called after every `push_packet` to opportunistically
+/// collect decoded frames. Using 10ms here previously wasted ~10ms per frame
+/// waiting for output that wasn't ready, making the decoder run at 75% of
+/// real-time on 30fps content (30 × 10ms = 300ms/s of pure wait).
+pub(crate) const DEQUEUE_OUTPUT_TIMEOUT: std::time::Duration = std::time::Duration::ZERO;
 
 // ── MediaFormat builders ─────────────────────────────────────────────
 
@@ -107,7 +113,7 @@ pub(crate) fn encoder_format(
 ///
 /// Sets MIME type and dimensions. If SPS/PPS data is available (from an
 /// avcC record), it is set as `csd-0` and `csd-1` buffers with Annex B
-/// start code prefixes.
+/// start code prefixes. Includes low-latency hints for real-time playback.
 pub(crate) fn decoder_format(
     width: u32,
     height: u32,
@@ -118,6 +124,10 @@ pub(crate) fn decoder_format(
     format.set_str(KEY_MIME, MIME_AVC);
     format.set_i32(KEY_WIDTH, width as i32);
     format.set_i32(KEY_HEIGHT, height as i32);
+    // Low-latency decoding hints — best-effort, silently ignored on older API levels.
+    // Reduces internal decoder buffering for real-time playback.
+    format.set_i32(KEY_LOW_LATENCY, 1);
+    format.set_i32(KEY_PRIORITY, 0); // 0 = realtime
 
     // SPS goes into csd-0 with Annex B start code prefix.
     if let Some(sps_data) = sps {

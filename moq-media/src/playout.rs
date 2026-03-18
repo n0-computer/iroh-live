@@ -198,18 +198,22 @@ impl PlayoutClock {
 
     /// Records a frame arrival and updates the playout timeline.
     ///
-    /// On the first call, establishes the PTS→wall-clock mapping. On
+    /// On the first call, establishes the PTS→wall-clock mapping with
+    /// the full buffer offset (absorbs initial decoder DPB burst). On
     /// subsequent calls, re-anchors if the frame would play in the past
-    /// (i.e. the buffer ran dry due to a stall). This ensures the buffer
-    /// self-heals after transient disruptions instead of permanently
-    /// collapsing to zero depth.
+    /// (buffer underrun). Re-anchors use **zero offset** so the frame
+    /// plays immediately — the stream is already behind, adding buffer
+    /// delay would only make it worse. Without this, repeated underruns
+    /// accumulate `reanchor_count × buffer` of hidden latency (e.g. 40
+    /// re-anchors × 133ms = 5.3s of extra delay the metrics don't show).
     pub(crate) fn observe_arrival(&self, pts: Duration) {
         let now = Instant::now();
         let mut inner = self.inner.lock().expect("lock");
         let offset = buffer_duration(&inner.mode);
 
         if inner.base_wall.is_none() {
-            // First frame: establish base mapping.
+            // First frame: establish base mapping with full buffer offset
+            // to absorb initial decoder DPB burst output.
             inner.base_wall = Some(now + offset);
             inner.base_pts = Some(pts);
             tracing::debug!(
@@ -219,15 +223,18 @@ impl PlayoutClock {
             );
         } else {
             // Check if this frame would play in the past (buffer underrun).
-            // If so, re-anchor so the buffer refills from this point.
+            // If so, re-anchor to play immediately (zero offset). In a live
+            // stream the frame already carries network + decode latency, so
+            // adding the full buffer offset again would compound delay on
+            // every burst cycle.
             let base_wall = inner.base_wall.unwrap();
             let base_pts = inner.base_pts.unwrap();
             let media_offset = pts.saturating_sub(base_pts);
             let playout = base_wall + media_offset;
             if now >= playout {
-                // Frame is late — shift base_wall forward to restore buffer depth.
                 let late_by = now - playout;
-                inner.base_wall = Some(now + offset);
+                // Re-anchor with zero offset: play this frame NOW.
+                inner.base_wall = Some(now);
                 inner.base_pts = Some(pts);
                 inner.total_reanchor_drift += late_by;
                 inner.reanchor_count += 1;
@@ -237,7 +244,7 @@ impl PlayoutClock {
                     total_drift_ms = inner.total_reanchor_drift.as_millis(),
                     reanchor_count = inner.reanchor_count,
                     pts_ms = pts.as_millis(),
-                    "playout clock: re-anchored after buffer underrun"
+                    "playout clock: re-anchored after buffer underrun (zero offset)"
                 );
             }
         }

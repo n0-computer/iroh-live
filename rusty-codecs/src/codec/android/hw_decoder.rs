@@ -16,8 +16,8 @@ use ndk::media::media_codec::{
 };
 
 use super::format::{
-    BUFFER_FLAG_CODEC_CONFIG, DEQUEUE_TIMEOUT, KEY_HEIGHT, KEY_WIDTH, decoder_format,
-    extract_sps_pps_from_avcc,
+    BUFFER_FLAG_CODEC_CONFIG, DEQUEUE_INPUT_TIMEOUT, DEQUEUE_OUTPUT_TIMEOUT, KEY_HEIGHT, KEY_WIDTH,
+    decoder_format, extract_sps_pps_from_avcc,
 };
 use super::gpu_frame::AndroidGpuFrame;
 use crate::{
@@ -178,7 +178,7 @@ impl AndroidHwDecoder {
     fn submit_input(&self, data: &[u8], timestamp: Duration) -> Result<()> {
         match self
             .codec
-            .dequeue_input_buffer(DEQUEUE_TIMEOUT)
+            .dequeue_input_buffer(DEQUEUE_INPUT_TIMEOUT)
             .map_err(|e| anyhow::anyhow!("decoder dequeue input failed: {e:?}"))?
         {
             DequeuedInputBufferResult::Buffer(mut input_buf) => {
@@ -218,7 +218,7 @@ impl AndroidHwDecoder {
         loop {
             match self
                 .codec
-                .dequeue_output_buffer(DEQUEUE_TIMEOUT)
+                .dequeue_output_buffer(DEQUEUE_OUTPUT_TIMEOUT)
                 .map_err(|e| anyhow::anyhow!("decoder dequeue output failed: {e:?}"))?
             {
                 DequeuedOutputBufferInfoResult::Buffer(output_buf) => {
