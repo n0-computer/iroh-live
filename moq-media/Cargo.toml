@@ -45,7 +45,7 @@ cros-codecs = { version = "0.0.6", optional = true, features = ["vaapi"] }
 [dev-dependencies]
 buf-list = "1.1"
 clap = { version = "4.5", features = ["derive"] }
-eframe = { version = "0.33.0", default-features = false, features = ["default_fonts", "wayland", "x11", "wgpu"] }
+eframe = { version = "0.33.0", default-features = false, features = ["default_fonts", "wgpu"] }
 egui-wgpu = "0.33.0"
 moq-media-egui = { workspace = true }
 pollster = "0.4"
@@ -55,6 +55,9 @@ rusty-capture = { workspace = true }
 tokio = { version = "1.48.0", features = ["full"] }
 tracing-subscriber = "0.3.20"
 wgpu = { version = "27", default-features = false, features = ["wgsl", "vulkan"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+eframe = { version = "0.33.0", default-features = false, features = ["wayland", "x11"] }
 
 [features]
 default = ["h264", "opus", "av1", "capture"]
