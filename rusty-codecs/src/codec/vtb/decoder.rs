@@ -12,14 +12,12 @@
 use std::{
     collections::VecDeque,
     ffi::c_void,
-    fmt,
     ptr::{self, NonNull},
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
-use image::RgbaImage;
 use objc2_core_foundation::{
     CFDictionary, CFNumber, CFRetained, CFString, CFType, kCFTypeDictionaryKeyCallBacks,
     kCFTypeDictionaryValueCallBacks,
@@ -29,10 +27,8 @@ use objc2_core_media::{
     CMVideoFormatDescriptionCreateFromH264ParameterSets,
 };
 use objc2_core_video::{
-    CVImageBuffer, CVPixelBuffer, CVPixelBufferGetBaseAddressOfPlane,
-    CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeight, CVPixelBufferGetHeightOfPlane,
-    CVPixelBufferGetWidth, CVPixelBufferGetWidthOfPlane, CVPixelBufferLockBaseAddress,
-    CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVPixelBufferPixelFormatTypeKey,
+    CVImageBuffer, CVPixelBuffer, CVPixelBufferGetHeight, CVPixelBufferGetWidth,
+    kCVPixelBufferPixelFormatTypeKey,
 };
 use objc2_video_toolbox::{
     VTDecodeFrameFlags, VTDecodeInfoFlags, VTDecompressionOutputCallbackRecord,
@@ -44,11 +40,7 @@ use crate::{
         annex_b_to_length_prefixed, avcc_to_annex_b, extract_sps_pps, parse_annex_b,
     },
     config::{VideoCodec, VideoConfig},
-    format::{
-        DecodeConfig, GpuFrame, GpuFrameInner, GpuPixelFormat, MediaPacket, NalFormat, Nv12Planes,
-        VideoFrame,
-    },
-    processing::convert::nv12_to_rgba_data,
+    format::{DecodeConfig, GpuFrame, GpuPixelFormat, MediaPacket, NalFormat, VideoFrame},
     traits::VideoDecoder,
 };
 
@@ -206,11 +198,9 @@ impl VideoDecoder for VtbDecoder {
         let w = CVPixelBufferGetWidth(&pixel_buffer) as u32;
         let h = CVPixelBufferGetHeight(&pixel_buffer) as u32;
 
-        let gpu_frame = GpuFrame::new(Arc::new(VtbGpuFrame {
-            pixel_buffer,
-            width: w,
-            height: h,
-        }));
+        let apple_frame =
+            crate::format::AppleGpuFrame::from_retained(pixel_buffer, w, h, GpuPixelFormat::Nv12);
+        let gpu_frame = GpuFrame::new(Arc::new(apple_frame));
 
         Ok(Some(VideoFrame::new_gpu(gpu_frame, timestamp)))
     }
@@ -235,120 +225,9 @@ impl Drop for VtbDecoder {
     }
 }
 
-// --- GPU frame wrapper ---
-
-/// Wraps a CVPixelBuffer (NV12) from VideoToolbox for deferred CPU readback.
-struct VtbGpuFrame {
-    pixel_buffer: CFRetained<CVPixelBuffer>,
-    width: u32,
-    height: u32,
-}
-
-// Safety: CVPixelBuffer is reference-counted and thread-safe when retained.
-unsafe impl Send for VtbGpuFrame {}
-unsafe impl Sync for VtbGpuFrame {}
-
-impl fmt::Debug for VtbGpuFrame {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("VtbGpuFrame")
-            .field("width", &self.width)
-            .field("height", &self.height)
-            .finish()
-    }
-}
-
-impl GpuFrameInner for VtbGpuFrame {
-    fn download_rgba(&self) -> Result<RgbaImage> {
-        let nv12 = self.download_nv12_inner()?;
-        let rgba = nv12_to_rgba_data(
-            &nv12.y_data,
-            nv12.y_stride,
-            &nv12.uv_data,
-            nv12.uv_stride,
-            nv12.width,
-            nv12.height,
-        )?;
-        RgbaImage::from_raw(nv12.width, nv12.height, rgba)
-            .context("failed to create RgbaImage from NV12 conversion")
-    }
-
-    fn gpu_pixel_format(&self) -> GpuPixelFormat {
-        GpuPixelFormat::Nv12
-    }
-
-    fn dimensions(&self) -> (u32, u32) {
-        (self.width, self.height)
-    }
-
-    fn download_nv12(&self) -> Option<Result<Nv12Planes>> {
-        Some(self.download_nv12_inner())
-    }
-}
-
-impl VtbGpuFrame {
-    fn download_nv12_inner(&self) -> Result<Nv12Planes> {
-        let pb = &*self.pixel_buffer;
-
-        // Lock for read-only access.
-        let status = unsafe { CVPixelBufferLockBaseAddress(pb, CVPixelBufferLockFlags(1)) }; // 1 = kCVPixelBufferLock_ReadOnly
-        if status != 0 {
-            bail!("CVPixelBufferLockBaseAddress failed with status {status}");
-        }
-
-        let result = unsafe { read_nv12_planes(pb, self.width, self.height) };
-
-        unsafe { CVPixelBufferUnlockBaseAddress(pb, CVPixelBufferLockFlags(1)) };
-
-        result
-    }
-}
-
-/// Read NV12 Y and UV planes from a locked CVPixelBuffer.
-unsafe fn read_nv12_planes(pb: &CVPixelBuffer, width: u32, height: u32) -> Result<Nv12Planes> {
-    // Y plane (index 0)
-    let y_base = CVPixelBufferGetBaseAddressOfPlane(pb, 0);
-    if y_base.is_null() {
-        bail!("Y plane base address is null");
-    }
-    let y_stride = CVPixelBufferGetBytesPerRowOfPlane(pb, 0);
-    let y_height = CVPixelBufferGetHeightOfPlane(pb, 0);
-    let y_data = unsafe { read_plane(y_base, y_stride, y_height, width as usize) };
-
-    // UV plane (index 1)
-    let uv_base = CVPixelBufferGetBaseAddressOfPlane(pb, 1);
-    if uv_base.is_null() {
-        bail!("UV plane base address is null");
-    }
-    let uv_stride = CVPixelBufferGetBytesPerRowOfPlane(pb, 1);
-    let uv_height = CVPixelBufferGetHeightOfPlane(pb, 1);
-    let uv_width = CVPixelBufferGetWidthOfPlane(pb, 1) * 2; // interleaved U+V
-    let uv_data = unsafe { read_plane(uv_base, uv_stride, uv_height, uv_width) };
-
-    Ok(Nv12Planes {
-        y_data,
-        y_stride: y_stride as u32,
-        uv_data,
-        uv_stride: uv_stride as u32,
-        width,
-        height,
-    })
-}
-
-/// Copy a single plane from a CVPixelBuffer, stripping stride padding.
-unsafe fn read_plane(
-    base: *const c_void,
-    stride: usize,
-    height: usize,
-    copy_width: usize,
-) -> Vec<u8> {
-    let mut data = Vec::with_capacity(copy_width * height);
-    for row in 0..height {
-        let src = unsafe { (base as *const u8).add(row * stride) };
-        let row_bytes = unsafe { std::slice::from_raw_parts(src, copy_width.min(stride)) };
-        data.extend_from_slice(row_bytes);
-    }
-    data
-}
+// VtbGpuFrame replaced by AppleGpuFrame (format.rs) — unified GPU frame
+// type for both capture and decode on macOS. AppleGpuFrame holds a retained
+// CVPixelBufferRef and handles NV12/BGRA download + native_handle() export.
 
 // --- Session creation ---
 
@@ -448,8 +327,8 @@ fn create_block_buffer(data: &[u8]) -> Result<CFRetained<CMBlockBuffer>> {
     let mut block_buffer: *mut CMBlockBuffer = ptr::null_mut();
     let status = unsafe {
         CMBlockBuffer::create_with_memory_block(
-            None,                          // allocator
-            data.as_ptr() as *mut c_void,  // memory block (borrowed)
+            None,                         // allocator
+            data.as_ptr() as *mut c_void, // memory block (borrowed)
             data.len(),
             None,        // block allocator (no dealloc needed)
             ptr::null(), // custom block source
@@ -535,9 +414,7 @@ unsafe extern "C-unwind" fn decompression_output_callback(
     // CVImageBuffer and CVPixelBuffer are the same type on macOS/iOS.
     let pixel_buffer = image_buffer as *mut CVPixelBuffer;
     // Retain the pixel buffer so it outlives this callback.
-    let retained = unsafe {
-        CFRetained::retain(NonNull::new(pixel_buffer).unwrap())
-    };
+    let retained = unsafe { CFRetained::retain(NonNull::new(pixel_buffer).unwrap()) };
 
     // Recover timestamp from refcon.
     let ts_micros = source_frame_ref_con as u64;
