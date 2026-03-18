@@ -6,7 +6,6 @@ use iroh::{Endpoint, Watcher};
 use iroh_gossip::TopicId;
 use iroh_live::{
     Live,
-    media::stats::MetricsCollector,
     media::{
         audio_backend::AudioBackend,
         capture::{CameraCapturer, ScreenCapturer},
@@ -203,25 +202,20 @@ struct RemoteTrackView {
     _audio_track: Option<AudioTrack>,
     session: MoqSession,
     broadcast: RemoteBroadcast,
-    metrics: MetricsCollector,
     overlay: moq_media_egui::overlay::DebugOverlay,
 }
 
 impl RemoteTrackView {
-    fn new(ctx: &egui::Context, session: MoqSession, mut track: MediaTracks, id: usize) -> Self {
-        let metrics = MetricsCollector::new();
-        metrics.register_defaults();
-        track.broadcast.set_metrics(metrics.clone());
+    fn new(ctx: &egui::Context, session: MoqSession, track: MediaTracks, id: usize) -> Self {
         iroh_live::util::spawn_stats_recorder(
             session.conn(),
-            metrics.clone(),
+            track.broadcast.metrics().clone(),
             track.broadcast.shutdown_token(),
         );
         Self {
             video: track
                 .video
                 .map(|video| VideoTrackView::new(ctx, &format!("video-{id}"), video)),
-            metrics,
             overlay: moq_media_egui::overlay::DebugOverlay::new(&[
                 moq_media_egui::overlay::StatCategory::Net,
                 moq_media_egui::overlay::StatCategory::Render,
@@ -248,7 +242,7 @@ impl RemoteTrackView {
     }
 
     fn render_overlay_in_rect(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
-        let snap = self.metrics.snapshot();
+        let snap = self.broadcast.metrics().snapshot();
         self.overlay.show(ui, rect, &snap);
     }
 }

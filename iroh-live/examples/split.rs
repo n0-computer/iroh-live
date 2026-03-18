@@ -28,7 +28,6 @@ use iroh_live::{
         format::{AudioPreset, DecodeConfig, DecoderBackend, PlaybackConfig, VideoPreset},
         playout::PlayoutClock,
         publish::LocalBroadcast,
-        stats::MetricsCollector,
         subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
     },
     moq::MoqSession,
@@ -145,7 +144,6 @@ struct PublishView {
     preset: VideoPreset,
 
     preview: Option<VideoTrackView>,
-    metrics: MetricsCollector,
     overlay: DebugOverlay,
     needs_republish: bool,
     error_msg: Option<String>,
@@ -162,10 +160,7 @@ impl PublishView {
             .accept(ALPN, live.protocol_handler())
             .spawn();
 
-        let pub_metrics = MetricsCollector::new();
-        pub_metrics.register_defaults();
-        let mut broadcast = LocalBroadcast::new();
-        broadcast.set_metrics(pub_metrics.clone());
+        let broadcast = LocalBroadcast::new();
         broadcast.video().set(
             TestPatternSource::new(1280, 720),
             VideoCodec::best_available().expect("no video codec available"),
@@ -189,7 +184,6 @@ impl PublishView {
             codec: VideoCodec::best_available().expect("no video codec available"),
             preset: VideoPreset::P720,
             preview: None,
-            metrics: pub_metrics,
             overlay: DebugOverlay::new(&[StatCategory::Capture]),
             needs_republish: false,
             error_msg: None,
@@ -378,9 +372,9 @@ impl PublishView {
         }
 
         let video_rect = egui::Rect::from_min_size(video_origin, video_size);
-        self.metrics
-            .set_label(moq_media::stats::LBL_CODEC, self.codec.display_name());
-        let snap = self.metrics.snapshot();
+        let m = self.broadcast.metrics();
+        m.set_label(moq_media::stats::LBL_CODEC, self.codec.display_name());
+        let snap = m.snapshot();
         self.overlay.show(ui, video_rect, &snap);
     }
 
@@ -410,7 +404,6 @@ struct SubscribeView {
     _live: Live,
 
     playout_clock: PlayoutClock,
-    metrics: MetricsCollector,
     overlay: DebugOverlay,
 
     #[cfg(feature = "wgpu")]
@@ -426,19 +419,16 @@ impl SubscribeView {
 
         let playout_clock = broadcast.clock().clone();
 
-        let playback_config = PlaybackConfig::default();
-        let mut tracks = broadcast
-            .media::<DefaultDecoders>(audio_ctx, playback_config)
-            .await?;
-
-        let metrics = MetricsCollector::new();
-        metrics.register_defaults();
-        tracks.broadcast.set_metrics(metrics.clone());
         iroh_live::util::spawn_stats_recorder(
             session.conn(),
-            metrics.clone(),
-            tracks.broadcast.shutdown_token(),
+            broadcast.metrics().clone(),
+            broadcast.shutdown_token(),
         );
+
+        let playback_config = PlaybackConfig::default();
+        let tracks = broadcast
+            .media::<DefaultDecoders>(audio_ctx, playback_config)
+            .await?;
 
         Ok(Self {
             session,
@@ -450,7 +440,6 @@ impl SubscribeView {
             backend: DecoderBackend::Auto,
             render_mode: *RenderMode::VARIANTS.last().unwrap(),
             playout_clock,
-            metrics,
             overlay: DebugOverlay::new(&[
                 StatCategory::Net,
                 StatCategory::Render,
@@ -635,9 +624,10 @@ impl SubscribeView {
         }
 
         let video_rect = egui::Rect::from_min_size(video_origin, video_size);
+        let m = self.broadcast.metrics();
         if let Some(v) = &self.video {
-            self.overlay.update_from_track(&self.metrics, v.track());
-            self.metrics.set_label(
+            self.overlay.update_from_track(m, v.track());
+            m.set_label(
                 moq_media::stats::LBL_RENDERER,
                 if v.is_wgpu() {
                     v.render_path_name()
@@ -646,7 +636,7 @@ impl SubscribeView {
                 },
             );
         }
-        let snap = self.metrics.snapshot();
+        let snap = m.snapshot();
         self.overlay.show(ui, video_rect, &snap);
     }
 

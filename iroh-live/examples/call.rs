@@ -25,7 +25,6 @@ use iroh_live::{
         codec::{AudioCodec, DefaultDecoders, DynamicVideoDecoder, VideoCodec},
         format::{AudioPreset, DecodeConfig, PlaybackConfig, VideoPreset},
         publish::LocalBroadcast,
-        stats::MetricsCollector,
         subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
         test_sources::{TestPatternSource, TestToneSource},
         traits::VideoSource,
@@ -352,7 +351,6 @@ struct InCallState {
     #[allow(dead_code, reason = "kept alive to sustain audio playout")]
     remote_audio: Option<AudioTrack>,
 
-    metrics: MetricsCollector,
     overlay: DebugOverlay,
 }
 
@@ -622,13 +620,14 @@ impl InCallState {
         ui.separator();
 
         // Update labels from remote track.
+        let m = self.remote.metrics();
         if let Some(v) = &self.remote_video {
-            self.overlay.update_from_track(&self.metrics, v.track());
+            self.overlay.update_from_track(m, v.track());
         }
         // Stats overlay on the available rect below the separator.
         let stats_rect =
             egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 100.0));
-        let snap = self.metrics.snapshot();
+        let snap = m.snapshot();
         self.overlay.show(ui, stats_rect, &snap);
         ui.allocate_space(egui::vec2(ui.available_width(), 80.0));
     }
@@ -663,15 +662,10 @@ impl CallApp {
             AppState::Setup(s) => s.audio_ctx.clone(),
             AppState::InCall(s) => s.audio_ctx.clone(),
         };
-        let metrics = MetricsCollector::new();
-        metrics.register_defaults();
-
-        let mut remote = result.remote;
-        remote.set_metrics(metrics.clone());
-
+        let remote = result.remote;
         iroh_live::util::spawn_stats_recorder(
             session.conn(),
-            metrics.clone(),
+            remote.metrics().clone(),
             remote.shutdown_token(),
         );
 
@@ -686,7 +680,6 @@ impl CallApp {
             pending_video: result.video,
             remote_video: None,
             remote_audio: result.audio,
-            metrics,
             overlay: DebugOverlay::new(&[
                 StatCategory::Net,
                 StatCategory::Render,
