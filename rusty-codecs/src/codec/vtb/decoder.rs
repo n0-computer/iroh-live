@@ -113,7 +113,9 @@ impl VideoDecoder for VtbDecoder {
             tracing::info!("VideoToolbox H.264 decoder ready (eager)");
             (Some(session), Some(format_desc), sps)
         } else {
-            tracing::info!("VideoToolbox H.264 decoder created (deferred — waiting for first keyframe)");
+            tracing::info!(
+                "VideoToolbox H.264 decoder created (deferred — waiting for first keyframe)"
+            );
             (None, None, Vec::new())
         };
 
@@ -160,7 +162,9 @@ impl VideoDecoder for VtbDecoder {
                         self.format_desc = Some(new_fmt);
                         self.current_sps = sps;
                         if self.current_sps.is_empty() {
-                            tracing::info!("VideoToolbox H.264 decoder initialized from first keyframe");
+                            tracing::info!(
+                                "VideoToolbox H.264 decoder initialized from first keyframe"
+                            );
                         }
                     }
                 }
@@ -349,9 +353,9 @@ fn create_block_buffer(data: &[u8]) -> Result<CFRetained<CMBlockBuffer>> {
             None,                         // allocator
             data.as_ptr() as *mut c_void, // memory block (borrowed)
             data.len(),
-            null_allocator.as_deref(),    // block allocator: kCFAllocatorNull = don't free
-            ptr::null(), // custom block source
-            0,           // offset
+            null_allocator.as_deref(), // block allocator: kCFAllocatorNull = don't free
+            ptr::null(),               // custom block source
+            0,                         // offset
             data.len(),
             0, // flags
             NonNull::new(&mut block_buffer).unwrap(),

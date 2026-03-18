@@ -7,6 +7,9 @@
 #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
 pub mod dmabuf_import;
 
+#[cfg(all(target_os = "macos", feature = "metal-import"))]
+pub mod metal_import;
+
 #[cfg(feature = "gles")]
 pub mod gles;
 
@@ -20,7 +23,10 @@ use anyhow::{Context as _, Result};
 #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
 pub use dmabuf_import::create_device_with_dmabuf_extensions;
 
-#[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
+#[cfg(any(
+    all(target_os = "linux", feature = "dmabuf-import"),
+    all(target_os = "macos", feature = "metal-import"),
+))]
 use crate::format::NativeFrameHandle;
 #[cfg(feature = "wgpu")]
 use crate::format::{FrameData, Nv12Planes, VideoFrame};
@@ -44,10 +50,47 @@ pub struct WgpuVideoRenderer {
     nv12_planes: Option<Nv12PlaneTextures>,
     #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
     dmabuf_importer: Option<dmabuf_import::DmaBufImporter>,
-    /// Consecutive DMA-BUF import failures. After MAX_DMABUF_FAILURES,
-    /// the importer is disabled to avoid log spam and allocation churn.
     #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
     dmabuf_failures: u32,
+    #[cfg(all(target_os = "macos", feature = "metal-import"))]
+    metal_importer: Option<metal_import::MetalImporter>,
+    #[cfg(all(target_os = "macos", feature = "metal-import"))]
+    metal_failures: u32,
+    /// Which render path was used for the last frame.
+    last_render_path: RenderPath,
+}
+
+/// Describes which render path was used for the last frame.
+#[cfg(feature = "wgpu")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RenderPath {
+    /// No frame rendered yet.
+    #[default]
+    None,
+    /// CPU RGBA packed upload.
+    CpuRgba,
+    /// CPU NV12 plane upload + GPU shader conversion.
+    CpuNv12,
+    /// Zero-copy DMA-BUF Vulkan import (Linux).
+    DmaBuf,
+    /// Zero-copy CVMetalTextureCache import (macOS).
+    MetalZeroCopy,
+    /// CPU RGBA download from GPU frame (fallback).
+    GpuDownload,
+}
+
+#[cfg(feature = "wgpu")]
+impl fmt::Display for RenderPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => write!(f, "none"),
+            Self::CpuRgba => write!(f, "cpu-rgba"),
+            Self::CpuNv12 => write!(f, "cpu-nv12"),
+            Self::DmaBuf => write!(f, "dmabuf"),
+            Self::MetalZeroCopy => write!(f, "metal-zerocopy"),
+            Self::GpuDownload => write!(f, "gpu-download"),
+        }
+    }
 }
 
 #[cfg(feature = "wgpu")]
@@ -155,6 +198,8 @@ impl WgpuVideoRenderer {
 
         #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
         let dmabuf_importer = dmabuf_import::DmaBufImporter::new(&device);
+        #[cfg(all(target_os = "macos", feature = "metal-import"))]
+        let metal_importer = metal_import::MetalImporter::new(&device);
 
         Self {
             device,
@@ -168,7 +213,17 @@ impl WgpuVideoRenderer {
             dmabuf_importer,
             #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
             dmabuf_failures: 0,
+            #[cfg(all(target_os = "macos", feature = "metal-import"))]
+            metal_importer,
+            #[cfg(all(target_os = "macos", feature = "metal-import"))]
+            metal_failures: 0,
+            last_render_path: RenderPath::None,
         }
+    }
+
+    /// Returns which render path was used for the last frame.
+    pub fn last_render_path(&self) -> RenderPath {
+        self.last_render_path
     }
 
     /// Renders a frame to an RGBA texture. Returns a `TextureView` suitable for
@@ -181,8 +236,14 @@ impl WgpuVideoRenderer {
 
         let [w, h] = frame.dimensions;
         match &frame.data {
-            FrameData::Packed { data, .. } => self.render_packed(data, w, h),
-            FrameData::Nv12(planes) => self.render_nv12(planes),
+            FrameData::Packed { data, .. } => {
+                self.last_render_path = RenderPath::CpuRgba;
+                self.render_packed(data, w, h)
+            }
+            FrameData::Nv12(planes) => {
+                self.last_render_path = RenderPath::CpuNv12;
+                self.render_nv12(planes)
+            }
             FrameData::Gpu(gpu) => {
                 // Try zero-copy DMA-BUF import (Linux only)
                 #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
@@ -192,6 +253,7 @@ impl WgpuVideoRenderer {
                     match importer.import_nv12(&self.device, info) {
                         Ok(imported) => {
                             self.dmabuf_failures = 0;
+                            self.last_render_path = RenderPath::DmaBuf;
                             return self.render_imported_nv12(imported);
                         }
                         Err(e) => {
@@ -209,11 +271,39 @@ impl WgpuVideoRenderer {
                     }
                 }
 
+                // Try zero-copy Metal import (macOS only)
+                #[cfg(all(target_os = "macos", feature = "metal-import"))]
+                if let Some(ref mut importer) = self.metal_importer
+                    && let Some(NativeFrameHandle::CvPixelBuffer(ref info)) = gpu.native_handle()
+                    && info.pixel_format == crate::format::GpuPixelFormat::Nv12
+                {
+                    match importer.import_nv12(&self.device, info) {
+                        Ok(imported) => {
+                            self.metal_failures = 0;
+                            self.last_render_path = RenderPath::MetalZeroCopy;
+                            return self.render_imported_metal_nv12(imported);
+                        }
+                        Err(e) => {
+                            self.metal_failures += 1;
+                            if self.metal_failures >= 3 {
+                                tracing::warn!(
+                                    "Metal import failed 3 times, disabling zero-copy: {e}"
+                                );
+                                self.metal_importer = None;
+                            } else {
+                                tracing::debug!("Metal import failed, falling back: {e}");
+                            }
+                        }
+                    }
+                }
+
                 // Try NV12 plane upload + GPU shader conversion
                 if let Some(Ok(planes)) = gpu.download_nv12() {
+                    self.last_render_path = RenderPath::CpuNv12;
                     return self.render_nv12(&planes);
                 }
                 // Fallback: download as RGBA
+                self.last_render_path = RenderPath::GpuDownload;
                 let img = gpu.download_rgba().context("GPU frame download failed")?;
                 self.render_packed(img.as_raw(), img.width(), img.height())
             }
@@ -268,6 +358,73 @@ impl WgpuVideoRenderer {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("dmabuf_nv12_to_rgba_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &out.view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.nv12_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        self.queue.submit(iter::once(encoder.finish()));
+
+        Ok(&self
+            .output_texture
+            .as_ref()
+            .context("output texture not initialized")?
+            .view)
+    }
+
+    /// Render zero-copy Metal-imported NV12 textures to RGBA via shader.
+    #[cfg(all(target_os = "macos", feature = "metal-import"))]
+    fn render_imported_metal_nv12(
+        &mut self,
+        imported: metal_import::ImportedMetalNv12,
+    ) -> Result<&wgpu::TextureView> {
+        let w = imported.width;
+        let h = imported.height;
+        self.ensure_output_texture(w, h);
+
+        let y_view = imported.y_texture.create_view(&Default::default());
+        let uv_view = imported.uv_texture.create_view(&Default::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("metal_nv12_bind_group"),
+            layout: &self.nv12_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&y_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&uv_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+
+        let out = self
+            .output_texture
+            .as_ref()
+            .context("output texture not initialized")?;
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("metal_nv12_to_rgba"),
+            });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("metal_nv12_to_rgba_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &out.view,
                     resolve_target: None,

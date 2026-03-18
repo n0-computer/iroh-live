@@ -589,7 +589,7 @@ impl Tile {
             PipelineMode::Direct => {
                 format!(
                     "DIRECT render: {} fps: {:.0} delay: {:.0}ms",
-                    self.settings.render_mode.short_name(),
+                    self.video_view.render_path_name(),
                     self.stats.fps,
                     self.stats.delay_ms,
                 )
@@ -603,7 +603,7 @@ impl Tile {
                     "enc: {} dec: {} render: {} fps: {:.0} delay: {:.0}ms bitrate: {}",
                     self.encoder_name,
                     self.decoder_name,
-                    self.settings.render_mode.short_name(),
+                    self.video_view.render_path_name(),
                     self.stats.fps,
                     self.stats.delay_ms,
                     bitrate,

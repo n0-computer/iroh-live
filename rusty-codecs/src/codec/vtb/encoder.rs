@@ -272,8 +272,7 @@ impl VideoEncoder for VtbEncoder {
         // pass it directly to VTCompressionSession. VTB handles color
         // conversion (BGRA→YUV) and scaling on the GPU — no CPU work.
         let pixel_buffer = if let crate::format::FrameData::Gpu(ref gpu) = frame.data
-            && let Some(crate::format::NativeFrameHandle::CvPixelBuffer(info)) =
-                gpu.native_handle()
+            && let Some(crate::format::NativeFrameHandle::CvPixelBuffer(info)) = gpu.native_handle()
         {
             tracing::trace!("vtb zero-copy encode path");
             let ptr = NonNull::new(info.as_ptr().cast::<CVPixelBuffer>()).unwrap();

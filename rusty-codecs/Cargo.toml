@@ -35,7 +35,8 @@ rav1d = { git = "https://github.com/memorysafety/rav1d", default-features = fals
 ffmpeg-next = { version = "8", optional = true, default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
 ffmpeg-sys-next = { version = "8", optional = true }
 glow = { version = "0.16", optional = true }
-wgpu = { version = "27", optional = true, default-features = false, features = ["wgsl", "vulkan"] }
+wgpu = { version = "27", optional = true, default-features = false, features = ["wgsl"] }
+wgpu-hal = { version = "27", optional = true, default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 cros-codecs = { version = "0.0.6", optional = true }
@@ -52,7 +53,9 @@ objc2-video-toolbox = { version = "0.3", optional = true, features = ["VTCompres
 objc2-core-media = { version = "0.3", optional = true, features = ["CMTime", "CMSampleBuffer", "CMFormatDescription", "CMBlockBuffer"] }
 objc2-core-video = { version = "0.3", optional = true, features = ["CVPixelBuffer", "CVBuffer", "CVPixelBufferPool", "CVReturn", "CVImageBuffer", "CVBase"] }
 objc2-core-foundation = { version = "0.3", optional = true, features = ["CFDictionary"] }
+objc2-metal = { version = "0.3", optional = true, features = ["MTLDevice", "MTLTexture", "MTLPixelFormat"] }
 objc2 = { version = "0.6", optional = true }
+metal = { version = "0.32", optional = true }
 
 [dev-dependencies]
 image = { version = "0.25", features = ["jpeg"] }
@@ -69,9 +72,10 @@ videotoolbox = ["apple-gpu", "dep:objc2-video-toolbox", "dep:objc2-core-media"]
 vaapi = ["dep:cros-codecs", "cros-codecs/vaapi"]
 v4l2 = ["dep:v4l2r"]
 wgpu = ["dep:wgpu"]
+metal-import = ["wgpu", "apple-gpu", "dep:metal", "dep:wgpu-hal", "dep:objc2-metal", "wgpu/metal", "wgpu-hal/metal", "objc2-core-video/CVMetalTexture", "objc2-core-video/CVMetalTextureCache", "objc2-core-video/objc2-metal"]
 media-foundation = []
 android = ["dep:ndk"]
 ffmpeg = ["dep:ffmpeg-next", "dep:ffmpeg-sys-next"]
 gles = ["dep:glow"]
-dmabuf-import = ["wgpu", "dep:ash", "dep:gbm", "dep:drm-fourcc"]
+dmabuf-import = ["wgpu", "dep:ash", "dep:gbm", "dep:drm-fourcc", "wgpu/vulkan"]
 raspberry-pi = ["h264"]

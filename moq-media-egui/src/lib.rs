@@ -109,6 +109,22 @@ impl FrameView {
         }
     }
 
+    /// Returns which render path was used for the last frame.
+    pub fn render_path_name(&self) -> &'static str {
+        #[cfg(feature = "wgpu-render")]
+        if let Some(ref r) = self.egui_renderer {
+            return match r.last_render_path() {
+                moq_media::render::RenderPath::None => "wgpu",
+                moq_media::render::RenderPath::CpuRgba => "wgpu/cpu-rgba",
+                moq_media::render::RenderPath::CpuNv12 => "wgpu/cpu-nv12",
+                moq_media::render::RenderPath::DmaBuf => "wgpu/dmabuf",
+                moq_media::render::RenderPath::MetalZeroCopy => "wgpu/metal",
+                moq_media::render::RenderPath::GpuDownload => "wgpu/gpu-dl",
+            };
+        }
+        "cpu"
+    }
+
     /// Uploads a video frame to the texture (CPU or wgpu).
     pub fn render_frame(&mut self, frame: &VideoFrame) {
         #[cfg(feature = "wgpu-render")]
@@ -332,6 +348,11 @@ impl EguiVideoRenderer {
     /// Returns the last rendered texture ID and dimensions, if any frame has been rendered.
     pub fn last_texture(&self) -> Option<(epaint::TextureId, (u32, u32))> {
         self.texture_id.zip(self.last_frame_size)
+    }
+
+    /// Returns which render path was used for the last frame.
+    pub fn last_render_path(&self) -> moq_media::render::RenderPath {
+        self.renderer.last_render_path()
     }
 }
 
