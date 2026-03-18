@@ -5,18 +5,22 @@
 
 use std::time::Duration;
 
-use iroh::{Endpoint, SecretKey};
+use iroh::Endpoint;
 use iroh_live::{Call, Live};
 use moq_media::{
-    format::VideoPreset,
+    adaptive::AdaptiveConfig,
+    codec::{AudioCodec, VideoCodec},
+    format::{AudioFormat, AudioPreset, VideoPreset},
+    net::NetworkSignals,
     publish::LocalBroadcast,
     test_util::{NullAudioBackend, TestAudioSource, TestVideoSource},
 };
+use n0_tracing_test::traced_test;
+use tokio::sync::watch;
 
 /// Creates an endpoint bound to localhost with a random secret key.
-async fn make_endpoint() -> Endpoint {
-    Endpoint::builder(iroh::endpoint::presets::N0)
-        .secret_key(SecretKey::generate(&mut rand::rng()))
+async fn endpoint() -> Endpoint {
+    Endpoint::empty_builder()
         .bind()
         .await
         .expect("failed to bind endpoint")
@@ -25,18 +29,12 @@ async fn make_endpoint() -> Endpoint {
 /// Publishes video over one Live node and subscribes from another,
 /// verifying that decoded video frames arrive across the QUIC connection.
 #[tokio::test]
+#[traced_test]
 async fn publish_subscribe_video() {
-    use moq_media::codec::VideoCodec;
-
-    let _ = tracing_subscriber::fmt::try_init();
-
     // --- Publisher ---
-    let pub_ep = make_endpoint().await;
-    let publisher = Live::builder(pub_ep.clone()).spawn_with_router();
+    let publisher = Live::builder(endpoint().await).spawn_with_router();
 
     let broadcast = LocalBroadcast::new();
-    // Yield so the broadcast's internal task starts listening for track requests.
-    tokio::task::yield_now().await;
 
     let source = TestVideoSource::new(320, 240).with_fps(30.0);
     broadcast
@@ -54,11 +52,10 @@ async fn publish_subscribe_video() {
         .expect("failed to publish");
 
     // --- Subscriber ---
-    let sub_ep = make_endpoint().await;
-    let subscriber = Live::builder(sub_ep.clone()).spawn();
+    let subscriber = Live::builder(endpoint().await).spawn();
 
-    let pub_addr = pub_ep.addr();
-    let (session, remote) = subscriber
+    let pub_addr = publisher.endpoint().addr();
+    let (_session, remote) = subscriber
         .subscribe(pub_addr, "test-stream")
         .await
         .expect("failed to subscribe");
@@ -88,32 +85,18 @@ async fn publish_subscribe_video() {
         "second frame should have a later timestamp"
     );
 
-    // Clean up.
-    drop(video_track);
-    drop(remote);
-    drop(session);
-    drop(broadcast);
     publisher.shutdown().await;
-    sub_ep.close().await;
+    subscriber.shutdown().await;
 }
 
 /// Subscribes to audio and verifies the audio track is created successfully.
 #[tokio::test]
+#[traced_test]
 async fn publish_subscribe_audio() {
-    use moq_media::{
-        codec::{AudioCodec, VideoCodec},
-        format::{AudioFormat, AudioPreset},
-    };
-
-    let _ = tracing_subscriber::fmt::try_init();
-
     // --- Publisher ---
-    let pub_ep = make_endpoint().await;
-    let publisher = Live::builder(pub_ep.clone()).spawn_with_router();
+    let publisher = Live::builder(endpoint().await).spawn_with_router();
 
     let broadcast = LocalBroadcast::new();
-    tokio::task::yield_now().await;
-
     let video_source = TestVideoSource::new(320, 240).with_fps(30.0);
     broadcast
         .video()
@@ -136,11 +119,10 @@ async fn publish_subscribe_audio() {
         .expect("failed to publish");
 
     // --- Subscriber ---
-    let sub_ep = make_endpoint().await;
-    let subscriber = Live::builder(sub_ep.clone()).spawn();
+    let subscriber = Live::builder(endpoint().await).spawn();
 
-    let (session, remote) = subscriber
-        .subscribe(pub_ep.addr(), "av-stream")
+    let (_session, remote) = subscriber
+        .subscribe(publisher.endpoint().addr(), "av-stream")
         .await
         .expect("failed to subscribe");
 
@@ -148,7 +130,7 @@ async fn publish_subscribe_audio() {
     assert!(remote.has_audio(), "broadcast should have audio");
 
     // Subscribe to audio — verifies the full decode pipeline starts.
-    let audio_track = remote
+    let _audio_track = remote
         .audio(&NullAudioBackend)
         .await
         .expect("failed to create audio track");
@@ -160,14 +142,8 @@ async fn publish_subscribe_audio() {
         .expect("timed out waiting for video frame")
         .expect("video track closed");
 
-    // Clean up.
-    drop(audio_track);
-    drop(video_track);
-    drop(remote);
-    drop(session);
-    drop(broadcast);
     publisher.shutdown().await;
-    sub_ep.close().await;
+    subscriber.shutdown().await;
 }
 
 /// Publishes two video renditions (180p + 360p), creates an AdaptiveVideoTrack
@@ -177,19 +153,12 @@ async fn publish_subscribe_audio() {
 /// This exercises the full adaptive pipeline over a real QUIC connection
 /// without needing patchbay or real network impairment.
 #[tokio::test]
+#[traced_test]
 async fn adaptive_rendition_switching() {
-    use moq_media::{adaptive::AdaptiveConfig, codec::VideoCodec, net::NetworkSignals};
-    use tokio::sync::watch;
-
-    let _ = tracing_subscriber::fmt::try_init();
-
     // --- Publisher with two renditions ---
-    let pub_ep = make_endpoint().await;
-    let publisher = Live::builder(pub_ep.clone()).spawn_with_router();
+    let publisher = Live::builder(endpoint().await).spawn_with_router();
 
     let broadcast = LocalBroadcast::new();
-    tokio::task::yield_now().await;
-
     let source = TestVideoSource::new(640, 480).with_fps(30.0);
     broadcast
         .video()
@@ -206,11 +175,10 @@ async fn adaptive_rendition_switching() {
         .expect("failed to publish");
 
     // --- Subscriber with adaptive track ---
-    let sub_ep = make_endpoint().await;
-    let subscriber = Live::builder(sub_ep.clone()).spawn();
+    let subscriber = Live::builder(endpoint().await).spawn();
 
     let (_session, remote) = subscriber
-        .subscribe(pub_ep.addr(), "adaptive-stream")
+        .subscribe(publisher.endpoint().addr(), "adaptive-stream")
         .await
         .expect("failed to subscribe");
 
@@ -305,11 +273,8 @@ async fn adaptive_rendition_switching() {
     }
 
     // Clean up.
-    drop(adaptive);
-    drop(remote);
-    drop(broadcast);
     publisher.shutdown().await;
-    sub_ep.close().await;
+    subscriber.shutdown().await;
 }
 
 /// 1:1 call using [`Call::dial`] and [`Call::accept`].
@@ -317,13 +282,10 @@ async fn adaptive_rendition_switching() {
 /// Both sides create a broadcast with video, one dials the other,
 /// and both receive video frames from the remote peer.
 #[tokio::test]
+#[traced_test]
 async fn call_dial_accept() {
-    use moq_media::codec::VideoCodec;
-
-    let _ = tracing_subscriber::fmt::try_init();
-
     // --- Caller side ---
-    let caller_ep = make_endpoint().await;
+    let caller_ep = endpoint().await;
     let caller_live = Live::builder(caller_ep.clone()).spawn_with_router();
 
     let caller_broadcast = LocalBroadcast::new();
@@ -339,7 +301,7 @@ async fn call_dial_accept() {
         .expect("failed to set caller video");
 
     // --- Callee side ---
-    let callee_ep = make_endpoint().await;
+    let callee_ep = endpoint().await;
     let callee_live = Live::builder(callee_ep.clone()).spawn_with_router();
 
     let callee_broadcast = LocalBroadcast::new();
