@@ -822,13 +822,24 @@ impl eframe::App for ViewerApp {
                 ui.separator();
 
                 ui.label("Source");
-                egui::ComboBox::from_id_salt("source")
+                let combo = egui::ComboBox::from_id_salt("source")
                     .selected_text(self.selected_source().to_string())
                     .show_ui(ui, |ui| {
                         for (i, src) in self.available_sources.iter().enumerate() {
                             ui.selectable_value(&mut self.source_idx, i, src.to_string());
                         }
                     });
+                // Refresh source list each time the dropdown opens.
+                if combo.response.clicked() {
+                    let prev = self.selected_source().clone();
+                    self.available_sources = discover_sources();
+                    // Preserve selection if the previously selected source still exists.
+                    self.source_idx = self
+                        .available_sources
+                        .iter()
+                        .position(|s| *s == prev)
+                        .unwrap_or(0);
+                }
 
                 ui.label("Mode");
                 egui::ComboBox::from_id_salt("mode")
@@ -995,9 +1006,35 @@ impl eframe::App for ViewerApp {
 
                     let painter = ui.painter();
 
-                    // Video fills the tile
-                    if let Some((tex_id, _)) = tile.video_view.texture_info() {
-                        painter.image(tex_id, tile_rect, uv, egui::Color32::WHITE);
+                    // Video fills the tile, preserving aspect ratio (letterbox/pillarbox).
+                    if let Some((tex_id, tex_size)) = tile.video_view.texture_info() {
+                        // Black background for letterbox bars.
+                        painter.rect_filled(tile_rect, 0.0, egui::Color32::BLACK);
+
+                        let video_rect = if tex_size.x > 0.0 && tex_size.y > 0.0 {
+                            let frame_aspect = tex_size.x / tex_size.y;
+                            let tile_aspect = tile_w / tile_h;
+                            if frame_aspect > tile_aspect {
+                                // Frame wider than tile → letterbox (bars top/bottom).
+                                let h = tile_w / frame_aspect;
+                                let y_off = (tile_h - h) / 2.0;
+                                egui::Rect::from_min_size(
+                                    egui::pos2(tile_rect.min.x, tile_rect.min.y + y_off),
+                                    egui::vec2(tile_w, h),
+                                )
+                            } else {
+                                // Frame taller than tile → pillarbox (bars left/right).
+                                let w = tile_h * frame_aspect;
+                                let x_off = (tile_w - w) / 2.0;
+                                egui::Rect::from_min_size(
+                                    egui::pos2(tile_rect.min.x + x_off, tile_rect.min.y),
+                                    egui::vec2(w, tile_h),
+                                )
+                            }
+                        } else {
+                            tile_rect
+                        };
+                        painter.image(tex_id, video_rect, uv, egui::Color32::WHITE);
                     }
 
                     // Border

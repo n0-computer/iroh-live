@@ -115,8 +115,13 @@ impl MetalImporter {
             bail!("CVPixelBuffer has {plane_count} planes, need 2 for NV12");
         }
 
-        let w = info.width as usize;
-        let h = info.height as usize;
+        // Use actual plane dimensions from the CVPixelBuffer — the decoded
+        // frame may be wider than the logical size due to H.264 macroblock
+        // alignment (multiples of 16). CVMetalTextureCache handles stride
+        // internally, but we must create textures at the actual plane size
+        // to avoid row-shift artifacts.
+        let y_w = unsafe { CVPixelBufferGetWidthOfPlane(pb, 0) };
+        let y_h = unsafe { CVPixelBufferGetHeightOfPlane(pb, 0) };
         let uv_w = unsafe { CVPixelBufferGetWidthOfPlane(pb, 1) };
         let uv_h = unsafe { CVPixelBufferGetHeightOfPlane(pb, 1) };
 
@@ -129,8 +134,8 @@ impl MetalImporter {
                 pb,
                 None,
                 MTLPixelFormat::R8Unorm,
-                w,
-                h,
+                y_w,
+                y_h,
                 0,
                 NonNull::new(&mut cv_y_ptr).unwrap(),
             )
@@ -192,8 +197,8 @@ impl MetalImporter {
                 1,
                 1,
                 wgpu_hal::CopyExtent {
-                    width: w as u32,
-                    height: h as u32,
+                    width: y_w as u32,
+                    height: y_h as u32,
                     depth: 1,
                 },
             )
@@ -219,8 +224,8 @@ impl MetalImporter {
                 &wgpu::TextureDescriptor {
                     label: Some("metal_y"),
                     size: wgpu::Extent3d {
-                        width: w as u32,
-                        height: h as u32,
+                        width: y_w as u32,
+                        height: y_h as u32,
                         depth_or_array_layers: 1,
                     },
                     mip_level_count: 1,
@@ -262,8 +267,8 @@ impl MetalImporter {
         Ok(ImportedMetalNv12 {
             y_texture: y_tex,
             uv_texture: uv_tex,
-            width: w as u32,
-            height: h as u32,
+            width: y_w as u32,
+            height: y_h as u32,
         })
     }
 }
