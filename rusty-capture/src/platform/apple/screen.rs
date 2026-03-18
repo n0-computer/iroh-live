@@ -5,6 +5,8 @@
 //! pass the CVPixelBuffer directly to `VTCompressionSessionEncodeFrame`; wgpu
 //! renderer can import via `CVMetalTextureCache`.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::time::Instant;
 
@@ -43,10 +45,42 @@ fn check_screen_capture_permission() {
     }
 }
 
-/// SCK provides physical pixels; scale factor is handled internally.
-/// Returns 1.0 unconditionally for now.
-fn display_scale_factor() -> f32 {
-    1.0
+/// Derive scale factor from SCK display: pixel width / frame width.
+/// Returns 2.0 on Retina, 1.0 on non-Retina.
+fn display_scale_factor(display: &screencapturekit::shareable_content::SCDisplay) -> f64 {
+    // SCDisplay.width() returns logical points — same as frame().width —
+    // so we can't derive Retina scale from it. Query NSScreen instead.
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSScreen;
+    use objc2_foundation::NSString;
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        // Not on the main thread — fall back to safe Retina default.
+        return 2.0;
+    };
+
+    let display_id = display.display_id();
+
+    // Find the NSScreen matching this display via NSScreenNumber in deviceDescription.
+    let scale = NSScreen::screens(mtm)
+        .iter()
+        .find(|screen| {
+            let desc = screen.deviceDescription();
+            let key = NSString::from_str("NSScreenNumber");
+            desc.objectForKey(&key)
+                .and_then(|val| {
+                    // NSScreenNumber is an NSNumber containing the CGDirectDisplayID.
+                    let num: *const objc2::runtime::AnyObject = objc2::rc::Retained::as_ptr(&val);
+                    let id: u32 = unsafe { objc2::msg_send![num, unsignedIntValue] };
+                    Some(id)
+                })
+                .is_some_and(|id| id == display_id)
+        })
+        .map(|screen| screen.backingScaleFactor())
+        .unwrap_or(2.0);
+
+    tracing::debug!(display_id, scale, "display scale factor from NSScreen");
+    scale
 }
 
 /// Lists available macOS displays.
@@ -66,7 +100,7 @@ pub fn monitors() -> Result<Vec<MonitorInfo>> {
             name: format!("Display {}", display.display_id()),
             position: [frame.x as i32, frame.y as i32],
             dimensions: [width, height],
-            scale_factor: display_scale_factor(),
+            scale_factor: display_scale_factor(display) as f32,
             refresh_rate_hz: None,
             is_primary: i == 0,
         });
@@ -129,9 +163,17 @@ pub fn windows() -> Result<Vec<crate::types::WindowInfo>> {
     Ok(result)
 }
 
+/// Actual pixel dimensions observed from the CVPixelBuffer callback.
+/// SCK may deliver at a different resolution than requested (e.g. Retina scaling).
+struct ActualDimensions {
+    width: AtomicU32,
+    height: AtomicU32,
+}
+
 struct FrameHandler {
     tx: mpsc::SyncSender<VideoFrame>,
     capture_start: Instant,
+    actual_dims: Arc<ActualDimensions>,
 }
 
 impl SCStreamOutputTrait for FrameHandler {
@@ -144,16 +186,19 @@ impl SCStreamOutputTrait for FrameHandler {
             return;
         };
 
-        let width = pixel_buffer.width();
-        let height = pixel_buffer.height();
+        let width = pixel_buffer.width() as u32;
+        let height = pixel_buffer.height() as u32;
+
+        // Update actual dimensions on first frame (or if source resizes).
+        self.actual_dims.width.store(width, Ordering::Relaxed);
+        self.actual_dims.height.store(height, Ordering::Relaxed);
 
         // Zero-copy: retain the CVPixelBuffer and wrap it as a GPU frame.
         let raw = pixel_buffer.as_ptr();
-        let gpu_frame = unsafe {
-            AppleGpuFrame::from_raw(raw, width as u32, height as u32, GpuPixelFormat::Bgra)
-        };
+        let gpu_frame =
+            unsafe { AppleGpuFrame::from_raw(raw, width, height, GpuPixelFormat::Bgra) };
         let frame = VideoFrame::new_gpu(
-            GpuFrame::new(std::sync::Arc::new(gpu_frame)),
+            GpuFrame::new(Arc::new(gpu_frame)),
             self.capture_start.elapsed(),
         );
 
@@ -166,8 +211,14 @@ impl SCStreamOutputTrait for FrameHandler {
 /// macOS screen capturer via ScreenCaptureKit.
 #[derive(derive_more::Debug)]
 pub struct MacScreenCapturer {
-    width: u32,
-    height: u32,
+    /// Requested dimensions (logical points for windows, display pixels for screens).
+    /// Used as fallback before the first frame arrives.
+    requested_width: u32,
+    requested_height: u32,
+    /// Actual pixel dimensions from the CVPixelBuffer callback.
+    /// Updated on every frame — authoritative source of truth.
+    #[debug(skip)]
+    actual_dims: Arc<ActualDimensions>,
     #[debug(skip)]
     rx: mpsc::Receiver<VideoFrame>, // bounded via SyncSender
     #[debug(skip)]
@@ -187,9 +238,23 @@ impl MacScreenCapturer {
             .find(|w| w.window_id() == window_id)
             .context("window not found")?;
 
+        // Window frame is in logical points. On Retina (2x), request double
+        // to capture at native pixel resolution. The actual CVPixelBuffer
+        // dimensions are tracked via actual_dims from the callback.
         let frame = window.frame();
-        let width = frame.width as u32;
-        let height = frame.height as u32;
+        let displays = content.displays();
+        let cx = frame.x + frame.width / 2.0;
+        let cy = frame.y + frame.height / 2.0;
+        let scale = displays
+            .iter()
+            .find(|d| {
+                let f = d.frame();
+                cx >= f.x && cx < f.x + f.width && cy >= f.y && cy < f.y + f.height
+            })
+            .map(|d| display_scale_factor(d))
+            .unwrap_or(2.0);
+        let width = (frame.width * scale) as u32;
+        let height = (frame.height * scale) as u32;
 
         let filter = SCContentFilter::create().with_window(&window).build();
 
@@ -250,10 +315,16 @@ impl MacScreenCapturer {
             stream_config = stream_config.with_minimum_frame_interval(&CMTime::new(1, fps as i32));
         }
 
+        let actual_dims = Arc::new(ActualDimensions {
+            width: AtomicU32::new(0),
+            height: AtomicU32::new(0),
+        });
+
         let (frame_tx, frame_rx) = mpsc::sync_channel(2);
         let handler = FrameHandler {
             tx: frame_tx,
             capture_start: Instant::now(),
+            actual_dims: Arc::clone(&actual_dims),
         };
 
         let mut stream = SCStream::new(&filter, &stream_config);
@@ -265,8 +336,9 @@ impl MacScreenCapturer {
         info!(width, height, "macOS screen capture started");
 
         Ok(Self {
-            width: width as u32,
-            height: height as u32,
+            requested_width: width,
+            requested_height: height,
+            actual_dims,
             rx: frame_rx,
             stream,
         })
@@ -279,9 +351,18 @@ impl VideoSource for MacScreenCapturer {
     }
 
     fn format(&self) -> VideoFormat {
+        // Use actual pixel buffer dimensions if we've received a frame,
+        // otherwise fall back to the requested dimensions.
+        let w = self.actual_dims.width.load(Ordering::Relaxed);
+        let h = self.actual_dims.height.load(Ordering::Relaxed);
+        let (w, h) = if w > 0 && h > 0 {
+            (w, h)
+        } else {
+            (self.requested_width, self.requested_height)
+        };
         VideoFormat {
             pixel_format: RcPixelFormat::Bgra,
-            dimensions: [self.width, self.height],
+            dimensions: [w, h],
         }
     }
 

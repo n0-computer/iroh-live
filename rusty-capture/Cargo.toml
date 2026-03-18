@@ -65,6 +65,7 @@ dispatch2 = { version = "0.3", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 screencapturekit = { version = "1.5", optional = true }
+objc2-app-kit = { version = "0.3", optional = true, features = ["NSScreen", "NSGraphics", "NSGraphicsContext"] }
 
 [features]
 default = ["camera", "screen", "xcap", "nokhwa"]
@@ -80,7 +81,7 @@ screen = ["screen-linux", "screen-apple"]
 camera-linux = ["pipewire", "v4l2"]
 camera-apple = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-av-foundation", "dep:objc2-core-media", "dep:objc2-core-video", "dep:block2", "dep:dispatch2"]
 screen-linux = ["pipewire"]
-screen-apple = ["camera-apple", "dep:screencapturekit", "rusty-codecs/apple-gpu"]
+screen-apple = ["camera-apple", "dep:screencapturekit", "dep:objc2-app-kit", "rusty-codecs/apple-gpu"]
 
 # Low-level backend features — for fine-grained / embedded builds.
 pipewire = ["dep:pipewire", "dep:libspa", "dep:ashpd", "dep:nix", "dep:tokio"]
