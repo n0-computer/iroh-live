@@ -269,6 +269,7 @@ impl CameraCapturer {
     /// Returns the capture backends that are compiled in and available at runtime
     /// for camera capture.
     pub fn list_backends() -> Vec<CaptureBackend> {
+        #[allow(unused_mut)]
         let mut backends = Vec::new();
         #[cfg(all(target_os = "linux", feature = "pipewire"))]
         if pipewire_available() {
@@ -395,6 +396,7 @@ impl ScreenCapturer {
     /// Returns the capture backends that are compiled in and available at runtime
     /// for screen capture.
     pub fn list_backends() -> Vec<CaptureBackend> {
+        #[allow(unused_mut)]
         let mut backends = Vec::new();
         #[cfg(all(target_os = "linux", feature = "pipewire"))]
         if pipewire_available() {
