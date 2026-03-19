@@ -450,11 +450,11 @@ impl RemoteBroadcast {
             config,
             playback_config,
             Some(clock),
-            Some((
-                self.stats.render.clone(),
-                self.stats.timing.clone(),
-                self.stats.timeline.clone(),
-            )),
+            Some(crate::stats::DecodeStats {
+                render: self.stats.render.clone(),
+                timing: self.stats.timing.clone(),
+                timeline: self.stats.timeline.clone(),
+            }),
         )
     }
 
@@ -875,11 +875,7 @@ impl VideoTrack {
         config: &VideoConfig,
         playback_config: &DecodeConfig,
         clock: Option<PlayoutClock>,
-        stats: Option<(
-            crate::stats::RenderStats,
-            crate::stats::TimingStats,
-            crate::stats::Timeline,
-        )>,
+        stats: Option<crate::stats::DecodeStats>,
     ) -> Result<Self> {
         let source = MoqPacketSource(consumer);
         let config: rusty_codecs::config::VideoConfig = config.clone().into();

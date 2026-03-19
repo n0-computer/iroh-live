@@ -40,7 +40,7 @@ const REPAINT_INTERVAL: Duration = Duration::from_millis(4);
 
 #[derive(Debug, Parser)]
 struct Cli {
-    #[clap(long, conflicts_with = "endpoint-id")]
+    #[clap(conflicts_with = "endpoint-id")]
     ticket: Option<LiveTicket>,
     #[clap(long, conflicts_with = "ticket", requires = "name")]
     endpoint_id: Option<EndpointId>,

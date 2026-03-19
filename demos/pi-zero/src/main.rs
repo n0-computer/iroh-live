@@ -52,7 +52,7 @@ mod app {
     #[derive(Parser, Debug)]
     struct WatchOpts {
         /// Connection ticket (alternative to --endpoint-id + --name).
-        #[clap(long, conflicts_with = "endpoint_id")]
+        #[clap(conflicts_with = "endpoint_id")]
         ticket: Option<LiveTicket>,
         /// Remote endpoint ID (requires --name).
         #[clap(long, conflicts_with = "ticket", requires = "name")]
