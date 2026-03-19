@@ -345,9 +345,29 @@ impl PlayoutBuffer {
     pub(crate) fn push(&mut self, frame: VideoFrame) {
         self.clock.observe_arrival(frame.timestamp);
         self.buffer.push_back(frame);
-        // Safety valve: drop oldest if over limit.
-        while self.buffer.len() > self.max_frames {
-            self.buffer.pop_front();
+        // Safety valve: when the buffer overflows, the pipeline is
+        // overwhelmed (e.g. a burst of frames after a latency change).
+        // Draining one-by-one would leave stale frames that gate on old
+        // playout times, producing a long stutter. Instead, clear the
+        // buffer entirely, keep only the newest frame, and reset the
+        // clock so playout resumes immediately from the latest frame.
+        if self.buffer.len() > self.max_frames {
+            let newest = self.buffer.pop_back();
+            let dropped = self.buffer.len();
+            self.buffer.clear();
+            if let Some(frame) = newest {
+                tracing::debug!(
+                    dropped,
+                    pts_ms = frame.timestamp.as_millis(),
+                    "playout buffer: overflow, reset to newest frame"
+                );
+                self.buffer.push_back(frame);
+            }
+            self.clock.reset();
+            // Re-anchor the clock with the newest frame.
+            if let Some(f) = self.buffer.front() {
+                self.clock.observe_arrival(f.timestamp);
+            }
         }
     }
 
@@ -533,16 +553,19 @@ mod tests {
     }
 
     #[test]
-    fn playout_buffer_overflow_drops_oldest() {
-        let clock = PlayoutClock::new(PlayoutMode::Live {
-            buffer: Duration::from_secs(10),
-            max_latency: Duration::from_secs(10),
-        });
-        let mut buf = PlayoutBuffer::new(clock);
+    fn playout_buffer_overflow_resets_to_newest() {
+        // Use Reliable mode (zero buffer offset) so pop_ready() works
+        // without waiting for playout time.
+        let clock = PlayoutClock::new(PlayoutMode::Reliable);
+        let mut buf = PlayoutBuffer::new(clock.clone());
+        // Push 40 frames. Overflow fires at frame 31 (31 > 30), clearing
+        // the buffer to just frame 30. Frames 31-39 accumulate normally.
         for i in 0..40 {
             buf.push(make_test_frame(Duration::from_millis(i * 33)));
         }
-        assert_eq!(buf.len(), 30);
+        assert_eq!(buf.len(), 10); // frame 30 + frames 31-39
+        let frame = buf.pop_ready().expect("should have frame 30");
+        assert_eq!(frame.timestamp, Duration::from_millis(30 * 33));
     }
 
     #[test]
