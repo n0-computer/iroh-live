@@ -97,6 +97,10 @@ Issues noticed while writing minimal README code examples. The goal is that the 
 - [x] **EH2**: `AudioDriver::new()` now logs error and continues if initial stream start fails (no panic)
 - [x] **EH3**: Inconsistent lock panic messages — normalized to `.expect("poisoned")`
 
+### CI / Lint
+
+- [ ] **CI1**: Clippy with `--all-features -D warnings` fails on CI's newer Rust stable — new lints (`needless_borrow`, `is_multiple_of`, `allow_without_reason`) fire on feature-gated code paths (VAAPI, V4L2, Android). Currently worked around by running clippy without `--all-features`. These should be fixed so we can run full-strictness clippy across all features. Medium priority: affects code quality enforcement on hardware-specific paths.
+
 ### New findings (2026-03-18)
 
 - [ ] **B12**: `VideoEncoderPipeline` hardcodes 30 fps frame duration — ignores encoder config framerate (`pipeline.rs:260`)
