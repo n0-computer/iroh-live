@@ -416,12 +416,11 @@ fn log_push_status(status: PushStatus) {
 
 /// Reads audio from the system input device (microphone).
 ///
-/// Cloning creates a handle that shares the same ring buffer consumer.
-/// Only one clone should call [`AudioSource::pop_samples`] at a time —
-/// concurrent reads produce garbled audio. Cloning is intended for
-/// sequential ownership transfer (e.g., moving into an encoder thread),
-/// not for fan-out to multiple consumers.
-#[derive(Clone, derive_more::Debug)]
+/// Each `InputStream` owns an independent ring buffer consumer fed by the
+/// input callback. For multiple consumers (e.g., parallel audio renditions),
+/// create multiple streams via [`AudioBackend::input`] — the input callback
+/// fans out to all registered producers automatically.
+#[derive(derive_more::Debug)]
 pub struct InputStream {
     #[debug(skip)]
     cons: Arc<std::sync::Mutex<ResamplingCons<f32>>>,
@@ -436,10 +435,6 @@ pub struct InputStream {
 }
 
 impl AudioSource for InputStream {
-    fn cloned_boxed(&self) -> Box<dyn AudioSource> {
-        Box::new(self.clone())
-    }
-
     fn format(&self) -> AudioFormat {
         self.format
     }

@@ -39,10 +39,6 @@ impl TestAudioSource {
 }
 
 impl AudioSource for TestAudioSource {
-    fn cloned_boxed(&self) -> Box<dyn AudioSource> {
-        Box::new(self.clone())
-    }
-
     fn format(&self) -> AudioFormat {
         self.format
     }
@@ -185,10 +181,6 @@ impl SineAudioSource {
 }
 
 impl AudioSource for SineAudioSource {
-    fn cloned_boxed(&self) -> Box<dyn AudioSource> {
-        Box::new(self.clone())
-    }
-
     fn format(&self) -> AudioFormat {
         self.format
     }
