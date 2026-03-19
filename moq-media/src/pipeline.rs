@@ -449,6 +449,10 @@ impl Drop for PreEncodedVideoPipeline {
 ///
 /// Uses `blocking_recv()` when the buffer is empty (zero CPU overhead),
 /// and timed waits only when frames are buffered and awaiting playout.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "decode thread needs all pipeline handles"
+)]
 fn decode_loop(
     shutdown: &CancellationToken,
     mut input_rx: mpsc::Receiver<MediaPacket>,
@@ -714,10 +718,10 @@ fn decode_loop(
             frames_popped += 1;
             let gap = last_send.elapsed();
             // Freeze detection: no frame for >2× expected interval.
-            if gap > frame_interval * 2 {
-                if let Some(ref s) = stats {
-                    s.timing.freezes.record(1.0);
-                }
+            if gap > frame_interval * 2
+                && let Some(ref s) = stats
+            {
+                s.timing.freezes.record(1.0);
             }
             if let Some(ref s) = stats {
                 // Record instantaneous fps from inter-frame gap.
@@ -943,6 +947,10 @@ impl AudioDecoderPipeline {
         Self::build::<D>(name, source, config, sink, handle, None, None, None)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "audio pipeline build needs all handles"
+    )]
     fn build<D: AudioDecoder>(
         name: String,
         source: impl PacketSource,

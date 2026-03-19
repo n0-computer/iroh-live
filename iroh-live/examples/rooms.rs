@@ -2,14 +2,14 @@ use std::time::Duration;
 
 use clap::Parser;
 use eframe::egui::{self, Id, Vec2};
-use iroh::{Endpoint, Watcher};
+use iroh::Endpoint;
 use iroh_gossip::TopicId;
 use iroh_live::{
     Live,
     media::{
         audio_backend::AudioBackend,
         capture::{CameraCapturer, ScreenCapturer},
-        codec::{AudioCodec, DefaultDecoders, DynamicVideoDecoder, VideoCodec},
+        codec::{AudioCodec, DefaultDecoders, VideoCodec},
         format::{AudioPreset, VideoPreset},
         publish::{AudioRenditions, LocalBroadcast, VideoRenditions},
         subscribe::{AudioTrack, MediaTracks, RemoteBroadcast},
@@ -158,7 +158,7 @@ impl eframe::App for App {
                     };
 
                     self.peers
-                        .push(RemoteTrackView::new(ctx, session, track, self.peers.len()));
+                        .push(RemoteTrackView::new(ctx, *session, track, self.peers.len()));
                 }
             }
         }
@@ -197,7 +197,7 @@ impl eframe::App for App {
 }
 
 struct RemoteTrackView {
-    id: usize,
+    _id: usize,
     video: Option<VideoTrackView>,
     _audio_track: Option<AudioTrack>,
     session: MoqSession,
@@ -221,7 +221,7 @@ impl RemoteTrackView {
                 moq_media_egui::overlay::StatCategory::Render,
             ]),
             broadcast: track.broadcast,
-            id,
+            _id: id,
             _audio_track: track.audio,
             session,
         }

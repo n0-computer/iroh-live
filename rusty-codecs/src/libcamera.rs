@@ -300,7 +300,7 @@ impl PreEncodedVideoSource for LibcameraH264Source {
             }
             anyhow::bail!(
                 "rpicam-vid EOF — process exited (status: {}, stderr: {:?})",
-                status.map_or("unknown".into(), |s| format!("{s}")),
+                status.map_or_else(|| "unknown".into(), |s| format!("{s}")),
                 stderr_trimmed,
             );
         }
@@ -328,7 +328,7 @@ impl PreEncodedVideoSource for LibcameraH264Source {
         if is_keyframe && self.avcc.is_none() {
             let nals = parse_annex_b(&frame_data);
             if let Some((sps, pps)) = extract_sps_pps(&nals) {
-                self.avcc = Some(build_avcc(&sps, &pps).into());
+                self.avcc = Some(build_avcc(sps, pps).into());
                 tracing::debug!(
                     sps_len = sps.len(),
                     pps_len = pps.len(),
@@ -341,7 +341,7 @@ impl PreEncodedVideoSource for LibcameraH264Source {
         let pts = Duration::from_secs_f64(self.frame_count as f64 / fps);
         self.frame_count += 1;
 
-        if self.frame_count <= 3 || self.frame_count % 150 == 0 {
+        if self.frame_count <= 3 || self.frame_count.is_multiple_of(150) {
             tracing::debug!(
                 frame = self.frame_count,
                 len = frame_data.len(),
@@ -562,7 +562,7 @@ impl VideoSource for LibcameraYuvSource {
                 "first YUV frame from rpicam-vid"
             );
         }
-        if self.frame_count % (self.framerate as u64 * 5) == 0 {
+        if self.frame_count.is_multiple_of(self.framerate as u64 * 5) {
             tracing::debug!(frames = self.frame_count, "libcamera YUV capture running");
         }
 
@@ -656,10 +656,10 @@ mod tests {
         source.start().unwrap();
         let mut got_keyframe = false;
         for _ in 0..90 {
-            if let Some(frame) = source.pop_packet().unwrap() {
-                if frame.is_keyframe {
-                    got_keyframe = true;
-                }
+            if let Some(frame) = source.pop_packet().unwrap()
+                && frame.is_keyframe
+            {
+                got_keyframe = true;
             }
         }
         source.stop().unwrap();

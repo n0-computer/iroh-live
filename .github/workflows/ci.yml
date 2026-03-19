@@ -49,6 +49,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -60,7 +61,7 @@ jobs:
       - run: cargo check --locked ${{ matrix.cargo-args }} --all-targets --no-default-features
       - run: cargo clippy --locked ${{ matrix.cargo-args }} --all-targets -- -D warnings
       - if: ${{ matrix.run-tests }}
-        run: cargo test --locked ${{ matrix.cargo-args }}
+        run: cargo nextest run --locked ${{ matrix.cargo-args }}
       - if: ${{ matrix.run-fmt }}
         run: cargo fmt --check
 

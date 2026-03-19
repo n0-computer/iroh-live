@@ -3,6 +3,13 @@
 #[cfg(target_os = "linux")]
 pub(crate) mod linux;
 
+// TODO(CI1-macos): fix clippy lints in apple backends and remove this allow
+#[allow(
+    clippy::bind_instead_of_map,
+    clippy::redundant_closure,
+    clippy::unnecessary_cast,
+    reason = "macOS-specific code awaiting clippy cleanup"
+)]
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub(crate) mod apple;
 

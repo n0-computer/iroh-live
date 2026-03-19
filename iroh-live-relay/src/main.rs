@@ -231,10 +231,10 @@ async fn main() -> anyhow::Result<()> {
         conn_id += 1;
         tokio::spawn(async move {
             // Pull the remote broadcast before serving the session.
-            if let (Some(ticket), Some(pull)) = (ticket, pull_clone) {
-                if let Err(err) = pull.pull(&ticket).await {
-                    tracing::warn!(%err, "pull failed for ticket in URL");
-                }
+            if let (Some(ticket), Some(pull)) = (ticket, pull_clone)
+                && let Err(err) = pull.pull(&ticket).await
+            {
+                tracing::warn!(%err, "pull failed for ticket in URL");
             }
             if let Err(err) = conn.run().await {
                 tracing::warn!(%err, "connection closed");

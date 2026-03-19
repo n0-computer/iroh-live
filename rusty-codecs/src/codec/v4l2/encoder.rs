@@ -152,7 +152,7 @@ impl V4l2Encoder {
             && self.avcc.is_none()
             && let Some((sps, pps)) = extract_sps_pps(&nals)
         {
-            self.avcc = Some(build_avcc(&sps, &pps));
+            self.avcc = Some(build_avcc(sps, pps));
         }
 
         let payload: bytes::Bytes = match self.nal_format {
@@ -282,7 +282,7 @@ impl VideoEncoder for V4l2Encoder {
         let timestamp_us = (self.frame_count * 1_000_000) / self.framerate as u64;
         self.frame_count += 1;
 
-        if self.frame_count <= 3 || self.frame_count % 150 == 0 {
+        if self.frame_count <= 3 || self.frame_count.is_multiple_of(150) {
             tracing::debug!(
                 frame = self.frame_count,
                 nv12_len = nv12.len(),
@@ -334,7 +334,11 @@ impl Drop for V4l2Encoder {
 //  10. Poll loop: DQBUF CAPTURE → send encoded, DQBUF OUTPUT → reuse
 // ---------------------------------------------------------------------------
 
-#[allow(unreachable_pub, dead_code)]
+#[allow(
+    unreachable_pub,
+    dead_code,
+    reason = "raw ioctl FFI module, items are pub for clarity"
+)]
 mod raw_v4l2 {
     use std::{
         collections::VecDeque,
@@ -345,7 +349,10 @@ mod raw_v4l2 {
     };
 
     /// V4L2 ioctl numbers (from linux/videodev2.h).
-    #[allow(unreachable_pub)]
+    #[allow(
+        unreachable_pub,
+        reason = "pub for readability inside private FFI module"
+    )]
     mod ioctl_nr {
         use libc::c_ulong;
         // _IOWR('V', ...)
@@ -924,7 +931,10 @@ mod raw_v4l2 {
 }
 
 /// Runs the V4L2 M2M encoder using raw ioctls.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "V4L2 M2M setup requires many parameters"
+)]
 fn encoder_thread(
     device_path: std::path::PathBuf,
     width: u32,
@@ -991,7 +1001,7 @@ fn encoder_thread(
             while let Some((data, ts)) = enc.dequeue_capture() {
                 if !data.is_empty() {
                     encoded_count += 1;
-                    if encoded_count <= 5 || encoded_count % 30 == 0 {
+                    if encoded_count <= 5 || encoded_count.is_multiple_of(30) {
                         tracing::debug!(
                             encoded_count,
                             len = data.len(),
@@ -1019,7 +1029,7 @@ fn encoder_thread(
             // Queue the frame.
             if enc.queue_frame(&nv12, timestamp_us) {
                 queued_count += 1;
-                if queued_count <= 5 || queued_count % 150 == 0 {
+                if queued_count <= 5 || queued_count.is_multiple_of(150) {
                     tracing::debug!(queued_count, "V4L2 encoder: frame queued");
                 }
             } else {

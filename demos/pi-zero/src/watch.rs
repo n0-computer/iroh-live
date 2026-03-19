@@ -29,26 +29,24 @@ fn try_upload_frame(
         .as_ref()
         .is_some_and(|f| last_ts.is_none_or(|prev| f.timestamp != prev));
 
-    if is_new {
-        if let Some(f) = &frame {
-            *last_ts = Some(f.timestamp);
-            *frame_count += 1;
-            if *frame_count <= 3 {
-                tracing::info!(
-                    frame = *frame_count,
-                    w = f.width(), h = f.height(),
-                    format = ?std::mem::discriminant(&f.data),
-                    "decoding frame"
-                );
-            }
-            unsafe { renderer.upload_frame(f) };
+    if is_new && let Some(f) = &frame {
+        *last_ts = Some(f.timestamp);
+        *frame_count += 1;
+        if *frame_count <= 3 {
+            tracing::info!(
+                frame = *frame_count,
+                w = f.width(), h = f.height(),
+                format = ?std::mem::discriminant(&f.data),
+                "decoding frame"
+            );
         }
+        unsafe { renderer.upload_frame(f) };
     }
     is_new
 }
 
 /// Prints FPS and RTT stats every second.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "useful for debugging but not called in release")]
 fn print_stats(
     session: &MoqSession,
     track: &VideoTrack,
@@ -191,7 +189,7 @@ impl DrmDisplay {
                     continue;
                 }
                 let modes = conn.modes().to_vec();
-                let mode = modes.first().context("connector has no modes")?.clone();
+                let mode = *modes.first().context("connector has no modes")?;
                 let enc = conn.current_encoder().context("no encoder")?;
                 let crtc = card
                     .get_encoder(enc)
@@ -414,9 +412,8 @@ pub(crate) async fn run_drm(mut video_track: VideoTrack, _session: MoqSession) -
 
             loop {
                 // Block until a frame arrives (or channel closes).
-                let frame = match frame_rx.blocking_recv() {
-                    Some(f) => f,
-                    None => break, // channel closed, exit
+                let Some(frame) = frame_rx.blocking_recv() else {
+                    break; // channel closed, exit
                 };
 
                 // Drain any newer frames — display the latest.
@@ -443,14 +440,9 @@ pub(crate) async fn run_drm(mut video_track: VideoTrack, _session: MoqSession) -
         .context("spawn render thread")?;
 
     // Async frame pump — runs on tokio, feeds the render thread.
-    loop {
-        match video_track.next_frame().await {
-            Some(frame) => {
-                if frame_tx.send(frame).await.is_err() {
-                    break; // render thread exited
-                }
-            }
-            None => break, // track closed
+    while let Some(frame) = video_track.next_frame().await {
+        if frame_tx.send(frame).await.is_err() {
+            break; // render thread exited
         }
     }
 

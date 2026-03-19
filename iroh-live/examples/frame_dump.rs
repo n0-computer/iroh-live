@@ -288,8 +288,7 @@ fn compute_color_bar_psnr(frame: &image::RgbaImage) -> f64 {
     let mut count = 0u64;
 
     for y in y_start..y_end {
-        for bar_idx in 0..7 {
-            let expected = bars[bar_idx];
+        for (bar_idx, &expected) in bars.iter().enumerate().take(7) {
             // Sample the center third of each bar to avoid edge blending.
             let x_start = bar_idx * bar_width + bar_width / 3;
             let x_end = bar_idx * bar_width + bar_width * 2 / 3;

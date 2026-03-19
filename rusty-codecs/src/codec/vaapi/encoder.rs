@@ -911,7 +911,7 @@ impl VaapiEncoder {
                 if avcc.is_none() {
                     let nals = parse_annex_b(&coded.bitstream);
                     if let Some((sps, pps)) = extract_sps_pps(&nals) {
-                        avcc = Some(build_avcc(&sps, &pps));
+                        avcc = Some(build_avcc(sps, pps));
                     }
                 }
             }
@@ -1127,7 +1127,7 @@ impl VaapiEncoder {
             && self.avcc.is_none()
             && let Some((sps, pps)) = extract_sps_pps(&nals)
         {
-            self.avcc = Some(build_avcc(&sps, &pps));
+            self.avcc = Some(build_avcc(sps, pps));
         }
 
         let payload: bytes::Bytes = match self.nal_format {

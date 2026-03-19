@@ -99,7 +99,7 @@ Issues noticed while writing minimal README code examples. The goal is that the 
 
 ### CI / Lint
 
-- [ ] **CI1**: Clippy with `--all-features -D warnings` fails on CI's newer Rust stable — new lints (`needless_borrow`, `is_multiple_of`, `allow_without_reason`) fire on feature-gated code paths (VAAPI, V4L2, Android). Currently worked around by running clippy without `--all-features`. These should be fixed so we can run full-strictness clippy across all features. Medium priority: affects code quality enforcement on hardware-specific paths.
+- [ ] **CI1**: rusty-codecs has 15+ clippy lints suppressed at crate level (`lib.rs`) because CI's newer Rust stable fires them across v4l2, h264, libcamera, gles, and vtb code. Lints: `needless_borrows_for_generic_args`, `manual_is_multiple_of`, `allow_without_reason`, `too_many_arguments`, `unnecessary_unsafe`, `collapsible_if`, `redundant_slicing`, `arc_with_non_send_sync`, `deprecated` (objc2 API rename), and others. These should be fixed file-by-file and the crate-level allows removed. Medium priority.
 
 ### New findings (2026-03-18)
 

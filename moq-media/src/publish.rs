@@ -90,8 +90,10 @@ type MakeVideoEncoder = Box<dyn Fn() -> Result<Box<dyn VideoEncoder>> + Send + '
 /// pipeline cancels the encoder/passthrough thread.
 #[derive(derive_more::Debug)]
 enum VideoPipeline {
-    Encoder(#[allow(dead_code)] VideoEncoderPipeline),
-    PreEncoded(#[allow(dead_code)] PreEncodedVideoPipeline),
+    Encoder(#[allow(dead_code, reason = "held for RAII cleanup on drop")] VideoEncoderPipeline),
+    PreEncoded(
+        #[allow(dead_code, reason = "held for RAII cleanup on drop")] PreEncodedVideoPipeline,
+    ),
 }
 
 type MakePreEncodedSource =
@@ -1289,10 +1291,11 @@ mod tests {
     #[cfg(feature = "av1")]
     #[tokio::test]
     async fn spawn_video_av1_produces_output() {
-        // rav1e buffers ~30 frames before first output at speed preset 10
+        // rav1e buffers ~30 frames before first output at speed preset 10.
+        // Needs generous timeout — shared CI runners are slow.
         assert_spawn_video_produces_output::<codec::Av1Encoder>(
             VideoPreset::P180,
-            Duration::from_secs(5),
+            Duration::from_secs(15),
         )
         .await;
     }

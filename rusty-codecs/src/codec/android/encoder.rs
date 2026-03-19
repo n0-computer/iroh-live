@@ -243,7 +243,7 @@ impl AndroidEncoder {
     fn try_extract_sps_pps_from_data(&mut self, data: &[u8]) {
         let nals = parse_annex_b(data);
         if let Some((sps, pps)) = extract_sps_pps(&nals) {
-            self.avcc = Some(build_avcc(&sps, &pps));
+            self.avcc = Some(build_avcc(sps, pps));
         }
     }
 
