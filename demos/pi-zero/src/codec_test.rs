@@ -167,10 +167,7 @@ fn test_decode(opts: &CodecTestOpts) -> anyhow::Result<()> {
         };
         decoder.push_packet(media_pkt)?;
 
-        // Give the V4L2 HW decoder time to process. The decoder runs
-        // asynchronously, so without pacing we overflow the input channel.
-        std::thread::sleep(Duration::from_millis(5));
-
+        // Drain any ready frames between pushes.
         while let Ok(Some(frame)) = decoder.pop_frame() {
             decoded_count += 1;
             save_frame(opts, &format!("v4l2dec_{:04}", decoded_count - 1), &frame)?;
@@ -180,13 +177,30 @@ fn test_decode(opts: &CodecTestOpts) -> anyhow::Result<()> {
             println!("  packet {}: {} decoded frames", i + 1, decoded_count);
         }
     }
+    let feed_elapsed = start.elapsed();
+    println!(
+        "  feed done: {:.1}s ({} packets queued, {} decoded during feed)",
+        feed_elapsed.as_secs_f64(),
+        encoded_packets.len(),
+        decoded_count,
+    );
 
-    // Give the decoder time to finish pending frames.
-    for _ in 0..20 {
+    // Drain remaining frames. The HW decoder may still be processing — at
+    // 1080p the pipeline latency is several frames, so we wait until no new
+    // frames arrive for 500ms.
+    let mut idle_streak = 0;
+    while idle_streak < 10 {
         std::thread::sleep(Duration::from_millis(50));
+        let mut got_any = false;
         while let Ok(Some(frame)) = decoder.pop_frame() {
             decoded_count += 1;
             save_frame(opts, &format!("v4l2dec_{:04}", decoded_count - 1), &frame)?;
+            got_any = true;
+        }
+        if got_any {
+            idle_streak = 0;
+        } else {
+            idle_streak += 1;
         }
     }
 
@@ -253,19 +267,26 @@ fn test_roundtrip(opts: &CodecTestOpts) -> anyhow::Result<()> {
             timestamp: pkt.timestamp,
         };
         decoder.push_packet(media_pkt)?;
-        std::thread::sleep(Duration::from_millis(5));
         while let Ok(Some(frame)) = decoder.pop_frame() {
             decoded_count += 1;
             save_frame(opts, &format!("roundtrip_{:04}", decoded_count - 1), &frame)?;
         }
     }
 
-    // Drain remaining frames.
-    for _ in 0..20 {
+    // Drain remaining frames until idle for 500ms.
+    let mut idle_streak = 0;
+    while idle_streak < 10 {
         std::thread::sleep(Duration::from_millis(50));
+        let mut got_any = false;
         while let Ok(Some(frame)) = decoder.pop_frame() {
             decoded_count += 1;
             save_frame(opts, &format!("roundtrip_{:04}", decoded_count - 1), &frame)?;
+            got_any = true;
+        }
+        if got_any {
+            idle_streak = 0;
+        } else {
+            idle_streak += 1;
         }
     }
 

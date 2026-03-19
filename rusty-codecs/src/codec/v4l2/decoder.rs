@@ -13,8 +13,7 @@ use anyhow::{Context as _, Result, bail};
 use crate::{
     codec::h264::annexb::{avcc_to_annex_b, length_prefixed_to_annex_b},
     config::{VideoCodec, VideoConfig},
-    format::{DecodeConfig, MediaPacket, NalFormat, VideoFrame},
-    processing::convert::{YuvData, nv12_to_rgba_data, yuv420_to_rgba_data},
+    format::{DecodeConfig, MediaPacket, NalFormat, Nv12Planes, VideoFrame},
     traits::VideoDecoder,
 };
 
@@ -204,7 +203,12 @@ fn decoder_thread(
             .start(
                 // Input done: no-op.
                 |_: CompletedInputBuffer<Vec<MmapHandle>>| {},
-                // Frame decoded: extract NV12, convert to VideoFrame, send.
+                // Frame decoded: extract NV12 planes, send to consumer.
+                // Uses try_send to avoid stalling the V4L2 capture thread — if
+                // the consumer falls behind, the oldest un-consumed frames are
+                // lost but the decode pipeline keeps running at max HW rate.
+                // Production consumers (render loops) drain fast enough that
+                // the channel rarely fills.
                 move |event: DecoderEvent<MmapProvider>| match event {
                     DecoderEvent::FrameDecoded(dqbuf) => {
                         let state = format_state_decode.lock().expect("poisoned");
@@ -215,7 +219,9 @@ fn decoder_thread(
 
                         match extract_decoded_frame(&dqbuf, fmt) {
                             Ok(f) => {
-                                let _ = frame_tx_cb.try_send(f);
+                                if frame_tx_cb.try_send(f).is_err() {
+                                    tracing::debug!("V4L2: frame channel full, dropping frame");
+                                }
                             }
                             Err(e) => {
                                 tracing::warn!("V4L2: frame extraction failed: {e}");
@@ -259,23 +265,40 @@ fn decoder_thread(
             )
             .map_err(|e| anyhow::anyhow!("failed to start V4L2 decoder: {e}"))?;
 
-        /// Feeds data to the decoder by getting a free buffer, copying into it, and queuing.
-        /// Defined as a macro to avoid naming the unnameable Decoder<Decoding<...>> type.
+        /// Feeds data to the decoder by getting a free buffer, copying into it,
+        /// and queuing. Polls at 1ms intervals when no buffer is available,
+        /// up to 500ms — this covers the V4L2 HW decode latency (typically
+        /// 10-50ms per frame depending on resolution).
+        /// Defined as a macro to avoid naming the unnameable
+        /// Decoder<Decoding<...>> type.
         macro_rules! feed_data {
             ($decoder:expr, $data:expr) => {{
                 let data: &[u8] = $data;
-                let qbuf = $decoder
-                    .try_get_free_buffer()
-                    .map_err(|e| anyhow::anyhow!("no free decoder buffer: {e}"))?;
-                {
-                    let mut mapping = qbuf
-                        .get_plane_mapping(0)
-                        .ok_or_else(|| anyhow::anyhow!("buffer map failed"))?;
-                    let len = data.len().min(mapping.len());
-                    mapping[..len].copy_from_slice(&data[..len]);
-                }
-                qbuf.queue(&[data.len()])
-                    .map_err(|e| anyhow::anyhow!("buffer queue failed: {e}"))
+                (|| -> Result<()> {
+                    let qbuf = {
+                        let mut buf = None;
+                        for _ in 0..500 {
+                            match $decoder.try_get_free_buffer() {
+                                Ok(b) => {
+                                    buf = Some(b);
+                                    break;
+                                }
+                                Err(_) => std::thread::sleep(std::time::Duration::from_millis(1)),
+                            }
+                        }
+                        buf.ok_or_else(|| anyhow::anyhow!("no free decoder buffer after 500ms"))?
+                    };
+                    {
+                        let mut mapping = qbuf
+                            .get_plane_mapping(0)
+                            .ok_or_else(|| anyhow::anyhow!("buffer map failed"))?;
+                        let len = data.len().min(mapping.len());
+                        mapping[..len].copy_from_slice(&data[..len]);
+                    }
+                    qbuf.queue(&[data.len()])
+                        .map_err(|e| anyhow::anyhow!("buffer queue failed: {e}"))?;
+                    Ok(())
+                })()
             }};
         }
 
@@ -317,10 +340,14 @@ fn decoder_thread(
 /// YU12 (I420) fourcc: 'Y','U','1','2' = 0x32315559
 const PIXFMT_YU12: u32 = u32::from_le_bytes([b'Y', b'U', b'1', b'2']);
 
-/// Extracts a decoded frame from a dequeued CAPTURE buffer.
+/// Extracts a decoded frame from a dequeued CAPTURE buffer as NV12.
 ///
 /// Handles both NV12 (interleaved UV) and YU12/I420 (separate U, V planes),
 /// which are the two formats the bcm2835-codec decoder commonly produces.
+/// I420 planes are interleaved into NV12 format during the copy — this is
+/// much cheaper than full YUV→RGBA conversion (simple byte interleave vs.
+/// per-pixel matrix multiply), and lets the GPU handle color conversion
+/// via the NV12 shader.
 fn extract_decoded_frame(
     dqbuf: &v4l2r::device::queue::dqbuf::DqBuffer<
         v4l2r::device::queue::direction::Capture,
@@ -340,34 +367,33 @@ fn extract_decoded_frame(
     let data: &[u8] = &mapping;
 
     if fmt.pixelformat == PIXFMT_YU12 {
-        // I420: Y plane, then U plane (w/2 * h/2), then V plane (w/2 * h/2).
+        // I420: Y plane, then U plane (w/2 × h/2), then V plane (w/2 × h/2).
+        // Interleave U+V into NV12's interleaved UV plane.
         let uv_h = h.div_ceil(2) as usize;
         let uv_w = w.div_ceil(2) as usize;
         let uv_stride = stride / 2;
 
-        let y_data = copy_plane(data, stride, w_usize, h_usize);
+        let y_data = copy_plane(data, stride, w_usize, h_usize).into_owned();
         let u_offset = stride * h_usize;
         let v_offset = u_offset + uv_stride * uv_h;
 
         let u_src = data.get(u_offset..).unwrap_or(&[]);
         let v_src = data.get(v_offset..).unwrap_or(&[]);
-        let u_data = copy_plane(u_src, uv_stride, uv_w, uv_h);
-        let v_data = copy_plane(v_src, uv_stride, uv_w, uv_h);
 
-        let yuv = YuvData {
-            y: y_data.into_owned(),
-            u: u_data.into_owned(),
-            v: v_data.into_owned(),
+        // Interleave U and V into NV12 UV plane (UVUVUV...).
+        let uv_data = interleave_uv(u_src, v_src, uv_stride, uv_w, uv_h);
+
+        let planes = Nv12Planes {
+            y_data,
+            y_stride: w,
+            uv_data,
+            uv_stride: (uv_w * 2) as u32,
             width: w,
             height: h,
-            y_stride: w,
-            u_stride: uv_w as u32,
-            v_stride: uv_w as u32,
         };
-        let rgba = yuv420_to_rgba_data(&yuv)?;
-        Ok(VideoFrame::new_cpu(rgba, w, h, Duration::ZERO))
+        Ok(VideoFrame::new_nv12(planes, Duration::ZERO))
     } else {
-        // NV12: Y plane, then interleaved UV plane (w * h/2).
+        // NV12: Y plane, then interleaved UV plane (w × h/2).
         let uv_h = h.div_ceil(2) as usize;
         let uv_offset = stride * h_usize;
 
@@ -381,12 +407,44 @@ fn extract_decoded_frame(
             &uv_mapping
         };
 
-        let y_data = copy_plane(data, stride, w_usize, h_usize);
-        let uv_data = copy_plane(uv_src, stride, w_usize, uv_h);
+        let y_data = copy_plane(data, stride, w_usize, h_usize).into_owned();
+        let uv_data = copy_plane(uv_src, stride, w_usize, uv_h).into_owned();
 
-        let rgba = nv12_to_rgba_data(&y_data, w, &uv_data, w, w, h)?;
-        Ok(VideoFrame::new_cpu(rgba, w, h, Duration::ZERO))
+        let planes = Nv12Planes {
+            y_data,
+            y_stride: w,
+            uv_data,
+            uv_stride: w,
+            width: w,
+            height: h,
+        };
+        Ok(VideoFrame::new_nv12(planes, Duration::ZERO))
     }
+}
+
+/// Interleaves separate U and V planes into NV12's interleaved UV format.
+///
+/// Each output row contains `uv_w` pairs of (U, V) bytes. Much cheaper than
+/// full color conversion — just byte shuffling with no arithmetic.
+fn interleave_uv(
+    u_src: &[u8],
+    v_src: &[u8],
+    uv_stride: usize,
+    uv_w: usize,
+    uv_h: usize,
+) -> Vec<u8> {
+    let mut uv = Vec::with_capacity(uv_w * 2 * uv_h);
+    for row in 0..uv_h {
+        let u_row_start = row * uv_stride;
+        let v_row_start = row * uv_stride;
+        for col in 0..uv_w {
+            let u = u_src.get(u_row_start + col).copied().unwrap_or(128);
+            let v = v_src.get(v_row_start + col).copied().unwrap_or(128);
+            uv.push(u);
+            uv.push(v);
+        }
+    }
+    uv
 }
 
 /// Returns rows from a plane buffer, stripping stride padding.
