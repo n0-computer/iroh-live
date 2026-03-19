@@ -427,28 +427,31 @@ impl Actor {
                     }
                 }
                 Some(res) = self.session_tasks.join_next(), if !self.session_tasks.is_empty() => {
-                    let (endpoint_id, res) = res.expect("session task panicked");
-                    info!(remote=%endpoint_id.fmt_short(), "session closed: {res:?}");
-                    self.sessions.remove(&endpoint_id);
+                    match res {
+                        Ok((endpoint_id, res)) => {
+                            info!(remote=%endpoint_id.fmt_short(), "session closed: {res:?}");
+                            self.sessions.remove(&endpoint_id);
+                        }
+                        Err(err) => tracing::error!("session task panicked: {err}"),
+                    }
                 }
                 Some(name) = self.publishing_closed_futs.next(), if !self.publishing_closed_futs.is_empty() => {
                     self.publishing.remove(&name);
                 }
                 Some(res) = self.pending_connect_tasks.join_next(), if !self.pending_connect_tasks.is_empty() => {
-                    let (endpoint_id, res) = res.expect("connect task panicked");
                     match res {
-                        Ok(session) => {
+                        Err(err) => tracing::error!("connect task panicked: {err}"),
+                        Ok((endpoint_id, Ok(session))) => {
                             info!(remote=%endpoint_id.fmt_short(), "connected");
                             self.handle_incoming_session(session);
                         }
-                        Err(err) => {
+                        Ok((endpoint_id, Err(err))) => {
                             info!(remote=%endpoint_id.fmt_short(), "connect failed: {err:#}");
                             let replies = self.pending_connects.remove(&endpoint_id).into_iter().flatten();
                             let err = Arc::new(err);
                             for reply in replies {
                                 reply.send(Err(err.clone())).ok();
                             }
-
                         }
                     }
                 }

@@ -402,7 +402,7 @@ impl VaapiDecoder {
                             info.min_num_frames,
                             extra,
                         );
-                        self.framepool.lock().unwrap().resize(&info);
+                        self.framepool.lock().expect("poisoned").resize(&info);
                     }
                 }
             }
@@ -499,7 +499,7 @@ impl VideoDecoder for VaapiDecoder {
             let pool = this.framepool.clone();
             let _ = this
                 .decoder
-                .decode(ts, &annex_b, &mut || pool.lock().unwrap().alloc());
+                .decode(ts, &annex_b, &mut || pool.lock().expect("poisoned").alloc());
             this.drain_events();
         }
 
@@ -553,7 +553,7 @@ impl VideoDecoder for VaapiDecoder {
         let mut alloc_count = 0u32;
         let mut alloc = || {
             let t = Instant::now();
-            let frame = pool.lock().unwrap().alloc();
+            let frame = pool.lock().expect("poisoned").alloc();
             let elapsed = t.elapsed();
             alloc_count += 1;
             if elapsed > Duration::from_millis(5) {

@@ -191,7 +191,7 @@ fn decoder_thread(
                 // Frame decoded: extract NV12, convert to VideoFrame, send.
                 move |event: DecoderEvent<MmapProvider>| match event {
                     DecoderEvent::FrameDecoded(dqbuf) => {
-                        let state = format_state_decode.lock().unwrap();
+                        let state = format_state_decode.lock().expect("poisoned");
                         let Some(fmt) = state.as_ref() else {
                             tracing::warn!("V4L2: frame before format negotiation");
                             return;
@@ -227,7 +227,7 @@ fn decoder_thread(
                         .map(|p| p.bytesperline)
                         .unwrap_or(visible_rect.width);
 
-                    *format_state_format.lock().unwrap() = Some(FormatState {
+                    *format_state_format.lock().expect("poisoned") = Some(FormatState {
                         width: visible_rect.width,
                         height: visible_rect.height,
                         stride,
