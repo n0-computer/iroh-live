@@ -14,7 +14,7 @@ use crate::{
     codec::h264::annexb::{avcc_to_annex_b, length_prefixed_to_annex_b},
     config::{VideoCodec, VideoConfig},
     format::{DecodeConfig, MediaPacket, NalFormat, VideoFrame},
-    processing::convert::nv12_to_rgba_data,
+    processing::convert::{YuvData, nv12_to_rgba_data, yuv420_to_rgba_data},
     traits::VideoDecoder,
 };
 
@@ -44,6 +44,8 @@ struct FormatState {
     width: u32,
     height: u32,
     stride: u32,
+    /// V4L2 pixel format fourcc (e.g. YU12 for I420, NV12 for NV12).
+    pixelformat: u32,
 }
 
 impl VideoDecoder for V4l2Decoder {
@@ -76,10 +78,24 @@ impl VideoDecoder for V4l2Decoder {
         let initial_data = config.description.as_ref().and_then(|d| avcc_to_annex_b(d));
 
         let device_path_owned = device_path.clone();
+        let init_tx_panic = init_tx.clone();
         let thread = std::thread::Builder::new()
             .name("v4l2-decoder".into())
             .spawn(move || {
-                decoder_thread(device_path_owned, input_rx, frame_tx, init_tx, initial_data);
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    decoder_thread(device_path_owned, input_rx, frame_tx, init_tx, initial_data);
+                }));
+                if let Err(panic) = result {
+                    let msg = if let Some(s) = panic.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "unknown panic".to_string()
+                    };
+                    tracing::error!("V4L2 decoder thread panicked: {msg}");
+                    let _ = init_tx_panic.try_send(Err(anyhow::anyhow!("decoder panicked: {msg}")));
+                }
             })
             .context("failed to spawn V4L2 decoder thread")?;
 
@@ -197,7 +213,7 @@ fn decoder_thread(
                             return;
                         };
 
-                        match extract_nv12_frame(&dqbuf, fmt) {
+                        match extract_decoded_frame(&dqbuf, fmt) {
                             Ok(f) => {
                                 let _ = frame_tx_cb.try_send(f);
                             }
@@ -231,6 +247,7 @@ fn decoder_thread(
                         width: visible_rect.width,
                         height: visible_rect.height,
                         stride,
+                        pixelformat: format.pixelformat.to_u32(),
                     });
 
                     Ok(FormatChangedReply {
@@ -297,8 +314,14 @@ fn decoder_thread(
     }
 }
 
-/// Extracts NV12 plane data from a dequeued CAPTURE buffer.
-fn extract_nv12_frame(
+/// YU12 (I420) fourcc: 'Y','U','1','2' = 0x32315559
+const PIXFMT_YU12: u32 = u32::from_le_bytes([b'Y', b'U', b'1', b'2']);
+
+/// Extracts a decoded frame from a dequeued CAPTURE buffer.
+///
+/// Handles both NV12 (interleaved UV) and YU12/I420 (separate U, V planes),
+/// which are the two formats the bcm2835-codec decoder commonly produces.
+fn extract_decoded_frame(
     dqbuf: &v4l2r::device::queue::dqbuf::DqBuffer<
         v4l2r::device::queue::direction::Capture,
         Vec<v4l2r::memory::MmapHandle>,
@@ -310,35 +333,60 @@ fn extract_nv12_frame(
     let stride = fmt.stride as usize;
     let w_usize = w as usize;
     let h_usize = h as usize;
-    let uv_h = h.div_ceil(2) as usize;
 
     let mapping = dqbuf
         .get_plane_mapping(0)
         .context("failed to map V4L2 CAPTURE plane 0")?;
-
     let data: &[u8] = &mapping;
-    let uv_offset = stride * h_usize;
 
-    // Hoist the optional UV plane mapping so Cow borrows outlive the conversion.
-    let uv_mapping;
-    let uv_src: &[u8] = if uv_offset < data.len() {
-        &data[uv_offset..]
+    if fmt.pixelformat == PIXFMT_YU12 {
+        // I420: Y plane, then U plane (w/2 * h/2), then V plane (w/2 * h/2).
+        let uv_h = h.div_ceil(2) as usize;
+        let uv_w = w.div_ceil(2) as usize;
+        let uv_stride = stride / 2;
+
+        let y_data = copy_plane(data, stride, w_usize, h_usize);
+        let u_offset = stride * h_usize;
+        let v_offset = u_offset + uv_stride * uv_h;
+
+        let u_src = data.get(u_offset..).unwrap_or(&[]);
+        let v_src = data.get(v_offset..).unwrap_or(&[]);
+        let u_data = copy_plane(u_src, uv_stride, uv_w, uv_h);
+        let v_data = copy_plane(v_src, uv_stride, uv_w, uv_h);
+
+        let yuv = YuvData {
+            y: y_data.into_owned(),
+            u: u_data.into_owned(),
+            v: v_data.into_owned(),
+            width: w,
+            height: h,
+            y_stride: w,
+            u_stride: uv_w as u32,
+            v_stride: uv_w as u32,
+        };
+        let rgba = yuv420_to_rgba_data(&yuv)?;
+        Ok(VideoFrame::new_cpu(rgba, w, h, Duration::ZERO))
     } else {
-        // Multi-plane: UV is on a separate V4L2 plane.
-        uv_mapping = dqbuf
-            .get_plane_mapping(1)
-            .context("failed to map V4L2 CAPTURE UV plane")?;
-        &uv_mapping
-    };
+        // NV12: Y plane, then interleaved UV plane (w * h/2).
+        let uv_h = h.div_ceil(2) as usize;
+        let uv_offset = stride * h_usize;
 
-    // Single-plane NV12: Y at offset 0, UV at offset stride * height.
-    let y_data = copy_plane(data, stride, w_usize, h_usize);
-    let uv_data = copy_plane(uv_src, stride, w_usize, uv_h);
+        let uv_mapping;
+        let uv_src: &[u8] = if uv_offset < data.len() {
+            &data[uv_offset..]
+        } else {
+            uv_mapping = dqbuf
+                .get_plane_mapping(1)
+                .context("failed to map V4L2 CAPTURE UV plane")?;
+            &uv_mapping
+        };
 
-    // TODO: output NV12 directly (FrameData::Nv12) when the render pipeline
-    // supports NV12 from V4L2 without GPU import. For now, convert to RGBA.
-    let rgba = nv12_to_rgba_data(&y_data, w, &uv_data, w, w, h)?;
-    Ok(VideoFrame::new_cpu(rgba, w, h, Duration::ZERO))
+        let y_data = copy_plane(data, stride, w_usize, h_usize);
+        let uv_data = copy_plane(uv_src, stride, w_usize, uv_h);
+
+        let rgba = nv12_to_rgba_data(&y_data, w, &uv_data, w, w, h)?;
+        Ok(VideoFrame::new_cpu(rgba, w, h, Duration::ZERO))
+    }
 }
 
 /// Returns rows from a plane buffer, stripping stride padding.

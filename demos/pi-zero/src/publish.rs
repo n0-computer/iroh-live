@@ -33,6 +33,7 @@ pub(crate) struct PublishOpts {
     /// - "software": raw YUV capture + openh264 software encoder
     /// - "v4l2": raw YUV capture + V4L2 M2M hardware encoder
     /// - "ffmpeg": raw YUV capture + ffmpeg H.264 encoder
+    /// - "test": SMPTE test pattern (no camera needed, for e2e verification)
     #[clap(long, default_value = "libcamera")]
     pub encoder: String,
 
@@ -220,13 +221,33 @@ fn setup_encoder(
         }
         #[cfg(not(feature = "ffmpeg"))]
         "ffmpeg" => {
-            eprintln!("ffmpeg encoder not compiled in — build with --features ffmpeg");
+            eprintln!("ffmpeg encoder not compiled in -- build with --features ffmpeg");
             std::process::exit(1);
+        }
+        "test" | "test-pattern" => {
+            use moq_media::test_util::TestVideoSource;
+
+            let source = TestVideoSource::new(capture_w, capture_h).with_fps(opts.fps as f64);
+            let codec = VideoCodec::H264;
+            tracing::info!(%codec, presets = ?opts.video_presets, "test pattern + software encoder");
+            broadcast
+                .video()
+                .set(VideoInput::new(source, codec, opts.video_presets.clone()))?;
+        }
+        "test-v4l2" => {
+            use moq_media::test_util::TestVideoSource;
+
+            let source = TestVideoSource::new(capture_w, capture_h).with_fps(opts.fps as f64);
+            let codec = VideoCodec::V4l2H264;
+            tracing::info!(%codec, presets = ?opts.video_presets, "test pattern + V4L2 HW encoder");
+            broadcast
+                .video()
+                .set(VideoInput::new(source, codec, opts.video_presets.clone()))?;
         }
         other => {
             eprintln!(
                 "Unknown encoder: {other}. \
-                 Use 'libcamera' (default), 'software', 'v4l2', or 'ffmpeg'"
+                 Use 'libcamera' (default), 'software', 'v4l2', 'test', 'test-v4l2', or 'ffmpeg'"
             );
             std::process::exit(1);
         }

@@ -7,6 +7,8 @@
 compile_error!("pi-zero-demo only supports Linux");
 
 #[cfg(target_os = "linux")]
+mod codec_test;
+#[cfg(target_os = "linux")]
 mod epaper;
 #[cfg(target_os = "linux")]
 mod epd_v4;
@@ -28,7 +30,7 @@ mod app {
         ticket::LiveTicket,
     };
 
-    use crate::{epaper, publish, watch};
+    use crate::{codec_test, epaper, publish, watch};
 
     #[derive(Parser)]
     #[command(about = "Pi Zero 2 demo: camera streaming + e-paper QR ticket")]
@@ -47,6 +49,8 @@ mod app {
         Watch(WatchOpts),
         /// Render a test pattern directly to HDMI (no network, no window system).
         FbDemo,
+        /// Run V4L2 codec tests (encoder, decoder, roundtrip) on-device.
+        CodecTest(codec_test::CodecTestOpts),
     }
 
     #[derive(Parser, Debug)]
@@ -77,6 +81,7 @@ mod app {
             Command::Publish(opts) => publish::cmd_publish(opts).await,
             Command::Watch(opts) => cmd_watch(opts).await,
             Command::FbDemo => cmd_fb_demo(),
+            Command::CodecTest(opts) => Ok(codec_test::run(opts)?),
         }
     }
 

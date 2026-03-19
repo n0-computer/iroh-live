@@ -100,15 +100,51 @@ Intel.
 VAAPI is native via Mesa RADV. Not tested. DMA-BUF import should work
 similarly to Intel but with different modifiers.
 
+### Raspberry Pi Zero 2 W / Pi 3 (BCM2710)
+
+V4L2 stateful H.264 encoder and decoder via bcm2835-codec, tested on Pi Zero
+2 W with 128MB GPU memory. Hardware encode at 720p runs at 53 fps, 1080p at
+23 fps. Hardware decode at 720p runs at ~40 fps; 1080p decode is limited to
+~9 fps due to CPU-side YUV-to-RGBA conversion (a direct I420/NV12 render path
+would improve this).
+
+Key driver quirks discovered during testing:
+- The bcm2835-codec defaults to H.264 Level 1.0 (128x96 max). The level must
+  be set explicitly via `V4L2_CID_MPEG_VIDEO_H264_LEVEL` before `S_FMT`, or
+  any resolution above ~640x480 fails with `ESRCH` from `STREAMON`.
+- Profile and level controls must be set before format negotiation.
+- The encoder device (`/dev/video11`) must be opened with `O_NONBLOCK`.
+- `repeat_sequence_header` is used instead of `PREPEND_SPSPPS_TO_IDR`.
+- The decoder outputs YU12 (I420, planar), not NV12 (semi-planar).
+- The default GPU memory (64MB) is too small for 720p+. Set `gpu_mem=128` in
+  `/boot/firmware/config.txt`.
+
 ### Raspberry Pi 4 (BCM2711)
 
-V4L2 stateful H.264 encoder and decoder. Tested by upstream `v4l2r` crate
-authors. Our V4L2 backend compiles but has not been tested on RPi hardware.
+Same bcm2835-codec V4L2 path as Pi Zero 2 W, with more GPU memory and faster
+CPU. Expected to handle 1080p30 encode and decode in real time. Not tested
+with our codebase.
 
 ### Raspberry Pi 5 (BCM2712)
 
 Same V4L2 path as RPi 4. The VideoCore VII GPU supports Vulkan 1.2 via the
 `v3dv` driver, so wgpu rendering should work. Not tested.
+
+### V4L2 portability across SoCs
+
+The V4L2 M2M encoder API is a kernel standard, but SoC drivers differ in
+defaults and control support. The current implementation handles bcm2835-codec
+quirks; other SoCs (Rockchip, MediaTek, Samsung Exynos) may need:
+
+- Different H.264 level defaults (some auto-negotiate, others default high)
+- Different SPS/PPS repeat controls
+- Different decoder output pixel formats (NV12 vs I420 vs NV21)
+- Different device paths (override with `V4L2_ENC_DEVICE`/`V4L2_DEC_DEVICE`)
+
+The recommended approach for a new SoC is to query controls with
+`v4l2-ctl --list-ctrls-menus` and cross-reference with ffmpeg's
+`h264_v4l2m2m` ioctl sequence, which is well-tested across many drivers.
+See the `rusty-codecs` V4L2 module docs for implementation details.
 
 ### macOS (Apple Silicon)
 
