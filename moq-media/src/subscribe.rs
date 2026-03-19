@@ -1,3 +1,10 @@
+//! Subscribe side: receiving and decoding remote broadcasts.
+//!
+//! [`RemoteBroadcast`] wraps a catalog consumer and provides
+//! [`VideoTrack`] and [`AudioTrack`] handles for decoded media.
+//! [`AdaptiveVideoTrack`](crate::adaptive::AdaptiveVideoTrack) adds
+//! automatic rendition switching based on network conditions.
+
 use std::{
     collections::BTreeMap,
     future,

@@ -1,3 +1,10 @@
+//! Encoder and decoder pipeline orchestration.
+//!
+//! Each pipeline runs on a dedicated OS thread and bridges between
+//! sync codec APIs and async transport via channels. Pipelines are
+//! created by the publish and subscribe modules — most callers do
+//! not use this module directly.
+
 use std::{
     future::Future,
     thread,
