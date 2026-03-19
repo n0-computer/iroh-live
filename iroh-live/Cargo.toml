@@ -60,7 +60,7 @@ patchbay = "0.1.0"
 workspace = true
 
 [features]
-default = ["h264", "opus", "av1", "capture"]
+default = ["h264", "opus", "capture", "wgpu", "vaapi", "videotoolbox", "dmabuf-import", "metal-import"]
 h264 = ["moq-media/h264"]
 opus = ["moq-media/opus"]
 av1 = ["moq-media/av1"]
@@ -71,4 +71,5 @@ videotoolbox = ["moq-media/videotoolbox"]
 vaapi = ["moq-media/vaapi"]
 wgpu = ["moq-media/wgpu"]
 dmabuf-import = ["wgpu", "moq-media/dmabuf-import", "moq-media-egui/dmabuf-import"]
+metal-import = ["wgpu", "moq-media/metal-import", "moq-media-egui/metal-import"]
 android = ["moq-media/android"]

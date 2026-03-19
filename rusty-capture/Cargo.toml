@@ -18,9 +18,11 @@ tracing = "0.1.41"
 
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
-# Cross-platform screen capture (Linux X11/Wayland, macOS, Windows).
+# Cross-platform capture fallbacks (currently Windows-only, where native
+# backends are not yet available). On Linux and macOS, the native PipeWire,
+# V4L2, ScreenCaptureKit, and AVFoundation backends are preferred.
+# Enable the xcap/nokhwa features explicitly if needed on other platforms.
 xcap = { version = "0.9", optional = true }
-# Cross-platform webcam capture (Linux V4L2, macOS AVFoundation, Windows Media Foundation).
 nokhwa = { version = "0.10", optional = true, features = ["input-native", "camera-sync-impl"] }
 
 # Core types from rusty-codecs (no codec features enabled).
@@ -68,7 +70,7 @@ screencapturekit = { version = "1.5", optional = true }
 objc2-app-kit = { version = "0.3", optional = true, features = ["NSScreen", "NSGraphics", "NSGraphicsContext"] }
 
 [features]
-default = ["camera", "screen", "xcap", "nokhwa"]
+default = ["camera", "screen"]
 
 # Capability features — what consumers should use.
 camera = ["camera-linux", "camera-apple"]
