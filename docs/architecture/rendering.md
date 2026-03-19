@@ -2,7 +2,6 @@
 
 | Field | Value |
 |-------|-------|
-| Modified | 2026-03-19 |
 | Status | stable |
 | Applies to | rusty-codecs, moq-media-egui, moq-media-dioxus |
 | Platforms | Linux, macOS, Android, Raspberry Pi |

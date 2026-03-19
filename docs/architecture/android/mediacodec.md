@@ -2,7 +2,6 @@
 
 | Field | Value |
 |-------|-------|
-| Modified | 2026-03-19 |
 | Status | stable |
 | Applies to | rusty-codecs, moq-media-android |
 | Platforms | Android (API 26+) |

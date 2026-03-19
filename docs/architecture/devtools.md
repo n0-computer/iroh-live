@@ -2,7 +2,6 @@
 
 | Field | Value |
 |-------|-------|
-| Modified | 2026-03-19 |
 | Status | draft |
 | Applies to | moq-media-egui, iroh-live, moq-media |
 
@@ -28,8 +27,28 @@ patchbay integration would add kernel-level packet impairment that affects the a
 
 ## frame_dump example
 
-The `frame_dump` example captures frames from a publish-subscribe pipeline and computes PSNR against a known SMPTE test pattern. This provides end-to-end frame verification: capture source generates a test pattern, the codec pipeline encodes and decodes it, and the output is compared against the expected image. Useful for validating codec correctness and measuring compression quality.
+The `frame_dump` example captures frames from a live broadcast and saves them as PNGs for visual inspection. It can also verify frames against the expected SMPTE test pattern by computing PSNR on the color bar region.
+
+```sh
+# Publish a test pattern
+cargo run --example frame_dump -- publish
+
+# In another terminal, watch and verify
+cargo run --example frame_dump -- watch <TICKET> --out /tmp/frames --verify
+
+# Generate reference PNGs without network
+cargo run --example frame_dump -- reference --out /tmp/ref
+```
+
+The PSNR check compares each frame's color bar region against the known SMPTE bar colors, ignoring the animated bouncing line. Values above 30 dB indicate correct codec operation; below 20 dB suggests color space errors or decode failures.
 
 ## On-device codec testing
 
-The `pi-zero-demo` includes a `codec-test` subcommand for testing V4L2 hardware codecs directly on the Raspberry Pi. It exercises the encoder and decoder at multiple resolutions, reports frame rates, and checks for driver-specific issues (level negotiation, SPS/PPS handling, pixel format quirks).
+The `pi-zero-demo` includes a `codec-test` subcommand for testing V4L2 hardware codecs directly on the Raspberry Pi without any network involvement:
+
+```sh
+ssh pi@livepizero "./pi-zero-demo codec-test all --frames 60"
+ssh pi@livepizero "./pi-zero-demo codec-test roundtrip --frames 30 --width 1280 --height 720"
+```
+
+It exercises the encoder, decoder, and full roundtrip at configurable resolutions, reports frame rates, and can save decoded frames for visual inspection.

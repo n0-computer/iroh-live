@@ -2,7 +2,6 @@
 
 | Field | Value |
 |-------|-------|
-| Modified | 2026-03-19 |
 | Status | stable |
 | Applies to | iroh-live, rusty-codecs (v4l2) |
 | Platforms | Raspberry Pi Zero 2 W, Pi 4, Pi 5 |

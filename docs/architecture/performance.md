@@ -2,7 +2,6 @@
 
 | Field | Value |
 |-------|-------|
-| Modified | 2026-03-19 |
 | Status | draft |
 | Applies to | moq-media, rusty-codecs |
 
@@ -37,9 +36,9 @@ These changes are already in the codebase:
 
 ## Highest-impact remaining work
 
-**NV12 direct encode path** (tracked as PT1): the current pipeline converts NV12 capture frames to RGBA, then back to YUV420 for encoding. An NV12-direct input path for the encoder would eliminate the three YUV plane allocations and the double color conversion. This is the single largest allocation per frame (2.3 MB at 1080p).
+**NV12 direct encode path**: the current pipeline converts NV12 capture frames to RGBA, then back to YUV420 for encoding. An NV12-direct input path for the encoder would eliminate the three YUV plane allocations and the double color conversion. This is the single largest allocation per frame (2.3 MB at 1080p).
 
-**Encoder plane borrowing** (tracked as PF2): the H.264 encoder copies I420 plane data via `.to_vec()` even when the memory layout already matches the encoder's expected format. Borrowing the planes directly would eliminate this copy.
+**Encoder plane borrowing**: the H.264 encoder copies I420 plane data via `.to_vec()` even when the memory layout already matches the encoder's expected format. Borrowing the planes directly would eliminate this copy.
 
 ## Lock contention
 

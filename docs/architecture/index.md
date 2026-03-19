@@ -1,75 +1,35 @@
-# Architecture Overview
+# Architecture
 
 | Field | Value |
 |-------|-------|
-| Modified | 2026-03-19 |
 | Status | stable |
 | Applies to | iroh-live, moq-media, iroh-moq, rusty-codecs, rusty-capture |
 
+This section documents how iroh-live works internally: the crate boundaries and their responsibilities, the pipeline from capture to rendering, the design principles behind the public API, and platform-specific codec and GPU details.
+
 ## Crate layers
 
-The workspace is organized into three layers. Each layer depends only on
-the layers below it, and each can be used independently for its scope of
-concern.
+The workspace is organized into three layers. Each layer depends only on the layers below it, and each can be used independently.
 
-**iroh-live** is the product layer. It provides `Live` (session manager),
-`Call` (1:1 sessions), and rooms with participant models. It re-exports
-types from moq-media and adds signaling, identity, and connection
-management over iroh's QUIC transport. This is the entry point for
-applications that want video calls, rooms, or live streaming with
-peer-to-peer connectivity.
+**iroh-live** is the entry point for applications that want video calls, rooms, or live streaming with peer-to-peer connectivity. It provides `Live` (session manager), `Call` (1:1 sessions), and `Room` (multi-party via gossip). It re-exports moq-media and adds signaling, identity, and connection management over iroh's QUIC transport. See [iroh-live API design](iroh-live/api.md).
 
-**moq-media** is the media pipeline layer. It owns broadcast management
-(`LocalBroadcast`, `RemoteBroadcast`), codec pipeline orchestration
-(encode/decode on OS threads), playout timing, adaptive rendition
-switching, and the `PacketSink`/`PacketSource` transport boundary. It has
-no dependency on iroh. Non-RTC use cases (studio links, recording
-pipelines, file-based playback) use moq-media directly without iroh-live.
+**moq-media** owns the media pipeline: broadcast management (`LocalBroadcast`, `RemoteBroadcast`), codec orchestration, playout timing, adaptive bitrate, and the audio backend. It has no dependency on iroh, so non-RTC use cases (recording pipelines, studio links, camera dashboards) can use it directly. See [moq-media API design](moq-media/api.md).
 
-**iroh-moq** is the transport layer. It connects iroh's QUIC endpoint to
-moq-lite broadcast primitives. `Moq` manages the endpoint integration and
-connection lifecycle; `MoqSession` represents a single peer connection with
-publish/subscribe operations. See [transport.md](transport.md) for details.
+**iroh-moq** connects iroh's QUIC endpoint to moq-lite broadcast primitives. It manages sessions and provides the publish/subscribe interface. See [transport](transport.md).
 
-**rusty-codecs** provides codec implementations (H.264 via openh264, AV1
-via rav1e/rav1d, Opus), hardware acceleration (VAAPI, V4L2, VideoToolbox),
-image processing, and wgpu-based GPU rendering. It defines the core traits
-(`VideoEncoder`, `VideoDecoder`, `VideoSource`) that the rest of the stack
-builds on.
-
-**rusty-capture** provides platform-specific screen and camera capture
-behind the `VideoSource` trait. PipeWire, V4L2, X11, ScreenCaptureKit,
-and AVFoundation backends run on dedicated OS threads. See
-[capture.md](capture.md) for the full picture.
+Below these sit **rusty-codecs** (codec implementations, hardware acceleration, GPU rendering) and **rusty-capture** (platform-specific screen and camera capture). These define the `VideoEncoder`, `VideoDecoder`, and `VideoSource` traits that moq-media builds on.
 
 ## Design principles
 
-These principles govern the public API across moq-media and iroh-live.
+**`&self` everywhere.** All public types use interior mutability, making them safe to share across async tasks and threads without wrapper gymnastics.
 
-**`&self` everywhere.** All public types use interior mutability. Callers
-never need `&mut self`, which makes types safe to share across async tasks
-and threads without wrapper gymnastics.
+**Drop-based cleanup.** Dropping a `Call` closes it. Dropping a `LocalBroadcast` tears down encoder pipelines. Dropping a `VideoTrack` stops its decoder thread.
 
-**Drop-based cleanup.** Dropping a `Call` closes it. Dropping a
-`LocalBroadcast` tears down encoder pipelines. Dropping a `VideoTrack`
-stops its decoder thread. No explicit shutdown calls are required.
+**Watcher for continuous state, stream for discrete events.** Connection quality, active rendition, and catalog contents are continuous values exposed via `n0_watcher::Direct<T>`. Participant joins and session arrivals are discrete events exposed as `impl Stream`.
 
-**Watcher for continuous state, stream for discrete events.** Connection
-quality, active rendition, and catalog contents are continuous values that
-always have a current snapshot, exposed via `n0_watcher::Direct<T>` (call
-`.get()` for the snapshot, `.updated().await` to wait for changes).
-Participant joins, track publications, and session arrivals are discrete
-events exposed as `impl Stream`.
+**Declarative intent, not mechanism.** `VideoTarget { max_pixels: 1280*720 }` tells the system what quality the subscriber needs. The catalog selects the best matching rendition automatically.
 
-**Declarative intent, not mechanism.** `VideoTarget { max_pixels: 1280*720 }`
-tells the system what quality the subscriber needs. The catalog selects
-the best matching rendition. Callers do not manually pick rendition
-strings unless they want to.
-
-**moq-media is standalone.** A recording pipeline or a camera dashboard
-can use `LocalBroadcast` and `RemoteBroadcast` directly, without importing
-iroh-live or running iroh networking. The transport boundary is the
-`PacketSink`/`PacketSource` trait pair.
+**moq-media is standalone.** A recording pipeline can use `LocalBroadcast` and `RemoteBroadcast` directly, without importing iroh-live. The transport boundary is the `PacketSink`/`PacketSource` trait pair.
 
 ## Data flow
 
@@ -97,41 +57,10 @@ PlayoutBuffer (smooths bursty decoder output)
 renderer (wgpu texture upload or egui widget)
 ```
 
-Encoder and decoder pipelines run on dedicated OS threads, not tokio
-tasks. This keeps slow codec operations off the async runtime entirely.
-The `forward_packets` async task bridges the network-side `PacketSource`
-into an `mpsc` channel that the decoder thread reads synchronously.
+Encoder and decoder pipelines run on dedicated OS threads, not tokio tasks, so slow codec operations never block the async runtime. The `forward_packets` async task bridges the network-side `PacketSource` into an mpsc channel that the decoder thread reads synchronously.
 
-## Pages in this section
+## Platform coverage
 
-### Pipeline
+Linux (Intel Meteor Lake) is the primary development and test platform, with full hardware acceleration (VAAPI encode/decode, DMA-BUF zero-copy rendering) and PipeWire capture. macOS has VideoToolbox codec support and ScreenCaptureKit/AVFoundation capture with some manual testing. Android has been tested end-to-end with bidirectional video calls (MediaCodec HW, CameraX, EGL rendering). Raspberry Pi has V4L2 hardware codecs tested up to 1080p. Windows support (Media Foundation codecs, DXGI capture) is planned but not yet implemented.
 
-- [transport.md](transport.md) -- MoQ transport layer (iroh-moq)
-- [publish.md](publish.md) -- Publish pipeline and encoder management
-- [subscribe.md](subscribe.md) -- Subscribe pipeline and decoder management
-- [playout.md](playout.md) -- Playout timing, buffering, and A/V sync
-- [adaptive.md](adaptive.md) -- Adaptive rendition switching
-- [capture.md](capture.md) -- Platform capture backends
-
-### Cross-cutting
-
-- [codecs.md](codecs.md) -- Codec architecture (traits, auto-selection, software and hardware backends)
-- [rendering.md](rendering.md) -- Rendering backends (wgpu, GLES2, Android EGL)
-- [audio.md](audio.md) -- Audio backend (cpal, resampling, device management)
-- [audio/aec.md](audio/aec.md) -- Acoustic echo cancellation (sonora AEC3)
-- [performance.md](performance.md) -- Per-frame allocation budget and optimization status
-- [p2p-relay.md](p2p-relay.md) -- P2P connectivity and browser relay
-- [devtools.md](devtools.md) -- Debug overlay, metrics, network simulation
-
-### API design
-
-- [iroh-live/api.md](iroh-live/api.md) -- iroh-live API (Live, Call, Room)
-- [moq-media/api.md](moq-media/api.md) -- moq-media API (LocalBroadcast, RemoteBroadcast, transport boundary)
-
-### Platform-specific
-
-- [linux/vaapi.md](linux/vaapi.md) -- VAAPI hardware codec on Linux
-- [linux/dmabuf.md](linux/dmabuf.md) -- DMA-BUF zero-copy rendering on Linux
-- [macos/videotoolbox.md](macos/videotoolbox.md) -- VideoToolbox on macOS
-- [android/mediacodec.md](android/mediacodec.md) -- MediaCodec on Android
-- [pi/v4l2.md](pi/v4l2.md) -- V4L2 M2M codec on Raspberry Pi
+See [platforms.md](../../plans/platforms.md) for the full support matrix.

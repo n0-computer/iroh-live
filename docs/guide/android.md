@@ -2,7 +2,6 @@
 
 | Field | Value |
 |-------|-------|
-| Modified | 2026-03-19 |
 | Status | stable |
 | Applies to | iroh-live, moq-media, moq-media-android |
 | Platforms | Android (arm64-v8a, minSdk 26) |

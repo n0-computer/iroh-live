@@ -1,21 +1,21 @@
 # Documentation improvements
 
-## Structural and content issues
-
 - [ ] `docs/guide/index.md`: the "What is iroh-live" section works as an intro but reads as a separate section rather than a natural opening. Consider inlining the first paragraph as the page's intro text (before any heading), then starting the first heading with "System dependencies."
-- [ ] `docs/guide/desktop.md`: "Future possibilities" lists frameworks with no timeline or priority. Either cut it or tie each to a concrete use case that would justify the work. As written, it reads as speculative filler.
+- [x] `docs/guide/desktop.md`: "Future possibilities" reworded to practical "Other frameworks" section, no longer speculative filler. CPU fallback described as fallback/legacy, not as easy framework integration.
 - [ ] `docs/architecture/codecs.md`: the "Software codecs" section describes three codecs in a single dense paragraph. Breaking each codec into its own subsection (or at minimum a table) would improve scannability.
-- [ ] `docs/architecture/codecs.md`: "Image processing" and "Frame types" are tacked on at the end without connection to the codec traits above. Consider whether these belong on this page or in a separate page (e.g., `docs/architecture/frame-formats.md`).
-- [ ] `docs/architecture/performance.md`: the "Lock contention" section describes two specific issues (`PlayoutClock` mutex, `PlayoutBuffer` polling) but does not say whether they are measured problems or theoretical concerns. Adding profiling data or a "measured on X hardware" qualifier would strengthen the claims.
-- [ ] `docs/architecture/performance.md`: "Highest-impact remaining work" uses internal tracking IDs (PT1, PF2) that are not defined anywhere in the docs. Either define them or remove them.
-- [ ] `docs/architecture/devtools.md`: "Network simulation" describes patchbay as "the planned approach" but the page is titled "Developer Tools," implying these tools exist. Clarify what is available today versus what is planned.
-- [ ] `docs/architecture/devtools.md`: the `frame_dump` example is mentioned but no code sample or usage command is shown. Adding a one-liner (`cargo run --example frame_dump -- ...`) would match the pattern set by other pages.
-- [ ] `docs/architecture/rendering.md`: the "Industry comparison" table duplicates content from `docs/architecture/linux/dmabuf.md`. Consider keeping the detailed comparison on the dmabuf page and referencing it from rendering.md with a one-sentence summary.
-- [ ] `docs/architecture/adaptive.md`: "Current state" at the top is useful but its position before the intro paragraph makes the page structure unusual compared to other architecture pages. Consider moving it after the intro paragraph or into a "Status" row in the header table.
-- [ ] `docs/guide/moq.md`: "Further reading" lists external links without explaining when a reader should follow each one. A brief qualifier per link ("for protocol implementors," "for understanding the catalog wire format") would help readers decide whether to click.
-- [ ] `docs/architecture/audio.md`: the three-category thread model is described in prose but would benefit from a diagram or table showing which thread category owns which resources and how they communicate.
-- [ ] `docs/architecture/audio/aec.md`: "Real-time safety" is thorough but the third bullet contradicts itself. It says the Mutex is only locked in `set_stream_delay`, then immediately says `process_capture_f32` and `process_render_f32` also acquire the lock. Rewrite for clarity: state that the lock is always acquired but contention is minimal because all processing is serialized on one thread.
-- [ ] `docs/architecture/macos/videotoolbox.md`: "Testing status" says neither encoder nor decoder has been tested. If this is still true, the header table should say `Status: untested` rather than `draft` to set accurate expectations.
-- [ ] `docs/guide/android.md`: the "Architecture" section shows a directory tree but does not explain the data flow between components. Adding a sentence or two connecting the tree to the JNI bridge flow described in the following paragraph would improve coherence.
-- [ ] Cross-reference consistency: `docs/architecture/codecs.md` links to platform pages but `docs/architecture/publish.md` does not link to `codecs.md` even though it discusses encoder pipelines. Adding a cross-reference from publish.md to codecs.md would help readers navigate.
-- [ ] `docs/index.md`: all "Modified" dates are 2026-03-19, which suggests they were set in bulk. If these represent actual last-modified dates, consider automating them. If they are placeholders, remove the column.
+- [ ] `docs/architecture/codecs.md`: "Image processing" and "Frame types" are tacked on at the end without connection to the codec traits above. Consider whether these belong on this page or in a separate page.
+- [x] `docs/architecture/performance.md`: removed internal tracking IDs (PT1, PF2).
+- [x] `docs/architecture/devtools.md`: added `frame_dump` usage commands and `codec-test` usage commands.
+- [ ] `docs/architecture/rendering.md`: the "Industry comparison" table duplicates content from `docs/architecture/linux/dmabuf.md`. Consider keeping the detailed comparison on the dmabuf page and referencing it from rendering.md.
+- [ ] `docs/architecture/adaptive.md`: "Current state" at the top is useful but its position before the intro paragraph makes the page structure unusual compared to other architecture pages.
+- [ ] `docs/guide/moq.md`: "Further reading" lists external links without explaining when a reader should follow each one.
+- [ ] `docs/architecture/audio.md`: the three-category thread model would benefit from a diagram or table showing which thread category owns which resources.
+- [x] `docs/architecture/audio/aec.md`: AEC mutex description fixed by review agent.
+- [x] `docs/architecture/macos/videotoolbox.md`: status changed to "untested" by review agent.
+- [ ] `docs/guide/android.md`: the "Architecture" section shows a directory tree but does not explain the data flow between components.
+- [ ] Cross-reference: `docs/architecture/publish.md` should link to `codecs.md`.
+- [x] `docs/index.md`: removed Modified date column.
+- [x] `docs/guide/desktop.md`: CPU fallback described as fallback for headless/legacy, not advertised as easy framework integration.
+- [x] `docs/guide/desktop.md` and `docs/architecture/index.md`: macOS represented with VideoToolbox, ScreenCaptureKit/AVFoundation, Metal import.
+- [x] `docs/architecture/index.md`: mentions Windows as planned but not yet implemented.
+- [x] `docs/architecture/index.md`: rewritten to be concise and practical, no longer sounds like making things big.
