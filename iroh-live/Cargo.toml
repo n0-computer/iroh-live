@@ -52,6 +52,7 @@ n0-tracing-test = "0.3.0"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 eframe = { version = "0.33.0", default-features = false, features = ["wayland", "x11"] }
+patchbay = "0.1.0"
 
 [lints]
 workspace = true
