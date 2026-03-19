@@ -817,11 +817,11 @@ impl VideoRenditions {
             .context("rendition not available")?;
         let encoder = (entry.factory)()?;
         let sink = MoqPacketSink::new(producer);
-        Ok(VideoEncoderPipeline::with_stats(
+        Ok(VideoEncoderPipeline::new(
             self.source.clone(),
             encoder,
             sink,
-            stats,
+            crate::stats::EncodeOpts { stats },
         ))
     }
 }
@@ -1144,7 +1144,7 @@ mod tests {
         let mut consumer = producer.consume();
         let sink = MoqPacketSink::new(producer);
 
-        let _pipeline = VideoEncoderPipeline::new(source, encoder, sink);
+        let _pipeline = VideoEncoderPipeline::new(source, encoder, sink, Default::default());
 
         let result = tokio::time::timeout(timeout, consumer.next_group()).await;
 

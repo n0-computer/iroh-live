@@ -1130,13 +1130,12 @@ async fn audio_decoder_pipeline_standalone_roundtrip() {
     let captured = backend.captured_samples();
 
     // Start the decoder pipeline from the pipe source.
-    let _decoder_pipeline = AudioDecoderPipeline::with_clock::<OpusAudioDecoder>(
+    let _decoder_pipeline = AudioDecoderPipeline::new::<OpusAudioDecoder>(
         "test-audio".into(),
         source,
         &audio_config,
         &backend,
-        None,
-        None,
+        Default::default(),
     )
     .await
     .unwrap();
@@ -1186,13 +1185,12 @@ async fn audio_decoder_pipeline_stops_when_source_closes() {
     let (sink, source) = media_pipe(64);
     let backend = NullAudioBackend;
 
-    let decoder_pipeline = AudioDecoderPipeline::with_clock::<OpusAudioDecoder>(
+    let decoder_pipeline = AudioDecoderPipeline::new::<OpusAudioDecoder>(
         "test-stop".into(),
         source,
         &audio_config,
         &backend,
-        None,
-        None,
+        Default::default(),
     )
     .await
     .unwrap();

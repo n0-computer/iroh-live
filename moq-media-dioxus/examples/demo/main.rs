@@ -250,7 +250,7 @@ fn start_pipeline(
             let encoder_name = encoder.name().to_string();
             let config = encoder.config();
             let (sink, pipe_source) = media_pipe(32);
-            let enc = VideoEncoderPipeline::new(source, encoder, sink);
+            let enc = VideoEncoderPipeline::new(source, encoder, sink, Default::default());
 
             let decode_config = DecodeConfig {
                 backend,
@@ -261,6 +261,7 @@ fn start_pipeline(
                 pipe_source,
                 &config,
                 &decode_config,
+                Default::default(),
             )
             .map_err(|e| format!("Decoder: {e:#}"))?;
             let decoder_name = dec.handle.decoder_name().to_string();

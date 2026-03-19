@@ -126,35 +126,15 @@ impl VideoDecoderPipeline {
     ///
     /// Dropping the pipeline cancels the decode thread. The pipeline also
     /// shuts down automatically when the packet source closes.
+    ///
+    /// Use [`DecodeOpts`](crate::stats::DecodeOpts) to pass an optional
+    /// playout clock and/or stats collectors.
     pub fn new<D: VideoDecoder>(
         name: String,
         source: impl PacketSource,
         config: &VideoConfig,
         decode_config: &DecodeConfig,
-    ) -> Result<Self> {
-        Self::with_clock::<D>(name, source, config, decode_config, None)
-    }
-
-    /// Creates a new decoder pipeline with a shared [`PlayoutClock`] for
-    /// playout timing and A/V sync.
-    pub fn with_clock<D: VideoDecoder>(
-        name: String,
-        source: impl PacketSource,
-        config: &VideoConfig,
-        decode_config: &DecodeConfig,
-        clock: Option<PlayoutClock>,
-    ) -> Result<Self> {
-        Self::with_clock_and_stats::<D>(name, source, config, decode_config, clock, None)
-    }
-
-    /// Creates a new decoder pipeline with playout clock and stats.
-    pub fn with_clock_and_stats<D: VideoDecoder>(
-        name: String,
-        source: impl PacketSource,
-        config: &VideoConfig,
-        decode_config: &DecodeConfig,
-        clock: Option<PlayoutClock>,
-        stats: Option<crate::stats::DecodeStats>,
+        opts: crate::stats::DecodeOpts,
     ) -> Result<Self> {
         let shutdown = CancellationToken::new();
         let (packet_tx, packet_rx) = mpsc::channel(32);
@@ -180,9 +160,9 @@ impl VideoDecoderPipeline {
                     frame_tx,
                     viewport_watcher,
                     decoder,
-                    clock,
+                    opts.clock,
                     framerate,
-                    stats,
+                    opts.stats,
                 ) {
                     error!("decoder failed: {err:#}");
                 }
@@ -233,21 +213,17 @@ impl VideoEncoderPipeline {
     ///
     /// Spawns an OS thread that captures frames from `source`, encodes them
     /// with `encoder`, and writes the resulting packets to `sink`.
+    /// Creates a new encoder pipeline.
+    ///
+    /// Use [`EncodeOpts`](crate::stats::EncodeOpts) to pass optional
+    /// stats collectors.
     pub fn new(
-        source: impl VideoSource,
-        encoder: impl VideoEncoder,
-        sink: impl PacketSink,
-    ) -> Self {
-        Self::with_stats(source, encoder, sink, None)
-    }
-
-    /// Creates a new encoder pipeline with optional stats recording.
-    pub fn with_stats(
         mut source: impl VideoSource,
         mut encoder: impl VideoEncoder,
         mut sink: impl PacketSink,
-        stats: Option<crate::stats::CaptureStats>,
+        opts: crate::stats::EncodeOpts,
     ) -> Self {
+        let stats = opts.stats;
         let shutdown = CancellationToken::new();
         let thread_name = format!("venc-{:<4}-{:<4}", source.name(), encoder.name());
         let span = info_span!("videoenc", source = %source.name(), encoder = %encoder.name());
@@ -902,29 +878,21 @@ impl AudioDecoderPipeline {
     ///
     /// Dropping the pipeline cancels the decode thread. The pipeline also
     /// shuts down automatically when the packet source closes.
+    /// Creates a new audio decoder pipeline.
+    ///
+    /// Use [`DecodeOpts`](crate::stats::DecodeOpts) to pass an optional
+    /// playout clock and/or stats collectors.
     pub async fn new<D: AudioDecoder>(
         name: String,
         source: impl PacketSource,
         config: &AudioConfig,
         audio_backend: &dyn AudioStreamFactory,
-    ) -> Result<Self> {
-        Self::with_clock::<D>(name, source, config, audio_backend, None, None).await
-    }
-
-    /// Creates a new audio decoder pipeline with a shared [`PlayoutClock`]
-    /// for A/V sync reporting.
-    pub async fn with_clock<D: AudioDecoder>(
-        name: String,
-        source: impl PacketSource,
-        config: &AudioConfig,
-        audio_backend: &dyn AudioStreamFactory,
-        clock: Option<PlayoutClock>,
-        stats: Option<crate::stats::DecodeStats>,
+        opts: crate::stats::DecodeOpts,
     ) -> Result<Self> {
         let target_format = AudioFormat::from_config(config);
         let sink = audio_backend.create_output(target_format).await?;
         let handle = sink.handle();
-        Self::build::<D>(name, source, config, sink, handle, clock, stats)
+        Self::build::<D>(name, source, config, sink, handle, opts.clock, opts.stats)
     }
 
     /// Creates a new audio decoder pipeline with a pre-made [`AudioSink`].
@@ -944,15 +912,7 @@ impl AudioDecoderPipeline {
             "audio sink format mismatch: sink has {output_format:?}, decoder expects {expected:?}"
         );
         let handle = sink.handle();
-        Self::build::<D>(
-            name,
-            source,
-            config,
-            sink,
-            handle,
-            None,
-            None::<crate::stats::DecodeStats>,
-        )
+        Self::build::<D>(name, source, config, sink, handle, None, None)
     }
 
     fn build<D: AudioDecoder>(
@@ -1329,6 +1289,7 @@ mod tests {
             source,
             &config,
             &decode_config,
+            Default::default(),
         )
         .unwrap();
 
@@ -1363,6 +1324,7 @@ mod tests {
             source,
             &config,
             &decode_config,
+            Default::default(),
         )
         .unwrap();
 
@@ -1382,6 +1344,7 @@ mod tests {
             source,
             &config,
             &decode_config,
+            Default::default(),
         )
         .unwrap();
 
@@ -1414,12 +1377,15 @@ mod tests {
         let (sink, source) = media_pipe(64);
         let clock = PlayoutClock::new(PlayoutMode::Reliable);
 
-        let pipeline = VideoDecoderPipeline::with_clock::<H264VideoDecoder>(
+        let pipeline = VideoDecoderPipeline::new::<H264VideoDecoder>(
             "test-clock".into(),
             source,
             &config,
             &decode_config,
-            Some(clock.clone()),
+            crate::stats::DecodeOpts {
+                clock: Some(clock.clone()),
+                stats: None,
+            },
         )
         .unwrap();
 

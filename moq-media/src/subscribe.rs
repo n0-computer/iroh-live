@@ -449,8 +449,10 @@ impl RemoteBroadcast {
             consumer,
             config,
             playback_config,
-            Some(clock),
-            Some(self.stats.decode_stats()),
+            crate::stats::DecodeOpts {
+                clock: Some(clock),
+                stats: Some(self.stats.decode_stats()),
+            },
         )
     }
 
@@ -489,8 +491,10 @@ impl RemoteBroadcast {
             consumer,
             config.clone(),
             audio_backend,
-            Some(clock),
-            Some(self.stats.decode_stats()),
+            crate::stats::DecodeOpts {
+                clock: Some(clock),
+                stats: Some(self.stats.decode_stats()),
+            },
         )
         .await
     }
@@ -698,20 +702,12 @@ impl AudioTrack {
         consumer: OrderedConsumer,
         config: AudioConfig,
         audio_backend: &dyn AudioStreamFactory,
-        clock: Option<PlayoutClock>,
-        stats: Option<crate::stats::DecodeStats>,
+        opts: crate::stats::DecodeOpts,
     ) -> Result<Self> {
         let source = MoqPacketSource(consumer);
         let config: rusty_codecs::config::AudioConfig = config.into();
-        let pipeline = AudioDecoderPipeline::with_clock::<D>(
-            name,
-            source,
-            &config,
-            audio_backend,
-            clock,
-            stats,
-        )
-        .await?;
+        let pipeline =
+            AudioDecoderPipeline::new::<D>(name, source, &config, audio_backend, opts).await?;
         Ok(Self { pipeline })
     }
 
@@ -878,19 +874,12 @@ impl VideoTrack {
         consumer: OrderedConsumer,
         config: &VideoConfig,
         playback_config: &DecodeConfig,
-        clock: Option<PlayoutClock>,
-        stats: Option<crate::stats::DecodeStats>,
+        opts: crate::stats::DecodeOpts,
     ) -> Result<Self> {
         let source = MoqPacketSource(consumer);
         let config: rusty_codecs::config::VideoConfig = config.clone().into();
-        let pipeline = VideoDecoderPipeline::with_clock_and_stats::<D>(
-            rendition,
-            source,
-            &config,
-            playback_config,
-            clock,
-            stats,
-        )?;
+        let pipeline =
+            VideoDecoderPipeline::new::<D>(rendition, source, &config, playback_config, opts)?;
         Ok(Self::from_pipeline(pipeline))
     }
 
