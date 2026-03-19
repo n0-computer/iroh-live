@@ -86,8 +86,7 @@ impl Scaler {
         };
 
         let src_store = ImageStore::<u8, 4>::from_slice(src, src_w as usize, src_h as usize)?;
-        let mut dst_store =
-            ImageStoreMut::<u8, 4>::from_slice(&mut buf, tw as usize, th as usize)?;
+        let mut dst_store = ImageStoreMut::<u8, 4>::from_slice(&mut buf, tw as usize, th as usize)?;
         self.scaler.resize_rgba(&src_store, &mut dst_store, false)?;
         drop(dst_store);
 

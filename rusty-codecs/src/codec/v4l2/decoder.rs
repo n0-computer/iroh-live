@@ -345,7 +345,12 @@ fn extract_nv12_frame(
 ///
 /// Returns a borrowed slice when stride equals width (zero-copy fast path).
 /// Falls back to copying row-by-row when stride padding is present.
-fn copy_plane<'a>(src: &'a [u8], stride: usize, width: usize, height: usize) -> std::borrow::Cow<'a, [u8]> {
+fn copy_plane<'a>(
+    src: &'a [u8],
+    stride: usize,
+    width: usize,
+    height: usize,
+) -> std::borrow::Cow<'a, [u8]> {
     if stride == width && src.len() >= width * height {
         return std::borrow::Cow::Borrowed(&src[..width * height]);
     }
