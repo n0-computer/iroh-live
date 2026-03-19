@@ -290,30 +290,10 @@ impl RemoteBroadcast {
         let shutdown = CancellationToken::new();
 
         let (catalog_watchable, catalog_task) = {
-            // TODO(Frando): Sometimes the catalog track is not yet ready by this time.
-            // Unsure when exactly it happens. My suspicion is because streams are unordered,
-            // this can just happen. As a temporary fix, we retry. A proper fix would add
-            // an API like `BroadcastConsumer::wait_for_track` or such to moq_lite?
-            const MAX_WAIT: Duration = Duration::from_secs(1);
-            let track = tokio::time::timeout(MAX_WAIT, async {
-                loop {
-                    match broadcast.subscribe_track(&Catalog::default_track()) {
-                        Ok(track) => break Ok(track),
-                        Err(moq_lite::Error::NotFound) => {
-                            warn!("catalog track not yet available");
-                            tokio::time::sleep(Duration::from_millis(10)).await;
-                            continue;
-                        }
-                        Err(err) => break Err(err).std_context("missing catalog track"),
-                    }
-                }
-            })
-            .await
-            .std_context("catalog track not started and timeout expired")??;
+            let track = broadcast
+                .subscribe_track(&Catalog::default_track())
+                .std_context("missing catalog track")?;
             debug!("catalog received");
-            // let track = broadcast
-            //     .subscribe_track(&Catalog::default_track())
-            //     .std_context("missing catalog track")?;
             let mut catalog_consumer = CatalogConsumer::new(track);
             let initial_catalog = catalog_consumer
                 .next()

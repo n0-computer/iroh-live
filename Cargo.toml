@@ -24,11 +24,11 @@ iroh = "0.97.0"
 iroh-gossip = "0.97.0"
 iroh-tickets = "0.4.0"
 iroh-smol-kv = { git = "https://github.com/n0-computer/iroh-smol-kv.git", branch = "iroh-097", default-features = false }
-hang = { git = "https://github.com/Frando/moq.git", branch = "feat/relay-lib" }
-moq-lite = { git = "https://github.com/Frando/moq.git", branch = "feat/relay-lib" }
-moq-mux = { git = "https://github.com/Frando/moq.git", branch = "feat/relay-lib" }
-moq-relay = { git = "https://github.com/Frando/moq.git", branch = "feat/relay-lib", default-features = false }
-moq-native = { git = "https://github.com/Frando/moq.git", branch = "feat/relay-lib", default-features = false }
+hang = { git = "https://github.com/Frando/moq.git", branch = "dev" }
+moq-lite = { git = "https://github.com/Frando/moq.git", branch = "dev" }
+moq-mux = { git = "https://github.com/Frando/moq.git", branch = "dev" }
+moq-relay = { git = "https://github.com/Frando/moq.git", branch = "dev", default-features = false }
+moq-native = { git = "https://github.com/Frando/moq.git", branch = "dev", default-features = false }
 web-transport-iroh = { git = "https://github.com/n0-computer/web-transport-iroh.git", branch = "main" }
 
 # In-repo crates
