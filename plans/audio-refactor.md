@@ -1807,3 +1807,147 @@ allocations/second for mono input streams.
 - Stress test for rapid pause/resume during callback execution
 - `fade_progress` reset on state transition (G5 from post-impl review)
 - `set_stream_delay` wiring to driver (G8 from post-impl review)
+
+---
+
+## Post-refactor review (2026-03-19)
+
+Expert review comparing the audio backend against WebRTC ADM,
+GStreamer, OBS, and Firewheel. Minor issues were fixed inline; medium
+and major findings are documented below with suggested solutions.
+
+### Fixed inline
+
+These were addressed directly in code:
+
+1. **Fade L/R imbalance** — the fade gain loop iterated per-sample,
+   giving L and R slightly different gains within a frame.
+   Restructured to compute gain once per frame and apply to both
+   channels identically.
+
+2. **Input callback panic on oversized data** — `stereo_buf` slice
+   panicked if a device delivered >4096 frames. Added chunked
+   processing matching the output callback pattern.
+
+3. **InputStream::stereo_temp not pre-allocated** — allocated on first
+   `pop_samples` call. Now pre-allocated to 2048 samples.
+
+4. **AEC hardcoded 48000 literal** — replaced with
+   `super::super::INTERNAL_RATE` for maintainability.
+
+5. **AEC processor ordering inconsistency** — `is_enabled` /
+   `set_enabled` used `Acquire` / `Release` while all other sites used
+   `Relaxed`. Unified to `Relaxed` — pure boolean branch, no dependent
+   state.
+
+### MAJOR: AEC processor Mutex on real-time thread
+
+**Location**: `aec.rs` processor module, lines 130-134, 154-158.
+
+`AecProcessor` wraps sonora behind `Arc<Mutex<AudioProcessing>>`. The
+input callback acquires this Mutex via `process_capture_f32` and
+`process_render_f32`. Currently safe because all calls happen on the
+single input callback thread, and `set_stream_delay` / `set_enabled`
+are unused or use atomics. But if `set_stream_delay` is wired up
+later, the callback will contend with the driver thread.
+
+WebRTC ADM never locks a mutex on the audio thread. State changes go
+through lock-free SPSC queues or atomics.
+
+**Solution**: Make `AecState` own the `AudioProcessing` directly
+(not through `AecProcessor`), removing shared access from the callback
+path. If sharing is needed later, use `try_lock` with passthrough
+fallback, or communicate commands via an atomic/SPSC channel.
+
+### MEDIUM: VecDeque can allocate on audio thread
+
+**Location**: `aec.rs` state module, lines 284-285, 317-318, 343-349.
+
+`VecDeque::push_back()` reallocates if capacity is exceeded. Initial
+capacity is 8192, but `out_buf` accumulates across callbacks (now that
+the clear bug is fixed) and has no cap.
+
+**Solution**: Either (a) cap `out_buf` length and drain excess when it
+grows beyond a threshold (e.g., 2× frame_size), or (b) replace
+VecDeque with fixed-capacity ring buffers that discard on overflow.
+Option (a) is simpler and sufficient — the steady-state `out_buf`
+length is bounded by the frame-size mismatch residual.
+
+### MEDIUM: AEC processing errors silently discarded
+
+**Location**: `aec.rs` state module, lines 300, 336.
+
+Both `process_render_f32` and `process_capture_f32` return
+`Result<(), sonora::Error>`, discarded with `let _ = ...`. Can't log
+on the audio thread (allocation risk).
+
+**Solution**: Add an `AtomicU32` error counter to `AecState`. The
+driver thread periodically checks and logs it. Alternatively, an
+`AtomicBool` "aec_errored" flag logged once on transition.
+
+### MEDIUM: Output resampling latency is 300ms
+
+**Location**: `audio_backend.rs`, `create_output_channel`.
+
+`latency_seconds: 0.3` adds 300ms to the playout path. Combined with
+network jitter buffers, total mouth-to-ear latency can exceed 500ms.
+WebRTC targets 10-20ms audio playout latency.
+
+**Solution**: Reduce to 0.05-0.1s (50-100ms). fixed-resample handles
+underflow gracefully (pads silence), so occasional underflow at low
+latency is preferable to consistent high latency. Make configurable
+via `AudioBackendOpts`. Input latency (currently 150ms) should also
+drop to 30-50ms.
+
+### MEDIUM: No clock drift correction between input and output
+
+**Location**: Architectural — render reference ring buffer.
+
+Input and output cpal streams run on independent hardware clocks. The
+AEC render reference ring buffer (100ms capacity) will overflow or
+underflow over time, degrading echo cancellation.
+
+**Solution**: Monitor render reference ring buffer fill level. Log
+drift rate at debug level. For production quality, implement
+micro-resampling on the render reference stream, or periodically
+adjust `set_stream_delay_ms` based on observed drift.
+
+### MEDIUM: Device switch doesn't handle rebuild failure
+
+**Location**: `audio_backend.rs`, `switch_devices_internal`.
+
+Drops old streams before starting new ones. If `start_cpal_streams`
+fails, the audio subsystem is left with no active streams and no way
+to recover.
+
+**Solution**: Either (a) start new streams before dropping old ones
+and swap atomically, or (b) on failure, attempt restart with previous
+device IDs, or (c) trigger `attempt_restart` from the error path.
+Option (c) is simplest and consistent with the existing error recovery
+pattern.
+
+### MINOR: negotiate_stream_config doesn't prefer stereo
+
+When multiple config ranges match the same preferred rate, the first
+is accepted regardless of channel count. A 6-channel config could be
+selected over a 2-channel one.
+
+**Solution**: Among matching configs, prefer channel count closest to
+2 for output, 1 for input.
+
+### MINOR: Render reference ring overflow is silent
+
+`render_ref_prod.push_slice()` return value is discarded. If the ring
+is full, samples are silently lost and AEC quality degrades.
+
+**Solution**: Track overflow count with an atomic counter, log
+periodically from the driver thread.
+
+### MINOR: No explicit buffer size hint to cpal
+
+`StreamConfig.buffer_size` defaults to `BufferSize::Default`. On some
+ALSA backends this can be large (2048+ frames). PipeWire is usually
+well-tuned.
+
+**Solution**: Consider requesting 480 frames (10ms at 48kHz) when low
+latency matters. Configurable via `AudioBackendOpts`.

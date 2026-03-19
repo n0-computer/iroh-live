@@ -102,12 +102,12 @@ mod processor {
         }
 
         pub(crate) fn is_enabled(&self) -> bool {
-            self.0.enabled.load(Ordering::Acquire)
+            self.0.enabled.load(Ordering::Relaxed)
         }
 
         #[allow(unused, reason = "API reserved for future use")]
         pub(crate) fn set_enabled(&self, enabled: bool) {
-            self.0.enabled.store(enabled, Ordering::Release);
+            self.0.enabled.store(enabled, Ordering::Relaxed);
         }
 
         /// Processes a capture (microphone) audio frame with explicit stream configs.
@@ -239,11 +239,11 @@ mod state {
             render_ref_cons: ringbuf::HeapCons<f32>,
             enabled: Arc<AtomicBool>,
         ) -> Self {
-            let frame_size = AecProcessorConfig::frame_size(48000);
+            let frame_size = AecProcessorConfig::frame_size(super::super::INTERNAL_RATE);
             Self {
                 processor,
                 enabled,
-                stream_config: StreamConfig::new(48000, 2),
+                stream_config: StreamConfig::new(super::super::INTERNAL_RATE, 2),
                 frame_size,
                 render_ref_cons,
                 render_buf_l: VecDeque::with_capacity(BUF_CAPACITY),
