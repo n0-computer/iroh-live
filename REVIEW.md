@@ -134,7 +134,7 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 
 ### Bugs
 
-- [ ] **IL1**: `Call::closed()` always returns `RemoteClose` — ignores actual disconnect reason (`call.rs:122-125`)
+- [x] **IL1**: `Call::closed()` — now inspects `conn().close_reason()` to distinguish local/remote/transport
 
 ### Design
 
@@ -142,7 +142,7 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 - [ ] **IL5**: Room actor silently drops events on send failure — should detect and shut down (`rooms.rs:233, 298`)
 - [ ] **IL6**: `broadcasts.clone()` in room actor — marginal savings possible (`rooms.rs:284`)
 - [x] **IL8**: `RoomEvent::RemoteConnected` — documented as reserved/not emitted
-- [ ] **IL9**: `Call::dial()` and `Call::accept()` duplicate code — should extract shared helper (`call.rs:51-94`)
+- [x] **IL9**: `Call::dial()` and `Call::accept()` — extracted shared `setup()` helper
 - [ ] **IL10**: `spawn_thread()` always panics on failure — should return `Result<JoinHandle>` (`util.rs:23`)
 
 ### Documentation

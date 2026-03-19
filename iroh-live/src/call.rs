@@ -1,9 +1,9 @@
 use std::str::FromStr;
 
-use iroh::{EndpointAddr, EndpointId};
+use iroh::{EndpointAddr, EndpointId, endpoint::ConnectionError};
 use iroh_moq::MoqSession;
 use moq_media::{publish::LocalBroadcast, subscribe::RemoteBroadcast};
-use n0_error::{AnyError, Result, StackErrorExt, StdResultExt, stack_error};
+use n0_error::{AnyError, Result, StdResultExt, stack_error};
 use serde::{Deserialize, Serialize};
 
 use crate::{Live, types::DisconnectReason};
@@ -135,27 +135,12 @@ impl Call {
         remote: impl Into<EndpointAddr>,
         local: LocalBroadcast,
     ) -> Result<Self, CallError> {
-        let mut session = live
+        let session = live
             .transport()
             .connect(remote)
             .await
             .map_err(CallError::ConnectionFailed)?;
-
-        session.publish(CALL_BROADCAST_NAME, local.consume());
-
-        let consumer = session
-            .subscribe(CALL_BROADCAST_NAME)
-            .await
-            .map_err(|err| CallError::Rejected(err.into()))?;
-        let remote = RemoteBroadcast::new(CALL_BROADCAST_NAME.to_string(), consumer)
-            .await
-            .map_err(CallError::Rejected)?;
-
-        Ok(Self {
-            session,
-            local,
-            remote,
-        })
+        Self::setup(session, local).await
     }
 
     /// Accepts an incoming session as a call.
@@ -163,16 +148,23 @@ impl Call {
     /// The `local` broadcast should have video/audio already configured.
     /// It is published on the session as "call" — do **not** also publish
     /// it via [`Live::publish`].
-    pub async fn accept(mut session: MoqSession, local: LocalBroadcast) -> Result<Self, CallError> {
+    pub async fn accept(session: MoqSession, local: LocalBroadcast) -> Result<Self, CallError> {
+        Self::setup(session, local).await
+    }
+
+    /// Publishes the local broadcast and subscribes to the remote's "call"
+    /// broadcast. Shared setup for both [`dial`](Self::dial) and
+    /// [`accept`](Self::accept).
+    async fn setup(mut session: MoqSession, local: LocalBroadcast) -> Result<Self, CallError> {
         session.publish(CALL_BROADCAST_NAME, local.consume());
 
         let consumer = session
             .subscribe(CALL_BROADCAST_NAME)
             .await
-            .map_err(|err| CallError::Rejected(err.context("subscribe failed")))?;
-        let remote = RemoteBroadcast::new(CALL_BROADCAST_NAME.to_string(), consumer)
+            .map_err(|err| CallError::Rejected(err.into()))?;
+        let remote = RemoteBroadcast::new(CALL_BROADCAST_NAME, consumer)
             .await
-            .map_err(|err| CallError::Rejected(err.context("establish failed")))?;
+            .map_err(CallError::Rejected)?;
 
         Ok(Self {
             session,
@@ -206,9 +198,21 @@ impl Call {
         self.session.close(0u32, b"call ended");
     }
 
-    /// Waits until the call ends.
+    /// Waits until the call ends and returns the disconnect reason.
+    ///
+    /// Inspects the QUIC connection's close reason to distinguish local
+    /// close, remote close, and transport errors.
     pub async fn closed(&self) -> DisconnectReason {
         let _ = self.session.closed().await;
-        DisconnectReason::RemoteClose
+        match self.session.conn().close_reason() {
+            Some(ConnectionError::LocallyClosed) => DisconnectReason::LocalClose,
+            Some(ConnectionError::ApplicationClosed(_) | ConnectionError::ConnectionClosed(_)) => {
+                DisconnectReason::RemoteClose
+            }
+            Some(ConnectionError::Reset) => DisconnectReason::RemoteClose,
+            Some(_) => DisconnectReason::TransportError,
+            // Session closed but no close reason yet — likely remote.
+            None => DisconnectReason::RemoteClose,
+        }
     }
 }
