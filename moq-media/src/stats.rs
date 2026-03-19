@@ -102,7 +102,11 @@ impl Metric {
         }
     }
 
-    /// Records a sample. Lock-free for current value; briefly locks history.
+    /// Records a sample. Briefly locks history ring buffer.
+    ///
+    /// The current-value EMA update is not fully atomic across concurrent
+    /// writers. In practice each Metric has a single writer (one pipeline
+    /// thread), so this is benign.
     pub fn record(&self, value: f64) {
         let count = self.inner.sample_count.fetch_add(1, Ordering::Relaxed);
         let smoothed = if count == 0 {

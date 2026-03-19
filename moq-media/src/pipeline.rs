@@ -272,6 +272,8 @@ impl VideoEncoderPipeline {
                 let interval = Duration::from_secs_f64(1. / framerate);
                 let mut sink_closed = false;
                 let mut last_frame_time = Instant::now();
+                let mut prev_bitrate_bytes: u64 = 0;
+                let mut prev_bitrate_time = Instant::now();
                 let mut total_bytes: u64 = 0;
                 'encode: loop {
                     let start = Instant::now();
@@ -321,12 +323,16 @@ impl VideoEncoderPipeline {
                             if !gap.is_zero() {
                                 s.fps.record(1.0 / gap.as_secs_f64());
                             }
-                            // Bitrate in kbps, smoothed via EMA in the Metric.
-                            s.bitrate_kbps.record(
-                                total_bytes as f64 * 8.0
-                                    / start.elapsed().as_secs_f64().max(0.001)
-                                    / 1000.0,
-                            );
+                            // Bitrate from delta bytes over delta time.
+                            let now_bitrate = Instant::now();
+                            let dt = now_bitrate.duration_since(prev_bitrate_time).as_secs_f64();
+                            if dt > 0.1 {
+                                let delta_bytes = total_bytes - prev_bitrate_bytes;
+                                s.bitrate_kbps
+                                    .record(delta_bytes as f64 * 8.0 / dt / 1000.0);
+                                prev_bitrate_bytes = total_bytes;
+                                prev_bitrate_time = now_bitrate;
+                            }
                         }
                         last_frame_time = start;
                     }
@@ -477,7 +483,6 @@ fn decode_loop(
     let mut frames_pushed = 0u64;
     let mut frames_popped = 0u64;
     let mut frames_skipped = 0u64;
-    let mut freeze_count = 0u64;
     let frame_interval = Duration::from_secs_f64(1.0 / framerate.max(1.0));
     // Track wall-clock vs PTS progression to estimate hidden latency.
     // If wall_elapsed grows faster than pts_elapsed, we're falling behind.
@@ -606,7 +611,7 @@ fn decode_loop(
                             }
                             frames_skipped += 1;
                             if let Some((_, ref timing, _)) = stats {
-                                timing.frames_skipped.record(frames_skipped as f64);
+                                timing.frames_skipped.record(1.0);
                             }
                             // Still drain output in case the decoder has frames ready.
                             loop {
@@ -719,11 +724,10 @@ fn decode_loop(
             }
             frames_popped += 1;
             let gap = last_send.elapsed();
-            // Freeze detection: no frame for >2x expected interval.
+            // Freeze detection: no frame for >2× expected interval.
             if gap > frame_interval * 2 {
-                freeze_count += 1;
                 if let Some((_, ref timing, _)) = stats {
-                    timing.freezes.record(freeze_count as f64);
+                    timing.freezes.record(1.0);
                 }
             }
             if let Some((ref render, _, _)) = stats {

@@ -113,8 +113,9 @@ pub fn spawn_signal_producer(
 /// [`NetStats`] for overlay display.
 ///
 /// Records RTT, loss rate, and bandwidth estimates every 200ms.
-/// Complements `spawn_signal_producer` — that one feeds adaptive
-/// bitrate, this one feeds the debug overlay.
+/// The task runs until `shutdown` is cancelled. Callers should pass
+/// the broadcast's shutdown token so the task stops when the
+/// broadcast is dropped.
 pub fn spawn_stats_recorder(
     conn: &Connection,
     net: moq_media::stats::NetStats,
@@ -126,6 +127,8 @@ pub fn spawn_stats_recorder(
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut prev_rx_bytes: u64 = 0;
         let mut prev_tx_bytes: u64 = 0;
+        let mut prev_lost: u64 = 0;
+        let mut prev_sent: u64 = 0;
         let mut prev_time = std::time::Instant::now();
         loop {
             tokio::select! {
@@ -160,11 +163,15 @@ pub fn spawn_stats_recorder(
             let active = paths.iter().filter(|p| !p.is_closed()).count();
             net.paths_active.record(active as f64);
 
-            // Loss rate (same calculation as spawn_signal_producer).
+            // Delta-based loss rate (recent interval, not session-lifetime).
             let total_lost = stats.lost_packets;
             let total_sent = stats.udp_tx.datagrams;
-            if total_sent + total_lost > 0 {
-                let loss = total_lost as f64 / (total_sent + total_lost) as f64 * 100.0;
+            let delta_lost = total_lost.saturating_sub(prev_lost);
+            let delta_sent = total_sent.saturating_sub(prev_sent);
+            prev_lost = total_lost;
+            prev_sent = total_sent;
+            if delta_sent + delta_lost > 0 {
+                let loss = delta_lost as f64 / (delta_sent + delta_lost) as f64 * 100.0;
                 net.loss_pct.record(loss);
             }
 
