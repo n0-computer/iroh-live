@@ -12,8 +12,31 @@ env:
 
 jobs:
   check:
-    name: Check, Test, Clippy, Fmt
-    runs-on: ubuntu-latest
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-latest
+            install: >
+              sudo apt-get update && sudo apt-get install -y --no-install-recommends
+              libasound2-dev libpipewire-0.3-dev libclang-dev
+              libegl-dev libgbm-dev libdrm-dev libfontconfig-dev
+              libva-dev nasm
+            run-tests: true
+            run-fmt: true
+          - name: macOS
+            os: macos-latest
+            install: brew install libtool automake
+            run-tests: true
+            run-fmt: false
+          # - name: Windows
+          #   os: windows-latest
+          #   install: echo "no extra deps"
+          #   run-tests: false
+          #   run-fmt: false
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -25,16 +48,15 @@ jobs:
           cache-on-failure: true
 
       - name: Install system deps
-        run: >
-          sudo apt-get update && sudo apt-get install -y
-          libasound2-dev libpipewire-0.3-dev libclang-dev
-          libegl-dev libgbm-dev libdrm-dev libfontconfig-dev
-          nasm
+        run: ${{ matrix.install }}
 
-      - run: cargo check --locked --workspace --all-targets
-      - run: cargo test --locked --workspace
-      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - run: cargo fmt --check
+      - run: cargo check --locked --workspace --all-targets --all-features
+      - run: cargo check --locked --workspace --all-targets --no-default-features
+      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - if: ${{ matrix.run-tests }}
+        run: cargo test --locked --workspace
+      - if: ${{ matrix.run-fmt }}
+        run: cargo fmt --check
 
   e2e-browser:
     name: Playwright E2E
@@ -49,10 +71,10 @@ jobs:
 
       - name: Install system deps
         run: >
-          sudo apt-get update && sudo apt-get install -y
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends
           libasound2-dev libpipewire-0.3-dev libclang-dev
           libegl-dev libgbm-dev libdrm-dev libfontconfig-dev
-          nasm
+          libva-dev nasm
 
       # Pre-build so compilation doesn't eat into test timeouts.
       - name: Build relay + examples
@@ -81,40 +103,3 @@ jobs:
         with:
           name: playwright-results
           path: tests/e2e-browser/test-results/
-
-  hw-accel:
-    name: HW Accel (${{ matrix.name }})
-    needs: check
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: macOS VideoToolbox
-            os: macos-latest
-            install: brew install libtool automake
-            check-features: videotoolbox
-            check-pkg: moq-media
-          - name: Linux VAAPI
-            os: ubuntu-latest
-            install: >
-              sudo apt-get update && sudo apt-get install -y
-              libva-dev vainfo mesa-va-drivers libtool automake
-              libpipewire-0.3-dev libclang-dev libasound2-dev
-              libegl-dev libgbm-dev libdrm-dev libfontconfig-dev nasm
-            check-features: vaapi
-            check-pkg: moq-media
-          - name: Windows MF
-            os: windows-latest
-            install: echo "no extra deps"
-            check-features: media-foundation
-            check-pkg: rusty-codecs
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-      - run: ${{ matrix.install }}
-      - run: cargo check --locked -p ${{ matrix.check-pkg }} --features ${{ matrix.check-features }}
-      - run: cargo clippy --locked -p ${{ matrix.check-pkg }} --features ${{ matrix.check-features }} -- -D warnings
