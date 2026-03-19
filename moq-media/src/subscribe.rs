@@ -222,6 +222,8 @@ pub struct RemoteBroadcast {
     shutdown: CancellationToken,
     _catalog_task: Arc<AbortOnDropHandle<()>>,
     stats: crate::stats::SubscribeStats,
+    /// Shared skip threshold in milliseconds, read by decode loops.
+    skip_threshold_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Point-in-time snapshot of a broadcast's catalog.
@@ -352,6 +354,7 @@ impl RemoteBroadcast {
             _catalog_task: Arc::new(AbortOnDropHandle::new(catalog_task)),
             shutdown,
             stats: crate::stats::SubscribeStats::default(),
+            skip_threshold_ms: Arc::new(std::sync::atomic::AtomicU64::new(500)),
         })
     }
 
@@ -395,6 +398,19 @@ impl RemoteBroadcast {
     /// Sets the playout mode, updating the shared clock.
     pub fn set_playout_mode(&self, mode: PlayoutMode) {
         self.clock.set_mode(mode);
+    }
+
+    /// Sets the skip threshold for the video decode loop.
+    ///
+    /// When the decoder falls behind by more than this duration,
+    /// non-keyframes are skipped until the next keyframe to recover.
+    /// Higher values let `delay_ms` show sustained network latency
+    /// before recovery kicks in. Default is 500ms.
+    pub fn set_skip_threshold(&self, threshold: std::time::Duration) {
+        self.skip_threshold_ms.store(
+            threshold.as_millis() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     // -- Generic subscription methods (for custom decoders) --
@@ -449,6 +465,7 @@ impl RemoteBroadcast {
             crate::stats::DecodeOpts {
                 clock: Some(clock),
                 stats: Some(self.stats.decode_stats()),
+                skip_threshold_ms: Some(self.skip_threshold_ms.clone()),
             },
         )
     }
@@ -491,6 +508,7 @@ impl RemoteBroadcast {
             crate::stats::DecodeOpts {
                 clock: Some(clock),
                 stats: Some(self.stats.decode_stats()),
+                skip_threshold_ms: None, // audio doesn't use skip threshold
             },
         )
         .await

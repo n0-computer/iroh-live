@@ -497,6 +497,7 @@ struct SubscribeView {
 
     playout_clock: PlayoutClock,
     overlay: DebugOverlay,
+    skip_threshold_ms: u32,
 
     #[cfg(feature = "wgpu")]
     wgpu_render_state: Option<egui_wgpu::RenderState>,
@@ -535,6 +536,7 @@ impl SubscribeView {
             backend: DecoderBackend::Auto,
             render_mode: *RenderMode::VARIANTS.last().unwrap(),
             playout_clock,
+            skip_threshold_ms: 500,
             overlay: DebugOverlay::new(&[
                 StatCategory::Net,
                 StatCategory::Render,
@@ -691,6 +693,18 @@ impl SubscribeView {
                         }
                     }
                 });
+
+            if ui
+                .add(
+                    egui::Slider::new(&mut self.skip_threshold_ms, 200..=5000)
+                        .text("skip ms")
+                        .logarithmic(true),
+                )
+                .changed()
+            {
+                self.broadcast
+                    .set_skip_threshold(Duration::from_millis(self.skip_threshold_ms as u64));
+            }
         });
 
         ui.separator();
