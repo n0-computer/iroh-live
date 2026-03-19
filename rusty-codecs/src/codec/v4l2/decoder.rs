@@ -317,19 +317,23 @@ fn extract_nv12_frame(
         .context("failed to map V4L2 CAPTURE plane 0")?;
 
     let data: &[u8] = &mapping;
+    let uv_offset = stride * h_usize;
+
+    // Hoist the optional UV plane mapping so Cow borrows outlive the conversion.
+    let uv_mapping;
+    let uv_src: &[u8] = if uv_offset < data.len() {
+        &data[uv_offset..]
+    } else {
+        // Multi-plane: UV is on a separate V4L2 plane.
+        uv_mapping = dqbuf
+            .get_plane_mapping(1)
+            .context("failed to map V4L2 CAPTURE UV plane")?;
+        &uv_mapping
+    };
 
     // Single-plane NV12: Y at offset 0, UV at offset stride * height.
     let y_data = copy_plane(data, stride, w_usize, h_usize);
-    let uv_offset = stride * h_usize;
-    let uv_data = if uv_offset < data.len() {
-        copy_plane(&data[uv_offset..], stride, w_usize, uv_h)
-    } else {
-        // Multi-plane: try plane 1.
-        let uv_mapping = dqbuf
-            .get_plane_mapping(1)
-            .context("failed to map V4L2 CAPTURE UV plane")?;
-        copy_plane(&uv_mapping, stride, w_usize, uv_h)
-    };
+    let uv_data = copy_plane(uv_src, stride, w_usize, uv_h);
 
     // TODO: output NV12 directly (FrameData::Nv12) when the render pipeline
     // supports NV12 from V4L2 without GPU import. For now, convert to RGBA.
@@ -337,10 +341,13 @@ fn extract_nv12_frame(
     Ok(VideoFrame::new_cpu(rgba, w, h, Duration::ZERO))
 }
 
-/// Copies rows from a plane buffer, stripping stride padding.
-fn copy_plane(src: &[u8], stride: usize, width: usize, height: usize) -> Vec<u8> {
+/// Returns rows from a plane buffer, stripping stride padding.
+///
+/// Returns a borrowed slice when stride equals width (zero-copy fast path).
+/// Falls back to copying row-by-row when stride padding is present.
+fn copy_plane<'a>(src: &'a [u8], stride: usize, width: usize, height: usize) -> std::borrow::Cow<'a, [u8]> {
     if stride == width && src.len() >= width * height {
-        return src[..width * height].to_vec();
+        return std::borrow::Cow::Borrowed(&src[..width * height]);
     }
     let mut out = Vec::with_capacity(width * height);
     for row in 0..height {
@@ -350,7 +357,7 @@ fn copy_plane(src: &[u8], stride: usize, width: usize, height: usize) -> Vec<u8>
             out.extend_from_slice(&src[start..end]);
         }
     }
-    out
+    std::borrow::Cow::Owned(out)
 }
 
 #[cfg(test)]

@@ -34,21 +34,25 @@ impl ScaleMode {
 /// Image scaler wrapping pic-scale.
 ///
 /// Optionally scales RGBA frames to target dimensions using bilinear filtering.
-/// If no target dimensions are set, frames pass through unchanged.
+/// If no target dimensions are set, frames pass through unchanged. Reuses the
+/// destination buffer across calls when target dimensions are stable.
 #[derive(Debug)]
 pub struct Scaler {
     target_width: Option<u32>,
     target_height: Option<u32>,
     scaler: PicScaler,
+    /// Reusable destination buffer: `(width, height, data)`.
+    dst_buf: Option<(u32, u32, Vec<u8>)>,
 }
 
 impl Scaler {
-    /// Create a new scaler. If `dims` is `None`, frames pass through unscaled.
+    /// Creates a new scaler. If `dims` is `None`, frames pass through unscaled.
     pub fn new(dims: Option<(u32, u32)>) -> Self {
         Self {
             target_width: dims.map(|(w, _)| w),
             target_height: dims.map(|(_, h)| h),
             scaler: PicScaler::new(ResamplingFunction::Bilinear),
+            dst_buf: None,
         }
     }
 
@@ -62,8 +66,9 @@ impl Scaler {
     ///
     /// Returns `None` if no scaling is needed (pass-through).
     /// Returns `Some((scaled_data, new_w, new_h))` when scaling was performed.
+    /// Reuses the destination buffer when target dimensions are stable.
     pub fn scale_rgba(
-        &self,
+        &mut self,
         src: &[u8],
         src_w: u32,
         src_h: u32,
@@ -73,11 +78,21 @@ impl Scaler {
             _ => return Ok(None),
         };
 
-        let src_store = ImageStore::<u8, 4>::from_slice(src, src_w as usize, src_h as usize)?;
-        let mut dst_store = ImageStoreMut::<u8, 4>::alloc(tw as usize, th as usize);
-        self.scaler.resize_rgba(&src_store, &mut dst_store, false)?;
+        let expected = (tw as usize) * (th as usize) * 4;
+        // Reuse or allocate the destination buffer.
+        let mut buf = match self.dst_buf.take() {
+            Some((bw, bh, buf)) if bw == tw && bh == th => buf,
+            _ => vec![0u8; expected],
+        };
 
-        let out = dst_store.as_bytes().to_vec();
+        let src_store = ImageStore::<u8, 4>::from_slice(src, src_w as usize, src_h as usize)?;
+        let mut dst_store =
+            ImageStoreMut::<u8, 4>::from_slice(&mut buf, tw as usize, th as usize)?;
+        self.scaler.resize_rgba(&src_store, &mut dst_store, false)?;
+        drop(dst_store);
+
+        let out = buf.clone();
+        self.dst_buf = Some((tw, th, buf));
         Ok(Some((out, tw, th)))
     }
 
@@ -150,7 +165,7 @@ mod tests {
 
     #[test]
     fn identity_scaling_passthrough() {
-        let scaler = Scaler::new(Some((640, 480)));
+        let mut scaler = Scaler::new(Some((640, 480)));
         // Same dimensions → None (pass-through)
         let src = vec![128u8; 640 * 480 * 4];
         let result = scaler.scale_rgba(&src, 640, 480).unwrap();
@@ -159,7 +174,7 @@ mod tests {
 
     #[test]
     fn no_target_passthrough() {
-        let scaler = Scaler::new(None);
+        let mut scaler = Scaler::new(None);
         let src = vec![128u8; 100 * 100 * 4];
         let result = scaler.scale_rgba(&src, 100, 100).unwrap();
         assert!(result.is_none(), "no target should pass through");
@@ -167,7 +182,7 @@ mod tests {
 
     #[test]
     fn downscale() {
-        let scaler = Scaler::new(Some((320, 240)));
+        let mut scaler = Scaler::new(Some((320, 240)));
         let src = vec![200u8; 640 * 480 * 4];
         let result = scaler.scale_rgba(&src, 640, 480).unwrap();
         let (data, w, h) = result.expect("should have scaled");
@@ -192,7 +207,7 @@ mod tests {
 
     #[test]
     fn small_scale() {
-        let scaler = Scaler::new(Some((2, 2)));
+        let mut scaler = Scaler::new(Some((2, 2)));
         let src = vec![255u8; 4 * 4 * 4];
         let result = scaler.scale_rgba(&src, 4, 4).unwrap();
         let (data, w, h) = result.expect("should scale");
@@ -245,7 +260,7 @@ mod tests {
     /// given source dimensions and encoder target, compute fit_within then scale.
     fn encoder_scale_scenario(src_w: u32, src_h: u32, enc_w: u32, enc_h: u32) -> (u32, u32) {
         let target = fit_within(src_w, src_h, enc_w, enc_h);
-        let scaler = Scaler::new(Some(target));
+        let mut scaler = Scaler::new(Some(target));
         let src = vec![128u8; (src_w * src_h * 4) as usize];
         match scaler.scale_rgba(&src, src_w, src_h).unwrap() {
             Some((data, w, h)) => {
