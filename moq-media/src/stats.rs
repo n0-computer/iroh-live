@@ -132,15 +132,18 @@ impl Metric {
         f64::from_bits(self.inner.current.load(Ordering::Relaxed))
     }
 
+    /// Copies history into `out`, clearing it first. Reuses the Vec allocation.
+    pub fn history_into(&self, out: &mut Vec<(Instant, f64)>) {
+        out.clear();
+        let hist = self.inner.history.lock().expect("history lock");
+        out.extend(hist.iter().copied());
+    }
+
     /// Returns a copy of the history ring buffer.
     pub fn history(&self) -> Vec<(Instant, f64)> {
-        self.inner
-            .history
-            .lock()
-            .expect("history lock")
-            .iter()
-            .copied()
-            .collect()
+        let mut v = Vec::new();
+        self.history_into(&mut v);
+        v
     }
 
     pub fn meta(&self) -> &MetricMeta {
@@ -348,6 +351,15 @@ impl Default for Timeline {
 }
 
 // ── Composite stats ─────────────────────────────────────────────────
+
+/// Stats passed to the decode pipeline. Groups render, timing, and
+/// timeline into a single value to avoid threading a 3-element tuple.
+#[derive(Clone, Debug)]
+pub struct DecodeStats {
+    pub render: RenderStats,
+    pub timing: TimingStats,
+    pub timeline: Timeline,
+}
 
 /// All stats for a subscribe-side broadcast. Owned by `RemoteBroadcast`.
 #[derive(Clone, Debug, Default)]

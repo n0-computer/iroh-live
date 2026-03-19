@@ -12,11 +12,7 @@
 //! cargo run -p moq-media --example viewer --features "h264,vaapi,wgpu"
 //! ```
 
-use std::{
-    collections::VecDeque,
-    sync::mpsc,
-    time::{Duration, Instant},
-};
+use std::{sync::mpsc, time::Duration};
 
 use eframe::egui;
 #[cfg(feature = "capture-camera")]
@@ -472,41 +468,16 @@ enum TilePipeline {
 // ---------------------------------------------------------------------------
 
 #[derive(Default)]
-struct Stats {
-    fps: f32,
-    fps_samples: VecDeque<Instant>,
-    delay_ms: f32,
-    /// Baseline for delay measurement: (wall_time, pts) of the first frame seen.
-    /// Delay is computed as drift from this baseline:
-    ///   delay = (now - base_wall) - (frame.pts - base_pts)
-    /// This measures how much the pipeline has fallen behind the expected cadence,
-    /// independent of encoder frame_count / framerate drift vs wall clock.
-    baseline: Option<(Instant, Duration)>,
+/// Tracks the last rendered frame's resolution for aspect ratio calculation.
+struct FrameSize {
     width: u32,
     height: u32,
 }
 
-impl Stats {
+impl FrameSize {
     fn update(&mut self, frame: &VideoFrame) {
-        let now = Instant::now();
-        self.fps_samples.push_back(now);
-        while self
-            .fps_samples
-            .front()
-            .is_some_and(|t| now - *t > Duration::from_secs(1))
-        {
-            self.fps_samples.pop_front();
-        }
-        self.fps = self.fps_samples.len() as f32;
-
-        let (base_wall, base_pts) = *self.baseline.get_or_insert((now, frame.timestamp));
-        let wall_delta = now.duration_since(base_wall);
-        let pts_delta = frame.timestamp.saturating_sub(base_pts);
-        self.delay_ms = wall_delta.saturating_sub(pts_delta).as_secs_f32() * 1000.0;
-
-        let (w, h) = (frame.width(), frame.height());
-        self.width = w;
-        self.height = h;
+        self.width = frame.width();
+        self.height = frame.height();
     }
 }
 
@@ -537,7 +508,7 @@ struct Tile {
     settings: PipelineSettings,
     pipeline: Option<TilePipeline>,
     video_view: FrameView,
-    stats: Stats,
+    frame_size: FrameSize,
     capture_stats: moq_media::stats::CaptureStats,
     render_stats: moq_media::stats::RenderStats,
     timing_stats: moq_media::stats::TimingStats,
@@ -574,7 +545,10 @@ impl Tile {
             settings,
             pipeline: None,
             video_view,
-            stats: Stats::default(),
+            frame_size: FrameSize {
+                width: 0,
+                height: 0,
+            },
             capture_stats,
             render_stats,
             timing_stats,
@@ -653,11 +627,11 @@ impl Tile {
                     &config,
                     &decode_config,
                     None,
-                    Some((
-                        self.render_stats.clone(),
-                        self.timing_stats.clone(),
-                        self.timeline.clone(),
-                    )),
+                    Some(moq_media::stats::DecodeStats {
+                        render: self.render_stats.clone(),
+                        timing: self.timing_stats.clone(),
+                        timeline: self.timeline.clone(),
+                    }),
                 ) {
                     Ok(d) => d,
                     Err(e) => {
@@ -675,7 +649,10 @@ impl Tile {
             }
         }
 
-        self.stats = Stats::default();
+        self.frame_size = FrameSize {
+            width: 0,
+            height: 0,
+        };
         self.error_msg = None;
     }
 
@@ -962,14 +939,14 @@ impl eframe::App for ViewerApp {
                     match tile.pipeline.as_mut() {
                         Some(TilePipeline::EncodeDecode { video_track, .. }) => {
                             if let Some(frame) = video_track.current_frame() {
-                                tile.stats.update(&frame);
+                                tile.frame_size.update(&frame);
                                 tile.video_view.render_frame(&frame);
                             }
                             video_track.set_viewport(tile_w as u32, tile_h as u32);
                         }
                         Some(TilePipeline::Direct(dc)) => {
                             if let Some(frame) = dc.current_frame() {
-                                tile.stats.update(frame);
+                                tile.frame_size.update(frame);
                                 tile.video_view.render_frame(frame);
                             }
                         }

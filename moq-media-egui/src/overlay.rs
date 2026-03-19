@@ -42,42 +42,6 @@ pub fn fit_to_aspect(available: egui::Vec2, aspect: f32) -> egui::Vec2 {
     }
 }
 
-/// Rolling frame-rate and delay tracker.
-///
-/// Call [`tick`](Self::tick) once per rendered frame. Computes fps over
-/// 1-second windows and measures wall-clock delay relative to frame PTS.
-#[derive(Debug, Default)]
-pub struct FrameStats {
-    count: u64,
-    last_update: Option<Instant>,
-    /// Current measured frames per second.
-    pub fps: f32,
-    /// Current estimated display delay in milliseconds.
-    pub delay_ms: f32,
-    baseline: Option<(Instant, Duration)>,
-}
-
-impl FrameStats {
-    /// Records one frame tick, optionally with a presentation timestamp.
-    pub fn tick(&mut self, frame_ts: Option<Duration>) {
-        self.count += 1;
-        let now = Instant::now();
-        let last = *self.last_update.get_or_insert(now);
-        let elapsed = now.duration_since(last);
-        if elapsed >= Duration::from_secs(1) {
-            self.fps = self.count as f32 / elapsed.as_secs_f32();
-            self.count = 0;
-            self.last_update = Some(now);
-        }
-        if let Some(ts) = frame_ts {
-            let (base_wall, base_pts) = *self.baseline.get_or_insert((now, ts));
-            let wall_delta = now.duration_since(base_wall);
-            let pts_delta = ts.saturating_sub(base_pts);
-            self.delay_ms = wall_delta.saturating_sub(pts_delta).as_secs_f32() * 1000.0;
-        }
-    }
-}
-
 // ── Debug overlay ───────────────────────────────────────────────────
 
 const BG_ALPHA: u8 = 200;
