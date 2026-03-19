@@ -23,14 +23,12 @@ pub mod overlay;
 
 use std::{fmt, time::Duration};
 
-pub use moq_media;
-use moq_media::format::VideoFrame;
-use moq_media::subscribe::VideoTrack;
-
 #[cfg(feature = "wgpu-render")]
 pub use egui_wgpu;
 #[cfg(feature = "wgpu-render")]
 pub use epaint;
+pub use moq_media;
+use moq_media::{format::VideoFrame, subscribe::VideoTrack};
 
 /// Formats a bitrate in bits per second as a human-readable string.
 ///

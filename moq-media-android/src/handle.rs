@@ -4,8 +4,10 @@
 //! (i64) pointer on the Java/Kotlin side. These helpers centralize the
 //! pointer arithmetic and `Arc` reference counting to avoid common mistakes.
 
-use std::mem::ManuallyDrop;
-use std::sync::{Arc, Mutex};
+use std::{
+    mem::ManuallyDrop,
+    sync::{Arc, Mutex},
+};
 
 /// Converts an `Arc<Mutex<T>>` into an `i64` suitable for storing as a JNI `jlong`.
 ///

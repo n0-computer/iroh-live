@@ -5,27 +5,35 @@
 //! pass the CVPixelBuffer directly to `VTCompressionSessionEncodeFrame`; wgpu
 //! renderer can import via `CVMetalTextureCache`.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc;
-use std::time::Instant;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+        mpsc,
+    },
+    time::Instant,
+};
 
 use anyhow::{Context, Result};
-use screencapturekit::cm::CMSampleBuffer;
-use screencapturekit::cm::CMTime;
-use screencapturekit::shareable_content::SCShareableContent;
-use screencapturekit::stream::SCStream;
-use screencapturekit::stream::configuration::PixelFormat;
-use screencapturekit::stream::configuration::SCStreamConfiguration;
-use screencapturekit::stream::content_filter::SCContentFilter;
-use screencapturekit::stream::output_trait::SCStreamOutputTrait;
-use screencapturekit::stream::output_type::SCStreamOutputType;
-use tracing::{info, warn};
-
-use rusty_codecs::format::{
-    AppleGpuFrame, GpuFrame, GpuPixelFormat, PixelFormat as RcPixelFormat, VideoFormat, VideoFrame,
+use rusty_codecs::{
+    format::{
+        AppleGpuFrame, GpuFrame, GpuPixelFormat, PixelFormat as RcPixelFormat, VideoFormat,
+        VideoFrame,
+    },
+    traits::VideoSource,
 };
-use rusty_codecs::traits::VideoSource;
+use screencapturekit::{
+    cm::{CMSampleBuffer, CMTime},
+    shareable_content::SCShareableContent,
+    stream::{
+        SCStream,
+        configuration::{PixelFormat, SCStreamConfiguration},
+        content_filter::SCContentFilter,
+        output_trait::SCStreamOutputTrait,
+        output_type::SCStreamOutputType,
+    },
+};
+use tracing::{info, warn};
 
 use crate::types::{MonitorInfo, ScreenConfig};
 

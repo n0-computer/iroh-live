@@ -17,6 +17,11 @@ use std::{sync::mpsc, time::Duration};
 use eframe::egui;
 #[cfg(feature = "capture-camera")]
 use moq_media::capture::CameraCapturer;
+// ---------------------------------------------------------------------------
+// Source selection — dynamically discovered from compiled backends
+// ---------------------------------------------------------------------------
+#[cfg(any(feature = "capture-camera", feature = "capture-screen"))]
+use moq_media::capture::CaptureBackend;
 #[cfg(feature = "capture-screen")]
 use moq_media::capture::{MonitorInfo, ScreenCapturer, WindowInfo};
 use moq_media::{
@@ -36,13 +41,6 @@ use moq_media_egui::{
 };
 use strum::VariantArray;
 use tokio::runtime::Runtime;
-
-// ---------------------------------------------------------------------------
-// Source selection — dynamically discovered from compiled backends
-// ---------------------------------------------------------------------------
-
-#[cfg(any(feature = "capture-camera", feature = "capture-screen"))]
-use moq_media::capture::CaptureBackend;
 
 /// A video source option discovered at runtime from available backends.
 #[derive(Debug, Clone)]

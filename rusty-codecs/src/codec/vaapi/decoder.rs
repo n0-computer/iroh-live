@@ -534,8 +534,9 @@ impl VideoDecoder for VaapiDecoder {
     }
 
     fn push_packet(&mut self, mut packet: MediaPacket) -> Result<()> {
-        use bytes::Buf;
         use std::time::Instant;
+
+        use bytes::Buf;
 
         let payload = packet.payload.copy_to_bytes(packet.payload.remaining());
         let mut annex_b = match self.nal_format {

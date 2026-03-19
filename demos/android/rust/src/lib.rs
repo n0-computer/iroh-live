@@ -7,21 +7,19 @@
 
 mod logcat;
 
-use std::ffi::c_void;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::{
+    ffi::c_void,
+    sync::{Arc, Mutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result};
+use iroh_live::{Call, CallTicket, Live, ticket::LiveTicket};
 use jni::{
     JNIEnv, JavaVM,
     objects::{JByteArray, JClass, JString},
     sys::{jint, jlong},
 };
-use tokio::runtime::Runtime;
-use tokio_util::sync::CancellationToken;
-use tracing::info;
-
-use iroh_live::{Call, CallTicket, Live, ticket::LiveTicket};
 use moq_media::{
     AudioBackend,
     codec::{AudioCodec, DynamicVideoDecoder, VideoCodec},
@@ -39,8 +37,10 @@ use moq_media_android::{
     renderer::AndroidRenderer,
 };
 use n0_watcher::Watcher;
-use rusty_codecs::codec::DefaultDecoders;
-use rusty_codecs::format::Nv12Planes;
+use rusty_codecs::{codec::DefaultDecoders, format::Nv12Planes};
+use tokio::runtime::Runtime;
+use tokio_util::sync::CancellationToken;
+use tracing::info;
 
 // ── Constants ───────────────────────────────────────────────────────
 

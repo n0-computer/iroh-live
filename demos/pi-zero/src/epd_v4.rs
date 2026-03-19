@@ -10,8 +10,10 @@
 use std::thread;
 use std::time::Duration;
 
-use embedded_hal::digital::{InputPin, OutputPin};
-use embedded_hal::spi::SpiDevice;
+use embedded_hal::{
+    digital::{InputPin, OutputPin},
+    spi::SpiDevice,
+};
 
 /// Display resolution.
 pub(crate) const WIDTH: u32 = 122;

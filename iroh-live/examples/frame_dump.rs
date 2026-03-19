@@ -18,8 +18,7 @@ use std::{path::PathBuf, time::Instant};
 
 use clap::{Parser, Subcommand};
 use iroh::Endpoint;
-use moq_media::test_util::TestVideoSource;
-use moq_media::traits::VideoSource as _;
+use moq_media::{test_util::TestVideoSource, traits::VideoSource as _};
 
 #[derive(Parser)]
 #[command(about = "Dump or verify video frames from an iroh-live broadcast")]

@@ -9,17 +9,24 @@
 use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use ndk::hardware_buffer::HardwareBufferUsage;
-use ndk::media::image_reader::{AcquireResult, ImageFormat, ImageReader};
-use ndk::media::media_codec::{
-    DequeuedInputBufferResult, DequeuedOutputBufferInfoResult, MediaCodec, MediaCodecDirection,
+use ndk::{
+    hardware_buffer::HardwareBufferUsage,
+    media::{
+        image_reader::{AcquireResult, ImageFormat, ImageReader},
+        media_codec::{
+            DequeuedInputBufferResult, DequeuedOutputBufferInfoResult, MediaCodec,
+            MediaCodecDirection,
+        },
+    },
 };
 
-use super::format::{
-    BUFFER_FLAG_CODEC_CONFIG, DEQUEUE_INPUT_TIMEOUT, DEQUEUE_OUTPUT_TIMEOUT, KEY_HEIGHT, KEY_WIDTH,
-    decoder_format, extract_sps_pps_from_avcc,
+use super::{
+    format::{
+        BUFFER_FLAG_CODEC_CONFIG, DEQUEUE_INPUT_TIMEOUT, DEQUEUE_OUTPUT_TIMEOUT, KEY_HEIGHT,
+        KEY_WIDTH, decoder_format, extract_sps_pps_from_avcc,
+    },
+    gpu_frame::AndroidGpuFrame,
 };
-use super::gpu_frame::AndroidGpuFrame;
 use crate::{
     codec::h264::annexb::length_prefixed_to_annex_b,
     config::{VideoCodec, VideoConfig},

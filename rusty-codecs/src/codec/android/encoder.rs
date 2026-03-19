@@ -19,8 +19,7 @@ use crate::{
     codec::h264::annexb::{build_avcc, extract_sps_pps, parse_annex_b},
     config::{H264, VideoCodec, VideoConfig},
     format::{EncodedFrame, NalFormat, ScaleMode, VideoEncoderConfig, VideoFrame},
-    processing::convert::pixel_format_to_nv12,
-    processing::scale::Scaler,
+    processing::{convert::pixel_format_to_nv12, scale::Scaler},
     traits::{VideoEncoder, VideoEncoderFactory},
 };
 

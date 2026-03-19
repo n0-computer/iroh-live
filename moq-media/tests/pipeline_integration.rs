@@ -6,13 +6,15 @@
 
 use std::time::Duration;
 
-use moq_media::codec::VideoCodec;
-use moq_media::format::{AudioFormat, AudioPreset, VideoPreset};
-use moq_media::playout::PlayoutMode;
-use moq_media::publish::{LocalBroadcast, VideoInput};
-use moq_media::subscribe::RemoteBroadcast;
-use moq_media::test_util::{
-    CapturingAudioBackend, NullAudioBackend, SineAudioSource, TestAudioSource, TestVideoSource,
+use moq_media::{
+    codec::VideoCodec,
+    format::{AudioFormat, AudioPreset, VideoPreset},
+    playout::PlayoutMode,
+    publish::{LocalBroadcast, VideoInput},
+    subscribe::RemoteBroadcast,
+    test_util::{
+        CapturingAudioBackend, NullAudioBackend, SineAudioSource, TestAudioSource, TestVideoSource,
+    },
 };
 use n0_watcher::Watcher as _;
 
@@ -1130,9 +1132,9 @@ async fn audio_track_handle_pause_resume() {
 #[cfg(feature = "opus")]
 #[tokio::test]
 async fn audio_decoder_pipeline_standalone_roundtrip() {
-    use moq_media::codec::OpusAudioDecoder;
-    use moq_media::pipeline::AudioDecoderPipeline;
-    use moq_media::transport::media_pipe;
+    use moq_media::{
+        codec::OpusAudioDecoder, pipeline::AudioDecoderPipeline, transport::media_pipe,
+    };
 
     let format = AudioFormat::mono_48k();
     let preset = AudioPreset::Hq;
@@ -1191,9 +1193,9 @@ async fn audio_decoder_pipeline_standalone_roundtrip() {
 #[cfg(feature = "opus")]
 #[tokio::test]
 async fn audio_decoder_pipeline_stops_when_source_closes() {
-    use moq_media::codec::OpusAudioDecoder;
-    use moq_media::pipeline::AudioDecoderPipeline;
-    use moq_media::transport::media_pipe;
+    use moq_media::{
+        codec::OpusAudioDecoder, pipeline::AudioDecoderPipeline, transport::media_pipe,
+    };
 
     let format = AudioFormat::mono_48k();
     let preset = AudioPreset::Hq;
@@ -1354,9 +1356,9 @@ async fn parallel_audio_renditions_produce_independent_output() {
 #[cfg(feature = "opus")]
 #[tokio::test]
 async fn audio_decoder_inserts_silence_on_stall() {
-    use moq_media::codec::OpusAudioDecoder;
-    use moq_media::pipeline::AudioDecoderPipeline;
-    use moq_media::transport::media_pipe;
+    use moq_media::{
+        codec::OpusAudioDecoder, pipeline::AudioDecoderPipeline, transport::media_pipe,
+    };
 
     let format = AudioFormat::mono_48k();
     let preset = AudioPreset::Hq;

@@ -10,9 +10,11 @@
 //!
 //! Requires the `gles-dmabuf` feature (implies `gles`).
 
-use std::ffi::{CStr, c_void};
-use std::os::fd::AsRawFd;
-use std::sync::OnceLock;
+use std::{
+    ffi::{CStr, c_void},
+    os::fd::AsRawFd,
+    sync::OnceLock,
+};
 
 use anyhow::{Context as _, Result, bail};
 use glow::HasContext;

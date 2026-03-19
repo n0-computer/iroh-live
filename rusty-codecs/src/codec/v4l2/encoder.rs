@@ -11,8 +11,7 @@ use crate::{
     codec::h264::annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, parse_annex_b},
     config::{H264, VideoCodec, VideoConfig},
     format::{EncodedFrame, NalFormat, ScaleMode, VideoEncoderConfig, VideoFrame},
-    processing::convert::pixel_format_to_nv12,
-    processing::scale::Scaler,
+    processing::{convert::pixel_format_to_nv12, scale::Scaler},
     traits::{VideoEncoder, VideoEncoderFactory},
 };
 
@@ -340,9 +339,13 @@ impl Drop for V4l2Encoder {
 
 #[allow(unreachable_pub, dead_code)]
 mod raw_v4l2 {
-    use std::collections::VecDeque;
-    use std::os::unix::fs::OpenOptionsExt as _;
-    use std::os::unix::io::{AsRawFd, RawFd};
+    use std::{
+        collections::VecDeque,
+        os::unix::{
+            fs::OpenOptionsExt as _,
+            io::{AsRawFd, RawFd},
+        },
+    };
 
     /// V4L2 ioctl numbers (from linux/videodev2.h).
     #[allow(unreachable_pub)]

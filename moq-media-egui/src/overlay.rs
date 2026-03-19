@@ -10,8 +10,10 @@ use std::{
 };
 
 use egui;
-use moq_media::stats::{self, Label, Metric, NetStats, PublishStats, SubscribeStats, Timeline};
-use moq_media::subscribe::VideoTrack;
+use moq_media::{
+    stats::{self, Label, Metric, NetStats, PublishStats, SubscribeStats, Timeline},
+    subscribe::VideoTrack,
+};
 
 /// Height of a single overlay bar (text + padding).
 pub const OVERLAY_BAR_H: f32 = 15.0;

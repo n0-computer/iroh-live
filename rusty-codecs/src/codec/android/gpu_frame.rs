@@ -9,13 +9,15 @@ use std::fmt;
 
 use anyhow::{Context, Result};
 use image::RgbaImage;
-use ndk::hardware_buffer::{HardwareBuffer, HardwareBufferUsage};
-use ndk::media::image_reader::Image;
-
-use crate::format::{
-    GpuFrameInner, GpuPixelFormat, HardwareBufferInfo, NativeFrameHandle, Nv12Planes,
+use ndk::{
+    hardware_buffer::{HardwareBuffer, HardwareBufferUsage},
+    media::image_reader::Image,
 };
-use crate::processing::convert::nv12_to_rgba_data;
+
+use crate::{
+    format::{GpuFrameInner, GpuPixelFormat, HardwareBufferInfo, NativeFrameHandle, Nv12Planes},
+    processing::convert::nv12_to_rgba_data,
+};
 
 /// Guard that ensures a locked [`HardwareBuffer`] is unlocked on drop.
 ///

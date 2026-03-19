@@ -16,6 +16,10 @@ use std::{
 use anyhow::Result;
 use hang::catalog::VideoConfig;
 use n0_watcher::{Watchable, Watcher};
+use rusty_codecs::{
+    format::{PixelFormat, VideoFormat},
+    traits::VideoSource,
+};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
 
@@ -23,10 +27,6 @@ use crate::{
     format::{DecodeConfig, VideoFrame},
     net::NetworkSignals,
     subscribe::{RemoteBroadcast, VideoTrack},
-};
-use rusty_codecs::{
-    format::{PixelFormat, VideoFormat},
-    traits::VideoSource,
 };
 
 // ── Configuration ───────────────────────────────────────────────────────
@@ -581,8 +581,9 @@ fn switch_rendition(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use hang::catalog::{H264, VideoCodec};
+
+    use super::*;
 
     fn test_config(w: u32, h: u32, bitrate: u64) -> VideoConfig {
         VideoConfig {

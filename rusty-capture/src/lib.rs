@@ -52,33 +52,26 @@ pub mod types;
 mod platform;
 
 // Re-export core types from rusty-codecs that capture backends produce.
-pub use rusty_codecs::format::{PixelFormat, VideoFormat, VideoFrame};
-pub use rusty_codecs::traits::VideoSource;
-
-pub use types::*;
-
-// Re-export platform-specific capturers at the crate root.
-
-#[cfg(all(target_os = "linux", feature = "pipewire"))]
-pub use platform::linux::pipewire::{PipeWireCameraCapturer, PipeWireScreenCapturer};
-
-#[cfg(all(target_os = "linux", feature = "v4l2"))]
-pub use platform::linux::v4l2::V4l2CameraCapturer;
-
-#[cfg(all(target_os = "linux", feature = "x11"))]
-pub use platform::linux::x11::X11ScreenCapturer;
-
-#[cfg(all(target_os = "macos", feature = "screen-apple"))]
-pub use platform::apple::screen::MacScreenCapturer;
-
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple"))]
 pub use platform::apple::camera::AppleCameraCapturer;
-
-#[cfg(feature = "xcap")]
-pub use platform::xcap_impl::XcapScreenCapturer;
-
+#[cfg(all(target_os = "macos", feature = "screen-apple"))]
+pub use platform::apple::screen::MacScreenCapturer;
+// Re-export platform-specific capturers at the crate root.
+#[cfg(all(target_os = "linux", feature = "pipewire"))]
+pub use platform::linux::pipewire::{PipeWireCameraCapturer, PipeWireScreenCapturer};
+#[cfg(all(target_os = "linux", feature = "v4l2"))]
+pub use platform::linux::v4l2::V4l2CameraCapturer;
+#[cfg(all(target_os = "linux", feature = "x11"))]
+pub use platform::linux::x11::X11ScreenCapturer;
 #[cfg(feature = "nokhwa")]
 pub use platform::nokhwa_impl::NokhwaCameraCapturer;
+#[cfg(feature = "xcap")]
+pub use platform::xcap_impl::XcapScreenCapturer;
+pub use rusty_codecs::{
+    format::{PixelFormat, VideoFormat, VideoFrame},
+    traits::VideoSource,
+};
+pub use types::*;
 
 // ── PipeWire runtime detection ──────────────────────────────────────
 

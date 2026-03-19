@@ -1,5 +1,7 @@
-use std::num::NonZeroU32;
-use std::time::{Duration, Instant};
+use std::{
+    num::NonZeroU32,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context as _, Result};
 use clap::Parser;

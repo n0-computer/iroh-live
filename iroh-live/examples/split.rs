@@ -23,18 +23,18 @@ use std::time::Duration;
 use clap::Parser;
 use eframe::egui;
 use iroh::{Endpoint, EndpointAddr, SecretKey, protocol::Router};
-use iroh_live::media::capture::{CameraCapturer, CaptureBackend, ScreenCapturer};
-use iroh_live::media::test_sources::{TestPatternSource, TestToneSource};
-use iroh_live::media::traits::VideoSource;
 use iroh_live::{
     ALPN, Live,
     media::{
         audio_backend::AudioBackend,
+        capture::{CameraCapturer, CaptureBackend, ScreenCapturer},
         codec::{AudioCodec, DefaultDecoders, DynamicVideoDecoder, VideoCodec},
         format::{AudioPreset, DecodeConfig, DecoderBackend, PlaybackConfig, VideoPreset},
         playout::PlayoutClock,
         publish::{LocalBroadcast, VideoInput},
         subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
+        test_sources::{TestPatternSource, TestToneSource},
+        traits::VideoSource,
     },
     moq::MoqSession,
 };
