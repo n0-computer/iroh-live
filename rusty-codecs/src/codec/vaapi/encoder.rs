@@ -402,6 +402,8 @@ struct VppColorConverter {
 impl VppColorConverter {
     /// Creates a VPP color converter targeting the given output dimensions.
     fn new(target_width: u32, target_height: u32) -> Result<Self> {
+        // SAFETY: All VA-API calls below operate on freshly-opened display handles and
+        // surface/config IDs that we own exclusively. Error codes are checked after each call.
         unsafe {
             for path in ["/dev/dri/renderD128", "/dev/dri/renderD129"] {
                 let Ok(file) = std::fs::File::options().read(true).write(true).open(path) else {
@@ -487,6 +489,8 @@ impl VppColorConverter {
 
         impl Drop for VppResources {
             fn drop(&mut self) {
+                // SAFETY: Destroys VA-API resources we created. IDs are valid because
+                // they come from successful vaCreate* calls in the enclosing scope.
                 unsafe {
                     if self.buf_id != 0 {
                         va::vaDestroyBuffer(self.dpy, self.buf_id);
@@ -504,6 +508,8 @@ impl VppColorConverter {
             }
         }
 
+        // SAFETY: All VA-API calls use `self.dpy` (valid display from new()) and
+        // IDs allocated in this scope. VppResources RAII guard ensures cleanup on error.
         unsafe {
             let mut res = VppResources {
                 dpy: self.dpy,
@@ -692,6 +698,8 @@ impl VppColorConverter {
 
 impl Drop for VppColorConverter {
     fn drop(&mut self) {
+        // SAFETY: `config_id` and `dpy` are valid handles from successful new() construction.
+        // vaTerminate is safe to call once per vaGetDisplay* handle.
         unsafe {
             va::vaDestroyConfig(self.dpy, self.config_id);
             va::vaTerminate(self.dpy);

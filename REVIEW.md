@@ -103,7 +103,7 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 
 ### Bugs
 
-- [ ] **MQ1**: Two `.expect()` panics in actor run loop — task panic crashes actor (`lib.rs:414, 422`)
+- [x] **MQ1**: Actor run loop `.expect()` — replaced with match + `error!` log so task panics don't crash the actor
 
 ### Design
 
@@ -167,8 +167,8 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 
 ### Concurrency
 
-- [ ] **RC9**: Lock poison not handled in V4L2 encoder — `ts_cb.lock().unwrap()` panics on poisoned lock (`v4l2/encoder.rs:382, 397`)
-- [ ] **RC10**: Lock poison not handled in VAAPI decoder — same issue in decode hot paths (`vaapi/decoder.rs:391, 485, 522`)
+- [x] **RC9**: V4L2 decoder `.lock().unwrap()` — normalized to `.expect("poisoned")`
+- [x] **RC10**: VAAPI decoder `.lock().unwrap()` — normalized to `.expect("poisoned")`
 
 ### Performance
 
@@ -179,7 +179,7 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 
 ### Documentation
 
-- [ ] **RC14**: Minimal SAFETY comments on VAAPI encoder unsafe blocks (`vaapi/encoder.rs:405, 490, 507, 695`)
+- [x] **RC14**: SAFETY comments added to all four VAAPI encoder unsafe blocks
 
 ### New findings (2026-03-18)
 
