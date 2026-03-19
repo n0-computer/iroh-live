@@ -1,3 +1,10 @@
+//! Publish side: encoding raw video/audio into a broadcast catalog.
+//!
+//! The main entry point is [`LocalBroadcast`], which manages encoder
+//! pipelines and publishes a catalog that subscribers use to discover
+//! available renditions. Use [`VideoPublisher`] and [`AudioPublisher`]
+//! to configure tracks.
+
 mod controller;
 use std::{
     collections::{BTreeMap, HashMap},

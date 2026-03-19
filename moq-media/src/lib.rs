@@ -1,3 +1,11 @@
+//! Media pipelines for capture, encode, decode, publish, and subscribe.
+//!
+//! This crate has no iroh dependency — it works with any transport that
+//! implements [`transport::PacketSource`] and [`transport::PacketSink`].
+//! The [`publish`] module handles encoding and writing, the [`subscribe`]
+//! module handles reading and decoding, and [`pipeline`] orchestrates
+//! encoder/decoder threads.
+
 pub mod adaptive;
 pub mod audio_backend;
 pub mod net;
