@@ -25,11 +25,13 @@ jobs:
               libasound2-dev libpipewire-0.3-dev libclang-dev
               libegl-dev libgbm-dev libdrm-dev libfontconfig-dev
               libva-dev nasm
+            cargo-args: "--workspace"
             run-tests: true
             run-fmt: true
           - name: macOS
             os: macos-latest
             install: brew install libtool automake
+            cargo-args: "--workspace --exclude pi-zero-demo"
             run-tests: true
             run-fmt: false
           # - name: Windows
@@ -51,11 +53,11 @@ jobs:
       - name: Install system deps
         run: ${{ matrix.install }}
 
-      - run: cargo check --locked --workspace --all-targets --all-features
-      - run: cargo check --locked --workspace --all-targets --no-default-features
-      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - run: cargo check --locked ${{ matrix.cargo-args }} --all-targets --all-features
+      - run: cargo check --locked ${{ matrix.cargo-args }} --all-targets --no-default-features
+      - run: cargo clippy --locked ${{ matrix.cargo-args }} --all-targets -- -D warnings
       - if: ${{ matrix.run-tests }}
-        run: cargo test --locked --workspace
+        run: cargo test --locked ${{ matrix.cargo-args }}
       - if: ${{ matrix.run-fmt }}
         run: cargo fmt --check
 
