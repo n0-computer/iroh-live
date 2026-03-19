@@ -4,8 +4,7 @@ Publishes a live camera stream from a Raspberry Pi Zero 2 W over iroh, and
 displays the connection ticket as a QR code on a Waveshare 2.13" Touch e-Paper
 HAT.
 
-The e-paper display is optional — if the HAT is not connected (or SPI is not
-enabled), the binary still runs and prints the ticket to the terminal.
+The e-paper display is optional --if the HAT is not connected or SPI is not enabled, the binary still runs and prints the ticket to the terminal.
 
 ## Hardware
 
@@ -17,7 +16,7 @@ enabled), the binary still runs and prints the ticket to the terminal.
 
 1. Starts an iroh endpoint and creates a media broadcast.
 2. Captures the camera at 720p via V4L2.
-3. Encodes H.264 — uses the VideoCore hardware encoder (V4L2 M2M) when
+3. Encodes H.264 --uses the VideoCore hardware encoder (V4L2 M2M) when
    available, otherwise falls back to openh264 software encoding.
 4. Publishes the stream under the name `pi-zero`.
 5. Prints the `LiveTicket` string to the terminal (always, regardless of HAT).
@@ -32,20 +31,18 @@ enabled), the binary still runs and prints the ticket to the terminal.
 
 The Pi Zero 2 W runs a 64-bit ARM (aarch64) Linux. Build on your host machine.
 
-Cross-compilation needs an aarch64 sysroot with C library headers (ALSA for
-audio, PipeWire for camera capture). The easiest approach is to grab the
-sysroot from a running Pi.
+Cross-compilation needs an aarch64 sysroot with C library headers (ALSA for audio, PipeWire for camera capture). The simplest approach is to grab the sysroot from a running Pi.
 
 ### Option A: sysroot from your Pi (recommended)
 
-One-time setup on the Pi — install dev headers:
+One-time setup on the Pi to install dev headers:
 
 ```sh
 # On the Pi:
 sudo apt install libasound2-dev
 ```
 
-One-time setup on your laptop — pull the sysroot and install tools:
+One-time setup on your host machine to pull the sysroot and install the cross-compiler:
 
 ```sh
 mkdir -p ~/pi-sysroot
@@ -69,8 +66,7 @@ Build with the included script (sets up pkg-config, linker search paths, etc.):
 PI_SYSROOT=/path/to/sysroot ./demos/pi-zero/build.sh
 ```
 
-The script validates the sysroot, fixes missing `.so` symlinks, and passes
-the right `-L` flags so the linker can find aarch64 libraries like ALSA.
+The script validates the sysroot, fixes missing `.so` symlinks, and passes the right `-L` flags so the linker can find aarch64 libraries like ALSA.
 
 ### Option B: build natively on the Pi
 
@@ -135,7 +131,7 @@ ls /dev/spidev0.0
 # Should exist after enabling SPI
 ```
 
-### 3. Enable I2C (for the touch controller — optional)
+### 3. Enable I2C (for the touch controller --optional)
 
 The touch controller on the HAT uses I2C. This demo does not use touch input,
 but if you want to use it in the future:
@@ -159,7 +155,7 @@ sudo usermod -aG video,spi,gpio $USER
 
 ### 5. Wire the e-paper HAT
 
-The HAT plugs directly onto the Pi's 40-pin GPIO header — no extra wiring
+The HAT plugs directly onto the Pi's 40-pin GPIO header --no extra wiring
 needed. Just push it on, making sure pin 1 aligns.
 
 Pin mapping (active pins used by this demo):
@@ -194,14 +190,11 @@ publishing at pi-zero@abcdef1234...
 INFO QR code displayed on e-paper
 ```
 
-The ticket string (`pi-zero@...`) is always printed to the terminal regardless
-of whether the e-paper display works. If the HAT is not connected, you'll see a
-warning but the stream keeps publishing.
+The ticket string (`pi-zero@...`) is always printed to the terminal regardless of whether the e-paper display works. If the HAT is not connected, you will see a warning, but the stream keeps publishing.
 
 ### Persistent secret key
 
-On first run, iroh generates a new secret key (and a new endpoint address). The
-ticket changes on every restart unless you pin the key:
+On first run, iroh generates a new secret key and endpoint address. The ticket changes on every restart unless you pin the key:
 
 ```sh
 # First run prints the generated key:
@@ -221,24 +214,23 @@ On another machine (with a display), use the `watch` example from the workspace:
 cargo run --example watch -- <TICKET>
 ```
 
-Replace `<TICKET>` with the ticket string printed by the Pi, or scan the QR
-code from the e-paper display.
+Replace `<TICKET>` with the ticket string printed by the Pi, or scan the QR code from the e-paper display.
 
 ## Troubleshooting
 
-**"No video device found"** — Camera not detected. Check the ribbon cable
+**"No video device found"** --Camera not detected. Check the ribbon cable
 connection, run `v4l2-ctl --list-devices`, and make sure the camera is enabled
 in `raspi-config`.
 
-**"could not display QR on e-paper"** — SPI not enabled, HAT not connected, or
+**"could not display QR on e-paper"** --SPI not enabled, HAT not connected, or
 permission denied on `/dev/spidev0.0` or `/dev/gpiochip0`. Check
 `raspi-config` SPI setting and file permissions. The stream is still publishing
 normally.
 
-**"no video codec compiled in"** — The binary was built without any video codec
+**"no video codec compiled in"** --The binary was built without any video codec
 feature. Rebuild with `h264` or `v4l2` features enabled.
 
-**Software encoder is slow** — If the V4L2 hardware encoder isn't available
+**Software encoder is slow** --If the V4L2 hardware encoder is not available
 (no `v4l2` feature, or `/dev/video11` missing), the fallback is openh264
 software encoding, which may struggle at 720p on the Pi Zero 2's Cortex-A53.
 Consider dropping to `VideoPreset::P360` in the source, or ensure the `v4l2`
@@ -250,13 +242,13 @@ The code respects all [Waveshare e-paper precautions](https://www.waveshare.com/
 
 | # | Precaution | Status |
 |---|-----------|--------|
-| 1 | No continuous partial refresh without full refresh | **Implemented** — only full refresh is used, never partial. |
-| 2 | Do not leave powered on when not refreshing | **Implemented** — `epd.sleep()` is called immediately after every frame update. |
-| 3 | Min 180 s between refreshes; refresh at least once per 24 h | **Implemented** — periodic refresh runs every 12 h (well above 180 s floor, well within 24 h ceiling). |
-| 4 | After sleep, must re-initialise before sending data | **Implemented** — every operation calls `open_epd()` which creates a fresh `Epd2in13`, re-initialising from scratch. |
-| 5 | Border waveform register (0x3C / 0x50) | **N/A** — default border settings from `epd-waveshare` are fine for QR display. |
-| 6 | Image size must match display | **Implemented** — `Display2in13` buffer is exactly 122x250, matching the panel. |
-| 7 | Working voltage 3.3V / level conversion | **N/A** — the HAT (V2.1+) has built-in level conversion; handled by hardware. |
-| 8 | FPC cable is fragile — do not bend | **N/A** — physical handling, not software. Noted in README for awareness. |
-| 9 | Screen is fragile — avoid drops/pressure | **N/A** — physical handling. |
-| 10 | Clear screen before long-term storage | **Implemented** — on Ctrl-C shutdown, the display is cleared to white and put to sleep. |
+| 1 | No continuous partial refresh without full refresh | **Implemented** --only full refresh is used, never partial. |
+| 2 | Do not leave powered on when not refreshing | **Implemented** --`epd.sleep()` is called immediately after every frame update. |
+| 3 | Min 180 s between refreshes; refresh at least once per 24 h | **Implemented** --periodic refresh runs every 12 h (well above 180 s floor, well within 24 h ceiling). |
+| 4 | After sleep, must re-initialise before sending data | **Implemented** --every operation calls `open_epd()` which creates a fresh `Epd2in13`, re-initialising from scratch. |
+| 5 | Border waveform register (0x3C / 0x50) | **N/A** --default border settings from `epd-waveshare` are fine for QR display. |
+| 6 | Image size must match display | **Implemented** --`Display2in13` buffer is exactly 122x250, matching the panel. |
+| 7 | Working voltage 3.3V / level conversion | **N/A** --the HAT (V2.1+) has built-in level conversion; handled by hardware. |
+| 8 | FPC cable is fragile --do not bend | **N/A** --physical handling, not software. Noted in README for awareness. |
+| 9 | Screen is fragile --avoid drops/pressure | **N/A** --physical handling. |
+| 10 | Clear screen before long-term storage | **Implemented** --on Ctrl-C shutdown, the display is cleared to white and put to sleep. |

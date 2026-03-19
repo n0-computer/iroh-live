@@ -1,42 +1,24 @@
 # rusty-capture
 
-Cross-platform screen and camera capture with zero-copy GPU buffer support.
+Cross-platform screen and camera capture for the iroh-live media pipeline.
 
-Provides platform-specific capturers (`PipeWireScreenCapturer`,
-`V4l2CameraCapturer`, `X11ScreenCapturer`, etc.) that implement the
-`VideoSource` trait from `rusty-codecs`, producing `VideoFrame` values ready
-for encoding or rendering.
+Each platform backend runs its capture loop on a dedicated OS thread and delivers frames through the `VideoSource` trait. `pop_frame()` always returns the latest frame, preventing latency buildup when the encoder is slower than the capture rate.
 
-## Platform backends
+## Platform support
 
-| Platform | Screen | Camera | Zero-copy |
-|----------|--------|--------|-----------|
-| Linux (PipeWire) | `pipewire` feature | `pipewire` feature | DMA-BUF mmap (NV12, BGRx) |
-| Linux (X11) | `x11` feature | — | No (MIT-SHM CPU copy) |
-| Linux (V4L2) | — | `v4l2` feature | DMA-BUF via EXPBUF (planned) |
-| macOS | `apple-screen` feature | `apple` feature | IOSurface (planned) |
-| iOS | — | `apple` feature | IOSurface (planned) |
-| Windows | — | — | D3D11 (planned) |
-| Android | — | — | AHardwareBuffer (planned) |
+| Platform | Screen | Camera | Backend | Feature |
+|----------|--------|--------|---------|---------|
+| Linux (Wayland) | Yes | Yes | PipeWire + xdg-desktop-portal | `pipewire` |
+| Linux (X11) | Yes | -- | MIT-SHM | `x11` |
+| Linux | -- | Yes | V4L2 | `v4l2` |
+| macOS 12.3+ | Yes | -- | ScreenCaptureKit | `apple-screen` |
+| macOS, iOS | -- | Yes | AVFoundation | `apple` |
+| Android | -- | Yes | CameraX via JNI | (in `moq-media-android`) |
+| Windows | -- | -- | -- | -- |
 
-When multiple Linux backends are enabled, the runtime dispatch prefers PipeWire
-(if the daemon is running) over X11 and V4L2.
+See [`plans/platforms.md`](../plans/platforms.md) for tested hardware and future plans.
 
-## Feature flags
-
-- **`pipewire`** — PipeWire screen + camera capture via xdg-desktop-portal.
-  Requires `libpipewire-0.3-dev` at build time. Supports DMA-BUF buffers from
-  compositors and libcamera sources.
-
-- **`v4l2`** — V4L2 camera capture. Works on Raspberry Pi (1–5, Zero) and USB
-  cameras via the `v4l2r` crate. MMAP streaming with planned DMA-BUF export.
-
-- **`x11`** — X11 screen capture via MIT-SHM. CPU-only fallback for
-  non-Wayland systems.
-
-- **`apple`** — AVFoundation camera capture on macOS and iOS.
-
-- **`apple-screen`** — ScreenCaptureKit screen capture on macOS 12.3+.
+When multiple Linux backends are enabled, runtime dispatch prefers PipeWire (if the daemon is running) over X11 and V4L2.
 
 ## Usage
 
@@ -47,7 +29,7 @@ let mut capturer = PipeWireScreenCapturer::new(&ScreenConfig::default())?;
 
 loop {
     if let Some(frame) = capturer.pop_frame()? {
-        // frame is a VideoFrame — encode, render, or inspect.
+        // frame is a VideoFrame: encode, render, or inspect
         println!("{}x{}", frame.width(), frame.height());
     }
 }
@@ -71,18 +53,22 @@ No system dependencies beyond a working V4L2 kernel driver.
 
 ### macOS
 
-Xcode command-line tools provide the required frameworks (AVFoundation,
-ScreenCaptureKit, CoreMedia, CoreVideo).
+Xcode command-line tools provide the required frameworks (AVFoundation, ScreenCaptureKit, CoreMedia, CoreVideo).
+
+## Feature flags
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `camera` | yes | Camera capture (via platform backend) |
+| `screen` | yes | Screen capture (via platform backend) |
+| `xcap` | yes | Cross-platform screen capture fallback |
+| `nokhwa` | yes | Cross-platform camera capture fallback |
+| `pipewire` | | PipeWire screen + camera capture via xdg-desktop-portal |
+| `v4l2` | | V4L2 camera capture (USB cameras, Raspberry Pi) |
+| `x11` | | X11 screen capture via MIT-SHM |
+| `apple` | | AVFoundation camera capture (macOS, iOS) |
+| `apple-screen` | | ScreenCaptureKit screen capture (macOS 12.3+) |
 
 ## Architecture
 
-Each platform backend runs its capture loop on a dedicated OS thread and sends
-frames to the caller via `std::sync::mpsc`. The `VideoSource` trait provides a
-uniform `pop_frame()` interface that drains to the latest frame, preventing
-latency buildup.
-
-PipeWire backends use the xdg-desktop-portal D-Bus API (via `ashpd`) for
-session negotiation, then consume the PipeWire stream directly via
-`pipewire-rs`. DMA-BUF buffers are mmapped and copied within the process
-callback — not true zero-copy, but avoids the compositor→SHM copy overhead
-that SHM-only paths incur.
+PipeWire backends use the xdg-desktop-portal D-Bus API (via `ashpd`) for session negotiation, then consume the PipeWire stream directly via `pipewire-rs`. DMA-BUF buffers are memory-mapped within the process callback. V4L2 uses MMAP streaming for zero-copy kernel-to-userspace transfer.
