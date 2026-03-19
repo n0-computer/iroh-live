@@ -20,8 +20,6 @@ pub trait Decoders {
 
 /// Provides PCM audio samples from a capture device or file.
 pub trait AudioSource: Send + 'static {
-    /// Returns a boxed clone of this source.
-    fn cloned_boxed(&self) -> Box<dyn AudioSource>;
     /// Returns the audio format produced by this source.
     fn format(&self) -> AudioFormat;
     /// Fills `buf` with interleaved f32 samples and returns the number of

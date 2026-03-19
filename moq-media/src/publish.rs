@@ -412,6 +412,23 @@ impl AudioPublisher<'_> {
         self.broadcast.set_audio(Some(renditions))
     }
 
+    /// Sets audio from a source factory, enabling parallel multi-rendition encoding.
+    ///
+    /// Each rendition gets its own independent source from the factory.
+    /// Use with [`AudioBackend`](crate::audio_backend::AudioBackend) where
+    /// each `create_input()` call returns a stream backed by the same device.
+    #[cfg(any_audio_codec)]
+    pub fn set_with_factory(
+        &self,
+        format: AudioFormat,
+        factory: impl Fn() -> anyhow::Result<Box<dyn AudioSource>> + Send + Sync + 'static,
+        codec: AudioCodec,
+        presets: impl IntoIterator<Item = AudioPreset>,
+    ) -> Result<()> {
+        let renditions = AudioRenditions::with_factory(format, factory, codec, presets);
+        self.broadcast.set_audio(Some(renditions))
+    }
+
     /// Removes audio from the broadcast.
     pub fn clear(&self) {
         let _ = self.broadcast.set_audio(None);
@@ -566,23 +583,42 @@ impl State {
 /// Each rendition pairs a codec configuration with an encoder factory.
 /// Used by [`AudioPublisher::set_renditions`] for advanced control.
 ///
-/// Audio sources are single-consumer: only one encoder pipeline can read
-/// from the source at a time. When a subscriber connects, the source is
-/// cloned via [`AudioSource::cloned_boxed`]. For device-backed sources
-/// like [`InputStream`](crate::audio_backend::InputStream), clones share
-/// the underlying ring buffer — concurrent reads produce garbled audio.
-/// In practice this is safe because only one audio rendition is active at
-/// a time (multiple renditions are encoded sequentially, not in parallel).
+/// When multiple renditions are subscribed to in parallel, each encoder
+/// pipeline needs its own independent audio source. Two modes handle this:
+///
+/// - **Factory mode**: a closure creates a fresh [`AudioSource`] per
+///   rendition. Use this with device-backed sources like
+///   [`AudioBackend`](crate::audio_backend::AudioBackend), where each
+///   call to `create_input()` returns an independent stream backed by the
+///   same device (the input callback fans out to all streams).
+///
+/// - **Single mode**: a single [`AudioSource`] is consumed by the first
+///   rendition that starts. Use this with test sources or file playback
+///   where only one rendition is expected.
 #[derive(derive_more::Debug)]
 pub struct AudioRenditions {
     #[debug(skip)]
-    source: Box<dyn AudioSource>,
+    source: AudioSourceMode,
+    format: AudioFormat,
     #[debug(skip)]
     renditions: HashMap<String, AudioRenditionEntry>,
 }
 
+/// How [`AudioRenditions`] obtains an [`AudioSource`] for each encoder pipeline.
+enum AudioSourceMode {
+    /// Creates a fresh source per rendition. Supports parallel encoding.
+    Factory(Box<dyn Fn() -> anyhow::Result<Box<dyn AudioSource>> + Send + Sync>),
+    /// Single source, borrowed by one pipeline at a time. When the pipeline
+    /// drops, the source is returned via [`AudioSourceLease`]. A second
+    /// concurrent rendition fails.
+    Single(Arc<std::sync::Mutex<Option<Box<dyn AudioSource>>>>),
+}
+
 impl AudioRenditions {
     /// Creates audio renditions with a dynamically-selected encoder.
+    ///
+    /// The source is consumed by the first rendition that starts. For
+    /// parallel multi-rendition encoding, use [`Self::with_factory`].
     #[cfg(any_audio_codec)]
     pub fn new(
         source: impl AudioSource,
@@ -590,6 +626,25 @@ impl AudioRenditions {
         presets: impl IntoIterator<Item = AudioPreset>,
     ) -> Self {
         let mut this = Self::empty(source);
+        for preset in presets {
+            this.add(codec, preset);
+        }
+        this
+    }
+
+    /// Creates audio renditions backed by a source factory.
+    ///
+    /// Each rendition gets its own independent source from the factory,
+    /// enabling parallel encoding. Use with [`AudioBackend`](crate::audio_backend::AudioBackend)
+    /// or any [`AudioStreamFactory`](crate::traits::AudioStreamFactory).
+    #[cfg(any_audio_codec)]
+    pub fn with_factory(
+        format: AudioFormat,
+        factory: impl Fn() -> anyhow::Result<Box<dyn AudioSource>> + Send + Sync + 'static,
+        codec: AudioCodec,
+        presets: impl IntoIterator<Item = AudioPreset>,
+    ) -> Self {
+        let mut this = Self::empty_factory(format, factory);
         for preset in presets {
             this.add(codec, preset);
         }
@@ -608,10 +663,26 @@ impl AudioRenditions {
         this
     }
 
-    /// Creates an empty rendition set with the given audio source and no presets.
+    /// Creates an empty rendition set with a single audio source and no presets.
     pub fn empty(source: impl AudioSource) -> Self {
+        let format = source.format();
         Self {
-            source: Box::new(source),
+            source: AudioSourceMode::Single(Arc::new(std::sync::Mutex::new(Some(Box::new(
+                source,
+            ))))),
+            format,
+            renditions: HashMap::new(),
+        }
+    }
+
+    /// Creates an empty rendition set with a source factory and no presets.
+    pub fn empty_factory(
+        format: AudioFormat,
+        factory: impl Fn() -> anyhow::Result<Box<dyn AudioSource>> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            source: AudioSourceMode::Factory(Box::new(factory)),
+            format,
             renditions: HashMap::new(),
         }
     }
@@ -628,7 +699,7 @@ impl AudioRenditions {
     /// Adds a rendition using a statically-typed encoder factory.
     pub fn add_with_generic<E: AudioEncoderFactory>(&mut self, preset: AudioPreset) {
         let name = format!("audio/{}-{preset}", E::ID);
-        let format = self.source.format();
+        let format = self.format;
         let enc_config = AudioEncoderConfig::from_preset(format, preset);
         let config = E::config_for(&enc_config);
         self.renditions.insert(
@@ -647,7 +718,7 @@ impl AudioRenditions {
         config: AudioConfig,
         encoder_factory: impl Fn(AudioFormat) -> anyhow::Result<E> + Send + 'static,
     ) {
-        let format = self.source.format();
+        let format = self.format;
         self.renditions.insert(
             name.into(),
             AudioRenditionEntry {
@@ -673,9 +744,9 @@ impl AudioRenditions {
 
     /// Starts the encoder pipeline for the named rendition, writing to the given producer.
     ///
-    /// Clones the audio source for the new pipeline. For device-backed sources
-    /// like [`InputStream`](crate::audio_backend::InputStream), the clone
-    /// shares the ring buffer — only one pipeline should be active per source.
+    /// In factory mode, each call creates a fresh independent source.
+    /// In single mode, the source is leased to one pipeline at a time —
+    /// returned automatically when the pipeline drops.
     pub fn start_encoder(
         &mut self,
         name: &str,
@@ -687,11 +758,55 @@ impl AudioRenditions {
             .context("rendition not available")?;
         let encoder = (entry.factory)()?;
         let sink = MoqPacketSink::new(producer);
-        Ok(AudioEncoderPipeline::with_source(
-            self.source.cloned_boxed(),
-            encoder,
-            sink,
-        )?)
+        let source: Box<dyn AudioSource> = match &self.source {
+            AudioSourceMode::Factory(f) => f()?,
+            AudioSourceMode::Single(slot) => {
+                let inner = slot
+                    .lock()
+                    .expect("poisoned")
+                    .take()
+                    .context("audio source already in use by another rendition")?;
+                let format = inner.format();
+                Box::new(AudioSourceLease {
+                    inner: Some(inner),
+                    format,
+                    slot: slot.clone(),
+                })
+            }
+        };
+        Ok(AudioEncoderPipeline::with_source(source, encoder, sink)?)
+    }
+}
+
+/// Wraps an [`AudioSource`] and returns it to a shared slot on drop.
+///
+/// Used by [`AudioSourceMode::Single`] to lease a source to one encoder
+/// pipeline at a time. When the pipeline shuts down and drops the lease,
+/// the source becomes available for the next pipeline.
+struct AudioSourceLease {
+    inner: Option<Box<dyn AudioSource>>,
+    format: AudioFormat,
+    slot: Arc<std::sync::Mutex<Option<Box<dyn AudioSource>>>>,
+}
+
+impl AudioSource for AudioSourceLease {
+    fn format(&self) -> AudioFormat {
+        self.format
+    }
+
+    fn pop_samples(&mut self, buf: &mut [f32]) -> anyhow::Result<Option<usize>> {
+        match &mut self.inner {
+            Some(src) => src.pop_samples(buf),
+            None => Ok(None),
+        }
+    }
+}
+
+impl Drop for AudioSourceLease {
+    fn drop(&mut self) {
+        if let Some(source) = self.inner.take() {
+            *self.slot.lock().expect("poisoned") = Some(source);
+        }
     }
 }
 

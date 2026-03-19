@@ -253,13 +253,6 @@ impl Default for TestToneSource {
 }
 
 impl AudioSource for TestToneSource {
-    fn cloned_boxed(&self) -> Box<dyn AudioSource> {
-        Box::new(Self {
-            format: self.format,
-            phase: 0.0,
-            sample_index: 0,
-        })
-    }
 
     fn format(&self) -> AudioFormat {
         self.format
