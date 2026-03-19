@@ -7,6 +7,9 @@
 #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
 pub mod dmabuf_import;
 
+#[cfg(all(target_os = "linux", feature = "gles-dmabuf"))]
+pub mod gles_dmabuf;
+
 #[cfg(all(target_os = "macos", feature = "metal-import"))]
 pub mod metal_import;
 

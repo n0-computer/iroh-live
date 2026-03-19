@@ -15,7 +15,7 @@ tracing-subscriber = "0.3.20"
 iroh = { workspace = true }
 iroh-live = { workspace = true, features = ["h264", "opus"] }
 moq-media = { workspace = true, features = ["h264", "opus"] }
-rusty-codecs = { workspace = true, features = ["gles"] }
+rusty-codecs = { workspace = true, features = ["gles", "gles-dmabuf"] }
 
 glow = "0.16"
 winit = "0.30"
