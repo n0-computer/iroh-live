@@ -49,6 +49,7 @@ qr2term = "0.3"
 tokio = { version = "1.48.0", features = ["full"] }
 tracing-subscriber = "0.3.20"
 n0-tracing-test = "0.3.0"
+image = { version = "0.25", features = ["png"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 ctor = "0.4"

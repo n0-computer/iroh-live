@@ -341,6 +341,7 @@ impl Drop for V4l2Encoder {
 #[allow(unreachable_pub, dead_code)]
 mod raw_v4l2 {
     use std::collections::VecDeque;
+    use std::os::unix::fs::OpenOptionsExt as _;
     use std::os::unix::io::{AsRawFd, RawFd};
 
     /// V4L2 ioctl numbers (from linux/videodev2.h).
@@ -371,10 +372,31 @@ mod raw_v4l2 {
     const V4L2_CID_MPEG_VIDEO_H264_LEVEL: u32 = 0x00990900 + 359; // CODEC_BASE+359
     const V4L2_CID_MPEG_VIDEO_H264_PROFILE: u32 = 0x00990900 + 363; // CODEC_BASE+363
     const V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR: u32 = 0x00990900 + 644; // CODEC_BASE+644
+    /// bcm2835-codec uses this control instead of PREPEND_SPSPPS_TO_IDR.
+    const V4L2_CID_MPEG_VIDEO_REPEAT_SEQ_HEADER: u32 = 0x009909E2;
 
-    // H264 Baseline profile = 0, Level 3.0 = 9 (V4L2 enum values).
     const V4L2_MPEG_VIDEO_H264_PROFILE_CONSTRAINED_BASELINE: i32 = 1;
-    const V4L2_MPEG_VIDEO_H264_LEVEL_3_0: i32 = 9;
+
+    // bcm2835-codec H.264 level menu values:
+    //   8=3.0, 9=3.1, 10=3.2, 11=4.0, 12=4.1
+    // The driver defaults to level 1.0 (max 128x96), so this MUST be set
+    // to a level that accommodates the requested resolution.
+    fn h264_level_for_resolution(width: u32, height: u32) -> i32 {
+        let pixels = width * height;
+        if pixels <= 101_376 {
+            // 352x288 -- Level 1.3
+            4
+        } else if pixels <= 414_720 {
+            // 720x576 -- Level 3.0
+            8
+        } else if pixels <= 921_600 {
+            // 1280x720 -- Level 3.1
+            9
+        } else {
+            // 1920x1080 -- Level 4.0
+            11
+        }
+    }
 
     fn fourcc(a: u8, b: u8, c: u8, d: u8) -> u32 {
         u32::from(a) | (u32::from(b) << 8) | (u32::from(c) << 16) | (u32::from(d) << 24)
@@ -507,11 +529,34 @@ mod raw_v4l2 {
             let fd = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
+                .custom_flags(libc::O_NONBLOCK)
                 .open(device_path)?;
 
             let raw_fd = fd.as_raw_fd();
 
-            // 1. S_FMT OUTPUT (NV12).
+            // 1. Set codec controls before format negotiation.
+            //    On bcm2835-codec, profile and level must be set early so the
+            //    driver picks the right encoder configuration.
+            Self::s_ctrl(
+                raw_fd,
+                V4L2_CID_MPEG_VIDEO_H264_PROFILE,
+                V4L2_MPEG_VIDEO_H264_PROFILE_CONSTRAINED_BASELINE,
+            );
+            let level = h264_level_for_resolution(width, height);
+            Self::s_ctrl(raw_fd, V4L2_CID_MPEG_VIDEO_H264_LEVEL, level);
+            Self::s_ctrl(raw_fd, V4L2_CID_MPEG_VIDEO_BITRATE, bitrate as i32);
+            Self::s_ctrl(
+                raw_fd,
+                V4L2_CID_MPEG_VIDEO_GOP_SIZE,
+                keyframe_interval as i32,
+            );
+            // Repeat SPS/PPS with every IDR so late-joining decoders can init.
+            // bcm2835-codec uses repeat_sequence_header instead of
+            // V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR.
+            Self::s_ctrl(raw_fd, V4L2_CID_MPEG_VIDEO_REPEAT_SEQ_HEADER, 1);
+            Self::s_ctrl(raw_fd, V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR, 1);
+
+            // 2. S_FMT OUTPUT (NV12).
             Self::s_fmt(
                 raw_fd,
                 V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
@@ -521,7 +566,7 @@ mod raw_v4l2 {
             )?;
             tracing::debug!("V4L2 raw: OUTPUT format set to NV12 {width}x{height}");
 
-            // 2. S_FMT CAPTURE (H264).
+            // 3. S_FMT CAPTURE (H264).
             Self::s_fmt(
                 raw_fd,
                 V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
@@ -530,25 +575,6 @@ mod raw_v4l2 {
                 height,
             )?;
             tracing::debug!("V4L2 raw: CAPTURE format set to H264 {width}x{height}");
-
-            // 3. Set controls (best-effort).
-            Self::s_ctrl(raw_fd, V4L2_CID_MPEG_VIDEO_BITRATE, bitrate as i32);
-            Self::s_ctrl(
-                raw_fd,
-                V4L2_CID_MPEG_VIDEO_GOP_SIZE,
-                keyframe_interval as i32,
-            );
-            Self::s_ctrl(
-                raw_fd,
-                V4L2_CID_MPEG_VIDEO_H264_PROFILE,
-                V4L2_MPEG_VIDEO_H264_PROFILE_CONSTRAINED_BASELINE,
-            );
-            Self::s_ctrl(
-                raw_fd,
-                V4L2_CID_MPEG_VIDEO_H264_LEVEL,
-                V4L2_MPEG_VIDEO_H264_LEVEL_3_0,
-            );
-            Self::s_ctrl(raw_fd, V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR, 1);
 
             // 4. S_PARM (framerate).
             Self::s_parm(raw_fd, framerate);

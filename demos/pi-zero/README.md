@@ -116,7 +116,34 @@ v4l2-ctl --list-devices
 libcamera-hello --timeout 2000
 ```
 
-### 2. Enable SPI (for the e-paper HAT)
+### 2. Set GPU memory for hardware video encoding
+
+The bcm2835-codec hardware encoder and decoder share the VideoCore GPU
+memory. The default 64MB is only enough for resolutions up to 640x480.
+For 720p, set at least 128MB:
+
+```sh
+# Add to /boot/firmware/config.txt under [all]:
+echo 'gpu_mem=128' | sudo tee -a /boot/firmware/config.txt
+sudo reboot
+```
+
+After reboot, verify with `vcgencmd get_mem gpu` (should show `gpu=128M`).
+
+With 128MB GPU memory on a 512MB Pi Zero 2 W, the hardware encoder
+supports up to 1920x1080. Encoding performance:
+
+| Resolution | HW Encode | HW Decode | Roundtrip |
+|-----------|-----------|-----------|-----------|
+| 640x360 | 138 fps | 60 fps | 44 fps |
+| 1280x720 | 53 fps | ~40 fps | 28 fps |
+| 1920x1080 | 23 fps | 9 fps | 7 fps |
+
+720p is comfortably real-time at 30fps. 1080p encoding is near real-time
+but decode is slow because of the CPU-side YUV-to-RGBA conversion; a
+future NV12/I420 direct render path would improve this.
+
+### 3. Enable SPI (for the e-paper HAT)
 
 ```sh
 sudo raspi-config
@@ -131,7 +158,7 @@ ls /dev/spidev0.0
 # Should exist after enabling SPI
 ```
 
-### 3. Enable I2C (for the touch controller --optional)
+### 4. Enable I2C (for the touch controller --optional)
 
 The touch controller on the HAT uses I2C. This demo does not use touch input,
 but if you want to use it in the future:
@@ -142,7 +169,7 @@ sudo raspi-config
 sudo reboot
 ```
 
-### 4. Permissions
+### 5. Permissions
 
 The binary needs access to `/dev/video*` (camera), `/dev/spidev*` (SPI), and
 `/dev/gpiochip0` (GPIO). Either run as root or add your user to the required
@@ -153,7 +180,7 @@ sudo usermod -aG video,spi,gpio $USER
 # Log out and back in for group changes to take effect
 ```
 
-### 5. Wire the e-paper HAT
+### 6. Wire the e-paper HAT
 
 The HAT plugs directly onto the Pi's 40-pin GPIO header --no extra wiring
 needed. Just push it on, making sure pin 1 aligns.
@@ -169,7 +196,7 @@ Pin mapping (active pins used by this demo):
 | RST      | 17       | 11        |
 | BUSY     | 24       | 18        |
 
-### 6. Connect the camera
+### 7. Connect the camera
 
 Plug the CSI ribbon cable into the Pi Zero's camera connector (the small one
 near the HDMI port, not the display connector). The contacts face the board.
@@ -215,6 +242,51 @@ cargo run --example watch -- <TICKET>
 ```
 
 Replace `<TICKET>` with the ticket string printed by the Pi, or scan the QR code from the e-paper display.
+
+## Testing the V4L2 hardware codec
+
+The `codec-test` subcommand runs on-device encoder, decoder, and round-trip
+tests using the SMPTE test pattern (no camera needed). Cross-compile on your
+host, deploy, and run:
+
+```sh
+# Build and deploy
+./demos/pi-zero/build.sh --deploy livepizero
+
+# Run all tests (encoder, decoder, roundtrip) at 640x360
+ssh pi@livepizero "./pi-zero-demo codec-test all --frames 60"
+
+# Test a specific resolution
+ssh pi@livepizero "./pi-zero-demo codec-test roundtrip --frames 30 --width 1280 --height 720"
+
+# Save decoded frames for visual inspection (raw RGBA, viewable with ffplay)
+ssh pi@livepizero "./pi-zero-demo codec-test roundtrip --frames 10 --save /tmp/frames"
+```
+
+## V4L2 portability notes
+
+The V4L2 M2M encoder/decoder API is a Linux kernel standard, but individual
+SoC drivers differ in their defaults and control support. The current
+implementation is tested on the Pi's bcm2835-codec and may need adjustments
+for other hardware:
+
+- **H.264 level**: bcm2835 defaults to Level 1.0 (128x96 max). The encoder
+  auto-selects the level based on resolution (Level 3.1 for 720p, Level 4.0
+  for 1080p). Other SoCs may auto-negotiate or default to a higher level.
+
+- **SPS/PPS repeat**: bcm2835 uses `repeat_sequence_header` instead of
+  the standard `V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR`. The encoder
+  tries both.
+
+- **Decoder output format**: bcm2835 outputs YU12 (I420, planar). Other
+  decoders may output NV12 (semi-planar). The decoder checks the negotiated
+  format and handles both.
+
+- **Device paths**: Override with `V4L2_ENC_DEVICE` and `V4L2_DEC_DEVICE`
+  environment variables for non-Pi hardware.
+
+See the `rusty-codecs` V4L2 module docs for more detail on cross-SoC
+portability.
 
 ## Troubleshooting
 
