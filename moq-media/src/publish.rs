@@ -379,8 +379,8 @@ impl VideoPublisher<'_> {
 
     /// Enables or disables video output.
     ///
-    /// When disabled, the encoder pipeline is paused and no frames are sent.
-    /// When re-enabled, encoding resumes from the next captured frame.
+    /// **Unimplemented.** Currently a no-op. Intended to pause the encoder
+    /// pipeline when disabled and resume on the next captured frame.
     pub fn set_enabled(&self, _enabled: bool) {
         // TODO: implement pause/resume on the encoder pipeline
     }
@@ -412,7 +412,8 @@ impl AudioPublisher<'_> {
 
     /// Mutes or unmutes audio output.
     ///
-    /// When muted, silence is sent instead of captured audio.
+    /// **Unimplemented.** Currently a no-op. Intended to send silence
+    /// instead of captured audio when muted.
     pub fn set_muted(&self, _muted: bool) {
         // TODO: implement mute on the audio pipeline
     }

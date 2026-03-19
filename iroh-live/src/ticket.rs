@@ -42,10 +42,14 @@ impl LiveTicket {
         self
     }
 
+    /// Serializes to raw postcard bytes.
+    ///
+    /// For a human-readable URI, use [`serialize`](Self::serialize) or [`Display`](std::fmt::Display).
     pub fn to_bytes(&self) -> Vec<u8> {
-        postcard::to_stdvec(self).unwrap()
+        postcard::to_stdvec(self).expect("LiveTicket serialization is infallible")
     }
 
+    /// Deserializes from raw postcard bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let ticket = postcard::from_bytes(bytes).std_context("failed to deserialize")?;
         Ok(ticket)
@@ -53,7 +57,8 @@ impl LiveTicket {
 
     /// Serializes to a URI string: `iroh-live:<addr>/<name>`
     pub fn serialize(&self) -> String {
-        let addr_bytes = postcard::to_stdvec(&self.endpoint).unwrap();
+        let addr_bytes =
+            postcard::to_stdvec(&self.endpoint).expect("EndpointAddr serialization is infallible");
         let addr_encoded = data_encoding::BASE64URL_NOPAD.encode(&addr_bytes);
         format!("{SCHEME}{addr_encoded}/{}", self.broadcast_name)
     }

@@ -37,12 +37,18 @@ const AUDIO_PRIORITY: u8 = 2u8;
 
 // ── Subscription options ────────────────────────────────────────────────
 
-/// Viewport-aware rendition selection target. Subscribers describe what they
-/// need rather than naming specific renditions.
+/// Viewport-aware rendition selection target.
+///
+/// Subscribers describe what they need rather than naming specific
+/// renditions. The catalog selects the best match. If `rendition` is set,
+/// it takes priority over pixel/bitrate constraints.
 #[derive(Debug, Clone, Default)]
 pub struct VideoTarget {
+    /// Maximum pixel count (width * height). Renditions above this are skipped.
     pub max_pixels: Option<u32>,
+    /// Maximum bitrate in kbps. Renditions above this are skipped.
     pub max_bitrate_kbps: Option<u32>,
+    /// Pin to a specific rendition by name, bypassing automatic selection.
     pub rendition: Option<String>,
 }
 
@@ -75,11 +81,14 @@ impl From<Quality> for VideoTarget {
     }
 }
 
-/// Options for video subscription.
+/// Options for video subscription and decoding.
 #[derive(Debug, Clone, Default)]
 pub struct VideoOptions {
+    /// Decoder configuration (backend, pixel format).
     pub playback: Option<DecodeConfig>,
+    /// Rendition selection target (quality, resolution, bitrate).
     pub target: Option<VideoTarget>,
+    /// Viewport dimensions `(width, height)` for resolution-aware decoding.
     pub viewport: Option<(u32, u32)>,
 }
 
@@ -133,6 +142,7 @@ impl VideoOptions {
 /// Options for audio subscription.
 #[derive(Debug, Clone, Default)]
 pub struct AudioOptions {
+    /// Pin to a specific audio rendition by name.
     pub rendition: Option<String>,
 }
 

@@ -27,6 +27,7 @@ pub struct RoomPublisherSync {
 }
 
 impl RoomPublisherSync {
+    /// Creates a new publisher and immediately publishes a camera broadcast into the room.
     pub fn new(room: RoomHandle, audio_ctx: AudioBackend) -> Self {
         let controller = PublishCaptureController::new(audio_ctx);
         // Publish the main (camera + audio) broadcast to the room eagerly.
@@ -42,6 +43,7 @@ impl RoomPublisherSync {
         Self { controller, room }
     }
 
+    /// Applies new publish options, updating capture and encoding configuration.
     pub fn set_state(&mut self, opts: &PublishOpts) -> Result<(), PublishUpdateError> {
         match self.controller.set_opts(opts.clone()) {
             Ok(update) => {
@@ -52,6 +54,7 @@ impl RoomPublisherSync {
         }
     }
 
+    /// Returns the current publish options.
     pub fn state(&self) -> PublishOpts {
         self.controller.state()
     }

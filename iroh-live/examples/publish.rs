@@ -62,7 +62,7 @@ async fn main() -> n0_error::Result {
     if let Some(ref relay_addr) = cli.relay {
         let id: iroh::EndpointId = relay_addr.parse().map_err(|e| anyhow::anyhow!("{e}"))?;
         let session = live.transport().connect(id).await?;
-        session.publish(name.to_string(), broadcast.producer().consume());
+        session.publish(name, broadcast.producer().consume());
         tracing::info!(%relay_addr, "published to relay");
     }
 

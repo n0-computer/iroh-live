@@ -23,14 +23,28 @@ type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + Sync + 'static>>;
 
 mod publisher;
 
+/// Multi-party room backed by gossip-based peer discovery.
+///
+/// Peers announce their broadcasts via a shared gossip topic. When a
+/// remote peer announces, the room automatically connects and subscribes,
+/// emitting [`RoomEvent`]s for each successful subscription.
+///
+/// Use [`split`](Room::split) to separate the event stream from the
+/// publish handle when you need to move them to different tasks.
 #[derive(Debug)]
 pub struct Room {
     handle: RoomHandle,
     events: mpsc::Receiver<RoomEvent>,
 }
 
+/// Receiver half of a room's event stream.
+///
+/// Obtained from [`Room::split`].
 pub type RoomEvents = mpsc::Receiver<RoomEvent>;
 
+/// Cloneable handle for publishing into a [`Room`].
+///
+/// Obtained from [`Room::split`]. Can be shared across tasks.
 #[derive(Debug, Clone)]
 pub struct RoomHandle {
     me: EndpointId,
@@ -40,12 +54,14 @@ pub struct RoomHandle {
 }
 
 impl RoomHandle {
+    /// Returns a ticket that includes this peer as a bootstrap node.
     pub fn ticket(&self) -> RoomTicket {
         let mut ticket = self.ticket.clone();
         ticket.bootstrap = vec![self.me];
         ticket
     }
 
+    /// Publishes a broadcast into the room, announcing it to all peers.
     pub async fn publish(&self, name: impl ToString, producer: BroadcastProducer) -> Result<()> {
         self.tx
             .send(ApiMessage::Publish {
@@ -58,6 +74,10 @@ impl RoomHandle {
 }
 
 impl Room {
+    /// Joins a room using the given ticket.
+    ///
+    /// Requires gossip to be enabled on [`Live`]. Spawns an internal actor
+    /// that handles peer discovery, connection, and subscription.
     pub async fn new(live: &Live, ticket: RoomTicket) -> Result<Self> {
         let gossip = live
             .gossip()
@@ -92,22 +112,29 @@ impl Room {
         })
     }
 
+    /// Waits for the next room event.
     pub async fn recv(&mut self) -> Result<RoomEvent> {
         self.events.recv().await.std_context("sender stopped")
     }
 
+    /// Returns the next room event without blocking, or an error if none is ready.
     pub fn try_recv(&mut self) -> Result<RoomEvent, TryRecvError> {
         self.events.try_recv()
     }
 
+    /// Returns a ticket for this room that includes this peer as a bootstrap node.
     pub fn ticket(&self) -> RoomTicket {
         self.handle.ticket()
     }
 
+    /// Splits the room into its event stream and publish handle.
+    ///
+    /// Useful when the event loop and the publisher live in different tasks.
     pub fn split(self) -> (RoomEvents, RoomHandle) {
         (self.events, self.handle)
     }
 
+    /// Publishes a broadcast into the room, announcing it to all peers.
     pub async fn publish(&self, name: impl ToString, producer: BroadcastProducer) -> Result<()> {
         self.handle.publish(name, producer).await
     }
@@ -120,17 +147,26 @@ enum ApiMessage {
     },
 }
 
+/// Events emitted by a [`Room`] as peers join and publish broadcasts.
 #[derive(Debug)]
 pub enum RoomEvent {
+    /// A remote peer announced its available broadcasts via gossip.
     RemoteAnnounced {
+        /// The announcing peer's endpoint ID.
         remote: EndpointId,
+        /// Broadcast names the peer is publishing.
         broadcasts: Vec<String>,
     },
+    /// Reserved for future use. Not currently emitted by the room actor.
     RemoteConnected {
+        /// The connected session.
         session: MoqSession,
     },
+    /// Successfully subscribed to a remote peer's broadcast.
     BroadcastSubscribed {
+        /// The MoQ session with the remote peer.
         session: MoqSession,
+        /// The subscribed broadcast, ready for video/audio decoding.
         broadcast: RemoteBroadcast,
     },
 }
@@ -304,7 +340,10 @@ impl Actor {
         };
         if let Err(err) = self
             .kv_writer
-            .put(PEER_STATE_KEY, postcard::to_stdvec(&state).unwrap())
+            .put(
+                PEER_STATE_KEY,
+                postcard::to_stdvec(&state).expect("PeerState serialization is infallible"),
+            )
             .await
         {
             warn!("failed to update gossip kv: {err:#}");
@@ -320,14 +359,21 @@ mod ticket {
     use n0_error::{Result, StdResultExt};
     use serde::{Deserialize, Serialize};
 
+    /// Ticket for joining a room.
+    ///
+    /// Contains the gossip topic ID and optional bootstrap peer IDs.
+    /// Serializes to a compact string via the `iroh_tickets` crate.
     #[derive(Debug, Serialize, Deserialize, Clone, derive_more::Display)]
     #[display("{}", iroh_tickets::Ticket::serialize(self))]
     pub struct RoomTicket {
+        /// Peers to contact initially for gossip bootstrap.
         pub bootstrap: Vec<EndpointId>,
+        /// The gossip topic that identifies this room.
         pub topic_id: TopicId,
     }
 
     impl RoomTicket {
+        /// Creates a ticket with the given topic and bootstrap peers.
         pub fn new(topic_id: TopicId, bootstrap: impl IntoIterator<Item = EndpointId>) -> Self {
             Self {
                 bootstrap: bootstrap.into_iter().collect(),
@@ -335,6 +381,7 @@ mod ticket {
             }
         }
 
+        /// Generates a new room with a random topic ID and no bootstrap peers.
         pub fn generate() -> Self {
             Self {
                 bootstrap: vec![],
@@ -342,6 +389,11 @@ mod ticket {
             }
         }
 
+        /// Creates a ticket from environment variables.
+        ///
+        /// Reads `IROH_LIVE_ROOM` for a full ticket string, or
+        /// `IROH_LIVE_TOPIC` for a hex-encoded topic ID. Generates a
+        /// random topic if neither is set.
         pub fn new_from_env() -> Result<Self> {
             if let Ok(value) = env::var("IROH_LIVE_ROOM") {
                 value
@@ -383,7 +435,7 @@ mod ticket {
         const KIND: &'static str = "room";
 
         fn to_bytes(&self) -> Vec<u8> {
-            postcard::to_stdvec(self).unwrap()
+            postcard::to_stdvec(self).expect("RoomTicket serialization is infallible")
         }
 
         fn from_bytes(bytes: &[u8]) -> Result<Self, iroh_tickets::ParseError> {
