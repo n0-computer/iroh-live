@@ -138,15 +138,8 @@ mod app {
             "auto" | "hardware" | "hw" => DecoderBackend::Auto,
             "software" | "sw" => DecoderBackend::Software,
             "ffmpeg" => {
-                #[cfg(feature = "ffmpeg")]
-                {
-                    DecoderBackend::Auto
-                }
-                #[cfg(not(feature = "ffmpeg"))]
-                {
-                    eprintln!("ffmpeg decoder not compiled in — build with --features ffmpeg");
-                    std::process::exit(1);
-                }
+                eprintln!("ffmpeg decoder has been removed from rusty-codecs");
+                std::process::exit(1);
             }
             other => {
                 eprintln!("Unknown decoder: {other}. Use 'auto', 'software', or 'ffmpeg'");

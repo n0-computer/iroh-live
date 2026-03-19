@@ -8,7 +8,6 @@ publish = false
 [features]
 default = ["windowed"]
 windowed = ["dep:winit", "dep:glutin", "dep:glutin-winit", "dep:raw-window-handle"]
-ffmpeg = ["moq-media/ffmpeg"]
 
 # Cross-platform dependencies (used in all targets for the binary entry point).
 [dependencies]

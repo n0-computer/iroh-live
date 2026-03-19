@@ -32,14 +32,13 @@ pub(crate) struct PublishOpts {
     ///   (pre-encoded path, lowest CPU, ~300 KB/s at 360p)
     /// - "software": raw YUV capture + openh264 software encoder
     /// - "v4l2": raw YUV capture + V4L2 M2M hardware encoder
-    /// - "ffmpeg": raw YUV capture + ffmpeg H.264 encoder
     /// - "test": SMPTE test pattern (no camera needed, for e2e verification)
     #[clap(long, default_value = "libcamera")]
     pub encoder: String,
 
     /// Video rendition presets (comma-separated).
     ///
-    /// Only used with software/v4l2/ffmpeg encoders (not libcamera, which
+    /// Only used with software/v4l2 encoders (not libcamera, which
     /// produces a single pre-encoded stream at the configured resolution).
     #[clap(long, value_delimiter = ',', default_values_t = [VideoPreset::P360])]
     pub video_presets: Vec<VideoPreset>,
@@ -208,20 +207,8 @@ fn setup_encoder(
                 .video()
                 .set(VideoInput::new(camera, codec, opts.video_presets.clone()))?;
         }
-        #[cfg(feature = "ffmpeg")]
         "ffmpeg" => {
-            use rusty_codecs::libcamera::LibcameraYuvSource;
-
-            let camera = LibcameraYuvSource::new(capture_w, capture_h, opts.fps);
-            let codec = VideoCodec::FfmpegH264;
-            tracing::info!(%codec, presets = ?opts.video_presets, "ffmpeg encoder + raw YUV capture");
-            broadcast
-                .video()
-                .set(VideoInput::new(camera, codec, opts.video_presets.clone()))?;
-        }
-        #[cfg(not(feature = "ffmpeg"))]
-        "ffmpeg" => {
-            eprintln!("ffmpeg encoder not compiled in -- build with --features ffmpeg");
+            eprintln!("ffmpeg encoder has been removed from rusty-codecs");
             std::process::exit(1);
         }
         "test" | "test-pattern" => {
