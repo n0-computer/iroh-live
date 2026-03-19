@@ -361,6 +361,25 @@ pub struct DecodeStats {
     pub timeline: Timeline,
 }
 
+/// Optional parameters for decoder pipelines.
+///
+/// Bundles clock and stats to avoid telescoping constructor variants.
+/// Use `Default` for simple cases (no clock, no stats).
+#[derive(Debug, Clone, Default)]
+pub struct DecodeOpts {
+    /// Shared playout clock for A/V sync.
+    pub clock: Option<crate::playout::PlayoutClock>,
+    /// Stats collectors for metrics and timeline.
+    pub stats: Option<DecodeStats>,
+}
+
+/// Optional parameters for encoder pipelines.
+#[derive(Debug, Clone, Default)]
+pub struct EncodeOpts {
+    /// Stats collectors for capture metrics.
+    pub stats: Option<CaptureStats>,
+}
+
 /// All stats for a subscribe-side broadcast. Owned by `RemoteBroadcast`.
 #[derive(Clone, Debug, Default)]
 pub struct SubscribeStats {

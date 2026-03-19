@@ -432,7 +432,8 @@ fn start_h264_impl(cam_w: u32, cam_h: u32) -> Result<jlong> {
     let video_config = encoder.config();
 
     let (sink, pipe_source) = media_pipe(32);
-    let encoder_pipeline = VideoEncoderPipeline::new(shared_source, encoder, sink);
+    let encoder_pipeline =
+        VideoEncoderPipeline::new(shared_source, encoder, sink, Default::default());
 
     let decode_config = DecodeConfig::default();
     let decoder = VideoDecoderPipeline::new::<DynamicVideoDecoder>(
@@ -440,6 +441,7 @@ fn start_h264_impl(cam_w: u32, cam_h: u32) -> Result<jlong> {
         pipe_source,
         &video_config,
         &decode_config,
+        Default::default(),
     )
     .context("failed to create H264 decoder pipeline")?;
     let video = VideoTrack::from_pipeline(decoder);

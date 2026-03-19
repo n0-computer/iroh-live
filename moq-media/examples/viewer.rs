@@ -610,28 +610,32 @@ impl Tile {
                 let config = encoder.config();
                 self.encoder_bitrate = config.bitrate;
                 let (sink, pipe_source) = media_pipe(32);
-                let enc = VideoEncoderPipeline::with_stats(
+                let enc = VideoEncoderPipeline::new(
                     source,
                     encoder,
                     sink,
-                    Some(self.capture_stats.clone()),
+                    moq_media::stats::EncodeOpts {
+                        stats: Some(self.capture_stats.clone()),
+                    },
                 );
 
                 let decode_config = DecodeConfig {
                     backend: self.settings.backend,
                     ..Default::default()
                 };
-                let dec = match VideoDecoderPipeline::with_clock_and_stats::<DynamicVideoDecoder>(
+                let dec = match VideoDecoderPipeline::new::<DynamicVideoDecoder>(
                     format!("viewer-{}", self.id),
                     pipe_source,
                     &config,
                     &decode_config,
-                    None,
-                    Some(moq_media::stats::DecodeStats {
-                        render: self.render_stats.clone(),
-                        timing: self.timing_stats.clone(),
-                        timeline: self.timeline.clone(),
-                    }),
+                    moq_media::stats::DecodeOpts {
+                        clock: None,
+                        stats: Some(moq_media::stats::DecodeStats {
+                            render: self.render_stats.clone(),
+                            timing: self.timing_stats.clone(),
+                            timeline: self.timeline.clone(),
+                        }),
+                    },
                 ) {
                     Ok(d) => d,
                     Err(e) => {
