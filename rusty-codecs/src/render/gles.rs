@@ -12,6 +12,8 @@
 use anyhow::{Context as _, Result, bail};
 use glow::HasContext;
 
+#[cfg(all(target_os = "linux", feature = "gles-dmabuf"))]
+use crate::format::NativeFrameHandle;
 use crate::format::{FrameData, VideoFrame};
 
 // ── GLES2 shaders ──────────────────────────────────────────────────
@@ -66,10 +68,14 @@ enum ActiveMode {
     Nv12,
 }
 
-/// GLES2 renderer with RGBA and NV12 upload paths.
+/// GLES2 renderer with RGBA, NV12, and zero-copy DMA-BUF upload paths.
 ///
 /// Platform-agnostic — works with any `glow::Context`. The caller is
 /// responsible for creating the GL context and swapping buffers.
+///
+/// When the `gles-dmabuf` feature is enabled and the EGL display supports
+/// `EGL_EXT_image_dma_buf_import`, GPU frames with DMA-BUF handles bypass
+/// CPU readback entirely.
 #[derive(Debug)]
 pub struct GlesRenderer {
     gl: glow::Context,
@@ -88,6 +94,9 @@ pub struct GlesRenderer {
     active: ActiveMode,
     tex_width: u32,
     tex_height: u32,
+    // DMA-BUF zero-copy import (Linux only).
+    #[cfg(all(target_os = "linux", feature = "gles-dmabuf"))]
+    dmabuf_importer: Option<super::gles_dmabuf::GlesDmaBufImporter>,
 }
 
 fn compile_shader(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::Shader> {
@@ -176,6 +185,15 @@ impl GlesRenderer {
         let y_texture = create_texture(&gl)?;
         let uv_texture = create_texture(&gl)?;
 
+        #[cfg(all(target_os = "linux", feature = "gles-dmabuf"))]
+        let dmabuf_importer = match unsafe { super::gles_dmabuf::GlesDmaBufImporter::new() } {
+            Ok(imp) => imp,
+            Err(e) => {
+                tracing::debug!("EGL DMA-BUF import unavailable: {e}");
+                None
+            }
+        };
+
         Ok(Self {
             gl,
             vbo,
@@ -189,6 +207,8 @@ impl GlesRenderer {
             active: ActiveMode::Rgba,
             tex_width: 0,
             tex_height: 0,
+            #[cfg(all(target_os = "linux", feature = "gles-dmabuf"))]
+            dmabuf_importer,
         })
     }
 
@@ -294,11 +314,37 @@ impl GlesRenderer {
         }
     }
 
-    /// Uploads a [`VideoFrame`], choosing the NV12 fast path when available.
+    /// Uploads a [`VideoFrame`], choosing the best available path.
+    ///
+    /// Priority: DMA-BUF zero-copy (if `gles-dmabuf` feature and GPU frame)
+    /// → NV12 direct upload → RGBA fallback.
     ///
     /// # Safety
     /// The GL context must be current on the calling thread.
     pub unsafe fn upload_frame(&mut self, frame: &VideoFrame) {
+        // Try zero-copy DMA-BUF import for GPU frames.
+        #[cfg(all(target_os = "linux", feature = "gles-dmabuf"))]
+        if let FrameData::Gpu(gpu) = &frame.data
+            && let Some(ref mut importer) = self.dmabuf_importer
+            && !importer.is_disabled()
+            && let Some(NativeFrameHandle::DmaBuf(ref info)) = gpu.native_handle()
+        {
+            match unsafe { importer.import_nv12(&self.gl, info, self.y_texture, self.uv_texture) } {
+                Ok((w, h)) => {
+                    importer.record_success();
+                    self.active = ActiveMode::Nv12;
+                    self.tex_width = w;
+                    self.tex_height = h;
+                    return;
+                }
+                Err(e) => {
+                    if importer.record_failure(&e) {
+                        self.dmabuf_importer = None;
+                    }
+                }
+            }
+        }
+
         match &frame.data {
             FrameData::Nv12(planes) => {
                 // SAFETY: caller guarantees GL context is current.
