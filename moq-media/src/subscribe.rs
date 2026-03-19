@@ -204,7 +204,7 @@ pub struct RemoteBroadcast {
     clock: PlayoutClock,
     shutdown: CancellationToken,
     _catalog_task: Arc<AbortOnDropHandle<()>>,
-    metrics: crate::stats::MetricsCollector,
+    stats: crate::stats::SubscribeStats,
 }
 
 /// Point-in-time snapshot of a broadcast's catalog.
@@ -354,11 +354,7 @@ impl RemoteBroadcast {
             clock,
             _catalog_task: Arc::new(AbortOnDropHandle::new(catalog_task)),
             shutdown,
-            metrics: {
-                let m = crate::stats::MetricsCollector::new();
-                m.register_defaults();
-                m
-            },
+            stats: crate::stats::SubscribeStats::default(),
         })
     }
 
@@ -392,12 +388,11 @@ impl RemoteBroadcast {
         &self.clock
     }
 
-    /// Returns the metrics collector. Decode and playout pipelines
-    /// record into this automatically. External producers (e.g. iroh
-    /// transport stats) can record additional metrics into the same
-    /// collector via [`MetricsCollector::record`] / [`MetricsCollector::set_label`].
-    pub fn metrics(&self) -> &crate::stats::MetricsCollector {
-        &self.metrics
+    /// Returns the subscribe-side stats. Decode and playout pipelines
+    /// record into these automatically. External producers (e.g. iroh
+    /// transport stats) can record additional metrics into the net stats.
+    pub fn stats(&self) -> &crate::stats::SubscribeStats {
+        &self.stats
     }
 
     /// Sets the playout mode, updating the shared clock.
@@ -455,7 +450,11 @@ impl RemoteBroadcast {
             config,
             playback_config,
             Some(clock),
-            Some(self.metrics.clone()),
+            Some((
+                self.stats.render.clone(),
+                self.stats.timing.clone(),
+                self.stats.timeline.clone(),
+            )),
         )
     }
 
@@ -876,17 +875,21 @@ impl VideoTrack {
         config: &VideoConfig,
         playback_config: &DecodeConfig,
         clock: Option<PlayoutClock>,
-        metrics: Option<crate::stats::MetricsCollector>,
+        stats: Option<(
+            crate::stats::RenderStats,
+            crate::stats::TimingStats,
+            crate::stats::Timeline,
+        )>,
     ) -> Result<Self> {
         let source = MoqPacketSource(consumer);
         let config: rusty_codecs::config::VideoConfig = config.clone().into();
-        let pipeline = VideoDecoderPipeline::with_clock_and_metrics::<D>(
+        let pipeline = VideoDecoderPipeline::with_clock_and_stats::<D>(
             rendition,
             source,
             &config,
             playback_config,
             clock,
-            metrics,
+            stats,
         )?;
         Ok(Self::from_pipeline(pipeline))
     }

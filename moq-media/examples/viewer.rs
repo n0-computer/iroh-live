@@ -538,7 +538,10 @@ struct Tile {
     pipeline: Option<TilePipeline>,
     video_view: FrameView,
     stats: Stats,
-    metrics: moq_media::stats::MetricsCollector,
+    capture_stats: moq_media::stats::CaptureStats,
+    render_stats: moq_media::stats::RenderStats,
+    timing_stats: moq_media::stats::TimingStats,
+    timeline: moq_media::stats::Timeline,
     overlay: DebugOverlay,
     encoder_name: String,
     decoder_name: String,
@@ -562,15 +565,20 @@ impl Tile {
             wgpu_render_state,
         );
 
-        let metrics = moq_media::stats::MetricsCollector::new();
-        metrics.register_defaults();
+        let capture_stats = moq_media::stats::CaptureStats::default();
+        let render_stats = moq_media::stats::RenderStats::default();
+        let timing_stats = moq_media::stats::TimingStats::default();
+        let timeline = moq_media::stats::Timeline::default();
         let mut tile = Self {
             id,
             settings,
             pipeline: None,
             video_view,
             stats: Stats::default(),
-            metrics,
+            capture_stats,
+            render_stats,
+            timing_stats,
+            timeline,
             overlay: DebugOverlay::new(&[
                 StatCategory::Capture,
                 StatCategory::Render,
@@ -628,24 +636,28 @@ impl Tile {
                 let config = encoder.config();
                 self.encoder_bitrate = config.bitrate;
                 let (sink, pipe_source) = media_pipe(32);
-                let enc = VideoEncoderPipeline::with_metrics(
+                let enc = VideoEncoderPipeline::with_stats(
                     source,
                     encoder,
                     sink,
-                    Some(self.metrics.clone()),
+                    Some(self.capture_stats.clone()),
                 );
 
                 let decode_config = DecodeConfig {
                     backend: self.settings.backend,
                     ..Default::default()
                 };
-                let dec = match VideoDecoderPipeline::with_clock_and_metrics::<DynamicVideoDecoder>(
+                let dec = match VideoDecoderPipeline::with_clock_and_stats::<DynamicVideoDecoder>(
                     format!("viewer-{}", self.id),
                     pipe_source,
                     &config,
                     &decode_config,
                     None,
-                    Some(self.metrics.clone()),
+                    Some((
+                        self.render_stats.clone(),
+                        self.timing_stats.clone(),
+                        self.timeline.clone(),
+                    )),
                 ) {
                     Ok(d) => d,
                     Err(e) => {
@@ -1037,26 +1049,27 @@ impl eframe::App for ViewerApp {
 
                     // Debug overlay bars at bottom.
                     {
-                        use moq_media::stats::*;
-                        tile.metrics.set_label(LBL_ENCODER, &tile.encoder_name);
-                        tile.metrics.set_label(LBL_DECODER, &tile.decoder_name);
-                        tile.metrics
-                            .set_label(LBL_RENDERER, tile.video_view.render_path_name());
+                        tile.capture_stats.encoder.set(&tile.encoder_name);
+                        tile.render_stats.decoder.set(&tile.decoder_name);
+                        tile.render_stats
+                            .renderer
+                            .set(tile.video_view.render_path_name());
                         if let Some(bps) = tile.encoder_bitrate {
-                            tile.metrics.set_label(
-                                LBL_CODEC,
-                                format!(
-                                    "{} {}",
-                                    tile.settings.codec.display_name(),
-                                    format_bitrate(bps as f64),
-                                ),
-                            );
+                            tile.capture_stats.codec.set(format!(
+                                "{} {}",
+                                tile.settings.codec.display_name(),
+                                format_bitrate(bps as f64),
+                            ));
                         } else {
-                            tile.metrics
-                                .set_label(LBL_CODEC, tile.settings.codec.display_name());
+                            tile.capture_stats
+                                .codec
+                                .set(tile.settings.codec.display_name());
                         }
-                        let snap = tile.metrics.snapshot();
-                        tile.overlay.show(ui, tile_rect, &snap);
+                        let publish_stats = moq_media::stats::PublishStats {
+                            net: moq_media::stats::NetStats::default(),
+                            capture: tile.capture_stats.clone(),
+                        };
+                        tile.overlay.show_publish(ui, tile_rect, &publish_stats);
                     }
 
                     // Close button (X) at top-right

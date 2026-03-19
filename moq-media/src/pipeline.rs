@@ -144,17 +144,21 @@ impl VideoDecoderPipeline {
         decode_config: &DecodeConfig,
         clock: Option<PlayoutClock>,
     ) -> Result<Self> {
-        Self::with_clock_and_metrics::<D>(name, source, config, decode_config, clock, None)
+        Self::with_clock_and_stats::<D>(name, source, config, decode_config, clock, None)
     }
 
-    /// Creates a new decoder pipeline with playout clock and metrics collector.
-    pub fn with_clock_and_metrics<D: VideoDecoder>(
+    /// Creates a new decoder pipeline with playout clock and stats.
+    pub fn with_clock_and_stats<D: VideoDecoder>(
         name: String,
         source: impl PacketSource,
         config: &VideoConfig,
         decode_config: &DecodeConfig,
         clock: Option<PlayoutClock>,
-        metrics: Option<crate::stats::MetricsCollector>,
+        stats: Option<(
+            crate::stats::RenderStats,
+            crate::stats::TimingStats,
+            crate::stats::Timeline,
+        )>,
     ) -> Result<Self> {
         let shutdown = CancellationToken::new();
         let (packet_tx, packet_rx) = mpsc::channel(32);
@@ -182,7 +186,7 @@ impl VideoDecoderPipeline {
                     decoder,
                     clock,
                     framerate,
-                    metrics,
+                    stats,
                 ) {
                     error!("decoder failed: {err:#}");
                 }
@@ -238,15 +242,15 @@ impl VideoEncoderPipeline {
         encoder: impl VideoEncoder,
         sink: impl PacketSink,
     ) -> Self {
-        Self::with_metrics(source, encoder, sink, None)
+        Self::with_stats(source, encoder, sink, None)
     }
 
-    /// Creates a new encoder pipeline with optional metrics recording.
-    pub fn with_metrics(
+    /// Creates a new encoder pipeline with optional stats recording.
+    pub fn with_stats(
         mut source: impl VideoSource,
         mut encoder: impl VideoEncoder,
         mut sink: impl PacketSink,
-        metrics: Option<crate::stats::MetricsCollector>,
+        stats: Option<crate::stats::CaptureStats>,
     ) -> Self {
         let shutdown = CancellationToken::new();
         let thread_name = format!("venc-{:<4}-{:<4}", source.name(), encoder.name());
@@ -310,16 +314,15 @@ impl VideoEncoderPipeline {
                             }
                         }
 
-                        if let Some(ref m) = metrics {
+                        if let Some(ref s) = stats {
                             let encode_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
-                            m.record(crate::stats::CAP_ENCODE_MS, encode_ms);
+                            s.encode_ms.record(encode_ms);
                             let gap = start.duration_since(last_frame_time);
                             if !gap.is_zero() {
-                                m.record(crate::stats::CAP_FPS, 1.0 / gap.as_secs_f64());
+                                s.fps.record(1.0 / gap.as_secs_f64());
                             }
-                            // Bitrate in kbps, smoothed via EMA in the collector.
-                            m.record(
-                                crate::stats::CAP_BITRATE_KBPS,
+                            // Bitrate in kbps, smoothed via EMA in the Metric.
+                            s.bitrate_kbps.record(
                                 total_bytes as f64 * 8.0
                                     / start.elapsed().as_secs_f64().max(0.001)
                                     / 1000.0,
@@ -463,7 +466,11 @@ fn decode_loop(
     mut decoder: impl VideoDecoder,
     clock: Option<PlayoutClock>,
     framerate: f64,
-    metrics: Option<crate::stats::MetricsCollector>,
+    stats: Option<(
+        crate::stats::RenderStats,
+        crate::stats::TimingStats,
+        crate::stats::Timeline,
+    )>,
 ) -> Result<()> {
     let mut waiting_for_keyframe = false;
     let mut last_send = Instant::now();
@@ -598,8 +605,8 @@ fn decode_loop(
                                 skip_active = true;
                             }
                             frames_skipped += 1;
-                            if let Some(ref m) = metrics {
-                                m.record(crate::stats::TMG_FRAMES_SKIPPED, frames_skipped as f64);
+                            if let Some((_, ref timing, _)) = stats {
+                                timing.frames_skipped.record(frames_skipped as f64);
                             }
                             // Still drain output in case the decoder has frames ready.
                             loop {
@@ -645,11 +652,8 @@ fn decode_loop(
                     waiting_for_keyframe = true;
                 } else {
                     let push_elapsed = t.elapsed();
-                    if let Some(ref m) = metrics {
-                        m.record(
-                            crate::stats::RND_DECODE_MS,
-                            push_elapsed.as_secs_f64() * 1000.0,
-                        );
+                    if let Some((ref render, _, _)) = stats {
+                        render.decode_ms.record(push_elapsed.as_secs_f64() * 1000.0);
                     }
                     if push_elapsed > Duration::from_millis(10) {
                         debug!(t=?push_elapsed, "decode_loop: slow push_packet");
@@ -692,13 +696,16 @@ fn decode_loop(
 
         // Release frames whose playout time has arrived.
         while let Some(mut frame) = playout.pop_ready() {
-            frame.timing.render_wall = Some(Instant::now());
-            if let Some(ref m) = metrics {
-                m.record_frame_timing(crate::stats::FrameTimingEntry {
+            let render_wall = Instant::now();
+            frame.timing.render_wall = Some(render_wall);
+            if let Some((_, _, ref timeline)) = stats {
+                timeline.push(crate::stats::FrameTimingEntry {
+                    kind: crate::stats::FrameKind::Video,
                     pts: frame.timestamp,
-                    receive_wall: frame.timing.receive_wall,
+                    receive_wall: frame.timing.receive_wall.unwrap_or(render_wall),
                     decode_end: frame.timing.decode_end,
-                    render_wall: frame.timing.render_wall,
+                    render_wall,
+                    is_keyframe: false, // not tracked at this point
                 });
             }
             trace!(
@@ -712,17 +719,17 @@ fn decode_loop(
             }
             frames_popped += 1;
             let gap = last_send.elapsed();
-            // Freeze detection: no frame for >2× expected interval.
+            // Freeze detection: no frame for >2x expected interval.
             if gap > frame_interval * 2 {
                 freeze_count += 1;
-                if let Some(ref m) = metrics {
-                    m.record(crate::stats::TMG_FREEZES, freeze_count as f64);
+                if let Some((_, ref timing, _)) = stats {
+                    timing.freezes.record(freeze_count as f64);
                 }
             }
-            if let Some(ref m) = metrics {
+            if let Some((ref render, _, _)) = stats {
                 // Record instantaneous fps from inter-frame gap.
                 if !gap.is_zero() {
-                    m.record(crate::stats::RND_FPS, 1.0 / gap.as_secs_f64());
+                    render.fps.record(1.0 / gap.as_secs_f64());
                 }
             }
             if gap > Duration::from_millis(50) {
@@ -745,12 +752,11 @@ fn decode_loop(
                     0
                 };
 
-            if let Some(ref m) = metrics {
-                m.record(crate::stats::TMG_JITTER_MS, jitter.as_secs_f64() * 1000.0);
-                m.record(crate::stats::TMG_DRIFT_MS, drift.as_secs_f64() * 1000.0);
-                m.record(crate::stats::TMG_REANCHOR_COUNT, reanchors as f64);
-                m.record(crate::stats::TMG_BUF_FRAMES, playout.buf_len() as f64);
-                m.record(crate::stats::TMG_DELAY_MS, wall_vs_pts_lag_ms as f64);
+            if let Some((_, ref timing, _)) = stats {
+                timing.jitter_ms.record(jitter.as_secs_f64() * 1000.0);
+                timing.drift_ms.record(drift.as_secs_f64() * 1000.0);
+                timing.buf_frames.record(playout.buf_len() as f64);
+                timing.delay_ms.record(wall_vs_pts_lag_ms as f64);
             }
 
             throttled_tracing::debug_every!(

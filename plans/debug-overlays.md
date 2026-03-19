@@ -326,27 +326,62 @@ painting gives full control over per-frame coloring and is simpler.
   limitation reason, probe state)
 - [x] Freeze detection (`TMG_FREEZES`, gap > 2× frame interval)
 
-### Future: typed metrics refactor
+### Typed metrics refactor
 
-The current string-keyed `MetricsCollector` works but is stringly-typed
-and brittle. A follow-up should introduce typed metric structs:
+Replace `MetricsCollector` (stringly-typed, BTreeMap lookups, allocation-
+heavy snapshots) with typed stat structs carrying `Metric` (EMA +
+ring buffer) and `Label` (atomic string) fields.
+
+**Core types:**
 
 ```rust
-pub struct CaptureMetrics { pub fps: f64, pub encode_ms: f64, ... }
-pub struct RenderMetrics { pub fps: f64, pub decode_ms: f64 }
-pub struct TimingMetrics { pub jitter_ms: f64, pub delay_ms: f64, ... }
-pub struct NetMetrics { pub rtt_ms: f64, pub loss_pct: f64, ... }
+/// Single numeric metric with EMA smoothing and ring buffer history.
+pub struct Metric { /* AtomicU64 for current, Mutex<RingBuf> for history */ }
+/// Single string label, cheaply cloneable.
+pub struct Label { /* Arc<Mutex<String>> */ }
 ```
 
-The overlay would read these directly instead of doing string lookups.
-The `record(name, value)` API stays for external producers (iroh path
-stats), but pipeline-internal metrics go through typed paths.
+**Stat category structs:**
 
-Also: `web_transport_trait::Session::stats()` provides transport-level
-metrics accessible from `moq-media` without iroh dependency. This would
-let `RemoteBroadcast` record basic net stats (RTT, loss) natively,
-leaving only iroh-specific path info (relay/direct, address) for the
-external bridge.
+```rust
+pub struct NetStats     { rtt_ms, loss_pct, bw_down_mbps, bw_up_mbps, paths_active: Metric; path_type, path_addr, peer: Label }
+pub struct CaptureStats { fps, encode_ms, bitrate_kbps: Metric; codec, encoder, resolution: Label }
+pub struct RenderStats  { fps, decode_ms: Metric; decoder, renderer, rendition, resolution: Label }
+pub struct TimingStats  { jitter_ms, delay_ms, drift_ms, buf_frames, frames_skipped, freezes: Metric }
+```
+
+**Composite:**
+
+```rust
+pub struct SubscribeStats { pub net: NetStats, pub render: RenderStats, pub timing: TimingStats, pub timeline: Timeline }
+pub struct PublishStats   { pub net: NetStats, pub capture: CaptureStats }
+```
+
+**Key improvements:**
+- No string keys, no `register_defaults()`, no BTreeMap lookups
+- RTT history comes from `net.rtt_ms.history()` — no separate `record_rtt_timeline()`
+- Pipeline records via `stats.render.decode_ms.record(value)` — type-checked
+- Overlay reads via `stats.render.fps.current()` — no snapshot allocation
+- `iroh-live` bridge writes `stats.net.rtt_ms.record(v)` — same `Metric` type
+- `RemoteBroadcast` owns `SubscribeStats`, `LocalBroadcast` owns `PublishStats`
+
+### Timeline panel redesign
+
+150px panel with five lanes:
+
+| Lane | Height | Content |
+|------|--------|---------|
+| Latency graph | 40px | `render_wall - receive_wall` per frame as line chart. Slope = drift. |
+| Video frames | 24px | Boxes at render_wall. Color = decode time (<8ms green, 8-16ms yellow, >16ms red). |
+| Audio frames | 16px | Boxes at render_wall. Blue, red if late. |
+| A/V sync | 24px | Offset line centered on zero. Color by magnitude (<20ms gray, 20-40ms yellow, >40ms red). |
+| RTT | 30px | Existing RTT sparkline. |
+| Time axis | 16px | Tick labels, LIVE/PAUSED indicator. |
+
+**Scrolling:** Mouse wheel scrolls, double-click resets to live edge.
+**Drift:** Visible as the latency line sloping upward over time.
+**Frame drops:** Visible gaps in the video/audio lanes.
+**A/V sync:** Offset from zero line shows lip-sync drift.
 
 ## Estimated effort
 

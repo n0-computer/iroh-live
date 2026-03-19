@@ -110,17 +110,16 @@ pub fn spawn_signal_producer(
 }
 
 /// Spawns a background task that records connection stats into a
-/// [`MetricsCollector`] for overlay display.
+/// [`NetStats`] for overlay display.
 ///
 /// Records RTT, loss rate, and bandwidth estimates every 200ms.
 /// Complements `spawn_signal_producer` — that one feeds adaptive
 /// bitrate, this one feeds the debug overlay.
 pub fn spawn_stats_recorder(
     conn: &Connection,
-    metrics: moq_media::stats::MetricsCollector,
+    net: moq_media::stats::NetStats,
     shutdown: CancellationToken,
 ) {
-    use moq_media::stats::*;
     let conn = conn.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(200));
@@ -146,8 +145,7 @@ pub fn spawn_stats_recorder(
             };
 
             let rtt_ms = rtt.as_secs_f64() * 1000.0;
-            metrics.record(NET_RTT_MS, rtt_ms);
-            metrics.record_rtt_timeline(rtt_ms);
+            net.rtt_ms.record(rtt_ms);
 
             // Path type and address labels.
             let path_type = if selected.is_relay() {
@@ -155,20 +153,19 @@ pub fn spawn_stats_recorder(
             } else {
                 "direct"
             };
-            metrics.set_label(LBL_PATH_TYPE, path_type);
-            metrics.set_label(LBL_PATH_ADDR, format!("{:?}", selected.remote_addr()));
+            net.path_type.set(path_type);
+            net.path_addr.set(format!("{:?}", selected.remote_addr()));
 
             // Path counts.
             let active = paths.iter().filter(|p| !p.is_closed()).count();
-            metrics.record(NET_PATHS_ACTIVE, active as f64);
-            metrics.record(NET_PATHS_TOTAL, paths.len() as f64);
+            net.paths_active.record(active as f64);
 
             // Loss rate (same calculation as spawn_signal_producer).
             let total_lost = stats.lost_packets;
             let total_sent = stats.udp_tx.datagrams;
             if total_sent + total_lost > 0 {
                 let loss = total_lost as f64 / (total_sent + total_lost) as f64 * 100.0;
-                metrics.record(NET_LOSS_PCT, loss);
+                net.loss_pct.record(loss);
             }
 
             // Bandwidth from byte deltas.
@@ -179,8 +176,8 @@ pub fn spawn_stats_recorder(
                 let tx = stats.udp_tx.bytes;
                 let down_mbps = (rx.saturating_sub(prev_rx_bytes)) as f64 * 8.0 / dt / 1_000_000.0;
                 let up_mbps = (tx.saturating_sub(prev_tx_bytes)) as f64 * 8.0 / dt / 1_000_000.0;
-                metrics.record(NET_BW_DOWN_MBPS, down_mbps);
-                metrics.record(NET_BW_UP_MBPS, up_mbps);
+                net.bw_down_mbps.record(down_mbps);
+                net.bw_up_mbps.record(up_mbps);
                 prev_rx_bytes = rx;
                 prev_tx_bytes = tx;
                 prev_time = now;
