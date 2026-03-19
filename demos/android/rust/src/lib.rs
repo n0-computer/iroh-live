@@ -29,7 +29,7 @@ use moq_media::{
         AudioPreset, DecodeConfig, PlaybackConfig, VideoEncoderConfig, VideoFrame, VideoPreset,
     },
     pipeline::{VideoDecoderPipeline, VideoEncoderPipeline},
-    publish::LocalBroadcast,
+    publish::{LocalBroadcast, VideoInput},
     subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
     transport::media_pipe,
 };
@@ -282,11 +282,11 @@ async fn dial_impl(ticket_str: String, cam_w: u32, cam_h: u32) -> Result<jlong> 
     };
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             shared_source,
             VideoCodec::best_available().expect("no video codec available"),
             [VideoPreset::P720],
-        )
+        ))
         .context("failed to set video source")?;
 
     // Microphone audio via cpal/Oboe.
@@ -592,7 +592,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_initSurface(
         return;
     }
     // ANativeWindow_fromSurface requires the raw JNIEnv pointer.
-    let raw_env = unsafe { env.get_raw() };
+    let raw_env = env.get_raw();
     let raw_surface = surface.as_raw();
     let native_window =
         unsafe { ndk::native_window::NativeWindow::from_surface(raw_env, raw_surface) };
@@ -1063,11 +1063,11 @@ async fn publish_impl(name: String, cam_w: u32, cam_h: u32) -> Result<jlong> {
     };
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             shared_source,
             VideoCodec::best_available().expect("no video codec available"),
             [VideoPreset::P720],
-        )
+        ))
         .context("failed to set video source")?;
 
     let audio_backend = AudioBackend::default();

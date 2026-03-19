@@ -26,7 +26,7 @@ const ERROR: i32 = 6;
 ///
 /// The `filter` string follows [`EnvFilter`] syntax. Returns an error if
 /// a subscriber is already set.
-pub fn init(filter: &str) -> Result<(), tracing_subscriber::util::TryInitError> {
+pub(crate) fn init(filter: &str) -> Result<(), tracing_subscriber::util::TryInitError> {
     tracing_subscriber::registry()
         .with(EnvFilter::new(filter))
         .with(
