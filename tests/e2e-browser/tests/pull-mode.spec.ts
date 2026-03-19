@@ -9,8 +9,8 @@ test.beforeAll(async () => {
   relay = await startRelay();
 });
 
-test.afterAll(() => {
-  stopRelay(relay);
+test.afterAll(async () => {
+  await stopRelay(relay);
 });
 
 /**
@@ -24,7 +24,13 @@ test.afterAll(() => {
 test("pull mode: standalone publisher → relay → browser watch", async ({
   page,
 }) => {
+  // Log browser console for debugging.
+  page.on("console", (msg) => console.log(`BROWSER [${msg.type()}]: ${msg.text()}`));
+  page.on("pageerror", (err) => console.log(`BROWSER ERROR: ${err}`));
+
   // Start publisher with test source — no --relay flag, standalone P2P only.
+  // Force software H.264 to avoid hardware codec incompatibility with
+  // the browser's JS decoder.
   const publisher = spawn("cargo", [
     "run",
     "--example",
@@ -32,6 +38,8 @@ test("pull mode: standalone publisher → relay → browser watch", async ({
     "--",
     "--test-source",
     "--no-audio",
+    "--codec",
+    "h264",
     "--name",
     "pull-test",
     "--video-presets",

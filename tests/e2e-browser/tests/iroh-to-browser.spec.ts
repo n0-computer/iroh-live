@@ -9,12 +9,19 @@ test.beforeAll(async () => {
   relay = await startRelay();
 });
 
-test.afterAll(() => {
-  stopRelay(relay);
+test.afterAll(async () => {
+  await stopRelay(relay);
 });
 
 test("CLI publish → browser watch", async ({ page }) => {
-  // Start publisher with test source, publishing to relay via iroh
+  // Log browser console for debugging.
+  page.on("console", (msg) => console.log(`BROWSER [${msg.type()}]: ${msg.text()}`));
+  page.on("pageerror", (err) => console.log(`BROWSER ERROR: ${err}`));
+
+  // Start publisher with test source, publishing to relay via iroh.
+  // Force software H.264: workspace feature unification can activate
+  // hardware codecs (V4L2, VAAPI) whose output the browser JS decoder
+  // may not handle.
   const publisher = spawn("cargo", [
     "run",
     "--example",
@@ -22,6 +29,8 @@ test("CLI publish → browser watch", async ({ page }) => {
     "--",
     "--test-source",
     "--no-audio",
+    "--codec",
+    "h264",
     "--relay",
     relay.irohAddr,
     "--name",
