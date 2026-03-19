@@ -13,6 +13,21 @@ members = [
     "demos/pi-zero",
     "demos/opengl",
 ]
+# moq-media-dioxus is a workspace member but excluded from default builds.
+# It pulls ~224 additional deps (blitz-dom, vello, etc.) and is prototype-quality.
+# Build it explicitly with: cargo build -p moq-media-dioxus
+default-members = [
+    "iroh-live",
+    "iroh-live-relay",
+    "iroh-moq",
+    "moq-media",
+    "moq-media-android",
+    "moq-media-egui",
+    "rusty-capture",
+    "rusty-codecs",
+    "demos/pi-zero",
+    "demos/opengl",
+]
 resolver = "2"
 
 [profile.release]

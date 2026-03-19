@@ -4,6 +4,9 @@ on:
     branches: [main, dev]
   pull_request:
     branches: [main]
+  schedule:
+    # Weekly check for excluded workspace members (moq-media-dioxus).
+    - cron: '0 6 * * 1'
 
 env:
   CARGO_TERM_COLOR: always
@@ -60,6 +63,25 @@ jobs:
         run: cargo test --locked ${{ matrix.cargo-args }}
       - if: ${{ matrix.run-fmt }}
         run: cargo fmt --check
+
+  # moq-media-dioxus is excluded from default-members (heavy dep tree).
+  # Check it weekly to catch breakage early.
+  check-dioxus:
+    name: Check moq-media-dioxus
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || contains(github.event.head_commit.message, '[check-dioxus]')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Install system deps
+        run: >
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends
+          libasound2-dev libpipewire-0.3-dev libclang-dev
+          libegl-dev libgbm-dev libdrm-dev libfontconfig-dev nasm
+      - run: cargo check --locked -p moq-media-dioxus
 
   e2e-browser:
     name: Playwright E2E
