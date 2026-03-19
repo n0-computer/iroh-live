@@ -125,6 +125,7 @@ cargo fmt --check
 - Small incremental commits, each leaving all crates compiling
 - `cargo clippy --locked --workspace --all-targets --all-features` must be clean (no warnings)
 - `cargo fmt --check` must pass
+- **Prefix**: use conventional commit prefixes: `feat:`, `fix:`, `test:`, `refactor:`, `perf:`, `ci:`, `docs:`, `chore:`, `build:`
 - Commit messages: start with *why* (motivation), then any decisions and their reasoning, then cover *what*, then points of note.
 - Follow ./.agents/writing.md for all prose, including commit messages.
 - When working through a multi-step prompt, add "(phase Xb of current prompt)" as the last line
