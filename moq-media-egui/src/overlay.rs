@@ -619,21 +619,23 @@ fn paint_sparkline(
 // ── Timeline panel ──────────────────────────────────────────────────
 
 const TIMELINE_WINDOW_SECS: f32 = 10.0;
-const LATENCY_GRAPH_H: f32 = 40.0;
-const VIDEO_LANE_H: f32 = 24.0;
-const RTT_STRIP_H: f32 = 30.0;
-const AXIS_H: f32 = 16.0;
-// Total: 40 + 24 + 30 + 16 = 110px (fits in 150px with padding)
+const LATENCY_GRAPH_H: f32 = 36.0;
+const VIDEO_LANE_H: f32 = 20.0;
+const AUDIO_LANE_H: f32 = 16.0;
+const AV_SYNC_H: f32 = 20.0;
+const RTT_STRIP_H: f32 = 26.0;
+const AXIS_H: f32 = 14.0;
+// Total: 36+20+16+20+26+14 = 132px
 
 const LATENCY_GOOD_MS: f32 = 100.0;
 const LATENCY_WARN_MS: f32 = 200.0;
-const DECODE_GOOD_MS: f32 = 8.0;
-const DECODE_WARN_MS: f32 = 16.0;
 
 const COLOR_GREEN: egui::Color32 = egui::Color32::from_rgb(68, 170, 68);
 const COLOR_YELLOW: egui::Color32 = egui::Color32::from_rgb(200, 170, 0);
 const COLOR_RED: egui::Color32 = egui::Color32::from_rgb(200, 68, 68);
+const COLOR_BLUE: egui::Color32 = egui::Color32::from_rgb(68, 136, 204);
 const COLOR_CYAN: egui::Color32 = egui::Color32::from_rgb(0, 200, 200);
+const COLOR_GRAY: egui::Color32 = egui::Color32::from_rgb(160, 160, 160);
 const COLOR_GRID: egui::Color32 = egui::Color32::from_rgb(50, 50, 50);
 
 fn latency_color(ms: f32) -> egui::Color32 {
@@ -646,17 +648,21 @@ fn latency_color(ms: f32) -> egui::Color32 {
     }
 }
 
-fn decode_color(ms: f32) -> egui::Color32 {
-    if ms < DECODE_GOOD_MS {
+/// Video frame box color: based on inter-frame gap relative to expected
+/// cadence. Steady 33ms gaps at 30fps = green. 1.5× = yellow. 2× = red.
+fn gap_color(gap_ms: f32, expected_ms: f32) -> egui::Color32 {
+    let ratio = gap_ms / expected_ms.max(1.0);
+    if ratio < 1.5 {
         COLOR_GREEN
-    } else if ms < DECODE_WARN_MS {
+    } else if ratio < 2.0 {
         COLOR_YELLOW
     } else {
         COLOR_RED
     }
 }
 
-/// Paints the timeline panel with latency graph, video frame boxes, RTT chart, and axis.
+/// Paints the timeline panel: latency graph, video/audio frame lanes,
+/// A/V sync offset, RTT chart, and scrollable time axis.
 fn paint_timeline_panel(
     ui: &mut egui::Ui,
     rect: egui::Rect,
@@ -679,7 +685,6 @@ fn paint_timeline_panel(
         .checked_sub(Duration::from_secs_f32(TIMELINE_WINDOW_SECS))
         .unwrap_or(t_right);
     let px_per_sec = rect.width() / TIMELINE_WINDOW_SECS;
-
     let time_to_x =
         |t: Instant| -> f32 { rect.min.x + t.duration_since(t_left).as_secs_f32() * px_per_sec };
 
@@ -698,30 +703,33 @@ fn paint_timeline_panel(
     }
 
     let frames = timeline.snapshot();
-    let visible_frames: Vec<_> = frames
+    let visible: Vec<_> = frames
         .iter()
         .filter(|f| f.render_wall >= t_left && f.render_wall <= t_right)
         .collect();
+    let video_frames: Vec<_> = visible
+        .iter()
+        .filter(|f| f.kind == stats::FrameKind::Video)
+        .copied()
+        .collect();
+    let audio_frames: Vec<_> = visible
+        .iter()
+        .filter(|f| f.kind == stats::FrameKind::Audio)
+        .copied()
+        .collect();
 
-    // ── Lane 1: Latency graph (top) ─────────────────────────────────
+    // ── Lane 1: Latency graph ───────────────────────────────────────
     let lat_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), LATENCY_GRAPH_H));
     {
-        let galley =
-            painter.layout_no_wrap("LATENCY".to_string(), font.clone(), egui::Color32::GRAY);
-        painter.galley(
-            lat_rect.min + egui::vec2(4.0, 2.0),
-            galley,
-            egui::Color32::GRAY,
-        );
+        let g = painter.layout_no_wrap("LATENCY".to_string(), font.clone(), egui::Color32::GRAY);
+        painter.galley(lat_rect.min + egui::vec2(4.0, 2.0), g, egui::Color32::GRAY);
 
-        // End-to-end latency = render_wall - receive_wall.
-        let latencies: Vec<(f32, f32)> = visible_frames
+        let latencies: Vec<(f32, f32)> = video_frames
             .iter()
-            .filter(|f| f.kind == stats::FrameKind::Video)
             .map(|f| {
                 let x = time_to_x(f.render_wall);
-                let lat_ms = f.render_wall.duration_since(f.receive_wall).as_secs_f32() * 1000.0;
-                (x, lat_ms)
+                let lat = f.render_wall.duration_since(f.receive_wall).as_secs_f32() * 1000.0;
+                (x, lat)
             })
             .collect();
 
@@ -731,55 +739,61 @@ fn paint_timeline_panel(
                 .map(|(_, l)| *l)
                 .fold(0.0f32, f32::max)
                 .max(50.0);
-            let usable_h = lat_rect.height() - 14.0;
-
+            let h = lat_rect.height() - 14.0;
             for pair in latencies.windows(2) {
                 let (x1, l1) = pair[0];
                 let (x2, l2) = pair[1];
-                let y1 = lat_rect.max.y - (l1 / max_lat) * usable_h;
-                let y2 = lat_rect.max.y - (l2 / max_lat) * usable_h;
-                let color = latency_color((l1 + l2) / 2.0);
+                let y1 = lat_rect.max.y - (l1 / max_lat) * h;
+                let y2 = lat_rect.max.y - (l2 / max_lat) * h;
                 painter.line_segment(
                     [egui::pos2(x1, y1), egui::pos2(x2, y2)],
-                    egui::Stroke::new(1.5, color),
+                    egui::Stroke::new(1.5, latency_color((l1 + l2) / 2.0)),
                 );
             }
-
-            // Current value label.
             if let Some((_, lat)) = latencies.last() {
-                let label = format!("{:.0}ms", lat);
-                let color = latency_color(*lat);
-                let galley = painter.layout_no_wrap(label, font.clone(), color);
+                let c = latency_color(*lat);
+                let g = painter.layout_no_wrap(format!("{:.0}ms", lat), font.clone(), c);
                 painter.galley(
-                    egui::pos2(lat_rect.max.x - galley.size().x - 4.0, lat_rect.min.y + 2.0),
-                    galley,
-                    color,
+                    egui::pos2(lat_rect.max.x - g.size().x - 4.0, lat_rect.min.y + 2.0),
+                    g,
+                    c,
                 );
             }
         }
     }
 
-    // ── Lane 2: Video frame boxes ───────────────────────────────────
+    // ── Lane 2: Video frame boxes (color = inter-frame gap) ─────────
     let video_y = rect.min.y + LATENCY_GRAPH_H;
     let video_rect = egui::Rect::from_min_size(
         egui::pos2(rect.min.x, video_y),
         egui::vec2(rect.width(), VIDEO_LANE_H),
     );
     {
-        let galley = painter.layout_no_wrap("VIDEO".to_string(), font.clone(), egui::Color32::GRAY);
+        let g = painter.layout_no_wrap("VIDEO".to_string(), font.clone(), egui::Color32::GRAY);
         painter.galley(
             egui::pos2(video_rect.min.x + 4.0, video_rect.min.y + 1.0),
-            galley,
+            g,
             egui::Color32::GRAY,
         );
 
-        let box_h = VIDEO_LANE_H - 10.0;
-        let box_y = video_rect.min.y + 9.0;
-
-        let video_frames: Vec<_> = visible_frames
-            .iter()
-            .filter(|f| f.kind == stats::FrameKind::Video)
-            .collect();
+        let box_h = VIDEO_LANE_H - 8.0;
+        let box_y = video_rect.min.y + 7.0;
+        // Estimate expected interval from median gap of visible frames.
+        let expected_ms = if video_frames.len() >= 3 {
+            let mut gaps: Vec<f32> = video_frames
+                .windows(2)
+                .map(|w| {
+                    w[1].render_wall
+                        .duration_since(w[0].render_wall)
+                        .as_secs_f32()
+                        * 1000.0
+                })
+                .collect();
+            gaps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            gaps[gaps.len() / 2]
+        } else {
+            33.3 // assume 30fps
+        };
 
         for (i, entry) in video_frames.iter().enumerate() {
             let x = time_to_x(entry.render_wall);
@@ -789,17 +803,20 @@ fn paint_timeline_panel(
                 .unwrap_or(x + 6.0);
             let box_w = (next_x - x - 1.0).clamp(3.0, 20.0);
 
-            let color = if let Some(decode_end) = entry.decode_end {
-                let dt = entry.render_wall.duration_since(decode_end).as_secs_f32() * 1000.0;
-                decode_color(dt)
+            let gap_ms = if i > 0 {
+                entry
+                    .render_wall
+                    .duration_since(video_frames[i - 1].render_wall)
+                    .as_secs_f32()
+                    * 1000.0
             } else {
-                COLOR_GREEN
+                expected_ms
             };
+            let color = gap_color(gap_ms, expected_ms);
 
             let r = egui::Rect::from_min_size(egui::pos2(x, box_y), egui::vec2(box_w, box_h));
             painter.rect_filled(r, 1.0, color);
 
-            // Keyframe indicator: white left border.
             if entry.is_keyframe {
                 painter.line_segment(
                     [r.left_top(), r.left_bottom()],
@@ -809,25 +826,146 @@ fn paint_timeline_panel(
         }
     }
 
-    // ── Lane 3: RTT sparkline ───────────────────────────────────────
-    let rtt_y = rect.min.y + LATENCY_GRAPH_H + VIDEO_LANE_H;
+    // ── Lane 3: Audio frame boxes ───────────────────────────────────
+    let audio_y = rect.min.y + LATENCY_GRAPH_H + VIDEO_LANE_H;
+    let audio_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x, audio_y),
+        egui::vec2(rect.width(), AUDIO_LANE_H),
+    );
+    {
+        let g = painter.layout_no_wrap("AUDIO".to_string(), font.clone(), COLOR_BLUE);
+        painter.galley(
+            egui::pos2(audio_rect.min.x + 4.0, audio_rect.min.y + 1.0),
+            g,
+            COLOR_BLUE,
+        );
+
+        let box_h = AUDIO_LANE_H - 6.0;
+        let box_y = audio_rect.min.y + 5.0;
+
+        for (i, entry) in audio_frames.iter().enumerate() {
+            let x = time_to_x(entry.render_wall);
+            let next_x = audio_frames
+                .get(i + 1)
+                .map(|e| time_to_x(e.render_wall))
+                .unwrap_or(x + 4.0);
+            let box_w = (next_x - x - 0.5).clamp(2.0, 10.0);
+
+            // Blue normally, red if receive-to-render > 100ms.
+            let lat = entry
+                .render_wall
+                .duration_since(entry.receive_wall)
+                .as_secs_f32()
+                * 1000.0;
+            let color = if lat > 100.0 { COLOR_RED } else { COLOR_BLUE };
+
+            let r = egui::Rect::from_min_size(egui::pos2(x, box_y), egui::vec2(box_w, box_h));
+            painter.rect_filled(r, 1.0, color);
+        }
+    }
+
+    // ── Lane 4: A/V sync offset ─────────────────────────────────────
+    let sync_y = rect.min.y + LATENCY_GRAPH_H + VIDEO_LANE_H + AUDIO_LANE_H;
+    let sync_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x, sync_y),
+        egui::vec2(rect.width(), AV_SYNC_H),
+    );
+    {
+        // Zero line.
+        let zero_y = sync_rect.min.y + sync_rect.height() / 2.0;
+        painter.line_segment(
+            [
+                egui::pos2(sync_rect.min.x, zero_y),
+                egui::pos2(sync_rect.max.x, zero_y),
+            ],
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 60, 60)),
+        );
+
+        let g = painter.layout_no_wrap("A/V".to_string(), font.clone(), COLOR_GRAY);
+        painter.galley(
+            egui::pos2(sync_rect.min.x + 4.0, sync_rect.min.y + 1.0),
+            g,
+            COLOR_GRAY,
+        );
+
+        // For each video frame, find the closest audio frame by PTS and
+        // compute the render-time offset: video_render - audio_render.
+        // Positive = video renders later than audio.
+        const SYNC_RANGE_MS: f32 = 80.0;
+        let half_h = sync_rect.height() / 2.0 - 2.0;
+
+        let mut sync_points: Vec<(f32, f32)> = Vec::new();
+        for vf in &video_frames {
+            let closest_audio = audio_frames.iter().min_by_key(|af| {
+                let diff = if vf.pts > af.pts {
+                    vf.pts - af.pts
+                } else {
+                    af.pts - vf.pts
+                };
+                diff.as_millis()
+            });
+            if let Some(af) = closest_audio {
+                let signed_offset = if vf.render_wall >= af.render_wall {
+                    vf.render_wall.duration_since(af.render_wall).as_secs_f32() * 1000.0
+                } else {
+                    -(af.render_wall.duration_since(vf.render_wall).as_secs_f32() * 1000.0)
+                };
+                sync_points.push((time_to_x(vf.render_wall), signed_offset));
+            }
+        }
+
+        if sync_points.len() >= 2 {
+            for pair in sync_points.windows(2) {
+                let (x1, o1) = pair[0];
+                let (x2, o2) = pair[1];
+                let y1 = zero_y - (o1 / SYNC_RANGE_MS).clamp(-1.0, 1.0) * half_h;
+                let y2 = zero_y - (o2 / SYNC_RANGE_MS).clamp(-1.0, 1.0) * half_h;
+                let avg = (o1.abs() + o2.abs()) / 2.0;
+                let color = if avg < 20.0 {
+                    COLOR_GRAY
+                } else if avg < 40.0 {
+                    COLOR_YELLOW
+                } else {
+                    COLOR_RED
+                };
+                painter.line_segment(
+                    [egui::pos2(x1, y1), egui::pos2(x2, y2)],
+                    egui::Stroke::new(1.0, color),
+                );
+            }
+            if let Some((_, offset)) = sync_points.last() {
+                let c = if offset.abs() < 20.0 {
+                    COLOR_GRAY
+                } else if offset.abs() < 40.0 {
+                    COLOR_YELLOW
+                } else {
+                    COLOR_RED
+                };
+                let g = painter.layout_no_wrap(format!("{:+.0}ms", offset), font.clone(), c);
+                painter.galley(
+                    egui::pos2(sync_rect.max.x - g.size().x - 4.0, sync_rect.min.y + 1.0),
+                    g,
+                    c,
+                );
+            }
+        }
+    }
+
+    // ── Lane 5: RTT sparkline ───────────────────────────────────────
+    let rtt_y = rect.min.y + LATENCY_GRAPH_H + VIDEO_LANE_H + AUDIO_LANE_H + AV_SYNC_H;
     let rtt_rect = egui::Rect::from_min_size(
         egui::pos2(rect.min.x, rtt_y),
         egui::vec2(rect.width(), RTT_STRIP_H),
     );
     {
         let rtt = net.rtt_ms.history();
-        let visible: Vec<_> = rtt
+        let vis: Vec<_> = rtt
             .iter()
             .filter(|(t, _)| *t >= t_left && *t <= t_right)
             .collect();
-        if visible.len() >= 2 {
-            let max_rtt = visible
-                .iter()
-                .map(|(_, v)| *v)
-                .fold(0.0f64, f64::max)
-                .max(1.0);
-            let points: Vec<egui::Pos2> = visible
+        if vis.len() >= 2 {
+            let max_rtt = vis.iter().map(|(_, v)| *v).fold(0.0f64, f64::max).max(1.0);
+            let points: Vec<egui::Pos2> = vis
                 .iter()
                 .map(|(t, v)| {
                     let x = time_to_x(*t);
@@ -835,14 +973,16 @@ fn paint_timeline_panel(
                     egui::pos2(x, y)
                 })
                 .collect();
-            let stroke = egui::Stroke::new(1.5, COLOR_CYAN);
             for pair in points.windows(2) {
-                painter.line_segment([pair[0], pair[1]], stroke);
+                painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5, COLOR_CYAN));
             }
         }
-        let label = format!("RTT {:.0}ms", net.rtt_ms.current());
-        let galley = painter.layout_no_wrap(label, font.clone(), COLOR_CYAN);
-        painter.galley(rtt_rect.min + egui::vec2(4.0, 2.0), galley, COLOR_CYAN);
+        let g = painter.layout_no_wrap(
+            format!("RTT {:.0}ms", net.rtt_ms.current()),
+            font.clone(),
+            COLOR_CYAN,
+        );
+        painter.galley(rtt_rect.min + egui::vec2(4.0, 2.0), g, COLOR_CYAN);
     }
 
     // ── Time axis ───────────────────────────────────────────────────
@@ -852,18 +992,17 @@ fn paint_timeline_panel(
     for sec in (0..=TIMELINE_WINDOW_SECS as i32).step_by(2) {
         let x = rect.min.x + sec as f32 * px_per_sec;
         let t = TIMELINE_WINDOW_SECS - sec as f32 + offset_secs;
-        let label = format!("-{:.0}s", t);
-        let galley = painter.layout_no_wrap(label, font.clone(), axis_color);
-        painter.galley(egui::pos2(x + 2.0, axis_y), galley, axis_color);
+        let g = painter.layout_no_wrap(format!("-{:.0}s", t), font.clone(), axis_color);
+        painter.galley(egui::pos2(x + 2.0, axis_y), g, axis_color);
     }
 
     // Live/paused indicator.
     let indicator = if *live { "LIVE" } else { "PAUSED" };
     let ind_color = if *live { COLOR_GREEN } else { COLOR_YELLOW };
-    let galley = painter.layout_no_wrap(indicator.to_string(), font.clone(), ind_color);
+    let g = painter.layout_no_wrap(indicator.to_string(), font.clone(), ind_color);
     painter.galley(
-        egui::pos2(rect.max.x - galley.size().x - 4.0, axis_y),
-        galley,
+        egui::pos2(rect.max.x - g.size().x - 4.0, axis_y),
+        g,
         ind_color,
     );
 

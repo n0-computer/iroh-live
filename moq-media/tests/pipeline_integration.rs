@@ -1136,6 +1136,7 @@ async fn audio_decoder_pipeline_standalone_roundtrip() {
         &audio_config,
         &backend,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -1190,6 +1191,7 @@ async fn audio_decoder_pipeline_stops_when_source_closes() {
         source,
         &audio_config,
         &backend,
+        None,
         None,
     )
     .await
