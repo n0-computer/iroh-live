@@ -1,5 +1,8 @@
 //! Adaptive rendition switching for video tracks.
 //!
+//! **Partially implemented.** The selection algorithm and switching
+//! infrastructure work, but seamless switching is not yet wired up.
+//!
 //! [`AdaptiveVideoTrack`] wraps a [`RemoteBroadcast`] and automatically
 //! switches between video renditions based on [`NetworkSignals`]. It
 //! implements [`VideoSource`] so it can be used anywhere a capture source
@@ -236,6 +239,11 @@ pub(crate) fn should_abort_probe(
 
 /// Video track that automatically switches renditions based on network
 /// conditions.
+///
+/// **Partially implemented.** The selection algorithm and switching
+/// infrastructure work, but seamless switching (staging a new decoder
+/// in parallel and swapping on the first decoded frame) is not yet
+/// wired up, so rendition changes may produce a brief visual glitch.
 ///
 /// Wraps a [`RemoteBroadcast`] and manages rendition switching in a
 /// background task. Implements [`VideoSource`] for use in encoding

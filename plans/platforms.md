@@ -1,8 +1,10 @@
 # Platform Support
 
-Matrix of feature support across hardware–OS combinations for `rusty-codecs`
-and `rusty-capture`. "Impl" means code exists; "Tested" means we have
-confirmed it works on real hardware.
+Feature support across hardware and OS combinations for `rusty-codecs`,
+`rusty-capture`, and GPU rendering. "Impl" means code exists; "Tested"
+means confirmed on real hardware. All software codecs (openh264, rav1e/rav1d,
+unsafe-libopus) work on every platform Rust targets — the tables below cover
+hardware acceleration and platform-specific capture backends.
 
 ## Codec support
 

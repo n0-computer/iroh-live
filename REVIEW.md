@@ -4,6 +4,18 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 
 ---
 
+## API ergonomics
+
+Issues noticed while writing minimal README code examples. The goal is that the simplest use case (publish a stream, subscribe to a stream) should be expressible in a few lines without needing to understand multiple crates. `moq_media` is re-exported as `iroh_live::media`, which helps, but some friction remains.
+
+- [ ] **E1**: `live.subscribe(remote, name)` returns `(MoqSession, RemoteBroadcast)` as a tuple. The session handle is needed to keep the connection alive, but in most cases the caller only cares about the `RemoteBroadcast`. Consider having `RemoteBroadcast` hold the session internally (dropping the broadcast drops the session), or return a wrapper struct with named fields.
+
+- [ ] **E2**: Getting a `VideoTrack` from `RemoteBroadcast` has multiple methods (`video()`, `video_with()`, `video_with_decoder()`, `video_rendition()`). The simplest path `remote.video()` is good, but the relationship between these methods and when to use which is not obvious from the type signatures alone. Could benefit from a builder pattern: `remote.video().with_quality(Quality::Best).build()`.
+
+- [ ] **E3**: `Call::dial(live, remote, local_broadcast)` and `Call::accept(session, local_broadcast)` have asymmetric first arguments (`&Live` vs `MoqSession`). The accept side requires the user to handle incoming sessions manually. A `live.accept_call(local_broadcast)` convenience that waits for the next incoming session would simplify the callee path.
+
+---
+
 ## moq-media
 
 ### Bugs

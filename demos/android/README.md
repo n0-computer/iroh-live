@@ -1,8 +1,6 @@
 # iroh-live Android Demo
 
-Minimal Android app demonstrating live video over iroh. Captures frames from
-the device camera, encodes with Android MediaCodec (hardware H.264), and
-sends/receives through iroh-live sessions.
+Bidirectional video and audio calling on Android. Captures from the device camera with CameraX, encodes with MediaCodec hardware H.264, sends and receives through iroh-live sessions, and renders incoming video with zero-copy EGL `AHardwareBuffer` import.
 
 ## Prerequisites
 
@@ -13,7 +11,7 @@ sends/receives through iroh-live sessions.
   rustup target add aarch64-linux-android
   ```
 - [cargo-ndk](https://github.com/niclas-van-eyk/cargo-ndk-rs) and
-  [cargo-make](https://github.com/niclas-van-eyk/cargo-make):
+  [cargo-make](https://github.com/sagiegurari/cargo-make):
   ```sh
   cargo install cargo-ndk cargo-make
   ```
@@ -32,12 +30,11 @@ cargo make logcat      # stream filtered logs in another terminal
 
 ## Build tasks
 
-All tasks auto-detect the NDK path from `$ANDROID_HOME/ndk/` (picks the
-highest version). See `Makefile.toml` for the full list.
+All tasks auto-detect the NDK path from `$ANDROID_HOME/ndk/` and pick the highest installed version. See `Makefile.toml` for the full list.
 
 | Task | Description |
 |------|-------------|
-| `cargo make apk` | Full pipeline: cargo-ndk → clean → strip → Gradle APK |
+| `cargo make apk` | Full pipeline: cargo-ndk -> clean -> strip -> Gradle APK |
 | `cargo make install` | Build + install on connected device |
 | `cargo make logcat` | Stream logs filtered to app tags |
 | `cargo make logcat-pid` | Stream all logs for the running app PID |
@@ -58,7 +55,7 @@ cargo ndk -t arm64-v8a -P 26 --link-libcxx-shared \
 find demos/android/app/src/main/jniLibs -name "*.so" \
   ! -name "libiroh_live_android.so" ! -name "libc++_shared.so" -delete
 
-# 3. Strip debug symbols (~500 MB → ~21 MB)
+# 3. Strip debug symbols (~500 MB -> ~21 MB)
 $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip \
   demos/android/app/src/main/jniLibs/arm64-v8a/libiroh_live_android.so
 
@@ -86,9 +83,9 @@ $ADB logcat -c
 ```
 
 Key log tags:
-- `iroh_live` — Rust-side `tracing` output
-- `IrohBridge` — Kotlin JNI bridge
-- `AndroidRuntime` — Java/Kotlin crash stack traces
+- `iroh_live` --Rust-side `tracing` output
+- `IrohBridge` --Kotlin JNI bridge
+- `AndroidRuntime` --Java/Kotlin crash stack traces
 
 ## Feature configuration
 
@@ -113,18 +110,14 @@ demos/android/
       CameraHelper.kt   # Camera2 camera capture
 ```
 
-The Kotlin side captures camera frames via Camera2 and pushes them into the
-Rust layer through JNI. The Rust side uses `moq-media` to encode (Android
-MediaCodec H.264) and publish through `iroh-live` sessions.
+The Kotlin side captures camera frames via Camera2 and pushes them into the Rust layer through JNI. The Rust side uses `moq-media` to encode with Android MediaCodec H.264 and publish through `iroh-live` sessions.
 
 ## Requirements
 
-- **minSdk 26** (Android 8.0) — required for AAudio (audio backend)
+- **minSdk 26** (Android 8.0) --required for AAudio (audio backend)
 - **targetSdk 34**, **compileSdk 35**
 - arm64-v8a only (x86_64 not currently built)
 
 ## Status
 
-This is a skeleton demo. The Rust codec and JNI bridge compile and the APK
-builds, but the app has not been tested end-to-end on a real device yet.
-See `plans/media-pipeline/android-demo-app.md` for the full roadmap.
+Tested end-to-end on a real Android device with bidirectional video and audio between Android and Linux desktop. See [`plans/platforms.md`](../../plans/platforms.md) for the full platform support matrix.
