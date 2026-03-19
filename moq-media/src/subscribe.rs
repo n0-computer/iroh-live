@@ -224,6 +224,8 @@ pub struct RemoteBroadcast {
     stats: crate::stats::SubscribeStats,
     /// Shared skip threshold in milliseconds, read by decode loops.
     skip_threshold_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// Skip generation counter: video increments on skip, audio flushes to resync.
+    skip_generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Point-in-time snapshot of a broadcast's catalog.
@@ -355,6 +357,7 @@ impl RemoteBroadcast {
             shutdown,
             stats: crate::stats::SubscribeStats::default(),
             skip_threshold_ms: Arc::new(std::sync::atomic::AtomicU64::new(500)),
+            skip_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }
 
@@ -466,6 +469,7 @@ impl RemoteBroadcast {
                 clock: Some(clock),
                 stats: Some(self.stats.decode_stats()),
                 skip_threshold_ms: Some(self.skip_threshold_ms.clone()),
+                skip_generation: Some(self.skip_generation.clone()),
             },
         )
     }
@@ -509,6 +513,7 @@ impl RemoteBroadcast {
                 clock: Some(clock),
                 stats: Some(self.stats.decode_stats()),
                 skip_threshold_ms: None, // audio doesn't use skip threshold
+                skip_generation: Some(self.skip_generation.clone()),
             },
         )
         .await

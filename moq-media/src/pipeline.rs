@@ -175,6 +175,7 @@ impl VideoDecoderPipeline {
                     framerate,
                     opts.stats,
                     opts.skip_threshold_ms,
+                    opts.skip_generation,
                 ) {
                     error!("decoder failed: {err:#}");
                 }
@@ -458,6 +459,7 @@ fn decode_loop(
     framerate: f64,
     stats: Option<crate::stats::DecodeStats>,
     skip_threshold_ms: Option<Arc<AtomicU64>>,
+    skip_generation: Option<Arc<AtomicU64>>,
 ) -> Result<()> {
     let mut waiting_for_keyframe = false;
     let mut last_send = Instant::now();
@@ -580,12 +582,10 @@ fn decode_loop(
                                 latest_pts = packet.timestamp;
                                 playout.clear();
                                 playout.reset_clock();
-                                // NOTE: audio is not reset here — it runs on an
-                                // independent tick loop and doesn't use the
-                                // PlayoutClock (see audio_decode_loop). After a
-                                // video skip, A/V can be out of sync until the
-                                // next keyframe aligns them. A proper fix would
-                                // require audio-side skip support.
+                                // Signal audio to flush its decoder and resync.
+                                if let Some(ref sg) = skip_generation {
+                                    sg.fetch_add(1, Ordering::Relaxed);
+                                }
                             }
                         } else {
                             // Skip non-keyframes to catch up.
@@ -911,7 +911,16 @@ impl AudioDecoderPipeline {
         let target_format = AudioFormat::from_config(config);
         let sink = audio_backend.create_output(target_format).await?;
         let handle = sink.handle();
-        Self::build::<D>(name, source, config, sink, handle, opts.clock, opts.stats)
+        Self::build::<D>(
+            name,
+            source,
+            config,
+            sink,
+            handle,
+            opts.clock,
+            opts.stats,
+            opts.skip_generation,
+        )
     }
 
     /// Creates a new audio decoder pipeline with a pre-made [`AudioSink`].
@@ -931,7 +940,7 @@ impl AudioDecoderPipeline {
             "audio sink format mismatch: sink has {output_format:?}, decoder expects {expected:?}"
         );
         let handle = sink.handle();
-        Self::build::<D>(name, source, config, sink, handle, None, None)
+        Self::build::<D>(name, source, config, sink, handle, None, None, None)
     }
 
     fn build<D: AudioDecoder>(
@@ -942,6 +951,7 @@ impl AudioDecoderPipeline {
         handle: Box<dyn AudioSinkHandle>,
         clock: Option<PlayoutClock>,
         stats: Option<crate::stats::DecodeStats>,
+        skip_generation: Option<Arc<AtomicU64>>,
     ) -> Result<Self> {
         let shutdown = CancellationToken::new();
         let span = info_span!("audiodec", %name);
@@ -956,9 +966,15 @@ impl AudioDecoderPipeline {
             move || {
                 let _guard = span.enter();
                 info!(?config, "decode start");
-                if let Err(err) =
-                    audio_decode_loop(&shutdown, packet_rx, decoder, sink, clock, stats)
-                {
+                if let Err(err) = audio_decode_loop(
+                    &shutdown,
+                    packet_rx,
+                    decoder,
+                    sink,
+                    clock,
+                    stats,
+                    skip_generation,
+                ) {
                     error!("decoder failed: {err:#}");
                 }
                 info!("decode stop");
@@ -1011,6 +1027,7 @@ fn audio_decode_loop(
     mut sink: impl AudioSink,
     _clock: Option<PlayoutClock>,
     stats: Option<crate::stats::DecodeStats>,
+    skip_generation: Option<Arc<AtomicU64>>,
 ) -> Result<()> {
     use bytes::Buf as _;
     use mpsc::error::TryRecvError;
@@ -1030,6 +1047,9 @@ fn audio_decode_loop(
     let mut last_push = Instant::now();
     let mut silence_buf = [0.0f32; SILENCE_FRAME_SAMPLES];
     let mut silence_warned = false;
+    let mut last_skip_gen = skip_generation
+        .as_ref()
+        .map_or(0, |sg| sg.load(Ordering::Relaxed));
 
     'main: for i in 0.. {
         let tick = Instant::now();
@@ -1037,6 +1057,30 @@ fn audio_decode_loop(
         if shutdown.is_cancelled() {
             debug!("stop audio decoder: cancelled");
             break;
+        }
+
+        // Check if video signalled a skip recovery. When the generation
+        // counter changes, flush the decoder so audio doesn't keep playing
+        // samples from before the skip point.
+        if let Some(ref sg) = skip_generation {
+            let current_gen = sg.load(Ordering::Relaxed);
+            if current_gen != last_skip_gen {
+                last_skip_gen = current_gen;
+                info!("audio: video skip detected, draining stale packets to resync");
+                // Drain any buffered packets that predate the skip.
+                // Opus packets are independently decodable, so we don't
+                // need to reset the decoder — just discard old input.
+                let mut drained = 0u32;
+                while input_rx.try_recv().is_ok() {
+                    drained += 1;
+                }
+                if drained > 0 {
+                    info!(drained, "audio: discarded stale packets");
+                }
+                // Pop any residual decoded samples from the decoder.
+                while decoder.pop_samples().ok().flatten().is_some() {}
+                remote_start = None;
+            }
         }
 
         let mut received_any = false;
@@ -1438,6 +1482,7 @@ mod tests {
                 clock: Some(clock.clone()),
                 stats: None,
                 skip_threshold_ms: None,
+                skip_generation: None,
             },
         )
         .unwrap();

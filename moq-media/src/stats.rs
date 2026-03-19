@@ -377,6 +377,10 @@ pub struct DecodeOpts {
     /// by more than this amount, non-keyframes are skipped until the next
     /// keyframe to recover. `None` uses the default (500ms).
     pub skip_threshold_ms: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+    /// Skip generation counter shared between video and audio decode loops.
+    /// Video increments this on skip recovery; audio watches it and flushes
+    /// its decoder to resync when it changes.
+    pub skip_generation: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
 }
 
 /// Optional parameters for encoder pipelines.

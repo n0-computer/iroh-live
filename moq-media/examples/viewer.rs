@@ -484,6 +484,7 @@ impl Tile {
                             timeline: self.timeline.clone(),
                         }),
                         skip_threshold_ms: None,
+                        skip_generation: None,
                     },
                 ) {
                     Ok(d) => d,
