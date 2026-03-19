@@ -530,11 +530,18 @@ async fn audio_clear_while_video_continues() {
         .await
         .unwrap();
 
-    remote.ready().await;
-    assert!(remote.has_video());
-    assert!(remote.has_audio());
-
+    // Wait for both video and audio to appear in the catalog.
     let mut watcher = remote.catalog_watcher();
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            if remote.has_video() && remote.has_audio() {
+                break;
+            }
+            watcher.updated().await.unwrap();
+        }
+    })
+    .await
+    .expect("timeout waiting for video + audio catalog");
 
     // Clear audio only
     broadcast.audio().clear();
@@ -616,10 +623,19 @@ async fn audio_replace_source_subscriber_still_receives() {
         .await
         .unwrap();
 
-    remote.ready().await;
-    assert!(remote.has_audio());
-
+    // ready() returns when *either* video or audio appears. Since video is set
+    // first, audio may not be in the catalog yet. Wait explicitly for audio.
     let mut watcher = remote.catalog_watcher();
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            if remote.has_audio() {
+                break;
+            }
+            watcher.updated().await.unwrap();
+        }
+    })
+    .await
+    .expect("timeout waiting for initial audio");
 
     // Replace audio source with a fresh one
     broadcast

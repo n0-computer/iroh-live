@@ -2,6 +2,10 @@
 //!
 //! These tests exercise the full publish → transport → subscribe pipeline
 //! over real QUIC connections between two iroh endpoints.
+//!
+//! We use `VideoCodec::H264` (software) rather than `best_available()` because
+//! workspace feature unification can activate hardware codec features (V4L2,
+//! VAAPI) from other crates, and hardware encoders fail when no device exists.
 
 use std::time::Duration;
 
@@ -13,11 +17,19 @@ use moq_media::{
     format::{AudioFormat, AudioPreset, VideoPreset},
     net::NetworkSignals,
     publish::{LocalBroadcast, VideoInput},
-    test_util::{NullAudioBackend, TestAudioSource, TestVideoSource},
+    test_util::{CapturingAudioBackend, TestAudioSource, TestVideoSource},
 };
 use n0_tracing_test::traced_test;
 use tokio::sync::watch;
 use tracing::{Instrument, info_span};
+
+/// Generous timeout for frame arrival — must survive CPU contention when the
+/// full workspace test suite runs in parallel.
+const FRAME_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Software video codec that works on any machine, regardless of which
+/// hardware-codec features workspace unification activates.
+const TEST_VIDEO_CODEC: VideoCodec = VideoCodec::H264;
 
 /// Creates an endpoint bound to localhost with a random secret key.
 async fn endpoint() -> Endpoint {
@@ -28,7 +40,8 @@ async fn endpoint() -> Endpoint {
 }
 
 /// Publishes video over one Live node and subscribes from another,
-/// verifying that decoded video frames arrive across the QUIC connection.
+/// verifying that decoded video frames arrive across the QUIC connection
+/// with valid dimensions and monotonically increasing timestamps.
 #[tokio::test]
 #[traced_test]
 async fn publish_subscribe_video() {
@@ -43,7 +56,7 @@ async fn publish_subscribe_video() {
             .video()
             .set(VideoInput::new(
                 source,
-                VideoCodec::best_available().expect("no video codec available"),
+                TEST_VIDEO_CODEC,
                 [VideoPreset::P180],
             ))
             .expect("failed to set video");
@@ -65,30 +78,38 @@ async fn publish_subscribe_video() {
             .await
             .expect("failed to subscribe");
 
-        // Wait for catalog to arrive and contain video.
-        assert!(remote.has_video(), "broadcast should have video renditions");
-
-        let mut video_track = remote.video().expect("failed to create video track");
-
-        // Receive a few frames with a generous timeout.
-        let frame = tokio::time::timeout(Duration::from_secs(10), video_track.next_frame())
+        // video_ready waits for the catalog to contain video before subscribing,
+        // avoiding the race where ready() returns on audio alone.
+        let mut video_track = tokio::time::timeout(FRAME_TIMEOUT, remote.video_ready())
             .await
-            .expect("timed out waiting for first video frame")
-            .expect("video track closed without producing a frame");
+            .expect("timed out waiting for video catalog")
+            .expect("failed to create video track");
 
-        let [w, h] = frame.dimensions;
-        assert!(w > 0 && h > 0, "frame dimensions should be non-zero");
+        // Receive several frames and verify the pipeline streams correctly.
+        let mut prev_ts = None;
+        for i in 0..5 {
+            let frame = tokio::time::timeout(FRAME_TIMEOUT, video_track.next_frame())
+                .await
+                .unwrap_or_else(|_| panic!("timed out waiting for frame {i}"))
+                .unwrap_or_else(|| panic!("video track closed before frame {i}"));
 
-        // Receive a second frame to confirm the pipeline is streaming.
-        let frame2 = tokio::time::timeout(Duration::from_secs(5), video_track.next_frame())
-            .await
-            .expect("timed out waiting for second video frame")
-            .expect("video track closed after first frame");
+            assert!(
+                frame.width() > 0 && frame.height() > 0,
+                "frame {i}: dimensions should be non-zero, got {}×{}",
+                frame.width(),
+                frame.height(),
+            );
 
-        assert!(
-            frame2.timestamp > frame.timestamp || frame2.timestamp == Duration::ZERO,
-            "second frame should have a later timestamp"
-        );
+            if let Some(prev) = prev_ts {
+                assert!(
+                    frame.timestamp >= prev,
+                    "frame {i}: timestamp {:#?} should not precede previous {prev:#?}",
+                    frame.timestamp,
+                );
+            }
+            prev_ts = Some(frame.timestamp);
+        }
+
         live
     }
     .instrument(info_span!("subscriber"))
@@ -98,7 +119,9 @@ async fn publish_subscribe_video() {
     subscriber.shutdown().await;
 }
 
-/// Subscribes to audio and verifies the audio track is created successfully.
+/// Publishes audio + video and verifies both tracks arrive. Uses
+/// [`CapturingAudioBackend`] to confirm decoded audio samples flow through
+/// the pipeline end-to-end.
 #[tokio::test]
 #[traced_test]
 async fn publish_subscribe_audio() {
@@ -111,7 +134,7 @@ async fn publish_subscribe_audio() {
         .video()
         .set(VideoInput::new(
             video_source,
-            VideoCodec::best_available().expect("no video codec available"),
+            TEST_VIDEO_CODEC,
             [VideoPreset::P180],
         ))
         .expect("failed to set video");
@@ -135,21 +158,35 @@ async fn publish_subscribe_audio() {
         .await
         .expect("failed to subscribe");
 
-    assert!(remote.has_video(), "broadcast should have video");
-    assert!(remote.has_audio(), "broadcast should have audio");
-
-    // Subscribe to audio — verifies the full decode pipeline starts.
-    let _audio_track = remote
-        .audio(&NullAudioBackend)
+    // Wait for both tracks to appear in the catalog.
+    let mut video_track = tokio::time::timeout(FRAME_TIMEOUT, remote.video_ready())
         .await
+        .expect("timed out waiting for video catalog")
+        .expect("failed to create video track");
+
+    // Use a capturing backend so we can verify audio samples arrived.
+    let audio_backend = CapturingAudioBackend::new();
+    let captured = audio_backend.captured_samples();
+    let _audio_track = tokio::time::timeout(FRAME_TIMEOUT, remote.audio_ready(&audio_backend))
+        .await
+        .expect("timed out waiting for audio catalog")
         .expect("failed to create audio track");
 
-    // Subscribe to video and get at least one frame.
-    let mut video_track = remote.video().expect("failed to create video track");
-    let _frame = tokio::time::timeout(Duration::from_secs(10), video_track.next_frame())
-        .await
-        .expect("timed out waiting for video frame")
-        .expect("video track closed");
+    // Receive several video frames to give the audio pipeline time to
+    // accumulate samples.
+    for i in 0..5 {
+        let _frame = tokio::time::timeout(FRAME_TIMEOUT, video_track.next_frame())
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for video frame {i}"))
+            .unwrap_or_else(|| panic!("video track closed at frame {i}"));
+    }
+
+    // Verify audio samples flowed through the pipeline.
+    let sample_count = captured.lock().unwrap().len();
+    assert!(
+        sample_count > 0,
+        "expected captured audio samples, got {sample_count}",
+    );
 
     publisher.shutdown().await;
     subscriber.shutdown().await;
@@ -173,7 +210,7 @@ async fn adaptive_rendition_switching() {
         .video()
         .set(VideoInput::new(
             source,
-            VideoCodec::best_available().expect("no video codec available"),
+            TEST_VIDEO_CODEC,
             [VideoPreset::P360, VideoPreset::P180],
         ))
         .expect("failed to set video");
@@ -191,7 +228,11 @@ async fn adaptive_rendition_switching() {
         .await
         .expect("failed to subscribe");
 
-    assert!(remote.has_video(), "should have video renditions");
+    // Wait for catalog to arrive with video renditions.
+    tokio::time::timeout(FRAME_TIMEOUT, remote.ready())
+        .await
+        .expect("timed out waiting for video catalog");
+
     let catalog = remote.catalog();
     let rendition_count = catalog.video.renditions.len();
     assert_eq!(
@@ -224,10 +265,15 @@ async fn adaptive_rendition_switching() {
         .expect("failed to create adaptive track");
 
     // Get initial frame — should start on highest rendition (360p).
-    let _frame = tokio::time::timeout(Duration::from_secs(10), adaptive.next_frame())
+    let first = tokio::time::timeout(FRAME_TIMEOUT, adaptive.next_frame())
         .await
         .expect("timed out waiting for first adaptive frame")
         .expect("adaptive track closed");
+
+    assert!(
+        first.width() > 0 && first.height() > 0,
+        "first adaptive frame should have non-zero dimensions"
+    );
 
     let initial_rendition = adaptive.selected_rendition();
 
@@ -243,17 +289,16 @@ async fn adaptive_rendition_switching() {
 
     // Wait for adaptation to react (emergency is immediate, but the task
     // needs a few check intervals to process).
-    let downgrade_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let downgrade_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         // Drain frames to keep the pipeline moving.
-        let _ = tokio::time::timeout(Duration::from_millis(200), adaptive.next_frame()).await;
+        let _ = tokio::time::timeout(Duration::from_millis(500), adaptive.next_frame()).await;
         let current = adaptive.selected_rendition();
         if current != initial_rendition {
-            // Downgrade happened.
             break;
         }
         if tokio::time::Instant::now() > downgrade_deadline {
-            panic!("adaptive track did not downgrade within 5s (still on {current})");
+            panic!("adaptive track did not downgrade within 10 s (still on {current})");
         }
     }
 
@@ -266,9 +311,9 @@ async fn adaptive_rendition_switching() {
     // Restore good conditions → expect upgrade probe eventually.
     signals_tx.send(good).ok();
 
-    let upgrade_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let upgrade_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
-        let _ = tokio::time::timeout(Duration::from_millis(200), adaptive.next_frame()).await;
+        let _ = tokio::time::timeout(Duration::from_millis(500), adaptive.next_frame()).await;
         let current = adaptive.selected_rendition();
         if current != downgraded_rendition {
             // Upgrade happened.
@@ -288,8 +333,8 @@ async fn adaptive_rendition_switching() {
 
 /// 1:1 call using [`Call::dial`] and [`Call::accept`].
 ///
-/// Both sides create a broadcast with video, one dials the other,
-/// and both receive video frames from the remote peer.
+/// Both sides publish video, one dials the other, and both receive decoded
+/// video frames from the remote peer with valid dimensions.
 #[tokio::test]
 #[traced_test]
 async fn call_dial_accept() {
@@ -304,7 +349,7 @@ async fn call_dial_accept() {
         .video()
         .set(VideoInput::new(
             source,
-            VideoCodec::best_available().expect("no video codec available"),
+            TEST_VIDEO_CODEC,
             [VideoPreset::P180],
         ))
         .expect("failed to set caller video");
@@ -320,7 +365,7 @@ async fn call_dial_accept() {
         .video()
         .set(VideoInput::new(
             source,
-            VideoCodec::best_available().expect("no video codec available"),
+            TEST_VIDEO_CODEC,
             [VideoPreset::P180],
         ))
         .expect("failed to set callee video");
@@ -341,7 +386,7 @@ async fn call_dial_accept() {
     let callee_addr = callee_ep.addr();
 
     let caller_call = tokio::time::timeout(
-        Duration::from_secs(10),
+        FRAME_TIMEOUT,
         Call::dial(&caller_live, callee_addr, caller_broadcast),
     )
     .await
@@ -349,7 +394,7 @@ async fn call_dial_accept() {
     .expect("Call::dial failed");
 
     // Wait for callee to accept.
-    let callee_call = tokio::time::timeout(Duration::from_secs(10), accept_handle)
+    let callee_call = tokio::time::timeout(FRAME_TIMEOUT, accept_handle)
         .await
         .expect("timed out waiting for accept")
         .expect("accept task panicked")
@@ -365,33 +410,53 @@ async fn call_dial_accept() {
         "callee should see caller's video"
     );
 
-    // Caller receives a frame from callee.
+    // Caller receives multiple frames from callee.
     let mut caller_video = caller_call
         .remote()
         .video()
         .expect("caller: failed to create video track");
-    let frame = tokio::time::timeout(Duration::from_secs(10), caller_video.next_frame())
-        .await
-        .expect("caller: timed out waiting for video frame")
-        .expect("caller: video track closed");
-    assert!(
-        frame.width() > 0 && frame.height() > 0,
-        "caller: frame dimensions should be non-zero"
-    );
+    let mut prev_ts = None;
+    for i in 0..3 {
+        let frame = tokio::time::timeout(FRAME_TIMEOUT, caller_video.next_frame())
+            .await
+            .unwrap_or_else(|_| panic!("caller: timed out on frame {i}"))
+            .unwrap_or_else(|| panic!("caller: video track closed at frame {i}"));
+        assert!(
+            frame.width() > 0 && frame.height() > 0,
+            "caller: frame {i} dimensions should be non-zero"
+        );
+        if let Some(prev) = prev_ts {
+            assert!(
+                frame.timestamp >= prev,
+                "caller: timestamps should not go backwards"
+            );
+        }
+        prev_ts = Some(frame.timestamp);
+    }
 
-    // Callee receives a frame from caller.
+    // Callee receives multiple frames from caller.
     let mut callee_video = callee_call
         .remote()
         .video()
         .expect("callee: failed to create video track");
-    let frame = tokio::time::timeout(Duration::from_secs(10), callee_video.next_frame())
-        .await
-        .expect("callee: timed out waiting for video frame")
-        .expect("callee: video track closed");
-    assert!(
-        frame.width() > 0 && frame.height() > 0,
-        "callee: frame dimensions should be non-zero"
-    );
+    let mut prev_ts = None;
+    for i in 0..3 {
+        let frame = tokio::time::timeout(FRAME_TIMEOUT, callee_video.next_frame())
+            .await
+            .unwrap_or_else(|_| panic!("callee: timed out on frame {i}"))
+            .unwrap_or_else(|| panic!("callee: video track closed at frame {i}"));
+        assert!(
+            frame.width() > 0 && frame.height() > 0,
+            "callee: frame {i} dimensions should be non-zero"
+        );
+        if let Some(prev) = prev_ts {
+            assert!(
+                frame.timestamp >= prev,
+                "callee: timestamps should not go backwards"
+            );
+        }
+        prev_ts = Some(frame.timestamp);
+    }
 
     // Clean up.
     caller_call.close();

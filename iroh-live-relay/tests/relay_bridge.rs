@@ -175,7 +175,7 @@ async fn iroh_publish_iroh_subscribe() {
         .video()
         .set(VideoInput::new(
             source,
-            moq_media::codec::VideoCodec::best_available().expect("no codec"),
+            moq_media::codec::VideoCodec::H264,
             [moq_media::format::VideoPreset::P180],
         ))
         .expect("set video");
@@ -350,7 +350,7 @@ async fn pull_remote_broadcast_via_ticket() {
         .video()
         .set(VideoInput::new(
             source,
-            moq_media::codec::VideoCodec::best_available().expect("no codec"),
+            moq_media::codec::VideoCodec::H264,
             [moq_media::format::VideoPreset::P180],
         ))
         .expect("set video");
@@ -471,7 +471,7 @@ async fn iroh_publish_noq_subscribe() {
         .video()
         .set(VideoInput::new(
             source,
-            moq_media::codec::VideoCodec::best_available().expect("no codec"),
+            moq_media::codec::VideoCodec::H264,
             [moq_media::format::VideoPreset::P180],
         ))
         .expect("set video");
