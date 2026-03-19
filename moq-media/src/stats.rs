@@ -373,6 +373,10 @@ pub struct DecodeOpts {
     pub clock: Option<crate::playout::PlayoutClock>,
     /// Stats collectors for metrics and timeline.
     pub stats: Option<DecodeStats>,
+    /// Shared skip threshold in milliseconds. When the decoder falls behind
+    /// by more than this amount, non-keyframes are skipped until the next
+    /// keyframe to recover. `None` uses the default (500ms).
+    pub skip_threshold_ms: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
 }
 
 /// Optional parameters for encoder pipelines.

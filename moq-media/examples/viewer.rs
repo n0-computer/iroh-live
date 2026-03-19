@@ -483,6 +483,7 @@ impl Tile {
                             timing: self.timing_stats.clone(),
                             timeline: self.timeline.clone(),
                         }),
+                        skip_threshold_ms: None,
                     },
                 ) {
                     Ok(d) => d,

@@ -7,6 +7,10 @@
 
 use std::{
     future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -170,6 +174,7 @@ impl VideoDecoderPipeline {
                     opts.clock,
                     framerate,
                     opts.stats,
+                    opts.skip_threshold_ms,
                 ) {
                     error!("decoder failed: {err:#}");
                 }
@@ -452,6 +457,7 @@ fn decode_loop(
     clock: Option<PlayoutClock>,
     framerate: f64,
     stats: Option<crate::stats::DecodeStats>,
+    skip_threshold_ms: Option<Arc<AtomicU64>>,
 ) -> Result<()> {
     let mut waiting_for_keyframe = false;
     let mut last_send = Instant::now();
@@ -459,11 +465,12 @@ fn decode_loop(
     let mut frames_popped = 0u64;
     let mut frames_skipped = 0u64;
     let frame_interval = Duration::from_secs_f64(1.0 / framerate.max(1.0));
-    // Track wall-clock vs PTS progression to measure accumulated delay.
-    // If wall_elapsed grows faster than pts_elapsed, the subscriber is
-    // falling behind real-time. Baselines are set once (first decoded frame)
-    // and intentionally NOT reset during skip recovery, so the delay metric
-    // persistently reflects total accumulated lag including network delay.
+    // Track wall-clock vs PTS progression to measure decoder lag.
+    // When lag exceeds the skip threshold, non-keyframes are skipped
+    // until a keyframe arrives, then baselines reset so delay_ms
+    // reflects current state. The skip threshold is configurable at
+    // runtime via the shared atomic — higher values let delay_ms show
+    // sustained network latency before recovery kicks in.
     let mut stream_start_wall: Option<Instant> = None;
     let mut first_pts: Option<Duration> = None;
     let mut latest_pts = Duration::ZERO;
@@ -544,14 +551,16 @@ fn decode_loop(
             // Skip frames when the decoder can't keep up. If wall-clock
             // time has advanced significantly more than PTS, the decoder
             // is falling behind. Skip non-keyframe packets until the next
-            // keyframe, which lets us jump forward in the stream. The
-            // threshold (500ms) avoids triggering on normal jitter.
+            // keyframe, which lets us jump forward in the stream.
             if !waiting_for_keyframe {
+                let threshold_ms = skip_threshold_ms
+                    .as_ref()
+                    .map_or(500, |a| a.load(Ordering::Relaxed));
                 if let (Some(fp), Some(wall_start)) = (first_pts, stream_start_wall) {
                     let wall_elapsed = wall_start.elapsed();
                     let pts_elapsed = latest_pts.saturating_sub(fp);
                     let lag = wall_elapsed.saturating_sub(pts_elapsed);
-                    if lag > Duration::from_millis(500) {
+                    if lag > Duration::from_millis(threshold_ms) {
                         if packet.is_keyframe {
                             // Keyframe while skipping: reset ALL baselines so
                             // the lag measurement starts fresh from this point.
@@ -562,10 +571,12 @@ fn decode_loop(
                                     "decode_loop: skip complete, resuming at keyframe"
                                 );
                                 skip_active = false;
-                                // Keep wall/PTS baselines intact so delay_ms
-                                // reflects the total accumulated delay rather
-                                // than resetting after each skip. The playout
-                                // clock still resets for correct frame timing.
+                                // Reset wall/PTS baselines so delay_ms reflects
+                                // current lag from this point forward. Without
+                                // reset, delay accumulates permanently and never
+                                // recovers when network conditions improve.
+                                stream_start_wall = Some(Instant::now());
+                                first_pts = Some(packet.timestamp);
                                 latest_pts = packet.timestamp;
                                 playout.clear();
                                 playout.reset_clock();
@@ -1393,6 +1404,7 @@ mod tests {
             crate::stats::DecodeOpts {
                 clock: Some(clock.clone()),
                 stats: None,
+                skip_threshold_ms: None,
             },
         )
         .unwrap();

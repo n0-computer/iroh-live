@@ -133,7 +133,7 @@ impl DebugOverlay {
 
             // TIME section shows the timeline panel instead of metrics.
             if cat == StatCategory::Time {
-                let height = 150.0;
+                let height = 176.0;
                 y_cursor -= height;
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(video_rect.min.x, y_cursor),
@@ -144,6 +144,7 @@ impl DebugOverlay {
                     rect,
                     &stats.timeline,
                     &stats.net,
+                    &stats.timing,
                     &mut self.timeline_scroll,
                     &mut self.timeline_live,
                 );
@@ -623,9 +624,10 @@ const LATENCY_GRAPH_H: f32 = 36.0;
 const VIDEO_LANE_H: f32 = 20.0;
 const AUDIO_LANE_H: f32 = 16.0;
 const AV_SYNC_H: f32 = 20.0;
+const DELAY_STRIP_H: f32 = 26.0;
 const RTT_STRIP_H: f32 = 26.0;
 const AXIS_H: f32 = 14.0;
-// Total: 36+20+16+20+26+14 = 132px
+// Total: 36+20+16+20+26+26+14 = 158px
 
 const LATENCY_GOOD_MS: f32 = 100.0;
 const LATENCY_WARN_MS: f32 = 200.0;
@@ -668,6 +670,7 @@ fn paint_timeline_panel(
     rect: egui::Rect,
     timeline: &Timeline,
     net: &NetStats,
+    timing: &stats::TimingStats,
     scroll: &mut f32,
     live: &mut bool,
 ) {
@@ -951,8 +954,63 @@ fn paint_timeline_panel(
         }
     }
 
-    // ── Lane 5: RTT sparkline ───────────────────────────────────────
-    let rtt_y = rect.min.y + LATENCY_GRAPH_H + VIDEO_LANE_H + AUDIO_LANE_H + AV_SYNC_H;
+    // ── Lane 5: Delay sparkline ──────────────────────────────────────
+    let delay_y = rect.min.y + LATENCY_GRAPH_H + VIDEO_LANE_H + AUDIO_LANE_H + AV_SYNC_H;
+    let delay_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x, delay_y),
+        egui::vec2(rect.width(), DELAY_STRIP_H),
+    );
+    {
+        let hist = timing.delay_ms.history();
+        let vis: Vec<_> = hist
+            .iter()
+            .filter(|(t, _)| *t >= t_left && *t <= t_right)
+            .collect();
+        if vis.len() >= 2 {
+            let max_delay = vis.iter().map(|(_, v)| *v).fold(0.0f64, f64::max).max(50.0);
+            let points: Vec<egui::Pos2> = vis
+                .iter()
+                .map(|(t, v)| {
+                    let x = time_to_x(*t);
+                    let y =
+                        delay_rect.max.y - (*v / max_delay) as f32 * (delay_rect.height() - 4.0);
+                    egui::pos2(x, y)
+                })
+                .collect();
+            for pair in points.windows(2) {
+                let color = if pair[1].y > delay_rect.max.y - 4.0 {
+                    COLOR_GREEN
+                } else {
+                    let v = (delay_rect.max.y - pair[1].y) / (delay_rect.height() - 4.0)
+                        * max_delay as f32;
+                    if v < 100.0 {
+                        COLOR_GREEN
+                    } else if v < 300.0 {
+                        COLOR_YELLOW
+                    } else {
+                        COLOR_RED
+                    }
+                };
+                painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5, color));
+            }
+        }
+        let g = painter.layout_no_wrap(
+            format!("Delay {:.0}ms", timing.delay_ms.current()),
+            font.clone(),
+            if timing.delay_ms.current() < 100.0 {
+                COLOR_GREEN
+            } else if timing.delay_ms.current() < 300.0 {
+                COLOR_YELLOW
+            } else {
+                COLOR_RED
+            },
+        );
+        painter.galley(delay_rect.min + egui::vec2(4.0, 2.0), g, COLOR_GREEN);
+    }
+
+    // ── Lane 6: RTT sparkline ───────────────────────────────────────
+    let rtt_y =
+        rect.min.y + LATENCY_GRAPH_H + VIDEO_LANE_H + AUDIO_LANE_H + AV_SYNC_H + DELAY_STRIP_H;
     let rtt_rect = egui::Rect::from_min_size(
         egui::pos2(rect.min.x, rtt_y),
         egui::vec2(rect.width(), RTT_STRIP_H),
