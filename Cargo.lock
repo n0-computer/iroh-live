@@ -582,19 +582,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-compat"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1ba85bc55464dcbf728b56d97e119d673f4cf9062be330a9a26f3acf504a590"
-dependencies = [
- "futures-core",
- "futures-io",
- "once_cell",
- "pin-project-lite",
- "tokio",
-]
-
-[[package]]
 name = "async-compression"
 version = "0.4.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2055,7 +2042,7 @@ dependencies = [
 [[package]]
 name = "conducer"
 version = "0.3.1"
-source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#93bf932be9ff65c246ebdb35fb506f4860ebbaab"
+source = "git+https://github.com/Frando/moq.git?branch=dev#abfc7f0243d70b6f128e99f8a7be84be531bc331"
 
 [[package]]
 name = "console"
@@ -4896,8 +4883,8 @@ dependencies = [
 
 [[package]]
 name = "hang"
-version = "0.15.2"
-source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#93bf932be9ff65c246ebdb35fb506f4860ebbaab"
+version = "0.15.3"
+source = "git+https://github.com/Frando/moq.git?branch=dev#abfc7f0243d70b6f128e99f8a7be84be531bc331"
 dependencies = [
  "buf-list",
  "bytes",
@@ -5310,7 +5297,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.58.0",
 ]
 
 [[package]]
@@ -5665,59 +5652,6 @@ dependencies = [
 
 [[package]]
 name = "iroh"
-version = "0.96.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5236da4d5681f317ec393c8fe2b7e3d360d31c6bb40383991d0b7429ca5ad117"
-dependencies = [
- "backon",
- "bytes",
- "cfg_aliases 0.2.1",
- "data-encoding",
- "derive_more",
- "ed25519-dalek",
- "futures-util",
- "getrandom 0.3.4",
- "hickory-resolver",
- "http",
- "igd-next",
- "iroh-base 0.96.1",
- "iroh-metrics",
- "iroh-quinn",
- "iroh-quinn-proto",
- "iroh-quinn-udp",
- "iroh-relay 0.96.1",
- "n0-error",
- "n0-future",
- "n0-watcher",
- "netdev",
- "netwatch 0.14.0",
- "papaya",
- "pin-project",
- "pkarr",
- "pkcs8 0.11.0-rc.11",
- "portmapper 0.14.0",
- "rand 0.9.2",
- "reqwest 0.12.28",
- "rustc-hash 2.1.1",
- "rustls",
- "rustls-pki-types",
- "rustls-webpki",
- "serde",
- "smallvec",
- "strum 0.27.2",
- "sync_wrapper",
- "time",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tracing",
- "url",
- "wasm-bindgen-futures",
- "webpki-roots",
-]
-
-[[package]]
-name = "iroh"
 version = "0.97.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "feb56e7e4b0ec7fba7efa6a236b016a52b5d927d50244aceb9e20566159b1a32"
@@ -5733,13 +5667,13 @@ dependencies = [
  "hickory-resolver",
  "http",
  "ipnet",
- "iroh-base 0.97.0",
+ "iroh-base",
  "iroh-metrics",
- "iroh-relay 0.97.0",
+ "iroh-relay",
  "n0-error",
  "n0-future",
  "n0-watcher",
- "netwatch 0.15.0",
+ "netwatch",
  "noq",
  "noq-proto",
  "noq-udp",
@@ -5748,7 +5682,7 @@ dependencies = [
  "pkarr",
  "pkcs8 0.11.0-rc.11",
  "portable-atomic",
- "portmapper 0.15.0",
+ "portmapper",
  "rand 0.9.2",
  "reqwest 0.12.28",
  "rustc-hash 2.1.1",
@@ -5767,26 +5701,6 @@ dependencies = [
  "url",
  "wasm-bindgen-futures",
  "webpki-roots",
-]
-
-[[package]]
-name = "iroh-base"
-version = "0.96.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20c99d836a1c99e037e98d1bf3ef209c3a4df97555a00ce9510eb78eccdf5567"
-dependencies = [
- "curve25519-dalek",
- "data-encoding",
- "derive_more",
- "digest 0.11.0-rc.10",
- "ed25519-dalek",
- "n0-error",
- "rand_core 0.9.5",
- "serde",
- "sha2 0.11.0-rc.2",
- "url",
- "zeroize",
- "zeroize_derive",
 ]
 
 [[package]]
@@ -5825,8 +5739,8 @@ dependencies = [
  "futures-util",
  "hex",
  "indexmap 2.13.0",
- "iroh 0.97.0",
- "iroh-base 0.97.0",
+ "iroh",
+ "iroh-base",
  "iroh-metrics",
  "irpc",
  "n0-error",
@@ -5852,7 +5766,7 @@ dependencies = [
  "egui-wgpu",
  "hang",
  "image",
- "iroh 0.97.0",
+ "iroh",
  "iroh-gossip",
  "iroh-moq",
  "iroh-smol-kv",
@@ -5911,7 +5825,7 @@ dependencies = [
  "dirs",
  "http",
  "include_dir",
- "iroh 0.97.0",
+ "iroh",
  "iroh-live",
  "iroh-moq",
  "moq-lite",
@@ -5960,7 +5874,7 @@ dependencies = [
 name = "iroh-moq"
 version = "0.1.0"
 dependencies = [
- "iroh 0.97.0",
+ "iroh",
  "moq-lite",
  "n0-error",
  "n0-future",
@@ -5968,114 +5882,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
- "web-transport-iroh 0.2.2 (git+https://github.com/n0-computer/web-transport-iroh.git?branch=main)",
-]
-
-[[package]]
-name = "iroh-quinn"
-version = "0.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "034ed21f34c657a123d39525d948c885aacba59508805e4dd67d71f022e7151b"
-dependencies = [
- "bytes",
- "cfg_aliases 0.2.1",
- "iroh-quinn-proto",
- "iroh-quinn-udp",
- "pin-project-lite",
- "rustc-hash 2.1.1",
- "rustls",
- "socket2 0.6.3",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tracing",
- "web-time",
-]
-
-[[package]]
-name = "iroh-quinn-proto"
-version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0de99ad8adc878ee0e68509ad256152ce23b8bbe45f5539d04e179630aca40a9"
-dependencies = [
- "bytes",
- "derive_more",
- "enum-assoc",
- "fastbloom",
- "getrandom 0.3.4",
- "identity-hash",
- "lru-slab",
- "rand 0.9.2",
- "ring",
- "rustc-hash 2.1.1",
- "rustls",
- "rustls-pki-types",
- "slab",
- "sorted-index-buffer",
- "thiserror 2.0.18",
- "tinyvec",
- "tracing",
- "web-time",
-]
-
-[[package]]
-name = "iroh-quinn-udp"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f981dadd5a072a9e0efcd24bdcc388e570073f7e51b33505ceb1ef4668c80c86"
-dependencies = [
- "cfg_aliases 0.2.1",
- "libc",
- "socket2 0.6.3",
- "tracing",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "iroh-relay"
-version = "0.96.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd2b63e654b9dec799a73372cdc79b529ca6c7248c0c8de7da78a02e3a46f03c"
-dependencies = [
- "blake3",
- "bytes",
- "cfg_aliases 0.2.1",
- "data-encoding",
- "derive_more",
- "getrandom 0.3.4",
- "hickory-resolver",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "iroh-base 0.96.1",
- "iroh-metrics",
- "iroh-quinn",
- "iroh-quinn-proto",
- "lru",
- "n0-error",
- "n0-future",
- "num_enum",
- "pin-project",
- "pkarr",
- "postcard",
- "rand 0.9.2",
- "reqwest 0.12.28",
- "rustls",
- "rustls-pki-types",
- "serde",
- "serde_bytes",
- "strum 0.27.2",
- "tokio",
- "tokio-rustls",
- "tokio-util",
- "tokio-websockets",
- "tracing",
- "url",
- "vergen-gitcl",
- "webpki-roots",
- "ws_stream_wasm",
- "z32",
+ "web-transport-iroh",
 ]
 
 [[package]]
@@ -6095,7 +5902,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "iroh-base 0.97.0",
+ "iroh-base",
  "iroh-metrics",
  "lru",
  "n0-error",
@@ -6133,7 +5940,7 @@ dependencies = [
  "bytes",
  "ed25519-dalek",
  "hex",
- "iroh 0.97.0",
+ "iroh",
  "iroh-gossip",
  "irpc",
  "n0-error",
@@ -6156,7 +5963,7 @@ checksum = "ab64bac4bb573b9cfd2142bd2876ed65ca792efbc4398361a4ee51a0f9afbed6"
 dependencies = [
  "data-encoding",
  "derive_more",
- "iroh-base 0.97.0",
+ "iroh-base",
  "n0-error",
  "postcard",
  "serde",
@@ -6985,8 +6792,8 @@ dependencies = [
 
 [[package]]
 name = "moq-lite"
-version = "0.15.3"
-source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#93bf932be9ff65c246ebdb35fb506f4860ebbaab"
+version = "0.15.4"
+source = "git+https://github.com/Frando/moq.git?branch=dev#abfc7f0243d70b6f128e99f8a7be84be531bc331"
 dependencies = [
  "bytes",
  "conducer",
@@ -7085,7 +6892,7 @@ dependencies = [
 [[package]]
 name = "moq-msf"
 version = "0.1.1"
-source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#93bf932be9ff65c246ebdb35fb506f4860ebbaab"
+source = "git+https://github.com/Frando/moq.git?branch=dev#abfc7f0243d70b6f128e99f8a7be84be531bc331"
 dependencies = [
  "serde",
  "serde_json",
@@ -7095,7 +6902,7 @@ dependencies = [
 [[package]]
 name = "moq-mux"
 version = "0.3.2"
-source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#93bf932be9ff65c246ebdb35fb506f4860ebbaab"
+source = "git+https://github.com/Frando/moq.git?branch=dev#abfc7f0243d70b6f128e99f8a7be84be531bc331"
 dependencies = [
  "anyhow",
  "base64",
@@ -7119,8 +6926,8 @@ dependencies = [
 
 [[package]]
 name = "moq-native"
-version = "0.13.5"
-source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#93bf932be9ff65c246ebdb35fb506f4860ebbaab"
+version = "0.13.6"
+source = "git+https://github.com/Frando/moq.git?branch=dev#abfc7f0243d70b6f128e99f8a7be84be531bc331"
 dependencies = [
  "anyhow",
  "clap",
@@ -7145,15 +6952,15 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
- "web-transport-iroh 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "web-transport-iroh",
  "web-transport-noq",
  "web-transport-proto 0.5.5",
 ]
 
 [[package]]
 name = "moq-relay"
-version = "0.10.9"
-source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#93bf932be9ff65c246ebdb35fb506f4860ebbaab"
+version = "0.10.10"
+source = "git+https://github.com/Frando/moq.git?branch=dev#abfc7f0243d70b6f128e99f8a7be84be531bc331"
 dependencies = [
  "anyhow",
  "axum",
@@ -7179,8 +6986,8 @@ dependencies = [
 
 [[package]]
 name = "moq-token"
-version = "0.5.10"
-source = "git+https://github.com/Frando/moq.git?branch=feat%2Frelay-lib#93bf932be9ff65c246ebdb35fb506f4860ebbaab"
+version = "0.5.11"
+source = "git+https://github.com/Frando/moq.git?branch=dev#abfc7f0243d70b6f128e99f8a7be84be531bc331"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
@@ -7435,7 +7242,7 @@ dependencies = [
  "libc",
  "mac-addr",
  "netlink-packet-core",
- "netlink-packet-route 0.29.0",
+ "netlink-packet-route",
  "netlink-sys",
  "objc2-core-foundation",
  "objc2-system-configuration",
@@ -7451,18 +7258,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3463cbb78394cb0141e2c926b93fc2197e473394b761986eca3b9da2c63ae0f4"
 dependencies = [
  "paste",
-]
-
-[[package]]
-name = "netlink-packet-route"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ce3636fa715e988114552619582b530481fd5ef176a1e5c1bf024077c2c9445"
-dependencies = [
- "bitflags 2.11.0",
- "libc",
- "log",
- "netlink-packet-core",
 ]
 
 [[package]]
@@ -7506,42 +7301,6 @@ dependencies = [
 
 [[package]]
 name = "netwatch"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "454b8c0759b2097581f25ed5180b4a1d14c324fde6d0734932a288e044d06232"
-dependencies = [
- "atomic-waker",
- "bytes",
- "cfg_aliases 0.2.1",
- "derive_more",
- "iroh-quinn-udp",
- "js-sys",
- "libc",
- "n0-error",
- "n0-future",
- "n0-watcher",
- "netdev",
- "netlink-packet-core",
- "netlink-packet-route 0.28.0",
- "netlink-proto",
- "netlink-sys",
- "objc2-core-foundation",
- "objc2-system-configuration",
- "pin-project-lite",
- "serde",
- "socket2 0.6.3",
- "time",
- "tokio",
- "tokio-util",
- "tracing",
- "web-sys",
- "windows 0.62.2",
- "windows-result 0.4.1",
- "wmi",
-]
-
-[[package]]
-name = "netwatch"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b1b27babe89ef9f2237bc6c028bea24fa84163a1b6f8f17ff93573ebd7d861f"
@@ -7557,7 +7316,7 @@ dependencies = [
  "n0-watcher",
  "netdev",
  "netlink-packet-core",
- "netlink-packet-route 0.29.0",
+ "netlink-packet-route",
  "netlink-proto",
  "netlink-sys",
  "noq-udp",
@@ -8599,7 +8358,7 @@ dependencies = [
  "glow 0.16.0",
  "glutin",
  "glutin-winit",
- "iroh 0.97.0",
+ "iroh",
  "iroh-live",
  "moq-media",
  "raw-window-handle",
@@ -8927,7 +8686,7 @@ dependencies = [
  "glutin",
  "glutin-winit",
  "gpio-cdev",
- "iroh 0.97.0",
+ "iroh",
  "iroh-live",
  "khronos-egl",
  "libc",
@@ -9065,29 +8824,17 @@ version = "5.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f950360d31be432c0c9467fba5024a94f55128e7f32bc9d32db140369f24c77"
 dependencies = [
- "async-compat",
  "base32",
  "bytes",
  "cfg_aliases 0.2.1",
  "document-features",
- "dyn-clone",
  "ed25519-dalek",
- "futures-buffered",
- "futures-lite",
  "getrandom 0.4.2",
- "log",
- "lru",
  "ntimestamp",
- "reqwest 0.13.2",
  "self_cell",
  "serde",
- "sha1_smol",
  "simple-dns",
  "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
- "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -9217,36 +8964,6 @@ dependencies = [
 
 [[package]]
 name = "portmapper"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d2a8825353ace3285138da3378b1e21860d60351942f7aa3b99b13b41f80318"
-dependencies = [
- "base64",
- "bytes",
- "derive_more",
- "futures-lite",
- "futures-util",
- "hyper-util",
- "igd-next",
- "iroh-metrics",
- "libc",
- "n0-error",
- "netwatch 0.14.0",
- "num_enum",
- "rand 0.9.2",
- "serde",
- "smallvec",
- "socket2 0.6.3",
- "time",
- "tokio",
- "tokio-util",
- "tower-layer",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "portmapper"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "74748bc706fa6b6aebac6bbe0bbe0de806b384cb5c557ea974f771360a4e3858"
@@ -9261,7 +8978,7 @@ dependencies = [
  "iroh-metrics",
  "libc",
  "n0-error",
- "netwatch 0.15.0",
+ "netwatch",
  "num_enum",
  "rand 0.9.2",
  "serde",
@@ -11005,12 +10722,6 @@ dependencies = [
  "cpufeatures 0.2.17",
  "digest 0.10.7",
 ]
-
-[[package]]
-name = "sha1_smol"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
 
 [[package]]
 name = "sha2"
@@ -13345,31 +13056,12 @@ dependencies = [
 [[package]]
 name = "web-transport-iroh"
 version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e7c7c00efe0ba6bdc42cabe47646e8bc4df96d45d19892f92cb154f81b943a8"
-dependencies = [
- "bytes",
- "derive_more",
- "http",
- "iroh 0.96.1",
- "n0-error",
- "n0-future",
- "tokio",
- "tracing",
- "url",
- "web-transport-proto 0.5.5",
- "web-transport-trait",
-]
-
-[[package]]
-name = "web-transport-iroh"
-version = "0.2.2"
 source = "git+https://github.com/n0-computer/web-transport-iroh.git?branch=main#ebbbf863d975d38c6e4e262d2f88617f5157aa01"
 dependencies = [
  "bytes",
  "derive_more",
  "http",
- "iroh 0.97.0",
+ "iroh",
  "n0-error",
  "n0-future",
  "tokio",
