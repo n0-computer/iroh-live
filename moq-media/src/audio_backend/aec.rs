@@ -318,9 +318,11 @@ mod state {
                 self.capture_buf_r.push_back(buf[i * 2 + 1]);
             }
 
-            // 4. Process complete 10ms capture frames.
-            self.out_buf_l.clear();
-            self.out_buf_r.clear();
+            // 4. Process complete 10ms capture frames through sonora.
+            // out_buf is NOT cleared here — residual processed samples from the
+            // previous callback carry over. Only the frames consumed in step 5
+            // are drained (via pop_front). This prevents sample loss when the
+            // callback buffer size doesn't divide evenly by the 10ms frame size.
 
             while self.capture_buf_l.len() >= self.frame_size {
                 for i in 0..self.frame_size {

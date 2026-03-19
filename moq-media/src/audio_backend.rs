@@ -289,6 +289,9 @@ pub struct OutputStream {
     handle: OutputHandle,
     #[debug(skip)]
     _drop_guard: Arc<StreamDropGuard>,
+    /// Keeps the driver thread alive as long as this stream exists.
+    #[debug(skip)]
+    _driver_keepalive: mpsc::Sender<DriverMessage>,
 }
 
 /// Lightweight clonable handle for controlling an [`OutputStream`].
@@ -432,6 +435,9 @@ pub struct InputStream {
     stereo_temp: Vec<f32>,
     #[debug(skip)]
     _drop_guard: Arc<StreamDropGuard>,
+    /// Keeps the driver thread alive as long as this stream exists.
+    #[debug(skip)]
+    _driver_keepalive: mpsc::Sender<DriverMessage>,
 }
 
 impl AudioSource for InputStream {
@@ -449,10 +455,7 @@ impl AudioSource for InputStream {
                 self.stereo_temp.resize(stereo_len, 0.0);
             }
             let stereo_buf = &mut self.stereo_temp[..stereo_len];
-            match handle_read_status(
-                cons.read_interleaved(stereo_buf),
-                &mut self.inactive_count,
-            ) {
+            match handle_read_status(cons.read_interleaved(stereo_buf), &mut self.inactive_count) {
                 Some(()) => {
                     for i in 0..buf.len() {
                         buf[i] = (stereo_buf[i * 2] + stereo_buf[i * 2 + 1]) * 0.5;
@@ -631,7 +634,7 @@ enum DriverMessage {
 // Device enumeration
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Direction {
     Input,
     Output,
@@ -694,6 +697,90 @@ fn resolve_device(
         Direction::Input => host.default_input_device(),
         Direction::Output => host.default_output_device(),
     }
+}
+
+/// Preferred sample rates in priority order.
+///
+/// 48 kHz is ideal because Opus and our internal pipeline use it natively,
+/// avoiding resampling. 44.1 kHz is the most common fallback (CD-quality).
+const PREFERRED_RATES: &[u32] = &[48_000, 44_100];
+
+/// Negotiates the best stream config for a device.
+///
+/// Prefers 48 kHz with f32 samples (avoiding resampling in the pipeline),
+/// falls back to 44.1 kHz, then to the highest supported rate. Returns the
+/// chosen config and the device channel count. The returned `StreamConfig`
+/// always requests f32 — cpal handles format conversion transparently.
+fn negotiate_stream_config(
+    device: &cpal::Device,
+    direction: Direction,
+) -> Result<(cpal::StreamConfig, u16)> {
+    let supported_configs: Vec<cpal::SupportedStreamConfigRange> = match direction {
+        Direction::Input => device
+            .supported_input_configs()
+            .context("failed to enumerate input configs")?
+            .collect(),
+        Direction::Output => device
+            .supported_output_configs()
+            .context("failed to enumerate output configs")?
+            .collect(),
+    };
+
+    if supported_configs.is_empty() {
+        anyhow::bail!("device reports no supported configurations");
+    }
+
+    debug!(
+        count = supported_configs.len(),
+        ?direction,
+        "available stream configs"
+    );
+    for (i, cfg) in supported_configs.iter().enumerate() {
+        debug!(
+            idx = i,
+            channels = cfg.channels(),
+            min_rate = cfg.min_sample_rate(),
+            max_rate = cfg.max_sample_rate(),
+            "  config range"
+        );
+    }
+
+    // Try each preferred rate in order. Accept the first config range
+    // that contains the rate.
+    for &rate in PREFERRED_RATES {
+        for cfg in &supported_configs {
+            if let Some(matched) = (*cfg).try_with_sample_rate(rate) {
+                let channels = matched.channels();
+                let stream_config: cpal::StreamConfig = matched.into();
+                debug!(
+                    sample_rate = rate,
+                    channels,
+                    ?direction,
+                    "negotiated preferred sample rate"
+                );
+                return Ok((stream_config, channels));
+            }
+        }
+    }
+
+    // No preferred rate available. Pick the highest supported rate across
+    // all config ranges — higher is generally better for resampling quality.
+    let best = supported_configs
+        .iter()
+        .max_by_key(|cfg| cfg.max_sample_rate())
+        .expect("non-empty checked above");
+
+    let rate = best.max_sample_rate();
+    let matched = (*best).with_max_sample_rate();
+    let channels = matched.channels();
+    let stream_config: cpal::StreamConfig = matched.into();
+    info!(
+        sample_rate = rate,
+        channels,
+        ?direction,
+        "using highest available sample rate (preferred rates unavailable)"
+    );
+    Ok((stream_config, channels))
 }
 
 // ---------------------------------------------------------------------------
@@ -1011,6 +1098,10 @@ struct AudioDriver {
     aec_processor: AecProcessor,
     /// AEC enabled flag shared with callbacks.
     aec_enabled: Arc<AtomicBool>,
+    /// Actual output device sample rate (set after stream negotiation).
+    output_device_rate: u32,
+    /// Actual input device sample rate (set after stream negotiation).
+    input_device_rate: u32,
     /// Backoff for restart attempts.
     restart_backoff: Duration,
     next_restart_allowed: Instant,
@@ -1083,6 +1174,8 @@ impl AudioDriver {
             error_tx,
             aec_processor,
             aec_enabled,
+            output_device_rate: INTERNAL_RATE,
+            input_device_rate: INTERNAL_RATE,
             restart_backoff: Duration::from_millis(500),
             next_restart_allowed: Instant::now(),
             underrun_count: 0,
@@ -1235,17 +1328,16 @@ impl AudioDriver {
     fn start_cpal_streams(&mut self) -> Result<()> {
         let host = cpal::default_host();
 
-        // Resolve output device.
+        // Resolve output device and negotiate sample rate.
         let output_device = resolve_device(&host, &self.current_output_device, Direction::Output)
             .context("no output audio device available")?;
-        let output_config = output_device
-            .default_output_config()
-            .context("no default output config")?;
-        let output_channels = output_config.channels();
-        let output_stream_config: cpal::StreamConfig = output_config.into();
+        let (output_stream_config, output_channels) =
+            negotiate_stream_config(&output_device, Direction::Output)
+                .context("failed to negotiate output stream config")?;
+        let output_device_rate = output_stream_config.sample_rate;
 
         info!(
-            sample_rate = output_stream_config.sample_rate,
+            sample_rate = output_device_rate,
             channels = output_channels,
             "opening output device"
         );
@@ -1257,7 +1349,7 @@ impl AudioDriver {
         // Rebuild existing output streams: create fresh resampling channels,
         // send new consumers to the callback, swap producers into handles.
         for tracked in &self.tracked_outputs {
-            let (prod, cons) = create_output_channel(tracked.format);
+            let (prod, cons) = create_output_channel(tracked.format, self.output_device_rate);
             *tracked.prod.lock().expect("poisoned") = prod;
             output_cmd_tx
                 .send(OutputCmd::Add {
@@ -1311,14 +1403,13 @@ impl AudioDriver {
             let input_device = resolve_device(&host, &self.current_input_device, Direction::Input);
 
             if let Some(input_device) = input_device {
-                let input_config = input_device
-                    .default_input_config()
-                    .context("no default input config")?;
-                let input_channels = input_config.channels();
-                let input_stream_config: cpal::StreamConfig = input_config.into();
+                let (input_stream_config, input_channels) =
+                    negotiate_stream_config(&input_device, Direction::Input)
+                        .context("failed to negotiate input stream config")?;
+                let input_device_rate = input_stream_config.sample_rate;
 
                 info!(
-                    sample_rate = input_stream_config.sample_rate,
+                    sample_rate = input_device_rate,
                     channels = input_channels,
                     "opening input device"
                 );
@@ -1327,7 +1418,7 @@ impl AudioDriver {
 
                 // Rebuild existing input streams.
                 for tracked in &self.tracked_inputs {
-                    let (prod, cons) = create_input_channel(tracked.format);
+                    let (prod, cons) = create_input_channel(tracked.format, self.input_device_rate);
                     *tracked.cons.lock().expect("poisoned") = cons;
                     input_cmd_tx
                         .send(InputCmd::Add {
@@ -1370,6 +1461,7 @@ impl AudioDriver {
                     .context("failed to build input stream")?;
                 stream.play().context("failed to play input stream")?;
 
+                self.input_device_rate = input_device_rate;
                 (Some(input_cmd_tx), Some(stream))
             } else {
                 debug!("no input device available, skipping input stream");
@@ -1381,6 +1473,7 @@ impl AudioDriver {
         self._input_stream = input_stream;
         self.output_cmd_tx = Some(output_cmd_tx);
         self.input_cmd_tx = input_cmd_tx;
+        self.output_device_rate = output_device_rate;
 
         Ok(())
     }
@@ -1389,7 +1482,7 @@ impl AudioDriver {
         let stream_id = self.next_stream_id;
         self.next_stream_id += 1;
 
-        let (prod, cons) = create_output_channel(format);
+        let (prod, cons) = create_output_channel(format, self.output_device_rate);
         let prod = Arc::new(std::sync::Mutex::new(prod));
         let paused = Arc::new(AtomicBool::new(false));
         let fade_state = Arc::new(AtomicU32::new(FADE_PLAYING));
@@ -1421,7 +1514,14 @@ impl AudioDriver {
             tx: self.tx.clone(),
         });
 
-        info!(stream_id, ?format, "created output stream");
+        let driver_keepalive = self.tx.upgrade().context("driver channel closed")?;
+
+        info!(
+            stream_id,
+            ?format,
+            device_rate = self.output_device_rate,
+            "created output stream"
+        );
 
         Ok(OutputStream {
             prod,
@@ -1432,6 +1532,7 @@ impl AudioDriver {
                 peak_state,
             },
             _drop_guard: drop_guard,
+            _driver_keepalive: driver_keepalive,
         })
     }
 
@@ -1439,7 +1540,7 @@ impl AudioDriver {
         let stream_id = self.next_stream_id;
         self.next_stream_id += 1;
 
-        let (prod, cons) = create_input_channel(format);
+        let (prod, cons) = create_input_channel(format, self.input_device_rate);
         let cons = Arc::new(std::sync::Mutex::new(cons));
 
         // Send producer to the input callback.
@@ -1464,7 +1565,14 @@ impl AudioDriver {
             tx: self.tx.clone(),
         });
 
-        info!(stream_id, ?format, "created input stream");
+        let driver_keepalive = self.tx.upgrade().context("driver channel closed")?;
+
+        info!(
+            stream_id,
+            ?format,
+            device_rate = self.input_device_rate,
+            "created input stream"
+        );
 
         Ok(InputStream {
             cons,
@@ -1472,6 +1580,7 @@ impl AudioDriver {
             inactive_count: 0,
             stereo_temp: Vec::new(),
             _drop_guard: drop_guard,
+            _driver_keepalive: driver_keepalive,
         })
     }
 
@@ -1546,9 +1655,14 @@ impl AudioDriver {
 // Resampling channel creation
 // ---------------------------------------------------------------------------
 
-/// Creates a resampling channel for an output stream (caller rate → 48 kHz internal).
+/// Creates a resampling channel for an output stream (caller rate → device rate).
+///
+/// The caller (e.g., Opus decoder at 48 kHz) pushes samples at `format.sample_rate`.
+/// The cpal output callback reads at `device_rate`. The resampling channel handles
+/// the rate conversion transparently.
 fn create_output_channel(
     format: AudioFormat,
+    device_rate: u32,
 ) -> (ResamplingProd<f32, INTERNAL_CHANNELS>, ResamplingCons<f32>) {
     let num_channels = NonZeroUsize::new(INTERNAL_CHANNELS).unwrap();
     let config = ResamplingChannelConfig {
@@ -1561,14 +1675,18 @@ fn create_output_channel(
     resampling_channel::<f32, INTERNAL_CHANNELS>(
         num_channels,
         format.sample_rate,
-        INTERNAL_RATE,
+        device_rate,
         config,
     )
 }
 
-/// Creates a resampling channel for an input stream (48 kHz internal → caller rate).
+/// Creates a resampling channel for an input stream (device rate → caller rate).
+///
+/// The cpal input callback pushes samples at `device_rate`. The caller (e.g.,
+/// Opus encoder expecting 48 kHz) reads at `format.sample_rate`.
 fn create_input_channel(
     format: AudioFormat,
+    device_rate: u32,
 ) -> (ResamplingProd<f32, INTERNAL_CHANNELS>, ResamplingCons<f32>) {
     let num_channels = NonZeroUsize::new(INTERNAL_CHANNELS).unwrap();
     let config = ResamplingChannelConfig {
@@ -1580,7 +1698,7 @@ fn create_input_channel(
     };
     resampling_channel::<f32, INTERNAL_CHANNELS>(
         num_channels,
-        INTERNAL_RATE,
+        device_rate,
         format.sample_rate,
         config,
     )
@@ -1704,7 +1822,7 @@ mod tests {
         Arc<AtomicU32>,
         Arc<PeakState>,
     ) {
-        let (prod, cons) = create_output_channel(AudioFormat::stereo_48k());
+        let (prod, cons) = create_output_channel(AudioFormat::stereo_48k(), INTERNAL_RATE);
         let fade_state = Arc::new(AtomicU32::new(FADE_PLAYING));
         let peak_state = Arc::new(PeakState::new());
         (prod, cons, fade_state, peak_state)
@@ -1760,7 +1878,10 @@ mod tests {
         let data = pump_output(&mut state, &mut prod, 0.5, 40);
 
         let non_zero = data.iter().any(|&s| s.abs() > 0.01);
-        assert!(non_zero, "output should contain non-zero samples after priming");
+        assert!(
+            non_zero,
+            "output should contain non-zero samples after priming"
+        );
     }
 
     #[test]
@@ -1811,10 +1932,20 @@ mod tests {
         let (mut prod_b, cons_b, fade_b, peak_b) = make_output_stream();
 
         cmd_tx
-            .send(OutputCmd::Add { stream_id: 1, cons: cons_a, fade_state: fade_a, peak_state: peak_a })
+            .send(OutputCmd::Add {
+                stream_id: 1,
+                cons: cons_a,
+                fade_state: fade_a,
+                peak_state: peak_a,
+            })
             .unwrap();
         cmd_tx
-            .send(OutputCmd::Add { stream_id: 2, cons: cons_b, fade_state: fade_b, peak_state: peak_b })
+            .send(OutputCmd::Add {
+                stream_id: 2,
+                cons: cons_b,
+                fade_state: fade_b,
+                peak_state: peak_b,
+            })
             .unwrap();
 
         let mut data = vec![0.0f32; 1024];
@@ -1825,7 +1956,7 @@ mod tests {
         }
 
         assert!(
-            data.iter().all(|&s| s <= 1.0 && s >= -1.0),
+            data.iter().all(|&s| (-1.0..=1.0).contains(&s)),
             "output must be clamped to [-1.0, 1.0]"
         );
     }
@@ -2000,10 +2131,7 @@ mod tests {
             let _ = peak_clone.smoothed_normalized();
         }
         let norm = peak_clone.smoothed_normalized();
-        assert!(
-            norm > 0.0,
-            "peak should be non-zero after signal: {norm}"
-        );
+        assert!(norm > 0.0, "peak should be non-zero after signal: {norm}");
     }
 
     #[test]
@@ -2051,7 +2179,8 @@ mod tests {
             .unwrap();
 
         // Add an input stream to capture AEC output.
-        let (input_prod, _input_cons) = create_input_channel(AudioFormat::stereo_48k());
+        let (input_prod, _input_cons) =
+            create_input_channel(AudioFormat::stereo_48k(), INTERNAL_RATE);
         input_cmd_tx
             .send(InputCmd::Add {
                 stream_id: 1,
@@ -2108,7 +2237,7 @@ mod tests {
             stereo_buf: vec![0.0f32; MAX_MIX_FRAMES * 2],
         };
 
-        let (prod, _cons) = create_input_channel(AudioFormat::stereo_48k());
+        let (prod, _cons) = create_input_channel(AudioFormat::stereo_48k(), INTERNAL_RATE);
         input_cmd_tx
             .send(InputCmd::Add {
                 stream_id: 1,
