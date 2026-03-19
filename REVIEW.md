@@ -56,8 +56,8 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 
 ### Audio Backend
 
-- [ ] **AB1**: ~30 `.unwrap()` calls in `audio_backend.rs` — should propagate `Result` when no audio device present
-- [ ] **AB2**: `.expect("poisoned")` on every mutex lock in `OutputStream` — Firewheel callbacks could panic and poison them
+- [x] **AB1**: ~30 `.unwrap()` calls — reduced to ~3 in production code (infallible `NonZeroUsize::new(2)`), rest in tests
+- [x] **AB2**: Firewheel removed; `OutputStream` mutex is now uncontended (single-writer, swapped only on device switch)
 
 ### Transport
 
@@ -72,18 +72,18 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 
 - [ ] **CC1**: `SharedVideoSource` park/unpark race — thread can hang if broadcast drops while parked (`publish.rs:737-859`)
 - [ ] **CC2**: `PlayoutClock` mutex acquired every frame — lock contention if clock shared across tracks (`playout.rs:206-259`)
-- [ ] **CC3**: AEC ring buffer `.unwrap()` in tight loop (`audio_backend/aec.rs:306-331`)
+- [ ] **CC3**: AEC VecDeque `.pop_front().unwrap()` in callback — guarded by len check but panic in RT path is risky (`aec.rs:293-359`)
 
 ### Performance (additional)
 
 - [ ] **PP1**: `PlayoutClock::mode()` clones entire `PlayoutMode` on every call (`playout.rs:114`)
-- [ ] **PP2**: `AudioBackendOpts` fully cloned for device switching (`audio_backend.rs:697-699`)
+- [x] **PP2**: `AudioBackendOpts` cloning eliminated in new audio backend
 
 ### Error Handling
 
 - [ ] **EH1**: Adaptive rendition switch failures logged but state not reset — could lead to stuck selections (`adaptive.rs`)
-- [ ] **EH2**: `AudioDriver::new()` unwraps on CPAL stream start — panics if audio device unavailable (`audio_backend.rs:489`)
-- [x] **EH3**: Inconsistent lock panic messages — normalized `playout.rs` from `.expect("lock")` to `.expect("poisoned")`
+- [x] **EH2**: `AudioDriver::new()` now logs error and continues if initial stream start fails (no panic)
+- [x] **EH3**: Inconsistent lock panic messages — normalized to `.expect("poisoned")`
 
 ### New findings (2026-03-18)
 

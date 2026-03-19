@@ -1017,9 +1017,19 @@ fn audio_decode_loop(
 
     const INTERVAL: Duration = Duration::from_millis(10);
     const MAX_CONSECUTIVE_ERRORS: u32 = 10;
+    /// How long without decoded audio before we start pushing silence.
+    /// Must be shorter than the output ring buffer's latency (300ms) to
+    /// prevent the cpal callback from running dry and underrunning.
+    const SILENCE_THRESHOLD: Duration = Duration::from_millis(200);
+    /// Silence frame size: 10ms at 48 kHz stereo = 960 samples.
+    const SILENCE_FRAME_SAMPLES: usize = 960;
+
     let mut remote_start = None;
     let loop_start = Instant::now();
     let mut consecutive_errors = 0u32;
+    let mut last_push = Instant::now();
+    let mut silence_buf = [0.0f32; SILENCE_FRAME_SAMPLES];
+    let mut silence_warned = false;
 
     'main: for i in 0.. {
         let tick = Instant::now();
@@ -1029,9 +1039,12 @@ fn audio_decode_loop(
             break;
         }
 
+        let mut received_any = false;
+
         loop {
             match input_rx.try_recv() {
                 Ok(packet) => {
+                    received_any = true;
                     let remote_start = *remote_start.get_or_insert(packet.timestamp);
 
                     // Note: we intentionally do NOT call clock.observe_arrival()
@@ -1066,11 +1079,11 @@ fn audio_decode_loop(
                             Ok(Some(samples)) => {
                                 consecutive_errors = 0;
                                 sink.push_samples(samples)?;
-                                // Record audio frame timing. render_wall is
-                                // when we push to the audio sink, not when the
-                                // OS actually plays the samples. True playout
-                                // time would require feedback from the audio
-                                // backend (cpal/firewheel), which we don't have.
+                                last_push = Instant::now();
+                                if silence_warned {
+                                    info!("audio packets resumed, stopping silence insertion");
+                                    silence_warned = false;
+                                }
                                 if let Some(ref s) = stats {
                                     s.timeline.push(crate::stats::FrameTimingEntry {
                                         kind: crate::stats::FrameKind::Audio,
@@ -1102,10 +1115,30 @@ fn audio_decode_loop(
                     break 'main;
                 }
                 Err(TryRecvError::Empty) => {
-                    trace!("no packet to recv");
                     break;
                 }
             }
+        }
+
+        // If we haven't pushed decoded audio for too long, push silence
+        // to keep the ring buffer fed and prevent cpal underruns. This
+        // produces clean silence instead of the choppy artifacts from
+        // the callback running dry.
+        if !received_any
+            && !sink.is_paused()
+            && last_push.elapsed() > SILENCE_THRESHOLD
+            && remote_start.is_some()
+        {
+            if !silence_warned {
+                warn!(
+                    gap_ms = last_push.elapsed().as_millis(),
+                    "no audio packets for {}ms, inserting silence",
+                    SILENCE_THRESHOLD.as_millis()
+                );
+                silence_warned = true;
+            }
+            silence_buf.fill(0.0);
+            let _ = sink.push_samples(&silence_buf);
         }
 
         let sleep = (INTERVAL * i).saturating_sub(loop_start.elapsed());
