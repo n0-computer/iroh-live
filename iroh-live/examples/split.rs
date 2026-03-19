@@ -8,13 +8,19 @@
 //! `PublishView` and `SubscribeView` are fully independent — they share
 //! nothing except the publisher's endpoint address.
 //!
+//! With `--patchbay` (Linux only), endpoints run in separate patchbay
+//! network namespaces with a simulated link. Sliders let you impair the
+//! link (rate, latency, loss) at runtime.
+//!
 //! ```sh
 //! cargo run -p iroh-live --example split
 //! cargo run -p iroh-live --example split --features "vaapi,wgpu"
+//! cargo run -p iroh-live --example split -- --patchbay
 //! ```
 
 use std::time::Duration;
 
+use clap::Parser;
 use eframe::egui;
 use iroh::{Endpoint, EndpointAddr, SecretKey, protocol::Router};
 use iroh_live::media::capture::{CameraCapturer, CaptureBackend, ScreenCapturer};
@@ -41,6 +47,13 @@ use strum::VariantArray;
 use tracing::{info, warn};
 
 mod common;
+
+#[derive(Parser)]
+struct Args {
+    /// Run in patchbay mode with network impairment sliders (Linux only).
+    #[arg(long)]
+    patchbay: bool,
+}
 
 const BROADCAST_NAME: &str = "split";
 
@@ -127,6 +140,90 @@ enum RenderMode {
 }
 
 // ---------------------------------------------------------------------------
+// Patchbay (Linux only)
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+struct PatchbayState {
+    lab: patchbay::Lab,
+    pub_node: patchbay::NodeId,
+    sub_node: patchbay::NodeId,
+    router_node: patchbay::NodeId,
+    rate_kbit: u32,
+    latency_ms: u32,
+    loss_pct: f32,
+    dirty: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl PatchbayState {
+    fn new(
+        lab: patchbay::Lab,
+        pub_node: patchbay::NodeId,
+        sub_node: patchbay::NodeId,
+        router_node: patchbay::NodeId,
+    ) -> Self {
+        Self {
+            lab,
+            pub_node,
+            sub_node,
+            router_node,
+            rate_kbit: 100_000,
+            latency_ms: 0,
+            loss_pct: 0.0,
+            dirty: false,
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Link:");
+            let mut changed = false;
+            changed |= ui
+                .add(egui::Slider::new(&mut self.rate_kbit, 100..=100_000).text("kbit/s"))
+                .changed();
+            changed |= ui
+                .add(egui::Slider::new(&mut self.latency_ms, 0..=1000).text("ms lat"))
+                .changed();
+            changed |= ui
+                .add(egui::Slider::new(&mut self.loss_pct, 0.0..=30.0).text("% loss"))
+                .changed();
+            if changed {
+                self.dirty = true;
+            }
+        });
+    }
+
+    /// Applies impairment to both pub↔router and sub↔router links so the
+    /// simulated delay, loss, and rate limit affect traffic in both directions.
+    fn apply(&mut self, rt: &tokio::runtime::Runtime) {
+        if !self.dirty {
+            return;
+        }
+        self.dirty = false;
+        let cond = Some(patchbay::LinkCondition::Manual(patchbay::LinkLimits {
+            rate_kbit: self.rate_kbit,
+            latency_ms: self.latency_ms,
+            jitter_ms: self.latency_ms / 5,
+            loss_pct: self.loss_pct,
+            ..Default::default()
+        }));
+        let lab = self.lab.clone();
+        let pub_n = self.pub_node;
+        let sub_n = self.sub_node;
+        let router_n = self.router_node;
+        rt.spawn(async move {
+            if let Err(e) = lab.set_link_condition(pub_n, router_n, cond).await {
+                warn!("pub link condition: {e:#}");
+            }
+            if let Err(e) = lab.set_link_condition(sub_n, router_n, cond).await {
+                warn!("sub link condition: {e:#}");
+            }
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PublishView
 // ---------------------------------------------------------------------------
 
@@ -150,11 +247,7 @@ struct PublishView {
 }
 
 impl PublishView {
-    async fn new(secret_key: SecretKey, audio_ctx: AudioBackend) -> Result<Self> {
-        let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
-            .secret_key(secret_key)
-            .bind()
-            .await?;
+    async fn new(endpoint: Endpoint, audio_ctx: AudioBackend) -> Result<Self> {
         let live = Live::new(endpoint.clone());
         let router = Router::builder(endpoint.clone())
             .accept(ALPN, live.protocol_handler())
@@ -410,8 +503,11 @@ struct SubscribeView {
 }
 
 impl SubscribeView {
-    async fn new(publisher_addr: EndpointAddr, audio_ctx: &AudioBackend) -> Result<Self> {
-        let endpoint = Endpoint::bind(iroh::endpoint::presets::N0).await?;
+    async fn new(
+        endpoint: Endpoint,
+        publisher_addr: EndpointAddr,
+        audio_ctx: &AudioBackend,
+    ) -> Result<Self> {
         let live = Live::new(endpoint);
         let (session, broadcast) = live.subscribe(publisher_addr, BROADCAST_NAME).await?;
         info!("subscriber connected");
@@ -649,6 +745,8 @@ struct SplitApp {
     rt: tokio::runtime::Runtime,
     publish: PublishView,
     subscribe: SubscribeView,
+    #[cfg(target_os = "linux")]
+    patchbay: Option<PatchbayState>,
 }
 
 impl eframe::App for SplitApp {
@@ -657,6 +755,12 @@ impl eframe::App for SplitApp {
 
         if self.publish.needs_republish {
             self.publish.republish(&self.rt);
+        }
+
+        #[cfg(target_os = "linux")]
+        if let Some(ref mut pb) = self.patchbay {
+            pb.apply(&self.rt);
+            egui::TopBottomPanel::top("impairment").show(ctx, |ui| pb.ui(ui));
         }
 
         let panel_width = ctx.input(|i| i.viewport_rect().width()) / 2.0;
@@ -687,8 +791,107 @@ impl eframe::App for SplitApp {
 // main
 // ---------------------------------------------------------------------------
 
+/// Creates both endpoints directly (no network simulation).
+async fn setup_direct(audio_ctx: &AudioBackend) -> Result<(PublishView, SubscribeView)> {
+    let secret_key = SecretKey::generate(&mut rand::rng());
+    let pub_endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
+        .secret_key(secret_key)
+        .bind()
+        .await?;
+    let publish = PublishView::new(pub_endpoint, audio_ctx.clone()).await?;
+    info!(addr = ?publish.addr(), "publish side ready");
+
+    let sub_endpoint = Endpoint::bind(iroh::endpoint::presets::N0).await?;
+    let subscribe = SubscribeView::new(sub_endpoint, publish.addr(), audio_ctx).await?;
+    info!("subscribe side ready");
+
+    Ok((publish, subscribe))
+}
+
+/// Creates endpoints inside patchbay network namespaces with a simulated link.
+#[cfg(target_os = "linux")]
+async fn setup_patchbay(
+    audio_ctx: &AudioBackend,
+) -> Result<(PublishView, SubscribeView, PatchbayState)> {
+    let lab = patchbay::Lab::new()
+        .await
+        .map_err(|e| anyerr!("patchbay lab: {e:#}"))?;
+    let router = lab
+        .add_router("r1")
+        .build()
+        .await
+        .map_err(|e| anyerr!("router: {e:#}"))?;
+    let router_id = router.id();
+
+    let pub_device = lab
+        .add_device("publisher")
+        .iface("eth0", router_id, None)
+        .build()
+        .await
+        .map_err(|e| anyerr!("pub device: {e:#}"))?;
+    let pub_id = pub_device.id();
+
+    let sub_device = lab
+        .add_device("subscriber")
+        .iface("eth0", router_id, None)
+        .build()
+        .await
+        .map_err(|e| anyerr!("sub device: {e:#}"))?;
+    let sub_id = sub_device.id();
+
+    info!("patchbay lab ready");
+
+    let secret_key = SecretKey::generate(&mut rand::rng());
+    let pub_endpoint = pub_device
+        .spawn({
+            let secret_key = secret_key.clone();
+            |_dev| async move {
+                Endpoint::builder(iroh::endpoint::presets::N0)
+                    .secret_key(secret_key)
+                    .bind()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("pub endpoint: {e:#}"))
+            }
+        })
+        .map_err(|e| anyerr!("pub spawn: {e:#}"))?
+        .await
+        .map_err(|e| anyerr!("pub join: {e:#}"))??;
+
+    let sub_endpoint = sub_device
+        .spawn(|_dev| async move {
+            Endpoint::bind(iroh::endpoint::presets::N0)
+                .await
+                .map_err(|e| anyhow::anyhow!("sub endpoint: {e:#}"))
+        })
+        .map_err(|e| anyerr!("sub spawn: {e:#}"))?
+        .await
+        .map_err(|e| anyerr!("sub join: {e:#}"))??;
+
+    let publish = PublishView::new(pub_endpoint, audio_ctx.clone()).await?;
+    info!(addr = ?publish.addr(), "publish side ready (patchbay)");
+
+    let subscribe = SubscribeView::new(sub_endpoint, publish.addr(), audio_ctx).await?;
+    info!("subscribe side ready (patchbay)");
+
+    Ok((
+        publish,
+        subscribe,
+        PatchbayState::new(lab, pub_id, sub_id, router_id),
+    ))
+}
+
 fn main() -> Result<()> {
+    let args = Args::parse();
     tracing_subscriber::fmt::init();
+
+    #[cfg(target_os = "linux")]
+    if args.patchbay {
+        patchbay::init_userns().map_err(|e| anyerr!("patchbay init_userns: {e:#}"))?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    if args.patchbay {
+        return Err(anyerr!("--patchbay requires Linux"));
+    }
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -696,14 +899,18 @@ fn main() -> Result<()> {
         .unwrap();
 
     let audio_ctx = AudioBackend::default();
-    let secret_key = SecretKey::generate(&mut rand::rng());
 
-    let publish = rt.block_on(PublishView::new(secret_key, audio_ctx.clone()))?;
-    info!(addr=?publish.addr(), "Publish side ready");
-    let publisher_addr = publish.addr();
-    #[allow(unused_mut, reason = "mut needed when wgpu feature is enabled")]
-    let mut subscribe = rt.block_on(SubscribeView::new(publisher_addr, &audio_ctx))?;
-    info!("Subscribe side ready");
+    // Branch on patchbay for setup; cfg gates keep patchbay types off non-Linux.
+    #[cfg(target_os = "linux")]
+    let (publish, mut subscribe, patchbay_state) = if args.patchbay {
+        let (p, s, pb) = rt.block_on(setup_patchbay(&audio_ctx))?;
+        (p, s, Some(pb))
+    } else {
+        let (p, s) = rt.block_on(setup_direct(&audio_ctx))?;
+        (p, s, None)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let (publish, mut subscribe) = rt.block_on(setup_direct(&audio_ctx))?;
 
     let _guard = rt.enter();
 
@@ -718,21 +925,25 @@ fn main() -> Result<()> {
         eframe::NativeOptions::default()
     };
 
+    let title = if args.patchbay {
+        "iroh-live split (patchbay)"
+    } else {
+        "iroh-live split"
+    };
+
     eframe::run_native(
-        "iroh-live split",
+        title,
         native_options,
         Box::new(move |_cc| {
             #[cfg(feature = "wgpu")]
             subscribe.set_wgpu_render_state(_cc.wgpu_render_state.clone());
 
-            // Publish preview and subscribe video are created lazily on
-            // first ui() call via pending_video / preview fields, so we
-            // don't need the egui context here.
-
             Ok(Box::new(SplitApp {
                 rt,
                 publish,
                 subscribe,
+                #[cfg(target_os = "linux")]
+                patchbay: patchbay_state,
             }))
         }),
     )

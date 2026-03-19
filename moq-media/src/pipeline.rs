@@ -459,10 +459,11 @@ fn decode_loop(
     let mut frames_popped = 0u64;
     let mut frames_skipped = 0u64;
     let frame_interval = Duration::from_secs_f64(1.0 / framerate.max(1.0));
-    // Track wall-clock vs PTS progression to estimate hidden latency.
-    // If wall_elapsed grows faster than pts_elapsed, we're falling behind.
-    // stream_start_wall is set when first_pts is set (first decoded frame),
-    // and both are reset together during skip recovery.
+    // Track wall-clock vs PTS progression to measure accumulated delay.
+    // If wall_elapsed grows faster than pts_elapsed, the subscriber is
+    // falling behind real-time. Baselines are set once (first decoded frame)
+    // and intentionally NOT reset during skip recovery, so the delay metric
+    // persistently reflects total accumulated lag including network delay.
     let mut stream_start_wall: Option<Instant> = None;
     let mut first_pts: Option<Duration> = None;
     let mut latest_pts = Duration::ZERO;
@@ -561,11 +562,11 @@ fn decode_loop(
                                     "decode_loop: skip complete, resuming at keyframe"
                                 );
                                 skip_active = false;
-                                // Reset both wall-clock and PTS baselines together.
-                                stream_start_wall = Some(Instant::now());
-                                first_pts = Some(packet.timestamp);
+                                // Keep wall/PTS baselines intact so delay_ms
+                                // reflects the total accumulated delay rather
+                                // than resetting after each skip. The playout
+                                // clock still resets for correct frame timing.
                                 latest_pts = packet.timestamp;
-                                // Reset playout clock for clean restart.
                                 playout.clear();
                                 playout.reset_clock();
                                 // NOTE: audio is not reset here — it runs on an

@@ -283,7 +283,9 @@ impl Default for TimingStats {
             jitter_ms: Metric::new(
                 MetricMeta::smooth("Jitter", "ms").with_thresholds(10.0, 30.0, false),
             ),
-            delay_ms: Metric::new(MetricMeta::smooth("Delay", "ms")),
+            delay_ms: Metric::new(
+                MetricMeta::responsive("Delay", "ms").with_thresholds(100.0, 300.0, false),
+            ),
             drift_ms: Metric::new(MetricMeta::smooth("Drift", "ms")),
             buf_frames: Metric::new(MetricMeta::responsive("Buffer", "")),
             frames_skipped: Metric::new(MetricMeta::smooth("Skipped", "")),
