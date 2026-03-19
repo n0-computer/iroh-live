@@ -27,7 +27,7 @@ use iroh_live::{
         codec::{AudioCodec, DefaultDecoders, DynamicVideoDecoder, VideoCodec},
         format::{AudioPreset, DecodeConfig, DecoderBackend, PlaybackConfig, VideoPreset},
         playout::PlayoutClock,
-        publish::LocalBroadcast,
+        publish::{LocalBroadcast, VideoInput},
         subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
     },
     moq::MoqSession,
@@ -161,11 +161,11 @@ impl PublishView {
             .spawn();
 
         let broadcast = LocalBroadcast::new();
-        broadcast.video().set(
+        broadcast.video().set(VideoInput::new(
             TestPatternSource::new(1280, 720),
             VideoCodec::best_available().expect("no video codec available"),
             [VideoPreset::P720],
-        )?;
+        ))?;
         broadcast
             .audio()
             .set(TestToneSource::new(), AudioCodec::Opus, [AudioPreset::Hq])?;
@@ -205,10 +205,10 @@ impl PublishView {
                 return;
             }
         };
-        if let Err(e) = self
-            .broadcast
-            .video()
-            .set(source, self.codec, [self.preset])
+        if let Err(e) =
+            self.broadcast
+                .video()
+                .set(VideoInput::new(source, self.codec, [self.preset]))
         {
             self.error_msg = Some(format!("Set video: {e:#}"));
             return;

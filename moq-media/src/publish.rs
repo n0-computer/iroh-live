@@ -90,11 +90,62 @@ enum VideoPipeline {
 type MakePreEncodedSource =
     Box<dyn Fn() -> anyhow::Result<Box<dyn PreEncodedVideoSource>> + Send + 'static>;
 
-/// Entry for a single pre-encoded video track.
-pub(crate) struct PreEncodedVideoEntry {
-    pub(crate) name: String,
-    pub(crate) config: VideoConfig,
-    pub(crate) factory: MakePreEncodedSource,
+/// Describes how video enters the publish pipeline: either as raw frames
+/// that get encoded, or as already-encoded packets that pass through directly.
+///
+/// Use [`VideoPublisher::set`] to apply a `VideoInput` to a broadcast.
+#[derive(derive_more::Debug)]
+pub enum VideoInput {
+    /// Raw video source with encoder renditions (simulcast layers).
+    Renditions(VideoRenditions),
+    /// One or more pre-encoded video tracks (no encoding needed).
+    PreEncoded(#[debug(skip)] Vec<PreEncodedTrack>),
+}
+
+impl VideoInput {
+    /// Creates a raw video input that encodes with the given codec and presets.
+    #[cfg(any_video_codec)]
+    pub fn new(
+        source: impl VideoSource,
+        codec: VideoCodec,
+        presets: impl IntoIterator<Item = VideoPreset>,
+    ) -> Self {
+        Self::Renditions(VideoRenditions::new(source, codec, presets))
+    }
+
+    /// Creates a pre-encoded video input with a single track.
+    ///
+    /// The `factory` closure creates a fresh source instance for each
+    /// subscriber — it is called each time a subscriber requests this track.
+    pub fn pre_encoded(
+        name: impl Into<String>,
+        config: impl Into<VideoConfig>,
+        factory: impl Fn() -> anyhow::Result<Box<dyn PreEncodedVideoSource>> + Send + 'static,
+    ) -> Self {
+        Self::PreEncoded(vec![PreEncodedTrack {
+            name: name.into(),
+            config: config.into(),
+            factory: Box::new(factory),
+        }])
+    }
+}
+
+impl From<VideoRenditions> for VideoInput {
+    fn from(renditions: VideoRenditions) -> Self {
+        Self::Renditions(renditions)
+    }
+}
+
+/// A single pre-encoded video track within a [`VideoInput::PreEncoded`] set.
+#[derive(derive_more::Debug)]
+pub struct PreEncodedTrack {
+    /// Track name as it appears in the catalog (e.g. `"video/h264-pi"`).
+    pub name: String,
+    /// Codec configuration for the catalog entry and subscriber decoder setup.
+    pub config: VideoConfig,
+    /// Factory that creates a fresh source instance per subscriber.
+    #[debug(skip)]
+    pub factory: MakePreEncodedSource,
 }
 
 struct AudioRenditionEntry {
@@ -172,22 +223,14 @@ impl LocalBroadcast {
         AudioPublisher { broadcast: self }
     }
 
-    /// Returns `true` if video renditions are currently configured.
+    /// Returns `true` if video is currently configured.
     pub fn has_video(&self) -> bool {
-        self.state
-            .lock()
-            .expect("poisoned")
-            .available_video
-            .is_some()
+        self.state.lock().expect("poisoned").video.is_some()
     }
 
-    /// Returns `true` if audio renditions are currently configured.
+    /// Returns `true` if audio is currently configured.
     pub fn has_audio(&self) -> bool {
-        self.state
-            .lock()
-            .expect("poisoned")
-            .available_audio
-            .is_some()
+        self.state.lock().expect("poisoned").audio.is_some()
     }
 
     /// Returns a consumer that reads from this broadcast's producer.
@@ -229,13 +272,17 @@ impl LocalBroadcast {
     }
 
     /// Returns a local preview video track (decode our own output).
+    ///
+    /// Only available when the video input is [`VideoInput::Renditions`] —
+    /// pre-encoded sources do not produce raw frames for local preview.
     pub fn preview(&self, decode_config: DecodeConfig) -> Option<VideoTrack> {
         let (source, shutdown) = {
             let state = self.state.lock().expect("poisoned");
-            let source = state
-                .available_video
-                .as_ref()
-                .map(|video| video.source.clone())?;
+            let renditions = match state.video.as_ref()? {
+                VideoInput::Renditions(r) => r,
+                VideoInput::PreEncoded(_) => return None,
+            };
+            let source = renditions.source.clone();
             Some((source, state.local_video_token.child_token()))
         }?;
         Some(VideoTrack::from_video_source(
@@ -246,46 +293,28 @@ impl LocalBroadcast {
         ))
     }
 
-    pub(crate) fn set_pre_encoded_video(&self, entry: Option<PreEncodedVideoEntry>) -> Result<()> {
+    pub(crate) fn set_video(&self, input: Option<VideoInput>) -> Result<()> {
         let mut state = self.state.lock().expect("poisoned");
-        match entry {
-            Some(entry) => {
-                let mut configs = BTreeMap::new();
-                configs.insert(entry.name.clone(), entry.config.clone());
+        match input {
+            Some(input) => {
+                let configs = match &input {
+                    VideoInput::Renditions(renditions) => renditions.available_renditions()?,
+                    VideoInput::PreEncoded(tracks) => tracks
+                        .iter()
+                        .map(|t| (t.name.clone(), t.config.clone()))
+                        .collect(),
+                };
                 let video = Video {
                     renditions: configs,
                     display: None,
                     rotation: None,
                     flip: None,
                 };
-                state.remove_video();
-                state.pre_encoded_video = Some(entry);
-                state.catalog.set_video(video)?;
-            }
-            None => {
-                state.remove_video();
-                state.catalog.set_video(Default::default())?;
-            }
-        }
-        Ok(())
-    }
-
-    pub(crate) fn set_video(&self, renditions: Option<VideoRenditions>) -> Result<()> {
-        let mut state = self.state.lock().expect("poisoned");
-        match renditions {
-            Some(renditions) => {
-                let configs = renditions.available_renditions()?;
-                let video = Video {
-                    renditions: configs,
-                    display: None,
-                    rotation: None,
-                    flip: None,
-                };
-                // Tear down existing video, set new renditions, then publish catalog.
-                // Order matters: renditions must be available before the catalog is
+                // Tear down existing video, install new input, then publish catalog.
+                // Order matters: the input must be available before the catalog is
                 // published, otherwise subscribers may request tracks we can't serve.
                 state.remove_video();
-                state.available_video = Some(renditions);
+                state.video = Some(input);
                 state.catalog.set_video(video)?;
             }
             None => {
@@ -305,7 +334,7 @@ impl LocalBroadcast {
                     renditions: configs,
                 };
                 state.remove_audio();
-                state.available_audio = Some(renditions);
+                state.audio = Some(renditions);
                 state.catalog.set_audio(audio)?;
             }
             None => {
@@ -324,39 +353,13 @@ pub struct VideoPublisher<'a> {
 }
 
 impl VideoPublisher<'_> {
-    /// Sets the video source, codec, and encoding presets (simulcast renditions).
-    #[cfg(any_video_codec)]
-    pub fn set(
-        &self,
-        source: impl VideoSource,
-        codec: VideoCodec,
-        presets: impl IntoIterator<Item = VideoPreset>,
-    ) -> Result<()> {
-        let renditions = VideoRenditions::new(source, codec, presets);
-        self.broadcast.set_video(Some(renditions))
-    }
-
-    /// Publishes pre-encoded video from a source that produces compressed
-    /// packets directly, bypassing the encoder.
+    /// Sets the video input for this broadcast.
     ///
-    /// Use this when the capture device or an external tool already outputs
-    /// encoded video (e.g. `rpicam-vid --codec h264` on Raspberry Pi).
-    ///
-    /// The `factory` closure creates a fresh source instance for each
-    /// subscriber — it is called each time a subscriber requests this track.
-    pub fn set_pre_encoded(
-        &self,
-        track_name: impl Into<String>,
-        config: impl Into<VideoConfig>,
-        factory: impl Fn() -> anyhow::Result<Box<dyn PreEncodedVideoSource>> + Send + 'static,
-    ) -> Result<()> {
-        let name = track_name.into();
-        let entry = PreEncodedVideoEntry {
-            name: name.clone(),
-            config: config.into(),
-            factory: Box::new(factory),
-        };
-        self.broadcast.set_pre_encoded_video(Some(entry))
+    /// Accepts either raw frames (via [`VideoInput::Renditions`]) or
+    /// pre-encoded packets (via [`VideoInput::PreEncoded`]). Tears down
+    /// any existing video pipeline before installing the new one.
+    pub fn set(&self, input: impl Into<VideoInput>) -> Result<()> {
+        self.broadcast.set_video(Some(input.into()))
     }
 
     /// Removes video from the broadcast.
@@ -366,28 +369,12 @@ impl VideoPublisher<'_> {
 
     /// Returns the names of all currently configured video renditions.
     pub fn renditions(&self) -> Vec<String> {
-        self.broadcast
-            .state
-            .lock()
-            .expect("poisoned")
-            .available_video
-            .as_ref()
-            .map(|v| v.renditions.keys().cloned().collect())
-            .unwrap_or_default()
-    }
-
-    /// Replaces the video source while keeping the broadcast live.
-    ///
-    /// Equivalent to [`set`](Self::set) — stops the current encoder pipeline
-    /// and starts a new one. Subscribers see a seamless switch.
-    #[cfg(any_video_codec)]
-    pub fn replace(
-        &self,
-        source: impl VideoSource,
-        codec: VideoCodec,
-        presets: impl IntoIterator<Item = VideoPreset>,
-    ) -> Result<()> {
-        self.set(source, codec, presets)
+        let state = self.broadcast.state.lock().expect("poisoned");
+        match state.video.as_ref() {
+            Some(VideoInput::Renditions(r)) => r.renditions.keys().cloned().collect(),
+            Some(VideoInput::PreEncoded(tracks)) => tracks.iter().map(|t| t.name.clone()).collect(),
+            None => Vec::new(),
+        }
     }
 
     /// Enables or disables video output.
@@ -396,11 +383,6 @@ impl VideoPublisher<'_> {
     /// When re-enabled, encoding resumes from the next captured frame.
     pub fn set_enabled(&self, _enabled: bool) {
         // TODO: implement pause/resume on the encoder pipeline
-    }
-
-    /// Sets video from pre-built [`VideoRenditions`].
-    pub fn set_renditions(&self, renditions: VideoRenditions) -> Result<()> {
-        self.broadcast.set_video(Some(renditions))
     }
 }
 
@@ -491,9 +473,8 @@ struct State {
     catalog: CatalogProducer,
     shutdown_token: CancellationToken,
     local_video_token: CancellationToken,
-    available_video: Option<VideoRenditions>,
-    pre_encoded_video: Option<PreEncodedVideoEntry>,
-    available_audio: Option<AudioRenditions>,
+    video: Option<VideoInput>,
+    audio: Option<AudioRenditions>,
     active_video: HashMap<String, VideoPipeline>,
     active_audio: HashMap<String, AudioEncoderPipeline>,
     stats: Option<crate::stats::CaptureStats>,
@@ -505,9 +486,8 @@ impl State {
             catalog,
             shutdown_token: CancellationToken::new(),
             local_video_token: CancellationToken::new(),
-            available_video: None,
-            pre_encoded_video: None,
-            available_audio: None,
+            video: None,
+            audio: None,
             active_video: HashMap::new(),
             active_audio: HashMap::new(),
             stats: None,
@@ -525,36 +505,42 @@ impl State {
 
     fn remove_audio(&mut self) {
         self.active_audio.clear();
-        self.available_audio = None;
+        self.audio = None;
     }
 
     fn remove_video(&mut self) {
         self.local_video_token.cancel();
         self.local_video_token = CancellationToken::new();
         self.active_video.clear();
-        self.available_video = None;
-        self.pre_encoded_video = None;
+        self.video = None;
     }
 
     fn start_track(&mut self, track: moq_lite::TrackProducer) -> Result<()> {
         let name = track.info.name.clone();
-        if let Some(video) = self.available_video.as_mut()
-            && video.contains_rendition(&name)
-        {
-            let pipeline = video.start_encoder(&name, track, self.stats.clone())?;
-            self.active_video
-                .insert(name, VideoPipeline::Encoder(pipeline));
-            Ok(())
-        } else if let Some(entry) = self.pre_encoded_video.as_ref()
-            && entry.name == name
-        {
-            let source = (entry.factory)()?;
-            let sink = MoqPacketSink::new(track);
-            let pipeline = PreEncodedVideoPipeline::new(source, sink);
-            self.active_video
-                .insert(name, VideoPipeline::PreEncoded(pipeline));
-            Ok(())
-        } else if let Some(audio) = self.available_audio.as_mut()
+
+        // Try video first.
+        match self.video.as_mut() {
+            Some(VideoInput::Renditions(renditions)) if renditions.contains_rendition(&name) => {
+                let pipeline = renditions.start_encoder(&name, track, self.stats.clone())?;
+                self.active_video
+                    .insert(name, VideoPipeline::Encoder(pipeline));
+                return Ok(());
+            }
+            Some(VideoInput::PreEncoded(tracks)) => {
+                if let Some(entry) = tracks.iter().find(|t| t.name == name) {
+                    let source = (entry.factory)()?;
+                    let sink = MoqPacketSink::new(track);
+                    let pipeline = PreEncodedVideoPipeline::new(source, sink);
+                    self.active_video
+                        .insert(name, VideoPipeline::PreEncoded(pipeline));
+                    return Ok(());
+                }
+            }
+            _ => {}
+        }
+
+        // Then audio.
+        if let Some(audio) = self.audio.as_mut()
             && audio.contains_rendition(&name)
         {
             let pipeline = audio.start_encoder(&name, track)?;
@@ -1026,7 +1012,7 @@ mod tests {
     #[tokio::test]
     async fn preview_produces_frames() {
         let broadcast = LocalBroadcast::new();
-        broadcast.set_video(Some(make_renditions())).unwrap();
+        broadcast.set_video(Some(make_renditions().into())).unwrap();
         let watch = broadcast
             .preview(DecodeConfig::default())
             .expect("preview should return Some when video is set");
@@ -1038,13 +1024,13 @@ mod tests {
     #[tokio::test]
     async fn set_video_stops_old_local_watch() {
         let broadcast = LocalBroadcast::new();
-        broadcast.set_video(Some(make_renditions())).unwrap();
+        broadcast.set_video(Some(make_renditions().into())).unwrap();
         let watch = broadcast
             .preview(DecodeConfig::default())
             .expect("should have watch");
 
         // Replace video — old local watches should be cancelled.
-        broadcast.set_video(Some(make_renditions())).unwrap();
+        broadcast.set_video(Some(make_renditions().into())).unwrap();
 
         // The old watch's cancellation token should now be cancelled.
         // We can verify by checking that a new preview still works.
@@ -1058,8 +1044,8 @@ mod tests {
     #[tokio::test]
     async fn set_video_new_source_produces_frames() {
         let broadcast = LocalBroadcast::new();
-        broadcast.set_video(Some(make_renditions())).unwrap();
-        broadcast.set_video(Some(make_renditions())).unwrap();
+        broadcast.set_video(Some(make_renditions().into())).unwrap();
+        broadcast.set_video(Some(make_renditions().into())).unwrap();
 
         let watch = broadcast
             .preview(DecodeConfig::default())
@@ -1070,7 +1056,7 @@ mod tests {
     #[tokio::test]
     async fn set_video_none_stops_local_watch() {
         let broadcast = LocalBroadcast::new();
-        broadcast.set_video(Some(make_renditions())).unwrap();
+        broadcast.set_video(Some(make_renditions().into())).unwrap();
         let _watch = broadcast
             .preview(DecodeConfig::default())
             .expect("should have watch");
@@ -1090,13 +1076,13 @@ mod tests {
         let broadcast = LocalBroadcast::new();
 
         // Set video but never create a local watch — source thread will be parked.
-        broadcast.set_video(Some(make_renditions())).unwrap();
+        broadcast.set_video(Some(make_renditions().into())).unwrap();
 
         // Give the source thread time to park.
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Replace video — this should cleanly shut down the parked source thread.
-        broadcast.set_video(Some(make_renditions())).unwrap();
+        broadcast.set_video(Some(make_renditions().into())).unwrap();
 
         // Give the old thread time to wake up and exit.
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1111,7 +1097,7 @@ mod tests {
     #[tokio::test]
     async fn source_thread_stops_on_video_removal() {
         let broadcast = LocalBroadcast::new();
-        broadcast.set_video(Some(make_renditions())).unwrap();
+        broadcast.set_video(Some(make_renditions().into())).unwrap();
 
         // Give source thread time to start and park.
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1209,11 +1195,14 @@ mod tests {
         let renditions = make_renditions();
         let rendition_names: Vec<String> = renditions.renditions.keys().cloned().collect();
 
-        broadcast.set_video(Some(renditions)).unwrap();
+        broadcast.set_video(Some(renditions.into())).unwrap();
 
         // After set_video, all rendition names should be available in state.
         let state = broadcast.state.lock().expect("poisoned");
-        let available = state.available_video.as_ref().expect("video should be set");
+        let available = match state.video.as_ref().expect("video should be set") {
+            VideoInput::Renditions(r) => r,
+            VideoInput::PreEncoded(_) => panic!("expected Renditions variant"),
+        };
         for name in &rendition_names {
             assert!(
                 available.contains_rendition(name),

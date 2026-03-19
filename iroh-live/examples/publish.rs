@@ -7,7 +7,7 @@ use iroh_live::{
         capture::CameraCapturer,
         codec::{AudioCodec, VideoCodec},
         format::{AudioPreset, VideoPreset},
-        publish::LocalBroadcast,
+        publish::{LocalBroadcast, VideoInput},
         test_util::TestVideoSource,
     },
     ticket::LiveTicket,
@@ -45,12 +45,12 @@ async fn main() -> n0_error::Result {
             let source = TestVideoSource::new(640, 480);
             broadcast
                 .video()
-                .set(source, cli.codec, cli.video_presets)?;
+                .set(VideoInput::new(source, cli.codec, cli.video_presets))?;
         } else {
             let camera = CameraCapturer::new()?;
             broadcast
                 .video()
-                .set(camera, cli.codec, cli.video_presets)?;
+                .set(VideoInput::new(camera, cli.codec, cli.video_presets))?;
         }
     }
 

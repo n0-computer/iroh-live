@@ -94,7 +94,7 @@ async fn setup(cli: Cli, audio_ctx: AudioBackend) -> Result<(Live, LocalBroadcas
             let camera = CameraCapturer::new()?;
             VideoRenditions::new(camera, cli.codec, VideoPreset::all())
         };
-        broadcast.video().set_renditions(video)?;
+        broadcast.video().set(video)?;
         broadcast
     };
     let ticket = match cli.join {
