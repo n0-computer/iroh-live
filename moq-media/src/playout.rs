@@ -213,22 +213,31 @@ impl PlayoutClock {
         let mut inner = self.inner.lock().expect("poisoned");
         let offset = buffer_duration(&inner.mode);
 
-        // Small jitter buffer for re-anchors: 2 frame intervals at 30fps.
-        // Large enough to smooth normal arrival jitter, small enough that
-        // accumulation triggers the skip mechanism before it gets bad.
-        const REANCHOR_JITTER_BUFFER: Duration = Duration::from_millis(66);
+        // Minimum re-anchor buffer: 2 frame intervals at 30fps.
+        const MIN_JITTER_BUFFER: Duration = Duration::from_millis(66);
+
+        let is_live = matches!(inner.mode, PlayoutMode::Live { .. });
 
         if inner.base_wall.is_none() {
-            // First frame: establish base mapping with full buffer offset
-            // to absorb initial decoder DPB burst output.
-            inner.base_wall = Some(now + offset);
+            // First frame: establish base mapping. In Live mode, use the
+            // larger of the DPB burst offset and the observed jitter so
+            // the initial anchor absorbs both decoder bursts and network
+            // jitter. In Reliable mode, play immediately (zero offset).
+            let initial_offset = if is_live {
+                let jitter_buf = inner.smoothed_jitter * 2;
+                offset.max(jitter_buf).max(MIN_JITTER_BUFFER)
+            } else {
+                offset
+            };
+            inner.base_wall = Some(now + initial_offset);
             inner.base_pts = Some(pts);
             tracing::debug!(
                 buffer_ms = offset.as_millis(),
+                initial_offset_ms = initial_offset.as_millis(),
                 pts_ms = pts.as_millis(),
                 "playout clock: anchored (first frame)"
             );
-        } else {
+        } else if is_live {
             // Check if this frame would play in the past (buffer underrun).
             let base_wall = inner.base_wall.unwrap();
             let base_pts = inner.base_pts.unwrap();
@@ -236,16 +245,19 @@ impl PlayoutClock {
             let playout = base_wall + media_offset;
             if now >= playout {
                 let late_by = now - playout;
-                // Re-anchor with small jitter buffer, not the full DPB
-                // burst buffer. The stream is behind but we need some
-                // smoothing to absorb normal network/decoder jitter.
-                inner.base_wall = Some(now + REANCHOR_JITTER_BUFFER);
+                // Re-anchor with an adaptive jitter buffer derived from
+                // the observed inter-arrival jitter. Using 2× smoothed
+                // jitter absorbs typical variance without accumulating
+                // unbounded delay — the decode loop's skip threshold
+                // catches runaway cases.
+                let jitter_buf = (inner.smoothed_jitter * 2).max(MIN_JITTER_BUFFER);
+                inner.base_wall = Some(now + jitter_buf);
                 inner.base_pts = Some(pts);
                 inner.total_reanchor_drift += late_by;
                 inner.reanchor_count += 1;
                 tracing::debug!(
                     late_by_ms = late_by.as_millis(),
-                    jitter_buf_ms = REANCHOR_JITTER_BUFFER.as_millis(),
+                    jitter_buf_ms = jitter_buf.as_millis(),
                     total_drift_ms = inner.total_reanchor_drift.as_millis(),
                     reanchor_count = inner.reanchor_count,
                     pts_ms = pts.as_millis(),
