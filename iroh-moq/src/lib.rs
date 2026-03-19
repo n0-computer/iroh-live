@@ -1,3 +1,9 @@
+//! MoQ transport layer over iroh.
+//!
+//! Provides [`Moq`] for managing sessions and [`MoqSession`] for
+//! publish/subscribe operations over QUIC connections. Uses an internal
+//! actor for connection deduplication and broadcast routing.
+
 use std::{
     collections::{HashMap, hash_map},
     fmt,
@@ -336,8 +342,8 @@ impl MoqSession {
     }
 
     /// Publishes a broadcast on this session, making it available to the remote peer.
-    pub fn publish(&self, name: String, broadcast: BroadcastConsumer) {
-        self.publish.publish_broadcast(name, broadcast);
+    pub fn publish(&self, name: impl ToString, broadcast: BroadcastConsumer) {
+        self.publish.publish_broadcast(name.to_string(), broadcast);
     }
 
     /// Returns the origin producer for advanced publish operations.
@@ -381,7 +387,6 @@ enum ActorMessage {
 type BroadcastName = String;
 type PendingConnects = HashMap<EndpointId, Vec<oneshot::Sender<Result<MoqSession, Arc<AnyError>>>>>;
 
-#[derive()]
 struct Actor {
     endpoint: Endpoint,
     shutdown_token: CancellationToken,
@@ -470,7 +475,7 @@ impl Actor {
         let remote = session.remote_id();
         info!(remote=%remote.fmt_short(), "accepted incoming connection");
         for (name, producer) in self.publishing.iter() {
-            session.publish(name.to_string(), producer.consume());
+            session.publish(name.as_str(), producer.consume());
         }
         self.sessions.insert(remote, session.clone());
         // Notify incoming session subscribers (best-effort, ok if no receivers).

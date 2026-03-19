@@ -111,7 +111,7 @@ impl PlayoutClock {
 
     /// Returns the current playout mode.
     pub fn mode(&self) -> PlayoutMode {
-        self.inner.lock().expect("lock").mode.clone()
+        self.inner.lock().expect("poisoned").mode.clone()
     }
 
     /// Sets the playout mode.
@@ -121,7 +121,7 @@ impl PlayoutClock {
     /// new playout times without a gap. If no base exists yet, just stores
     /// the new mode.
     pub fn set_mode(&self, mode: PlayoutMode) {
-        let mut inner = self.inner.lock().expect("lock");
+        let mut inner = self.inner.lock().expect("poisoned");
         let old_buf = buffer_duration(&inner.mode);
         let new_buf = buffer_duration(&mode);
         if let Some(ref mut base_wall) = inner.base_wall {
@@ -144,17 +144,17 @@ impl PlayoutClock {
 
     /// Returns the effective max_latency for hang's `TrackConsumer`.
     pub fn hang_max_latency(&self) -> Duration {
-        self.inner.lock().expect("lock").mode.hang_max_latency()
+        self.inner.lock().expect("poisoned").mode.hang_max_latency()
     }
 
     /// Returns the current observed jitter (diagnostic).
     pub fn jitter(&self) -> Duration {
-        self.inner.lock().expect("lock").smoothed_jitter
+        self.inner.lock().expect("poisoned").smoothed_jitter
     }
 
     /// Returns the configured buffer duration (Live mode) or zero (Reliable).
     pub fn buffer(&self) -> Duration {
-        let inner = self.inner.lock().expect("lock");
+        let inner = self.inner.lock().expect("poisoned");
         buffer_duration(&inner.mode)
     }
 
@@ -163,7 +163,7 @@ impl PlayoutClock {
     /// No-op if the clock is in Reliable mode. If a base mapping exists,
     /// shifts it so frames already in the buffer get correct playout times.
     pub fn set_buffer(&self, new_buffer: Duration) {
-        let mut inner = self.inner.lock().expect("lock");
+        let mut inner = self.inner.lock().expect("poisoned");
         let old = buffer_duration(&inner.mode);
         if old == new_buffer {
             return;
@@ -192,7 +192,7 @@ impl PlayoutClock {
 
     /// Returns the total accumulated drift from re-anchoring and the count.
     pub fn reanchor_stats(&self) -> (Duration, u32) {
-        let inner = self.inner.lock().expect("lock");
+        let inner = self.inner.lock().expect("poisoned");
         (inner.total_reanchor_drift, inner.reanchor_count)
     }
 
@@ -210,7 +210,7 @@ impl PlayoutClock {
     /// session, each producing a visible stutter.
     pub(crate) fn observe_arrival(&self, pts: Duration) {
         let now = Instant::now();
-        let mut inner = self.inner.lock().expect("lock");
+        let mut inner = self.inner.lock().expect("poisoned");
         let offset = buffer_duration(&inner.mode);
 
         // Small jitter buffer for re-anchors: 2 frame intervals at 30fps.
@@ -273,7 +273,7 @@ impl PlayoutClock {
     /// Returns the wall-clock time at which a frame with the given PTS
     /// should be played out.
     pub(crate) fn playout_time(&self, pts: Duration) -> Option<Instant> {
-        let inner = self.inner.lock().expect("lock");
+        let inner = self.inner.lock().expect("poisoned");
         let base_wall = inner.base_wall?;
         let base_pts = inner.base_pts?;
         let media_offset = pts.saturating_sub(base_pts);
@@ -283,7 +283,7 @@ impl PlayoutClock {
     /// Resets the clock's base mapping. Called when switching tracks or
     /// recovering from errors.
     pub fn reset(&self) {
-        let mut inner = self.inner.lock().expect("lock");
+        let mut inner = self.inner.lock().expect("poisoned");
         tracing::debug!(
             total_drift_ms = inner.total_reanchor_drift.as_millis(),
             reanchor_count = inner.reanchor_count,

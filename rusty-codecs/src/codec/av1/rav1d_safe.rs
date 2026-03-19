@@ -55,7 +55,12 @@ impl Settings {
     pub(crate) fn new() -> Self {
         let mut inner = MaybeUninit::<Dav1dSettings>::uninit();
         // SAFETY: dav1d_default_settings writes valid defaults into the pointer.
-        unsafe { rav1d::dav1d_default_settings(NonNull::new(inner.as_mut_ptr()).unwrap()) };
+        // `as_mut_ptr()` on a stack-allocated `MaybeUninit` is always non-null.
+        unsafe {
+            rav1d::dav1d_default_settings(
+                NonNull::new(inner.as_mut_ptr()).expect("MaybeUninit pointer is never null"),
+            )
+        };
         Self {
             inner: unsafe { inner.assume_init() },
         }

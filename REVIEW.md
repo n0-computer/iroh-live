@@ -61,12 +61,12 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 
 ### Transport
 
-- [ ] **TR1**: Missing doc comments on `media_pipe()`, `PipeSink`, `PipeSource` (`transport.rs`)
+- [x] **TR1**: Doc comments on `media_pipe()`, `PipeSink`, `PipeSource` — already present
 
 ### Stubs
 
-- [ ] **ST1**: `VideoPublisher::set_enabled()` is a no-op (`publish.rs:324`)
-- [ ] **ST2**: `AudioPublisher::set_muted()` is a no-op (`publish.rs:361`)
+- [x] **ST1**: `VideoPublisher::set_enabled()` — documented as unimplemented stub
+- [x] **ST2**: `AudioPublisher::set_muted()` — documented as unimplemented stub
 
 ### Concurrency
 
@@ -83,7 +83,7 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 
 - [ ] **EH1**: Adaptive rendition switch failures logged but state not reset — could lead to stuck selections (`adaptive.rs`)
 - [ ] **EH2**: `AudioDriver::new()` unwraps on CPAL stream start — panics if audio device unavailable (`audio_backend.rs:489`)
-- [ ] **EH3**: Inconsistent lock panic messages — mixed `.expect("poisoned")` vs `.expect("lock")` vs `.unwrap()`
+- [x] **EH3**: Inconsistent lock panic messages — normalized `playout.rs` from `.expect("lock")` to `.expect("poisoned")`
 
 ### New findings (2026-03-18)
 
@@ -108,15 +108,15 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 ### Design
 
 - [ ] **MQ4**: `MoqSession::subscribe(&mut self)` takes `&mut self` unnecessarily — prevents concurrent subscriptions
-- [ ] **MQ5**: `publish()` takes `String` by value — inconsistent with `subscribe(&str)` (`lib.rs:338`)
+- [x] **MQ5**: `publish()` takes `String` by value — changed to `impl ToString` for consistency
 - [ ] **MQ6**: Channel capacities hardcoded — no sizing rationale, high-churn scenarios silently drop sessions (`lib.rs:79-80`)
 - [ ] **MQ7**: Error context lost in conversions — `Error` -> `AnyError` -> `AcceptError` discards specific variants (`lib.rs:165`)
 - [ ] **MQ8**: `handle_publish_broadcast` clones name per session — should clone once outside loop (`lib.rs:493-496`)
 
 ### Documentation
 
-- [ ] **MQ9**: No module-level doc comment on `lib.rs`
-- [ ] **MQ10**: `session_connect()` and `session_accept()` undocumented (`lib.rs:270, 286`)
+- [x] **MQ9**: Module-level doc comment added to `lib.rs`
+- [x] **MQ10**: `session_connect()` and `session_accept()` — already documented
 
 ### Error Handling
 
@@ -126,7 +126,7 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 
 ### Code Quality
 
-- [ ] **MQ14**: Empty `#[derive()]` on Actor struct — should add `Debug` or remove (`lib.rs:373`)
+- [x] **MQ14**: Empty `#[derive()]` on Actor struct — removed
 
 ---
 
@@ -138,16 +138,16 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 
 ### Design
 
-- [ ] **IL3**: `postcard::to_stdvec().unwrap()` in four places — serialization can fail (`ticket.rs`, `rooms.rs`)
+- [x] **IL3**: `postcard::to_stdvec().unwrap()` — replaced with `.expect()` with infallibility messages
 - [ ] **IL5**: Room actor silently drops events on send failure — should detect and shut down (`rooms.rs:233, 298`)
 - [ ] **IL6**: `broadcasts.clone()` in room actor — marginal savings possible (`rooms.rs:284`)
-- [ ] **IL8**: `RoomEvent::RemoteConnected` defined but never emitted (`rooms.rs:129`)
+- [x] **IL8**: `RoomEvent::RemoteConnected` — documented as reserved/not emitted
 - [ ] **IL9**: `Call::dial()` and `Call::accept()` duplicate code — should extract shared helper (`call.rs:51-94`)
 - [ ] **IL10**: `spawn_thread()` always panics on failure — should return `Result<JoinHandle>` (`util.rs:23`)
 
 ### Documentation
 
-- [ ] **IL7**: Missing docs on most public items — `RoomHandle`, `Room`, `RoomTicket`, `LiveTicket`, `Rate`, `SmoothedStats`
+- [x] **IL7**: Missing docs — added doc comments to `Room`, `RoomHandle`, `RoomTicket`, `RoomEvent` variants, `RoomPublisherSync`, `LiveTicket::from_bytes`
 
 ### New findings (2026-03-18)
 
@@ -163,7 +163,7 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 
 ### Safety
 
-- [ ] **RC8**: `NonNull::new().unwrap()` in rav1d_safe — could use `.expect("non-null pointer")` (`av1/rav1d_safe.rs:58`)
+- [x] **RC8**: `NonNull::new().unwrap()` in rav1d_safe — replaced with `.expect()` and SAFETY comment
 
 ### Concurrency
 

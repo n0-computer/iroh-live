@@ -26,10 +26,8 @@ quality-based selection. The precedence rules (rendition pin wins over quality)
 are not documented. A user reading these APIs cannot predict which controls
 which without reading the implementation.
 
-**VideoPublisher naming inconsistency.** `set()` and `replace()` do the same
-thing — `replace()` is documented as "equivalent to `set()`". One should be
-removed or given distinct semantics (e.g., `replace` implies hot-swap
-mid-stream while `set` implies first-time configuration).
+~~**VideoPublisher naming inconsistency.** `set()` and `replace()` do the same
+thing.~~ *Resolved: `replace()` was removed in a prior refactor.*
 
 **renditions() allocates on every call.** `VideoPublisher::renditions()`
 builds a `Vec<String>` from the internal map on each invocation. High-frequency
@@ -221,3 +219,50 @@ and selects by resolution/fps only. Not documented.
 power-of-two counts, meaning long-running sessions can drop hundreds of frames
 between log messages. The threshold should be configurable or log at a fixed
 interval (e.g., every 10 seconds during active drops).
+
+---
+
+## Resolved in this pass (2026-03-19)
+
+Items addressed from both nightly-review.md and REVIEW.md:
+
+- **MQ14**: Removed empty `#[derive()]` on iroh-moq Actor struct.
+- **MQ5**: Changed `MoqSession::publish()` from `String` to `impl ToString`. Updated all callers to remove redundant `.to_string()` and `.clone()`.
+- **MQ9/MQ10**: Added module-level doc comment to iroh-moq. Confirmed `session_connect`/`session_accept` already documented.
+- **IL3**: Replaced `.unwrap()` with `.expect("...is infallible")` on all postcard serialization in `ticket.rs` and `rooms.rs`.
+- **IL7**: Added doc comments to `Room`, `RoomHandle`, `RoomTicket`, `RoomEvent` variants, `RoomPublisherSync` methods, `LiveTicket::from_bytes`.
+- **IL8**: Documented `RoomEvent::RemoteConnected` as reserved/not emitted.
+- **ST1/ST2**: Marked `set_enabled()` and `set_muted()` doc comments as unimplemented stubs.
+- **EH3**: Normalized playout.rs lock panics from `.expect("lock")` to `.expect("poisoned")`.
+- **RC8**: Replaced `NonNull::new().unwrap()` with `.expect()` + SAFETY comment in rav1d_safe.
+- **TR1**: Confirmed doc comments already present on transport types.
+- Added field-level docs to `VideoTarget`, `VideoOptions`, `AudioOptions` in subscribe.rs.
+
+## Proposed larger changes
+
+These changes have higher value but require more careful review and testing.
+Grouped roughly by effort and risk.
+
+### Medium effort, low risk
+
+**ActiveSubscription wrapper (nightly: subscribe returns tuple).** `Live::subscribe()` returns `(MoqSession, RemoteBroadcast)`. The session must outlive the broadcast, but nothing enforces this. An `ActiveSubscription` struct wrapping both would make the lifetime relationship explicit and reduce API surface. The session would still be accessible via a method for stats/closing. This is a pure addition — the tuple return can remain as a lower-level option.
+
+**PlayoutClock facade on RemoteBroadcast.** Callers reach through `remote.clock().set_buffer()` to tune playout. `RemoteBroadcast` should expose `set_playout_mode()` and `set_playout_buffer()` directly, making the clock an implementation detail. Small change, but touches a well-exercised path.
+
+**VideoPublisher: remove `replace()` or give it distinct semantics.** Currently `replace()` is documented as equivalent to `set()`. Either remove it (breaking change, but trivially mechanical for callers) or give it hot-swap semantics (replace mid-stream without tearing down the pipeline). The former is simpler and eliminates confusion.
+
+### Medium effort, medium risk
+
+**SharedVideoSource condvar.** The park/unpark race is confirmed by an existing 100ms sleep workaround in tests. Replacing `thread::park()` with a `Condvar` would eliminate the race. Touches the core video publish path — needs careful testing with the pipeline integration tests.
+
+**`spawn_thread` → `Result<JoinHandle>`.** Currently panics on spawn failure. Changing to `Result` propagates naturally but requires updating all callers (many) to handle the error. Most callers will just `?` it, but some are in contexts where `?` doesn't work (e.g., callback closures). Could keep the panicking version as `spawn_thread_or_panic` for those.
+
+**Hardcoded 30fps in VideoEncoderPipeline.** `frame_duration` ignores the encoder config's framerate. Fix is straightforward — read from config — but needs to be verified against all callers to ensure they set framerate correctly. Risk: some callers may rely on the 30fps pacing as a side-effect.
+
+### Higher effort
+
+**AdaptiveVideoTrack::format() returning zeroed dimensions.** The `VideoSource` trait impl returns `[0, 0]` dimensions. Fixing this requires either querying the current inner track's format dynamically (adds a lock) or caching dimensions on each rendition switch. Both approaches are small in code but affect the hot path.
+
+**Pipeline thread error observability.** Encoder/decoder threads that panic or error leave callers with a frozen stream and no diagnostic. Adding an error channel or health-check mechanism is architecturally clean but touches every pipeline entry point. Best done alongside a broader pipeline lifecycle refactor.
+
+**Domain error types replacing anyhow.** Converting public APIs from `anyhow::Result` to domain-specific error enums is high-value for library consumers but is a large, cross-cutting change that should be done per-crate in phases.

@@ -141,7 +141,7 @@ impl Call {
             .await
             .map_err(CallError::ConnectionFailed)?;
 
-        session.publish(CALL_BROADCAST_NAME.to_string(), local.consume());
+        session.publish(CALL_BROADCAST_NAME, local.consume());
 
         let consumer = session
             .subscribe(CALL_BROADCAST_NAME)
@@ -164,7 +164,7 @@ impl Call {
     /// It is published on the session as "call" — do **not** also publish
     /// it via [`Live::publish`].
     pub async fn accept(mut session: MoqSession, local: LocalBroadcast) -> Result<Self, CallError> {
-        session.publish(CALL_BROADCAST_NAME.to_string(), local.consume());
+        session.publish(CALL_BROADCAST_NAME, local.consume());
 
         let consumer = session
             .subscribe(CALL_BROADCAST_NAME)
