@@ -16,7 +16,10 @@ bytemuck = "1.24.0"
 byte-unit = { version = "5.1", features = ["bit"] }
 data-encoding = "2.9.0"
 derive_more = { version = "2.0.1", features = ["display", "debug", "eq", "deref"] }
-firewheel = { version = "0.10.0", features = ["cpal", "peak_meter_node", "std", "stream_nodes", "cpal_resample_inputs"] }
+cpal = { path = "/home/bit/Code/rust/cpal" }
+fixed-resample = { version = "0.9", features = ["resampler"] }
+arc-swap = "1.7"
+ringbuf = "0.4"
 hang = { workspace = true }
 image = { version = "0.25", default-features = false }
 moq-lite = { workspace = true }

@@ -565,6 +565,14 @@ impl State {
 ///
 /// Each rendition pairs a codec configuration with an encoder factory.
 /// Used by [`AudioPublisher::set_renditions`] for advanced control.
+///
+/// Audio sources are single-consumer: only one encoder pipeline can read
+/// from the source at a time. When a subscriber connects, the source is
+/// cloned via [`AudioSource::cloned_boxed`]. For device-backed sources
+/// like [`InputStream`](crate::audio_backend::InputStream), clones share
+/// the underlying ring buffer — concurrent reads produce garbled audio.
+/// In practice this is safe because only one audio rendition is active at
+/// a time (multiple renditions are encoded sequentially, not in parallel).
 #[derive(derive_more::Debug)]
 pub struct AudioRenditions {
     #[debug(skip)]
@@ -664,6 +672,10 @@ impl AudioRenditions {
     }
 
     /// Starts the encoder pipeline for the named rendition, writing to the given producer.
+    ///
+    /// Clones the audio source for the new pipeline. For device-backed sources
+    /// like [`InputStream`](crate::audio_backend::InputStream), the clone
+    /// shares the ring buffer — only one pipeline should be active per source.
     pub fn start_encoder(
         &mut self,
         name: &str,

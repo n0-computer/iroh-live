@@ -1,7 +1,18 @@
-pub(super) use self::{
-    firewheel_nodes::{AecCaptureNode, AecRenderNode},
-    processor::{AecProcessor, AecProcessorConfig},
-};
+//! Acoustic echo cancellation via sonora.
+//!
+//! Two components:
+//!
+//! - [`AecProcessor`] wraps `sonora::AudioProcessing` with enable/disable
+//!   control. Independent of any audio backend — takes 10ms frames of f32
+//!   samples and returns processed frames.
+//!
+//! - [`AecState`] accumulates samples from the cpal callbacks into 10ms
+//!   frames, calls the processor, and drains the output. All processing
+//!   is serialized on the input callback thread to avoid Mutex contention
+//!   between separate cpal input and output callbacks.
+
+pub(super) use self::processor::{AecProcessor, AecProcessorConfig};
+pub(super) use self::state::AecState;
 
 mod processor {
     use std::sync::{
@@ -44,7 +55,7 @@ mod processor {
             }
         }
 
-        /// Compute the number of samples per channel for a 10ms frame at a given sample rate.
+        /// Computes the number of samples per channel for a 10ms frame at the given sample rate.
         pub(crate) fn frame_size(sample_rate_hz: u32) -> usize {
             (sample_rate_hz / 100) as usize
         }
@@ -91,12 +102,12 @@ mod processor {
         }
 
         pub(crate) fn is_enabled(&self) -> bool {
-            self.0.enabled.load(Ordering::SeqCst)
+            self.0.enabled.load(Ordering::Acquire)
         }
 
         #[allow(unused, reason = "API reserved for future use")]
         pub(crate) fn set_enabled(&self, enabled: bool) {
-            let _prev = self.0.enabled.swap(enabled, Ordering::SeqCst);
+            self.0.enabled.store(enabled, Ordering::Release);
         }
 
         /// Processes a capture (microphone) audio frame with explicit stream configs.
@@ -147,6 +158,7 @@ mod processor {
                 .process_render_f32_with_config(src, input_config, output_config, dest)
         }
 
+        #[allow(unused, reason = "API reserved for future use")]
         pub(crate) fn set_stream_delay(&self, delay_ms: u32) {
             debug!("updating stream delay to {delay_ms}ms");
             let _ = self
@@ -159,353 +171,197 @@ mod processor {
     }
 }
 
-mod firewheel_nodes {
-    use std::collections::VecDeque;
-
-    use firewheel::{
-        StreamInfo,
-        channel_config::{ChannelConfig, ChannelCount},
-        diff::{Diff, Patch},
-        event::ProcEvents,
-        node::{
-            AudioNode, AudioNodeInfo, AudioNodeProcessor, ConstructProcessorContext, ProcBuffers,
-            ProcExtra, ProcInfo, ProcStreamCtx, ProcessStatus,
+mod state {
+    use std::{
+        collections::VecDeque,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
         },
     };
+
+    use ringbuf::traits::{Consumer, Observer};
     use sonora::StreamConfig;
 
-    use super::{AecProcessor, AecProcessorConfig};
+    use super::processor::{AecProcessor, AecProcessorConfig};
 
-    /// Render-side node: feeds output audio into the AEC render stream.
-    #[derive(Diff, Patch, Debug, Clone, Copy, PartialEq)]
-    pub(crate) struct AecRenderNode {
-        pub enabled: bool,
-    }
+    /// Pre-allocated capacity for AEC accumulation buffers.
+    /// Covers pathological callback sizes (4096 frames) without reallocation.
+    const BUF_CAPACITY: usize = 8192;
 
-    impl Default for AecRenderNode {
-        fn default() -> Self {
-            Self { enabled: true }
-        }
-    }
-
-    impl AudioNode for AecRenderNode {
-        type Configuration = AecProcessor;
-
-        fn info(&self, _config: &Self::Configuration) -> AudioNodeInfo {
-            AudioNodeInfo::new()
-                .debug_name("aec_render")
-                .channel_config(ChannelConfig {
-                    num_inputs: ChannelCount::STEREO,
-                    num_outputs: ChannelCount::STEREO,
-                })
-        }
-
-        fn construct_processor(
-            &self,
-            config: &Self::Configuration,
-            _cx: ConstructProcessorContext<'_>,
-        ) -> impl AudioNodeProcessor {
-            // Use default 48kHz until new_stream provides the actual rate.
-            let frame_size = AecProcessorConfig::frame_size(48000);
-            let stream_config = StreamConfig::new(48000, 2);
-            RenderProcessor {
-                enabled: self.enabled,
-                processor: config.clone(),
-                frame_size,
-                stream_config,
-                in_ring_l: VecDeque::with_capacity(frame_size * 4),
-                in_ring_r: VecDeque::with_capacity(frame_size * 4),
-                out_ring_l: VecDeque::with_capacity(frame_size * 4),
-                out_ring_r: VecDeque::with_capacity(frame_size * 4),
-                tmp_src_l: vec![0.0; frame_size],
-                tmp_src_r: vec![0.0; frame_size],
-                tmp_dest_l: vec![0.0; frame_size],
-                tmp_dest_r: vec![0.0; frame_size],
-            }
-        }
-    }
-
-    struct RenderProcessor {
-        enabled: bool,
+    /// Callback-based AEC processing state.
+    ///
+    /// Owned exclusively by the input callback. The output callback writes
+    /// its mixed stereo signal into the render reference ring buffer
+    /// (lock-free SPSC); the input callback drains it, processes render
+    /// frames through sonora, then processes capture frames — all on a
+    /// single thread with no Mutex contention.
+    pub(crate) struct AecState {
         processor: AecProcessor,
-        frame_size: usize,
+        enabled: Arc<AtomicBool>,
         stream_config: StreamConfig,
-        in_ring_l: VecDeque<f32>,
-        in_ring_r: VecDeque<f32>,
-        out_ring_l: VecDeque<f32>,
-        out_ring_r: VecDeque<f32>,
+        frame_size: usize,
+
+        /// Render reference consumer (from output callback).
+        render_ref_cons: ringbuf::HeapCons<f32>,
+
+        /// Render accumulation buffers (per-channel).
+        render_buf_l: VecDeque<f32>,
+        render_buf_r: VecDeque<f32>,
+
+        /// Capture accumulation buffers (per-channel).
+        capture_buf_l: VecDeque<f32>,
+        capture_buf_r: VecDeque<f32>,
+
+        /// Capture output ring (processed samples waiting to be read).
+        out_buf_l: VecDeque<f32>,
+        out_buf_r: VecDeque<f32>,
+
+        /// Pre-allocated temporary buffers for sonora frame processing.
         tmp_src_l: Vec<f32>,
         tmp_src_r: Vec<f32>,
-        tmp_dest_l: Vec<f32>,
-        tmp_dest_r: Vec<f32>,
+        tmp_dst_l: Vec<f32>,
+        tmp_dst_r: Vec<f32>,
+
+        /// Interleaved scratch buffer for reading from render reference ring.
+        render_scratch: Vec<f32>,
     }
 
-    impl RenderProcessor {
-        fn reconfigure(&mut self, sample_rate: u32) {
-            let frame_size = AecProcessorConfig::frame_size(sample_rate);
-            self.frame_size = frame_size;
-            self.stream_config = StreamConfig::new(sample_rate, 2);
-            self.in_ring_l.clear();
-            self.in_ring_r.clear();
-            self.out_ring_l.clear();
-            self.out_ring_r.clear();
-            self.tmp_src_l.resize(frame_size, 0.0);
-            self.tmp_src_r.resize(frame_size, 0.0);
-            self.tmp_dest_l.resize(frame_size, 0.0);
-            self.tmp_dest_r.resize(frame_size, 0.0);
+    impl AecState {
+        /// Creates a new AEC callback state.
+        ///
+        /// - `processor`: shared sonora wrapper.
+        /// - `render_ref_cons`: consumer end of the SPSC ring buffer that the
+        ///   output callback writes mixed stereo into.
+        /// - `enabled`: shared flag for dynamic AEC enable/disable.
+        pub(crate) fn new(
+            processor: AecProcessor,
+            render_ref_cons: ringbuf::HeapCons<f32>,
+            enabled: Arc<AtomicBool>,
+        ) -> Self {
+            let frame_size = AecProcessorConfig::frame_size(48000);
+            Self {
+                processor,
+                enabled,
+                stream_config: StreamConfig::new(48000, 2),
+                frame_size,
+                render_ref_cons,
+                render_buf_l: VecDeque::with_capacity(BUF_CAPACITY),
+                render_buf_r: VecDeque::with_capacity(BUF_CAPACITY),
+                capture_buf_l: VecDeque::with_capacity(BUF_CAPACITY),
+                capture_buf_r: VecDeque::with_capacity(BUF_CAPACITY),
+                out_buf_l: VecDeque::with_capacity(BUF_CAPACITY),
+                out_buf_r: VecDeque::with_capacity(BUF_CAPACITY),
+                tmp_src_l: vec![0.0; frame_size],
+                tmp_src_r: vec![0.0; frame_size],
+                tmp_dst_l: vec![0.0; frame_size],
+                tmp_dst_r: vec![0.0; frame_size],
+                render_scratch: vec![0.0; BUF_CAPACITY * 2],
+            }
         }
-    }
 
-    impl AudioNodeProcessor for RenderProcessor {
-        fn process(
-            &mut self,
-            info: &ProcInfo,
-            buffers: ProcBuffers<'_, '_>,
-            events: &mut ProcEvents<'_>,
-            _extra: &mut ProcExtra,
-        ) -> ProcessStatus {
-            for patch in events.drain_patches::<AecRenderNode>() {
-                match patch {
-                    AecRenderNodePatch::Enabled(enabled) => {
-                        self.enabled = enabled;
-                        if !self.enabled {
-                            self.in_ring_l.clear();
-                            self.in_ring_r.clear();
-                            self.out_ring_l.clear();
-                            self.out_ring_r.clear();
-                        }
+        /// Processes stereo interleaved audio in-place.
+        ///
+        /// 1. Drains the render reference ring buffer and processes render
+        ///    frames through sonora.
+        /// 2. Pushes the input (capture) samples into accumulation buffers.
+        /// 3. Processes complete 10ms capture frames through sonora.
+        /// 4. Writes processed capture samples back into the buffer in-place.
+        ///
+        /// Called from the input callback. No allocation occurs.
+        pub(crate) fn process_stereo_interleaved(&mut self, buf: &mut [f32], num_frames: usize) {
+            let enabled = self.enabled.load(Ordering::Relaxed);
+
+            // 1. Drain render reference ring buffer into per-channel render buffers.
+            let available = self.render_ref_cons.occupied_len();
+            if available > 0 {
+                let to_read = available.min(self.render_scratch.len());
+                let read = self
+                    .render_ref_cons
+                    .pop_slice(&mut self.render_scratch[..to_read]);
+                let render_frames = read / 2;
+                for i in 0..render_frames {
+                    self.render_buf_l.push_back(self.render_scratch[i * 2]);
+                    self.render_buf_r.push_back(self.render_scratch[i * 2 + 1]);
+                }
+            }
+
+            // 2. Process complete 10ms render frames.
+            if enabled {
+                while self.render_buf_l.len() >= self.frame_size {
+                    for i in 0..self.frame_size {
+                        self.tmp_src_l[i] = self.render_buf_l.pop_front().unwrap();
+                        self.tmp_src_r[i] = self.render_buf_r.pop_front().unwrap();
+                    }
+                    // We discard the render output — sonora only needs it internally
+                    // to build its echo model.
+                    let src: &[&[f32]] = &[&self.tmp_src_l, &self.tmp_src_r];
+                    let dst: &mut [&mut [f32]] = &mut [&mut self.tmp_dst_l, &mut self.tmp_dst_r];
+                    let _ = self.processor.process_render_f32(
+                        src,
+                        dst,
+                        &self.stream_config,
+                        &self.stream_config,
+                    );
+                }
+            } else {
+                // When disabled, still drain the buffers to prevent unbounded growth.
+                while self.render_buf_l.len() >= self.frame_size {
+                    self.render_buf_l.drain(..self.frame_size);
+                    self.render_buf_r.drain(..self.frame_size);
+                }
+            }
+
+            // 3. Push capture samples into per-channel buffers.
+            for i in 0..num_frames {
+                self.capture_buf_l.push_back(buf[i * 2]);
+                self.capture_buf_r.push_back(buf[i * 2 + 1]);
+            }
+
+            // 4. Process complete 10ms capture frames.
+            self.out_buf_l.clear();
+            self.out_buf_r.clear();
+
+            while self.capture_buf_l.len() >= self.frame_size {
+                for i in 0..self.frame_size {
+                    self.tmp_src_l[i] = self.capture_buf_l.pop_front().unwrap();
+                    self.tmp_src_r[i] = self.capture_buf_r.pop_front().unwrap();
+                }
+
+                if enabled {
+                    let src: &[&[f32]] = &[&self.tmp_src_l, &self.tmp_src_r];
+                    let dst: &mut [&mut [f32]] = &mut [&mut self.tmp_dst_l, &mut self.tmp_dst_r];
+                    let _ = self.processor.process_capture_f32(
+                        src,
+                        dst,
+                        &self.stream_config,
+                        &self.stream_config,
+                    );
+                    for i in 0..self.frame_size {
+                        self.out_buf_l.push_back(self.tmp_dst_l[i]);
+                        self.out_buf_r.push_back(self.tmp_dst_r[i]);
+                    }
+                } else {
+                    for i in 0..self.frame_size {
+                        self.out_buf_l.push_back(self.tmp_src_l[i]);
+                        self.out_buf_r.push_back(self.tmp_src_r[i]);
                     }
                 }
             }
 
-            let num_frames = info.frames;
-
-            let in_l = &buffers.inputs[0][..num_frames];
-            let in_r = &buffers.inputs[1][..num_frames];
-
-            let (out_l, out_rest) = buffers.outputs.split_first_mut().unwrap();
-            let out_l = &mut out_l[..num_frames];
-            let out_r = &mut out_rest[0][..num_frames];
-
-            if !self.enabled {
-                out_l.copy_from_slice(in_l);
-                out_r.copy_from_slice(in_r);
-                return ProcessStatus::OutputsModified;
-            }
-
-            // 1. Push input samples into per-channel ring buffers.
+            // 5. Write processed output back into the interleaved buffer.
+            //    If fewer processed frames are available than input frames
+            //    (residual from frame accumulation), output silence for the
+            //    remainder.
             for i in 0..num_frames {
-                self.in_ring_l.push_back(in_l[i]);
-                self.in_ring_r.push_back(in_r[i]);
-            }
-
-            // 2. Process full 10ms frames.
-            let frame_size = self.frame_size;
-            while self.in_ring_l.len() >= frame_size {
-                for i in 0..frame_size {
-                    self.tmp_src_l[i] = self.in_ring_l.pop_front().unwrap();
-                    self.tmp_src_r[i] = self.in_ring_r.pop_front().unwrap();
-                }
-
-                let src: &[&[f32]] = &[&self.tmp_src_l, &self.tmp_src_r];
-                let mut dest_l = self.tmp_dest_l.as_mut_slice();
-                let mut dest_r = self.tmp_dest_r.as_mut_slice();
-                let dest: &mut [&mut [f32]] = &mut [&mut dest_l, &mut dest_r];
-                let _ = self.processor.process_render_f32(
-                    src,
-                    dest,
-                    &self.stream_config,
-                    &self.stream_config,
-                );
-
-                for i in 0..frame_size {
-                    self.out_ring_l.push_back(self.tmp_dest_l[i]);
-                    self.out_ring_r.push_back(self.tmp_dest_r[i]);
-                }
-            }
-
-            // 3. Produce outputs.
-            for i in 0..num_frames {
-                if !self.out_ring_l.is_empty() {
-                    out_l[i] = self.out_ring_l.pop_front().unwrap();
-                    out_r[i] = self.out_ring_r.pop_front().unwrap();
+                if !self.out_buf_l.is_empty() {
+                    buf[i * 2] = self.out_buf_l.pop_front().unwrap();
+                    buf[i * 2 + 1] = self.out_buf_r.pop_front().unwrap();
                 } else {
-                    out_l[i] = 0.0;
-                    out_r[i] = 0.0;
+                    buf[i * 2] = 0.0;
+                    buf[i * 2 + 1] = 0.0;
                 }
             }
-
-            ProcessStatus::OutputsModified
-        }
-
-        fn new_stream(&mut self, stream_info: &StreamInfo, _ctx: &mut ProcStreamCtx<'_>) {
-            self.reconfigure(stream_info.sample_rate.get());
-        }
-    }
-
-    /// Capture-side node: feeds mic audio into the AEC capture stream.
-    #[derive(Diff, Patch, Debug, Clone, Copy, PartialEq)]
-    pub(crate) struct AecCaptureNode {
-        pub enabled: bool,
-    }
-
-    impl Default for AecCaptureNode {
-        fn default() -> Self {
-            Self { enabled: true }
-        }
-    }
-
-    impl AudioNode for AecCaptureNode {
-        type Configuration = AecProcessor;
-
-        fn info(&self, _config: &Self::Configuration) -> AudioNodeInfo {
-            AudioNodeInfo::new()
-                .debug_name("aec_capture")
-                .channel_config(ChannelConfig {
-                    num_inputs: ChannelCount::STEREO,
-                    num_outputs: ChannelCount::STEREO,
-                })
-        }
-
-        fn construct_processor(
-            &self,
-            config: &Self::Configuration,
-            _cx: ConstructProcessorContext<'_>,
-        ) -> impl AudioNodeProcessor {
-            let frame_size = AecProcessorConfig::frame_size(48000);
-            let stream_config = StreamConfig::new(48000, 2);
-            CaptureProcessor {
-                enabled: self.enabled,
-                processor: config.clone(),
-                frame_size,
-                stream_config,
-                in_ring_l: VecDeque::with_capacity(frame_size * 4),
-                in_ring_r: VecDeque::with_capacity(frame_size * 4),
-                out_ring_l: VecDeque::with_capacity(frame_size * 4),
-                out_ring_r: VecDeque::with_capacity(frame_size * 4),
-                tmp_src_l: vec![0.0; frame_size],
-                tmp_src_r: vec![0.0; frame_size],
-                tmp_dest_l: vec![0.0; frame_size],
-                tmp_dest_r: vec![0.0; frame_size],
-            }
-        }
-    }
-
-    struct CaptureProcessor {
-        enabled: bool,
-        processor: AecProcessor,
-        frame_size: usize,
-        stream_config: StreamConfig,
-        in_ring_l: VecDeque<f32>,
-        in_ring_r: VecDeque<f32>,
-        out_ring_l: VecDeque<f32>,
-        out_ring_r: VecDeque<f32>,
-        tmp_src_l: Vec<f32>,
-        tmp_src_r: Vec<f32>,
-        tmp_dest_l: Vec<f32>,
-        tmp_dest_r: Vec<f32>,
-    }
-
-    impl CaptureProcessor {
-        fn reconfigure(&mut self, sample_rate: u32) {
-            let frame_size = AecProcessorConfig::frame_size(sample_rate);
-            self.frame_size = frame_size;
-            self.stream_config = StreamConfig::new(sample_rate, 2);
-            self.in_ring_l.clear();
-            self.in_ring_r.clear();
-            self.out_ring_l.clear();
-            self.out_ring_r.clear();
-            self.tmp_src_l.resize(frame_size, 0.0);
-            self.tmp_src_r.resize(frame_size, 0.0);
-            self.tmp_dest_l.resize(frame_size, 0.0);
-            self.tmp_dest_r.resize(frame_size, 0.0);
-        }
-    }
-
-    impl AudioNodeProcessor for CaptureProcessor {
-        fn process(
-            &mut self,
-            info: &ProcInfo,
-            buffers: ProcBuffers<'_, '_>,
-            events: &mut ProcEvents<'_>,
-            _extra: &mut ProcExtra,
-        ) -> ProcessStatus {
-            for patch in events.drain_patches::<AecCaptureNode>() {
-                match patch {
-                    AecCaptureNodePatch::Enabled(enabled) => {
-                        self.enabled = enabled;
-                        if !self.enabled {
-                            self.in_ring_l.clear();
-                            self.in_ring_r.clear();
-                            self.out_ring_l.clear();
-                            self.out_ring_r.clear();
-                        }
-                    }
-                }
-            }
-
-            let num_frames = info.frames;
-
-            let in_l = &buffers.inputs[0][..num_frames];
-            let in_r = &buffers.inputs[1][..num_frames];
-
-            let (out_l, out_rest) = buffers.outputs.split_first_mut().unwrap();
-            let out_l = &mut out_l[..num_frames];
-            let out_r = &mut out_rest[0][..num_frames];
-
-            if !self.enabled {
-                out_l.copy_from_slice(in_l);
-                out_r.copy_from_slice(in_r);
-                return ProcessStatus::OutputsModified;
-            }
-
-            // 1. Push input samples into per-channel ring buffers.
-            for i in 0..num_frames {
-                self.in_ring_l.push_back(in_l[i]);
-                self.in_ring_r.push_back(in_r[i]);
-            }
-
-            // 2. Process full 10ms frames.
-            let frame_size = self.frame_size;
-            while self.in_ring_l.len() >= frame_size {
-                for i in 0..frame_size {
-                    self.tmp_src_l[i] = self.in_ring_l.pop_front().unwrap();
-                    self.tmp_src_r[i] = self.in_ring_r.pop_front().unwrap();
-                }
-
-                let src: &[&[f32]] = &[&self.tmp_src_l, &self.tmp_src_r];
-                let mut dest_l = self.tmp_dest_l.as_mut_slice();
-                let mut dest_r = self.tmp_dest_r.as_mut_slice();
-                let dest: &mut [&mut [f32]] = &mut [&mut dest_l, &mut dest_r];
-                let _ = self.processor.process_capture_f32(
-                    src,
-                    dest,
-                    &self.stream_config,
-                    &self.stream_config,
-                );
-
-                for i in 0..frame_size {
-                    self.out_ring_l.push_back(self.tmp_dest_l[i]);
-                    self.out_ring_r.push_back(self.tmp_dest_r[i]);
-                }
-            }
-
-            // 3. Produce outputs.
-            for i in 0..num_frames {
-                if !self.out_ring_l.is_empty() {
-                    out_l[i] = self.out_ring_l.pop_front().unwrap();
-                    out_r[i] = self.out_ring_r.pop_front().unwrap();
-                } else {
-                    out_l[i] = 0.0;
-                    out_r[i] = 0.0;
-                }
-            }
-
-            ProcessStatus::OutputsModified
-        }
-
-        fn new_stream(&mut self, stream_info: &StreamInfo, _ctx: &mut ProcStreamCtx<'_>) {
-            self.reconfigure(stream_info.sample_rate.get());
         }
     }
 }

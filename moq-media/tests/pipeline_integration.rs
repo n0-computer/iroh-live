@@ -1234,3 +1234,70 @@ async fn audio_decoder_pipeline_stops_when_source_closes() {
         .await
         .expect("decoder pipeline should stop after source closes");
 }
+
+/// Verifies that the audio decode pipeline pushes silence to the sink
+/// when the network stalls (no packets for >200ms), preventing the audio
+/// backend's ring buffer from running dry and underrunning.
+#[cfg(feature = "opus")]
+#[tokio::test]
+async fn audio_decoder_inserts_silence_on_stall() {
+    use moq_media::codec::OpusAudioDecoder;
+    use moq_media::pipeline::AudioDecoderPipeline;
+    use moq_media::transport::media_pipe;
+
+    let format = AudioFormat::mono_48k();
+    let preset = AudioPreset::Hq;
+
+    use moq_media::traits::AudioEncoderFactory;
+
+    let encoder =
+        <moq_media::codec::OpusEncoder as AudioEncoderFactory>::with_preset(format, preset)
+            .unwrap();
+    let enc_config = moq_media::format::AudioEncoderConfig::from_preset(format, preset);
+    let audio_config =
+        <moq_media::codec::OpusEncoder as AudioEncoderFactory>::config_for(&enc_config);
+
+    let (sink, source) = media_pipe(64);
+    let backend = CapturingAudioBackend::new();
+    let captured = backend.captured_samples();
+
+    let _decoder_pipeline = AudioDecoderPipeline::new::<OpusAudioDecoder>(
+        "test-silence".into(),
+        source,
+        &audio_config,
+        &backend,
+        Default::default(),
+    )
+    .await
+    .unwrap();
+
+    // Start encoder, let it produce a few packets, then drop it to simulate
+    // a network stall (pipe stays open but no new packets arrive).
+    let sine = SineAudioSource::new(format);
+    let encoder_pipeline =
+        moq_media::pipeline::AudioEncoderPipeline::with_source(Box::new(sine), encoder, sink)
+            .unwrap();
+
+    // Let the encoder run briefly to establish the stream.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let samples_before_stall = captured.lock().unwrap().len();
+    assert!(
+        samples_before_stall > 0,
+        "should have received some samples before stall"
+    );
+
+    // Drop the encoder to stop producing packets (simulates network stall).
+    // The pipe sink is dropped, which makes PipeSource return None on next read.
+    // But the decoder pipeline stays alive until the source channel closes.
+    drop(encoder_pipeline);
+
+    // Wait longer than SILENCE_THRESHOLD (200ms) for silence insertion to kick in.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let samples_after_stall = captured.lock().unwrap().len();
+    assert!(
+        samples_after_stall > samples_before_stall,
+        "should have received additional samples (silence) after stall: before={samples_before_stall} after={samples_after_stall}"
+    );
+}
