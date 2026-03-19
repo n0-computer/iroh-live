@@ -2,7 +2,6 @@
 
 | Field | Value |
 |-------|-------|
-| Modified | 2026-03-19 |
 | Status | stable |
 | Applies to | rusty-capture, moq-media |
 | Platforms | Linux (PipeWire, V4L2, X11), macOS (ScreenCaptureKit, AVFoundation) |

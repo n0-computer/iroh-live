@@ -2,7 +2,6 @@
 
 | Field | Value |
 |-------|-------|
-| Modified | 2026-03-19 |
 | Status | draft |
 | Applies to | iroh-moq, moq-media |
 | Platforms | all |

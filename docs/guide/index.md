@@ -2,7 +2,6 @@
 
 | Field | Value |
 |-------|-------|
-| Modified | 2026-03-19 |
 | Status | stable |
 | Applies to | iroh-live, moq-media, rusty-codecs, rusty-capture |
 | Platforms | Linux, macOS, Windows |

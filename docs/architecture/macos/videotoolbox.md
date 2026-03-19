@@ -2,7 +2,6 @@
 
 | Field | Value |
 |-------|-------|
-| Modified | 2026-03-19 |
 | Status | untested |
 | Applies to | rusty-codecs |
 | Platforms | macOS |
