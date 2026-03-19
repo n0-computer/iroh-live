@@ -14,8 +14,10 @@ use super::annexb::{annex_b_to_length_prefixed, build_avcc, extract_sps_pps, par
 use crate::{
     config::{H264, VideoCodec, VideoConfig},
     format::{EncodedFrame, NalFormat, ScaleMode, VideoEncoderConfig, VideoFrame},
-    processing::convert::{YuvData, pixel_format_to_yuv420},
-    processing::scale::Scaler,
+    processing::{
+        convert::{YuvData, pixel_format_to_yuv420},
+        scale::Scaler,
+    },
     traits::{VideoEncoder, VideoEncoderFactory},
 };
 

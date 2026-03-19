@@ -6,8 +6,7 @@ use rav1e::prelude::*;
 use crate::{
     config::{AV1, VideoCodec, VideoConfig},
     format::{EncodedFrame, ScaleMode, VideoEncoderConfig, VideoFrame},
-    processing::convert::pixel_format_to_yuv420,
-    processing::scale::Scaler,
+    processing::{convert::pixel_format_to_yuv420, scale::Scaler},
     traits::{VideoEncoder, VideoEncoderFactory},
 };
 

@@ -8,8 +8,10 @@
 //! cargo run --example watch-wgpu --features wgpu -- --ticket <TICKET>
 //! ```
 
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use clap::Parser;
 use iroh::{Endpoint, EndpointId, Watcher};

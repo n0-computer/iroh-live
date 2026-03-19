@@ -7,11 +7,12 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use rusty_codecs::{
+    format::{PixelFormat, VideoFormat, VideoFrame},
+    traits::VideoSource,
+};
 use tracing::debug;
 use xcap::Monitor;
-
-use rusty_codecs::format::{PixelFormat, VideoFormat, VideoFrame};
-use rusty_codecs::traits::VideoSource;
 
 use crate::types::{CaptureBackend, MonitorInfo, ScreenConfig};
 

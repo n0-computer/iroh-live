@@ -14,8 +14,7 @@
 //!   → glEGLImageTargetTexture2DOES     → GL_TEXTURE_EXTERNAL_OES texture
 //! ```
 
-use std::ffi::c_void;
-use std::sync::OnceLock;
+use std::{ffi::c_void, sync::OnceLock};
 
 type EglGetProcAddressFn = unsafe extern "C" fn(*const std::ffi::c_char) -> *mut c_void;
 type GetNativeClientBufferFn = unsafe extern "C" fn(*const c_void) -> *mut c_void;

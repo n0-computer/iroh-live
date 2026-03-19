@@ -120,8 +120,9 @@ impl FromStr for LiveTicket {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use iroh::SecretKey;
+
+    use super::*;
 
     fn test_endpoint_addr() -> EndpointAddr {
         let key = SecretKey::generate(&mut rand::rng());

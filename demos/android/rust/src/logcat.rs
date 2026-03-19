@@ -6,9 +6,7 @@
 use std::io::Write;
 
 use tracing::Level;
-use tracing_subscriber::EnvFilter;
-use tracing_subscriber::fmt::MakeWriter;
-use tracing_subscriber::prelude::*;
+use tracing_subscriber::{EnvFilter, fmt::MakeWriter, prelude::*};
 
 unsafe extern "C" {
     fn __android_log_write(prio: i32, tag: *const i8, text: *const i8) -> i32;

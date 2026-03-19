@@ -8,9 +8,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result};
 use glow::HasContext;
 use iroh::Watcher;
-use iroh_live::media::format::VideoFrame;
-use iroh_live::media::subscribe::VideoTrack;
-use iroh_live::moq::MoqSession;
+use iroh_live::{
+    media::{format::VideoFrame, subscribe::VideoTrack},
+    moq::MoqSession,
+};
 use rusty_codecs::render::gles::GlesRenderer;
 
 /// Poll interval between frame checks (≈250 fps ceiling).
@@ -80,10 +81,10 @@ fn print_stats(
 
 // ── DRM display setup (shared by run_drm + run_fb_demo) ───────────
 
-use drm::Device as _;
-use drm::control::Device as ControlDevice;
-use gbm::AsRaw;
 use std::os::fd::AsFd;
+
+use drm::{Device as _, control::Device as ControlDevice};
+use gbm::AsRaw;
 
 struct Card(std::fs::File);
 impl AsFd for Card {
@@ -500,17 +501,21 @@ pub(crate) fn run_windowed(
 ) -> Result<()> {
     use std::num::NonZeroU32;
 
-    use glutin::config::ConfigTemplateBuilder;
-    use glutin::context::{ContextAttributesBuilder, NotCurrentGlContext, Version};
-    use glutin::display::{GetGlDisplay, GlDisplay};
-    use glutin::surface::{GlSurface, SurfaceAttributesBuilder, WindowSurface};
+    use glutin::{
+        config::ConfigTemplateBuilder,
+        context::{ContextAttributesBuilder, NotCurrentGlContext, Version},
+        display::{GetGlDisplay, GlDisplay},
+        surface::{GlSurface, SurfaceAttributesBuilder, WindowSurface},
+    };
     use glutin_winit::DisplayBuilder;
     use raw_window_handle::HasWindowHandle;
-    use winit::application::ApplicationHandler;
-    use winit::event::{ElementState, KeyEvent, WindowEvent};
-    use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-    use winit::keyboard::{Key, NamedKey};
-    use winit::window::{Fullscreen, Window, WindowId};
+    use winit::{
+        application::ApplicationHandler,
+        event::{ElementState, KeyEvent, WindowEvent},
+        event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+        keyboard::{Key, NamedKey},
+        window::{Fullscreen, Window, WindowId},
+    };
 
     struct App {
         renderer: Option<GlesRenderer>,

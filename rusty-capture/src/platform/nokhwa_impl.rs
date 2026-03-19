@@ -12,13 +12,16 @@
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use nokhwa::Camera;
-use nokhwa::pixel_format::RgbAFormat;
-use nokhwa::utils::{ApiBackend, CameraIndex, RequestedFormat, RequestedFormatType};
+use nokhwa::{
+    Camera,
+    pixel_format::RgbAFormat,
+    utils::{ApiBackend, CameraIndex, RequestedFormat, RequestedFormatType},
+};
+use rusty_codecs::{
+    format::{PixelFormat, VideoFormat, VideoFrame},
+    traits::VideoSource,
+};
 use tracing::{debug, warn};
-
-use rusty_codecs::format::{PixelFormat, VideoFormat, VideoFrame};
-use rusty_codecs::traits::VideoSource;
 
 use crate::types::{CameraConfig, CameraFormat, CameraInfo, CaptureBackend, CapturePixelFormat};
 

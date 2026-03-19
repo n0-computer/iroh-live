@@ -12,7 +12,6 @@
 //! cargo test -p moq-media --features "capture-camera,vaapi,dmabuf-import" \
 //!     --test zero_copy_pipeline -- --ignored --nocapture
 //! ```
-//!
 
 #[cfg(all(
     target_os = "linux",

@@ -11,8 +11,10 @@
 //!   is serialized on the input callback thread to avoid Mutex contention
 //!   between separate cpal input and output callbacks.
 
-pub(super) use self::processor::{AecProcessor, AecProcessorConfig};
-pub(super) use self::state::AecState;
+pub(super) use self::{
+    processor::{AecProcessor, AecProcessorConfig},
+    state::AecState,
+};
 
 mod processor {
     use std::sync::{

@@ -15,13 +15,12 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use rusty_codecs::{
+    format::{PixelFormat, VideoFormat, VideoFrame},
+    traits::VideoSource,
+};
 use tracing::{debug, info, warn};
-use x11rb::connection::Connection;
-use x11rb::protocol::shm;
-use x11rb::rust_connection::RustConnection;
-
-use rusty_codecs::format::{PixelFormat, VideoFormat, VideoFrame};
-use rusty_codecs::traits::VideoSource;
+use x11rb::{connection::Connection, protocol::shm, rust_connection::RustConnection};
 
 use crate::types::{MonitorInfo, ScreenConfig};
 

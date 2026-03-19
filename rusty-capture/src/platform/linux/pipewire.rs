@@ -28,32 +28,38 @@
 //! output from libcamera is preserved through PipeWire when the spa plugin and
 //! consumer both support it.
 
-use std::io::Cursor;
-use std::os::fd::OwnedFd;
-use std::os::unix::io::BorrowedFd;
-use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::{
+    io::Cursor,
+    os::{fd::OwnedFd, unix::io::BorrowedFd},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc,
+    },
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result};
-use libspa::buffer::DataType;
-use libspa::param::ParamType;
-use libspa::param::format::{FormatProperties, MediaSubtype, MediaType};
-use libspa::param::video::VideoFormat as SpaVideoFormat;
-use libspa::pod::serialize::PodSerializer;
-use libspa::pod::{ChoiceValue, Object, Pod, Property, Value};
-use libspa::utils::{Choice, ChoiceEnum, ChoiceFlags, Fraction, Id, Rectangle, SpaTypes};
+use libspa::{
+    buffer::DataType,
+    param::{
+        ParamType,
+        format::{FormatProperties, MediaSubtype, MediaType},
+        video::VideoFormat as SpaVideoFormat,
+    },
+    pod::{ChoiceValue, Object, Pod, Property, Value, serialize::PodSerializer},
+    utils::{Choice, ChoiceEnum, ChoiceFlags, Fraction, Id, Rectangle, SpaTypes},
+};
 use pipewire as pw;
 use pw::stream::StreamFlags;
-use tracing::{debug, info, warn};
-
-use rusty_codecs::format::{
-    DmaBufInfo, DmaBufPlaneInfo, GpuFrame, GpuFrameInner, GpuPixelFormat, NativeFrameHandle,
-    Nv12Planes, PixelFormat, VideoFormat, VideoFrame,
+use rusty_codecs::{
+    format::{
+        DmaBufInfo, DmaBufPlaneInfo, GpuFrame, GpuFrameInner, GpuPixelFormat, NativeFrameHandle,
+        Nv12Planes, PixelFormat, VideoFormat, VideoFrame,
+    },
+    traits::VideoSource,
 };
-use rusty_codecs::traits::VideoSource;
+use tracing::{debug, info, warn};
 
 use crate::types::{CameraConfig, ScreenConfig};
 
@@ -151,8 +157,9 @@ struct PipeWireDmaBufFrame {
 
 impl GpuFrameInner for PipeWireDmaBufFrame {
     fn download_rgba(&self) -> anyhow::Result<image::RgbaImage> {
-        use nix::sys::mman::{MapFlags, ProtFlags, mmap, munmap};
         use std::os::unix::io::AsFd;
+
+        use nix::sys::mman::{MapFlags, ProtFlags, mmap, munmap};
 
         let ptr = unsafe {
             mmap(
@@ -1050,8 +1057,10 @@ fn portal_screen_capture_thread(
     let rt = portal_runtime();
 
     rt.block_on(async {
-        use ashpd::desktop::PersistMode;
-        use ashpd::desktop::screencast::{CursorMode, Screencast, SourceType};
+        use ashpd::desktop::{
+            PersistMode,
+            screencast::{CursorMode, Screencast, SourceType},
+        };
         use tokio::time::timeout;
 
         let result = async {

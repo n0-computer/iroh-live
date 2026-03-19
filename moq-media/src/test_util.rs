@@ -4,14 +4,18 @@
 //! deterministic video/audio sources and a null audio backend for
 //! testing without hardware.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 use anyhow::Result;
 use n0_future::boxed::BoxFuture;
 
-use crate::format::AudioFormat;
-use crate::traits::{AudioSink, AudioSinkHandle, AudioSource, AudioStreamFactory};
+use crate::{
+    format::AudioFormat,
+    traits::{AudioSink, AudioSinkHandle, AudioSource, AudioStreamFactory},
+};
 
 // ── TestVideoSource ────────────────────────────────────────────────
 

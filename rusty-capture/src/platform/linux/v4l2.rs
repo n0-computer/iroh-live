@@ -23,19 +23,23 @@
 //! intended usage: one blocking call per frame, driven by the caller's
 //! thread.
 
-use std::fs::{File, OpenOptions};
-use std::os::unix::io::AsRawFd;
-use std::time::{Duration, Instant};
+use std::{
+    fs::{File, OpenOptions},
+    os::unix::io::AsRawFd,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result};
+use rusty_codecs::{
+    format::{PixelFormat, VideoFormat, VideoFrame},
+    traits::VideoSource,
+};
 use tracing::{debug, info};
-use v4l2r::PixelFormat as V4l2PixelFormat;
-use v4l2r::ioctl::{self, FormatIterator, PlaneMapping, QueryBuffer};
-use v4l2r::memory::{MemoryType, MmapHandle};
-use v4l2r::{Format, QueueType};
-
-use rusty_codecs::format::{PixelFormat, VideoFormat, VideoFrame};
-use rusty_codecs::traits::VideoSource;
+use v4l2r::{
+    Format, PixelFormat as V4l2PixelFormat, QueueType,
+    ioctl::{self, FormatIterator, PlaneMapping, QueryBuffer},
+    memory::{MemoryType, MmapHandle},
+};
 
 use crate::types::{CameraConfig, CameraFormat, CameraInfo, CapturePixelFormat};
 

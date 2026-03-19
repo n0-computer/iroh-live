@@ -13,8 +13,7 @@
 mod pipewire_reopen {
     use std::time::{Duration, Instant};
 
-    use rusty_capture::types::CameraConfig;
-    use rusty_capture::{PipeWireCameraCapturer, VideoSource};
+    use rusty_capture::{PipeWireCameraCapturer, VideoSource, types::CameraConfig};
 
     /// Tries to open a PipeWire camera. Returns `None` if no camera is
     /// available (skip the test gracefully).

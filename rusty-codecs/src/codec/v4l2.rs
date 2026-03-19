@@ -46,10 +46,10 @@
 mod decoder;
 mod encoder;
 
+use std::path::{Path, PathBuf};
+
 pub use decoder::V4l2Decoder;
 pub use encoder::V4l2Encoder;
-
-use std::path::{Path, PathBuf};
 
 /// Returns the V4L2 encoder device path.
 ///

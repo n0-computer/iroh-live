@@ -14,17 +14,21 @@
 //! - [`LibcameraYuvSource`] — produces raw I420 frames for use with a
 //!   separate encoder (V4L2 M2M, openh264, etc.).
 
-use std::io::Read;
-use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+use std::{
+    io::Read,
+    process::{Child, Command, Stdio},
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
 
-use crate::codec::h264::annexb::{build_avcc, extract_sps_pps, parse_annex_b};
-use crate::config::{H264, VideoCodec, VideoConfig};
-use crate::format::{EncodedFrame, PixelFormat, VideoFormat, VideoFrame};
-use crate::traits::{PreEncodedVideoSource, VideoSource};
+use crate::{
+    codec::h264::annexb::{build_avcc, extract_sps_pps, parse_annex_b},
+    config::{H264, VideoCodec, VideoConfig},
+    format::{EncodedFrame, PixelFormat, VideoFormat, VideoFrame},
+    traits::{PreEncodedVideoSource, VideoSource},
+};
 
 // ---------------------------------------------------------------------------
 // Pre-encoded H.264 source (preferred on Pi)

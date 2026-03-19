@@ -35,10 +35,11 @@
 use std::sync::mpsc;
 
 use anyhow::Result;
+use rusty_codecs::{
+    format::{PixelFormat, VideoFormat, VideoFrame},
+    traits::VideoSource,
+};
 use tracing::warn;
-
-use rusty_codecs::format::{PixelFormat, VideoFormat, VideoFrame};
-use rusty_codecs::traits::VideoSource;
 
 use crate::types::{CameraConfig, CameraInfo};
 
