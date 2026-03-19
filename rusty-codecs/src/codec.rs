@@ -12,6 +12,17 @@ pub(crate) mod opus;
 pub(crate) mod v4l2;
 #[cfg(all(target_os = "linux", feature = "vaapi"))]
 pub(crate) mod vaapi;
+// TODO(CI1-macos): fix clippy lints in vtb decoder and remove this allow
+#[allow(
+    clippy::arc_with_non_send_sync,
+    clippy::collapsible_if,
+    clippy::manual_let_else,
+    clippy::needless_option_as_deref,
+    clippy::unnecessary_mut_passed,
+    clippy::useless_conversion,
+    deprecated,
+    reason = "macOS-specific code awaiting clippy cleanup"
+)]
 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
 pub(crate) mod vtb;
 

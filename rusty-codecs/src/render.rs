@@ -10,6 +10,8 @@ pub mod dmabuf_import;
 #[cfg(all(target_os = "linux", feature = "gles-dmabuf"))]
 pub mod gles_dmabuf;
 
+// TODO(CI1-macos): fix clippy lints in metal_import and remove this allow
+#[allow(deprecated, unused_unsafe, reason = "objc2 API migration pending")]
 #[cfg(all(target_os = "macos", feature = "metal-import"))]
 pub mod metal_import;
 

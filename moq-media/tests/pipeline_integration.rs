@@ -18,7 +18,8 @@ use moq_media::{
 };
 use n0_watcher::Watcher as _;
 
-const TIMEOUT: Duration = Duration::from_secs(10);
+// Generous timeout for CI runners — rav1e AV1 encoding is slow on shared hardware.
+const TIMEOUT: Duration = Duration::from_secs(30);
 
 // ── Helpers ────────────────────────────────────────────────────────
 

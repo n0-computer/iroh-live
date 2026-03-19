@@ -96,7 +96,7 @@ impl H264Encoder {
             let bitstream = encoder.encode(&black)?;
             let annex_b = bitstream.to_vec();
             let nals = parse_annex_b(&annex_b);
-            let avcc = extract_sps_pps(&nals).map(|(sps, pps)| build_avcc(&sps, &pps));
+            let avcc = extract_sps_pps(&nals).map(|(sps, pps)| build_avcc(sps, pps));
             // Force the next real frame to be an IDR since we consumed the first one.
             encoder.force_intra_frame();
             avcc
@@ -250,7 +250,7 @@ impl VideoEncoder for H264Encoder {
         if self.nal_format == NalFormat::Avcc && self.avcc.is_none() {
             let nals = parse_annex_b(&annex_b);
             if let Some((sps, pps)) = extract_sps_pps(&nals) {
-                self.avcc = Some(build_avcc(&sps, &pps));
+                self.avcc = Some(build_avcc(sps, pps));
             }
         }
 

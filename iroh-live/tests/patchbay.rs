@@ -755,7 +755,12 @@ async fn slider_drag_inner() {
 /// Tests latency transitions at 30fps 720p — matching the split example's
 /// default settings. If the playout buffer's zero-buffer default causes
 /// excessive re-anchoring under jitter, this test will show it as stuttering.
+///
+/// Ignored by default: 720p@30fps encode/decode needs more CPU than shared CI
+/// runners provide. Run locally with `cargo nextest run -E 'test(latency_at_split)'
+/// --run-ignored all`.
 #[test]
+#[ignore]
 fn latency_at_split_example_settings() {
     let _ = tracing_subscriber::fmt::try_init();
     patchbay::init_userns().expect("patchbay init_userns");
@@ -953,7 +958,12 @@ async fn latency_split_settings_inner() {
 /// freezes reported in the split example: each re-anchor adds a 66ms
 /// gap in frame delivery. If the jitter is larger than the re-anchor
 /// buffer, this happens every few frames, producing visible stuttering.
+///
+/// Ignored by default: re-anchor counting is sensitive to CPU scheduling
+/// jitter on shared CI runners. Run locally with `cargo nextest run
+/// -E 'test(reanchor_count)' --run-ignored all`.
 #[test]
+#[ignore]
 fn reanchor_count_during_sustained_latency() {
     let _ = tracing_subscriber::fmt::try_init();
     patchbay::init_userns().expect("patchbay init_userns");

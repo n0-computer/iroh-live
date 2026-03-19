@@ -160,14 +160,14 @@ pub enum RoomEvent {
     /// Reserved for future use. Not currently emitted by the room actor.
     RemoteConnected {
         /// The connected session.
-        session: MoqSession,
+        session: Box<MoqSession>,
     },
     /// Successfully subscribed to a remote peer's broadcast.
     BroadcastSubscribed {
         /// The MoQ session with the remote peer.
-        session: MoqSession,
+        session: Box<MoqSession>,
         /// The subscribed broadcast, ready for video/audio decoding.
-        broadcast: RemoteBroadcast,
+        broadcast: Box<RemoteBroadcast>,
     },
 }
 
@@ -266,7 +266,7 @@ impl Actor {
                     match res {
                         Ok((session, broadcast)) => {
                             let closed_fut = broadcast.closed();
-                            self.event_tx.send(RoomEvent::BroadcastSubscribed { session, broadcast }).await.ok();
+                            self.event_tx.send(RoomEvent::BroadcastSubscribed { session: Box::new(session), broadcast: Box::new(broadcast) }).await.ok();
                             self.subscribe_closed.push(Box::pin(async move {
                                 closed_fut.await;
                                 id

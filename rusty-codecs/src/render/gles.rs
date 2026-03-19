@@ -463,6 +463,10 @@ impl Drop for GlesRenderer {
 /// Uploads pixel data, reusing `tex_sub_image_2d` when dimensions match.
 ///
 /// `cached_w` / `cached_h` track the last allocated size for this texture.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "GL upload needs all texture parameters"
+)]
 unsafe fn upload_tex(
     gl: &glow::Context,
     texture: glow::Texture,

@@ -338,6 +338,7 @@ struct SetupState {
 }
 
 struct InCallState {
+    #[allow(dead_code, reason = "kept alive to sustain the call")]
     session: MoqSession,
     #[allow(dead_code, reason = "kept alive to sustain the call")]
     call: Call,

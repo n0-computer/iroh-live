@@ -165,12 +165,12 @@ fn parse_real_bitstream_sps_pps_extraction() {
 fn avcc_roundtrip_with_real_bitstream() {
     let nals = annexb::parse_annex_b(IDR_32X32_RED);
     let (sps, pps) = annexb::extract_sps_pps(&nals).unwrap();
-    let avcc = annexb::build_avcc(&sps, &pps);
+    let avcc = annexb::build_avcc(sps, pps);
     let annex_b = annexb::avcc_to_annex_b(&avcc).unwrap();
     let recovered_nals = annexb::parse_annex_b(&annex_b);
     assert_eq!(recovered_nals.len(), 2);
-    assert_eq!(recovered_nals[0], &sps[..]);
-    assert_eq!(recovered_nals[1], &pps[..]);
+    assert_eq!(recovered_nals[0], sps);
+    assert_eq!(recovered_nals[1], pps);
 }
 
 #[test]

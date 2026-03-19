@@ -901,14 +901,9 @@ fn paint_timeline_panel(
 
         let mut sync_points: Vec<(f32, f32)> = Vec::new();
         for vf in &video_frames {
-            let closest_audio = audio_frames.iter().min_by_key(|af| {
-                let diff = if vf.pts > af.pts {
-                    vf.pts - af.pts
-                } else {
-                    af.pts - vf.pts
-                };
-                diff.as_millis()
-            });
+            let closest_audio = audio_frames
+                .iter()
+                .min_by_key(|af| vf.pts.abs_diff(af.pts).as_millis());
             if let Some(af) = closest_audio {
                 let signed_offset = if vf.render_wall >= af.render_wall {
                     vf.render_wall.duration_since(af.render_wall).as_secs_f32() * 1000.0
