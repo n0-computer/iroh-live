@@ -8,8 +8,8 @@ test.beforeAll(async () => {
   relay = await startRelay();
 });
 
-test.afterAll(() => {
-  stopRelay(relay);
+test.afterAll(async () => {
+  await stopRelay(relay);
 });
 
 test("Browser publish → CLI subscribe", async ({ page }) => {

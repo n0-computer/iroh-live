@@ -43,8 +43,16 @@ export async function startRelay(): Promise<RelayInfo> {
   return { process: proc, httpPort, irohAddr, dataDir };
 }
 
-export function stopRelay(relay: RelayInfo) {
+export async function stopRelay(relay: RelayInfo) {
+  if (!relay?.process) return;
   relay.process.kill();
+  // Wait for the process to exit so its ports are released before the
+  // next test starts a new relay on port 0.
+  await new Promise<void>((resolve) => {
+    relay.process.on("exit", () => resolve());
+    // Safety timeout in case the process doesn't exit cleanly.
+    setTimeout(resolve, 5_000);
+  });
   try {
     rmSync(relay.dataDir, { recursive: true, force: true });
   } catch {
