@@ -34,8 +34,6 @@ pub enum DynamicVideoDecoder {
     AndroidHwH264(Box<super::android::AndroidHwDecoder>),
     #[cfg(all(target_os = "android", feature = "android"))]
     AndroidH264(Box<super::android::AndroidDecoder>),
-    #[cfg(feature = "ffmpeg")]
-    FfmpegH264(Box<super::ffmpeg::FfmpegVideoDecoder>),
 }
 
 #[cfg(any_video_codec)]
@@ -81,28 +79,14 @@ impl VideoDecoder for DynamicVideoDecoder {
                         return Ok(Self::AndroidH264(Box::new(dec)));
                     }
                 }
-                #[cfg(feature = "ffmpeg")]
-                if matches!(playback_config.backend, crate::format::DecoderBackend::Auto)
-                    && let Ok(dec) = super::ffmpeg::FfmpegVideoDecoder::new(config, playback_config)
-                {
-                    tracing::info!("using FFmpeg H.264 decoder");
-                    return Ok(Self::FfmpegH264(Box::new(dec)));
-                }
                 tracing::info!("using software H.264 decoder");
                 Ok(Self::H264(super::H264VideoDecoder::new(
                     config,
                     playback_config,
                 )?))
             }
-            #[cfg(all(not(feature = "h264"), feature = "ffmpeg"))]
-            VideoCodec::H264(_) => {
-                tracing::info!("using FFmpeg H.264 decoder");
-                Ok(Self::FfmpegH264(Box::new(
-                    super::ffmpeg::FfmpegVideoDecoder::new(config, playback_config)?,
-                )))
-            }
-            #[cfg(not(any(feature = "h264", feature = "ffmpeg")))]
-            VideoCodec::H264(_) => bail!("H.264 support requires the `h264` or `ffmpeg` feature"),
+            #[cfg(not(feature = "h264"))]
+            VideoCodec::H264(_) => bail!("H.264 support requires the `h264` feature"),
             #[cfg(feature = "av1")]
             VideoCodec::AV1(_) => Ok(Self::Av1(super::av1::Av1VideoDecoder::new(
                 config,
@@ -130,9 +114,7 @@ impl VideoDecoder for DynamicVideoDecoder {
             Self::AndroidHwH264(d) => d.name(),
             #[cfg(all(target_os = "android", feature = "android"))]
             Self::AndroidH264(d) => d.name(),
-            #[cfg(feature = "ffmpeg")]
-            Self::FfmpegH264(d) => d.name(),
-            #[cfg(not(any(feature = "h264", feature = "av1", feature = "ffmpeg")))]
+            #[cfg(not(any(feature = "h264", feature = "av1")))]
             _ => unreachable!(),
         }
     }
@@ -153,9 +135,7 @@ impl VideoDecoder for DynamicVideoDecoder {
             Self::AndroidHwH264(d) => d.push_packet(packet),
             #[cfg(all(target_os = "android", feature = "android"))]
             Self::AndroidH264(d) => d.push_packet(packet),
-            #[cfg(feature = "ffmpeg")]
-            Self::FfmpegH264(d) => d.push_packet(packet),
-            #[cfg(not(any(feature = "h264", feature = "av1", feature = "ffmpeg")))]
+            #[cfg(not(any(feature = "h264", feature = "av1")))]
             _ => unreachable!(),
         }
     }
@@ -176,9 +156,7 @@ impl VideoDecoder for DynamicVideoDecoder {
             Self::AndroidHwH264(d) => d.pop_frame(),
             #[cfg(all(target_os = "android", feature = "android"))]
             Self::AndroidH264(d) => d.pop_frame(),
-            #[cfg(feature = "ffmpeg")]
-            Self::FfmpegH264(d) => d.pop_frame(),
-            #[cfg(not(any(feature = "h264", feature = "av1", feature = "ffmpeg")))]
+            #[cfg(not(any(feature = "h264", feature = "av1")))]
             _ => unreachable!(),
         }
     }
@@ -199,9 +177,7 @@ impl VideoDecoder for DynamicVideoDecoder {
             Self::AndroidHwH264(d) => d.set_viewport(w, h),
             #[cfg(all(target_os = "android", feature = "android"))]
             Self::AndroidH264(d) => d.set_viewport(w, h),
-            #[cfg(feature = "ffmpeg")]
-            Self::FfmpegH264(d) => d.set_viewport(w, h),
-            #[cfg(not(any(feature = "h264", feature = "av1", feature = "ffmpeg")))]
+            #[cfg(not(any(feature = "h264", feature = "av1")))]
             _ => unreachable!(),
         }
     }
@@ -222,9 +198,7 @@ impl VideoDecoder for DynamicVideoDecoder {
             Self::AndroidHwH264(d) => d.burst_size(),
             #[cfg(all(target_os = "android", feature = "android"))]
             Self::AndroidH264(d) => d.burst_size(),
-            #[cfg(feature = "ffmpeg")]
-            Self::FfmpegH264(d) => d.burst_size(),
-            #[cfg(not(any(feature = "h264", feature = "av1", feature = "ffmpeg")))]
+            #[cfg(not(any(feature = "h264", feature = "av1")))]
             _ => unreachable!(),
         }
     }

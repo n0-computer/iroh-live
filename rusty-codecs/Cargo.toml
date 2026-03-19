@@ -32,8 +32,6 @@ rubato = { version = "1.0", optional = true }
 audioadapter-buffers = { version = "2.0", optional = true }
 rav1e = { version = "0.8", optional = true }
 rav1d = { git = "https://github.com/memorysafety/rav1d", default-features = false, features = ["bitdepth_8", "bitdepth_16", "asm"], optional = true }
-ffmpeg-next = { version = "8", optional = true, default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
-ffmpeg-sys-next = { version = "8", optional = true }
 glow = { version = "0.16", optional = true }
 wgpu = { version = "27", optional = true, default-features = false, features = ["wgsl"] }
 wgpu-hal = { version = "27", optional = true, default-features = false }
@@ -75,7 +73,6 @@ wgpu = ["dep:wgpu"]
 metal-import = ["wgpu", "apple-gpu", "dep:metal", "dep:wgpu-hal", "dep:objc2-metal", "wgpu/metal", "wgpu-hal/metal", "objc2-core-video/CVMetalTexture", "objc2-core-video/CVMetalTextureCache", "objc2-core-video/objc2-metal"]
 media-foundation = []
 android = ["dep:ndk"]
-ffmpeg = ["dep:ffmpeg-next", "dep:ffmpeg-sys-next"]
 gles = ["dep:glow"]
 gles-dmabuf = ["gles"]
 dmabuf-import = ["wgpu", "dep:ash", "dep:gbm", "dep:drm-fourcc", "wgpu/vulkan"]
