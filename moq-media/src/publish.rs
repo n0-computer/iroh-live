@@ -121,7 +121,7 @@ pub struct LocalBroadcast {
     state: Arc<Mutex<State>>,
     #[debug(skip)]
     _task: Arc<AbortOnDropHandle<()>>,
-    metrics: crate::stats::MetricsCollector,
+    stats: crate::stats::PublishStats,
 }
 
 impl Default for LocalBroadcast {
@@ -136,11 +136,10 @@ impl LocalBroadcast {
         let mut producer = BroadcastProducer::default();
         let catalog = CatalogProducer::new(&mut producer).expect("not closed");
 
-        let metrics = crate::stats::MetricsCollector::new();
-        metrics.register_defaults();
+        let stats = crate::stats::PublishStats::default();
 
         let mut state = State::new(catalog);
-        state.metrics = Some(metrics.clone());
+        state.stats = Some(stats.capture.clone());
         let state = Arc::new(Mutex::new(state));
         let task_handle = tokio::spawn(Self::run(state.clone(), producer.clone()));
 
@@ -148,7 +147,7 @@ impl LocalBroadcast {
             producer,
             state,
             _task: Arc::new(AbortOnDropHandle::new(task_handle)),
-            metrics,
+            stats,
         }
     }
 
@@ -157,10 +156,10 @@ impl LocalBroadcast {
         self.producer.clone()
     }
 
-    /// Returns the metrics collector. Encode pipelines record into this
+    /// Returns the publish-side stats. Encode pipelines record into these
     /// automatically. External producers can record additional metrics.
-    pub fn metrics(&self) -> &crate::stats::MetricsCollector {
-        &self.metrics
+    pub fn stats(&self) -> &crate::stats::PublishStats {
+        &self.stats
     }
 
     /// Returns the video publishing handle.
@@ -497,7 +496,7 @@ struct State {
     available_audio: Option<AudioRenditions>,
     active_video: HashMap<String, VideoPipeline>,
     active_audio: HashMap<String, AudioEncoderPipeline>,
-    metrics: Option<crate::stats::MetricsCollector>,
+    stats: Option<crate::stats::CaptureStats>,
 }
 
 impl State {
@@ -511,7 +510,7 @@ impl State {
             available_audio: None,
             active_video: HashMap::new(),
             active_audio: HashMap::new(),
-            metrics: None,
+            stats: None,
         }
     }
 }
@@ -542,7 +541,7 @@ impl State {
         if let Some(video) = self.available_video.as_mut()
             && video.contains_rendition(&name)
         {
-            let pipeline = video.start_encoder(&name, track, self.metrics.clone())?;
+            let pipeline = video.start_encoder(&name, track, self.stats.clone())?;
             self.active_video
                 .insert(name, VideoPipeline::Encoder(pipeline));
             Ok(())
@@ -810,7 +809,7 @@ impl VideoRenditions {
         &mut self,
         name: &str,
         producer: TrackProducer,
-        metrics: Option<crate::stats::MetricsCollector>,
+        stats: Option<crate::stats::CaptureStats>,
     ) -> Result<VideoEncoderPipeline> {
         let entry = self
             .renditions
@@ -818,11 +817,11 @@ impl VideoRenditions {
             .context("rendition not available")?;
         let encoder = (entry.factory)()?;
         let sink = MoqPacketSink::new(producer);
-        Ok(VideoEncoderPipeline::with_metrics(
+        Ok(VideoEncoderPipeline::with_stats(
             self.source.clone(),
             encoder,
             sink,
-            metrics,
+            stats,
         ))
     }
 }

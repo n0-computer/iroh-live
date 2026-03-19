@@ -620,15 +620,14 @@ impl InCallState {
         ui.separator();
 
         // Update labels from remote track.
-        let m = self.remote.metrics();
+        let stats = self.remote.stats();
         if let Some(v) = &self.remote_video {
-            self.overlay.update_from_track(m, v.track());
+            self.overlay.update_from_track(stats, v.track());
         }
         // Stats overlay on the available rect below the separator.
         let stats_rect =
             egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 100.0));
-        let snap = m.snapshot();
-        self.overlay.show(ui, stats_rect, &snap);
+        self.overlay.show(ui, stats_rect, stats);
         ui.allocate_space(egui::vec2(ui.available_width(), 80.0));
     }
 }
@@ -665,7 +664,7 @@ impl CallApp {
         let remote = result.remote;
         iroh_live::util::spawn_stats_recorder(
             session.conn(),
-            remote.metrics().clone(),
+            remote.stats().net.clone(),
             remote.shutdown_token(),
         );
 

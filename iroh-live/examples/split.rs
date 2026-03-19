@@ -372,10 +372,9 @@ impl PublishView {
         }
 
         let video_rect = egui::Rect::from_min_size(video_origin, video_size);
-        let m = self.broadcast.metrics();
-        m.set_label(moq_media::stats::LBL_CODEC, self.codec.display_name());
-        let snap = m.snapshot();
-        self.overlay.show(ui, video_rect, &snap);
+        let stats = self.broadcast.stats();
+        stats.capture.codec.set(self.codec.display_name());
+        self.overlay.show_publish(ui, video_rect, stats);
     }
 
     fn shutdown(&self, rt: &tokio::runtime::Runtime) {
@@ -421,7 +420,7 @@ impl SubscribeView {
 
         iroh_live::util::spawn_stats_recorder(
             session.conn(),
-            broadcast.metrics().clone(),
+            broadcast.stats().net.clone(),
             broadcast.shutdown_token(),
         );
 
@@ -624,20 +623,16 @@ impl SubscribeView {
         }
 
         let video_rect = egui::Rect::from_min_size(video_origin, video_size);
-        let m = self.broadcast.metrics();
+        let stats = self.broadcast.stats();
         if let Some(v) = &self.video {
-            self.overlay.update_from_track(m, v.track());
-            m.set_label(
-                moq_media::stats::LBL_RENDERER,
-                if v.is_wgpu() {
-                    v.render_path_name()
-                } else {
-                    "cpu"
-                },
-            );
+            self.overlay.update_from_track(stats, v.track());
+            stats.render.renderer.set(if v.is_wgpu() {
+                v.render_path_name()
+            } else {
+                "cpu"
+            });
         }
-        let snap = m.snapshot();
-        self.overlay.show(ui, video_rect, &snap);
+        self.overlay.show(ui, video_rect, stats);
     }
 
     fn shutdown(&self) {

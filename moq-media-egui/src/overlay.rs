@@ -1,7 +1,7 @@
 //! Translucent overlay bars for painting stats on top of video.
 //!
 //! Provides [`DebugOverlay`] — a set of collapsible stat bars (NET,
-//! CAPTURE, RENDER, TIME) driven by [`MetricsSnapshot`]. Also provides the
+//! CAPTURE, RENDER, TIME) driven by typed stat structs. Also provides the
 //! low-level [`overlay_bar`] helper for custom overlays.
 
 use std::{
@@ -10,7 +10,7 @@ use std::{
 };
 
 use egui;
-use moq_media::stats::{self, MetricsCollector, MetricsSnapshot};
+use moq_media::stats::{self, Label, Metric, NetStats, PublishStats, SubscribeStats, Timeline};
 use moq_media::subscribe::VideoTrack;
 
 /// Height of a single overlay bar (text + padding).
@@ -100,68 +100,6 @@ impl StatCategory {
             Self::Time => "TIME",
         }
     }
-
-    /// Key metrics shown in the bottom bar summary (up to 3).
-    fn summary_metrics(self) -> &'static [&'static str] {
-        match self {
-            Self::Net => &[stats::NET_RTT_MS, stats::NET_BW_DOWN_MBPS],
-            Self::Capture => &[stats::CAP_FPS, stats::CAP_ENCODE_MS],
-            Self::Render => &[stats::RND_FPS, stats::RND_DECODE_MS],
-            Self::Time => &[stats::TMG_JITTER_MS, stats::TMG_DELAY_MS],
-        }
-    }
-
-    /// Key labels shown in the bottom bar summary.
-    fn summary_labels(self) -> &'static [&'static str] {
-        match self {
-            Self::Net => &[stats::LBL_PATH_TYPE],
-            Self::Capture => &[stats::LBL_CODEC],
-            Self::Render => &[stats::LBL_RENDERER],
-            Self::Time => &[],
-        }
-    }
-
-    /// All metrics for the expanded detail panel.
-    fn detail_metrics(self) -> &'static [&'static str] {
-        match self {
-            Self::Net => &[
-                stats::NET_RTT_MS,
-                stats::NET_LOSS_PCT,
-                stats::NET_BW_DOWN_MBPS,
-                stats::NET_BW_UP_MBPS,
-                stats::NET_PATHS_ACTIVE,
-            ],
-            Self::Capture => &[
-                stats::CAP_FPS,
-                stats::CAP_ENCODE_MS,
-                stats::CAP_BITRATE_KBPS,
-            ],
-            Self::Render => &[stats::RND_FPS, stats::RND_DECODE_MS],
-            Self::Time => &[
-                stats::TMG_JITTER_MS,
-                stats::TMG_DELAY_MS,
-                stats::TMG_DRIFT_MS,
-                stats::TMG_BUF_FRAMES,
-                stats::TMG_FRAMES_SKIPPED,
-                stats::TMG_FREEZES,
-            ],
-        }
-    }
-
-    /// All labels for the expanded detail panel.
-    fn detail_labels(self) -> &'static [&'static str] {
-        match self {
-            Self::Net => &[stats::LBL_PEER, stats::LBL_PATH_TYPE, stats::LBL_PATH_ADDR],
-            Self::Capture => &[stats::LBL_CODEC, stats::LBL_ENCODER, stats::LBL_RESOLUTION],
-            Self::Render => &[
-                stats::LBL_DECODER,
-                stats::LBL_RENDERER,
-                stats::LBL_RENDITION,
-                stats::LBL_RESOLUTION,
-            ],
-            Self::Time => &[],
-        }
-    }
 }
 
 /// Consolidated debug overlay with a persistent bottom bar and
@@ -197,21 +135,17 @@ impl DebugOverlay {
         self.visible = !self.visible;
     }
 
-    /// Updates labels from a [`VideoTrack`] into the collector.
+    /// Updates labels from a [`VideoTrack`] into the stats.
     ///
     /// Call this each frame before [`show`](Self::show) to keep decoder
     /// name, rendition, and resolution in sync with the current track state.
-    pub fn update_from_track(&self, metrics: &MetricsCollector, track: &VideoTrack) {
-        metrics.set_label(stats::LBL_DECODER, track.decoder_name());
-        metrics.set_label(stats::LBL_RENDITION, track.rendition());
+    pub fn update_from_track(&self, stats: &SubscribeStats, track: &VideoTrack) {
+        stats.render.decoder.set(track.decoder_name());
+        stats.render.rendition.set(track.rendition());
     }
 
-    /// Renders the overlay at the bottom of `video_rect`.
-    ///
-    /// For labels that can be derived from a `VideoTrack`, call
-    /// [`update_from_track`](Self::update_from_track) before this. For other
-    /// labels (renderer, peer, relay), use [`MetricsCollector::set_label`].
-    pub fn show(&mut self, ui: &mut egui::Ui, video_rect: egui::Rect, snap: &MetricsSnapshot) {
+    /// Renders the overlay at the bottom of `video_rect` using subscribe-side stats.
+    pub fn show(&mut self, ui: &mut egui::Ui, video_rect: egui::Rect, stats: &SubscribeStats) {
         if !self.visible {
             return;
         }
@@ -235,21 +169,12 @@ impl DebugOverlay {
                     egui::pos2(video_rect.min.x, y_cursor),
                     egui::vec2(video_rect.width(), height),
                 );
-                paint_timeline_panel(ui, rect, snap);
+                paint_timeline_panel(ui, rect, &stats.timeline, &stats.net);
                 continue;
             }
 
-            let label_count = cat
-                .detail_labels()
-                .iter()
-                .filter(|l| snap.label(l).is_some())
-                .count();
-            let metric_count = cat
-                .detail_metrics()
-                .iter()
-                .filter(|m| snap.series(m).is_some())
-                .count();
-            let line_count = label_count + metric_count;
+            let entries = detail_entries(cat, stats);
+            let line_count = entries.len();
             if line_count == 0 {
                 continue;
             }
@@ -259,7 +184,7 @@ impl DebugOverlay {
                 egui::pos2(video_rect.min.x, y_cursor),
                 egui::vec2(video_rect.width(), height),
             );
-            paint_detail_panel(ui, rect, cat, snap, &font);
+            paint_detail_panel_entries(ui, rect, &entries, &font);
         }
 
         // Bottom bar: all sections side by side.
@@ -274,7 +199,7 @@ impl DebugOverlay {
         let sections: Vec<(StatCategory, String)> = enabled
             .iter()
             .map(|&cat| {
-                let text = format_section_summary(cat, snap);
+                let text = format_section_summary_typed(cat, stats);
                 (cat, text)
             })
             .collect();
@@ -344,35 +269,264 @@ impl DebugOverlay {
             }
         }
     }
+
+    /// Renders the overlay for publish-side stats (capture only).
+    pub fn show_publish(
+        &mut self,
+        ui: &mut egui::Ui,
+        video_rect: egui::Rect,
+        stats: &PublishStats,
+    ) {
+        if !self.visible {
+            return;
+        }
+
+        let font = egui::FontId::monospace(11.0);
+        let enabled = self.enabled.clone();
+        let mut clicks: Vec<StatCategory> = Vec::new();
+
+        // Expanded detail panels.
+        let mut y_cursor = video_rect.max.y - OVERLAY_BAR_H;
+        for &cat in enabled.iter().rev() {
+            if self.expanded.get(&cat) != Some(&true) {
+                continue;
+            }
+
+            let entries = detail_entries_publish(cat, stats);
+            let line_count = entries.len();
+            if line_count == 0 {
+                continue;
+            }
+            let height = OVERLAY_BAR_H * (line_count as f32 + 0.5);
+            y_cursor -= height;
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(video_rect.min.x, y_cursor),
+                egui::vec2(video_rect.width(), height),
+            );
+            paint_detail_panel_entries(ui, rect, &entries, &font);
+        }
+
+        // Bottom bar.
+        let bar_rect = egui::Rect::from_min_size(
+            egui::pos2(video_rect.min.x, video_rect.max.y - OVERLAY_BAR_H),
+            egui::vec2(video_rect.width(), OVERLAY_BAR_H),
+        );
+        let painter = ui.painter();
+        painter.rect_filled(bar_rect, 0.0, egui::Color32::from_black_alpha(BG_ALPHA));
+
+        let sections: Vec<(StatCategory, String)> = enabled
+            .iter()
+            .map(|&cat| {
+                let text = format_section_summary_publish(cat, stats);
+                (cat, text)
+            })
+            .collect();
+
+        let padding = 8.0;
+        let mut x = bar_rect.min.x + padding;
+        for (i, (cat, text)) in sections.iter().enumerate() {
+            let galley = painter.layout_no_wrap(text.clone(), font.clone(), egui::Color32::WHITE);
+            let section_width = galley.size().x + 8.0;
+            let section_rect = egui::Rect::from_min_size(
+                egui::pos2(x - 4.0, bar_rect.min.y),
+                egui::vec2(section_width, OVERLAY_BAR_H),
+            );
+
+            let id = egui::Id::new(("dbg_pub_section", cat.label()));
+            let response = ui.interact(section_rect, id, egui::Sense::click());
+            if response.hovered() {
+                painter.rect_filled(section_rect, 2.0, egui::Color32::from_white_alpha(30));
+                painter.line_segment(
+                    [section_rect.left_bottom(), section_rect.right_bottom()],
+                    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(80)),
+                );
+            }
+            if response.clicked() {
+                clicks.push(*cat);
+            }
+
+            painter.galley(
+                egui::pos2(x, bar_rect.min.y + 1.0),
+                galley,
+                egui::Color32::WHITE,
+            );
+
+            x += section_width;
+
+            if i < sections.len() - 1 {
+                let sep_x = x + 2.0;
+                painter.line_segment(
+                    [
+                        egui::pos2(sep_x, bar_rect.min.y + 3.0),
+                        egui::pos2(sep_x, bar_rect.max.y - 3.0),
+                    ],
+                    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(40)),
+                );
+                x += 12.0;
+            }
+        }
+
+        for cat in clicks {
+            if let Some(exp) = self.expanded.get_mut(&cat) {
+                *exp = !*exp;
+            }
+        }
+    }
 }
 
-/// Formats the summary text for a section in the bottom bar.
-fn format_section_summary(cat: StatCategory, snap: &MetricsSnapshot) -> String {
+// ── Detail entry types ──────────────────────────────────────────────
+
+enum DetailEntry<'a> {
+    MetricEntry(&'a Metric),
+    LabelEntry {
+        name: &'static str,
+        label: &'a Label,
+    },
+}
+
+fn detail_entries<'a>(cat: StatCategory, stats: &'a SubscribeStats) -> Vec<DetailEntry<'a>> {
+    let mut entries = Vec::new();
+    match cat {
+        StatCategory::Net => {
+            push_label(&mut entries, "peer", &stats.net.peer);
+            push_label(&mut entries, "path", &stats.net.path_type);
+            push_label(&mut entries, "addr", &stats.net.path_addr);
+            push_metric(&mut entries, &stats.net.rtt_ms);
+            push_metric(&mut entries, &stats.net.loss_pct);
+            push_metric(&mut entries, &stats.net.bw_down_mbps);
+            push_metric(&mut entries, &stats.net.bw_up_mbps);
+            push_metric(&mut entries, &stats.net.paths_active);
+        }
+        StatCategory::Capture => {
+            // Subscribe side has no capture stats.
+        }
+        StatCategory::Render => {
+            push_label(&mut entries, "decoder", &stats.render.decoder);
+            push_label(&mut entries, "renderer", &stats.render.renderer);
+            push_label(&mut entries, "rendition", &stats.render.rendition);
+            push_metric(&mut entries, &stats.render.fps);
+            push_metric(&mut entries, &stats.render.decode_ms);
+        }
+        StatCategory::Time => {
+            push_metric(&mut entries, &stats.timing.jitter_ms);
+            push_metric(&mut entries, &stats.timing.delay_ms);
+            push_metric(&mut entries, &stats.timing.drift_ms);
+            push_metric(&mut entries, &stats.timing.buf_frames);
+            push_metric(&mut entries, &stats.timing.frames_skipped);
+            push_metric(&mut entries, &stats.timing.freezes);
+        }
+    }
+    entries
+}
+
+fn detail_entries_publish<'a>(cat: StatCategory, stats: &'a PublishStats) -> Vec<DetailEntry<'a>> {
+    let mut entries = Vec::new();
+    match cat {
+        StatCategory::Capture => {
+            push_label(&mut entries, "codec", &stats.capture.codec);
+            push_label(&mut entries, "encoder", &stats.capture.encoder);
+            push_label(&mut entries, "resolution", &stats.capture.resolution);
+            push_metric(&mut entries, &stats.capture.fps);
+            push_metric(&mut entries, &stats.capture.encode_ms);
+            push_metric(&mut entries, &stats.capture.bitrate_kbps);
+        }
+        StatCategory::Net => {
+            push_label(&mut entries, "peer", &stats.net.peer);
+            push_label(&mut entries, "path", &stats.net.path_type);
+            push_label(&mut entries, "addr", &stats.net.path_addr);
+            push_metric(&mut entries, &stats.net.rtt_ms);
+            push_metric(&mut entries, &stats.net.loss_pct);
+            push_metric(&mut entries, &stats.net.bw_down_mbps);
+            push_metric(&mut entries, &stats.net.bw_up_mbps);
+            push_metric(&mut entries, &stats.net.paths_active);
+        }
+        _ => {}
+    }
+    entries
+}
+
+fn push_metric<'a>(entries: &mut Vec<DetailEntry<'a>>, metric: &'a Metric) {
+    if metric.has_samples() {
+        entries.push(DetailEntry::MetricEntry(metric));
+    }
+}
+
+fn push_label<'a>(entries: &mut Vec<DetailEntry<'a>>, name: &'static str, label: &'a Label) {
+    let val = label.get();
+    if !val.is_empty() {
+        entries.push(DetailEntry::LabelEntry { name, label });
+    }
+}
+
+// ── Summary formatting ──────────────────────────────────────────────
+
+fn format_section_summary_typed(cat: StatCategory, stats: &SubscribeStats) -> String {
     let mut parts = vec![cat.label().to_string()];
-
-    // Labels first (e.g. "wgpu/dmabuf").
-    for &lbl_name in cat.summary_labels() {
-        if let Some(val) = snap.label(lbl_name) {
-            parts.push(format!(" {val}"));
+    match cat {
+        StatCategory::Net => {
+            push_label_summary(&mut parts, &stats.net.path_type);
+            push_metric_summary(&mut parts, &stats.net.rtt_ms);
+            push_metric_summary(&mut parts, &stats.net.bw_down_mbps);
+        }
+        StatCategory::Capture => {
+            // Subscribe side has no capture stats.
+        }
+        StatCategory::Render => {
+            push_label_summary(&mut parts, &stats.render.renderer);
+            push_metric_summary(&mut parts, &stats.render.fps);
+            push_metric_summary(&mut parts, &stats.render.decode_ms);
+        }
+        StatCategory::Time => {
+            push_metric_summary(&mut parts, &stats.timing.jitter_ms);
+            push_metric_summary(&mut parts, &stats.timing.delay_ms);
         }
     }
-
-    // Then key metrics.
-    for &name in cat.summary_metrics() {
-        if let Some(ts) = snap.series(name) {
-            parts.push(format!(" {}:{:.0}{}", ts.label, ts.current, ts.unit));
-        }
-    }
-
     parts.join("")
 }
 
-/// Paints the expanded detail panel for a category.
-fn paint_detail_panel(
+fn format_section_summary_publish(cat: StatCategory, stats: &PublishStats) -> String {
+    let mut parts = vec![cat.label().to_string()];
+    match cat {
+        StatCategory::Capture => {
+            push_label_summary(&mut parts, &stats.capture.codec);
+            push_metric_summary(&mut parts, &stats.capture.fps);
+            push_metric_summary(&mut parts, &stats.capture.encode_ms);
+        }
+        StatCategory::Net => {
+            push_label_summary(&mut parts, &stats.net.path_type);
+            push_metric_summary(&mut parts, &stats.net.rtt_ms);
+            push_metric_summary(&mut parts, &stats.net.bw_up_mbps);
+        }
+        _ => {}
+    }
+    parts.join("")
+}
+
+fn push_metric_summary(parts: &mut Vec<String>, metric: &Metric) {
+    if metric.has_samples() {
+        let meta = metric.meta();
+        parts.push(format!(
+            " {}:{:.0}{}",
+            meta.label,
+            metric.current(),
+            meta.unit
+        ));
+    }
+}
+
+fn push_label_summary(parts: &mut Vec<String>, label: &Label) {
+    let val = label.get();
+    if !val.is_empty() {
+        parts.push(format!(" {val}"));
+    }
+}
+
+// ── Detail panel painting ───────────────────────────────────────────
+
+fn paint_detail_panel_entries(
     ui: &mut egui::Ui,
     rect: egui::Rect,
-    cat: StatCategory,
-    snap: &MetricsSnapshot,
+    entries: &[DetailEntry<'_>],
     font: &egui::FontId,
 ) {
     let painter = ui.painter();
@@ -381,82 +535,71 @@ fn paint_detail_panel(
     let mut y = rect.min.y + 2.0;
     let dim = egui::Color32::from_rgb(160, 160, 160);
 
-    // Labels.
-    for &lbl_name in cat.detail_labels() {
-        if let Some(val) = snap.label(lbl_name) {
-            // Use the part after "lbl." as the display name.
-            let display_name = lbl_name.strip_prefix("lbl.").unwrap_or(lbl_name);
-            let text = format!("  {display_name}: {val}");
-            let galley = painter.layout_no_wrap(text, font.clone(), dim);
-            painter.galley(egui::pos2(rect.min.x + 6.0, y), galley, dim);
-            y += OVERLAY_BAR_H;
-        }
-    }
-
-    // Metrics with sparklines.
-    for &name in cat.detail_metrics() {
-        if let Some(ts) = snap.series(name) {
-            let color = metric_color(name, ts.current);
-            let text = format!("  {}:{:.1}{}", ts.label, ts.current, ts.unit);
-            let galley = painter.layout_no_wrap(text, font.clone(), color);
-            painter.galley(egui::pos2(rect.min.x + 6.0, y), galley, color);
-
-            if ts.history.len() >= 2 {
-                let spark_w = 100.0;
-                let spark_h = OVERLAY_BAR_H - 4.0;
-                let spark_x = rect.max.x - spark_w - 6.0;
-                let spark_rect = egui::Rect::from_min_size(
-                    egui::pos2(spark_x, y + 2.0),
-                    egui::vec2(spark_w, spark_h),
-                );
-                paint_sparkline(painter, spark_rect, &ts.history, color);
+    for entry in entries {
+        match entry {
+            DetailEntry::LabelEntry { name, label } => {
+                let val = label.get();
+                let text = format!("  {name}: {val}");
+                let galley = painter.layout_no_wrap(text, font.clone(), dim);
+                painter.galley(egui::pos2(rect.min.x + 6.0, y), galley, dim);
+                y += OVERLAY_BAR_H;
             }
+            DetailEntry::MetricEntry(metric) => {
+                let meta = metric.meta();
+                let value = metric.current();
+                let color = metric_color_from_thresholds(meta.thresholds, value);
+                let text = format!("  {}:{:.1}{}", meta.label, value, meta.unit);
+                let galley = painter.layout_no_wrap(text, font.clone(), color);
+                painter.galley(egui::pos2(rect.min.x + 6.0, y), galley, color);
 
-            y += OVERLAY_BAR_H;
+                let history = metric.history();
+                if history.len() >= 2 {
+                    let spark_w = 100.0;
+                    let spark_h = OVERLAY_BAR_H - 4.0;
+                    let spark_x = rect.max.x - spark_w - 6.0;
+                    let spark_rect = egui::Rect::from_min_size(
+                        egui::pos2(spark_x, y + 2.0),
+                        egui::vec2(spark_w, spark_h),
+                    );
+                    paint_sparkline(painter, spark_rect, &history, color);
+                }
+
+                y += OVERLAY_BAR_H;
+            }
         }
     }
 }
 
-/// Color-codes a metric value: green (good), yellow (warn), red (bad).
-fn metric_color(name: &str, value: f64) -> egui::Color32 {
-    match name {
-        stats::NET_RTT_MS => {
-            if value < 30.0 {
-                egui::Color32::from_rgb(100, 220, 100)
-            } else if value < 100.0 {
-                egui::Color32::from_rgb(220, 200, 80)
-            } else {
-                egui::Color32::from_rgb(220, 80, 80)
-            }
+/// Color-codes a metric value using threshold metadata.
+fn metric_color_from_thresholds(
+    thresholds: Option<stats::Thresholds>,
+    value: f64,
+) -> egui::Color32 {
+    let Some(t) = thresholds else {
+        return egui::Color32::WHITE;
+    };
+    let good = egui::Color32::from_rgb(100, 220, 100);
+    let warn = egui::Color32::from_rgb(220, 200, 80);
+    let bad = egui::Color32::from_rgb(220, 80, 80);
+
+    if t.inverted {
+        // Higher is better (e.g. FPS).
+        if value > t.good {
+            good
+        } else if value > t.warn {
+            warn
+        } else {
+            bad
         }
-        stats::NET_LOSS_PCT => {
-            if value < 2.0 {
-                egui::Color32::from_rgb(100, 220, 100)
-            } else if value < 10.0 {
-                egui::Color32::from_rgb(220, 200, 80)
-            } else {
-                egui::Color32::from_rgb(220, 80, 80)
-            }
+    } else {
+        // Lower is better (e.g. RTT, loss).
+        if value < t.good {
+            good
+        } else if value < t.warn {
+            warn
+        } else {
+            bad
         }
-        stats::RND_FPS | stats::CAP_FPS => {
-            if value > 25.0 {
-                egui::Color32::from_rgb(100, 220, 100)
-            } else if value > 15.0 {
-                egui::Color32::from_rgb(220, 200, 80)
-            } else {
-                egui::Color32::from_rgb(220, 80, 80)
-            }
-        }
-        stats::TMG_JITTER_MS => {
-            if value < 10.0 {
-                egui::Color32::from_rgb(100, 220, 100)
-            } else if value < 30.0 {
-                egui::Color32::from_rgb(220, 200, 80)
-            } else {
-                egui::Color32::from_rgb(220, 80, 80)
-            }
-        }
-        _ => egui::Color32::WHITE,
     }
 }
 
@@ -509,7 +652,7 @@ const FRAME_BAD: egui::Color32 = egui::Color32::from_rgb(200, 68, 68);
 const GRID_COLOR: egui::Color32 = egui::Color32::from_rgb(50, 50, 50);
 
 /// Paints the timeline panel: RTT line chart + video frame boxes.
-fn paint_timeline_panel(ui: &mut egui::Ui, rect: egui::Rect, snap: &MetricsSnapshot) {
+fn paint_timeline_panel(ui: &mut egui::Ui, rect: egui::Rect, timeline: &Timeline, net: &NetStats) {
     let painter = ui.painter();
     painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(BG_ALPHA));
 
@@ -540,7 +683,7 @@ fn paint_timeline_panel(ui: &mut egui::Ui, rect: egui::Rect, snap: &MetricsSnaps
     // --- RTT strip (top) ---
     let rtt_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), RTT_STRIP_H));
 
-    let rtt = &snap.timeline.rtt_samples;
+    let rtt = net.rtt_ms.history();
     if rtt.len() >= 2 {
         // Filter to visible window.
         let visible: Vec<_> = rtt.iter().filter(|(t, _)| *t >= t_min).collect();
@@ -582,7 +725,7 @@ fn paint_timeline_panel(ui: &mut egui::Ui, rect: egui::Rect, snap: &MetricsSnaps
         egui::vec2(rect.width(), FRAME_STRIP_H),
     );
 
-    let frames = &snap.timeline.video_frames;
+    let frames = timeline.snapshot();
     if !frames.is_empty() {
         // Label.
         let galley = painter.layout_no_wrap("VIDEO".to_string(), font.clone(), egui::Color32::GRAY);
@@ -596,9 +739,7 @@ fn paint_timeline_panel(ui: &mut egui::Ui, rect: egui::Rect, snap: &MetricsSnaps
         let box_y = frame_rect.min.y + 14.0;
 
         for (i, entry) in frames.iter().enumerate() {
-            let Some(render_wall) = entry.render_wall else {
-                continue;
-            };
+            let render_wall = entry.render_wall;
             if render_wall < t_min {
                 continue;
             }
@@ -608,10 +749,9 @@ fn paint_timeline_panel(ui: &mut egui::Ui, rect: egui::Rect, snap: &MetricsSnaps
             // Box width: gap to next frame, or 3px minimum.
             let next_x = frames
                 .get(i + 1)
-                .and_then(|e| e.render_wall)
-                .map(|t| time_to_x(t))
+                .map(|e| time_to_x(e.render_wall))
                 .unwrap_or(x + 6.0);
-            let box_w = (next_x - x - 1.0).max(3.0).min(20.0);
+            let box_w = (next_x - x - 1.0).clamp(3.0, 20.0);
 
             // Color based on decode-to-render latency.
             let color = if let Some(decode_end) = entry.decode_end {

@@ -209,7 +209,7 @@ impl RemoteTrackView {
     fn new(ctx: &egui::Context, session: MoqSession, track: MediaTracks, id: usize) -> Self {
         iroh_live::util::spawn_stats_recorder(
             session.conn(),
-            track.broadcast.metrics().clone(),
+            track.broadcast.stats().net.clone(),
             track.broadcast.shutdown_token(),
         );
         Self {
@@ -242,8 +242,7 @@ impl RemoteTrackView {
     }
 
     fn render_overlay_in_rect(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
-        let snap = self.broadcast.metrics().snapshot();
-        self.overlay.show(ui, rect, &snap);
+        self.overlay.show(ui, rect, self.broadcast.stats());
     }
 }
 
