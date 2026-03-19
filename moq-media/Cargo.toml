@@ -16,7 +16,7 @@ bytemuck = "1.24.0"
 byte-unit = { version = "5.1", features = ["bit"] }
 data-encoding = "2.9.0"
 derive_more = { version = "2.0.1", features = ["display", "debug", "eq", "deref"] }
-cpal = { path = "/home/bit/Code/rust/cpal" }
+cpal = { git = "https://github.com/RustAudio/cpal.git", branch = "master" }
 fixed-resample = { version = "0.9", features = ["resampler"] }
 arc-swap = "1.7"
 ringbuf = "0.4"
