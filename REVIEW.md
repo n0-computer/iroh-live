@@ -185,10 +185,10 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 
 - [ ] **RC16**: VAAPI device path hardcoded to `/dev/dri/renderD128` — multi-GPU or renamed nodes fail silently (`vaapi/encoder.rs`, `vaapi/decoder.rs`, `ffmpeg/decoder.rs:66`)
 - [ ] **RC17**: Opus pre-skip always zero — standard encoder delay is 312 samples, can cause A/V sync drift (`opus/encoder.rs:210`)
-- [ ] **RC18**: Vulkan command pool not destroyed on DmaBufImporter drop — resource leak (`render/dmabuf_import.rs`)
+- [x] **RC18**: Vulkan command pool not destroyed on DmaBufImporter drop — verified: already cleaned up in Drop impl (`render/dmabuf_import.rs:949`)
 - [ ] **RC19**: AV1 decoder stride assumption — no assert that `picture.stride() >= width` (`av1/decoder.rs:87-89`)
 - [ ] **RC20**: FFmpeg `get_extradata()` lacks safety comments on raw pointer dereference (`ffmpeg/encoder.rs:612-625`)
-- [ ] **RC21**: V4L2 decoder `copy_plane()` allocates Vec even when stride == width — could return slice (`v4l2/decoder.rs:322-336`)
+- [x] **RC21**: V4L2 decoder `copy_plane()` allocates Vec even when stride == width — fixed: returns `Cow<[u8]>` for zero-copy fast path
 - [ ] **RC22**: VAAPI VPP retiler re-initializes on every incompatible frame — should set initialized flag on error to stop retrying (`render/dmabuf_import.rs:157-168`)
 
 ### rusty-capture

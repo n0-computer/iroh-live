@@ -109,9 +109,9 @@ impl VideoDecoder for VtbDecoder {
                 avcc_to_annex_b(description).context("failed to parse avcC description")?;
             let nals = parse_annex_b(&annex_b);
             let (sps, pps) = extract_sps_pps(&nals).context("no SPS/PPS in avcC")?;
-            let (session, format_desc) = create_session(&sps, &pps, &state)?;
+            let (session, format_desc) = create_session(sps, pps, &state)?;
             tracing::info!("VideoToolbox H.264 decoder ready (eager)");
-            (Some(session), Some(format_desc), sps)
+            (Some(session), Some(format_desc), sps.to_vec())
         } else {
             tracing::info!(
                 "VideoToolbox H.264 decoder created (deferred — waiting for first keyframe)"

@@ -41,7 +41,10 @@ pub(crate) fn parse_annex_b(data: &[u8]) -> Vec<&[u8]> {
 }
 
 /// Extract SPS (NAL type 7) and PPS (NAL type 8) from a slice of NAL units.
-pub(crate) fn extract_sps_pps(nals: &[&[u8]]) -> Option<(Vec<u8>, Vec<u8>)> {
+///
+/// Returns borrowed slices into the original NAL data, avoiding per-keyframe
+/// allocation.
+pub(crate) fn extract_sps_pps<'a>(nals: &[&'a [u8]]) -> Option<(&'a [u8], &'a [u8])> {
     let mut sps = None;
     let mut pps = None;
     for nal in nals {
@@ -50,8 +53,8 @@ pub(crate) fn extract_sps_pps(nals: &[&[u8]]) -> Option<(Vec<u8>, Vec<u8>)> {
         }
         let nal_type = nal[0] & 0x1F;
         match nal_type {
-            7 => sps = Some(nal.to_vec()),
-            8 => pps = Some(nal.to_vec()),
+            7 => sps = Some(*nal),
+            8 => pps = Some(*nal),
             _ => {}
         }
     }

@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use image::RgbaImage;
 use openh264::{decoder::Decoder, formats::YUVSource};
 
 use super::annexb::{avcc_to_annex_b, length_prefixed_to_annex_b};
@@ -25,9 +24,9 @@ pub struct H264VideoDecoder {
     scaler: Scaler,
     viewport_changed: Option<(u32, u32)>,
     last_timestamp: Option<Duration>,
-    /// Decoded frame waiting to be collected via `pop_frame`.
+    /// Decoded pixel data waiting to be collected via `pop_frame`: `(pixels, w, h)`.
     #[debug(skip)]
-    pending_frame: Option<(RgbaImage, u32, u32)>,
+    pending_frame: Option<(Vec<u8>, u32, u32)>,
 }
 
 impl VideoDecoder for H264VideoDecoder {
@@ -135,9 +134,7 @@ impl VideoDecoder for H264VideoDecoder {
                 }
             };
 
-            let img = RgbaImage::from_raw(w, h, pixels)
-                .context("failed to create RgbaImage from pixel data")?;
-            self.pending_frame = Some((img, w, h));
+            self.pending_frame = Some((pixels, w, h));
         }
 
         self.last_timestamp = Some(packet.timestamp);
@@ -145,7 +142,7 @@ impl VideoDecoder for H264VideoDecoder {
     }
 
     fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {
-        let Some((img, src_w, src_h)) = self.pending_frame.take() else {
+        let Some((pixels, src_w, src_h)) = self.pending_frame.take() else {
             return Ok(None);
         };
 
@@ -159,10 +156,10 @@ impl VideoDecoder for H264VideoDecoder {
         }
 
         let (data, w, h) =
-            if let Some((scaled, sw, sh)) = self.scaler.scale_rgba(img.as_raw(), src_w, src_h)? {
+            if let Some((scaled, sw, sh)) = self.scaler.scale_rgba(&pixels, src_w, src_h)? {
                 (scaled, sw, sh)
             } else {
-                (img.into_raw(), src_w, src_h)
+                (pixels, src_w, src_h)
             };
 
         Ok(Some(VideoFrame::new_cpu_with_format(
