@@ -655,6 +655,104 @@ async fn latency_poll_based_inner() {
     fixture.shutdown().await;
 }
 
+/// Simulates the user dragging the latency slider from 0 to 500ms over
+/// 2 seconds with incremental steps, mimicking the split example's UI.
+/// This is the most realistic reproduction of the reported freeze: rapid
+/// small latency changes rather than a single large jump.
+#[test]
+fn slider_drag_latency_ramp() {
+    let _ = tracing_subscriber::fmt::try_init();
+    patchbay::init_userns().expect("patchbay init_userns");
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    rt.block_on(slider_drag_inner());
+}
+
+async fn slider_drag_inner() {
+    let fixture = PatchbayFixture::new().await;
+    fixture.remote.set_skip_threshold(Duration::from_secs(10));
+
+    let mut track = tokio::time::timeout(FRAME_TIMEOUT, fixture.remote.video_ready())
+        .await
+        .expect("timeout")
+        .expect("video_ready");
+
+    // Warmup.
+    let _ = drain_frames(&mut track, Duration::from_secs(2)).await;
+
+    let (_, reanchors_before) = fixture.remote.clock().reanchor_stats();
+
+    // Simulate dragging slider from 0→500ms in 20 steps over 2s.
+    for step in 0..=20u32 {
+        let latency_ms = step * 25; // 0, 25, 50, ..., 500
+        fixture.set_latency(latency_ms).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Hold at 500ms for 3s and measure.
+    let sustained = poll_frames(&mut track, Duration::from_secs(3));
+    let sustained_gaps = inter_frame_gaps(&sustained);
+    let (_, reanchors_after) = fixture.remote.clock().reanchor_stats();
+    let ramp_reanchors = reanchors_after - reanchors_before;
+
+    let stutter_count = sustained_gaps
+        .iter()
+        .filter(|g| **g > Duration::from_millis(100))
+        .count();
+    info!(
+        frames = sustained.len(),
+        ramp_reanchors,
+        stutter_count,
+        max_gap_ms = sustained_gaps
+            .iter()
+            .max()
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+        "after slider drag 0→500ms"
+    );
+
+    // Drag back down: 500→0ms in 20 steps.
+    for step in (0..=20u32).rev() {
+        let latency_ms = step * 25;
+        fixture.set_latency(latency_ms).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Settle and measure recovery.
+    let _ = poll_frames(&mut track, Duration::from_secs(2));
+    let recovery = poll_frames(&mut track, Duration::from_secs(3));
+    let recovery_gaps = inter_frame_gaps(&recovery);
+    let violation_rate = gap_violation_rate(&recovery_gaps, Duration::from_millis(200));
+
+    info!(
+        frames = recovery.len(),
+        violation_pct = format!("{:.1}", violation_rate * 100.0),
+        max_gap_ms = recovery_gaps
+            .iter()
+            .max()
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+        "recovery after slider drag round-trip"
+    );
+
+    assert!(
+        recovery.len() >= 15,
+        "slider drag recovery too few frames: {}",
+        recovery.len()
+    );
+    assert!(
+        violation_rate <= 0.15,
+        "slider drag recovery: {:.1}% of gaps exceed 200ms",
+        violation_rate * 100.0,
+    );
+
+    fixture.shutdown().await;
+}
+
 /// Tests latency transitions at 30fps 720p — matching the split example's
 /// default settings. If the playout buffer's zero-buffer default causes
 /// excessive re-anchoring under jitter, this test will show it as stuttering.
@@ -849,4 +947,98 @@ async fn latency_split_settings_inner() {
     remote.shutdown();
     publisher.shutdown().await;
     subscriber.shutdown().await;
+}
+
+/// Measures playout clock re-anchoring during sustained high latency.
+/// Excessive re-anchoring under jitter is the most likely cause of the
+/// freezes reported in the split example: each re-anchor adds a 66ms
+/// gap in frame delivery. If the jitter is larger than the re-anchor
+/// buffer, this happens every few frames, producing visible stuttering.
+#[test]
+fn reanchor_count_during_sustained_latency() {
+    let _ = tracing_subscriber::fmt::try_init();
+    patchbay::init_userns().expect("patchbay init_userns");
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    rt.block_on(reanchor_count_inner());
+}
+
+async fn reanchor_count_inner() {
+    let fixture = PatchbayFixture::new().await;
+    fixture.remote.set_skip_threshold(Duration::from_secs(10));
+
+    let mut track = tokio::time::timeout(FRAME_TIMEOUT, fixture.remote.video_ready())
+        .await
+        .expect("timeout")
+        .expect("video_ready");
+
+    // Warmup.
+    let _ = drain_frames(&mut track, Duration::from_secs(2)).await;
+
+    // Record reanchor baseline.
+    let (drift_before, reanchors_before) = fixture.remote.clock().reanchor_stats();
+    info!(
+        drift_ms = drift_before.as_millis(),
+        reanchors_before, "before latency"
+    );
+
+    // Apply 500ms latency with proportional jitter (100ms).
+    fixture.set_latency(500).await;
+
+    // Run for 5s under sustained latency.
+    let sustained = poll_frames(&mut track, Duration::from_secs(5));
+    let sustained_gaps = inter_frame_gaps(&sustained);
+    let (drift_after, reanchors_after) = fixture.remote.clock().reanchor_stats();
+    let new_reanchors = reanchors_after - reanchors_before;
+    let new_drift = drift_after.saturating_sub(drift_before);
+
+    let stutter_count = sustained_gaps
+        .iter()
+        .filter(|g| **g > Duration::from_millis(100))
+        .count();
+
+    info!(
+        frames = sustained.len(),
+        new_reanchors,
+        new_drift_ms = new_drift.as_millis(),
+        stutter_count,
+        max_gap_ms = sustained_gaps
+            .iter()
+            .max()
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+        "sustained 500ms latency"
+    );
+
+    // After the initial transition stutter, sustained latency should NOT
+    // cause ongoing re-anchoring. The playout clock should anchor once
+    // (or a few times) during the transition, then stabilize. Anything
+    // above ~5 re-anchors in 5 seconds indicates the jitter buffer is
+    // too small for the arrival variance.
+    assert!(
+        new_reanchors <= 10,
+        "too many re-anchors during sustained latency: {} (drift: {}ms). \
+         The playout clock's jitter buffer may be too small for the \
+         inter-arrival variance.",
+        new_reanchors,
+        new_drift.as_millis(),
+    );
+
+    // Clear latency and verify recovery.
+    fixture.set_impairment(Default::default()).await;
+    let _ = drain_frames(&mut track, Duration::from_secs(2)).await;
+    let recovery = poll_frames(&mut track, Duration::from_secs(2));
+    let recovery_gaps = inter_frame_gaps(&recovery);
+    let violation_rate = gap_violation_rate(&recovery_gaps, Duration::from_millis(200));
+    info!(
+        frames = recovery.len(),
+        violation_pct = format!("{:.1}", violation_rate * 100.0),
+        "recovery after sustained latency"
+    );
+
+    fixture.shutdown().await;
 }
