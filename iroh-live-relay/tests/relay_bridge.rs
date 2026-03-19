@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use moq_media::publish::VideoInput;
 use moq_native::moq_lite::{Origin, Track};
 use serial_test::serial;
 
@@ -172,11 +173,11 @@ async fn iroh_publish_iroh_subscribe() {
     let source = moq_media::test_util::TestVideoSource::new(320, 240).with_fps(30.0);
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             source,
             moq_media::codec::VideoCodec::best_available().expect("no codec"),
             [moq_media::format::VideoPreset::P180],
-        )
+        ))
         .expect("set video");
     publisher
         .publish("relay-test", &broadcast)
@@ -347,11 +348,11 @@ async fn pull_remote_broadcast_via_ticket() {
     let source = moq_media::test_util::TestVideoSource::new(320, 240).with_fps(30.0);
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             source,
             moq_media::codec::VideoCodec::best_available().expect("no codec"),
             [moq_media::format::VideoPreset::P180],
-        )
+        ))
         .expect("set video");
     publisher
         .publish("remote-stream", &broadcast)
@@ -468,11 +469,11 @@ async fn iroh_publish_noq_subscribe() {
     let source = moq_media::test_util::TestVideoSource::new(320, 240).with_fps(30.0);
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             source,
             moq_media::codec::VideoCodec::best_available().expect("no codec"),
             [moq_media::format::VideoPreset::P180],
-        )
+        ))
         .expect("set video");
     publisher
         .publish("cli-stream", &broadcast)

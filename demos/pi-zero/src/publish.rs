@@ -5,7 +5,11 @@ use clap::Parser;
 use iroh::{Endpoint, EndpointId};
 use iroh_live::{
     Live,
-    media::{codec::VideoCodec, format::VideoPreset, publish::LocalBroadcast},
+    media::{
+        codec::VideoCodec,
+        format::VideoPreset,
+        publish::{LocalBroadcast, VideoInput},
+    },
     ticket::LiveTicket,
 };
 
@@ -177,11 +181,11 @@ fn setup_encoder(
                 bitrate = opts.bitrate,
                 "using pre-encoded H.264 from rpicam-vid"
             );
-            broadcast
-                .video()
-                .set_pre_encoded(track_name, video_config, move || {
-                    Ok(Box::new(LibcameraH264Source::new(config.clone())))
-                })?;
+            broadcast.video().set(VideoInput::pre_encoded(
+                track_name,
+                video_config,
+                move || Ok(Box::new(LibcameraH264Source::new(config.clone()))),
+            ))?;
         }
         "software" | "sw" => {
             use rusty_codecs::libcamera::LibcameraYuvSource;
@@ -191,7 +195,7 @@ fn setup_encoder(
             tracing::info!(%codec, presets = ?opts.video_presets, "software encoder + raw YUV capture");
             broadcast
                 .video()
-                .set(camera, codec, opts.video_presets.clone())?;
+                .set(VideoInput::new(camera, codec, opts.video_presets.clone()))?;
         }
         "v4l2" => {
             use rusty_codecs::libcamera::LibcameraYuvSource;
@@ -201,7 +205,7 @@ fn setup_encoder(
             tracing::info!(%codec, presets = ?opts.video_presets, "V4L2 M2M encoder + raw YUV capture");
             broadcast
                 .video()
-                .set(camera, codec, opts.video_presets.clone())?;
+                .set(VideoInput::new(camera, codec, opts.video_presets.clone()))?;
         }
         #[cfg(feature = "ffmpeg")]
         "ffmpeg" => {
@@ -212,7 +216,7 @@ fn setup_encoder(
             tracing::info!(%codec, presets = ?opts.video_presets, "ffmpeg encoder + raw YUV capture");
             broadcast
                 .video()
-                .set(camera, codec, opts.video_presets.clone())?;
+                .set(VideoInput::new(camera, codec, opts.video_presets.clone()))?;
         }
         #[cfg(not(feature = "ffmpeg"))]
         "ffmpeg" => {

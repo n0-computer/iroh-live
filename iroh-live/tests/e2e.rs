@@ -12,7 +12,7 @@ use moq_media::{
     codec::{AudioCodec, VideoCodec},
     format::{AudioFormat, AudioPreset, VideoPreset},
     net::NetworkSignals,
-    publish::LocalBroadcast,
+    publish::{LocalBroadcast, VideoInput},
     test_util::{NullAudioBackend, TestAudioSource, TestVideoSource},
 };
 use n0_tracing_test::traced_test;
@@ -41,11 +41,11 @@ async fn publish_subscribe_video() {
         let source = TestVideoSource::new(320, 240).with_fps(30.0);
         broadcast
             .video()
-            .set(
+            .set(VideoInput::new(
                 source,
                 VideoCodec::best_available().expect("no video codec available"),
                 [VideoPreset::P180],
-            )
+            ))
             .expect("failed to set video");
         live.publish("test-stream", &broadcast)
             .await
@@ -109,11 +109,11 @@ async fn publish_subscribe_audio() {
     let video_source = TestVideoSource::new(320, 240).with_fps(30.0);
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             video_source,
             VideoCodec::best_available().expect("no video codec available"),
             [VideoPreset::P180],
-        )
+        ))
         .expect("failed to set video");
 
     let audio_source = TestAudioSource::new(AudioFormat::mono_48k());
@@ -171,11 +171,11 @@ async fn adaptive_rendition_switching() {
     let source = TestVideoSource::new(640, 480).with_fps(30.0);
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             source,
             VideoCodec::best_available().expect("no video codec available"),
             [VideoPreset::P360, VideoPreset::P180],
-        )
+        ))
         .expect("failed to set video");
 
     publisher
@@ -302,11 +302,11 @@ async fn call_dial_accept() {
     let source = TestVideoSource::new(320, 240).with_fps(30.0);
     caller_broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             source,
             VideoCodec::best_available().expect("no video codec available"),
             [VideoPreset::P180],
-        )
+        ))
         .expect("failed to set caller video");
 
     // --- Callee side ---
@@ -318,11 +318,11 @@ async fn call_dial_accept() {
     let source = TestVideoSource::new(320, 240).with_fps(30.0);
     callee_broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             source,
             VideoCodec::best_available().expect("no video codec available"),
             [VideoPreset::P180],
-        )
+        ))
         .expect("failed to set callee video");
 
     // Spawn the callee's accept loop in the background.

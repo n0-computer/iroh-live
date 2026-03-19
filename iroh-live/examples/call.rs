@@ -24,7 +24,7 @@ use iroh_live::{
         capture::{CameraCapturer, CaptureBackend, ScreenCapturer},
         codec::{AudioCodec, DefaultDecoders, DynamicVideoDecoder, VideoCodec},
         format::{AudioPreset, DecodeConfig, PlaybackConfig, VideoPreset},
-        publish::LocalBroadcast,
+        publish::{LocalBroadcast, VideoInput},
         subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
         test_sources::{TestPatternSource, TestToneSource},
         traits::VideoSource,
@@ -255,7 +255,11 @@ impl DeviceSelectors {
                     return;
                 }
             };
-            if let Err(e) = broadcast.video().set(source, self.codec, [self.preset]) {
+            if let Err(e) =
+                broadcast
+                    .video()
+                    .set(VideoInput::new(source, self.codec, [self.preset]))
+            {
                 self.error_msg = Some(format!("Set video: {e:#}"));
                 return;
             }
@@ -840,11 +844,11 @@ fn main() -> Result<()> {
         let live = Live::from_env().await?;
 
         let broadcast = LocalBroadcast::new();
-        broadcast.video().set(
+        broadcast.video().set(VideoInput::new(
             TestPatternSource::new(1280, 720),
             VideoCodec::best_available().expect("no video codec available"),
             [VideoPreset::P720],
-        )?;
+        ))?;
         broadcast
             .audio()
             .set(TestToneSource::new(), AudioCodec::Opus, [AudioPreset::Hq])?;

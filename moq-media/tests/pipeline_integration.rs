@@ -9,7 +9,7 @@ use std::time::Duration;
 use moq_media::codec::VideoCodec;
 use moq_media::format::{AudioFormat, AudioPreset, VideoPreset};
 use moq_media::playout::PlayoutMode;
-use moq_media::publish::LocalBroadcast;
+use moq_media::publish::{LocalBroadcast, VideoInput};
 use moq_media::subscribe::RemoteBroadcast;
 use moq_media::test_util::{
     CapturingAudioBackend, NullAudioBackend, SineAudioSource, TestAudioSource, TestVideoSource,
@@ -41,7 +41,7 @@ async fn publish_and_subscribe(
     let (w, h) = preset.dimensions();
     broadcast
         .video()
-        .set(TestVideoSource::new(w, h), codec, [preset])
+        .set(VideoInput::new(TestVideoSource::new(w, h), codec, [preset]))
         .unwrap();
 
     let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
@@ -121,11 +121,11 @@ async fn multiple_renditions_subscriber_selects_each() {
     let (broadcast, consumer) = setup_broadcast().await;
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             TestVideoSource::new(640, 360),
             VideoCodec::H264,
             [VideoPreset::P180, VideoPreset::P360],
-        )
+        ))
         .unwrap();
 
     let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
@@ -168,11 +168,11 @@ async fn multiple_renditions_have_distinct_dimensions() {
     let (broadcast, consumer) = setup_broadcast().await;
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             TestVideoSource::new(640, 360),
             VideoCodec::H264,
             [VideoPreset::P360, VideoPreset::P180],
-        )
+        ))
         .unwrap();
 
     let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
@@ -252,11 +252,11 @@ async fn publisher_replace_triggers_catalog_update() {
     // Replace video with new source
     broadcast
         .video()
-        .replace(
+        .set(VideoInput::new(
             TestVideoSource::new(320, 180),
             VideoCodec::H264,
             [VideoPreset::P180],
-        )
+        ))
         .unwrap();
 
     // Catalog should update
@@ -282,11 +282,11 @@ async fn audio_and_video_roundtrip() {
     let (broadcast, consumer) = setup_broadcast().await;
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             TestVideoSource::new(320, 180),
             VideoCodec::H264,
             [VideoPreset::P180],
-        )
+        ))
         .unwrap();
     broadcast
         .audio()
@@ -411,11 +411,11 @@ async fn two_subscribers_receive_frames() {
     let (w, h) = VideoPreset::P180.dimensions();
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             TestVideoSource::new(w, h),
             VideoCodec::H264,
             [VideoPreset::P180],
-        )
+        ))
         .unwrap();
 
     let remote1 = RemoteBroadcast::with_playout_mode("s1", consumer1, PlayoutMode::Reliable)
@@ -449,11 +449,11 @@ async fn publisher_resolution_change_updates_subscriber() {
     let (broadcast, consumer) = setup_broadcast().await;
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             TestVideoSource::new(320, 180),
             VideoCodec::H264,
             [VideoPreset::P180],
-        )
+        ))
         .unwrap();
 
     let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
@@ -473,11 +473,11 @@ async fn publisher_resolution_change_updates_subscriber() {
     // Replace with higher resolution
     broadcast
         .video()
-        .replace(
+        .set(VideoInput::new(
             TestVideoSource::new(640, 360),
             VideoCodec::H264,
             [VideoPreset::P360],
-        )
+        ))
         .unwrap();
 
     // Wait for catalog update
@@ -511,11 +511,11 @@ async fn audio_clear_while_video_continues() {
     let (broadcast, consumer) = setup_broadcast().await;
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             TestVideoSource::new(320, 180),
             VideoCodec::H264,
             [VideoPreset::P180],
-        )
+        ))
         .unwrap();
     broadcast
         .audio()
@@ -568,11 +568,11 @@ async fn rapid_republish_does_not_panic() {
     for _ in 0..5 {
         broadcast
             .video()
-            .set(
+            .set(VideoInput::new(
                 TestVideoSource::new(320, 180),
                 VideoCodec::H264,
                 [VideoPreset::P180],
-            )
+            ))
             .unwrap();
     }
 
@@ -597,11 +597,11 @@ async fn audio_replace_source_subscriber_still_receives() {
     let (broadcast, consumer) = setup_broadcast().await;
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             TestVideoSource::new(320, 180),
             VideoCodec::H264,
             [VideoPreset::P180],
-        )
+        ))
         .unwrap();
     broadcast
         .audio()
@@ -652,11 +652,11 @@ async fn audio_clear_and_readd_works() {
     let (broadcast, consumer) = setup_broadcast().await;
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             TestVideoSource::new(320, 180),
             VideoCodec::H264,
             [VideoPreset::P180],
-        )
+        ))
         .unwrap();
     broadcast
         .audio()
@@ -713,11 +713,11 @@ async fn video_source_switch_preserves_audio() {
     let (broadcast, consumer) = setup_broadcast().await;
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             TestVideoSource::new(320, 180),
             VideoCodec::H264,
             [VideoPreset::P180],
-        )
+        ))
         .unwrap();
     broadcast
         .audio()
@@ -745,11 +745,11 @@ async fn video_source_switch_preserves_audio() {
     // Replace video with a different source
     broadcast
         .video()
-        .replace(
+        .set(VideoInput::new(
             TestVideoSource::new(640, 360),
             VideoCodec::H264,
             [VideoPreset::P360],
-        )
+        ))
         .unwrap();
 
     tokio::time::timeout(TIMEOUT, watcher.updated())
@@ -778,11 +778,11 @@ async fn rapid_audio_switches_do_not_panic() {
     let (broadcast, consumer) = setup_broadcast().await;
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             TestVideoSource::new(320, 180),
             VideoCodec::H264,
             [VideoPreset::P180],
-        )
+        ))
         .unwrap();
     broadcast
         .audio()
@@ -839,11 +839,11 @@ async fn audio_data_flows_through_pipeline() {
     // Publish with a sine wave source instead of silence.
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             TestVideoSource::new(320, 180),
             VideoCodec::H264,
             [VideoPreset::P180],
-        )
+        ))
         .unwrap();
     broadcast
         .audio()
@@ -963,11 +963,11 @@ async fn remote_broadcast_video_appears_after_publish() {
     let (w, h) = VideoPreset::P180.dimensions();
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             TestVideoSource::new(w, h),
             VideoCodec::H264,
             [VideoPreset::P180],
-        )
+        ))
         .unwrap();
 
     // Wait for catalog update to propagate.
@@ -1035,11 +1035,11 @@ async fn audio_track_rendition_name_contains_codec() {
     let (broadcast, consumer) = setup_broadcast().await;
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             TestVideoSource::new(320, 180),
             VideoCodec::H264,
             [VideoPreset::P180],
-        )
+        ))
         .unwrap();
     broadcast
         .audio()
@@ -1068,11 +1068,11 @@ async fn audio_track_handle_pause_resume() {
     let (broadcast, consumer) = setup_broadcast().await;
     broadcast
         .video()
-        .set(
+        .set(VideoInput::new(
             TestVideoSource::new(320, 180),
             VideoCodec::H264,
             [VideoPreset::P180],
-        )
+        ))
         .unwrap();
     broadcast
         .audio()
