@@ -31,8 +31,10 @@ async fn main() -> n0_error::Result {
     let broadcast = LocalBroadcast::new();
 
     // Capture audio, and encode with the cli-provided preset.
+    // AudioBackend must outlive the InputStream it creates — keep it alive
+    // for the duration of the program.
+    let audio_ctx = AudioBackend::default();
     if !cli.no_audio && !cli.test_source {
-        let audio_ctx = AudioBackend::default();
         let mic = audio_ctx.default_input().await?;
         broadcast
             .audio()

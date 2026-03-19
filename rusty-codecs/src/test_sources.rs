@@ -253,7 +253,6 @@ impl Default for TestToneSource {
 }
 
 impl AudioSource for TestToneSource {
-
     fn format(&self) -> AudioFormat {
         self.format
     }
