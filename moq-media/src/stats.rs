@@ -370,6 +370,17 @@ pub struct SubscribeStats {
     pub timeline: Timeline,
 }
 
+impl SubscribeStats {
+    /// Returns a [`DecodeStats`] clone for passing to decode pipelines.
+    pub fn decode_stats(&self) -> DecodeStats {
+        DecodeStats {
+            render: self.render.clone(),
+            timing: self.timing.clone(),
+            timeline: self.timeline.clone(),
+        }
+    }
+}
+
 /// All stats for a publish-side broadcast. Owned by `LocalBroadcast`.
 #[derive(Clone, Debug, Default)]
 pub struct PublishStats {

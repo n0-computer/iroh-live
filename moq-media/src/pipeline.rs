@@ -908,7 +908,7 @@ impl AudioDecoderPipeline {
         config: &AudioConfig,
         audio_backend: &dyn AudioStreamFactory,
     ) -> Result<Self> {
-        Self::with_clock::<D>(name, source, config, audio_backend, None).await
+        Self::with_clock::<D>(name, source, config, audio_backend, None, None).await
     }
 
     /// Creates a new audio decoder pipeline with a shared [`PlayoutClock`]
@@ -919,11 +919,12 @@ impl AudioDecoderPipeline {
         config: &AudioConfig,
         audio_backend: &dyn AudioStreamFactory,
         clock: Option<PlayoutClock>,
+        stats: Option<crate::stats::DecodeStats>,
     ) -> Result<Self> {
         let target_format = AudioFormat::from_config(config);
         let sink = audio_backend.create_output(target_format).await?;
         let handle = sink.handle();
-        Self::build::<D>(name, source, config, sink, handle, clock)
+        Self::build::<D>(name, source, config, sink, handle, clock, stats)
     }
 
     /// Creates a new audio decoder pipeline with a pre-made [`AudioSink`].
@@ -943,7 +944,15 @@ impl AudioDecoderPipeline {
             "audio sink format mismatch: sink has {output_format:?}, decoder expects {expected:?}"
         );
         let handle = sink.handle();
-        Self::build::<D>(name, source, config, sink, handle, None)
+        Self::build::<D>(
+            name,
+            source,
+            config,
+            sink,
+            handle,
+            None,
+            None::<crate::stats::DecodeStats>,
+        )
     }
 
     fn build<D: AudioDecoder>(
@@ -953,6 +962,7 @@ impl AudioDecoderPipeline {
         sink: impl AudioSink,
         handle: Box<dyn AudioSinkHandle>,
         clock: Option<PlayoutClock>,
+        stats: Option<crate::stats::DecodeStats>,
     ) -> Result<Self> {
         let shutdown = CancellationToken::new();
         let span = info_span!("audiodec", %name);
@@ -967,7 +977,9 @@ impl AudioDecoderPipeline {
             move || {
                 let _guard = span.enter();
                 info!(?config, "decode start");
-                if let Err(err) = audio_decode_loop(&shutdown, packet_rx, decoder, sink, clock) {
+                if let Err(err) =
+                    audio_decode_loop(&shutdown, packet_rx, decoder, sink, clock, stats)
+                {
                     error!("decoder failed: {err:#}");
                 }
                 info!("decode stop");
@@ -1019,6 +1031,7 @@ fn audio_decode_loop(
     mut decoder: impl AudioDecoder,
     mut sink: impl AudioSink,
     _clock: Option<PlayoutClock>,
+    stats: Option<crate::stats::DecodeStats>,
 ) -> Result<()> {
     use bytes::Buf as _;
     use mpsc::error::TryRecvError;
@@ -1057,6 +1070,8 @@ fn audio_decode_loop(
                         trace!(payload_bytes = packet.payload.remaining(), ts=?packet.timestamp, ?loop_elapsed, ?remote_elapsed, ?diff_ms, "recv packet");
                     }
 
+                    let receive_wall = Instant::now();
+                    let packet_pts = packet.timestamp;
                     if !sink.is_paused() {
                         if let Err(err) = decoder.push_packet(packet) {
                             consecutive_errors += 1;
@@ -1072,6 +1087,21 @@ fn audio_decode_loop(
                             Ok(Some(samples)) => {
                                 consecutive_errors = 0;
                                 sink.push_samples(samples)?;
+                                // Record audio frame timing. render_wall is
+                                // when we push to the audio sink, not when the
+                                // OS actually plays the samples. True playout
+                                // time would require feedback from the audio
+                                // backend (cpal/firewheel), which we don't have.
+                                if let Some(ref s) = stats {
+                                    s.timeline.push(crate::stats::FrameTimingEntry {
+                                        kind: crate::stats::FrameKind::Audio,
+                                        pts: packet_pts,
+                                        receive_wall,
+                                        decode_end: Some(Instant::now()),
+                                        render_wall: Instant::now(),
+                                        is_keyframe: false,
+                                    });
+                                }
                             }
                             Ok(None) => {
                                 consecutive_errors = 0;

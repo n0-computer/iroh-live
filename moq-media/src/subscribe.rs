@@ -450,11 +450,7 @@ impl RemoteBroadcast {
             config,
             playback_config,
             Some(clock),
-            Some(crate::stats::DecodeStats {
-                render: self.stats.render.clone(),
-                timing: self.stats.timing.clone(),
-                timeline: self.stats.timeline.clone(),
-            }),
+            Some(self.stats.decode_stats()),
         )
     }
 
@@ -494,6 +490,7 @@ impl RemoteBroadcast {
             config.clone(),
             audio_backend,
             Some(clock),
+            Some(self.stats.decode_stats()),
         )
         .await
     }
@@ -702,12 +699,19 @@ impl AudioTrack {
         config: AudioConfig,
         audio_backend: &dyn AudioStreamFactory,
         clock: Option<PlayoutClock>,
+        stats: Option<crate::stats::DecodeStats>,
     ) -> Result<Self> {
         let source = MoqPacketSource(consumer);
         let config: rusty_codecs::config::AudioConfig = config.into();
-        let pipeline =
-            AudioDecoderPipeline::with_clock::<D>(name, source, &config, audio_backend, clock)
-                .await?;
+        let pipeline = AudioDecoderPipeline::with_clock::<D>(
+            name,
+            source,
+            &config,
+            audio_backend,
+            clock,
+            stats,
+        )
+        .await?;
         Ok(Self { pipeline })
     }
 
