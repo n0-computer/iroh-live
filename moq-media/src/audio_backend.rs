@@ -915,35 +915,35 @@ fn output_callback(state: &mut OutputCallbackState, data: &mut [f32]) {
             // ReadStatus is informational; we always use whatever data we got.
             let _ = status;
 
-            // Apply fade gain and mix.
-            for i in 0..stereo_samples {
+            // Apply fade gain and mix. Gain is computed once per frame so
+            // that L and R channels in the same frame receive identical gain.
+            for frame in 0..stereo_samples / 2 {
                 let gain = match fade {
                     FADE_OUT => {
                         let progress = entry.fade_progress.min(DECLICKER_SAMPLES);
                         let g = 1.0 - (progress as f32 / DECLICKER_SAMPLES as f32);
-                        if i % 2 == 1 {
-                            entry.fade_progress = entry.fade_progress.saturating_add(1);
-                            if entry.fade_progress >= DECLICKER_SAMPLES {
-                                entry.fade_state.store(FADE_PAUSED, Ordering::Release);
-                            }
+                        entry.fade_progress = entry.fade_progress.saturating_add(1);
+                        if entry.fade_progress >= DECLICKER_SAMPLES {
+                            entry.fade_state.store(FADE_PAUSED, Ordering::Release);
                         }
                         g
                     }
                     FADE_IN => {
                         let progress = entry.fade_progress.min(DECLICKER_SAMPLES);
                         let g = progress as f32 / DECLICKER_SAMPLES as f32;
-                        if i % 2 == 1 {
-                            entry.fade_progress = entry.fade_progress.saturating_add(1);
-                            if entry.fade_progress >= DECLICKER_SAMPLES {
-                                entry.fade_state.store(FADE_PLAYING, Ordering::Release);
-                                entry.fade_progress = 0;
-                            }
+                        entry.fade_progress = entry.fade_progress.saturating_add(1);
+                        if entry.fade_progress >= DECLICKER_SAMPLES {
+                            entry.fade_state.store(FADE_PLAYING, Ordering::Release);
+                            entry.fade_progress = 0;
                         }
                         g
                     }
                     _ => 1.0, // FADE_PLAYING
                 };
-                state.mix_buf[i] += state.stream_buf[i] * gain;
+                let l = frame * 2;
+                let r = l + 1;
+                state.mix_buf[l] += state.stream_buf[l] * gain;
+                state.mix_buf[r] += state.stream_buf[r] * gain;
             }
         }
 
@@ -1037,35 +1037,46 @@ fn input_callback(state: &mut InputCallbackState, data: &[f32]) {
     }
 
     let device_channels = state.device_channels as usize;
-    let num_frames = data.len() / device_channels;
+    let total_frames = data.len() / device_channels;
 
-    // Channel-map device audio to stereo.
-    let stereo_samples = num_frames * 2;
-    // Ensure stereo_buf is large enough (pre-allocated to MAX_MIX_FRAMES * 2).
-    let stereo_buf = &mut state.stereo_buf[..stereo_samples];
-    if device_channels == 1 {
-        for i in 0..num_frames {
-            stereo_buf[i * 2] = data[i];
-            stereo_buf[i * 2 + 1] = data[i];
+    // Process in chunks to fit pre-allocated buffers (MAX_MIX_FRAMES * 2).
+    let mut frame_offset = 0;
+    while frame_offset < total_frames {
+        let chunk_frames = (total_frames - frame_offset).min(MAX_MIX_FRAMES);
+        let stereo_samples = chunk_frames * 2;
+
+        // Channel-map device audio to stereo.
+        let stereo_buf = &mut state.stereo_buf[..stereo_samples];
+        if device_channels == 1 {
+            for i in 0..chunk_frames {
+                let src = frame_offset + i;
+                stereo_buf[i * 2] = data[src];
+                stereo_buf[i * 2 + 1] = data[src];
+            }
+        } else {
+            for i in 0..chunk_frames {
+                let src = (frame_offset + i) * device_channels;
+                stereo_buf[i * 2] = data[src];
+                stereo_buf[i * 2 + 1] = if device_channels >= 2 {
+                    data[src + 1]
+                } else {
+                    data[src]
+                };
+            }
         }
-    } else {
-        for i in 0..num_frames {
-            stereo_buf[i * 2] = data[i * device_channels];
-            stereo_buf[i * 2 + 1] = if device_channels >= 2 {
-                data[i * device_channels + 1]
-            } else {
-                data[i * device_channels]
-            };
+
+        // Process through AEC: drains render reference, runs render frames,
+        // then processes capture frames.
+        state
+            .aec
+            .process_stereo_interleaved(stereo_buf, chunk_frames);
+
+        // Distribute processed capture audio to all input stream producers.
+        for entry in &mut state.entries {
+            entry.prod.push_interleaved(stereo_buf);
         }
-    }
 
-    // Process through AEC: drains render reference, runs render frames,
-    // then processes capture frames.
-    state.aec.process_stereo_interleaved(stereo_buf, num_frames);
-
-    // Distribute processed capture audio to all input stream producers.
-    for entry in &mut state.entries {
-        entry.prod.push_interleaved(stereo_buf);
+        frame_offset += chunk_frames;
     }
 }
 
@@ -1578,7 +1589,7 @@ impl AudioDriver {
             cons,
             format,
             inactive_count: 0,
-            stereo_temp: Vec::new(),
+            stereo_temp: vec![0.0; 2048],
             _drop_guard: drop_guard,
             _driver_keepalive: driver_keepalive,
         })
