@@ -9,7 +9,7 @@ use std::time::Duration;
 pub struct NetworkSignals {
     /// Round-trip time to the remote peer.
     pub rtt: Duration,
-    /// Smoothed packet loss rate in the range `0.0..=1.0`.
+    /// Recent packet loss rate in `0.0..=1.0`, computed over a 200ms delta window.
     pub loss_rate: f64,
     /// Estimated available bandwidth in bits per second (`cwnd * 8 / rtt`).
     pub available_bps: u64,

@@ -319,6 +319,8 @@ impl MoqSession {
     /// Subscribes to a named broadcast from the remote peer.
     ///
     /// Waits for the remote to announce the broadcast if not yet available.
+    /// Returns when the session closes if the name is never announced.
+    /// Callers that need a timeout should wrap this in `tokio::time::timeout`.
     pub async fn subscribe(&mut self, name: &str) -> Result<BroadcastConsumer, SubscribeError> {
         if let Some(reason) = self.conn().close_reason() {
             return Err(SessionError::from(reason).into());
