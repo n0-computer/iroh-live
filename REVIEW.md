@@ -6,7 +6,7 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 
 ## USER REVIEW - prioritize these
 
-- [ ] AdaptiveVideoTrack returning dimensions [0, 0] can't hold. either we remove it from the trait entirley or make it an option, but this wrong-value is not good. can't we just return the *current* dimensions?
+- [x] AdaptiveVideoTrack returning dimensions [0, 0] — now returns current rendition dimensions from catalog via AtomicU64, updated on every switch (c11bd37)
 - [ ] Audio/Video sync - see item below and respect NOTE on it. We need this to be settled, and we need it to be tested. Tested *meaningfully**!! which means that we somehow simulate video being late, and audio adjusting, but audio playing still if video is delayed again. orient at how webrtc etc do it.
 
 ## API ergonomics
