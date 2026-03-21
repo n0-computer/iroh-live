@@ -787,4 +787,25 @@ mod tests {
         assert_eq!(count_after, 1, "should have re-anchored once");
         assert!(drift_after > Duration::ZERO, "drift should be positive");
     }
+
+    #[test]
+    fn is_anchored_tracks_first_arrival() {
+        let clock = PlayoutClock::new(PlayoutMode::default());
+        assert!(!clock.is_anchored(), "new clock should not be anchored");
+
+        clock.observe_arrival(Duration::ZERO);
+        assert!(clock.is_anchored(), "should be anchored after first frame");
+
+        clock.reset();
+        assert!(!clock.is_anchored(), "reset should clear anchor");
+    }
+
+    #[test]
+    fn is_anchored_reliable_mode() {
+        let clock = PlayoutClock::new(PlayoutMode::Reliable);
+        assert!(!clock.is_anchored());
+
+        clock.observe_arrival(Duration::ZERO);
+        assert!(clock.is_anchored());
+    }
 }
