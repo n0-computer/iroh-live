@@ -10,10 +10,10 @@ use iroh::{Endpoint, SecretKey};
 use iroh_live::Live;
 use moq_media::{
     adaptive::AdaptiveConfig,
-    codec::VideoCodec,
-    format::VideoPreset,
+    codec::{AudioCodec, VideoCodec},
+    format::{AudioPreset, VideoPreset},
     publish::{LocalBroadcast, VideoInput},
-    test_util::TestVideoSource,
+    test_util::{TestVideoSource, TimestampingAudioBackend},
 };
 use patchbay::{Lab, LinkCondition, LinkLimits, NodeId};
 use tracing::info;
@@ -1261,4 +1261,364 @@ async fn adaptive_real_loss_inner() {
     remote.shutdown();
     publisher.shutdown().await;
     subscriber.shutdown().await;
+}
+
+// ── A/V synchronization tests ─────────────────────────────────────
+//
+// Publish correlated video (yellow flash) and audio (880 Hz beep) through
+// a real iroh connection with patchbay network simulation. Measure the
+// wall-clock delta between paired flash/beep events to verify A/V sync
+// under realistic conditions.
+
+/// A/V sync fixture: publishes video + audio through patchbay.
+struct AvSyncFixture {
+    lab: Lab,
+    pub_node: NodeId,
+    sub_node: NodeId,
+    #[allow(dead_code)]
+    router_node: NodeId,
+    publisher: Live,
+    _broadcast: LocalBroadcast,
+    subscriber: Live,
+    remote: moq_media::subscribe::RemoteBroadcast,
+}
+
+impl AvSyncFixture {
+    async fn new() -> Self {
+        let lab = Lab::new().await.expect("patchbay lab");
+        let router = lab.add_router("r1").build().await.expect("router");
+        let router_node = router.id();
+
+        let pub_device = lab
+            .add_device("publisher")
+            .iface("eth0", router_node, None)
+            .build()
+            .await
+            .expect("pub device");
+        let pub_node = pub_device.id();
+
+        let sub_device = lab
+            .add_device("subscriber")
+            .iface("eth0", router_node, None)
+            .build()
+            .await
+            .expect("sub device");
+        let sub_node = sub_device.id();
+
+        let secret_key = SecretKey::generate(&mut rand::rng());
+        let pub_endpoint = pub_device
+            .spawn({
+                let secret_key = secret_key.clone();
+                |_dev| async move {
+                    Endpoint::builder(iroh::endpoint::presets::N0)
+                        .secret_key(secret_key)
+                        .bind()
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e:#}"))
+                }
+            })
+            .expect("pub spawn")
+            .await
+            .expect("pub join")
+            .expect("pub endpoint");
+
+        let sub_endpoint = sub_device
+            .spawn(|_dev| async move {
+                Endpoint::bind(iroh::endpoint::presets::N0)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e:#}"))
+            })
+            .expect("sub spawn")
+            .await
+            .expect("sub join")
+            .expect("sub endpoint");
+
+        let publisher = Live::builder(pub_endpoint).spawn_with_router();
+        let broadcast = LocalBroadcast::new();
+
+        // Video: test pattern with yellow beep indicator (15 fps for debug builds).
+        let source = TestVideoSource::new(320, 240).with_fps(15.0);
+        broadcast
+            .video()
+            .set(VideoInput::new(
+                source,
+                TEST_VIDEO_CODEC,
+                [VideoPreset::P180],
+            ))
+            .expect("set video");
+
+        // Audio: 880 Hz beep synchronized with the video flash indicator.
+        broadcast
+            .audio()
+            .set(
+                moq_media::test_sources::TestToneSource::new(),
+                AudioCodec::Opus,
+                [AudioPreset::Hq],
+            )
+            .expect("set audio");
+
+        publisher
+            .publish("test", &broadcast)
+            .await
+            .expect("publish");
+
+        let pub_addr = publisher.endpoint().addr();
+        let subscriber = Live::builder(sub_endpoint).spawn();
+        // Default playout mode is Live — exercises the playout clock.
+        let (_session, remote) = subscriber
+            .subscribe(pub_addr, "test")
+            .await
+            .expect("subscribe");
+
+        Self {
+            lab,
+            pub_node,
+            sub_node,
+            router_node,
+            publisher,
+            _broadcast: broadcast,
+            subscriber,
+            remote,
+        }
+    }
+
+    async fn set_impairment(&self, limits: LinkLimits) {
+        let cond = if limits.latency_ms == 0
+            && limits.loss_pct == 0.0
+            && limits.rate_kbit == 0
+            && limits.jitter_ms == 0
+        {
+            None
+        } else {
+            Some(LinkCondition::Manual(limits))
+        };
+        self.lab
+            .set_link_condition(self.pub_node, self.router_node, cond)
+            .await
+            .expect("pub link");
+        self.lab
+            .set_link_condition(self.sub_node, self.router_node, cond)
+            .await
+            .expect("sub link");
+    }
+
+    async fn shutdown(self) {
+        self.remote.shutdown();
+        self.publisher.shutdown().await;
+        self.subscriber.shutdown().await;
+    }
+}
+
+/// Measures A/V sync by detecting video flash onsets and pairing them
+/// with audio beep onsets from the TimestampingAudioBackend. Returns
+/// per-event sync errors in milliseconds.
+async fn measure_av_sync(
+    video: &mut moq_media::subscribe::VideoTrack,
+    audio_beep_ts: &moq_media::test_util::BeepTimestamps,
+    duration: Duration,
+) -> Vec<f64> {
+    let start = Instant::now();
+    let mut video_flash_times: Vec<Instant> = Vec::new();
+    let mut prev_had_flash = false;
+
+    while start.elapsed() < duration {
+        let remaining = duration.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+        let frame = match tokio::time::timeout(
+            remaining.min(Duration::from_secs(5)),
+            video.next_frame(),
+        )
+        .await
+        {
+            Ok(Some(frame)) => frame,
+            Ok(None) | Err(_) => break,
+        };
+
+        let now = Instant::now();
+        let has_flash = frame_has_yellow_indicator(&frame);
+        if has_flash && !prev_had_flash {
+            video_flash_times.push(now);
+        }
+        prev_had_flash = has_flash;
+    }
+
+    let audio_beeps = audio_beep_ts.lock().unwrap();
+    let mut sync_errors_ms = Vec::new();
+    for &video_wall in &video_flash_times {
+        if let Some(&audio_wall) = audio_beeps
+            .iter()
+            .min_by_key(|&&a| abs_duration_diff(a, video_wall))
+        {
+            let delta = abs_duration_diff(audio_wall, video_wall);
+            sync_errors_ms.push(delta.as_secs_f64() * 1000.0);
+        }
+    }
+
+    info!(
+        video_flashes = video_flash_times.len(),
+        audio_beeps = audio_beeps.len(),
+        matched = sync_errors_ms.len(),
+        "sync measurement"
+    );
+    sync_errors_ms
+}
+
+fn abs_duration_diff(a: Instant, b: Instant) -> Duration {
+    if a > b { a - b } else { b - a }
+}
+
+/// Checks the center pixel of a decoded frame for the yellow beep
+/// indicator. Tolerant of H.264 compression artifacts.
+fn frame_has_yellow_indicator(frame: &moq_media::format::VideoFrame) -> bool {
+    let img = frame.rgba_image();
+    let [w, h] = frame.dimensions;
+    let idx = ((h / 2 * w + w / 2) * 4) as usize;
+    let pixels = img.as_raw();
+    if idx + 3 >= pixels.len() {
+        return false;
+    }
+    let (r, g, b) = (pixels[idx], pixels[idx + 1], pixels[idx + 2]);
+    r > 180 && g > 180 && b < 100
+}
+
+fn log_sync_stats(label: &str, errors: &[f64], threshold_ms: f64) {
+    if errors.is_empty() {
+        info!("{label}: no sync events");
+        return;
+    }
+    let mut sorted = errors.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median = sorted[sorted.len() / 2];
+    let max = sorted.last().copied().unwrap_or(0.0);
+    let within = errors.iter().filter(|&&e| e < threshold_ms).count();
+    let pct = within as f64 / errors.len() as f64 * 100.0;
+    info!(
+        "{label}: median={median:.1}ms max={max:.1}ms {within}/{} within {threshold_ms}ms ({pct:.0}%)",
+        errors.len()
+    );
+}
+
+/// A/V sync with zero added latency — baseline measurement.
+#[test]
+fn av_sync_zero_latency() {
+    let _ = tracing_subscriber::fmt::try_init();
+    patchbay::init_userns().expect("patchbay init");
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(av_sync_at_latency(0, 0));
+}
+
+/// A/V sync at 50 ms latency with 20 ms jitter — typical LAN/WAN.
+#[test]
+fn av_sync_50ms_latency() {
+    let _ = tracing_subscriber::fmt::try_init();
+    patchbay::init_userns().expect("patchbay init");
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(av_sync_at_latency(50, 20));
+}
+
+/// A/V sync at 200 ms latency with 20 ms jitter — relayed/intercontinental.
+#[test]
+fn av_sync_200ms_latency() {
+    let _ = tracing_subscriber::fmt::try_init();
+    patchbay::init_userns().expect("patchbay init");
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(av_sync_at_latency(200, 20));
+}
+
+async fn av_sync_at_latency(latency_ms: u32, jitter_ms: u32) {
+    let fixture = AvSyncFixture::new().await;
+
+    if latency_ms > 0 || jitter_ms > 0 {
+        fixture
+            .set_impairment(LinkLimits {
+                latency_ms,
+                jitter_ms,
+                ..Default::default()
+            })
+            .await;
+    }
+
+    // Subscribe to audio with timestamping backend.
+    let audio_backend = TimestampingAudioBackend::new();
+    let audio_beep_ts = audio_backend.beep_timestamps();
+    let _audio = tokio::time::timeout(
+        FRAME_TIMEOUT,
+        fixture.remote.audio_ready(&audio_backend),
+    )
+    .await
+    .expect("audio timeout")
+    .expect("audio_ready");
+
+    let mut video = tokio::time::timeout(FRAME_TIMEOUT, fixture.remote.video_ready())
+        .await
+        .expect("video timeout")
+        .expect("video_ready");
+
+    // Warmup: let the pipeline and playout clock stabilize. The audio
+    // decode loop waits for the video clock anchor (up to 500 ms), and
+    // the playout buffer needs a few frames to calibrate.
+    let _ = drain_frames(&mut video, Duration::from_secs(3)).await;
+    audio_beep_ts.lock().unwrap().clear();
+
+    // Measure sync over 10 seconds (~10 beep cycles at 1 Hz).
+    let errors = measure_av_sync(&mut video, &audio_beep_ts, Duration::from_secs(10)).await;
+
+    let label = format!("av_sync@{latency_ms}ms+{jitter_ms}ms_jitter");
+    log_sync_stats(&label, &errors, 200.0);
+
+    assert!(
+        errors.len() >= 2,
+        "{label}: expected >= 2 sync events, got {}",
+        errors.len()
+    );
+
+    // Sync error should be bounded. With Live playout mode over a real
+    // network connection, the playout clock introduces a buffer offset
+    // and the codec pipeline adds latency (H.264 DPB + Opus lookahead).
+    // In debug builds with patchbay overhead, sync errors are higher
+    // than in optimized builds.
+    //
+    // Current threshold: 500 ms. This is deliberately generous — the
+    // purpose of these tests is to verify that sync does not DRIFT
+    // unboundedly, not that we meet the 45 ms ITU-R BT.1359 target
+    // (which requires the ER4 playout clock fix). Once ER4 is
+    // implemented, tighten this to 200 ms (debug) / 45 ms (release).
+    const BOUND_MS: f64 = 500.0;
+    let within = errors.iter().filter(|&&e| e < BOUND_MS).count();
+    let pct = within as f64 / errors.len() as f64 * 100.0;
+    assert!(
+        pct >= 80.0,
+        "{label}: only {pct:.0}% within {BOUND_MS} ms. errors: {errors:?}"
+    );
+
+    // Drift: sync error should not grow over time. Compare first and
+    // second half averages.
+    if errors.len() >= 4 {
+        let mid = errors.len() / 2;
+        let first_avg: f64 = errors[..mid].iter().sum::<f64>() / mid as f64;
+        let second_avg: f64 =
+            errors[mid..].iter().sum::<f64>() / (errors.len() - mid) as f64;
+        let drift = (second_avg - first_avg).abs();
+        info!("{label}: half_avg {first_avg:.1} → {second_avg:.1} ms, drift={drift:.1}ms");
+        assert!(
+            drift < 100.0,
+            "{label}: drift {drift:.1} ms between halves — A/V diverging"
+        );
+    }
+
+    fixture.shutdown().await;
 }
