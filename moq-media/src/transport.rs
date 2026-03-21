@@ -123,3 +123,35 @@ impl PacketSource for PipeSource {
         Ok(self.0.recv().await)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn media_pipe_roundtrip() {
+        let (mut sink, mut source) = media_pipe(4);
+        let frame = EncodedFrame {
+            is_keyframe: true,
+            timestamp: Duration::from_millis(42),
+            payload: bytes::Bytes::from_static(b"hello").into(),
+        };
+        // PipeSink::write uses blocking_send, which needs a blocking context.
+        tokio::task::spawn_blocking(move || sink.write(frame).unwrap())
+            .await
+            .unwrap();
+
+        let pkt = source.read().await.unwrap().unwrap();
+        assert!(pkt.is_keyframe);
+        assert_eq!(pkt.timestamp, Duration::from_millis(42));
+    }
+
+    #[tokio::test]
+    async fn media_pipe_close_on_sink_drop() {
+        let (sink, mut source) = media_pipe(4);
+        drop(sink);
+        let pkt = source.read().await.unwrap();
+        assert!(pkt.is_none(), "should return None when sink is dropped");
+    }
+}
