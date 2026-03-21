@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use anyhow::{Result, bail};
 use rav1e::prelude::*;
@@ -24,6 +24,9 @@ pub struct Av1Encoder {
     scaler: Scaler,
     /// AV1 sequence header, populated after context creation.
     seq_header: Vec<u8>,
+    /// Maps rav1e input_frameno to the original frame timestamp, so we can
+    /// recover timestamps after rav1e's lookahead reordering.
+    timestamp_map: HashMap<u64, Duration>,
     /// Encoded packets ready for collection.
     packet_buf: std::collections::VecDeque<EncodedFrame>,
 }
@@ -83,6 +86,7 @@ impl Av1Encoder {
             scale_mode,
             scaler: Scaler::new(Some((width, height))),
             seq_header,
+            timestamp_map: HashMap::new(),
             packet_buf: std::collections::VecDeque::new(),
         })
     }
@@ -116,12 +120,14 @@ impl Av1Encoder {
             match self.ctx.receive_packet() {
                 Ok(packet) => {
                     let is_keyframe = packet.frame_type == FrameType::KEY;
-                    let timestamp_us = (self.frame_count * 1_000_000) / self.framerate as u64;
-                    self.frame_count += 1;
+                    let timestamp = self
+                        .timestamp_map
+                        .remove(&packet.input_frameno)
+                        .unwrap_or_default();
 
                     self.packet_buf.push_back(EncodedFrame {
                         is_keyframe,
-                        timestamp: Duration::from_micros(timestamp_us),
+                        timestamp,
                         payload: packet.data.into(),
                     });
                 }
@@ -242,6 +248,11 @@ impl VideoEncoder for Av1Encoder {
         rav1e_frame.planes[0].copy_from_raw_u8(&yuv.y, yuv.y_stride as usize, 1);
         rav1e_frame.planes[1].copy_from_raw_u8(&yuv.u, yuv.u_stride as usize, 1);
         rav1e_frame.planes[2].copy_from_raw_u8(&yuv.v, yuv.v_stride as usize, 1);
+
+        // Record the input timestamp so drain_packets can recover it after
+        // rav1e's lookahead reordering.
+        self.timestamp_map.insert(self.frame_count, frame.timestamp);
+        self.frame_count += 1;
 
         self.ctx
             .send_frame(rav1e_frame)

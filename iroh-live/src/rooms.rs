@@ -253,7 +253,7 @@ impl Actor {
                 Some(update) = updates.next() => {
                     match update {
                         Err(err) => warn!("gossip kv update failed: {err:#}"),
-                        Ok(update) => self.handle_gossip_update(update).await,
+                        Ok(update) => if !self.handle_gossip_update(update).await { break },
                     }
                 }
                 msg = inbox.recv() => {
@@ -297,10 +297,14 @@ impl Actor {
         match msg {
             ApiMessage::Publish { name, producer } => {
                 let consume = producer.consume();
-                self.live
+                if let Err(err) = self
+                    .live
                     .publish_producer(name.clone(), producer)
                     .await
-                    .ok();
+                {
+                    tracing::warn!(%name, "failed to publish broadcast to room: {err:#}");
+                    return;
+                }
                 self.active_publish.insert(name.clone());
                 self.publish_closed.push(Box::pin(async move {
                     consume.closed().await;
@@ -311,13 +315,14 @@ impl Actor {
         }
     }
 
-    async fn handle_gossip_update(&mut self, entry: KvEntry) {
+    /// Handles a gossip KV update. Returns `false` if the actor should stop.
+    async fn handle_gossip_update(&mut self, entry: KvEntry) -> bool {
         let (remote, key, value) = entry;
         if remote == self.me || key != PEER_STATE_KEY {
-            return;
+            return true;
         }
         let Ok(value) = postcard::from_bytes::<PeerState>(&value.value) else {
-            return;
+            return true;
         };
         let PeerState { broadcasts } = value;
         for name in broadcasts.clone() {
@@ -331,10 +336,16 @@ impl Actor {
                 (id, session)
             }));
         }
-        self.event_tx
+        if self
+            .event_tx
             .send(RoomEvent::RemoteAnnounced { remote, broadcasts })
             .await
-            .ok();
+            .is_err()
+        {
+            tracing::debug!("room event receiver dropped, stopping actor");
+            return false;
+        }
+        true
     }
 
     async fn update_kv(&self) {
