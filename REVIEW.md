@@ -151,7 +151,8 @@ The crate boundaries are clean and deliberate: `rusty-codecs` handles codec abst
 
 ### Critical
 
-- [ ] **ER21**: `unimplemented!()` in `VideoFrame::rgba_image()` for NV12/I420 when `h264`/`av1` features disabled — panics in library code that could crash downstream applications. Returns `&RgbaImage` via `OnceLock::get_or_init`, so can't return `Result`. Should at minimum document the panic, or change to `Option<&RgbaImage>` (`format.rs:813,831`)
+- [ ] **ER21**: `unimplemented!()` in `VideoFrame::rgba_image()` for NV12/I420 when `h264`/`av1` features disabled — panics in library code that could crash downstream applications. Returns `&RgbaImage` via `OnceLock::get_or_init`, so can't return `Result`.  (`format.rs:813,831`)
+--> FIX THIS by making the conversion functions available wihthout any features!!
 
 ### Important
 
@@ -194,75 +195,81 @@ Exhaustive file-by-file review of every function in the codebase, covering: (a) 
 
 ### Critical
 
-- [ ] **DR1**: VTB decoder leaks Arc — `Arc::into_raw` for the decompression callback refcon is never reclaimed in `Drop`. The encoder's Drop correctly calls `Arc::from_raw`, but the decoder only invalidates the session without reclaiming. Every `VtbDecoder` instance leaks a `SharedDecoderState` (`vtb/decoder.rs:285-306`)
-- [ ] **DR2**: `FrameData::I420` has no stride fields — `rgba_image()` hardcodes `y_stride = width` and `uv_stride = width.div_ceil(2)`. Hardware decoders often align to 64-byte boundaries, so padded I420 frames produce garbled RGBA output. The NV12 variant correctly stores strides; I420 should too (`format.rs:819-820`)
+- [ ] **DR1**: VTB decoder leaks Arc — `create_session()` calls `Arc::into_raw(state.clone())` at line 285 to pass the refcon to VTDecompressionSession. The error path at line 305 correctly reclaims via `Arc::from_raw`. But `VtbDecoder::Drop` (lines 236-244) only calls `wait_for_asynchronous_frames` + `invalidate` — it never reclaims the refcon. The encoder's Drop (lines 372-391) shows the correct pattern: `Arc::from_raw(self.callback_refcon)` after invalidation. Additionally, on SPS-change session recreation (lines 151-163), the old session is invalidated but its refcon Arc is also not reclaimed, leaking one more strong count each time. Fix: store the refcon pointer as a field (like the encoder does) and reclaim in Drop and before session recreation (`vtb/decoder.rs`)
+
+### Important — data model
+
+- [ ] **DR2**: `FrameData::I420` has no stride fields — `rgba_image()` hardcodes `y_stride = width` and `uv_stride = width.div_ceil(2)` (lines 819-820). The `Nv12Planes` variant correctly stores `y_stride` and `uv_stride`. Current I420 producers (rav1d AV1 decoder, libcamera) strip strides during conversion so the data is contiguous, meaning this does not currently produce garbled output. But the data model is incomplete — if a future producer stores padded I420, the conversion will be wrong with no compile-time guard. Add stride fields to `FrameData::I420` for parity with NV12 (`format.rs`)
 
 ### Stubs — public APIs that silently do nothing
 
-These are tracked elsewhere (ST1/ST2) but the deep review confirms they remain unimplemented and deserve prominent flagging.
+Doc comments clearly say "Unimplemented" on DR3/DR4, and DR5 logs a `warn!`, so callers with tracing enabled will notice. DR6 are explicitly platform stubs with detailed implementation plans. DR7 are `pub(crate)` internal dead code, not public API.
 
-- [ ] **DR3**: `VideoPublisher::set_enabled()` — public no-op stub. Callers believe they are pausing but nothing happens (`publish.rs:394`)
-- [ ] **DR4**: `AudioPublisher::set_muted()` — public no-op stub. Callers believe they are muting but nothing happens (`publish.rs:444`)
-- [ ] **DR5**: `AppleCameraCapturer` — entire backend is a stub. `new()` logs a warning, produces zero frames. `cameras()` returns a hardcoded placeholder. Any code path reaching this silently fails (`rusty-capture/src/platform/apple/camera.rs`)
-- [ ] **DR6**: Android and Windows capture backends — pure documentation stubs, no implementation. Compile but produce nothing (`rusty-capture/src/platform/android/mod.rs`, `windows/mod.rs`)
-- [ ] **DR7**: `AecProcessor::set_stream_delay()` and `set_enabled()` — `#[allow(unused)]`, reserved for future. Dead code (`audio_backend/aec.rs:110,163`)
+- [ ] **DR3**: `VideoPublisher::set_enabled()` — public no-op. Doc says "Unimplemented. Currently a no-op." (`publish.rs:393-395`). Already tracked as ST1
+- [ ] **DR4**: `AudioPublisher::set_muted()` — public no-op. Doc says "Unimplemented. Currently a no-op." (`publish.rs:442-445`). Already tracked as ST2
+- [ ] **DR5**: `AppleCameraCapturer` — entire backend is a stub. `new()` logs `warn!("AVFoundation camera capture not yet fully implemented")`, produces zero frames. `cameras()` returns a hardcoded placeholder. Detailed implementation plan in doc comments at lines 112-165 (`rusty-capture/src/platform/apple/camera.rs`)
+- [ ] **DR6**: Android and Windows capture backends — pure documentation stubs with detailed implementation plans, no runtime code. Compile but produce nothing (`rusty-capture/src/platform/android/mod.rs`, `windows/mod.rs`)
+- [ ] **DR7**: `AecProcessor::set_stream_delay()` and `set_enabled()` — `pub(crate)` internal methods, `#[allow(unused, reason = "API reserved for future use")]`. Not public API; internal dead code reserved for phase 3 AEC work (`audio_backend/aec.rs:110,163`)
 
 ### Important — bugs and correctness
 
-- [ ] **DR8**: `LiveTicket` URI format drops relay URLs on round-trip — the `iroh-live:<base64>/<name>` format has no provision for relay URLs; `deserialize_url` always returns empty `relay_urls`. `CallTicket::serialize` delegates to this, so relay URLs are silently lost on call tickets too. `to_bytes`/`from_bytes` (postcard) preserves them, but the human-readable format does not (`ticket.rs:79-94`)
-- [ ] **DR9**: Room actor silently ignores publish failure — `.ok()` swallows the error, but the broadcast name is still inserted into `active_publish` and announced via gossip. Remote peers try to subscribe to a broadcast that does not exist (`rooms.rs:302-303`)
-- [ ] **DR10**: `RoomTicket::new_from_env` prints wrong env var — says `IROH_TOPIC` but code reads `IROH_LIVE_TOPIC`. Misleading instructions for users (`rooms.rs:418`)
-- [ ] **DR11**: Relay `PullState::pull` has TOCTOU race — checks if ticket is being pulled, drops lock, does async connect, re-acquires lock. Two concurrent pulls for the same ticket both pass the check, both connect, one overwrites the other (`pull.rs:50-100`)
-- [ ] **DR12**: Relay pull handles never cleaned up — when a pulled session disconnects, the `PullHandle` remains in the `active` map forever. Memory leak on long-running relays (`pull.rs`)
-- [ ] **DR13**: `IncomingSessionStream` uses `broadcast` channel (capacity 16) — under connection storms, sessions are silently dropped. `broadcast` also delivers all sessions to all receivers, which is probably not intended for an accept loop (`iroh-moq/src/lib.rs:86,196`)
-- [ ] **DR14**: iroh-moq actor session map dedup conflict — when a peer reconnects before the old session's close task runs, the close task removes the *new* session entry from the map (`iroh-moq/src/lib.rs:479-508`)
-- [ ] **DR15**: `build.rs` missing `v4l2` and `android` in `any_video_codec` — enabling only `v4l2` without `h264`/`av1`/`vaapi` results in `any_video_codec` being false, so code guarded by that cfg won't compile (`moq-media/build.rs`)
-- [ ] **DR16**: `SharedVideoSource::pop_frame` returns last frame repeatedly — `watch::Receiver::borrow_and_update()` returns the current value even if already consumed. Encoder encodes duplicate frames, wasting bandwidth. Needs `changed()` or version tracking (`publish.rs:1085-1088`)
-- [ ] **DR17**: `gpu.download_rgba().expect(...)` inside `OnceLock::get_or_init` — GPU download failures (context lost, driver bug) become panics on the render thread. Should return `Option` or `Result` (`format.rs:794`)
-- [ ] **DR18**: `Metric::record()` has TOCTOU race on `AtomicU64` — load→compute→store is not CAS. Two concurrent writers lose one update. Comment acknowledges single-writer assumption, but the API does not enforce it (`stats.rs:110-128`)
-- [ ] **DR19**: AV1 encoder uses synthetic timestamps instead of propagating input frame timestamps. Inconsistent with H.264 encoder which correctly propagates `frame.timestamp` (`av1/encoder.rs:119`)
+- [ ] **DR8**: `LiveTicket` URI format drops relay URLs on round-trip — `serialize()` (line 63) encodes only `{SCHEME}{addr}/{name}`, no relay URLs. `deserialize_url()` (line 93) always returns `relay_urls: Vec::new()`. `CallTicket::serialize` (line 86) delegates via `self.clone().into_live_ticket().serialize()`, so relay URLs are lost there too. The `to_bytes`/`from_bytes` postcard path correctly preserves them via serde. The URI format needs a relay URL encoding (e.g. query params) or should document the limitation (`ticket.rs`)
+- [ ] **DR9**: Room actor silently ignores publish failure — `self.live.publish_producer(name.clone(), producer).await.ok()` (line 302-303) swallows the error. The broadcast name is inserted into `active_publish` (line 304) and announced via KV gossip (line 309) regardless. Remote peers subscribe to a nonexistent broadcast (`rooms.rs`)
+- [ ] **DR10**: `RoomTicket::new_from_env` prints wrong env var — line 418: `"Created new topic. Reuse with IROH_TOPIC={}"` but line 406: `env::var("IROH_LIVE_TOPIC")`. Users following the printed instructions set `IROH_TOPIC` which is ignored (`rooms.rs`)
+- [ ] **DR11**: Relay `PullState::pull` has TOCTOU race — lock acquired at line 52, checked, dropped at line 60. Async connect at lines 68-78 (no lock). Re-acquire at line 100 to insert. Two concurrent pulls for the same ticket both pass the check and connect; one overwrites the other. The first session is dropped, disconnecting the stream. Fix: use `tokio::sync::Mutex` held across the async gap, or insert a sentinel value before connecting (`pull.rs`)
+- [ ] **DR12**: Relay pull handles never cleaned up — `active` map only grows via `insert` at line 100. No background task monitors session health or removes entries when the remote disconnects. `_session: MoqSession` goes dead but `PullHandle` persists. On a long-running relay with many transient pulls, this leaks memory indefinitely (`pull.rs`)
+- [ ] **DR13**: `IncomingSessionStream` uses `broadcast` channel (capacity 16) — lagged sessions are logged at `info!` level and skipped (line 206-209), not silently dropped. But `broadcast` delivers all sessions to all receivers, which is wrong for a typical single-accept-loop pattern. Under connection storms (>16 pending), sessions are lost. Consider `mpsc` with a single receiver (`iroh-moq/src/lib.rs:86,196`)
+- [ ] **DR14**: iroh-moq actor session map dedup — `self.sessions.insert(remote, session.clone())` at line 485 replaces the old entry. The old session's close task (spawned at lines 492-507) returns `(remote, res)` keyed on the same `remote` PublicKey. When the old session closes, the actor would remove or update `sessions[remote]`, which now points to the new session. This could prematurely mark the new session as closed (`iroh-moq/src/lib.rs`)
+- [ ] **DR15**: `build.rs` missing `v4l2` and `android` in `any_video_codec` — line 10: `let any_video_codec = has_h264 || has_av1 || has_videotoolbox || has_vaapi;`. Features `v4l2` and `android` both provide H.264 encoder/decoder but are not checked. Enabling only `v4l2` results in `any_video_codec = false`, and all code behind `#[cfg(any_video_codec)]` is excluded (`moq-media/build.rs`)
+- [ ] **DR16**: `SharedVideoSource::pop_frame` returns stale frames — line 1086: `self.frames_rx.borrow_and_update().clone()` returns the current value even if the encoder already consumed it. `watch::Receiver` has no "consumed" state. If the encoder polls faster than the source produces, it re-encodes the same frame. Fix: call `self.frames_rx.changed().await` first, or track a generation counter (`publish.rs`)
+- [ ] **DR17**: GPU download panic in `OnceLock::get_or_init` — line 794: `gpu.download_rgba().expect("GPU frame download failed")`. GPU context loss, driver bugs, or FD exhaustion cause panics on the render thread. `OnceLock` retries on panic, hitting the same error repeatedly. Change `rgba_image()` signature to return `Option<&RgbaImage>` or `Result<&RgbaImage>` (`format.rs`)
+- [ ] **DR19**: AV1 encoder uses synthetic timestamps — line 119: `timestamp_us = (self.frame_count * 1_000_000) / self.framerate`. The input `frame.timestamp` is never used. The H.264 encoder correctly propagates the input timestamp. This causes AV1 streams to have monotonic but wrong timestamps when frames arrive at irregular intervals (`av1/encoder.rs`)
 
 ### Important — performance
 
-- [ ] **DR20**: `Scaler::scale_rgba` clones entire output buffer — `buf.clone()` copies the full scaled image every frame, negating the buffer reuse optimization. Should return the buffer directly or use `Arc<[u8]>` (`processing/scale.rs:93`)
-- [ ] **DR21**: `scale_if_needed` duplicated verbatim in 5 encoder backends (H.264, AV1, VAAPI, V4L2, VTB) — ~20 lines x 5. Should be a shared helper or default trait method
-- [ ] **DR22**: GLES renderer UV plane always calls `gl_tex_image_2d` (full reallocation) instead of `gl_tex_sub_image_2d` when dimensions haven't changed. Per-frame GPU texture reallocation on the Pi target hardware (`render/gles.rs:516-538`)
-- [ ] **DR23**: All RGB↔YUV conversions hardcode BT.601 Limited regardless of resolution. HD content (720p+) should use BT.709 per ITU standards. Internally consistent but wrong for interop with standards-compliant decoders. The encoders signal BT.601 in metadata, so decode-side is correct for our own content, but imported content may be wrong (`processing/convert.rs`)
+- [ ] **DR20**: `Scaler::scale_rgba` clones entire output buffer — line 93: `let out = buf.clone();`. The buffer is then stored back in `self.dst_buf` for reuse, but the clone allocates a fresh `Vec<u8>` every frame (potentially megabytes at 1080p). The "reuse" only avoids zero-initialization vs copying existing data — both allocate. Fix: return the buffer and have the caller return it, or use `Bytes`/`Arc<[u8]>` (`processing/scale.rs`)
+- [ ] **DR21**: `scale_if_needed` duplicated verbatim in 5 encoder backends (H.264, AV1, VAAPI, V4L2, VTB) — ~20 identical lines x 5. Should be a shared helper function or default method on a trait extension
+- [ ] **DR22**: GLES renderer UV plane always calls `gl_tex_image_2d` (full GPU texture reallocation) instead of `gl_tex_sub_image_2d` (fast update) when dimensions haven't changed. The Y plane uses the cached `upload_tex` function with dimension tracking, but the UV plane uses `upload_tex_uncached`. On the Pi Zero target hardware where GLES2 is the primary renderer, per-frame texture reallocation is wasteful. Fix: add separate `uv_tex_width`/`uv_tex_height` fields to `GlesRenderer` (`render/gles.rs:516-538`)
+- [ ] **DR23**: All RGB↔YUV conversions hardcode BT.601 Limited regardless of resolution — technically wrong for HD (720p+) per ITU-R BT.709. However, the encoders signal BT.601 in their metadata (H.264 SPS VUI and AV1 sequence header), so standards-compliant decoders receiving our streams will use the correct matrix. The issue is limited to: (a) receiving external BT.709 content for transcoding, (b) interop testing with tools that assume BT.709 for HD. Internally consistent, so this is a design note rather than a bug (`processing/convert.rs`)
 
 ### Important — design and API
 
-- [ ] **DR24**: `DynamicVideoDecoder` match-arm duplication — 5 trait methods each with 7+ variants that all delegate identically. Every new codec requires updating all 5 methods. Use `enum_dispatch` or a macro (`codec/dynamic.rs:100-205`)
-- [ ] **DR25**: Asymmetric encoder/decoder factory pattern — encoders have a separate `VideoEncoderFactory` trait; decoders put `new()` directly on the `VideoDecoder` trait with `Self: Sized`. Confusing API inconsistency (`traits.rs:345-367`)
-- [ ] **DR26**: `codec::test_util` module is unconditionally public and compiled in release builds. Test pattern generators shouldn't be in the release binary. Gate behind `#[cfg(any(test, feature = "test-util"))]` (`codec.rs:47`)
-- [ ] **DR27**: Duplicated `secret_key_from_env` — `live.rs:217` uses `println!`, `util.rs:14` uses `tracing::info!`. The library version should not print to stdout. Delete the private copy, call the util version (`iroh-live/src/live.rs`)
-- [ ] **DR28**: `VideoOptions::resolve_quality` ignores `max_bitrate_kbps` — the field is defined on `VideoTarget` but never consulted during quality resolution (`subscribe.rs:128-146`)
-- [ ] **DR29**: Room event handling inconsistency — `RemoteAnnounced` ignores `event_tx.send` failure (`.ok()`), but `BroadcastSubscribed` correctly checks `.is_err()` and returns. Dead actor continues spawning connect tasks (`rooms.rs:334-337 vs 270`)
-- [ ] **DR30**: Room publisher fire-and-forget spawns — `RoomPublisherSync::new()` and `handle_new_screen()` spawn tokio tasks without storing handles. Task failures are logged but callers have no indication (`rooms/publisher.rs:35-42,65-69`)
+- [ ] **DR24**: `DynamicVideoDecoder` match-arm duplication — 5 trait methods (`name`, `push_packet`, `pop_frame`, `set_viewport`, `burst_size`) x 7 cfg-gated variants, each arm a one-line delegation. ~110 lines of pure boilerplate. Every new codec backend (HEVC, etc.) requires adding 5 match arms. `enum_dispatch` crate or a `delegate_all!` macro would eliminate this entirely (`codec/dynamic.rs:100-205`)
+- [ ] **DR26**: `codec::test_util` module is unconditionally `pub` and compiled in release builds — test pattern generators (`make_rgba_frame`, `make_test_pattern`, `video_encode`) ship in the release binary. Gate behind `#[cfg(any(test, feature = "test-util"))]` like the `moq-media::test_util` module already does (`codec.rs:47`)
+- [ ] **DR27**: Duplicated `secret_key_from_env` — `live.rs:217-229` is a private copy that uses `println!` (wrong for a library). `util.rs:14-26` is the public version that uses `tracing::info!`. The private copy should be deleted; callers should use `crate::util::secret_key_from_env()` (`iroh-live/src/live.rs`)
+- [ ] **DR29**: Room event handling inconsistency — `BroadcastSubscribed` (line 269-271) checks `event_tx.send(...).await.is_err()` and stops the actor when the receiver is dropped. `RemoteAnnounced` (line 334-337) uses `.ok()` and silently continues. If the event receiver is dropped, the actor keeps spawning connect tasks that nobody will consume
 
-### Important — render
+### Minor — design
 
-- [ ] **DR31**: NV12 render pass code duplicated between DMA-BUF and Metal paths — ~60 lines of nearly identical code in `render_imported_nv12` and `render_imported_metal_nv12`. Should extract shared helper (`render.rs:330-460`)
-- [ ] **DR32**: Metal importer has no GPU fence in double-buffer scheme — relies on frame timing (~33ms at 30fps) for the GPU to finish reading the previous-previous frame's textures. Under heavy GPU load or frame bursts, previous resources may be released while still in flight (`render/metal_import.rs:260-262`)
+- [ ] **DR25**: Asymmetric encoder/decoder factory pattern — encoders have a separate `VideoEncoderFactory` trait with `with_preset`/`with_config`; decoders put `new()` on the `VideoDecoder` trait with `Self: Sized` bound (preventing `dyn VideoDecoder::new()`). The `DynamicVideoDecoder` works around this. Confusing but functional (`traits.rs:345-367`)
+- [ ] **DR28**: `VideoOptions::resolve_quality` ignores `max_bitrate_kbps` — the `VideoTarget` struct has a `max_bitrate_kbps` field but `resolve_quality()` (lines 128-146) only consults `max_pixels`. Unused field (`subscribe.rs`)
+- [ ] **DR30**: Room publisher fire-and-forget spawns — `RoomPublisherSync::new()` (line 35-42) and `handle_new_screen()` (line 65-69) spawn tokio tasks without storing handles. Errors ARE logged at `warn!` level. This is a limitation of the synchronous constructor pattern — there's no clean way to propagate async publish errors. Acceptable but worth noting (`rooms/publisher.rs`)
+- [ ] **DR48**: `controller.rs::apply_audio` spawns fire-and-forget tokio task — no handle tracking, rapid `set_opts` calls race, errors only logged at `warn!`. Already marked as "by design" in D6 (audio device enumeration is async, failures logged, task holds Arc so outliving controller is safe). Confirmed acceptable (`publish/controller.rs:294-306`)
 
-### Minor
+### Minor — render
 
-- [ ] **DR33**: RGBA/BGRA conversion pairs are copy-paste — ~200 lines of duplication in `convert.rs` where each pair differs only in which `yuvutils_rs` function is called. A generic helper would reduce to ~60 lines
-- [ ] **DR34**: `codec.rs::VideoCodec::available()` returns `Vec<Self>` — should return `&'static [Self]` since values are known at compile time
-- [ ] **DR35**: `AudioFormat` missing `PartialEq`, `Eq`, `Hash` — simple value type that should be comparable (`format.rs:15`)
+- [ ] **DR31**: NV12 render pass code duplicated between DMA-BUF and Metal paths — `render_imported_nv12` and `render_imported_metal_nv12` share ~60 lines of identical code (bind group creation, command encoder, render pass). Extract a shared helper that takes the Y/UV texture views (`render.rs:330-460`)
+- [ ] **DR32**: Metal importer has no GPU fence in double-buffer scheme — keeps previous frame's `CVMetalTextureRef` resources alive for one extra frame (~33ms at 30fps). At normal frame rates the GPU finishes reading well within this window. Under heavy GPU load or frame bursts, previous resources could theoretically be released while still in flight, but this would require processing latency exceeding one full frame interval — unlikely in practice (`render/metal_import.rs:260-262`)
+- [ ] **DR49**: `render.rs` I420 render path doesn't set `last_render_path` field — should set `RenderPath::CpuRgba` since it falls through the RGBA cache (`render.rs:320-325`)
+
+### Minor — code hygiene
+
+- [ ] **DR18**: `Metric::record()` has non-atomic EMA update — load→compute→store on `AtomicU64` without CAS. Comment at lines 107-109 explicitly acknowledges this and states "each Metric has a single writer (one pipeline thread)." The single-writer invariant is enforced by architecture (each metric belongs to one pipeline). Benign by design (`stats.rs`)
+- [ ] **DR33**: RGBA/BGRA conversion pairs are copy-paste — ~200 lines in `convert.rs` where each pair differs only in which `yuvutils_rs` function is called. A generic helper parameterized on the conversion function would reduce to ~60 lines
+- [ ] **DR34**: `codec.rs::VideoCodec::available()` returns `Vec<Self>` — should return `&'static [Self]` since values are known at compile time. Minor allocation on a cold path
+- [ ] **DR35**: `AudioFormat` missing `PartialEq`, `Eq`, `Hash` — simple value type with `u32` fields that should be comparable (`format.rs:15`)
 - [ ] **DR36**: `PixelFormat` missing `Eq` and `Hash` — has `PartialEq` but not `Eq` despite being a simple enum (`format.rs:50`)
-- [ ] **DR37**: `VideoPreset::fps()` returns 30 for all presets — hardcoded regardless of variant. Doc should note this or make it variant-dependent (`format.rs:882`)
-- [ ] **DR38**: `PipeSink::finish()` is a silent no-op — unlike `MoqPacketSink::finish()` which signals stream end. Different `PacketSink` implementations have different `finish()` semantics (`transport.rs:120`)
-- [ ] **DR39**: `V4L2 decoder discards timestamps` — all decoded frames get `Duration::ZERO`. Should recover timestamps from V4L2 dequeued buffer (`v4l2/decoder.rs:394,421`)
-- [ ] **DR40**: `CallTicket::serialize` clones self unnecessarily — `into_live_ticket` takes by value, forcing a clone. Could construct `LiveTicket` directly (`call.rs:86`)
-- [ ] **DR41**: Relay `serve_fingerprint` panics on lock poisoning — production server should return 500 error instead of crashing the handler (`iroh-live-relay/src/main.rs:267`)
-- [ ] **DR42**: Dead commented-out code in relay main — old query-param extraction (~6 lines) should be removed (`iroh-live-relay/src/main.rs:257-262`)
-- [ ] **DR43**: `decode_loop` is 280+ lines with interleaved skip logic, playout buffer interaction, stats, and packet reception. Consider extracting skip detection into a helper (`pipeline.rs:462-781`)
+- [ ] **DR37**: `VideoPreset::fps()` returns 30 for all presets — hardcoded regardless of variant. Doc should note this (`format.rs:882`)
+- [ ] **DR38**: `PipeSink::finish()` is a silent no-op — unlike `MoqPacketSink::finish()` which signals stream end. Semantics differ between `PacketSink` implementations (`transport.rs:120`)
+- [ ] **DR39**: V4L2 decoder discards timestamps — all decoded frames get `Duration::ZERO`. Should recover timestamps from the V4L2 dequeued buffer (`v4l2/decoder.rs:394,421`)
+- [ ] **DR40**: `CallTicket::serialize` clones self unnecessarily — `into_live_ticket` takes `self` by value, forcing a clone at line 86. Could construct `LiveTicket` directly from `&self` fields (`call.rs`)
+- [ ] **DR41**: Relay `serve_fingerprint` panics on lock poisoning — `.expect("tls_info lock poisoned")` in a web handler at line 267. In dev mode (only use case for fingerprint endpoint) this is acceptable; a production relay would use real TLS certificates and skip this endpoint (`iroh-live-relay/src/main.rs`)
+- [ ] **DR42**: Dead commented-out code in relay main — old query-param extraction at lines 257-262 should be removed (`iroh-live-relay/src/main.rs`)
+- [ ] **DR43**: `decode_loop` is 280+ lines — interleaved skip logic, playout buffer interaction, stats, and packet reception. Consider extracting skip detection into a helper (`pipeline.rs:462-781`)
 - [ ] **DR44**: `overlay.rs` `show()` and `show_publish()` share ~100 lines of duplicated bottom bar rendering code
 - [ ] **DR45**: `DiscoveredVideoSource` enum and `discover_video_sources()` duplicated across `split.rs`, `call.rs`, and `viewer.rs` (~200 lines total). Extract to `examples/common/`
-- [ ] **DR46**: `H.264 SPS patcher module` is dead code — `#[allow(dead_code)]` on entire module, `patch_sps_low_latency` commented out at call sites (`codec/h264/sps.rs`)
-- [ ] **DR47**: `H264Encoder::frame_count` field is incremented but never read — dead state (`h264/encoder.rs:30,321`)
-- [ ] **DR48**: `controller.rs::apply_audio` spawns fire-and-forget tokio task — no handle tracking, rapid `set_opts` calls race, errors only logged at warn (`publish/controller.rs:294-306`)
-- [ ] **DR49**: `render.rs` I420 render path doesn't set `last_render_path` field — should set `RenderPath::CpuRgba` (`render.rs:320-325`)
+- [ ] **DR46**: H.264 SPS patcher module is dead code — `#[allow(dead_code)]` on entire module, `patch_sps_low_latency` commented out at call sites (`codec/h264/sps.rs`)
+- [ ] **DR47**: `H264Encoder::frame_count` field is incremented at line 321 but never read — dead state (`h264/encoder.rs:30`)
 
 ### TODO/FIXME inventory
 
