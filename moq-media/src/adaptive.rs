@@ -10,6 +10,7 @@
 
 use std::{
     collections::BTreeMap,
+    sync::{Arc, atomic::AtomicU64},
     time::{Duration, Instant},
 };
 
@@ -100,17 +101,33 @@ pub(crate) struct RankedRendition {
     pub pixels: u64,
     /// Advertised bitrate in bits per second.
     pub bitrate_bps: u64,
+    /// Coded dimensions from the catalog.
+    pub width: u32,
+    pub height: u32,
+}
+
+fn pack_dimensions(w: u32, h: u32) -> u64 {
+    (w as u64) << 32 | h as u64
+}
+
+fn unpack_dimensions(packed: u64) -> [u32; 2] {
+    [(packed >> 32) as u32, packed as u32]
 }
 
 /// Ranks video renditions by pixel count descending (highest quality first).
 pub(crate) fn rank_renditions(renditions: &BTreeMap<String, VideoConfig>) -> Vec<RankedRendition> {
     let mut ranked: Vec<_> = renditions
         .iter()
-        .map(|(name, config)| RankedRendition {
-            name: name.clone(),
-            pixels: config.coded_width.unwrap_or(0) as u64
-                * config.coded_height.unwrap_or(0) as u64,
-            bitrate_bps: config.bitrate.unwrap_or(0),
+        .map(|(name, config)| {
+            let w = config.coded_width.unwrap_or(0);
+            let h = config.coded_height.unwrap_or(0);
+            RankedRendition {
+                name: name.clone(),
+                pixels: w as u64 * h as u64,
+                bitrate_bps: config.bitrate.unwrap_or(0),
+                width: w,
+                height: h,
+            }
         })
         .collect();
     ranked.sort_by(|a, b| b.pixels.cmp(&a.pixels));
@@ -262,6 +279,8 @@ pub struct AdaptiveVideoTrack {
     swap_rx: mpsc::Receiver<VideoTrack>,
     selected_rendition: Watchable<String>,
     viewport: Watchable<(u32, u32)>,
+    /// Current rendition dimensions from the catalog, packed as (width << 32 | height).
+    dimensions: Arc<std::sync::atomic::AtomicU64>,
     mode_tx: watch::Sender<RenditionMode>,
     _task: n0_future::task::AbortOnDropHandle<()>,
 }
@@ -289,6 +308,14 @@ impl AdaptiveVideoTrack {
         let initial_track =
             broadcast.video_rendition::<DynamicVideoDecoder>(&decode_config, initial_name)?;
 
+        // Initialize dimensions from the catalog for the selected rendition.
+        let initial_config = &catalog.video.renditions[initial_name];
+        let initial_dims = pack_dimensions(
+            initial_config.coded_width.unwrap_or(0),
+            initial_config.coded_height.unwrap_or(0),
+        );
+        let dimensions = Arc::new(AtomicU64::new(initial_dims));
+
         let selected_rendition = Watchable::new(initial_name.clone());
         let viewport = Watchable::new((0u32, 0u32));
         let (mode_tx, mode_rx) = watch::channel(RenditionMode::Auto);
@@ -304,6 +331,7 @@ impl AdaptiveVideoTrack {
             selected_rendition.clone(),
             mode_rx,
             swap_tx,
+            dimensions.clone(),
         ));
 
         Ok(Self {
@@ -311,6 +339,7 @@ impl AdaptiveVideoTrack {
             swap_rx,
             selected_rendition,
             viewport,
+            dimensions,
             mode_tx,
             _task: n0_future::task::AbortOnDropHandle::new(task),
         })
@@ -383,13 +412,16 @@ impl VideoSource for AdaptiveVideoTrack {
         "adaptive"
     }
 
-    /// Returns `[0, 0]` dimensions because the active rendition (and thus
-    /// resolution) can change at any time. Callers that need actual frame
-    /// dimensions should read them from each [`VideoFrame`] instead.
+    /// Returns the current rendition's dimensions from the catalog.
+    ///
+    /// These may change when the adaptation task switches renditions. For
+    /// pixel-accurate layout, read dimensions from each [`VideoFrame`].
     fn format(&self) -> VideoFormat {
         VideoFormat {
             pixel_format: PixelFormat::Rgba,
-            dimensions: [0, 0],
+            dimensions: unpack_dimensions(
+                self.dimensions.load(std::sync::atomic::Ordering::Relaxed),
+            ),
         }
     }
 
@@ -423,6 +455,7 @@ async fn adaptation_task(
     selected_rendition: Watchable<String>,
     mut mode_rx: watch::Receiver<RenditionMode>,
     swap_tx: mpsc::Sender<VideoTrack>,
+    dimensions: Arc<AtomicU64>,
 ) {
     let mut timers = AdaptationTimers::default();
     let mut interval = tokio::time::interval(config.check_interval);
@@ -495,8 +528,13 @@ async fn adaptation_task(
                 // Probe succeeded — commit.
                 let probe_idx = current_idx.saturating_sub(1);
                 current_idx = probe_idx;
-                selected_rendition.set(ranked[probe_idx].name.clone()).ok();
-                info!(rendition = %ranked[probe_idx].name, "probe succeeded: upgraded");
+                let r = &ranked[probe_idx];
+                dimensions.store(
+                    pack_dimensions(r.width, r.height),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                selected_rendition.set(r.name.clone()).ok();
+                info!(rendition = %r.name, "probe succeeded: upgraded");
                 timers.last_probe = Some(now);
                 if swap_tx.send(probe_track).await.is_err() {
                     return;
@@ -524,9 +562,14 @@ async fn adaptation_task(
                     Ok(new_track) => {
                         current_idx = target_idx;
                         timers.last_switch_failure = None;
-                        selected_rendition.set(ranked[target_idx].name.clone()).ok();
+                        let r = &ranked[target_idx];
+                        dimensions.store(
+                            pack_dimensions(r.width, r.height),
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        selected_rendition.set(r.name.clone()).ok();
                         info!(
-                            rendition = %ranked[target_idx].name,
+                            rendition = %r.name,
                             loss = sigs.loss_rate,
                             bw = sigs.available_bps,
                             "downgraded rendition"
@@ -549,7 +592,12 @@ async fn adaptation_task(
                     Ok(new_track) => {
                         current_idx = target_idx;
                         timers.last_switch_failure = None;
-                        selected_rendition.set(ranked[target_idx].name.clone()).ok();
+                        let r = &ranked[target_idx];
+                        dimensions.store(
+                            pack_dimensions(r.width, r.height),
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        selected_rendition.set(r.name.clone()).ok();
                         info!(
                             rendition = %ranked[target_idx].name,
                             loss = sigs.loss_rate,
@@ -643,16 +691,22 @@ mod tests {
                 name: "video-1080p".into(),
                 pixels: 1920 * 1080,
                 bitrate_bps: 4_000_000,
+                width: 1920,
+                height: 1080,
             },
             RankedRendition {
                 name: "video-720p".into(),
                 pixels: 1280 * 720,
                 bitrate_bps: 2_000_000,
+                width: 1280,
+                height: 720,
             },
             RankedRendition {
                 name: "video-360p".into(),
                 pixels: 640 * 360,
                 bitrate_bps: 500_000,
+                width: 640,
+                height: 360,
             },
         ]
     }
