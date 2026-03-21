@@ -50,7 +50,7 @@ Issues noticed while writing minimal README code examples. The goal is that the 
 ### Audio Backend
 
 - [ ] **AB3**: AEC Mutex on real-time thread — `AecProcessor` holds `Arc<Mutex<AudioProcessing>>` acquired on cpal input callback; becomes RT violation if `set_stream_delay` is wired up. Use `try_lock` with passthrough fallback.
-- [ ] **AB4**: AEC VecDeque can allocate on audio thread — `out_buf` grows unbounded via `push_back()`; cap length or use fixed-capacity ring buffer
+- [x] **AB4**: AEC VecDeque can allocate on audio thread — capped render, capture, and output buffers at BUF_CAPACITY (8192); oldest samples discarded if consumer falls behind
 - [ ] **AB5**: AEC processing errors silently discarded — `process_render_f32`/`process_capture_f32` results ignored; add atomic error counter
 - [ ] **AB6**: Output resampling latency 300ms — `latency_seconds: 0.3` vs WebRTC target of 10–20ms; reduce to 50–100ms, make configurable via `AudioBackendOpts`
 - [ ] **AB7**: No clock drift correction between input/output — cpal streams on independent hardware clocks; monitor fill level, micro-resample

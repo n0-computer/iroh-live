@@ -286,6 +286,13 @@ mod state {
                     self.render_buf_l.push_back(self.render_scratch[i * 2]);
                     self.render_buf_r.push_back(self.render_scratch[i * 2 + 1]);
                 }
+                // Cap render buffers to prevent allocation on the RT thread.
+                while self.render_buf_l.len() > BUF_CAPACITY {
+                    self.render_buf_l.pop_front();
+                }
+                while self.render_buf_r.len() > BUF_CAPACITY {
+                    self.render_buf_r.pop_front();
+                }
             }
 
             // 2. Process complete 10ms render frames.
@@ -352,6 +359,15 @@ mod state {
                         self.out_buf_l.push_back(self.tmp_src_l[i]);
                         self.out_buf_r.push_back(self.tmp_src_r[i]);
                     }
+                }
+
+                // Cap output buffer length to avoid allocation on the RT thread.
+                // Discard oldest samples if the consumer falls behind.
+                while self.out_buf_l.len() > BUF_CAPACITY {
+                    self.out_buf_l.pop_front();
+                }
+                while self.out_buf_r.len() > BUF_CAPACITY {
+                    self.out_buf_r.pop_front();
                 }
             }
 
