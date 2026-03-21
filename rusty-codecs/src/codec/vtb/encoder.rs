@@ -211,22 +211,7 @@ impl VideoEncoderFactory for VtbEncoder {
     fn config_for(config: &VideoEncoderConfig) -> VideoConfig {
         let bitrate = config.bitrate_or_default(H264_BPP);
         let inline = config.nal_format == NalFormat::AnnexB;
-        VideoConfig {
-            codec: VideoCodec::H264(H264 {
-                profile: 0x42,
-                constraints: 0xE0,
-                level: 0x1E,
-                inline,
-            }),
-            description: None,
-            coded_width: Some(config.width),
-            coded_height: Some(config.height),
-            display_ratio_width: None,
-            display_ratio_height: None,
-            bitrate: Some(bitrate),
-            framerate: Some(config.framerate as f64),
-            optimize_for_latency: Some(true),
-        }
+        crate::codec::h264::h264_video_config(config.width, config.height, bitrate, config.framerate, inline, None)
     }
 }
 
@@ -238,22 +223,10 @@ impl VideoEncoder for VtbEncoder {
     fn config(&self) -> VideoConfig {
         let inline = self.nal_format == NalFormat::AnnexB;
         let state = self.callback_state.lock().unwrap();
-        VideoConfig {
-            codec: VideoCodec::H264(H264 {
-                profile: 0x42, // Baseline
-                constraints: 0xE0,
-                level: 0x1E, // Level 3.0
-                inline,
-            }),
-            description: state.avcc.clone().map(Into::into),
-            coded_width: Some(self.width),
-            coded_height: Some(self.height),
-            display_ratio_width: None,
-            display_ratio_height: None,
-            bitrate: Some(self.bitrate),
-            framerate: Some(self.framerate as f64),
-            optimize_for_latency: Some(true),
-        }
+        crate::codec::h264::h264_video_config(
+            self.width, self.height, self.bitrate, self.framerate, inline,
+            state.avcc.clone().map(Into::into),
+        )
     }
 
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
