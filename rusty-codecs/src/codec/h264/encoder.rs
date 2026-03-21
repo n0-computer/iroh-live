@@ -38,6 +38,45 @@ pub struct H264Encoder {
     packet_buf: std::collections::VecDeque<EncodedFrame>,
 }
 
+/// Borrowed view of I420 planes — avoids copying when the frame already has
+/// the right layout. Used for the zero-copy I420 encode path.
+struct YuvSlices<'a> {
+    y: &'a [u8],
+    u: &'a [u8],
+    v: &'a [u8],
+    width: u32,
+    height: u32,
+    y_stride: u32,
+    u_stride: u32,
+    v_stride: u32,
+}
+
+impl YUVSource for YuvSlices<'_> {
+    fn dimensions(&self) -> (usize, usize) {
+        (self.width as usize, self.height as usize)
+    }
+
+    fn strides(&self) -> (usize, usize, usize) {
+        (
+            self.y_stride as usize,
+            self.u_stride as usize,
+            self.v_stride as usize,
+        )
+    }
+
+    fn y(&self) -> &[u8] {
+        self.y
+    }
+
+    fn u(&self) -> &[u8] {
+        self.u
+    }
+
+    fn v(&self) -> &[u8] {
+        self.v
+    }
+}
+
 impl YUVSource for YuvData {
     fn dimensions(&self) -> (usize, usize) {
         (self.width as usize, self.height as usize)
@@ -215,38 +254,57 @@ impl VideoEncoder for H264Encoder {
         // Scale frame to encoder dimensions if needed.
         let frame = self.scale_if_needed(frame)?;
         let [w, h] = frame.dimensions;
-        let yuv = match &frame.data {
-            crate::format::FrameData::Packed { pixel_format, data } => {
-                pixel_format_to_yuv420(data, w, h, *pixel_format)?
-            }
-            crate::format::FrameData::I420 { y, u, v } => YuvData {
-                y: y.to_vec(),
-                y_stride: w,
-                u: u.to_vec(),
-                u_stride: w / 2,
-                v: v.to_vec(),
-                v_stride: w / 2,
+        // Fast path: if the frame is already I420 with matching strides,
+        // borrow the planes directly without copying (PF2).
+        let (annex_b, frame_type) = if let crate::format::FrameData::I420 { y, u, v } = &frame.data
+        {
+            let slices = YuvSlices {
+                y,
+                u,
+                v,
                 width: w,
                 height: h,
-            },
-            _ => {
-                // GPU or NV12 frames: fall back through RGBA.
-                let img = frame.rgba_image();
-                pixel_format_to_yuv420(img.as_raw(), w, h, crate::format::PixelFormat::Rgba)?
-            }
+                y_stride: w,
+                u_stride: w / 2,
+                v_stride: w / 2,
+            };
+            let bs = self.encoder.encode(&slices)?;
+            (bs.to_vec(), bs.frame_type())
+        } else {
+            let yuv = match &frame.data {
+                crate::format::FrameData::Packed { pixel_format, data } => {
+                    pixel_format_to_yuv420(data, w, h, *pixel_format)?
+                }
+                _ => {
+                    let img = frame.rgba_image();
+                    pixel_format_to_yuv420(img.as_raw(), w, h, crate::format::PixelFormat::Rgba)?
+                }
+            };
+            let bs = self.encoder.encode(&yuv)?;
+            (bs.to_vec(), bs.frame_type())
         };
 
-        let bitstream = self.encoder.encode(&yuv)?;
-        let frame_type = bitstream.frame_type();
+        self.finish_encode(annex_b, frame_type, input_timestamp)
+    }
 
+    fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
+        Ok(self.packet_buf.pop_front())
+    }
+}
+
+impl H264Encoder {
+    /// Converts encoded Annex B data into an `EncodedFrame` and pushes it
+    /// to the output buffer.
+    fn finish_encode(
+        &mut self,
+        annex_b: Vec<u8>,
+        frame_type: FrameType,
+        timestamp: std::time::Duration,
+    ) -> Result<()> {
         if matches!(frame_type, FrameType::Skip | FrameType::Invalid) {
             return Ok(());
         }
 
-        // openh264 outputs Annex B format natively.
-        let annex_b = bitstream.to_vec();
-
-        // In avcC mode, extract SPS/PPS on first IDR and convert to length-prefixed.
         if self.nal_format == NalFormat::Avcc && self.avcc.is_none() {
             let nals = parse_annex_b(&annex_b);
             if let Some((sps, pps)) = extract_sps_pps(&nals) {
@@ -264,15 +322,11 @@ impl VideoEncoder for H264Encoder {
 
         self.packet_buf.push_back(EncodedFrame {
             is_keyframe,
-            timestamp: input_timestamp,
+            timestamp,
             payload,
         });
 
         Ok(())
-    }
-
-    fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
-        Ok(self.packet_buf.pop_front())
     }
 }
 
