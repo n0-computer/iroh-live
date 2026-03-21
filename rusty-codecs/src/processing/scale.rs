@@ -158,6 +158,44 @@ pub fn fit_within(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32, u32) 
     (w, h)
 }
 
+/// Scales a frame to the encoder's target dimensions if the frame doesn't
+/// already match.
+///
+/// Shared by all encoder backends. Returns the frame unchanged when no
+/// scaling is needed.
+pub fn scale_frame_if_needed(
+    scaler: &mut Scaler,
+    scale_mode: ScaleMode,
+    target_w: u32,
+    target_h: u32,
+    frame: crate::format::VideoFrame,
+) -> anyhow::Result<crate::format::VideoFrame> {
+    let [fw, fh] = frame.dimensions;
+    if fw == target_w && fh == target_h {
+        return Ok(frame);
+    }
+    let (tw, th) = scale_mode.resolve((fw, fh), (target_w, target_h));
+    if tw == fw && th == fh {
+        return Ok(frame);
+    }
+    scaler.set_target_dimensions(tw, th);
+    let img = frame.rgba_image();
+    let scaled = if scale_mode == ScaleMode::Cover {
+        scaler.scale_cover_rgba(img.as_raw(), fw, fh)?
+    } else {
+        scaler.scale_rgba(img.as_raw(), fw, fh)?
+    };
+    match scaled {
+        Some((data, w, h)) => Ok(crate::format::VideoFrame::new_rgba(
+            data.into(),
+            w,
+            h,
+            frame.timestamp,
+        )),
+        None => Ok(frame),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

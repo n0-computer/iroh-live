@@ -755,7 +755,6 @@ pub struct VaapiEncoder {
     bitrate: u64,
     frame_count: u64,
     nal_format: NalFormat,
-    scale_mode: ScaleMode,
     #[debug(skip)]
     scaler: Scaler,
     /// avcC description, populated after first keyframe (avcC mode only).
@@ -965,7 +964,6 @@ impl VaapiEncoder {
             bitrate,
             frame_count: 0,
             nal_format,
-            scale_mode: config.scale_mode,
             scaler: Scaler::new(Some((width, height))),
             avcc,
             packet_buf: std::collections::VecDeque::new(),
@@ -1057,36 +1055,22 @@ impl VaapiEncoder {
         }
     }
 
-    /// Scales the frame to encoder dimensions if needed, based on the
-    /// configured [`ScaleMode`].
+    /// Scales the frame to encoder dimensions.
+    ///
+    /// VAAPI surfaces are fixed-size, so frames must always match exactly.
+    /// Unlike software encoders, this always forces scaling to encoder
+    /// dimensions to avoid green padding from uninitialized surface pixels.
     fn scale_if_needed(&mut self, frame: VideoFrame) -> Result<VideoFrame> {
-        let [fw, fh] = frame.dimensions;
-        if fw == self.width && fh == self.height {
-            return Ok(frame);
-        }
-        let (mut tw, mut th) = self.scale_mode.resolve((fw, fh), (self.width, self.height));
-        // VAAPI surfaces are fixed-size — frames MUST match encoder dimensions.
-        // If resolve() returned smaller dims (e.g. Fit mode refusing to upscale),
-        // force-scale to encoder dimensions to avoid green padding from
-        // uninitialized surface pixels.
-        if tw != self.width || th != self.height {
-            tw = self.width;
-            th = self.height;
-        }
-        if tw == fw && th == fh {
-            return Ok(frame);
-        }
-        self.scaler.set_target_dimensions(tw, th);
-        let img = frame.rgba_image();
-        let scaled = if self.scale_mode == ScaleMode::Cover {
-            self.scaler.scale_cover_rgba(img.as_raw(), fw, fh)?
-        } else {
-            self.scaler.scale_rgba(img.as_raw(), fw, fh)?
-        };
-        match scaled {
-            Some((data, w, h)) => Ok(VideoFrame::new_rgba(data.into(), w, h, frame.timestamp)),
-            None => Ok(frame),
-        }
+        // Force ScaleMode::Cover to ensure we always fill the encoder
+        // surface, regardless of what the user configured. Fit mode could
+        // produce smaller output, leaving uninitialized surface pixels.
+        crate::processing::scale::scale_frame_if_needed(
+            &mut self.scaler,
+            ScaleMode::Cover,
+            self.width,
+            self.height,
+            frame,
+        )
     }
 
     fn i420_to_nv12(y: &[u8], u: &[u8], v: &[u8], width: u32, height: u32) -> Vec<u8> {

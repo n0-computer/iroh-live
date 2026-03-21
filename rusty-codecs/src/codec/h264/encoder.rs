@@ -165,30 +165,14 @@ impl H264Encoder {
 }
 
 impl H264Encoder {
-    /// Scales the frame to encoder dimensions if needed, based on the
-    /// configured [`ScaleMode`].
     fn scale_if_needed(&mut self, frame: VideoFrame) -> Result<VideoFrame> {
-        let [fw, fh] = frame.dimensions;
-        if fw == self.width && fh == self.height {
-            return Ok(frame);
-        }
-        // Compute actual target dims using the scale mode.
-        let (tw, th) = self.scale_mode.resolve((fw, fh), (self.width, self.height));
-        if tw == fw && th == fh {
-            return Ok(frame);
-        }
-        // Update scaler target in case source resolution changed.
-        self.scaler.set_target_dimensions(tw, th);
-        let img = frame.rgba_image();
-        let scaled = if self.scale_mode == ScaleMode::Cover {
-            self.scaler.scale_cover_rgba(img.as_raw(), fw, fh)?
-        } else {
-            self.scaler.scale_rgba(img.as_raw(), fw, fh)?
-        };
-        match scaled {
-            Some((data, w, h)) => Ok(VideoFrame::new_rgba(data.into(), w, h, frame.timestamp)),
-            None => Ok(frame),
-        }
+        crate::processing::scale::scale_frame_if_needed(
+            &mut self.scaler,
+            self.scale_mode,
+            self.width,
+            self.height,
+            frame,
+        )
     }
 }
 
