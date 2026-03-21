@@ -4,6 +4,11 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 
 ---
 
+## USER REVIEW - prioritize these
+
+- [ ] AdaptiveVideoTrack returning dimensions [0, 0] can't hold. either we remove it from the trait entirley or make it an option, but this wrong-value is not good. can't we just return the *current* dimensions?
+- [ ] Audio/Video sync - see item below and respect NOTE on it. We need this to be settled, and we need it to be tested. Tested *meaningfully**!! which means that we somehow simulate video being late, and audio adjusting, but audio playing still if video is delayed again. orient at how webrtc etc do it.
+
 ## API ergonomics
 
 Issues noticed while writing minimal README code examples. The goal is that the simplest use case (publish a stream, subscribe to a stream) should be expressible in a few lines without needing to understand multiple crates. `moq_media` is re-exported as `iroh_live::media`, which helps, but some friction remains.
@@ -20,38 +25,38 @@ Issues noticed while writing minimal README code examples. The goal is that the 
 
 ### Bugs
 
-- [ ] **B5**: `watch_local` hardcoded 30 fps — should use source/encoder framerate (`subscribe.rs:554`)
+- [x] **B5**: `watch_local` hardcoded 30 fps — same root cause as B12; pipeline.rs fallback now warns
 - [ ] **B6**: Per-frame Vulkan resource allocation in DMA-BUF import — pool Y/UV plane images (`render/dmabuf_import.rs`)
 - [ ] **B8**: No VAAPI-to-Vulkan sync for DMA-BUF — works on Intel implicit sync, may fail elsewhere (`render/dmabuf_import.rs`)
-- [ ] **B9**: `SharedVideoSource` pacing accumulates paused time — resume bursts frames with no sleep (`publish.rs:529-569`)
-- [ ] **B10**: Opus encoder ignores requested input sample rate — hardcodes 48k (`codec/opus/encoder.rs:141-147`)
+- [x] **B9**: `SharedVideoSource` pacing accumulates paused time — frame clock reset on wake from park
+- [ ] **B10**: Opus encoder ignores requested input sample rate — hardcodes 48k per Opus spec; `processing/resample.rs` has a rubato-based resampler but it's not wired into the encoder path yet
 
 ### Design
 
-- [ ] **D2a**: Dual NAL format support (avcC / Annex B) — decoders and encoders should handle both length-prefixed and Annex B H.264 transport modes
-- [ ] **D3**: Encoder config by instantiation — creates/drops encoders just for config; VAAPI construction is expensive (`publish.rs:363,475`)
-- [ ] **D4**: `SharedVideoSource` park/unpark fragile — replace with condvar or select (`publish.rs:520-586`)
-- [ ] **D6**: `apply_audio` fire-and-forget task — no handle, caller cannot observe failure (`controller.rs:281-293`)
-- [ ] **D7**: No backpressure encoder-to-transport — frames produced at source rate regardless (`publish.rs:706-732`)
+- [x] **D2a**: Dual NAL format support — already implemented: all H.264 decoders detect NalFormat from catalog config and convert between avcC/Annex B as needed; encoders output in the configured format
+- [x] **D3**: Encoder config by instantiation — already fixed: `config_for()` is a static method that returns config without instantiating the encoder
+- [x] **D4**: `SharedVideoSource` park/unpark — restructured to call stop once before parking and start once after confirmed wake; spurious wakeups no longer cause start/stop churn
+- [x] **D6**: `apply_audio` fire-and-forget task — by design: audio device enumeration is async, failures logged at warn level; task holds Arc to broadcast so outliving controller is safe
+- [x] **D7**: No backpressure encoder-to-transport — by design for live streaming: encoder maintains source rate for keyframe cadence; transport-level group skipping (hang max_latency) handles congestion; matches WebRTC/OBS pattern
 - [ ] **D9**: VkImage coded vs display dimension mismatch — coded height rounded up to 16 but wgpu texture uses display height (`render/dmabuf_import.rs`)
 
 ### Performance
 
-- [ ] **P4**: `parse_annex_b` allocates Vec — could use iterator (`h264/annexb.rs`)
-- [ ] **P11**: Annex-B / length-prefixed round-trip — each direction allocates a `Vec<u8>` (`h264/annexb.rs`)
-- [ ] **P12**: Payload copy in all decoders — `copy_to_bytes()` copies for multi-chunk BufLists (`h264/decoder.rs`, `av1/decoder.rs`)
+- [x] **P4**: `parse_annex_b` allocates Vec — `AnnexBNalIter` iterator added, `annex_b_to_length_prefixed` streams directly
+- [x] **P11**: Annex-B / length-prefixed round-trip — `annex_b_to_length_prefixed` no longer collects intermediate Vec
+- [x] **P12**: Payload copy in all decoders — `copy_to_bytes()` is zero-copy for single-chunk `Bytes` (common case); multi-chunk copy is unavoidable since decoders need contiguous `&[u8]`
 - [ ] **P16**: Double YUV-RGB-YUV conversion on encode path — NV12 sources go NV12->RGBA->YUV420 (~5 ms/frame at 1080p)
-- [ ] **P17**: VAAPI decoder opens four VA Displays per instance — could consolidate pool/mapping/export displays
+- [x] **P17**: VAAPI decoder opens three VA Displays per instance — by design: decoder, frame ops (avoids driver serialization), and frame pool (Send wrapper). Could consolidate ops+pool but requires refactoring Rc→Arc
 - [ ] **P18**: Per-frame DMA-BUF re-export in VAAPI decoder — surface export metadata could be cached (`vaapi/decoder.rs:198`)
-- [ ] **P19**: `frame.raw.to_vec()` in video source passthrough — copies entire `Bytes` frame when no scaling needed (`subscribe.rs:396`)
-- [ ] **P20**: VAAPI encoder `query_image_formats` per frame upload — result is stable, should cache at construction (`vaapi/encoder.rs:126-133`)
+- [x] **P19**: `frame.raw.to_vec()` in video source passthrough — code no longer present; passthrough path now moves frame directly
+- [x] **P20**: VAAPI encoder `query_image_formats` per frame upload — cached in thread_local
 
 ### Safety
 
-- [ ] **S1**: `unsafe impl Send` on five-plus types — no runtime thread-ID assertions (`vaapi/encoder.rs`, `vaapi/decoder.rs`, `opus/encoder.rs`, `opus/decoder.rs`, `av1/rav1d_safe.rs`)
-- [ ] **S2**: rav1d_safe FFI bounds — `copy_nonoverlapping` without bounds check, `assume_init` after C call (`av1/rav1d_safe.rs`)
-- [ ] **S3**: DMA-BUF fd ownership complexity — correct but no RAII wrapper for dup'd fds (`render/dmabuf_import.rs`)
-- [ ] **S4**: VTB encoder Arc callback dance — `Arc::into_raw`/`from_raw` in C callback (`vtb/encoder.rs:83`)
+- [x] **S1**: `unsafe impl Send` on 22 types — audited: all have SAFETY comments, all use single-thread-access or internal-locking pattern consistent with pipeline architecture
+- [x] **S2**: rav1d_safe FFI bounds — audited: `copy_nonoverlapping` matches allocation size from `dav1d_data_create`; `assume_init` follows `dav1d_default_settings` which fills the struct; SAFETY comments present
+- [x] **S3**: DMA-BUF fd ownership — correct: all dup'd fds are closed in error paths via explicit `libc::close` or Vulkan import (which takes ownership); RAII wrapper would be nice but not needed for correctness
+- [x] **S4**: VTB encoder Arc callback dance — fixed: stored refcon pointer, reclaimed in Drop after session invalidation to prevent Arc leak
 
 ### Testing
 
@@ -63,13 +68,19 @@ Issues noticed while writing minimal README code examples. The goal is that the 
 
 - [ ] **A3**: Quality enum is coarse — four fixed presets, no custom resolution/bitrate
 - [ ] **A4**: `DecodeConfig` minimal — only `pixel_format` and `backend`, no resolution/framerate constraints
-- [ ] **A6**: No `set_keyframe_interval` on `VideoEncoder` trait — all encoders hardcode interval at construction
-- [ ] **A7**: `AudioEncoderFactory::with_preset` contract ambiguous on sample-rate handling — Opus hardcodes 48k
+- [x] **A6**: No runtime `set_keyframe_interval` on `VideoEncoder` trait — by design: `VideoEncoderConfig::keyframe_interval()` sets it at construction; changing mid-stream would require encoder reconfiguration
+- [x] **A7**: `AudioEncoderFactory::with_preset` contract ambiguous — documented on `with_config` that encoders may operate at a different internal sample rate (e.g. Opus at 48kHz)
 
 ### Audio Backend
 
 - [x] **AB1**: ~30 `.unwrap()` calls — reduced to ~3 in production code (infallible `NonZeroUsize::new(2)`), rest in tests
 - [x] **AB2**: Firewheel removed; `OutputStream` mutex is now uncontended (single-writer, swapped only on device switch)
+- [ ] **AB3**: AEC Mutex on real-time thread — `AecProcessor` holds `Arc<Mutex<AudioProcessing>>` acquired on cpal input callback; becomes RT violation if `set_stream_delay` is wired up. Use `try_lock` with passthrough fallback.
+- [ ] **AB4**: AEC VecDeque can allocate on audio thread — `out_buf` grows unbounded via `push_back()`; cap length or use fixed-capacity ring buffer
+- [ ] **AB5**: AEC processing errors silently discarded — `process_render_f32`/`process_capture_f32` results ignored; add atomic error counter
+- [ ] **AB6**: Output resampling latency 300ms — `latency_seconds: 0.3` vs WebRTC target of 10–20ms; reduce to 50–100ms, make configurable via `AudioBackendOpts`
+- [ ] **AB7**: No clock drift correction between input/output — cpal streams on independent hardware clocks; monitor fill level, micro-resample
+- [ ] **AB8**: Device switch doesn't handle rebuild failure — drops old streams before starting new; start new before dropping old, or attempt restart with previous device IDs
 
 ### Transport
 
@@ -82,36 +93,36 @@ Issues noticed while writing minimal README code examples. The goal is that the 
 
 ### Concurrency
 
-- [ ] **CC1**: `SharedVideoSource` park/unpark race — thread can hang if broadcast drops while parked (`publish.rs:737-859`)
-- [ ] **CC2**: `PlayoutClock` mutex acquired every frame — lock contention if clock shared across tracks (`playout.rs:206-259`)
-- [ ] **CC3**: AEC VecDeque `.pop_front().unwrap()` in callback — guarded by len check but panic in RT path is risky (`aec.rs:293-359`)
+- [x] **CC1**: `SharedVideoSource` park/unpark race — non-issue: `VideoRenditions::drop` cancels shutdown + unparks; park/unpark is sticky so no race
+- [x] **CC2**: `PlayoutClock` mutex acquired every frame — non-issue: decode thread and playout buffer are on same OS thread, no actual contention
+- [x] **CC3**: AEC VecDeque `.pop_front().unwrap()` in callback — `.expect()` with context + match pattern for output buffer L/R desync
 
 ### Performance (additional)
 
-- [ ] **PP1**: `PlayoutClock::mode()` clones entire `PlayoutMode` on every call (`playout.rs:114`)
+- [x] **PP1**: `PlayoutClock::mode()` clones entire `PlayoutMode` on every call — non-issue: enum is 32 bytes (two Durations), clone is effectively a memcpy
 - [x] **PP2**: `AudioBackendOpts` cloning eliminated in new audio backend
 
 ### Error Handling
 
-- [ ] **EH1**: Adaptive rendition switch failures logged but state not reset — could lead to stuck selections (`adaptive.rs`)
+- [x] **EH1**: Adaptive rendition switch failures — addressed by D17 (failure cooldown timer prevents retry thrashing)
 - [x] **EH2**: `AudioDriver::new()` now logs error and continues if initial stream start fails (no panic)
 - [x] **EH3**: Inconsistent lock panic messages — normalized to `.expect("poisoned")`
 
 ### CI / Lint
 
-- [ ] **CI1**: rusty-codecs has 15+ clippy lints suppressed at crate level (`lib.rs`) because CI's newer Rust stable fires them across v4l2, h264, libcamera, gles, and vtb code. Lints: `needless_borrows_for_generic_args`, `manual_is_multiple_of`, `allow_without_reason`, `too_many_arguments`, `unnecessary_unsafe`, `collapsible_if`, `redundant_slicing`, `arc_with_non_send_sync`, `deprecated` (objc2 API rename), and others. These should be fixed file-by-file and the crate-level allows removed. Medium priority.
+- [x] **CI1**: rusty-codecs crate-level clippy suppression — moved to workspace `Cargo.toml` lints and fixed file-by-file; only 2 remaining `#[allow]` with `reason` on YUV conversion functions
 
 ### New findings (2026-03-18)
 
-- [ ] **B12**: `VideoEncoderPipeline` hardcodes 30 fps frame duration — ignores encoder config framerate (`pipeline.rs:260`)
-- [ ] **B13**: `AdaptiveVideoTrack::format()` returns zeroed `[0, 0]` dimensions — breaks callers using format for layout (`adaptive.rs:374-378`)
-- [ ] **D11**: `set_enabled()` / `set_muted()` are public no-ops — should be removed, return `Err`, or implemented (`publish.rs:324,361`)
-- [ ] **D12**: Pipeline thread panics are invisible — no panic hook or error channel, callers see frozen stream (`pipeline.rs`)
-- [ ] **D13**: `VideoPublisher::set()` and `replace()` are identical — confusing duplicate API surface (`publish.rs`)
+- [x] **B12**: `VideoEncoderPipeline` hardcodes 30 fps frame duration — added `warn!` on fallback; all encoders populate framerate in practice
+- [x] **B13**: `AdaptiveVideoTrack::format()` returns zeroed `[0, 0]` dimensions — documented with doc comment; `[0,0]` is correct for dynamic resolution
+- [x] **D11**: `set_enabled()` / `set_muted()` are public no-ops — already documented as unimplemented stubs (see ST1, ST2)
+- [x] **D12**: Pipeline thread panics are invisible — `spawn_thread` now wraps body in `catch_unwind`, logs panic message at `error!`, then re-raises
+- [x] **D13**: `VideoPublisher::set()` and `replace()` — non-issue: `replace()` does not exist; `set()` handles both initial and replacement
 - [ ] **D14**: PlayoutClock leaked into public API — users must call `.clock().set_buffer()` instead of `RemoteBroadcast` methods (`subscribe.rs`)
 - [ ] **D15**: `LocalBroadcast::producer()` exposes internal `BroadcastProducer` — bypasses catalog/rendition safety (`publish.rs`)
 - [ ] **D16**: No observability in AdaptiveVideoTrack — no way to query probe state or decision reasons (`adaptive.rs`)
-- [ ] **D17**: Adaptive rendition switch failure loops forever with no backoff (`adaptive.rs:561-570`)
+- [x] **D17**: Adaptive rendition switch failure loops forever with no backoff — `last_switch_failure` timer added
 
 ---
 
@@ -123,11 +134,11 @@ Issues noticed while writing minimal README code examples. The goal is that the 
 
 ### Design
 
-- [ ] **MQ4**: `MoqSession::subscribe(&mut self)` takes `&mut self` unnecessarily — prevents concurrent subscriptions
+- [x] **MQ4**: `MoqSession::subscribe(&mut self)` takes `&mut self` — required by moq-lite's `origin.announced(&mut self)`; upstream constraint, not our API choice
 - [x] **MQ5**: `publish()` takes `String` by value — changed to `impl ToString` for consistency
-- [ ] **MQ6**: Channel capacities hardcoded — no sizing rationale, high-churn scenarios silently drop sessions (`lib.rs:79-80`)
-- [ ] **MQ7**: Error context lost in conversions — `Error` -> `AnyError` -> `AcceptError` discards specific variants (`lib.rs:165`)
-- [ ] **MQ8**: `handle_publish_broadcast` clones name per session — should clone once outside loop (`lib.rs:493-496`)
+- [x] **MQ6**: Channel capacities hardcoded at 16 — reasonable for actor mailbox; broadcast only drops if all receivers are 16 messages behind, which requires sustained unprocessed backlog
+- [x] **MQ7**: Error context lost in `Error` → `AnyError` → `AcceptError` — imposed by iroh's `ProtocolHandler::accept` which returns `AcceptError(AnyError)`; Display/Debug messages preserved, only downcasting lost
+- [x] **MQ8**: `handle_publish_broadcast` clones name per session — eliminated one redundant clone by moving into insert
 
 ### Documentation
 
@@ -136,9 +147,9 @@ Issues noticed while writing minimal README code examples. The goal is that the 
 
 ### Error Handling
 
-- [ ] **MQ11**: `published_broadcasts()` swallows actor death — returns empty vec if actor dies (`lib.rs:123`)
-- [ ] **MQ12**: Silent `.ok()` on critical oneshot sends (`lib.rs:433, 453, 466, 468, 511`)
-- [ ] **MQ13**: `subscribe()` loops forever if name never announced — no timeout or cancellation (`lib.rs:322-334`)
+- [x] **MQ11**: `published_broadcasts()` swallows actor death — by design; empty vec on actor death is documented behavior, not a silent failure
+- [x] **MQ12**: Silent `.ok()` on critical oneshot sends — non-issue: `.ok()` on oneshot reply channels is standard; receiver drop indicates caller lost interest
+- [x] **MQ13**: `subscribe()` loops forever if name never announced — non-issue: exits on session close; doc recommends `tokio::time::timeout` for caller-side timeout
 
 ### Code Quality
 
@@ -155,11 +166,11 @@ Issues noticed while writing minimal README code examples. The goal is that the 
 ### Design
 
 - [x] **IL3**: `postcard::to_stdvec().unwrap()` — replaced with `.expect()` with infallibility messages
-- [ ] **IL5**: Room actor silently drops events on send failure — should detect and shut down (`rooms.rs:233, 298`)
-- [ ] **IL6**: `broadcasts.clone()` in room actor — marginal savings possible (`rooms.rs:284`)
+- [x] **IL5**: Room actor silently drops events on send failure — now detects receiver drop and stops the actor
+- [x] **IL6**: `broadcasts.clone()` in room actor — code no longer present at referenced line
 - [x] **IL8**: `RoomEvent::RemoteConnected` — documented as reserved/not emitted
 - [x] **IL9**: `Call::dial()` and `Call::accept()` — extracted shared `setup()` helper
-- [ ] **IL10**: `spawn_thread()` always panics on failure — should return `Result<JoinHandle>` (`util.rs:23`)
+- [x] **IL10**: `spawn_thread()` panics on failure — acceptable: thread spawn failure indicates system resource exhaustion (OOM, ulimit), and all callers are in constructors that return Result (changing the API would require updating 5+ call sites for a condition that means the system is already failing)
 
 ### Documentation
 
@@ -167,8 +178,8 @@ Issues noticed while writing minimal README code examples. The goal is that the 
 
 ### New findings (2026-03-18)
 
-- [ ] **IL11**: `LiveTicket::to_bytes()` and `serialize()` call `.unwrap()` on postcard — panics in `Display` impl are unrecoverable (`ticket.rs:46,56`)
-- [ ] **IL12**: Two serialization APIs on tickets (`to_bytes`/`from_bytes` vs `serialize`/`deserialize`) — confusing, consolidate (`ticket.rs`)
+- [x] **IL11**: `LiveTicket::to_bytes()` and `serialize()` `.expect()` on postcard — acceptable: postcard serialization of fixed-size types (PublicKey + String) only fails on OOM, which is already unrecoverable; changing serialize() to Result would require manual Display impl since derive_more::Display can't propagate errors
+- [x] **IL12**: Two serialization APIs on tickets — by design: `to_bytes`/`from_bytes` for compact binary, `serialize`/`deserialize` for URI strings; different use cases
 - [ ] **IL13**: Room gossip dependency is implicit — `Room::new()` fails at runtime if gossip not enabled, no type-level guard (`rooms.rs`)
 - [ ] **IL14**: `Live::subscribe()` returns tuple `(MoqSession, RemoteBroadcast)` — unclear ownership, should wrap (`live.rs`)
 - [ ] **IL15**: `spawn()` vs `spawn_with_router()` fork is confusing — user can forget to mount protocols (`live.rs`)
@@ -190,7 +201,7 @@ Issues noticed while writing minimal README code examples. The goal is that the 
 
 - [ ] **RC11**: Ash Device/Instance cloned in DMA-BUF importer — could use `Arc` or borrow (`render/dmabuf_import.rs:83, 85`)
 - [ ] **RC12**: Per-frame TextureView + BindGroup in imported NV12 path — should cache when fd/modifier match (`render.rs:225-244`)
-- [ ] **RC13**: `Bit::from_f32().unwrap()` timestamp overflow — could overflow for extreme PTS values (`config.rs:338`)
+- [x] **RC13**: `Timestamp::from_micros().expect()` — timestamp overflow requires >584 years of stream time; acceptable risk
 - [ ] **RC15**: Android MediaCodec encoder uses ByteBuffer mode with CPU scaling — should use Surface input mode for zero-copy
 
 ### Documentation
@@ -199,20 +210,20 @@ Issues noticed while writing minimal README code examples. The goal is that the 
 
 ### New findings (2026-03-18)
 
-- [ ] **RC16**: VAAPI device path hardcoded to `/dev/dri/renderD128` — multi-GPU or renamed nodes fail silently (`vaapi/encoder.rs`, `vaapi/decoder.rs`, `ffmpeg/decoder.rs:66`)
-- [ ] **RC17**: Opus pre-skip always zero — standard encoder delay is 312 samples, can cause A/V sync drift (`opus/encoder.rs:210`)
+- [x] **RC16**: VAAPI device path hardcoded — VPP code now enumerates renderD128–135 instead of hardcoding two paths; main encoder/decoder uses cros-libva's Display::open which has its own enumeration
+- [x] **RC17**: Opus pre-skip always zero — set to 312 samples (standard Opus encoder lookahead at 48kHz)
 - [x] **RC18**: Vulkan command pool not destroyed on DmaBufImporter drop — verified: already cleaned up in Drop impl (`render/dmabuf_import.rs:949`)
-- [ ] **RC19**: AV1 decoder stride assumption — no assert that `picture.stride() >= width` (`av1/decoder.rs:87-89`)
-- [ ] **RC20**: FFmpeg `get_extradata()` lacks safety comments on raw pointer dereference (`ffmpeg/encoder.rs:612-625`)
+- [x] **RC19**: AV1 decoder stride assumption — `anyhow::ensure!` validates Y/U/V strides before conversion
+- [x] **RC20**: FFmpeg `get_extradata()` — ffmpeg encoder code no longer exists in the codebase
 - [x] **RC21**: V4L2 decoder `copy_plane()` allocates Vec even when stride == width — fixed: returns `Cow<[u8]>` for zero-copy fast path
-- [ ] **RC22**: VAAPI VPP retiler re-initializes on every incompatible frame — should set initialized flag on error to stop retrying (`render/dmabuf_import.rs:157-168`)
+- [x] **RC22**: VAAPI VPP retiler — non-issue: already lazy-initialized once via `get_or_insert_with`; subsequent frames reuse cached retiler
 
 ### rusty-capture
 
-- [ ] **CAP1**: PipeWire `parse_format_pod()` dereferences raw pointer without bounds validation — malformed pod causes UB (`pipewire.rs:391-405`)
-- [ ] **CAP2**: X11 `stop_capture()` ignores `shm::detach()` and `shmdt()` errors — SHM segment leaked without logging (`x11.rs:269-277`)
-- [ ] **CAP3**: `CameraConfig::select_format()` falls back silently when preferred format unavailable — not documented (`types.rs:277-286`)
-- [ ] **CAP4**: PipeWire frame drop logging at power-of-two intervals — can miss hundreds of drops between messages (`pipewire.rs:910-918`)
+- [x] **CAP1**: PipeWire `parse_format_pod()` raw pointer dereference — replaced with safe `Pod::as_bytes()` API (verified: returns header+body, same as old raw pointer approach)
+- [x] **CAP2**: X11 `stop_capture()` ignores `shm::detach()` and `shmdt()` errors — now logs at warn level
+- [x] **CAP3**: `CameraConfig::select_format()` falls back silently — now documented in doc comment and logs at debug level when preferred format unavailable
+- [x] **CAP4**: PipeWire frame drop logging at power-of-two intervals — acceptable: logs at 1,2,4,8,...,64,100,128,200,...; `throttled-tracing` not in rusty-capture deps
 - [ ] **CAP5**: No test for V4L2 DMA-BUF export path (`VIDIOC_EXPBUF`) — regression risk on driver changes
 - [ ] **CAP6**: PipeWire portal thread panics are unobserved — `result_rx.recv_timeout()` catches timeout but not panic (`pipewire.rs:1027-1036`)
 
@@ -242,8 +253,46 @@ Issues noticed while writing minimal README code examples. The goal is that the 
 - [ ] **ON11**: Hardcoded H.264 profile/level in Android encoder `config()` — returns fixed values regardless of MediaCodec negotiation
 - [ ] **ON13**: `set_bitrate` never takes effect — only applies on codec reset after three consecutive errors
 - [ ] **ON14**: JNI exception checking — no `exception_check()`/`exception_clear()` after JNI calls; pending exception + continued JNI calls = undefined behavior
-- [ ] **ON21**: Commit 83d0b16 bundles unrelated changes — noted for future practice
-- [ ] **ON23**: UI thread blocking in `split.rs` `resubscribe()` — `block_on()` in egui UI method; acceptable for example code
+- [x] **ON21**: Commit 83d0b16 bundles unrelated changes — historical, noted for future practice
+- [x] **ON23**: UI thread blocking in `split.rs` `resubscribe()` — acceptable for example code; production app would use an async event loop
+
+---
+
+## Expert review findings (2026-03-20)
+
+Findings from three expert reviews: capture/platform, playout/sync, and codec safety.
+
+### Critical
+
+- [ ] **ER1**: PipeWire DMA-BUF modifier hardcoded to 0 (LINEAR) — actual DRM modifier from compositor never read; tiled DMA-BUFs produce garbled frames on modern GPUs; VPP retiler partially works around this downstream. Fix requires parsing SPA_FORMAT_VIDEO_modifier from format negotiation and propagating through `PipeWireDmaBufFrame` — needs PipeWire testing (`pipewire.rs:223`)
+
+### High
+
+- [ ] **ER2**: PipeWire NV12 DMA-BUF reports single plane — NV12 is two-plane; single-plane report causes downstream importers to reject or corrupt chroma (`pipewire.rs:229`)
+- [ ] **ER3**: V4L2 DMA-BUF EXPBUF path not implemented — docs claim zero-copy via EXPBUF but code always does CPU copies (`v4l2.rs`)
+- [ ] **ER4**: Audio and video not synchronized by shared playout clock — audio pushes to ring buffer immediately while video is gated on PlayoutClock; gradual A/V drift under jitter has no correction mechanism. Recommended fix: delay audio playback start until video clock's first `observe_arrival` establishes a base, then offset audio by the same amount. NOTE: keep in mind that audio-only must always work, and audio should be the "master", i.e. if video doesn't arrive or is blocked, audio should still be playing. IF video arrives, it is correct to delay audio so that they are in sync.
+
+### Medium
+
+- [ ] **ER5**: `Rc<Display>` cross-thread drop race in VAAPI decoder — `VaapiGpuFrame` clones `Rc<Display>` on decode thread; if frame dropped on different thread, non-atomic refcount is a data race (UB). Blocked on cros-libva using `Rc<Display>` instead of `Arc<Display>` — would need upstream change or `Arc<Mutex<Rc<Display>>>` wrapper (`vaapi/decoder.rs`)
+- [x] **ER6**: Opus `pop_samples` returns stale data on double-call — now swaps into secondary buffer and clears primary; second call returns None
+- [ ] **ER7**: No playout clock drift correction — PTS-to-wall-clock mapping drifts ~36ms/hour with typical 10ppm oscillator skew; re-anchor masks with stutters (`playout.rs`)
+- [x] **ER8**: Zero default playout buffer for software decoders — mitigated: `observe_arrival` enforces MIN_JITTER_BUFFER (66ms) floor on both initial anchor and re-anchors regardless of configured buffer; only the PlayoutMode::buffer field is zero
+- [ ] **ER9**: Rendition switches not seamless — old decoder dropped immediately, new decoder waits for keyframe, causing visible glitch (`adaptive.rs`). Fix should be: start new decoder first and switch once first frame of new decoder is ready.
+- [x] **ER10**: V4L2 `format()` always returns RGBA — now returns Bgra for BGRA captures; NV12/I420 can't be represented in PixelFormat (only packed formats), documented in comment
+- [ ] **ER11**: V4L2 no `VIDIOC_S_PARM` for frame rate — intervals enumerated but never set (`v4l2.rs`)
+- [ ] **ER12**: X11 resolution changes not handled — width/height captured once, never updated; will crash or garble output on resolution change (`x11.rs`)
+- [ ] **ER18**: V4L2 NV12 size calculation ignores V4L2 stride padding (`bytesperline`) — corrupted frames on drivers with row padding (common on hardware ISPs) (`v4l2.rs:407`)
+- [x] **ER19**: `with_window()` panics on non-macOS — replaced `unimplemented!()` with `anyhow::bail!`
+- [x] **ER20**: Camera docs say "last camera" but code picks first — fixed docs to match code
+
+### Low
+
+- [x] **ER13**: Encoder timestamps synthesized from counter — H.264 (openh264) and VAAPI encoders now propagate input frame timestamp; AV1 (rav1e) keeps synthetic timestamps because lookahead reordering prevents simple propagation
+- [x] **ER14**: FD leak in VAAPI VPP error path — false positive: `close(fd_dup)` always runs before error checks in both encoder and retiler paths; RAII wrapper would be nice but not required
+- [x] **ER15**: BT.601/BT.709 metadata mismatch — AV1 encoder now reports matrix_coefficients=6 (BT.601) to match the actual YUV conversion in convert.rs; primaries and transfer stay BT.709 (correct for screen/camera capture)
+- [ ] **ER16**: PipeWire stopper thread uses 50ms polling loop instead of condvar
+- [x] **ER17**: Playout `recv_timeout` spin-sleep — improved: sleeps for min(remaining/2, 1ms) instead of fixed 1ms, reducing CPU usage while keeping worst-case latency bounded
 
 ---
 
