@@ -430,4 +430,29 @@ mod tests {
         assert_eq!(config.framerate, Some(30.0));
         assert_eq!(config.optimize_for_latency, Some(true));
     }
+
+    #[test]
+    fn i420_zero_copy_path() {
+        // Verify the I420 fast path (YuvSlices borrow) produces valid output
+        // without copying the plane data (PF2).
+        use crate::processing::convert::YuvData;
+        let mut enc = H264Encoder::with_preset(VideoPreset::P180).unwrap();
+        let yuv = YuvData::black(320, 180);
+        let frame = VideoFrame::new_i420(
+            yuv.y.into(),
+            yuv.u.into(),
+            yuv.v.into(),
+            320,
+            180,
+            std::time::Duration::from_millis(42),
+        );
+        enc.push_frame(frame).unwrap();
+        let pkt = enc.pop_packet().unwrap().expect("should encode I420 frame");
+        assert!(pkt.is_keyframe, "first frame should be IDR");
+        assert_eq!(
+            pkt.timestamp,
+            std::time::Duration::from_millis(42),
+            "timestamp should propagate from input"
+        );
+    }
 }
