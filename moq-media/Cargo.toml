@@ -59,12 +59,15 @@ tokio = { version = "1.48.0", features = ["full"] }
 tracing-subscriber = "0.3.20"
 wgpu = { version = "27", default-features = false, features = ["wgsl", "vulkan"] }
 
+# Enable test-util in rusty-codecs for unit tests that use codec::test_util.
+rusty-codecs = { workspace = true, features = ["test-util"] }
+
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 eframe = { version = "0.33.0", default-features = false, features = ["wayland", "x11"] }
 
 [features]
 default = ["h264", "opus", "capture"]
-test-util = []
+test-util = ["rusty-codecs/test-util"]
 h264 = ["rusty-codecs/h264"]
 opus = ["rusty-codecs/opus"]
 av1 = ["rusty-codecs/av1"]

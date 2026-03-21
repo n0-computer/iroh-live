@@ -44,6 +44,7 @@ pub use self::h264::*;
 #[cfg(feature = "opus")]
 pub use self::opus::*;
 
+#[cfg(any(test, feature = "test-util"))]
 pub mod test_util;
 
 /// Available audio encoder implementations.
