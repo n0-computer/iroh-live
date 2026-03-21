@@ -37,6 +37,26 @@ where
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spawn_thread_returns_value() {
+        let handle = spawn_thread("test-ok", || 42);
+        assert_eq!(handle.join().unwrap(), 42);
+    }
+
+    #[test]
+    fn spawn_thread_propagates_panic() {
+        let handle = spawn_thread("test-panic", || {
+            panic!("intentional test panic");
+        });
+        let result = handle.join();
+        assert!(result.is_err(), "panic should propagate through join");
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn encoded_frames_to_media_packets(
     input: Vec<crate::format::EncodedFrame>,
 ) -> Vec<crate::format::MediaPacket> {
