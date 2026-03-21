@@ -25,7 +25,7 @@ use tracing::{debug, error, info, info_span, trace, warn};
 
 use crate::{
     format::{AudioFormat, DecodeConfig, MediaPacket, VideoFrame},
-    playout::{PlayoutBuffer, PlayoutClock, RecvResult},
+    playout::{PlayoutBuffer, PlayoutClock, PlayoutMode, RecvResult},
     traits::{
         AudioDecoder, AudioEncoder, AudioSink, AudioSinkHandle, AudioSource, AudioStreamFactory,
         PreEncodedVideoSource, VideoDecoder, VideoEncoder, VideoSource,
@@ -1065,12 +1065,40 @@ fn audio_decode_loop(
         .as_ref()
         .map_or(0, |sg| sg.load(Ordering::Relaxed));
 
+    // A/V sync: in Live mode, hold audio until the video playout clock is
+    // anchored (first video frame arrived). This ensures both tracks start
+    // from the same time reference. If no video arrives within the timeout,
+    // start audio anyway (audio-only mode). In Reliable mode or without a
+    // clock, play immediately.
+    const AV_SYNC_WAIT: Duration = Duration::from_millis(500);
+    let is_live = _clock
+        .as_ref()
+        .is_some_and(|c| matches!(c.mode(), PlayoutMode::Live { .. }));
+    let mut av_sync_waiting = is_live;
+    let av_sync_deadline = Instant::now() + AV_SYNC_WAIT;
+
     'main: for i in 0.. {
         let tick = Instant::now();
 
         if shutdown.is_cancelled() {
             debug!("stop audio decoder: cancelled");
             break;
+        }
+
+        // Wait for video clock anchor before starting audio playback.
+        if av_sync_waiting {
+            let anchored = _clock.as_ref().is_some_and(|c| c.is_anchored());
+            if anchored {
+                debug!("audio: video clock anchored, starting playback");
+                av_sync_waiting = false;
+            } else if Instant::now() >= av_sync_deadline {
+                info!("audio: no video anchor after {AV_SYNC_WAIT:?}, starting audio-only");
+                av_sync_waiting = false;
+            } else {
+                // Still waiting — tick but don't decode.
+                std::thread::sleep(INTERVAL);
+                continue;
+            }
         }
 
         // Check if video signalled a skip recovery. When the generation

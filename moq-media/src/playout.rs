@@ -137,6 +137,15 @@ impl PlayoutClock {
         self.inner.lock().expect("poisoned").mode.clone()
     }
 
+    /// Returns whether the clock has been anchored (first video frame arrived).
+    ///
+    /// Audio decode loops use this to decide whether to hold samples until
+    /// video establishes the time base, or to start playing immediately
+    /// (audio-only mode).
+    pub fn is_anchored(&self) -> bool {
+        self.inner.lock().expect("poisoned").base_wall.is_some()
+    }
+
     /// Sets the playout mode.
     ///
     /// If a base mapping exists, shifts `base_wall` by the difference in
