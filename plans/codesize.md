@@ -361,7 +361,7 @@ crate handles.
 | D2 | H.264 `config()` | 100 | 25 | 75 | trivial | none | **done** (e4fcf92) |
 | D3 | `DynamicVideoDecoder` match arms | 170 | 40 | 130 | small | low | **done** (f8d15d2) |
 | D4 | RGBA/BGRA conversion pairs | 160 | 80 | 80 | small | none | open |
-| D5 | NV12 render pass | 75 | 35 | 40 | trivial | none | open |
+| D5 | NV12 render pass | 75 | 35 | 40 | trivial | none | **done** (7bebb89) |
 | D6 | `DiscoveredVideoSource` | 100 | 55 | 45 | trivial | none | open |
 | D7 | `show`/`show_publish` overlay | 230 | 150 | 80 | small | low | open |
 | D8 | `libcamera.rs` no cfg gate | 678 | 0* | 678* | trivial | none | **already done** (was cfg-gated) |
@@ -373,6 +373,6 @@ crate handles.
 *D8 does not reduce total workspace lines; it reduces compiled lines on
 non-Pi targets. It was already cfg-gated when the report was written.
 
-D1, D2, D3, D8, D9 are complete (~460 lines reduced). D5 and D6 are trivial
-remaining items. D4 and D7 are small cleanup tasks. D11 requires a
+D1, D2, D3, D5, D8, D9 are complete (~510 lines reduced). D6 is the only
+trivial remaining item. D4 and D7 are small cleanup tasks. D11 requires a
 decision about platform support scope before acting on it.
