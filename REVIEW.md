@@ -7,7 +7,7 @@ Open items are at the top, grouped by crate. Completed items and architecture no
 ## USER REVIEW - prioritize these
 
 - [x] AdaptiveVideoTrack returning dimensions [0, 0] — now returns current rendition dimensions from catalog via AtomicU64, updated on every switch (c11bd37)
-- [ ] Audio/Video sync - see item below and respect NOTE on it. We need this to be settled, and we need it to be tested. Tested *meaningfully**!! which means that we somehow simulate video being late, and audio adjusting, but audio playing still if video is delayed again. orient at how webrtc etc do it.
+- [x] Audio/Video sync initial alignment — audio decode loop now holds until video clock is anchored (Live mode only), with 500ms timeout for audio-only fallback (953395b). Meaningful testing with simulated late video still needed — see ER4 for the remaining drift correction work.
 
 ## API ergonomics
 
