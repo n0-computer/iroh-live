@@ -426,4 +426,29 @@ mod tests {
         // Capacity should be at least what we reserved
         assert!(output.capacity() >= 100);
     }
+
+    #[test]
+    fn pop_samples_consumed_on_second_call() {
+        // Verify that pop_samples returns None on the second call
+        // without an intervening push_packet (ER6 fix).
+        let format = AudioFormat::mono_48k();
+        let mut enc = OpusEncoder::with_preset(format, AudioPreset::Hq).unwrap();
+        let config = enc.config();
+
+        let sine = make_sine(440.0, 48000, 960);
+        let packets = encode_frames(&mut enc, &sine);
+        assert_eq!(packets.len(), 1);
+
+        let mut dec = OpusAudioDecoder::new(&config, format).unwrap();
+        dec.push_packet(packets.into_iter().next().unwrap())
+            .unwrap();
+
+        // First pop returns data.
+        let first = dec.pop_samples().unwrap();
+        assert!(first.is_some(), "first pop should return samples");
+
+        // Second pop without push_packet returns None.
+        let second = dec.pop_samples().unwrap();
+        assert!(second.is_none(), "second pop should return None (consumed)");
+    }
 }
