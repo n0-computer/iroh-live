@@ -52,7 +52,7 @@ Issues noticed while writing minimal README code examples. The goal is that the 
 - [ ] **AB3**: AEC Mutex on real-time thread — `AecProcessor` holds `Arc<Mutex<AudioProcessing>>` acquired on cpal input callback; becomes RT violation if `set_stream_delay` is wired up. Use `try_lock` with passthrough fallback.
 - [x] **AB4**: AEC VecDeque can allocate on audio thread — capped render, capture, and output buffers at BUF_CAPACITY (8192); oldest samples discarded if consumer falls behind
 - [ ] **AB5**: AEC processing errors silently discarded — `process_render_f32`/`process_capture_f32` results ignored; add atomic error counter
-- [ ] **AB6**: Output resampling latency 300ms — `latency_seconds: 0.3` vs WebRTC target of 10–20ms; reduce to 50–100ms, make configurable via `AudioBackendOpts`
+- [x] **AB6**: Output resampling latency 300ms — reduced to 50ms output / 30ms input; WebRTC targets 10-20ms but requires tighter clock management
 - [ ] **AB7**: No clock drift correction between input/output — cpal streams on independent hardware clocks; monitor fill level, micro-resample
 - [ ] **AB8**: Device switch doesn't handle rebuild failure — drops old streams before starting new; start new before dropping old, or attempt restart with previous device IDs
 

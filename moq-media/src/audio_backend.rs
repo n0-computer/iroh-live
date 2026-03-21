@@ -1677,7 +1677,11 @@ fn create_output_channel(
 ) -> (ResamplingProd<f32, INTERNAL_CHANNELS>, ResamplingCons<f32>) {
     let num_channels = NonZeroUsize::new(INTERNAL_CHANNELS).unwrap();
     let config = ResamplingChannelConfig {
-        latency_seconds: 0.3,
+        // 50ms latency is a reasonable compromise between playout smoothness
+        // and end-to-end latency. The old value (300ms) added perceptible delay
+        // to the audio path. WebRTC targets 10-20ms but requires tighter clock
+        // management than we have today.
+        latency_seconds: 0.05,
         capacity_seconds: 3.0,
         underflow_autocorrect_percent_threshold: Some(25.0),
         overflow_autocorrect_percent_threshold: Some(75.0),
@@ -1701,7 +1705,10 @@ fn create_input_channel(
 ) -> (ResamplingProd<f32, INTERNAL_CHANNELS>, ResamplingCons<f32>) {
     let num_channels = NonZeroUsize::new(INTERNAL_CHANNELS).unwrap();
     let config = ResamplingChannelConfig {
-        latency_seconds: 0.15,
+        // 30ms input latency — captures should be available quickly for
+        // encoding. Lower than output because the input path doesn't need
+        // jitter absorption.
+        latency_seconds: 0.03,
         capacity_seconds: 1.0,
         underflow_autocorrect_percent_threshold: Some(25.0),
         overflow_autocorrect_percent_threshold: Some(75.0),
