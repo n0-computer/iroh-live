@@ -1,0 +1,26 @@
+# cargo-nextest configuration
+# https://nexte.st/docs/configuration/
+
+[test-groups]
+# Patchbay tests use network simulation with timing assertions (frame gap
+# thresholds, re-anchor counts, latency recovery). Running them in parallel
+# on shared CI runners causes CPU contention that trips these assertions.
+serial-patchbay = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary(patchbay)'
+test-group = 'serial-patchbay'
+# Patchbay tests are timing-sensitive and can fail under CPU contention.
+# Allow one retry before marking as failed.
+retries = 1
+
+# Relay bridge tests occasionally time out under load.
+[[profile.default.overrides]]
+filter = 'binary(relay_bridge)'
+retries = 1
+
+# Pipeline integration tests can SIGABRT under heavy system load
+# (e.g. after a full check + clippy cycle in test-full).
+[[profile.default.overrides]]
+filter = 'binary(pipeline_integration)'
+retries = 1

@@ -292,8 +292,10 @@ mod state {
             if enabled {
                 while self.render_buf_l.len() >= self.frame_size {
                     for i in 0..self.frame_size {
-                        self.tmp_src_l[i] = self.render_buf_l.pop_front().unwrap();
-                        self.tmp_src_r[i] = self.render_buf_r.pop_front().unwrap();
+                        // While-guard ensures >= frame_size samples, but RT audio
+                        // callbacks must never panic — output silence on underrun.
+                        self.tmp_src_l[i] = self.render_buf_l.pop_front().unwrap_or(0.0);
+                        self.tmp_src_r[i] = self.render_buf_r.pop_front().unwrap_or(0.0);
                     }
                     // We discard the render output — sonora only needs it internally
                     // to build its echo model.
@@ -328,8 +330,8 @@ mod state {
 
             while self.capture_buf_l.len() >= self.frame_size {
                 for i in 0..self.frame_size {
-                    self.tmp_src_l[i] = self.capture_buf_l.pop_front().unwrap();
-                    self.tmp_src_r[i] = self.capture_buf_r.pop_front().unwrap();
+                    self.tmp_src_l[i] = self.capture_buf_l.pop_front().unwrap_or(0.0);
+                    self.tmp_src_r[i] = self.capture_buf_r.pop_front().unwrap_or(0.0);
                 }
 
                 if enabled {
@@ -358,12 +360,15 @@ mod state {
             //    (residual from frame accumulation), output silence for the
             //    remainder.
             for i in 0..num_frames {
-                if !self.out_buf_l.is_empty() {
-                    buf[i * 2] = self.out_buf_l.pop_front().unwrap();
-                    buf[i * 2 + 1] = self.out_buf_r.pop_front().unwrap();
-                } else {
-                    buf[i * 2] = 0.0;
-                    buf[i * 2 + 1] = 0.0;
+                match (self.out_buf_l.pop_front(), self.out_buf_r.pop_front()) {
+                    (Some(l), Some(r)) => {
+                        buf[i * 2] = l;
+                        buf[i * 2 + 1] = r;
+                    }
+                    _ => {
+                        buf[i * 2] = 0.0;
+                        buf[i * 2 + 1] = 0.0;
+                    }
                 }
             }
         }

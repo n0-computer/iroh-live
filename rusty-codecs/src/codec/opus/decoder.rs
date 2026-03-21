@@ -23,6 +23,8 @@ pub struct OpusAudioDecoder {
     resampler: Resampler,
     /// Decoded + resampled + channel-converted sample buffer.
     samples: Vec<f32>,
+    /// Secondary buffer for pop_samples — holds samples while the borrow is live.
+    consumed_buf: Vec<f32>,
     /// Reusable PCM decode buffer.
     pcm_buf: Vec<f32>,
 }
@@ -66,6 +68,7 @@ impl AudioDecoder for OpusAudioDecoder {
             target_channel_count: target_format.channel_count,
             resampler,
             samples: Vec::new(),
+            consumed_buf: Vec::new(),
             pcm_buf: vec![0f32; max_samples],
         })
     }
@@ -114,7 +117,12 @@ impl AudioDecoder for OpusAudioDecoder {
         if self.samples.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(&self.samples))
+            // Return the buffered samples and mark as consumed. The next call
+            // returns None unless push_packet is called again. We swap the
+            // samples into a secondary buffer so the borrow is valid.
+            std::mem::swap(&mut self.samples, &mut self.consumed_buf);
+            self.samples.clear();
+            Ok(Some(&self.consumed_buf))
         }
     }
 }

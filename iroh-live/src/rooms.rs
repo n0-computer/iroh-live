@@ -266,7 +266,10 @@ impl Actor {
                     match res {
                         Ok((session, broadcast)) => {
                             let closed_fut = broadcast.closed();
-                            self.event_tx.send(RoomEvent::BroadcastSubscribed { session: Box::new(session), broadcast: Box::new(broadcast) }).await.ok();
+                            if self.event_tx.send(RoomEvent::BroadcastSubscribed { session: Box::new(session), broadcast: Box::new(broadcast) }).await.is_err() {
+                                tracing::debug!("room event receiver dropped, stopping actor");
+                                return;
+                            }
                             self.subscribe_closed.push(Box::pin(async move {
                                 closed_fut.await;
                                 id

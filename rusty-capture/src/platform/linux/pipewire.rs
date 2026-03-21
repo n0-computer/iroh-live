@@ -145,6 +145,10 @@ fn spa_format_to_drm_fourcc(spa_format: u32) -> Option<u32> {
 struct PipeWireDmaBufFrame {
     fd: OwnedFd,
     drm_format: u32,
+    /// DRM format modifier (e.g. LINEAR, X_TILED, CCS). Currently always 0
+    /// (LINEAR) because PipeWire format negotiation doesn't propagate the
+    /// modifier yet. See ER1 in REVIEW.md.
+    modifier: u64,
     width: u32,
     height: u32,
     stride: u32,
@@ -220,7 +224,7 @@ impl GpuFrameInner for PipeWireDmaBufFrame {
         let dup_fd = self.fd.as_fd().try_clone_to_owned().ok()?;
         Some(NativeFrameHandle::DmaBuf(DmaBufInfo {
             fd: dup_fd,
-            modifier: 0, // LINEAR assumed for PipeWire DMA-BUFs
+            modifier: self.modifier,
             drm_format: self.drm_format,
             coded_width: self.width,
             coded_height: self.height,
@@ -396,10 +400,7 @@ fn extract_rectangle(value: &Value) -> Option<Rectangle> {
 
 /// Parses a negotiated `Format` pod into `(width, height, spa_video_format)`.
 fn parse_format_pod(pod: &Pod) -> Option<(u32, u32, u32)> {
-    // Get pod bytes: header (8 bytes) + body.
-    let raw = pod as *const Pod as *const libspa::sys::spa_pod;
-    let total_size = unsafe { std::mem::size_of::<libspa::sys::spa_pod>() + (*raw).size as usize };
-    let bytes = unsafe { std::slice::from_raw_parts(raw as *const u8, total_size) };
+    let bytes = pod.as_bytes();
 
     let (_, value) =
         match libspa::pod::deserialize::PodDeserializer::deserialize_from::<Value>(bytes) {
@@ -690,6 +691,7 @@ fn dmabuf_to_frame(
         let gpu_frame = PipeWireDmaBufFrame {
             fd: dup_fd,
             drm_format,
+            modifier: 0, // TODO(ER1): parse from SPA_FORMAT_VIDEO_modifier
             width,
             height,
             stride,
@@ -1034,7 +1036,17 @@ fn portal_screen_capture(
     std::thread::Builder::new()
         .name("pw-portal-screen".into())
         .spawn(move || {
-            portal_screen_capture_thread(show_cursor, restore_token, result_tx, close_rx);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                portal_screen_capture_thread(show_cursor, restore_token, result_tx, close_rx);
+            }));
+            if let Err(payload) = result {
+                let msg = payload
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
+                    .unwrap_or("(non-string panic)");
+                tracing::error!("portal thread panicked: {msg}");
+            }
         })
         .context("failed to spawn portal thread")?;
 
@@ -1168,8 +1180,22 @@ fn portal_camera_capture() -> Result<OwnedFd> {
     std::thread::Builder::new()
         .name("pw-portal-camera".into())
         .spawn(move || {
-            let result = portal_camera_capture_inner();
-            let _ = tx.send(result);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                portal_camera_capture_inner()
+            }));
+            match result {
+                Ok(r) => {
+                    let _ = tx.send(r);
+                }
+                Err(payload) => {
+                    let msg = payload
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
+                        .unwrap_or("(non-string panic)");
+                    tracing::error!("camera portal thread panicked: {msg}");
+                }
+            }
         })
         .context("failed to spawn portal thread")?;
 

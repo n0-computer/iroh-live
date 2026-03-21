@@ -164,9 +164,13 @@ impl VideoEncoderFactory for Av1Encoder {
                 chroma_subsampling_x: true,
                 chroma_subsampling_y: true,
                 chroma_sample_position: 0,
-                color_primaries: 1,
-                transfer_characteristics: 1,
-                matrix_coefficients: 1,
+                // Match the actual conversion pipeline:
+                // - Primaries: BT.709 (same gamut as sRGB, correct for screen/camera)
+                // - Transfer: BT.709 (close to sRGB gamma)
+                // - Matrix: BT.601 (matches YuvStandardMatrix::Bt601 in convert.rs)
+                color_primaries: 1,          // BT.709
+                transfer_characteristics: 1, // BT.709
+                matrix_coefficients: 6,      // BT.601 (SMPTE 170M)
                 full_range: false,
             }),
             description: None,

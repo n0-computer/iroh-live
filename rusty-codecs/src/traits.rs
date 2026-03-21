@@ -109,6 +109,12 @@ pub trait AudioEncoderFactory: AudioEncoder {
     const ID: &str;
 
     /// Creates an encoder from a full [`AudioEncoderConfig`].
+    ///
+    /// The encoder may operate at a different internal sample rate than
+    /// `config.sample_rate`. For example, Opus always operates at 48kHz
+    /// internally per the codec specification. The actual operating rate
+    /// is reported in [`config_for`](Self::config_for) and the catalog
+    /// `AudioConfig`.
     fn with_config(config: AudioEncoderConfig) -> Result<Self>
     where
         Self: Sized;

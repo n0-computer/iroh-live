@@ -260,7 +260,34 @@ impl CrosVideoFrame for VaapiInputFrame {
     }
 }
 
-/// Upload raw NV12 data to a VA surface using image mapping.
+thread_local! {
+    /// Caches the NV12 `VAImageFormat` for the lifetime of the encoder thread.
+    /// `query_image_formats()` returns stable results, so querying once is enough.
+    /// Assumes one VA display per thread (true today — each encoder runs on a
+    /// dedicated OS thread). If multi-display support is ever needed, key this
+    /// by display pointer.
+    static NV12_IMAGE_FORMAT: RefCell<Option<va::VAImageFormat>> = const { RefCell::new(None) };
+}
+
+/// Looks up or caches the NV12 image format for the given display.
+fn nv12_image_format(display: &Rc<Display>) -> Result<va::VAImageFormat> {
+    NV12_IMAGE_FORMAT.with(|cell| {
+        if let Some(fmt) = *cell.borrow() {
+            return Ok(fmt);
+        }
+        let fmts = display
+            .query_image_formats()
+            .map_err(|e| anyhow::anyhow!("failed to query image formats: {e:?}"))?;
+        let fmt = fmts
+            .into_iter()
+            .find(|f| f.fourcc == VA_FOURCC_NV12)
+            .context("VAAPI display does not support NV12 image format")?;
+        *cell.borrow_mut() = Some(fmt);
+        Ok(fmt)
+    })
+}
+
+/// Uploads raw NV12 data to a VA surface using image mapping.
 fn upload_nv12_to_surface(
     display: &Rc<Display>,
     surface: &Surface<VaapiInputFrame>,
@@ -268,14 +295,7 @@ fn upload_nv12_to_surface(
     width: u32,
     height: u32,
 ) -> Result<()> {
-    let image_fmts = display
-        .query_image_formats()
-        .map_err(|e| anyhow::anyhow!("failed to query image formats: {e:?}"))?;
-
-    let nv12_fmt = image_fmts
-        .into_iter()
-        .find(|f| f.fourcc == VA_FOURCC_NV12)
-        .context("VAAPI display does not support NV12 image format")?;
+    let nv12_fmt = nv12_image_format(display)?;
 
     let size = (width, height);
     let mut image = Image::create_from(surface, nv12_fmt, size, size)
@@ -407,7 +427,10 @@ impl VppColorConverter {
         // SAFETY: All VA-API calls below operate on freshly-opened display handles and
         // surface/config IDs that we own exclusively. Error codes are checked after each call.
         unsafe {
-            for path in ["/dev/dri/renderD128", "/dev/dri/renderD129"] {
+            // Enumerate render nodes. DRI render nodes are numbered from 128.
+            let render_paths: Vec<String> =
+                (128..136).map(|i| format!("/dev/dri/renderD{i}")).collect();
+            for path in &render_paths {
                 let Ok(file) = std::fs::File::options().read(true).write(true).open(path) else {
                     continue;
                 };
@@ -1201,6 +1224,7 @@ impl VideoEncoder for VaapiEncoder {
 
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
         const NV12_FOURCC: u32 = u32::from_le_bytes(*b"NV12");
+        let input_timestamp = frame.timestamp;
 
         // Check for zero-copy DMA-BUF path before any CPU-side scaling.
         let input_frame = if let Some(NativeFrameHandle::DmaBuf(info)) = frame.native_handle() {
@@ -1229,8 +1253,10 @@ impl VideoEncoder for VaapiEncoder {
         let w = input_frame.width();
         let h = input_frame.height();
 
-        // Build frame metadata with layout matching the input frame.
-        let timestamp_us = (self.frame_count * 1_000_000) / self.framerate as u64;
+        // Propagate the input frame's timestamp to cros-codecs metadata.
+        // The encoder preserves it through to the coded output, where it's
+        // converted back to Duration in `poll_coded_frames`.
+        let timestamp_us = input_timestamp.as_micros() as u64;
         let layout = match &input_frame {
             VaapiInputFrame::DmaBuf(info) => {
                 // Only NV12 DMA-BUFs reach here (format checked in push_frame).

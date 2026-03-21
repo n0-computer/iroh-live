@@ -88,6 +88,11 @@ impl VideoDecoder for Av1VideoDecoder {
                 let u_stride = picture.stride(PlanarImageComponent::U);
                 let v_stride = picture.stride(PlanarImageComponent::V);
 
+                anyhow::ensure!(
+                    y_stride >= w && u_stride >= w.div_ceil(2) && v_stride >= w.div_ceil(2),
+                    "invalid AV1 plane strides: Y={y_stride} U={u_stride} V={v_stride} for {w}x{h}"
+                );
+
                 let pixels = match self.pixel_format {
                     PixelFormat::Bgra => yuv420_to_bgra_from_slices(
                         y_plane, y_stride, u_plane, u_stride, v_plane, v_stride, w, h,

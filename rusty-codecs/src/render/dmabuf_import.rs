@@ -1017,7 +1017,11 @@ impl VppRetiler {
     /// Creates a VPP retiler, preferring the given render node path if
     /// provided, then falling back to common render node paths.
     fn new(preferred_render_node: Option<&str>) -> anyhow::Result<Self> {
-        let fallbacks = ["/dev/dri/renderD128", "/dev/dri/renderD129"];
+        // DRI render nodes are numbered from 128. Enumerate a reasonable range
+        // rather than hardcoding two paths, to support multi-GPU and renamed nodes.
+        let fallback_paths: Vec<String> =
+            (128..136).map(|i| format!("/dev/dri/renderD{i}")).collect();
+        let fallbacks: Vec<&str> = fallback_paths.iter().map(|s| s.as_str()).collect();
         let candidates: Vec<&str> = preferred_render_node
             .into_iter()
             .chain(fallbacks.iter().copied())

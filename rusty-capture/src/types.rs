@@ -291,8 +291,11 @@ impl Default for CameraConfig {
 impl CameraConfig {
     /// Selects the best format from a camera's supported formats.
     ///
-    /// Filters by [`preferred_format`](Self::preferred_format) when set,
-    /// then applies the [`selector`](Self::selector) strategy.
+    /// When [`preferred_format`](Self::preferred_format) is set, only formats
+    /// with that pixel format are considered. If none match (e.g. the camera
+    /// doesn't support NV12), falls back to the full format list and logs a
+    /// warning. The [`selector`](Self::selector) strategy picks the final
+    /// format from whichever list is used.
     pub fn select_format<'a>(&self, formats: &'a [CameraFormat]) -> Option<&'a CameraFormat> {
         if let Some(pf) = self.preferred_format {
             let filtered: Vec<&CameraFormat> =
@@ -300,6 +303,11 @@ impl CameraConfig {
             if let Some(f) = self.selector.select_refs(&filtered) {
                 return Some(f);
             }
+            tracing::debug!(
+                preferred = ?pf,
+                available = formats.len(),
+                "preferred pixel format unavailable, falling back to best available"
+            );
         }
         self.selector.select(formats)
     }

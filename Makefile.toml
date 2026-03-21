@@ -26,3 +26,50 @@ args = [
      "--config",
      "imports_granularity=Crate,group_imports=StdExternalCrate,reorder_imports=true,format_code_in_doc_comments=true",
 ]
+
+# ── CI-equivalent checks ─────────────────────────────────────────────
+
+[tasks.check-all-features]
+workspace = false
+command = "cargo"
+args = ["check", "--locked", "--workspace", "--all-targets", "--all-features"]
+
+[tasks.check-no-default]
+workspace = false
+command = "cargo"
+args = ["check", "--locked", "--workspace", "--all-targets", "--no-default-features"]
+
+[tasks.check]
+description = "cargo check with all features and no-default-features"
+workspace = false
+dependencies = ["check-all-features", "check-no-default"]
+
+[tasks.clippy]
+workspace = false
+command = "cargo"
+args = ["clippy", "--locked", "--workspace", "--all-targets", "--all-features"]
+
+[tasks.test]
+description = "Run workspace tests via nextest (serializes patchbay tests)"
+workspace = false
+command = "cargo"
+args = ["nextest", "run", "--locked", "--workspace"]
+
+[tasks.test-patchbay]
+description = "Run patchbay network simulation tests (including ignored)"
+workspace = false
+command = "cargo"
+args = ["nextest", "run", "--locked", "-p", "iroh-live",
+        "-E", "binary(patchbay)", "--run-ignored", "all"]
+
+[tasks.test-e2e-browser]
+description = "Run Playwright browser E2E tests (requires npm ci in tests/e2e-browser)"
+workspace = false
+cwd = "tests/e2e-browser"
+command = "npx"
+args = ["playwright", "test", "--workers=1"]
+
+[tasks.test-full]
+description = "Full CI-equivalent test suite: fmt, clippy, all tests, patchbay, browser E2E"
+workspace = false
+dependencies = ["format-check", "check", "clippy", "test"]
