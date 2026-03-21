@@ -334,4 +334,31 @@ mod tests {
         let result = length_prefixed_to_annex_b(&[]);
         assert!(result.is_empty());
     }
+
+    #[test]
+    fn iterator_matches_collect() {
+        // Verify the iterator produces the same results as parse_annex_b.
+        let mut data = vec![0, 0, 0, 1, 0x67, 0x42, 0xC0];
+        data.extend_from_slice(&[0, 0, 1, 0x68, 0xCE, 0x38]);
+        data.extend_from_slice(&[0, 0, 0, 1, 0x65, 0x88]);
+
+        let collected: Vec<&[u8]> = annex_b_nals(&data).collect();
+        let parsed = parse_annex_b(&data);
+        assert_eq!(collected, parsed);
+        assert_eq!(collected.len(), 3);
+    }
+
+    #[test]
+    fn iterator_is_lazy() {
+        // The iterator should yield NALs one at a time without collecting.
+        let mut data = vec![0, 0, 0, 1, 0x67, 0x42];
+        data.extend_from_slice(&[0, 0, 0, 1, 0x68, 0xCE]);
+        data.extend_from_slice(&[0, 0, 0, 1, 0x65, 0x88]);
+
+        let mut iter = annex_b_nals(&data);
+        assert_eq!(iter.next().unwrap(), &[0x67, 0x42]);
+        assert_eq!(iter.next().unwrap(), &[0x68, 0xCE]);
+        assert_eq!(iter.next().unwrap(), &[0x65, 0x88]);
+        assert!(iter.next().is_none());
+    }
 }
