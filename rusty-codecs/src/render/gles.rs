@@ -94,6 +94,8 @@ pub struct GlesRenderer {
     active: ActiveMode,
     tex_width: u32,
     tex_height: u32,
+    uv_tex_width: u32,
+    uv_tex_height: u32,
     // DMA-BUF zero-copy import (Linux only).
     #[cfg(all(target_os = "linux", feature = "gles-dmabuf"))]
     dmabuf_importer: Option<super::gles_dmabuf::GlesDmaBufImporter>,
@@ -207,6 +209,8 @@ impl GlesRenderer {
             active: ActiveMode::Rgba,
             tex_width: 0,
             tex_height: 0,
+            uv_tex_width: 0,
+            uv_tex_height: 0,
             #[cfg(all(target_os = "linux", feature = "gles-dmabuf"))]
             dmabuf_importer,
         })
@@ -289,26 +293,30 @@ impl GlesRenderer {
         let uv_row = uv_w * 2;
         if uv_stride == uv_row {
             unsafe {
-                upload_tex_uncached(
+                upload_tex(
                     &self.gl,
                     self.uv_texture,
                     glow::LUMINANCE_ALPHA,
                     &uv_data[..(uv_row * uv_h) as usize],
                     uv_w,
                     uv_h,
+                    &mut self.uv_tex_width,
+                    &mut self.uv_tex_height,
                 );
             }
         } else {
             let stripped =
                 strip_stride(uv_data, uv_row as usize, uv_stride as usize, uv_h as usize);
             unsafe {
-                upload_tex_uncached(
+                upload_tex(
                     &self.gl,
                     self.uv_texture,
                     glow::LUMINANCE_ALPHA,
                     &stripped,
                     uv_w,
                     uv_h,
+                    &mut self.uv_tex_width,
+                    &mut self.uv_tex_height,
                 );
             }
         }
@@ -508,32 +516,6 @@ unsafe fn upload_tex(
                 glow::PixelUnpackData::Slice(Some(data)),
             );
         }
-    }
-}
-
-/// Uploads pixel data without dimension caching (used for UV plane which
-/// has different dimensions than Y).
-unsafe fn upload_tex_uncached(
-    gl: &glow::Context,
-    texture: glow::Texture,
-    format: u32,
-    data: &[u8],
-    w: u32,
-    h: u32,
-) {
-    unsafe { gl.bind_texture(glow::TEXTURE_2D, Some(texture)) };
-    unsafe {
-        gl.tex_image_2d(
-            glow::TEXTURE_2D,
-            0,
-            format as i32,
-            w as i32,
-            h as i32,
-            0,
-            format,
-            glow::UNSIGNED_BYTE,
-            glow::PixelUnpackData::Slice(Some(data)),
-        );
     }
 }
 

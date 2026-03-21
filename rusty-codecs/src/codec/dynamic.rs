@@ -14,6 +14,37 @@ impl Decoders for DefaultDecoders {
     type Video = DynamicVideoDecoder;
 }
 
+/// Generates forwarding match arms for all `DynamicVideoDecoder` variants.
+///
+/// Each call produces a match block that delegates `$method` to the inner
+/// decoder. The cfg gates are baked in once here so adding a new backend
+/// only requires updating this macro and the enum definition.
+macro_rules! dispatch_video {
+    ($self:expr, $method:ident $(, $arg:expr)*) => {
+        match $self {
+            #[cfg(feature = "h264")]
+            Self::H264(d) => d.$method($($arg),*),
+            #[cfg(feature = "av1")]
+            Self::Av1(d) => d.$method($($arg),*),
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            Self::VaapiH264(d) => d.$method($($arg),*),
+            #[cfg(all(target_os = "linux", feature = "v4l2"))]
+            Self::V4l2H264(d) => d.$method($($arg),*),
+            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
+            Self::VtbH264(d) => d.$method($($arg),*),
+            #[cfg(all(target_os = "android", feature = "android"))]
+            Self::AndroidHwH264(d) => d.$method($($arg),*),
+            #[cfg(all(target_os = "android", feature = "android"))]
+            Self::AndroidH264(d) => d.$method($($arg),*),
+            // Safety net: any_video_codec is true but no variant matched.
+            // This can only happen if a new video codec feature is added
+            // without updating this macro.
+            #[cfg(not(any(feature = "h264", feature = "av1")))]
+            _ => unreachable!(),
+        }
+    };
+}
+
 /// Video decoder that dispatches to the appropriate codec-specific decoder
 /// based on the `VideoConfig::codec` field.
 #[derive(Debug)]
@@ -99,108 +130,23 @@ impl VideoDecoder for DynamicVideoDecoder {
     }
 
     fn name(&self) -> &str {
-        match self {
-            #[cfg(feature = "h264")]
-            Self::H264(d) => d.name(),
-            #[cfg(feature = "av1")]
-            Self::Av1(d) => d.name(),
-            #[cfg(all(target_os = "linux", feature = "vaapi"))]
-            Self::VaapiH264(d) => d.name(),
-            #[cfg(all(target_os = "linux", feature = "v4l2"))]
-            Self::V4l2H264(d) => d.name(),
-            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
-            Self::VtbH264(d) => d.name(),
-            #[cfg(all(target_os = "android", feature = "android"))]
-            Self::AndroidHwH264(d) => d.name(),
-            #[cfg(all(target_os = "android", feature = "android"))]
-            Self::AndroidH264(d) => d.name(),
-            #[cfg(not(any(feature = "h264", feature = "av1")))]
-            _ => unreachable!(),
-        }
+        dispatch_video!(self, name)
     }
 
     fn push_packet(&mut self, packet: MediaPacket) -> Result<()> {
-        match self {
-            #[cfg(feature = "h264")]
-            Self::H264(d) => d.push_packet(packet),
-            #[cfg(feature = "av1")]
-            Self::Av1(d) => d.push_packet(packet),
-            #[cfg(all(target_os = "linux", feature = "vaapi"))]
-            Self::VaapiH264(d) => d.push_packet(packet),
-            #[cfg(all(target_os = "linux", feature = "v4l2"))]
-            Self::V4l2H264(d) => d.push_packet(packet),
-            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
-            Self::VtbH264(d) => d.push_packet(packet),
-            #[cfg(all(target_os = "android", feature = "android"))]
-            Self::AndroidHwH264(d) => d.push_packet(packet),
-            #[cfg(all(target_os = "android", feature = "android"))]
-            Self::AndroidH264(d) => d.push_packet(packet),
-            #[cfg(not(any(feature = "h264", feature = "av1")))]
-            _ => unreachable!(),
-        }
+        dispatch_video!(self, push_packet, packet)
     }
 
     fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {
-        match self {
-            #[cfg(feature = "h264")]
-            Self::H264(d) => d.pop_frame(),
-            #[cfg(feature = "av1")]
-            Self::Av1(d) => d.pop_frame(),
-            #[cfg(all(target_os = "linux", feature = "vaapi"))]
-            Self::VaapiH264(d) => d.pop_frame(),
-            #[cfg(all(target_os = "linux", feature = "v4l2"))]
-            Self::V4l2H264(d) => d.pop_frame(),
-            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
-            Self::VtbH264(d) => d.pop_frame(),
-            #[cfg(all(target_os = "android", feature = "android"))]
-            Self::AndroidHwH264(d) => d.pop_frame(),
-            #[cfg(all(target_os = "android", feature = "android"))]
-            Self::AndroidH264(d) => d.pop_frame(),
-            #[cfg(not(any(feature = "h264", feature = "av1")))]
-            _ => unreachable!(),
-        }
+        dispatch_video!(self, pop_frame)
     }
 
     fn set_viewport(&mut self, w: u32, h: u32) {
-        match self {
-            #[cfg(feature = "h264")]
-            Self::H264(d) => d.set_viewport(w, h),
-            #[cfg(feature = "av1")]
-            Self::Av1(d) => d.set_viewport(w, h),
-            #[cfg(all(target_os = "linux", feature = "vaapi"))]
-            Self::VaapiH264(d) => d.set_viewport(w, h),
-            #[cfg(all(target_os = "linux", feature = "v4l2"))]
-            Self::V4l2H264(d) => d.set_viewport(w, h),
-            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
-            Self::VtbH264(d) => d.set_viewport(w, h),
-            #[cfg(all(target_os = "android", feature = "android"))]
-            Self::AndroidHwH264(d) => d.set_viewport(w, h),
-            #[cfg(all(target_os = "android", feature = "android"))]
-            Self::AndroidH264(d) => d.set_viewport(w, h),
-            #[cfg(not(any(feature = "h264", feature = "av1")))]
-            _ => unreachable!(),
-        }
+        dispatch_video!(self, set_viewport, w, h)
     }
 
     fn burst_size(&self) -> usize {
-        match self {
-            #[cfg(feature = "h264")]
-            Self::H264(d) => d.burst_size(),
-            #[cfg(feature = "av1")]
-            Self::Av1(d) => d.burst_size(),
-            #[cfg(all(target_os = "linux", feature = "vaapi"))]
-            Self::VaapiH264(d) => d.burst_size(),
-            #[cfg(all(target_os = "linux", feature = "v4l2"))]
-            Self::V4l2H264(d) => d.burst_size(),
-            #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
-            Self::VtbH264(d) => d.burst_size(),
-            #[cfg(all(target_os = "android", feature = "android"))]
-            Self::AndroidHwH264(d) => d.burst_size(),
-            #[cfg(all(target_os = "android", feature = "android"))]
-            Self::AndroidH264(d) => d.burst_size(),
-            #[cfg(not(any(feature = "h264", feature = "av1")))]
-            _ => unreachable!(),
-        }
+        dispatch_video!(self, burst_size)
     }
 }
 
