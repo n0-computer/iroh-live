@@ -332,65 +332,10 @@ impl WgpuVideoRenderer {
         &mut self,
         imported: dmabuf_import::ImportedNv12Frame,
     ) -> Result<&wgpu::TextureView> {
-        let w = imported.width;
-        let h = imported.height;
-        self.ensure_output_texture(w, h);
-
+        self.ensure_output_texture(imported.width, imported.height);
         let y_view = imported.y_texture.create_view(&Default::default());
         let uv_view = imported.uv_texture.create_view(&Default::default());
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("dmabuf_nv12_bind_group"),
-            layout: &self.nv12_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&y_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&uv_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-            ],
-        });
-
-        let out = self
-            .output_texture
-            .as_ref()
-            .context("output texture not initialized")?;
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("dmabuf_nv12_to_rgba"),
-            });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("dmabuf_nv12_to_rgba_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &out.view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                ..Default::default()
-            });
-            pass.set_pipeline(&self.nv12_pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.draw(0..3, 0..1);
-        }
-        self.queue.submit(iter::once(encoder.finish()));
-
-        Ok(&self
-            .output_texture
-            .as_ref()
-            .context("output texture not initialized")?
-            .view)
+        self.render_nv12_from_views(&y_view, &uv_view, "dmabuf")
     }
 
     /// Render zero-copy Metal-imported NV12 textures to RGBA via shader.
@@ -399,23 +344,32 @@ impl WgpuVideoRenderer {
         &mut self,
         imported: metal_import::ImportedMetalNv12,
     ) -> Result<&wgpu::TextureView> {
-        let w = imported.width;
-        let h = imported.height;
-        self.ensure_output_texture(w, h);
-
+        self.ensure_output_texture(imported.width, imported.height);
         let y_view = imported.y_texture.create_view(&Default::default());
         let uv_view = imported.uv_texture.create_view(&Default::default());
+        self.render_nv12_from_views(&y_view, &uv_view, "metal")
+    }
+
+    /// Runs the NV12→RGBA shader pass using the given Y and UV texture views.
+    ///
+    /// Shared by the DMA-BUF import, Metal import, and CPU-upload NV12 paths.
+    fn render_nv12_from_views(
+        &self,
+        y_view: &wgpu::TextureView,
+        uv_view: &wgpu::TextureView,
+        label: &str,
+    ) -> Result<&wgpu::TextureView> {
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("metal_nv12_bind_group"),
+            label: Some(label),
             layout: &self.nv12_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&y_view),
+                    resource: wgpu::BindingResource::TextureView(y_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&uv_view),
+                    resource: wgpu::BindingResource::TextureView(uv_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -430,12 +384,10 @@ impl WgpuVideoRenderer {
             .context("output texture not initialized")?;
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("metal_nv12_to_rgba"),
-            });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("metal_nv12_to_rgba_pass"),
+                label: Some(label),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &out.view,
                     resolve_target: None,
@@ -453,11 +405,7 @@ impl WgpuVideoRenderer {
         }
         self.queue.submit(iter::once(encoder.finish()));
 
-        Ok(&self
-            .output_texture
-            .as_ref()
-            .context("output texture not initialized")?
-            .view)
+        Ok(&out.view)
     }
 
     /// Upload NV12 planes and render to RGBA via shader.
