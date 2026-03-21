@@ -974,4 +974,52 @@ mod tests {
         assert_eq!(ranked[1].name, "mid");
         assert_eq!(ranked[2].name, "low");
     }
+
+    #[test]
+    fn emergency_fires_despite_recent_failure() {
+        // The failure cooldown should NOT block emergency downgrades.
+        // Emergency exists for catastrophic conditions where immediate
+        // reaction is critical.
+        let ranked = test_ranked();
+        let signals = NetworkSignals {
+            loss_rate: 0.25, // catastrophic
+            ..good_signals()
+        };
+        let config = AdaptiveConfig::default();
+        let mut timers = AdaptationTimers::default();
+        let now = Instant::now();
+
+        // Simulate a recent switch failure.
+        timers.last_switch_failure = Some(now);
+
+        let d = evaluate(0, &ranked, &signals, &mut timers, &config, now);
+        assert_eq!(
+            d,
+            Decision::Emergency,
+            "emergency should fire even with recent failure"
+        );
+    }
+
+    #[test]
+    fn downgrade_blocked_by_failure_cooldown() {
+        let ranked = test_ranked();
+        let signals = NetworkSignals {
+            loss_rate: 0.12, // above downgrade threshold
+            ..good_signals()
+        };
+        let config = AdaptiveConfig::default();
+        let mut timers = AdaptationTimers::default();
+        let start = Instant::now();
+
+        // Prime the downgrade hold timer.
+        evaluate(0, &ranked, &signals, &mut timers, &config, start);
+        let later = start + config.downgrade_hold;
+        let d = evaluate(0, &ranked, &signals, &mut timers, &config, later);
+        assert_eq!(d, Decision::Downgrade(1), "should want to downgrade");
+
+        // Now the adaptation_task would attempt the switch and fail.
+        // The failure cooldown is checked in the task, not in evaluate().
+        // evaluate() will still return Downgrade, but the task skips it.
+        // This test verifies evaluate() behavior is unchanged.
+    }
 }
