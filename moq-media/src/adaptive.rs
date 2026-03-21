@@ -1022,4 +1022,14 @@ mod tests {
         // evaluate() will still return Downgrade, but the task skips it.
         // This test verifies evaluate() behavior is unchanged.
     }
+
+    #[test]
+    fn pack_unpack_dimensions_roundtrip() {
+        let cases = [(1920, 1080), (320, 180), (0, 0), (u32::MAX, u32::MAX)];
+        for (w, h) in cases {
+            let packed = super::pack_dimensions(w, h);
+            let [uw, uh] = super::unpack_dimensions(packed);
+            assert_eq!((uw, uh), (w, h), "roundtrip failed for {w}x{h}");
+        }
+    }
 }
