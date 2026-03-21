@@ -22,7 +22,7 @@ Per-path stats are read from `MoqSession::conn().paths().get()`, which returns a
 
 ## Metrics infrastructure
 
-`Metric` provides EMA (exponential moving average) smoothing for noisy per-frame measurements. `Label` formats metrics for display with unit suffixes. Typed metric groups (`NetStats`, `CaptureStats`, `RenderStats`) collect related measurements. These are defined in moq-media-egui and used by the debug overlay.
+`Metric` provides EMA (exponential moving average) smoothing for noisy per-frame measurements. `Label` formats metrics for display with unit suffixes. Typed metric groups (`NetStats`, `PublishStats`, `SubscribeStats`) collect related measurements. These are defined in moq-media-egui and used by the debug overlay.
 
 ## Network simulation
 

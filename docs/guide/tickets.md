@@ -23,7 +23,7 @@ The endpoint address is postcard-encoded, then base64url-encoded (no padding). T
 ### Creating and parsing
 
 ```rust
-use iroh_live::LiveTicket;
+use iroh_live::ticket::LiveTicket;
 
 // Create a ticket
 let ticket = LiveTicket::new(endpoint_addr, "my-stream");
@@ -63,7 +63,7 @@ println!("Call me: {ticket}");
 `RoomTicket` identifies a multi-party room. It contains a gossip topic ID and optional bootstrap peer IDs. Unlike `LiveTicket`, it does not contain a broadcast name, because each room participant publishes their own broadcast and discovers others via gossip.
 
 ```rust
-use iroh_live::RoomTicket;
+use iroh_live::rooms::RoomTicket;
 
 // Generate a new room
 let ticket = RoomTicket::generate();

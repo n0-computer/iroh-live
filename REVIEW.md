@@ -141,6 +141,53 @@ Findings from three expert reviews: capture/platform, playout/sync, and codec sa
 
 ---
 
+## Expert review 2026-03-21
+
+Senior Rust / audio-video streaming review. Focused on concurrency correctness, API soundness, and production robustness concerns not covered by prior reviews.
+
+### Executive summary
+
+The crate boundaries are clean and deliberate: `rusty-codecs` handles codec abstraction and GPU rendering, `moq-media` orchestrates publish/subscribe pipelines without transport dependency, `iroh-moq` provides MoQ transport, and `iroh-live` ties everything together. The threading model is appropriate — OS threads for blocking codec work, tokio tasks for async transport, channels bridging the two. The playout clock, adaptive bitrate, and pipeline lifecycle management are all thoughtfully designed. Test coverage is strong for codec roundtrips and pipeline integration. The main concerns center on a few concurrency edge cases, some missing backpressure paths, and places where error recovery could be more robust.
+
+### Critical
+
+- [ ] **ER21**: `unimplemented!()` in `VideoFrame::rgba_image()` for NV12/I420 when `h264`/`av1` features disabled — panics in library code that could crash downstream applications. Returns `&RgbaImage` via `OnceLock::get_or_init`, so can't return `Result`. Should at minimum document the panic, or change to `Option<&RgbaImage>` (`format.rs:813,831`)
+
+### Important
+
+- [ ] **ER22**: Audio decode loop tick counter is `usize` — on 32-bit platforms (RPi Zero), `INTERVAL * i` overflows after ~497 days of continuous operation. Use `u64` explicitly (`pipeline.rs:1230`)
+- [ ] **ER23**: `recv_timeout` spin-polls at ~1ms resolution — 16–33 wakeups per frame for a typical 33ms interval. On battery-powered or embedded devices this adds measurable CPU overhead. A condvar-based approach would be more efficient (`playout.rs:461-484`)
+- [ ] **ER24**: `LocalBroadcast::run` holds state mutex while calling `start_track` — encoder factory calls can take tens of milliseconds for hardware codecs (VAAPI/VTB device negotiation), blocking all `has_video()`, `has_audio()`, `set_video()` callers. Factory call and thread spawn should happen after releasing the lock (`publish.rs:261-264`)
+- [ ] **ER25**: No timeout on `RemoteBroadcast::new` catalog wait — if the remote peer connects but never sends a catalog, the subscription hangs indefinitely. Doc recommends `tokio::time::timeout` but `RemoteBroadcast::new` doesn't follow its own advice. Add a configurable timeout with a reasonable default (e.g. 10s) (`subscribe.rs:319-323`)
+- [ ] **ER26**: `PublishError` and `SubscribeError` lack `std::error::Error` source chains — `EncoderFailed(anyhow::Error)` and `DecoderFailed(anyhow::Error)` variants wrap inner errors invisible to `source()`. Use `derive_more::Error` or `thiserror` (`publish.rs:54-83`, `subscribe.rs:167-199`)
+
+### Minor
+
+- [ ] **ER27**: `select_rendition` fallback to `renditions.keys().next()` returns lexicographically first key, which may not be the lowest quality if rendition names don't sort by quality (`subscribe.rs:677-686`)
+- [ ] **ER28**: `SharedVideoSource::stop` uses `SeqCst` ordering while `start` uses `Relaxed` — inconsistent; `AcqRel`/`Acquire` would be sufficient and consistent (`publish.rs:1063,1072-1083`)
+- [ ] **ER29**: `CatalogSnapshot` `PartialEq` skips inner catalog (`#[eq(skip)]`) — equality based solely on `seq` number, which could surprise callers comparing snapshots from different broadcasts. Document this (`subscribe.rs:236-238`)
+- [ ] **ER30**: `VideoTrack::from_video_source` hardcodes `fps = 30` — camera sources at 60fps or 15fps get doubled frames or drops. `VideoFormat` lacks a framerate field (`subscribe.rs:816`)
+- [ ] **ER31**: Room actor event channel capacity 16 — in rooms with many simultaneous joins, actor blocks on sends and stops processing gossip. Consider increasing capacity or `try_send` with logged warning (`rooms.rs:89`)
+- [ ] **ER32**: `PlayoutBuffer` `max_frames` hardcoded at 30 — represents only 500ms at 60fps, 2s at 15fps. Should be proportional to framerate (`playout.rs:371`)
+- [ ] **ER33**: Missing `#[must_use]` on builder methods — `VideoTarget::max_pixels`, `VideoOptions::target`, `AudioOptions::rendition` return `Self` but callers could accidentally discard the builder
+
+### Already tracked (confirmed still open)
+
+- ER5 / C1: `Rc<Display>` cross-thread drop race in VAAPI decoder — still blocked on cros-libva upstream
+- C2: `SharedVideoSource` thread handle in `Arc<JoinHandle>` — thread detached on drop, panics silently lost. Consider joining with timeout in `VideoRenditions::drop`
+- I4: `AdaptiveVideoTrack::next_frame` minor race between `check_swap` and `select!` — latency bump during rendition switches, not a correctness issue
+
+### Positive observations
+
+- **Architecture**: The `moq-media` / `iroh-live` boundary is well-maintained. `PacketSource`/`PacketSink` traits enable clean testing without network infrastructure.
+- **Playout clock**: RFC 3550 jitter measurement, adaptive re-anchoring with jitter-proportional buffers, `MIN_JITTER_BUFFER` floor — reflects real operational experience.
+- **Error recovery**: Video decode loop skip-to-keyframe with cross-track sync (audio flushes on video skip generation change) avoids tight coupling.
+- **Tracing**: Structured fields, appropriate log levels, `throttled-tracing` for hot paths, per-pipeline `info_span!` naming. Would be invaluable at 3 AM two years from now.
+- **Resource lifecycle**: `CancellationToken` + `DropGuard` + `AbortOnDropHandle` + `spawn_thread` with `catch_unwind` provides reliable cleanup.
+- **Adaptive bitrate**: Asymmetric timers, bandwidth headroom, probe mechanism with congestion baseline tracking — matches production ABR implementations.
+
+---
+
 # Completed
 
 - [x] **B5**: `watch_local` hardcoded 30 fps — same root cause as B12; pipeline.rs fallback now warns
