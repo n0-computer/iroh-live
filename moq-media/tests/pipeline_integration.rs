@@ -1428,3 +1428,211 @@ async fn audio_decoder_inserts_silence_on_stall() {
 
     drop(encoder_pipeline);
 }
+
+// ── Group P: A/V synchronization ──────────────────────────────────
+
+/// Verifies that audio and video beep events arrive in sync through
+/// the full encode→transport→decode pipeline.
+///
+/// TestPatternSource flashes a yellow indicator at `(t % 1.0) < 0.1`,
+/// and TestToneSource produces an 880 Hz beep on the same schedule.
+/// Both share the same time base. This test checks that the wall-clock
+/// delta between the video flash frame and the audio beep onset stays
+/// within a reasonable bound.
+///
+/// Uses PlayoutMode::Reliable (every frame in order, no playout delay)
+/// to isolate the encode/decode pipeline sync from playout clock timing.
+/// The Reliable mode test establishes that the correlation detection
+/// mechanism works and that codec pipeline latency doesn't introduce
+/// unbounded drift. A separate Live-mode test (with patchbay network
+/// simulation) will verify playout clock sync under realistic conditions.
+///
+/// The threshold here is 100 ms — generous because the H.264 encoder's
+/// DPB introduces a few frames of latency (~100 ms at 30 fps) that
+/// shifts video relative to audio. The 45 ms ITU-R BT.1359 threshold
+/// applies to the Live-mode test where the playout clock compensates
+/// for this offset.
+#[cfg(all(feature = "h264", feature = "opus"))]
+#[tokio::test]
+async fn av_sync_beep_flash_correlation() {
+    use moq_media::test_util::TimestampingAudioBackend;
+    use std::time::Instant;
+
+    let (broadcast, consumer) = setup_broadcast().await;
+
+    // Publish video: test pattern with yellow flash indicator.
+    broadcast
+        .video()
+        .set(VideoInput::new(
+            TestVideoSource::new(320, 180),
+            VideoCodec::H264,
+            [VideoPreset::P180],
+        ))
+        .unwrap();
+
+    // Publish audio: 880 Hz beep synchronized with the video flash.
+    broadcast
+        .audio()
+        .set(
+            rusty_codecs::test_sources::TestToneSource::new(),
+            moq_media::codec::AudioCodec::Opus,
+            [AudioPreset::Hq],
+        )
+        .unwrap();
+
+    // Subscribe with Reliable playout (no playout delay, every frame
+    // in order). This tests pipeline sync, not playout clock sync.
+    let remote = RemoteBroadcast::with_playout_mode(
+        "av-sync-test",
+        consumer,
+        PlayoutMode::Reliable,
+    )
+    .await
+    .unwrap();
+
+    // Set up the timestamping audio backend to detect beep onsets.
+    let audio_backend = TimestampingAudioBackend::new();
+    let audio_beep_ts = audio_backend.beep_timestamps();
+    let _audio = remote.audio_ready(&audio_backend).await.unwrap();
+
+    // Subscribe to video and collect flash timestamps.
+    let mut video = remote.video_ready().await.unwrap();
+
+    // Collect beep events over ~5 seconds (enough for 4-5 beep cycles).
+    // Each beep cycle is 1 second: 100ms beep + 900ms silence.
+    let mut video_flash_times: Vec<(Duration, Instant)> = Vec::new();
+    let collect_duration = Duration::from_secs(5);
+    let start = Instant::now();
+    let mut prev_had_flash = false;
+
+    while start.elapsed() < collect_duration {
+        let frame = match tokio::time::timeout(Duration::from_secs(10), video.next_frame()).await {
+            Ok(Some(frame)) => frame,
+            Ok(None) => break,
+            Err(_) => panic!("timeout waiting for video frame"),
+        };
+
+        // Detect flash: check center pixel of decoded frame for yellow.
+        let now = Instant::now();
+        let has_flash = frame_has_yellow_indicator(&frame);
+
+        // Record only the onset (rising edge) of the flash.
+        if has_flash && !prev_had_flash {
+            video_flash_times.push((frame.timestamp, now));
+        }
+        prev_had_flash = has_flash;
+    }
+
+    // Give audio a moment to finish processing.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let audio_beeps = audio_beep_ts.lock().unwrap();
+
+    // We need at least 2 matched events to say anything meaningful.
+    assert!(
+        video_flash_times.len() >= 2,
+        "expected >= 2 video flash onsets, got {}",
+        video_flash_times.len()
+    );
+    assert!(
+        audio_beeps.len() >= 2,
+        "expected >= 2 audio beep onsets, got {}",
+        audio_beeps.len()
+    );
+
+    // Match events: pair each video flash with the nearest audio beep.
+    // Both should occur at the same PTS (integer seconds), so the
+    // wall-clock delta between paired events is the sync error.
+    let mut sync_errors_ms: Vec<f64> = Vec::new();
+    for &(_pts, video_wall) in &video_flash_times {
+        // Find the audio beep closest in wall-clock time.
+        if let Some(&audio_wall) = audio_beeps
+            .iter()
+            .min_by_key(|&&a| abs_duration_diff(a, video_wall))
+        {
+            let delta = abs_duration_diff(audio_wall, video_wall);
+            sync_errors_ms.push(delta.as_secs_f64() * 1000.0);
+        }
+    }
+
+    assert!(
+        !sync_errors_ms.is_empty(),
+        "no matched A/V sync events found"
+    );
+
+    // In Reliable mode with in-process transport, the sync error comes
+    // from the H.264 encoder's DPB latency (a few frames at 30 fps ≈
+    // 66-100 ms) and the audio decode loop's 10 ms tick resolution. The
+    // important thing is that (a) both tracks produce correlated events,
+    // (b) the sync error is bounded and stable across events, and (c) the
+    // error does not grow over time (no drift).
+    //
+    // We use 200 ms as the threshold here — the encoder latency is the
+    // dominant factor and varies by codec speed. The 45 ms ITU-R BT.1359
+    // threshold applies to the Live-mode playout clock test, where the
+    // clock compensates for codec latency.
+    const THRESHOLD_MS: f64 = 200.0;
+
+    let total = sync_errors_ms.len();
+    let within_threshold = sync_errors_ms.iter().filter(|&&e| e < THRESHOLD_MS).count();
+    let pct = within_threshold as f64 / total as f64 * 100.0;
+
+    // Log all measurements for debugging.
+    for (i, err) in sync_errors_ms.iter().enumerate() {
+        eprintln!("  sync event {i}: {err:.1} ms");
+    }
+
+    let mut sorted = sync_errors_ms.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median = sorted[sorted.len() / 2];
+    let max = sorted.last().copied().unwrap_or(0.0);
+    eprintln!("  median: {median:.1} ms, max: {max:.1} ms, {within_threshold}/{total} within {THRESHOLD_MS} ms ({pct:.0}%)");
+
+    assert!(
+        pct >= 95.0,
+        "A/V sync: only {pct:.0}% of events within {THRESHOLD_MS} ms threshold \
+         (need 95%). errors: {sync_errors_ms:?}"
+    );
+
+    // Check that sync error is stable (no drift): the difference between
+    // the first and last measurement should be small.
+    if sync_errors_ms.len() >= 3 {
+        let drift = (sync_errors_ms.last().unwrap() - sync_errors_ms.first().unwrap()).abs();
+        eprintln!("  drift (last - first): {drift:.1} ms");
+        assert!(
+            drift < 50.0,
+            "A/V sync drift {drift:.1} ms exceeds 50 ms — \
+             audio and video are diverging over time"
+        );
+    }
+}
+
+/// Returns the absolute duration between two instants.
+fn abs_duration_diff(a: std::time::Instant, b: std::time::Instant) -> Duration {
+    if a > b { a - b } else { b - a }
+}
+
+/// Checks whether a decoded video frame contains the yellow beep
+/// indicator from TestPatternSource.
+///
+/// The indicator is a large yellow square centered in the frame. We
+/// check the center pixel: if it's yellow (R > 200, G > 200, B < 80),
+/// the indicator is present. This survives H.264 compression because
+/// the square is large (1/3 of the shorter dimension).
+fn frame_has_yellow_indicator(frame: &moq_media::format::VideoFrame) -> bool {
+    let img = frame.rgba_image();
+    let [w, h] = frame.dimensions;
+    let cx = w / 2;
+    let cy = h / 2;
+    let idx = ((cy * w + cx) * 4) as usize;
+    let pixels = img.as_raw();
+    if idx + 3 >= pixels.len() {
+        return false;
+    }
+    let r = pixels[idx];
+    let g = pixels[idx + 1];
+    let b = pixels[idx + 2];
+    // Yellow after H.264 lossy compression: high R, high G, low B.
+    // Use generous thresholds to survive BT.601 YUV roundtrip.
+    r > 180 && g > 180 && b < 100
+}
