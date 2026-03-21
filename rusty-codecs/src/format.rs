@@ -12,7 +12,7 @@ use strum::{Display, EnumString, VariantNames};
 pub use crate::processing::scale::ScaleMode;
 
 /// Describes an audio stream's sample rate and channel layout.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AudioFormat {
     /// Sample rate in Hz (e.g. 48 000).
     pub sample_rate: u32,
@@ -47,7 +47,7 @@ impl AudioFormat {
 }
 
 /// Pixel byte ordering for CPU-resident frame data.
-#[derive(Copy, Clone, Debug, PartialEq, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
 pub enum PixelFormat {
     /// Red, green, blue, alpha (standard for most APIs).
     #[default]

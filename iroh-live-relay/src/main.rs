@@ -254,12 +254,6 @@ fn extract_name_from_url(request: &moq_native::Request) -> Option<String> {
     } else {
         None
     }
-    // let res = url
-    //     .query_pairs()
-    //     .find(|(k, _)| k == "name")
-    //     .map(|(_, v)| v.into_owned());
-    // debug!("res: {res:?}");
-    // res
 }
 
 /// Serves the TLS certificate fingerprint for WebTransport dev mode.

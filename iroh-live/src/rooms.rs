@@ -415,7 +415,7 @@ mod ticket {
                     Err(_) => {
                         let topic = TopicId::from_bytes(rand::random());
                         println!(
-                            "Created new topic. Reuse with IROH_TOPIC={}",
+                            "Created new topic. Reuse with IROH_LIVE_TOPIC={}",
                             data_encoding::HEXLOWER.encode(topic.as_bytes())
                         );
                         topic

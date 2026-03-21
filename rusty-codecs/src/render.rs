@@ -319,6 +319,7 @@ impl WgpuVideoRenderer {
             }
             FrameData::I420 { .. } => {
                 // Fall back through RGBA cache
+                self.last_render_path = RenderPath::CpuRgba;
                 let img = frame.rgba_image();
                 self.render_packed(img.as_raw(), img.width(), img.height())
             }
