@@ -1207,4 +1207,47 @@ mod tests {
         assert_eq!(img.height(), 2);
         assert_eq!(img.as_raw(), &data);
     }
+
+    #[test]
+    fn new_i420_frame() {
+        let w = 4u32;
+        let h = 4u32;
+        let y = vec![16u8; (w * h) as usize];
+        let u = vec![128u8; (w * h / 4) as usize];
+        let v = vec![128u8; (w * h / 4) as usize];
+        let frame = VideoFrame::new_i420(
+            y.into(),
+            u.into(),
+            v.into(),
+            w,
+            h,
+            Duration::from_millis(100),
+        );
+        assert_eq!(frame.dimensions, [4, 4]);
+        assert_eq!(frame.timestamp, Duration::from_millis(100));
+        assert!(!frame.is_gpu());
+        // Should be able to convert to RGBA.
+        let img = frame.rgba_image();
+        assert_eq!(img.width(), 4);
+        assert_eq!(img.height(), 4);
+    }
+
+    #[test]
+    fn new_nv12_frame() {
+        let w = 4u32;
+        let h = 4u32;
+        let nv12 = crate::format::Nv12Planes {
+            y_data: vec![16u8; (w * h) as usize],
+            y_stride: w,
+            uv_data: vec![128u8; (w * h / 2) as usize],
+            uv_stride: w,
+            width: w,
+            height: h,
+        };
+        let frame = VideoFrame::new_nv12(nv12, Duration::ZERO);
+        assert_eq!(frame.dimensions, [4, 4]);
+        assert!(!frame.is_gpu());
+        let img = frame.rgba_image();
+        assert_eq!(img.width(), 4);
+    }
 }
