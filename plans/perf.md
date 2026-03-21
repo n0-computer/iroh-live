@@ -14,7 +14,7 @@ for the allocation budget and completed optimizations.
 
 ### Lock contention
 - [x] **PL1**: PlayoutClock mutex on every frame — non-issue: clock is only accessed from the decode thread (single-threaded), zero contention in practice (see CC2 in REVIEW.md)
-- [ ] **PL3**: V4L2 decoder format state Mutex in callback — consider RwLock or atomic state machine (`v4l2/decoder.rs`)
+- [ ] **PL3**: V4L2 decoder format state Mutex in callback — requires restructuring V4L2 callback model; low priority since V4L2 path is ARM-only (`v4l2/decoder.rs`)
 
 ### GPU / DMA-BUF
 - [ ] **PG1**: Per-frame Vulkan TextureView + BindGroup for imported NV12 — cache when fd/modifier match (`render.rs:225`)
