@@ -15,6 +15,7 @@ use moq_media::{
     publish::{LocalBroadcast, VideoInput},
     test_util::{TestVideoSource, TimestampingAudioBackend},
 };
+use n0_tracing_test::traced_test;
 use patchbay::{Lab, LinkCondition, LinkLimits, NodeId};
 use tracing::info;
 
@@ -235,22 +236,9 @@ fn gap_violation_rate(gaps: &[Duration], threshold: Duration) -> f64 {
 /// "Smooth" means: at least 90% of inter-frame gaps are ≤ 100ms (3×
 /// the 33ms expected interval at 30fps). The tolerance accounts for
 /// normal scheduling jitter and the adaptive playout buffer.
-#[test]
-fn latency_up_down_video_recovers() {
-    let _ = tracing_subscriber::fmt::try_init();
-
-    // init_userns must be called before any threads exist (before tokio).
-    patchbay::init_userns().expect("patchbay init_userns");
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    rt.block_on(latency_up_down_video_recovers_inner());
-}
-
-async fn latency_up_down_video_recovers_inner() {
+#[tokio::test]
+#[traced_test]
+async fn latency_up_down_video_recovers() {
     let fixture = PatchbayFixture::new().await;
 
     // Raise skip threshold so the test can observe delay without skipping.
@@ -410,20 +398,9 @@ async fn latency_up_down_video_recovers_inner() {
 ///
 /// Uses poll-based frame consumption to match the egui rendering pattern:
 /// polls at ~60Hz with current_frame(), which drops stale frames.
-#[test]
-fn link_blackout_recovers() {
-    let _ = tracing_subscriber::fmt::try_init();
-    patchbay::init_userns().expect("patchbay init_userns");
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    rt.block_on(link_blackout_inner());
-}
-
-async fn link_blackout_inner() {
+#[tokio::test]
+#[traced_test]
+async fn link_blackout_recovers() {
     let fixture = PatchbayFixture::new().await;
     fixture.remote.set_skip_threshold(Duration::from_secs(5));
 
@@ -495,20 +472,9 @@ async fn link_blackout_inner() {
 /// Verifies that high packet loss triggers recovery (and doesn't stall).
 /// With 20% loss, QUIC retransmits should keep the stream alive, but
 /// degraded. After loss drops to zero, playback should recover fully.
-#[test]
-fn packet_loss_spike_recovers() {
-    let _ = tracing_subscriber::fmt::try_init();
-    patchbay::init_userns().expect("patchbay init_userns");
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    rt.block_on(packet_loss_spike_inner());
-}
-
-async fn packet_loss_spike_inner() {
+#[tokio::test]
+#[traced_test]
+async fn packet_loss_spike_recovers() {
     let fixture = PatchbayFixture::new().await;
     fixture.remote.set_skip_threshold(Duration::from_secs(5));
 
@@ -578,20 +544,9 @@ async fn packet_loss_spike_inner() {
 /// transitions to reveal stuttering that the async `next_frame()` path
 /// hides. If the split example freezes but drain_frames-based tests
 /// don't, this test should catch it.
-#[test]
-fn latency_poll_based_smoothness() {
-    let _ = tracing_subscriber::fmt::try_init();
-    patchbay::init_userns().expect("patchbay init_userns");
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    rt.block_on(latency_poll_based_inner());
-}
-
-async fn latency_poll_based_inner() {
+#[tokio::test]
+#[traced_test]
+async fn latency_poll_based_smoothness() {
     let fixture = PatchbayFixture::new().await;
     fixture.remote.set_skip_threshold(Duration::from_secs(5));
 
@@ -660,20 +615,9 @@ async fn latency_poll_based_inner() {
 /// 2 seconds with incremental steps, mimicking the split example's UI.
 /// This is the most realistic reproduction of the reported freeze: rapid
 /// small latency changes rather than a single large jump.
-#[test]
-fn slider_drag_latency_ramp() {
-    let _ = tracing_subscriber::fmt::try_init();
-    patchbay::init_userns().expect("patchbay init_userns");
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    rt.block_on(slider_drag_inner());
-}
-
-async fn slider_drag_inner() {
+#[tokio::test]
+#[traced_test]
+async fn slider_drag_latency_ramp() {
     let fixture = PatchbayFixture::new().await;
     fixture.remote.set_skip_threshold(Duration::from_secs(10));
 
@@ -759,21 +703,10 @@ async fn slider_drag_inner() {
 /// Ignored by default: 720p@30fps encode/decode needs more CPU than shared CI
 /// runners provide. Run locally with `cargo nextest run -E 'test(latency_at_split)'
 /// --run-ignored all`.
-#[test]
+#[tokio::test]
+#[traced_test]
 #[ignore]
-fn latency_at_split_example_settings() {
-    let _ = tracing_subscriber::fmt::try_init();
-    patchbay::init_userns().expect("patchbay init_userns");
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    rt.block_on(latency_split_settings_inner());
-}
-
-async fn latency_split_settings_inner() {
+async fn latency_at_split_example_settings() {
     let lab = Lab::new().await.expect("patchbay lab");
     let router = lab.add_router("r1").build().await.expect("router");
     let router_node = router.id();
@@ -962,21 +895,10 @@ async fn latency_split_settings_inner() {
 /// Ignored by default: re-anchor counting is sensitive to CPU scheduling
 /// jitter on shared CI runners. Run locally with `cargo nextest run
 /// -E 'test(reanchor_count)' --run-ignored all`.
-#[test]
+#[tokio::test]
+#[traced_test]
 #[ignore]
-fn reanchor_count_during_sustained_latency() {
-    let _ = tracing_subscriber::fmt::try_init();
-    patchbay::init_userns().expect("patchbay init_userns");
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    rt.block_on(reanchor_count_inner());
-}
-
-async fn reanchor_count_inner() {
+async fn reanchor_count_during_sustained_latency() {
     let fixture = PatchbayFixture::new().await;
     fixture.remote.set_skip_threshold(Duration::from_secs(10));
 
@@ -1061,20 +983,9 @@ async fn reanchor_count_inner() {
 /// uses actual network impairment so the full feedback loop is exercised:
 /// netem loss → QUIC detects loss → PathStats reports it → signal
 /// producer samples it → adaptive algorithm reacts.
-#[test]
-fn adaptive_downgrade_upgrade_under_real_loss() {
-    let _ = tracing_subscriber::fmt::try_init();
-    patchbay::init_userns().expect("patchbay init_userns");
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    rt.block_on(adaptive_real_loss_inner());
-}
-
-async fn adaptive_real_loss_inner() {
+#[tokio::test]
+#[traced_test]
+async fn adaptive_downgrade_upgrade_under_real_loss() {
     let lab = Lab::new().await.expect("patchbay lab");
     let router = lab.add_router("r1").build().await.expect("router");
     let router_node = router.id();
@@ -1501,42 +1412,24 @@ fn log_sync_stats(label: &str, errors: &[f64], threshold_ms: f64) {
 }
 
 /// A/V sync with zero added latency — baseline measurement.
-#[test]
-fn av_sync_zero_latency() {
-    let _ = tracing_subscriber::fmt::try_init();
-    patchbay::init_userns().expect("patchbay init");
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    rt.block_on(av_sync_at_latency(0, 0));
+#[tokio::test]
+#[traced_test]
+async fn av_sync_zero_latency() {
+    av_sync_at_latency(0, 0).await;
 }
 
 /// A/V sync at 50 ms latency with 20 ms jitter — typical LAN/WAN.
-#[test]
-fn av_sync_50ms_latency() {
-    let _ = tracing_subscriber::fmt::try_init();
-    patchbay::init_userns().expect("patchbay init");
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    rt.block_on(av_sync_at_latency(50, 20));
+#[tokio::test]
+#[traced_test]
+async fn av_sync_50ms_latency() {
+    av_sync_at_latency(50, 20).await;
 }
 
 /// A/V sync at 200 ms latency with 20 ms jitter — relayed/intercontinental.
-#[test]
-fn av_sync_200ms_latency() {
-    let _ = tracing_subscriber::fmt::try_init();
-    patchbay::init_userns().expect("patchbay init");
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    rt.block_on(av_sync_at_latency(200, 20));
+#[tokio::test]
+#[traced_test]
+async fn av_sync_200ms_latency() {
+    av_sync_at_latency(200, 20).await;
 }
 
 async fn av_sync_at_latency(latency_ms: u32, jitter_ms: u32) {
