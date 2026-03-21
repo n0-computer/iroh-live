@@ -13,7 +13,7 @@ for the allocation budget and completed optimizations.
 - [ ] **PF10**: FFmpeg encoder `sws_frame.clone()` per frame — needs double-buffer restructuring (`ffmpeg/encoder.rs:422`)
 
 ### Lock contention
-- [ ] **PL1**: PlayoutClock mutex on every frame — move `smoothed_jitter` to AtomicU64 (`playout.rs`)
+- [x] **PL1**: PlayoutClock mutex on every frame — non-issue: clock is only accessed from the decode thread (single-threaded), zero contention in practice (see CC2 in REVIEW.md)
 - [ ] **PL3**: V4L2 decoder format state Mutex in callback — consider RwLock or atomic state machine (`v4l2/decoder.rs`)
 
 ### GPU / DMA-BUF
@@ -23,7 +23,7 @@ for the allocation budget and completed optimizations.
 
 ### Transport
 - [ ] **PT1**: Double YUV→RGB→YUV conversion on NV12 encode — add NV12-direct encoder input path
-- [ ] **PT4**: AudioBackendOpts cloned entirely for device switching — clone only modified fields (`audio_backend.rs`)
+- [x] **PT4**: AudioBackendOpts cloned — non-issue: struct is 3 fields (two Option<DeviceId> + bool), clone is trivially cheap
 
 ## Priority
 
