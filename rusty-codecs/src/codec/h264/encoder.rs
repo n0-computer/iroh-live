@@ -27,7 +27,6 @@ pub struct H264Encoder {
     height: u32,
     framerate: u32,
     bitrate: u64,
-    frame_count: u64,
     nal_format: NalFormat,
     scale_mode: ScaleMode,
     #[debug(skip)]
@@ -156,7 +155,6 @@ impl H264Encoder {
             height,
             framerate,
             bitrate,
-            frame_count: 0,
             nal_format,
             scale_mode: config.scale_mode,
             scaler: Scaler::new(Some((width, height))),
@@ -318,7 +316,6 @@ impl H264Encoder {
         };
 
         let is_keyframe = matches!(frame_type, FrameType::IDR | FrameType::I);
-        self.frame_count += 1;
 
         self.packet_buf.push_back(EncodedFrame {
             is_keyframe,

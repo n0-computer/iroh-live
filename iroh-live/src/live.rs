@@ -1,7 +1,7 @@
-use std::{env, sync::Arc};
+use std::sync::Arc;
 
 use iroh::{
-    Endpoint, EndpointAddr, SecretKey,
+    Endpoint, EndpointAddr,
     endpoint::presets,
     protocol::{Router, RouterBuilder},
 };
@@ -109,7 +109,7 @@ impl Live {
     /// binds an endpoint, and spawns with gossip and a protocol router.
     pub async fn from_env() -> Result<Self> {
         let endpoint = Endpoint::builder(presets::N0)
-            .secret_key(secret_key_from_env()?)
+            .secret_key(crate::util::secret_key_from_env()?)
             .bind()
             .await?;
         info!(endpoint_id=%endpoint.id(), "endpoint bound");
@@ -212,18 +212,4 @@ impl Live {
             self.endpoint.close().await
         }
     }
-}
-
-fn secret_key_from_env() -> Result<SecretKey> {
-    Ok(match env::var("IROH_SECRET") {
-        Ok(key) => key.parse()?,
-        Err(_) => {
-            let key = SecretKey::generate(&mut rand::rng());
-            println!(
-                "Created new secret. Reuse with IROH_SECRET={}",
-                data_encoding::HEXLOWER.encode(&key.to_bytes())
-            );
-            key
-        }
-    })
 }
