@@ -91,6 +91,14 @@ pub fn media_pipe(capacity: usize) -> (PipeSink, PipeSource) {
 pub struct PipeSink(mpsc::Sender<MediaPacket>);
 
 impl PipeSink {
+    /// Sends a packet into the pipe asynchronously.
+    pub async fn send(&self, packet: MediaPacket) -> Result<()> {
+        self.0
+            .send(packet)
+            .await
+            .map_err(|_| anyhow::anyhow!("pipe closed"))
+    }
+
     /// Sends a packet into the pipe. Blocks until space is available.
     pub fn send_blocking(&self, packet: MediaPacket) -> Result<()> {
         self.0
@@ -131,16 +139,13 @@ mod tests {
 
     #[tokio::test]
     async fn media_pipe_roundtrip() {
-        let (mut sink, mut source) = media_pipe(4);
-        let frame = EncodedFrame {
+        let (sink, mut source) = media_pipe(4);
+        let pkt = MediaPacket {
             is_keyframe: true,
             timestamp: Duration::from_millis(42),
             payload: bytes::Bytes::from_static(b"hello").into(),
         };
-        // PipeSink::write uses blocking_send, which needs a blocking context.
-        tokio::task::spawn_blocking(move || sink.write(frame).unwrap())
-            .await
-            .unwrap();
+        sink.send(pkt).await.unwrap();
 
         let pkt = source.read().await.unwrap().unwrap();
         assert!(pkt.is_keyframe);

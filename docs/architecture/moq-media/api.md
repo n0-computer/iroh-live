@@ -48,4 +48,4 @@ Cleanup is drop-based. Dropping a `LocalBroadcast` tears down all encoder pipeli
 
 ## Relay support
 
-`RemoteBroadcast` can relay to a `LocalBroadcast` without transcoding. The encoded packets pass from `PacketSource` to `PacketSink` directly, bypassing the decode and encode stages. `VideoTrack` implements `VideoSource`, so a transcoding relay (decode then re-encode at a different resolution or bitrate) is also possible by feeding the decoded frames into a new encoder pipeline.
+`RemoteBroadcast` can relay to a `LocalBroadcast` without transcoding. The encoded packets pass from `PacketSource` to `PacketSink` directly, bypassing the decode and encode stages. `AdaptiveVideoTrack` implements `VideoSource`, so a transcoding relay (decode then re-encode at a different resolution or bitrate) is also possible by feeding the decoded frames into a new encoder pipeline.

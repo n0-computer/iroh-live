@@ -22,15 +22,16 @@
 | [Publish pipeline](architecture/publish.md) | `LocalBroadcast`, encoder pipelines, `VideoInput` variants, `SharedVideoSource` fan-out, and the `PacketSink` boundary. |
 | [Subscribe pipeline](architecture/subscribe.md) | `RemoteBroadcast`, catalog watching, decoder pipelines, `VideoTrack`/`AudioTrack`, and viewport-driven scaling. |
 | [Playout and sync](architecture/playout.md) | `PlayoutClock` PTS-to-wall-clock mapping, jitter-adaptive re-anchoring, `PlayoutBuffer` for DPB burst smoothing, and frame skip logic. |
+| [A/V sync basics](av-sync-basics.md) | End-to-end walkthrough of audio/video synchronization from capture to render. |
 | [Adaptive bitrate](architecture/adaptive.md) | Subscribe-side rendition switching driven by `NetworkSignals`, with bandwidth and loss thresholds, probe-based upgrades, and emergency downgrades. |
 | [Capture](architecture/capture.md) | The rusty-capture abstraction over PipeWire, V4L2, X11, ScreenCaptureKit, and AVFoundation backends. |
 | [Codecs](architecture/codecs.md) | `VideoEncoder`/`VideoDecoder` traits, software backends (openh264, rav1e/rav1d, Opus), and the `DynamicVideoDecoder` fallback chain. |
-| [Rendering](architecture/rendering.md) | Three rendering backends (wgpu NV12 shader, GLES2 for Pi, Vulkan DMA-BUF import) and how they integrate with egui and dioxus. |
+| [Rendering](architecture/rendering.md) | Three rendering backends (wgpu, GLES2, Android EGL) and how they integrate with egui and dioxus. |
 | [Audio](architecture/audio.md) | The cpal-based audio backend, device enumeration, hot-switching, and the driver thread model. |
 | [Echo cancellation](architecture/audio/aec.md) | Real-time AEC via sonora, the render/capture signal flow, and constraints on the audio callback. |
 | [Performance](architecture/performance.md) | Per-frame allocation budgets on the encode and decode paths, and the strategy for hot-path optimization. |
 | [P2P and relay](architecture/p2p-relay.md) | Direct P2P connectivity via iroh, relay fallback for NAT traversal, and the WebTransport bridge for browsers. |
-| [Developer tools](architecture/devtools.md) | Debug overlays, `MetricsCollector`, `frame_dump` diagnostic, and patchbay network simulation tests. |
+| [Developer tools](architecture/devtools.md) | Debug overlays, `Metric`/`Label` stats infrastructure, `frame_dump` diagnostic, and patchbay network simulation tests. |
 
 ### API design
 

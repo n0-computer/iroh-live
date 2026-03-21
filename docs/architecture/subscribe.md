@@ -80,7 +80,7 @@ rendering) or the underlying receiver.
 ## AudioTrack
 
 Follows the same pattern as `VideoTrack` but sends decoded audio samples
-to an `AudioSink` (typically backed by cpal, firewheel, or sonora). The
+to an `AudioSink` (typically backed by cpal and sonora). The
 audio decoder thread runs a 10ms tick loop, draining packets from the
 transport and pushing decoded samples to the sink.
 

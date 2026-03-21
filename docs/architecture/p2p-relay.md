@@ -42,8 +42,8 @@ The watch page auto-detects the relay URL from the page origin. Broadcast names 
 
 In development mode (`--dev`), the relay generates self-signed certificates. Browsers need `--ignore-certificate-errors` or the relay's certificate fingerprint (served at `/certificate.sha256`) for WebTransport to work with self-signed certs.
 
-In production, ACME certificate provisioning (via `instant-acme`) handles automatic TLS. The same certificate serves both HTTPS and QUIC. HTTP-01 challenges are served on the relay's HTTP listener, and certificates are stored in the relay's persistent data directory. A background task renews certificates 30 days before expiry.
+Production ACME certificate provisioning is planned but not yet implemented. Currently only self-signed certificates are supported. See `plans/relay-browser.md` for the ACME roadmap.
 
 ## Data directory
 
-`RelayServer` maintains a persistent data directory (`IROH_LIVE_RELAY_DATA` env var, or the platform default). The iroh secret key is stored here so the endpoint ID remains stable across restarts. TLS certificates and the ACME account key are also persisted.
+`RelayServer` maintains a persistent data directory (`IROH_LIVE_RELAY_DATA` env var, or the platform default). The iroh secret key is stored here so the endpoint ID remains stable across restarts. TLS certificates are also persisted when available.
