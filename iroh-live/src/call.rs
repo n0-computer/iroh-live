@@ -83,7 +83,9 @@ impl CallTicket {
 
     /// Serializes to an `iroh-live:` URI with broadcast name `call`.
     fn serialize(&self) -> String {
-        self.clone().into_live_ticket().serialize()
+        crate::ticket::LiveTicket::new(self.endpoint.clone(), CALL_BROADCAST_NAME)
+            .with_relay_urls(self.relay_urls.clone())
+            .serialize()
     }
 
     /// Deserializes from a string. Accepts `iroh-live:` URIs and the

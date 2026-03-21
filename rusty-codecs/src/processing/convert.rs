@@ -180,56 +180,6 @@ pub fn yuv420_to_bgra_from_slices(
     Ok(bgra)
 }
 
-/// Convert YUV 4:2:0 planar data back to RGBA format (BT.601).
-#[allow(dead_code, reason = "symmetric API; prefer yuv420_to_rgba_from_slices")]
-pub fn yuv420_to_rgba_data(yuv: &YuvData) -> Result<Vec<u8>> {
-    let planar = YuvPlanarImage {
-        y_plane: &yuv.y,
-        y_stride: yuv.y_stride,
-        u_plane: &yuv.u,
-        u_stride: yuv.u_stride,
-        v_plane: &yuv.v,
-        v_stride: yuv.v_stride,
-        width: yuv.width,
-        height: yuv.height,
-    };
-    let rgba_stride = yuv.width * 4;
-    let mut rgba = vec![0u8; (yuv.width * yuv.height * 4) as usize];
-    yuv420_to_rgba(
-        &planar,
-        &mut rgba,
-        rgba_stride,
-        YuvRange::Limited,
-        YuvStandardMatrix::Bt601,
-    )?;
-    Ok(rgba)
-}
-
-/// Convert YUV 4:2:0 planar data to BGRA format (BT.601).
-#[allow(dead_code, reason = "symmetric API; prefer yuv420_to_bgra_from_slices")]
-pub fn yuv420_to_bgra_data(yuv: &YuvData) -> Result<Vec<u8>> {
-    let planar = YuvPlanarImage {
-        y_plane: &yuv.y,
-        y_stride: yuv.y_stride,
-        u_plane: &yuv.u,
-        u_stride: yuv.u_stride,
-        v_plane: &yuv.v,
-        v_stride: yuv.v_stride,
-        width: yuv.width,
-        height: yuv.height,
-    };
-    let bgra_stride = yuv.width * 4;
-    let mut bgra = vec![0u8; (yuv.width * yuv.height * 4) as usize];
-    yuv420_to_bgra(
-        &planar,
-        &mut bgra,
-        bgra_stride,
-        YuvRange::Limited,
-        YuvStandardMatrix::Bt601,
-    )?;
-    Ok(bgra)
-}
-
 /// NV12 bi-planar data with Y and interleaved UV planes.
 #[derive(Debug)]
 #[allow(
