@@ -21,9 +21,9 @@ impl Decoders for DefaultDecoders {
 #[cfg(any_video_codec)]
 pub enum DynamicVideoDecoder {
     #[cfg(feature = "h264")]
-    H264(super::H264VideoDecoder),
+    H264(Box<super::H264VideoDecoder>),
     #[cfg(feature = "av1")]
-    Av1(super::av1::Av1VideoDecoder),
+    Av1(Box<super::av1::Av1VideoDecoder>),
     #[cfg(all(target_os = "linux", feature = "vaapi"))]
     VaapiH264(Box<super::vaapi::VaapiDecoder>),
     #[cfg(all(target_os = "linux", feature = "v4l2"))]
@@ -80,18 +80,18 @@ impl VideoDecoder for DynamicVideoDecoder {
                     }
                 }
                 tracing::info!("using software H.264 decoder");
-                Ok(Self::H264(super::H264VideoDecoder::new(
+                Ok(Self::H264(Box::new(super::H264VideoDecoder::new(
                     config,
                     playback_config,
-                )?))
+                )?)))
             }
             #[cfg(not(feature = "h264"))]
             VideoCodec::H264(_) => bail!("H.264 support requires the `h264` feature"),
             #[cfg(feature = "av1")]
-            VideoCodec::AV1(_) => Ok(Self::Av1(super::av1::Av1VideoDecoder::new(
+            VideoCodec::AV1(_) => Ok(Self::Av1(Box::new(super::av1::Av1VideoDecoder::new(
                 config,
                 playback_config,
-            )?)),
+            )?))),
             #[cfg(not(feature = "av1"))]
             VideoCodec::AV1(_) => bail!("AV1 support requires the `av1` feature"),
             other => bail!("Unsupported video codec: {other}"),

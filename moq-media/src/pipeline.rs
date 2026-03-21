@@ -159,7 +159,10 @@ impl VideoDecoderPipeline {
 
         let thread_name = format!("vdec-{name}");
         let decoder_name_for_handle = decoder_name;
-        let framerate = config.framerate.unwrap_or(30.0);
+        let framerate = config.framerate.unwrap_or_else(|| {
+            warn!("catalog has no framerate, falling back to 30 fps");
+            30.0
+        });
         let thread = spawn_thread(thread_name, {
             let shutdown = shutdown.clone();
             move || {
@@ -253,7 +256,10 @@ impl VideoEncoderPipeline {
                 let enc_config = encoder.config();
                 info!(src_format = ?format, "encode start");
                 debug!(dst_config = ?enc_config);
-                let framerate = enc_config.framerate.unwrap_or(30.0);
+                let framerate = enc_config.framerate.unwrap_or_else(|| {
+                    warn!("encoder config has no framerate, falling back to 30 fps");
+                    30.0
+                });
                 let interval = Duration::from_secs_f64(1. / framerate);
                 let mut sink_closed = false;
                 let mut last_frame_time = Instant::now();

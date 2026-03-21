@@ -88,8 +88,24 @@ impl OpusEncoder {
             }
         }
 
+        // Query the actual encoder lookahead for the OpusHead pre-skip field.
+        // This varies by application mode (VOIP=120+192=312, Audio=312, LowDelay=~120).
+        let mut lookahead: i32 = 0;
+        unsafe {
+            let ret = opus::opus_encoder_ctl_impl(
+                encoder,
+                opus::OPUS_GET_LOOKAHEAD_REQUEST,
+                varargs!(&mut lookahead),
+            );
+            if ret != OPUS_OK {
+                tracing::warn!("OPUS_GET_LOOKAHEAD failed ({ret}), using default 312");
+                lookahead = 312;
+            }
+        }
+        let pre_skip = lookahead.max(0) as u16;
+
         // Build OpusHead extradata (19 bytes, RFC 7845 §5.1)
-        let extradata = build_opus_head(channel_count, sample_rate);
+        let extradata = build_opus_head(channel_count, sample_rate, pre_skip);
 
         Ok(Self {
             encoder,
@@ -153,7 +169,9 @@ impl AudioEncoderFactory for OpusEncoder {
             sample_rate: SAMPLE_RATE,
             channel_count: config.channel_count,
             bitrate: Some(config.bitrate),
-            description: Some(build_opus_head(config.channel_count, SAMPLE_RATE).into()),
+            // Default pre-skip for OPUS_APPLICATION_VOIP at 48kHz.
+            // Actual value is queried from the encoder instance in new().
+            description: Some(build_opus_head(config.channel_count, SAMPLE_RATE, 312).into()),
         }
     }
 }
@@ -201,13 +219,17 @@ impl AudioEncoder for OpusEncoder {
     }
 }
 
-/// Build a 19-byte OpusHead structure per RFC 7845 §5.1.
-fn build_opus_head(channel_count: u32, sample_rate: u32) -> Vec<u8> {
+/// Builds a 19-byte OpusHead structure per RFC 7845 §5.1.
+///
+/// `pre_skip` is the encoder lookahead in samples at 48kHz, typically
+/// obtained from `OPUS_GET_LOOKAHEAD`. Decoders trim this many leading
+/// samples from the first packet.
+fn build_opus_head(channel_count: u32, sample_rate: u32, pre_skip: u16) -> Vec<u8> {
     let mut head = Vec::with_capacity(19);
     head.extend_from_slice(b"OpusHead"); // Magic signature
     head.push(1); // Version
     head.push(channel_count as u8); // Channel count
-    head.extend_from_slice(&0u16.to_le_bytes()); // Pre-skip
+    head.extend_from_slice(&pre_skip.to_le_bytes()); // Pre-skip
     head.extend_from_slice(&sample_rate.to_le_bytes()); // Input sample rate
     head.extend_from_slice(&0i16.to_le_bytes()); // Output gain
     head.push(0); // Channel mapping family (0 = mono/stereo)
@@ -298,6 +320,11 @@ mod tests {
         assert_eq!(&desc[..8], b"OpusHead");
         assert_eq!(desc[8], 1); // version
         assert_eq!(desc[9], 1); // mono
+        // Pre-skip should be non-zero (queried from OPUS_GET_LOOKAHEAD).
+        // VOIP mode at 48kHz: 120 (Fs/400) + 192 (delay_compensation) = 312.
+        let pre_skip = u16::from_le_bytes([desc[10], desc[11]]);
+        assert!(pre_skip > 0, "pre-skip must be non-zero, got {pre_skip}");
+        assert_eq!(pre_skip, 312, "expected VOIP lookahead");
     }
 
     #[test]

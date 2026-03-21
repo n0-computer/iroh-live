@@ -145,6 +145,10 @@ pub(crate) struct AdaptationTimers {
     pub last_probe: Option<Instant>,
     /// Baseline congestion_events counter at probe start.
     pub probe_congestion_baseline: Option<u64>,
+    /// When the last rendition switch attempt failed. Prevents rapid
+    /// retry thrashing (decoder allocation churn) when switches fail
+    /// persistently. Cleared on successful switch.
+    pub last_switch_failure: Option<Instant>,
 }
 
 /// Evaluates network signals and decides whether to switch renditions.
@@ -379,10 +383,13 @@ impl VideoSource for AdaptiveVideoTrack {
         "adaptive"
     }
 
+    /// Returns `[0, 0]` dimensions because the active rendition (and thus
+    /// resolution) can change at any time. Callers that need actual frame
+    /// dimensions should read them from each [`VideoFrame`] instead.
     fn format(&self) -> VideoFormat {
         VideoFormat {
             pixel_format: PixelFormat::Rgba,
-            dimensions: [0, 0], // dynamic, varies per frame
+            dimensions: [0, 0],
         }
     }
 
@@ -503,13 +510,20 @@ async fn adaptation_task(
 
         let decision = evaluate(current_idx, &ranked, &sigs, &mut timers, &config, now);
 
+        // Skip switch attempts during failure cooldown to prevent
+        // decoder allocation churn when switches fail persistently.
+        let in_failure_cooldown = timers
+            .last_switch_failure
+            .is_some_and(|t| now.duration_since(t) < config.post_downgrade_cooldown);
+
         match decision {
             Decision::Hold => {}
-            Decision::Downgrade(idx) => {
+            Decision::Downgrade(idx) if !in_failure_cooldown => {
                 let target_idx = idx.min(ranked.len() - 1);
                 match switch_rendition(&broadcast, &decode_config, &ranked[target_idx].name) {
                     Ok(new_track) => {
                         current_idx = target_idx;
+                        timers.last_switch_failure = None;
                         selected_rendition.set(ranked[target_idx].name.clone()).ok();
                         info!(
                             rendition = %ranked[target_idx].name,
@@ -521,29 +535,41 @@ async fn adaptation_task(
                             return;
                         }
                     }
-                    Err(err) => warn!("failed to switch rendition: {err:#}"),
+                    Err(err) => {
+                        warn!("failed to switch rendition: {err:#}");
+                        timers.last_switch_failure = Some(now);
+                    }
                 }
             }
+            // Emergency downgrades bypass failure cooldown — the whole
+            // point of emergency is immediate reaction to catastrophic loss.
             Decision::Emergency => {
                 let target_idx = ranked.len() - 1;
                 match switch_rendition(&broadcast, &decode_config, &ranked[target_idx].name) {
                     Ok(new_track) => {
                         current_idx = target_idx;
+                        timers.last_switch_failure = None;
                         selected_rendition.set(ranked[target_idx].name.clone()).ok();
                         info!(
                             rendition = %ranked[target_idx].name,
                             loss = sigs.loss_rate,
                             bw = sigs.available_bps,
-                            "downgraded rendition"
+                            "emergency downgrade"
                         );
                         if swap_tx.send(new_track).await.is_err() {
                             return;
                         }
                     }
-                    Err(err) => warn!("failed to switch rendition: {err:#}"),
+                    Err(err) => {
+                        warn!("failed emergency rendition switch: {err:#}");
+                        timers.last_switch_failure = Some(now);
+                    }
                 }
             }
-            Decision::StartProbe(probe_idx) => {
+            Decision::Downgrade(_) => {
+                // In failure cooldown — skip this downgrade attempt.
+            }
+            Decision::StartProbe(probe_idx) if !in_failure_cooldown => {
                 debug!(
                     rendition = %ranked[probe_idx].name,
                     bw = sigs.available_bps,
@@ -553,13 +579,18 @@ async fn adaptation_task(
                     Ok(probe_track) => {
                         let baseline = sigs.congestion_events;
                         timers.probe_congestion_baseline = Some(baseline);
+                        timers.last_switch_failure = None;
                         probe = Some((probe_track, now, baseline));
                     }
                     Err(err) => {
                         warn!("failed to start probe: {err:#}");
                         timers.last_probe = Some(now);
+                        timers.last_switch_failure = Some(now);
                     }
                 }
+            }
+            Decision::StartProbe(_) => {
+                // In failure cooldown — skip this probe attempt.
             }
         }
     }

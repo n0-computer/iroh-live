@@ -1,43 +1,68 @@
-/// Parse an Annex B bitstream into individual NAL units (without start codes).
-pub(crate) fn parse_annex_b(data: &[u8]) -> Vec<&[u8]> {
-    let mut nals = Vec::new();
-    let mut i = 0;
-    while i < data.len() {
-        // Find start code: 0x000001 or 0x00000001
-        let sc_len = if i + 3 <= data.len() && data[i] == 0 && data[i + 1] == 0 {
-            if data[i + 2] == 1 {
-                3
-            } else if i + 4 <= data.len() && data[i + 2] == 0 && data[i + 3] == 1 {
-                4
-            } else {
-                i += 1;
-                continue;
-            }
-        } else {
-            i += 1;
-            continue;
-        };
+/// Iterates over NAL units in an Annex B bitstream, yielding each NAL
+/// without its start code prefix.
+pub(crate) struct AnnexBNalIter<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
 
-        let nal_start = i + sc_len;
-        // Find next start code or end of data
-        let mut end = nal_start;
-        while end < data.len() {
-            if end + 3 <= data.len()
-                && data[end] == 0
-                && data[end + 1] == 0
-                && (data[end + 2] == 1
-                    || (end + 4 <= data.len() && data[end + 2] == 0 && data[end + 3] == 1))
-            {
-                break;
-            }
-            end += 1;
-        }
-        if end > nal_start {
-            nals.push(&data[nal_start..end]);
-        }
-        i = end;
+impl<'a> AnnexBNalIter<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, pos: 0 }
     }
-    nals
+}
+
+impl<'a> Iterator for AnnexBNalIter<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let data = self.data;
+        while self.pos < data.len() {
+            // Find start code: 0x000001 or 0x00000001
+            let i = self.pos;
+            let sc_len = if i + 3 <= data.len() && data[i] == 0 && data[i + 1] == 0 {
+                if data[i + 2] == 1 {
+                    3
+                } else if i + 4 <= data.len() && data[i + 2] == 0 && data[i + 3] == 1 {
+                    4
+                } else {
+                    self.pos += 1;
+                    continue;
+                }
+            } else {
+                self.pos += 1;
+                continue;
+            };
+
+            let nal_start = i + sc_len;
+            let mut end = nal_start;
+            while end < data.len() {
+                if end + 3 <= data.len()
+                    && data[end] == 0
+                    && data[end + 1] == 0
+                    && (data[end + 2] == 1
+                        || (end + 4 <= data.len() && data[end + 2] == 0 && data[end + 3] == 1))
+                {
+                    break;
+                }
+                end += 1;
+            }
+            self.pos = end;
+            if end > nal_start {
+                return Some(&data[nal_start..end]);
+            }
+        }
+        None
+    }
+}
+
+/// Returns an iterator over NAL units in an Annex B bitstream.
+pub(crate) fn annex_b_nals(data: &[u8]) -> AnnexBNalIter<'_> {
+    AnnexBNalIter::new(data)
+}
+
+/// Parses an Annex B bitstream into individual NAL units (without start codes).
+pub(crate) fn parse_annex_b(data: &[u8]) -> Vec<&[u8]> {
+    annex_b_nals(data).collect()
 }
 
 /// Extract SPS (NAL type 7) and PPS (NAL type 8) from a slice of NAL units.
@@ -152,12 +177,14 @@ pub(crate) fn length_prefixed_to_annex_b(data: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Convert Annex B start-code-separated NALs to length-prefixed (4-byte big-endian) format.
+/// Converts Annex B start-code-separated NALs to length-prefixed (4-byte big-endian) format.
+///
+/// Streams directly from the Annex B parser to the output buffer without
+/// collecting an intermediate `Vec` of NAL slices.
 pub(crate) fn annex_b_to_length_prefixed(data: &[u8]) -> Vec<u8> {
-    let nals = parse_annex_b(data);
-    let total: usize = nals.iter().map(|n| 4 + n.len()).sum();
-    let mut out = Vec::with_capacity(total);
-    for nal in &nals {
+    // Worst case: every byte in the input is payload (no start codes shrink it).
+    let mut out = Vec::with_capacity(data.len());
+    for nal in annex_b_nals(data) {
         out.extend_from_slice(&(nal.len() as u32).to_be_bytes());
         out.extend_from_slice(nal);
     }

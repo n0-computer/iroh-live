@@ -331,8 +331,16 @@ impl VideoSource for V4l2CameraCapturer {
     }
 
     fn format(&self) -> VideoFormat {
+        // PixelFormat only covers packed formats (Rgba/Bgra). For NV12 and
+        // I420 captures, the actual format is in VideoFrame::FrameData, but
+        // the VideoFormat reports Rgba as the "consumable" format. Callers
+        // that need the raw capture format should check the frame data enum.
+        let pixel_format = match self.capture_format {
+            CapturePixelFormat::Bgra => PixelFormat::Bgra,
+            _ => PixelFormat::Rgba,
+        };
         VideoFormat {
-            pixel_format: PixelFormat::Rgba,
+            pixel_format,
             dimensions: [self.width, self.height],
         }
     }

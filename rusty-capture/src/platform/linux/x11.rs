@@ -267,10 +267,20 @@ impl X11ScreenCapturer {
 
     fn stop_capture(&mut self) {
         if let Some(state) = self.state.take() {
-            shm::detach(&state.conn, state.seg).ok();
-            state.conn.flush().ok();
-            unsafe {
-                libc::shmdt(state.shm_addr);
+            if let Err(e) = shm::detach(&state.conn, state.seg) {
+                warn!(screen = self.screen_idx, "X11 SHM detach failed: {e}");
+            }
+            if let Err(e) = state.conn.flush() {
+                warn!(screen = self.screen_idx, "X11 connection flush failed: {e}");
+            }
+            // SAFETY: shm_addr was returned by shmat and is still valid.
+            let rc = unsafe { libc::shmdt(state.shm_addr) };
+            if rc != 0 {
+                warn!(
+                    screen = self.screen_idx,
+                    errno = std::io::Error::last_os_error().raw_os_error(),
+                    "shmdt failed"
+                );
             }
             debug!(screen = self.screen_idx, "X11 SHM capture stopped");
         }

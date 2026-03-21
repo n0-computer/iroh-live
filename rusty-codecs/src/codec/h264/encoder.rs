@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use anyhow::Result;
 use openh264::{
     OpenH264API,
@@ -212,6 +210,8 @@ impl VideoEncoder for H264Encoder {
     }
 
     fn push_frame(&mut self, frame: VideoFrame) -> Result<()> {
+        // Propagate the input frame's timestamp to the encoded output.
+        let input_timestamp = frame.timestamp;
         // Scale frame to encoder dimensions if needed.
         let frame = self.scale_if_needed(frame)?;
         let [w, h] = frame.dimensions;
@@ -260,12 +260,11 @@ impl VideoEncoder for H264Encoder {
         };
 
         let is_keyframe = matches!(frame_type, FrameType::IDR | FrameType::I);
-        let timestamp_us = (self.frame_count * 1_000_000) / self.framerate as u64;
         self.frame_count += 1;
 
         self.packet_buf.push_back(EncodedFrame {
             is_keyframe,
-            timestamp: Duration::from_micros(timestamp_us),
+            timestamp: input_timestamp,
             payload,
         });
 
@@ -331,11 +330,13 @@ mod tests {
     }
 
     #[test]
-    fn timestamps_increase() {
+    fn timestamps_propagate() {
+        use std::time::Duration;
         let mut enc = H264Encoder::with_preset(VideoPreset::P180).unwrap();
         let mut prev_ts = None;
-        for _ in 0..10 {
-            let frame = make_rgba_frame(320, 180, 64, 64, 64);
+        for i in 0..10 {
+            let mut frame = make_rgba_frame(320, 180, 64, 64, 64);
+            frame.timestamp = Duration::from_millis(i * 33); // ~30fps
             enc.push_frame(frame).unwrap();
             if let Some(pkt) = enc.pop_packet().unwrap() {
                 if let Some(prev) = prev_ts {
@@ -344,6 +345,11 @@ mod tests {
                 prev_ts = Some(pkt.timestamp);
             }
         }
+        // Verify timestamps match input, not synthetic counter.
+        assert!(
+            prev_ts.unwrap().as_millis() > 200,
+            "timestamps should come from input"
+        );
     }
 
     #[test]

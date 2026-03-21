@@ -1,3 +1,26 @@
+//! Playout clock and buffer for PTS-based frame scheduling.
+//!
+//! The playout system bridges the gap between network/decoder timing and
+//! display timing. It operates in three layers:
+//!
+//! 1. **[`PlayoutClock`]** maps media PTS (presentation timestamps) to
+//!    wall-clock time via a single anchor point. Handles jitter-adaptive
+//!    re-anchoring when frames arrive late.
+//!
+//! 2. **[`PlayoutBuffer`]** holds decoded frames until their playout time
+//!    arrives. Smooths bursty output from hardware decoders (DPB flushes)
+//!    and provides overflow protection.
+//!
+//! 3. **[`PlayoutMode`]** controls behavior: [`Live`](PlayoutMode::Live)
+//!    mode skips late frames for real-time A/V sync;
+//!    [`Reliable`](PlayoutMode::Reliable) mode delivers every frame in
+//!    order (for tests and recordings).
+//!
+//! Audio does not use the playout buffer — it is decoded and pushed
+//! directly to the audio sink. The `PlayoutClock` is shared between
+//! audio and video tracks but only video drives the anchor point.
+//! See ER4 in `REVIEW.md` for the A/V sync design and its limitations.
+
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
@@ -438,10 +461,14 @@ pub(crate) fn recv_timeout<T>(
             Ok(val) => return RecvResult::Value(val),
             Err(TryRecvError::Disconnected) => return RecvResult::Disconnected,
             Err(TryRecvError::Empty) => {
-                if Instant::now() >= deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
                     return RecvResult::Timeout;
                 }
-                std::thread::sleep(Duration::from_millis(1));
+                // Sleep for at most half the remaining time, capped at 2ms.
+                // This limits CPU usage while keeping worst-case latency
+                // bounded to ~2ms (acceptable for frame-level playout timing).
+                std::thread::sleep(remaining.min(Duration::from_millis(2)) / 2);
             }
         }
     }

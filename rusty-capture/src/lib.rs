@@ -288,7 +288,7 @@ impl CameraCapturer {
 
     /// Opens the default camera with [`CameraSelector::HighestResolution`].
     ///
-    /// Picks the last camera in the enumerated list, which on most systems is
+    /// Picks the first camera in the enumerated list, which on most systems is
     /// the primary built-in camera.
     pub fn new() -> anyhow::Result<Self> {
         Self::with_config(None, &CameraConfig::default())
@@ -341,7 +341,7 @@ impl CameraCapturer {
 
     /// Opens a camera with full configuration control.
     ///
-    /// When `info` is `None`, selects the last camera from the enumerated list.
+    /// When `info` is `None`, selects the first camera from the enumerated list.
     pub fn with_config(info: Option<&CameraInfo>, config: &CameraConfig) -> anyhow::Result<Self> {
         let owned;
         let info = match info {
@@ -472,10 +472,11 @@ impl ScreenCapturer {
     }
 
     /// Opens a specific window for capture by window ID.
-    // TODO: Don't panic.
+    ///
+    /// Currently only supported on macOS (ScreenCaptureKit).
     #[cfg(not(all(target_os = "macos", feature = "screen-apple")))]
     pub fn with_window(_window_id: u32, _config: &ScreenConfig) -> anyhow::Result<Self> {
-        unimplemented!("The platform doesn't support window captures")
+        anyhow::bail!("window capture is not supported on this platform")
     }
 }
 

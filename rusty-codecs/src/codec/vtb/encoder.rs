@@ -54,6 +54,9 @@ pub struct VtbEncoder {
     session: CFRetained<VTCompressionSession>,
     #[debug(skip)]
     callback_state: SharedPacketBuf,
+    /// Raw pointer from `Arc::into_raw`, passed as refcon to VTCompressionSession.
+    /// Reclaimed in Drop after session invalidation to avoid leaking the Arc.
+    callback_refcon: *mut std::ffi::c_void,
     width: u32,
     height: u32,
     framerate: u32,
@@ -173,6 +176,7 @@ impl VtbEncoder {
         Ok(Self {
             session,
             callback_state,
+            callback_refcon: refcon,
             width,
             height,
             framerate,
@@ -371,6 +375,17 @@ impl Drop for VtbEncoder {
         unsafe {
             let _ = self.session.complete_frames(kCMTimeInvalid);
             self.session.invalidate();
+        }
+        // Reclaim the Arc leaked via Arc::into_raw for the callback refcon.
+        // After invalidate(), no more callbacks will fire, so this is safe.
+        if !self.callback_refcon.is_null() {
+            // SAFETY: refcon was created by Arc::into_raw(callback_state.clone())
+            // and is no longer accessed after session invalidation.
+            unsafe {
+                drop(Arc::from_raw(
+                    self.callback_refcon as *const Mutex<CallbackState>,
+                ));
+            }
         }
     }
 }

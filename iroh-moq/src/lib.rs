@@ -514,11 +514,12 @@ impl Actor {
                 .publish_broadcast(name.clone(), producer.consume());
         }
         let consume = producer.consume();
-        self.publishing.insert(name.clone(), producer);
+        let closed_name = name.clone();
+        self.publishing.insert(name, producer);
         self.publishing_closed_futs.push(Box::pin(async move {
             let closed = consume.closed();
             closed.await;
-            name
+            closed_name
         }));
     }
 

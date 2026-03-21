@@ -975,28 +975,34 @@ impl SharedVideoSource {
             let running = running.clone();
             move || {
                 let frame_time = Duration::from_secs_f32(1. / 30.);
-                let start = Instant::now();
+                let mut start = Instant::now();
+                let mut frame_idx: u32 = 0;
                 // Track whether the source has ever been started. Some sources
                 // (e.g. PipeWire capturers) cannot survive a stop() before their
                 // first start() because stop() permanently kills the capture
                 // thread and start() is a no-op.
                 let mut ever_started = false;
-                for i in 0.. {
+                loop {
                     if shutdown.is_cancelled() {
                         break;
                     }
 
-                    loop {
-                        if running.load(Ordering::Relaxed) {
-                            break;
-                        }
+                    // Park until a subscriber arrives. Stop the source while
+                    // parked to release camera/screen resources.
+                    if !running.load(Ordering::Relaxed) {
                         if ever_started && let Err(err) = source.stop() {
                             warn!("Failed to stop video source: {err:#}");
                         }
-                        if shutdown.is_cancelled() {
-                            break;
+                        loop {
+                            if shutdown.is_cancelled() {
+                                break;
+                            }
+                            thread::park();
+                            if shutdown.is_cancelled() || running.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            // Spurious wakeup — park again.
                         }
-                        thread::park();
                         if shutdown.is_cancelled() {
                             break;
                         }
@@ -1004,6 +1010,10 @@ impl SharedVideoSource {
                             warn!("Failed to start video source: {err:#}");
                         }
                         ever_started = true;
+                        // Reset frame pacing so accumulated pause time doesn't
+                        // cause a burst of frames on resume.
+                        start = Instant::now();
+                        frame_idx = 0;
                     }
                     if shutdown.is_cancelled() {
                         break;
@@ -1016,11 +1026,12 @@ impl SharedVideoSource {
                         Ok(None) => {}
                         Err(_) => break,
                     }
-                    let expected = frame_time * i;
+                    let expected = frame_time * frame_idx;
                     let actual = start.elapsed();
                     if actual < expected {
                         thread::sleep(expected - actual);
                     }
+                    frame_idx = frame_idx.wrapping_add(1);
                 }
             }
         });
