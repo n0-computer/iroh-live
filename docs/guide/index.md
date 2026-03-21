@@ -1,14 +1,8 @@
 # Getting Started
 
-| Field | Value |
-|-------|-------|
-| Status | stable |
-| Applies to | iroh-live, moq-media, rusty-codecs, rusty-capture |
-| Platforms | Linux, macOS, Windows |
-
-## What is iroh-live
-
 iroh-live is a Rust library for real-time video and audio over [iroh](https://github.com/n0-computer/iroh), using Media over QUIC for transport. It handles the full pipeline from camera and screen capture through encoding, QUIC transport, decoding, and rendering. Connections are peer-to-peer by default, with an optional relay server for browser bridging. No media servers are required.
+
+This page walks through building the workspace, running your first publish and subscribe, and finding the right example for your use case.
 
 ## System dependencies
 

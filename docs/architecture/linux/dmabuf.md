@@ -6,7 +6,20 @@
 | Applies to | rusty-codecs |
 | Platforms | Linux (Intel confirmed, AMD planned) |
 
-## The problem
+On Linux, video frames decoded by VAAPI live as GPU surfaces backed by
+DMA-BUF file descriptors. Rendering them without copying to the CPU
+requires importing these DMA-BUFs into the display API (Vulkan via
+wgpu). This is the zero-copy path: decoded pixels stay in GPU memory
+from decode through display, avoiding the 2-4 ms per frame that a CPU
+round-trip would add at 1080p.
+
+The challenge is that GPU drivers encode surface memory layout in DRM
+format modifiers (tiling, compression), and the decoder's output
+modifier may not match what the display API can import. This page
+covers how `DmaBufImporter` handles the import, including the VPP
+retiler that bridges incompatible modifiers.
+
+## Modifier incompatibility
 
 VAAPI's H.264 decoder outputs NV12 surfaces with a tiling modifier chosen by the driver. On Intel Meteor Lake, this is `I915_FORMAT_MOD_Y_TILED` (0x100000000000002). Vulkan's ANV driver cannot import images with this modifier; it requires `I915_FORMAT_MOD_4_TILED_MTL_RC_CCS` (0x100000000000009) or linear. Without a fix, DMA-BUF import fails and the renderer falls back to CPU NV12 download and upload, adding 2-4 ms per frame.
 

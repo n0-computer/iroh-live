@@ -6,6 +6,13 @@
 | Applies to | rusty-codecs, moq-media-android |
 | Platforms | Android (API 26+) |
 
+Android provides hardware-accelerated video encoding and decoding
+through its MediaCodec framework. iroh-live uses the NDK C API
+directly from Rust, bypassing the Java layer for lower latency and
+tighter integration with the native media pipeline. This page covers
+the codec integration, the two decoder paths (ByteBuffer and
+ImageReader), and the zero-copy rendering chain via AHardwareBuffer.
+
 ## NDK API
 
 The encoder and decoder use the NDK `AMediaCodec` API via the `ndk` crate (0.9, api-level-26). The `android` feature flag gates all Android-specific code in rusty-codecs.

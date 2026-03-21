@@ -42,7 +42,6 @@ Each hardware backend is gated behind a feature flag and a target OS cfg:
 | VideoToolbox | `videotoolbox` | macOS | VTCompressionSession | objc2 bindings |
 | V4L2 | `v4l2` | Linux ARM | V4L2 M2M ioctls | raw libc ioctls |
 | MediaCodec | `android` | Android | NDK AMediaCodec | ndk crate (0.9) |
-| FFmpeg | `ffmpeg` | Linux | libavcodec | ffmpeg-next |
 
 See [linux/vaapi.md](linux/vaapi.md), [macos/videotoolbox.md](macos/videotoolbox.md), [pi/v4l2.md](pi/v4l2.md), and [android/mediacodec.md](android/mediacodec.md) for platform-specific details.
 

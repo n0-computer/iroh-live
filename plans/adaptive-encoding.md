@@ -1,8 +1,10 @@
 # Phase 3d: Adaptive Encoding (Future Work)
 
-## Status: Future Work
+## Status: Future Work (Step 1 partial)
 
 This phase depends on Phase 3a (rendition switching + NetworkSignals). It adds sender-side adaptation: encoders adjust bitrate/framerate in response to network conditions, complementing the subscriber-side rendition switching from Phase 3a.
+
+Step 1 is partially done: `set_bitrate()` exists on the `VideoEncoder` trait (default no-op) and is implemented for VAAPI, VideoToolbox, Android, and Opus. Not yet implemented for openh264 or rav1e. `force_keyframe()` is not on the trait yet.
 
 ## Goal
 

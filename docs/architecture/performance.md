@@ -5,6 +5,13 @@
 | Status | draft |
 | Applies to | moq-media, rusty-codecs |
 
+In a real-time media pipeline running at 30+ fps, per-frame allocations
+and lock contention translate directly into latency jitter and CPU
+overhead. This page documents the current allocation budget on both
+encode and decode paths, the optimizations already applied, and the
+highest-impact remaining work. See [plans/perf.md](../../plans/perf.md)
+for the tracking checklist.
+
 ## Per-frame allocation budget
 
 The decode path for a 1080p H.264 stream at steady state allocates twice per frame:

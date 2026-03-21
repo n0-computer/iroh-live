@@ -4,47 +4,47 @@
 
 | Page | Summary |
 |------|---------|
-| [Getting started](guide/index.md) | Build, run examples, system dependencies |
-| [Desktop rendering](guide/desktop.md) | wgpu, OpenGL, egui/dioxus integrations, framework options |
-| [Raspberry Pi](guide/raspberry-pi.md) | Pi Zero 2 W setup, cross-compile, V4L2 HW codec, e-paper |
-| [Android](guide/android.md) | Build with cargo-ndk, CameraX, MediaCodec, demo app |
-| [Browser relay](guide/browser-relay.md) | Relay server for WebTransport, built-in web viewer |
-| [Tickets](guide/tickets.md) | LiveTicket format, sharing, QR codes |
-| [Rooms](guide/rooms.md) | Multi-party rooms with gossip coordination (experimental) |
-| [MoQ protocol](guide/moq.md) | moq-lite wire protocol, broadcasts, tracks, groups |
+| [Getting started](guide/index.md) | System dependencies, building the workspace, and running the examples for the first time. |
+| [Desktop rendering](guide/desktop.md) | Choosing between wgpu, OpenGL, and egui or dioxus for desktop video rendering. |
+| [Raspberry Pi](guide/raspberry-pi.md) | Cross-compiling for Pi Zero 2 W, hardware H.264 via V4L2, and e-paper QR display. |
+| [Android](guide/android.md) | Building the JNI bridge with cargo-ndk, CameraX capture, and the demo app architecture. |
+| [Browser relay](guide/browser-relay.md) | Running the relay server that bridges iroh P2P publishers to WebTransport browser viewers. |
+| [Tickets](guide/tickets.md) | How LiveTicket URIs encode endpoint addresses, and how to share them via QR codes. |
+| [Rooms](guide/rooms.md) | Multi-party rooms built on iroh-gossip for automatic peer discovery and broadcast sharing. |
+| [MoQ protocol](guide/moq.md) | How moq-lite maps broadcasts, tracks, and groups onto QUIC streams. |
 
 ## Architecture
 
 | Page | Summary |
 |------|---------|
-| [Overview](architecture/index.md) | Crate layers, data flow, design principles |
-| [Transport](architecture/transport.md) | MoQ over QUIC, iroh-moq, sessions, groups |
-| [Publish pipeline](architecture/publish.md) | Encoder pipelines, VideoInput, SharedVideoSource |
-| [Subscribe pipeline](architecture/subscribe.md) | Decoder pipelines, catalog, VideoTrack |
-| [Playout and sync](architecture/playout.md) | PlayoutClock, jitter buffer, A/V sync, DPB bursts |
-| [Adaptive bitrate](architecture/adaptive.md) | Rendition switching, NetworkSignals, thresholds |
-| [Capture](architecture/capture.md) | rusty-capture, PipeWire, V4L2, ScreenCaptureKit |
-| [Codecs](architecture/codecs.md) | Codec traits, software and hardware backends |
-| [Rendering](architecture/rendering.md) | wgpu, GLES2, Android EGL, DMA-BUF zero-copy |
-| [Audio](architecture/audio.md) | Audio backend, cpal, device switching |
-| [Echo cancellation](architecture/audio/aec.md) | sonora AEC3, signal flow, real-time safety |
-| [Performance](architecture/performance.md) | Allocation budgets, hot-path optimization |
-| [P2P and relay](architecture/p2p-relay.md) | Direct connectivity, relay fallback, WebTransport bridge |
-| [Developer tools](architecture/devtools.md) | Debug overlays, metrics, network simulation |
+| [Overview](architecture/index.md) | Crate layering from iroh-live down to rusty-codecs, data flow through the publish and subscribe pipelines, and the design principles behind the split. |
+| [Transport](architecture/transport.md) | How iroh-moq wraps moq-lite sessions over iroh QUIC connections, and how `PacketSource`/`PacketSink` decouple media from transport. |
+| [Publish pipeline](architecture/publish.md) | `LocalBroadcast`, encoder pipelines, `VideoInput` variants, `SharedVideoSource` fan-out, and the `PacketSink` boundary. |
+| [Subscribe pipeline](architecture/subscribe.md) | `RemoteBroadcast`, catalog watching, decoder pipelines, `VideoTrack`/`AudioTrack`, and viewport-driven scaling. |
+| [Playout and sync](architecture/playout.md) | `PlayoutClock` PTS-to-wall-clock mapping, jitter-adaptive re-anchoring, `PlayoutBuffer` for DPB burst smoothing, and frame skip logic. |
+| [Adaptive bitrate](architecture/adaptive.md) | Subscribe-side rendition switching driven by `NetworkSignals`, with bandwidth and loss thresholds, probe-based upgrades, and emergency downgrades. |
+| [Capture](architecture/capture.md) | The rusty-capture abstraction over PipeWire, V4L2, X11, ScreenCaptureKit, and AVFoundation backends. |
+| [Codecs](architecture/codecs.md) | `VideoEncoder`/`VideoDecoder` traits, software backends (openh264, rav1e/rav1d, Opus), and the `DynamicVideoDecoder` fallback chain. |
+| [Rendering](architecture/rendering.md) | Three rendering backends (wgpu NV12 shader, GLES2 for Pi, Vulkan DMA-BUF import) and how they integrate with egui and dioxus. |
+| [Audio](architecture/audio.md) | The cpal-based audio backend, device enumeration, hot-switching, and the driver thread model. |
+| [Echo cancellation](architecture/audio/aec.md) | Real-time AEC via sonora, the render/capture signal flow, and constraints on the audio callback. |
+| [Performance](architecture/performance.md) | Per-frame allocation budgets on the encode and decode paths, and the strategy for hot-path optimization. |
+| [P2P and relay](architecture/p2p-relay.md) | Direct P2P connectivity via iroh, relay fallback for NAT traversal, and the WebTransport bridge for browsers. |
+| [Developer tools](architecture/devtools.md) | Debug overlays, `MetricsCollector`, `frame_dump` diagnostic, and patchbay network simulation tests. |
 
 ### API design
 
 | Page | Summary |
 |------|---------|
-| [iroh-live API](architecture/iroh-live/api.md) | Live, Call, Room: design rationale and reactivity model |
-| [moq-media API](architecture/moq-media/api.md) | LocalBroadcast, RemoteBroadcast, transport-agnostic design |
+| [iroh-live API](architecture/iroh-live/api.md) | The `Live` builder, `Call` for 1:1 sessions, `Room` for multi-party, and the reactive state model via `n0_watcher`. |
+| [moq-media API](architecture/moq-media/api.md) | `LocalBroadcast`/`RemoteBroadcast` publish-subscribe split, transport-agnostic design, and the codec trait hierarchy. |
 
 ### Platforms
 
 | Page | Summary |
 |------|---------|
-| [Linux VAAPI](architecture/linux/vaapi.md) | VAAPI encode/decode via cros-codecs |
-| [Linux DMA-BUF](architecture/linux/dmabuf.md) | Zero-copy rendering, VPP retiler, modifier negotiation |
-| [macOS VideoToolbox](architecture/macos/videotoolbox.md) | VideoToolbox H.264 encode/decode |
-| [Android MediaCodec](architecture/android/mediacodec.md) | NDK codec, HardwareBuffer, EGL zero-copy |
-| [Raspberry Pi V4L2](architecture/pi/v4l2.md) | V4L2 M2M, bcm2835-codec quirks, cross-SoC portability |
+| [Linux VAAPI](architecture/linux/vaapi.md) | Hardware H.264 encode and decode via cros-codecs, VA surface management, and the low-latency SPS VUI patch. |
+| [Linux DMA-BUF](architecture/linux/dmabuf.md) | Zero-copy frame import into Vulkan via DMA-BUF, the VPP retiler for modifier conversion, and how the pipeline avoids GPU-to-CPU readback. |
+| [macOS VideoToolbox](architecture/macos/videotoolbox.md) | VideoToolbox H.264 encode and decode, CVPixelBuffer handling, and current test status. |
+| [Android MediaCodec](architecture/android/mediacodec.md) | NDK MediaCodec for H.264, AHardwareBuffer zero-copy rendering, and the JNI boundary design. |
+| [Raspberry Pi V4L2](architecture/pi/v4l2.md) | V4L2 stateful M2M codec on bcm2835, quirks around DPB sizing and bitrate control, and cross-SoC portability notes. |

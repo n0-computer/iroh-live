@@ -220,13 +220,10 @@ Access chain: `MoqSession::conn()` → `&Connection<HandshakeCompleted>` (from `
 
 ## Plans and docs
 
-- `plans/PLANS.md` — master index of all plans with completion status
+- `docs/` — architecture docs and platform guides (see `docs/index.md`)
+- `plans/PLANS.md` — master index of open plans with checklists
 - `plans/future.md` — potential future features with use cases and effort estimates
 - `plans/platforms.md` — platform support matrix (codecs, capture, GPU rendering)
-- `plans/media-pipeline/00-main.md` — media pipeline master plan
-- `plans/api/0-overview.md` — API redesign overview
-- `plans/capture-pipeline.md` — capture/encoding pipeline API review and design alternatives
-- `plans/platform/pi.md` — Raspberry Pi technical notes (camera, V4L2, e-paper, cross-compilation)
 - `REVIEW.md` — crate review findings and action items
 
 ## Platform testing

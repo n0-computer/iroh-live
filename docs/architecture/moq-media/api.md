@@ -25,7 +25,7 @@ moq-media has no dependency on iroh. It defines the media pipeline (capture, enc
 
 `VideoTrack` represents a decoded video stream. It runs a decoder on a dedicated OS thread and outputs `VideoFrame`s through an mpsc channel. `AudioTrack` does the same for audio, outputting decoded PCM samples to an `AudioSink`.
 
-`MediaTracks` is a convenience struct combining a `RemoteBroadcast` with an optional `VideoTrack` and optional `AudioTrack`. It provides `video_ready().await` and `audio_ready().await` for waiting until tracks become available from the catalog.
+`MediaTracks` is a convenience struct combining a `RemoteBroadcast` with an optional `VideoTrack` and optional `AudioTrack`. The `video_ready().await` and `audio_ready().await` methods live on `RemoteBroadcast` itself, waiting until the catalog announces the corresponding track and a decoder is started.
 
 `CatalogSnapshot` captures a point-in-time view of the catalog with helpers for rendition selection. `AdaptiveVideoTrack` wraps a `VideoTrack` and automatically switches renditions based on `NetworkSignals` (bandwidth, RTT, loss rate).
 

@@ -1,21 +1,20 @@
 # Documentation improvements
 
-- [ ] `docs/guide/index.md`: the "What is iroh-live" section works as an intro but reads as a separate section rather than a natural opening. Consider inlining the first paragraph as the page's intro text (before any heading), then starting the first heading with "System dependencies."
-- [x] `docs/guide/desktop.md`: "Future possibilities" reworded to practical "Other frameworks" section, no longer speculative filler. CPU fallback described as fallback/legacy, not as easy framework integration.
-- [ ] `docs/architecture/codecs.md`: the "Software codecs" section describes three codecs in a single dense paragraph. Breaking each codec into its own subsection (or at minimum a table) would improve scannability.
-- [ ] `docs/architecture/codecs.md`: "Image processing" and "Frame types" are tacked on at the end without connection to the codec traits above. Consider whether these belong on this page or in a separate page.
-- [x] `docs/architecture/performance.md`: removed internal tracking IDs (PT1, PF2).
-- [x] `docs/architecture/devtools.md`: added `frame_dump` usage commands and `codec-test` usage commands.
-- [ ] `docs/architecture/rendering.md`: the "Industry comparison" table duplicates content from `docs/architecture/linux/dmabuf.md`. Consider keeping the detailed comparison on the dmabuf page and referencing it from rendering.md.
-- [ ] `docs/architecture/adaptive.md`: "Current state" at the top is useful but its position before the intro paragraph makes the page structure unusual compared to other architecture pages.
-- [ ] `docs/guide/moq.md`: "Further reading" lists external links without explaining when a reader should follow each one.
-- [ ] `docs/architecture/audio.md`: the three-category thread model would benefit from a diagram or table showing which thread category owns which resources.
-- [x] `docs/architecture/audio/aec.md`: AEC mutex description fixed by review agent.
-- [x] `docs/architecture/macos/videotoolbox.md`: status changed to "untested" by review agent.
-- [ ] `docs/guide/android.md`: the "Architecture" section shows a directory tree but does not explain the data flow between components.
-- [ ] Cross-reference: `docs/architecture/publish.md` should link to `codecs.md`.
-- [x] `docs/index.md`: removed Modified date column.
-- [x] `docs/guide/desktop.md`: CPU fallback described as fallback for headless/legacy, not advertised as easy framework integration.
-- [x] `docs/guide/desktop.md` and `docs/architecture/index.md`: macOS represented with VideoToolbox, ScreenCaptureKit/AVFoundation, Metal import.
-- [x] `docs/architecture/index.md`: mentions Windows as planned but not yet implemented.
-- [x] `docs/architecture/index.md`: rewritten to be concise and practical, no longer sounds like making things big.
+- [ ] `docs/guide/index.md`: inline the "What is iroh-live" paragraph as
+  the page intro before any heading
+- [ ] `docs/architecture/codecs.md`: break "Software codecs" into
+  per-codec subsections or a table for scannability
+- [ ] `docs/architecture/codecs.md`: move "Image processing" and "Frame
+  types" to their own page or connect to codec traits
+- [ ] `docs/architecture/rendering.md`: deduplicate "Industry comparison"
+  table vs `docs/architecture/linux/dmabuf.md`
+- [ ] `docs/architecture/adaptive.md`: move "Current state" below the
+  intro paragraph to match other architecture pages
+- [ ] `docs/guide/moq.md`: add one-line explanations for each "Further
+  reading" link
+- [ ] `docs/architecture/audio.md`: add table or diagram showing which
+  thread category owns which resources
+- [ ] `docs/guide/android.md`: add data flow explanation to the
+  "Architecture" section (currently just a directory tree)
+- [ ] `docs/architecture/publish.md`: add cross-reference link to
+  `codecs.md`
