@@ -5,6 +5,13 @@
 | Status | draft |
 | Applies to | moq-media |
 
+Network conditions change during a live session — bandwidth drops, loss
+spikes, congestion clears. When the publisher offers multiple quality
+levels (renditions), the subscriber can switch between them to maintain
+smooth playback without manual intervention. This page covers the
+selection algorithm, the network signals that drive it, and the
+switching mechanism between decoder pipelines.
+
 ## Current state
 
 The selection algorithm and switching infrastructure are implemented and

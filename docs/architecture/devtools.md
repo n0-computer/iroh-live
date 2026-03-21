@@ -5,6 +5,13 @@
 | Status | draft |
 | Applies to | moq-media-egui, iroh-live, moq-media |
 
+Debugging a real-time media pipeline requires visibility into frame
+timing, network conditions, codec behavior, and A/V sync — all while
+the system runs at 30+ fps. iroh-live includes diagnostic tools that
+surface this information: a per-tile debug overlay for live sessions,
+a metrics collection infrastructure, a frame dump utility for offline
+analysis, and network simulation via patchbay for controlled testing.
+
 ## Debug overlay
 
 The `split` example includes a collapsible debug overlay rendered per video tile. When enabled, it shows a stats bar with RTT, downstream/upstream bandwidth, and frame delay as large monospace numbers. A colored dot indicates connection quality: green when RTT is under 50 ms and loss under 1%, yellow under 150 ms/5%, red otherwise.

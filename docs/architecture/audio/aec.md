@@ -5,6 +5,12 @@
 | Status | draft |
 | Applies to | moq-media |
 
+Acoustic echo cancellation is a core component of the audio pipeline
+for bidirectional communication. It runs inline in the cpal audio
+callback, processing every capture frame in real time. This page covers
+the echo model, the signal flow between render and capture paths, and
+the real-time safety constraints on the callback.
+
 ## Problem
 
 In a video call, the speaker plays remote audio that the local microphone picks up. Without echo cancellation, the remote participant hears their own voice delayed by the round-trip time. AEC removes this echo by subtracting an estimate of the speaker output from the microphone input.

@@ -17,8 +17,11 @@ The trait is deliberately synchronous and polling-based:
 
 ```rust
 pub trait VideoSource: Send + 'static {
-    fn pop_frame(&mut self) -> Result<Option<VideoFrame>>;
+    fn name(&self) -> &str;
     fn format(&self) -> VideoFormat;
+    fn pop_frame(&mut self) -> Result<Option<VideoFrame>>;
+    fn start(&mut self) -> Result<()>;
+    fn stop(&mut self) -> Result<()>;
 }
 ```
 
@@ -84,8 +87,10 @@ Feature flag: `camera-apple`.
 ### Cross-platform fallbacks
 
 `xcap` (screen) and `nokhwa` (camera) provide CPU-only capture on
-platforms where native backends are unavailable. These are the default
-feature flags for the `screen` and `camera` high-level capabilities.
+platforms where native backends are unavailable. These are optional
+feature flags, not enabled by default. The default `screen` and
+`camera` features activate the native backends (PipeWire/X11/V4L2 on
+Linux, ScreenCaptureKit/AVFoundation on macOS).
 
 ## Runtime backend selection
 

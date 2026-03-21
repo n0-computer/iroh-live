@@ -6,7 +6,7 @@
 | Applies to | iroh-live, moq-media, moq-media-android |
 | Platforms | Android (arm64-v8a, minSdk 26) |
 
-The `demos/android` directory contains a full Kotlin/Rust Android app with bidirectional video and audio calling. It captures from the device camera with CameraX, encodes with MediaCodec hardware H.264, sends and receives through iroh-live sessions, and renders incoming video with zero-copy EGL `AHardwareBuffer` import.
+The `demos/android` directory contains a full Kotlin/Rust Android app with bidirectional video and audio calling. It captures from the device camera with Camera2, encodes with MediaCodec hardware H.264, sends and receives through iroh-live sessions, and renders incoming video with zero-copy EGL `AHardwareBuffer` import.
 
 ## Prerequisites
 
