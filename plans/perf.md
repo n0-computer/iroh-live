@@ -10,7 +10,7 @@ for the allocation budget and completed optimizations.
 - [x] **PF2**: H.264 encoder I420 planes `.to_vec()` — zero-copy via `YuvSlices` borrow when layout matches
 - [ ] **PF6**: NAL Annex B / length-prefixed conversion allocates Vec — consider in-place or arena (`h264/annexb.rs`)
 - [ ] **PF9**: AV1 encoder RGBA fallback for GPU frames — try NV12 direct access first (`av1/encoder.rs:225`)
-- [ ] **PF10**: FFmpeg encoder `sws_frame.clone()` per frame — needs double-buffer restructuring (`ffmpeg/encoder.rs:422`)
+- [x] **PF10**: FFmpeg encoder — n/a, ffmpeg encoder removed from codebase
 
 ### Lock contention
 - [x] **PL1**: PlayoutClock mutex on every frame — non-issue: clock is only accessed from the decode thread (single-threaded), zero contention in practice (see CC2 in REVIEW.md)
