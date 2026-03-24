@@ -1162,7 +1162,14 @@ impl VideoEncoderFactory for VaapiEncoder {
     fn config_for(config: &VideoEncoderConfig) -> VideoConfig {
         let bitrate = config.bitrate_or_default(Self::H264_BPP);
         let inline = config.nal_format == NalFormat::AnnexB;
-        crate::codec::h264::h264_video_config(config.width, config.height, bitrate, config.framerate, inline, None)
+        crate::codec::h264::h264_video_config(
+            config.width,
+            config.height,
+            bitrate,
+            config.framerate,
+            inline,
+            None,
+        )
     }
 }
 
@@ -1174,7 +1181,11 @@ impl VideoEncoder for VaapiEncoder {
     fn config(&self) -> VideoConfig {
         let inline = self.nal_format == NalFormat::AnnexB;
         crate::codec::h264::h264_video_config(
-            self.width, self.height, self.bitrate, self.framerate, inline,
+            self.width,
+            self.height,
+            self.bitrate,
+            self.framerate,
+            inline,
             self.avcc.clone().map(Into::into),
         )
     }

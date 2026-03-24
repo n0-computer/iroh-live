@@ -322,6 +322,8 @@ fn alloc_va_dma_frame(
 /// VAAPI hardware-accelerated H.264 decoder for Linux.
 #[derive(derive_more::Debug)]
 pub struct VaapiDecoder {
+    config: VideoConfig,
+    playback_config: DecodeConfig,
     #[debug(skip)]
     decoder: VaapiH264Decoder,
     #[debug(skip)]
@@ -391,7 +393,13 @@ impl VaapiDecoder {
                         // without starving the decoder's surface pool. This is the
                         // same approach mpv uses (--hwdec-extra-frames).
                         let mut info = stream_info.clone();
-                        let extra = 8;
+                        // Live playout, renderer handoff, and post-disturbance
+                        // burst flushes can keep more surfaces in flight than
+                        // the codec minimum + a small handful of extras. A
+                        // larger cushion avoids dropping packets on transient
+                        // backlog (`NotEnoughOutputBuffers`), which otherwise
+                        // cascades into parser errors after recovery.
+                        let extra = 16;
                         info.min_num_frames += extra;
                         tracing::info!(
                             "VAAPI decoder: format changed to {}x{} (coded {}x{}), pool {} (+{} extra)",
@@ -415,7 +423,7 @@ impl VideoDecoder for VaapiDecoder {
         "h264-vaapi"
     }
 
-    fn new(config: &VideoConfig, _playback_config: &DecodeConfig) -> Result<Self>
+    fn new(config: &VideoConfig, playback_config: &DecodeConfig) -> Result<Self>
     where
         Self: Sized,
     {
@@ -479,6 +487,8 @@ impl VideoDecoder for VaapiDecoder {
         })));
 
         let mut this = Self {
+            config: config.clone(),
+            playback_config: playback_config.clone(),
             decoder,
             framepool,
             display,
@@ -549,6 +559,7 @@ impl VideoDecoder for VaapiDecoder {
         self.timestamp_queue.push_back(packet.timestamp);
         self.timestamp_counter += 1;
         let ts = self.timestamp_counter;
+        let timestamp_queue_len = self.timestamp_queue.len();
 
         let pool = self.framepool.clone();
         let mut alloc_count = 0u32;
@@ -594,15 +605,25 @@ impl VideoDecoder for VaapiDecoder {
                     not_enough_bufs_count += 1;
                     self.drain_events();
                     if not_enough_bufs_count > 30 {
-                        throttled_tracing::warn_every!(
-                            std::time::Duration::from_secs(1),
-                            pending = self.pending_frames.len(),
-                            "vaapi: NotEnoughOutputBuffers after 30 retries, dropping packet"
+                        // Treat a persistent surface starvation as fatal for
+                        // this decoder instance instead of silently dropping the
+                        // packet. A silent drop leaves the H.264 parser and our
+                        // timestamp FIFO out of sync, which in turn causes
+                        // permanent A/V timing corruption after recovery.
+                        if self.timestamp_queue.len() == timestamp_queue_len {
+                            let _ = self.timestamp_queue.pop_back();
+                        }
+                        bail!(
+                            "VAAPI decoder ran out of output buffers: pending={} retries={}",
+                            self.pending_frames.len(),
+                            not_enough_bufs_count
                         );
-                        break;
                     }
                 }
                 Err(e) => {
+                    if self.timestamp_queue.len() == timestamp_queue_len {
+                        let _ = self.timestamp_queue.pop_back();
+                    }
                     bail!("VAAPI decode error: {e:?}");
                 }
             }
@@ -631,6 +652,14 @@ impl VideoDecoder for VaapiDecoder {
 
     fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {
         Ok(self.pending_frames.pop_front())
+    }
+
+    fn reset(&mut self) -> Result<()> {
+        let config = self.config.clone();
+        let playback_config = self.playback_config.clone();
+        tracing::info!("resetting VAAPI decoder after fatal decode error");
+        *self = Self::new(&config, &playback_config)?;
+        Ok(())
     }
 }
 
@@ -767,6 +796,180 @@ mod tests {
         assert!(
             dmabuf_exports >= 20,
             "expected at least 20 DMA-BUF exports, got {dmabuf_exports}"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires VAAPI hardware"]
+    fn vaapi_recovers_after_packet_gap_with_reset() {
+        use crate::{
+            codec::h264::encoder::H264Encoder,
+            format::{VideoEncoderConfig, VideoPreset},
+            traits::{VideoEncoder, VideoEncoderFactory},
+        };
+
+        let mut encoder = H264Encoder::with_config(
+            VideoEncoderConfig::from_preset(VideoPreset::P180).keyframe_interval(10),
+        )
+        .unwrap();
+        let config = encoder.config();
+
+        let decode_config = DecodeConfig::default();
+        let mut decoder = VaapiDecoder::new(&config, &decode_config).unwrap();
+
+        let w = 320u32;
+        let h = 180u32;
+        let rgba = vec![128u8; (w * h * 4) as usize];
+
+        let mut packets = Vec::new();
+        for i in 0..40u64 {
+            let frame =
+                VideoFrame::new_rgba(rgba.clone().into(), w, h, Duration::from_millis(i * 33));
+            encoder.push_frame(frame).unwrap();
+            while let Some(pkt) = encoder.pop_packet().unwrap() {
+                packets.push(pkt);
+            }
+        }
+
+        let mut saw_decode_error = false;
+        let mut waiting_for_keyframe = false;
+        let mut decoded_after_reset = 0usize;
+
+        for (idx, pkt) in packets.into_iter().enumerate() {
+            // Drop a single inter frame to simulate the packet loss / Hang skip
+            // disturbance seen in patchbay runs.
+            if idx == 5 {
+                continue;
+            }
+
+            let media_pkt = MediaPacket {
+                timestamp: pkt.timestamp,
+                payload: pkt.payload.into(),
+                is_keyframe: pkt.is_keyframe,
+            };
+
+            if waiting_for_keyframe {
+                if !media_pkt.is_keyframe {
+                    continue;
+                }
+                waiting_for_keyframe = false;
+            }
+
+            match decoder.push_packet(media_pkt) {
+                Ok(()) => {
+                    while let Ok(Some(frame)) = decoder.pop_frame() {
+                        if saw_decode_error {
+                            decoded_after_reset += 1;
+                        }
+                        drop(frame);
+                    }
+                }
+                Err(_) => {
+                    saw_decode_error = true;
+                    decoder.reset().unwrap();
+                    waiting_for_keyframe = true;
+                }
+            }
+        }
+
+        assert!(
+            saw_decode_error,
+            "expected decoder to notice the injected packet gap"
+        );
+        assert!(
+            decoded_after_reset > 0,
+            "decoder produced no frames after reset + next keyframe"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires VAAPI hardware"]
+    fn vaapi_surface_exhaustion_returns_error_and_recovers_after_reset() {
+        use crate::{
+            codec::vaapi::encoder::VaapiEncoder,
+            format::VideoPreset,
+            traits::{VideoEncoder, VideoEncoderFactory},
+        };
+
+        let mut encoder = VaapiEncoder::with_preset(VideoPreset::P360).unwrap();
+        let config = encoder.config();
+        let mut decoder = VaapiDecoder::new(&config, &DecodeConfig::default()).unwrap();
+
+        let w = 640u32;
+        let h = 360u32;
+        let rgba = vec![64u8; (w * h * 4) as usize];
+        let frame = VideoFrame::new_rgba(rgba.into(), w, h, Duration::ZERO);
+
+        let mut packets = Vec::new();
+        for _ in 0..90 {
+            encoder.push_frame(frame.clone()).unwrap();
+            while let Some(pkt) = encoder.pop_packet().unwrap() {
+                packets.push(MediaPacket {
+                    timestamp: pkt.timestamp,
+                    payload: pkt.payload.into(),
+                    is_keyframe: pkt.is_keyframe,
+                });
+            }
+        }
+
+        let mut held_frames = Vec::new();
+        let mut recovery_packets = Vec::new();
+        let mut exhaustion_seen = false;
+        let mut collect_recovery = false;
+
+        for packet in packets {
+            if exhaustion_seen {
+                if packet.is_keyframe {
+                    collect_recovery = true;
+                }
+                if collect_recovery {
+                    recovery_packets.push(packet);
+                }
+                if recovery_packets.len() >= 20 {
+                    break;
+                }
+                continue;
+            }
+
+            match decoder.push_packet(packet) {
+                Ok(()) => {
+                    // Keep decoded frames alive on purpose so the decoder must
+                    // surface a real output-buffer exhaustion instead of
+                    // silently dropping access units and desynchronizing PTS.
+                    while let Ok(Some(frame)) = decoder.pop_frame() {
+                        held_frames.push(frame);
+                    }
+                }
+                Err(err) => {
+                    let text = format!("{err:#}");
+                    assert!(
+                        text.contains("out of output buffers"),
+                        "unexpected decoder error: {text}"
+                    );
+                    exhaustion_seen = true;
+                }
+            }
+        }
+
+        assert!(
+            exhaustion_seen,
+            "expected VAAPI decoder to report output-buffer exhaustion"
+        );
+
+        drop(held_frames);
+        decoder.reset().unwrap();
+
+        let mut decoded_after_reset = 0usize;
+        for packet in recovery_packets {
+            decoder.push_packet(packet).unwrap();
+            while let Ok(Some(_)) = decoder.pop_frame() {
+                decoded_after_reset += 1;
+            }
+        }
+
+        assert!(
+            decoded_after_reset >= 3,
+            "expected decoder to recover after reset, got {decoded_after_reset} frames"
         );
     }
 
