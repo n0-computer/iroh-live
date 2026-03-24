@@ -20,6 +20,8 @@ use moq_lite::{BroadcastConsumer, Track};
 use n0_error::{Result, StackResultExt, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
+#[cfg(any_video_codec)]
+use tokio::sync::watch;
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{Instrument, debug, warn};
 
@@ -27,8 +29,6 @@ use tracing::{Instrument, debug, warn};
 use crate::adaptive::{AdaptiveConfig, AdaptiveVideoTrack};
 #[cfg(any_video_codec)]
 use crate::net::NetworkSignals;
-#[cfg(any_video_codec)]
-use tokio::sync::watch;
 use crate::{
     format::{DecodeConfig, PlaybackConfig, Quality, VideoFrame},
     pipeline::{
