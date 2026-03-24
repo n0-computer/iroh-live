@@ -979,7 +979,13 @@ pub struct VideoEncoderConfig {
     pub keyframe_interval: Option<u32>,
     /// H.264 NAL framing format. Ignored by non-H.264 codecs.
     #[cfg_attr(
-        not(any(feature = "h264", feature = "vaapi", feature = "v4l2", feature = "videotoolbox", feature = "android")),
+        not(any(
+            feature = "h264",
+            feature = "vaapi",
+            feature = "v4l2",
+            feature = "videotoolbox",
+            feature = "android"
+        )),
         allow(dead_code)
     )]
     pub(crate) nal_format: NalFormat,
