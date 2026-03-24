@@ -368,12 +368,7 @@ fn start_direct_impl(cam_w: u32, cam_h: u32) -> Result<jlong> {
         inner: Arc::clone(&camera_source),
     };
     let shutdown = CancellationToken::new();
-    let video = VideoTrack::from_video_source(
-        "direct".to_string(),
-        shutdown,
-        shared_source,
-        DecodeConfig::default(),
-    );
+    let video = VideoTrack::from_video_source("direct".to_string(), shutdown, shared_source);
     let handle = SessionHandle {
         live: None,
         session: None,
@@ -984,13 +979,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getStatusLine<'a>(
     let playout_info = guard
         .remote
         .as_ref()
-        .map(|b| {
-            format!(
-                "buf:{}ms jit:{:.0}ms",
-                b.clock().buffer().as_millis(),
-                b.clock().jitter().as_secs_f64() * 1000.0,
-            )
-        })
+        .map(|b| format!("lat:{}ms", b.clock().latency().as_millis(),))
         .unwrap_or_default();
 
     let line = format!(

@@ -388,11 +388,15 @@ fn detail_entries<'a>(cat: StatCategory, stats: &'a SubscribeStats) -> Vec<Detai
             push_metric(&mut entries, &stats.render.decode_ms);
         }
         StatCategory::Time => {
-            push_metric(&mut entries, &stats.timing.jitter_ms);
+            push_label(&mut entries, "sync", &stats.timing.sync_state);
             push_metric(&mut entries, &stats.timing.delay_ms);
-            push_metric(&mut entries, &stats.timing.drift_ms);
+            push_metric(&mut entries, &stats.timing.audio_buffer_ms);
+            push_metric(&mut entries, &stats.timing.audio_live_lag_ms);
+            push_metric(&mut entries, &stats.timing.video_live_lag_ms);
+            push_metric(&mut entries, &stats.timing.av_delta_ms);
             push_metric(&mut entries, &stats.timing.buf_frames);
             push_metric(&mut entries, &stats.timing.frames_skipped);
+            push_metric(&mut entries, &stats.timing.late_frames_dropped);
             push_metric(&mut entries, &stats.timing.freezes);
         }
     }
@@ -457,8 +461,10 @@ fn format_section_summary_typed(cat: StatCategory, stats: &SubscribeStats) -> St
             push_metric_summary(&mut parts, &stats.render.decode_ms);
         }
         StatCategory::Time => {
-            push_metric_summary(&mut parts, &stats.timing.jitter_ms);
+            push_label_summary(&mut parts, &stats.timing.sync_state);
             push_metric_summary(&mut parts, &stats.timing.delay_ms);
+            push_metric_summary(&mut parts, &stats.timing.audio_live_lag_ms);
+            push_metric_summary(&mut parts, &stats.timing.av_delta_ms);
         }
     }
     parts.join("")
@@ -992,7 +998,14 @@ fn paint_timeline_panel(
             }
         }
         let g = painter.layout_no_wrap(
-            format!("Delay {:.0}ms", timing.delay_ms.current()),
+            format!(
+                "Delay {:.0}ms  AudioBuf {:.0}ms  AudioLag {:.0}ms  VideoLag {:.0}ms  {}",
+                timing.delay_ms.current(),
+                timing.audio_buffer_ms.current(),
+                timing.audio_live_lag_ms.current(),
+                timing.video_live_lag_ms.current(),
+                timing.sync_state.get()
+            ),
             font.clone(),
             if timing.delay_ms.current() < 100.0 {
                 COLOR_GREEN

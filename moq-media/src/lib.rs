@@ -8,6 +8,7 @@
 
 pub mod adaptive;
 pub mod audio_backend;
+pub mod frame_channel;
 pub mod net;
 pub mod pipeline;
 pub mod playout;

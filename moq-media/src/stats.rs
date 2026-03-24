@@ -269,28 +269,77 @@ impl Default for RenderStats {
 /// Timing/playout stats. Written by the decode/playout pipeline.
 #[derive(Clone, Debug)]
 pub struct TimingStats {
-    pub jitter_ms: Metric,
     pub delay_ms: Metric,
-    pub drift_ms: Metric,
+    pub audio_buffer_ms: Metric,
+    pub audio_live_lag_ms: Metric,
+    pub video_live_lag_ms: Metric,
     pub buf_frames: Metric,
     pub frames_skipped: Metric,
+    pub late_frames_dropped: Metric,
     pub freezes: Metric,
+    pub av_delta_ms: Metric,
+    pub sync_state: Label,
 }
 
 impl Default for TimingStats {
     fn default() -> Self {
         Self {
-            jitter_ms: Metric::new(
-                MetricMeta::smooth("Jitter", "ms").with_thresholds(10.0, 30.0, false),
-            ),
             delay_ms: Metric::new(
                 MetricMeta::responsive("Delay", "ms").with_thresholds(100.0, 300.0, false),
             ),
-            drift_ms: Metric::new(MetricMeta::smooth("Drift", "ms")),
+            audio_buffer_ms: Metric::new(
+                MetricMeta::responsive("AudioBuf", "ms").with_thresholds(80.0, 200.0, false),
+            ),
+            audio_live_lag_ms: Metric::new(
+                MetricMeta::responsive("AudioLag", "ms").with_thresholds(120.0, 300.0, false),
+            ),
+            video_live_lag_ms: Metric::new(
+                MetricMeta::responsive("VideoLag", "ms").with_thresholds(120.0, 300.0, false),
+            ),
             buf_frames: Metric::new(MetricMeta::responsive("Buffer", "")),
             frames_skipped: Metric::new(MetricMeta::smooth("Skipped", "")),
+            late_frames_dropped: Metric::new(MetricMeta::smooth("LateDrop", "")),
             freezes: Metric::new(MetricMeta::smooth("Freezes", "")),
+            av_delta_ms: Metric::new(
+                MetricMeta::responsive("A/V Δ", "ms").with_thresholds(20.0, 50.0, false),
+            ),
+            sync_state: Label::default(),
         }
+    }
+}
+
+impl TimingStats {
+    /// Records the current video playout state.
+    pub fn record_video_status(
+        &self,
+        queued_frames: usize,
+        next_wait: Option<Duration>,
+        audio_buffered: Option<Duration>,
+        av_delta_ms: Option<f64>,
+        video_live_lag: Option<Duration>,
+        sync_state: &str,
+    ) {
+        self.buf_frames.record(queued_frames as f64);
+        self.delay_ms
+            .record(next_wait.unwrap_or_default().as_secs_f64() * 1000.0);
+        if let Some(buffered) = audio_buffered {
+            self.audio_buffer_ms.record(buffered.as_secs_f64() * 1000.0);
+        }
+        if let Some(delta_ms) = av_delta_ms {
+            self.av_delta_ms.record(delta_ms);
+        }
+        if let Some(lag) = video_live_lag {
+            self.video_live_lag_ms.record(lag.as_secs_f64() * 1000.0);
+        }
+        self.sync_state.set(sync_state);
+    }
+
+    /// Records the current audio sink state.
+    pub fn record_audio_status(&self, audio_buffered: Duration, audio_live_lag: Option<Duration>) {
+        self.audio_buffer_ms
+            .record(audio_buffered.as_secs_f64() * 1000.0);
+        self.audio_live_lag_ms
+            .record(audio_live_lag.unwrap_or_default().as_secs_f64() * 1000.0);
     }
 }
 
@@ -356,31 +405,11 @@ impl Default for Timeline {
 
 /// Stats passed to the decode pipeline. Groups render, timing, and
 /// timeline into a single value to avoid threading a 3-element tuple.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct DecodeStats {
     pub render: RenderStats,
     pub timing: TimingStats,
     pub timeline: Timeline,
-}
-
-/// Optional parameters for decoder pipelines.
-///
-/// Bundles clock and stats to avoid telescoping constructor variants.
-/// Use `Default` for simple cases (no clock, no stats).
-#[derive(Debug, Clone, Default)]
-pub struct DecodeOpts {
-    /// Shared playout clock for A/V sync.
-    pub clock: Option<crate::playout::PlayoutClock>,
-    /// Stats collectors for metrics and timeline.
-    pub stats: Option<DecodeStats>,
-    /// Shared skip threshold in milliseconds. When the decoder falls behind
-    /// by more than this amount, non-keyframes are skipped until the next
-    /// keyframe to recover. `None` uses the default (500ms).
-    pub skip_threshold_ms: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
-    /// Skip generation counter shared between video and audio decode loops.
-    /// Video increments this on skip recovery; audio watches it and flushes
-    /// its decoder to resync when it changes.
-    pub skip_generation: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
 }
 
 /// Optional parameters for encoder pipelines.

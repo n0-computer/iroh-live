@@ -235,12 +235,7 @@ fn start_pipeline(
 
     match mode {
         PipelineMode::Direct => {
-            let track = VideoTrack::from_video_source(
-                "direct".into(),
-                Default::default(),
-                source,
-                DecodeConfig::default(),
-            );
+            let track = VideoTrack::from_video_source("direct".into(), Default::default(), source);
             Ok((track, format!("{source_kind} (direct)"), None))
         }
         PipelineMode::EncodeDecode => {

@@ -112,13 +112,12 @@ mod app {
 
     /// Renders a test pattern directly to HDMI — no network, no window system.
     fn cmd_fb_demo() -> n0_error::Result {
-        use moq_media::{format::DecodeConfig, subscribe::VideoTrack, test_util::TestVideoSource};
+        use moq_media::{subscribe::VideoTrack, test_util::TestVideoSource};
         use tokio_util::sync::CancellationToken;
 
         let source = TestVideoSource::new(640, 480).with_fps(30.0);
         let shutdown = CancellationToken::new();
-        let video_track =
-            VideoTrack::from_video_source("test".into(), shutdown, source, DecodeConfig::default());
+        let video_track = VideoTrack::from_video_source("test".into(), shutdown, source);
 
         watch::run_fb_demo(video_track)?;
         Ok(())

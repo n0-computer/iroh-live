@@ -58,7 +58,7 @@ fn main() -> Result<()> {
                 room,
                 peers: vec![],
                 self_video: broadcast
-                    .preview(Default::default())
+                    .preview()
                     .map(|track| VideoTrackView::new(&cc.egui_ctx, "self-video", track)),
                 live,
                 _broadcast: broadcast,

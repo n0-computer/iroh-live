@@ -474,15 +474,13 @@ impl Tile {
                     pipe_source,
                     &config,
                     &decode_config,
-                    moq_media::stats::DecodeOpts {
-                        clock: None,
-                        stats: Some(moq_media::stats::DecodeStats {
+                    moq_media::pipeline::DecodeOpts {
+                        stats: moq_media::stats::DecodeStats {
                             render: self.render_stats.clone(),
                             timing: self.timing_stats.clone(),
                             timeline: self.timeline.clone(),
-                        }),
-                        skip_threshold_ms: None,
-                        skip_generation: None,
+                        },
+                        ..Default::default()
                     },
                 ) {
                     Ok(d) => d,

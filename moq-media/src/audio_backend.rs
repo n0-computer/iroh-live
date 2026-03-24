@@ -359,6 +359,14 @@ impl AudioSinkHandle for OutputStream {
     }
 }
 
+impl OutputStream {
+    /// Returns the duration of audio buffered between push_samples()
+    /// and the cpal output callback. Used for A/V sync delta measurement.
+    pub fn occupied_seconds(&self) -> f64 {
+        self.prod.lock().expect("poisoned").occupied_seconds()
+    }
+}
+
 impl AudioSink for OutputStream {
     fn handle(&self) -> Box<dyn AudioSinkHandle> {
         Box::new(self.handle.clone())
@@ -389,6 +397,10 @@ impl AudioSink for OutputStream {
         }
 
         Ok(())
+    }
+
+    fn occupied_seconds(&self) -> f64 {
+        self.prod.lock().expect("poisoned").occupied_seconds()
     }
 }
 
@@ -735,15 +747,6 @@ fn negotiate_stream_config(
         ?direction,
         "available stream configs"
     );
-    for (i, cfg) in supported_configs.iter().enumerate() {
-        debug!(
-            idx = i,
-            channels = cfg.channels(),
-            min_rate = cfg.min_sample_rate(),
-            max_rate = cfg.max_sample_rate(),
-            "  config range"
-        );
-    }
 
     // Try each preferred rate in order. Accept the first config range
     // that contains the rate.

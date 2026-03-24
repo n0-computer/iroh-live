@@ -1,463 +1,270 @@
-//! Playout clock and buffer for PTS-based frame scheduling.
+//! Video playout primitives and playback policy.
 //!
-//! The playout system bridges the gap between network/decoder timing and
-//! display timing. It operates in three layers:
+//! We separate playback policy into two independent concerns:
 //!
-//! 1. **[`PlayoutClock`]** maps media PTS (presentation timestamps) to
-//!    wall-clock time via a single anchor point. Handles jitter-adaptive
-//!    re-anchoring when frames arrive late.
+//! - [`SyncMode`] controls how we align decoded audio and video at playout
+//!   time.
+//! - [`FreshnessPolicy`] controls how much stale media we are willing to keep
+//!   after a stall before we skip forward.
 //!
-//! 2. **[`PlayoutBuffer`]** holds decoded frames until their playout time
-//!    arrives. Smooths bursty output from hardware decoders (DPB flushes)
-//!    and provides overflow protection.
+//! This separation is intentional. Users usually tune these concerns for
+//! different reasons:
 //!
-//! 3. **[`PlayoutMode`]** controls behavior: [`Live`](PlayoutMode::Live)
-//!    mode skips late frames for real-time A/V sync;
-//!    [`Reliable`](PlayoutMode::Reliable) mode delivers every frame in
-//!    order (for tests and recordings).
+//! - You tune [`SyncMode::AudioMaster`] when you want to trade video smoothness
+//!   against A/V alignment. A larger `video_hold_budget` gives video more time
+//!   to wait for audio and smooth decoder bursts, at the cost of added video
+//!   delay.
+//! - You tune [`FreshnessPolicy::max_stale_duration`] when you want to trade
+//!   continuity against recovery speed after congestion or loss. A larger value
+//!   tolerates longer stalls before we skip forward; a smaller value returns to
+//!   the live edge faster.
 //!
-//! Audio does not use the playout buffer — it is decoded and pushed
-//! directly to the audio sink. The `PlayoutClock` is shared between
-//! audio and video tracks but only video drives the anchor point.
-//! See ER4 in `REVIEW.md` for the A/V sync design and its limitations.
+//! Internally, playout is intentionally narrow:
+//!
+//! 1. [`PlayoutBuffer`] stores a bounded queue of decoded video frames.
+//! 2. [`VideoSyncController`] decides whether the front frame should be held,
+//!    rendered now, or dropped based on estimated audio playback position.
 
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use crate::format::VideoFrame;
 
-/// Controls playout buffer behavior.
-#[derive(Debug, Clone)]
-pub enum PlayoutMode {
-    /// Real-time playback with frame skipping for A/V sync.
+/// A/V synchronization behavior at playout time.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncMode {
+    /// Audio drives playout and video follows it.
     ///
-    /// Frames are released at PTS-correct intervals offset by `buffer`
-    /// from decode time. This absorbs bursty output from hardware
-    /// decoders (DPB flushes). Late video frames may be skipped to
-    /// maintain A/V sync with the audio master.
-    ///
-    /// `max_latency` is propagated to hang's `TrackConsumer` to skip
-    /// stale groups at the transport level.
-    Live {
-        /// Display offset from decode time. Smooths DPB burst output.
-        buffer: Duration,
-        /// Transport-level ceiling. Hang skips groups older than this.
-        max_latency: Duration,
+    /// This is the default for interactive playback. Audio keeps continuity
+    /// first. Video may wait up to `video_hold_budget`, or drop late frames, to
+    /// stay close to the estimated speaker position.
+    AudioMaster {
+        /// Maximum time we intentionally hold a decoded video frame before
+        /// rendering it.
+        ///
+        /// Increase this when decoder bursts or moderate jitter cause visible
+        /// jank after recovery. Decrease it when you prefer lower delay and can
+        /// tolerate more video drops.
+        video_hold_budget: Duration,
     },
 
-    /// Reliable playback: every frame is played in order, never skipped.
+    /// Frames render as soon as they decode.
     ///
-    /// No latency target — frames are released as soon as they are
-    /// decoded. Hang's group-skip threshold is set very high to avoid
-    /// dropping any groups. Good for recordings, demos, and debugging.
-    Reliable,
+    /// This mode is useful for diagnostics and local tests where you want to
+    /// see raw decode output without active A/V synchronization.
+    Unmanaged,
 }
 
-impl Default for PlayoutMode {
+impl Default for SyncMode {
     fn default() -> Self {
-        Self::Live {
-            buffer: Duration::ZERO,
-            max_latency: Duration::from_millis(150),
-        }
+        Self::audio_master()
     }
 }
 
-impl PlayoutMode {
-    /// Returns the effective max_latency for hang's `TrackConsumer`.
-    pub fn hang_max_latency(&self) -> Duration {
+impl SyncMode {
+    /// Creates [`SyncMode::AudioMaster`] with a 150 ms video hold budget.
+    pub fn audio_master() -> Self {
+        Self::AudioMaster {
+            video_hold_budget: Duration::from_millis(150),
+        }
+    }
+
+    /// Creates [`SyncMode::AudioMaster`] with an explicit hold budget.
+    pub fn audio_master_with_hold(video_hold_budget: Duration) -> Self {
+        Self::AudioMaster { video_hold_budget }
+    }
+
+    /// Creates [`SyncMode::Unmanaged`].
+    pub fn unmanaged() -> Self {
+        Self::Unmanaged
+    }
+
+    /// Returns the configured video hold budget.
+    pub fn video_hold_budget(&self) -> Duration {
         match self {
-            Self::Live { max_latency, .. } => *max_latency,
-            // Reliable: very high so hang never skips groups.
-            Self::Reliable => Duration::from_secs(3600),
+            Self::AudioMaster { video_hold_budget } => *video_hold_budget,
+            Self::Unmanaged => Duration::ZERO,
         }
+    }
+
+    pub(crate) fn is_audio_master(&self) -> bool {
+        matches!(self, Self::AudioMaster { .. })
     }
 }
 
-/// Shared playout clock for A/V synchronization and latency control.
-///
-/// Uses the hang-style independent delay approach: each track (audio
-/// and video) independently maps its PTS to wall-clock playout times
-/// via a shared base reference. No cross-track sync actions are needed
-/// because both tracks share the same time anchor and buffer offset.
-///
-/// All tracks in a broadcast share the same clock instance. The clock
-/// maps media timestamps to wall-clock playout times based on the
-/// configured [`PlayoutMode`] and measures inter-arrival jitter as a
-/// diagnostic.
-#[derive(Debug, Clone)]
-pub struct PlayoutClock {
-    inner: Arc<Mutex<ClockInner>>,
+/// Freshness policy for ordered media delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FreshnessPolicy {
+    /// Maximum duration of stale media we are willing to keep before we skip
+    /// forward to newer data.
+    ///
+    /// This value serves two roles:
+    ///
+    /// - it is the `max_latency` passed to Hang's ordered consumer, so older
+    ///   groups may be dropped before decode;
+    /// - it is the late-packet threshold for the video decode loop, which may
+    ///   skip forward to the next keyframe once packets are clearly behind the
+    ///   current audio playout position.
+    ///
+    /// Use a larger value when you want to preserve more continuity through
+    /// congestion. Use a smaller value when you want faster recovery back to
+    /// the live edge.
+    pub max_stale_duration: Duration,
 }
 
-#[derive(Debug)]
-struct ClockInner {
-    mode: PlayoutMode,
-
-    /// Observed inter-arrival jitter (EMA-smoothed, RFC 3550 style).
-    /// Diagnostic only — does not drive playout timing.
-    smoothed_jitter: Duration,
-
-    /// Wall clock ↔ media timestamp mapping, established on first frame.
-    base_wall: Option<Instant>,
-    base_pts: Option<Duration>,
-
-    /// Previous arrival for jitter calculation.
-    prev_arrival: Option<Instant>,
-    prev_pts: Option<Duration>,
-
-    /// Total accumulated drift from re-anchoring (diagnostic).
-    /// Positive = we shifted forward (frames were late).
-    total_reanchor_drift: Duration,
-    /// Number of times the clock has been re-anchored.
-    reanchor_count: u32,
-}
-
-impl PlayoutClock {
-    /// Creates a new playout clock with the given mode.
-    pub fn new(mode: PlayoutMode) -> Self {
+impl Default for FreshnessPolicy {
+    fn default() -> Self {
         Self {
-            inner: Arc::new(Mutex::new(ClockInner {
-                mode,
-                smoothed_jitter: Duration::ZERO,
-                base_wall: None,
-                base_pts: None,
-                prev_arrival: None,
-                prev_pts: None,
-                total_reanchor_drift: Duration::ZERO,
-                reanchor_count: 0,
-            })),
+            max_stale_duration: Duration::from_millis(500),
         }
-    }
-
-    /// Returns the current playout mode.
-    pub fn mode(&self) -> PlayoutMode {
-        self.inner.lock().expect("poisoned").mode.clone()
-    }
-
-    /// Returns whether the clock has been anchored (first video frame arrived).
-    ///
-    /// Audio decode loops use this to decide whether to hold samples until
-    /// video establishes the time base, or to start playing immediately
-    /// (audio-only mode).
-    pub fn is_anchored(&self) -> bool {
-        self.inner.lock().expect("poisoned").base_wall.is_some()
-    }
-
-    /// Sets the playout mode.
-    ///
-    /// If a base mapping exists, shifts `base_wall` by the difference in
-    /// buffer offset so frames already in the playout buffer get correct
-    /// new playout times without a gap. If no base exists yet, just stores
-    /// the new mode.
-    pub fn set_mode(&self, mode: PlayoutMode) {
-        let mut inner = self.inner.lock().expect("poisoned");
-        let old_buf = buffer_duration(&inner.mode);
-        let new_buf = buffer_duration(&mode);
-        if let Some(ref mut base_wall) = inner.base_wall {
-            // Shift the anchor: increasing buffer → later playout, decreasing → earlier.
-            let delta = new_buf.as_nanos() as i128 - old_buf.as_nanos() as i128;
-            if delta >= 0 {
-                *base_wall += Duration::from_nanos(delta as u64);
-            } else {
-                *base_wall -= Duration::from_nanos((-delta) as u64);
-            }
-        }
-        tracing::debug!(
-            old_buffer_ms = old_buf.as_millis(),
-            new_buffer_ms = new_buf.as_millis(),
-            has_base = inner.base_wall.is_some(),
-            "playout clock: mode changed"
-        );
-        inner.mode = mode;
-    }
-
-    /// Returns the effective max_latency for hang's `TrackConsumer`.
-    pub fn hang_max_latency(&self) -> Duration {
-        self.inner.lock().expect("poisoned").mode.hang_max_latency()
-    }
-
-    /// Returns the current observed jitter (diagnostic).
-    pub fn jitter(&self) -> Duration {
-        self.inner.lock().expect("poisoned").smoothed_jitter
-    }
-
-    /// Returns the configured buffer duration (Live mode) or zero (Reliable).
-    pub fn buffer(&self) -> Duration {
-        let inner = self.inner.lock().expect("poisoned");
-        buffer_duration(&inner.mode)
-    }
-
-    /// Sets the buffer duration for Live mode.
-    ///
-    /// No-op if the clock is in Reliable mode. If a base mapping exists,
-    /// shifts it so frames already in the buffer get correct playout times.
-    pub fn set_buffer(&self, new_buffer: Duration) {
-        let mut inner = self.inner.lock().expect("poisoned");
-        let old = buffer_duration(&inner.mode);
-        if old == new_buffer {
-            return;
-        }
-        if !matches!(inner.mode, PlayoutMode::Live { .. }) {
-            return;
-        }
-        // Shift the anchor to account for the buffer change.
-        if let Some(ref mut base_wall) = inner.base_wall {
-            let delta = new_buffer.as_nanos() as i128 - old.as_nanos() as i128;
-            if delta >= 0 {
-                *base_wall += Duration::from_nanos(delta as u64);
-            } else {
-                *base_wall -= Duration::from_nanos((-delta) as u64);
-            }
-        }
-        tracing::debug!(
-            old_buffer_ms = old.as_millis(),
-            new_buffer_ms = new_buffer.as_millis(),
-            "playout clock: buffer updated"
-        );
-        if let PlayoutMode::Live { ref mut buffer, .. } = inner.mode {
-            *buffer = new_buffer;
-        }
-    }
-
-    /// Returns the total accumulated drift from re-anchoring and the count.
-    pub fn reanchor_stats(&self) -> (Duration, u32) {
-        let inner = self.inner.lock().expect("poisoned");
-        (inner.total_reanchor_drift, inner.reanchor_count)
-    }
-
-    /// Records a frame arrival and updates the playout timeline.
-    ///
-    /// On the first call, establishes the PTS→wall-clock mapping with
-    /// the full buffer offset (absorbs initial decoder DPB burst). On
-    /// subsequent calls, re-anchors if the frame would play in the past
-    /// (buffer underrun). Re-anchors use a **small jitter offset** (two
-    /// frame intervals at 30fps ≈ 66ms) instead of the full buffer.
-    /// This absorbs normal arrival jitter without the accumulation
-    /// problem: even in the worst case, the decode-loop's 500ms skip
-    /// threshold catches runaway accumulation (500ms / 66ms ≈ 7
-    /// re-anchors). Using zero offset caused 90+ re-anchors per
-    /// session, each producing a visible stutter.
-    pub(crate) fn observe_arrival(&self, pts: Duration) {
-        let now = Instant::now();
-        let mut inner = self.inner.lock().expect("poisoned");
-        let offset = buffer_duration(&inner.mode);
-
-        // Minimum re-anchor buffer: 2 frame intervals at 30fps.
-        const MIN_JITTER_BUFFER: Duration = Duration::from_millis(66);
-
-        let is_live = matches!(inner.mode, PlayoutMode::Live { .. });
-
-        if inner.base_wall.is_none() {
-            // First frame: establish base mapping. In Live mode, use the
-            // larger of the DPB burst offset and the observed jitter so
-            // the initial anchor absorbs both decoder bursts and network
-            // jitter. In Reliable mode, play immediately (zero offset).
-            let initial_offset = if is_live {
-                let jitter_buf = inner.smoothed_jitter * 2;
-                offset.max(jitter_buf).max(MIN_JITTER_BUFFER)
-            } else {
-                offset
-            };
-            inner.base_wall = Some(now + initial_offset);
-            inner.base_pts = Some(pts);
-            tracing::debug!(
-                buffer_ms = offset.as_millis(),
-                initial_offset_ms = initial_offset.as_millis(),
-                pts_ms = pts.as_millis(),
-                "playout clock: anchored (first frame)"
-            );
-        } else if is_live {
-            // Check if this frame would play in the past (buffer underrun).
-            let base_wall = inner.base_wall.unwrap();
-            let base_pts = inner.base_pts.unwrap();
-            let media_offset = pts.saturating_sub(base_pts);
-            let playout = base_wall + media_offset;
-            if now >= playout {
-                let late_by = now - playout;
-                // Re-anchor with an adaptive jitter buffer derived from
-                // the observed inter-arrival jitter. Using 2× smoothed
-                // jitter absorbs typical variance without accumulating
-                // unbounded delay — the decode loop's skip threshold
-                // catches runaway cases.
-                let jitter_buf = (inner.smoothed_jitter * 2).max(MIN_JITTER_BUFFER);
-                inner.base_wall = Some(now + jitter_buf);
-                inner.base_pts = Some(pts);
-                inner.total_reanchor_drift += late_by;
-                inner.reanchor_count += 1;
-                tracing::debug!(
-                    late_by_ms = late_by.as_millis(),
-                    jitter_buf_ms = jitter_buf.as_millis(),
-                    total_drift_ms = inner.total_reanchor_drift.as_millis(),
-                    reanchor_count = inner.reanchor_count,
-                    pts_ms = pts.as_millis(),
-                    "playout clock: re-anchored after buffer underrun"
-                );
-            }
-        }
-
-        // RFC 3550 jitter calculation (diagnostic only).
-        if let (Some(prev_arrival), Some(prev_pts)) = (inner.prev_arrival, inner.prev_pts) {
-            let actual_interval = now.duration_since(prev_arrival);
-            let expected_interval = pts.saturating_sub(prev_pts);
-            let jitter_sample = actual_interval.abs_diff(expected_interval);
-            // EMA: J = J + (|D| - J) / 16
-            let current = inner.smoothed_jitter.as_nanos() as i128;
-            let sample = jitter_sample.as_nanos() as i128;
-            let new_jitter = current + (sample - current) / 16;
-            inner.smoothed_jitter = Duration::from_nanos(new_jitter.max(0) as u64);
-        }
-
-        inner.prev_arrival = Some(now);
-        inner.prev_pts = Some(pts);
-    }
-
-    /// Returns the wall-clock time at which a frame with the given PTS
-    /// should be played out.
-    pub(crate) fn playout_time(&self, pts: Duration) -> Option<Instant> {
-        let inner = self.inner.lock().expect("poisoned");
-        let base_wall = inner.base_wall?;
-        let base_pts = inner.base_pts?;
-        let media_offset = pts.saturating_sub(base_pts);
-        Some(base_wall + media_offset)
-    }
-
-    /// Resets the clock's base mapping. Called when switching tracks or
-    /// recovering from errors.
-    pub fn reset(&self) {
-        let mut inner = self.inner.lock().expect("poisoned");
-        tracing::debug!(
-            total_drift_ms = inner.total_reanchor_drift.as_millis(),
-            reanchor_count = inner.reanchor_count,
-            "playout clock: reset"
-        );
-        inner.base_wall = None;
-        inner.base_pts = None;
-        inner.prev_arrival = None;
-        inner.prev_pts = None;
-        inner.smoothed_jitter = Duration::ZERO;
-        inner.total_reanchor_drift = Duration::ZERO;
-        inner.reanchor_count = 0;
     }
 }
 
-/// Returns the buffer/display offset for the given mode.
-fn buffer_duration(mode: &PlayoutMode) -> Duration {
-    match mode {
-        PlayoutMode::Live { buffer, .. } => *buffer,
-        // Reliable: no buffering offset, play as soon as decoded.
-        PlayoutMode::Reliable => Duration::ZERO,
+impl FreshnessPolicy {
+    /// Creates a freshness policy with the given maximum stale duration.
+    pub fn new(max_stale_duration: Duration) -> Self {
+        Self { max_stale_duration }
     }
 }
 
-/// Post-decoder frame buffer that smooths bursty decoder output.
+/// Public playback policy for a subscribed broadcast.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaybackPolicy {
+    /// Cross-track synchronization policy.
+    pub sync: SyncMode,
+    /// Staleness policy for ordered delivery and decode recovery.
+    pub freshness: FreshnessPolicy,
+}
+
+impl Default for PlaybackPolicy {
+    fn default() -> Self {
+        Self::audio_master()
+    }
+}
+
+impl PlaybackPolicy {
+    /// Creates the default interactive policy: audio-master sync with a 150 ms
+    /// video hold budget and a 500 ms freshness threshold.
+    pub fn audio_master() -> Self {
+        Self {
+            sync: SyncMode::audio_master(),
+            freshness: FreshnessPolicy::default(),
+        }
+    }
+
+    /// Creates an audio-master policy with an explicit hold budget.
+    pub fn audio_master_with_hold(video_hold_budget: Duration) -> Self {
+        Self {
+            sync: SyncMode::audio_master_with_hold(video_hold_budget),
+            freshness: FreshnessPolicy::default(),
+        }
+    }
+
+    /// Creates an unmanaged policy with the default freshness threshold.
+    pub fn unmanaged() -> Self {
+        Self {
+            sync: SyncMode::unmanaged(),
+            freshness: FreshnessPolicy::default(),
+        }
+    }
+
+    /// Returns a copy with a different freshness policy.
+    pub fn with_freshness(mut self, freshness: FreshnessPolicy) -> Self {
+        self.freshness = freshness;
+        self
+    }
+
+    /// Returns a copy with a different sync mode.
+    pub fn with_sync(mut self, sync: SyncMode) -> Self {
+        self.sync = sync;
+        self
+    }
+
+    pub(crate) fn is_audio_master(&self) -> bool {
+        self.sync.is_audio_master()
+    }
+}
+
+// ── PlayoutBuffer ─────────────────────────────────────────────────
+
+/// Post-decoder video frame queue.
 ///
-/// Sits between the video decoder's `pop_frame()` and the output channel.
-/// Frames are inserted as they come from the decoder and released when
-/// their playout time arrives according to the shared [`PlayoutClock`].
+/// The queue is intentionally small and bounded. When it is full, we drop the
+/// newest decoded frame instead of resetting to the newest frame. Ordered
+/// delivery already gives us monotonic video input, so keeping the current
+/// front of the queue stable is more valuable than repeatedly throwing away
+/// the whole backlog.
 pub(crate) struct PlayoutBuffer {
     buffer: VecDeque<VideoFrame>,
     max_frames: usize,
-    clock: PlayoutClock,
 }
 
 impl PlayoutBuffer {
-    /// Creates a new playout buffer.
-    pub(crate) fn new(clock: PlayoutClock) -> Self {
+    pub(crate) fn new(max_frames: usize) -> Self {
         Self {
             buffer: VecDeque::new(),
-            max_frames: 30, // 1 second at 30fps — safety valve
-            clock,
+            max_frames,
         }
     }
 
-    /// Inserts a decoded frame from the decoder.
-    pub(crate) fn push(&mut self, frame: VideoFrame) {
-        self.clock.observe_arrival(frame.timestamp);
-        self.buffer.push_back(frame);
-        // Safety valve: when the buffer overflows, the pipeline is
-        // overwhelmed (e.g. a burst of frames after a latency change).
-        // Draining one-by-one would leave stale frames that gate on old
-        // playout times, producing a long stutter. Instead, clear the
-        // buffer entirely, keep only the newest frame, and reset the
-        // clock so playout resumes immediately from the latest frame.
-        if self.buffer.len() > self.max_frames {
-            let newest = self.buffer.pop_back();
-            let dropped = self.buffer.len();
-            self.buffer.clear();
-            if let Some(frame) = newest {
-                tracing::debug!(
-                    dropped,
-                    pts_ms = frame.timestamp.as_millis(),
-                    "playout buffer: overflow, reset to newest frame"
-                );
-                self.buffer.push_back(frame);
-            }
-            self.clock.reset();
-            // Re-anchor the clock with the newest frame.
-            if let Some(f) = self.buffer.front() {
-                self.clock.observe_arrival(f.timestamp);
-            }
-        }
-    }
-
-    /// Pops the next frame whose playout time has arrived.
+    /// Inserts a decoded frame.
     ///
-    /// Frames are released based on the clock's PTS-to-wall-clock mapping.
-    /// Each track independently gates on its playout time (hang-style
-    /// independent delay). No cross-track comparison is needed.
-    pub(crate) fn pop_ready(&mut self) -> Option<VideoFrame> {
-        let front = self.buffer.front()?;
-        let playout = self.clock.playout_time(front.timestamp)?;
-        if Instant::now() < playout {
-            return None;
+    /// Returns `true` when the queue was already full and the new frame was
+    /// dropped. Under normal operation decode backpressure keeps us below this
+    /// bound; hitting it usually means the decoder emitted a burst before the
+    /// release loop could run.
+    pub(crate) fn push(&mut self, frame: VideoFrame) -> bool {
+        if self.buffer.len() >= self.max_frames {
+            tracing::debug!(
+                max_frames = self.max_frames,
+                pts_ms = frame.timestamp.as_millis(),
+                "playout buffer: dropping newest frame because the queue is full"
+            );
+            return true;
         }
+
+        self.buffer.push_back(frame);
+        false
+    }
+
+    pub(crate) fn front(&self) -> Option<&VideoFrame> {
+        self.buffer.front()
+    }
+
+    pub(crate) fn pop_front(&mut self) -> Option<VideoFrame> {
         self.buffer.pop_front()
     }
 
-    /// Returns the duration until the next frame is ready for playout.
-    ///
-    /// Returns `None` if the buffer is empty or the clock has no base
-    /// mapping yet.
-    pub(crate) fn next_playout_wait(&self) -> Option<Duration> {
-        let front = self.buffer.front()?;
-        let playout = self.clock.playout_time(front.timestamp)?;
-        let now = Instant::now();
-        if now >= playout {
-            Some(Duration::ZERO)
-        } else {
-            Some(playout - now)
-        }
+    pub(crate) fn drop_front(&mut self) -> Option<VideoFrame> {
+        self.buffer.pop_front()
     }
 
-    /// Returns the number of frames currently in the buffer.
-    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.buffer.len()
     }
 
-    /// Returns the number of frames currently in the buffer.
-    pub(crate) fn buf_len(&self) -> usize {
-        self.buffer.len()
-    }
-
-    /// Clears all buffered frames.
     pub(crate) fn clear(&mut self) {
         self.buffer.clear();
     }
 
-    /// Resets the clock's base mapping for a fresh PTS sequence.
-    pub(crate) fn reset_clock(&self) {
-        self.clock.reset();
+    /// Drops all queued frames except the current front frame.
+    ///
+    /// This is used when video is already far ahead of audio. Keeping a deep
+    /// queue of future frames does not improve sync, but it can retain scarce
+    /// decoder-backed resources such as VAAPI output surfaces.
+    pub(crate) fn trim_to_front(&mut self) -> usize {
+        let dropped = self.buffer.len().saturating_sub(1);
+        self.buffer.truncate(1);
+        dropped
     }
 }
 
+// ── recv_timeout ──────────────────────────────────────────────────
+
 /// Receives a value from a tokio mpsc channel with a timeout.
-///
-/// Polls with `try_recv` and short sleeps. The 1ms polling resolution
-/// is acceptable for video playout (33ms frame intervals).
 pub(crate) fn recv_timeout<T>(
     rx: &mut tokio::sync::mpsc::Receiver<T>,
     timeout: Duration,
@@ -474,9 +281,6 @@ pub(crate) fn recv_timeout<T>(
                 if remaining.is_zero() {
                     return RecvResult::Timeout;
                 }
-                // Sleep for at most half the remaining time, capped at 2ms.
-                // This limits CPU usage while keeping worst-case latency
-                // bounded to ~2ms (acceptable for frame-level playout timing).
                 std::thread::sleep(remaining.min(Duration::from_millis(2)) / 2);
             }
         }
@@ -485,12 +289,200 @@ pub(crate) fn recv_timeout<T>(
 
 /// Result of a [`recv_timeout`] call.
 pub(crate) enum RecvResult<T> {
-    /// A value was received.
     Value(T),
-    /// The timeout elapsed without receiving a value.
     Timeout,
-    /// The channel is disconnected.
     Disconnected,
+}
+
+// ── VideoSyncController ───────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SyncState {
+    CatchUp,
+    Locked,
+}
+
+impl SyncState {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::CatchUp => "catchup",
+            Self::Locked => "locked",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FrameDecision {
+    Hold(Duration),
+    RenderNow,
+    DropLate,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct VideoSyncConfig {
+    pub video_hold_target: Duration,
+    pub sync_window: Duration,
+    pub late_drop_threshold: Duration,
+    pub stall_timeout: Duration,
+}
+
+impl VideoSyncConfig {
+    pub(crate) fn from_policy(policy: &PlaybackPolicy, framerate: f64) -> Option<Self> {
+        let SyncMode::AudioMaster { video_hold_budget } = &policy.sync else {
+            return None;
+        };
+        let frame_interval = Duration::from_secs_f64(1.0 / framerate.max(1.0));
+        let sync_window = Duration::from_micros(
+            frame_interval
+                .max(Duration::from_millis(50))
+                .as_micros()
+                .min(u64::MAX as u128) as u64,
+        );
+        Some(Self {
+            video_hold_target: *video_hold_budget,
+            // Sync tolerance must reflect frame cadence. Low-fps streams cannot
+            // physically present video inside a narrow sub-frame window, so the
+            // lock target must be at least "good enough" (~50ms) and never
+            // smaller than one frame interval.
+            sync_window,
+            late_drop_threshold: (*video_hold_budget).max(sync_window * 2),
+            stall_timeout: Duration::from_millis(300),
+        })
+    }
+
+    pub(crate) fn decode_pause_queue_len(self) -> usize {
+        // Once video is being intentionally held, a small queue is enough to
+        // bridge decoder burstiness. Letting the queue grow past this point
+        // only creates future backlog that will later be trimmed or overflowed.
+        let frames = (self.video_hold_target.as_secs_f64() / self.sync_window.as_secs_f64())
+            .ceil()
+            .max(2.0) as usize;
+        frames + 1
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct VideoSyncController {
+    /// Current diagnostic mode of the controller.
+    state: SyncState,
+    /// The very first frame is always rendered immediately to avoid startup
+    /// deadlock before we have a usable playout estimate.
+    first_frame_sent: bool,
+    /// Last time we saw a video packet arrive from transport.
+    last_video_arrival: Option<Instant>,
+    /// Last skip generation observed from the decode loop.
+    last_skip_generation: u64,
+    config: VideoSyncConfig,
+}
+
+impl VideoSyncController {
+    pub(crate) fn new(config: VideoSyncConfig) -> Self {
+        Self {
+            state: SyncState::CatchUp,
+            first_frame_sent: false,
+            last_video_arrival: None,
+            last_skip_generation: 0,
+            config,
+        }
+    }
+
+    pub(crate) fn state(&self) -> SyncState {
+        self.state
+    }
+
+    pub(crate) fn decode_pause_queue_len(&self) -> usize {
+        self.config.decode_pause_queue_len()
+    }
+
+    pub(crate) fn note_arrival(&mut self, now: Instant) {
+        self.last_video_arrival = Some(now);
+    }
+
+    pub(crate) fn force_catchup(&mut self) {
+        self.state = SyncState::CatchUp;
+    }
+
+    pub(crate) fn on_skip_generation(&mut self, generation: u64) {
+        if generation != self.last_skip_generation {
+            self.last_skip_generation = generation;
+            self.force_catchup();
+        }
+    }
+
+    /// Falls back to catchup if transport has gone quiet for too long.
+    fn enforce_stall_timeout(&mut self, now: Instant) {
+        if self.state == SyncState::Locked
+            && let Some(last) = self.last_video_arrival
+            && now.duration_since(last) > self.config.stall_timeout
+        {
+            self.force_catchup();
+        }
+    }
+
+    /// Decides whether the current front frame should be held, rendered, or
+    /// dropped relative to the estimated audio playout position.
+    pub(crate) fn decide(
+        &mut self,
+        frame_pts: Duration,
+        audio_pts: Option<Duration>,
+        now: Instant,
+    ) -> FrameDecision {
+        self.enforce_stall_timeout(now);
+
+        if !self.first_frame_sent {
+            self.first_frame_sent = true;
+            return FrameDecision::RenderNow;
+        }
+
+        let Some(audio_pts) = audio_pts else {
+            self.force_catchup();
+            return FrameDecision::RenderNow;
+        };
+
+        let delta = frame_pts.as_micros() as i128 - audio_pts.as_micros() as i128;
+        let sync_window = self.config.sync_window.as_micros() as i128;
+        let late_drop = self.config.late_drop_threshold.as_micros() as i128;
+
+        if delta < -late_drop {
+            self.state = SyncState::CatchUp;
+            return FrameDecision::DropLate;
+        }
+
+        if delta > sync_window {
+            let steady_early = self.config.video_hold_target.as_micros() as i128;
+            self.state = if delta <= steady_early {
+                SyncState::Locked
+            } else {
+                SyncState::CatchUp
+            };
+            return FrameDecision::Hold(Duration::from_micros((delta - sync_window) as u64));
+        }
+
+        self.state = if delta >= -sync_window {
+            SyncState::Locked
+        } else {
+            SyncState::CatchUp
+        };
+        FrameDecision::RenderNow
+    }
+
+    /// Returns the earliest time at which `frame_pts` could be rendered
+    /// without violating the current sync window.
+    pub(crate) fn wait_hint(&self, frame_pts: Duration, audio_pts: Option<Duration>) -> Duration {
+        let Some(audio_pts) = audio_pts else {
+            return Duration::ZERO;
+        };
+        if !self.first_frame_sent {
+            return Duration::ZERO;
+        }
+        let delta = frame_pts.as_micros() as i128 - audio_pts.as_micros() as i128;
+        let sync_window = self.config.sync_window.as_micros() as i128;
+        if delta <= sync_window {
+            Duration::ZERO
+        } else {
+            Duration::from_micros((delta - sync_window) as u64)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -502,188 +494,53 @@ mod tests {
     }
 
     #[test]
-    fn playout_clock_jitter_measurement() {
-        let clock = PlayoutClock::new(PlayoutMode::default());
-        let pts_interval = Duration::from_millis(33);
-        for i in 0..32 {
-            let pts = pts_interval * i;
-            clock.observe_arrival(pts);
-        }
-        let jitter = clock.jitter();
-        assert!(
-            jitter < Duration::from_millis(100),
-            "jitter should be small, got {jitter:?}"
-        );
-    }
-
-    #[test]
-    fn playout_clock_base_mapping_live() {
-        let clock = PlayoutClock::new(PlayoutMode::Live {
-            buffer: Duration::from_millis(80),
-            max_latency: Duration::from_millis(150),
-        });
-        let pts0 = Duration::from_millis(0);
-        let pts1 = Duration::from_millis(33);
-
-        clock.observe_arrival(pts0);
-        let t0 = clock.playout_time(pts0).expect("should have base");
-        let t1 = clock.playout_time(pts1).expect("should have base");
-
-        let diff = t1.duration_since(t0);
-        assert!(
-            (diff.as_millis() as i64 - 33).unsigned_abs() < 2,
-            "playout times should be 33ms apart, got {diff:?}"
-        );
-
-        // Playout should be offset by ~buffer (80ms) from now.
-        let now = Instant::now();
-        let diff_from_now = if t0 > now {
-            t0.duration_since(now)
-        } else {
-            now.duration_since(t0)
-        };
-        assert!(
-            diff_from_now < Duration::from_millis(90),
-            "playout should be near buffer offset, got {diff_from_now:?}"
-        );
-    }
-
-    #[test]
-    fn playout_clock_reliable_mode() {
-        let clock = PlayoutClock::new(PlayoutMode::Reliable);
-        let pts0 = Duration::from_millis(0);
-        clock.observe_arrival(pts0);
-        let t0 = clock.playout_time(pts0).expect("should have base");
-        let now = Instant::now();
-        let diff = if t0 > now {
-            t0.duration_since(now)
-        } else {
-            now.duration_since(t0)
-        };
-        assert!(
-            diff < Duration::from_millis(5),
-            "reliable mode should have near-zero offset, got {diff:?}"
-        );
-    }
-
-    #[test]
-    fn playout_clock_reset() {
-        let clock = PlayoutClock::new(PlayoutMode::default());
-        clock.observe_arrival(Duration::ZERO);
-        assert!(clock.playout_time(Duration::ZERO).is_some());
-        clock.reset();
-        assert!(clock.playout_time(Duration::ZERO).is_none());
-        assert_eq!(clock.jitter(), Duration::ZERO);
-    }
-
-    #[test]
     fn playout_buffer_push_pop() {
-        let clock = PlayoutClock::new(PlayoutMode::Reliable);
-        let mut buf = PlayoutBuffer::new(clock);
+        let mut buf = PlayoutBuffer::new(30);
         for i in 0..3 {
-            buf.push(make_test_frame(Duration::from_millis(i * 33)));
+            assert!(!buf.push(make_test_frame(Duration::from_millis(i * 33))));
         }
         assert_eq!(buf.len(), 3);
-        let f0 = buf.pop_ready();
-        assert!(f0.is_some(), "frame 0 should be ready");
+        let f0 = buf.pop_front();
+        assert!(f0.is_some());
     }
 
     #[test]
-    fn playout_buffer_overflow_resets_to_newest() {
-        // Use Reliable mode (zero buffer offset) so pop_ready() works
-        // without waiting for playout time.
-        let clock = PlayoutClock::new(PlayoutMode::Reliable);
-        let mut buf = PlayoutBuffer::new(clock.clone());
-        // Push 40 frames. Overflow fires at frame 31 (31 > 30), clearing
-        // the buffer to just frame 30. Frames 31-39 accumulate normally.
-        for i in 0..40 {
-            buf.push(make_test_frame(Duration::from_millis(i * 33)));
+    fn playout_buffer_full_drops_newest_frame() {
+        let mut buf = PlayoutBuffer::new(3);
+        for i in 0..3 {
+            assert!(!buf.push(make_test_frame(Duration::from_millis(i))));
         }
-        assert_eq!(buf.len(), 10); // frame 30 + frames 31-39
-        let frame = buf.pop_ready().expect("should have frame 30");
-        assert_eq!(frame.timestamp, Duration::from_millis(30 * 33));
+        assert!(buf.push(make_test_frame(Duration::from_millis(99))));
+        assert_eq!(buf.len(), 3);
+        assert_eq!(buf.front().expect("front frame").timestamp, Duration::ZERO);
     }
 
     #[test]
-    fn playout_buffer_empty_pop() {
-        let clock = PlayoutClock::new(PlayoutMode::default());
-        let mut buf = PlayoutBuffer::new(clock);
-        assert!(buf.pop_ready().is_none());
-        assert!(buf.next_playout_wait().is_none());
-    }
+    fn playout_buffer_trim_to_front_drops_future_backlog() {
+        let mut buf = PlayoutBuffer::new(30);
+        for i in 0..4 {
+            let _ = buf.push(make_test_frame(Duration::from_millis(i * 33)));
+        }
 
-    #[test]
-    fn playout_buffer_clear() {
-        let clock = PlayoutClock::new(PlayoutMode::Reliable);
-        let mut buf = PlayoutBuffer::new(clock);
-        buf.push(make_test_frame(Duration::ZERO));
+        let dropped = buf.trim_to_front();
+
+        assert_eq!(dropped, 3);
         assert_eq!(buf.len(), 1);
-        buf.clear();
-        assert_eq!(buf.len(), 0);
-    }
-
-    #[test]
-    fn playout_mode_hang_max_latency() {
-        let live = PlayoutMode::Live {
-            buffer: Duration::from_millis(80),
-            max_latency: Duration::from_millis(200),
-        };
-        assert_eq!(live.hang_max_latency(), Duration::from_millis(200));
-
-        let reliable = PlayoutMode::Reliable;
-        assert_eq!(reliable.hang_max_latency(), Duration::from_secs(3600));
-    }
-
-    #[test]
-    fn playout_clock_set_mode_shifts_base() {
-        let clock = PlayoutClock::new(PlayoutMode::Live {
-            buffer: Duration::from_millis(80),
-            max_latency: Duration::from_millis(150),
-        });
-        clock.observe_arrival(Duration::ZERO);
-        let t_before = clock
-            .playout_time(Duration::ZERO)
-            .expect("should have base");
-
-        // Switch to Reliable (buffer=0): playout times should shift earlier by 80ms.
-        clock.set_mode(PlayoutMode::Reliable);
-        let t_after = clock
-            .playout_time(Duration::ZERO)
-            .expect("base should still exist after set_mode");
-
-        // t_after should be ~80ms earlier than t_before.
-        let shift = t_before.duration_since(t_after);
-        assert!(
-            (shift.as_millis() as i64 - 80).unsigned_abs() < 5,
-            "expected ~80ms shift, got {shift:?}"
-        );
-
-        // Switch to Live with larger buffer: should shift later.
-        clock.set_mode(PlayoutMode::Live {
-            buffer: Duration::from_millis(200),
-            max_latency: Duration::from_millis(300),
-        });
-        let t_large = clock
-            .playout_time(Duration::ZERO)
-            .expect("base should still exist");
-        let shift2 = t_large.duration_since(t_after);
-        assert!(
-            (shift2.as_millis() as i64 - 200).unsigned_abs() < 5,
-            "expected ~200ms shift from reliable, got {shift2:?}"
+        assert_eq!(
+            buf.front().expect("front frame").timestamp,
+            Duration::from_millis(0)
         );
     }
 
     #[test]
-    fn playout_buffer_reset_clock_clears_base() {
-        let clock = PlayoutClock::new(PlayoutMode::Reliable);
-        let mut buf = PlayoutBuffer::new(clock.clone());
-        buf.push(make_test_frame(Duration::ZERO));
-        assert!(clock.playout_time(Duration::ZERO).is_some());
-        buf.clear();
-        buf.reset_clock();
-        assert!(
-            clock.playout_time(Duration::ZERO).is_none(),
-            "clock base should be reset"
+    fn playback_policy_keeps_sync_and_freshness_separate() {
+        let policy = PlaybackPolicy::audio_master_with_hold(Duration::from_millis(80))
+            .with_freshness(FreshnessPolicy::new(Duration::from_millis(200)));
+
+        assert_eq!(policy.sync.video_hold_budget(), Duration::from_millis(80));
+        assert_eq!(
+            policy.freshness.max_stale_duration,
+            Duration::from_millis(200)
         );
     }
 
@@ -694,11 +551,8 @@ mod tests {
         let result = recv_timeout(&mut rx, Duration::from_millis(10));
         let elapsed = start.elapsed();
         assert!(matches!(result, RecvResult::Timeout));
-        assert!(elapsed >= Duration::from_millis(9), "should wait ~10ms");
-        assert!(
-            elapsed < Duration::from_millis(50),
-            "should not wait too long"
-        );
+        assert!(elapsed >= Duration::from_millis(9));
+        assert!(elapsed < Duration::from_millis(50));
     }
 
     #[test]
@@ -718,94 +572,131 @@ mod tests {
     }
 
     #[test]
-    fn set_buffer_noop_in_reliable_mode() {
-        let clock = PlayoutClock::new(PlayoutMode::Reliable);
-        clock.observe_arrival(Duration::ZERO);
-        let t_before = clock.playout_time(Duration::ZERO).unwrap();
-        // set_buffer should be a no-op in Reliable mode.
-        clock.set_buffer(Duration::from_millis(100));
-        let t_after = clock.playout_time(Duration::ZERO).unwrap();
+    fn controller_enters_catchup_when_audio_appears() {
+        let mut c = VideoSyncController::new(
+            VideoSyncConfig::from_policy(&PlaybackPolicy::audio_master(), 30.0).unwrap(),
+        );
         assert_eq!(
-            t_before, t_after,
-            "set_buffer should be no-op in Reliable mode"
+            c.decide(Duration::ZERO, None, Instant::now()),
+            FrameDecision::RenderNow
         );
-        assert_eq!(clock.buffer(), Duration::ZERO);
-    }
-
-    #[test]
-    fn set_buffer_shifts_anchor_in_live_mode() {
-        let clock = PlayoutClock::new(PlayoutMode::Live {
-            buffer: Duration::from_millis(50),
-            max_latency: Duration::from_millis(150),
-        });
-        clock.observe_arrival(Duration::ZERO);
-        let t_before = clock.playout_time(Duration::ZERO).unwrap();
-
-        // Increase buffer by 100ms — playout should shift later.
-        clock.set_buffer(Duration::from_millis(150));
-        let t_after = clock.playout_time(Duration::ZERO).unwrap();
-        let shift = t_after.duration_since(t_before);
-        assert!(
-            (shift.as_millis() as i64 - 100).unsigned_abs() < 5,
-            "expected ~100ms shift, got {shift:?}"
+        assert_eq!(c.state(), SyncState::CatchUp);
+        assert_eq!(
+            c.decide(
+                Duration::from_millis(33),
+                Some(Duration::ZERO),
+                Instant::now()
+            ),
+            FrameDecision::RenderNow
         );
-        assert_eq!(clock.buffer(), Duration::from_millis(150));
+        assert_eq!(c.state(), SyncState::Locked);
     }
 
     #[test]
-    fn set_buffer_same_value_is_noop() {
-        let clock = PlayoutClock::new(PlayoutMode::Live {
-            buffer: Duration::from_millis(80),
-            max_latency: Duration::from_millis(150),
-        });
-        clock.observe_arrival(Duration::ZERO);
-        let t_before = clock.playout_time(Duration::ZERO).unwrap();
-        clock.set_buffer(Duration::from_millis(80));
-        let t_after = clock.playout_time(Duration::ZERO).unwrap();
-        assert_eq!(t_before, t_after, "same buffer value should be no-op");
+    fn controller_drops_late_frames_in_catchup() {
+        let mut c = VideoSyncController::new(
+            VideoSyncConfig::from_policy(&PlaybackPolicy::audio_master(), 30.0).unwrap(),
+        );
+        let _ = c.decide(Duration::ZERO, Some(Duration::ZERO), Instant::now());
+        assert_eq!(
+            c.decide(
+                Duration::ZERO,
+                Some(Duration::from_millis(200)),
+                Instant::now()
+            ),
+            FrameDecision::DropLate
+        );
+        assert_eq!(c.state(), SyncState::CatchUp);
     }
 
     #[test]
-    fn observe_arrival_reanchors_on_late_frame() {
-        let clock = PlayoutClock::new(PlayoutMode::Live {
-            buffer: Duration::from_millis(50),
-            max_latency: Duration::from_millis(200),
-        });
-        // First frame anchors the clock.
-        clock.observe_arrival(Duration::ZERO);
-        let (drift_before, count_before) = clock.reanchor_stats();
-        assert_eq!(count_before, 0);
-        assert_eq!(drift_before, Duration::ZERO);
-
-        // Sleep long enough that the next frame's playout time is in the past.
-        std::thread::sleep(Duration::from_millis(100));
-
-        // Second frame with PTS=33ms — playout time would be base_wall + 33ms,
-        // which is ~50ms in the past. Should trigger re-anchor.
-        clock.observe_arrival(Duration::from_millis(33));
-        let (drift_after, count_after) = clock.reanchor_stats();
-        assert_eq!(count_after, 1, "should have re-anchored once");
-        assert!(drift_after > Duration::ZERO, "drift should be positive");
+    fn controller_never_zero_holds_late_frame_in_catchup() {
+        let mut c = VideoSyncController::new(
+            VideoSyncConfig::from_policy(&PlaybackPolicy::audio_master(), 30.0).unwrap(),
+        );
+        let _ = c.decide(Duration::ZERO, Some(Duration::ZERO), Instant::now());
+        assert_eq!(
+            c.decide(
+                Duration::from_millis(3100),
+                Some(Duration::from_millis(3235)),
+                Instant::now(),
+            ),
+            FrameDecision::RenderNow
+        );
     }
 
     #[test]
-    fn is_anchored_tracks_first_arrival() {
-        let clock = PlayoutClock::new(PlayoutMode::default());
-        assert!(!clock.is_anchored(), "new clock should not be anchored");
-
-        clock.observe_arrival(Duration::ZERO);
-        assert!(clock.is_anchored(), "should be anchored after first frame");
-
-        clock.reset();
-        assert!(!clock.is_anchored(), "reset should clear anchor");
+    fn controller_locks_when_frame_is_inside_sync_window() {
+        let mut c = VideoSyncController::new(
+            VideoSyncConfig::from_policy(&PlaybackPolicy::audio_master(), 30.0).unwrap(),
+        );
+        let _ = c.decide(Duration::ZERO, Some(Duration::ZERO), Instant::now());
+        let _ = c.decide(
+            Duration::from_millis(66),
+            Some(Duration::from_millis(66)),
+            Instant::now(),
+        );
+        assert_eq!(c.state(), SyncState::Locked);
     }
 
     #[test]
-    fn is_anchored_reliable_mode() {
-        let clock = PlayoutClock::new(PlayoutMode::Reliable);
-        assert!(!clock.is_anchored());
+    fn controller_holds_early_frames_until_audio_catches_up() {
+        let mut c = VideoSyncController::new(
+            VideoSyncConfig::from_policy(&PlaybackPolicy::audio_master(), 30.0).unwrap(),
+        );
+        let _ = c.decide(Duration::ZERO, Some(Duration::ZERO), Instant::now());
+        assert_eq!(
+            c.decide(
+                Duration::from_millis(300),
+                Some(Duration::from_millis(100)),
+                Instant::now(),
+            ),
+            FrameDecision::Hold(Duration::from_millis(150))
+        );
+        assert_eq!(c.state(), SyncState::CatchUp);
+    }
 
-        clock.observe_arrival(Duration::ZERO);
-        assert!(clock.is_anchored());
+    #[test]
+    fn controller_renders_slightly_late_frames_for_continuity() {
+        let mut c = VideoSyncController::new(
+            VideoSyncConfig::from_policy(&PlaybackPolicy::audio_master(), 30.0).unwrap(),
+        );
+        let _ = c.decide(Duration::ZERO, Some(Duration::ZERO), Instant::now());
+        assert_eq!(
+            c.decide(
+                Duration::from_millis(170),
+                Some(Duration::from_millis(200)),
+                Instant::now(),
+            ),
+            FrameDecision::RenderNow
+        );
+        assert_eq!(c.state(), SyncState::Locked);
+    }
+
+    #[test]
+    fn sync_window_scales_with_frame_interval() {
+        let low_fps = VideoSyncConfig::from_policy(&PlaybackPolicy::audio_master(), 15.0).unwrap();
+        let high_fps = VideoSyncConfig::from_policy(&PlaybackPolicy::audio_master(), 60.0).unwrap();
+
+        assert_eq!(low_fps.sync_window, Duration::from_micros(66_666));
+        assert_eq!(high_fps.sync_window, Duration::from_millis(50));
+        assert_eq!(low_fps.late_drop_threshold, Duration::from_millis(150));
+        assert_eq!(high_fps.late_drop_threshold, Duration::from_millis(150));
+    }
+
+    #[test]
+    fn controller_forces_catchup_on_skip_generation_change() {
+        let mut c = VideoSyncController::new(
+            VideoSyncConfig::from_policy(&PlaybackPolicy::audio_master(), 30.0).unwrap(),
+        );
+        let _ = c.decide(Duration::ZERO, Some(Duration::ZERO), Instant::now());
+        let _ = c.decide(
+            Duration::from_millis(33),
+            Some(Duration::from_millis(33)),
+            Instant::now(),
+        );
+        assert_eq!(c.state(), SyncState::Locked);
+        c.on_skip_generation(1);
+        assert_eq!(c.state(), SyncState::CatchUp);
     }
 }
