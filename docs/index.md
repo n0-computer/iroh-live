@@ -21,8 +21,9 @@
 | [Transport](architecture/transport.md) | How iroh-moq wraps moq-lite sessions over iroh QUIC connections, and how `PacketSource`/`PacketSink` decouple media from transport. |
 | [Publish pipeline](architecture/publish.md) | `LocalBroadcast`, encoder pipelines, `VideoInput` variants, `SharedVideoSource` fan-out, and the `PacketSink` boundary. |
 | [Subscribe pipeline](architecture/subscribe.md) | `RemoteBroadcast`, catalog watching, decoder pipelines, `VideoTrack`/`AudioTrack`, and viewport-driven scaling. |
-| [Playout and sync](architecture/playout.md) | `PlayoutClock` PTS-to-wall-clock mapping, jitter-adaptive re-anchoring, `PlayoutBuffer` for DPB burst smoothing, and frame skip logic. |
-| [A/V sync basics](av-sync-basics.md) | End-to-end walkthrough of audio/video synchronization from capture to render. |
+| [Playout and sync](architecture/playout.md) | The current audio-master receive-side model, and how `PlaybackPolicy`, `AudioPosition`, and `VideoSyncController` fit together. |
+| [A/V sync and playout](av-sync/README.md) | Current-state documentation for receive-side timing, recovery, stats, and the rationale behind the audio-master design. |
+| [A/V sync tuning](av-sync/tuning.md) | The public tuning surface, with guidance for `video_hold_budget`, `max_stale_duration`, and `Unmanaged` mode. |
 | [Adaptive bitrate](architecture/adaptive.md) | Subscribe-side rendition switching driven by `NetworkSignals`, with bandwidth and loss thresholds, probe-based upgrades, and emergency downgrades. |
 | [Capture](architecture/capture.md) | The rusty-capture abstraction over PipeWire, V4L2, X11, ScreenCaptureKit, and AVFoundation backends. |
 | [Codecs](architecture/codecs.md) | `VideoEncoder`/`VideoDecoder` traits, software backends (openh264, rav1e/rav1d, Opus), and the `DynamicVideoDecoder` fallback chain. |

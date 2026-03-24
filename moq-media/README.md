@@ -59,7 +59,8 @@ Zero-copy rendering is available on most platforms. On Linux, decoded frames fro
 - **`PlayoutMode::Live`** -- real-time with configurable buffer depth and maximum latency. Skips frames that fall behind.
 - **`PlayoutMode::Reliable`** -- every frame in order, no latency target. Suitable for recordings and tests.
 
-`PlayoutBuffer` sits after the decoder and gates frame release on the playout clock.
+`PlayoutBuffer` sits after the decoder and stores decoded video frames for the
+audio-master playout controller.
 
 ## Feature flags
 
