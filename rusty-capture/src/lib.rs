@@ -261,12 +261,12 @@ pub struct CameraCapturer {
 impl CameraCapturer {
     /// Returns the capture backends that are compiled in and available at runtime
     /// for camera capture.
+    #[allow(
+        unused_mut,
+        clippy::vec_init_then_push,
+        reason = "mut and push count depend on which platform backends are compiled in"
+    )]
     pub fn list_backends() -> Vec<CaptureBackend> {
-        #[allow(
-            unused_mut,
-            clippy::vec_init_then_push,
-            reason = "mut and push count depend on which platform backends are compiled in"
-        )]
         let mut backends = Vec::new();
         #[cfg(all(target_os = "linux", feature = "pipewire"))]
         if pipewire_available() {
@@ -392,12 +392,12 @@ pub struct ScreenCapturer {
 impl ScreenCapturer {
     /// Returns the capture backends that are compiled in and available at runtime
     /// for screen capture.
+    #[allow(
+        unused_mut,
+        clippy::vec_init_then_push,
+        reason = "mut and push count depend on which platform backends are compiled in"
+    )]
     pub fn list_backends() -> Vec<CaptureBackend> {
-        #[allow(
-            unused_mut,
-            clippy::vec_init_then_push,
-            reason = "mut and push count depend on which platform backends are compiled in"
-        )]
         let mut backends = Vec::new();
         #[cfg(all(target_os = "linux", feature = "pipewire"))]
         if pipewire_available() {

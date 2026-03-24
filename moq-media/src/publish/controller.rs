@@ -113,6 +113,7 @@ impl Error for PublishUpdateError {}
 /// transport layer they use (rooms, direct connections, etc.).
 #[derive(Debug)]
 pub struct PublishCaptureController {
+    #[cfg_attr(not(any_audio_codec), allow(dead_code))]
     audio_ctx: AudioBackend,
     camera: Arc<Mutex<LocalBroadcast>>,
     screen: Option<LocalBroadcast>,

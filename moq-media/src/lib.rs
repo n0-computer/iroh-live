@@ -6,6 +6,7 @@
 //! module handles reading and decoding, and [`pipeline`] orchestrates
 //! encoder/decoder threads.
 
+#[cfg(any_video_codec)]
 pub mod adaptive;
 pub mod audio_backend;
 pub mod frame_channel;
