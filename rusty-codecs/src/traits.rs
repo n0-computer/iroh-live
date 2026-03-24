@@ -35,6 +35,13 @@ pub trait AudioSink: AudioSinkHandle {
     fn push_samples(&mut self, buf: &[f32]) -> Result<()>;
     /// Returns a clonable handle for pause/resume control from other threads.
     fn handle(&self) -> Box<dyn AudioSinkHandle>;
+    /// Returns the duration of audio buffered between [`push_samples`](Self::push_samples)
+    /// and the hardware output callback. Used by the A/V sync corrector
+    /// to estimate what the speaker is actually playing. Returns zero
+    /// by default for sinks without internal buffering.
+    fn occupied_seconds(&self) -> f64 {
+        0.0
+    }
 }
 
 /// Thread-safe handle for controlling an [`AudioSink`] (pause, resume, level metering).
@@ -97,6 +104,9 @@ impl AudioSink for Box<dyn AudioSink> {
     }
     fn handle(&self) -> Box<dyn AudioSinkHandle> {
         (**self).handle()
+    }
+    fn occupied_seconds(&self) -> f64 {
+        (**self).occupied_seconds()
     }
 }
 
@@ -353,6 +363,14 @@ pub trait VideoDecoder: Send + 'static {
     fn pop_frame(&mut self) -> Result<Option<VideoFrame>>;
     /// Pushes an encoded packet into the decoder.
     fn push_packet(&mut self, packet: MediaPacket) -> Result<()>;
+    /// Resets decoder state after a fatal stream error.
+    ///
+    /// Hardware decoders often need a real reinitialization after packet loss
+    /// or parser failure. Software decoders that can recover on the next
+    /// keyframe can keep the default no-op implementation.
+    fn reset(&mut self) -> Result<()> {
+        Ok(())
+    }
     /// Sets the target viewport dimensions for optional downscaling.
     fn set_viewport(&mut self, w: u32, h: u32);
     /// Returns the maximum number of frames the decoder may output in a

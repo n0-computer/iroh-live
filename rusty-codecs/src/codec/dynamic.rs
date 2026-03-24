@@ -141,6 +141,10 @@ impl VideoDecoder for DynamicVideoDecoder {
         dispatch_video!(self, pop_frame)
     }
 
+    fn reset(&mut self) -> Result<()> {
+        dispatch_video!(self, reset)
+    }
+
     fn set_viewport(&mut self, w: u32, h: u32) {
         dispatch_video!(self, set_viewport, w, h)
     }
