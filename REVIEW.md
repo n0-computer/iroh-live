@@ -38,6 +38,7 @@ Issues noticed while writing minimal README code examples. The goal is that the 
 
 ### Testing
 
+- [x] **T7**: Patchbay A/V recovery on VAAPI now passes the enforced latency spike / blackout coverage after tightening catch-up late-frame handling, learning a bounded stable late bias for hardware decode, and turning sustained `NotEnoughOutputBuffers` into a reset-worthy decoder error with timestamp rollback (`iroh-live/tests/patchbay.rs`, `moq-media/src/playout.rs`, `moq-media/src/pipeline.rs`, `rusty-codecs/src/codec/vaapi/decoder.rs`)
 - [ ] **T3**: No `render.rs` tests — `WgpuVideoRenderer` untested (needs GPU)
 - [ ] **T5**: `PublishCaptureController` not tested — `set_opts` has no tests
 - [ ] **T6**: No fuzz tests — codec decoders not fuzzed with malformed input
@@ -58,7 +59,7 @@ Issues noticed while writing minimal README code examples. The goal is that the 
 
 ### New findings (2026-03-18)
 
-- [ ] **D14**: PlayoutClock leaked into public API — users must call `.clock().set_buffer()` instead of `RemoteBroadcast` methods (`subscribe.rs`)
+- [x] **D14**: Playout clock no longer leaks into the public API. Playback is configured through `PlaybackPolicy` and live freshness tuning via `RemoteBroadcast::set_max_stale_duration()` (`subscribe.rs`, `playout.rs`)
 - [ ] **D15**: `LocalBroadcast::producer()` exposes internal `BroadcastProducer` — bypasses catalog/rendition safety (`publish.rs`)
 - [ ] **D16**: No observability in AdaptiveVideoTrack — no way to query probe state or decision reasons (`adaptive.rs`)
 
@@ -124,7 +125,31 @@ Findings from three expert reviews: capture/platform, playout/sync, and codec sa
 
 - [ ] **ER2**: PipeWire NV12 DMA-BUF reports single plane — NV12 is two-plane; single-plane report causes downstream importers to reject or corrupt chroma (`pipewire.rs:229`)
 - [ ] **ER3**: V4L2 DMA-BUF EXPBUF path not implemented — docs claim zero-copy via EXPBUF but code always does CPU copies (`v4l2.rs`)
-- [ ] **ER4**: Audio and video not synchronized by shared playout clock — audio pushes to ring buffer immediately while video is gated on PlayoutClock; gradual A/V drift under jitter has no correction mechanism. Recommended fix: delay audio playback start until video clock's first `observe_arrival` establishes a base, then offset audio by the same amount. NOTE: keep in mind that audio-only must always work, and audio should be the "master", i.e. if video doesn't arrive or is blocked, audio should still be playing. IF video arrives, it is correct to delay audio so that they are in sync.
+- [ ] **ER4**: Audio and video not synchronized — PTS timebase mismatch.
+
+  **Root cause.** Audio and video use different PTS timebases. Video PTS comes from wall-clock (`capture_start.elapsed()` in capture backends). Audio PTS comes from a frame counter (`frame_count * 20ms` in Opus encoder, line 141-142 of `opus/encoder.rs`). These diverge because the audio encoder thread doesn't tick at exactly real-time speed. Research confirmed moq-js has the same structural issue — video uses `performance.now()` while audio uses sample counting.
+
+  **Measured impact.** In-process Reliable mode: 6 ms median (both counters start from 0, close enough). Live mode over QUIC: 90–280 ms and growing (PTS values diverge over time).
+
+  **Fix: wall-clock PTS for audio + shared epoch.** Two changes, both on the publish side:
+
+  1. **Wall-clock audio PTS** (`pipeline.rs`, audio encoder loop ~line 1282): After `encoder.pop_packet()`, override `pkt.timestamp` with `start.elapsed()` instead of the Opus encoder's counter-based timestamp. The Opus codec has no internal PTS concept — `opus_encode_float` doesn't take a timestamp — so overriding is safe. Assert at most one packet per tick (the pipeline feeds exactly one 20ms frame per tick).
+
+  2. **Shared epoch** (`publish.rs` or `pipeline.rs`): Both audio and video encoder pipelines must reference the same `Instant` as their epoch, so PTS=0 means the same wall-clock moment. Without this, different thread start times cause 50–200ms constant offset depending on capture startup order. Either (a) pass a shared `Instant` to both pipelines, or (b) restamp video frames in the video encoder pipeline using the same `start` instant as audio.
+
+  **No playout changes needed.** With aligned PTS values, the existing independent-delay model works correctly: video frames gate on `playout_time()` (with jitter buffer), audio plays immediately. Both tracks share the same wall-clock timebase so the playout offset is consistent. This matches the moq-js approach: audio plays freely via the AudioContext sample clock, video gates on a reference-based delay.
+
+  **Design principles (from research):**
+  - Audio is the timing master: never gate, delay, or buffer audio for sync purposes. Audio always plays immediately.
+  - Video adjusts to match audio's timeline. The PlayoutBuffer already skips late frames and holds early ones.
+  - The fix is on the PUBLISH side (align timebases), not the SUBSCRIBE side (no need to gate audio).
+  - moq-js, GStreamer, and mpv all follow this pattern. WebRTC uses RTCP Sender Reports for cross-stream NTP correlation, but that's overkill when both tracks originate from the same process.
+
+  **What NOT to change:**
+  - Do not add an AudioPlayoutBuffer — audio should never be gated or buffered for sync.
+  - Do not change the Opus encoder's internal timestamp generation — override at the pipeline level.
+  - Do not change test sources (TestToneSource/TestPatternSource) — they share a coherent counter-based timebase and run in Reliable mode.
+  - Do not add drift correction here — that is ER7 (separate fix, ~36ms/hour).
 
 ### Medium
 
