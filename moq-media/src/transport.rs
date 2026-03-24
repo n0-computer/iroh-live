@@ -134,8 +134,9 @@ impl PacketSource for PipeSource {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::Duration;
+
+    use super::*;
 
     #[tokio::test]
     async fn media_pipe_roundtrip() {

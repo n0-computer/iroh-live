@@ -9,7 +9,7 @@ use std::time::Duration;
 use moq_media::{
     codec::VideoCodec,
     format::{AudioFormat, AudioPreset, VideoPreset},
-    playout::PlayoutMode,
+    playout::PlaybackPolicy,
     publish::{LocalBroadcast, VideoInput},
     subscribe::RemoteBroadcast,
     test_util::{
@@ -47,9 +47,10 @@ async fn publish_and_subscribe(
         .set(VideoInput::new(TestVideoSource::new(w, h), codec, [preset]))
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
-        .await
-        .unwrap();
+    let remote =
+        RemoteBroadcast::with_playback_policy("test", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
     (broadcast, remote)
 }
 
@@ -131,9 +132,10 @@ async fn multiple_renditions_subscriber_selects_each() {
         ))
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
-        .await
-        .unwrap();
+    let remote =
+        RemoteBroadcast::with_playback_policy("test", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
 
     remote.ready().await;
     let catalog = remote.catalog();
@@ -178,9 +180,10 @@ async fn multiple_renditions_have_distinct_dimensions() {
         ))
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
-        .await
-        .unwrap();
+    let remote =
+        RemoteBroadcast::with_playback_policy("test", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
 
     remote.ready().await;
     let catalog = remote.catalog();
@@ -300,9 +303,10 @@ async fn audio_and_video_roundtrip() {
         )
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
-        .await
-        .unwrap();
+    let remote =
+        RemoteBroadcast::with_playback_policy("test", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
 
     // Video frames arrive
     let mut video = remote.video_ready().await.unwrap();
@@ -335,11 +339,11 @@ async fn playout_reliable_frames_have_monotonic_timestamps() {
 
 #[cfg(feature = "h264")]
 #[tokio::test]
-async fn playout_clock_reports_jitter_after_frames() {
+async fn synced_playout_updates_timing_state_after_frames() {
     let (_broadcast, remote) = publish_and_subscribe(VideoCodec::H264, VideoPreset::P180).await;
 
     let mut track = remote.video_ready().await.unwrap();
-    // Drain a few frames so the clock has data
+    // Drain a few frames so timing state has data.
     for _ in 0..5 {
         tokio::time::timeout(TIMEOUT, track.next_frame())
             .await
@@ -347,11 +351,13 @@ async fn playout_clock_reports_jitter_after_frames() {
             .expect("closed");
     }
 
-    // Clock should have observed arrivals; in-process tests have near-zero jitter.
-    let jitter = remote.clock().jitter();
+    let state = remote.stats().timing.sync_state.get();
     assert!(
-        jitter < Duration::from_millis(500),
-        "jitter too high for in-process test: {jitter:?}"
+        matches!(
+            state.as_str(),
+            "startup" | "catchup" | "locked" | "unmanaged"
+        ),
+        "unexpected sync state: {state}"
     );
 }
 
@@ -421,12 +427,14 @@ async fn two_subscribers_receive_frames() {
         ))
         .unwrap();
 
-    let remote1 = RemoteBroadcast::with_playout_mode("s1", consumer1, PlayoutMode::Reliable)
-        .await
-        .unwrap();
-    let remote2 = RemoteBroadcast::with_playout_mode("s2", consumer2, PlayoutMode::Reliable)
-        .await
-        .unwrap();
+    let remote1 =
+        RemoteBroadcast::with_playback_policy("s1", consumer1, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
+    let remote2 =
+        RemoteBroadcast::with_playback_policy("s2", consumer2, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
 
     let mut track1 = remote1.video_ready().await.unwrap();
     let mut track2 = remote2.video_ready().await.unwrap();
@@ -459,9 +467,10 @@ async fn publisher_resolution_change_updates_subscriber() {
         ))
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
-        .await
-        .unwrap();
+    let remote =
+        RemoteBroadcast::with_playback_policy("test", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
 
     // Drain a frame from the initial rendition
     let mut track = remote.video_ready().await.unwrap();
@@ -529,9 +538,10 @@ async fn audio_clear_while_video_continues() {
         )
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
-        .await
-        .unwrap();
+    let remote =
+        RemoteBroadcast::with_playback_policy("test", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
 
     // Wait for both video and audio to appear in the catalog.
     let mut watcher = remote.catalog_watcher();
@@ -587,9 +597,10 @@ async fn rapid_republish_does_not_panic() {
     }
 
     // Should still be able to subscribe and get frames
-    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
-        .await
-        .unwrap();
+    let remote =
+        RemoteBroadcast::with_playback_policy("test", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
 
     let mut track = remote.video_ready().await.unwrap();
     let frame = tokio::time::timeout(TIMEOUT, track.next_frame())
@@ -622,9 +633,10 @@ async fn audio_replace_source_subscriber_still_receives() {
         )
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
-        .await
-        .unwrap();
+    let remote =
+        RemoteBroadcast::with_playback_policy("test", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
 
     // ready() returns when *either* video or audio appears. Since video is set
     // first, audio may not be in the catalog yet. Wait explicitly for audio.
@@ -686,9 +698,10 @@ async fn audio_clear_and_readd_works() {
         )
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
-        .await
-        .unwrap();
+    let remote =
+        RemoteBroadcast::with_playback_policy("test", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
 
     // ready() returns when *either* video or audio appears. Since video is set
     // first, audio may not be in the catalog yet. Wait explicitly for audio.
@@ -756,9 +769,10 @@ async fn video_source_switch_preserves_audio() {
         )
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
-        .await
-        .unwrap();
+    let remote =
+        RemoteBroadcast::with_playback_policy("test", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
 
     // Drain one video frame to confirm the pipeline is running
     let mut track = remote.video_ready().await.unwrap();
@@ -802,6 +816,87 @@ async fn video_source_switch_preserves_audio() {
 
 #[cfg(all(feature = "h264", feature = "opus"))]
 #[tokio::test]
+async fn active_tracks_close_and_can_be_resubscribed_after_republish() {
+    let (broadcast, consumer) = setup_broadcast().await;
+    broadcast
+        .video()
+        .set(VideoInput::new(
+            TestVideoSource::new(320, 180),
+            VideoCodec::H264,
+            [VideoPreset::P180],
+        ))
+        .unwrap();
+    broadcast
+        .audio()
+        .set(
+            TestAudioSource::new(AudioFormat::mono_48k()),
+            moq_media::codec::AudioCodec::Opus,
+            [AudioPreset::Hq],
+        )
+        .unwrap();
+
+    let remote =
+        RemoteBroadcast::with_playback_policy("test", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
+    let mut watcher = remote.catalog_watcher();
+
+    let mut old_video = remote.video_ready().await.unwrap();
+    let old_audio = remote.audio_ready(&NullAudioBackend).await.unwrap();
+    tokio::time::timeout(TIMEOUT, old_video.next_frame())
+        .await
+        .expect("timeout waiting for initial video frame")
+        .expect("initial video track closed");
+
+    // Replace both tracks the same way the split example republishes on a
+    // source change. Existing subscriber tracks must terminate so the caller
+    // can reopen them from the updated catalog.
+    broadcast
+        .video()
+        .set(VideoInput::new(
+            TestVideoSource::new(640, 360),
+            VideoCodec::H264,
+            [VideoPreset::P360],
+        ))
+        .unwrap();
+    broadcast
+        .audio()
+        .set(
+            TestAudioSource::new(AudioFormat::mono_48k()),
+            moq_media::codec::AudioCodec::Opus,
+            [AudioPreset::Hq],
+        )
+        .unwrap();
+
+    tokio::time::timeout(TIMEOUT, watcher.updated())
+        .await
+        .expect("timeout waiting for republish catalog update")
+        .expect("catalog watcher disconnected");
+
+    tokio::time::timeout(TIMEOUT, async {
+        while !old_video.is_closed() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("old video track should close after republish");
+
+    tokio::time::timeout(TIMEOUT, old_audio.stopped())
+        .await
+        .expect("old audio track should stop after republish");
+
+    let mut new_video = remote.video_ready().await.unwrap();
+    let new_audio = remote.audio_ready(&NullAudioBackend).await.unwrap();
+    let frame = tokio::time::timeout(TIMEOUT, new_video.next_frame())
+        .await
+        .expect("timeout waiting for video after republish")
+        .expect("new video track closed after republish");
+    assert_eq!(frame.dimensions, [640, 360]);
+    assert!(!new_audio.rendition().is_empty());
+}
+
+#[cfg(all(feature = "h264", feature = "opus"))]
+#[tokio::test]
 async fn rapid_audio_switches_do_not_panic() {
     let (broadcast, consumer) = setup_broadcast().await;
     broadcast
@@ -821,9 +916,10 @@ async fn rapid_audio_switches_do_not_panic() {
         )
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
-        .await
-        .unwrap();
+    let remote =
+        RemoteBroadcast::with_playback_policy("test", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
 
     // Rapid-fire audio clear + re-add cycles
     for _ in 0..5 {
@@ -882,9 +978,10 @@ async fn audio_data_flows_through_pipeline() {
         )
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
-        .await
-        .unwrap();
+    let remote =
+        RemoteBroadcast::with_playback_policy("test", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
 
     // Subscribe with a capturing backend to record decoded samples.
     let backend = CapturingAudioBackend::new();
@@ -935,19 +1032,8 @@ async fn playout_clock_reset_on_resubscribe() {
             .expect("closed");
     }
 
-    // Clock should have non-zero jitter or at least an established base
-    let jitter_before = remote.clock().jitter();
-    let _ = jitter_before; // just verify it doesn't panic
-
-    // Reset clock (as split.rs does on resubscribe)
-    remote.clock().reset();
-
-    // Jitter should be zero after reset
-    assert_eq!(
-        remote.clock().jitter(),
-        std::time::Duration::ZERO,
-        "jitter should be zero after reset"
-    );
+    // Reset sync state (as split.rs does on resubscribe). This should not panic.
+    remote.reset_sync();
 }
 
 // ── Group N: RemoteBroadcast construction and state ────────────────
@@ -966,9 +1052,10 @@ async fn remote_broadcast_empty_has_no_media() {
     let consumer = broadcast.consume();
 
     // An empty broadcast still publishes a catalog (with no renditions).
-    let remote = RemoteBroadcast::with_playout_mode("empty", consumer, PlayoutMode::Reliable)
-        .await
-        .unwrap();
+    let remote =
+        RemoteBroadcast::with_playback_policy("empty", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
 
     assert!(!remote.has_video(), "empty broadcast should have no video");
     assert!(!remote.has_audio(), "empty broadcast should have no audio");
@@ -982,9 +1069,10 @@ async fn remote_broadcast_video_appears_after_publish() {
     tokio::task::yield_now().await;
     let consumer = broadcast.consume();
 
-    let remote = RemoteBroadcast::with_playout_mode("late", consumer, PlayoutMode::Reliable)
-        .await
-        .unwrap();
+    let remote =
+        RemoteBroadcast::with_playback_policy("late", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
     assert!(!remote.has_video());
 
     // Publish video after the subscriber connected.
@@ -1078,9 +1166,10 @@ async fn audio_track_rendition_name_contains_codec() {
         )
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
-        .await
-        .unwrap();
+    let remote =
+        RemoteBroadcast::with_playback_policy("test", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
 
     let audio = remote.audio_ready(&NullAudioBackend).await.unwrap();
     let rendition = audio.rendition();
@@ -1111,9 +1200,10 @@ async fn audio_track_handle_pause_resume() {
         )
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
-        .await
-        .unwrap();
+    let remote =
+        RemoteBroadcast::with_playback_policy("test", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
 
     let audio = remote.audio_ready(&NullAudioBackend).await.unwrap();
     let handle = audio.handle();
@@ -1270,9 +1360,10 @@ async fn parallel_audio_renditions_produce_independent_output() {
         )
         .unwrap();
 
-    let remote = RemoteBroadcast::with_playout_mode("test", consumer, PlayoutMode::Reliable)
-        .await
-        .unwrap();
+    let remote =
+        RemoteBroadcast::with_playback_policy("test", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
 
     remote.ready().await;
 
@@ -1440,23 +1531,24 @@ async fn audio_decoder_inserts_silence_on_stall() {
 /// delta between the video flash frame and the audio beep onset stays
 /// within a reasonable bound.
 ///
-/// Uses PlayoutMode::Reliable (every frame in order, no playout delay)
-/// to isolate the encode/decode pipeline sync from playout clock timing.
-/// The Reliable mode test establishes that the correlation detection
-/// mechanism works and that codec pipeline latency doesn't introduce
+/// Uses `PlaybackPolicy::unmanaged()` (every frame in order, no active video sync)
+/// to isolate the encode/decode pipeline sync from audio-master playout
+/// behavior. The Unmanaged mode test establishes that the correlation
+/// detection mechanism works and that codec pipeline latency doesn't introduce
 /// unbounded drift. A separate Live-mode test (with patchbay network
-/// simulation) will verify playout clock sync under realistic conditions.
+/// simulation) verifies synced playout under realistic conditions.
 ///
 /// The threshold here is 100 ms — generous because the H.264 encoder's
 /// DPB introduces a few frames of latency (~100 ms at 30 fps) that
 /// shifts video relative to audio. The 45 ms ITU-R BT.1359 threshold
-/// applies to the Live-mode test where the playout clock compensates
+/// applies to the Live-mode test where synced playout compensates
 /// for this offset.
 #[cfg(all(feature = "h264", feature = "opus"))]
 #[tokio::test]
 async fn av_sync_beep_flash_correlation() {
-    use moq_media::test_util::TimestampingAudioBackend;
     use std::time::Instant;
+
+    use moq_media::test_util::TimestampingAudioBackend;
 
     let (broadcast, consumer) = setup_broadcast().await;
 
@@ -1480,12 +1572,12 @@ async fn av_sync_beep_flash_correlation() {
         )
         .unwrap();
 
-    // Subscribe with Reliable playout (no playout delay, every frame
-    // in order). This tests pipeline sync, not playout clock sync.
-    let remote = RemoteBroadcast::with_playout_mode(
+    // Subscribe with Unmanaged playout (no playout delay, every frame
+    // in order). This tests pipeline sync, not synced playout behavior.
+    let remote = RemoteBroadcast::with_playback_policy(
         "av-sync-test",
         consumer,
-        PlayoutMode::Reliable,
+        PlaybackPolicy::unmanaged(),
     )
     .await
     .unwrap();
@@ -1560,7 +1652,7 @@ async fn av_sync_beep_flash_correlation() {
         "no matched A/V sync events found"
     );
 
-    // In Reliable mode with in-process transport, the sync error comes
+    // In Unmanaged mode with in-process transport, the sync error comes
     // from the H.264 encoder's DPB latency (a few frames at 30 fps ≈
     // 66-100 ms) and the audio decode loop's 10 ms tick resolution. The
     // important thing is that (a) both tracks produce correlated events,
@@ -1569,7 +1661,7 @@ async fn av_sync_beep_flash_correlation() {
     //
     // We use 200 ms as the threshold here — the encoder latency is the
     // dominant factor and varies by codec speed. The 45 ms ITU-R BT.1359
-    // threshold applies to the Live-mode playout clock test, where the
+    // threshold applies to the Live-mode synced playout test, where the
     // clock compensates for codec latency.
     const THRESHOLD_MS: f64 = 200.0;
 
@@ -1586,7 +1678,9 @@ async fn av_sync_beep_flash_correlation() {
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let median = sorted[sorted.len() / 2];
     let max = sorted.last().copied().unwrap_or(0.0);
-    eprintln!("  median: {median:.1} ms, max: {max:.1} ms, {within_threshold}/{total} within {THRESHOLD_MS} ms ({pct:.0}%)");
+    eprintln!(
+        "  median: {median:.1} ms, max: {max:.1} ms, {within_threshold}/{total} within {THRESHOLD_MS} ms ({pct:.0}%)"
+    );
 
     assert!(
         pct >= 95.0,

@@ -30,7 +30,6 @@ use iroh_live::{
         capture::{CameraCapturer, CaptureBackend, ScreenCapturer},
         codec::{AudioCodec, DefaultDecoders, DynamicVideoDecoder, VideoCodec},
         format::{AudioPreset, DecodeConfig, DecoderBackend, PlaybackConfig, VideoPreset},
-        playout::PlayoutClock,
         publish::{LocalBroadcast, VideoInput},
         subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
         test_sources::{TestPatternSource, TestToneSource},
@@ -201,10 +200,18 @@ impl PatchbayState {
             return;
         }
         self.dirty = false;
+        let jitter_ms = self.latency_ms / 5;
+        info!(
+            rate_kbit = self.rate_kbit,
+            latency_ms = self.latency_ms,
+            jitter_ms,
+            loss_pct = self.loss_pct,
+            "patchbay: link conditions changed"
+        );
         let cond = Some(patchbay::LinkCondition::Manual(patchbay::LinkLimits {
             rate_kbit: self.rate_kbit,
             latency_ms: self.latency_ms,
-            jitter_ms: self.latency_ms / 5,
+            jitter_ms,
             loss_pct: self.loss_pct,
             ..Default::default()
         }));
@@ -439,7 +446,7 @@ impl PublishView {
         let video_size = fit_to_aspect(avail, aspect);
 
         if self.preview.is_none()
-            && let Some(track) = self.broadcast.preview(DecodeConfig::default())
+            && let Some(track) = self.broadcast.preview()
         {
             self.preview = Some(VideoTrackView::new(ctx, "pub-video", track));
         }
@@ -494,10 +501,8 @@ struct SubscribeView {
     backend: DecoderBackend,
     render_mode: RenderMode,
     _live: Live,
-
-    playout_clock: PlayoutClock,
     overlay: DebugOverlay,
-    skip_threshold_ms: u32,
+    max_stale_duration_ms: u32,
 
     #[cfg(feature = "wgpu")]
     wgpu_render_state: Option<egui_wgpu::RenderState>,
@@ -512,8 +517,6 @@ impl SubscribeView {
         let live = Live::new(endpoint);
         let (session, broadcast) = live.subscribe(publisher_addr, BROADCAST_NAME).await?;
         info!("subscriber connected");
-
-        let playout_clock = broadcast.clock().clone();
 
         iroh_live::util::spawn_stats_recorder(
             session.conn(),
@@ -535,8 +538,7 @@ impl SubscribeView {
             _audio: tracks.audio,
             backend: DecoderBackend::Auto,
             render_mode: *RenderMode::VARIANTS.last().unwrap(),
-            playout_clock,
-            skip_threshold_ms: 500,
+            max_stale_duration_ms: 500,
             overlay: DebugOverlay::new(&[
                 StatCategory::Net,
                 StatCategory::Render,
@@ -554,13 +556,20 @@ impl SubscribeView {
     }
 
     fn resubscribe(&mut self, ctx: &egui::Context) {
-        self.playout_clock.reset();
+        // Reset sync state so new pipelines start fresh.
+        self.broadcast.reset_sync();
 
-        // Resubscribe video with default quality selection.
-        match self.broadcast.video() {
+        // Resubscribe video with the current decoder backend.
+        let decode_config = DecodeConfig {
+            backend: self.backend,
+            ..Default::default()
+        };
+        let opts = moq_media::subscribe::VideoOptions::default().playback(decode_config);
+        match self.broadcast.video_with(opts) {
             Ok(track) => {
                 info!(
                     rendition = track.rendition(),
+                    backend = ?self.backend,
                     "subscriber: resubscribed to video"
                 );
                 self.video = Some(self.make_video_view(ctx, track));
@@ -609,8 +618,13 @@ impl SubscribeView {
         // the new one is ready. Wait for the close, then resubscribe from
         // the current catalog (which already reflects the new source).
         let video_closed = self.video.as_ref().is_some_and(|v| v.track().is_closed());
-        if video_closed {
-            info!("subscriber: video track closed, resubscribing from current catalog");
+        let audio_stopped = self._audio.as_ref().is_some_and(AudioTrack::is_stopped);
+        if video_closed || audio_stopped {
+            info!(
+                video_closed,
+                audio_stopped,
+                "subscriber: media track stopped, resubscribing from current catalog"
+            );
             self.resubscribe(ctx);
         }
 
@@ -696,14 +710,15 @@ impl SubscribeView {
 
             if ui
                 .add(
-                    egui::Slider::new(&mut self.skip_threshold_ms, 200..=5000)
-                        .text("skip ms")
+                    egui::Slider::new(&mut self.max_stale_duration_ms, 200..=5000)
+                        .text("stale ms")
                         .logarithmic(true),
                 )
                 .changed()
             {
-                self.broadcast
-                    .set_skip_threshold(Duration::from_millis(self.skip_threshold_ms as u64));
+                self.broadcast.set_max_stale_duration(Duration::from_millis(
+                    self.max_stale_duration_ms as u64,
+                ));
             }
         });
 

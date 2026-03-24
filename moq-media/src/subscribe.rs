@@ -7,8 +7,7 @@
 
 use std::{
     collections::BTreeMap,
-    future,
-    sync::Arc,
+    sync::{Arc, atomic::AtomicBool},
     thread,
     time::{Duration, Instant},
 };
@@ -21,7 +20,7 @@ use moq_lite::{BroadcastConsumer, Track};
 use n0_error::{Result, StackResultExt, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{Instrument, debug, warn};
 
@@ -29,8 +28,10 @@ use crate::{
     adaptive::{AdaptiveConfig, AdaptiveVideoTrack},
     format::{DecodeConfig, PlaybackConfig, Quality, VideoFrame},
     net::NetworkSignals,
-    pipeline::{AudioDecoderPipeline, VideoDecoderHandle, VideoDecoderPipeline},
-    playout::{PlayoutClock, PlayoutMode},
+    pipeline::{
+        AudioDecoderPipeline, AudioPosition, DecodeOpts, VideoDecoderHandle, VideoDecoderPipeline,
+    },
+    playout::{FreshnessPolicy, PlaybackPolicy},
     processing::scale::Scaler,
     traits::{
         AudioDecoder, AudioSinkHandle, AudioStreamFactory, Decoders, VideoDecoder, VideoSource,
@@ -218,12 +219,14 @@ pub struct RemoteBroadcast {
     #[debug("BroadcastConsumer")]
     broadcast: BroadcastConsumer,
     catalog_watchable: Watchable<CatalogSnapshot>,
-    clock: PlayoutClock,
+    playback_policy: PlaybackPolicy,
     shutdown: CancellationToken,
     _catalog_task: Arc<AbortOnDropHandle<()>>,
     stats: crate::stats::SubscribeStats,
-    /// Shared skip threshold in milliseconds, read by decode loops.
-    skip_threshold_ms: Arc<std::sync::atomic::AtomicU64>,
+    audio_position: AudioPosition,
+    video_started: Arc<AtomicBool>,
+    /// Shared freshness threshold used by new and existing tracks.
+    max_stale_duration_ms: Arc<std::sync::atomic::AtomicU64>,
     /// Skip generation counter: video increments on skip, audio flushes to resync.
     skip_generation: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -292,22 +295,32 @@ impl RemoteBroadcast {
     /// Creates a new remote broadcast subscription.
     ///
     /// Waits for the initial catalog before returning. Spawns a background
-    /// task that watches for catalog updates. A shared [`PlayoutClock`] is
-    /// created from the given mode and passed to all tracks for A/V sync.
+    /// task that watches for catalog updates.
+    ///
+    /// This uses the default interactive playback policy:
+    /// [`PlaybackPolicy::audio_master()`]. Use
+    /// [`RemoteBroadcast::with_playback_policy`] when you need unmanaged
+    /// playout or a different freshness threshold.
     pub async fn new(broadcast_name: impl ToString, broadcast: BroadcastConsumer) -> Result<Self> {
-        Self::with_playout_mode(broadcast_name, broadcast, PlayoutMode::default()).await
+        Self::with_playback_policy(broadcast_name, broadcast, PlaybackPolicy::default()).await
     }
 
-    /// Creates a new remote broadcast subscription with a specific [`PlayoutMode`].
+    /// Creates a new remote broadcast subscription with an explicit playback
+    /// policy.
+    ///
+    /// Choose the playback policy when you create the subscription. In normal
+    /// applications, this is where you decide whether you want audio-master
+    /// sync or unmanaged playout, and how aggressively you want to skip stale
+    /// media after a stall.
     #[tracing::instrument("RemoteBroadcast", skip_all, fields(name=tracing::field::Empty))]
-    pub async fn with_playout_mode(
+    pub async fn with_playback_policy(
         broadcast_name: impl ToString,
         broadcast: BroadcastConsumer,
-        playout_mode: PlayoutMode,
+        playback_policy: PlaybackPolicy,
     ) -> Result<Self> {
+        let max_stale_duration_ms = playback_policy.freshness.max_stale_duration.as_millis() as u64;
         let broadcast_name = broadcast_name.to_string();
         tracing::Span::current().record("name", tracing::field::display(&broadcast_name));
-        let clock = PlayoutClock::new(playout_mode);
         let shutdown = CancellationToken::new();
 
         let (catalog_watchable, catalog_task) = {
@@ -352,11 +365,15 @@ impl RemoteBroadcast {
             broadcast_name,
             broadcast,
             catalog_watchable,
-            clock,
+            playback_policy,
             _catalog_task: Arc::new(AbortOnDropHandle::new(catalog_task)),
             shutdown,
             stats: crate::stats::SubscribeStats::default(),
-            skip_threshold_ms: Arc::new(std::sync::atomic::AtomicU64::new(500)),
+            audio_position: AudioPosition::default(),
+            video_started: Arc::new(AtomicBool::new(false)),
+            max_stale_duration_ms: Arc::new(std::sync::atomic::AtomicU64::new(
+                max_stale_duration_ms,
+            )),
             skip_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }
@@ -364,6 +381,19 @@ impl RemoteBroadcast {
     /// Returns the name of this broadcast.
     pub fn broadcast_name(&self) -> &str {
         &self.broadcast_name
+    }
+
+    /// Returns a [`DecodeOpts`] value wired to this
+    /// broadcast's timing state, stats, and skip coordination.
+    fn decode_opts(&self) -> DecodeOpts {
+        DecodeOpts {
+            stats: self.stats.decode_stats(),
+            audio_position: self.audio_position.clone(),
+            video_started: self.video_started.clone(),
+            playback_policy: self.playback_policy.clone(),
+            max_stale_duration_ms: self.max_stale_duration_ms.clone(),
+            skip_generation: self.skip_generation.clone(),
+        }
     }
 
     /// Returns a watcher for the catalog (renditions added/removed).
@@ -386,11 +416,6 @@ impl RemoteBroadcast {
         !self.catalog().audio.renditions.is_empty()
     }
 
-    /// Returns the shared playout clock for A/V sync and latency control.
-    pub fn clock(&self) -> &PlayoutClock {
-        &self.clock
-    }
-
     /// Returns the subscribe-side stats. Decode and playout pipelines
     /// record into these automatically. External producers (e.g. iroh
     /// transport stats) can record additional metrics into the net stats.
@@ -398,20 +423,45 @@ impl RemoteBroadcast {
         &self.stats
     }
 
-    /// Sets the playout mode, updating the shared clock.
-    pub fn set_playout_mode(&self, mode: PlayoutMode) {
-        self.clock.set_mode(mode);
+    /// Returns the current playback policy for this broadcast.
+    ///
+    /// We return an owned value because freshness may be adjusted at runtime.
+    /// This is useful when UI code wants to show the current tuning state or
+    /// clone the policy for a new subscription.
+    pub fn playback_policy(&self) -> PlaybackPolicy {
+        self.playback_policy
+            .clone()
+            .with_freshness(FreshnessPolicy::new(Duration::from_millis(
+                self.max_stale_duration_ms
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            )))
     }
 
-    /// Sets the skip threshold for the video decode loop.
+    /// Resets sync state for a fresh pipeline start. Call before
+    /// rebuilding video/audio tracks (decoder switch, resubscribe)
+    /// so the new pipelines don't inherit stale timing from the
+    /// old session.
+    pub fn reset_sync(&self) {
+        self.audio_position.reset();
+        self.video_started
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Sets the maximum stale duration used for transport freshness and
+    /// decoder skip recovery.
     ///
-    /// When the decoder falls behind by more than this duration,
-    /// non-keyframes are skipped until the next keyframe to recover.
-    /// Higher values let `delay_ms` show sustained network latency
-    /// before recovery kicks in. Default is 500ms.
-    pub fn set_skip_threshold(&self, threshold: std::time::Duration) {
-        self.skip_threshold_ms.store(
-            threshold.as_millis() as u64,
+    /// This is the one playback knob that we support changing on a live
+    /// subscription. Increase it when you want to preserve more continuity
+    /// through congestion. Decrease it when you want faster recovery back to
+    /// the live edge after a stall.
+    ///
+    /// We keep sync mode fixed for the lifetime of the subscription. Changing
+    /// sync mode rebuilds the mental model of playout, while freshness is a
+    /// straightforward transport/recovery tradeoff that is safe to retune
+    /// live.
+    pub fn set_max_stale_duration(&self, duration: Duration) {
+        self.max_stale_duration_ms.store(
+            duration.as_millis() as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
     }
@@ -443,8 +493,10 @@ impl RemoteBroadcast {
         playback_config: &DecodeConfig,
         track_name: &str,
     ) -> Result<VideoTrack> {
-        let clock = self.clock.clone();
-        let max_latency = clock.hang_max_latency();
+        let max_latency = Duration::from_millis(
+            self.max_stale_duration_ms
+                .load(std::sync::atomic::Ordering::Relaxed),
+        );
         let catalog = self.catalog();
         let video = &catalog.video;
         let config = video
@@ -465,12 +517,7 @@ impl RemoteBroadcast {
             consumer,
             config,
             playback_config,
-            crate::stats::DecodeOpts {
-                clock: Some(clock),
-                stats: Some(self.stats.decode_stats()),
-                skip_threshold_ms: Some(self.skip_threshold_ms.clone()),
-                skip_generation: Some(self.skip_generation.clone()),
-            },
+            self.decode_opts(),
         )
     }
 
@@ -490,8 +537,10 @@ impl RemoteBroadcast {
         name: &str,
         audio_backend: &dyn AudioStreamFactory,
     ) -> Result<AudioTrack> {
-        let clock = self.clock.clone();
-        let max_latency = clock.hang_max_latency();
+        let max_latency = Duration::from_millis(
+            self.max_stale_duration_ms
+                .load(std::sync::atomic::Ordering::Relaxed),
+        );
         let catalog = self.catalog();
         let audio = &catalog.audio;
         let config = audio.renditions.get(name).context("rendition not found")?;
@@ -509,12 +558,7 @@ impl RemoteBroadcast {
             consumer,
             config.clone(),
             audio_backend,
-            crate::stats::DecodeOpts {
-                clock: Some(clock),
-                stats: Some(self.stats.decode_stats()),
-                skip_threshold_ms: None, // audio doesn't use skip threshold
-                skip_generation: Some(self.skip_generation.clone()),
-            },
+            self.decode_opts(),
         )
         .await
     }
@@ -722,7 +766,7 @@ impl AudioTrack {
         consumer: OrderedConsumer,
         config: AudioConfig,
         audio_backend: &dyn AudioStreamFactory,
-        opts: crate::stats::DecodeOpts,
+        opts: DecodeOpts,
     ) -> Result<Self> {
         let source = MoqPacketSource(consumer);
         let config: rusty_codecs::config::AudioConfig = config.into();
@@ -745,6 +789,11 @@ impl AudioTrack {
     pub fn handle(&self) -> &dyn AudioSinkHandle {
         self.pipeline.handle()
     }
+
+    /// Returns `true` if the decoder pipeline has already stopped.
+    pub fn is_stopped(&self) -> bool {
+        self.pipeline.is_stopped()
+    }
 }
 
 /// Decoded video track from a remote broadcast.
@@ -755,7 +804,7 @@ impl AudioTrack {
 #[derive(derive_more::Debug)]
 pub struct VideoTrack {
     #[debug(skip)]
-    rx: mpsc::Receiver<VideoFrame>,
+    rx: crate::frame_channel::FrameReceiver<VideoFrame>,
     inner: VideoTrackInner,
 }
 
@@ -771,42 +820,17 @@ enum VideoTrackInner {
         _shutdown_guard: DropGuard,
         _thread: thread::JoinHandle<()>,
     },
-    /// Empty placeholder.
-    #[debug("Empty")]
-    Empty {
-        rendition: String,
-        viewport: Watchable<(u32, u32)>,
-        _task: AbortOnDropHandle<()>,
-    },
 }
 
 impl VideoTrack {
-    /// Creates an empty placeholder that never produces frames.
-    pub fn empty(rendition: impl ToString) -> Self {
-        let (tx, rx) = mpsc::channel(1);
-        let task = tokio::spawn(async move {
-            future::pending::<()>().await;
-            let _ = tx;
-        });
-        Self {
-            rx,
-            inner: VideoTrackInner::Empty {
-                rendition: rendition.to_string(),
-                viewport: Default::default(),
-                _task: AbortOnDropHandle::new(task),
-            },
-        }
-    }
-
     /// Creates a track from a raw [`VideoSource`] (e.g. camera capture).
     pub fn from_video_source(
         rendition: String,
         shutdown: CancellationToken,
         mut source: impl VideoSource,
-        _decode_config: DecodeConfig,
     ) -> Self {
         let viewport = Watchable::new((1u32, 1u32));
-        let (frame_tx, frame_rx) = mpsc::channel::<VideoFrame>(2);
+        let (frame_tx, frame_rx) = crate::frame_channel::frame_channel();
         let thread_name = format!("vpr-{:>4}-{:>4}", source.name(), rendition);
         let thread = spawn_thread(thread_name, {
             let mut viewport = viewport.watch();
@@ -862,7 +886,7 @@ impl VideoTrack {
                                 f.timestamp = start.elapsed();
                                 f
                             };
-                            let _ = frame_tx.blocking_send(decoded);
+                            frame_tx.send(decoded);
                         }
                         Ok(None) => {}
                         Err(_) => break,
@@ -894,7 +918,7 @@ impl VideoTrack {
         consumer: OrderedConsumer,
         config: &VideoConfig,
         playback_config: &DecodeConfig,
-        opts: crate::stats::DecodeOpts,
+        opts: DecodeOpts,
     ) -> Result<Self> {
         let source = MoqPacketSource(consumer);
         let config: rusty_codecs::config::VideoConfig = config.clone().into();
@@ -907,7 +931,7 @@ impl VideoTrack {
     pub fn from_pipeline(pipeline: VideoDecoderPipeline) -> Self {
         let VideoDecoderPipeline { frames, handle } = pipeline;
         Self {
-            rx: frames.into_rx(),
+            rx: frames.rx,
             inner: VideoTrackInner::Pipeline(handle),
         }
     }
@@ -916,8 +940,7 @@ impl VideoTrack {
     pub fn set_viewport(&self, w: u32, h: u32) {
         match &self.inner {
             VideoTrackInner::Pipeline(handle) => handle.set_viewport(w, h),
-            VideoTrackInner::VideoSource { viewport, .. }
-            | VideoTrackInner::Empty { viewport, .. } => {
+            VideoTrackInner::VideoSource { viewport, .. } => {
                 viewport.set((w, h)).ok();
             }
         }
@@ -927,8 +950,7 @@ impl VideoTrack {
     pub fn rendition(&self) -> &str {
         match &self.inner {
             VideoTrackInner::Pipeline(handle) => handle.rendition(),
-            VideoTrackInner::VideoSource { rendition, .. }
-            | VideoTrackInner::Empty { rendition, .. } => rendition,
+            VideoTrackInner::VideoSource { rendition, .. } => rendition,
         }
     }
 
@@ -937,39 +959,31 @@ impl VideoTrack {
         match &self.inner {
             VideoTrackInner::Pipeline(handle) => handle.decoder_name(),
             VideoTrackInner::VideoSource { .. } => "capture",
-            VideoTrackInner::Empty { .. } => "",
         }
     }
 
-    /// Returns `true` if the track's frame channel has been closed (producer stopped).
+    /// Returns `true` if the track's frame producer has been dropped.
     pub fn is_closed(&self) -> bool {
         self.rx.is_closed()
     }
 
-    /// Returns the most recent decoded frame, draining any older buffered frames.
+    /// Returns the latest decoded frame, or `None` if no new frame
+    /// has arrived since the last call.
     pub fn current_frame(&mut self) -> Option<VideoFrame> {
-        let mut out = None;
-        while let Ok(item) = self.rx.try_recv() {
-            out = Some(item);
-        }
-        out
+        self.rx.take()
     }
 
-    /// Returns the next decoded frame, waiting if none is buffered.
+    /// Waits for the next frame. Returns `None` when the producer
+    /// shuts down.
     pub async fn next_frame(&mut self) -> Option<VideoFrame> {
-        if let Some(frame) = self.current_frame() {
-            Some(frame)
-        } else {
-            self.rx.recv().await
-        }
+        self.rx.recv().await
     }
 }
 
 /// Combined video and audio tracks from a [`RemoteBroadcast`].
 ///
 /// Convenience type that holds the broadcast alongside its decoded
-/// media tracks. The broadcast's shared [`PlayoutClock`] is used for
-/// A/V synchronization and playout timing.
+/// media tracks and shared timing state.
 #[derive(derive_more::Debug)]
 pub struct MediaTracks {
     /// The underlying broadcast subscription.
@@ -982,9 +996,6 @@ pub struct MediaTracks {
 
 impl MediaTracks {
     /// Creates media tracks by subscribing to both video and audio from the broadcast.
-    ///
-    /// Uses the broadcast's playout clock for A/V sync. To change the playout
-    /// mode, call [`RemoteBroadcast::set_playout_mode`] before or after.
     pub async fn new<D: Decoders>(
         broadcast: RemoteBroadcast,
         audio_backend: &dyn AudioStreamFactory,
@@ -1017,10 +1028,5 @@ impl MediaTracks {
             audio,
             video,
         })
-    }
-
-    /// Returns the shared playout clock for latency control and A/V sync.
-    pub fn clock(&self) -> &PlayoutClock {
-        self.broadcast.clock()
     }
 }

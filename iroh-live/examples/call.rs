@@ -23,7 +23,7 @@ use iroh_live::{
         audio_backend::{AudioBackend, AudioDevice},
         capture::{CameraCapturer, CaptureBackend, ScreenCapturer},
         codec::{AudioCodec, DefaultDecoders, DynamicVideoDecoder, VideoCodec},
-        format::{AudioPreset, DecodeConfig, PlaybackConfig, VideoPreset},
+        format::{AudioPreset, PlaybackConfig, VideoPreset},
         publish::{LocalBroadcast, VideoInput},
         subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
         test_sources::{TestPatternSource, TestToneSource},
@@ -441,7 +441,7 @@ impl SetupState {
 
     fn preview_ui(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         if self.preview.is_none()
-            && let Some(track) = self.broadcast.preview(DecodeConfig::default())
+            && let Some(track) = self.broadcast.preview()
         {
             self.preview = Some(VideoTrackView::new(ctx, "setup-preview", track));
         }
@@ -513,7 +513,7 @@ impl InCallState {
 
     fn pip_ui(&mut self, ctx: &egui::Context) {
         if self.preview.is_none()
-            && let Some(track) = self.broadcast.preview(DecodeConfig::default())
+            && let Some(track) = self.broadcast.preview()
         {
             self.preview = Some(VideoTrackView::new(ctx, "local-preview", track));
         }

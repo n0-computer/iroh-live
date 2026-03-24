@@ -37,8 +37,8 @@ use crate::codec::AudioCodec;
 use crate::codec::VideoCodec;
 use crate::{
     format::{
-        AudioEncoderConfig, AudioFormat, AudioPreset, DecodeConfig, VideoEncoderConfig,
-        VideoFormat, VideoFrame, VideoPreset,
+        AudioEncoderConfig, AudioFormat, AudioPreset, VideoEncoderConfig, VideoFormat, VideoFrame,
+        VideoPreset,
     },
     pipeline::{AudioEncoderPipeline, PreEncodedVideoPipeline, VideoEncoderPipeline},
     subscribe::VideoTrack,
@@ -284,7 +284,7 @@ impl LocalBroadcast {
     ///
     /// Only available when the video input is [`VideoInput::Renditions`] —
     /// pre-encoded sources do not produce raw frames for local preview.
-    pub fn preview(&self, decode_config: DecodeConfig) -> Option<VideoTrack> {
+    pub fn preview(&self) -> Option<VideoTrack> {
         let (source, shutdown) = {
             let state = self.state.lock().expect("poisoned");
             let renditions = match state.video.as_ref()? {
@@ -298,7 +298,6 @@ impl LocalBroadcast {
             "local".to_string(),
             shutdown,
             source,
-            decode_config,
         ))
     }
 
@@ -878,6 +877,11 @@ impl VideoRenditions {
             VideoCodec::V4l2H264 => self.add_with_generic::<codec::V4l2Encoder>(preset),
             #[cfg(all(target_os = "android", feature = "android"))]
             VideoCodec::AndroidH264 => self.add_with_generic::<codec::AndroidEncoder>(preset),
+            #[allow(
+                unreachable_patterns,
+                reason = "platform-gated codec variants may be absent"
+            )]
+            other => tracing::warn!("no encoder for {other:?} on this platform"),
         }
     }
 
@@ -974,9 +978,8 @@ impl SharedVideoSource {
             let shutdown = shutdown.clone();
             let running = running.clone();
             move || {
-                let frame_time = Duration::from_secs_f32(1. / 30.);
-                let mut start = Instant::now();
-                let mut frame_idx: u32 = 0;
+                let mut wall_start = Instant::now();
+                let mut pts_start: Option<Duration> = None;
                 // Track whether the source has ever been started. Some sources
                 // (e.g. PipeWire capturers) cannot survive a stop() before their
                 // first start() because stop() permanently kills the capture
@@ -1010,10 +1013,12 @@ impl SharedVideoSource {
                             warn!("Failed to start video source: {err:#}");
                         }
                         ever_started = true;
-                        // Reset frame pacing so accumulated pause time doesn't
-                        // cause a burst of frames on resume.
-                        start = Instant::now();
-                        frame_idx = 0;
+                        // Re-anchor pacing on each resume. This avoids a burst
+                        // of "catch-up" frames after the source was paused and
+                        // keeps deterministic test sources aligned to their own
+                        // timestamps instead of an arbitrary fixed cadence.
+                        wall_start = Instant::now();
+                        pts_start = None;
                     }
                     if shutdown.is_cancelled() {
                         break;
@@ -1021,17 +1026,26 @@ impl SharedVideoSource {
 
                     match source.pop_frame() {
                         Ok(Some(frame)) => {
+                            // The shared source thread must follow the source's
+                            // PTS cadence. A fixed 30fps loop here is wrong for
+                            // any source whose timestamps are not 30fps, and it
+                            // can make published PTS advance faster or slower
+                            // than wall-clock. If the source already blocks at
+                            // capture cadence, `actual >= expected` and we send
+                            // immediately. If it is a synthetic source that
+                            // returns instantly, the PTS delta provides the
+                            // correct pacing.
+                            let base_pts = *pts_start.get_or_insert(frame.timestamp);
+                            let expected = frame.timestamp.saturating_sub(base_pts);
+                            let actual = wall_start.elapsed();
+                            if actual < expected {
+                                thread::sleep(expected - actual);
+                            }
                             let _ = tx.send(Some(frame));
                         }
                         Ok(None) => {}
                         Err(_) => break,
                     }
-                    let expected = frame_time * frame_idx;
-                    let actual = start.elapsed();
-                    if actual < expected {
-                        thread::sleep(expected - actual);
-                    }
-                    frame_idx = frame_idx.wrapping_add(1);
                 }
             }
         });
@@ -1083,8 +1097,17 @@ impl VideoSource for SharedVideoSource {
     }
 
     fn pop_frame(&mut self) -> anyhow::Result<Option<VideoFrame>> {
-        let frame = self.frames_rx.borrow_and_update().clone();
-        Ok(frame)
+        // SharedVideoSource is a fan-out wrapper around a single capture thread.
+        // Returning the last frame unconditionally would make slower sources
+        // appear to run at the encoder's poll rate, duplicating frames and PTS
+        // when the encoder polls faster than new captures arrive. Preserve the
+        // normal VideoSource contract instead: `Some(frame)` only for newly
+        // arrived captures, `None` when no fresh frame is ready yet.
+        match self.frames_rx.has_changed() {
+            Ok(true) => Ok(self.frames_rx.borrow_and_update().clone()),
+            Ok(false) => Ok(None),
+            Err(_) => Ok(None),
+        }
     }
 }
 
@@ -1160,7 +1183,7 @@ mod tests {
         let broadcast = LocalBroadcast::new();
         broadcast.set_video(Some(make_renditions().into())).unwrap();
         let watch = broadcast
-            .preview(DecodeConfig::default())
+            .preview()
             .expect("preview should return Some when video is set");
         // The watch track exists — it will produce decoded frames once the
         // decode loop runs, but here we just verify it was created successfully.
@@ -1171,9 +1194,7 @@ mod tests {
     async fn set_video_stops_old_local_watch() {
         let broadcast = LocalBroadcast::new();
         broadcast.set_video(Some(make_renditions().into())).unwrap();
-        let watch = broadcast
-            .preview(DecodeConfig::default())
-            .expect("should have watch");
+        let watch = broadcast.preview().expect("should have watch");
 
         // Replace video — old local watches should be cancelled.
         broadcast.set_video(Some(make_renditions().into())).unwrap();
@@ -1181,7 +1202,7 @@ mod tests {
         // The old watch's cancellation token should now be cancelled.
         // We can verify by checking that a new preview still works.
         let watch2 = broadcast
-            .preview(DecodeConfig::default())
+            .preview()
             .expect("new watch should work after replacement");
         drop(watch);
         drop(watch2);
@@ -1194,7 +1215,7 @@ mod tests {
         broadcast.set_video(Some(make_renditions().into())).unwrap();
 
         let watch = broadcast
-            .preview(DecodeConfig::default())
+            .preview()
             .expect("watch should work with replacement video");
         drop(watch);
     }
@@ -1203,13 +1224,11 @@ mod tests {
     async fn set_video_none_stops_local_watch() {
         let broadcast = LocalBroadcast::new();
         broadcast.set_video(Some(make_renditions().into())).unwrap();
-        let _watch = broadcast
-            .preview(DecodeConfig::default())
-            .expect("should have watch");
+        let _watch = broadcast.preview().expect("should have watch");
 
         broadcast.set_video(None).unwrap();
         assert!(
-            broadcast.preview(DecodeConfig::default()).is_none(),
+            broadcast.preview().is_none(),
             "preview should return None after set_video(None)"
         );
     }
@@ -1235,7 +1254,7 @@ mod tests {
 
         // Verify the new video works.
         let watch = broadcast
-            .preview(DecodeConfig::default())
+            .preview()
             .expect("new watch should work after replacing parked video");
         drop(watch);
     }
@@ -1255,7 +1274,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Verify no video available.
-        assert!(broadcast.preview(DecodeConfig::default()).is_none());
+        assert!(broadcast.preview().is_none());
     }
 
     // --- Real encoder pipeline tests ---

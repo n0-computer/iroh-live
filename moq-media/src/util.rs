@@ -37,6 +37,20 @@ where
 }
 
 #[cfg(test)]
+pub(crate) fn encoded_frames_to_media_packets(
+    input: Vec<crate::format::EncodedFrame>,
+) -> Vec<crate::format::MediaPacket> {
+    input
+        .into_iter()
+        .map(|frame| crate::format::MediaPacket {
+            timestamp: frame.timestamp,
+            payload: frame.payload.into(),
+            is_keyframe: frame.is_keyframe,
+        })
+        .collect()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -54,18 +68,4 @@ mod tests {
         let result = handle.join();
         assert!(result.is_err(), "panic should propagate through join");
     }
-}
-
-#[cfg(test)]
-pub(crate) fn encoded_frames_to_media_packets(
-    input: Vec<crate::format::EncodedFrame>,
-) -> Vec<crate::format::MediaPacket> {
-    input
-        .into_iter()
-        .map(|frame| crate::format::MediaPacket {
-            timestamp: frame.timestamp,
-            payload: frame.payload.into(),
-            is_keyframe: frame.is_keyframe,
-        })
-        .collect()
 }
