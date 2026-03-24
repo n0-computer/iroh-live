@@ -31,7 +31,7 @@ use objc2_video_toolbox::{
 
 use crate::{
     codec::h264::annexb::{build_avcc, length_prefixed_to_annex_b},
-    config::{H264, VideoCodec, VideoConfig},
+    config::VideoConfig,
     format::{EncodedFrame, NalFormat, ScaleMode, VideoEncoderConfig, VideoFrame},
     processing::{convert::pixel_format_to_yuv420, scale::Scaler},
     traits::{VideoEncoder, VideoEncoderFactory},
@@ -744,7 +744,10 @@ unsafe fn extract_sps_pps_from_format_desc(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{codec::test_util::make_rgba_frame, format::VideoPreset, traits::VideoEncoder};
+    use crate::{
+        codec::test_util::make_rgba_frame, config::VideoCodec, format::VideoPreset,
+        traits::VideoEncoder,
+    };
 
     #[test]
     #[ignore]

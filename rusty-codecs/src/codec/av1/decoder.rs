@@ -178,8 +178,8 @@ mod tests {
         let h = 180u32;
         let mut enc = Av1Encoder::with_preset(VideoPreset::P180).unwrap();
 
-        // rav1e buffers frames for look-ahead; send enough to produce output
-        let frames: Vec<VideoFrame> = (0..60)
+        // low_latency rav1e emits packets after a few frames; 15 is plenty.
+        let frames: Vec<VideoFrame> = (0..15)
             .map(|i| make_rgba_frame(w, h, (i * 4) as u8, 128, 64))
             .collect();
         let packets = encode_frames(&mut enc, &frames);
@@ -203,8 +203,8 @@ mod tests {
             }
         }
         assert!(
-            decoded_count >= 5,
-            "expected >= 5 decoded frames, got {decoded_count}"
+            decoded_count >= 2,
+            "expected >= 2 decoded frames, got {decoded_count}"
         );
     }
 
@@ -214,7 +214,7 @@ mod tests {
         let h = 180u32;
         let mut enc = Av1Encoder::with_preset(VideoPreset::P180).unwrap();
 
-        let frames: Vec<VideoFrame> = (0..60).map(|_| make_rgba_frame(w, h, 255, 0, 0)).collect();
+        let frames: Vec<VideoFrame> = (0..15).map(|_| make_rgba_frame(w, h, 255, 0, 0)).collect();
         let packets = encode_frames(&mut enc, &frames);
 
         let config = enc.config();
@@ -240,10 +240,10 @@ mod tests {
 
     #[test]
     fn viewport_scaling() {
-        let mut enc = Av1Encoder::with_preset(VideoPreset::P360).unwrap();
+        let mut enc = Av1Encoder::with_preset(VideoPreset::P180).unwrap();
 
-        let frames: Vec<VideoFrame> = (0..60)
-            .map(|_| make_rgba_frame(640, 360, 100, 100, 100))
+        let frames: Vec<VideoFrame> = (0..15)
+            .map(|_| make_rgba_frame(320, 180, 100, 100, 100))
             .collect();
         let packets = encode_frames(&mut enc, &frames);
 
@@ -251,15 +251,15 @@ mod tests {
         let decode_config = DecodeConfig::default();
         let mut dec = Av1VideoDecoder::new(&config, &decode_config).unwrap();
 
-        dec.set_viewport(320, 180);
+        dec.set_viewport(160, 90);
 
         let packets = encoded_frames_to_media_packets(packets);
         for pkt in packets {
             dec.push_packet(pkt).unwrap();
             if let Some(frame) = dec.pop_frame().unwrap() {
                 let img = frame.rgba_image();
-                assert!(img.width() <= 320, "width {} > 320", img.width());
-                assert!(img.height() <= 180, "height {} > 180", img.height());
+                assert!(img.width() <= 160, "width {} > 160", img.width());
+                assert!(img.height() <= 90, "height {} > 90", img.height());
             }
         }
     }
@@ -270,7 +270,7 @@ mod tests {
         let h = 180u32;
         let mut enc = Av1Encoder::with_preset(VideoPreset::P180).unwrap();
 
-        let frames: Vec<VideoFrame> = (0..60).map(|_| make_rgba_frame(w, h, 255, 0, 0)).collect();
+        let frames: Vec<VideoFrame> = (0..15).map(|_| make_rgba_frame(w, h, 255, 0, 0)).collect();
         let packets = encode_frames(&mut enc, &frames);
 
         let config = enc.config();

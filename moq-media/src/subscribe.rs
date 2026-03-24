@@ -20,14 +20,17 @@ use moq_lite::{BroadcastConsumer, Track};
 use n0_error::{Result, StackResultExt, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
-use tokio::sync::watch;
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{Instrument, debug, warn};
 
+#[cfg(any_video_codec)]
+use crate::adaptive::{AdaptiveConfig, AdaptiveVideoTrack};
+#[cfg(any_video_codec)]
+use crate::net::NetworkSignals;
+#[cfg(any_video_codec)]
+use tokio::sync::watch;
 use crate::{
-    adaptive::{AdaptiveConfig, AdaptiveVideoTrack},
     format::{DecodeConfig, PlaybackConfig, Quality, VideoFrame},
-    net::NetworkSignals,
     pipeline::{
         AudioDecoderPipeline, AudioPosition, DecodeOpts, VideoDecoderHandle, VideoDecoderPipeline,
     },
@@ -122,10 +125,12 @@ impl VideoOptions {
         self
     }
 
+    #[cfg(any_video_codec)]
     fn decode_config(&self) -> DecodeConfig {
         self.playback.clone().unwrap_or_default()
     }
 
+    #[cfg(any_video_codec)]
     fn resolve_quality(&self) -> Quality {
         // If a specific rendition is pinned, we'll use video_rendition() directly.
         // Otherwise map VideoTarget to Quality for the existing selection logic.
@@ -688,6 +693,7 @@ impl RemoteBroadcast {
         self.audio(audio_backend).await
     }
 
+    #[cfg(any_video_codec)]
     async fn wait_for_video(&self) {
         let mut watcher = self.catalog_watcher();
         loop {
@@ -700,6 +706,7 @@ impl RemoteBroadcast {
         }
     }
 
+    #[cfg(any_audio_codec)]
     async fn wait_for_audio(&self) {
         let mut watcher = self.catalog_watcher();
         loop {
