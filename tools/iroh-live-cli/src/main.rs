@@ -6,14 +6,18 @@
 use clap::{Parser, Subcommand};
 
 mod args;
+#[cfg(feature = "wgpu")]
 mod call;
 mod devices;
 mod import;
+#[cfg(feature = "wgpu")]
 mod play;
 mod publish;
+#[cfg(feature = "wgpu")]
 mod room;
 mod source;
 mod transport;
+#[cfg(feature = "wgpu")]
 mod ui;
 
 #[derive(Parser)]
@@ -33,10 +37,13 @@ enum Command {
     /// Serves locally by default; use --relay/--room to push elsewhere.
     Publish(args::PublishArgs),
     /// Subscribe and play a remote broadcast.
+    #[cfg(feature = "wgpu")]
     Play(args::PlayArgs),
     /// 1:1 bidirectional video call.
+    #[cfg(feature = "wgpu")]
     Call(args::CallArgs),
     /// Multi-party room (publish + play grid).
+    #[cfg(feature = "wgpu")]
     Room(args::RoomArgs),
 }
 
@@ -55,8 +62,11 @@ fn main() -> n0_error::Result {
     match cli.command {
         Command::Devices => devices::run(),
         Command::Publish(args) => publish::run(args, &rt),
+        #[cfg(feature = "wgpu")]
         Command::Play(args) => play::run(args, &rt),
+        #[cfg(feature = "wgpu")]
         Command::Call(args) => call::run(args, &rt),
+        #[cfg(feature = "wgpu")]
         Command::Room(args) => room::run(args, &rt),
     }
 }
