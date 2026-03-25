@@ -72,3 +72,10 @@ absolute_paths = "allow"
 manual_let_else = "warn"
 allow_attributes_without_reason = "warn"
 mod_module_files = "deny"
+
+[patch."https://github.com/Frando/moq.git"]
+hang = { path = "../moq/rs/hang" }
+moq-lite = { path = "../moq/rs/moq-lite" }
+moq-mux = { path = "../moq/rs/moq-mux" }
+moq-relay = { path = "../moq/rs/moq-relay" }
+moq-native = { path = "../moq/rs/moq-native" }

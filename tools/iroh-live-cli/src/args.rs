@@ -1,5 +1,8 @@
 use clap::{Args, Subcommand, ValueEnum};
+#[cfg(feature = "wgpu")]
 use iroh::EndpointId;
+#[cfg(feature = "wgpu")]
+use iroh_live::ticket::LiveTicket;
 use iroh_live::{
     media::{
         capture::CaptureBackend,
@@ -7,7 +10,6 @@ use iroh_live::{
         format::{AudioPreset, VideoPreset},
     },
     rooms::RoomTicket,
-    ticket::LiveTicket,
 };
 
 // ---------------------------------------------------------------------------
@@ -259,9 +261,10 @@ pub enum ImportFormat {
 }
 
 // ---------------------------------------------------------------------------
-// Play args
+// Play args (wgpu only — needs egui window)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "wgpu")]
 #[derive(Args, Debug)]
 pub struct PlayArgs {
     /// Connection ticket.
@@ -298,6 +301,7 @@ pub struct PlayArgs {
     pub fullscreen: bool,
 }
 
+#[cfg(feature = "wgpu")]
 impl PlayArgs {
     pub fn ticket(&self) -> anyhow::Result<LiveTicket> {
         match (&self.ticket, &self.endpoint_id, &self.broadcast_name) {
@@ -318,9 +322,10 @@ impl PlayArgs {
 }
 
 // ---------------------------------------------------------------------------
-// Call args
+// Call args (wgpu only)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "wgpu")]
 #[derive(Args, Debug)]
 pub struct CallArgs {
     /// Remote ticket to auto-dial. Omit to wait for incoming call.
@@ -339,9 +344,10 @@ pub struct CallArgs {
 }
 
 // ---------------------------------------------------------------------------
-// Room args
+// Room args (wgpu only)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "wgpu")]
 #[derive(Args, Debug)]
 pub struct RoomArgs {
     /// Room ticket to join. Omit to create a new room.

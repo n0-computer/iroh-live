@@ -914,6 +914,7 @@ fn main() -> Result<()> {
 
     // Branch on patchbay for setup; cfg gates keep patchbay types off non-Linux.
     #[cfg(target_os = "linux")]
+    #[allow(unused_mut, reason = "mut needed when wgpu feature is enabled")]
     let (publish, mut subscribe, patchbay_state) = if args.patchbay {
         let (p, s, pb) = rt.block_on(setup_patchbay(&audio_ctx))?;
         (p, s, Some(pb))
