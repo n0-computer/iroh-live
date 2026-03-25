@@ -39,6 +39,40 @@ impl std::fmt::Display for CaptureBackend {
     }
 }
 
+impl std::str::FromStr for CaptureBackend {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "pipewire" | "pw" => Ok(Self::PipeWire),
+            "v4l2" => Ok(Self::V4l2),
+            "x11" => Ok(Self::X11),
+            "screencapturekit" | "sck" => Ok(Self::ScreenCaptureKit),
+            "avfoundation" | "avf" => Ok(Self::AVFoundation),
+            "xcap" => Ok(Self::Xcap),
+            "nokhwa" => Ok(Self::Nokhwa),
+            _ => Err(format!("unknown capture backend: {s}")),
+        }
+    }
+}
+
+impl CameraInfo {
+    /// Returns a one-line summary for display (e.g. "Integrated Camera (PipeWire, /dev/video0)").
+    pub fn summary(&self) -> String {
+        format!("{} ({}, {})", self.name, self.backend, self.id)
+    }
+}
+
+impl MonitorInfo {
+    /// Returns a one-line summary for display (e.g. "eDP-1 — 2560×1600 (PipeWire, primary)").
+    pub fn summary(&self) -> String {
+        let primary = if self.is_primary { ", primary" } else { "" };
+        format!(
+            "{} — {}×{} ({}{})",
+            self.name, self.dimensions[0], self.dimensions[1], self.backend, primary,
+        )
+    }
+}
+
 /// Describes a display monitor available for screen capture.
 #[derive(Debug, Clone)]
 pub struct MonitorInfo {

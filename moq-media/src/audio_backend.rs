@@ -246,6 +246,27 @@ impl AudioBackend {
             .await?;
         reply_rx.await?
     }
+
+    // -- Blocking helpers for use in synchronous contexts (egui callbacks) --
+
+    /// Blocking version of [`default_input`](Self::default_input).
+    ///
+    /// Requires a running tokio runtime (panics otherwise). Intended for
+    /// use inside egui update callbacks and other synchronous code that
+    /// runs within a tokio context.
+    pub fn default_input_blocking(&self) -> Result<InputStream> {
+        tokio::runtime::Handle::current().block_on(self.default_input())
+    }
+
+    /// Blocking version of [`switch_input`](Self::switch_input).
+    pub fn switch_input_blocking(&self, device: Option<DeviceId>) -> Result<()> {
+        tokio::runtime::Handle::current().block_on(self.switch_input(device))
+    }
+
+    /// Blocking version of [`switch_output`](Self::switch_output).
+    pub fn switch_output_blocking(&self, device: Option<DeviceId>) -> Result<()> {
+        tokio::runtime::Handle::current().block_on(self.switch_output(device))
+    }
 }
 
 impl AudioStreamFactory for AudioBackend {

@@ -4,13 +4,16 @@
 //! different transport backends (noq/WebTransport and iroh P2P), verifying
 //! that data published on one transport is visible to subscribers on another.
 
-use std::time::Duration;
+use std::{sync::OnceLock, time::Duration};
 
+use iroh::address_lookup::MemoryLookup;
 use moq_media::publish::VideoInput;
 use moq_native::moq_lite::{Origin, Track};
 use serial_test::serial;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
+
+static ADDRESS_LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
 
 /// Starts a relay (noq server + iroh endpoint + cluster) and returns handles.
 struct TestRelay {
@@ -37,6 +40,11 @@ impl TestRelay {
         let server = server_config.init().expect("init server");
         let client = client_config.init().expect("init client");
         let iroh = iroh_config.bind().await.expect("bind iroh");
+        if let Some(iroh) = iroh.as_ref() {
+            ADDRESS_LOOKUP
+                .get_or_init(Default::default)
+                .add_endpoint_info(iroh.addr());
+        }
 
         let iroh_id = iroh.as_ref().map(|ep| ep.id().to_string());
 
@@ -163,6 +171,7 @@ async fn iroh_publish_iroh_subscribe() {
 
     // Publisher
     let pub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+        .address_lookup(ADDRESS_LOOKUP.get_or_init(Default::default).clone())
         .secret_key(iroh::SecretKey::generate(&mut rand::rng()))
         .bind()
         .await

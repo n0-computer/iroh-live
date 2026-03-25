@@ -58,6 +58,25 @@ pub enum AudioCodec {
     Opus,
 }
 
+#[cfg(any_audio_codec)]
+impl AudioCodec {
+    /// Returns all audio codecs that are compiled in.
+    pub fn available() -> Vec<Self> {
+        vec![
+            #[cfg(feature = "opus")]
+            Self::Opus,
+        ]
+    }
+
+    /// Human-readable display name.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            #[cfg(feature = "opus")]
+            Self::Opus => "Opus",
+        }
+    }
+}
+
 /// Available video encoder implementations.
 #[cfg(any_video_codec)]
 #[derive(
@@ -204,6 +223,24 @@ impl VideoCodec {
             keyframe_interval: None,
             nal_format: crate::format::NalFormat::default(),
         })
+    }
+
+    /// Parses a codec name, returning a helpful error listing available codecs on failure.
+    pub fn parse_or_list(s: &str) -> anyhow::Result<Self> {
+        s.parse().map_err(|_| {
+            let names: Vec<_> = Self::available().iter().map(|c| c.to_string()).collect();
+            anyhow::anyhow!("unknown video codec '{s}'. Available: {}", names.join(", "))
+        })
+    }
+
+    /// Parses a codec name if provided, or returns the best available codec.
+    pub fn parse_or_best(s: Option<&str>) -> anyhow::Result<Self> {
+        match s {
+            Some(name) => Self::parse_or_list(name),
+            None => {
+                Self::best_available().ok_or_else(|| anyhow::anyhow!("no video codec compiled in"))
+            }
+        }
     }
 
     /// Human-readable display name.

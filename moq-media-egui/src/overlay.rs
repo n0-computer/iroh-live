@@ -107,6 +107,11 @@ impl DebugOverlay {
         self.visible = !self.visible;
     }
 
+    /// Returns true if any detail panel is currently expanded.
+    pub fn any_expanded(&self) -> bool {
+        self.expanded.values().any(|&v| v)
+    }
+
     /// Updates labels from a [`VideoTrack`] into the stats.
     ///
     /// Call this each frame before [`show`](Self::show) to keep decoder

@@ -12,6 +12,7 @@ members = [
     "demos/android/rust",
     "demos/pi-zero",
     "demos/opengl",
+    "tools/iroh-live-cli",
 ]
 # moq-media-dioxus is a workspace member but excluded from default builds.
 # It pulls ~224 additional deps (blitz-dom, vello, etc.) and is prototype-quality.
@@ -27,6 +28,7 @@ default-members = [
     "rusty-codecs",
     "demos/pi-zero",
     "demos/opengl",
+    "tools/iroh-live-cli",
 ]
 resolver = "2"
 

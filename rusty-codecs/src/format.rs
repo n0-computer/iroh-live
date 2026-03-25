@@ -882,6 +882,17 @@ impl VideoPreset {
     pub fn fps(&self) -> u32 {
         30
     }
+
+    /// Parses a preset name, returning a helpful error listing valid presets on failure.
+    pub fn parse_or_list(s: &str) -> anyhow::Result<Self> {
+        s.parse().map_err(|_| {
+            let names: Vec<_> = Self::all().iter().map(|p| p.to_string()).collect();
+            anyhow::anyhow!(
+                "unknown video preset '{s}'. Available: {}",
+                names.join(", ")
+            )
+        })
+    }
 }
 
 /// Audio quality presets controlling encoder bitrate.
@@ -892,6 +903,14 @@ pub enum AudioPreset {
     Hq,
     /// Low quality (32 kbps).
     Lq,
+}
+
+impl AudioPreset {
+    /// Parses a preset name, returning a helpful error listing valid presets on failure.
+    pub fn parse_or_list(s: &str) -> anyhow::Result<Self> {
+        s.parse()
+            .map_err(|_| anyhow::anyhow!("unknown audio preset '{s}'. Available: hq, lq"))
+    }
 }
 
 /// Playback quality preference for decoder/renderer selection.

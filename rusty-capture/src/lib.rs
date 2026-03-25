@@ -325,6 +325,41 @@ impl CameraCapturer {
         Ok(Self { inner })
     }
 
+    /// Opens a camera matching an optional backend and/or device ID.
+    ///
+    /// When only `backend` is given, selects the first camera on that backend.
+    /// When only `id` is given, searches all cameras by platform ID or name.
+    /// When both are given, requires an exact match.
+    /// When neither is given, delegates to [`CameraCapturer::new()`].
+    ///
+    /// On failure, the error message lists available cameras.
+    pub fn open(
+        backend: Option<CaptureBackend>,
+        id: Option<&str>,
+        config: &CameraConfig,
+    ) -> anyhow::Result<Self> {
+        match (backend, id) {
+            (None, None) => Self::new(),
+            (Some(b), None) => Self::with_backend(b, config),
+            (None, Some(id)) => {
+                let cameras = list_cameras()?;
+                let info = cameras
+                    .iter()
+                    .find(|c| c.id == id || c.name == id)
+                    .ok_or_else(|| format_not_found("camera", id, &cameras))?;
+                Self::with_config(Some(info), config)
+            }
+            (Some(b), Some(id)) => {
+                let cameras = list_cameras()?;
+                let info = cameras
+                    .iter()
+                    .find(|c| c.backend == b && (c.id == id || c.name == id))
+                    .ok_or_else(|| format_not_found("camera", id, &cameras))?;
+                Self::with_config(Some(info), config)
+            }
+        }
+    }
+
     /// Opens a camera using a specific backend with default config.
     ///
     /// Returns an error if the backend is not available or does not support camera capture.
@@ -424,6 +459,36 @@ impl ScreenCapturer {
         Ok(Self { inner })
     }
 
+    /// Opens a screen matching an optional backend and/or monitor ID.
+    ///
+    /// Same selection semantics as [`CameraCapturer::open()`].
+    pub fn open(
+        backend: Option<CaptureBackend>,
+        id: Option<&str>,
+        config: &ScreenConfig,
+    ) -> anyhow::Result<Self> {
+        match (backend, id) {
+            (None, None) => Self::new(),
+            (Some(b), None) => Self::with_backend(b, config),
+            (None, Some(id)) => {
+                let monitors = list_monitors()?;
+                let info = monitors
+                    .iter()
+                    .find(|m| m.id == id || m.name == id)
+                    .ok_or_else(|| format_screen_not_found(id, &monitors))?;
+                Self::with_backend(info.backend, config)
+            }
+            (Some(b), Some(id)) => {
+                let monitors = list_monitors()?;
+                let info = monitors
+                    .iter()
+                    .find(|m| m.backend == b && (m.id == id || m.name == id))
+                    .ok_or_else(|| format_screen_not_found(id, &monitors))?;
+                Self::with_backend(info.backend, config)
+            }
+        }
+    }
+
     /// Opens the default screen using a specific backend.
     ///
     /// Returns an error if the backend is not available or does not support screen capture.
@@ -495,5 +560,33 @@ impl VideoSource for ScreenCapturer {
     }
     fn pop_frame(&mut self) -> anyhow::Result<Option<VideoFrame>> {
         self.inner.pop_frame()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Error formatting helpers
+// ---------------------------------------------------------------------------
+
+fn format_not_found(kind: &str, id: &str, cameras: &[CameraInfo]) -> anyhow::Error {
+    let available: Vec<String> = cameras.iter().map(|c| c.summary()).collect();
+    if available.is_empty() {
+        anyhow::anyhow!("no {kind}s found")
+    } else {
+        anyhow::anyhow!(
+            "{kind} '{id}' not found. Available:\n  {}",
+            available.join("\n  ")
+        )
+    }
+}
+
+fn format_screen_not_found(id: &str, monitors: &[MonitorInfo]) -> anyhow::Error {
+    let available: Vec<String> = monitors.iter().map(|m| m.summary()).collect();
+    if available.is_empty() {
+        anyhow::anyhow!("no screens found")
+    } else {
+        anyhow::anyhow!(
+            "screen '{id}' not found. Available:\n  {}",
+            available.join("\n  ")
+        )
     }
 }

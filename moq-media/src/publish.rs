@@ -6,6 +6,7 @@
 //! to configure tracks.
 
 mod controller;
+
 use std::{
     collections::{BTreeMap, HashMap},
     sync::{
@@ -167,6 +168,20 @@ struct VideoRenditionEntry {
     factory: MakeVideoEncoder,
 }
 
+/// Creates a subscribe-side preview from any [`BroadcastConsumer`](moq_lite::BroadcastConsumer).
+///
+/// Subscribes to the consumer's catalog, spawns decoders, and returns media
+/// tracks suitable for rendering. This is the building block for previewing
+/// both live capture and file import output.
+pub async fn subscribe_preview_from_consumer<D: crate::traits::Decoders>(
+    consumer: moq_lite::BroadcastConsumer,
+    audio_backend: &dyn crate::traits::AudioStreamFactory,
+    config: crate::format::PlaybackConfig,
+) -> Result<crate::subscribe::MediaTracks> {
+    let broadcast = crate::subscribe::RemoteBroadcast::new("preview", consumer).await?;
+    broadcast.media::<D>(audio_backend, config).await
+}
+
 /// Local media broadcast that encodes and publishes video and audio tracks.
 ///
 /// Configure video via [`video()`](Self::video) and audio via
@@ -280,6 +295,21 @@ impl LocalBroadcast {
         }
     }
 
+    /// Creates a subscribe-side preview by decoding our own published output.
+    ///
+    /// Goes through the full mux→demux→decode round-trip, showing exactly what
+    /// remote subscribers see. Works for both live capture and file import.
+    ///
+    /// For live capture, [`preview()`](Self::preview) is more efficient since
+    /// it taps raw source frames without re-encoding and decoding.
+    pub async fn subscribe_preview<D: crate::traits::Decoders>(
+        &self,
+        audio_backend: &dyn crate::traits::AudioStreamFactory,
+        config: crate::format::PlaybackConfig,
+    ) -> Result<crate::subscribe::MediaTracks> {
+        subscribe_preview_from_consumer::<D>(self.consume(), audio_backend, config).await
+    }
+
     /// Returns a local preview video track (decode our own output).
     ///
     /// Only available when the video input is [`VideoInput::Renditions`] —
@@ -368,6 +398,19 @@ impl VideoPublisher<'_> {
     /// any existing video pipeline before installing the new one.
     pub fn set(&self, input: impl Into<VideoInput>) -> Result<()> {
         self.broadcast.set_video(Some(input.into()))
+    }
+
+    /// Sets video from any [`VideoSource`] with the given codec and presets.
+    ///
+    /// Convenience wrapper around [`set(VideoInput::new(...))`](Self::set).
+    #[cfg(any_video_codec)]
+    pub fn set_source(
+        &self,
+        source: impl crate::traits::VideoSource + 'static,
+        codec: crate::codec::VideoCodec,
+        presets: impl IntoIterator<Item = crate::format::VideoPreset>,
+    ) -> Result<()> {
+        self.set(VideoInput::new(source, codec, presets))
     }
 
     /// Removes video from the broadcast.

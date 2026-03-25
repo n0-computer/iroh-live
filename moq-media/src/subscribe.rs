@@ -348,6 +348,7 @@ impl RemoteBroadcast {
                     for seq in 1.. {
                         match catalog_consumer.next().await {
                             Ok(Some(catalog)) => {
+                                debug!(?catalog, "catalog update");
                                 watchable.set(CatalogSnapshot::new(catalog, seq)).ok();
                             }
                             Ok(None) => {

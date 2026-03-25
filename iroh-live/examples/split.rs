@@ -45,8 +45,6 @@ use n0_error::{Result, anyerr};
 use strum::VariantArray;
 use tracing::{info, warn};
 
-mod common;
-
 #[derive(Parser)]
 struct Args {
     /// Run in patchbay mode with network impairment sliders (Linux only).
