@@ -500,7 +500,6 @@ struct SubscribeView {
     render_mode: RenderMode,
     _live: Live,
     overlay: DebugOverlay,
-    max_stale_duration_ms: u32,
 
     #[cfg(feature = "wgpu")]
     wgpu_render_state: Option<egui_wgpu::RenderState>,
@@ -536,7 +535,6 @@ impl SubscribeView {
             _audio: tracks.audio,
             backend: DecoderBackend::Auto,
             render_mode: *RenderMode::VARIANTS.last().unwrap(),
-            max_stale_duration_ms: 500,
             overlay: DebugOverlay::new(&[
                 StatCategory::Net,
                 StatCategory::Render,
@@ -705,19 +703,6 @@ impl SubscribeView {
                         }
                     }
                 });
-
-            if ui
-                .add(
-                    egui::Slider::new(&mut self.max_stale_duration_ms, 200..=5000)
-                        .text("stale ms")
-                        .logarithmic(true),
-                )
-                .changed()
-            {
-                self.broadcast.set_max_stale_duration(Duration::from_millis(
-                    self.max_stale_duration_ms as u64,
-                ));
-            }
         });
 
         ui.separator();

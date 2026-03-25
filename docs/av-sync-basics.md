@@ -1,17 +1,15 @@
 # A/V sync basics
 
-The older version of this page explained A/V sync through the now-removed
-shared `PlayoutClock` design. The current receive side no longer works that
-way, so the detailed walkthrough moved to the dedicated A/V sync section.
+A/V synchronization is **currently disabled**. Audio and video play
+independently with PTS-based frame pacing. Both streams track their
+wall-clock drift from PTS cadence, and the debug overlay shows the resulting
+A/V delta, but no active correction is applied.
 
-Start here instead:
+The codec-level background is still true: video decode is burstier than audio
+decode, keyframes are the recovery boundary, and live playback should avoid
+routine audio gaps. What changed is that the active sync machinery was removed
+because it consistently performed worse under congestion than unsynchronized
+PTS pacing (see [plans/av-sync.md](../plans/av-sync.md) for the full history).
 
-- [A/V sync and playout](av-sync/README.md): the current receive-side design,
-  including audio-master playout, `PlaybackPolicy`, `AudioPosition`, and
-  `VideoSyncController`.
-- [A/V sync tuning](av-sync/tuning.md): the public knobs and when to use them.
-
-The codec-level background from the original page is still true in broad
-strokes: video decode is burstier than audio decode, keyframes are the recovery
-boundary, and live playback should avoid adding routine audio gaps. The part
-that changed is how the receiver turns those facts into playout behavior.
+For the freshness/staleness controls (which are still active), see
+[A/V sync tuning](av-sync/tuning.md).

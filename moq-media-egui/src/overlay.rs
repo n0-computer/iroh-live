@@ -138,17 +138,28 @@ impl DebugOverlay {
                 continue;
             }
 
-            // TIME section shows the timeline panel instead of metrics.
+            // TIME section: metrics row first, then timeline above.
             if cat == StatCategory::Time {
-                let height = 176.0;
-                y_cursor -= height;
-                let rect = egui::Rect::from_min_size(
+                // Metrics row at the bottom of the Time panel.
+                let entries = detail_entries(cat, stats);
+                let metrics_h = OVERLAY_BAR_H * (entries.len() as f32 + 0.5);
+                y_cursor -= metrics_h;
+                let metrics_rect = egui::Rect::from_min_size(
                     egui::pos2(video_rect.min.x, y_cursor),
-                    egui::vec2(video_rect.width(), height),
+                    egui::vec2(video_rect.width(), metrics_h),
+                );
+                paint_detail_panel_entries(ui, metrics_rect, &entries, &font);
+
+                // Timeline panel above the metrics.
+                let timeline_h = 176.0;
+                y_cursor -= timeline_h;
+                let timeline_rect = egui::Rect::from_min_size(
+                    egui::pos2(video_rect.min.x, y_cursor),
+                    egui::vec2(video_rect.width(), timeline_h),
                 );
                 paint_timeline_panel(
                     ui,
-                    rect,
+                    timeline_rect,
                     &stats.timeline,
                     &stats.net,
                     &stats.timing,
@@ -393,16 +404,11 @@ fn detail_entries<'a>(cat: StatCategory, stats: &'a SubscribeStats) -> Vec<Detai
             push_metric(&mut entries, &stats.render.decode_ms);
         }
         StatCategory::Time => {
-            push_label(&mut entries, "sync", &stats.timing.sync_state);
-            push_metric(&mut entries, &stats.timing.delay_ms);
-            push_metric(&mut entries, &stats.timing.audio_buffer_ms);
-            push_metric(&mut entries, &stats.timing.audio_live_lag_ms);
-            push_metric(&mut entries, &stats.timing.video_live_lag_ms);
+            push_metric(&mut entries, &stats.timing.audio_buf_ms);
+            push_metric(&mut entries, &stats.timing.video_lag_ms);
+            push_metric(&mut entries, &stats.timing.audio_lag_ms);
             push_metric(&mut entries, &stats.timing.av_delta_ms);
-            push_metric(&mut entries, &stats.timing.buf_frames);
-            push_metric(&mut entries, &stats.timing.frames_skipped);
-            push_metric(&mut entries, &stats.timing.late_frames_dropped);
-            push_metric(&mut entries, &stats.timing.freezes);
+            push_metric(&mut entries, &stats.timing.video_buf);
         }
     }
     entries
@@ -466,9 +472,8 @@ fn format_section_summary_typed(cat: StatCategory, stats: &SubscribeStats) -> St
             push_metric_summary(&mut parts, &stats.render.decode_ms);
         }
         StatCategory::Time => {
-            push_label_summary(&mut parts, &stats.timing.sync_state);
-            push_metric_summary(&mut parts, &stats.timing.delay_ms);
-            push_metric_summary(&mut parts, &stats.timing.audio_live_lag_ms);
+            push_metric_summary(&mut parts, &stats.timing.audio_buf_ms);
+            push_metric_summary(&mut parts, &stats.timing.video_lag_ms);
             push_metric_summary(&mut parts, &stats.timing.av_delta_ms);
         }
     }
@@ -721,7 +726,7 @@ fn paint_timeline_panel(
     let frames = timeline.snapshot();
     let visible: Vec<_> = frames
         .iter()
-        .filter(|f| f.render_wall >= t_left && f.render_wall <= t_right)
+        .filter(|f| f.rendered >= t_left && f.rendered <= t_right)
         .collect();
     let video_frames: Vec<_> = visible
         .iter()
@@ -743,8 +748,8 @@ fn paint_timeline_panel(
         let latencies: Vec<(f32, f32)> = video_frames
             .iter()
             .map(|f| {
-                let x = time_to_x(f.render_wall);
-                let lat = f.render_wall.duration_since(f.receive_wall).as_secs_f32() * 1000.0;
+                let x = time_to_x(f.rendered);
+                let lat = f.rendered.duration_since(f.received).as_secs_f32() * 1000.0;
                 (x, lat)
             })
             .collect();
@@ -798,12 +803,7 @@ fn paint_timeline_panel(
         let expected_ms = if video_frames.len() >= 3 {
             let mut gaps: Vec<f32> = video_frames
                 .windows(2)
-                .map(|w| {
-                    w[1].render_wall
-                        .duration_since(w[0].render_wall)
-                        .as_secs_f32()
-                        * 1000.0
-                })
+                .map(|w| w[1].rendered.duration_since(w[0].rendered).as_secs_f32() * 1000.0)
                 .collect();
             gaps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             gaps[gaps.len() / 2]
@@ -812,17 +812,17 @@ fn paint_timeline_panel(
         };
 
         for (i, entry) in video_frames.iter().enumerate() {
-            let x = time_to_x(entry.render_wall);
+            let x = time_to_x(entry.rendered);
             let next_x = video_frames
                 .get(i + 1)
-                .map(|e| time_to_x(e.render_wall))
+                .map(|e| time_to_x(e.rendered))
                 .unwrap_or(x + 6.0);
             let box_w = (next_x - x - 1.0).clamp(3.0, 20.0);
 
             let gap_ms = if i > 0 {
                 entry
-                    .render_wall
-                    .duration_since(video_frames[i - 1].render_wall)
+                    .rendered
+                    .duration_since(video_frames[i - 1].rendered)
                     .as_secs_f32()
                     * 1000.0
             } else {
@@ -860,19 +860,15 @@ fn paint_timeline_panel(
         let box_y = audio_rect.min.y + 5.0;
 
         for (i, entry) in audio_frames.iter().enumerate() {
-            let x = time_to_x(entry.render_wall);
+            let x = time_to_x(entry.rendered);
             let next_x = audio_frames
                 .get(i + 1)
-                .map(|e| time_to_x(e.render_wall))
+                .map(|e| time_to_x(e.rendered))
                 .unwrap_or(x + 4.0);
             let box_w = (next_x - x - 0.5).clamp(2.0, 10.0);
 
             // Blue normally, red if receive-to-render > 100ms.
-            let lat = entry
-                .render_wall
-                .duration_since(entry.receive_wall)
-                .as_secs_f32()
-                * 1000.0;
+            let lat = entry.rendered.duration_since(entry.received).as_secs_f32() * 1000.0;
             let color = if lat > 100.0 { COLOR_RED } else { COLOR_BLUE };
 
             let r = egui::Rect::from_min_size(egui::pos2(x, box_y), egui::vec2(box_w, box_h));
@@ -916,12 +912,12 @@ fn paint_timeline_panel(
                 .iter()
                 .min_by_key(|af| vf.pts.abs_diff(af.pts).as_millis());
             if let Some(af) = closest_audio {
-                let signed_offset = if vf.render_wall >= af.render_wall {
-                    vf.render_wall.duration_since(af.render_wall).as_secs_f32() * 1000.0
+                let signed_offset = if vf.rendered >= af.rendered {
+                    vf.rendered.duration_since(af.rendered).as_secs_f32() * 1000.0
                 } else {
-                    -(af.render_wall.duration_since(vf.render_wall).as_secs_f32() * 1000.0)
+                    -(af.rendered.duration_since(vf.rendered).as_secs_f32() * 1000.0)
                 };
-                sync_points.push((time_to_x(vf.render_wall), signed_offset));
+                sync_points.push((time_to_x(vf.rendered), signed_offset));
             }
         }
 
@@ -969,58 +965,44 @@ fn paint_timeline_panel(
         egui::vec2(rect.width(), DELAY_STRIP_H),
     );
     {
-        let hist = timing.delay_ms.history();
+        let hist = timing.audio_buf_ms.history();
         let vis: Vec<_> = hist
             .iter()
             .filter(|(t, _)| *t >= t_left && *t <= t_right)
             .collect();
         if vis.len() >= 2 {
-            let max_delay = vis.iter().map(|(_, v)| *v).fold(0.0f64, f64::max).max(50.0);
+            let max_buf = vis.iter().map(|(_, v)| *v).fold(0.0f64, f64::max).max(50.0);
             let points: Vec<egui::Pos2> = vis
                 .iter()
                 .map(|(t, v)| {
                     let x = time_to_x(*t);
-                    let y =
-                        delay_rect.max.y - (*v / max_delay) as f32 * (delay_rect.height() - 4.0);
+                    let y = delay_rect.max.y - (*v / max_buf) as f32 * (delay_rect.height() - 4.0);
                     egui::pos2(x, y)
                 })
                 .collect();
             for pair in points.windows(2) {
-                let color = if pair[1].y > delay_rect.max.y - 4.0 {
+                let v =
+                    (delay_rect.max.y - pair[1].y) / (delay_rect.height() - 4.0) * max_buf as f32;
+                let color = if v > 40.0 {
                     COLOR_GREEN
+                } else if v > 15.0 {
+                    COLOR_YELLOW
                 } else {
-                    let v = (delay_rect.max.y - pair[1].y) / (delay_rect.height() - 4.0)
-                        * max_delay as f32;
-                    if v < 100.0 {
-                        COLOR_GREEN
-                    } else if v < 300.0 {
-                        COLOR_YELLOW
-                    } else {
-                        COLOR_RED
-                    }
+                    COLOR_RED
                 };
                 painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5, color));
             }
         }
-        let g = painter.layout_no_wrap(
-            format!(
-                "Delay {:.0}ms  AudioBuf {:.0}ms  AudioLag {:.0}ms  VideoLag {:.0}ms  {}",
-                timing.delay_ms.current(),
-                timing.audio_buffer_ms.current(),
-                timing.audio_live_lag_ms.current(),
-                timing.video_live_lag_ms.current(),
-                timing.sync_state.get()
-            ),
-            font.clone(),
-            if timing.delay_ms.current() < 100.0 {
-                COLOR_GREEN
-            } else if timing.delay_ms.current() < 300.0 {
-                COLOR_YELLOW
-            } else {
-                COLOR_RED
-            },
-        );
-        painter.galley(delay_rect.min + egui::vec2(4.0, 2.0), g, COLOR_GREEN);
+        let buf_ms = timing.audio_buf_ms.current();
+        let color = if buf_ms > 40.0 {
+            COLOR_GREEN
+        } else if buf_ms > 15.0 {
+            COLOR_YELLOW
+        } else {
+            COLOR_RED
+        };
+        let g = painter.layout_no_wrap(format!("AudioBuf {buf_ms:.0}ms"), font.clone(), color);
+        painter.galley(delay_rect.min + egui::vec2(4.0, 2.0), g, color);
     }
 
     // ── Lane 6: RTT sparkline ───────────────────────────────────────

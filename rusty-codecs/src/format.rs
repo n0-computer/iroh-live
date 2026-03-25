@@ -3,7 +3,7 @@ use std::os::unix::io::OwnedFd;
 use std::{
     fmt,
     sync::{Arc, OnceLock},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use image::RgbaImage;
@@ -572,22 +572,6 @@ pub enum FrameData {
 /// frames, and hardware decoders produce `Gpu` frames. Encoders inspect
 /// [`FrameData`] to pick the cheapest input path.
 /// Timing annotations accumulated as a frame moves through the pipeline.
-///
-/// Each stage stamps its field. All fields start as `None` and are set
-/// at the corresponding pipeline stage. No per-frame allocation — the
-/// struct is 40 bytes inline.
-#[derive(Debug, Clone, Default)]
-pub struct FrameTiming {
-    /// Wall-clock time when the frame was received from the transport.
-    pub receive_wall: Option<Instant>,
-    /// Wall-clock time when decode started.
-    pub decode_start: Option<Instant>,
-    /// Wall-clock time when decode completed.
-    pub decode_end: Option<Instant>,
-    /// Wall-clock time when the frame was released from the playout buffer.
-    pub render_wall: Option<Instant>,
-}
-
 #[derive(derive_more::Debug)]
 pub struct VideoFrame {
     /// Frame dimensions as `[width, height]`.
@@ -597,8 +581,6 @@ pub struct VideoFrame {
     /// Presentation timestamp (`Duration::ZERO` for capture frames before
     /// the encoder assigns a PTS).
     pub timestamp: Duration,
-    /// Per-frame timing annotations for debug overlays.
-    pub timing: FrameTiming,
     /// Lazy RGBA cache for rendering and legacy accessors.
     #[debug(skip)]
     cached_rgba: OnceLock<RgbaImage>,
@@ -610,7 +592,6 @@ impl Clone for VideoFrame {
             dimensions: self.dimensions,
             data: self.data.clone(),
             timestamp: self.timestamp,
-            timing: self.timing.clone(),
             cached_rgba: OnceLock::new(),
         }
     }
@@ -626,7 +607,6 @@ impl VideoFrame {
                 data,
             },
             timestamp,
-            timing: FrameTiming::default(),
             cached_rgba: OnceLock::new(),
         }
     }
@@ -643,7 +623,6 @@ impl VideoFrame {
             dimensions: [width, height],
             data: FrameData::Packed { pixel_format, data },
             timestamp,
-            timing: FrameTiming::default(),
             cached_rgba: OnceLock::new(),
         }
     }
@@ -665,7 +644,6 @@ impl VideoFrame {
                 data: data.into(),
             },
             timestamp,
-            timing: FrameTiming::default(),
             cached_rgba: OnceLock::new(),
         }
     }
@@ -686,7 +664,6 @@ impl VideoFrame {
                 data: image.into_raw().into(),
             },
             timestamp,
-            timing: FrameTiming::default(),
             cached_rgba: OnceLock::new(),
         }
     }
@@ -699,7 +676,6 @@ impl VideoFrame {
             dimensions: [w, h],
             data: FrameData::Nv12(planes),
             timestamp,
-            timing: FrameTiming::default(),
             cached_rgba: OnceLock::new(),
         }
     }
@@ -717,7 +693,6 @@ impl VideoFrame {
             dimensions: [width, height],
             data: FrameData::I420 { y, u, v },
             timestamp,
-            timing: FrameTiming::default(),
             cached_rgba: OnceLock::new(),
         }
     }
@@ -729,7 +704,6 @@ impl VideoFrame {
             dimensions: [w, h],
             data: FrameData::Gpu(gpu),
             timestamp,
-            timing: FrameTiming::default(),
             cached_rgba: OnceLock::new(),
         }
     }

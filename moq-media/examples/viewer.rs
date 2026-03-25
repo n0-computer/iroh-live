@@ -480,7 +480,6 @@ impl Tile {
                             timing: self.timing_stats.clone(),
                             timeline: self.timeline.clone(),
                         },
-                        ..Default::default()
                     },
                 ) {
                     Ok(d) => d,

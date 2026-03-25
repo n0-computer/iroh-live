@@ -13,6 +13,7 @@ use tracing::{debug, error, info, info_span, warn};
 use super::{DecodeOpts, forward_packets};
 use crate::{
     format::AudioFormat,
+    stats::LagTracker,
     traits::{AudioDecoder, AudioSink, AudioSinkHandle, AudioStreamFactory},
     util::spawn_thread,
 };
@@ -106,40 +107,12 @@ impl Drop for AudioDecoderPipeline {
     }
 }
 
-/// Mutable state that belongs to one running audio decode loop.
-struct AudioLoopState {
-    consecutive_errors: u32,
-    last_push: Instant,
-    silence_warned: bool,
-    last_skip_gen: u64,
-    started: bool,
-    startup_wait_done: bool,
-    last_audio_end_pts: Option<Duration>,
-}
-
-impl AudioLoopState {
-    fn new(playback_policy: &crate::playout::PlaybackPolicy) -> Self {
-        Self {
-            consecutive_errors: 0,
-            last_push: Instant::now(),
-            silence_warned: false,
-            last_skip_gen: 0,
-            started: false,
-            startup_wait_done: !playback_policy.is_audio_master(),
-            last_audio_end_pts: None,
-        }
-    }
-
-    fn reset_for_skip(&mut self, playback_policy: &crate::playout::PlaybackPolicy) {
-        self.started = false;
-        self.startup_wait_done = !playback_policy.is_audio_master();
-        self.last_audio_end_pts = None;
-        self.silence_warned = false;
-        self.last_push = Instant::now();
-    }
-}
-
-/// Runs the audio decode loop on an OS thread.
+/// Core audio decode loop. Runs on a dedicated OS thread.
+///
+/// Decodes packets as they arrive and pushes samples to the audio sink
+/// immediately. The sink's internal ring buffer provides the front-buffering
+/// that smooths jitter. If no packets arrive and the sink buffer runs low,
+/// silence is inserted to prevent audible underruns.
 fn audio_decode_loop(
     shutdown: &CancellationToken,
     mut input_rx: mpsc::Receiver<crate::format::MediaPacket>,
@@ -147,182 +120,141 @@ fn audio_decode_loop(
     mut sink: impl AudioSink,
     opts: DecodeOpts,
 ) -> Result<()> {
-    use std::sync::atomic::Ordering;
-
     use mpsc::error::TryRecvError;
 
-    let DecodeOpts {
-        stats,
-        audio_position,
-        video_started,
-        playback_policy,
-        skip_generation,
-        ..
-    } = opts;
+    let stats = opts.stats;
 
-    const INTERVAL: Duration = Duration::from_millis(10);
+    /// Tick interval — how often we check for packets and sink state.
+    const TICK: Duration = Duration::from_millis(10);
     const MAX_CONSECUTIVE_ERRORS: u32 = 10;
-    const SILENCE_THRESHOLD: Duration = Duration::from_millis(200);
-    const SILENCE_FRAME_SAMPLES: usize = 960;
+    /// Insert silence when the sink buffer drops below this threshold.
+    const LOW_BUFFER_THRESHOLD: Duration = Duration::from_millis(20);
+    /// How many silence samples to insert per underrun (20ms at 48kHz mono).
+    const SILENCE_SAMPLES: usize = 960;
 
     let loop_start = Instant::now();
-    let mut silence_buf = [0.0f32; SILENCE_FRAME_SAMPLES];
-    let mut state = AudioLoopState::new(&playback_policy);
-    state.last_skip_gen = skip_generation.load(Ordering::Relaxed);
-    let startup_deadline = Instant::now() + Duration::from_millis(250);
     let sink_format = sink.format()?;
     let channels = sink_format.channel_count as usize;
     let sample_rate = sink_format.sample_rate as f64;
+    let silence_buf = vec![0.0f32; SILENCE_SAMPLES];
 
-    'main: for i in 0.. {
+    let mut consecutive_errors = 0u32;
+    let mut started = false;
+    let mut last_pts = Duration::ZERO;
+    let mut silence_warned = false;
+
+    let mut lag = LagTracker::new();
+
+    for tick_num in 0u64.. {
         if shutdown.is_cancelled() {
-            debug!("stop audio decoder: cancelled");
+            debug!("audio decode: cancelled");
             break;
         }
 
-        let current_gen = skip_generation.load(Ordering::Relaxed);
-        if current_gen != state.last_skip_gen {
-            state.last_skip_gen = current_gen;
-            info!("audio: video skip detected, draining stale packets to resync");
-            let mut drained = 0u32;
-            while input_rx.try_recv().is_ok() {
-                drained += 1;
-            }
-            if drained > 0 {
-                info!(drained, "audio: discarded stale packets");
-            }
-            while decoder.pop_samples().ok().flatten().is_some() {}
-            state.reset_for_skip(&playback_policy);
-            audio_position.reset();
-        }
-
+        // Drain all available packets.
         let mut received_any = false;
         loop {
             match input_rx.try_recv() {
                 Ok(packet) => {
-                    let packet_pts = packet.timestamp;
                     received_any = true;
-                    state.started = true;
+                    started = true;
+                    let packet_pts = packet.timestamp;
+                    let received = Instant::now();
 
-                    if !sink.is_paused() {
-                        if let Err(err) = decoder.push_packet(packet) {
-                            state.consecutive_errors += 1;
-                            warn!(
-                                consecutive_errors = state.consecutive_errors,
-                                "failed to push audio packet: {err:#}"
+                    if sink.is_paused() {
+                        continue;
+                    }
+
+                    if let Err(err) = decoder.push_packet(packet) {
+                        consecutive_errors += 1;
+                        warn!(consecutive_errors, "audio push_packet failed: {err:#}");
+                        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                            n0_error::bail_any!(
+                                "too many consecutive audio decode errors: {err:#}"
                             );
-                            if state.consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                        }
+                        continue;
+                    }
+
+                    match decoder.pop_samples() {
+                        Ok(Some(samples)) => {
+                            consecutive_errors = 0;
+                            silence_warned = false;
+                            sink.push_samples(samples)?;
+
+                            let decoded = Instant::now();
+                            let buffered = Duration::from_secs_f64(sink.occupied_seconds());
+                            let frame_count = samples.len() / channels;
+                            let chunk_duration =
+                                Duration::from_secs_f64(frame_count as f64 / sample_rate);
+
+                            // Timeline entry.
+                            stats.timeline.push(crate::stats::FrameMeta {
+                                kind: crate::stats::FrameKind::Audio,
+                                pts: packet_pts,
+                                received,
+                                decoded: Some(decoded),
+                                rendered: decoded + buffered,
+                                is_keyframe: false,
+                            });
+
+                            // Lag at the speaker: wall + buffered vs PTS.
+                            stats
+                                .timing
+                                .audio_lag_ms
+                                .record(lag.record_ms(decoded + buffered, packet_pts));
+
+                            last_pts = packet_pts + chunk_duration;
+                        }
+                        Ok(None) => {
+                            consecutive_errors = 0;
+                        }
+                        Err(err) => {
+                            consecutive_errors += 1;
+                            warn!(consecutive_errors, "audio pop_samples failed: {err:#}");
+                            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
                                 n0_error::bail_any!(
                                     "too many consecutive audio decode errors: {err:#}"
                                 );
                             }
-                            continue;
-                        }
-                        match decoder.pop_samples() {
-                            Ok(Some(samples)) => {
-                                state.consecutive_errors = 0;
-                                if !state.startup_wait_done {
-                                    while Instant::now() < startup_deadline
-                                        && !video_started.load(Ordering::Acquire)
-                                        && !shutdown.is_cancelled()
-                                    {
-                                        thread::sleep(Duration::from_millis(5));
-                                    }
-                                    state.startup_wait_done = true;
-                                }
-                                sink.push_samples(samples)?;
-                                state.last_push = Instant::now();
-                                let frame_count = samples.len() / channels;
-                                let chunk_duration =
-                                    Duration::from_secs_f64(frame_count as f64 / sample_rate);
-                                let buffered = Duration::from_secs_f64(sink.occupied_seconds());
-                                audio_position.record(packet_pts, chunk_duration, buffered);
-                                stats.timing.record_audio_status(buffered, None);
-                                let now = Instant::now();
-                                stats.timeline.push(crate::stats::FrameTimingEntry {
-                                    kind: crate::stats::FrameKind::Audio,
-                                    pts: packet_pts,
-                                    receive_wall: now,
-                                    decode_end: Some(now),
-                                    render_wall: now + buffered,
-                                    is_keyframe: false,
-                                });
-                                state.last_audio_end_pts = Some(packet_pts + chunk_duration);
-                                if state.silence_warned {
-                                    info!("audio packets resumed, stopping silence insertion");
-                                    state.silence_warned = false;
-                                }
-                            }
-                            Ok(None) => {
-                                state.consecutive_errors = 0;
-                            }
-                            Err(err) => {
-                                state.consecutive_errors += 1;
-                                warn!(
-                                    consecutive_errors = state.consecutive_errors,
-                                    "failed to pop audio samples: {err:#}"
-                                );
-                                if state.consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                                    n0_error::bail_any!(
-                                        "too many consecutive audio decode errors: {err:#}"
-                                    );
-                                }
-                            }
                         }
                     }
+
+                    last_pts = last_pts.max(packet_pts);
                 }
                 Err(TryRecvError::Disconnected) => {
-                    debug!("stop audio decoder: packet channel closed");
-                    break 'main;
+                    debug!("audio decode: input channel closed");
+                    shutdown.cancel();
+                    return Ok(());
                 }
                 Err(TryRecvError::Empty) => break,
             }
         }
 
-        if !received_any
-            && !sink.is_paused()
-            && state.last_push.elapsed() > SILENCE_THRESHOLD
-            && state.started
-        {
-            if !state.silence_warned {
+        // If the sink buffer is running low and we have no new packets,
+        // insert a small silence chunk to prevent audible underruns.
+        let buffered = Duration::from_secs_f64(sink.occupied_seconds());
+        if started && !received_any && !sink.is_paused() && buffered < LOW_BUFFER_THRESHOLD {
+            if !silence_warned {
                 warn!(
-                    gap_ms = state.last_push.elapsed().as_millis(),
-                    "no audio packets for {}ms, inserting silence",
-                    SILENCE_THRESHOLD.as_millis()
+                    buffered_ms = buffered.as_millis(),
+                    "audio buffer low, inserting silence"
                 );
-                state.silence_warned = true;
+                silence_warned = true;
             }
-            silence_buf.fill(0.0);
-            let chunk_duration =
-                Duration::from_secs_f64((silence_buf.len() / channels) as f64 / sample_rate);
-            let start_pts = state.last_audio_end_pts.unwrap_or_default();
-            if sink.push_samples(&silence_buf).is_ok() {
-                let buffered = Duration::from_secs_f64(sink.occupied_seconds());
-                audio_position.record(start_pts, chunk_duration, buffered);
-                stats.timing.record_audio_status(buffered, None);
-                let now = Instant::now();
-                stats.timeline.push(crate::stats::FrameTimingEntry {
-                    kind: crate::stats::FrameKind::Audio,
-                    pts: start_pts,
-                    receive_wall: now,
-                    decode_end: Some(now),
-                    render_wall: now + buffered,
-                    is_keyframe: false,
-                });
-                state.last_audio_end_pts = Some(start_pts + chunk_duration);
-            }
+            let _ = sink.push_samples(&silence_buf);
         }
 
-        let audio_buffered = Duration::from_secs_f64(sink.occupied_seconds());
-        let audio_live_lag = audio_position.playback_pts().map(|playback_pts| {
-            let latest_pts = state.last_audio_end_pts.unwrap_or(playback_pts);
-            latest_pts.saturating_sub(playback_pts)
-        });
+        // Record audio buffer level every tick.
         stats
             .timing
-            .record_audio_status(audio_buffered, audio_live_lag);
+            .audio_buf_ms
+            .record_ms(Duration::from_secs_f64(sink.occupied_seconds()));
 
-        let sleep = (INTERVAL * i).saturating_sub(loop_start.elapsed());
+        // Sleep to maintain tick cadence.
+        let target = TICK * tick_num as u32;
+        let elapsed = loop_start.elapsed();
+        let sleep = target.saturating_sub(elapsed);
         if !sleep.is_zero() {
             thread::sleep(sleep);
         }

@@ -9,8 +9,9 @@ use std::{
 
 use bytes::BytesMut;
 use moq_lite::BroadcastProducer;
+use moq_mux::import::StreamFormat;
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::args::ImportFormat;
 
@@ -28,113 +29,37 @@ pub async fn open_input(
     }
 }
 
-/// Two-phase import handle. Call [`init`] to read the file header and publish
-/// the catalog, then [`run`] to stream the remaining data.
-///
-/// Splitting into phases allows creating a preview subscription between init
-/// (catalog available) and run (media flowing).
-pub struct ImportHandle {
-    import: Import,
-    input: Pin<Box<dyn AsyncRead + Send + 'static>>,
-}
-
-impl ImportHandle {
-    /// Creates the import and reads the file header, publishing the catalog
-    /// to the broadcast producer. After this returns, a consumer of the
-    /// producer can subscribe to the catalog and media tracks.
-    pub async fn init(
-        broadcast: BroadcastProducer,
-        format: ImportFormat,
-        mut input: Pin<Box<dyn AsyncRead + Send + 'static>>,
-    ) -> anyhow::Result<Self> {
-        let mut import = Import::new(broadcast, format);
-        import.init_from(&mut input).await?;
-        Ok(Self { import, input })
-    }
-
-    /// Continues reading media data until EOF or cancellation.
-    pub async fn run(mut self) -> anyhow::Result<()> {
-        let read = async {
-            self.import.read_from(&mut self.input).await?;
-            anyhow::Ok(())
-        };
-        tokio::pin!(read);
-
-        tokio::select! {
-            res = &mut read => {
-                if let Err(err) = res {
-                    warn!("import failed: {err:#}");
-                }
-            }
-            _ = tokio::signal::ctrl_c() => {}
-        }
-        Ok(())
-    }
-}
-
-/// One-shot import: init + run in a single call. Use [`ImportHandle`] when
-/// you need to create a preview between init and run.
-pub async fn run_import(
-    broadcast: BroadcastProducer,
+/// Reads the file header and publishes the initial catalog to the producer.
+/// After this returns, consumers can subscribe to the catalog.
+pub async fn init_import(
+    broadcast: &mut BroadcastProducer,
     format: ImportFormat,
     input: &mut Pin<Box<dyn AsyncRead + Send + 'static>>,
-) -> anyhow::Result<()> {
-    let import = async move {
-        let mut imp = Import::new(broadcast, format);
-        imp.init_from(input).await?;
-        imp.read_from(input).await?;
-        anyhow::Ok(())
+) -> anyhow::Result<moq_mux::import::StreamDecoder> {
+    let catalog = moq_mux::CatalogProducer::new(broadcast).unwrap();
+    let stream_format = match format {
+        ImportFormat::Fmp4 => StreamFormat::Fmp4,
+        ImportFormat::Avc3 => StreamFormat::Avc3,
     };
-    tokio::pin!(import);
-
-    tokio::select! {
-        res = &mut import => {
-            if let Err(err) = res {
-                warn!("import failed: {err:#}");
-            }
-        }
-        _ = tokio::signal::ctrl_c() => {}
+    let mut decoder =
+        moq_mux::import::StreamDecoder::new(broadcast.clone(), catalog, stream_format);
+    let mut buffer = BytesMut::new();
+    while !decoder.is_initialized() && input.read_buf(&mut buffer).await? > 0 {
+        decoder.decode_stream(&mut buffer)?;
     }
-    Ok(())
+    Ok(decoder)
 }
 
-// ---------------------------------------------------------------------------
-// Import decoder (ported from examples/common/import.rs)
-// ---------------------------------------------------------------------------
-
-struct Import {
-    decoder: moq_mux::import::StreamDecoder,
-    buffer: BytesMut,
-}
-
-impl Import {
-    fn new(mut broadcast: BroadcastProducer, format: ImportFormat) -> Self {
-        use moq_mux::import::StreamFormat;
-        let catalog = moq_mux::CatalogProducer::new(&mut broadcast).unwrap();
-        let stream_format = match format {
-            ImportFormat::Fmp4 => StreamFormat::Fmp4,
-            ImportFormat::Avc3 => StreamFormat::Avc3,
-        };
-        let decoder = moq_mux::import::StreamDecoder::new(broadcast, catalog, stream_format);
-        Self {
-            decoder,
-            buffer: BytesMut::new(),
-        }
+/// Continues reading media data from `input` until EOF.
+pub async fn run_import(
+    mut decoder: moq_mux::import::StreamDecoder,
+    mut input: Pin<Box<dyn AsyncRead + Send + 'static>>,
+) -> anyhow::Result<()> {
+    let mut buffer = BytesMut::new();
+    while input.read_buf(&mut buffer).await? > 0 {
+        decoder.decode_stream(&mut buffer)?;
     }
-
-    async fn init_from<T: AsyncRead + Unpin>(&mut self, input: &mut T) -> anyhow::Result<()> {
-        while !self.decoder.is_initialized() && input.read_buf(&mut self.buffer).await? > 0 {
-            self.decoder.decode_stream(&mut self.buffer)?;
-        }
-        Ok(())
-    }
-
-    async fn read_from<T: AsyncRead + Unpin>(&mut self, input: &mut T) -> anyhow::Result<()> {
-        while input.read_buf(&mut self.buffer).await? > 0 {
-            self.decoder.decode_stream(&mut self.buffer)?;
-        }
-        self.decoder.finish()
-    }
+    decoder.finish()
 }
 
 // ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@ use iroh_live::media::{
     format::{AudioPreset, DecodeConfig, DecoderBackend, VideoPreset},
     net::NetworkSignals,
     publish::LocalBroadcast,
-    subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
+    subscribe::{AudioTrack, RemoteBroadcast, VideoOptions, VideoTrack},
     test_sources::{TestPatternSource, TestToneSource},
     traits::VideoSource,
 };
@@ -423,7 +423,6 @@ pub struct RemoteControls {
     pub decoder_backend: DecoderBackend,
     pub sync_mode: SyncModeChoice,
     pub rendition_mode: RenditionMode,
-    stale_duration_ms: u32,
 }
 
 impl RemoteControls {
@@ -452,11 +451,11 @@ impl RemoteControls {
             decoder_backend: DecoderBackend::Auto,
             sync_mode: SyncModeChoice::AudioMaster,
             rendition_mode: RenditionMode::Auto,
-            stale_duration_ms: 500,
         }
     }
 
-    /// Resubscribes to video and audio from the current catalog.
+    /// Resubscribes to video (respecting current rendition mode and decoder
+    /// backend) and audio from the current catalog.
     pub fn resubscribe(&mut self, ctx: &egui::Context, view_id: &str) {
         self.broadcast.reset_sync();
 
@@ -465,10 +464,16 @@ impl RemoteControls {
             ..Default::default()
         };
 
-        // Video
-        match self.broadcast.video_with(
-            iroh_live::media::subscribe::VideoOptions::default().playback(decode_config.clone()),
-        ) {
+        // Video — respect rendition mode.
+        let video_result = match &self.rendition_mode {
+            RenditionMode::Fixed(name) => self
+                .broadcast
+                .video_rendition::<DynamicVideoDecoder>(&decode_config, name),
+            RenditionMode::Auto => self
+                .broadcast
+                .video_with(VideoOptions::default().playback(decode_config.clone())),
+        };
+        match video_result {
             Ok(track) => {
                 info!(rendition = track.rendition(), "resubscribed to video");
                 self.video = Some(VideoTrackView::new(ctx, view_id, track));
@@ -511,11 +516,11 @@ impl RemoteControls {
     }
 
     /// Draws the playback control bar: rendition (auto/fixed), decoder, sync mode,
-    /// stale duration slider. Returns true if anything changed that requires resubscribe.
-    pub fn controls_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, id_salt: &str) -> bool {
+    /// stale duration slider.
+    pub fn controls_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, id_salt: &str) {
         let mut needs_resubscribe = false;
 
-        // Rendition: Auto or fixed by name
+        // Rendition: Auto or fixed by name.
         let rendition_label = match &self.rendition_mode {
             RenditionMode::Auto => "Auto".to_string(),
             RenditionMode::Fixed(name) => name.clone(),
@@ -536,19 +541,7 @@ impl RemoteControls {
                     if ui.selectable_label(is_selected, name).clicked() {
                         info!(rendition = name, "rendition pinned");
                         self.rendition_mode = RenditionMode::Fixed(name.to_string());
-                        let decode_config = DecodeConfig {
-                            backend: self.decoder_backend,
-                            ..Default::default()
-                        };
-                        match self
-                            .broadcast
-                            .video_rendition::<DynamicVideoDecoder>(&decode_config, name)
-                        {
-                            Ok(track) => {
-                                self.video = Some(VideoTrackView::new(ctx, id_salt, track));
-                            }
-                            Err(e) => warn!("rendition switch failed: {e:#}"),
-                        }
+                        needs_resubscribe = true;
                     }
                 }
             });
@@ -592,23 +585,8 @@ impl RemoteControls {
                 }
             });
 
-        // Stale duration slider
-        if ui
-            .add(
-                egui::Slider::new(&mut self.stale_duration_ms, 200..=5000)
-                    .text("stale ms")
-                    .logarithmic(true),
-            )
-            .changed()
-        {
-            self.broadcast
-                .set_max_stale_duration(Duration::from_millis(self.stale_duration_ms as u64));
-        }
-
         if needs_resubscribe {
             self.resubscribe(ctx, id_salt);
         }
-
-        needs_resubscribe
     }
 }
