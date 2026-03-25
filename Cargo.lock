@@ -5450,6 +5450,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "iroh-live-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "clap",
+ "data-encoding",
+ "eframe",
+ "iroh",
+ "iroh-gossip",
+ "iroh-live",
+ "moq-lite",
+ "moq-media",
+ "moq-media-egui",
+ "moq-mux",
+ "n0-error",
+ "qr2term",
+ "rand 0.9.2",
+ "strum 0.28.0",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "iroh-live-relay"
 version = "0.1.0"
 dependencies = [

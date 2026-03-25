@@ -445,7 +445,7 @@ impl Actor {
                         Err(err) => tracing::error!("connect task panicked: {err}"),
                         Ok((endpoint_id, Ok(session))) => {
                             info!(remote=%endpoint_id.fmt_short(), "connected");
-                            self.handle_incoming_session(session);
+                            self.handle_session(session);
                         }
                         Ok((endpoint_id, Err(err))) => {
                             info!(remote=%endpoint_id.fmt_short(), "connect failed: {err:#}");
@@ -463,7 +463,10 @@ impl Actor {
 
     fn handle_message(&mut self, msg: ActorMessage) {
         match msg {
-            ActorMessage::HandleSession { session: msg } => self.handle_incoming_session(*msg),
+            ActorMessage::HandleSession { session } => {
+                info!(remote=%session.remote_id().fmt_short(), "accepted incoming connection");
+                self.handle_session(*session);
+            }
             ActorMessage::LocalBroadcast {
                 broadcast_name: name,
                 producer,
@@ -476,9 +479,8 @@ impl Actor {
         }
     }
 
-    fn handle_incoming_session(&mut self, session: MoqSession) {
+    fn handle_session(&mut self, session: MoqSession) {
         let remote = session.remote_id();
-        info!(remote=%remote.fmt_short(), "accepted incoming connection");
         for (name, producer) in self.publishing.iter() {
             session.publish(name.as_str(), producer.consume());
         }

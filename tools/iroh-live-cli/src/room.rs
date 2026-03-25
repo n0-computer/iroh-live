@@ -1,0 +1,373 @@
+//! `irl room` — multi-party room with video grid.
+
+use std::time::Duration;
+
+use eframe::egui::{self, Id, Vec2};
+use iroh::Endpoint;
+use iroh_gossip::TopicId;
+use iroh_live::{
+    Live,
+    media::{
+        AudioBackend,
+        codec::DefaultDecoders,
+        publish::LocalBroadcast,
+        subscribe::{AudioTrack, MediaTracks, RemoteBroadcast},
+    },
+    moq::MoqSession,
+    rooms::{Room, RoomEvent, RoomTicket},
+};
+use moq_media_egui::VideoTrackView;
+use n0_error::{Result, StdResultExt, anyerr};
+use tracing::{info, warn};
+
+use crate::args::RoomArgs;
+
+const BROADCAST_NAME: &str = "cam";
+
+pub fn run(args: RoomArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
+    let (live, broadcast, room, audio_ctx) = rt.block_on(async {
+        let audio_ctx = AudioBackend::default();
+        let (live, broadcast, room) = setup(&args, audio_ctx.clone()).await?;
+        n0_error::Ok((live, broadcast, room, audio_ctx))
+    })?;
+
+    // eframe runs outside block_on.
+    let _guard = rt.enter();
+    eframe::run_native(
+        "irl room",
+        eframe::NativeOptions::default(),
+        Box::new(|cc| {
+            Ok(Box::new(RoomApp {
+                room,
+                peers: vec![],
+                self_video: broadcast
+                    .preview()
+                    .map(|track| VideoTrackView::new(&cc.egui_ctx, "self-video", track)),
+                live,
+                _broadcast: broadcast,
+                audio_ctx,
+                self_view_mode: SelfViewMode::Grid,
+            }))
+        }),
+    )
+    .map_err(|err| anyerr!("eframe failed: {err:#}"))
+}
+
+async fn setup(args: &RoomArgs, audio_ctx: AudioBackend) -> Result<(Live, LocalBroadcast, Room)> {
+    let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
+        .secret_key(iroh_live::util::secret_key_from_env()?)
+        .bind()
+        .await?;
+    info!(endpoint_id=%endpoint.id(), "endpoint bound");
+    let live = Live::builder(endpoint).enable_gossip().spawn_with_router();
+
+    let broadcast = LocalBroadcast::new();
+    let video_sources = args
+        .capture
+        .video_sources()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let audio_sources = args
+        .capture
+        .audio_sources()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let codec = args.capture.video_codec()?;
+    let presets = args.capture.presets()?;
+    let audio_preset = args.capture.audio_preset_parsed()?;
+
+    crate::source::setup_video(&broadcast, &video_sources, codec, &presets)?;
+    crate::source::setup_audio(&broadcast, &audio_sources, &audio_ctx, audio_preset).await?;
+
+    let ticket = match &args.ticket {
+        Some(t) => t.clone(),
+        None => RoomTicket::new(topic_id_from_env()?, vec![]),
+    };
+    let room = live.join_room(ticket).await?;
+    room.publish(BROADCAST_NAME, broadcast.producer()).await?;
+    println!("room ticket: {}", room.ticket());
+
+    Ok((live, broadcast, room))
+}
+
+// ---------------------------------------------------------------------------
+// Self-view toggle
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SelfViewMode {
+    Grid,
+    Pip,
+}
+
+// ---------------------------------------------------------------------------
+// Remote peer track
+// ---------------------------------------------------------------------------
+
+struct RemoteTrackView {
+    _id: usize,
+    video: Option<VideoTrackView>,
+    _audio_track: Option<AudioTrack>,
+    session: MoqSession,
+    broadcast: RemoteBroadcast,
+    overlay: moq_media_egui::overlay::DebugOverlay,
+}
+
+impl RemoteTrackView {
+    fn new(ctx: &egui::Context, session: MoqSession, track: MediaTracks, id: usize) -> Self {
+        iroh_live::util::spawn_stats_recorder(
+            session.conn(),
+            track.broadcast.stats().net.clone(),
+            track.broadcast.shutdown_token(),
+        );
+        Self {
+            video: track
+                .video
+                .map(|v| VideoTrackView::new(ctx, &format!("video-{id}"), v)),
+            overlay: moq_media_egui::overlay::DebugOverlay::new(&[
+                moq_media_egui::overlay::StatCategory::Net,
+                moq_media_egui::overlay::StatCategory::Render,
+            ]),
+            broadcast: track.broadcast,
+            _id: id,
+            _audio_track: track.audio,
+            session,
+        }
+    }
+
+    fn is_closed(&self) -> bool {
+        self.session.conn().close_reason().is_some()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// App
+// ---------------------------------------------------------------------------
+
+struct RoomApp {
+    room: Room,
+    peers: Vec<RemoteTrackView>,
+    self_video: Option<VideoTrackView>,
+    live: Live,
+    _broadcast: LocalBroadcast,
+    audio_ctx: AudioBackend,
+    self_view_mode: SelfViewMode,
+}
+
+impl eframe::App for RoomApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.request_repaint_after(Duration::from_millis(30));
+        self.peers.retain(|t| !t.is_closed());
+
+        while let Ok(event) = self.room.try_recv() {
+            match event {
+                RoomEvent::RemoteAnnounced { remote, broadcasts } => {
+                    info!("peer announced: {} with {broadcasts:?}", remote.fmt_short());
+                }
+                RoomEvent::RemoteConnected { session } => {
+                    info!("peer connected: {}", session.conn().remote_id().fmt_short());
+                }
+                RoomEvent::BroadcastSubscribed { session, broadcast } => {
+                    info!(
+                        "subscribing to {}:{}",
+                        session.remote_id(),
+                        broadcast.broadcast_name()
+                    );
+                    let handle = tokio::runtime::Handle::current();
+                    let track = match handle.block_on(async {
+                        broadcast
+                            .media::<DefaultDecoders>(&self.audio_ctx, Default::default())
+                            .await
+                    }) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            warn!("failed to add track: {e}");
+                            continue;
+                        }
+                    };
+                    self.peers
+                        .push(RemoteTrackView::new(ctx, *session, track, self.peers.len()));
+                }
+            }
+        }
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().inner_margin(0.0).outer_margin(0.0))
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                let bar_h = 28.0;
+                let avail = ui.available_size();
+                let grid_avail = egui::vec2(avail.x, avail.y - bar_h);
+
+                if self.self_view_mode == SelfViewMode::Grid {
+                    show_grid_with_self(ctx, ui, &mut self.peers, &mut self.self_video, grid_avail);
+                } else {
+                    show_grid(ctx, ui, &mut self.peers, grid_avail);
+                    if let Some(sv) = self.self_video.as_mut() {
+                        let pip = egui::vec2(200.0, 200.0);
+                        egui::Area::new(Id::new("self-video"))
+                            .anchor(egui::Align2::RIGHT_BOTTOM, [-10.0, -bar_h - 10.0])
+                            .order(egui::Order::Foreground)
+                            .show(ctx, |ui| {
+                                egui::Frame::new()
+                                    .fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 128))
+                                    .corner_radius(8.0)
+                                    .show(ui, |ui| {
+                                        ui.set_width(pip.x);
+                                        ui.set_height(pip.y);
+                                        let (img, _) = sv.render(ctx, pip);
+                                        ui.add_sized(pip, img);
+                                    });
+                            });
+                    }
+                }
+
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.label("Self view:");
+                    if ui
+                        .selectable_label(self.self_view_mode == SelfViewMode::Grid, "grid")
+                        .clicked()
+                    {
+                        self.self_view_mode = SelfViewMode::Grid;
+                    }
+                    if ui
+                        .selectable_label(self.self_view_mode == SelfViewMode::Pip, "pip")
+                        .clicked()
+                    {
+                        self.self_view_mode = SelfViewMode::Pip;
+                    }
+                });
+            });
+    }
+
+    fn on_exit(&mut self) {
+        let live = self.live.clone();
+        tokio::runtime::Handle::current().block_on(async move { live.shutdown().await });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Grid layout helpers
+// ---------------------------------------------------------------------------
+
+fn grid_layout(n: usize, avail: Vec2) -> (usize, usize, f32) {
+    if n == 0 {
+        return (0, 0, 0.0);
+    }
+    let cols = (n as f32).sqrt().ceil() as usize;
+    let rows = n.div_ceil(cols);
+    let cell = (avail.x / cols as f32).min(avail.y / rows as f32).floor();
+    (cols, rows, cell)
+}
+
+fn show_grid(ctx: &egui::Context, ui: &mut egui::Ui, peers: &mut [RemoteTrackView], avail: Vec2) {
+    let n = peers.len();
+    let (cols, rows, cell) = grid_layout(n, avail);
+    if n == 0 {
+        return;
+    }
+    let cell_size: Vec2 = [cell, cell].into();
+    let pad_x = ((avail.x - cell * cols as f32) * 0.5).max(0.0);
+    let pad_y = ((avail.y - cell * rows as f32) * 0.5).max(0.0);
+
+    ui.add_space(pad_y);
+    ui.horizontal(|ui| {
+        ui.add_space(pad_x);
+        egui::Grid::new("room_grid")
+            .spacing(Vec2::ZERO)
+            .show(ui, |ui| {
+                let mut i = 0;
+                for _r in 0..rows {
+                    for _c in 0..cols {
+                        if i < n {
+                            if let Some(img) =
+                                peers[i].video.as_mut().map(|v| v.render(ctx, cell_size).0)
+                            {
+                                let resp = ui.add_sized(cell_size, img);
+                                peers[i]
+                                    .overlay
+                                    .show(ui, resp.rect, peers[i].broadcast.stats());
+                            }
+                        } else {
+                            ui.allocate_exact_size(cell_size, egui::Sense::hover());
+                        }
+                        i += 1;
+                    }
+                    ui.end_row();
+                }
+            });
+    });
+}
+
+fn show_grid_with_self(
+    ctx: &egui::Context,
+    ui: &mut egui::Ui,
+    peers: &mut [RemoteTrackView],
+    self_video: &mut Option<VideoTrackView>,
+    avail: Vec2,
+) {
+    let n = peers.len() + usize::from(self_video.is_some());
+    let (cols, rows, cell) = grid_layout(n, avail);
+    if n == 0 {
+        return;
+    }
+    let cell_size: Vec2 = [cell, cell].into();
+    let pad_x = ((avail.x - cell * cols as f32) * 0.5).max(0.0);
+    let pad_y = ((avail.y - cell * rows as f32) * 0.5).max(0.0);
+
+    ui.add_space(pad_y);
+    ui.horizontal(|ui| {
+        ui.add_space(pad_x);
+        egui::Grid::new("room_grid_self")
+            .spacing(Vec2::ZERO)
+            .show(ui, |ui| {
+                let total_peers = peers.len();
+                let mut i = 0;
+                for _r in 0..rows {
+                    for _c in 0..cols {
+                        if i < total_peers {
+                            if let Some(img) =
+                                peers[i].video.as_mut().map(|v| v.render(ctx, cell_size).0)
+                            {
+                                let resp = ui.add_sized(cell_size, img);
+                                peers[i]
+                                    .overlay
+                                    .show(ui, resp.rect, peers[i].broadcast.stats());
+                            }
+                        } else if i == total_peers {
+                            if let Some(sv) = self_video {
+                                let (img, _) = sv.render(ctx, cell_size);
+                                ui.add_sized(cell_size, img);
+                            } else {
+                                ui.allocate_exact_size(cell_size, egui::Sense::hover());
+                            }
+                        } else {
+                            ui.allocate_exact_size(cell_size, egui::Sense::hover());
+                        }
+                        i += 1;
+                    }
+                    ui.end_row();
+                }
+            });
+    });
+}
+
+fn topic_id_from_env() -> Result<TopicId> {
+    Ok(match std::env::var("IROH_TOPIC") {
+        Ok(topic) => TopicId::from_bytes(
+            data_encoding::HEXLOWER
+                .decode(topic.as_bytes())
+                .std_context("invalid hex")?
+                .as_slice()
+                .try_into()
+                .std_context("invalid length")?,
+        ),
+        Err(_) => {
+            let topic = TopicId::from_bytes(rand::random());
+            println!(
+                "Created new topic. Reuse with IROH_TOPIC={}",
+                data_encoding::HEXLOWER.encode(topic.as_bytes())
+            );
+            topic
+        }
+    })
+}

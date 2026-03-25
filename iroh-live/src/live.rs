@@ -14,7 +14,7 @@ use moq_media::{
     traits::AudioStreamFactory,
 };
 use n0_error::Result;
-use tracing::{error, info};
+use tracing::{error, info, instrument};
 
 use crate::rooms::{Room, RoomTicket};
 
@@ -171,16 +171,45 @@ impl Live {
     ///
     /// Returns both the session (for stats, closing, etc.) and the broadcast.
     /// If you only need the broadcast, use [`subscribe`](Self::subscribe).
+    #[instrument("Subscribe", skip_all, fields(remote=tracing::field::Empty))]
     pub async fn subscribe(
         &self,
         remote: impl Into<EndpointAddr>,
         broadcast_name: &str,
     ) -> Result<(MoqSession, RemoteBroadcast)> {
+        let remote = remote.into();
+        tracing::Span::current().record("remote", tracing::field::display(remote.id.fmt_short()));
         let mut session = self.moq.connect(remote).await?;
         info!(id=%session.conn().remote_id(), "connected");
         let consumer = session.subscribe(broadcast_name).await?;
         let broadcast = RemoteBroadcast::new(broadcast_name, consumer).await?;
         Ok((session, broadcast))
+    }
+
+    /// Subscribes and starts both stat recording and network signal production.
+    ///
+    /// Returns the session, broadcast, and a signal receiver for adaptive
+    /// rendition selection. Equivalent to calling [`subscribe`](Self::subscribe)
+    /// followed by [`spawn_stats_recorder`](crate::util::spawn_stats_recorder)
+    /// and [`spawn_signal_producer`](crate::util::spawn_signal_producer).
+    pub async fn subscribe_with_stats(
+        &self,
+        remote: impl Into<EndpointAddr>,
+        broadcast_name: &str,
+    ) -> Result<(
+        MoqSession,
+        RemoteBroadcast,
+        tokio::sync::watch::Receiver<moq_media::net::NetworkSignals>,
+    )> {
+        let (session, broadcast) = self.subscribe(remote, broadcast_name).await?;
+        crate::util::spawn_stats_recorder(
+            session.conn(),
+            broadcast.stats().net.clone(),
+            broadcast.shutdown_token(),
+        );
+        let signals =
+            crate::util::spawn_signal_producer(session.conn(), broadcast.shutdown_token());
+        Ok((session, broadcast, signals))
     }
 
     /// Connects to a remote peer, subscribes, and decodes video+audio in one step.
