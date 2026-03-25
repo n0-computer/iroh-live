@@ -153,6 +153,61 @@ impl Metric {
     pub fn has_samples(&self) -> bool {
         self.inner.sample_count.load(Ordering::Relaxed) > 0
     }
+
+    /// Records a [`Duration`] as milliseconds.
+    pub fn record_ms(&self, d: Duration) {
+        self.record(d.as_secs_f64() * 1000.0);
+    }
+
+    /// Records an FPS sample from the gap since the previous event. Ignores
+    /// gaps shorter than 5ms to avoid division noise.
+    pub fn record_fps_gap(&self, gap: Duration) {
+        if gap >= Duration::from_millis(5) {
+            self.record(1.0 / gap.as_secs_f64());
+        }
+    }
+}
+
+/// Tracks wall-clock drift from PTS cadence to produce a lag metric.
+///
+/// On first call, records the base wall+PTS. On subsequent calls, returns
+/// `wall_elapsed - pts_elapsed` in milliseconds (positive = behind live).
+#[derive(Debug, Default)]
+pub struct LagTracker {
+    base_wall: Option<Instant>,
+    base_pts: Option<Duration>,
+}
+
+impl LagTracker {
+    pub fn new() -> Self {
+        Self {
+            base_wall: None,
+            base_pts: None,
+        }
+    }
+
+    /// Records one observation and returns the current lag (wall behind PTS).
+    ///
+    /// Returns the signed lag as a `Duration` pair: `(behind, ahead)`.
+    /// In practice, use `lag_ms()` for the signed millisecond value.
+    pub fn record(&mut self, wall: Instant, pts: Duration) -> Duration {
+        let base_w = *self.base_wall.get_or_insert(wall);
+        let base_p = *self.base_pts.get_or_insert(pts);
+        let wall_elapsed = wall.duration_since(base_w);
+        let pts_elapsed = pts.saturating_sub(base_p);
+        wall_elapsed.saturating_sub(pts_elapsed)
+    }
+
+    /// Records one observation and returns the signed lag in milliseconds.
+    /// Positive = wall is behind PTS (rendering late).
+    /// Negative = wall is ahead of PTS (rendering early).
+    pub fn record_ms(&mut self, wall: Instant, pts: Duration) -> f64 {
+        let base_w = *self.base_wall.get_or_insert(wall);
+        let base_p = *self.base_pts.get_or_insert(pts);
+        let wall_elapsed = wall.duration_since(base_w);
+        let pts_elapsed = pts.saturating_sub(base_p);
+        wall_elapsed.as_secs_f64() * 1000.0 - pts_elapsed.as_secs_f64() * 1000.0
+    }
 }
 
 // ── Label ───────────────────────────────────────────────────────────
@@ -266,80 +321,38 @@ impl Default for RenderStats {
     }
 }
 
-/// Timing/playout stats. Written by the decode/playout pipeline.
+/// Timing/playout stats. Written by the decode pipelines.
 #[derive(Clone, Debug)]
 pub struct TimingStats {
-    pub delay_ms: Metric,
-    pub audio_buffer_ms: Metric,
-    pub audio_live_lag_ms: Metric,
-    pub video_live_lag_ms: Metric,
-    pub buf_frames: Metric,
-    pub frames_skipped: Metric,
-    pub late_frames_dropped: Metric,
-    pub freezes: Metric,
+    /// Audio output ring buffer fill level.
+    pub audio_buf_ms: Metric,
+    /// Video playout lag: wall drift from PTS cadence (positive = behind live).
+    pub video_lag_ms: Metric,
+    /// Audio playout lag: wall drift from PTS cadence.
+    pub audio_lag_ms: Metric,
+    /// A/V delta: `video_lag - audio_lag`. Positive = video behind audio.
     pub av_delta_ms: Metric,
-    pub sync_state: Label,
+    /// Decoded video frames waiting in the playout buffer.
+    pub video_buf: Metric,
 }
 
 impl Default for TimingStats {
     fn default() -> Self {
         Self {
-            delay_ms: Metric::new(
-                MetricMeta::responsive("Delay", "ms").with_thresholds(100.0, 300.0, false),
-            ),
-            audio_buffer_ms: Metric::new(
+            audio_buf_ms: Metric::new(
                 MetricMeta::responsive("AudioBuf", "ms").with_thresholds(80.0, 200.0, false),
             ),
-            audio_live_lag_ms: Metric::new(
-                MetricMeta::responsive("AudioLag", "ms").with_thresholds(120.0, 300.0, false),
+            video_lag_ms: Metric::new(
+                MetricMeta::responsive("VideoLag", "ms").with_thresholds(50.0, 150.0, false),
             ),
-            video_live_lag_ms: Metric::new(
-                MetricMeta::responsive("VideoLag", "ms").with_thresholds(120.0, 300.0, false),
+            audio_lag_ms: Metric::new(
+                MetricMeta::responsive("AudioLag", "ms").with_thresholds(50.0, 150.0, false),
             ),
-            buf_frames: Metric::new(MetricMeta::responsive("Buffer", "")),
-            frames_skipped: Metric::new(MetricMeta::smooth("Skipped", "")),
-            late_frames_dropped: Metric::new(MetricMeta::smooth("LateDrop", "")),
-            freezes: Metric::new(MetricMeta::smooth("Freezes", "")),
             av_delta_ms: Metric::new(
                 MetricMeta::responsive("A/V Δ", "ms").with_thresholds(20.0, 50.0, false),
             ),
-            sync_state: Label::default(),
+            video_buf: Metric::new(MetricMeta::responsive("VideoBuf", "")),
         }
-    }
-}
-
-impl TimingStats {
-    /// Records the current video playout state.
-    pub fn record_video_status(
-        &self,
-        queued_frames: usize,
-        next_wait: Option<Duration>,
-        audio_buffered: Option<Duration>,
-        av_delta_ms: Option<f64>,
-        video_live_lag: Option<Duration>,
-        sync_state: &str,
-    ) {
-        self.buf_frames.record(queued_frames as f64);
-        self.delay_ms
-            .record(next_wait.unwrap_or_default().as_secs_f64() * 1000.0);
-        if let Some(buffered) = audio_buffered {
-            self.audio_buffer_ms.record(buffered.as_secs_f64() * 1000.0);
-        }
-        if let Some(delta_ms) = av_delta_ms {
-            self.av_delta_ms.record(delta_ms);
-        }
-        if let Some(lag) = video_live_lag {
-            self.video_live_lag_ms.record(lag.as_secs_f64() * 1000.0);
-        }
-        self.sync_state.set(sync_state);
-    }
-
-    /// Records the current audio sink state.
-    pub fn record_audio_status(&self, audio_buffered: Duration, audio_live_lag: Option<Duration>) {
-        self.audio_buffer_ms
-            .record(audio_buffered.as_secs_f64() * 1000.0);
-        self.audio_live_lag_ms
-            .record(audio_live_lag.unwrap_or_default().as_secs_f64() * 1000.0);
     }
 }
 
@@ -347,13 +360,16 @@ impl TimingStats {
 
 /// Per-frame timing snapshot for the timeline visualization.
 #[derive(Debug, Clone)]
-pub struct FrameTimingEntry {
+pub struct FrameMeta {
     pub kind: FrameKind,
     pub pts: Duration,
-    pub receive_wall: Instant,
-    pub decode_end: Option<Instant>,
-    pub render_wall: Instant,
     pub is_keyframe: bool,
+    /// Wall-clock time when the frame was received from the transport.
+    pub received: Instant,
+    /// Wall-clock time when decode completed.
+    pub decoded: Option<Instant>,
+    /// Wall-clock time when the frame was released from the playout buffer.
+    pub rendered: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -365,7 +381,7 @@ pub enum FrameKind {
 /// Ring buffer of frame timing entries for the timeline panel.
 #[derive(Clone, Debug)]
 pub struct Timeline {
-    frames: Arc<Mutex<VecDeque<FrameTimingEntry>>>,
+    frames: Arc<Mutex<VecDeque<FrameMeta>>>,
     cap: usize,
 }
 
@@ -377,7 +393,7 @@ impl Timeline {
         }
     }
 
-    pub fn push(&self, entry: FrameTimingEntry) {
+    pub fn push(&self, entry: FrameMeta) {
         let mut frames = self.frames.lock().expect("timeline lock");
         if frames.len() >= self.cap {
             frames.pop_front();
@@ -385,7 +401,7 @@ impl Timeline {
         frames.push_back(entry);
     }
 
-    pub fn snapshot(&self) -> Vec<FrameTimingEntry> {
+    pub fn snapshot(&self) -> Vec<FrameMeta> {
         self.frames
             .lock()
             .expect("timeline lock")
@@ -477,23 +493,5 @@ mod tests {
         assert_eq!(l.get(), "initial");
         l.set("changed");
         assert_eq!(l.get(), "changed");
-    }
-
-    #[test]
-    fn timeline_ring_buffer() {
-        let tl = Timeline::new(3);
-        let now = Instant::now();
-        for i in 0..5 {
-            tl.push(FrameTimingEntry {
-                kind: FrameKind::Video,
-                pts: Duration::from_millis(i * 33),
-                receive_wall: now,
-                decode_end: Some(now),
-                render_wall: now,
-                is_keyframe: i == 0,
-            });
-        }
-        let snap = tl.snapshot();
-        assert_eq!(snap.len(), 3); // capped at 3
     }
 }

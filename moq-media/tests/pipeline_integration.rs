@@ -350,15 +350,6 @@ async fn synced_playout_updates_timing_state_after_frames() {
             .expect("timeout")
             .expect("closed");
     }
-
-    let state = remote.stats().timing.sync_state.get();
-    assert!(
-        matches!(
-            state.as_str(),
-            "startup" | "catchup" | "locked" | "unmanaged"
-        ),
-        "unexpected sync state: {state}"
-    );
 }
 
 // ── Group E: Publisher disconnect ──────────────────────────────────

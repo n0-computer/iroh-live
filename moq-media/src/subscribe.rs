@@ -7,7 +7,7 @@
 
 use std::{
     collections::BTreeMap,
-    sync::{Arc, atomic::AtomicBool},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -31,9 +31,7 @@ use crate::adaptive::{AdaptiveConfig, AdaptiveVideoTrack};
 use crate::net::NetworkSignals;
 use crate::{
     format::{DecodeConfig, PlaybackConfig, Quality, VideoFrame},
-    pipeline::{
-        AudioDecoderPipeline, AudioPosition, DecodeOpts, VideoDecoderHandle, VideoDecoderPipeline,
-    },
+    pipeline::{AudioDecoderPipeline, DecodeOpts, VideoDecoderHandle, VideoDecoderPipeline},
     playout::{FreshnessPolicy, PlaybackPolicy},
     processing::scale::Scaler,
     traits::{
@@ -228,12 +226,8 @@ pub struct RemoteBroadcast {
     shutdown: CancellationToken,
     _catalog_task: Arc<AbortOnDropHandle<()>>,
     stats: crate::stats::SubscribeStats,
-    audio_position: AudioPosition,
-    video_started: Arc<AtomicBool>,
     /// Shared freshness threshold used by new and existing tracks.
     max_stale_duration_ms: Arc<std::sync::atomic::AtomicU64>,
-    /// Skip generation counter: video increments on skip, audio flushes to resync.
-    skip_generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Point-in-time snapshot of a broadcast's catalog.
@@ -332,13 +326,18 @@ impl RemoteBroadcast {
             let track = broadcast
                 .subscribe_track(&Catalog::default_track())
                 .std_context("missing catalog track")?;
-            debug!("catalog received");
+            debug!("catalog track subscribed");
             let mut catalog_consumer = CatalogConsumer::new(track);
             let initial_catalog = catalog_consumer
                 .next()
                 .await
                 .std_context("Broadcast closed before receiving catalog")?
                 .context("Catalog track closed before receiving catalog")?;
+            debug!(
+                video = initial_catalog.video.renditions.len(),
+                audio = initial_catalog.audio.renditions.len(),
+                "initial catalog received"
+            );
             let watchable = Watchable::new(CatalogSnapshot::new(initial_catalog, 0));
 
             let task = tokio::spawn({
@@ -348,7 +347,11 @@ impl RemoteBroadcast {
                     for seq in 1.. {
                         match catalog_consumer.next().await {
                             Ok(Some(catalog)) => {
-                                debug!(?catalog, "catalog update");
+                                debug!(
+                                    video = catalog.video.renditions.len(),
+                                    audio = catalog.audio.renditions.len(),
+                                    "catalog updated"
+                                );
                                 watchable.set(CatalogSnapshot::new(catalog, seq)).ok();
                             }
                             Ok(None) => {
@@ -375,12 +378,9 @@ impl RemoteBroadcast {
             _catalog_task: Arc::new(AbortOnDropHandle::new(catalog_task)),
             shutdown,
             stats: crate::stats::SubscribeStats::default(),
-            audio_position: AudioPosition::default(),
-            video_started: Arc::new(AtomicBool::new(false)),
             max_stale_duration_ms: Arc::new(std::sync::atomic::AtomicU64::new(
                 max_stale_duration_ms,
             )),
-            skip_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }
 
@@ -394,11 +394,6 @@ impl RemoteBroadcast {
     fn decode_opts(&self) -> DecodeOpts {
         DecodeOpts {
             stats: self.stats.decode_stats(),
-            audio_position: self.audio_position.clone(),
-            video_started: self.video_started.clone(),
-            playback_policy: self.playback_policy.clone(),
-            max_stale_duration_ms: self.max_stale_duration_ms.clone(),
-            skip_generation: self.skip_generation.clone(),
         }
     }
 
@@ -448,9 +443,7 @@ impl RemoteBroadcast {
     /// so the new pipelines don't inherit stale timing from the
     /// old session.
     pub fn reset_sync(&self) {
-        self.audio_position.reset();
-        self.video_started
-            .store(false, std::sync::atomic::Ordering::Release);
+        // Currently a no-op — will be restored when A/V sync is re-added.
     }
 
     /// Sets the maximum stale duration used for transport freshness and

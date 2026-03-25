@@ -27,7 +27,7 @@ use tracing::info;
 
 use crate::{
     args::{PublishArgs, PublishInput},
-    import::{ImportHandle, open_input},
+    import::{init_import, open_input, run_import},
     transport::{publish_producer, setup_live},
 };
 
@@ -95,19 +95,20 @@ fn run_file_cmd(
     file_args: &crate::args::FileInputArgs,
     rt: &tokio::runtime::Runtime,
 ) -> n0_error::Result {
+    // Common setup: open input, init catalog, then publish.
+    // Publishing must happen after init so the catalog is available to subscribers.
+    let (live, decoder, input, preview_consumer) = rt.block_on(async {
+        let mut input = open_input(&file_args.file, file_args.transcode, file_args.format).await?;
+        let live = setup_live(!args.transport.no_serve).await?;
+        let mut broadcast = BroadcastProducer::default();
+        let preview_consumer = broadcast.consume();
+        let decoder = init_import(&mut broadcast, file_args.format, &mut input).await?;
+        publish_producer(&live, broadcast, &args.transport).await?;
+        anyhow::Ok((live, decoder, input, preview_consumer))
+    })?;
+
     if args.preview {
-        // Two-phase: async setup (init catalog), then egui preview outside block_on.
-        let (live, tracks, import_task, ticket_str) = rt.block_on(async {
-            let input = open_input(&file_args.file, file_args.transcode, file_args.format).await?;
-            let live = setup_live(!args.transport.no_serve).await?;
-            let broadcast = BroadcastProducer::default();
-
-            publish_producer(&live, broadcast.clone(), &args.transport).await?;
-
-            let preview_consumer = broadcast.consume();
-            let handle = ImportHandle::init(broadcast, file_args.format, input).await?;
-
-            // Catalog is now published — subscribe for local preview.
+        let (tracks, import_task, ticket_str) = rt.block_on(async {
             let audio_ctx = AudioBackend::default();
             let tracks = subscribe_preview_from_consumer::<DefaultDecoders>(
                 preview_consumer,
@@ -115,27 +116,20 @@ fn run_file_cmd(
                 PlaybackConfig::default(),
             )
             .await?;
-
-            let import_task = tokio::spawn(handle.run());
+            let import_task = tokio::spawn(run_import(decoder, input));
             let ticket = LiveTicket::new(live.endpoint().addr(), &args.transport.name);
-
-            anyhow::Ok((live, tracks, import_task, ticket.to_string()))
+            anyhow::Ok((tracks, import_task, ticket.to_string()))
         })?;
 
         let _guard = rt.enter();
         run_file_preview(live, tracks, import_task, ticket_str)
     } else {
-        // Simple: run everything inside block_on.
-        rt.block_on(async {
-            let input = open_input(&file_args.file, file_args.transcode, file_args.format).await?;
-            let live = setup_live(!args.transport.no_serve).await?;
-            let broadcast = BroadcastProducer::default();
-
-            publish_producer(&live, broadcast.clone(), &args.transport).await?;
-
-            println!("press Ctrl+C to stop");
-            let mut input = input;
-            crate::import::run_import(broadcast, file_args.format, &mut input).await?;
+        println!("press Ctrl+C to stop");
+        rt.block_on(async move {
+            tokio::select! {
+                res = run_import(decoder, input) => res?,
+                _ = tokio::signal::ctrl_c() => {}
+            }
             live.shutdown().await;
             n0_error::Ok(())
         })
