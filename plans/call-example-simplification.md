@@ -1,28 +1,23 @@
-# Call example simplification
+# Example simplification
 
-The `split.rs` example is ~1100 lines. Target: 200–300 lines of
-application logic with the rest in library crates.
+The CLI consolidation (`tools/iroh-live-cli`) addressed the main problem:
+examples were 800-1100 lines each with duplicated infrastructure. The CLI
+extracted shared logic into `transport.rs`, `source.rs`, `ui.rs`, and `import.rs`.
 
-## Checklist
+## Remaining library-level improvements
 
-- [ ] **A. Demo sources** — add `demo-sources` feature to moq-media
-  exposing `TestPatternSource` (SMPTE bars + bouncing ball) and
-  `TestToneSource`. Keep `test-util` for test infrastructure. Animation
-  makes codec/latency/framerate issues visible.
+- [ ] **A. Demo sources** — `demo-sources` feature in moq-media exposing
+  `TestPatternSource` (animated SMPTE bars) and `TestToneSource`. Currently
+  only `test-util` feature exists with basic test patterns.
 
-- [ ] **B. Source discovery** — add `discover_sources() -> Vec<DiscoveredSource>`
-  to rusty-capture. Enumerates screens + cameras, deduplicates. Reduces
-  example boilerplate from ~75 lines to one call.
+- [ ] **B. Source discovery** — `discover_sources() -> Vec<DiscoveredSource>`
+  in rusty-capture. Enumerates screens + cameras, deduplicates.
 
-- [ ] **C. Egui helpers** — move `fit_to_aspect`, `overlay_bar`,
-  `FrameTimingStats` into moq-media-egui. Rename `FrameStats` →
-  `FpsCounter`.
+- [ ] **C. Egui helpers** — `FrameTimingStats` / `FpsCounter` not yet in
+  moq-media-egui. `fit_to_aspect` and `overlay_bar` are already extracted.
 
-- [ ] **D. Source replacement** — add `replace_source(source)` on
-  `VideoPublisher` / `AudioPublisher` that keeps current codec and
-  presets. Reduces dynamic source change from six lines to one.
+- [ ] **D. Source replacement** — `VideoPublisher::replace_source()` that
+  keeps current codec and presets. Same as api.md item.
 
-- [ ] **E. Auto-resubscribe** — add `LiveMediaTracks` wrapper (or
-  `MediaTracks::watch()` async method) that resubscribes on catalog
-  change internally. Eliminates the 60-line `resubscribe` method and
-  `catalog_watcher.update()` polling in examples.
+- [ ] **E. Auto-resubscribe** — `MediaTracks::watch()` or `LiveMediaTracks`
+  wrapper that resubscribes on catalog change internally. Same as api.md item.

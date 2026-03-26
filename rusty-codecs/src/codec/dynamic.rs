@@ -50,7 +50,6 @@ macro_rules! dispatch_video {
 /// Always defined regardless of codec features. Without any video codec
 /// features, the enum is empty and `new()` returns an error.
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum DynamicVideoDecoder {
     #[cfg(feature = "h264")]
     H264(Box<super::H264VideoDecoder>),
@@ -69,7 +68,7 @@ pub enum DynamicVideoDecoder {
 }
 
 impl VideoDecoder for DynamicVideoDecoder {
-    fn new(config: &VideoConfig, playback_config: &DecodeConfig) -> Result<Self>
+    fn new(config: &VideoConfig, _playback_config: &DecodeConfig) -> Result<Self>
     where
         Self: Sized,
     {
@@ -77,35 +76,44 @@ impl VideoDecoder for DynamicVideoDecoder {
             #[cfg(feature = "h264")]
             VideoCodec::H264(_) => {
                 #[cfg(all(target_os = "linux", feature = "vaapi"))]
-                if matches!(playback_config.backend, crate::format::DecoderBackend::Auto)
-                    && let Ok(dec) = super::vaapi::VaapiDecoder::new(config, playback_config)
+                if matches!(
+                    _playback_config.backend,
+                    crate::format::DecoderBackend::Auto
+                ) && let Ok(dec) = super::vaapi::VaapiDecoder::new(config, _playback_config)
                 {
                     tracing::info!("using VAAPI hardware H.264 decoder");
                     return Ok(Self::VaapiH264(Box::new(dec)));
                 }
                 #[cfg(all(target_os = "linux", feature = "v4l2"))]
-                if matches!(playback_config.backend, crate::format::DecoderBackend::Auto)
-                    && let Ok(dec) = super::v4l2::V4l2Decoder::new(config, playback_config)
+                if matches!(
+                    _playback_config.backend,
+                    crate::format::DecoderBackend::Auto
+                ) && let Ok(dec) = super::v4l2::V4l2Decoder::new(config, _playback_config)
                 {
                     tracing::info!("using V4L2 hardware H.264 decoder");
                     return Ok(Self::V4l2H264(Box::new(dec)));
                 }
                 #[cfg(all(target_os = "macos", feature = "videotoolbox"))]
-                if matches!(playback_config.backend, crate::format::DecoderBackend::Auto)
-                    && let Ok(dec) = super::vtb::VtbDecoder::new(config, playback_config)
+                if matches!(
+                    _playback_config.backend,
+                    crate::format::DecoderBackend::Auto
+                ) && let Ok(dec) = super::vtb::VtbDecoder::new(config, _playback_config)
                 {
                     tracing::info!("using VideoToolbox hardware H.264 decoder");
                     return Ok(Self::VtbH264(Box::new(dec)));
                 }
                 #[cfg(all(target_os = "android", feature = "android"))]
-                if matches!(playback_config.backend, crate::format::DecoderBackend::Auto) {
+                if matches!(
+                    _playback_config.backend,
+                    crate::format::DecoderBackend::Auto
+                ) {
                     // Prefer zero-copy HW decoder; fall back to ByteBuffer decoder.
-                    if let Ok(dec) = super::android::AndroidHwDecoder::new(config, playback_config)
+                    if let Ok(dec) = super::android::AndroidHwDecoder::new(config, _playback_config)
                     {
                         tracing::info!("using Android MediaCodec HW decoder (ImageReader)");
                         return Ok(Self::AndroidHwH264(Box::new(dec)));
                     }
-                    if let Ok(dec) = super::android::AndroidDecoder::new(config, playback_config) {
+                    if let Ok(dec) = super::android::AndroidDecoder::new(config, _playback_config) {
                         tracing::info!("using Android MediaCodec decoder (ByteBuffer)");
                         return Ok(Self::AndroidH264(Box::new(dec)));
                     }
@@ -113,7 +121,7 @@ impl VideoDecoder for DynamicVideoDecoder {
                 tracing::info!("using software H.264 decoder");
                 Ok(Self::H264(Box::new(super::H264VideoDecoder::new(
                     config,
-                    playback_config,
+                    _playback_config,
                 )?)))
             }
             #[cfg(not(feature = "h264"))]
@@ -121,7 +129,7 @@ impl VideoDecoder for DynamicVideoDecoder {
             #[cfg(feature = "av1")]
             VideoCodec::AV1(_) => Ok(Self::Av1(Box::new(super::av1::Av1VideoDecoder::new(
                 config,
-                playback_config,
+                _playback_config,
             )?))),
             #[cfg(not(feature = "av1"))]
             VideoCodec::AV1(_) => bail!("AV1 support requires the `av1` feature"),
@@ -160,7 +168,6 @@ impl VideoDecoder for DynamicVideoDecoder {
 /// Always defined regardless of codec features. Without any audio codec
 /// features, the enum is empty and `new()` returns an error.
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum DynamicAudioDecoder {
     #[cfg(feature = "opus")]
     Opus(super::OpusAudioDecoder),
