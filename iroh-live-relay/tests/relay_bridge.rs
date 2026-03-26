@@ -3,6 +3,10 @@
 //! These tests exercise the relay's ability to bridge broadcasts between
 //! different transport backends (noq/WebTransport and iroh P2P), verifying
 //! that data published on one transport is visible to subscribers on another.
+//!
+//! All iroh endpoints use `presets::Minimal` + a shared `MemoryLookup` instead
+//! of `presets::N0` to avoid depending on real network discovery (DNS, relays),
+//! which is flaky in CI.
 
 use std::{sync::OnceLock, time::Duration};
 
@@ -14,6 +18,11 @@ use serial_test::serial;
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 static ADDRESS_LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
+
+/// Returns the shared MemoryLookup, creating it if needed.
+fn shared_lookup() -> MemoryLookup {
+    ADDRESS_LOOKUP.get_or_init(Default::default).clone()
+}
 
 /// Starts a relay (noq server + iroh endpoint + cluster) and returns handles.
 struct TestRelay {
@@ -34,19 +43,29 @@ impl TestRelay {
         let mut client_config = moq_native::ClientConfig::default();
         client_config.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
 
-        let mut iroh_config = moq_native::IrohEndpointConfig::default();
-        iroh_config.enabled = Some(true);
+        // Build the relay's iroh endpoint with Minimal preset + MemoryLookup
+        // instead of IrohEndpointConfig (which uses presets::N0 and real DNS
+        // discovery). This makes tests reliable in CI without network access.
+        let mut alpns: Vec<Vec<u8>> = moq_native::moq_lite::ALPNS
+            .iter()
+            .map(|alpn| alpn.as_bytes().to_vec())
+            .collect();
+        alpns.push(b"h3".to_vec());
+
+        let iroh = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .address_lookup(shared_lookup())
+            .secret_key(iroh::SecretKey::generate(&mut rand::rng()))
+            .alpns(alpns)
+            .bind()
+            .await
+            .expect("bind relay iroh");
+
+        shared_lookup().add_endpoint_info(iroh.addr());
+        let iroh_id = Some(iroh.id().to_string());
+        let iroh = Some(iroh);
 
         let server = server_config.init().expect("init server");
         let client = client_config.init().expect("init client");
-        let iroh = iroh_config.bind().await.expect("bind iroh");
-        if let Some(iroh) = iroh.as_ref() {
-            ADDRESS_LOOKUP
-                .get_or_init(Default::default)
-                .add_endpoint_info(iroh.addr());
-        }
-
-        let iroh_id = iroh.as_ref().map(|ep| ep.id().to_string());
 
         let (mut server, client) = (
             server.with_iroh(iroh.clone()),
@@ -170,12 +189,13 @@ async fn iroh_publish_iroh_subscribe() {
     let relay_id: iroh::EndpointId = relay.iroh_id.as_ref().expect("no iroh").parse().unwrap();
 
     // Publisher
-    let pub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
-        .address_lookup(ADDRESS_LOOKUP.get_or_init(Default::default).clone())
+    let pub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .address_lookup(shared_lookup())
         .secret_key(iroh::SecretKey::generate(&mut rand::rng()))
         .bind()
         .await
         .expect("bind pub");
+    shared_lookup().add_endpoint_info(pub_ep.addr());
     let publisher = iroh_live::Live::builder(pub_ep.clone())
         .with_router()
         .spawn();
@@ -202,11 +222,13 @@ async fn iroh_publish_iroh_subscribe() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Subscriber
-    let sub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+    let sub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .address_lookup(shared_lookup())
         .secret_key(iroh::SecretKey::generate(&mut rand::rng()))
         .bind()
         .await
         .expect("bind sub");
+    shared_lookup().add_endpoint_info(sub_ep.addr());
     let subscriber = iroh_live::Live::builder(sub_ep.clone()).spawn();
     let sub = tokio::time::timeout(TIMEOUT, subscriber.subscribe(relay_id, "relay-test"))
         .await
@@ -283,11 +305,13 @@ async fn noq_publish_iroh_subscribe() {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // ── Subscriber (iroh via Live::subscribe) ──
-    let sub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+    let sub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .address_lookup(shared_lookup())
         .secret_key(iroh::SecretKey::generate(&mut rand::rng()))
         .bind()
         .await
         .expect("bind sub");
+    shared_lookup().add_endpoint_info(sub_ep.addr());
     let subscriber = iroh_live::Live::builder(sub_ep.clone()).spawn();
 
     // Retry subscribe a few times — the relay may need time to propagate
@@ -347,11 +371,13 @@ async fn pull_remote_broadcast_via_ticket() {
     let relay = TestRelay::start().await;
 
     // ── Publisher (standalone iroh, NOT connected to relay) ──
-    let pub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+    let pub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .address_lookup(shared_lookup())
         .secret_key(iroh::SecretKey::generate(&mut rand::rng()))
         .bind()
         .await
         .expect("bind pub");
+    shared_lookup().add_endpoint_info(pub_ep.addr());
     let publisher = iroh_live::Live::builder(pub_ep.clone())
         .with_router()
         .spawn();
@@ -378,11 +404,13 @@ async fn pull_remote_broadcast_via_ticket() {
     let ticket = iroh_live::ticket::LiveTicket::new(pub_ep.addr(), "remote-stream");
 
     // ── Pull: relay connects to publisher and injects broadcast ──
-    // This simulates what the relay's pull module does. Uses a separate
-    // iroh 0.97 endpoint (the relay's moq-native uses iroh 0.96).
-    let pull_ep = iroh::Endpoint::bind(iroh::endpoint::presets::N0)
+    let pull_ep = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .address_lookup(shared_lookup())
+        .secret_key(iroh::SecretKey::generate(&mut rand::rng()))
+        .bind()
         .await
         .expect("bind pull");
+    shared_lookup().add_endpoint_info(pull_ep.addr());
     let pull_live = iroh_live::Live::new(pull_ep);
     let mut pull_session = tokio::time::timeout(
         TIMEOUT,
@@ -470,11 +498,13 @@ async fn iroh_publish_noq_subscribe() {
     let relay_id: iroh::EndpointId = relay.iroh_id.as_ref().expect("no iroh").parse().unwrap();
 
     // Publisher (iroh via iroh-live)
-    let pub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+    let pub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .address_lookup(shared_lookup())
         .secret_key(iroh::SecretKey::generate(&mut rand::rng()))
         .bind()
         .await
         .expect("bind pub");
+    shared_lookup().add_endpoint_info(pub_ep.addr());
     let publisher = iroh_live::Live::builder(pub_ep.clone())
         .with_router()
         .spawn();
