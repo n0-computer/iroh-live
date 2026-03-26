@@ -2,7 +2,7 @@
 //!
 //! Each observable value is a [`Metric`] (EMA-smoothed current value +
 //! ring buffer history for sparklines) or a [`Label`] (atomic string).
-//! These are grouped into typed structs ([`NetStats`], [`CaptureStats`],
+//! These are grouped into typed structs ([`NetStats`], [`EncodeStats`],
 //! [`RenderStats`], [`TimingStats`]) that the pipelines write to and
 //! the overlay reads from. No string keys, no registration.
 
@@ -186,27 +186,21 @@ impl LagTracker {
         }
     }
 
-    /// Records one observation and returns the current lag (wall behind PTS).
-    ///
-    /// Returns the signed lag as a `Duration` pair: `(behind, ahead)`.
-    /// In practice, use `lag_ms()` for the signed millisecond value.
-    pub fn record(&mut self, wall: Instant, pts: Duration) -> Duration {
-        let base_w = *self.base_wall.get_or_insert(wall);
-        let base_p = *self.base_pts.get_or_insert(pts);
-        let wall_elapsed = wall.duration_since(base_w);
-        let pts_elapsed = pts.saturating_sub(base_p);
-        wall_elapsed.saturating_sub(pts_elapsed)
-    }
-
     /// Records one observation and returns the signed lag in milliseconds.
-    /// Positive = wall is behind PTS (rendering late).
-    /// Negative = wall is ahead of PTS (rendering early).
-    pub fn record_ms(&mut self, wall: Instant, pts: Duration) -> f64 {
+    ///
+    /// Positive values mean wall clock is behind PTS (rendering late).
+    /// Negative values mean wall clock is ahead of PTS (rendering early).
+    pub fn record(&mut self, wall: Instant, pts: Duration) -> f64 {
         let base_w = *self.base_wall.get_or_insert(wall);
         let base_p = *self.base_pts.get_or_insert(pts);
         let wall_elapsed = wall.duration_since(base_w);
         let pts_elapsed = pts.saturating_sub(base_p);
         wall_elapsed.as_secs_f64() * 1000.0 - pts_elapsed.as_secs_f64() * 1000.0
+    }
+
+    /// Alias for [`record`](Self::record).
+    pub fn record_ms(&mut self, wall: Instant, pts: Duration) -> f64 {
+        self.record(wall, pts)
     }
 }
 
@@ -275,9 +269,9 @@ impl Default for NetStats {
     }
 }
 
-/// Capture/encode stats. Written by the encode pipeline.
+/// Publish-side encode stats. Written by the encode pipeline.
 #[derive(Clone, Debug)]
-pub struct CaptureStats {
+pub struct EncodeStats {
     pub fps: Metric,
     pub encode_ms: Metric,
     pub bitrate_kbps: Metric,
@@ -286,7 +280,7 @@ pub struct CaptureStats {
     pub resolution: Label,
 }
 
-impl Default for CaptureStats {
+impl Default for EncodeStats {
     fn default() -> Self {
         Self {
             fps: Metric::new(MetricMeta::responsive("FPS", "").with_thresholds(25.0, 15.0, true)),
@@ -431,8 +425,8 @@ pub struct DecodeStats {
 /// Optional parameters for encoder pipelines.
 #[derive(Debug, Clone, Default)]
 pub struct EncodeOpts {
-    /// Stats collectors for capture metrics.
-    pub stats: Option<CaptureStats>,
+    /// Stats collectors for publish-side encode metrics.
+    pub stats: Option<EncodeStats>,
 }
 
 /// All stats for a subscribe-side broadcast. Owned by `RemoteBroadcast`.
@@ -459,7 +453,7 @@ impl SubscribeStats {
 #[derive(Clone, Debug, Default)]
 pub struct PublishStats {
     pub net: NetStats,
-    pub capture: CaptureStats,
+    pub encode: EncodeStats,
 }
 
 // ── Tests ───────────────────────────────────────────────────────────

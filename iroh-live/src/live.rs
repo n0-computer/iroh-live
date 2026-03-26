@@ -213,7 +213,29 @@ impl Live {
     }
 
     /// Connects to a remote peer, subscribes, and decodes video+audio in one step.
-    pub async fn subscribe_media_track<D: moq_media::traits::Decoders>(
+    ///
+    /// Uses dynamic decoder dispatch. For explicit decoder selection, use
+    /// [`subscribe_media_with_decoders`](Self::subscribe_media_with_decoders).
+    #[cfg(any_codec)]
+    pub async fn subscribe_media(
+        &self,
+        remote: impl Into<EndpointAddr>,
+        broadcast_name: &str,
+        audio_backend: &dyn AudioStreamFactory,
+        config: PlaybackConfig,
+    ) -> Result<(MoqSession, MediaTracks)> {
+        self.subscribe_media_with_decoders::<moq_media::codec::DefaultDecoders>(
+            remote,
+            broadcast_name,
+            audio_backend,
+            config,
+        )
+        .await
+    }
+
+    /// Connects to a remote peer, subscribes, and decodes video+audio in one step
+    /// with a custom decoder type.
+    pub async fn subscribe_media_with_decoders<D: moq_media::traits::Decoders>(
         &self,
         remote: impl Into<EndpointAddr>,
         broadcast_name: &str,
@@ -221,7 +243,9 @@ impl Live {
         config: PlaybackConfig,
     ) -> Result<(MoqSession, MediaTracks)> {
         let (session, broadcast) = self.subscribe(remote, broadcast_name).await?;
-        let track = broadcast.media::<D>(audio_backend, config).await?;
+        let track = broadcast
+            .media_with_decoders::<D>(audio_backend, config)
+            .await?;
         Ok((session, track))
     }
 

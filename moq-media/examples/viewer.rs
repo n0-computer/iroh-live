@@ -355,7 +355,7 @@ struct Tile {
     pipeline: Option<TilePipeline>,
     video_view: FrameView,
     frame_size: FrameSize,
-    capture_stats: moq_media::stats::CaptureStats,
+    publish_stats: moq_media::stats::EncodeStats,
     render_stats: moq_media::stats::RenderStats,
     timing_stats: moq_media::stats::TimingStats,
     timeline: moq_media::stats::Timeline,
@@ -382,7 +382,7 @@ impl Tile {
             wgpu_render_state,
         );
 
-        let capture_stats = moq_media::stats::CaptureStats::default();
+        let publish_stats = moq_media::stats::EncodeStats::default();
         let render_stats = moq_media::stats::RenderStats::default();
         let timing_stats = moq_media::stats::TimingStats::default();
         let timeline = moq_media::stats::Timeline::default();
@@ -395,7 +395,7 @@ impl Tile {
                 width: 0,
                 height: 0,
             },
-            capture_stats,
+            publish_stats,
             render_stats,
             timing_stats,
             timeline,
@@ -461,7 +461,7 @@ impl Tile {
                     encoder,
                     sink,
                     moq_media::stats::EncodeOpts {
-                        stats: Some(self.capture_stats.clone()),
+                        stats: Some(self.publish_stats.clone()),
                     },
                 );
 
@@ -474,7 +474,7 @@ impl Tile {
                     pipe_source,
                     &config,
                     &decode_config,
-                    moq_media::pipeline::DecodeOpts {
+                    moq_media::pipeline::PipelineContext {
                         stats: moq_media::stats::DecodeStats {
                             render: self.render_stats.clone(),
                             timing: self.timing_stats.clone(),
@@ -875,25 +875,25 @@ impl eframe::App for ViewerApp {
 
                     // Debug overlay bars at bottom.
                     {
-                        tile.capture_stats.encoder.set(&tile.encoder_name);
+                        tile.publish_stats.encoder.set(&tile.encoder_name);
                         tile.render_stats.decoder.set(&tile.decoder_name);
                         tile.render_stats
                             .renderer
                             .set(tile.video_view.render_path_name());
                         if let Some(bps) = tile.encoder_bitrate {
-                            tile.capture_stats.codec.set(format!(
+                            tile.publish_stats.codec.set(format!(
                                 "{} {}",
                                 tile.settings.codec.display_name(),
                                 format_bitrate(bps as f64),
                             ));
                         } else {
-                            tile.capture_stats
+                            tile.publish_stats
                                 .codec
                                 .set(tile.settings.codec.display_name());
                         }
                         let publish_stats = moq_media::stats::PublishStats {
                             net: moq_media::stats::NetStats::default(),
-                            capture: tile.capture_stats.clone(),
+                            encode: tile.publish_stats.clone(),
                         };
                         tile.overlay.show_publish(ui, tile_rect, &publish_stats);
                     }

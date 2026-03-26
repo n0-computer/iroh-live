@@ -392,6 +392,35 @@ impl DeviceSelectors {
 }
 
 // ---------------------------------------------------------------------------
+// Ctrl-C → close viewport helper
+// ---------------------------------------------------------------------------
+
+/// Spawns a background task that closes the egui viewport on Ctrl-C.
+///
+/// Call this during eframe setup (inside the `Box::new(move |cc| { ... })` closure)
+/// to wire up graceful shutdown. The returned handle is intentionally dropped
+/// since [`AbortOnDropHandle`] would cancel it; the task self-terminates when
+/// the signal fires.
+pub fn spawn_ctrl_c_handler(ctx: &egui::Context) {
+    let egui_ctx = ctx.clone();
+    tokio::runtime::Handle::current().spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        egui_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    });
+}
+
+/// Blocks on [`Live::shutdown`] using the current tokio runtime handle.
+///
+/// Convenience for `on_exit` implementations that need to shut down the
+/// iroh endpoint before the process exits.
+pub fn shutdown_live_blocking(live: &iroh_live::Live) {
+    let live = live.clone();
+    tokio::runtime::Handle::current().block_on(async move {
+        live.shutdown().await;
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Sync mode for UI
 // ---------------------------------------------------------------------------
 

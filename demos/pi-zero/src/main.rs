@@ -23,10 +23,7 @@ mod app {
     use iroh::{Endpoint, EndpointId};
     use iroh_live::{
         Live,
-        media::{
-            codec::DefaultDecoders,
-            format::{DecodeConfig, DecoderBackend, PlaybackConfig},
-        },
+        media::format::{DecodeConfig, DecoderBackend, PlaybackConfig},
         ticket::LiveTicket,
     };
 
@@ -159,7 +156,7 @@ mod app {
             ..Default::default()
         };
         let (session, track) = live
-            .subscribe_media_track::<DefaultDecoders>(
+            .subscribe_media(
                 ticket.endpoint,
                 &ticket.broadcast_name,
                 &audio_ctx,

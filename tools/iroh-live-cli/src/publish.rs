@@ -17,17 +17,7 @@ pub fn run(args: PublishArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result 
     match args.input {
         Some(PublishInput::File(ref file_args)) => run_file_cmd(&args, file_args, rt),
         Some(PublishInput::Capture(ref capture_args)) => run_capture_cmd(&args, capture_args, rt),
-        None => {
-            let default_capture = crate::args::CaptureArgs {
-                video: vec![],
-                audio: vec![],
-                test_source: false,
-                codec: None,
-                video_presets: None,
-                audio_preset: "hq".to_string(),
-            };
-            run_capture_cmd(&args, &default_capture, rt)
-        }
+        None => run_capture_cmd(&args, &crate::args::CaptureArgs::default(), rt),
     }
 }
 
@@ -103,9 +93,7 @@ fn run_file_cmd(
         {
             let (tracks, import_task, ticket_str) = rt.block_on(async {
                 let audio_ctx = iroh_live::media::AudioBackend::default();
-                let tracks = iroh_live::media::publish::subscribe_preview_from_consumer::<
-                    iroh_live::media::codec::DefaultDecoders,
-                >(
+                let tracks = iroh_live::media::subscribe::subscribe_preview(
                     preview_consumer,
                     &audio_ctx,
                     iroh_live::media::format::PlaybackConfig::default(),
@@ -246,10 +234,7 @@ mod preview {
         fn on_exit(&mut self) {
             info!("exit");
             self.remote.broadcast.shutdown();
-            let live = self.live.clone();
-            tokio::runtime::Handle::current().block_on(async move {
-                live.shutdown().await;
-            });
+            crate::ui::shutdown_live_blocking(&self.live);
         }
     }
 
@@ -261,17 +246,11 @@ mod preview {
         audio_ctx: AudioBackend,
         ticket_str: String,
     ) -> n0_error::Result {
-        let rt = tokio::runtime::Handle::current();
-
         eframe::run_native(
             "irl — publish preview",
             eframe::NativeOptions::default(),
             Box::new(move |cc| {
-                let egui_ctx = cc.egui_ctx.clone();
-                rt.spawn(async move {
-                    let _ = tokio::signal::ctrl_c().await;
-                    egui_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                });
+                crate::ui::spawn_ctrl_c_handler(&cc.egui_ctx);
 
                 let preview = broadcast
                     .preview()
@@ -348,10 +327,7 @@ mod preview {
 
         fn on_exit(&mut self) {
             info!("exit");
-            let live = self.live.clone();
-            tokio::runtime::Handle::current().block_on(async move {
-                live.shutdown().await;
-            });
+            crate::ui::shutdown_live_blocking(&self.live);
         }
     }
 }

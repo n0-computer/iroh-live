@@ -26,7 +26,7 @@ pub use video_encode::{PreEncodedVideoPipeline, VideoEncoderPipeline};
 /// Callers configure playback through [`crate::subscribe::RemoteBroadcast`];
 /// they do not construct this directly except in tests and tools.
 #[derive(Debug, Clone, Default)]
-pub struct DecodeOpts {
+pub struct PipelineContext {
     /// Stats collectors for metrics and timeline.
     pub stats: crate::stats::DecodeStats,
 }

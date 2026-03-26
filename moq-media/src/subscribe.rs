@@ -31,7 +31,7 @@ use crate::adaptive::{AdaptiveConfig, AdaptiveVideoTrack};
 use crate::net::NetworkSignals;
 use crate::{
     format::{DecodeConfig, PlaybackConfig, Quality, VideoFrame},
-    pipeline::{AudioDecoderPipeline, DecodeOpts, VideoDecoderHandle, VideoDecoderPipeline},
+    pipeline::{AudioDecoderPipeline, PipelineContext, VideoDecoderHandle, VideoDecoderPipeline},
     playout::{FreshnessPolicy, PlaybackPolicy},
     processing::scale::Scaler,
     traits::{
@@ -92,6 +92,7 @@ impl From<Quality> for VideoTarget {
 
 /// Options for video subscription and decoding.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct VideoOptions {
     /// Decoder configuration (backend, pixel format).
     pub playback: Option<DecodeConfig>,
@@ -152,6 +153,7 @@ impl VideoOptions {
 
 /// Options for audio subscription.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct AudioOptions {
     /// Pin to a specific audio rendition by name.
     pub rendition: Option<String>,
@@ -389,10 +391,10 @@ impl RemoteBroadcast {
         &self.broadcast_name
     }
 
-    /// Returns a [`DecodeOpts`] value wired to this
+    /// Returns a [`PipelineContext`] value wired to this
     /// broadcast's timing state, stats, and skip coordination.
-    fn decode_opts(&self) -> DecodeOpts {
-        DecodeOpts {
+    fn decode_opts(&self) -> PipelineContext {
+        PipelineContext {
             stats: self.stats.decode_stats(),
         }
     }
@@ -465,10 +467,26 @@ impl RemoteBroadcast {
         );
     }
 
+    // -- Non-generic convenience methods (dynamic decoder dispatch) ──────
+
+    /// Subscribes to both video and audio, returning combined [`MediaTracks`].
+    ///
+    /// Uses dynamic decoder dispatch (codec determined from the catalog).
+    /// For explicit decoder selection, use [`media_with_decoders`](Self::media_with_decoders).
+    #[cfg(any_codec)]
+    pub async fn media(
+        &self,
+        audio_backend: &dyn AudioStreamFactory,
+        playback_config: PlaybackConfig,
+    ) -> Result<MediaTracks> {
+        self.media_with_decoders::<crate::codec::DefaultDecoders>(audio_backend, playback_config)
+            .await
+    }
+
     // -- Generic subscription methods (for custom decoders) --
 
     /// Subscribes to both video and audio with a custom decoder type.
-    pub async fn media<D: Decoders>(
+    pub async fn media_with_decoders<D: Decoders>(
         &self,
         audio_backend: &dyn AudioStreamFactory,
         playback_config: PlaybackConfig,
@@ -561,8 +579,6 @@ impl RemoteBroadcast {
         )
         .await
     }
-
-    // -- Non-generic convenience methods (dynamic decoder dispatch) ──────
 
     /// Subscribes to the best-quality video rendition.
     ///
@@ -767,7 +783,7 @@ impl AudioTrack {
         consumer: OrderedConsumer,
         config: AudioConfig,
         audio_backend: &dyn AudioStreamFactory,
-        opts: DecodeOpts,
+        opts: PipelineContext,
     ) -> Result<Self> {
         let source = MoqPacketSource(consumer);
         let config: rusty_codecs::config::AudioConfig = config.into();
@@ -919,7 +935,7 @@ impl VideoTrack {
         consumer: OrderedConsumer,
         config: &VideoConfig,
         playback_config: &DecodeConfig,
-        opts: DecodeOpts,
+        opts: PipelineContext,
     ) -> Result<Self> {
         let source = MoqPacketSource(consumer);
         let config: rusty_codecs::config::VideoConfig = config.clone().into();
@@ -1030,4 +1046,38 @@ impl MediaTracks {
             video,
         })
     }
+}
+
+/// Creates a subscribe-side preview from any [`BroadcastConsumer`](moq_lite::BroadcastConsumer).
+///
+/// Subscribes to the consumer's catalog, spawns decoders, and returns media
+/// tracks suitable for rendering. This is the building block for previewing
+/// both live capture and file import output.
+pub async fn subscribe_preview_from_consumer<D: Decoders>(
+    consumer: moq_lite::BroadcastConsumer,
+    audio_backend: &dyn crate::traits::AudioStreamFactory,
+    config: crate::format::PlaybackConfig,
+) -> Result<MediaTracks> {
+    let broadcast = RemoteBroadcast::new("preview", consumer).await?;
+    broadcast
+        .media_with_decoders::<D>(audio_backend, config)
+        .await
+}
+
+/// Creates a subscribe-side preview using dynamic decoder dispatch.
+///
+/// Non-generic convenience over [`subscribe_preview_from_consumer`] that uses
+/// [`DefaultDecoders`](crate::codec::DefaultDecoders).
+#[cfg(any_codec)]
+pub async fn subscribe_preview(
+    consumer: moq_lite::BroadcastConsumer,
+    audio_backend: &dyn crate::traits::AudioStreamFactory,
+    config: crate::format::PlaybackConfig,
+) -> Result<MediaTracks> {
+    subscribe_preview_from_consumer::<crate::codec::DefaultDecoders>(
+        consumer,
+        audio_backend,
+        config,
+    )
+    .await
 }

@@ -35,7 +35,7 @@ impl RoomPublisherSync {
         tokio::spawn({
             let room = room.clone();
             async move {
-                if let Err(err) = room.publish(Broadcasts::Camera, producer).await {
+                if let Err(err) = room.publish_producer(Broadcasts::Camera, producer).await {
                     warn!("publish camera to room failed: {err:#}");
                 }
             }
@@ -63,7 +63,7 @@ impl RoomPublisherSync {
         if let Some(producer) = new_screen {
             let room = self.room.clone();
             tokio::spawn(async move {
-                if let Err(err) = room.publish(Broadcasts::Screen, producer).await {
+                if let Err(err) = room.publish_producer(Broadcasts::Screen, producer).await {
                     warn!("publish screen to room failed: {err:#}");
                 }
             });

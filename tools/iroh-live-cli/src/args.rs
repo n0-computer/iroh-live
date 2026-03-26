@@ -168,6 +168,19 @@ pub struct CaptureArgs {
     pub audio_preset: String,
 }
 
+impl Default for CaptureArgs {
+    fn default() -> Self {
+        Self {
+            video: Vec::new(),
+            audio: Vec::new(),
+            test_source: false,
+            codec: None,
+            video_presets: None,
+            audio_preset: "hq".to_string(),
+        }
+    }
+}
+
 impl CaptureArgs {
     /// Resolves video sources. When `--video` is present, only explicit sources
     /// are used (no default camera). Without `--video`, defaults to first camera.
@@ -312,12 +325,12 @@ impl PlayArgs {
     }
 
     pub fn decoder_backend(&self) -> anyhow::Result<iroh_live::media::format::DecoderBackend> {
-        use iroh_live::media::format::DecoderBackend;
-        match self.decoder.as_str() {
-            "auto" => Ok(DecoderBackend::Auto),
-            "software" | "sw" => Ok(DecoderBackend::Software),
-            other => anyhow::bail!("unknown decoder backend: {other}; use 'auto' or 'sw'"),
-        }
+        self.decoder.parse().map_err(|_| {
+            anyhow::anyhow!(
+                "unknown decoder backend: '{}'; use 'auto' or 'sw'",
+                self.decoder
+            )
+        })
     }
 }
 

@@ -9,7 +9,6 @@ use iroh_live::{
     Live,
     media::{
         AudioBackend,
-        codec::DefaultDecoders,
         publish::LocalBroadcast,
         subscribe::{AudioTrack, MediaTracks, RemoteBroadcast},
     },
@@ -37,15 +36,12 @@ pub fn run(args: RoomArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
         "irl room",
         eframe::NativeOptions::default(),
         Box::new(|cc| {
-            let egui_ctx = cc.egui_ctx.clone();
-            tokio::runtime::Handle::current().spawn(async move {
-                let _ = tokio::signal::ctrl_c().await;
-                egui_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            });
+            crate::ui::spawn_ctrl_c_handler(&cc.egui_ctx);
 
             Ok(Box::new(RoomApp {
                 room,
                 peers: vec![],
+                pending: tokio::task::JoinSet::new(),
                 self_video: broadcast
                     .preview()
                     .map(|track| VideoTrackView::new(&cc.egui_ctx, "self-video", track)),
@@ -88,7 +84,7 @@ async fn setup(args: &RoomArgs, audio_ctx: AudioBackend) -> Result<(Live, LocalB
         None => RoomTicket::new(topic_id_from_env()?, vec![]),
     };
     let room = live.join_room(ticket).await?;
-    room.publish(BROADCAST_NAME, broadcast.producer()).await?;
+    room.publish(BROADCAST_NAME, &broadcast).await?;
     println!("room ticket: {}", room.ticket());
 
     Ok((live, broadcast, room))
@@ -151,6 +147,8 @@ impl RemoteTrackView {
 struct RoomApp {
     room: Room,
     peers: Vec<RemoteTrackView>,
+    /// Pending async media subscriptions for newly joined peers.
+    pending: tokio::task::JoinSet<anyhow::Result<(MoqSession, MediaTracks)>>,
     self_video: Option<VideoTrackView>,
     live: Live,
     _broadcast: LocalBroadcast,
@@ -163,13 +161,23 @@ impl eframe::App for RoomApp {
         ctx.request_repaint_after(Duration::from_millis(30));
         self.peers.retain(|t| !t.is_closed());
 
+        // Collect completed peer subscriptions from the JoinSet.
+        while let Some(result) = self.pending.try_join_next() {
+            match result {
+                Ok(Ok((session, tracks))) => {
+                    self.peers
+                        .push(RemoteTrackView::new(ctx, session, tracks, self.peers.len()));
+                }
+                Ok(Err(e)) => warn!("failed to subscribe to peer: {e:#}"),
+                Err(e) => warn!("peer subscribe task panicked: {e}"),
+            }
+        }
+
+        // Dispatch new room events — spawn async media subscriptions.
         while let Ok(event) = self.room.try_recv() {
             match event {
                 RoomEvent::RemoteAnnounced { remote, broadcasts } => {
                     info!("peer announced: {} with {broadcasts:?}", remote.fmt_short());
-                }
-                RoomEvent::RemoteConnected { session } => {
-                    info!("peer connected: {}", session.conn().remote_id().fmt_short());
                 }
                 RoomEvent::BroadcastSubscribed { session, broadcast } => {
                     info!(
@@ -177,21 +185,13 @@ impl eframe::App for RoomApp {
                         session.remote_id(),
                         broadcast.broadcast_name()
                     );
-                    let handle = tokio::runtime::Handle::current();
-                    let track = match handle.block_on(async {
-                        broadcast
-                            .media::<DefaultDecoders>(&self.audio_ctx, Default::default())
-                            .await
-                    }) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            warn!("failed to add track: {e}");
-                            continue;
-                        }
-                    };
-                    self.peers
-                        .push(RemoteTrackView::new(ctx, *session, track, self.peers.len()));
+                    let audio_ctx = self.audio_ctx.clone();
+                    self.pending.spawn(async move {
+                        let tracks = broadcast.media(&audio_ctx, Default::default()).await?;
+                        Ok((*session, tracks))
+                    });
                 }
+                _ => {}
             }
         }
 
@@ -247,10 +247,7 @@ impl eframe::App for RoomApp {
 
     fn on_exit(&mut self) {
         info!("exit");
-        let live = self.live.clone();
-        tokio::runtime::Handle::current().block_on(async move {
-            live.shutdown().await;
-        });
+        crate::ui::shutdown_live_blocking(&self.live);
     }
 }
 

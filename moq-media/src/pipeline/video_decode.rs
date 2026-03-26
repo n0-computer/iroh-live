@@ -11,7 +11,7 @@ use tokio::sync::mpsc::{self, error::TryRecvError};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, info_span, trace, warn};
 
-use super::{DecodeOpts, forward_packets};
+use super::{PipelineContext, forward_packets};
 use crate::{
     format::{DecodeConfig, VideoFrame},
     stats::{FrameKind, FrameMeta, LagTracker},
@@ -90,7 +90,7 @@ impl VideoDecoderPipeline {
         source: impl crate::transport::PacketSource,
         config: &rusty_codecs::config::VideoConfig,
         decode_config: &DecodeConfig,
-        opts: DecodeOpts,
+        opts: PipelineContext,
     ) -> Result<Self> {
         let shutdown = CancellationToken::new();
         let (packet_tx, packet_rx) = mpsc::channel(32);
@@ -156,7 +156,7 @@ fn decode_loop(
     mut viewport_watcher: n0_watcher::Direct<(u32, u32)>,
     mut decoder: impl VideoDecoder,
     framerate: f64,
-    opts: DecodeOpts,
+    opts: PipelineContext,
 ) -> Result<()> {
     let stats = &opts.stats;
     let mut buffer = VecDeque::new();

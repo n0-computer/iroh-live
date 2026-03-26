@@ -19,7 +19,6 @@ use iroh_live::{
     Live,
     media::{
         audio_backend::AudioBackend,
-        codec::DefaultDecoders,
         format::{DecodeConfig, DecoderBackend, PlaybackConfig, VideoFrame},
         render::WgpuVideoRenderer,
         subscribe::VideoTrack,
@@ -96,7 +95,7 @@ fn main() -> Result<()> {
                 ..Default::default()
             };
             let (session, track) = live
-                .subscribe_media_track::<DefaultDecoders>(
+                .subscribe_media(
                     ticket.endpoint,
                     &ticket.broadcast_name,
                     &audio_ctx,

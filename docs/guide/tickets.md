@@ -47,14 +47,15 @@ There are several ways to share a ticket with viewers:
 - **QR code**: the Pi Zero demo renders the ticket as a QR code on an e-paper display. Any QR scanner can read it. The ticket string is short enough to fit comfortably in a QR code (well under 2000 characters).
 - **Browser URL**: pass the ticket as a query parameter to the relay web viewer: `https://relay.example.com/?name=<TICKET>`. See [browser-relay.md](browser-relay.md).
 
-## CallTicket
+## Call tickets
 
-`CallTicket` is a simplified ticket for 1:1 calls. It wraps an `EndpointAddr` with a fixed broadcast name (`call`) and optional relay URLs. The `Call` type uses this internally; you create one from your endpoint address and share it with the person you want to call.
+For 1:1 calls, use a `LiveTicket` with broadcast name `"call"`. The `Call`
+type uses this convention internally.
 
 ```rust
-use iroh_live::CallTicket;
+use iroh_live::ticket::LiveTicket;
 
-let ticket = CallTicket::new(my_endpoint_addr);
+let ticket = LiveTicket::new(my_endpoint_addr, "call");
 println!("Call me: {ticket}");
 ```
 
