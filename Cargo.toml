@@ -12,7 +12,7 @@ members = [
     "demos/android/rust",
     "demos/pi-zero",
     "demos/opengl",
-    "tools/iroh-live-cli",
+    "iroh-live-cli",
 ]
 # moq-media-dioxus is a workspace member but excluded from default builds.
 # It pulls ~224 additional deps (blitz-dom, vello, etc.) and is prototype-quality.
@@ -28,7 +28,7 @@ default-members = [
     "rusty-codecs",
     "demos/pi-zero",
     "demos/opengl",
-    "tools/iroh-live-cli",
+    "iroh-live-cli",
 ]
 resolver = "2"
 
@@ -50,6 +50,7 @@ web-transport-iroh = { git = "https://github.com/n0-computer/web-transport-iroh.
 
 # In-repo crates
 iroh-live = { path = "iroh-live", default-features = false }
+iroh-live-relay = { path = "iroh-live-relay" }
 iroh-moq = { path = "iroh-moq" }
 moq-media = { path = "moq-media", default-features = false }
 moq-media-android = { path = "moq-media-android" }
