@@ -69,7 +69,7 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
         .secret_key(secret_key)
         .bind()
         .await?;
-    let live = Live::builder(endpoint).spawn_with_router();
+    let live = Live::builder(endpoint).with_router().spawn();
 
     // --- media broadcast ---
     let broadcast = LocalBroadcast::new();

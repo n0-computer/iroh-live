@@ -1,6 +1,11 @@
 //! Shared transport: create Live, publish via serve/relay/room combinations.
 
-use iroh_live::{Live, media::publish::LocalBroadcast, rooms::RoomTicket, ticket::LiveTicket};
+use iroh_live::{
+    Live,
+    media::publish::LocalBroadcast,
+    rooms::{Room, RoomTicket},
+    ticket::LiveTicket,
+};
 use moq_lite::BroadcastProducer;
 use tracing::info;
 
@@ -9,33 +14,23 @@ use crate::args::TransportArgs;
 /// Creates a [`Live`] instance. When `serve` is true, spawns with router so
 /// incoming subscribers are accepted. When false, only outbound connections work.
 pub async fn setup_live(serve: bool) -> anyhow::Result<Live> {
-    let secret_key = iroh_live::util::secret_key_from_env()?;
-    #[allow(unused_mut, reason = "mut needed when qlog feature is enabled")]
-    let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::N0);
-    #[cfg(feature = "qlog")]
-    {
-        let prefix = format!("live-{}", secret_key.public().fmt_short());
-        builder = builder.transport_config(
-            iroh::endpoint::QuicTransportConfig::builder()
-                .qlog_from_env(&prefix)
-                .build(),
-        )
-    }
-    let endpoint = builder.secret_key(secret_key).bind().await?;
+    let mut builder = Live::from_env().await?;
     if serve {
-        Ok(Live::builder(endpoint).spawn_with_router())
-    } else {
-        Ok(Live::builder(endpoint).spawn())
+        builder = builder.with_router();
     }
+    Ok(builder.spawn())
 }
 
 /// Publishes a [`LocalBroadcast`] according to transport flags: serve locally,
 /// push to relay, and/or publish into a room. Prints ticket when serving.
+///
+/// Returns the [`Room`] handle when `--room` is used, so the caller can keep
+/// it alive for the session's duration instead of leaking memory.
 pub async fn publish_broadcast(
     live: &Live,
     broadcast: &LocalBroadcast,
     args: &TransportArgs,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<Room>> {
     let serve = !args.no_serve;
     if serve {
         live.publish(&args.name, broadcast).await?;
@@ -46,19 +41,23 @@ pub async fn publish_broadcast(
         push_to_relay(live, &args.name, broadcast.producer().consume(), relay_addr).await?;
     }
 
-    if let Some(ref room_ticket) = args.room {
-        push_to_room(live, &args.name, broadcast.producer(), room_ticket).await?;
-    }
+    let room = if let Some(ref room_ticket) = args.room {
+        Some(push_to_room(live, &args.name, broadcast.producer(), room_ticket).await?)
+    } else {
+        None
+    };
 
-    Ok(())
+    Ok(room)
 }
 
 /// Publishes a raw [`BroadcastProducer`] according to transport flags.
+///
+/// Returns the [`Room`] handle when `--room` is used.
 pub async fn publish_producer(
     live: &Live,
     producer: BroadcastProducer,
     args: &TransportArgs,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<Room>> {
     let serve = !args.no_serve;
     if serve {
         live.publish_producer(&args.name, producer.clone()).await?;
@@ -69,11 +68,13 @@ pub async fn publish_producer(
         push_to_relay(live, &args.name, producer.consume(), relay_addr).await?;
     }
 
-    if let Some(ref room_ticket) = args.room {
-        push_to_room(live, &args.name, producer, room_ticket).await?;
-    }
+    let room = if let Some(ref room_ticket) = args.room {
+        Some(push_to_room(live, &args.name, producer, room_ticket).await?)
+    } else {
+        None
+    };
 
-    Ok(())
+    Ok(room)
 }
 
 async fn push_to_relay(
@@ -96,13 +97,11 @@ async fn push_to_room(
     name: &str,
     producer: BroadcastProducer,
     room_ticket: &RoomTicket,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Room> {
     let room = live.join_room(room_ticket.clone()).await?;
     room.publish_producer(name, producer).await?;
     println!("room ticket: {}", room.ticket());
-    // Keep room alive by leaking — it will be cleaned up on Live::shutdown().
-    std::mem::forget(room);
-    Ok(())
+    Ok(room)
 }
 
 fn print_ticket(live: &Live, name: &str, no_qr: bool) {

@@ -4,7 +4,7 @@
 //! Transport: serve by default, `--relay` pushes to relay, `--room` publishes
 //! into a room, `--no-serve` disables incoming connections.
 
-use iroh_live::media::publish::LocalBroadcast;
+use iroh_live::{media::publish::LocalBroadcast, rooms::Room};
 use moq_lite::BroadcastProducer;
 
 use crate::{
@@ -26,7 +26,7 @@ fn run_capture_cmd(
     capture: &crate::args::CaptureArgs,
     rt: &tokio::runtime::Runtime,
 ) -> n0_error::Result {
-    let (live, broadcast, audio_ctx) = rt.block_on(async {
+    let (live, broadcast, audio_ctx, _room) = rt.block_on(async {
         let video_sources = capture
             .video_sources()
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -43,9 +43,9 @@ fn run_capture_cmd(
 
         crate::source::setup_video(&broadcast, &video_sources, codec, &presets)?;
         crate::source::setup_audio(&broadcast, &audio_sources, &audio_ctx, audio_preset).await?;
-        crate::transport::publish_broadcast(&live, &broadcast, &args.transport).await?;
+        let room = crate::transport::publish_broadcast(&live, &broadcast, &args.transport).await?;
 
-        anyhow::Ok((live, broadcast, audio_ctx))
+        anyhow::Ok((live, broadcast, audio_ctx, room))
     })?;
 
     if args.preview {
@@ -54,16 +54,18 @@ fn run_capture_cmd(
             let ticket =
                 iroh_live::ticket::LiveTicket::new(live.endpoint().addr(), &args.transport.name);
             let _guard = rt.enter();
-            run_capture_preview(live, broadcast, audio_ctx, ticket.to_string())
+            run_capture_preview(live, broadcast, audio_ctx, _room, ticket.to_string())
         }
         #[cfg(not(feature = "wgpu"))]
         {
-            let _ = (live, broadcast, audio_ctx);
+            let _ = (live, broadcast, audio_ctx, _room);
             n0_error::bail_any!("--preview requires the 'wgpu' feature");
         }
     } else {
         println!("press Ctrl+C to stop");
         rt.block_on(async {
+            // Keep room alive until shutdown so the room actor keeps running.
+            let _room = _room;
             tokio::signal::ctrl_c().await?;
             live.shutdown().await;
             n0_error::Ok(())
@@ -78,14 +80,14 @@ fn run_file_cmd(
 ) -> n0_error::Result {
     // Common setup: open input, init catalog, then publish.
     // Publishing must happen after init so the catalog is available to subscribers.
-    let (live, decoder, input, preview_consumer) = rt.block_on(async {
+    let (live, decoder, input, preview_consumer, _room) = rt.block_on(async {
         let mut input = open_input(&file_args.file, file_args.transcode, file_args.format).await?;
         let live = setup_live(!args.transport.no_serve).await?;
         let mut broadcast = BroadcastProducer::default();
         let preview_consumer = broadcast.consume();
         let decoder = init_import(&mut broadcast, file_args.format, &mut input).await?;
-        publish_producer(&live, broadcast, &args.transport).await?;
-        anyhow::Ok((live, decoder, input, preview_consumer))
+        let room = publish_producer(&live, broadcast, &args.transport).await?;
+        anyhow::Ok((live, decoder, input, preview_consumer, room))
     })?;
 
     if args.preview {
@@ -108,16 +110,18 @@ fn run_file_cmd(
             })?;
 
             let _guard = rt.enter();
-            run_file_preview(live, tracks, import_task, ticket_str)
+            run_file_preview(live, _room, tracks, import_task, ticket_str)
         }
         #[cfg(not(feature = "wgpu"))]
         {
-            let _ = (live, decoder, input, preview_consumer);
+            let _ = (live, decoder, input, preview_consumer, _room);
             n0_error::bail_any!("--preview requires the 'wgpu' feature");
         }
     } else {
         println!("press Ctrl+C to stop");
         rt.block_on(async move {
+            // Keep room alive until shutdown so the room actor keeps running.
+            let _room = _room;
             tokio::select! {
                 res = run_import(decoder, input) => res?,
                 _ = tokio::signal::ctrl_c() => {}
@@ -152,13 +156,12 @@ mod preview {
 
     pub(super) fn run_file_preview(
         live: Live,
+        room: Option<super::Room>,
         tracks: MediaTracks,
         import_task: tokio::task::JoinHandle<anyhow::Result<()>>,
         ticket_str: String,
     ) -> n0_error::Result {
         let rt = tokio::runtime::Handle::current();
-        let signals =
-            tokio::sync::watch::channel(iroh_live::media::net::NetworkSignals::default()).1;
 
         eframe::run_native(
             "irl — file preview",
@@ -184,7 +187,7 @@ mod preview {
                     tracks.video,
                     tracks.audio,
                     audio_ctx,
-                    signals,
+                    None,
                     &cc.egui_ctx,
                     "file-preview",
                     &[StatCategory::Render, StatCategory::Time],
@@ -192,6 +195,7 @@ mod preview {
 
                 Ok(Box::new(FilePreviewApp {
                     live,
+                    _room: room,
                     remote,
                     ticket_str,
                 }))
@@ -202,6 +206,8 @@ mod preview {
 
     struct FilePreviewApp {
         live: Live,
+        #[allow(dead_code, reason = "kept alive so the room actor keeps running")]
+        _room: Option<super::Room>,
         remote: crate::ui::RemoteControls,
         ticket_str: String,
     }
@@ -244,6 +250,7 @@ mod preview {
         live: Live,
         broadcast: LocalBroadcast,
         audio_ctx: AudioBackend,
+        room: Option<super::Room>,
         ticket_str: String,
     ) -> n0_error::Result {
         eframe::run_native(
@@ -258,6 +265,7 @@ mod preview {
 
                 Ok(Box::new(CapturePreviewApp {
                     live,
+                    _room: room,
                     broadcast,
                     audio_ctx,
                     preview,
@@ -272,6 +280,8 @@ mod preview {
 
     struct CapturePreviewApp {
         live: Live,
+        #[allow(dead_code, reason = "kept alive so the room actor keeps running")]
+        _room: Option<super::Room>,
         broadcast: LocalBroadcast,
         audio_ctx: AudioBackend,
         preview: Option<VideoTrackView>,

@@ -19,7 +19,7 @@ use iroh_live::{
     Live,
     media::{
         audio_backend::AudioBackend,
-        format::{DecodeConfig, DecoderBackend, PlaybackConfig, VideoFrame},
+        format::{DecoderBackend, PlaybackConfig, VideoFrame},
         render::WgpuVideoRenderer,
         subscribe::VideoTrack,
     },
@@ -88,10 +88,7 @@ fn main() -> Result<()> {
             let endpoint = Endpoint::bind(iroh::endpoint::presets::N0).await?;
             let live = Live::new(endpoint.clone());
             let playback_config = PlaybackConfig {
-                decode_config: DecodeConfig {
-                    backend,
-                    ..Default::default()
-                },
+                backend,
                 ..Default::default()
             };
             let (session, track) = live

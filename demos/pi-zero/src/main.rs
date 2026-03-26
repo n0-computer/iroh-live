@@ -23,7 +23,7 @@ mod app {
     use iroh::{Endpoint, EndpointId};
     use iroh_live::{
         Live,
-        media::format::{DecodeConfig, DecoderBackend, PlaybackConfig},
+        media::format::{DecoderBackend, PlaybackConfig},
         ticket::LiveTicket,
     };
 
@@ -149,10 +149,7 @@ mod app {
         let endpoint = Endpoint::bind(iroh::endpoint::presets::N0).await?;
         let live = Live::new(endpoint);
         let playback_config = PlaybackConfig {
-            decode_config: DecodeConfig {
-                backend,
-                ..Default::default()
-            },
+            backend,
             ..Default::default()
         };
         let (session, track) = live

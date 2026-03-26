@@ -3,7 +3,6 @@
 use std::time::Duration;
 
 use eframe::egui::{self, Id, Vec2};
-use iroh::Endpoint;
 use iroh_gossip::TopicId;
 use iroh_live::{
     Live,
@@ -56,12 +55,7 @@ pub fn run(args: RoomArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
 }
 
 async fn setup(args: &RoomArgs, audio_ctx: AudioBackend) -> Result<(Live, LocalBroadcast, Room)> {
-    let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
-        .secret_key(iroh_live::util::secret_key_from_env()?)
-        .bind()
-        .await?;
-    info!(endpoint_id=%endpoint.id(), "endpoint bound");
-    let live = Live::builder(endpoint).enable_gossip().spawn_with_router();
+    let live = Live::from_env().await?.with_router().with_gossip().spawn();
 
     let broadcast = LocalBroadcast::new();
     let video_sources = args

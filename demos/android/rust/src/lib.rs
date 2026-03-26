@@ -196,12 +196,13 @@ async fn connect_impl(ticket_str: String) -> Result<jlong> {
         .parse()
         .context("failed to parse ticket string")?;
 
-    let live = Live::from_env().await?;
+    let live = Live::from_env().await?.with_router().with_gossip().spawn();
     info!(broadcast = %ticket.broadcast_name, "connecting to broadcast");
 
-    let (session, remote) = live
+    let sub = live
         .subscribe(ticket.endpoint.clone(), &ticket.broadcast_name)
         .await?;
+    let (session, remote, _signals) = sub.into_parts();
 
     let video = remote
         .video()
@@ -271,7 +272,7 @@ async fn dial_impl(ticket_str: String, cam_w: u32, cam_h: u32) -> Result<jlong> 
     info!(ticket = %ticket_str, cam_w, cam_h, "parsing call ticket");
     let ticket: LiveTicket = ticket_str.parse().context("failed to parse call ticket")?;
 
-    let live = Live::from_env().await?;
+    let live = Live::from_env().await?.with_router().with_gossip().spawn();
     info!(id = %live.endpoint().id().fmt_short(), "endpoint ready");
 
     // Camera video source.
@@ -1042,7 +1043,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_publish(
 
 async fn publish_impl(name: String, cam_w: u32, cam_h: u32) -> Result<jlong> {
     info!(name = %name, cam_w, cam_h, "publishing broadcast");
-    let live = Live::from_env().await?;
+    let live = Live::from_env().await?.with_router().with_gossip().spawn();
     info!(id = %live.endpoint().id().fmt_short(), "endpoint ready");
 
     let broadcast = LocalBroadcast::new();

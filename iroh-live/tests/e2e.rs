@@ -47,7 +47,7 @@ async fn endpoint() -> Endpoint {
 async fn publish_subscribe_video() {
     // --- Publisher ---
     let (publisher, _broadcast) = async {
-        let live = Live::builder(endpoint().await).spawn_with_router();
+        let live = Live::builder(endpoint().await).with_router().spawn();
 
         let broadcast = LocalBroadcast::new();
 
@@ -73,11 +73,12 @@ async fn publish_subscribe_video() {
     let subscriber = async move {
         let live = Live::builder(endpoint().await).spawn();
 
-        let (_session, remote) = live
+        let sub = live
             .subscribe(pub_addr, "test-stream")
             .await
             .expect("failed to subscribe");
 
+        let remote = sub.broadcast();
         // video_ready waits for the catalog to contain video before subscribing,
         // avoiding the race where ready() returns on audio alone.
         let mut video_track = tokio::time::timeout(FRAME_TIMEOUT, remote.video_ready())
@@ -126,7 +127,7 @@ async fn publish_subscribe_video() {
 #[traced_test]
 async fn publish_subscribe_audio() {
     // --- Publisher ---
-    let publisher = Live::builder(endpoint().await).spawn_with_router();
+    let publisher = Live::builder(endpoint().await).with_router().spawn();
 
     let broadcast = LocalBroadcast::new();
     let video_source = TestVideoSource::new(320, 240).with_fps(30.0);
@@ -153,11 +154,12 @@ async fn publish_subscribe_audio() {
     // --- Subscriber ---
     let subscriber = Live::builder(endpoint().await).spawn();
 
-    let (_session, remote) = subscriber
+    let sub = subscriber
         .subscribe(publisher.endpoint().addr(), "av-stream")
         .await
         .expect("failed to subscribe");
 
+    let remote = sub.broadcast();
     // Wait for both tracks to appear in the catalog.
     let mut video_track = tokio::time::timeout(FRAME_TIMEOUT, remote.video_ready())
         .await
@@ -202,7 +204,7 @@ async fn publish_subscribe_audio() {
 #[traced_test]
 async fn adaptive_rendition_switching() {
     // --- Publisher with two renditions ---
-    let publisher = Live::builder(endpoint().await).spawn_with_router();
+    let publisher = Live::builder(endpoint().await).with_router().spawn();
 
     let broadcast = LocalBroadcast::new();
     let source = TestVideoSource::new(640, 480).with_fps(30.0);
@@ -223,11 +225,12 @@ async fn adaptive_rendition_switching() {
     // --- Subscriber with adaptive track ---
     let subscriber = Live::builder(endpoint().await).spawn();
 
-    let (_session, remote) = subscriber
+    let sub = subscriber
         .subscribe(publisher.endpoint().addr(), "adaptive-stream")
         .await
         .expect("failed to subscribe");
 
+    let remote = sub.broadcast();
     // Wait for catalog to arrive with video renditions.
     tokio::time::timeout(FRAME_TIMEOUT, remote.ready())
         .await
@@ -340,7 +343,7 @@ async fn adaptive_rendition_switching() {
 async fn call_dial_accept() {
     // --- Caller side ---
     let caller_ep = endpoint().await;
-    let caller_live = Live::builder(caller_ep.clone()).spawn_with_router();
+    let caller_live = Live::builder(caller_ep.clone()).with_router().spawn();
 
     let caller_broadcast = LocalBroadcast::new();
     tokio::task::yield_now().await;
@@ -356,7 +359,7 @@ async fn call_dial_accept() {
 
     // --- Callee side ---
     let callee_ep = endpoint().await;
-    let callee_live = Live::builder(callee_ep.clone()).spawn_with_router();
+    let callee_live = Live::builder(callee_ep.clone()).with_router().spawn();
 
     let callee_broadcast = LocalBroadcast::new();
     tokio::task::yield_now().await;

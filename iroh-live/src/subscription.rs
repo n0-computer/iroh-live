@@ -5,7 +5,7 @@ use tokio::sync::watch;
 /// Wraps a MoQ session, its remote broadcast, and network signal production
 /// into a single handle.
 ///
-/// Created by [`Live::subscribe_with_stats`](crate::Live::subscribe_with_stats).
+/// Created by [`Live::subscribe`](crate::Live::subscribe).
 /// The constructor auto-wires stats recording and signal production, so
 /// callers no longer need to call `spawn_stats_recorder` and
 /// `spawn_signal_producer` manually.
@@ -22,7 +22,7 @@ pub struct Subscription {
 impl Subscription {
     /// Creates a new subscription with pre-wired stats and signals.
     ///
-    /// Called internally by [`Live::subscribe_with_stats`](crate::Live::subscribe_with_stats).
+    /// Called internally by [`Live::subscribe`](crate::Live::subscribe).
     /// Spawns background tasks for connection stats recording and network
     /// signal production.
     pub(crate) fn new(session: MoqSession, broadcast: RemoteBroadcast) -> Self {
