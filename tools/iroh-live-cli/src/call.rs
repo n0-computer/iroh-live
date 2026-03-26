@@ -48,6 +48,7 @@ struct SetupState {
 }
 
 struct InCallState {
+    live: Live,
     #[allow(dead_code, reason = "kept alive to sustain the call")]
     session: MoqSession,
     #[allow(dead_code, reason = "kept alive to sustain the call")]
@@ -267,9 +268,9 @@ impl CallApp {
     ) {
         let session = result.call.session().clone();
         let broadcast = result.call.local().clone();
-        let audio_ctx = match &self.state {
-            AppState::Setup(s) => s.audio_ctx.clone(),
-            AppState::InCall(s) => s.audio_ctx.clone(),
+        let (live, audio_ctx) = match &self.state {
+            AppState::Setup(s) => (s.live.clone(), s.audio_ctx.clone()),
+            AppState::InCall(s) => (s.live.clone(), s.audio_ctx.clone()),
         };
 
         iroh_live::util::spawn_stats_recorder(
@@ -290,6 +291,7 @@ impl CallApp {
         );
 
         self.state = AppState::InCall(Box::new(InCallState {
+            live,
             session,
             call: result.call,
             broadcast,
@@ -367,9 +369,17 @@ impl eframe::App for CallApp {
     }
 
     fn on_exit(&mut self) {
-        if let AppState::InCall(state) = &self.state {
-            state.call.close();
+        info!("exit");
+        if let Some(task) = self.accept_task.take() {
+            task.abort();
         }
+        let live = match &self.state {
+            AppState::Setup(s) => s.live.clone(),
+            AppState::InCall(s) => s.live.clone(),
+        };
+        tokio::runtime::Handle::current().block_on(async move {
+            live.shutdown().await;
+        });
     }
 }
 
@@ -497,7 +507,13 @@ pub fn run(args: CallArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
     eframe::run_native(
         "irl call",
         eframe::NativeOptions::default(),
-        Box::new(move |_cc| {
+        Box::new(move |cc| {
+            let egui_ctx = cc.egui_ctx.clone();
+            tokio::runtime::Handle::current().spawn(async move {
+                let _ = tokio::signal::ctrl_c().await;
+                egui_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            });
+
             Ok(Box::new(CallApp {
                 state: AppState::Setup(Box::new(SetupState {
                     live,

@@ -79,3 +79,11 @@ moq-lite = { path = "../moq/rs/moq-lite" }
 moq-mux = { path = "../moq/rs/moq-mux" }
 moq-relay = { path = "../moq/rs/moq-relay" }
 moq-native = { path = "../moq/rs/moq-native" }
+
+[patch.crates-io]
+iroh = { git = "https://github.com/n0-computer/iroh", branch = "main" }
+iroh-base = { git = "https://github.com/n0-computer/iroh", branch = "main" }
+iroh-relay = { git = "https://github.com/n0-computer/iroh", branch = "main" }
+noq = { git = "https://github.com/n0-computer/noq", branch = "main" }
+noq-proto = { git = "https://github.com/n0-computer/noq", branch = "main" }
+noq-udp = { git = "https://github.com/n0-computer/noq", branch = "main" }

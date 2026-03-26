@@ -9,10 +9,19 @@ use crate::args::TransportArgs;
 /// Creates a [`Live`] instance. When `serve` is true, spawns with router so
 /// incoming subscribers are accepted. When false, only outbound connections work.
 pub async fn setup_live(serve: bool) -> anyhow::Result<Live> {
-    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
-        .secret_key(iroh_live::util::secret_key_from_env()?)
-        .bind()
-        .await?;
+    let secret_key = iroh_live::util::secret_key_from_env()?;
+    #[allow(unused_mut, reason = "mut needed when qlog feature is enabled")]
+    let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::N0);
+    #[cfg(feature = "qlog")]
+    {
+        let prefix = format!("live-{}", secret_key.public().fmt_short());
+        builder = builder.transport_config(
+            iroh::endpoint::QuicTransportConfig::builder()
+                .qlog_from_env(&prefix)
+                .build(),
+        )
+    }
+    let endpoint = builder.secret_key(secret_key).bind().await?;
     if serve {
         Ok(Live::builder(endpoint).spawn_with_router())
     } else {
