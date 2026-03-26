@@ -13,14 +13,11 @@ import { execSync } from "child_process";
 export default function globalSetup() {
   console.log("Pre-building Rust binaries for e2e tests...");
 
-  execSync(
-    "cargo build -p iroh-live-relay -p iroh-live --examples -p iroh-live-cli",
-    {
-      cwd: "../..",
-      stdio: "inherit",
-      timeout: 300_000, // 5 minutes for cold builds
-    }
-  );
+  execSync("cargo make e2e-prebuild", {
+    cwd: "../..",
+    stdio: "inherit",
+    timeout: 300_000, // 5 minutes for cold builds
+  });
 
   // Rebuild relay web assets in case they're stale.
   execSync("npm run build", {

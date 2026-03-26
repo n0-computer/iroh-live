@@ -52,40 +52,37 @@ dependencies = ["check-all-features", "check-no-default", "check-default-feature
 [tasks.clippy-all-features]
 workspace = false
 command = "cargo"
-args = ["clippy", "--locked", "--workspace", "--all-targets", "--all-features"]
+args = ["clippy", "--locked", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
 
 [tasks.clippy-no-default]
 workspace = false
 command = "cargo"
-args = ["clippy", "--locked", "--workspace", "--all-targets", "--no-default-features"]
+args = ["clippy", "--locked", "--workspace", "--all-targets", "--no-default-features", "--", "-D", "warnings"]
 
 [tasks.clippy-default-features]
 workspace = false
 command = "cargo"
-args = ["clippy", "--locked", "--workspace", "--all-targets"]
+args = ["clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"]
 
 [tasks.clippy]
-description = "clippy: all features, no-default-features, and default features"
+description = "clippy with -D warnings: all features, no-default-features, and default features"
 workspace = false
 dependencies = ["clippy-all-features", "clippy-no-default", "clippy-default-features"]
 
-[tasks.clippy-all-features-deny]
-workspace = false
-command = "cargo"
-args = ["clippy", "--locked", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
-
 [tasks.check-all]
-description = "Full check suite: cargo check (3 configs), clippy (3 configs, deny on all-features), fmt"
+description = "Full pre-commit check: cargo check (3 configs), clippy -D warnings (3 configs), fmt"
 workspace = false
 dependencies = [
     "check-all-features",
     "check-no-default",
     "check-default-features",
-    "clippy-all-features-deny",
+    "clippy-all-features",
     "clippy-no-default",
     "clippy-default-features",
     "format-check",
 ]
+
+# ── Tests ─────────────────────────────────────────────────────────────
 
 [tasks.test]
 description = "Run workspace tests via nextest (serializes patchbay tests)"
@@ -100,14 +97,24 @@ command = "cargo"
 args = ["nextest", "run", "--locked", "-p", "iroh-live",
         "-E", "binary(patchbay)", "--run-ignored", "all"]
 
-[tasks.test-e2e-browser]
-description = "Run Playwright browser E2E tests (requires npm ci in tests/e2e-browser)"
+# ── E2E browser tests ────────────────────────────────────────────────
+
+[tasks.e2e-prebuild]
+description = "Pre-build binaries needed by Playwright E2E tests"
 workspace = false
+script = [
+    "cargo build --locked -p iroh-live-relay -p iroh-live-cli --example subscribe_test",
+]
+
+[tasks.test-e2e]
+description = "Run Playwright browser E2E tests"
+workspace = false
+dependencies = ["e2e-prebuild"]
 cwd = "tests/e2e-browser"
 command = "npx"
 args = ["playwright", "test", "--workers=1"]
 
 [tasks.test-full]
-description = "Full CI-equivalent test suite: fmt, clippy, all tests, patchbay, browser E2E"
+description = "Full CI-equivalent test suite: check-all, tests, browser E2E"
 workspace = false
-dependencies = ["format-check", "check", "clippy", "test"]
+dependencies = ["check-all", "test", "test-e2e"]

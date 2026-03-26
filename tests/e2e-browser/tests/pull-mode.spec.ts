@@ -1,7 +1,10 @@
 import { test, expect } from "@playwright/test";
 import { spawn, ChildProcess } from "child_process";
 import { PNG } from "pngjs";
+import { findBinary } from "../fixtures/bin";
 import { startRelay, stopRelay, RelayInfo } from "../fixtures/relay";
+
+const irlBin = findBinary("irl");
 
 let relay: RelayInfo;
 
@@ -31,12 +34,7 @@ test("pull mode: standalone publisher → relay → browser watch", async ({
   // Start publisher with test source — no --relay flag, standalone P2P only.
   // Force software H.264 to avoid hardware codec incompatibility with
   // the browser's JS decoder.
-  const publisher = spawn("cargo", [
-    "run",
-    "--locked",
-    "-p", "iroh-live-cli",
-    "--bin", "irl",
-    "--",
+  const publisher = spawn(irlBin, [
     "publish",
     "--name", "pull-test",
     "--no-qr",

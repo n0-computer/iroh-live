@@ -13,6 +13,7 @@ mod import;
 #[cfg(feature = "wgpu")]
 mod play;
 mod publish;
+mod relay;
 #[cfg(feature = "wgpu")]
 mod room;
 mod source;
@@ -35,7 +36,7 @@ enum Command {
     ///
     /// Subcommands: `capture` (default if omitted), `file`.
     /// Serves locally by default; use --relay/--room to push elsewhere.
-    Publish(args::PublishArgs),
+    Publish(Box<args::PublishArgs>),
     /// Subscribe and play a remote broadcast.
     #[cfg(feature = "wgpu")]
     Play(args::PlayArgs),
@@ -45,6 +46,8 @@ enum Command {
     /// Multi-party room (publish + play grid).
     #[cfg(feature = "wgpu")]
     Room(args::RoomArgs),
+    /// Start a local relay server for browser WebTransport bridging.
+    Relay(relay::RelayArgs),
 }
 
 fn main() -> n0_error::Result {
@@ -61,12 +64,13 @@ fn main() -> n0_error::Result {
 
     match cli.command {
         Command::Devices => devices::run(),
-        Command::Publish(args) => publish::run(args, &rt),
+        Command::Publish(args) => publish::run(*args, &rt),
         #[cfg(feature = "wgpu")]
         Command::Play(args) => play::run(args, &rt),
         #[cfg(feature = "wgpu")]
         Command::Call(args) => call::run(args, &rt),
         #[cfg(feature = "wgpu")]
         Command::Room(args) => room::run(args, &rt),
+        Command::Relay(args) => relay::run(args),
     }
 }

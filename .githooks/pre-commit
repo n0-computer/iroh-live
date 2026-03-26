@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -e
+
+echo "pre-commit: formatting"
+cargo make format
+
+echo "pre-commit: running cargo make check-all"
+cargo make check-all
+
+# Stage any formatting changes
+git diff --name-only | while read -r file; do
+    git add "$file"
+done

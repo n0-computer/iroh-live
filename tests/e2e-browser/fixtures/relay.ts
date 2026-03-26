@@ -2,6 +2,7 @@ import { spawn, ChildProcess } from "child_process";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { findBinary } from "./bin";
 
 export interface RelayInfo {
   process: ChildProcess;
@@ -19,14 +20,12 @@ export interface RelayInfo {
 export async function startRelay(): Promise<RelayInfo> {
   const dataDir = mkdtempSync(join(tmpdir(), "iroh-live-relay-test-"));
 
+  // Use the pre-built binary directly to avoid cargo recompilation during tests.
+  const relayBin = findBinary("iroh-live-relay");
+
   const proc = spawn(
-    "cargo",
+    relayBin,
     [
-      "run",
-      "--locked",
-      "-p",
-      "iroh-live-relay",
-      "--",
       "--dev",
       "--bind",
       "[::]:0",

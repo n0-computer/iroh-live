@@ -104,11 +104,13 @@ jobs:
             libegl-dev libgbm-dev libdrm-dev libfontconfig-dev \
             libva-dev nasm
 
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-make
+
       # Pre-build so compilation doesn't eat into test timeouts.
       - name: Build relay + CLI + examples
-        run: |
-          cargo build --locked -p iroh-live-relay -p iroh-live-cli
-          cargo build --locked --example subscribe_test
+        run: cargo make e2e-prebuild
 
       - name: Build relay web assets
         working-directory: iroh-live-relay/web
