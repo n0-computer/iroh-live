@@ -323,7 +323,11 @@ impl Actor {
         match msg {
             ApiMessage::Publish { name, producer } => {
                 let consume = producer.consume();
-                if let Err(err) = self.live.publish_producer(name.clone(), producer).await {
+                if let Err(err) = self
+                    .live
+                    .publish_broadcast_producer(name.clone(), producer)
+                    .await
+                {
                     tracing::warn!(%name, "failed to publish broadcast to room: {err:#}");
                     return;
                 }
