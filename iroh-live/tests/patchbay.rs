@@ -1706,6 +1706,7 @@ async fn av_sync_at_latency(latency_ms: u32, jitter_ms: u32) {
 /// desync after recovery.
 #[tokio::test]
 #[traced_test]
+#[ignore = "A/V sync disabled — re-enable when sync is re-added (plans/av-sync.md)"]
 async fn av_sync_recovery_after_blackout() {
     let fixture = AvSyncFixture::new().await;
 
@@ -1856,6 +1857,7 @@ async fn av_sync_recovery_after_blackout() {
 /// Both audio and video should resume normal delivery after the spike.
 #[tokio::test]
 #[traced_test]
+#[ignore = "A/V sync disabled — re-enable when sync is re-added (plans/av-sync.md)"]
 async fn av_sync_latency_spike_recovery() {
     let fixture = AvSyncFixture::new().await;
 

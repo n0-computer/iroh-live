@@ -1536,6 +1536,7 @@ async fn audio_decoder_inserts_silence_on_stall() {
 /// for this offset.
 #[cfg(all(feature = "h264", feature = "opus"))]
 #[tokio::test]
+#[ignore = "A/V sync disabled — re-enable when sync is re-added (plans/av-sync.md)"]
 async fn av_sync_beep_flash_correlation() {
     use std::time::Instant;
 

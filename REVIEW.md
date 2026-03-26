@@ -250,9 +250,9 @@ Full API ergonomics review after building the `irl` CLI tool. Covers iroh-live, 
 
 - [ ] **ER21**: `NetworkSignals` receiver is required by `RemoteControls` even for local file preview (creates a dummy channel). Make it `Option`.
 
-### Low — misc
+### Medium — naming
 
-- [ ] **ER22**: Two `VideoCodec` types across sibling modules (`rusty_codecs::codec::VideoCodec` for encoding, `rusty_codecs::config::VideoCodec` for decoder config). Rename to `VideoEncoderCodec`/`VideoDecoderConfig` or similar.
+- [ ] **ER22**: Two `VideoCodec` types across sibling modules (`rusty_codecs::codec::VideoCodec` for encoding, `rusty_codecs::config::VideoCodec` for decoder config). Rename to `VideoEncoderCodec`/`VideoDecoderConfig` or similar. Large cross-crate rename — defer but do before any external API stabilization.
 
 - [ ] **ER23**: `CallTicket` is essentially a `LiveTicket` with broadcast name "call". Consider collapsing.
 
