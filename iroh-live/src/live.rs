@@ -43,6 +43,7 @@ pub struct Live {
 /// # }
 /// ```
 #[derive(Debug)]
+#[must_use]
 pub struct LiveBuilder {
     #[debug(skip)]
     endpoint: Endpoint,

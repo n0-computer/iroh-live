@@ -69,7 +69,7 @@ Issues noticed while writing minimal README code examples. The goal is that the 
 
 - [ ] **IL13**: Room gossip dependency is implicit — `Room::new()` fails at runtime if gossip not enabled, no type-level guard (`rooms.rs`)
 - [ ] **IL14**: `Live::subscribe()` returns tuple `(MoqSession, RemoteBroadcast)` — unclear ownership, should wrap (`live.rs`)
-- [ ] **IL15**: `spawn()` vs `spawn_with_router()` fork is confusing — user can forget to mount protocols (`live.rs`)
+- [x] **IL15**: `spawn()` vs `spawn_with_router()` fork is confusing — replaced by `LiveBuilder` with `.with_router().spawn()` chain
 
 ---
 
@@ -173,7 +173,7 @@ The crate boundaries are clean and deliberate: `rusty-codecs` handles codec abst
 - [ ] **ER30**: `VideoTrack::from_video_source` hardcodes `fps = 30` — camera sources at 60fps or 15fps get doubled frames or drops. `VideoFormat` lacks a framerate field (`subscribe.rs:816`)
 - [ ] **ER31**: Room actor event channel capacity 16 — in rooms with many simultaneous joins, actor blocks on sends and stops processing gossip. Consider increasing capacity or `try_send` with logged warning (`rooms.rs:89`)
 - [x] **ER32**: `PlayoutBuffer` `max_frames` hardcoded at 30 — moot: `PlayoutBuffer` removed entirely in av-sync simplification (9c72f6a)
-- [ ] **ER33**: Missing `#[must_use]` on builder methods — `VideoTarget::max_pixels`, `VideoOptions::target`, `AudioOptions::rendition` return `Self` but callers could accidentally discard the builder
+- [x] **ER33**: Missing `#[must_use]` on builder methods — added `#[must_use]` to all builder-pattern methods on `LiveBuilder`, `VideoTarget`, `VideoOptions`, `AudioOptions`, `PlaybackPolicy`, `LiveTicket`, `VideoEncoderConfig`, and `AudioEncoderConfig`
 
 ### Already tracked (confirmed still open)
 
@@ -226,9 +226,9 @@ Full API ergonomics review after building the `irl` CLI tool. Covers iroh-live, 
 
 - [ ] **ER11**: `subscribe_media_track` (singular) returns `MediaTracks` (plural). Rename to `subscribe_media`.
 
-- [ ] **ER12**: `ParticipantId`, `TrackName`, `TrackKind` in iroh-live types.rs appear unused. Remove or mark `#[doc(hidden)]` until needed.
+- [x] **ER12**: `ParticipantId`, `TrackName`, `TrackKind` in iroh-live types.rs appear unused — already removed
 
-- [ ] **ER13**: `RoomEvent::RemoteConnected` is documented as "reserved, not emitted". Dead variants in public enums force unreachable match arms. Remove until needed.
+- [x] **ER13**: `RoomEvent::RemoteConnected` is documented as "reserved, not emitted" — already removed
 
 - [ ] **ER14**: `VideoPublisher::set_enabled()` and `AudioPublisher::set_muted()` are documented no-ops. Remove from public API until implemented.
 
@@ -238,7 +238,7 @@ Full API ergonomics review after building the `irl` CLI tool. Covers iroh-live, 
 
 - [ ] **ER16**: `AdaptiveConfig` has 11 fields, no builder methods. Callers must use struct literal with `..Default::default()`. Add builder methods for commonly-adjusted fields.
 
-- [ ] **ER17**: `VideoOptions` / `AudioOptions` have `pub` fields but no `#[non_exhaustive]`. Adding a field is a silent breaking change.
+- [x] **ER17**: `VideoOptions` / `AudioOptions` have `pub` fields but no `#[non_exhaustive]` — both already have `#[non_exhaustive]`
 
 - [ ] **ER18**: `DecoderBackend` and `StreamFormat` (moq-mux) lack `FromStr`/`ValueEnum`. CLI manually matches strings. Derive these upstream.
 
@@ -322,7 +322,7 @@ Doc comments clearly say "Unimplemented" on DR3/DR4, and DR5 logs a `warn!`, so 
 
 ### Minor — render
 
-- [ ] **DR31**: NV12 render pass code duplicated between DMA-BUF and Metal paths — `render_imported_nv12` and `render_imported_metal_nv12` share ~60 lines of identical code (bind group creation, command encoder, render pass). Extract a shared helper that takes the Y/UV texture views (`render.rs:330-460`)
+- [x] **DR31**: NV12 render pass code duplicated between DMA-BUF and Metal paths — already extracted into shared `render_nv12_from_views` helper called by both paths (`render.rs:356`)
 - [ ] **DR32** *(waiting for macOS)*: Metal importer has no GPU fence in double-buffer scheme — keeps previous frame's `CVMetalTextureRef` resources alive for one extra frame (~33ms at 30fps). At normal frame rates the GPU finishes reading well within this window. Under heavy GPU load or frame bursts, previous resources could theoretically be released while still in flight, but this would require processing latency exceeding one full frame interval — unlikely in practice (`render/metal_import.rs:260-262`)
 - [x] **DR49**: `render.rs` I420 render path doesn't set `last_render_path` — fixed, now sets `RenderPath::CpuRgba` (6ccc328)
 

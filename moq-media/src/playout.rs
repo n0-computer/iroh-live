@@ -102,12 +102,14 @@ impl PlaybackPolicy {
     }
 
     /// Returns a copy with a different freshness policy.
+    #[must_use]
     pub fn with_freshness(mut self, freshness: FreshnessPolicy) -> Self {
         self.freshness = freshness;
         self
     }
 
     /// Returns a copy with a different sync mode.
+    #[must_use]
     pub fn with_sync(mut self, sync: SyncMode) -> Self {
         self.sync = sync;
         self

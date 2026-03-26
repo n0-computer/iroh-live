@@ -1026,30 +1026,35 @@ impl VideoEncoderConfig {
     }
 
     /// Sets the frame width.
+    #[must_use]
     pub fn width(mut self, width: u32) -> Self {
         self.width = width;
         self
     }
 
     /// Sets the frame height.
+    #[must_use]
     pub fn height(mut self, height: u32) -> Self {
         self.height = height;
         self
     }
 
     /// Sets the framerate.
+    #[must_use]
     pub fn framerate(mut self, framerate: u32) -> Self {
         self.framerate = framerate;
         self
     }
 
     /// Sets the target bitrate in bits per second.
+    #[must_use]
     pub fn bitrate(mut self, bitrate: u64) -> Self {
         self.bitrate = Some(bitrate);
         self
     }
 
     /// Sets the scale mode.
+    #[must_use]
     pub fn scale_mode(mut self, mode: crate::processing::scale::ScaleMode) -> Self {
         self.scale_mode = mode;
         self
@@ -1058,6 +1063,7 @@ impl VideoEncoderConfig {
     /// Sets the keyframe (IDR) interval in frames.
     ///
     /// Defaults to one keyframe per second if not set.
+    #[must_use]
     pub fn keyframe_interval(mut self, frames: u32) -> Self {
         self.keyframe_interval = Some(frames);
         self
@@ -1073,6 +1079,7 @@ impl VideoEncoderConfig {
     ///
     /// Call this after creating the config from a preset and before creating
     /// the encoder so that the encoder is sized correctly for the source.
+    #[must_use]
     pub fn resolve_for_source(mut self, source_width: u32, source_height: u32) -> Self {
         let (w, h) = self
             .scale_mode
@@ -1133,18 +1140,21 @@ impl AudioEncoderConfig {
     }
 
     /// Sets the sample rate in Hz.
+    #[must_use]
     pub fn sample_rate(mut self, rate: u32) -> Self {
         self.sample_rate = rate;
         self
     }
 
     /// Sets the channel count.
+    #[must_use]
     pub fn channel_count(mut self, count: u32) -> Self {
         self.channel_count = count;
         self
     }
 
     /// Sets the target bitrate in bits per second.
+    #[must_use]
     pub fn bitrate(mut self, bitrate: u64) -> Self {
         self.bitrate = bitrate;
         self

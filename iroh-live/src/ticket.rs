@@ -37,6 +37,7 @@ impl LiveTicket {
     }
 
     /// Adds relay URLs to this ticket.
+    #[must_use]
     pub fn with_relay_urls(mut self, urls: impl IntoIterator<Item = String>) -> Self {
         self.relay_urls = urls.into_iter().collect();
         self
