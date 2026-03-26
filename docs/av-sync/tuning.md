@@ -1,7 +1,7 @@
 # A/V sync tuning
 
-> **Note:** A/V sync is currently disabled. `SyncMode` has no effect — both
-> `AudioMaster` and `Unmanaged` behave identically. The freshness controls
+> A/V sync is currently disabled. `SyncMode` has only the `Unmanaged`
+> variant; the `AudioMaster` variant was removed. The freshness controls
 > below are still active.
 
 ## Freshness: the one knob that matters right now

@@ -16,7 +16,7 @@ iroh-live is not coupled to any GUI framework. The subscribe side delivers decod
 
 On Linux with VAAPI hardware decoding, the renderer can import DMA-BUF file descriptors directly into Vulkan textures without any CPU copy. This zero-copy path activates automatically when the `dmabuf-import` and `vaapi` features are both enabled and the GPU driver supports the frame's DRM modifier. On macOS, Metal texture import from VideoToolbox is available via the `metal-import` feature. See the [DMA-BUF architecture page](../architecture/linux/dmabuf.md) for details on the Linux zero-copy pipeline.
 
-The `watch-wgpu` and `watch` examples use this path.
+The `watch-wgpu` example and the `irl play` CLI command use this path.
 
 ### OpenGL ES 2.0 via `GlesRenderer`
 
@@ -32,7 +32,7 @@ Every `VideoFrame` exposes an `rgba_image()` method that returns an `RgbaImage` 
 
 ### moq-media-egui
 
-`moq-media-egui` wraps `WgpuVideoRenderer` as an egui widget called `VideoTrackView`. It handles texture allocation, frame upload, and display within an egui panel. The `watch` example uses this crate. It also provides a `DebugOverlay` for rendering network and codec stats.
+`moq-media-egui` wraps `WgpuVideoRenderer` as an egui widget called `VideoTrackView`. It handles texture allocation, frame upload, and display within an egui panel. The `irl play` CLI command and the `split` example use this crate. It also provides a `DebugOverlay` for rendering network and codec stats.
 
 ### moq-media-dioxus
 
@@ -46,7 +46,7 @@ For applications that use wgpu and winit directly, the `watch-wgpu` example demo
 
 For OpenGL, the `demos/opengl` crate is a minimal GLES2 viewer using glutin and winit. It creates an EGL context, constructs a `GlesRenderer`, and renders incoming frames.
 
-Both examples work on Linux and macOS. Windows rendering via wgpu is expected to work but has not been tested.
+The `watch-wgpu` example works on Linux and macOS. Windows rendering via wgpu is expected to work but has not been tested.
 
 ## Other frameworks
 

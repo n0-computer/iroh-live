@@ -43,7 +43,7 @@ let ticket = LiveTicket::new(endpoint_addr, "my-stream")
 
 There are several ways to share a ticket with viewers:
 
-- **Copy the string**: the `publish` example prints the ticket to the terminal. Copy and paste it to another machine.
+- **Copy the string**: the `irl publish` command prints the ticket to the terminal. Copy and paste it to another machine.
 - **QR code**: the Pi Zero demo renders the ticket as a QR code on an e-paper display. Any QR scanner can read it. The ticket string is short enough to fit comfortably in a QR code (well under 2000 characters).
 - **Browser URL**: pass the ticket as a query parameter to the relay web viewer: `https://relay.example.com/?name=<TICKET>`. See [browser-relay.md](browser-relay.md).
 

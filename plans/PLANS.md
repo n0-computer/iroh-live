@@ -7,8 +7,8 @@ notes. For the current architecture, see [docs/](../docs/).
 
 - [api.md](api.md) — remaining public API work: relay publishing, room
   participant model, mute/enable, source replacement, quality refinement
-- [api-ergonomics.md](api-ergonomics.md) — two remaining ergonomic
-  improvements (prelude module, subscribe_with_stats)
+- [api-ergonomics.md](api-ergonomics.md) — one remaining item: prelude
+  module for common re-exports
 - [call-example-simplification.md](call-example-simplification.md) —
   library-level improvements: demo sources, source discovery, auto-resubscribe
 - [cli.md](cli.md) — CLI is implemented; remaining: preview mode, grid layout,

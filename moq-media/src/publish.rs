@@ -451,13 +451,9 @@ impl VideoPublisher<'_> {
         }
     }
 
-    /// Enables or disables video output.
-    ///
-    /// **Unimplemented.** Currently a no-op. Intended to pause the encoder
-    /// pipeline when disabled and resume on the next captured frame.
-    pub fn set_enabled(&self, _enabled: bool) {
-        // TODO: implement pause/resume on the encoder pipeline
-    }
+    // TODO: impl set_enabled — pause encoder pipeline when disabled,
+    // resume on next captured frame.
+    // pub fn set_enabled(&self, enabled: bool) { ... }
 }
 
 /// Handle for configuring the audio track(s) of a [`LocalBroadcast`].
@@ -501,13 +497,9 @@ impl AudioPublisher<'_> {
         let _ = self.broadcast.set_audio(None);
     }
 
-    /// Mutes or unmutes audio output.
-    ///
-    /// **Unimplemented.** Currently a no-op. Intended to send silence
-    /// instead of captured audio when muted.
-    pub fn set_muted(&self, _muted: bool) {
-        // TODO: implement mute on the audio pipeline
-    }
+    // TODO: impl set_muted — send silence instead of captured audio
+    // when muted, resume live audio when unmuted.
+    // pub fn set_muted(&self, muted: bool) { ... }
 
     /// Sets audio from pre-built [`AudioRenditions`].
     pub fn set_renditions(&self, renditions: AudioRenditions) -> Result<()> {

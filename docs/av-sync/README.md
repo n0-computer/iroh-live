@@ -55,8 +55,8 @@ actively degraded it during congestion.
 - `PlaybackPolicy` and `FreshnessPolicy` are still in the public API.
   `FreshnessPolicy::max_stale_duration` drives Hang's ordered consumer and
   is the primary congestion-response knob.
-- `SyncMode` variants (`AudioMaster`, `Unmanaged`) are preserved in the type
-  system but currently have no effect — both behave as unmanaged.
+- `SyncMode` exists in the type system with only the `Unmanaged` variant.
+  The `AudioMaster` variant was removed.
 - The `LagTracker` in each decode loop records wall-vs-PTS drift. The video
   loop also computes A/V delta as `video_lag - audio_lag` and records it to
   `TimingStats::av_delta_ms`.

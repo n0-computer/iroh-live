@@ -46,7 +46,7 @@ Use the room to publish a broadcast. The room announces it to all peers
 via gossip:
 
 ```rust
-room.publish("my-stream", broadcast_producer).await?;
+room.publish("my-stream", &broadcast).await?;
 ```
 
 ## Receiving events
@@ -77,16 +77,16 @@ while let Some(event) = events.recv().await {
 The `split` method returns `(RoomEvents, RoomHandle)`. The handle is
 cloneable and shareable across tasks.
 
-## The rooms example
+## Running a room
 
-The `rooms` example in `iroh-live/examples/` demonstrates the full flow:
+The `irl room` CLI command demonstrates the full flow:
 
 ```sh
 # First participant creates the room
-cargo run --release --example rooms
+cargo run --release -p iroh-live-cli -- room
 
 # Others join with the printed ticket
-cargo run --release --example rooms -- <TICKET>
+cargo run --release -p iroh-live-cli -- room <TICKET>
 ```
 
 Each participant captures their camera and microphone, publishes into

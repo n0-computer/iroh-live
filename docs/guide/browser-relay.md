@@ -85,7 +85,7 @@ The web client depends on `@moq/watch` and `@moq/publish` from the [moq](https:/
 A typical workflow with the relay:
 
 1. Start the relay: `cargo run -p iroh-live-relay -- --dev`
-2. Publish from a desktop: `cargo run --release --example publish`
+2. Publish from a desktop: `cargo run --release -p iroh-live-cli -- publish`
 3. Open the relay URL in a browser with `?name=<TICKET>` to watch the stream.
 
 The publisher does not need to know about the relay. The relay connects to the publisher on behalf of the browser viewer, using the iroh endpoint address embedded in the ticket.

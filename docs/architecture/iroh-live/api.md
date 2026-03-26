@@ -13,17 +13,18 @@ Construction uses a builder pattern:
 
 ```rust
 let live = Live::builder(endpoint)
-    .enable_gossip()
-    .spawn_with_router();
+    .with_gossip()
+    .with_router()
+    .spawn();
 ```
 
-`LiveBuilder::enable_gossip()` creates a `Gossip` instance internally and auto-mounts it on the router. For applications that manage their own `Gossip`, `LiveBuilder::gossip()` accepts an externally-created instance.
+`LiveBuilder::with_gossip()` creates a `Gossip` instance internally and auto-mounts it on the router. For applications that manage their own `Gossip`, `LiveBuilder::gossip()` accepts an externally-created instance.
 
-`spawn()` creates the transport without a router (caller mounts protocols manually). `spawn_with_router()` creates a `Router`, mounts all protocols, and stores it on `Live` for lifetime management.
+`spawn()` creates the transport. If `.with_router()` was called, a `Router` is created, all protocols are mounted, and the router is stored on `Live` for lifetime management. Without `.with_router()`, the caller mounts protocols manually.
 
 ## Three abstraction levels
 
-**`Live`** provides the lowest-level publish/subscribe operations. `live.publish(name, broadcast)` announces a `LocalBroadcast` for P2P discovery. `live.subscribe(addr, name)` connects to a remote endpoint and returns a `MoqSession` plus a `RemoteBroadcast`. These are the building blocks for custom session management.
+**`Live`** provides the lowest-level publish/subscribe operations. `live.publish(name, &broadcast)` announces a `LocalBroadcast` for P2P discovery. `live.subscribe(addr, name)` connects to a remote endpoint and returns a `Subscription` (which bundles a `MoqSession`, a `RemoteBroadcast`, and pre-wired `NetworkSignals`). These are the building blocks for custom session management.
 
 **`Call`** wraps `Live` for 1:1 sessions. It handles the handshake of publishing local media and subscribing to the remote peer's media in a single operation. Dropping a `Call` closes the session, stops encoder pipelines, and disconnects.
 

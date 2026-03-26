@@ -38,54 +38,58 @@ Run the test suite:
 cargo test --workspace
 ```
 
-## Publishing a stream
+## The CLI tool
 
-The `publish` example captures your camera and microphone, encodes video and audio, and prints a ticket string that viewers can use to connect:
-
-```sh
-cargo run --release --example publish
-```
-
-The output includes a line like `publishing at iroh-live:ABC.../my-stream`. Copy the full ticket string.
-
-## Watching a stream
-
-In a second terminal, pass the ticket to the `watch` example. This opens an egui window that decodes and renders the incoming video with audio:
+The `iroh-live-cli` crate (binary name `irl`) provides publish, play, call, and room commands:
 
 ```sh
-cargo run --release --example watch -- <TICKET>
+cargo build --release -p iroh-live-cli
 ```
 
-Replace `<TICKET>` with the string printed by the publisher. The viewer connects directly to the publisher over QUIC, with no intermediary.
+### Publishing a stream
 
-## Multi-user rooms
+Capture your camera and microphone, encode, and print a ticket:
+
+```sh
+cargo run --release -p iroh-live-cli -- publish
+```
+
+The output includes a line like `iroh-live:ABC.../my-stream`. Copy the full ticket string.
+
+### Playing a stream
+
+In a second terminal, pass the ticket to the play command:
+
+```sh
+cargo run --release -p iroh-live-cli -- play <TICKET>
+```
+
+The viewer connects directly to the publisher over QUIC, with no intermediary.
+
+### Multi-user rooms
 
 Rooms use iroh-gossip for peer discovery. The first participant creates the room, and others join with the printed ticket:
 
 ```sh
 # First participant creates the room
-cargo run --release --example rooms
+cargo run --release -p iroh-live-cli -- room
 
 # Others join with the ticket
-cargo run --release --example rooms -- <TICKET>
+cargo run --release -p iroh-live-cli -- room <TICKET>
 ```
 
 Each participant publishes their own broadcast and automatically subscribes to every other participant. See [rooms.md](rooms.md) for details on the room API.
 
-## Other examples
+## Examples
 
-All examples live in `iroh-live/examples/`:
+A few standalone examples remain in the workspace:
 
-| Example | Description |
-|---------|-------------|
-| `publish` | Broadcast camera and microphone, print a ticket |
-| `watch` | egui viewer with video and audio |
-| `watch-wgpu` | Minimal fullscreen wgpu viewer without egui |
-| `call` | 1:1 peer-to-peer video call |
-| `rooms` | Multi-user room with dynamic participant discovery |
-| `split` | Local split-screen encode/decode loop on localhost |
-| `push` | Stream a video file or transcode via ffmpeg |
-| `room-publish-file` | Publish a video file into a room |
+| Example | Crate | Description |
+|---------|-------|-------------|
+| `split` | iroh-live | Local split-screen encode/decode loop on localhost |
+| `watch-wgpu` | iroh-live | Minimal fullscreen wgpu viewer without egui |
+| `frame_dump` | iroh-live | Capture frames from a broadcast, save as PNGs |
+| `viewer` | moq-media | Standalone media viewer |
 
 The `demos/opengl` crate is a standalone GLES2 viewer using glutin and winit, without any egui or wgpu dependency.
 

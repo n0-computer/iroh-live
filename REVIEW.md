@@ -161,7 +161,7 @@ Full API ergonomics review after building the `irl` CLI tool. Covers iroh-live, 
 
 ### Medium — dead API
 
-- [ ] **ER14**: `VideoPublisher::set_enabled()` and `AudioPublisher::set_muted()` are documented no-ops. Remove from public API until implemented.
+- [x] **ER14**: `VideoPublisher::set_enabled()` and `AudioPublisher::set_muted()` were documented no-ops. Commented out with TODO markers until encoder pipeline pause/resume is implemented.
 
 ### Medium — config ergonomics
 
@@ -193,8 +193,8 @@ Exhaustive file-by-file review covering: (a) Rust API idiomatics, (b) A/V indust
 
 Doc comments clearly say "Unimplemented" on DR3/DR4, and DR5 logs a `warn!`, so callers with tracing enabled will notice. DR6 are explicitly platform stubs with detailed implementation plans. DR7 are `pub(crate)` internal dead code, not public API.
 
-- [ ] **DR3**: `VideoPublisher::set_enabled()` — public no-op. Doc says "Unimplemented. Currently a no-op." (`publish.rs:393-395`)
-- [ ] **DR4**: `AudioPublisher::set_muted()` — public no-op. Doc says "Unimplemented. Currently a no-op." (`publish.rs:442-445`)
+- [x] **DR3**: `VideoPublisher::set_enabled()` — was public no-op, now commented out with TODO (`publish.rs`)
+- [x] **DR4**: `AudioPublisher::set_muted()` — was public no-op, now commented out with TODO (`publish.rs`)
 - [ ] **DR5** *(waiting for macOS)*: `AppleCameraCapturer` — entire backend is a stub. `new()` logs `warn!("AVFoundation camera capture not yet fully implemented")`, produces zero frames. `cameras()` returns a hardcoded placeholder (`rusty-capture/src/platform/apple/camera.rs`)
 - [ ] **DR6** *(waiting for platform)*: Android and Windows capture backends — pure documentation stubs with detailed implementation plans, no runtime code (`rusty-capture/src/platform/android/mod.rs`, `windows/mod.rs`)
 - [ ] **DR7**: `AecProcessor::set_stream_delay()` and `set_enabled()` — `pub(crate)` internal methods, `#[allow(unused, reason = "API reserved for future use")]`. Internal dead code reserved for phase 3 AEC work (`audio_backend/aec.rs:110,163`)

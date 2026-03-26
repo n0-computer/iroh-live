@@ -14,8 +14,8 @@ threads.
 
 ## RemoteBroadcast
 
-Created with a `BroadcastConsumer` (from moq-lite), a `PlayoutClock`, and
-a `CancellationToken`. On construction, it spawns a catalog-watching task
+Created with a `BroadcastConsumer` (from moq-lite), a `PlaybackPolicy`,
+and a `CancellationToken`. On construction, it spawns a catalog-watching task
 that monitors the broadcast's catalog track for changes and publishes
 snapshots via a `Watchable<CatalogSnapshot>`.
 
@@ -50,9 +50,9 @@ explicitly, it takes priority over pixel and bitrate constraints.
 
 ## VideoOptions and AudioOptions
 
-`VideoOptions` bundles a `VideoTarget`, decoder configuration
-(`DecodeConfig`), and optional viewport dimensions. `AudioOptions`
-optionally pins a specific audio rendition by name.
+`VideoOptions` bundles a `VideoTarget`, an optional `DecodeConfig` for
+decoder backend selection, and optional viewport dimensions.
+`AudioOptions` optionally pins a specific audio rendition by name.
 
 ## VideoTrack
 
@@ -64,14 +64,14 @@ Construction follows this path:
 
 1. The caller picks a rendition (via `VideoTarget` or explicit name).
 2. A `TrackConsumer` is created from the `BroadcastConsumer` for that
-   rendition's track, wrapped in an `OrderedConsumer` with the playout
-   clock's `hang_max_latency`.
+   rendition's track, wrapped in an `OrderedConsumer` with
+   `FreshnessPolicy::max_stale_duration` as `max_latency`.
 3. An `MoqPacketSource` wraps the `OrderedConsumer`.
 4. A `forward_packets` async task reads from the `MoqPacketSource` and
    sends `MediaPacket` values into an `mpsc` channel.
 5. A decoder thread reads from that channel, pushes packets to the
-   decoder, drains decoded frames into a `PlayoutBuffer`, and releases
-   frames at their playout time into the output channel.
+   decoder, and sends decoded frames through a `FramePacer` (PTS-based
+   sleep) into the output channel.
 
 The output channel is stable across the lifetime of the `VideoTrack`.
 Callers receive frames via `current_frame()` (drain-to-latest, for
@@ -103,9 +103,9 @@ hardware. The async-to-sync bridge works through two channels:
   pushes packets to the decoder, and writes decoded frames to the
   output channel.
 
-The `PlayoutBuffer` sits between the decoder and the output channel,
-absorbing bursty decoder output (especially from hardware decoders with
-DPB flush patterns). See [playout.md](playout.md).
+The `FramePacer` sits between the decoder and the output channel,
+sleeping between frames based on PTS deltas to maintain cadence. See
+[playout.md](playout.md).
 
 ## Lifecycle
 

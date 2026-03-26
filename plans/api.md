@@ -10,7 +10,7 @@ The core API redesign (phases 1-4, 6-7, 9) is complete and documented in
 - [ ] Relay publishing — `LocalBroadcast::relay()` for zero-transcode forwarding
 - [ ] Relay convenience methods on `Live` (phase 7.4)
 - [ ] Room participant model — `LocalParticipant`, `RemoteParticipant` wrappers
-- [ ] `set_enabled()` / `set_muted()` — stubs exist, need encoder pipeline pause/resume
+- [ ] `set_enabled()` / `set_muted()` — commented out (were no-op stubs), need encoder pipeline pause/resume
 - [ ] `VideoTrack::frames()` async stream API
 - [ ] `Quality` enum refinement — current Highest/High/Mid/Low is too coarse;
   let subscriber specify max resolution/framerate instead
