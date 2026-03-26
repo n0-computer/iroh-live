@@ -315,25 +315,34 @@ mod preview {
                     crate::ui::top_bar(ui, ctx, &self.ticket_str);
 
                     let avail = ui.available_size();
-                    let controls_h = 30.0;
-                    let video_avail = egui::vec2(avail.x, avail.y - controls_h);
-                    let video_rect = egui::Rect::from_min_size(ui.cursor().min, video_avail);
+                    let video_rect = egui::Rect::from_min_size(ui.cursor().min, avail);
 
                     if let Some(view) = self.preview.as_mut() {
-                        let video_size = fit_to_aspect(video_avail, 16.0 / 9.0);
+                        let video_size = fit_to_aspect(avail, 16.0 / 9.0);
                         let (img, _) = view.render(ctx, video_size);
                         ui.centered_and_justified(|ui| ui.add_sized(video_size, img));
                     } else {
-                        ui.allocate_space(video_avail);
+                        ui.allocate_space(avail);
                     }
 
                     self.overlay
                         .show_publish(ui, video_rect, self.broadcast.stats());
 
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        self.devices.ui(ui, "preview");
-                    });
+                    egui::Area::new(egui::Id::new("publish-controls"))
+                        .anchor(egui::Align2::LEFT_TOP, [8.0, 28.0])
+                        .order(egui::Order::Foreground)
+                        .show(ctx, |ui| {
+                            egui::Frame::new()
+                                .fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180))
+                                .corner_radius(3.0)
+                                .inner_margin(6.0)
+                                .show(ui, |ui| {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 4.0;
+                                        self.devices.ui(ui, "preview");
+                                    });
+                                });
+                        });
                 });
         }
 

@@ -14,11 +14,14 @@ anyhow = "1.0.100"
 bytes = "1.11.0"
 clap = { version = "4.5", features = ["derive"] }
 data-encoding = "2.9.0"
+dirs = "6.0.0"
 eframe = { version = "0.33.0", default-features = false, features = ["default_fonts", "wgpu"] }
 iroh = { workspace = true }
 iroh-gossip = { workspace = true }
 iroh-live = { workspace = true }
+iroh-live-relay = { path = "../iroh-live-relay" }
 moq-lite = { workspace = true }
+rustls = { version = "0.23", features = ["aws-lc-rs"], default-features = false }
 moq-media = { workspace = true }
 moq-media-egui = { workspace = true, optional = true }
 moq-mux = { workspace = true }

@@ -4,6 +4,9 @@ export default defineConfig({
   globalSetup: "./global-setup.ts",
   testDir: "./tests",
   timeout: 60_000,
+  // Retry flaky tests once. The yellow-blink detection in iroh-to-browser
+  // depends on screenshot timing and occasionally misses transitions.
+  retries: 1,
   // Run tests serially: each test starts its own relay process, and
   // parallel execution causes cargo lock contention + port conflicts.
   workers: 1,

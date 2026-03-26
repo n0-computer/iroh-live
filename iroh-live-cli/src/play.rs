@@ -21,6 +21,7 @@ use crate::{
 pub fn run(args: PlayArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
     let ticket = args.ticket()?;
     let backend = args.decoder_backend()?;
+    let render_mode = args.render_mode()?;
     let no_video = args.no_video;
 
     let (live, sub, track, audio_ctx, broadcast_name) = rt.block_on(async {
@@ -56,7 +57,7 @@ pub fn run(args: PlayArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
     } else {
         // GUI: eframe runs on the main thread, tokio workers stay alive via rt.enter().
         let _guard = rt.enter();
-        run_egui(live, sub, track, audio_ctx, broadcast_name)
+        run_egui(live, sub, track, audio_ctx, broadcast_name, render_mode)
     }
 }
 
@@ -66,6 +67,7 @@ fn run_egui(
     track: iroh_live::media::subscribe::MediaTracks,
     audio_ctx: AudioBackend,
     broadcast_name: String,
+    render_mode: crate::args::RenderMode,
 ) -> n0_error::Result {
     let native_options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
@@ -80,7 +82,8 @@ fn run_egui(
             crate::ui::spawn_ctrl_c_handler(&cc.egui_ctx);
 
             let signals = Some(sub.signals().clone());
-            let remote = RemoteControls::new(
+            let use_wgpu = render_mode == crate::args::RenderMode::Auto;
+            let remote = RemoteControls::with_render_mode(
                 track.broadcast,
                 track.video,
                 track.audio,
@@ -90,6 +93,7 @@ fn run_egui(
                 "video",
                 &[StatCategory::Net, StatCategory::Render, StatCategory::Time],
                 cc.wgpu_render_state.clone(),
+                use_wgpu,
             );
 
             Ok(Box::new(PlayApp {
@@ -145,7 +149,7 @@ impl eframe::App for PlayApp {
                         .show(ui, video_rect, self.remote.broadcast.stats());
 
                     egui::Area::new(egui::Id::new("play-controls"))
-                        .anchor(egui::Align2::LEFT_BOTTOM, [8.0, -8.0])
+                        .anchor(egui::Align2::LEFT_TOP, [8.0, 28.0])
                         .order(egui::Order::Foreground)
                         .show(ctx, |ui| {
                             egui::Frame::new()
