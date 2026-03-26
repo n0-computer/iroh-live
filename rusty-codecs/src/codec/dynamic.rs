@@ -40,6 +40,10 @@ macro_rules! dispatch_video {
             Self::AndroidHwH264(d) => d.$method($($arg),*),
             #[cfg(all(target_os = "android", feature = "android"))]
             Self::AndroidH264(d) => d.$method($($arg),*),
+            // When no video codec features are enabled the enum is uninhabited,
+            // but `#[non_exhaustive]` still requires a wildcard arm.
+            #[cfg(not(any_video_codec))]
+            _ => unreachable!("no video codec features enabled"),
         }
     };
 }
@@ -49,6 +53,7 @@ macro_rules! dispatch_video {
 ///
 /// Always defined regardless of codec features. Without any video codec
 /// features, the enum is empty and `new()` returns an error.
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum DynamicVideoDecoder {
     #[cfg(feature = "h264")]
@@ -167,6 +172,7 @@ impl VideoDecoder for DynamicVideoDecoder {
 ///
 /// Always defined regardless of codec features. Without any audio codec
 /// features, the enum is empty and `new()` returns an error.
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum DynamicAudioDecoder {
     #[cfg(feature = "opus")]
@@ -194,6 +200,8 @@ impl AudioDecoder for DynamicAudioDecoder {
         match self {
             #[cfg(feature = "opus")]
             Self::Opus(d) => d.push_packet(packet),
+            #[cfg(not(any_audio_codec))]
+            _ => unreachable!("no audio codec features enabled"),
         }
     }
 
@@ -201,6 +209,8 @@ impl AudioDecoder for DynamicAudioDecoder {
         match self {
             #[cfg(feature = "opus")]
             Self::Opus(d) => d.pop_samples(),
+            #[cfg(not(any_audio_codec))]
+            _ => unreachable!("no audio codec features enabled"),
         }
     }
 }
