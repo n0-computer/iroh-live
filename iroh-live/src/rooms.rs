@@ -61,8 +61,24 @@ impl RoomHandle {
         ticket
     }
 
-    /// Publishes a broadcast into the room, announcing it to all peers.
-    pub async fn publish(&self, name: impl ToString, producer: BroadcastProducer) -> Result<()> {
+    /// Publishes a [`LocalBroadcast`] into the room, announcing it to all peers.
+    ///
+    /// Extracts the underlying producer via [`LocalBroadcast::producer()`].
+    /// For raw producer access, use [`publish_producer`](Self::publish_producer).
+    pub async fn publish(
+        &self,
+        name: impl ToString,
+        broadcast: &moq_media::publish::LocalBroadcast,
+    ) -> Result<()> {
+        self.publish_producer(name, broadcast.producer()).await
+    }
+
+    /// Publishes a raw [`BroadcastProducer`] into the room.
+    pub async fn publish_producer(
+        &self,
+        name: impl ToString,
+        producer: BroadcastProducer,
+    ) -> Result<()> {
         self.tx
             .send(ApiMessage::Publish {
                 name: name.to_string(),
@@ -134,9 +150,23 @@ impl Room {
         (self.events, self.handle)
     }
 
-    /// Publishes a broadcast into the room, announcing it to all peers.
-    pub async fn publish(&self, name: impl ToString, producer: BroadcastProducer) -> Result<()> {
-        self.handle.publish(name, producer).await
+    /// Publishes a [`LocalBroadcast`](moq_media::publish::LocalBroadcast) into the room,
+    /// announcing it to all peers.
+    pub async fn publish(
+        &self,
+        name: impl ToString,
+        broadcast: &moq_media::publish::LocalBroadcast,
+    ) -> Result<()> {
+        self.handle.publish(name, broadcast).await
+    }
+
+    /// Publishes a raw [`BroadcastProducer`] into the room.
+    pub async fn publish_producer(
+        &self,
+        name: impl ToString,
+        producer: BroadcastProducer,
+    ) -> Result<()> {
+        self.handle.publish_producer(name, producer).await
     }
 }
 
@@ -149,6 +179,7 @@ enum ApiMessage {
 
 /// Events emitted by a [`Room`] as peers join and publish broadcasts.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum RoomEvent {
     /// A remote peer announced its available broadcasts via gossip.
     RemoteAnnounced {
@@ -156,11 +187,6 @@ pub enum RoomEvent {
         remote: EndpointId,
         /// Broadcast names the peer is publishing.
         broadcasts: Vec<String>,
-    },
-    /// Reserved for future use. Not currently emitted by the room actor.
-    RemoteConnected {
-        /// The connected session.
-        session: Box<MoqSession>,
     },
     /// Successfully subscribed to a remote peer's broadcast.
     BroadcastSubscribed {

@@ -16,10 +16,7 @@ use glutin_winit::DisplayBuilder;
 use iroh::Endpoint;
 use iroh_live::{
     Live,
-    media::{
-        audio_backend::AudioBackend, codec::DefaultDecoders, format::PlaybackConfig,
-        subscribe::VideoTrack,
-    },
+    media::{audio_backend::AudioBackend, format::PlaybackConfig, subscribe::VideoTrack},
     ticket::LiveTicket,
 };
 use raw_window_handle::HasWindowHandle;
@@ -56,7 +53,7 @@ fn main() -> Result<()> {
             let endpoint = Endpoint::bind(iroh::endpoint::presets::N0).await?;
             let live = Live::new(endpoint);
             let (_session, track) = live
-                .subscribe_media_track::<DefaultDecoders>(
+                .subscribe_media(
                     ticket.endpoint,
                     &ticket.broadcast_name,
                     &audio_ctx,

@@ -903,12 +903,14 @@ pub enum Quality {
 }
 
 /// Which decoder backend to use.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Display, EnumString, PartialEq, Eq)]
+#[strum(serialize_all = "lowercase")]
 pub enum DecoderBackend {
     /// Try hardware decoder first, fall back to software.
     #[default]
     Auto,
     /// Force software decoder.
+    #[strum(serialize = "software", serialize = "sw")]
     Software,
 }
 

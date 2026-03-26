@@ -28,7 +28,7 @@ use iroh_live::{
     media::{
         audio_backend::AudioBackend,
         capture::{CameraCapturer, CaptureBackend, ScreenCapturer},
-        codec::{AudioCodec, DefaultDecoders, DynamicVideoDecoder, VideoCodec},
+        codec::{AudioCodec, DynamicVideoDecoder, VideoCodec},
         format::{AudioPreset, DecodeConfig, DecoderBackend, PlaybackConfig, VideoPreset},
         publish::{LocalBroadcast, VideoInput},
         subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
@@ -471,7 +471,7 @@ impl PublishView {
 
         let video_rect = egui::Rect::from_min_size(video_origin, video_size);
         let stats = self.broadcast.stats();
-        stats.capture.codec.set(self.codec.display_name());
+        stats.encode.codec.set(self.codec.display_name());
         self.overlay.show_publish(ui, video_rect, stats);
     }
 
@@ -522,9 +522,7 @@ impl SubscribeView {
         );
 
         let playback_config = PlaybackConfig::default();
-        let tracks = broadcast
-            .media::<DefaultDecoders>(audio_ctx, playback_config)
-            .await?;
+        let tracks = broadcast.media(audio_ctx, playback_config).await?;
 
         Ok(Self {
             session,

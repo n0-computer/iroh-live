@@ -14,7 +14,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use iroh_live::{Call, CallTicket, Live, ticket::LiveTicket};
+use iroh_live::{Call, Live, ticket::LiveTicket};
 use jni::{
     JNIEnv, JavaVM,
     objects::{JByteArray, JClass, JString},
@@ -37,7 +37,7 @@ use moq_media_android::{
     renderer::AndroidRenderer,
 };
 use n0_watcher::Watcher;
-use rusty_codecs::{codec::DefaultDecoders, format::Nv12Planes};
+use rusty_codecs::format::Nv12Planes;
 use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -269,7 +269,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_dial(
 
 async fn dial_impl(ticket_str: String, cam_w: u32, cam_h: u32) -> Result<jlong> {
     info!(ticket = %ticket_str, cam_w, cam_h, "parsing call ticket");
-    let ticket: CallTicket = ticket_str.parse().context("failed to parse call ticket")?;
+    let ticket: LiveTicket = ticket_str.parse().context("failed to parse call ticket")?;
 
     let live = Live::from_env().await?;
     info!(id = %live.endpoint().id().fmt_short(), "endpoint ready");
@@ -301,12 +301,12 @@ async fn dial_impl(ticket_str: String, cam_w: u32, cam_h: u32) -> Result<jlong> 
         .context("failed to set audio source")?;
 
     // Dial and subscribe.
-    let call = Call::dial(&live, ticket, broadcast).await?;
+    let call = Call::dial(&live, ticket.endpoint, broadcast).await?;
     info!("call connected");
 
     let tracks = call
         .remote()
-        .media::<DefaultDecoders>(&audio_backend, PlaybackConfig::default())
+        .media(&audio_backend, PlaybackConfig::default())
         .await
         .context("failed to subscribe to remote media")?;
 

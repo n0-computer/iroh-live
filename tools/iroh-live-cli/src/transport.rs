@@ -98,7 +98,7 @@ async fn push_to_room(
     room_ticket: &RoomTicket,
 ) -> anyhow::Result<()> {
     let room = live.join_room(room_ticket.clone()).await?;
-    room.publish(name, producer).await?;
+    room.publish_producer(name, producer).await?;
     println!("room ticket: {}", room.ticket());
     // Keep room alive by leaking — it will be cleaned up on Live::shutdown().
     std::mem::forget(room);

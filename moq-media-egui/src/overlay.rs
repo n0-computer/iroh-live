@@ -418,12 +418,12 @@ fn detail_entries_publish<'a>(cat: StatCategory, stats: &'a PublishStats) -> Vec
     let mut entries = Vec::new();
     match cat {
         StatCategory::Capture => {
-            push_label(&mut entries, "codec", &stats.capture.codec);
-            push_label(&mut entries, "encoder", &stats.capture.encoder);
-            push_label(&mut entries, "resolution", &stats.capture.resolution);
-            push_metric(&mut entries, &stats.capture.fps);
-            push_metric(&mut entries, &stats.capture.encode_ms);
-            push_metric(&mut entries, &stats.capture.bitrate_kbps);
+            push_label(&mut entries, "codec", &stats.encode.codec);
+            push_label(&mut entries, "encoder", &stats.encode.encoder);
+            push_label(&mut entries, "resolution", &stats.encode.resolution);
+            push_metric(&mut entries, &stats.encode.fps);
+            push_metric(&mut entries, &stats.encode.encode_ms);
+            push_metric(&mut entries, &stats.encode.bitrate_kbps);
         }
         StatCategory::Net => {
             push_label(&mut entries, "peer", &stats.net.peer);
@@ -484,9 +484,9 @@ fn format_section_summary_publish(cat: StatCategory, stats: &PublishStats) -> St
     let mut parts = vec![cat.label().to_string()];
     match cat {
         StatCategory::Capture => {
-            push_label_summary(&mut parts, &stats.capture.codec);
-            push_metric_summary(&mut parts, &stats.capture.fps);
-            push_metric_summary(&mut parts, &stats.capture.encode_ms);
+            push_label_summary(&mut parts, &stats.encode.codec);
+            push_metric_summary(&mut parts, &stats.encode.fps);
+            push_metric_summary(&mut parts, &stats.encode.encode_ms);
         }
         StatCategory::Net => {
             push_label_summary(&mut parts, &stats.net.path_type);

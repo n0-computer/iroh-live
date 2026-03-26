@@ -4,15 +4,15 @@ use std::time::Duration;
 
 use eframe::egui::{self, Id};
 use iroh_live::{
-    Call, CallError, CallTicket, Live,
+    Call, CallError, Live,
     media::{
         AudioBackend,
-        codec::DefaultDecoders,
         format::PlaybackConfig,
         publish::LocalBroadcast,
         subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
     },
     moq::MoqSession,
+    ticket::LiveTicket,
 };
 use moq_media_egui::{
     VideoTrackView,
@@ -334,7 +334,7 @@ impl eframe::App for CallApp {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     if setup.ui(ctx, ui) {
                         let ticket_str = setup.remote_ticket.trim().to_string();
-                        match CallTicket::deserialize(&ticket_str) {
+                        match LiveTicket::deserialize(&ticket_str) {
                             Ok(ticket) => {
                                 if let Some(handle) = self.accept_task.take() {
                                     handle.abort();
@@ -374,12 +374,10 @@ impl eframe::App for CallApp {
             task.abort();
         }
         let live = match &self.state {
-            AppState::Setup(s) => s.live.clone(),
-            AppState::InCall(s) => s.live.clone(),
+            AppState::Setup(s) => &s.live,
+            AppState::InCall(s) => &s.live,
         };
-        tokio::runtime::Handle::current().block_on(async move {
-            live.shutdown().await;
-        });
+        crate::ui::shutdown_live_blocking(live);
     }
 }
 
@@ -389,12 +387,12 @@ impl eframe::App for CallApp {
 
 async fn dial_call(
     live: &Live,
-    ticket: CallTicket,
+    ticket: LiveTicket,
     broadcast: LocalBroadcast,
     audio_ctx: &AudioBackend,
 ) -> std::result::Result<CallResult, CallError> {
     info!(remote = %ticket, "dialing");
-    let call = Call::dial(live, ticket, broadcast).await?;
+    let call = Call::dial(live, ticket.endpoint, broadcast).await?;
     subscribe_call(call, audio_ctx).await
 }
 
@@ -427,7 +425,7 @@ async fn subscribe_call(
         iroh_live::util::spawn_signal_producer(session.conn(), call.remote().shutdown_token());
     let tracks = call
         .remote()
-        .media::<DefaultDecoders>(audio_ctx, PlaybackConfig::default())
+        .media(audio_ctx, PlaybackConfig::default())
         .await
         .map_err(CallError::ConnectionFailed)?;
     Ok(CallResult {
@@ -463,12 +461,12 @@ pub fn run(args: CallArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
             crate::source::setup_audio(&broadcast, &audio_sources, &audio_ctx, audio_preset)
                 .await?;
 
-            let our_ticket = CallTicket::new(live.endpoint().addr());
+            let our_ticket = LiveTicket::new(live.endpoint().addr(), "call");
             let our_ticket_str = our_ticket.to_string();
             println!("Your ticket: {our_ticket_str}");
 
             let (initial_call_rx, initial_accept_task) = if let Some(ref ticket_str) = ticket_arg {
-                let ticket = CallTicket::deserialize(ticket_str.trim())
+                let ticket = LiveTicket::deserialize(ticket_str.trim())
                     .map_err(|e| anyerr!("invalid ticket: {e:#}"))?;
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let live_c = live.clone();
@@ -508,11 +506,7 @@ pub fn run(args: CallArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
         "irl call",
         eframe::NativeOptions::default(),
         Box::new(move |cc| {
-            let egui_ctx = cc.egui_ctx.clone();
-            tokio::runtime::Handle::current().spawn(async move {
-                let _ = tokio::signal::ctrl_c().await;
-                egui_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            });
+            crate::ui::spawn_ctrl_c_handler(&cc.egui_ctx);
 
             Ok(Box::new(CallApp {
                 state: AppState::Setup(Box::new(SetupState {

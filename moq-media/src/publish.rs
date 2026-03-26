@@ -173,13 +173,15 @@ struct VideoRenditionEntry {
 /// Subscribes to the consumer's catalog, spawns decoders, and returns media
 /// tracks suitable for rendering. This is the building block for previewing
 /// both live capture and file import output.
+///
+/// Re-exported from [`crate::subscribe::subscribe_preview_from_consumer`] for
+/// backwards compatibility. Prefer calling the subscribe module directly.
 pub async fn subscribe_preview_from_consumer<D: crate::traits::Decoders>(
     consumer: moq_lite::BroadcastConsumer,
     audio_backend: &dyn crate::traits::AudioStreamFactory,
     config: crate::format::PlaybackConfig,
 ) -> Result<crate::subscribe::MediaTracks> {
-    let broadcast = crate::subscribe::RemoteBroadcast::new("preview", consumer).await?;
-    broadcast.media::<D>(audio_backend, config).await
+    crate::subscribe::subscribe_preview_from_consumer::<D>(consumer, audio_backend, config).await
 }
 
 /// Local media broadcast that encodes and publishes video and audio tracks.
@@ -214,7 +216,7 @@ impl LocalBroadcast {
         let stats = crate::stats::PublishStats::default();
 
         let mut state = State::new(catalog);
-        state.stats = Some(stats.capture.clone());
+        state.stats = Some(stats.encode.clone());
         let state = Arc::new(Mutex::new(state));
         let task_handle = tokio::spawn(Self::run(state.clone(), producer.clone()));
 
@@ -307,7 +309,12 @@ impl LocalBroadcast {
         audio_backend: &dyn crate::traits::AudioStreamFactory,
         config: crate::format::PlaybackConfig,
     ) -> Result<crate::subscribe::MediaTracks> {
-        subscribe_preview_from_consumer::<D>(self.consume(), audio_backend, config).await
+        crate::subscribe::subscribe_preview_from_consumer::<D>(
+            self.consume(),
+            audio_backend,
+            config,
+        )
+        .await
     }
 
     /// Returns a local preview video track (decode our own output).
@@ -546,7 +553,7 @@ struct State {
     audio: Option<AudioRenditions>,
     active_video: HashMap<String, VideoPipeline>,
     active_audio: HashMap<String, AudioEncoderPipeline>,
-    stats: Option<crate::stats::CaptureStats>,
+    stats: Option<crate::stats::EncodeStats>,
 }
 
 impl State {
@@ -977,7 +984,7 @@ impl VideoRenditions {
         &mut self,
         name: &str,
         producer: TrackProducer,
-        stats: Option<crate::stats::CaptureStats>,
+        stats: Option<crate::stats::EncodeStats>,
     ) -> Result<VideoEncoderPipeline> {
         let entry = self
             .renditions

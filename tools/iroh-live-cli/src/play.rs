@@ -7,7 +7,6 @@ use iroh_live::{
     Live,
     media::{
         AudioBackend,
-        codec::DefaultDecoders,
         format::{DecodeConfig, PlaybackConfig},
     },
     moq::MoqSession,
@@ -45,9 +44,7 @@ pub fn run(args: PlayArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
             .subscribe_with_stats(ticket.endpoint, &ticket.broadcast_name)
             .await?;
         info!("session established");
-        let track = broadcast
-            .media::<DefaultDecoders>(&audio_ctx, playback_config)
-            .await?;
+        let track = broadcast.media(&audio_ctx, playback_config).await?;
         info!("media tracks subscribed");
 
         n0_error::Ok((
@@ -85,8 +82,6 @@ fn run_egui(
     signals: tokio::sync::watch::Receiver<iroh_live::media::net::NetworkSignals>,
     broadcast_name: String,
 ) -> n0_error::Result {
-    let rt = tokio::runtime::Handle::current();
-
     let native_options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: create_egui_wgpu_config(),
@@ -97,11 +92,7 @@ fn run_egui(
         "irl — play",
         native_options,
         Box::new(move |cc| {
-            let egui_ctx = cc.egui_ctx.clone();
-            rt.spawn(async move {
-                let _ = tokio::signal::ctrl_c().await;
-                egui_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            });
+            crate::ui::spawn_ctrl_c_handler(&cc.egui_ctx);
 
             let remote = RemoteControls::new(
                 track.broadcast,
@@ -189,9 +180,6 @@ impl eframe::App for PlayApp {
         info!("exit");
         self.remote.broadcast.shutdown();
         self.session.close(0, b"bye");
-        let live = self.live.clone();
-        tokio::runtime::Handle::current().block_on(async move {
-            live.shutdown().await;
-        });
+        crate::ui::shutdown_live_blocking(&self.live);
     }
 }

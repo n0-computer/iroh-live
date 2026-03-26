@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, info_span, warn};
 
-use super::{DecodeOpts, forward_packets};
+use super::{PipelineContext, forward_packets};
 use crate::{
     format::AudioFormat,
     stats::LagTracker,
@@ -38,7 +38,7 @@ impl AudioDecoderPipeline {
         source: impl crate::transport::PacketSource,
         config: &rusty_codecs::config::AudioConfig,
         audio_backend: &dyn AudioStreamFactory,
-        opts: DecodeOpts,
+        opts: PipelineContext,
     ) -> Result<Self> {
         let target_format = AudioFormat::from_config(config);
         let sink = audio_backend.create_output(target_format).await?;
@@ -52,7 +52,7 @@ impl AudioDecoderPipeline {
         config: &rusty_codecs::config::AudioConfig,
         sink: impl AudioSink,
         handle: Box<dyn AudioSinkHandle>,
-        opts: DecodeOpts,
+        opts: PipelineContext,
     ) -> Result<Self> {
         let shutdown = CancellationToken::new();
         let span = info_span!("audiodec", %name);
@@ -118,7 +118,7 @@ fn audio_decode_loop(
     mut input_rx: mpsc::Receiver<crate::format::MediaPacket>,
     mut decoder: impl AudioDecoder,
     mut sink: impl AudioSink,
-    opts: DecodeOpts,
+    opts: PipelineContext,
 ) -> Result<()> {
     use mpsc::error::TryRecvError;
 

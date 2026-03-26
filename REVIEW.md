@@ -125,36 +125,14 @@ Findings from three expert reviews: capture/platform, playout/sync, and codec sa
 
 - [ ] **ER2**: PipeWire NV12 DMA-BUF reports single plane — NV12 is two-plane; single-plane report causes downstream importers to reject or corrupt chroma (`pipewire.rs:229`)
 - [ ] **ER3**: V4L2 DMA-BUF EXPBUF path not implemented — docs claim zero-copy via EXPBUF but code always does CPU copies (`v4l2.rs`)
-- [ ] **ER4**: Audio and video not synchronized — PTS timebase mismatch.
+- [ ] **ER4**: Audio and video not synchronized — PTS timebase mismatch. **Partially fixed**: wall-clock audio PTS is implemented (`pipeline/audio_encode.rs:90` overrides `pkt.timestamp = start.elapsed()`). Shared epoch between audio and video encoder threads is NOT yet implemented — each thread uses its own `Instant::now()`, so 50–200ms constant offset remains depending on capture startup order. The `PlayoutClock` and `PlayoutBuffer` were removed in the av-sync simplification (9c72f6a), so no playout-side changes are needed.
 
-  **Root cause.** Audio and video use different PTS timebases. Video PTS comes from wall-clock (`capture_start.elapsed()` in capture backends). Audio PTS comes from a frame counter (`frame_count * 20ms` in Opus encoder, line 141-142 of `opus/encoder.rs`). These diverge because the audio encoder thread doesn't tick at exactly real-time speed. Research confirmed moq-js has the same structural issue — video uses `performance.now()` while audio uses sample counting.
-
-  **Measured impact.** In-process Reliable mode: 6 ms median (both counters start from 0, close enough). Live mode over QUIC: 90–280 ms and growing (PTS values diverge over time).
-
-  **Fix: wall-clock PTS for audio + shared epoch.** Two changes, both on the publish side:
-
-  1. **Wall-clock audio PTS** (`pipeline.rs`, audio encoder loop ~line 1282): After `encoder.pop_packet()`, override `pkt.timestamp` with `start.elapsed()` instead of the Opus encoder's counter-based timestamp. The Opus codec has no internal PTS concept — `opus_encode_float` doesn't take a timestamp — so overriding is safe. Assert at most one packet per tick (the pipeline feeds exactly one 20ms frame per tick).
-
-  2. **Shared epoch** (`publish.rs` or `pipeline.rs`): Both audio and video encoder pipelines must reference the same `Instant` as their epoch, so PTS=0 means the same wall-clock moment. Without this, different thread start times cause 50–200ms constant offset depending on capture startup order. Either (a) pass a shared `Instant` to both pipelines, or (b) restamp video frames in the video encoder pipeline using the same `start` instant as audio.
-
-  **No playout changes needed.** With aligned PTS values, the existing independent-delay model works correctly: video frames gate on `playout_time()` (with jitter buffer), audio plays immediately. Both tracks share the same wall-clock timebase so the playout offset is consistent. This matches the moq-js approach: audio plays freely via the AudioContext sample clock, video gates on a reference-based delay.
-
-  **Design principles (from research):**
-  - Audio is the timing master: never gate, delay, or buffer audio for sync purposes. Audio always plays immediately.
-  - Video adjusts to match audio's timeline. The PlayoutBuffer already skips late frames and holds early ones.
-  - The fix is on the PUBLISH side (align timebases), not the SUBSCRIBE side (no need to gate audio).
-  - moq-js, GStreamer, and mpv all follow this pattern. WebRTC uses RTCP Sender Reports for cross-stream NTP correlation, but that's overkill when both tracks originate from the same process.
-
-  **What NOT to change:**
-  - Do not add an AudioPlayoutBuffer — audio should never be gated or buffered for sync.
-  - Do not change the Opus encoder's internal timestamp generation — override at the pipeline level.
-  - Do not change test sources (TestToneSource/TestPatternSource) — they share a coherent counter-based timebase and run in Reliable mode.
-  - Do not add drift correction here — that is ER7 (separate fix, ~36ms/hour).
+  **Remaining work:** Pass a shared `Instant` to both audio and video encoder pipelines so PTS=0 means the same wall-clock moment.
 
 ### Medium
 
 - [ ] **ER5**: `Rc<Display>` cross-thread drop race in VAAPI decoder — `VaapiGpuFrame` clones `Rc<Display>` on decode thread; if frame dropped on different thread, non-atomic refcount is a data race (UB). Blocked on cros-libva using `Rc<Display>` instead of `Arc<Display>` — would need upstream change or `Arc<Mutex<Rc<Display>>>` wrapper (`vaapi/decoder.rs`)
-- [ ] **ER7**: No playout clock drift correction — PTS-to-wall-clock mapping drifts ~36ms/hour with typical 10ppm oscillator skew; re-anchor masks with stutters (`playout.rs`)
+- [x] **ER7**: No playout clock drift correction — moot: `PlayoutClock` and `PlayoutBuffer` were removed in the av-sync simplification (9c72f6a). Will need to be reconsidered when A/V sync is re-added.
 - [ ] **ER9**: Rendition switches not seamless — old decoder dropped immediately, new decoder waits for keyframe, causing visible glitch (`adaptive.rs`). Fix should be: start new decoder first and switch once first frame of new decoder is ready.
 - [ ] **ER11**: V4L2 no `VIDIOC_S_PARM` for frame rate — intervals enumerated but never set (`v4l2.rs`)
 - [ ] **ER12**: X11 resolution changes not handled — width/height captured once, never updated; will crash or garble output on resolution change (`x11.rs`)
@@ -181,8 +159,8 @@ The crate boundaries are clean and deliberate: `rusty-codecs` handles codec abst
 
 ### Important
 
-- [ ] **ER22**: Audio decode loop tick counter is `usize` — on 32-bit platforms (RPi Zero), `INTERVAL * i` overflows after ~497 days of continuous operation. Use `u64` explicitly (`pipeline.rs:1230`)
-- [ ] **ER23**: `recv_timeout` spin-polls at ~1ms resolution — 16–33 wakeups per frame for a typical 33ms interval. On battery-powered or embedded devices this adds measurable CPU overhead. A condvar-based approach would be more efficient (`playout.rs:461-484`)
+- [x] **ER22**: Audio decode loop tick counter is `usize` — fixed: now `u64` (`pipeline/audio_decode.rs:148`: `for tick_num in 0u64..`)
+- [x] **ER23**: `recv_timeout` spin-polls — moot: `PlayoutBuffer` removed entirely in av-sync simplification (9c72f6a). Video decode now uses PTS-based pacing without a playout buffer.
 - [ ] **ER24**: `LocalBroadcast::run` holds state mutex while calling `start_track` — encoder factory calls can take tens of milliseconds for hardware codecs (VAAPI/VTB device negotiation), blocking all `has_video()`, `has_audio()`, `set_video()` callers. Factory call and thread spawn should happen after releasing the lock (`publish.rs:261-264`)
 - [ ] **ER25**: No timeout on `RemoteBroadcast::new` catalog wait — if the remote peer connects but never sends a catalog, the subscription hangs indefinitely. Doc recommends `tokio::time::timeout` but `RemoteBroadcast::new` doesn't follow its own advice. Add a configurable timeout with a reasonable default (e.g. 10s) (`subscribe.rs:319-323`)
 - [ ] **ER26**: `PublishError` and `SubscribeError` lack `std::error::Error` source chains — `EncoderFailed(anyhow::Error)` and `DecoderFailed(anyhow::Error)` variants wrap inner errors invisible to `source()`. Use `derive_more::Error` or `thiserror` (`publish.rs:54-83`, `subscribe.rs:167-199`)
@@ -194,7 +172,7 @@ The crate boundaries are clean and deliberate: `rusty-codecs` handles codec abst
 - [ ] **ER29**: `CatalogSnapshot` `PartialEq` skips inner catalog (`#[eq(skip)]`) — equality based solely on `seq` number, which could surprise callers comparing snapshots from different broadcasts. Document this (`subscribe.rs:236-238`)
 - [ ] **ER30**: `VideoTrack::from_video_source` hardcodes `fps = 30` — camera sources at 60fps or 15fps get doubled frames or drops. `VideoFormat` lacks a framerate field (`subscribe.rs:816`)
 - [ ] **ER31**: Room actor event channel capacity 16 — in rooms with many simultaneous joins, actor blocks on sends and stops processing gossip. Consider increasing capacity or `try_send` with logged warning (`rooms.rs:89`)
-- [ ] **ER32**: `PlayoutBuffer` `max_frames` hardcoded at 30 — represents only 500ms at 60fps, 2s at 15fps. Should be proportional to framerate (`playout.rs:371`)
+- [x] **ER32**: `PlayoutBuffer` `max_frames` hardcoded at 30 — moot: `PlayoutBuffer` removed entirely in av-sync simplification (9c72f6a)
 - [ ] **ER33**: Missing `#[must_use]` on builder methods — `VideoTarget::max_pixels`, `VideoOptions::target`, `AudioOptions::rendition` return `Self` but callers could accidentally discard the builder
 
 ### Already tracked (confirmed still open)
@@ -211,6 +189,76 @@ The crate boundaries are clean and deliberate: `rusty-codecs` handles codec abst
 - **Tracing**: Structured fields, appropriate log levels, `throttled-tracing` for hot paths, per-pipeline `info_span!` naming. Would be invaluable at 3 AM two years from now.
 - **Resource lifecycle**: `CancellationToken` + `DropGuard` + `AbortOnDropHandle` + `spawn_thread` with `catch_unwind` provides reliable cleanup.
 - **Adaptive bitrate**: Asymmetric timers, bandwidth headroom, probe mechanism with congestion baseline tracking — matches production ABR implementations.
+
+---
+
+## Expert review — ergonomics (2026-03-26)
+
+Full API ergonomics review after building the `irl` CLI tool. Covers iroh-live, moq-media, and the CLI itself. Findings grouped by impact.
+
+### High — subscribe flow
+
+- [ ] **ER1**: `live.subscribe_with_stats()` returns a 3-tuple `(MoqSession, RemoteBroadcast, Receiver<NetworkSignals>)`. Every caller must keep the session alive with `#[allow(dead_code)]` — a footgun. Create a `Subscription` struct that owns session + broadcast + signals. Dropping it closes the session. Subsumes existing E1.
+
+- [ ] **ER2**: Stats/signals wiring is manual outside of `subscribe_with_stats`. The `Call` and `Room` paths both manually call `spawn_stats_recorder` + `spawn_signal_producer` (identical boilerplate). These should merge into one function, or better, auto-wire on `Subscription`/`RemoteBroadcast` when a connection is available.
+
+- [x] **ER3**: `RemoteBroadcast::media::<D>()` requires a turbofish — fixed: non-generic `media()` convenience added that uses `DefaultDecoders` (gated on `#[cfg(any_codec)]`). Generic version available as `media_with_decoders::<D>()` (`subscribe.rs:475-482`).
+
+- [ ] **ER4**: `subscribe_preview_from_consumer` is a free function in `publish.rs` (subscribe code living in the publish module). Move to `subscribe.rs` and add a non-generic convenience.
+
+### High — publish flow
+
+- [ ] **ER5**: `Live::publish()` takes `&LocalBroadcast` but `Room::publish()` takes `BroadcastProducer`. Inconsistent — every room caller does `broadcast.producer()` manually. `Room::publish` should accept `&LocalBroadcast` too.
+
+- [ ] **ER6**: `publish_to_room` in CLI transport.rs uses `std::mem::forget(room)` to keep the room handle alive. `Live` should own joined rooms internally, or provide `Live::publish_to_room(name, producer, ticket)` as a single method.
+
+### High — construction and lifecycle
+
+- [ ] **ER7**: Three different `Live` construction patterns across CLI commands. `Live::from_env()` always enables gossip+router; `setup_live()` does manual endpoint construction; `room.rs` does its own construction with `enable_gossip()`. `LiveBuilder` should expose `from_env()` returning a builder (not a built `Live`) so callers can chain `.no_router()`, `.enable_gossip()`, `.serve(false)` before `.build()`.
+
+- [ ] **ER8**: `PlaybackPolicy` and `SyncMode` are dead weight — `SyncMode` has one variant (`Unmanaged`), and `PlaybackPolicy` wraps `FreshnessPolicy` with nothing else. Collapse to just `FreshnessPolicy` until A/V sync returns.
+
+### Medium — naming and dead API
+
+- [ ] **ER9**: `CaptureStats` is misnamed — it covers encoding too (`encode_ms`, `bitrate_kbps`). Rename to `PublishStats` or `EncodeStats`.
+
+- [ ] **ER10**: `DecodeOpts` vs `DecodeConfig` — near-identical names for internal pipeline plumbing vs user-facing config. Rename `DecodeOpts` to `PipelineContext` or similar.
+
+- [ ] **ER11**: `subscribe_media_track` (singular) returns `MediaTracks` (plural). Rename to `subscribe_media`.
+
+- [ ] **ER12**: `ParticipantId`, `TrackName`, `TrackKind` in iroh-live types.rs appear unused. Remove or mark `#[doc(hidden)]` until needed.
+
+- [ ] **ER13**: `RoomEvent::RemoteConnected` is documented as "reserved, not emitted". Dead variants in public enums force unreachable match arms. Remove until needed.
+
+- [ ] **ER14**: `VideoPublisher::set_enabled()` and `AudioPublisher::set_muted()` are documented no-ops. Remove from public API until implemented.
+
+### Medium — config ergonomics
+
+- [ ] **ER15**: `PlaybackConfig` wraps `DecodeConfig` + `Quality`, but callers always construct nested structs: `PlaybackConfig { decode_config: DecodeConfig { backend, ..Default::default() }, ..Default::default() }`. Flatten or add builder methods.
+
+- [ ] **ER16**: `AdaptiveConfig` has 11 fields, no builder methods. Callers must use struct literal with `..Default::default()`. Add builder methods for commonly-adjusted fields.
+
+- [ ] **ER17**: `VideoOptions` / `AudioOptions` have `pub` fields but no `#[non_exhaustive]`. Adding a field is a silent breaking change.
+
+- [ ] **ER18**: `DecoderBackend` and `StreamFormat` (moq-mux) lack `FromStr`/`ValueEnum`. CLI manually matches strings. Derive these upstream.
+
+### Medium — CLI friction
+
+- [ ] **ER19**: `block_on` inside egui `update()` for room peer subscription (room.rs:181). `RemoteBroadcast::media()` is async but room events arrive synchronously. Room should either emit pre-decoded tracks or provide a sync subscription path.
+
+- [ ] **ER20**: `CaptureArgs` default construction is manual (fragile if fields are added). Should derive `Default` with `audio_preset` defaulting to `"hq"`.
+
+- [ ] **ER21**: `NetworkSignals` receiver is required by `RemoteControls` even for local file preview (creates a dummy channel). Make it `Option`.
+
+### Low — misc
+
+- [ ] **ER22**: Two `VideoCodec` types across sibling modules (`rusty_codecs::codec::VideoCodec` for encoding, `rusty_codecs::config::VideoCodec` for decoder config). Rename to `VideoEncoderCodec`/`VideoDecoderConfig` or similar.
+
+- [ ] **ER23**: `CallTicket` is essentially a `LiveTicket` with broadcast name "call". Consider collapsing.
+
+- [ ] **ER24**: `LagTracker::record()` returns unsigned `Duration` (can't represent "ahead"), while `record_ms()` returns signed `f64`. Asymmetric — standardize on signed for both.
+
+- [ ] **ER25**: Common eframe lifecycle boilerplate (ctrl-c handler, repaint scheduling, shutdown in on_exit) repeats across all GUI commands. Could be a shared helper or trait in `moq-media-egui`.
 
 ---
 
@@ -291,7 +339,7 @@ Doc comments clearly say "Unimplemented" on DR3/DR4, and DR5 logs a `warn!`, so 
 - [x] **DR40**: `CallTicket::serialize` clones self unnecessarily — now constructs LiveTicket directly from borrowed fields (f8d15d2) — `into_live_ticket` takes `self` by value, forcing a clone at line 86. Could construct `LiveTicket` directly from `&self` fields (`call.rs`)
 - [ ] **DR41**: Relay `serve_fingerprint` panics on lock poisoning — `.expect("tls_info lock poisoned")` in a web handler at line 267. In dev mode (only use case for fingerprint endpoint) this is acceptable; a production relay would use real TLS certificates and skip this endpoint (`iroh-live-relay/src/main.rs`)
 - [x] **DR42**: Dead commented-out code in relay main — removed (6ccc328) — old query-param extraction at lines 257-262 should be removed (`iroh-live-relay/src/main.rs`)
-- [ ] **DR43** *(design decision needed — refactoring complex control flow)*: `decode_loop` is 280+ lines — interleaved skip logic, playout buffer interaction, stats, and packet reception. Consider extracting skip detection into a helper (`pipeline.rs:462-781`)
+- [ ] **DR43** *(design decision needed — refactoring complex control flow)*: `decode_loop` was 280+ lines — reduced to ~163 lines after av-sync removal (9c72f6a) which eliminated playout buffer interaction and skip logic. Now in `pipeline/video_decode.rs:152-315`. Still could benefit from extracting helpers but is much more manageable.
 - [ ] **DR44**: `overlay.rs` `show()` and `show_publish()` share ~100 lines of duplicated bottom bar rendering code
 - [ ] **DR45**: `DiscoveredVideoSource` enum and `discover_video_sources()` duplicated across `split.rs`, `call.rs`, and `viewer.rs` (~200 lines total). Extract to `examples/common/`
 - [ ] **DR46**: H.264 SPS patcher module is dead code — `#[allow(dead_code)]` on entire module, `patch_sps_low_latency` commented out at call sites (`codec/h264/sps.rs`)

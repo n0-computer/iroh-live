@@ -4,6 +4,10 @@ Concrete proposals for improving iroh-live/moq-media/rusty-* APIs to reduce
 boilerplate in the CLI and any future applications. No backwards compatibility
 constraints.
 
+See also `REVIEW.md` section "Expert review — ergonomics (2026-03-26)" for the
+full findings list (ER1–ER25). This plan covers implementation details for the
+subset that warranted concrete design proposals.
+
 ## 1. Unified device selection on capturers
 
 **Problem:** The CLI reimplements device selection logic (50 lines in
