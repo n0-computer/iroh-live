@@ -38,6 +38,7 @@ default = [
     "h264", "opus", "capture", "wgpu",
     "vaapi", "videotoolbox", "dmabuf-import", "metal-import",
 ]
+qlog = ["iroh/qlog"]
 
 # Codecs — delegate to moq-media
 h264 = ["moq-media/h264"]

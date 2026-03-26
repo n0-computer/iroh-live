@@ -37,6 +37,12 @@ pub fn run(args: RoomArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
         "irl room",
         eframe::NativeOptions::default(),
         Box::new(|cc| {
+            let egui_ctx = cc.egui_ctx.clone();
+            tokio::runtime::Handle::current().spawn(async move {
+                let _ = tokio::signal::ctrl_c().await;
+                egui_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            });
+
             Ok(Box::new(RoomApp {
                 room,
                 peers: vec![],
@@ -240,8 +246,11 @@ impl eframe::App for RoomApp {
     }
 
     fn on_exit(&mut self) {
+        info!("exit");
         let live = self.live.clone();
-        tokio::runtime::Handle::current().block_on(async move { live.shutdown().await });
+        tokio::runtime::Handle::current().block_on(async move {
+            live.shutdown().await;
+        });
     }
 }
 

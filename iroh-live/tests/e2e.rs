@@ -33,7 +33,7 @@ const TEST_VIDEO_CODEC: VideoCodec = VideoCodec::H264;
 
 /// Creates an endpoint bound to localhost with a random secret key.
 async fn endpoint() -> Endpoint {
-    Endpoint::empty_builder()
+    Endpoint::builder(iroh::endpoint::presets::N0)
         .bind()
         .await
         .expect("failed to bind endpoint")

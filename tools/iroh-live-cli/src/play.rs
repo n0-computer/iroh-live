@@ -3,7 +3,6 @@
 use std::time::Duration;
 
 use eframe::egui;
-use iroh::Endpoint;
 use iroh_live::{
     Live,
     media::{
@@ -19,6 +18,7 @@ use tracing::info;
 
 use crate::{
     args::PlayArgs,
+    transport::setup_live,
     ui::{MouseHide, RemoteControls},
 };
 
@@ -28,12 +28,11 @@ pub fn run(args: PlayArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
     let backend = args.decoder_backend()?;
     let no_video = args.no_video;
 
-    let (endpoint, session, track, audio_ctx, signals, broadcast_name) = rt.block_on(async {
+    let (live, session, track, audio_ctx, signals, broadcast_name) = rt.block_on(async {
         let audio_ctx = AudioBackend::default();
 
         println!("connecting to {ticket} ...");
-        let endpoint = Endpoint::bind(iroh::endpoint::presets::N0).await?;
-        let live = Live::new(endpoint.clone());
+        let live = setup_live(false).await?;
         let playback_config = PlaybackConfig {
             decode_config: DecodeConfig {
                 backend,
@@ -52,7 +51,7 @@ pub fn run(args: PlayArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
         info!("media tracks subscribed");
 
         n0_error::Ok((
-            endpoint,
+            live,
             session,
             track,
             audio_ctx,
@@ -68,18 +67,18 @@ pub fn run(args: PlayArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
             let _broadcast = track.broadcast;
             tokio::signal::ctrl_c().await?;
             session.close(0, b"bye");
-            endpoint.close().await;
+            live.shutdown().await;
             n0_error::Ok(())
         })
     } else {
         // GUI: eframe runs on the main thread, tokio workers stay alive via rt.enter().
         let _guard = rt.enter();
-        run_egui(endpoint, session, track, audio_ctx, signals, broadcast_name)
+        run_egui(live, session, track, audio_ctx, signals, broadcast_name)
     }
 }
 
 fn run_egui(
-    endpoint: Endpoint,
+    live: Live,
     session: MoqSession,
     track: iroh_live::media::subscribe::MediaTracks,
     audio_ctx: AudioBackend,
@@ -118,7 +117,7 @@ fn run_egui(
             Ok(Box::new(PlayApp {
                 remote,
                 session,
-                endpoint,
+                live,
                 mouse: MouseHide::default(),
                 broadcast_name,
             }))
@@ -130,7 +129,7 @@ fn run_egui(
 struct PlayApp {
     remote: RemoteControls,
     session: MoqSession,
-    endpoint: Endpoint,
+    live: Live,
     mouse: MouseHide,
     broadcast_name: String,
 }
@@ -190,9 +189,9 @@ impl eframe::App for PlayApp {
         info!("exit");
         self.remote.broadcast.shutdown();
         self.session.close(0, b"bye");
-        let endpoint = self.endpoint.clone();
+        let live = self.live.clone();
         tokio::runtime::Handle::current().block_on(async move {
-            endpoint.close().await;
+            live.shutdown().await;
         });
     }
 }
