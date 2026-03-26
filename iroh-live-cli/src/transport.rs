@@ -60,7 +60,8 @@ pub async fn publish_producer(
 ) -> anyhow::Result<Option<Room>> {
     let serve = !args.no_serve;
     if serve {
-        live.publish_producer(&args.name, producer.clone()).await?;
+        live.publish_broadcast_producer(&args.name, producer.clone())
+            .await?;
         print_ticket(live, &args.name, args.no_qr);
     }
 
