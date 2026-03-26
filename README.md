@@ -1,18 +1,19 @@
 # iroh-live
 
-> **Early tech preview.** iroh-live is experimental and under active development.
-> Key limitations: no Windows support, on-device testing limited to Linux (Intel)
-> and Android, no A/V sync (removed, will return), no direct browser-to-browser
-> (relay required), and codec selection is H.264, Opus, and AV1 only.
+> **Early tech preview.** We are early in development and several parts remain
+> unfinished. Among the most prominent gaps right now: audio and video play
+> without synchronization, Windows capture is missing, on-device testing has
+> been limited to a single Linux machine and one Android phone, room support
+> is functional but lightly tested, and the relay has no authentication yet.
 
-iroh-live is a Rust library and CLI for real-time audio and video over
-[iroh](https://github.com/n0-computer/iroh) (QUIC). It handles the full
-pipeline from camera capture through encoding, transport, decoding, and
-rendering. Connections are peer-to-peer by default, and an optional relay server
-bridges to browsers via WebTransport. The transport layer uses
-[Media over QUIC (MoQ)](https://moq.dev/), where each video rendition and audio
-track travels as an independent QUIC stream, so a dropped video packet never
-blocks audio delivery.
+Real-time audio and video over [iroh](https://github.com/n0-computer/iroh)
+(QUIC), written in Rust. iroh-live handles the full pipeline from camera
+capture through encoding, transport, decoding, and rendering. Connections are
+peer-to-peer by default, and an optional relay server bridges to browsers via
+WebTransport. The transport layer uses
+[Media over QUIC (MoQ)](https://moq.dev/), where each video rendition and
+audio track travels as an independent QUIC stream, so a dropped video packet
+never blocks audio delivery.
 
 ## Quick start
 
@@ -21,7 +22,7 @@ Install the `irl` CLI and publish your camera and microphone:
 ```sh
 cargo install --path iroh-live-cli --all-features
 
-# Terminal 1: publish camera + mic, prints a ticket and QR code
+# Terminal 1: publish camera and mic, prints a ticket and QR code
 irl publish
 
 # Terminal 2: watch the stream
@@ -80,14 +81,16 @@ let tracks = sub.media(&audio, Default::default()).await?;
 
 if let Some(mut video) = tracks.video {
     while let Some(frame) = video.next_frame().await {
+        // render the frame
         println!("frame {}x{}", frame.dimensions[0], frame.dimensions[1]);
     }
 }
 ```
 
-Both snippets are extracted from compilable examples at
-[`examples/readme_publish.rs`](iroh-live/examples/readme_publish.rs) and
-[`examples/readme_subscribe.rs`](iroh-live/examples/readme_subscribe.rs).
+Both snippets are extracted from a compilable example at
+[`examples/demo.rs`](iroh-live/examples/demo.rs).
+
+Details: [docs/guide/desktop.md](docs/guide/desktop.md)
 
 ## Platform support
 
@@ -96,25 +99,24 @@ platform Rust targets. Hardware acceleration and capture depend on the OS:
 
 | Platform | Codecs | Capture | GPU render | Status |
 |----------|--------|---------|------------|--------|
-| Linux (Intel/AMD) | Software and VAAPI HW | PipeWire, V4L2, X11 | Vulkan and DMA-BUF zero-copy | Tested |
-| macOS | Software and VideoToolbox | ScreenCaptureKit, AVFoundation | Metal via wgpu | Compiles, untested |
-| Android | Software and MediaCodec HW | CameraX via JNI | EGL and HardwareBuffer zero-copy | Tested |
-| Raspberry Pi | Software and V4L2 HW | V4L2 camera | Vulkan (RPi 5) | Partial |
-| Windows | Software only | Not yet | DX12 via wgpu | Minimal |
+| Linux (Intel/AMD) | Software and VAAPI HW | PipeWire, V4L2, X11 | Vulkan and DMA-BUF zero-copy | Mostly working |
+| macOS | Software and VideoToolbox | ScreenCaptureKit, AVFoundation | Metal via wgpu | Mostly working |
+| Android | Software and MediaCodec HW | CameraX via JNI | EGL and HardwareBuffer zero-copy | Mostly working |
+| Raspberry Pi | Software and V4L2 HW | V4L2 camera | Vulkan (RPi 5) | Mostly working |
+| Windows | Software only | Not yet implemented | DX12 via wgpu | Missing |
 | iOS | Software and VideoToolbox | AVFoundation | Metal via wgpu | Compiles, untested |
 
-See [plans/platforms.md](plans/platforms.md) for the full matrix with backend
-details and hardware-specific notes.
+Details: [docs/platforms.md](docs/platforms.md)
 
 ## CLI tool (`irl`)
 
-The `irl` binary lives in `iroh-live-cli`. Commands:
+The `irl` binary is in the `iroh-live-cli` crate. Commands:
 
 | Command | Description |
 |---------|-------------|
 | `irl devices` | List cameras, screens, audio devices, and codecs |
-| `irl publish` | Broadcast capture or file (subcommands: `capture`, `file`) |
-| `irl publish file <FILE>` | Publish a media file (MP4, MKV, etc.) |
+| `irl publish` | Broadcast camera and microphone (default) |
+| `irl publish file <FILE>` | Stream a media file |
 | `irl play <TICKET>` | Subscribe and render a remote broadcast |
 | `irl call [TICKET]` | 1:1 bidirectional video call |
 | `irl room [TICKET]` | Multi-party room with participant grid |
@@ -123,18 +125,17 @@ Common flags for `publish`: `--video cam`, `--video screen`, `--test-source`,
 `--codec av1`, `--video-presets 360p,720p`, `--relay <endpoint>`,
 `--room <ticket>`.
 
-See [plans/cli.md](plans/cli.md) for the full command reference and remaining
-work.
+Details: [docs/cli.md](docs/cli.md)
 
 ## Demos
 
-These demos are experimental and incomplete. They use egui for rendering unless
-noted otherwise.
+These demos are experimental and incomplete previews of what iroh-live can do.
 
-- **`demos/android/`** — Kotlin and Rust Android app with bidirectional video calling ([README](demos/android/README.md)).
+- **`demos/android/`** — Kotlin and Rust Android app with bidirectional video calling, rendered with EGL ([README](demos/android/README.md)).
 - **`demos/pi-zero/`** — Raspberry Pi Zero 2 W camera stream with e-paper QR code ([README](demos/pi-zero/README.md)).
-- **`demos/opengl/`** — minimal GLES2 viewer using glutin and winit, no egui or wgpu.
-- **`iroh-live/examples/`** — Rust examples including a subscribe viewer (`readme_subscribe.rs`) and a local split-screen encode/transport/decode loop (`split.rs`).
+- **`demos/opengl/`** — Minimal GLES2 viewer using glutin and winit, no egui or wgpu.
+- **`moq-media/examples/viewer.rs`** — Standalone egui video viewer.
+- **`iroh-live/examples/split.rs`** — Local split-screen with full encode, transport, and decode loop on localhost, rendered with egui.
 
 ## Workspace crates
 
@@ -148,7 +149,8 @@ noted otherwise.
 | [`moq-media-egui`](moq-media-egui) | egui integration for video rendering (wgpu texture upload, DMA-BUF import). |
 | [`moq-media-dioxus`](moq-media-dioxus) | dioxus-native integration for video rendering. |
 | [`moq-media-android`](moq-media-android) | Android camera, EGL rendering, JNI bridge. |
-| [`iroh-live-relay`](iroh-live-relay) | Relay server for browser WebTransport bridging. |
+| [`iroh-live-relay`](iroh-live-relay) | Relay server for browser WebTransport bridging (no auth yet). |
+| [`iroh-live-cli`](iroh-live-cli) | CLI tool for publishing, playing, calls, and rooms. |
 
 ## Building
 
@@ -176,21 +178,37 @@ Then build with all features:
 cargo build --workspace --all-features
 ```
 
-Key feature flags: `vaapi` (Linux HW codecs), `v4l2` (V4L2 HW codecs),
-`videotoolbox` (macOS HW codecs), `wgpu` (GPU rendering), `dmabuf-import`
-(Linux zero-copy decode-to-render), `av1` (AV1 codec, on by default).
+### Feature flags
+
+The workspace uses many feature flags for codecs, hardware backends, and capture
+sources. Most are enabled by default in the respective crates. The table below
+shows the flags relevant to `iroh-live` (which delegates to `moq-media` and
+`rusty-codecs`):
+
+| Flag | What it enables | Default |
+|------|-----------------|---------|
+| `h264` | H.264 codec (openh264) | Yes |
+| `opus` | Opus audio codec | Yes |
+| `av1` | AV1 codec (rav1e encoder, rav1d decoder) | No |
+| `capture` | Camera and screen capture | Yes |
+| `vaapi` | VAAPI hardware encode and decode (Linux) | Yes |
+| `videotoolbox` | VideoToolbox hardware codecs (macOS) | Yes |
+| `wgpu` | GPU rendering via wgpu | Yes |
+| `dmabuf-import` | Zero-copy VAAPI decode to Vulkan render (Linux) | Yes |
+| `metal-import` | Zero-copy VideoToolbox decode to Metal render (macOS) | Yes |
+| `v4l2` | V4L2 hardware codecs (Raspberry Pi, embedded Linux) | No |
 
 ## Contributing
 
-Open items and known issues are tracked in the issue tracker and in
+Open items and known issues are tracked in the
+[issue tracker](https://github.com/n0-computer/iroh-live/issues) and in
 [REVIEW.md](REVIEW.md). The [plans/](plans/PLANS.md) directory contains
 explorations of potential next steps rather than a fixed roadmap. Architecture
 documentation is in [docs/](docs/index.md).
 
 ```sh
-# Lint
-cargo clippy --locked --workspace --all-targets --all-features
-cargo fmt --check
+# Full check (all feature combinations, clippy, fmt)
+cargo make check-all
 
 # Test
 cargo test --workspace --all-features

@@ -78,10 +78,10 @@ function parseStartupOutput(
     const timeout = setTimeout(() => {
       reject(
         new Error(
-          `Relay did not start within 60s. Output:\n${output}`
+          `Relay did not start within 10s. Output:\n${output}`
         )
       );
-    }, 60_000);
+    }, 10_000);
 
     const checkDone = () => {
       if (httpPort !== null && irohAddr !== null) {
