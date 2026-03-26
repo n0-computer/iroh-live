@@ -1,6 +1,9 @@
 import { test, expect } from "@playwright/test";
 import { spawn } from "child_process";
+import { findExample } from "../fixtures/bin";
 import { startRelay, stopRelay, RelayInfo } from "../fixtures/relay";
+
+const subscribeBin = findExample("subscribe_test");
 
 let relay: RelayInfo;
 
@@ -32,12 +35,7 @@ test("Browser publish → CLI subscribe", async ({ page }) => {
   await page.waitForTimeout(5000);
 
   // Subscribe from Rust side: connect to relay, receive 3 frames, exit 0
-  const subscriber = spawn("cargo", [
-    "run",
-    "--locked",
-    "--example",
-    "subscribe_test",
-    "--",
+  const subscriber = spawn(subscribeBin, [
     "--relay",
     relay.irohAddr,
     "--name",

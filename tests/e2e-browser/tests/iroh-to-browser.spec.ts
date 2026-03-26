@@ -1,7 +1,10 @@
 import { test, expect } from "@playwright/test";
 import { spawn, ChildProcess } from "child_process";
 import { PNG } from "pngjs";
+import { findBinary } from "../fixtures/bin";
 import { startRelay, stopRelay, RelayInfo } from "../fixtures/relay";
+
+const irlBin = findBinary("irl");
 
 let relay: RelayInfo;
 
@@ -22,12 +25,7 @@ test("CLI publish → browser watch", async ({ page }) => {
   // Force software H.264: workspace feature unification can activate
   // hardware codecs (V4L2, VAAPI) whose output the browser JS decoder
   // may not handle.
-  const publisher = spawn("cargo", [
-    "run",
-    "--locked",
-    "-p", "iroh-live-cli",
-    "--bin", "irl",
-    "--",
+  const publisher = spawn(irlBin, [
     "publish",
     "--name", "hello",
     "--relay", relay.irohAddr,
@@ -74,7 +72,9 @@ test("CLI publish → browser watch", async ({ page }) => {
   // (0.5s at 30fps). We capture screenshots every 100ms for 4s and check
   // that the center pixel alternates between yellow and non-yellow.
   const screenshots: Buffer[] = [];
-  for (let i = 0; i < 40; i++) {
+  // Capture for 6s at 100ms intervals. The test pattern blinks every 500ms,
+  // so 60 samples gives ~12 full blink cycles even with codec latency.
+  for (let i = 0; i < 60; i++) {
     screenshots.push(await canvas.screenshot());
     await page.waitForTimeout(100);
   }

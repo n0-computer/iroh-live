@@ -2,9 +2,9 @@
 
 > **Early tech preview.** We are early in development and several parts remain
 > unfinished. Among the most prominent gaps right now: audio and video play
-> without synchronization, Windows capture is missing, on-device testing has
-> been limited to a single Linux machine and one Android phone, room support
-> is functional but lightly tested, and the relay has no authentication yet.
+> without synchronization, Windows support is mostly missing, on-device
+> testing has been very limited, the room feature is functional but lightly
+> tested, and the relay has no authentication yet.
 
 Real-time audio and video over [iroh](https://github.com/n0-computer/iroh)
 (QUIC), written in Rust. iroh-live handles the full pipeline from camera
@@ -110,7 +110,9 @@ Details: [docs/platforms.md](docs/platforms.md)
 
 ## CLI tool (`irl`)
 
-The `irl` binary is in the `iroh-live-cli` crate. Commands:
+The `irl` binary is in the `iroh-live-cli` crate. It covers the full
+workflow from device discovery through publishing, playback, calls, rooms,
+and running a relay server.
 
 | Command | Description |
 |---------|-------------|
@@ -120,6 +122,7 @@ The `irl` binary is in the `iroh-live-cli` crate. Commands:
 | `irl play <TICKET>` | Subscribe and render a remote broadcast |
 | `irl call [TICKET]` | 1:1 bidirectional video call |
 | `irl room [TICKET]` | Multi-party room with participant grid |
+| `irl relay` | Start a local relay server for browser access |
 
 Common flags for `publish`: `--video cam`, `--video screen`, `--test-source`,
 `--codec av1`, `--video-presets 360p,720p`, `--relay <endpoint>`,
