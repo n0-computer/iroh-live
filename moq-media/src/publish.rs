@@ -86,15 +86,32 @@ impl From<anyhow::Error> for PublishError {
 type MakeAudioEncoder = Box<dyn Fn() -> Result<Box<dyn AudioEncoder>> + Send + 'static>;
 type MakeVideoEncoder = Box<dyn Fn() -> Result<Box<dyn VideoEncoder>> + Send + 'static>;
 
-/// Active video pipeline — either encoding raw frames or passing through
-/// pre-encoded packets. The inner value is held for RAII: dropping the
-/// pipeline cancels the encoder/passthrough thread.
+/// Bundles an active video encoder pipeline with its track producer.
+///
+/// Aborts the track producer on drop so moq-lite marks the channel closed
+/// synchronously. Without this, the spawned unused-watcher task holds the
+/// last producer clone and `subscribe_track` can hand out a stale consumer.
 #[derive(derive_more::Debug)]
+struct ActiveVideoPipeline {
+    #[debug(skip)]
+    _pipeline: VideoPipeline,
+    #[debug(skip)]
+    track: TrackProducer,
+}
+
+impl Drop for ActiveVideoPipeline {
+    fn drop(&mut self) {
+        self.track.abort(moq_lite::Error::Cancel).ok();
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "variant payloads held for RAII drop, no field name to _ prefix"
+)]
 enum VideoPipeline {
-    Encoder(#[allow(dead_code, reason = "held for RAII cleanup on drop")] VideoEncoderPipeline),
-    PreEncoded(
-        #[allow(dead_code, reason = "held for RAII cleanup on drop")] PreEncodedVideoPipeline,
-    ),
+    Encoder(VideoEncoderPipeline),
+    PreEncoded(PreEncodedVideoPipeline),
 }
 
 type MakePreEncodedSource =
@@ -551,7 +568,7 @@ struct State {
     local_video_token: CancellationToken,
     video: Option<VideoInput>,
     audio: Option<AudioRenditions>,
-    active_video: HashMap<String, VideoPipeline>,
+    active_video: HashMap<String, ActiveVideoPipeline>,
     active_audio: HashMap<String, AudioEncoderPipeline>,
     stats: Option<crate::stats::EncodeStats>,
 }
@@ -587,7 +604,7 @@ impl State {
     fn remove_video(&mut self) {
         self.local_video_token.cancel();
         self.local_video_token = CancellationToken::new();
-        self.active_video.clear();
+        self.active_video.clear(); // Drop aborts each track producer
         self.video = None;
     }
 
@@ -597,18 +614,29 @@ impl State {
         // Try video first.
         match self.video.as_mut() {
             Some(VideoInput::Renditions(renditions)) if renditions.contains_rendition(&name) => {
-                let pipeline = renditions.start_encoder(&name, track, self.stats.clone())?;
-                self.active_video
-                    .insert(name, VideoPipeline::Encoder(pipeline));
+                let pipeline =
+                    renditions.start_encoder(&name, track.clone(), self.stats.clone())?;
+                self.active_video.insert(
+                    name,
+                    ActiveVideoPipeline {
+                        _pipeline: VideoPipeline::Encoder(pipeline),
+                        track,
+                    },
+                );
                 return Ok(());
             }
             Some(VideoInput::PreEncoded(tracks)) => {
                 if let Some(entry) = tracks.iter().find(|t| t.name == name) {
                     let source = (entry.factory)()?;
-                    let sink = MoqPacketSink::new(track);
+                    let sink = MoqPacketSink::new(track.clone());
                     let pipeline = PreEncodedVideoPipeline::new(source, sink);
-                    self.active_video
-                        .insert(name, VideoPipeline::PreEncoded(pipeline));
+                    self.active_video.insert(
+                        name,
+                        ActiveVideoPipeline {
+                            _pipeline: VideoPipeline::PreEncoded(pipeline),
+                            track,
+                        },
+                    );
                     return Ok(());
                 }
             }
