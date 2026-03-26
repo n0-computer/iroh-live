@@ -23,6 +23,7 @@ export async function startRelay(): Promise<RelayInfo> {
     "cargo",
     [
       "run",
+      "--locked",
       "-p",
       "iroh-live-relay",
       "--",
@@ -77,10 +78,10 @@ function parseStartupOutput(
     const timeout = setTimeout(() => {
       reject(
         new Error(
-          `Relay did not start within 30s. Output:\n${output}`
+          `Relay did not start within 60s. Output:\n${output}`
         )
       );
-    }, 30_000);
+    }, 60_000);
 
     const checkDone = () => {
       if (httpPort !== null && irohAddr !== null) {

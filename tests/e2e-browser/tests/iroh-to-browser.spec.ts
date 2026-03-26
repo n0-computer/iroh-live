@@ -24,6 +24,7 @@ test("CLI publish → browser watch", async ({ page }) => {
   // may not handle.
   const publisher = spawn("cargo", [
     "run",
+    "--locked",
     "-p", "iroh-live-cli",
     "--bin", "irl",
     "--",

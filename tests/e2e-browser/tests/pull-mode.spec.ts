@@ -33,6 +33,7 @@ test("pull mode: standalone publisher → relay → browser watch", async ({
   // the browser's JS decoder.
   const publisher = spawn("cargo", [
     "run",
+    "--locked",
     "-p", "iroh-live-cli",
     "--bin", "irl",
     "--",

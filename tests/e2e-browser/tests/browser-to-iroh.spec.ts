@@ -34,6 +34,7 @@ test("Browser publish → CLI subscribe", async ({ page }) => {
   // Subscribe from Rust side: connect to relay, receive 3 frames, exit 0
   const subscriber = spawn("cargo", [
     "run",
+    "--locked",
     "--example",
     "subscribe_test",
     "--",
