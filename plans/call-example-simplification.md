@@ -1,6 +1,6 @@
 # Example simplification
 
-The CLI consolidation (`tools/iroh-live-cli`) addressed the main problem:
+The CLI consolidation (`iroh-live-cli`) addressed the main problem:
 examples were 800-1100 lines each with duplicated infrastructure. The CLI
 extracted shared logic into `transport.rs`, `source.rs`, `ui.rs`, and `import.rs`.
 

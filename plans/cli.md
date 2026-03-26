@@ -1,6 +1,6 @@
 # CLI Tool — `irl`
 
-**Crate:** `tools/iroh-live-cli` | **Binary:** `irl`
+**Crate:** `iroh-live-cli` | **Binary:** `irl`
 
 ## Status: Implemented
 
