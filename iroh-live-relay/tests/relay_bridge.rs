@@ -176,7 +176,9 @@ async fn iroh_publish_iroh_subscribe() {
         .bind()
         .await
         .expect("bind pub");
-    let publisher = iroh_live::Live::builder(pub_ep.clone()).spawn_with_router();
+    let publisher = iroh_live::Live::builder(pub_ep.clone())
+        .with_router()
+        .spawn();
     let broadcast = moq_media::publish::LocalBroadcast::new();
     tokio::task::yield_now().await;
     let source = moq_media::test_util::TestVideoSource::new(320, 240).with_fps(30.0);
@@ -206,14 +208,13 @@ async fn iroh_publish_iroh_subscribe() {
         .await
         .expect("bind sub");
     let subscriber = iroh_live::Live::builder(sub_ep.clone()).spawn();
-    let (_session, remote) =
-        tokio::time::timeout(TIMEOUT, subscriber.subscribe(relay_id, "relay-test"))
-            .await
-            .expect("timeout")
-            .expect("subscribe");
+    let sub = tokio::time::timeout(TIMEOUT, subscriber.subscribe(relay_id, "relay-test"))
+        .await
+        .expect("timeout")
+        .expect("subscribe");
 
-    assert!(remote.has_video());
-    let mut video = remote.video().expect("video track");
+    assert!(sub.broadcast().has_video());
+    let mut video = sub.broadcast().video().expect("video track");
     let frame = tokio::time::timeout(Duration::from_secs(10), video.next_frame())
         .await
         .expect("timeout")
@@ -221,8 +222,7 @@ async fn iroh_publish_iroh_subscribe() {
     assert!(frame.width() > 0 && frame.height() > 0);
 
     drop(video);
-    drop(remote);
-    drop(_session);
+    drop(sub);
     drop(_pub_session);
     drop(broadcast);
     publisher.shutdown().await;
@@ -301,14 +301,15 @@ async fn noq_publish_iroh_subscribe() {
         .await;
 
         match result {
-            Ok(Ok((_session, remote))) => {
+            Ok(Ok(sub)) => {
                 tracing::info!(
                     attempt,
-                    has_video = remote.has_video(),
-                    has_audio = remote.has_audio(),
+                    has_video = sub.broadcast().has_video(),
+                    has_audio = sub.broadcast().has_audio(),
                     "subscribed to browser-stream via iroh"
                 );
                 // Success — clean up and return.
+                drop(sub);
                 drop(_pub_session);
                 sub_ep.close().await;
                 relay.server_handle.abort();
@@ -351,7 +352,9 @@ async fn pull_remote_broadcast_via_ticket() {
         .bind()
         .await
         .expect("bind pub");
-    let publisher = iroh_live::Live::builder(pub_ep.clone()).spawn_with_router();
+    let publisher = iroh_live::Live::builder(pub_ep.clone())
+        .with_router()
+        .spawn();
     let broadcast = moq_media::publish::LocalBroadcast::new();
     tokio::task::yield_now().await;
     let source = moq_media::test_util::TestVideoSource::new(320, 240).with_fps(30.0);
@@ -472,7 +475,9 @@ async fn iroh_publish_noq_subscribe() {
         .bind()
         .await
         .expect("bind pub");
-    let publisher = iroh_live::Live::builder(pub_ep.clone()).spawn_with_router();
+    let publisher = iroh_live::Live::builder(pub_ep.clone())
+        .with_router()
+        .spawn();
     let broadcast = moq_media::publish::LocalBroadcast::new();
     tokio::task::yield_now().await;
     let source = moq_media::test_util::TestVideoSource::new(320, 240).with_fps(30.0);

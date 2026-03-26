@@ -510,9 +510,7 @@ impl SubscribeView {
         audio_ctx: &AudioBackend,
     ) -> Result<Self> {
         let live = Live::new(endpoint);
-        let sub = live
-            .subscribe_with_stats(publisher_addr, BROADCAST_NAME)
-            .await?;
+        let sub = live.subscribe(publisher_addr, BROADCAST_NAME).await?;
         info!("subscriber connected");
 
         let playback_config = PlaybackConfig::default();

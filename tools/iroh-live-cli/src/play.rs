@@ -5,10 +5,7 @@ use std::time::Duration;
 use eframe::egui;
 use iroh_live::{
     Live, Subscription,
-    media::{
-        AudioBackend,
-        format::{DecodeConfig, PlaybackConfig},
-    },
+    media::{AudioBackend, format::PlaybackConfig},
 };
 use moq_media_egui::{create_egui_wgpu_config, overlay::StatCategory};
 use n0_error::anyerr;
@@ -32,15 +29,12 @@ pub fn run(args: PlayArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
         println!("connecting to {ticket} ...");
         let live = setup_live(false).await?;
         let playback_config = PlaybackConfig {
-            decode_config: DecodeConfig {
-                backend,
-                ..Default::default()
-            },
+            backend,
             ..Default::default()
         };
 
         let sub = live
-            .subscribe_with_stats(ticket.endpoint, &ticket.broadcast_name)
+            .subscribe(ticket.endpoint, &ticket.broadcast_name)
             .await?;
         info!("session established");
         let track = sub.broadcast().media(&audio_ctx, playback_config).await?;
@@ -85,7 +79,7 @@ fn run_egui(
         Box::new(move |cc| {
             crate::ui::spawn_ctrl_c_handler(&cc.egui_ctx);
 
-            let signals = sub.signals().clone();
+            let signals = Some(sub.signals().clone());
             let remote = RemoteControls::new(
                 track.broadcast,
                 track.video,

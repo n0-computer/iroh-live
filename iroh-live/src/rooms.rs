@@ -204,8 +204,7 @@ struct PeerState {
     broadcasts: Vec<String>,
 }
 
-type ConnectingFutures =
-    FuturesUnordered<BoxFuture<(BroadcastId, Result<(MoqSession, RemoteBroadcast)>)>>;
+type ConnectingFutures = FuturesUnordered<BoxFuture<(BroadcastId, Result<crate::Subscription>)>>;
 type KvEntry = (EndpointId, Bytes, SignedValue);
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, derive_more::Display)]
@@ -290,7 +289,8 @@ impl Actor {
                 }
                 Some((id, res)) = self.connecting.next(), if !self.connecting.is_empty() => {
                     match res {
-                        Ok((session, broadcast)) => {
+                        Ok(sub) => {
+                            let (session, broadcast, _signals) = sub.into_parts();
                             let closed_fut = broadcast.closed();
                             if self.event_tx.send(RoomEvent::BroadcastSubscribed { session: Box::new(session), broadcast: Box::new(broadcast) }).await.is_err() {
                                 tracing::debug!("room event receiver dropped, stopping actor");

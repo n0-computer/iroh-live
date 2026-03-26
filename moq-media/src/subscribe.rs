@@ -1036,7 +1036,7 @@ impl MediaTracks {
             .ok();
         let video = track_name.and_then(|name| {
             broadcast
-                .video_rendition::<D::Video>(&playback_config.decode_config, &name)
+                .video_rendition::<D::Video>(&playback_config.decode_config(), &name)
                 .inspect_err(|err| tracing::warn!("no video track: {err}"))
                 .ok()
         });

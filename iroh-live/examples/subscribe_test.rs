@@ -13,14 +13,14 @@ async fn main() -> anyhow::Result<()> {
         .bind()
         .await?;
 
-    let live = iroh_live::Live::builder(endpoint).spawn_with_router();
+    let live = iroh_live::Live::builder(endpoint).with_router().spawn();
 
     let id: iroh::EndpointId = cli.relay.parse().map_err(|e| anyhow::anyhow!("{e}"))?;
 
     tracing::info!(%cli.relay, %cli.name, frames = cli.frames, "subscribing");
 
     // Retry subscribe — the publisher may not have announced the catalog yet.
-    let (_session, broadcast) = {
+    let _sub = {
         let mut last_err = String::new();
         let mut result = None;
         for attempt in 0..5 {
@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     tracing::info!("subscribed, waiting for video");
-    let mut track = broadcast.video_ready().await?;
+    let mut track = _sub.broadcast().video_ready().await?;
 
     let mut received = 0u32;
     while received < cli.frames {

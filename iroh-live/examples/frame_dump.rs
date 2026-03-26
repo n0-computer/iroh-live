@@ -105,16 +105,16 @@ async fn cmd_watch(opts: WatchOpts) -> anyhow::Result<()> {
     let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
         .bind()
         .await?;
-    let live = iroh_live::Live::builder(endpoint).spawn_with_router();
+    let live = iroh_live::Live::builder(endpoint).with_router().spawn();
 
     println!("connecting to {} ...", opts.ticket);
 
-    let (_session, broadcast) = live
+    let _sub = live
         .subscribe(opts.ticket.endpoint, &opts.ticket.broadcast_name)
         .await?;
 
     println!("subscribed, waiting for video track");
-    let mut track = broadcast.video_ready().await?;
+    let mut track = _sub.broadcast().video_ready().await?;
 
     let mut received = 0u32;
     let start = Instant::now();
@@ -191,7 +191,7 @@ async fn cmd_publish(opts: PublishOpts) -> anyhow::Result<()> {
     let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
         .bind()
         .await?;
-    let live = iroh_live::Live::builder(endpoint).spawn_with_router();
+    let live = iroh_live::Live::builder(endpoint).with_router().spawn();
 
     let broadcast = LocalBroadcast::new();
 

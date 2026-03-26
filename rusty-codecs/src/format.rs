@@ -915,6 +915,9 @@ pub enum DecoderBackend {
 }
 
 /// Configuration passed to video decoders at construction time.
+///
+/// Pipeline-internal type. Most callers should use [`PlaybackConfig`] instead,
+/// which includes the same fields plus quality selection.
 #[derive(Clone, Debug, Default)]
 pub struct DecodeConfig {
     /// Desired output pixel format.
@@ -923,13 +926,34 @@ pub struct DecodeConfig {
     pub backend: DecoderBackend,
 }
 
+impl From<&PlaybackConfig> for DecodeConfig {
+    fn from(config: &PlaybackConfig) -> Self {
+        Self {
+            pixel_format: config.pixel_format,
+            backend: config.backend,
+        }
+    }
+}
+
 /// Combined decoding and quality settings for media playback.
+///
+/// Provides a flat API over decoder backend, pixel format, and quality
+/// selection. Pipeline internals convert to [`DecodeConfig`] where needed.
 #[derive(Clone, Debug, Default)]
 pub struct PlaybackConfig {
-    /// Decoder configuration (backend, pixel format).
-    pub decode_config: DecodeConfig,
-    /// Quality preference for rendering.
+    /// Decoder backend selection strategy.
+    pub backend: DecoderBackend,
+    /// Desired output pixel format.
+    pub pixel_format: PixelFormat,
+    /// Quality preference for rendering and rendition selection.
     pub quality: Quality,
+}
+
+impl PlaybackConfig {
+    /// Returns the internal [`DecodeConfig`] derived from this config.
+    pub fn decode_config(&self) -> DecodeConfig {
+        DecodeConfig::from(self)
+    }
 }
 
 /// H.264 NAL unit framing format.

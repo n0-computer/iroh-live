@@ -446,7 +446,7 @@ pub struct RemoteControls {
     pub overlay: DebugOverlay,
     audio_ctx: AudioBackend,
     #[allow(dead_code, reason = "reserved for AdaptiveVideoTrack wiring")]
-    signals: tokio::sync::watch::Receiver<NetworkSignals>,
+    signals: Option<tokio::sync::watch::Receiver<NetworkSignals>>,
 
     // Control state
     pub decoder_backend: DecoderBackend,
@@ -464,7 +464,7 @@ impl RemoteControls {
         video: Option<VideoTrack>,
         audio: Option<AudioTrack>,
         audio_ctx: AudioBackend,
-        signals: tokio::sync::watch::Receiver<NetworkSignals>,
+        signals: Option<tokio::sync::watch::Receiver<NetworkSignals>>,
         ctx: &egui::Context,
         view_id: &str,
         categories: &[StatCategory],

@@ -273,7 +273,7 @@ impl CallApp {
 
         // Stats recording and signal production are auto-wired by Call::setup,
         // so we just clone the signals receiver for the UI controls.
-        let signals = result.call.signals().clone();
+        let signals = Some(result.call.signals().clone());
 
         let remote = RemoteControls::new(
             result.remote,
@@ -439,7 +439,7 @@ pub fn run(args: CallArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
         .block_on(async {
             let audio_ctx = AudioBackend::default();
 
-            let live = Live::from_env().await?;
+            let live = Live::from_env().await?.with_router().spawn();
             let broadcast = LocalBroadcast::new();
 
             let video_sources = args.capture.video_sources().map_err(|e| anyerr!("{e}"))?;

@@ -38,6 +38,7 @@ struct PatchbayFixture {
     publisher: Live,
     _broadcast: LocalBroadcast,
     subscriber: Live,
+    _sub_session: iroh_moq::MoqSession,
     remote: moq_media::subscribe::RemoteBroadcast,
 }
 
@@ -91,7 +92,7 @@ impl PatchbayFixture {
             .expect("sub join")
             .expect("sub endpoint");
 
-        let publisher = Live::builder(pub_endpoint).spawn_with_router();
+        let publisher = Live::builder(pub_endpoint).with_router().spawn();
 
         let broadcast = LocalBroadcast::new();
         // Use 15fps to stay within debug-build encode/decode budget.
@@ -111,10 +112,11 @@ impl PatchbayFixture {
 
         let pub_addr = publisher.endpoint().addr();
         let subscriber = Live::builder(sub_endpoint).spawn();
-        let (_session, remote) = subscriber
+        let (sub_session, remote, _signals) = subscriber
             .subscribe(pub_addr, "test")
             .await
-            .expect("subscribe");
+            .expect("subscribe")
+            .into_parts();
         remote.set_max_stale_duration(Duration::from_millis(300));
 
         Self {
@@ -125,6 +127,7 @@ impl PatchbayFixture {
             publisher,
             _broadcast: broadcast,
             subscriber,
+            _sub_session: sub_session,
             remote,
         }
     }
@@ -786,7 +789,7 @@ async fn latency_at_split_example_settings() {
         .expect("sub join")
         .expect("sub endpoint");
 
-    let publisher = Live::builder(pub_endpoint).spawn_with_router();
+    let publisher = Live::builder(pub_endpoint).with_router().spawn();
     let broadcast = LocalBroadcast::new();
 
     // 30fps at 720p — same as split example default.
@@ -806,10 +809,11 @@ async fn latency_at_split_example_settings() {
 
     let pub_addr = publisher.endpoint().addr();
     let subscriber = Live::builder(sub_endpoint).spawn();
-    let (_session, remote) = subscriber
+    let (_session, remote, _signals) = subscriber
         .subscribe(pub_addr, "test")
         .await
-        .expect("subscribe");
+        .expect("subscribe")
+        .into_parts();
     remote.set_max_stale_duration(Duration::from_secs(5));
 
     let mut track = tokio::time::timeout(FRAME_TIMEOUT, video_ready_with_patchbay_decode(&remote))
@@ -1052,7 +1056,7 @@ async fn adaptive_downgrade_upgrade_under_real_loss() {
         .expect("sub endpoint");
 
     // Publisher with two renditions.
-    let publisher = Live::builder(pub_endpoint).spawn_with_router();
+    let publisher = Live::builder(pub_endpoint).with_router().spawn();
     let broadcast = LocalBroadcast::new();
     let source = TestVideoSource::new(640, 480).with_fps(15.0);
     broadcast
@@ -1070,11 +1074,12 @@ async fn adaptive_downgrade_upgrade_under_real_loss() {
 
     // Subscriber with adaptive track.
     let subscriber = Live::builder(sub_endpoint).spawn();
-    let (session, remote) = subscriber
+    let sub = subscriber
         .subscribe(publisher.endpoint().addr(), "test")
         .await
         .expect("subscribe");
 
+    let remote = sub.broadcast();
     tokio::time::timeout(FRAME_TIMEOUT, remote.ready())
         .await
         .expect("catalog timeout");
@@ -1082,9 +1087,8 @@ async fn adaptive_downgrade_upgrade_under_real_loss() {
     let renditions = remote.catalog().video.renditions.len();
     assert_eq!(renditions, 2, "expected 2 renditions, got {renditions}");
 
-    // Produce real network signals from the QUIC connection.
-    let signals_rx =
-        iroh_live::util::spawn_signal_producer(session.conn(), remote.shutdown_token());
+    // Network signals are already produced by the Subscription.
+    let signals_rx = sub.signals().clone();
 
     // Use fast timers so the test doesn't take forever.
     let config = AdaptiveConfig {
@@ -1211,6 +1215,7 @@ struct AvSyncFixture {
     publisher: Live,
     _broadcast: LocalBroadcast,
     subscriber: Live,
+    _sub_session: iroh_moq::MoqSession,
     remote: moq_media::subscribe::RemoteBroadcast,
 }
 
@@ -1264,7 +1269,7 @@ impl AvSyncFixture {
             .expect("sub join")
             .expect("sub endpoint");
 
-        let publisher = Live::builder(pub_endpoint).spawn_with_router();
+        let publisher = Live::builder(pub_endpoint).with_router().spawn();
         let broadcast = LocalBroadcast::new();
 
         // Use 30fps here so the A/V controller is exercised against the same
@@ -1298,10 +1303,11 @@ impl AvSyncFixture {
         let pub_addr = publisher.endpoint().addr();
         let subscriber = Live::builder(sub_endpoint).spawn();
         // Default playout mode is audio-master playout.
-        let (_session, remote) = subscriber
+        let (sub_session, remote, _signals) = subscriber
             .subscribe(pub_addr, "test")
             .await
-            .expect("subscribe");
+            .expect("subscribe")
+            .into_parts();
 
         Self {
             lab,
@@ -1311,6 +1317,7 @@ impl AvSyncFixture {
             publisher,
             _broadcast: broadcast,
             subscriber,
+            _sub_session: sub_session,
             remote,
         }
     }
