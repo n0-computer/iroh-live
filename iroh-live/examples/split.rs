@@ -35,7 +35,6 @@ use iroh_live::{
         test_sources::{TestPatternSource, TestToneSource},
         traits::VideoSource,
     },
-    moq::MoqSession,
 };
 use moq_media_egui::{
     VideoTrackView, create_egui_wgpu_config,
@@ -234,8 +233,7 @@ impl PatchbayState {
 
 struct PublishView {
     router: Router,
-    #[allow(dead_code, reason = "kept alive for protocol handler")]
-    live: Live,
+    _live: Live,
     broadcast: LocalBroadcast,
     audio_ctx: AudioBackend,
 
@@ -273,7 +271,7 @@ impl PublishView {
 
         Ok(Self {
             router,
-            live,
+            _live: live,
             broadcast,
             audio_ctx,
             available_sources: discover_video_sources(),
@@ -490,7 +488,7 @@ impl PublishView {
 // ---------------------------------------------------------------------------
 
 struct SubscribeView {
-    session: MoqSession,
+    sub: iroh_live::Subscription,
     broadcast: RemoteBroadcast,
     audio_ctx: AudioBackend,
     pending_video: Option<VideoTrack>,
@@ -512,20 +510,16 @@ impl SubscribeView {
         audio_ctx: &AudioBackend,
     ) -> Result<Self> {
         let live = Live::new(endpoint);
-        let (session, broadcast) = live.subscribe(publisher_addr, BROADCAST_NAME).await?;
+        let sub = live
+            .subscribe_with_stats(publisher_addr, BROADCAST_NAME)
+            .await?;
         info!("subscriber connected");
 
-        iroh_live::util::spawn_stats_recorder(
-            session.conn(),
-            broadcast.stats().net.clone(),
-            broadcast.shutdown_token(),
-        );
-
         let playback_config = PlaybackConfig::default();
-        let tracks = broadcast.media(audio_ctx, playback_config).await?;
+        let tracks = sub.broadcast().media(audio_ctx, playback_config).await?;
 
         Ok(Self {
-            session,
+            sub,
             broadcast: tracks.broadcast,
             audio_ctx: audio_ctx.clone(),
             pending_video: tracks.video,
@@ -743,7 +737,7 @@ impl SubscribeView {
 
     fn shutdown(&self) {
         self.broadcast.shutdown();
-        self.session.close(0, b"bye");
+        self.sub.session().close(0, b"bye");
     }
 }
 

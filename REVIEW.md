@@ -198,9 +198,9 @@ Full API ergonomics review after building the `irl` CLI tool. Covers iroh-live, 
 
 ### High — subscribe flow
 
-- [ ] **ER1**: `live.subscribe_with_stats()` returns a 3-tuple `(MoqSession, RemoteBroadcast, Receiver<NetworkSignals>)`. Every caller must keep the session alive with `#[allow(dead_code)]` — a footgun. Create a `Subscription` struct that owns session + broadcast + signals. Dropping it closes the session. Subsumes existing E1.
+- [x] **ER1**: `live.subscribe_with_stats()` returns a 3-tuple — fixed: returns `Subscription` that owns session + broadcast + signals, with accessor methods and `into_parts()` for destructuring
 
-- [ ] **ER2**: Stats/signals wiring is manual outside of `subscribe_with_stats`. The `Call` and `Room` paths both manually call `spawn_stats_recorder` + `spawn_signal_producer` (identical boilerplate). These should merge into one function, or better, auto-wire on `Subscription`/`RemoteBroadcast` when a connection is available.
+- [x] **ER2**: Stats/signals wiring is manual — fixed: `Subscription::new()` auto-wires stats recording and signal production; `Call::setup()` auto-wires both and exposes `signals()` method. Room path still manual (TODO in room.rs) because Room events deliver session + broadcast separately.
 
 - [x] **ER3**: `RemoteBroadcast::media::<D>()` requires a turbofish — fixed: non-generic `media()` convenience added that uses `DefaultDecoders` (gated on `#[cfg(any_codec)]`). Generic version available as `media_with_decoders::<D>()` (`subscribe.rs:475-482`).
 

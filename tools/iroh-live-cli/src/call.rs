@@ -11,7 +11,6 @@ use iroh_live::{
         publish::LocalBroadcast,
         subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
     },
-    moq::MoqSession,
     ticket::LiveTicket,
 };
 use moq_media_egui::{
@@ -49,9 +48,10 @@ struct SetupState {
 
 struct InCallState {
     live: Live,
-    #[allow(dead_code, reason = "kept alive to sustain the call")]
-    session: MoqSession,
-    #[allow(dead_code, reason = "kept alive to sustain the call")]
+    #[allow(
+        dead_code,
+        reason = "kept alive — owns session, stats, and signal tasks"
+    )]
     call: Call,
     broadcast: LocalBroadcast,
     audio_ctx: AudioBackend,
@@ -256,7 +256,6 @@ struct CallResult {
     remote: RemoteBroadcast,
     video: Option<VideoTrack>,
     audio: Option<AudioTrack>,
-    signals: tokio::sync::watch::Receiver<iroh_live::media::net::NetworkSignals>,
 }
 
 impl CallApp {
@@ -266,25 +265,22 @@ impl CallApp {
         devices: DeviceSelectors,
         ctx: &egui::Context,
     ) {
-        let session = result.call.session().clone();
         let broadcast = result.call.local().clone();
         let (live, audio_ctx) = match &self.state {
             AppState::Setup(s) => (s.live.clone(), s.audio_ctx.clone()),
             AppState::InCall(s) => (s.live.clone(), s.audio_ctx.clone()),
         };
 
-        iroh_live::util::spawn_stats_recorder(
-            session.conn(),
-            result.remote.stats().net.clone(),
-            result.remote.shutdown_token(),
-        );
+        // Stats recording and signal production are auto-wired by Call::setup,
+        // so we just clone the signals receiver for the UI controls.
+        let signals = result.call.signals().clone();
 
         let remote = RemoteControls::new(
             result.remote,
             result.video,
             result.audio,
             audio_ctx.clone(),
-            result.signals,
+            signals,
             ctx,
             "remote-video",
             &[StatCategory::Net, StatCategory::Render, StatCategory::Time],
@@ -292,7 +288,6 @@ impl CallApp {
 
         self.state = AppState::InCall(Box::new(InCallState {
             live,
-            session,
             call: result.call,
             broadcast,
             audio_ctx,
@@ -420,9 +415,6 @@ async fn subscribe_call(
     call: Call,
     audio_ctx: &AudioBackend,
 ) -> std::result::Result<CallResult, CallError> {
-    let session = call.session().clone();
-    let signals =
-        iroh_live::util::spawn_signal_producer(session.conn(), call.remote().shutdown_token());
     let tracks = call
         .remote()
         .media(audio_ctx, PlaybackConfig::default())
@@ -432,7 +424,6 @@ async fn subscribe_call(
         remote: tracks.broadcast,
         video: tracks.video,
         audio: tracks.audio,
-        signals,
         call,
     })
 }
