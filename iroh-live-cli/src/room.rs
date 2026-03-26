@@ -48,6 +48,7 @@ pub fn run(args: RoomArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
                 _broadcast: broadcast,
                 audio_ctx,
                 self_view_mode: SelfViewMode::Grid,
+                wgpu_render_state: cc.wgpu_render_state.clone(),
             }))
         }),
     )
@@ -108,7 +109,13 @@ struct RemoteTrackView {
 }
 
 impl RemoteTrackView {
-    fn new(ctx: &egui::Context, session: MoqSession, track: MediaTracks, id: usize) -> Self {
+    fn new(
+        ctx: &egui::Context,
+        session: MoqSession,
+        track: MediaTracks,
+        id: usize,
+        wgpu_render_state: Option<&moq_media_egui::egui_wgpu::RenderState>,
+    ) -> Self {
         // TODO(ER2): Room events deliver session + broadcast separately, so we
         // can't use Subscription here yet. Manual stats wiring stays until Room
         // events are updated to emit Subscriptions directly.
@@ -118,9 +125,9 @@ impl RemoteTrackView {
             track.broadcast.shutdown_token(),
         );
         Self {
-            video: track
-                .video
-                .map(|v| VideoTrackView::new(ctx, &format!("video-{id}"), v)),
+            video: track.video.map(|v| {
+                VideoTrackView::new_wgpu(ctx, &format!("video-{id}"), v, wgpu_render_state)
+            }),
             overlay: moq_media_egui::overlay::DebugOverlay::new(&[
                 moq_media_egui::overlay::StatCategory::Net,
                 moq_media_egui::overlay::StatCategory::Render,
@@ -151,6 +158,7 @@ struct RoomApp {
     _broadcast: LocalBroadcast,
     audio_ctx: AudioBackend,
     self_view_mode: SelfViewMode,
+    wgpu_render_state: Option<moq_media_egui::egui_wgpu::RenderState>,
 }
 
 impl eframe::App for RoomApp {
@@ -162,8 +170,13 @@ impl eframe::App for RoomApp {
         while let Some(result) = self.pending.try_join_next() {
             match result {
                 Ok(Ok((session, tracks))) => {
-                    self.peers
-                        .push(RemoteTrackView::new(ctx, session, tracks, self.peers.len()));
+                    self.peers.push(RemoteTrackView::new(
+                        ctx,
+                        session,
+                        tracks,
+                        self.peers.len(),
+                        self.wgpu_render_state.as_ref(),
+                    ));
                 }
                 Ok(Err(e)) => warn!("failed to subscribe to peer: {e:#}"),
                 Err(e) => warn!("peer subscribe task panicked: {e}"),

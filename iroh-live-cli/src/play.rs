@@ -89,6 +89,7 @@ fn run_egui(
                 &cc.egui_ctx,
                 "video",
                 &[StatCategory::Net, StatCategory::Render, StatCategory::Time],
+                cc.wgpu_render_state.clone(),
             );
 
             Ok(Box::new(PlayApp {

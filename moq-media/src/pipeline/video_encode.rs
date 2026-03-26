@@ -43,8 +43,20 @@ impl VideoEncoderPipeline {
                 let mut first = true;
                 let format = source.format();
                 let enc_config = encoder.config();
-                info!(src_format = ?format, "encode start");
+                info!(
+                    capture = %source.name(),
+                    encoder = %encoder.name(),
+                    src_format = ?format,
+                    "encode pipeline: {} -> {}",
+                    source.name(),
+                    encoder.name(),
+                );
                 debug!(dst_config = ?enc_config);
+
+                if let Some(ref s) = stats {
+                    s.encoder.set(encoder.name());
+                    s.capture_path.set(source.name());
+                }
                 let framerate = enc_config.framerate.unwrap_or_else(|| {
                     warn!("encoder config has no framerate, falling back to 30 fps");
                     30.0
@@ -67,7 +79,14 @@ impl VideoEncoderPipeline {
                             break;
                         }
                     };
-                    if let Some(frame) = frame {
+                    let Some(frame) = frame else {
+                        // No frame available yet. Short backoff to avoid spinning
+                        // while still picking up frames promptly. A full interval
+                        // sleep here would halve the effective FPS.
+                        thread::sleep(Duration::from_millis(2));
+                        continue;
+                    };
+                    {
                         let encode_start = Instant::now();
                         if let Err(err) = encoder.push_frame(frame) {
                             error!("encoder push_frame failed: {err:#}");
@@ -115,6 +134,7 @@ impl VideoEncoderPipeline {
                         }
                         last_frame_time = start;
                     }
+                    // Pace to target framerate after encoding a frame.
                     thread::sleep(interval.saturating_sub(start.elapsed()));
                 }
                 if !sink_closed {

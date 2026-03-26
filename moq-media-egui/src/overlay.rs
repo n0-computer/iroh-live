@@ -418,6 +418,7 @@ fn detail_entries_publish<'a>(cat: StatCategory, stats: &'a PublishStats) -> Vec
     let mut entries = Vec::new();
     match cat {
         StatCategory::Capture => {
+            push_label(&mut entries, "capture", &stats.encode.capture_path);
             push_label(&mut entries, "codec", &stats.encode.codec);
             push_label(&mut entries, "encoder", &stats.encode.encoder);
             push_label(&mut entries, "resolution", &stats.encode.resolution);
@@ -484,6 +485,7 @@ fn format_section_summary_publish(cat: StatCategory, stats: &PublishStats) -> St
     let mut parts = vec![cat.label().to_string()];
     match cat {
         StatCategory::Capture => {
+            push_label_summary(&mut parts, &stats.encode.capture_path);
             push_label_summary(&mut parts, &stats.encode.codec);
             push_metric_summary(&mut parts, &stats.encode.fps);
             push_metric_summary(&mut parts, &stats.encode.encode_ms);
@@ -502,7 +504,7 @@ fn push_metric_summary(parts: &mut Vec<String>, metric: &Metric) {
     if metric.has_samples() {
         let meta = metric.meta();
         parts.push(format!(
-            " {}:{:.0}{}",
+            " {}:{:.1}{}",
             meta.label,
             metric.current(),
             meta.unit

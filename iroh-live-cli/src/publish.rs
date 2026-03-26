@@ -192,6 +192,7 @@ mod preview {
                     &cc.egui_ctx,
                     "file-preview",
                     &[StatCategory::Render, StatCategory::Time],
+                    cc.wgpu_render_state.clone(),
                 );
 
                 Ok(Box::new(FilePreviewApp {

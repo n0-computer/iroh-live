@@ -278,6 +278,8 @@ pub struct EncodeStats {
     pub codec: Label,
     pub encoder: Label,
     pub resolution: Label,
+    /// Capture-to-encode path, e.g. "pw-screen/dmabuf" or "pw-screen/shm".
+    pub capture_path: Label,
 }
 
 impl Default for EncodeStats {
@@ -289,6 +291,7 @@ impl Default for EncodeStats {
             codec: Label::default(),
             encoder: Label::default(),
             resolution: Label::default(),
+            capture_path: Label::default(),
         }
     }
 }

@@ -110,9 +110,10 @@ Details: [docs/platforms.md](docs/platforms.md)
 
 ## CLI tool (`irl`)
 
-The `irl` binary is in the `iroh-live-cli` crate. It covers the full
-workflow from device discovery through publishing, playback, calls, rooms,
-and running a relay server.
+The `irl` binary is in the `iroh-live-cli` crate. It is a demo application
+that showcases iroh-live's capabilities, using egui for its GUI. It covers
+the full workflow from device discovery through publishing, playback, calls,
+rooms, and running a relay server.
 
 | Command | Description |
 |---------|-------------|
