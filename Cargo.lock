@@ -1895,6 +1895,7 @@ dependencies = [
 [[package]]
 name = "conducer"
 version = "0.3.1"
+source = "git+https://github.com/Frando/moq.git?branch=dev#f0d7a12f26e133ebd523f3185b6946c9110f4888"
 
 [[package]]
 name = "console"
@@ -4573,6 +4574,7 @@ dependencies = [
 [[package]]
 name = "hang"
 version = "0.15.4"
+source = "git+https://github.com/Frando/moq.git?branch=dev#f0d7a12f26e133ebd523f3185b6946c9110f4888"
 dependencies = [
  "buf-list",
  "bytes",
@@ -6488,6 +6490,7 @@ dependencies = [
 [[package]]
 name = "moq-lite"
 version = "0.15.5"
+source = "git+https://github.com/Frando/moq.git?branch=dev#f0d7a12f26e133ebd523f3185b6946c9110f4888"
 dependencies = [
  "bytes",
  "conducer",
@@ -6589,6 +6592,7 @@ dependencies = [
 [[package]]
 name = "moq-msf"
 version = "0.1.1"
+source = "git+https://github.com/Frando/moq.git?branch=dev#f0d7a12f26e133ebd523f3185b6946c9110f4888"
 dependencies = [
  "serde",
  "serde_json",
@@ -6598,6 +6602,7 @@ dependencies = [
 [[package]]
 name = "moq-mux"
 version = "0.3.3"
+source = "git+https://github.com/Frando/moq.git?branch=dev#f0d7a12f26e133ebd523f3185b6946c9110f4888"
 dependencies = [
  "anyhow",
  "base64",
@@ -6624,6 +6629,7 @@ dependencies = [
 [[package]]
 name = "moq-native"
 version = "0.13.6"
+source = "git+https://github.com/Frando/moq.git?branch=dev#f0d7a12f26e133ebd523f3185b6946c9110f4888"
 dependencies = [
  "anyhow",
  "clap",
@@ -6656,6 +6662,7 @@ dependencies = [
 [[package]]
 name = "moq-relay"
 version = "0.10.11"
+source = "git+https://github.com/Frando/moq.git?branch=dev#f0d7a12f26e133ebd523f3185b6946c9110f4888"
 dependencies = [
  "anyhow",
  "axum",
@@ -6682,6 +6689,7 @@ dependencies = [
 [[package]]
 name = "moq-token"
 version = "0.5.11"
+source = "git+https://github.com/Frando/moq.git?branch=dev#f0d7a12f26e133ebd523f3185b6946c9110f4888"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
