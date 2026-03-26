@@ -4,7 +4,7 @@
 //! Transport: serve by default, `--relay` pushes to relay, `--room` publishes
 //! into a room, `--no-serve` disables incoming connections.
 
-use iroh_live::{media::publish::LocalBroadcast, rooms::Room};
+use iroh_live::media::publish::LocalBroadcast;
 use moq_lite::BroadcastProducer;
 
 use crate::{
@@ -144,6 +144,7 @@ mod preview {
     use iroh_live::{
         Live,
         media::{AudioBackend, publish::LocalBroadcast, subscribe::MediaTracks},
+        rooms::Room,
     };
     use moq_media_egui::{
         VideoTrackView,
@@ -156,7 +157,7 @@ mod preview {
 
     pub(super) fn run_file_preview(
         live: Live,
-        room: Option<super::Room>,
+        room: Option<Room>,
         tracks: MediaTracks,
         import_task: tokio::task::JoinHandle<anyhow::Result<()>>,
         ticket_str: String,
@@ -207,7 +208,7 @@ mod preview {
     struct FilePreviewApp {
         live: Live,
         #[allow(dead_code, reason = "kept alive so the room actor keeps running")]
-        _room: Option<super::Room>,
+        _room: Option<Room>,
         remote: crate::ui::RemoteControls,
         ticket_str: String,
     }
@@ -250,7 +251,7 @@ mod preview {
         live: Live,
         broadcast: LocalBroadcast,
         audio_ctx: AudioBackend,
-        room: Option<super::Room>,
+        room: Option<Room>,
         ticket_str: String,
     ) -> n0_error::Result {
         eframe::run_native(
@@ -281,7 +282,7 @@ mod preview {
     struct CapturePreviewApp {
         live: Live,
         #[allow(dead_code, reason = "kept alive so the room actor keeps running")]
-        _room: Option<super::Room>,
+        _room: Option<Room>,
         broadcast: LocalBroadcast,
         audio_ctx: AudioBackend,
         preview: Option<VideoTrackView>,

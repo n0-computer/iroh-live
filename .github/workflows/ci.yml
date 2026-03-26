@@ -105,10 +105,10 @@ jobs:
             libva-dev nasm
 
       # Pre-build so compilation doesn't eat into test timeouts.
-      - name: Build relay + examples
+      - name: Build relay + CLI + examples
         run: |
-          cargo build --locked -p iroh-live-relay
-          cargo build --locked --example publish --example subscribe_test
+          cargo build --locked -p iroh-live-relay -p iroh-live-cli
+          cargo build --locked --example subscribe_test
 
       - name: Build relay web assets
         working-directory: iroh-live-relay/web
