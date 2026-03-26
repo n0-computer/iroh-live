@@ -30,13 +30,12 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-#[cfg(any_codec)]
-use crate::codec;
 #[cfg(any_audio_codec)]
 use crate::codec::AudioCodec;
 #[cfg(any_video_codec)]
 use crate::codec::VideoCodec;
 use crate::{
+    codec,
     format::{
         AudioEncoderConfig, AudioFormat, AudioPreset, VideoEncoderConfig, VideoFormat, VideoFrame,
         VideoPreset,

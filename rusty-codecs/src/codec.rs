@@ -2,7 +2,6 @@
 pub(crate) mod android;
 #[cfg(feature = "av1")]
 pub(crate) mod av1;
-#[cfg(any_codec)]
 pub(crate) mod dynamic;
 #[cfg(feature = "h264")]
 pub(crate) mod h264;
@@ -30,7 +29,6 @@ pub(crate) mod vtb;
 pub use android::*;
 #[cfg(feature = "av1")]
 pub use av1::*;
-#[cfg(any_codec)]
 pub use dynamic::*;
 #[cfg(all(target_os = "linux", feature = "v4l2"))]
 pub use v4l2::*;

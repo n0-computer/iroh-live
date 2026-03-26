@@ -224,7 +224,6 @@ impl Live {
     ///
     /// Uses dynamic decoder dispatch. For explicit decoder selection, use
     /// [`subscribe_media_with_decoders`](Self::subscribe_media_with_decoders).
-    #[cfg(any_codec)]
     pub async fn subscribe_media(
         &self,
         remote: impl Into<EndpointAddr>,
