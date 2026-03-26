@@ -10,9 +10,10 @@ running the relay and the E2E workflow.
 Automatic TLS certificate via Let's Encrypt for production deployments.
 Currently requires manually providing `--cert`/`--key`.
 
-- [ ] Add `--acme-url` and `--acme-domain` CLI flags (mutually exclusive
-  with `--dev`)
-- [ ] Use `instant-acme` crate for HTTP-01 challenges
+- [ ] Add `--acme-domain`, `--acme-email`, and `--acme-env` (prod/staging)
+  CLI flags (mutually exclusive with `--dev`)
+- [ ] Use `tokio-rustls-acme` crate for automatic cert provisioning
+  (`instant-acme` is another option but requires more manual plumbing)
 - [ ] Serve ACME challenges on HTTP (:8080), redirect other HTTP to HTTPS
 - [ ] Background renewal task — check every 12h, renew if < 30 days
 - [ ] Persist account key + cert in data_dir

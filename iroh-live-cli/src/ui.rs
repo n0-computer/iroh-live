@@ -447,6 +447,7 @@ pub struct RemoteControls {
     audio_ctx: AudioBackend,
     #[allow(dead_code, reason = "reserved for AdaptiveVideoTrack wiring")]
     signals: Option<tokio::sync::watch::Receiver<NetworkSignals>>,
+    wgpu_render_state: Option<moq_media_egui::egui_wgpu::RenderState>,
 
     // Control state
     pub decoder_backend: DecoderBackend,
@@ -468,8 +469,10 @@ impl RemoteControls {
         ctx: &egui::Context,
         view_id: &str,
         categories: &[StatCategory],
+        wgpu_render_state: Option<moq_media_egui::egui_wgpu::RenderState>,
     ) -> Self {
-        let video_view = video.map(|v| VideoTrackView::new(ctx, view_id, v));
+        let video_view =
+            video.map(|v| VideoTrackView::new_wgpu(ctx, view_id, v, wgpu_render_state.as_ref()));
         Self {
             video: video_view,
             audio,
@@ -477,6 +480,7 @@ impl RemoteControls {
             overlay: DebugOverlay::new(categories),
             audio_ctx,
             signals,
+            wgpu_render_state,
             decoder_backend: DecoderBackend::Auto,
             sync_mode: SyncModeChoice::AudioMaster,
             rendition_mode: RenditionMode::Auto,
@@ -505,7 +509,12 @@ impl RemoteControls {
         match video_result {
             Ok(track) => {
                 info!(rendition = track.rendition(), "resubscribed to video");
-                self.video = Some(VideoTrackView::new(ctx, view_id, track));
+                self.video = Some(VideoTrackView::new_wgpu(
+                    ctx,
+                    view_id,
+                    track,
+                    self.wgpu_render_state.as_ref(),
+                ));
             }
             Err(e) => {
                 warn!("video resubscribe failed: {e:#}");

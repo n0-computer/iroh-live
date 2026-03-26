@@ -251,6 +251,9 @@ struct CaptureState {
     frame_tx: mpsc::SyncSender<VideoFrame>,
     /// Counts frames dropped because the bounded channel was full.
     frames_dropped: Arc<AtomicU64>,
+    /// When false, the process callback skips frame conversion and delivery.
+    /// Controlled by `start()` and `stop()` on the capturer.
+    active: Arc<AtomicBool>,
     init_tx: Option<mpsc::Sender<Result<(u32, u32)>>>,
     width: u32,
     height: u32,
@@ -761,6 +764,10 @@ fn dmabuf_to_frame_cpu(
 /// The `init_tx` channel receives `Ok((width, height))` once the format is
 /// negotiated, or `Err` if setup fails. Frames are sent to `frame_tx`.
 /// Set `should_stop` to `true` to terminate the capture loop.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "internal function, bundling would add indirection"
+)]
 fn run_pipewire_stream(
     fd: OwnedFd,
     node_id: Option<u32>,
@@ -769,6 +776,7 @@ fn run_pipewire_stream(
     frame_tx: mpsc::SyncSender<VideoFrame>,
     init_tx: mpsc::Sender<Result<(u32, u32)>>,
     should_stop: Arc<AtomicBool>,
+    active: Arc<AtomicBool>,
 ) -> Result<()> {
     ensure_pw_init();
 
@@ -802,6 +810,7 @@ fn run_pipewire_stream(
     let state = CaptureState {
         frame_tx,
         frames_dropped: Arc::new(AtomicU64::new(0)),
+        active,
         init_tx: Some(init_tx),
         width: 0,
         height: 0,
@@ -858,6 +867,10 @@ fn run_pipewire_stream(
             let Some(mut buffer) = stream.dequeue_buffer() else {
                 return;
             };
+            // Skip frame processing when no subscriber is active.
+            if !state.active.load(Ordering::Relaxed) {
+                return;
+            }
 
             let datas = buffer.datas_mut();
             if datas.is_empty() {
@@ -1259,6 +1272,10 @@ pub struct PipeWireScreenCapturer {
     rx: mpsc::Receiver<VideoFrame>,
     #[debug(skip)]
     should_stop: Arc<AtomicBool>,
+    /// Controls whether the process callback delivers frames.
+    /// Starts inactive; toggled by `start()` and `stop()`.
+    #[debug(skip)]
+    active: Arc<AtomicBool>,
     #[debug(skip)]
     thread: Option<std::thread::JoinHandle<()>>,
     #[debug(skip)]
@@ -1286,6 +1303,8 @@ impl PipeWireScreenCapturer {
         let (init_tx, init_rx) = mpsc::channel();
         let should_stop = Arc::new(AtomicBool::new(false));
         let stop_flag = should_stop.clone();
+        let active = Arc::new(AtomicBool::new(false));
+        let active_flag = active.clone();
 
         let thread = std::thread::Builder::new()
             .name("pw-screen".into())
@@ -1304,6 +1323,7 @@ impl PipeWireScreenCapturer {
                     frame_tx,
                     init_tx.clone(),
                     stop_flag,
+                    active_flag,
                 );
                 if let Err(e) = result {
                     let _ = init_tx.send(Err(e));
@@ -1323,6 +1343,7 @@ impl PipeWireScreenCapturer {
             height,
             rx: frame_rx,
             should_stop,
+            active,
             thread: Some(thread),
             _portal_guard: portal_guard,
             restore_token,
@@ -1340,7 +1361,7 @@ impl PipeWireScreenCapturer {
 
 impl VideoSource for PipeWireScreenCapturer {
     fn name(&self) -> &str {
-        "pipewire-screen"
+        "pw-screen"
     }
 
     fn format(&self) -> VideoFormat {
@@ -1351,11 +1372,14 @@ impl VideoSource for PipeWireScreenCapturer {
     }
 
     fn start(&mut self) -> Result<()> {
+        self.active.store(true, Ordering::Relaxed);
+        // Drain stale frames that accumulated while inactive.
+        while self.rx.try_recv().is_ok() {}
         Ok(())
     }
 
     fn stop(&mut self) -> Result<()> {
-        self.should_stop.store(true, Ordering::Relaxed);
+        self.active.store(false, Ordering::Relaxed);
         Ok(())
     }
 
@@ -1414,6 +1438,10 @@ pub struct PipeWireCameraCapturer {
     rx: mpsc::Receiver<VideoFrame>,
     #[debug(skip)]
     should_stop: Arc<AtomicBool>,
+    /// Controls whether the process callback delivers frames.
+    /// Starts inactive; toggled by `start()` and `stop()`.
+    #[debug(skip)]
+    active: Arc<AtomicBool>,
     #[debug(skip)]
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -1464,6 +1492,8 @@ impl PipeWireCameraCapturer {
         let (init_tx, init_rx) = mpsc::channel();
         let should_stop = Arc::new(AtomicBool::new(false));
         let stop_flag = should_stop.clone();
+        let active = Arc::new(AtomicBool::new(false));
+        let active_flag = active.clone();
 
         let thread = std::thread::Builder::new()
             .name("pw-camera".into())
@@ -1477,6 +1507,7 @@ impl PipeWireCameraCapturer {
                     frame_tx,
                     init_tx.clone(),
                     stop_flag,
+                    active_flag,
                 );
                 if let Err(e) = result {
                     let _ = init_tx.send(Err(e));
@@ -1496,6 +1527,7 @@ impl PipeWireCameraCapturer {
             height,
             rx: frame_rx,
             should_stop,
+            active,
             thread: Some(thread),
         })
     }
@@ -1503,7 +1535,7 @@ impl PipeWireCameraCapturer {
 
 impl VideoSource for PipeWireCameraCapturer {
     fn name(&self) -> &str {
-        "pipewire-camera"
+        "pw-camera"
     }
 
     fn format(&self) -> VideoFormat {
@@ -1514,11 +1546,14 @@ impl VideoSource for PipeWireCameraCapturer {
     }
 
     fn start(&mut self) -> Result<()> {
+        self.active.store(true, Ordering::Relaxed);
+        // Drain stale frames that accumulated while inactive.
+        while self.rx.try_recv().is_ok() {}
         Ok(())
     }
 
     fn stop(&mut self) -> Result<()> {
-        self.should_stop.store(true, Ordering::Relaxed);
+        self.active.store(false, Ordering::Relaxed);
         Ok(())
     }
 

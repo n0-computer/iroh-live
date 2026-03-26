@@ -103,7 +103,7 @@ args = ["nextest", "run", "--locked", "-p", "iroh-live",
 description = "Pre-build binaries needed by Playwright E2E tests"
 workspace = false
 script = [
-    "cargo build --locked -p iroh-live-relay -p iroh-live-cli --example subscribe_test",
+    "cargo build --locked -p iroh-live-relay -p iroh-live-cli && cargo build --locked -p iroh-live --example subscribe_test",
 ]
 
 [tasks.test-e2e]

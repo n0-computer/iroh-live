@@ -249,6 +249,7 @@ struct CallApp {
     state: AppState,
     call_rx: Option<tokio::sync::oneshot::Receiver<std::result::Result<CallResult, String>>>,
     accept_task: Option<tokio::task::JoinHandle<()>>,
+    wgpu_render_state: Option<moq_media_egui::egui_wgpu::RenderState>,
 }
 
 struct CallResult {
@@ -284,6 +285,7 @@ impl CallApp {
             ctx,
             "remote-video",
             &[StatCategory::Net, StatCategory::Render, StatCategory::Time],
+            self.wgpu_render_state.clone(),
         );
 
         self.state = AppState::InCall(Box::new(InCallState {
@@ -513,6 +515,7 @@ pub fn run(args: CallArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
                 })),
                 call_rx: initial_call_rx,
                 accept_task: initial_accept_task,
+                wgpu_render_state: cc.wgpu_render_state.clone(),
             }))
         }),
     )
