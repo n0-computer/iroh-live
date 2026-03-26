@@ -122,12 +122,12 @@ side compensates by switching to lower renditions, but the publisher does
 not currently reduce its encoding rate in response to congestion.
 
 `VideoPublisher::set_enabled()` and `AudioPublisher::set_muted()` are
-defined but unimplemented (no-ops). They are intended to pause/resume
-the encoder pipeline and send silence, respectively.
+not yet implemented (marked as TODOs in the source). They are intended
+to pause/resume the encoder pipeline and send silence, respectively.
 
 ## Local preview
 
-`LocalBroadcast::preview(decode_config)` creates a `VideoTrack` that
-decodes the local broadcast's own output, useful for showing the
-publisher what subscribers see. Only available for
-`VideoInput::Renditions`, not for pre-encoded sources.
+`LocalBroadcast::preview()` creates a `VideoTrack` that decodes the
+local broadcast's own output, useful for showing the publisher what
+subscribers see. Returns `None` for pre-encoded sources or when no
+video is set.

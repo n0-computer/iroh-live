@@ -27,7 +27,7 @@ Below these sit **rusty-codecs** (codec implementations, hardware acceleration, 
 
 **Watcher for continuous state, stream for discrete events.** Connection quality, active rendition, and catalog contents are continuous values exposed via `n0_watcher::Direct<T>`. Participant joins and session arrivals are discrete events exposed as `impl Stream`.
 
-**Declarative intent, not mechanism.** `VideoTarget { max_pixels: 1280*720 }` tells the system what quality the subscriber needs. The catalog selects the best matching rendition automatically.
+**Declarative intent, not mechanism.** `VideoTarget::default().max_pixels(1280*720)` tells the system what quality the subscriber needs. The catalog selects the best matching rendition automatically.
 
 **moq-media is standalone.** A recording pipeline can use `LocalBroadcast` and `RemoteBroadcast` directly, without importing iroh-live. The transport boundary is the `PacketSink`/`PacketSource` trait pair.
 
@@ -51,7 +51,7 @@ PacketSource (MoqPacketSource reads ordered frames)
 decoder pipeline (moq-media, dedicated OS thread)
     |
     v  VideoFrame
-PlayoutBuffer (smooths bursty decoder output)
+FramePacer (PTS-based sleep between frames)
     |
     v
 renderer (wgpu texture upload or egui widget)

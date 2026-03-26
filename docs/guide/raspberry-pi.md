@@ -129,7 +129,7 @@ export IROH_SECRET=abcdef...
 On another machine with a display:
 
 ```sh
-cargo run --example watch -- <TICKET>
+cargo run --release -p iroh-live-cli -- play <TICKET>
 ```
 
 Replace `<TICKET>` with the string printed by the Pi, or scan the QR code from the e-paper display.

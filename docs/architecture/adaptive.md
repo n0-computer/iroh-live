@@ -39,7 +39,7 @@ pub struct NetworkSignals {
 
 moq-media does not depend on iroh. iroh-live produces these signals by
 polling `session.conn().stats()` every 200ms and publishing them via a
-`Watcher<NetworkSignals>`. If no signals are available (e.g., when
+`watch::Receiver<NetworkSignals>`. If no signals are available (e.g., when
 moq-media is used standalone), adaptive switching does not trigger and
 the track stays on its initial rendition.
 
@@ -155,6 +155,6 @@ stats every 200ms and publishes `NetworkSignals`:
 - `available_bps` computed as `cwnd * 8 / rtt_seconds`
 - `congestion_events` from the monotonic counter on `PathStats`
 
-The resulting `Watcher<NetworkSignals>` is passed to `RemoteBroadcast`
+The resulting `watch::Receiver<NetworkSignals>` is passed to `RemoteBroadcast`
 at construction time. moq-media reads it but never writes it, preserving
 the transport-agnostic boundary.

@@ -49,9 +49,8 @@ These changes are already in the codebase:
 
 ## Lock contention
 
-**`PlayoutClock` mutex**: the playout clock's `Mutex` is acquired on every frame to update jitter tracking. Moving `smoothed_jitter` to an `AtomicU64` would eliminate this contention point.
-
-**`PlayoutBuffer` polling**: the playout buffer uses a 1 ms polling loop (`recv_deadline`) to wait for the next frame's playout time. Replacing this with a condvar or `recv_deadline()` on the channel would reduce CPU wake-ups.
+<!-- PlayoutClock and PlayoutBuffer were removed when A/V sync was disabled.
+     No known lock contention remains on the per-frame hot path. -->
 
 ## GPU and DMA-BUF path
 

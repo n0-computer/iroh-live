@@ -38,13 +38,13 @@ The `frame_dump` example captures frames from a live broadcast and saves them as
 
 ```sh
 # Publish a test pattern
-cargo run --example frame_dump -- publish
+cargo run -p iroh-live --example frame_dump -- publish
 
 # In another terminal, watch and verify
-cargo run --example frame_dump -- watch <TICKET> --out /tmp/frames --verify
+cargo run -p iroh-live --example frame_dump -- watch <TICKET> --out /tmp/frames --verify
 
 # Generate reference PNGs without network
-cargo run --example frame_dump -- reference --out /tmp/ref
+cargo run -p iroh-live --example frame_dump -- reference --out /tmp/ref
 ```
 
 The PSNR check compares each frame's color bar region against the known SMPTE bar colors, ignoring the animated bouncing line. Values above 30 dB indicate correct codec operation; below 20 dB suggests color space errors or decode failures.
