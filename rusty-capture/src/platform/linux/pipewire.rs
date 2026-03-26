@@ -254,6 +254,10 @@ struct CaptureState {
     /// When false, the process callback skips frame conversion and delivery.
     /// Controlled by `start()` and `stop()` on the capturer.
     active: Arc<AtomicBool>,
+    /// Buffer params pod bytes for DMA-BUF negotiation. Passed back to
+    /// PipeWire via `update_params` in the `param_changed` callback to
+    /// confirm DMA-BUF buffer support for the negotiated format.
+    buffer_params_bytes: Vec<u8>,
     init_tx: Option<mpsc::Sender<Result<(u32, u32)>>>,
     width: u32,
     height: u32,
@@ -811,6 +815,7 @@ fn run_pipewire_stream(
         frame_tx,
         frames_dropped: Arc::new(AtomicU64::new(0)),
         active,
+        buffer_params_bytes: buffers_bytes.clone(),
         init_tx: Some(init_tx),
         width: 0,
         height: 0,
@@ -838,7 +843,7 @@ fn run_pipewire_stream(
 
     let _listener = stream
         .add_local_listener_with_user_data(state)
-        .param_changed(|_stream, state, id, param| {
+        .param_changed(|stream, state, id, param| {
             if id != ParamType::Format.as_raw() {
                 return;
             }
@@ -849,12 +854,24 @@ fn run_pipewire_stream(
                 state.height = h;
                 state.spa_format = fmt;
 
-                debug!(
-                    width = w,
-                    height = h,
-                    format = fmt,
-                    "PipeWire format negotiated"
-                );
+                // Confirm buffer params (including DMA-BUF support) for
+                // the negotiated format. Without this call, PipeWire falls
+                // back to shared memory because it considers the buffer
+                // type negotiation incomplete.
+                if let Some(pod) = Pod::from_bytes(&state.buffer_params_bytes) {
+                    let mut params = [pod];
+                    if let Err(e) = stream.update_params(&mut params) {
+                        warn!("PipeWire update_params failed: {e}, DMA-BUF may not be available");
+                    }
+                    info!(
+                        width = w,
+                        height = h,
+                        format = fmt,
+                        "PipeWire format negotiated, DMA-BUF buffer params confirmed"
+                    );
+                } else {
+                    warn!("failed to rebuild buffer params pod for update_params");
+                }
 
                 if let Some(tx) = state.init_tx.take() {
                     let _ = tx.send(Ok((w, h)));

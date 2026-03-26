@@ -5496,10 +5496,12 @@ dependencies = [
  "bytes",
  "clap",
  "data-encoding",
+ "dirs",
  "eframe",
  "iroh",
  "iroh-gossip",
  "iroh-live",
+ "iroh-live-relay",
  "moq-lite",
  "moq-media",
  "moq-media-egui",
@@ -5507,6 +5509,7 @@ dependencies = [
  "n0-error",
  "qr2term",
  "rand 0.9.2",
+ "rustls",
  "strum 0.28.0",
  "tokio",
  "tracing",
@@ -7238,7 +7241,7 @@ dependencies = [
  "pin-project-lite",
  "rustc-hash 2.1.1",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -7281,7 +7284,7 @@ source = "git+https://github.com/n0-computer/noq?branch=main#bf31f0785d9fa8bfde5
 dependencies = [
  "cfg_aliases 0.2.1",
  "libc",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -9949,7 +9952,7 @@ dependencies = [
  "v4l2r",
  "wgpu 27.0.1",
  "wgpu-hal 27.0.4",
- "yuvutils-rs",
+ "yuv",
 ]
 
 [[package]]
@@ -14334,10 +14337,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "yuvutils-rs"
-version = "0.8.3"
+name = "yuv"
+version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b699b6503cd14c70b258eaffedd7ada5a781ea23206eeb9066736b99ba37af1"
+checksum = "1d2b217e333a9afc47bc8cd1b17e93fefd52073d480c623aa82c05e507d828d7"
 dependencies = [
  "num-traits",
 ]

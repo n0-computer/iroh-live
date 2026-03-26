@@ -23,7 +23,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 strum = { version = "0.28", features = ["derive"] }
 throttled-tracing = "0.1.0"
 tracing = "0.1.41"
-yuvutils-rs = "0.8"
+yuv = "0.8.12"
 libc = "0.2"
 
 openh264 = { version = "0.9", optional = true, features = ["source"] }

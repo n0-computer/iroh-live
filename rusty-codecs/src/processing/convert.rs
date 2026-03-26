@@ -1,5 +1,5 @@
 use anyhow::Result;
-use yuvutils_rs::{
+use yuv::{
     BufferStoreMut, YuvBiPlanarImage, YuvBiPlanarImageMut, YuvChromaSubsampling, YuvPlanarImage,
     YuvPlanarImageMut, YuvRange, YuvStandardMatrix, bgra_to_yuv420, rgba_to_yuv_nv12,
     rgba_to_yuv420, yuv_nv12_to_bgra, yuv_nv12_to_rgba, yuv420_to_bgra, yuv420_to_rgba,
@@ -64,7 +64,7 @@ pub fn rgba_to_yuv420_data(src: &[u8], w: u32, h: u32) -> Result<YuvData> {
         w * 4,
         YuvRange::Limited,
         YuvStandardMatrix::Bt601,
-        yuvutils_rs::YuvConversionMode::Balanced,
+        yuv::YuvConversionMode::Balanced,
     )?;
     Ok(YuvData {
         y_stride: planar.y_stride,
@@ -87,7 +87,7 @@ pub fn bgra_to_yuv420_data(src: &[u8], w: u32, h: u32) -> Result<YuvData> {
         w * 4,
         YuvRange::Limited,
         YuvStandardMatrix::Bt601,
-        yuvutils_rs::YuvConversionMode::Balanced,
+        yuv::YuvConversionMode::Balanced,
     )?;
     Ok(YuvData {
         y_stride: planar.y_stride,
@@ -216,7 +216,7 @@ pub fn rgba_to_nv12_data(src: &[u8], w: u32, h: u32) -> Result<Nv12Data> {
         w * 4,
         YuvRange::Limited,
         YuvStandardMatrix::Bt601,
-        yuvutils_rs::YuvConversionMode::Balanced,
+        yuv::YuvConversionMode::Balanced,
     )?;
     let y = take_owned(bi.y_plane);
     let uv = take_owned(bi.uv_plane);
@@ -236,7 +236,7 @@ pub fn rgba_to_nv12_data(src: &[u8], w: u32, h: u32) -> Result<Nv12Data> {
     allow(dead_code, reason = "used by vaapi and android encoders")
 )]
 pub fn bgra_to_nv12_data(src: &[u8], w: u32, h: u32) -> Result<Nv12Data> {
-    use yuvutils_rs::bgra_to_yuv_nv12;
+    use yuv::bgra_to_yuv_nv12;
     let mut bi = YuvBiPlanarImageMut::<u8>::alloc(w, h, YuvChromaSubsampling::Yuv420);
     bgra_to_yuv_nv12(
         &mut bi,
@@ -244,7 +244,7 @@ pub fn bgra_to_nv12_data(src: &[u8], w: u32, h: u32) -> Result<Nv12Data> {
         w * 4,
         YuvRange::Limited,
         YuvStandardMatrix::Bt601,
-        yuvutils_rs::YuvConversionMode::Balanced,
+        yuv::YuvConversionMode::Balanced,
     )?;
     let y = take_owned(bi.y_plane);
     let uv = take_owned(bi.uv_plane);
@@ -301,7 +301,7 @@ pub fn nv12_to_rgba_data(
         rgba_stride,
         YuvRange::Limited,
         YuvStandardMatrix::Bt601,
-        yuvutils_rs::YuvConversionMode::Balanced,
+        yuv::YuvConversionMode::Balanced,
     )?;
     Ok(rgba)
 }
@@ -338,7 +338,7 @@ pub fn nv12_to_bgra_data(
         bgra_stride,
         YuvRange::Limited,
         YuvStandardMatrix::Bt601,
-        yuvutils_rs::YuvConversionMode::Balanced,
+        yuv::YuvConversionMode::Balanced,
     )?;
     Ok(bgra)
 }

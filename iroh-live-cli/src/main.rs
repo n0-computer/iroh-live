@@ -47,7 +47,7 @@ enum Command {
     #[cfg(feature = "wgpu")]
     Room(args::RoomArgs),
     /// Start a local relay server for browser WebTransport bridging.
-    Relay(relay::RelayArgs),
+    Relay(relay::RelayConfig),
 }
 
 fn main() -> n0_error::Result {
@@ -71,6 +71,6 @@ fn main() -> n0_error::Result {
         Command::Call(args) => call::run(args, &rt),
         #[cfg(feature = "wgpu")]
         Command::Room(args) => room::run(args, &rt),
-        Command::Relay(args) => relay::run(args),
+        Command::Relay(args) => relay::run(args, &rt),
     }
 }

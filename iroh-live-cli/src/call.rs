@@ -204,7 +204,7 @@ impl InCallState {
 
         // Overlay with controls.
         egui::Area::new(Id::new("call-overlay"))
-            .anchor(egui::Align2::LEFT_BOTTOM, [8.0, -8.0])
+            .anchor(egui::Align2::LEFT_TOP, [8.0, 28.0])
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 egui::Frame::new()

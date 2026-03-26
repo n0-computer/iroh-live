@@ -305,6 +305,10 @@ pub struct PlayArgs {
     #[arg(long, default_value = "auto")]
     pub decoder: String,
 
+    /// Render mode: auto (wgpu-accelerated) or cpu (software).
+    #[arg(long, default_value = "auto")]
+    pub render: String,
+
     /// Audio output device id.
     #[arg(long)]
     pub audio_device: Option<String>,
@@ -314,8 +318,27 @@ pub struct PlayArgs {
     pub fullscreen: bool,
 }
 
+/// Controls whether video rendering uses GPU acceleration or software fallback.
+#[cfg(feature = "wgpu")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RenderMode {
+    /// Use wgpu-accelerated rendering (default).
+    #[default]
+    Auto,
+    /// Use CPU-only software rendering.
+    Cpu,
+}
+
 #[cfg(feature = "wgpu")]
 impl PlayArgs {
+    pub fn render_mode(&self) -> anyhow::Result<RenderMode> {
+        match self.render.to_lowercase().as_str() {
+            "auto" | "wgpu" | "gpu" => Ok(RenderMode::Auto),
+            "cpu" | "sw" | "software" => Ok(RenderMode::Cpu),
+            other => anyhow::bail!("unknown render mode: '{other}'; use 'auto' or 'cpu'"),
+        }
+    }
+
     pub fn ticket(&self) -> anyhow::Result<LiveTicket> {
         match (&self.ticket, &self.endpoint_id, &self.broadcast_name) {
             (Some(t), None, None) => Ok(t.clone()),

@@ -26,7 +26,6 @@ export async function startRelay(): Promise<RelayInfo> {
   const proc = spawn(
     relayBin,
     [
-      "--dev",
       "--bind",
       "[::]:0",
       "--http-bind",

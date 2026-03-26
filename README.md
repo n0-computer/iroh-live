@@ -39,6 +39,18 @@ irl call
 irl call <TICKET>
 ```
 
+To watch a stream in a browser, start a relay and open the URL it prints:
+
+```sh
+# Terminal 1: start a local relay (self-signed TLS, dev mode)
+irl relay
+
+# Terminal 2: publish to the relay
+irl publish --relay <RELAY_ADDR>
+
+# Open http://localhost:4443/?name=hello in a browser to watch
+```
+
 For a multi-party room (early stage, limited testing):
 
 ```sh
