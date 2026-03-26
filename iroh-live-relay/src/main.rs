@@ -125,7 +125,14 @@ async fn main() -> anyhow::Result<()> {
 
     let tls_info = server.tls_info();
 
-    // Auth: public access (no JWT required)
+    // Auth: public access (no JWT required).
+    //
+    // Authentication is not yet implemented. The relay currently accepts all
+    // connections without verifying identity. Adding auth is straightforward
+    // since MoQ supports token-based authentication — `AuthConfig` already
+    // has fields for issuer URL, audience, and JWT validation. When this is
+    // enabled, clients will need to present a valid token during the
+    // WebTransport handshake.
     let auth_config = AuthConfig {
         public: Some(String::new()),
         ..Default::default()

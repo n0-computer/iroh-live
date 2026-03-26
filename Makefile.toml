@@ -39,15 +39,53 @@ workspace = false
 command = "cargo"
 args = ["check", "--locked", "--workspace", "--all-targets", "--no-default-features"]
 
-[tasks.check]
-description = "cargo check with all features and no-default-features"
+[tasks.check-default-features]
 workspace = false
-dependencies = ["check-all-features", "check-no-default"]
+command = "cargo"
+args = ["check", "--locked", "--workspace", "--all-targets"]
 
-[tasks.clippy]
+[tasks.check]
+description = "cargo check: all features, no-default-features, and default features"
+workspace = false
+dependencies = ["check-all-features", "check-no-default", "check-default-features"]
+
+[tasks.clippy-all-features]
 workspace = false
 command = "cargo"
 args = ["clippy", "--locked", "--workspace", "--all-targets", "--all-features"]
+
+[tasks.clippy-no-default]
+workspace = false
+command = "cargo"
+args = ["clippy", "--locked", "--workspace", "--all-targets", "--no-default-features"]
+
+[tasks.clippy-default-features]
+workspace = false
+command = "cargo"
+args = ["clippy", "--locked", "--workspace", "--all-targets"]
+
+[tasks.clippy]
+description = "clippy: all features, no-default-features, and default features"
+workspace = false
+dependencies = ["clippy-all-features", "clippy-no-default", "clippy-default-features"]
+
+[tasks.clippy-all-features-deny]
+workspace = false
+command = "cargo"
+args = ["clippy", "--locked", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
+
+[tasks.check-all]
+description = "Full check suite: cargo check (3 configs), clippy (3 configs, deny on all-features), fmt"
+workspace = false
+dependencies = [
+    "check-all-features",
+    "check-no-default",
+    "check-default-features",
+    "clippy-all-features-deny",
+    "clippy-no-default",
+    "clippy-default-features",
+    "format-check",
+]
 
 [tasks.test]
 description = "Run workspace tests via nextest (serializes patchbay tests)"

@@ -112,9 +112,12 @@ default features (h264 + av1 + opus).
 ## Lint
 
 ```sh
-cargo clippy --locked --workspace --all-targets --all-features
-cargo fmt --check
+cargo make check-all    # full check: check + clippy + fmt for all feature combos
+cargo make clippy       # clippy only (all features, no features, default features)
+cargo make format       # rustfmt
 ```
+
+Always run `cargo make check-all` before committing (unless only markdown is touched).
 
 ## Shell
 
@@ -123,7 +126,7 @@ cargo fmt --check
 ## Commits
 
 - Small incremental commits, each leaving all crates compiling
-- `cargo clippy --locked --workspace --all-targets --all-features` must be clean (no warnings)
+- `cargo make check-all` must pass (checks all feature combos, clippy, fmt)
 - `cargo fmt --check` must pass
 - **Prefix**: use conventional commit prefixes: `feat:`, `fix:`, `test:`, `refactor:`, `perf:`, `ci:`, `docs:`, `chore:`, `build:`
 - Commit messages: start with *why* (motivation), then any decisions and their reasoning, then cover *what*, then points of note.
