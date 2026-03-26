@@ -188,28 +188,17 @@ impl Live {
 
     /// Subscribes and starts both stat recording and network signal production.
     ///
-    /// Returns the session, broadcast, and a signal receiver for adaptive
-    /// rendition selection. Equivalent to calling [`subscribe`](Self::subscribe)
-    /// followed by [`spawn_stats_recorder`](crate::util::spawn_stats_recorder)
-    /// and [`spawn_signal_producer`](crate::util::spawn_signal_producer).
+    /// Returns a [`Subscription`](crate::Subscription) that owns the session,
+    /// broadcast, and signal receiver. Stats recording and signal production
+    /// are auto-wired by the `Subscription` constructor — callers no longer
+    /// need to call `spawn_stats_recorder` or `spawn_signal_producer` manually.
     pub async fn subscribe_with_stats(
         &self,
         remote: impl Into<EndpointAddr>,
         broadcast_name: &str,
-    ) -> Result<(
-        MoqSession,
-        RemoteBroadcast,
-        tokio::sync::watch::Receiver<moq_media::net::NetworkSignals>,
-    )> {
+    ) -> Result<crate::Subscription> {
         let (session, broadcast) = self.subscribe(remote, broadcast_name).await?;
-        crate::util::spawn_stats_recorder(
-            session.conn(),
-            broadcast.stats().net.clone(),
-            broadcast.shutdown_token(),
-        );
-        let signals =
-            crate::util::spawn_signal_producer(session.conn(), broadcast.shutdown_token());
-        Ok((session, broadcast, signals))
+        Ok(crate::Subscription::new(session, broadcast))
     }
 
     /// Connects to a remote peer, subscribes, and decodes video+audio in one step.

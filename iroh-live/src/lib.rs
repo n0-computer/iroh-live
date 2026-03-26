@@ -8,6 +8,7 @@ mod call;
 mod live;
 /// Multi-party room coordination over gossip.
 pub mod rooms;
+mod subscription;
 /// Ticket types for sharing connection info.
 pub mod ticket;
 mod types;
@@ -22,5 +23,6 @@ pub use moq_media as media;
 pub use self::{
     call::{Call, CallError},
     live::{Live, LiveBuilder},
+    subscription::Subscription,
     types::DisconnectReason,
 };

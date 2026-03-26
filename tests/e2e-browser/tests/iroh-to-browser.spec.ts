@@ -24,19 +24,17 @@ test("CLI publish → browser watch", async ({ page }) => {
   // may not handle.
   const publisher = spawn("cargo", [
     "run",
-    "--example",
-    "publish",
+    "-p", "iroh-live-cli",
+    "--bin", "irl",
     "--",
-    "--test-source",
-    "--no-audio",
-    "--codec",
-    "h264",
-    "--relay",
-    relay.irohAddr,
-    "--name",
-    "hello",
-    "--video-presets",
-    "360p",
+    "publish",
+    "--name", "hello",
+    "--relay", relay.irohAddr,
+    "capture",
+    "--video", "test",
+    "--audio", "none",
+    "--codec", "h264",
+    "--video-presets", "360p",
   ]);
 
   // Wait for publisher to announce

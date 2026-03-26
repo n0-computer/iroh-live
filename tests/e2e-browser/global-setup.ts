@@ -14,7 +14,7 @@ export default function globalSetup() {
   console.log("Pre-building Rust binaries for e2e tests...");
 
   execSync(
-    "cargo build -p iroh-live-relay -p iroh-live --examples",
+    "cargo build -p iroh-live-relay -p iroh-live --examples -p iroh-live-cli",
     {
       cwd: "../..",
       stdio: "inherit",

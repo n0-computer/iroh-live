@@ -115,6 +115,9 @@ struct RemoteTrackView {
 
 impl RemoteTrackView {
     fn new(ctx: &egui::Context, session: MoqSession, track: MediaTracks, id: usize) -> Self {
+        // TODO(ER2): Room events deliver session + broadcast separately, so we
+        // can't use Subscription here yet. Manual stats wiring stays until Room
+        // events are updated to emit Subscriptions directly.
         iroh_live::util::spawn_stats_recorder(
             session.conn(),
             track.broadcast.stats().net.clone(),

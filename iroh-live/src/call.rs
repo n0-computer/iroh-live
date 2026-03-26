@@ -1,7 +1,8 @@
 use iroh::{EndpointAddr, EndpointId, endpoint::ConnectionError};
 use iroh_moq::MoqSession;
-use moq_media::{publish::LocalBroadcast, subscribe::RemoteBroadcast};
+use moq_media::{net::NetworkSignals, publish::LocalBroadcast, subscribe::RemoteBroadcast};
 use n0_error::{AnyError, Result, stack_error};
+use tokio::sync::watch;
 
 use crate::{Live, types::DisconnectReason};
 
@@ -39,6 +40,7 @@ pub struct Call {
     session: MoqSession,
     local: LocalBroadcast,
     remote: RemoteBroadcast,
+    signals: watch::Receiver<NetworkSignals>,
 }
 
 const CALL_BROADCAST_NAME: &str = "call";
@@ -74,6 +76,9 @@ impl Call {
     /// Publishes the local broadcast and subscribes to the remote's "call"
     /// broadcast. Shared setup for both [`dial`](Self::dial) and
     /// [`accept`](Self::accept).
+    ///
+    /// Auto-wires stats recording and network signal production on the
+    /// connection, so callers do not need to do this manually.
     async fn setup(mut session: MoqSession, local: LocalBroadcast) -> Result<Self, CallError> {
         session.publish(CALL_BROADCAST_NAME, local.consume());
 
@@ -85,10 +90,18 @@ impl Call {
             .await
             .map_err(CallError::Rejected)?;
 
+        crate::util::spawn_stats_recorder(
+            session.conn(),
+            remote.stats().net.clone(),
+            remote.shutdown_token(),
+        );
+        let signals = crate::util::spawn_signal_producer(session.conn(), remote.shutdown_token());
+
         Ok(Self {
             session,
             local,
             remote,
+            signals,
         })
     }
 
@@ -110,6 +123,14 @@ impl Call {
     /// Returns a reference to the underlying [`MoqSession`].
     pub fn session(&self) -> &MoqSession {
         &self.session
+    }
+
+    /// Returns the network signals receiver for adaptive rendition selection.
+    ///
+    /// Signals are produced automatically when the call is established —
+    /// callers do not need to call `spawn_signal_producer` manually.
+    pub fn signals(&self) -> &watch::Receiver<NetworkSignals> {
+        &self.signals
     }
 
     /// Closes the call, ending the session.

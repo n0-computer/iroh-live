@@ -4,12 +4,11 @@ use std::time::Duration;
 
 use eframe::egui;
 use iroh_live::{
-    Live,
+    Live, Subscription,
     media::{
         AudioBackend,
         format::{DecodeConfig, PlaybackConfig},
     },
-    moq::MoqSession,
 };
 use moq_media_egui::{create_egui_wgpu_config, overlay::StatCategory};
 use n0_error::anyerr;
@@ -27,7 +26,7 @@ pub fn run(args: PlayArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
     let backend = args.decoder_backend()?;
     let no_video = args.no_video;
 
-    let (live, session, track, audio_ctx, signals, broadcast_name) = rt.block_on(async {
+    let (live, sub, track, audio_ctx, broadcast_name) = rt.block_on(async {
         let audio_ctx = AudioBackend::default();
 
         println!("connecting to {ticket} ...");
@@ -40,21 +39,14 @@ pub fn run(args: PlayArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
             ..Default::default()
         };
 
-        let (session, broadcast, signals) = live
+        let sub = live
             .subscribe_with_stats(ticket.endpoint, &ticket.broadcast_name)
             .await?;
         info!("session established");
-        let track = broadcast.media(&audio_ctx, playback_config).await?;
+        let track = sub.broadcast().media(&audio_ctx, playback_config).await?;
         info!("media tracks subscribed");
 
-        n0_error::Ok((
-            live,
-            session,
-            track,
-            audio_ctx,
-            signals,
-            ticket.broadcast_name,
-        ))
+        n0_error::Ok((live, sub, track, audio_ctx, ticket.broadcast_name))
     })?;
 
     if no_video {
@@ -63,23 +55,22 @@ pub fn run(args: PlayArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
             let _audio = track.audio;
             let _broadcast = track.broadcast;
             tokio::signal::ctrl_c().await?;
-            session.close(0, b"bye");
+            sub.session().close(0, b"bye");
             live.shutdown().await;
             n0_error::Ok(())
         })
     } else {
         // GUI: eframe runs on the main thread, tokio workers stay alive via rt.enter().
         let _guard = rt.enter();
-        run_egui(live, session, track, audio_ctx, signals, broadcast_name)
+        run_egui(live, sub, track, audio_ctx, broadcast_name)
     }
 }
 
 fn run_egui(
     live: Live,
-    session: MoqSession,
+    sub: Subscription,
     track: iroh_live::media::subscribe::MediaTracks,
     audio_ctx: AudioBackend,
-    signals: tokio::sync::watch::Receiver<iroh_live::media::net::NetworkSignals>,
     broadcast_name: String,
 ) -> n0_error::Result {
     let native_options = eframe::NativeOptions {
@@ -94,6 +85,7 @@ fn run_egui(
         Box::new(move |cc| {
             crate::ui::spawn_ctrl_c_handler(&cc.egui_ctx);
 
+            let signals = sub.signals().clone();
             let remote = RemoteControls::new(
                 track.broadcast,
                 track.video,
@@ -107,7 +99,7 @@ fn run_egui(
 
             Ok(Box::new(PlayApp {
                 remote,
-                session,
+                sub,
                 live,
                 mouse: MouseHide::default(),
                 broadcast_name,
@@ -119,7 +111,7 @@ fn run_egui(
 
 struct PlayApp {
     remote: RemoteControls,
-    session: MoqSession,
+    sub: Subscription,
     live: Live,
     mouse: MouseHide,
     broadcast_name: String,
@@ -179,7 +171,7 @@ impl eframe::App for PlayApp {
     fn on_exit(&mut self) {
         info!("exit");
         self.remote.broadcast.shutdown();
-        self.session.close(0, b"bye");
+        self.sub.session().close(0, b"bye");
         crate::ui::shutdown_live_blocking(&self.live);
     }
 }

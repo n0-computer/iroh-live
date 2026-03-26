@@ -33,18 +33,17 @@ test("pull mode: standalone publisher → relay → browser watch", async ({
   // the browser's JS decoder.
   const publisher = spawn("cargo", [
     "run",
-    "--example",
-    "publish",
+    "-p", "iroh-live-cli",
+    "--bin", "irl",
     "--",
-    "--test-source",
-    "--no-audio",
-    "--codec",
-    "h264",
-    "--name",
-    "pull-test",
-    "--video-presets",
-    "360p",
+    "publish",
+    "--name", "pull-test",
     "--no-qr",
+    "capture",
+    "--video", "test",
+    "--audio", "none",
+    "--codec", "h264",
+    "--video-presets", "360p",
   ]);
 
   // Wait for publisher to print its ticket.
