@@ -12,7 +12,6 @@ anyhow = "1.0.100"
 data-encoding = "2.9.0"
 derive_more = { version = "2.0.1", features = ["display", "debug", "eq"] }
 hang = { workspace = true }
-image = { version = "0.25", default-features = false }
 iroh = { workspace = true }
 iroh-gossip = { workspace = true }
 iroh-moq = { workspace = true }

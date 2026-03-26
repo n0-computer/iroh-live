@@ -353,6 +353,10 @@ impl WgpuVideoRenderer {
     /// Runs the NV12→RGBA shader pass using the given Y and UV texture views.
     ///
     /// Shared by the DMA-BUF import, Metal import, and CPU-upload NV12 paths.
+    #[cfg(any(
+        all(target_os = "linux", feature = "dmabuf-import"),
+        all(target_os = "macos", feature = "metal-import"),
+    ))]
     fn render_nv12_from_views(
         &self,
         y_view: &wgpu::TextureView,

@@ -63,16 +63,19 @@ pub struct VideoTarget {
 
 impl VideoTarget {
     /// Limits the maximum pixel count (width × height) for rendition selection.
+    #[must_use]
     pub fn max_pixels(mut self, pixels: u32) -> Self {
         self.max_pixels = Some(pixels);
         self
     }
     /// Limits the maximum bitrate in kilobits per second for rendition selection.
+    #[must_use]
     pub fn max_bitrate_kbps(mut self, kbps: u32) -> Self {
         self.max_bitrate_kbps = Some(kbps);
         self
     }
     /// Pins to a specific rendition by name, bypassing automatic selection.
+    #[must_use]
     pub fn rendition(mut self, name: impl Into<String>) -> Self {
         self.rendition = Some(name.into());
         self
@@ -104,21 +107,25 @@ pub struct VideoOptions {
 
 impl VideoOptions {
     /// Sets the rendition selection target.
+    #[must_use]
     pub fn target(mut self, target: impl Into<VideoTarget>) -> Self {
         self.target = Some(target.into());
         self
     }
     /// Sets the desired quality level for rendition selection.
+    #[must_use]
     pub fn quality(mut self, quality: Quality) -> Self {
         self.target = Some(quality.into());
         self
     }
     /// Sets the viewport dimensions for resolution-aware decoding.
+    #[must_use]
     pub fn viewport(mut self, w: u32, h: u32) -> Self {
         self.viewport = Some((w, h));
         self
     }
     /// Sets the decoder configuration (backend, etc.).
+    #[must_use]
     pub fn playback(mut self, config: DecodeConfig) -> Self {
         self.playback = Some(config);
         self
@@ -161,6 +168,7 @@ pub struct AudioOptions {
 
 impl AudioOptions {
     /// Pins to a specific audio rendition by name.
+    #[must_use]
     pub fn rendition(mut self, name: impl Into<String>) -> Self {
         self.rendition = Some(name.into());
         self
