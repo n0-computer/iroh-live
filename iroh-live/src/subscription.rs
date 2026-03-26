@@ -59,7 +59,6 @@ impl Subscription {
     /// Subscribes to video and audio using default decoders.
     ///
     /// Convenience wrapper around [`RemoteBroadcast::media`].
-    #[cfg(any_codec)]
     pub async fn media(
         &self,
         audio_backend: &dyn moq_media::traits::AudioStreamFactory,

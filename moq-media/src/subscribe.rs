@@ -481,7 +481,6 @@ impl RemoteBroadcast {
     ///
     /// Uses dynamic decoder dispatch (codec determined from the catalog).
     /// For explicit decoder selection, use [`media_with_decoders`](Self::media_with_decoders).
-    #[cfg(any_codec)]
     pub async fn media(
         &self,
         audio_backend: &dyn AudioStreamFactory,
@@ -1076,7 +1075,6 @@ pub async fn subscribe_preview_from_consumer<D: Decoders>(
 ///
 /// Non-generic convenience over [`subscribe_preview_from_consumer`] that uses
 /// [`DefaultDecoders`](crate::codec::DefaultDecoders).
-#[cfg(any_codec)]
 pub async fn subscribe_preview(
     consumer: moq_lite::BroadcastConsumer,
     audio_backend: &dyn crate::traits::AudioStreamFactory,

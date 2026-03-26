@@ -6,6 +6,10 @@ use crate::{
     traits::{AudioDecoder, Decoders, VideoDecoder},
 };
 
+/// Decoder set that dispatches to the appropriate codec at runtime based on
+/// the catalog's codec configuration. Always available regardless of which
+/// codec features are enabled — `new()` returns an error if the required
+/// codec feature is not compiled in.
 #[derive(Debug, Clone, Copy)]
 pub struct DefaultDecoders;
 
@@ -36,20 +40,17 @@ macro_rules! dispatch_video {
             Self::AndroidHwH264(d) => d.$method($($arg),*),
             #[cfg(all(target_os = "android", feature = "android"))]
             Self::AndroidH264(d) => d.$method($($arg),*),
-            // Safety net: any_video_codec is true but no variant matched.
-            // This can only happen if a new video codec feature is added
-            // without updating this macro.
-            #[cfg(not(any(feature = "h264", feature = "av1")))]
-            _ => unreachable!(),
         }
     };
 }
 
 /// Video decoder that dispatches to the appropriate codec-specific decoder
 /// based on the `VideoConfig::codec` field.
+///
+/// Always defined regardless of codec features. Without any video codec
+/// features, the enum is empty and `new()` returns an error.
 #[derive(Debug)]
 #[non_exhaustive]
-#[cfg(any_video_codec)]
 pub enum DynamicVideoDecoder {
     #[cfg(feature = "h264")]
     H264(Box<super::H264VideoDecoder>),
@@ -67,7 +68,6 @@ pub enum DynamicVideoDecoder {
     AndroidH264(Box<super::android::AndroidDecoder>),
 }
 
-#[cfg(any_video_codec)]
 impl VideoDecoder for DynamicVideoDecoder {
     fn new(config: &VideoConfig, playback_config: &DecodeConfig) -> Result<Self>
     where
@@ -156,7 +156,9 @@ impl VideoDecoder for DynamicVideoDecoder {
 
 /// Audio decoder that dispatches to the appropriate codec-specific decoder
 /// based on the `AudioConfig::codec` field.
-#[cfg(any_audio_codec)]
+///
+/// Always defined regardless of codec features. Without any audio codec
+/// features, the enum is empty and `new()` returns an error.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum DynamicAudioDecoder {
@@ -164,7 +166,6 @@ pub enum DynamicAudioDecoder {
     Opus(super::OpusAudioDecoder),
 }
 
-#[cfg(any_audio_codec)]
 impl AudioDecoder for DynamicAudioDecoder {
     fn new(config: &AudioConfig, target_format: AudioFormat) -> Result<Self>
     where
@@ -186,8 +187,6 @@ impl AudioDecoder for DynamicAudioDecoder {
         match self {
             #[cfg(feature = "opus")]
             Self::Opus(d) => d.push_packet(packet),
-            #[cfg(not(feature = "opus"))]
-            _ => unreachable!(),
         }
     }
 
@@ -195,8 +194,6 @@ impl AudioDecoder for DynamicAudioDecoder {
         match self {
             #[cfg(feature = "opus")]
             Self::Opus(d) => d.pop_samples(),
-            #[cfg(not(feature = "opus"))]
-            _ => unreachable!(),
         }
     }
 }
