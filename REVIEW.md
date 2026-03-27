@@ -8,13 +8,13 @@ been removed. Short codes are prefixed by section abbreviation.
 
 ## Bugs and correctness
 
-- [ ] **BUG-1**: Quality-based video rendition selection is broken. `select_video_rendition` builds search keys like `"1080p"` from `VideoPreset::to_string()`, but catalog rendition keys look like `"video/h264-1080p"`. The `contains_key` check never matches, so the function always falls through to `renditions.keys().next()` (lexicographically first). All quality levels produce the same result. Fix: compare by parsing resolution from `VideoConfig.coded_width/coded_height` rather than matching by string name (`subscribe.rs:730-760`). (Previously NR5, ER27.)
+- [x] **BUG-1**: ~~Rendition quality selection broken~~ — Fixed in `4456d77`: `select_rendition` now matches by suffix (`"720p"` matches `"video/h264-720p"`).
 
 - [ ] **BUG-2** *(critical, waiting for macOS)*: VTB decoder leaks an `Arc` refcon. `create_session()` calls `Arc::into_raw(state.clone())` to pass the refcon to `VTDecompressionSession`. The error path reclaims it via `Arc::from_raw`, but `VtbDecoder::Drop` never reclaims it. On SPS-change session recreation, the old refcon also leaks. The encoder's Drop shows the correct pattern. Fix: store the refcon pointer as a field and reclaim in Drop and before session recreation (`vtb/decoder.rs:285, 236-244`). (Previously DR1.)
 
 - [ ] **BUG-3**: `unimplemented!()` panic in `VideoFrame::rgba_image()` for NV12/I420 when `h264`/`av1` features are disabled. The conversion functions should be available without codec features. Returns `&RgbaImage` via `OnceLock::get_or_init`, so can't return `Result` without a signature change (`format.rs:787, 805`). (Previously ER21.) **Action: make conversion functions available without any codec features.**
 
-- [ ] **BUG-4**: `RemoteBroadcast` Drop does not close the shared `Sync` clock. The explicit `shutdown()` method calls `self.sync.close()`, but plain `drop()` does not. If dropped without `shutdown()` (common in error paths and scope exits), decode threads blocked in `Condvar::wait_timeout` remain blocked until the timeout expires. The `CancellationToken` drop guard cancels the token, but the decode thread only checks `shutdown.is_cancelled()` when the condvar returns. Fix: impl `Drop` that calls `self.sync.close()` (`subscribe.rs:230-243`). (Previously NR4.)
+- [x] **BUG-4**: ~~Sync clock not closed on drop~~ — Fixed in `a4189ad`: `SyncInner` implements `Drop`, closing the clock when the last `Arc` handle drops.
 
 - [ ] **BUG-5**: `Rc<Display>` cross-thread drop race in VAAPI decoder. `VaapiGpuFrame` clones `Rc<Display>` on the decode thread; if the frame is dropped on a different thread, the non-atomic refcount is a data race (UB). Blocked on cros-libva using `Rc<Display>` instead of `Arc<Display>` — needs upstream change or `Arc<Mutex<Rc<Display>>>` wrapper (`vaapi/decoder.rs`). (Previously ER5.)
 
