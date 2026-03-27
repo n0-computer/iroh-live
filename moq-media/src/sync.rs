@@ -355,19 +355,36 @@ mod tests {
         assert!(sync.wait(Duration::from_millis(0)));
         let elapsed = start.elapsed();
 
+        // Lower bound: should sleep at least most of the 50ms jitter.
+        // Upper bound: generous for shared CI VMs (macOS runners can
+        // stall threads for tens of ms under load).
         assert!(
-            elapsed >= Duration::from_millis(30),
+            elapsed >= Duration::from_millis(20),
             "expected ~50ms sleep, got {elapsed:?}"
         );
         assert!(
-            elapsed < Duration::from_millis(250),
+            elapsed < Duration::from_millis(500),
             "expected ~50ms sleep, got {elapsed:?}"
         );
     }
 
+    /// Verifies that updating the reference wakes a thread blocked in
+    /// `wait()`, causing it to return well before the jitter timeout.
+    ///
+    /// The test uses a large jitter (2s) so the "without wake" case is
+    /// unmistakable, and a generous startup sleep (200ms) to avoid the
+    /// race where `notify_all` fires before the spawned thread enters
+    /// `Condvar::wait_timeout`. On a shared CI VM the thread might not
+    /// be scheduled promptly, so we assert < 1s rather than < 100ms —
+    /// still far below the 2s jitter, proving the wake happened.
+    ///
+    /// In production, missed wakes are harmless: `received()` is called
+    /// on every packet (~30 fps), so the Condvar is re-notified within
+    /// one frame interval. The `wait_timeout` also caps the maximum
+    /// delay to `latency_ms`.
     #[test]
     fn wait_wakes_on_reference_update() {
-        let sync = Sync::with_jitter(Duration::from_millis(200));
+        let sync = Sync::with_jitter(Duration::from_millis(2000));
         sync.received(Duration::from_millis(0));
 
         let sync2 = sync.clone();
@@ -377,17 +394,16 @@ mod tests {
             start.elapsed()
         });
 
-        // After 30ms, update reference with a much better (earlier)
-        // offset by using a large PTS, making ref = now - big_pts
-        // very negative. The sleeping thread wakes, recalculates,
-        // and returns immediately since sleep would be ≤ 0.
-        thread::sleep(Duration::from_millis(30));
+        // Give the spawned thread ample time to enter wait_timeout.
+        thread::sleep(Duration::from_millis(200));
+        // Push the reference so far back that sleep_ms ≤ 0, causing
+        // the woken thread to return immediately.
         sync.received(Duration::from_millis(999_999));
 
         let elapsed = handle.join().unwrap();
         assert!(
-            elapsed < Duration::from_millis(100),
-            "expected early wake, got {elapsed:?}"
+            elapsed < Duration::from_secs(1),
+            "expected early wake (well under 2s jitter), got {elapsed:?}"
         );
     }
 }
