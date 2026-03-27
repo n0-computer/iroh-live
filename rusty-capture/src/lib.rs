@@ -336,13 +336,15 @@ impl CameraCapturer {
         reason = "mut and push count depend on which platform backends are compiled in"
     )]
     pub fn list_backends() -> Vec<CaptureBackend> {
+        // Order must match `list_all_cameras()` so that backend indexes from
+        // `irl devices` resolve correctly via `BackendRef::Index`.
         let mut backends = Vec::new();
+        #[cfg(all(target_os = "linux", feature = "v4l2"))]
+        backends.push(CaptureBackend::V4l2);
         #[cfg(all(target_os = "linux", feature = "pipewire"))]
         if pipewire_available() {
             backends.push(CaptureBackend::PipeWire);
         }
-        #[cfg(all(target_os = "linux", feature = "v4l2"))]
-        backends.push(CaptureBackend::V4l2);
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple"))]
         backends.push(CaptureBackend::AVFoundation);
         #[cfg(feature = "nokhwa")]
@@ -555,7 +557,8 @@ impl ScreenCapturer {
                     .iter()
                     .find(|m| m.id == id || m.name == id)
                     .ok_or_else(|| format_screen_not_found(id, &monitors))?;
-                Self::with_backend(info.backend, config)
+                let inner = create_screen_for_backend(info, config)?;
+                Ok(Self { inner })
             }
             (Some(b), Some(id)) => {
                 let monitors = list_monitors()?;
@@ -563,7 +566,8 @@ impl ScreenCapturer {
                     .iter()
                     .find(|m| m.backend == b && (m.id == id || m.name == id))
                     .ok_or_else(|| format_screen_not_found(id, &monitors))?;
-                Self::with_backend(info.backend, config)
+                let inner = create_screen_for_backend(info, config)?;
+                Ok(Self { inner })
             }
         }
     }
