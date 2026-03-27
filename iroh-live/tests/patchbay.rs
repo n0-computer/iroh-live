@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use iroh::{Endpoint, SecretKey};
+use iroh::{Endpoint, SecretKey, endpoint::presets};
 use iroh_live::Live;
 use moq_media::{
     adaptive::AdaptiveConfig,
@@ -19,7 +19,7 @@ use moq_media::{
 };
 use n0_tracing_test::traced_test;
 use patchbay::{Lab, LinkCondition, LinkLimits, NodeId};
-use tracing::{info, warn};
+use tracing::info;
 
 // Must run before any threads exist (cargo test harness spawns threads).
 #[ctor::ctor]
@@ -70,7 +70,7 @@ impl PatchbayFixture {
             .spawn({
                 let secret_key = secret_key.clone();
                 |_dev| async move {
-                    Endpoint::builder(iroh::endpoint::presets::N0)
+                    Endpoint::builder(presets::Minimal)
                         .secret_key(secret_key)
                         .bind()
                         .await
@@ -84,7 +84,7 @@ impl PatchbayFixture {
 
         let sub_endpoint = sub_device
             .spawn(|_dev| async move {
-                Endpoint::bind(iroh::endpoint::presets::N0)
+                Endpoint::bind(presets::Minimal)
                     .await
                     .map_err(|e| anyhow::anyhow!("{e:#}"))
             })
@@ -769,7 +769,7 @@ async fn latency_at_split_example_settings() {
         .spawn({
             let secret_key = secret_key.clone();
             |_dev| async move {
-                Endpoint::builder(iroh::endpoint::presets::N0)
+                Endpoint::builder(presets::Minimal)
                     .secret_key(secret_key)
                     .bind()
                     .await
@@ -783,7 +783,7 @@ async fn latency_at_split_example_settings() {
 
     let sub_endpoint = sub_device
         .spawn(|_dev| async move {
-            Endpoint::bind(iroh::endpoint::presets::N0)
+            Endpoint::bind(presets::Minimal)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e:#}"))
         })
@@ -1036,7 +1036,7 @@ async fn adaptive_downgrade_upgrade_under_real_loss() {
         .spawn({
             let secret_key = secret_key.clone();
             |_dev| async move {
-                Endpoint::builder(iroh::endpoint::presets::N0)
+                Endpoint::builder(presets::Minimal)
                     .secret_key(secret_key)
                     .bind()
                     .await
@@ -1050,7 +1050,7 @@ async fn adaptive_downgrade_upgrade_under_real_loss() {
 
     let sub_endpoint = sub_device
         .spawn(|_dev| async move {
-            Endpoint::bind(iroh::endpoint::presets::N0)
+            Endpoint::bind(presets::Minimal)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e:#}"))
         })
@@ -1189,19 +1189,10 @@ async fn adaptive_downgrade_upgrade_under_real_loss() {
         }
     }
     info!(frames_after, upgraded, "adaptive test complete");
-    if frames_after == 0 {
-        // Pipeline stall after heavy loss is a known issue — the decoder or
-        // ordered consumer can get stuck when keyframe groups are lost during
-        // a rendition switch.  Log loudly but don't fail CI; the downgrade
-        // path (the primary assertion) already passed.
-        // TODO: investigate pipeline recovery after loss-induced rendition switch
-        warn!("pipeline stalled: 0 frames after adaptive round-trip (known issue)");
-    } else {
-        assert!(
-            frames_after >= 5,
-            "expected ≥5 frames after adaptive round-trip, got {frames_after}"
-        );
-    }
+    assert!(
+        frames_after >= 5,
+        "expected ≥5 frames after adaptive round-trip, got {frames_after}"
+    );
 
     remote.shutdown();
     publisher.shutdown().await;
@@ -1259,7 +1250,7 @@ impl AvSyncFixture {
             .spawn({
                 let secret_key = secret_key.clone();
                 |_dev| async move {
-                    Endpoint::builder(iroh::endpoint::presets::N0)
+                    Endpoint::builder(presets::Minimal)
                         .secret_key(secret_key)
                         .bind()
                         .await
@@ -1273,7 +1264,7 @@ impl AvSyncFixture {
 
         let sub_endpoint = sub_device
             .spawn(|_dev| async move {
-                Endpoint::bind(iroh::endpoint::presets::N0)
+                Endpoint::bind(presets::Minimal)
                     .await
                     .map_err(|e| anyhow::anyhow!("{e:#}"))
             })

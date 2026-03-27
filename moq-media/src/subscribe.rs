@@ -509,15 +509,20 @@ impl RemoteBroadcast {
             .renditions
             .get(track_name)
             .context("rendition not found")?;
-        let consumer = OrderedConsumer::new(
-            self.broadcast
-                .subscribe_track(&Track {
-                    name: track_name.to_string(),
-                    priority: VIDEO_PRIORITY,
-                })
-                .anyerr()?,
-            max_latency,
+        tracing::debug!(
+            track = track_name,
+            max_latency_ms = max_latency.as_millis(),
+            "subscribing to video rendition"
         );
+        let track_consumer = self
+            .broadcast
+            .subscribe_track(&Track {
+                name: track_name.to_string(),
+                priority: VIDEO_PRIORITY,
+            })
+            .anyerr()?;
+        tracing::debug!(track = track_name, "track subscription created");
+        let consumer = OrderedConsumer::new(track_consumer, max_latency);
         VideoTrack::from_consumer::<D>(
             track_name.to_string(),
             consumer,
@@ -717,6 +722,7 @@ impl RemoteBroadcast {
 
     /// Shuts down this remote broadcast subscription.
     pub fn shutdown(&self) {
+        self.sync.close();
         self.shutdown.cancel();
     }
 }
@@ -771,7 +777,7 @@ impl AudioTrack {
         audio_backend: &dyn AudioStreamFactory,
         opts: PipelineContext,
     ) -> Result<Self> {
-        let source = MoqPacketSource(consumer);
+        let source = MoqPacketSource::new(consumer);
         let config: rusty_codecs::config::AudioConfig = config.into();
         let pipeline =
             AudioDecoderPipeline::new::<D>(name, source, &config, audio_backend, opts).await?;
@@ -823,6 +829,12 @@ enum VideoTrackInner {
         _shutdown_guard: DropGuard,
         _thread: thread::JoinHandle<()>,
     },
+}
+
+impl Drop for VideoTrack {
+    fn drop(&mut self) {
+        tracing::debug!(rendition = %self.rendition(), "VideoTrack dropped");
+    }
 }
 
 impl VideoTrack {
@@ -923,7 +935,7 @@ impl VideoTrack {
         playback_config: &DecodeConfig,
         opts: PipelineContext,
     ) -> Result<Self> {
-        let source = MoqPacketSource(consumer);
+        let source = MoqPacketSource::new(consumer);
         let config: rusty_codecs::config::VideoConfig = config.clone().into();
         let pipeline =
             VideoDecoderPipeline::new::<D>(rendition, source, &config, playback_config, opts)?;
