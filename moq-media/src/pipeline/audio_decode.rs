@@ -246,10 +246,20 @@ fn audio_decode_loop(
         }
 
         // Record audio buffer level every tick.
+        let buf_secs = sink.occupied_seconds();
         stats
             .timing
             .audio_buf_ms
-            .record_ms(Duration::from_secs_f64(sink.occupied_seconds()));
+            .record_ms(Duration::from_secs_f64(buf_secs));
+
+        {
+            throttled_tracing::debug_every!(
+                Duration::from_secs(5),
+                buf_ms = format_args!("{:.0}", buf_secs * 1000.0),
+                lag_ms = format_args!("{:.1}", stats.timing.audio_lag_ms.current()),
+                "adec stats",
+            );
+        }
 
         // Sleep to maintain tick cadence.
         let target = TICK * tick_num as u32;

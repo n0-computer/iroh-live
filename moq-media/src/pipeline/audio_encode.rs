@@ -65,6 +65,7 @@ impl AudioEncoderPipeline {
             let shutdown = shutdown.clone();
             move || {
                 let _guard = span.enter();
+                let codec_name = encoder.name().to_string();
                 info!(config = ?encoder.config(), "encode start");
                 const INTERVAL: Duration = Duration::from_millis(20);
                 let format = source.format();
@@ -73,6 +74,7 @@ impl AudioEncoderPipeline {
                     vec![0.0f32; samples_per_frame as usize * format.channel_count as usize];
                 let start = Instant::now();
                 let mut sink_closed = false;
+                let sample_rate = format.sample_rate;
                 'encode: for tick in 0.. {
                     trace!("tick");
                     if shutdown.is_cancelled() {
@@ -117,6 +119,13 @@ impl AudioEncoderPipeline {
                     if sleep > Duration::ZERO {
                         thread::sleep(sleep);
                     }
+
+                    throttled_tracing::debug_every!(Duration::from_secs(5),
+                        uptime_s = format_args!("{:.0}", start.elapsed().as_secs_f64()),
+                        codec = %codec_name,
+                        sample_rate,
+                        "aenc stats",
+                    );
                 }
                 if !sink_closed {
                     while let Ok(Some(mut pkt)) = encoder.pop_packet() {

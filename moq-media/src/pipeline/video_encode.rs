@@ -67,6 +67,9 @@ impl VideoEncoderPipeline {
                 let mut prev_bitrate_bytes: u64 = 0;
                 let mut prev_bitrate_time = Instant::now();
                 let mut total_bytes: u64 = 0;
+                let source_name = source.name().to_string();
+                let encoder_name = encoder.name().to_string();
+                let mut last_gpu;
                 'encode: loop {
                     let start = Instant::now();
                     if shutdown.is_cancelled() {
@@ -87,6 +90,7 @@ impl VideoEncoderPipeline {
                         continue;
                     };
                     {
+                        last_gpu = frame.is_gpu();
                         let encode_start = Instant::now();
                         if let Err(err) = encoder.push_frame(frame) {
                             error!("encoder push_frame failed: {err:#}");
@@ -133,6 +137,18 @@ impl VideoEncoderPipeline {
                             }
                         }
                         last_frame_time = start;
+
+                        if let Some(ref s) = stats {
+                            throttled_tracing::debug_every!(
+                                Duration::from_secs(5),
+                                fps = format_args!("{:.1}", s.fps.current()),
+                                encode_ms = format_args!("{:.1}", s.encode_ms.current()),
+                                kbps = format_args!("{:.0}", s.bitrate_kbps.current()),
+                                gpu = last_gpu,
+                                path = format_args!("{}/{}", source_name, encoder_name),
+                                "venc stats",
+                            );
+                        }
                     }
                     // Pace to target framerate after encoding a frame.
                     thread::sleep(interval.saturating_sub(start.elapsed()));
