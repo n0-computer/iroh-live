@@ -22,7 +22,7 @@ use rusty_codecs::{
     traits::VideoSource,
 };
 use tokio::sync::{mpsc, watch};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::{
     format::{DecodeConfig, VideoFrame},
@@ -348,6 +348,11 @@ impl AdaptiveVideoTrack {
     /// Checks for a rendition swap from the adaptation task.
     fn check_swap(&mut self) {
         while let Ok(new_track) = self.swap_rx.try_recv() {
+            trace!(
+                old = %self.current.rendition(),
+                new = %new_track.rendition(),
+                "swapping video track"
+            );
             self.current = new_track;
         }
     }

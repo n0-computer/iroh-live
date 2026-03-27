@@ -112,7 +112,7 @@ impl VideoDecoderPipeline {
             let shutdown = shutdown.clone();
             move || {
                 let _guard = span.enter();
-                info!("decode start");
+                info!("decode pipeline start");
                 if let Err(err) = decode_loop(
                     &shutdown,
                     packet_rx,
@@ -124,7 +124,7 @@ impl VideoDecoderPipeline {
                 ) {
                     error!("decoder failed: {err:#}");
                 }
-                info!("decode stop");
+                info!("decode pipeline stop");
                 shutdown.cancel();
             }
         });
@@ -211,6 +211,7 @@ fn decode_loop(
 
     'main: loop {
         if shutdown.is_cancelled() {
+            info!("decode loop: shutdown cancelled");
             break;
         }
 
@@ -229,15 +230,32 @@ fn decode_loop(
                 Ok(packet) => packet,
                 Err(TryRecvError::Empty) => {
                     if buffer.len() <= burst_size {
+                        let wait_start = Instant::now();
                         match input_rx.blocking_recv() {
-                            Some(packet) => packet,
-                            None => break 'main,
+                            Some(packet) => {
+                                let wait = wait_start.elapsed();
+                                if wait > Duration::from_secs(1) {
+                                    tracing::debug!(
+                                        wait_ms = wait.as_millis(),
+                                        waiting_for_keyframe,
+                                        "decode input stall"
+                                    );
+                                }
+                                packet
+                            }
+                            None => {
+                                info!("decode loop: input channel closed");
+                                break 'main;
+                            }
                         }
                     } else {
                         break 'drain;
                     }
                 }
-                Err(TryRecvError::Disconnected) => break 'main,
+                Err(TryRecvError::Disconnected) => {
+                    info!("decode loop: input channel disconnected");
+                    break 'main;
+                }
             };
 
             if waiting_for_keyframe {
@@ -352,11 +370,10 @@ fn decode_loop(
         }
     }
 
-    // Clean shutdown: close the sync so any other thread blocked on it
-    // (shouldn't happen with single-thread decode, but defensive).
-    if let Some(sync) = sync {
-        sync.close();
-    }
+    // Do NOT close the shared Sync here. The Sync belongs to the
+    // RemoteBroadcast and is shared across rendition switches. If the
+    // old pipeline closes it, the replacement pipeline's sync.wait()
+    // returns false immediately, killing the new decode loop.
 
     Ok(())
 }

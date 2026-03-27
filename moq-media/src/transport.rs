@@ -1,9 +1,10 @@
-use std::{fmt, future::Future};
+use std::{fmt, future::Future, time::Duration};
 
 use anyhow::Result;
 use hang::container::OrderedProducer;
 use moq_lite::TrackProducer;
 use tokio::sync::mpsc;
+use tracing::trace;
 
 use crate::format::{EncodedFrame, MediaPacket};
 
@@ -28,7 +29,14 @@ pub trait PacketSink: Send + 'static {
 }
 
 /// Wraps a hang [`OrderedConsumer`](hang::container::OrderedConsumer) as a [`PacketSource`].
-pub struct MoqPacketSource(pub hang::container::OrderedConsumer);
+pub struct MoqPacketSource(pub hang::container::OrderedConsumer, u64);
+
+impl MoqPacketSource {
+    /// Creates a new packet source from an ordered consumer.
+    pub fn new(consumer: hang::container::OrderedConsumer) -> Self {
+        Self(consumer, 0)
+    }
+}
 
 impl fmt::Debug for MoqPacketSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -38,10 +46,28 @@ impl fmt::Debug for MoqPacketSource {
 
 impl PacketSource for MoqPacketSource {
     async fn read(&mut self) -> Result<Option<MediaPacket>> {
+        self.1 += 1;
+        let seq = self.1;
         match self.0.read().await {
-            Ok(Some(frame)) => Ok(Some(frame.into())),
-            Ok(None) => Ok(None),
-            Err(e) => Err(e.into()),
+            Ok(Some(frame)) => {
+                let pkt: MediaPacket = frame.into();
+                throttled_tracing::trace_every!(
+                    Duration::from_secs(2),
+                    seq,
+                    keyframe = pkt.is_keyframe,
+                    pts_ms = pkt.timestamp.as_millis(),
+                    "moq_source: read frame"
+                );
+                Ok(Some(pkt))
+            }
+            Ok(None) => {
+                trace!(seq, "moq_source: stream ended");
+                Ok(None)
+            }
+            Err(e) => {
+                trace!(seq, err = %e, "moq_source: read error");
+                Err(e.into())
+            }
         }
     }
 }
