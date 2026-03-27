@@ -67,7 +67,7 @@ pub fn cameras() -> Result<Vec<CameraInfo>> {
     Ok(result)
 }
 
-/// Opens a camera briefly to query its supported formats.
+/// Opens a camera briefly to query its supported formats, then releases it.
 fn enumerate_formats(index: &CameraIndex) -> Result<Vec<CameraFormat>> {
     let format = RequestedFormat::new::<RgbAFormat>(RequestedFormatType::AbsoluteHighestResolution);
     let mut cam =
@@ -75,6 +75,13 @@ fn enumerate_formats(index: &CameraIndex) -> Result<Vec<CameraFormat>> {
     let nokhwa_formats = cam
         .compatible_camera_formats()
         .context("nokhwa: failed to list compatible formats")?;
+
+    // Explicitly stop any stream nokhwa may have opened during enumeration,
+    // then drop the Camera so the device is fully released before anyone
+    // else tries to open it (CAP14/CAP15).
+    let _ = cam.stop_stream();
+    drop(cam);
+
     let mut formats = Vec::new();
     for cf in nokhwa_formats {
         let Some(pf) = convert_frame_format(cf.format()) else {

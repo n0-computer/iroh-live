@@ -64,8 +64,8 @@ Open items only, grouped by severity.
 
 ### nokhwa backend (`rusty-capture/src/platform/nokhwa_impl.rs`)
 
-- [ ] **CAP14**: Camera resource leak in `enumerate_formats()` — opens `Camera` to query formats but never calls `stop_stream()` or explicitly closes. On platforms with exclusive device access, this can leave the device locked and cause subsequent opens to fail.
-- [ ] **CAP15**: Camera opened twice during discovery — `cameras()` calls `enumerate_formats()` which opens the camera, then `NokhwaCameraCapturer::new()` opens it again. On exclusive-access platforms, the second open can fail if the first didn't fully release.
+- [x] **CAP14**: Camera resource leak in `enumerate_formats()` — opened `Camera` to query formats without closing. Fixed: explicit `stop_stream()` + `drop()` before returning.
+- [x] **CAP15**: Camera opened twice during discovery — `enumerate_formats()` now releases the device before `NokhwaCameraCapturer::new()` opens it.
 - [ ] **CAP16**: Format enumeration errors silently swallowed — `enumerate_formats()` failure produces an empty format list with a `warn!` log. User sees a camera with zero formats, no way to distinguish "camera has no formats" from "query failed".
 
 ---
