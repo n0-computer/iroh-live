@@ -265,7 +265,7 @@ Full workspace review. Findings are new items not tracked in previous reviews.
 
 - [x] **NR3**: ~~Audio encode tick counter overflow after ~248 days~~ — Fixed: `0u64..` + `INTERVAL.mul_f64()`.
 
-- [ ] **NR4**: `RemoteBroadcast` Drop does not close the shared `Sync` clock. `RemoteBroadcast::shutdown()` calls `self.sync.close()`, but plain `drop()` does not. If the `RemoteBroadcast` is dropped without `shutdown()` (common in error paths, early returns, and scope exits), any decode thread blocked in `sync.wait()` will remain blocked in `Condvar::wait_timeout` until the timeout expires. The `CancellationToken` drop guard cancels the token, but the decode thread may be in a `Condvar::wait_timeout` that is not woken by the token — it only checks `shutdown.is_cancelled()` when the condvar returns. Fix: impl `Drop` for `RemoteBroadcast` that calls `self.sync.close()`, or add a shutdown guard alongside the existing `_catalog_task` (`subscribe.rs:230-243`).
+- [x] **NR4**: ~~Sync clock not closed on RemoteBroadcast drop~~ — Fixed: `SyncInner` now implements `Drop`, closing the clock and waking blocked threads when the last `Sync` handle (via `Arc`) is dropped.
 
 - [x] **NR5**: ~~Rendition quality selection broken~~ — Fixed: `select_rendition` now matches by suffix (`"720p"` matches `"video/h264-720p"`) instead of exact key lookup.
 
