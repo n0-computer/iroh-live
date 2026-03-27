@@ -1,6 +1,6 @@
 use iroh_live::media::{
     AudioBackend,
-    capture::{CameraCapturer, ScreenCapturer},
+    capture::{CameraCapturer, CaptureBackend, ScreenCapturer},
     codec::{AudioCodec, VideoCodec},
 };
 
@@ -28,24 +28,46 @@ pub fn run() -> n0_error::Result {
         }
     }
 
-    // Cameras
-    match CameraCapturer::list() {
+    // Cameras (grouped by backend, per-backend indexes)
+    match CameraCapturer::list_all() {
         Ok(cameras) if !cameras.is_empty() => {
             println!("\ncameras:");
-            for (i, cam) in cameras.iter().enumerate() {
-                println!("  {i}: {}", cam.summary());
+            let mut by_backend: Vec<(CaptureBackend, Vec<_>)> = Vec::new();
+            for cam in &cameras {
+                if let Some(entry) = by_backend.iter_mut().find(|(b, _)| *b == cam.backend) {
+                    entry.1.push(cam);
+                } else {
+                    by_backend.push((cam.backend, vec![cam]));
+                }
+            }
+            for (backend, cams) in &by_backend {
+                let bn = backend.cli_name();
+                for (i, cam) in cams.iter().enumerate() {
+                    println!("  cam:{bn}:{i}  {}", cam.summary());
+                }
             }
         }
         Ok(_) => println!("\ncameras: (none found)"),
         Err(e) => println!("\ncameras: error listing — {e:#}"),
     }
 
-    // Screens
-    match ScreenCapturer::list() {
+    // Screens (grouped by backend, per-backend indexes)
+    match ScreenCapturer::list_all() {
         Ok(screens) if !screens.is_empty() => {
             println!("\nscreens:");
-            for (i, mon) in screens.iter().enumerate() {
-                println!("  {i}: {}", mon.summary());
+            let mut by_backend: Vec<(CaptureBackend, Vec<_>)> = Vec::new();
+            for mon in &screens {
+                if let Some(entry) = by_backend.iter_mut().find(|(b, _)| *b == mon.backend) {
+                    entry.1.push(mon);
+                } else {
+                    by_backend.push((mon.backend, vec![mon]));
+                }
+            }
+            for (backend, mons) in &by_backend {
+                let bn = backend.cli_name();
+                for (i, mon) in mons.iter().enumerate() {
+                    println!("  screen:{bn}:{i}  {}", mon.summary());
+                }
             }
         }
         Ok(_) => println!("\nscreens: (none found)"),

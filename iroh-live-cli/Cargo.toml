@@ -57,6 +57,7 @@ v4l2 = ["moq-media/v4l2"]
 
 # Capture
 capture = ["moq-media/capture"]
+capture-all = ["moq-media/capture-all"]
 
 # Rendering
 wgpu = ["moq-media/wgpu", "dep:moq-media-egui"]

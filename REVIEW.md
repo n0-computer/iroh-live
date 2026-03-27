@@ -55,6 +55,19 @@ Open items only, grouped by severity.
 - [ ] **CAP5**: No test for V4L2 DMA-BUF export path (`VIDIOC_EXPBUF`) — regression risk on driver changes
 - [ ] **CAP6**: PipeWire portal thread panics are unobserved — `result_rx.recv_timeout()` catches timeout but not panic (`pipewire.rs:1027-1036`)
 
+### xcap backend (`rusty-capture/src/platform/xcap_impl.rs`)
+
+- [ ] **CAP10**: Monitor resolution change silently updates dimensions mid-stream — `pop_frame()` detects width/height change and updates `self.dimensions`, but downstream encoders cache `format()` at startup. Can cause encoder errors or corrupted frames on monitor hot-plug.
+- [ ] **CAP11**: Monitor ID parse failure silently falls back to index 0 — `id.strip_prefix("xcap-").and_then(|s| s.parse().ok()).unwrap_or(0)` means invalid IDs open the wrong monitor with no error.
+- [ ] **CAP12**: Duplicate `Monitor::all()` enumeration in `new()` — caller already enumerated to get `MonitorInfo`, constructor re-enumerates to find the same monitor by index. Redundant system call, and the two enumerations could return monitors in different order (race).
+- [ ] **CAP13**: `monitors()` uses `unwrap_or(0)` for width/height — creates `MonitorInfo` with 0×0 dimensions that will fail downstream. Should skip the monitor or propagate the error.
+
+### nokhwa backend (`rusty-capture/src/platform/nokhwa_impl.rs`)
+
+- [ ] **CAP14**: Camera resource leak in `enumerate_formats()` — opens `Camera` to query formats but never calls `stop_stream()` or explicitly closes. On platforms with exclusive device access, this can leave the device locked and cause subsequent opens to fail.
+- [ ] **CAP15**: Camera opened twice during discovery — `cameras()` calls `enumerate_formats()` which opens the camera, then `NokhwaCameraCapturer::new()` opens it again. On exclusive-access platforms, the second open can fail if the first didn't fully release.
+- [ ] **CAP16**: Format enumeration errors silently swallowed — `enumerate_formats()` failure produces an empty format list with a `warn!` log. User sees a camera with zero formats, no way to distinguish "camera has no formats" from "query failed".
+
 ---
 
 ## iroh-live

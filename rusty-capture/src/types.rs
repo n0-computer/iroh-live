@@ -39,6 +39,21 @@ impl std::fmt::Display for CaptureBackend {
     }
 }
 
+impl CaptureBackend {
+    /// Returns a short CLI-friendly name suitable for `--video cam:<backend>:<id>`.
+    pub fn cli_name(&self) -> &'static str {
+        match self {
+            Self::PipeWire => "pw",
+            Self::V4l2 => "v4l2",
+            Self::X11 => "x11",
+            Self::ScreenCaptureKit => "sck",
+            Self::AVFoundation => "avf",
+            Self::Xcap => "xcap",
+            Self::Nokhwa => "nokhwa",
+        }
+    }
+}
+
 impl std::str::FromStr for CaptureBackend {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
