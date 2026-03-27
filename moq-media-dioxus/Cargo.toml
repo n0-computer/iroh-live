@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 anyrender_vello = "0.7"
-dioxus-native = { git = "https://github.com/DioxusLabs/blitz", features = ["vello", "system-fonts", "prelude"] }
+dioxus-native = { git = "https://github.com/DioxusLabs/blitz", features = ["vello", "system-fonts", "prelude"], rev = "f83b2bc" }
 moq-media = { workspace = true, features = ["wgpu"] }
 tracing = "0.1"
 wgpu = { version = "27", default-features = false }

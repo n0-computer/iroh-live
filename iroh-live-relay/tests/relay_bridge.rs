@@ -73,10 +73,7 @@ impl TestRelay {
         );
         let noq_addr = server.local_addr().expect("get noq addr");
 
-        let auth_config = moq_relay::AuthConfig {
-            public: Some(String::new()),
-            ..Default::default()
-        };
+        let auth_config = moq_relay::AuthConfig::default();
         let auth = auth_config.init().await.expect("init auth");
 
         let cluster = moq_relay::Cluster::new(moq_relay::ClusterConfig::default(), client);

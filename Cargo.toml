@@ -37,16 +37,16 @@ debug = true
 
 [workspace.dependencies]
 # External
-iroh = "0.97.0"
+iroh = { version = "0.97.0", default-features = false, features = ["metrics", "portmapper", "fast-apple-datapath", "tls-aws-lc-rs"] }
 iroh-gossip = "0.97.0"
 iroh-tickets = "0.4.0"
-iroh-smol-kv = { git = "https://github.com/n0-computer/iroh-smol-kv.git", branch = "iroh-097", default-features = false }
-hang = { git = "https://github.com/Frando/moq.git", branch = "dev" }
-moq-lite = { git = "https://github.com/Frando/moq.git", branch = "dev" }
-moq-mux = { git = "https://github.com/Frando/moq.git", branch = "dev" }
-moq-relay = { git = "https://github.com/Frando/moq.git", branch = "dev", default-features = false }
-moq-native = { git = "https://github.com/Frando/moq.git", branch = "dev", default-features = false }
-web-transport-iroh = { git = "https://github.com/n0-computer/web-transport-iroh.git", branch = "main" }
+iroh-smol-kv = { git = "https://github.com/n0-computer/iroh-smol-kv", branch = "iroh-097", default-features = false }
+hang = { git = "https://github.com/Frando/moq", branch = "deps/iroh-main" }
+moq-lite = { git = "https://github.com/Frando/moq", branch = "deps/iroh-main" }
+moq-mux = { git = "https://github.com/Frando/moq", branch = "deps/iroh-main" }
+moq-relay = { git = "https://github.com/Frando/moq", branch = "deps/iroh-main", default-features = false }
+moq-native = { git = "https://github.com/Frando/moq", branch = "deps/iroh-main", default-features = false }
+web-transport-iroh = { version = "0.2" }
 
 # In-repo crates
 iroh-live = { path = "iroh-live", default-features = false }
@@ -74,17 +74,17 @@ manual_let_else = "warn"
 allow_attributes_without_reason = "warn"
 mod_module_files = "deny"
 
-# [patch."https://github.com/Frando/moq.git"]
-# hang = { path = "../moq/rs/hang" }
-# moq-lite = { path = "../moq/rs/moq-lite" }
-# moq-mux = { path = "../moq/rs/moq-mux" }
-# moq-relay = { path = "../moq/rs/moq-relay" }
-# moq-native = { path = "../moq/rs/moq-native" }
-
 [patch.crates-io]
-iroh = { git = "https://github.com/n0-computer/iroh", branch = "main" }
-iroh-base = { git = "https://github.com/n0-computer/iroh", branch = "main" }
-iroh-relay = { git = "https://github.com/n0-computer/iroh", branch = "main" }
 noq = { git = "https://github.com/n0-computer/noq", branch = "main" }
 noq-proto = { git = "https://github.com/n0-computer/noq", branch = "main" }
 noq-udp = { git = "https://github.com/n0-computer/noq", branch = "main" }
+
+iroh = { git = "https://github.com/n0-computer/iroh", branch = "main" }
+iroh-base = { git = "https://github.com/n0-computer/iroh", branch = "main" }
+iroh-relay = { git = "https://github.com/n0-computer/iroh", branch = "main" }
+iroh-gossip = { git = "https://github.com/n0-computer/iroh-gossip", branch = "deps/iroh-main" }
+
+web-transport-iroh = { git = "https://github.com/Frando/web-transport", branch = "deps/iroh-main" }
+web-transport-noq = { git = "https://github.com/Frando/web-transport", branch = "deps/iroh-main" }
+web-transport-proto = { git = "https://github.com/Frando/web-transport", branch = "deps/iroh-main" }
+web-transport-trait = { git = "https://github.com/Frando/web-transport", branch = "deps/iroh-main" }
