@@ -643,7 +643,8 @@ async fn audio_replace_source_subscriber_still_receives() {
     .await
     .expect("timeout waiting for initial audio");
 
-    // Replace audio source with a fresh one
+    // Replace audio source with a fresh one (same codec + preset, so catalog
+    // content is identical and the dedup logic correctly skips re-publishing).
     broadcast
         .audio()
         .set(
@@ -653,11 +654,10 @@ async fn audio_replace_source_subscriber_still_receives() {
         )
         .unwrap();
 
-    // Wait for catalog update from the replacement
-    tokio::time::timeout(TIMEOUT, watcher.updated())
-        .await
-        .expect("timeout waiting for catalog update after audio replace")
-        .expect("catalog watcher disconnected");
+    // Give the pipeline a moment to process the replacement. No catalog update
+    // is expected because the config is identical — the dedup in
+    // CatalogProducer correctly avoids sending duplicate catalogs.
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
     assert!(
         remote.has_audio(),
