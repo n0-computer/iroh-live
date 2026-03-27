@@ -43,18 +43,32 @@ pub struct TransportArgs {
 // Source spec parsing
 // ---------------------------------------------------------------------------
 
+/// References a capture backend by name or by index from `list_backends()`.
+#[derive(Debug, Clone)]
+pub enum BackendRef {
+    Name(CaptureBackend),
+    Index(usize),
+}
+
+/// References a capture device by platform ID or by index from the device list.
+#[derive(Debug, Clone)]
+pub enum DeviceRef {
+    Name(String),
+    Index(usize),
+}
+
 /// Parsed video source specification from CLI `--video` values.
 #[derive(Debug, Clone)]
 pub enum VideoSourceSpec {
     DefaultCamera,
     Camera {
-        backend: Option<CaptureBackend>,
-        id: Option<String>,
+        backend: Option<BackendRef>,
+        device: Option<DeviceRef>,
     },
     DefaultScreen,
     Screen {
-        backend: Option<CaptureBackend>,
-        id: Option<String>,
+        backend: Option<BackendRef>,
+        device: Option<DeviceRef>,
     },
     Test,
     None,
@@ -63,24 +77,35 @@ pub enum VideoSourceSpec {
 impl VideoSourceSpec {
     /// Parses a `--video` CLI value.
     ///
-    /// Forms: `cam`, `cam:<id>`, `cam:<backend>:<id>`,
-    ///        `screen`, `screen:<id>`, `screen:<backend>:<id>`,
+    /// Forms: `cam`, `cam:<device>`, `cam:<backend>:<device>`,
+    ///        `screen`, `screen:<device>`, `screen:<backend>:<device>`,
     ///        `test`, `none`.
+    ///
+    /// Both backend and device accept names or numeric indices from
+    /// `irl devices`. For example, `cam:0` selects the first camera,
+    /// `cam:v4l2:1` selects V4L2 camera at index 1, and `cam:0:1`
+    /// selects camera 1 from backend 0.
     pub fn parse(s: &str) -> Result<Self, String> {
         let parts: Vec<&str> = s.split(':').collect();
         match parts[0].to_lowercase().as_str() {
-            "cam" | "camera" => parse_device_spec(&parts[1..]).map(|(b, id)| {
-                if b.is_none() && id.is_none() {
+            "cam" | "camera" => parse_device_spec(&parts[1..]).map(|(b, d)| {
+                if b.is_none() && d.is_none() {
                     Self::DefaultCamera
                 } else {
-                    Self::Camera { backend: b, id }
+                    Self::Camera {
+                        backend: b,
+                        device: d,
+                    }
                 }
             }),
-            "screen" => parse_device_spec(&parts[1..]).map(|(b, id)| {
-                if b.is_none() && id.is_none() {
+            "screen" => parse_device_spec(&parts[1..]).map(|(b, d)| {
+                if b.is_none() && d.is_none() {
                     Self::DefaultScreen
                 } else {
-                    Self::Screen { backend: b, id }
+                    Self::Screen {
+                        backend: b,
+                        device: d,
+                    }
                 }
             }),
             "test" => Ok(Self::Test),
@@ -93,21 +118,39 @@ impl VideoSourceSpec {
     }
 }
 
-fn parse_device_spec(parts: &[&str]) -> Result<(Option<CaptureBackend>, Option<String>), String> {
+fn parse_device_spec(parts: &[&str]) -> Result<(Option<BackendRef>, Option<DeviceRef>), String> {
     match parts.len() {
         0 => Ok((None, None)),
         1 => {
+            // Single segment: try backend name first, then device index, then device name.
             if let Ok(backend) = parts[0].parse::<CaptureBackend>() {
-                Ok((Some(backend), None))
+                Ok((Some(BackendRef::Name(backend)), None))
+            } else if let Ok(idx) = parts[0].parse::<usize>() {
+                Ok((None, Some(DeviceRef::Index(idx))))
             } else {
-                Ok((None, Some(parts[0].to_string())))
+                Ok((None, Some(DeviceRef::Name(parts[0].to_string()))))
             }
         }
         2 => {
-            let backend = parts[0].parse::<CaptureBackend>()?;
-            Ok((Some(backend), Some(parts[1].to_string())))
+            // Two segments: backend (name or index) + device (index or name).
+            let backend = if let Ok(b) = parts[0].parse::<CaptureBackend>() {
+                BackendRef::Name(b)
+            } else if let Ok(idx) = parts[0].parse::<usize>() {
+                BackendRef::Index(idx)
+            } else {
+                return Err(format!(
+                    "unknown backend '{}'. Run `irl devices` to list backends.",
+                    parts[0]
+                ));
+            };
+            let device = if let Ok(idx) = parts[1].parse::<usize>() {
+                DeviceRef::Index(idx)
+            } else {
+                DeviceRef::Name(parts[1].to_string())
+            };
+            Ok((Some(backend), Some(device)))
         }
-        _ => Err("too many ':' segments; expected at most backend:id".to_string()),
+        _ => Err("too many ':' segments; expected at most backend:device".to_string()),
     }
 }
 
@@ -137,8 +180,10 @@ impl AudioSourceSpec {
 
 #[derive(Args, Debug)]
 pub struct CaptureArgs {
-    /// Video source: cam[:<id>], screen[:<backend>:<id>], test, none.
+    /// Video source: cam[:<backend>:<device>], screen[:<backend>:<device>], test, none.
     ///
+    /// Backend and device accept names or numeric indices from `irl devices`.
+    /// Examples: cam:0, cam:v4l2:1, screen:pw:0, screen:0.
     /// When any --video is given, no default source is added.
     /// Multiple --video flags publish multiple sources.
     /// Without --video, defaults to first camera.
@@ -240,7 +285,7 @@ pub struct PublishArgs {
     pub transport: TransportArgs,
 
     /// Open egui preview window with controls (capture only).
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub preview: bool,
 }
 

@@ -71,6 +71,7 @@ objc2-app-kit = { version = "0.3", optional = true, features = ["NSScreen", "NSG
 
 [features]
 default = ["camera", "screen"]
+all = ["camera", "screen", "xcap", "nokhwa", "x11"]
 
 # Capability features — what consumers should use.
 camera = ["camera-linux", "camera-apple"]

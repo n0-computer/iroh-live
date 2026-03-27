@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use iroh_live::media::{
     AudioBackend,
-    capture::{CameraCapturer, CameraConfig, ScreenCapturer, ScreenConfig},
+    capture::{CameraCapturer, CameraConfig, CaptureBackend, ScreenCapturer, ScreenConfig},
     codec::{AudioCodec, VideoCodec},
     format::{AudioPreset, VideoPreset},
     publish::LocalBroadcast,
@@ -15,7 +15,7 @@ use moq_media::test_sources::TestToneSource;
 #[cfg(all(target_os = "linux", feature = "capture"))]
 use tracing::{debug, warn};
 
-use crate::args::{AudioSourceSpec, VideoSourceSpec};
+use crate::args::{AudioSourceSpec, BackendRef, DeviceRef, VideoSourceSpec};
 
 // ---------------------------------------------------------------------------
 // PipeWire restore token persistence
@@ -117,6 +117,120 @@ fn setup_screen_source(
     Ok(())
 }
 
+/// Resolves a [`BackendRef`] to a concrete [`CaptureBackend`].
+fn resolve_backend(r: &BackendRef, available: &[CaptureBackend]) -> anyhow::Result<CaptureBackend> {
+    match r {
+        BackendRef::Name(b) => Ok(*b),
+        BackendRef::Index(idx) => available.get(*idx).copied().ok_or_else(|| {
+            let names: Vec<_> = available.iter().map(|b| b.cli_name()).collect();
+            anyhow::anyhow!(
+                "backend index {idx} out of range (available: {names:?}). \
+                 Run `irl devices` to list backends."
+            )
+        }),
+    }
+}
+
+/// Resolves a camera from [`BackendRef`] + [`DeviceRef`].
+///
+/// Uses `list_all()` so that non-preferred backends (nokhwa, pipewire when
+/// v4l2 is also compiled) are reachable. Once the camera is identified we
+/// open it directly via `with_config()` to avoid re-listing through the
+/// preferred-backend-only `open()` path.
+fn resolve_camera(
+    backend: Option<&BackendRef>,
+    device: Option<&DeviceRef>,
+) -> anyhow::Result<CameraCapturer> {
+    let cameras = CameraCapturer::list_all()?;
+    let resolved_backend = backend
+        .map(|b| resolve_backend(b, &CameraCapturer::list_backends()))
+        .transpose()?;
+
+    // Filter by backend if specified.
+    let filtered: Vec<_> = if let Some(b) = resolved_backend {
+        cameras.iter().filter(|c| c.backend == b).collect()
+    } else {
+        cameras.iter().collect()
+    };
+
+    let info = match device {
+        Some(DeviceRef::Index(idx)) => filtered.get(*idx).copied().ok_or_else(|| {
+            anyhow::anyhow!(
+                "camera index {idx} out of range ({} available). \
+                 Run `irl devices` to list cameras.",
+                filtered.len()
+            )
+        })?,
+        Some(DeviceRef::Name(name)) => filtered
+            .iter()
+            .find(|c| c.id == name.as_str() || c.name == name.as_str())
+            .copied()
+            .ok_or_else(|| {
+                let available: Vec<String> = filtered.iter().map(|c| c.summary()).collect();
+                anyhow::anyhow!(
+                    "camera '{name}' not found. Available:\n  {}",
+                    available.join("\n  ")
+                )
+            })?,
+        None => filtered.first().copied().ok_or_else(|| {
+            if let Some(b) = resolved_backend {
+                anyhow::anyhow!("no cameras on backend {b}. Run `irl devices` to list cameras.",)
+            } else {
+                anyhow::anyhow!("no cameras available. Run `irl devices` to list cameras.")
+            }
+        })?,
+    };
+
+    CameraCapturer::with_config(Some(info), &CameraConfig::default())
+}
+
+/// Resolves a screen from [`BackendRef`] + [`DeviceRef`] to `(backend, id)`.
+///
+/// Uses `list_all()` so non-preferred backends are reachable, then returns
+/// the concrete backend + id pair for `setup_screen_source`.
+fn resolve_screen(
+    backend: Option<&BackendRef>,
+    device: Option<&DeviceRef>,
+) -> anyhow::Result<(Option<CaptureBackend>, Option<String>)> {
+    let screens = ScreenCapturer::list_all()?;
+    let resolved_backend = backend
+        .map(|b| resolve_backend(b, &ScreenCapturer::list_backends()))
+        .transpose()?;
+
+    let filtered: Vec<_> = if let Some(b) = resolved_backend {
+        screens.iter().filter(|s| s.backend == b).collect()
+    } else {
+        screens.iter().collect()
+    };
+
+    match device {
+        Some(DeviceRef::Index(idx)) => {
+            let info = filtered.get(*idx).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "screen index {idx} out of range ({} available). \
+                     Run `irl devices` to list screens.",
+                    filtered.len()
+                )
+            })?;
+            Ok((Some(info.backend), Some(info.id.clone())))
+        }
+        Some(DeviceRef::Name(name)) => {
+            let info = filtered
+                .iter()
+                .find(|s| s.id == name.as_str() || s.name == name.as_str())
+                .ok_or_else(|| {
+                    let available: Vec<String> = filtered.iter().map(|s| s.summary()).collect();
+                    anyhow::anyhow!(
+                        "screen '{name}' not found. Available:\n  {}",
+                        available.join("\n  ")
+                    )
+                })?;
+            Ok((Some(info.backend), Some(info.id.clone())))
+        }
+        None => Ok((resolved_backend, None)),
+    }
+}
+
 /// Configures video sources on the broadcast from parsed CLI specs.
 pub fn setup_video(
     broadcast: &LocalBroadcast,
@@ -144,15 +258,16 @@ pub fn setup_video(
                     .video()
                     .set_source(CameraCapturer::new()?, codec, presets.to_vec())?;
             }
-            VideoSourceSpec::Camera { backend, id } => {
-                let cam = CameraCapturer::open(*backend, id.as_deref(), &CameraConfig::default())?;
+            VideoSourceSpec::Camera { backend, device } => {
+                let cam = resolve_camera(backend.as_ref(), device.as_ref())?;
                 broadcast.video().set_source(cam, codec, presets.to_vec())?;
             }
             VideoSourceSpec::DefaultScreen => {
                 setup_screen_source(broadcast, None, None, codec, presets)?;
             }
-            VideoSourceSpec::Screen { backend, id } => {
-                setup_screen_source(broadcast, *backend, id.as_deref(), codec, presets)?;
+            VideoSourceSpec::Screen { backend, device } => {
+                let (b, id) = resolve_screen(backend.as_ref(), device.as_ref())?;
+                setup_screen_source(broadcast, b, id.as_deref(), codec, presets)?;
             }
         }
     }

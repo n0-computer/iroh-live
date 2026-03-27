@@ -117,6 +117,7 @@ fn pipewire_camera_placeholder() -> CameraInfo {
 
 // ── Backend dispatch ────────────────────────────────────────────────
 
+/// Lists monitors from the preferred backend (priority cascade).
 #[allow(
     unreachable_code,
     reason = "cfg-gated returns may make trailing code unreachable"
@@ -143,6 +144,30 @@ fn list_monitors() -> anyhow::Result<Vec<MonitorInfo>> {
     )
 }
 
+/// Lists monitors from all compiled-in backends.
+#[allow(unused_mut, reason = "push count depends on compiled backends")]
+fn list_all_monitors() -> anyhow::Result<Vec<MonitorInfo>> {
+    let mut all = Vec::new();
+    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    if pipewire_available() {
+        all.push(pipewire_monitor_placeholder());
+    }
+    #[cfg(all(target_os = "linux", feature = "x11"))]
+    if let Ok(monitors) = platform::linux::x11::monitors() {
+        all.extend(monitors);
+    }
+    #[cfg(all(target_os = "macos", feature = "screen-apple"))]
+    if let Ok(monitors) = platform::apple::screen::monitors() {
+        all.extend(monitors);
+    }
+    #[cfg(feature = "xcap")]
+    if let Ok(monitors) = platform::xcap_impl::monitors() {
+        all.extend(monitors);
+    }
+    Ok(all)
+}
+
+/// Lists cameras from the preferred backend (priority cascade).
 #[allow(
     unreachable_code,
     reason = "cfg-gated returns may make trailing code unreachable"
@@ -169,6 +194,29 @@ fn list_cameras() -> anyhow::Result<Vec<CameraInfo>> {
     )
 }
 
+/// Lists cameras from all compiled-in backends.
+#[allow(unused_mut, reason = "push count depends on compiled backends")]
+fn list_all_cameras() -> anyhow::Result<Vec<CameraInfo>> {
+    let mut all = Vec::new();
+    #[cfg(all(target_os = "linux", feature = "v4l2"))]
+    if let Ok(cameras) = platform::linux::v4l2::cameras() {
+        all.extend(cameras);
+    }
+    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    if pipewire_available() {
+        all.push(pipewire_camera_placeholder());
+    }
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple"))]
+    if let Ok(cameras) = platform::apple::camera::cameras() {
+        all.extend(cameras);
+    }
+    #[cfg(feature = "nokhwa")]
+    if let Ok(cameras) = platform::nokhwa_impl::cameras() {
+        all.extend(cameras);
+    }
+    Ok(all)
+}
+
 #[allow(
     unreachable_code,
     reason = "cfg-gated returns may make trailing code unreachable"
@@ -177,26 +225,29 @@ fn create_camera_backend(
     info: &CameraInfo,
     config: &CameraConfig,
 ) -> anyhow::Result<Box<dyn VideoSource>> {
-    #[cfg(all(target_os = "linux", feature = "pipewire"))]
-    if info.id == "pipewire-portal" {
-        return Ok(Box::new(PipeWireCameraCapturer::new(config)?));
+    match info.backend {
+        #[cfg(all(target_os = "linux", feature = "pipewire"))]
+        CaptureBackend::PipeWire => Ok(Box::new(PipeWireCameraCapturer::new(config)?)),
+        #[cfg(all(target_os = "linux", feature = "v4l2"))]
+        CaptureBackend::V4l2 => Ok(Box::new(V4l2CameraCapturer::new(info, config)?)),
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple"))]
+        CaptureBackend::AVFoundation => Ok(Box::new(AppleCameraCapturer::new(info, config)?)),
+        #[cfg(feature = "nokhwa")]
+        CaptureBackend::Nokhwa => Ok(Box::new(NokhwaCameraCapturer::new(info, config)?)),
+        _ => {
+            let _ = (info, config);
+            anyhow::bail!(
+                "camera backend {} is not available on this platform",
+                info.backend
+            )
+        }
     }
-    #[cfg(all(target_os = "linux", feature = "v4l2"))]
-    {
-        return Ok(Box::new(V4l2CameraCapturer::new(info, config)?));
-    }
-    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple"))]
-    {
-        return Ok(Box::new(AppleCameraCapturer::new(info, config)?));
-    }
-    #[cfg(feature = "nokhwa")]
-    if info.backend == CaptureBackend::Nokhwa {
-        return Ok(Box::new(NokhwaCameraCapturer::new(info, config)?));
-    }
-    let _ = (info, config);
-    anyhow::bail!("no camera capture backend available on this platform")
 }
 
+/// Creates a screen backend for a specific monitor.
+///
+/// When `monitor` is provided, dispatches based on `monitor.backend`.
+/// When `None`, uses the preferred-backend cascade (same as `list_monitors`).
 #[allow(
     unreachable_code,
     reason = "cfg-gated returns may make trailing code unreachable"
@@ -205,45 +256,63 @@ fn create_screen_backend(
     monitor: Option<&MonitorInfo>,
     config: &ScreenConfig,
 ) -> anyhow::Result<Box<dyn VideoSource>> {
+    // When a specific monitor is given, dispatch on its backend directly.
+    if let Some(mon) = monitor {
+        return create_screen_for_backend(mon, config);
+    }
+
+    // No monitor specified — use preferred-backend cascade.
     #[cfg(all(target_os = "linux", feature = "pipewire"))]
     if pipewire_available() {
         return Ok(Box::new(PipeWireScreenCapturer::new(config)?));
     }
     #[cfg(all(target_os = "linux", feature = "x11"))]
     {
-        let mon = match monitor {
-            Some(m) => m.clone(),
-            None => list_monitors()?
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("no monitors available"))?,
-        };
+        let mon = list_monitors()?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("no monitors available"))?;
         return Ok(Box::new(X11ScreenCapturer::new(&mon, config)?));
     }
     #[cfg(all(target_os = "macos", feature = "screen-apple"))]
     {
-        let mon = match monitor {
-            Some(m) => m.clone(),
-            None => list_monitors()?
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("no monitors available"))?,
-        };
+        let mon = list_monitors()?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("no monitors available"))?;
         return Ok(Box::new(MacScreenCapturer::new(&mon, config)?));
     }
     #[cfg(feature = "xcap")]
     {
-        let mon = match monitor {
-            Some(m) => m.clone(),
-            None => list_monitors()?
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("no monitors available"))?,
-        };
+        let mon = list_monitors()?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("no monitors available"))?;
         return Ok(Box::new(XcapScreenCapturer::new(&mon, config)?));
     }
-    let _ = (monitor, config);
+    let _ = config;
     anyhow::bail!("no screen capture backend available on this platform")
+}
+
+/// Dispatches to the correct screen backend based on the monitor's backend field.
+fn create_screen_for_backend(
+    monitor: &MonitorInfo,
+    config: &ScreenConfig,
+) -> anyhow::Result<Box<dyn VideoSource>> {
+    match monitor.backend {
+        #[cfg(all(target_os = "linux", feature = "pipewire"))]
+        CaptureBackend::PipeWire => Ok(Box::new(PipeWireScreenCapturer::new(config)?)),
+        #[cfg(all(target_os = "linux", feature = "x11"))]
+        CaptureBackend::X11 => Ok(Box::new(X11ScreenCapturer::new(monitor, config)?)),
+        #[cfg(all(target_os = "macos", feature = "screen-apple"))]
+        CaptureBackend::ScreenCaptureKit => Ok(Box::new(MacScreenCapturer::new(monitor, config)?)),
+        #[cfg(feature = "xcap")]
+        CaptureBackend::Xcap => Ok(Box::new(XcapScreenCapturer::new(monitor, config)?)),
+        _ => anyhow::bail!(
+            "screen backend {} is not available on this platform",
+            monitor.backend
+        ),
+    }
 }
 
 // ── High-level capturers ────────────────────────────────────────────
@@ -281,9 +350,14 @@ impl CameraCapturer {
         backends
     }
 
-    /// Lists available cameras.
+    /// Lists cameras from the default (preferred) backend.
     pub fn list() -> anyhow::Result<Vec<CameraInfo>> {
         list_cameras()
+    }
+
+    /// Lists cameras from all compiled-in backends.
+    pub fn list_all() -> anyhow::Result<Vec<CameraInfo>> {
+        list_all_cameras()
     }
 
     /// Opens the default camera with [`CameraSelector::HighestResolution`].
@@ -447,9 +521,14 @@ impl ScreenCapturer {
         backends
     }
 
-    /// Lists available monitors for screen capture.
+    /// Lists monitors from the default (preferred) backend.
     pub fn list() -> anyhow::Result<Vec<MonitorInfo>> {
         list_monitors()
+    }
+
+    /// Lists monitors from all compiled-in backends.
+    pub fn list_all() -> anyhow::Result<Vec<MonitorInfo>> {
+        list_all_monitors()
     }
 
     /// Opens the default (primary) monitor for screen capture.
