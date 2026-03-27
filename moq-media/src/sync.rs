@@ -58,6 +58,17 @@ pub struct Sync {
     inner: Arc<SyncInner>,
 }
 
+/// Closes the sync clock when the last `Sync` handle is dropped, waking
+/// any decode threads still blocked in `wait()`. Without this, threads
+/// would block until their condvar timeout expires after all
+/// `RemoteBroadcast` clones are gone.
+impl Drop for SyncInner {
+    fn drop(&mut self) {
+        self.state.get_mut().unwrap().closed = true;
+        self.notify.notify_all();
+    }
+}
+
 #[derive(Debug)]
 struct SyncInner {
     /// Wall-clock epoch set at construction. `base.elapsed()` gives us
