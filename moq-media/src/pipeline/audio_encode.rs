@@ -75,7 +75,7 @@ impl AudioEncoderPipeline {
                 let start = Instant::now();
                 let mut sink_closed = false;
                 let sample_rate = format.sample_rate;
-                'encode: for tick in 0.. {
+                'encode: for tick in 0u64.. {
                     trace!("tick");
                     if shutdown.is_cancelled() {
                         break;
@@ -110,7 +110,7 @@ impl AudioEncoderPipeline {
                             break;
                         }
                     }
-                    let expected_time = (tick + 1) * INTERVAL;
+                    let expected_time = INTERVAL.mul_f64((tick + 1) as f64);
                     let elapsed = start.elapsed();
                     if elapsed > expected_time {
                         warn!("audio encoder too slow by {:?}", elapsed - expected_time);
