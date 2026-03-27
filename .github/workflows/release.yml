@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  push:
+    branches: [dev]  # TODO: change to main after merge
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            os: ubuntu-22.04
+            artifact: irl-linux-amd64
+          - name: linux-aarch64
+            os: ubuntu-22.04-arm
+            artifact: irl-linux-aarch64
+          - name: macos-aarch64
+            os: macos-14
+            artifact: irl-macos-aarch64
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: release-${{ matrix.name }}
+
+      - name: Install system deps (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev \
+            libegl-dev libgbm-dev libdrm-dev libfontconfig-dev \
+            libva-dev nasm
+
+      - name: Install system deps (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: brew install libtool automake
+
+      - name: Build release binary
+        run: cargo build --locked --release -p iroh-live-cli --all-features
+
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          cp target/release/irl dist/${{ matrix.artifact }}
+          chmod +x dist/${{ matrix.artifact }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+          retention-days: 7
+
+  release:
+    name: Publish rolling release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          for dir in artifacts/irl-*; do
+            name=$(basename "$dir")
+            cp "$dir/$name" "release/$name"
+            chmod +x "release/$name"
+          done
+          cd release && sha256sum irl-* > SHA256SUMS
+
+      - name: Create or update rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BUILD_DATE="$(date -u '+%Y-%m-%d %H:%M UTC')"
+
+          # Delete existing rolling release if present
+          gh release delete rolling-release --yes 2>/dev/null || true
+          git tag -f rolling-release HEAD
+          git push -f origin rolling-release
+
+          gh release create rolling-release release/* \
+            --title "Development build" \
+            --notes "$(cat <<EOF
+          Rolling development build from \`dev\` branch.
+
+          **Commit:** ${{ github.sha }}
+          **Built:** ${BUILD_DATE}
+
+          ### Platform notes
+          - **linux-amd64**: Ubuntu 22.04, glibc 2.35
+          - **linux-aarch64**: Ubuntu 22.04 ARM, glibc 2.35
+          - **macos-aarch64**: macOS 14, Apple Silicon
+
+          ### Included features
+          All codecs (H.264, Opus, AV1), PipeWire capture, wgpu rendering,
+          VAAPI hardware encoding (Linux), VideoToolbox (macOS).
+          EOF
+          )" \
+            --prerelease

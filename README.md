@@ -1,10 +1,10 @@
 # iroh-live
 
 > **Early tech preview.** We are early in development and several parts remain
-> unfinished. Among the most prominent gaps right now: audio and video play
-> without synchronization, Windows support is mostly missing, on-device
-> testing has been very limited, the room feature is functional but lightly
-> tested, and the relay has no authentication yet.
+> unfinished. Among the most prominent gaps right now: Windows support is 
+> mostly missing, on-device testing has been very limited, audio-video sync
+> is quite basic, the room feature is functional but lightly tested, and the 
+> relay has no authentication yet. Frequent API changes are still to be expected.
 
 Real-time audio and video over [iroh](https://github.com/n0-computer/iroh)
 (QUIC), written in Rust. iroh-live handles the full pipeline from camera
@@ -62,6 +62,10 @@ irl room <TICKET>
 ```
 
 ## Using iroh-live in Rust
+
+> **Note**: Right now iroh-live uses unreleased versions of several crates.
+> Downstream users should copy the `[patch.crates-io]` section of [Cargo.toml](Cargo.toml)
+> for now.
 
 The `iroh-live` crate provides the high-level API. A minimal publisher that
 captures camera and microphone, encodes them, and prints a ticket:
@@ -219,8 +223,8 @@ shows the flags relevant to `iroh-live` (which delegates to `moq-media` and
 Open items and known issues are tracked in the
 [issue tracker](https://github.com/n0-computer/iroh-live/issues) and in
 [REVIEW.md](REVIEW.md). The [plans/](plans/PLANS.md) directory contains
-explorations of potential next steps rather than a fixed roadmap. Architecture
-documentation is in [docs/](docs/index.md).
+explorations of potential next steps. Architecture documentation is in 
+[docs/](docs/index.md).
 
 ```sh
 # Full check (all feature combinations, clippy, fmt)
