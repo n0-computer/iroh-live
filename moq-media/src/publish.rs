@@ -518,6 +518,8 @@ impl Drop for LocalBroadcast {
 struct CatalogProducer {
     track: TrackProducer,
     catalog: Catalog,
+    /// Last published catalog bytes, used to skip duplicate publishes.
+    last_published: Option<String>,
 }
 
 impl CatalogProducer {
@@ -526,7 +528,11 @@ impl CatalogProducer {
             .create_track(hang::Catalog::default_track())
             .anyerr()?;
         let catalog = Catalog::default();
-        let mut this = Self { track, catalog };
+        let mut this = Self {
+            track,
+            catalog,
+            last_published: None,
+        };
         this.publish()?;
         Ok(this)
     }
@@ -544,11 +550,14 @@ impl CatalogProducer {
     }
 
     fn publish(&mut self) -> Result<()> {
+        let serialized = self.catalog.to_string().anyerr()?;
+        if self.last_published.as_ref() == Some(&serialized) {
+            return Ok(());
+        }
         let mut group = self.track.append_group().anyerr()?;
-        group
-            .write_frame(self.catalog.to_string().anyerr()?)
-            .anyerr()?;
+        group.write_frame(serialized.clone()).anyerr()?;
         group.finish().anyerr()?;
+        self.last_published = Some(serialized);
         Ok(())
     }
 }
