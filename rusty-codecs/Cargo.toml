@@ -19,7 +19,6 @@ hang = { workspace = true, optional = true }
 image = { version = "0.25", default-features = false }
 n0-future = "0.3.1"
 pic-scale = "0.6"
-serde = { version = "1.0.228", features = ["derive"] }
 strum = { version = "0.28", features = ["derive"] }
 throttled-tracing = "0.1.0"
 tracing = "0.1.41"
@@ -39,8 +38,6 @@ wgpu-hal = { version = "27", optional = true, default-features = false }
 [target.'cfg(target_os = "linux")'.dependencies]
 cros-codecs = { version = "0.0.6", optional = true }
 ash = { version = "0.38", optional = true, default-features = false }
-gbm = { version = "0.18", optional = true }
-drm-fourcc = { version = "2.2", optional = true }
 v4l2r = { version = "0.0.7", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
@@ -75,6 +72,6 @@ media-foundation = []
 android = ["dep:ndk"]
 gles = ["dep:glow"]
 gles-dmabuf = ["gles"]
-dmabuf-import = ["wgpu", "dep:ash", "dep:gbm", "dep:drm-fourcc", "wgpu/vulkan"]
+dmabuf-import = ["wgpu", "dep:ash", "wgpu/vulkan"]
 raspberry-pi = ["h264"]
 test-util = []

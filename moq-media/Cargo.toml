@@ -13,7 +13,6 @@ workspace = true
 [dependencies]
 anyhow = "1.0.100"
 bytemuck = "1.24.0"
-byte-unit = { version = "5.1", features = ["bit"] }
 data-encoding = "2.9.0"
 derive_more = { version = "2.0.1", features = ["display", "debug", "eq", "deref"] }
 cpal = { git = "https://github.com/RustAudio/cpal.git", branch = "master" }
