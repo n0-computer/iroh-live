@@ -9,10 +9,53 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  prepare-release:
+    name: Prepare rolling release
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Create or reset rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BUILD_DATE="$(date -u '+%Y-%m-%d %H:%M UTC')"
+
+          # Delete existing rolling release if present
+          gh release delete rolling-release --yes 2>/dev/null || true
+          git tag -f rolling-release HEAD
+          git push -f origin rolling-release
+
+          gh release create rolling-release \
+            --title "Development build" \
+            --notes "$(cat <<EOF
+          Rolling development build from \`dev\` branch.
+
+          **Commit:** ${{ github.sha }}
+          **Built:** ${BUILD_DATE}
+
+          ### Platform notes
+          - **linux-amd64**: Ubuntu 24.04, glibc 2.39
+          - **linux-aarch64**: Ubuntu 24.04 ARM, glibc 2.39
+          - **macos-aarch64**: macOS 14, Apple Silicon
+
+          ### Included features
+          All codecs (H.264, Opus, AV1), PipeWire capture, wgpu rendering,
+          VAAPI hardware encoding (Linux), VideoToolbox (macOS).
+          EOF
+          )" \
+            --prerelease
+
   build:
     name: Build ${{ matrix.name }}
+    needs: prepare-release
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -50,21 +93,18 @@ jobs:
       - name: Build release binary
         run: cargo build --locked --release -p iroh-live-cli --all-features
 
-      - name: Package binary
+      - name: Upload to rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p dist
-          cp target/release/irl dist/${{ matrix.artifact }}
-          chmod +x dist/${{ matrix.artifact }}
+          cp target/release/irl "${{ matrix.artifact }}"
+          chmod +x "${{ matrix.artifact }}"
+          gh release upload rolling-release "${{ matrix.artifact }}" --clobber
 
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}
-          retention-days: 7
-
-  release:
-    name: Publish rolling release
-    needs: build
+  finalize:
+    name: Add checksums
+    needs: [prepare-release, build]
+    if: always() && needs.prepare-release.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -72,47 +112,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/download-artifact@v7
-        with:
-          path: artifacts
-
-      - name: Prepare release assets
-        run: |
-          mkdir -p release
-          for dir in artifacts/irl-*; do
-            name=$(basename "$dir")
-            cp "$dir/$name" "release/$name"
-            chmod +x "release/$name"
-          done
-          cd release && sha256sum irl-* > SHA256SUMS
-
-      - name: Create or update rolling release
+      - name: Generate and upload SHA256SUMS
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          BUILD_DATE="$(date -u '+%Y-%m-%d %H:%M UTC')"
-
-          # Delete existing rolling release if present
-          gh release delete rolling-release --yes 2>/dev/null || true
-          git tag -f rolling-release HEAD
-          git push -f origin rolling-release
-
-          gh release create rolling-release release/* \
-            --title "Development build" \
-            --notes "$(cat <<EOF
-          Rolling development build from \`dev\` branch.
-
-          **Commit:** ${{ github.sha }}
-          **Built:** ${BUILD_DATE}
-
-          ### Platform notes
-          - **linux-amd64**: Ubuntu 24.04, glibc 2.39
-          - **linux-aarch64**: Ubuntu 24.04 ARM, glibc 2.39
-          - **macos-aarch64**: macOS 14, Apple Silicon
-
-          ### Included features
-          All codecs (H.264, Opus, AV1), PipeWire capture, wgpu rendering,
-          VAAPI hardware encoding (Linux), VideoToolbox (macOS).
-          EOF
-          )" \
-            --prerelease
+          mkdir -p release
+          cd release
+          # Download whatever assets made it to the release
+          gh release download rolling-release --pattern 'irl-*' || true
+          if ls irl-* 1>/dev/null 2>&1; then
+            sha256sum irl-* > SHA256SUMS
+            gh release upload rolling-release SHA256SUMS --clobber
+          fi
