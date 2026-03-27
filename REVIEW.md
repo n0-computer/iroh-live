@@ -252,3 +252,44 @@ Doc comments clearly say "Unimplemented" on DR3/DR4, and DR5 logs a `warn!`, so 
 - [ ] **DR45**: `DiscoveredVideoSource` enum and `discover_video_sources()` duplicated across `split.rs`, `call.rs`, and `viewer.rs` (~200 lines total). Extract to `examples/common/`
 - [ ] **DR46**: H.264 SPS patcher module is dead code — `#[allow(dead_code)]` on entire module, `patch_sps_low_latency` commented out at call sites (`codec/h264/sps.rs`)
 - [ ] **DR23** *(design decision needed)*: All RGB-YUV conversions hardcode BT.601 Limited regardless of resolution — technically wrong for HD (720p+) per ITU-R BT.709. Internally consistent since encoders signal BT.601 in metadata (`processing/convert.rs`)
+
+---
+
+## Overnight review 2026-03-27
+
+Full workspace review. Findings are new items not tracked in previous reviews.
+
+### Critical
+
+- [ ] **NR1**: `Live::shutdown` skips `endpoint.close()` when router shutdown succeeds. The `if let Some(router) ... && let Err(err) ... { error } else { endpoint.close() }` structure means the endpoint is only closed in the else branch: when there is no router, OR when the router shutdown fails. When a router is present and shuts down successfully, the endpoint is left open. Fix: unconditionally close the endpoint after router shutdown (`iroh-live/src/live.rs:290-299`).
+NO! router shutdown shuts the endpoint down. it's fine as is.
+
+### Important
+
+- [ ] **NR2**: Audio decode tick counter overflows after ~12 hours. `tick_num` is `u64` but cast to `u32` at `TICK * tick_num as u32` (line 265). After 4294967295 ticks at 10ms each (~11.9 hours), the `as u32` wraps to 0, making `target` zero. The sleep calculation produces `Duration::ZERO.saturating_sub(elapsed)` = zero, so the decode loop loses all pacing and spins at CPU speed. Fix: use `Duration::from_millis(tick_num * TICK.as_millis() as u64)` or switch the counter to `u32` and reset periodically (`pipeline/audio_decode.rs:265`).
+
+- [ ] **NR3**: Audio encode tick counter uses default integer type from `for tick in 0..`, which infers as `i32`. `(tick + 1) * INTERVAL` panics on overflow in debug mode (after `i32::MAX` ticks at 20ms = ~248 days) or wraps in release mode (silent sleep miscalculation). Fix: `for tick in 0u64..` (`pipeline/audio_encode.rs:78`).
+
+- [ ] **NR4**: `RemoteBroadcast` Drop does not close the shared `Sync` clock. `RemoteBroadcast::shutdown()` calls `self.sync.close()`, but plain `drop()` does not. If the `RemoteBroadcast` is dropped without `shutdown()` (common in error paths, early returns, and scope exits), any decode thread blocked in `sync.wait()` will remain blocked in `Condvar::wait_timeout` until the timeout expires. The `CancellationToken` drop guard cancels the token, but the decode thread may be in a `Condvar::wait_timeout` that is not woken by the token — it only checks `shutdown.is_cancelled()` when the condvar returns. Fix: impl `Drop` for `RemoteBroadcast` that calls `self.sync.close()`, or add a shutdown guard alongside the existing `_catalog_task` (`subscribe.rs:230-243`).
+
+- [ ] **NR5**: Quality-based video rendition selection is effectively broken. `select_video_rendition` builds an order array from `VideoPreset` variants (`P1080`, `P720`, etc.), then calls `ToString` on them to produce strings like `"1080p"`. But catalog rendition keys look like `"video/h264-1080p"`, so the `renditions.contains_key()` check never matches. The function always falls through to `renditions.keys().next()` which returns the lexicographically first key. All quality levels (`Highest`, `High`, `Mid`, `Low`) produce the same result. Fix: compare by parsing resolution from `VideoConfig.coded_width/coded_height` rather than matching by name (`subscribe.rs:730-760`).
+
+### Medium
+
+- [ ] **NR6**: `Subscription::new` spawns stats recorder and signal producer tasks without storing `AbortOnDropHandle`s. The tasks run until the `shutdown` token is cancelled, but if the subscription is moved and the token outlives it (e.g., the `RemoteBroadcast` is cloned elsewhere), the orphaned tasks keep polling a stale connection. Not a leak in normal usage but wastes resources in edge cases (`iroh-live/src/subscription.rs:28-36`).
+
+- [ ] **NR7**: `VideoTrack::from_video_source` hardcodes `fps = 30` and uses fixed-cadence pacing that conflicts with the `SharedVideoSource` PTS-cadence pacing, causing double-pacing. Sources faster than 30fps are throttled; sources slower than 30fps spin on empty `pop_frame()` calls. The comment says "TODO: Make configurable". Fix: use PTS-based pacing consistent with `SharedVideoSource`, or pass fps as a parameter (`subscribe.rs:854-857`).
+
+- [ ] **NR8**: Room actor does not retry subscriptions when a remote broadcast disconnects. When `subscribe_closed` fires, the broadcast ID is removed from `active_subscribe`, but no retry is scheduled. If the remote peer's connection drops and the peer re-announces the same broadcast via gossip KV, the room will attempt a new subscription (because `active_subscribe` no longer contains it). However, gossip KV values are set with `put` (not append), so if the peer's state hasn't changed, the KV layer may not emit a new update event. The room could miss the reconnection opportunity. Consider re-subscribing on close with exponential backoff (`rooms.rs:310-313`).
+
+- [ ] **NR9**: `CatalogProducer::publish` creates a new hang group on every catalog update with no deduplication. Setting the same catalog twice (e.g., calling `set_video` with identical input) creates unnecessary transport overhead. Consider comparing with the previous catalog state before publishing (`publish.rs:546-553`).
+
+- [ ] **NR10**: `iroh-live-cli/src/main.rs` uses `tracing_subscriber::fmt::init()` without `EnvFilter`, so `RUST_LOG` has no effect. The relay server correctly uses `EnvFilter::try_from_default_env()`. The CLI should do the same for consistency and debuggability (`iroh-live-cli/src/main.rs:54`).
+
+### Minor
+
+- [ ] **NR11**: `MoqPacketSource` sequence counter starts at 0 and increments before use, so the first packet is logged as `seq=1`. Minor off-by-one in logging only (`transport.rs:48-49`).
+
+- [ ] **NR12**: `moq-media-dioxus::DioxusVideoRenderer::render` directly accesses `self.track.0` (the internal `Arc<Mutex<>>`) instead of going through a public method. Couples the renderer to the handle's internal representation. Add a `VideoTrackHandle::current_frame()` method (`moq-media-dioxus/src/lib.rs:154-160`).
+
+- [ ] **NR13**: `VideoDecoderPipeline` initializes viewport to `(1u32, 1u32)`. If the subscriber never calls `set_viewport`, the decoder sees a 1x1 viewport for its lifetime. Currently harmless because most decoders ignore viewport, but could become a problem if viewport-aware downscaling is added to the decode path (`pipeline/video_decode.rs:98`).
