@@ -91,13 +91,13 @@ jobs:
         run: brew install libtool automake
 
       - name: Build release binary
-        run: cargo build --locked --release -p iroh-live-cli --all-features
+        run: cargo build --locked --profile release-dist -p iroh-live-cli --all-features
 
       - name: Upload to rolling release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp target/release/irl "${{ matrix.artifact }}"
+          cp target/release-dist/irl "${{ matrix.artifact }}"
           chmod +x "${{ matrix.artifact }}"
           gh release upload rolling-release "${{ matrix.artifact }}" --clobber
 

@@ -35,6 +35,12 @@ resolver = "2"
 [profile.release]
 debug = true
 
+[profile.release-dist]
+inherits = "release"
+debug = false
+strip = true
+lto = "thin"
+
 [workspace.dependencies]
 # External
 iroh = { version = "0.97.0", default-features = false, features = ["metrics", "portmapper", "fast-apple-datapath", "tls-aws-lc-rs"] }
