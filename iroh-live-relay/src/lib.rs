@@ -72,10 +72,7 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
 
     let tls_info = server.tls_info();
 
-    let auth_config = AuthConfig {
-        public: Some(String::new()),
-        ..Default::default()
-    };
+    let auth_config = AuthConfig::default();
     let auth = auth_config.init().await?;
 
     let cluster = Cluster::new(ClusterConfig::default(), client);

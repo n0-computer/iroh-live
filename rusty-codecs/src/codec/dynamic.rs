@@ -43,7 +43,10 @@ macro_rules! dispatch_video {
             // When no video codec features are enabled the enum is uninhabited,
             // but `#[non_exhaustive]` still requires a wildcard arm.
             #[cfg(not(any_video_codec))]
-            _ => unreachable!("no video codec features enabled"),
+            _ => {
+                let _ = ($($arg),*);
+                unreachable!("no video codec features enabled");
+            }
         }
     };
 }
@@ -190,9 +193,11 @@ impl AudioDecoder for DynamicAudioDecoder {
                 config,
                 target_format,
             )?)),
-            #[cfg(not(feature = "opus"))]
-            AudioCodec::Opus => bail!("Opus support requires the `opus` feature"),
-            other => bail!("Unsupported audio codec: {other}"),
+            other => {
+                let _ = target_format;
+                let _: &AudioCodec = other;
+                bail!("Unsupported audio codec: {other}");
+            }
         }
     }
 
@@ -201,7 +206,10 @@ impl AudioDecoder for DynamicAudioDecoder {
             #[cfg(feature = "opus")]
             Self::Opus(d) => d.push_packet(packet),
             #[cfg(not(any_audio_codec))]
-            _ => unreachable!("no audio codec features enabled"),
+            _ => {
+                let _ = packet;
+                unreachable!("no audio codec features enabled");
+            }
         }
     }
 
