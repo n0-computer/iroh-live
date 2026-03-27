@@ -17,6 +17,7 @@ mod processing;
 pub mod publish;
 pub mod stats;
 pub mod subscribe;
+pub mod sync;
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;
 pub mod transport;

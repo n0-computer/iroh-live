@@ -21,7 +21,7 @@ moq-media has no dependency on iroh. It defines the media pipeline (capture, enc
 
 ## Subscribe side
 
-`RemoteBroadcast` wraps a `BroadcastConsumer` and watches the catalog for track additions and removals. It holds a `PlaybackPolicy` that controls freshness thresholds for ordered delivery.
+`RemoteBroadcast` wraps a `BroadcastConsumer` and watches the catalog for track additions and removals. It holds a `PlaybackPolicy` that controls the A/V sync mode and the `max_latency` threshold for ordered delivery.
 
 `VideoTrack` represents a decoded video stream. It runs a decoder on a dedicated OS thread and outputs `VideoFrame`s through an mpsc channel. `AudioTrack` does the same for audio, outputting decoded PCM samples to an `AudioSink`.
 

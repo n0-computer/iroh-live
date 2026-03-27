@@ -2,91 +2,103 @@
 
 | Field | Value |
 |-------|-------|
-| Status | **sync disabled** — PTS pacing only, no active A/V alignment |
+| Status | **sync enabled** — shared playout clock (ported from moq/js) |
 | Applies to | moq-media |
 
 ## Current state
 
-Audio and video decode and render independently. Each stream paces its output
-based on PTS cadence:
+A shared playout clock (`moq-media::sync::Sync`) coordinates video
+frame timing. The clock is ported from the moq/js player (`js/watch/src/sync.ts`,
+commit `53fe78d8`) and uses the same algorithm.
 
-- **Video:** `FramePacer` sleeps between frames proportionally to the PTS delta
-  from the previous frame, clamped to 2× frame period to avoid long stalls
-  after network gaps.
-- **Audio:** the audio decode loop pushes samples to the cpal output sink as
-  fast as they arrive. The sink's internal ring buffer (~80ms at 48kHz)
-  provides the front-buffering that smooths jitter. Silence is inserted when
-  the buffer runs low.
+- **Video:** the decode loop calls `Sync::received(pts)` on each packet
+  from the ordered consumer, recording the wall-clock arrival offset.
+  After decoding, `Sync::wait(pts)` blocks until `reference + pts +
+  latency` arrives, then emits the frame. This replaces the earlier
+  PTS-cadence `FramePacer`.
+- **Audio:** the decode loop pushes samples to the cpal output sink as
+  fast as they arrive. The sink's internal ring buffer (~80 ms at 48 kHz)
+  smooths jitter. Silence is inserted when the buffer runs low. Audio
+  does *not* call `received` or `wait` — it runs independently, matching
+  the JS player's design.
 
-There is no active mechanism to align video timing to audio timing. The A/V
-delta metric in the debug overlay reports the drift, but nothing corrects it.
+Both paths share the same `Sync` instance through `PipelineContext`.
+The `Sync::latency` value (default 100 ms jitter buffer) determines
+how far ahead of real-time the clock buffers before releasing frames.
 
-## Why sync was removed
+`SyncMode::Unmanaged` disables the shared clock and falls back to
+PTS-cadence pacing for tests, file playback, and single-track
+scenarios.
 
-Three successive sync architectures were implemented and tested under
-congestion, latency spikes, and loss:
+## History: three earlier sync attempts
 
-1. **Shared `PlayoutClock` / `SyncClock`** — a single reference clock that
-   both audio and video anchored to and re-anchored on stalls. Failed because
-   the two streams observe different delays, and re-anchoring one stream
-   destabilized the other.
+Before the JS port, three successive sync architectures were implemented
+and tested under congestion, latency spikes, and loss:
 
-2. **Audio-gated video** — audio decode loop sleeps controlled video release
-   timing. Failed because audio continuity is more important than forcing it
-   to serve as a video gate, and gaps in the audio stream propagated as video
-   freezes.
+1. **Shared `PlayoutClock` / `SyncClock`** — a single reference clock
+   that both audio and video anchored to and re-anchored on stalls.
+   Failed because the two streams observe different delays, and
+   re-anchoring one stream destabilized the other.
 
-3. **Audio-master with `VideoSyncController`** — audio plays freely, video
-   holds or drops frames based on estimated speaker position
-   (`AudioPosition`). The most successful approach, but still performed
-   strictly worse than unsynchronized PTS pacing under all congestion
-   scenarios tested. Recovery from stalls was slower, and the hold/drop
-   decisions introduced visible artifacts (micro-freezes, frame skips) that
-   raw PTS pacing avoided.
+2. **Audio-gated video** — audio decode loop controlled video release
+   timing. Failed because audio continuity is more important than
+   forcing it to serve as a video gate, and gaps in the audio stream
+   propagated as video freezes.
 
-Each approach was implemented, tested with patchbay network simulation at
-0/50/200/500ms latency and 0-30% loss, and evaluated against the baseline of
-unsynchronized PTS pacing. In all cases, the sync machinery added complexity
-without measurably improving the user experience during normal operation, and
-actively degraded it during congestion.
+3. **Audio-master with `VideoSyncController`** — audio plays freely,
+   video holds or drops frames based on estimated speaker position.
+   The most successful approach, but still performed strictly worse
+   than unsynchronized PTS pacing under all congestion scenarios
+   tested.
 
-## What remains
+These were removed in `3e2c0de` and `9c72f6a`. Code preserved on
+`sync-redesign-backup` branch.
 
-- `PlaybackPolicy` and `FreshnessPolicy` are still in the public API.
-  `FreshnessPolicy::max_stale_duration` drives Hang's ordered consumer and
-  is the primary congestion-response knob.
-- `SyncMode` exists in the type system with only the `Unmanaged` variant.
-  The `AudioMaster` variant was removed.
-- The `LagTracker` in each decode loop records wall-vs-PTS drift. The video
-  loop also computes A/V delta as `video_lag - audio_lag` and records it to
+## What the current approach does differently
+
+The JS-ported `Sync` takes a simpler approach than any of the three
+above. It does not try to synchronize video *to* audio. Instead, it
+establishes a single reference offset (the earliest wall-minus-PTS ever
+observed) and buffers both streams by the same latency target. Audio
+paces itself through its ring buffer; video paces itself through
+`Sync::wait`. The two converge because they share the reference and
+the latency, without any cross-path signaling or gating.
+
+## Remaining infrastructure
+
+- `PlaybackPolicy` controls sync mode and the `max_latency` threshold
+  for Hang's ordered consumer.
+- `LagTracker` in each decode loop records wall-vs-PTS drift. The video
+  loop computes A/V delta as `video_lag - audio_lag` and records it to
   `TimingStats::av_delta_ms`.
-- The debug overlay shows AudioBuf, VideoLag, AudioLag, A/V Δ, and VideoBuf
-  in the Time detail panel.
+- The debug overlay shows AudioBuf, VideoLag, AudioLag, A/V Δ, and
+  VideoBuf in the Time detail panel.
 
-## Receive pipeline (current)
+## Receive pipeline
 
 ```text
-OrderedConsumer (hang, max_latency = freshness)
+OrderedConsumer (hang, max_latency from PlaybackPolicy)
     ↓
 forward_packets() async task → mpsc channel
     ↓
-┌──────────────────────┐   ┌──────────────────────┐
-│  Audio decode thread │   │  Video decode thread  │
-│  push_packet()       │   │  push_packet()        │
-│  pop_samples()       │   │  pop_frame()          │
-│  sink.push_samples() │   │  VecDeque buffer      │
-│  10ms tick cadence   │   │  FramePacer (PTS)     │
-│  silence on underrun │   │  frame_channel send   │
-└──────────────────────┘   └──────────────────────┘
+┌──────────────────────┐   ┌──────────────────────────┐
+│  Audio decode thread │   │  Video decode thread      │
+│  push_packet()       │   │  sync.received(pts)       │
+│  pop_samples()       │   │  push_packet() / pop()    │
+│  sink.push_samples() │   │  sync.wait(pts)           │
+│  10ms tick cadence   │   │  frame_channel send       │
+│  silence on underrun │   │                           │
+└──────────────────────┘   └──────────────────────────┘
          ↓                            ↓
    cpal output ring              egui/wgpu renderer
          ↓
       speakers
 ```
 
-Both paths are independent. No shared timing state, no cross-path
-coordination, no skip-generation signaling.
+Audio and video share the `Sync` instance but do not coordinate
+directly. The shared reference and latency target align their timing
+without cross-path signaling.
 
 ## Future direction
 
-See [plans/av-sync.md](../../plans/av-sync.md) for the research plan.
+See [plans/av-sync.md](../../plans/av-sync.md) for research notes.

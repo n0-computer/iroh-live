@@ -54,13 +54,12 @@ Zero-copy rendering is available on most platforms. On Linux, decoded frames fro
 
 ## Playout
 
-`PlayoutClock` synchronizes audio and video by mapping presentation timestamps to wall-clock time. Two modes are available:
+A shared playout clock (`sync::Sync`, ported from the moq/js player) coordinates video frame timing. The clock tracks the earliest wall-clock-to-PTS offset across received packets and gates each decoded frame until its target playout time arrives.
 
-- **`PlayoutMode::Live`** -- real-time with configurable buffer depth and maximum latency. Skips frames that fall behind.
-- **`PlayoutMode::Reliable`** -- every frame in order, no latency target. Suitable for recordings and tests.
+- **`SyncMode::Synced`** (default) — video frames are released by the shared clock, keeping audio and video aligned through a common latency target.
+- **`SyncMode::Unmanaged`** — PTS-cadence pacing with no cross-track alignment. Suitable for tests, file playback, and single-track scenarios.
 
-`PlayoutBuffer` sits after the decoder and stores decoded video frames for the
-audio-master playout controller.
+`PlaybackPolicy` bundles the sync mode with `max_latency`, the maximum span of buffered media before Hang's ordered consumer skips forward.
 
 ## Feature flags
 

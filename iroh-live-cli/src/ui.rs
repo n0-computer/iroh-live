@@ -12,6 +12,7 @@ use iroh_live::media::{
     codec::{AudioCodec, DynamicVideoDecoder, VideoCodec},
     format::{AudioPreset, DecodeConfig, DecoderBackend, VideoPreset},
     net::NetworkSignals,
+    playout::SyncMode,
     publish::LocalBroadcast,
     subscribe::{AudioTrack, RemoteBroadcast, VideoOptions, VideoTrack},
     test_sources::{TestPatternSource, TestToneSource},
@@ -421,19 +422,6 @@ pub fn shutdown_live_blocking(live: &iroh_live::Live) {
 }
 
 // ---------------------------------------------------------------------------
-// Sync mode for UI
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, strum::Display, strum::VariantArray)]
-pub enum SyncModeChoice {
-    /// Audio-master sync (default interactive).
-    #[strum(serialize = "Synced")]
-    AudioMaster,
-    /// Unmanaged — no A/V sync, frames delivered as decoded.
-    Unmanaged,
-}
-
-// ---------------------------------------------------------------------------
 // Remote playback controls (shared by play, call, room)
 // ---------------------------------------------------------------------------
 
@@ -452,7 +440,7 @@ pub struct RemoteControls {
 
     // Control state
     pub decoder_backend: DecoderBackend,
-    pub sync_mode: SyncModeChoice,
+    pub sync_mode: SyncMode,
     pub rendition_mode: RenditionMode,
 }
 
@@ -519,15 +507,17 @@ impl RemoteControls {
             wgpu_render_state,
             use_wgpu,
             decoder_backend: DecoderBackend::Auto,
-            sync_mode: SyncModeChoice::AudioMaster,
+            sync_mode: SyncMode::default(),
             rendition_mode: RenditionMode::Auto,
         }
     }
 
-    /// Resubscribes to video (respecting current rendition mode and decoder
-    /// backend) and audio from the current catalog.
+    /// Resubscribes to video (respecting current rendition mode, decoder
+    /// backend, and sync mode) and audio from the current catalog.
     pub fn resubscribe(&mut self, ctx: &egui::Context, view_id: &str) {
-        self.broadcast.reset_sync();
+        // Update the policy so the next track subscriptions pick it up.
+        self.broadcast
+            .set_playback_policy(self.broadcast.playback_policy().with_sync(self.sync_mode));
 
         let decode_config = DecodeConfig {
             backend: self.decoder_backend,
@@ -648,7 +638,7 @@ impl RemoteControls {
         egui::ComboBox::from_id_salt(format!("{id_salt}_sync"))
             .selected_text(self.sync_mode.to_string())
             .show_ui(ui, |ui| {
-                for mode in SyncModeChoice::VARIANTS {
+                for mode in SyncMode::VARIANTS {
                     if ui
                         .selectable_value(&mut self.sync_mode, *mode, mode.to_string())
                         .changed()

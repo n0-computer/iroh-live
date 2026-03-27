@@ -480,6 +480,7 @@ impl Tile {
                             timing: self.timing_stats.clone(),
                             timeline: self.timeline.clone(),
                         },
+                        sync: None, // Viewer uses standalone pipeline, no shared sync
                     },
                 ) {
                     Ok(d) => d,

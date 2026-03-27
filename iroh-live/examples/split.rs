@@ -30,6 +30,7 @@ use iroh_live::{
         capture::{CameraCapturer, CaptureBackend, ScreenCapturer},
         codec::{AudioCodec, DynamicVideoDecoder, VideoCodec},
         format::{AudioPreset, DecodeConfig, DecoderBackend, PlaybackConfig, VideoPreset},
+        playout::SyncMode,
         publish::{LocalBroadcast, VideoInput},
         subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
         test_sources::{TestPatternSource, TestToneSource},
@@ -496,6 +497,7 @@ struct SubscribeView {
     _audio: Option<AudioTrack>,
     backend: DecoderBackend,
     render_mode: RenderMode,
+    sync_mode: SyncMode,
     _live: Live,
     overlay: DebugOverlay,
 
@@ -525,6 +527,7 @@ impl SubscribeView {
             _audio: tracks.audio,
             backend: DecoderBackend::Auto,
             render_mode: *RenderMode::VARIANTS.last().unwrap(),
+            sync_mode: SyncMode::default(),
             overlay: DebugOverlay::new(&[
                 StatCategory::Net,
                 StatCategory::Render,
@@ -542,8 +545,8 @@ impl SubscribeView {
     }
 
     fn resubscribe(&mut self, ctx: &egui::Context) {
-        // Reset sync state so new pipelines start fresh.
-        self.broadcast.reset_sync();
+        self.broadcast
+            .set_playback_policy(self.broadcast.playback_policy().with_sync(self.sync_mode));
 
         // Resubscribe video with the current decoder backend.
         let decode_config = DecodeConfig {
@@ -691,6 +694,27 @@ impl SubscribeView {
                             info!(mode = %self.render_mode, "UI: render mode changed");
                             self.resubscribe(ctx);
                         }
+                    }
+                });
+
+            ui.label("Sync");
+            let sync_label = match self.sync_mode {
+                SyncMode::Synced => "Synced",
+                SyncMode::Unmanaged => "Off",
+                _ => "?",
+            };
+            egui::ComboBox::from_id_salt("sub_sync")
+                .selected_text(sync_label)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_value(&mut self.sync_mode, SyncMode::Synced, "Synced")
+                        .changed()
+                        || ui
+                            .selectable_value(&mut self.sync_mode, SyncMode::Unmanaged, "Off")
+                            .changed()
+                    {
+                        info!(mode = ?self.sync_mode, "UI: sync mode changed");
+                        self.resubscribe(ctx);
                     }
                 });
         });

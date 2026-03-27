@@ -12,6 +12,7 @@ use moq_media::{
     adaptive::AdaptiveConfig,
     codec::{AudioCodec, VideoCodec},
     format::{AudioPreset, DecodeConfig, DecoderBackend, VideoPreset},
+    playout::PlaybackPolicy,
     publish::{LocalBroadcast, VideoInput},
     subscribe::VideoOptions,
     test_util::{TestVideoSource, TimestampingAudioBackend},
@@ -112,12 +113,14 @@ impl PatchbayFixture {
 
         let pub_addr = publisher.endpoint().addr();
         let subscriber = Live::builder(sub_endpoint).spawn();
-        let (sub_session, remote, _signals) = subscriber
+        let (sub_session, mut remote, _signals) = subscriber
             .subscribe(pub_addr, "test")
             .await
             .expect("subscribe")
             .into_parts();
-        remote.set_max_stale_duration(Duration::from_millis(300));
+        remote.set_playback_policy(
+            PlaybackPolicy::unmanaged().with_max_latency(Duration::from_millis(300)),
+        );
 
         Self {
             lab,
@@ -244,12 +247,12 @@ fn gap_violation_rate(gaps: &[Duration], threshold: Duration) -> f64 {
 #[tokio::test]
 #[traced_test]
 async fn latency_up_down_video_recovers() {
-    let fixture = PatchbayFixture::new().await;
+    let mut fixture = PatchbayFixture::new().await;
 
     // Raise skip threshold so the test can observe delay without skipping.
     fixture
         .remote
-        .set_max_stale_duration(Duration::from_secs(5));
+        .set_playback_policy(PlaybackPolicy::unmanaged().with_max_latency(Duration::from_secs(5)));
 
     let mut track = tokio::time::timeout(
         FRAME_TIMEOUT,
@@ -412,10 +415,10 @@ async fn latency_up_down_video_recovers() {
 #[traced_test]
 #[ignore = "poll/current_frame blackout recovery is too scheduler-sensitive; async drain coverage remains enforced"]
 async fn link_blackout_recovers() {
-    let fixture = PatchbayFixture::new().await;
+    let mut fixture = PatchbayFixture::new().await;
     fixture
         .remote
-        .set_max_stale_duration(Duration::from_secs(5));
+        .set_playback_policy(PlaybackPolicy::unmanaged().with_max_latency(Duration::from_secs(5)));
 
     let mut track = tokio::time::timeout(
         FRAME_TIMEOUT,
@@ -491,10 +494,10 @@ async fn link_blackout_recovers() {
 #[tokio::test]
 #[traced_test]
 async fn packet_loss_spike_recovers() {
-    let fixture = PatchbayFixture::new().await;
+    let mut fixture = PatchbayFixture::new().await;
     fixture
         .remote
-        .set_max_stale_duration(Duration::from_secs(5));
+        .set_playback_policy(PlaybackPolicy::unmanaged().with_max_latency(Duration::from_secs(5)));
 
     let mut track = tokio::time::timeout(
         FRAME_TIMEOUT,
@@ -569,10 +572,10 @@ async fn packet_loss_spike_recovers() {
 #[traced_test]
 #[ignore = "poll/current_frame behavior is renderer-loop dependent and not stable in headless runs"]
 async fn latency_poll_based_smoothness() {
-    let fixture = PatchbayFixture::new().await;
+    let mut fixture = PatchbayFixture::new().await;
     fixture
         .remote
-        .set_max_stale_duration(Duration::from_secs(5));
+        .set_playback_policy(PlaybackPolicy::unmanaged().with_max_latency(Duration::from_secs(5)));
 
     let mut track = tokio::time::timeout(
         FRAME_TIMEOUT,
@@ -646,10 +649,10 @@ async fn latency_poll_based_smoothness() {
 #[traced_test]
 #[ignore = "slider-ramp coverage is exploratory; deterministic latency-spike tests cover enforced recovery"]
 async fn slider_drag_latency_ramp() {
-    let fixture = PatchbayFixture::new().await;
+    let mut fixture = PatchbayFixture::new().await;
     fixture
         .remote
-        .set_max_stale_duration(Duration::from_secs(10));
+        .set_playback_policy(PlaybackPolicy::unmanaged().with_max_latency(Duration::from_secs(10)));
 
     let mut track = tokio::time::timeout(
         FRAME_TIMEOUT,
@@ -809,12 +812,13 @@ async fn latency_at_split_example_settings() {
 
     let pub_addr = publisher.endpoint().addr();
     let subscriber = Live::builder(sub_endpoint).spawn();
-    let (_session, remote, _signals) = subscriber
+    let (_session, mut remote, _signals) = subscriber
         .subscribe(pub_addr, "test")
         .await
         .expect("subscribe")
         .into_parts();
-    remote.set_max_stale_duration(Duration::from_secs(5));
+    remote
+        .set_playback_policy(PlaybackPolicy::unmanaged().with_max_latency(Duration::from_secs(5)));
 
     let mut track = tokio::time::timeout(FRAME_TIMEOUT, video_ready_with_patchbay_decode(&remote))
         .await
@@ -933,10 +937,10 @@ async fn latency_at_split_example_settings() {
 #[traced_test]
 #[ignore]
 async fn reanchor_count_during_sustained_latency() {
-    let fixture = PatchbayFixture::new().await;
+    let mut fixture = PatchbayFixture::new().await;
     fixture
         .remote
-        .set_max_stale_duration(Duration::from_secs(10));
+        .set_playback_policy(PlaybackPolicy::unmanaged().with_max_latency(Duration::from_secs(10)));
 
     let mut track = tokio::time::timeout(
         FRAME_TIMEOUT,

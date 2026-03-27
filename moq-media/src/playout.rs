@@ -1,110 +1,85 @@
 //! Playback policy for subscribed broadcasts.
 //!
-//! - [`SyncMode`] controls how audio and video are aligned at playout time.
-//!   Currently unused (sync is disabled), but preserved for the public API.
-//! - [`FreshnessPolicy`] controls how much stale media we keep after a stall
-//!   before skipping forward. This drives Hang's ordered consumer.
+//! [`SyncMode`] controls how audio and video are aligned at playout time.
+//! [`PlaybackPolicy::max_latency`] controls how much buffered media we
+//! tolerate before skipping forward — this drives Hang's ordered
+//! consumer.
 
 use std::time::Duration;
 
 /// A/V synchronization behavior at playout time.
 ///
-/// Currently unused — both audio and video play independently with PTS-based
-/// pacing. Will be re-enabled when A/V sync is re-added.
+/// [`Synced`](Self::Synced) enables the shared playout clock (ported
+/// from `moq/js` commit `53fe78d8`, `js/watch/src/sync.ts`).
+/// [`Unmanaged`](Self::Unmanaged) uses PTS-cadence pacing with no
+/// cross-track synchronization.
 #[non_exhaustive]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, derive_more::Display, strum::VariantArray)]
 pub enum SyncMode {
-    /// No synchronization — frames are rendered as decoded.
+    /// Shared playout clock — the default for live playback.
+    ///
+    /// Video frames are gated by [`crate::sync::Sync::wait`], which
+    /// accounts for network jitter and codec latency to keep audio and
+    /// video aligned.
     #[default]
+    #[display("Synced")]
+    Synced,
+
+    /// No synchronization — frames are rendered as decoded.
+    ///
+    /// Uses PTS-cadence pacing in the video decode loop. Suitable for
+    /// tests, file playback, and single-track scenarios.
+    #[display("Off")]
     Unmanaged,
 }
 
-impl SyncMode {
-    // /// Creates [`SyncMode::AudioMaster`] with a 150 ms video hold budget.
-    // pub fn audio_master() -> Self {
-    //     Self::AudioMaster {
-    //         video_hold_budget: Duration::from_millis(150),
-    //     }
-    // }
-
-    // /// Creates [`SyncMode::AudioMaster`] with an explicit hold budget.
-    // pub fn audio_master_with_hold(video_hold_budget: Duration) -> Self {
-    //     Self::AudioMaster { video_hold_budget }
-    // }
-
-    /// Creates [`SyncMode::Unmanaged`].
-    pub fn unmanaged() -> Self {
-        Self::Unmanaged
-    }
-}
-
-/// Freshness policy for ordered media delivery.
+/// Playback policy for a subscribed broadcast.
+///
+/// Set at construction time via
+/// [`RemoteBroadcast::with_playback_policy`](crate::subscribe::RemoteBroadcast::with_playback_policy),
+/// or update before resubscribing via
+/// [`RemoteBroadcast::set_playback_policy`](crate::subscribe::RemoteBroadcast::set_playback_policy).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FreshnessPolicy {
-    /// Maximum duration of stale media we keep before skipping forward.
-    /// Passed to Hang's ordered consumer as `max_latency`.
-    pub max_stale_duration: Duration,
-}
-
-impl Default for FreshnessPolicy {
-    fn default() -> Self {
-        Self {
-            max_stale_duration: Duration::from_millis(150),
-        }
-    }
-}
-
-impl FreshnessPolicy {
-    /// Creates a freshness policy with the given maximum stale duration.
-    pub fn new(max_stale_duration: Duration) -> Self {
-        Self { max_stale_duration }
-    }
-}
-
-/// Public playback policy for a subscribed broadcast.
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaybackPolicy {
     /// Cross-track synchronization policy.
     pub sync: SyncMode,
-    /// Staleness policy for ordered delivery and decode recovery.
-    pub freshness: FreshnessPolicy,
+
+    /// Maximum span of buffered media before skipping forward to the
+    /// live edge. Passed to Hang's ordered consumer as `max_latency`.
+    ///
+    /// Increase for more continuity through congestion. Decrease for
+    /// faster recovery after a stall. The JS equivalent is the
+    /// `latency` parameter on the container consumer.
+    pub max_latency: Duration,
 }
 
 impl Default for PlaybackPolicy {
     fn default() -> Self {
-        Self::unmanaged()
+        Self {
+            sync: SyncMode::default(),
+            max_latency: Duration::from_millis(150),
+        }
     }
 }
 
 impl PlaybackPolicy {
-    // /// Default interactive policy: audio-master sync with 150 ms hold, 500 ms freshness.
-    // pub fn audio_master() -> Self {
-    //     Self {
-    //         sync: SyncMode::audio_master(),
-    //         freshness: FreshnessPolicy::default(),
-    //     }
-    // }
+    /// Synced playout with the default 150 ms latency budget.
+    pub fn synced() -> Self {
+        Self::default()
+    }
 
-    // /// Audio-master with explicit hold budget.
-    // pub fn audio_master_with_hold(video_hold_budget: Duration) -> Self {
-    //     Self {
-    //         sync: SyncMode::audio_master_with_hold(video_hold_budget),
-    //         freshness: FreshnessPolicy::default(),
-    //     }
-    // }
-
-    /// Unmanaged — no sync, default freshness.
+    /// Unmanaged playout with the default 150 ms latency budget.
     pub fn unmanaged() -> Self {
         Self {
-            sync: SyncMode::unmanaged(),
-            freshness: FreshnessPolicy::default(),
+            sync: SyncMode::Unmanaged,
+            ..Self::default()
         }
     }
 
-    /// Returns a copy with a different freshness policy.
+    /// Returns a copy with a different maximum latency.
     #[must_use]
-    pub fn with_freshness(mut self, freshness: FreshnessPolicy) -> Self {
-        self.freshness = freshness;
+    pub fn with_max_latency(mut self, max_latency: Duration) -> Self {
+        self.max_latency = max_latency;
         self
     }
 

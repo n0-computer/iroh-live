@@ -29,6 +29,14 @@ pub use video_encode::{PreEncodedVideoPipeline, VideoEncoderPipeline};
 pub struct PipelineContext {
     /// Stats collectors for metrics and timeline.
     pub stats: crate::stats::DecodeStats,
+
+    /// Shared playout clock for A/V synchronization.
+    ///
+    /// When `Some`, the video decode loop calls [`Sync::received`] on
+    /// packet arrival and [`Sync::wait`] before emitting each decoded
+    /// frame, replacing PTS-cadence pacing. When `None`, the legacy
+    /// `FramePacer` is used instead.
+    pub sync: Option<crate::sync::Sync>,
 }
 
 /// Forwards packets from an async [`PacketSource`] into an mpsc channel.
