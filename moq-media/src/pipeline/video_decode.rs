@@ -166,6 +166,7 @@ fn decode_loop(
     let mut last_render_wall: Option<Instant> = None;
 
     let burst_size = decoder.burst_size();
+    let decoder_name = decoder.name().to_string();
 
     'main: loop {
         if shutdown.is_cancelled() {
@@ -272,6 +273,24 @@ fn decode_loop(
                 let aud_lag_ms = stats.timing.audio_lag_ms.current();
                 stats.timing.av_delta_ms.record(vid_lag_ms - aud_lag_ms);
             }
+        }
+
+        {
+            let t = &stats.timing;
+            let av = if t.av_delta_ms.has_samples() {
+                format!("{:.1}", t.av_delta_ms.current())
+            } else {
+                "-".into()
+            };
+            throttled_tracing::debug_every!(Duration::from_secs(5),
+                fps = format_args!("{:.1}", stats.render.fps.current()),
+                decode_ms = format_args!("{:.1}", stats.render.decode_ms.current()),
+                lag_ms = format_args!("{:.1}", t.video_lag_ms.current()),
+                av_delta = %av,
+                buf = buffer.len(),
+                decoder = %decoder_name,
+                "vdec stats",
+            );
         }
     }
     Ok(())
