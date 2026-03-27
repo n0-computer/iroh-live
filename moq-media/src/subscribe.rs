@@ -731,11 +731,16 @@ fn select_rendition<T, P: ToString>(
     renditions: &BTreeMap<String, T>,
     order: &[P],
 ) -> Option<String> {
-    order
-        .iter()
-        .map(ToString::to_string)
-        .find(|k| renditions.contains_key(k.as_str()))
-        .or_else(|| renditions.keys().next().cloned())
+    // Rendition keys are full track names (e.g. "video/h264-720p") while
+    // presets produce short suffixes (e.g. "720p"). Match by suffix so
+    // that quality selection works regardless of the codec prefix.
+    for preset in order {
+        let suffix = preset.to_string();
+        if let Some(key) = renditions.keys().find(|k| k.ends_with(&suffix)) {
+            return Some(key.clone());
+        }
+    }
+    renditions.keys().next().cloned()
 }
 
 fn select_video_rendition<T>(renditions: &BTreeMap<String, T>, q: Quality) -> Option<String> {

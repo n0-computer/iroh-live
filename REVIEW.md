@@ -261,13 +261,13 @@ Full workspace review. Findings are new items not tracked in previous reviews.
 
 ### Important
 
-- [ ] **NR2**: Audio decode tick counter overflows after ~12 hours. `tick_num` is `u64` but cast to `u32` at `TICK * tick_num as u32` (line 265). After 4294967295 ticks at 10ms each (~11.9 hours), the `as u32` wraps to 0, making `target` zero. The sleep calculation produces `Duration::ZERO.saturating_sub(elapsed)` = zero, so the decode loop loses all pacing and spins at CPU speed. Fix: use `Duration::from_millis(tick_num * TICK.as_millis() as u64)` or switch the counter to `u32` and reset periodically (`pipeline/audio_decode.rs:265`).
+- [x] **NR2**: ~~Audio decode tick counter overflows after ~12 hours~~ — Fixed: `TICK.mul_f64(tick_num as f64)`.
 
-- [ ] **NR3**: Audio encode tick counter uses default integer type from `for tick in 0..`, which infers as `i32`. `(tick + 1) * INTERVAL` panics on overflow in debug mode (after `i32::MAX` ticks at 20ms = ~248 days) or wraps in release mode (silent sleep miscalculation). Fix: `for tick in 0u64..` (`pipeline/audio_encode.rs:78`).
+- [x] **NR3**: ~~Audio encode tick counter overflow after ~248 days~~ — Fixed: `0u64..` + `INTERVAL.mul_f64()`.
 
 - [ ] **NR4**: `RemoteBroadcast` Drop does not close the shared `Sync` clock. `RemoteBroadcast::shutdown()` calls `self.sync.close()`, but plain `drop()` does not. If the `RemoteBroadcast` is dropped without `shutdown()` (common in error paths, early returns, and scope exits), any decode thread blocked in `sync.wait()` will remain blocked in `Condvar::wait_timeout` until the timeout expires. The `CancellationToken` drop guard cancels the token, but the decode thread may be in a `Condvar::wait_timeout` that is not woken by the token — it only checks `shutdown.is_cancelled()` when the condvar returns. Fix: impl `Drop` for `RemoteBroadcast` that calls `self.sync.close()`, or add a shutdown guard alongside the existing `_catalog_task` (`subscribe.rs:230-243`).
 
-- [ ] **NR5**: Quality-based video rendition selection is effectively broken. `select_video_rendition` builds an order array from `VideoPreset` variants (`P1080`, `P720`, etc.), then calls `ToString` on them to produce strings like `"1080p"`. But catalog rendition keys look like `"video/h264-1080p"`, so the `renditions.contains_key()` check never matches. The function always falls through to `renditions.keys().next()` which returns the lexicographically first key. All quality levels (`Highest`, `High`, `Mid`, `Low`) produce the same result. Fix: compare by parsing resolution from `VideoConfig.coded_width/coded_height` rather than matching by name (`subscribe.rs:730-760`).
+- [x] **NR5**: ~~Rendition quality selection broken~~ — Fixed: `select_rendition` now matches by suffix (`"720p"` matches `"video/h264-720p"`) instead of exact key lookup.
 
 ### Medium
 
