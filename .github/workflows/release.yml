@@ -18,10 +18,10 @@ jobs:
       matrix:
         include:
           - name: linux-amd64
-            os: ubuntu-22.04
+            os: ubuntu-latest
             artifact: irl-linux-amd64
           - name: linux-aarch64
-            os: ubuntu-22.04-arm
+            os: ubuntu-latest-arm
             artifact: irl-linux-aarch64
           - name: macos-aarch64
             os: macos-14
@@ -106,8 +106,8 @@ jobs:
           **Built:** ${BUILD_DATE}
 
           ### Platform notes
-          - **linux-amd64**: Ubuntu 22.04, glibc 2.35
-          - **linux-aarch64**: Ubuntu 22.04 ARM, glibc 2.35
+          - **linux-amd64**: Ubuntu 24.04, glibc 2.39
+          - **linux-aarch64**: Ubuntu 24.04 ARM, glibc 2.39
           - **macos-aarch64**: macOS 14, Apple Silicon
 
           ### Included features

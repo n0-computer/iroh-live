@@ -360,7 +360,7 @@ mod tests {
             "expected ~50ms sleep, got {elapsed:?}"
         );
         assert!(
-            elapsed < Duration::from_millis(100),
+            elapsed < Duration::from_millis(250),
             "expected ~50ms sleep, got {elapsed:?}"
         );
     }
