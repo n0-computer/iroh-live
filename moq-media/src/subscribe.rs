@@ -246,6 +246,8 @@ pub struct RemoteBroadcast {
 ///
 /// Derefs to [`Catalog`] for direct access to video/audio configuration.
 /// Each snapshot carries a sequence number for change detection.
+/// Equality compares only the sequence number, not the catalog content — two
+/// snapshots from different broadcasts with the same `seq` compare as equal.
 #[derive(Debug, derive_more::PartialEq, derive_more::Eq, Default, Clone, derive_more::Deref)]
 pub struct CatalogSnapshot {
     #[eq(skip)]

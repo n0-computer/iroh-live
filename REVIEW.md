@@ -192,7 +192,7 @@ been removed. Short codes are prefixed by section abbreviation.
 
 - [ ] **HYGIENE-6**: `LocalBroadcast::run` holds state mutex while calling `start_track`. Encoder factory calls can take tens of milliseconds for hardware codecs (VAAPI/VTB device negotiation), blocking all `has_video()`, `has_audio()`, `set_video()` callers. Factory call and thread spawn should happen after releasing the lock (`publish.rs:294-297`). (Previously ER24.)
 
-- [ ] **HYGIENE-7**: `CatalogProducer::publish` creates a new hang group on every catalog update with no deduplication. Setting the same catalog twice creates unnecessary transport overhead (`publish.rs:546-553`). (Previously NR9.)
+- [x] **HYGIENE-7**: ~~Duplicate catalog publishes~~ — Fixed in `863be2e`: CatalogProducer caches last published string.
 
 - [ ] **HYGIENE-8**: Room actor does not retry subscriptions when a remote broadcast disconnects. If the remote peer re-announces via gossip KV without a state change, the room may miss the reconnection opportunity (`rooms.rs:310-313`). (Previously NR8.)
 
