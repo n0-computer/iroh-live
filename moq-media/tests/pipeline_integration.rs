@@ -1022,9 +1022,6 @@ async fn playout_clock_reset_on_resubscribe() {
             .expect("timeout")
             .expect("closed");
     }
-
-    // Reset sync state (as split.rs does on resubscribe). This should not panic.
-    remote.reset_sync();
 }
 
 // ── Group N: RemoteBroadcast construction and state ────────────────

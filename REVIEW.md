@@ -157,7 +157,7 @@ Full API ergonomics review after building the `irl` CLI tool. Covers iroh-live, 
 
 ### High — publish flow
 
-- [ ] **ER8**: `PlaybackPolicy` and `SyncMode` are dead weight — `SyncMode` has one variant (`Unmanaged`), and `PlaybackPolicy` wraps `FreshnessPolicy` with nothing else. Collapse to just `FreshnessPolicy` until A/V sync returns.
+- [x] **ER8**: ~~`PlaybackPolicy` and `SyncMode` are dead weight.~~ Resolved: `SyncMode::Synced` enables the shared playout clock (ported from moq/js), `FreshnessPolicy` was inlined as `max_latency` on `PlaybackPolicy`.
 
 ### Medium — dead API
 

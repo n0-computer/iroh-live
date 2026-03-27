@@ -149,6 +149,37 @@ impl VideoDecoderPipeline {
 }
 
 /// The core video decode loop, running on an OS thread.
+///
+/// ## Sync integration
+///
+/// Ported from `moq/js` commit `53fe78d8`, file
+/// `js/watch/src/video/decoder.ts`.
+///
+/// When `opts.sync` is `Some`:
+///
+/// 1. **Receive path** — `sync.received(packet.timestamp)` is called for
+///    every packet popped from `input_rx`, recording the arrival time
+///    so the shared clock can compute the tightest reference offset.
+///
+/// 2. **Render path** — `sync.wait(frame.timestamp)` gates each decoded
+///    frame before it is sent to `output_tx`, sleeping until the
+///    playout time (reference + pts + latency) arrives. This replaces
+///    the `FramePacer`.
+///
+/// When `opts.sync` is `None`, the legacy [`FramePacer`] is used (no
+/// shared clock, PTS-cadence sleep only).
+///
+/// ### Differences from the JS pipeline
+///
+/// - JS WebCodecs decode is async, so multiple `wait()` calls run
+///   concurrently. Here decode is synchronous on one OS thread, so
+///   `wait()` calls are sequential. Same algorithm, different
+///   concurrency model.
+///
+/// - JS immediately displays the first decoded frame before `wait()`
+///   returns ("preview while buffering"). We skip this because our
+///   frame channel already exposes the latest frame, and the wait is
+///   only the jitter buffer duration.
 fn decode_loop(
     shutdown: &CancellationToken,
     mut input_rx: mpsc::Receiver<crate::format::MediaPacket>,
@@ -159,14 +190,24 @@ fn decode_loop(
     opts: PipelineContext,
 ) -> Result<()> {
     let stats = &opts.stats;
+    let sync = opts.sync.as_ref();
     let mut buffer = VecDeque::new();
     let mut waiting_for_keyframe = false;
+    // FramePacer is only used when sync is None (legacy mode).
     let mut pacer = FramePacer::new(framerate);
     let mut lag = LagTracker::new();
     let mut last_render_wall: Option<Instant> = None;
 
     let burst_size = decoder.burst_size();
     let decoder_name = decoder.name().to_string();
+
+    // When sync is present, use a shorter drain timeout. The sync clock
+    // handles pacing, so we just need to avoid starving the decode buffer.
+    let drain_timeout = if sync.is_some() {
+        Duration::from_millis(2)
+    } else {
+        pacer.frame_time
+    };
 
     'main: loop {
         if shutdown.is_cancelled() {
@@ -181,7 +222,7 @@ fn decode_loop(
         // Drain all available packets into the decoder, collect frames.
         let drain_start = Instant::now();
         'drain: loop {
-            if !buffer.is_empty() && drain_start.elapsed() > pacer.frame_time {
+            if !buffer.is_empty() && drain_start.elapsed() > drain_timeout {
                 break;
             }
             let packet = match input_rx.try_recv() {
@@ -206,6 +247,13 @@ fn decode_loop(
                 }
                 info!("received keyframe, resuming decode");
                 waiting_for_keyframe = false;
+            }
+
+            // Record the packet arrival for the shared playout clock.
+            // The ordered consumer already applied group-level latency
+            // skipping, so this is the first point we see the packet.
+            if let Some(sync) = sync {
+                sync.received(packet.timestamp);
             }
 
             let received = Instant::now();
@@ -248,11 +296,21 @@ fn decode_loop(
         // Pace and render.
         while let Some((frame, mut meta)) = buffer.pop_front() {
             let frame_pts = frame.timestamp;
-            let sleep = pacer.pace(frame_pts);
-            if !sleep.is_zero() {
-                thread::sleep(sleep);
+
+            if let Some(sync) = sync {
+                // Block until the playout clock says it is time to
+                // render this frame. Returns false if the Sync was
+                // closed (pipeline teardown).
+                if !sync.wait(frame_pts) {
+                    break 'main;
+                }
+            } else {
+                let sleep = pacer.pace(frame_pts);
+                if !sleep.is_zero() {
+                    thread::sleep(sleep);
+                }
+                pacer.note_render(frame_pts);
             }
-            pacer.note_render(frame_pts);
 
             let now = Instant::now();
             meta.rendered = now;
@@ -293,6 +351,13 @@ fn decode_loop(
             );
         }
     }
+
+    // Clean shutdown: close the sync so any other thread blocked on it
+    // (shouldn't happen with single-thread decode, but defensive).
+    if let Some(sync) = sync {
+        sync.close();
+    }
+
     Ok(())
 }
 

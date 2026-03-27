@@ -65,13 +65,14 @@ Construction follows this path:
 1. The caller picks a rendition (via `VideoTarget` or explicit name).
 2. A `TrackConsumer` is created from the `BroadcastConsumer` for that
    rendition's track, wrapped in an `OrderedConsumer` with
-   `FreshnessPolicy::max_stale_duration` as `max_latency`.
+   `PlaybackPolicy::max_latency`.
 3. An `MoqPacketSource` wraps the `OrderedConsumer`.
 4. A `forward_packets` async task reads from the `MoqPacketSource` and
    sends `MediaPacket` values into an `mpsc` channel.
 5. A decoder thread reads from that channel, pushes packets to the
-   decoder, and sends decoded frames through a `FramePacer` (PTS-based
-   sleep) into the output channel.
+   decoder, and sends decoded frames through the shared `Sync` playout
+   clock (or `FramePacer` when `SyncMode::Unmanaged`) into the output
+   channel.
 
 The output channel is stable across the lifetime of the `VideoTrack`.
 Callers receive frames via `current_frame()` (drain-to-latest, for
@@ -103,9 +104,10 @@ hardware. The async-to-sync bridge works through two channels:
   pushes packets to the decoder, and writes decoded frames to the
   output channel.
 
-The `FramePacer` sits between the decoder and the output channel,
-sleeping between frames based on PTS deltas to maintain cadence. See
-[playout.md](playout.md).
+When `SyncMode::Synced` (the default), the shared `Sync` playout clock
+gates each decoded frame until its wall-clock playout time arrives. When
+`SyncMode::Unmanaged`, a `FramePacer` sleeps between frames based on
+PTS deltas instead. See [playout.md](playout.md).
 
 ## Lifecycle
 

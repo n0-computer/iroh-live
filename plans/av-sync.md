@@ -1,49 +1,47 @@
-# A/V sync — research plan
+# A/V sync — status and research notes
 
-## Status: disabled, research topic
+## Status: enabled (shared playout clock, ported from moq/js)
 
-Active A/V synchronization was removed (`3e2c0de`, `9c72f6a`) after three
-implementation attempts that all performed worse than unsynchronized PTS-based
-pacing under congestion. Code preserved on `sync-redesign-backup` branch.
+A shared playout clock (`moq_media::sync::Sync`) was ported from the
+moq/js player (`js/watch/src/sync.ts`, commit `53fe78d8`). It is the
+default sync mode (`SyncMode::Synced`). See
+[docs/av-sync/README.md](../docs/av-sync/README.md) for the full
+description and receive pipeline diagram.
 
-## What works today
+## Earlier attempts (removed)
 
-Audio and video each pace output based on PTS cadence, with no cross-path
-coordination. `LagTracker` in each decode loop records wall-vs-PTS drift;
-`av_delta_ms = video_lag - audio_lag` is visible in the debug overlay. Under
-typical conditions the delta stays within +/-30ms and self-corrects on
-congestion recovery.
+Three sync architectures were implemented and removed (`3e2c0de`,
+`9c72f6a`) because they all performed worse than unsynchronized PTS
+pacing under congestion. Code preserved on `sync-redesign-backup`
+branch.
 
-Transport-level freshness (`FreshnessPolicy::max_stale_duration`) controls how
-far behind live we fall before Hang drops stale groups.
+1. **Shared PlayoutClock** — audio and video fought over the reference
+   point on re-anchor after stalls, causing oscillation.
+2. **Audio-gated video** — audio gaps propagated as video freezes even
+   when video packets were available.
+3. **Audio-master with VideoSyncController** — most complete attempt;
+   under congestion the hold/drop decisions created micro-freezes and
+   skips that raw PTS pacing avoided. Tested with patchbay at
+   0/50/200/500 ms latency and 0–10–30% loss.
 
-## What was tried
+## What the current approach does differently
 
-Three approaches failed for the same root cause: any mechanism that delays,
-holds, or skips video frames during congestion recovery makes the experience
-worse than raw PTS pacing.
+The JS-ported `Sync` does not try to synchronize video *to* audio.
+Instead, it establishes a single reference offset (the earliest
+wall-minus-PTS ever observed) and buffers both streams by the same
+latency target. Audio paces itself through its ring buffer; video paces
+itself through `Sync::wait`. The two converge because they share the
+reference and the latency, without cross-path signaling or gating.
 
-1. **Shared PlayoutClock** — audio and video fought over the reference point on
-   re-anchor after stalls, causing oscillation.
-2. **Audio-gated video** — audio gaps propagated as video freezes even when
-   video packets were available.
-3. **Audio-master with VideoSyncController** — most complete attempt; under
-   congestion the hold/drop decisions created micro-freezes and skips that raw
-   PTS pacing avoided. Tested with patchbay at 0/50/200/500ms latency and
-   0-10-30% loss.
+## Open questions
 
-## Design principles for future attempt
-
-If sync is revisited:
-
-1. **Never make it worse under congestion** — must strictly improve over
-   unsynchronized PTS pacing in all tested scenarios.
-2. **Nudge, don't gate or skip** — adjust PTS pacing rate (1-2ms correction per
-   frame), never block video render on audio position.
-3. **Audio is never gated or delayed** — audio continuity is paramount.
-4. **Measure with patchbay** at 0/50/200/500ms latency, 0-10-30% loss.
-5. **Keep it simple** — entire sync mechanism under 30 lines of code. No state
-   machines, no cross-thread coordination, no playout buffers.
-
-The delta-nudge approach (proportional control with hard limits, ~1s convergence
-from 60ms delta at 30fps) is the most promising unexplored direction.
+- How does the shared clock behave under the patchbay congestion
+  scenarios that tripped up the earlier attempts? No patchbay tests
+  currently exercise `SyncMode::Synced`.
+- Should the jitter buffer be adaptive rather than fixed at 100 ms?
+  The JS player uses a fixed default too, but a network-aware jitter
+  estimate could tighten latency on good paths.
+- The catalog `jitter` field (per-codec latency) is populated by
+  moq-mux's fMP4 importer but not by live encoders. If live encoders
+  start populating it, the `Sync::set_audio_latency` /
+  `set_video_latency` setters are ready.

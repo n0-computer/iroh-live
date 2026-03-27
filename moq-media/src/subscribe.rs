@@ -32,7 +32,7 @@ use crate::net::NetworkSignals;
 use crate::{
     format::{DecodeConfig, PlaybackConfig, Quality, VideoFrame},
     pipeline::{AudioDecoderPipeline, PipelineContext, VideoDecoderHandle, VideoDecoderPipeline},
-    playout::{FreshnessPolicy, PlaybackPolicy},
+    playout::{PlaybackPolicy, SyncMode},
     processing::scale::Scaler,
     traits::{
         AudioDecoder, AudioSinkHandle, AudioStreamFactory, Decoders, VideoDecoder, VideoSource,
@@ -236,8 +236,10 @@ pub struct RemoteBroadcast {
     shutdown: CancellationToken,
     _catalog_task: Arc<AbortOnDropHandle<()>>,
     stats: crate::stats::SubscribeStats,
-    /// Shared freshness threshold used by new and existing tracks.
-    max_stale_duration_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// Shared playout clock for A/V synchronization. Created once per
+    /// broadcast and passed to video decode pipelines when
+    /// [`SyncMode::Synced`] is active.
+    sync: crate::sync::Sync,
 }
 
 /// Point-in-time snapshot of a broadcast's catalog.
@@ -301,33 +303,30 @@ impl CatalogSnapshot {
 }
 
 impl RemoteBroadcast {
-    /// Creates a new remote broadcast subscription.
+    /// Creates a new remote broadcast subscription with the default
+    /// [`PlaybackPolicy`] (synced playout, 150 ms max latency).
     ///
     /// Waits for the initial catalog before returning. Spawns a background
-    /// task that watches for catalog updates.
-    ///
-    /// This uses the default interactive playback policy:
-    /// [`PlaybackPolicy::audio_master()`]. Use
-    /// [`RemoteBroadcast::with_playback_policy`] when you need unmanaged
-    /// playout or a different freshness threshold.
+    /// task that watches for catalog updates. Use
+    /// [`with_playback_policy`](Self::with_playback_policy) when you need
+    /// unmanaged playout or a different latency budget.
     pub async fn new(broadcast_name: impl ToString, broadcast: BroadcastConsumer) -> Result<Self> {
         Self::with_playback_policy(broadcast_name, broadcast, PlaybackPolicy::default()).await
     }
 
-    /// Creates a new remote broadcast subscription with an explicit playback
-    /// policy.
+    /// Creates a new remote broadcast subscription with an explicit
+    /// [`PlaybackPolicy`].
     ///
-    /// Choose the playback policy when you create the subscription. In normal
-    /// applications, this is where you decide whether you want audio-master
-    /// sync or unmanaged playout, and how aggressively you want to skip stale
-    /// media after a stall.
+    /// The policy controls A/V sync mode and the max latency for the
+    /// ordered consumer. You can change it later with
+    /// [`set_playback_policy`](Self::set_playback_policy) before
+    /// subscribing to new tracks.
     #[tracing::instrument("RemoteBroadcast", skip_all, fields(name=tracing::field::Empty))]
     pub async fn with_playback_policy(
         broadcast_name: impl ToString,
         broadcast: BroadcastConsumer,
         playback_policy: PlaybackPolicy,
     ) -> Result<Self> {
-        let max_stale_duration_ms = playback_policy.freshness.max_stale_duration.as_millis() as u64;
         let broadcast_name = broadcast_name.to_string();
         tracing::Span::current().record("name", tracing::field::display(&broadcast_name));
         let shutdown = CancellationToken::new();
@@ -380,6 +379,10 @@ impl RemoteBroadcast {
             });
             (watchable, task)
         };
+        // Always create the Sync (100 ms jitter default). It is only
+        // passed to pipelines when SyncMode::Synced is active.
+        let sync = crate::sync::Sync::new();
+
         Ok(Self {
             broadcast_name,
             broadcast,
@@ -388,9 +391,7 @@ impl RemoteBroadcast {
             _catalog_task: Arc::new(AbortOnDropHandle::new(catalog_task)),
             shutdown,
             stats: crate::stats::SubscribeStats::default(),
-            max_stale_duration_ms: Arc::new(std::sync::atomic::AtomicU64::new(
-                max_stale_duration_ms,
-            )),
+            sync,
         })
     }
 
@@ -399,11 +400,20 @@ impl RemoteBroadcast {
         &self.broadcast_name
     }
 
-    /// Returns a [`PipelineContext`] value wired to this
-    /// broadcast's timing state, stats, and skip coordination.
-    fn decode_opts(&self) -> PipelineContext {
+    /// Builds a [`PipelineContext`] from the current policy and stats.
+    ///
+    /// When [`SyncMode::Synced`], the shared playout clock is included
+    /// so the video decode loop gates frames on playout time. When
+    /// [`SyncMode::Unmanaged`], `sync` is `None` and the decode loop
+    /// falls back to PTS-cadence pacing.
+    fn pipeline_ctx(&self) -> PipelineContext {
+        let sync = match self.playback_policy.sync {
+            SyncMode::Synced => Some(self.sync.clone()),
+            SyncMode::Unmanaged => None,
+        };
         PipelineContext {
             stats: self.stats.decode_stats(),
+            sync,
         }
     }
 
@@ -429,50 +439,25 @@ impl RemoteBroadcast {
 
     /// Returns the subscribe-side stats. Decode and playout pipelines
     /// record into these automatically. External producers (e.g. iroh
-    /// transport stats) can record additional metrics into the net stats.
+    /// transport stats) can record additional metrics into the net
+    /// stats.
     pub fn stats(&self) -> &crate::stats::SubscribeStats {
         &self.stats
     }
 
-    /// Returns the current playback policy for this broadcast.
-    ///
-    /// We return an owned value because freshness may be adjusted at runtime.
-    /// This is useful when UI code wants to show the current tuning state or
-    /// clone the policy for a new subscription.
-    pub fn playback_policy(&self) -> PlaybackPolicy {
-        self.playback_policy
-            .clone()
-            .with_freshness(FreshnessPolicy::new(Duration::from_millis(
-                self.max_stale_duration_ms
-                    .load(std::sync::atomic::Ordering::Relaxed),
-            )))
+    /// Returns the current playback policy.
+    pub fn playback_policy(&self) -> &PlaybackPolicy {
+        &self.playback_policy
     }
 
-    /// Resets sync state for a fresh pipeline start. Call before
-    /// rebuilding video/audio tracks (decoder switch, resubscribe)
-    /// so the new pipelines don't inherit stale timing from the
-    /// old session.
-    pub fn reset_sync(&self) {
-        // Currently a no-op — will be restored when A/V sync is re-added.
-    }
-
-    /// Sets the maximum stale duration used for transport freshness and
-    /// decoder skip recovery.
+    /// Replaces the playback policy for future track subscriptions.
     ///
-    /// This is the one playback knob that we support changing on a live
-    /// subscription. Increase it when you want to preserve more continuity
-    /// through congestion. Decrease it when you want faster recovery back to
-    /// the live edge after a stall.
-    ///
-    /// We keep sync mode fixed for the lifetime of the subscription. Changing
-    /// sync mode rebuilds the mental model of playout, while freshness is a
-    /// straightforward transport/recovery tradeoff that is safe to retune
-    /// live.
-    pub fn set_max_stale_duration(&self, duration: Duration) {
-        self.max_stale_duration_ms.store(
-            duration.as_millis() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+    /// Already-running pipelines are not affected: they keep whatever
+    /// sync mode and latency budget they were created with. Call
+    /// this before subscribing to new tracks (e.g. in a resubscribe
+    /// flow triggered by a UI toggle).
+    pub fn set_playback_policy(&mut self, policy: PlaybackPolicy) {
+        self.playback_policy = policy;
     }
 
     // -- Non-generic convenience methods (dynamic decoder dispatch) ──────
@@ -517,10 +502,7 @@ impl RemoteBroadcast {
         playback_config: &DecodeConfig,
         track_name: &str,
     ) -> Result<VideoTrack> {
-        let max_latency = Duration::from_millis(
-            self.max_stale_duration_ms
-                .load(std::sync::atomic::Ordering::Relaxed),
-        );
+        let max_latency = self.playback_policy.max_latency;
         let catalog = self.catalog();
         let video = &catalog.video;
         let config = video
@@ -541,7 +523,7 @@ impl RemoteBroadcast {
             consumer,
             config,
             playback_config,
-            self.decode_opts(),
+            self.pipeline_ctx(),
         )
     }
 
@@ -561,10 +543,7 @@ impl RemoteBroadcast {
         name: &str,
         audio_backend: &dyn AudioStreamFactory,
     ) -> Result<AudioTrack> {
-        let max_latency = Duration::from_millis(
-            self.max_stale_duration_ms
-                .load(std::sync::atomic::Ordering::Relaxed),
-        );
+        let max_latency = self.playback_policy.max_latency;
         let catalog = self.catalog();
         let audio = &catalog.audio;
         let config = audio.renditions.get(name).context("rendition not found")?;
@@ -582,7 +561,7 @@ impl RemoteBroadcast {
             consumer,
             config.clone(),
             audio_backend,
-            self.decode_opts(),
+            self.pipeline_ctx(),
         )
         .await
     }

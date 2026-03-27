@@ -38,7 +38,8 @@ Rust workspace for real-time media over iroh (QUIC-based transport).
 - `src/publish.rs` — `LocalBroadcast`, `VideoPublisher`, `AudioPublisher`, `VideoRenditions`, `AudioRenditions`
 - `src/publish/controller.rs` — publish controller
 - `src/subscribe.rs` — `RemoteBroadcast`, `VideoTrack`, `AudioTrack`, `MediaTracks`, `AdaptiveVideoTrack`, `CatalogSnapshot`
-- `src/playout.rs` — `PlayoutClock`, `PlayoutBuffer`, `PlayoutMode`
+- `src/playout.rs` — `PlaybackPolicy`, `SyncMode`
+- `src/sync.rs` — `Sync` (shared playout clock, ported from moq/js)
 - `src/adaptive.rs` — adaptive bitrate selection
 - `src/transport.rs` — `MediaPacket`, `PacketSource`, `PacketSink`
 - `src/pipeline.rs` — encode/decode pipeline orchestration
@@ -164,7 +165,7 @@ This repo will be maintained for years. Tracing is a first-class concern.
 
 ### moq-media subscribe side
 
-- `RemoteBroadcast` — wraps `BroadcastConsumer`, watches catalog, owns `PlayoutClock`
+- `RemoteBroadcast` — wraps `BroadcastConsumer`, watches catalog, owns `Sync` playout clock
 - `VideoTrack` / `AudioTrack` — decoded media tracks (frame channel + decoder handle)
 - `MediaTracks` — convenience: broadcast + optional video + optional audio
 - `CatalogSnapshot` — point-in-time catalog with rendition selection helpers
@@ -172,10 +173,10 @@ This repo will be maintained for years. Tracing is a first-class concern.
 
 ### Playout and sync
 
-- `PlayoutClock` — PTS→wall-clock mapping, jitter measurement, buffer re-anchoring
-- `PlayoutBuffer` — post-decoder frame buffer gated on playout time
-- `PlayoutMode::Live { buffer, max_latency }` — real-time with frame skipping
-- `PlayoutMode::Reliable` — every frame in order, no latency target (tests, recordings)
+- `Sync` — shared playout clock, gates video frames on `reference + pts + latency` (ported from moq/js)
+- `PlaybackPolicy` — sync mode (`Synced`/`Unmanaged`) + `max_latency` for ordered consumer
+- `SyncMode::Synced` — default, uses the shared `Sync` clock
+- `SyncMode::Unmanaged` — PTS-cadence `FramePacer`, no cross-track alignment
 
 ### Transport
 
