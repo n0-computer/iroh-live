@@ -262,7 +262,7 @@ fn audio_decode_loop(
         }
 
         // Sleep to maintain tick cadence.
-        let target = TICK * tick_num as u32;
+        let target = TICK.mul_f64(tick_num as f64);
         let elapsed = loop_start.elapsed();
         let sleep = target.saturating_sub(elapsed);
         if !sleep.is_zero() {

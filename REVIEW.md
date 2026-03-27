@@ -259,11 +259,6 @@ Doc comments clearly say "Unimplemented" on DR3/DR4, and DR5 logs a `warn!`, so 
 
 Full workspace review. Findings are new items not tracked in previous reviews.
 
-### Critical
-
-- [ ] **NR1**: `Live::shutdown` skips `endpoint.close()` when router shutdown succeeds. The `if let Some(router) ... && let Err(err) ... { error } else { endpoint.close() }` structure means the endpoint is only closed in the else branch: when there is no router, OR when the router shutdown fails. When a router is present and shuts down successfully, the endpoint is left open. Fix: unconditionally close the endpoint after router shutdown (`iroh-live/src/live.rs:290-299`).
-NO! router shutdown shuts the endpoint down. it's fine as is.
-
 ### Important
 
 - [ ] **NR2**: Audio decode tick counter overflows after ~12 hours. `tick_num` is `u64` but cast to `u32` at `TICK * tick_num as u32` (line 265). After 4294967295 ticks at 10ms each (~11.9 hours), the `as u32` wraps to 0, making `target` zero. The sleep calculation produces `Duration::ZERO.saturating_sub(elapsed)` = zero, so the decode loop loses all pacing and spins at CPU speed. Fix: use `Duration::from_millis(tick_num * TICK.as_millis() as u64)` or switch the counter to `u32` and reset periodically (`pipeline/audio_decode.rs:265`).
@@ -284,7 +279,7 @@ NO! router shutdown shuts the endpoint down. it's fine as is.
 
 - [ ] **NR9**: `CatalogProducer::publish` creates a new hang group on every catalog update with no deduplication. Setting the same catalog twice (e.g., calling `set_video` with identical input) creates unnecessary transport overhead. Consider comparing with the previous catalog state before publishing (`publish.rs:546-553`).
 
-- [ ] **NR10**: `iroh-live-cli/src/main.rs` uses `tracing_subscriber::fmt::init()` without `EnvFilter`, so `RUST_LOG` has no effect. The relay server correctly uses `EnvFilter::try_from_default_env()`. The CLI should do the same for consistency and debuggability (`iroh-live-cli/src/main.rs:54`).
+- ~~**NR10**~~: Invalid — `tracing_subscriber::fmt::init()` respects `RUST_LOG` via the default `EnvFilter`.
 
 ### Minor
 
