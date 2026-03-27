@@ -3,9 +3,11 @@
 #[cfg(all(target_os = "linux", feature = "capture"))]
 use std::path::PathBuf;
 
+#[cfg(all(target_os = "linux", feature = "capture"))]
+use iroh_live::media::capture::ScreenConfig;
 use iroh_live::media::{
     AudioBackend,
-    capture::{CameraCapturer, CameraConfig, CaptureBackend, ScreenCapturer, ScreenConfig},
+    capture::{CameraCapturer, CameraConfig, CaptureBackend, MonitorInfo, ScreenCapturer},
     codec::{AudioCodec, VideoCodec},
     format::{AudioPreset, VideoPreset},
     publish::LocalBroadcast,
@@ -66,22 +68,20 @@ fn save_restore_token(token: &str) {
 #[cfg(all(target_os = "linux", feature = "capture"))]
 fn setup_screen_source(
     broadcast: &LocalBroadcast,
-    backend: Option<iroh_live::media::capture::CaptureBackend>,
-    id: Option<&str>,
+    monitor: Option<&MonitorInfo>,
     codec: VideoCodec,
     presets: &[VideoPreset],
 ) -> anyhow::Result<()> {
-    use iroh_live::media::capture::{CaptureBackend, PipeWireScreenCapturer};
+    use iroh_live::media::capture::PipeWireScreenCapturer;
 
-    let is_pipewire = match backend {
-        Some(CaptureBackend::PipeWire) => true,
+    let is_pipewire = match monitor {
+        Some(m) => m.backend == CaptureBackend::PipeWire,
         None => ScreenCapturer::list_backends()
             .first()
             .is_some_and(|b| *b == CaptureBackend::PipeWire),
-        _ => false,
     };
 
-    if is_pipewire && id.is_none() {
+    if is_pipewire {
         let config = ScreenConfig {
             pipewire_restore_token: load_restore_token(),
             ..Default::default()
@@ -94,7 +94,10 @@ fn setup_screen_source(
             .video()
             .set_source(capturer, codec, presets.to_vec())?;
     } else {
-        let screen = ScreenCapturer::open(backend, id, &ScreenConfig::default())?;
+        let screen = match monitor {
+            Some(m) => ScreenCapturer::with_monitor(m)?,
+            None => ScreenCapturer::new()?,
+        };
         broadcast
             .video()
             .set_source(screen, codec, presets.to_vec())?;
@@ -105,12 +108,14 @@ fn setup_screen_source(
 #[cfg(not(all(target_os = "linux", feature = "capture")))]
 fn setup_screen_source(
     broadcast: &LocalBroadcast,
-    backend: Option<iroh_live::media::capture::CaptureBackend>,
-    id: Option<&str>,
+    monitor: Option<&MonitorInfo>,
     codec: VideoCodec,
     presets: &[VideoPreset],
 ) -> anyhow::Result<()> {
-    let screen = ScreenCapturer::open(backend, id, &ScreenConfig::default())?;
+    let screen = match monitor {
+        Some(m) => ScreenCapturer::with_monitor(m)?,
+        None => ScreenCapturer::new()?,
+    };
     broadcast
         .video()
         .set_source(screen, codec, presets.to_vec())?;
@@ -184,14 +189,15 @@ fn resolve_camera(
     CameraCapturer::with_config(Some(info), &CameraConfig::default())
 }
 
-/// Resolves a screen from [`BackendRef`] + [`DeviceRef`] to `(backend, id)`.
+/// Resolves a screen from [`BackendRef`] + [`DeviceRef`] to a [`MonitorInfo`].
 ///
-/// Uses `list_all()` so non-preferred backends are reachable, then returns
-/// the concrete backend + id pair for `setup_screen_source`.
+/// Uses `list_all()` so non-preferred backends (xcap, x11 when pipewire is
+/// also compiled) are reachable. Returns `None` when no specific monitor was
+/// requested, letting `setup_screen_source` use the default.
 fn resolve_screen(
     backend: Option<&BackendRef>,
     device: Option<&DeviceRef>,
-) -> anyhow::Result<(Option<CaptureBackend>, Option<String>)> {
+) -> anyhow::Result<Option<MonitorInfo>> {
     let screens = ScreenCapturer::list_all()?;
     let resolved_backend = backend
         .map(|b| resolve_backend(b, &ScreenCapturer::list_backends()))
@@ -212,7 +218,7 @@ fn resolve_screen(
                     filtered.len()
                 )
             })?;
-            Ok((Some(info.backend), Some(info.id.clone())))
+            Ok(Some((*info).clone()))
         }
         Some(DeviceRef::Name(name)) => {
             let info = filtered
@@ -225,9 +231,16 @@ fn resolve_screen(
                         available.join("\n  ")
                     )
                 })?;
-            Ok((Some(info.backend), Some(info.id.clone())))
+            Ok(Some((*info).clone()))
         }
-        None => Ok((resolved_backend, None)),
+        None => {
+            // Backend specified but no device — pick the first from that backend.
+            if resolved_backend.is_some() {
+                Ok(filtered.first().map(|info| (*info).clone()))
+            } else {
+                Ok(None)
+            }
+        }
     }
 }
 
@@ -263,11 +276,11 @@ pub fn setup_video(
                 broadcast.video().set_source(cam, codec, presets.to_vec())?;
             }
             VideoSourceSpec::DefaultScreen => {
-                setup_screen_source(broadcast, None, None, codec, presets)?;
+                setup_screen_source(broadcast, None, codec, presets)?;
             }
             VideoSourceSpec::Screen { backend, device } => {
-                let (b, id) = resolve_screen(backend.as_ref(), device.as_ref())?;
-                setup_screen_source(broadcast, b, id.as_deref(), codec, presets)?;
+                let monitor = resolve_screen(backend.as_ref(), device.as_ref())?;
+                setup_screen_source(broadcast, monitor.as_ref(), codec, presets)?;
             }
         }
     }
