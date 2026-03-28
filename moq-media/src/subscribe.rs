@@ -891,11 +891,30 @@ impl AudioTrack {
 /// Produces [`VideoFrame`]s via [`try_recv`](Self::try_recv) (non-blocking)
 /// or [`next_frame`](Self::next_frame) (async). Can also wrap a raw [`VideoSource`]
 /// for local preview.
+///
+/// Optionally carries an adaptation handle for automatic rendition
+/// switching based on network conditions. Attach one with
+/// [`enable_adaptation`](Self::enable_adaptation); the frame channel
+/// stays the same while the underlying decoder pipeline gets swapped.
 #[derive(derive_more::Debug)]
 pub struct VideoTrack {
     #[debug(skip)]
     rx: crate::frame_channel::FrameReceiver<VideoFrame>,
     inner: VideoTrackInner,
+    #[cfg(any_video_codec)]
+    #[debug(skip)]
+    adaptation: Option<AdaptationState>,
+}
+
+/// Internal state for an active adaptation handle on a [`VideoTrack`].
+#[cfg(any_video_codec)]
+#[derive(derive_more::Debug)]
+struct AdaptationState {
+    selected_rendition: Watchable<String>,
+    mode_tx: watch::Sender<crate::adaptive::RenditionMode>,
+    /// Dropping this aborts the adaptation background task.
+    #[debug(skip)]
+    _task: n0_future::task::AbortOnDropHandle<()>,
 }
 
 #[derive(derive_more::Debug)]
@@ -1006,6 +1025,8 @@ impl VideoTrack {
                 _shutdown_guard: shutdown.drop_guard(),
                 _thread: thread,
             },
+            #[cfg(any_video_codec)]
+            adaptation: None,
         }
     }
 
@@ -1029,6 +1050,8 @@ impl VideoTrack {
         Self {
             rx: frames.rx,
             inner: VideoTrackInner::Pipeline(handle),
+            #[cfg(any_video_codec)]
+            adaptation: None,
         }
     }
 
@@ -1084,6 +1107,126 @@ impl VideoTrack {
     pub async fn next_frame(&mut self) -> Option<VideoFrame> {
         self.rx.recv().await
     }
+
+    // ── Adaptation ──────────────────────────────────────────────────
+
+    /// Enables automatic rendition switching based on network signals.
+    ///
+    /// Spawns a background task that monitors `signals` and swaps the
+    /// underlying decoder pipeline when conditions change. The frame
+    /// channel stays the same, so the consumer does not need to change
+    /// how it reads frames.
+    ///
+    /// Requires a [`RemoteBroadcast`] to subscribe to alternate
+    /// renditions. Returns an error if the catalog has no video
+    /// renditions.
+    ///
+    /// If adaptation is already enabled, the previous handle is dropped
+    /// and replaced.
+    #[cfg(any_video_codec)]
+    pub fn enable_adaptation(
+        &mut self,
+        broadcast: RemoteBroadcast,
+        signals: watch::Receiver<NetworkSignals>,
+        config: AdaptiveConfig,
+        decode_config: DecodeConfig,
+    ) -> anyhow::Result<()> {
+        use crate::adaptive::rank_renditions;
+
+        let catalog = broadcast.catalog();
+        let ranked = rank_renditions(&catalog.video.renditions);
+        anyhow::ensure!(!ranked.is_empty(), "no video renditions in catalog");
+
+        // Determine which rendition we are currently on. If the current
+        // rendition is not in the catalog (unlikely), start from the
+        // highest.
+        let current_rendition = self.rendition().to_string();
+        let current_idx = ranked
+            .iter()
+            .position(|r| r.name == current_rendition)
+            .unwrap_or(0);
+
+        let selected_rendition = Watchable::new(ranked[current_idx].name.clone());
+        let (mode_tx, mode_rx) = watch::channel(crate::adaptive::RenditionMode::Auto);
+
+        // The adaptation task creates new decoder pipelines that write
+        // to the same frame channel via `new_sender()`.
+        let frame_sender = self.rx.new_sender();
+
+        let task = tokio::spawn(adaptation_task_v2(
+            broadcast,
+            signals,
+            config,
+            decode_config,
+            ranked,
+            current_idx,
+            selected_rendition.clone(),
+            mode_rx,
+            frame_sender,
+        ));
+
+        self.adaptation = Some(AdaptationState {
+            selected_rendition,
+            mode_tx,
+            _task: n0_future::task::AbortOnDropHandle::new(task),
+        });
+
+        Ok(())
+    }
+
+    /// Disables automatic rendition switching.
+    ///
+    /// Stops the adaptation background task. The track continues
+    /// playing on whichever rendition was active at the time.
+    #[cfg(any_video_codec)]
+    pub fn disable_adaptation(&mut self) {
+        self.adaptation = None;
+    }
+
+    /// Returns `true` if adaptation is currently enabled.
+    #[cfg(any_video_codec)]
+    pub fn is_adaptive(&self) -> bool {
+        self.adaptation.is_some()
+    }
+
+    /// Returns the name of the currently selected rendition.
+    ///
+    /// If adaptation is not enabled, returns the rendition this track
+    /// was originally subscribed to.
+    #[cfg(any_video_codec)]
+    pub fn selected_rendition(&self) -> String {
+        if let Some(ref state) = self.adaptation {
+            state.selected_rendition.get()
+        } else {
+            self.rendition().to_string()
+        }
+    }
+
+    /// Returns a watcher for rendition changes.
+    ///
+    /// Only meaningful when adaptation is enabled. When disabled,
+    /// returns a watcher that holds the current static rendition name
+    /// and never updates.
+    #[cfg(any_video_codec)]
+    pub fn rendition_watcher(&self) -> n0_watcher::Direct<String> {
+        if let Some(ref state) = self.adaptation {
+            state.selected_rendition.watch()
+        } else {
+            // Static: create a watchable with the current name.
+            let w = Watchable::new(self.rendition().to_string());
+            w.watch()
+        }
+    }
+
+    /// Sets the rendition selection mode (Auto or Fixed).
+    ///
+    /// No-op if adaptation is not enabled.
+    #[cfg(any_video_codec)]
+    pub fn set_rendition_mode(&self, mode: crate::adaptive::RenditionMode) {
+        if let Some(ref state) = self.adaptation {
+            state.mode_tx.send(mode).ok();
+        }
+    }
 }
 
 /// Combined video and audio tracks from a [`RemoteBroadcast`].
@@ -1135,6 +1278,261 @@ impl MediaTracks {
             video,
         })
     }
+}
+
+// ── Adaptation task (v2: writes to shared frame sender) ─────────────────
+
+/// Background task that monitors network signals and swaps decoder
+/// pipelines by creating new ones that write to the same frame sender.
+///
+/// Unlike the original `adaptation_task` in `adaptive.rs` which sends
+/// whole `VideoTrack` objects over a channel, this version creates
+/// `VideoDecoderPipeline`s with `with_sender()` so frames flow directly
+/// to the consumer's existing `FrameReceiver`.
+#[cfg(any_video_codec)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "private task function, grouping args would add complexity"
+)]
+async fn adaptation_task_v2(
+    broadcast: RemoteBroadcast,
+    signals: watch::Receiver<NetworkSignals>,
+    config: AdaptiveConfig,
+    decode_config: DecodeConfig,
+    mut ranked: Vec<crate::adaptive::RankedRendition>,
+    mut current_idx: usize,
+    selected_rendition: Watchable<String>,
+    mut mode_rx: watch::Receiver<crate::adaptive::RenditionMode>,
+    frame_sender: crate::frame_channel::FrameSender<VideoFrame>,
+) {
+    use std::time::Instant;
+
+    use crate::adaptive::{
+        AdaptationTimers, Decision, evaluate, rank_renditions, should_abort_probe,
+    };
+
+    let mut timers = AdaptationTimers::default();
+    let mut interval = tokio::time::interval(config.check_interval);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut catalog_watcher = broadcast.catalog_watcher();
+
+    // The current decoder handle. Dropping it stops the old pipeline.
+    // We hold it here so the old pipeline stays alive until the new one
+    // is ready, preventing frame gaps.
+    let mut _current_handle: Option<crate::pipeline::VideoDecoderHandle> = None;
+
+    // Active probe state: (decoder handle, started, congestion_baseline).
+    let mut probe: Option<(crate::pipeline::VideoDecoderHandle, Instant, u64)> = None;
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {}
+            _ = mode_rx.changed() => {}
+        }
+
+        // Refresh rendition ranking on catalog change.
+        if catalog_watcher.update() {
+            let catalog = broadcast.catalog();
+            let new_ranked = rank_renditions(&catalog.video.renditions);
+            if !new_ranked.is_empty() {
+                let current_name = &ranked[current_idx].name;
+                current_idx = new_ranked
+                    .iter()
+                    .position(|r| r.name == *current_name)
+                    .unwrap_or(0);
+                ranked = new_ranked;
+            }
+        }
+
+        let mode = mode_rx.borrow().clone();
+
+        // Handle Fixed mode.
+        if let crate::adaptive::RenditionMode::Fixed(ref name) = mode {
+            if ranked[current_idx].name != *name
+                && let Some(idx) = ranked.iter().position(|r| r.name == *name)
+            {
+                match switch_rendition_v2(
+                    &broadcast,
+                    &decode_config,
+                    &ranked[idx].name,
+                    &frame_sender,
+                ) {
+                    Ok(handle) => {
+                        current_idx = idx;
+                        selected_rendition.set(ranked[idx].name.clone()).ok();
+                        tracing::info!(rendition = %ranked[idx].name, "fixed mode: switched rendition");
+                        _current_handle = Some(handle);
+                    }
+                    Err(err) => tracing::warn!("failed to switch to fixed rendition: {err:#}"),
+                }
+            }
+            probe = None;
+            continue;
+        }
+
+        // Auto mode: read signals and evaluate.
+        let sigs = *signals.borrow();
+        let now = Instant::now();
+
+        // Check active probe.
+        if let Some((probe_handle, started, baseline)) = probe.take() {
+            if should_abort_probe(&sigs, baseline, &config) {
+                tracing::info!(
+                    loss = sigs.loss_rate,
+                    congestion = sigs.congestion_events,
+                    "probe aborted: congestion detected"
+                );
+                drop(probe_handle);
+                timers.last_probe = Some(now);
+                continue;
+            }
+            if now.duration_since(started) >= config.probe_duration {
+                // Probe succeeded — commit.
+                let probe_idx = current_idx.saturating_sub(1);
+                current_idx = probe_idx;
+                selected_rendition.set(ranked[probe_idx].name.clone()).ok();
+                tracing::info!(rendition = %ranked[probe_idx].name, "probe succeeded: upgraded");
+                timers.last_probe = Some(now);
+                _current_handle = Some(probe_handle);
+                continue;
+            }
+            // Probe still running.
+            probe = Some((probe_handle, started, baseline));
+            continue;
+        }
+
+        let decision = evaluate(current_idx, &ranked, &sigs, &mut timers, &config, now);
+
+        let in_failure_cooldown = timers
+            .last_switch_failure
+            .is_some_and(|t| now.duration_since(t) < config.post_downgrade_cooldown);
+
+        match decision {
+            Decision::Hold => {}
+            Decision::Downgrade(idx) if !in_failure_cooldown => {
+                let target_idx = idx.min(ranked.len() - 1);
+                match switch_rendition_v2(
+                    &broadcast,
+                    &decode_config,
+                    &ranked[target_idx].name,
+                    &frame_sender,
+                ) {
+                    Ok(handle) => {
+                        current_idx = target_idx;
+                        timers.last_switch_failure = None;
+                        selected_rendition.set(ranked[target_idx].name.clone()).ok();
+                        tracing::info!(
+                            rendition = %ranked[target_idx].name,
+                            loss = sigs.loss_rate,
+                            bw = sigs.available_bps,
+                            "downgraded rendition"
+                        );
+                        _current_handle = Some(handle);
+                    }
+                    Err(err) => {
+                        tracing::warn!("failed to switch rendition: {err:#}");
+                        timers.last_switch_failure = Some(now);
+                    }
+                }
+            }
+            Decision::Emergency => {
+                let target_idx = ranked.len() - 1;
+                match switch_rendition_v2(
+                    &broadcast,
+                    &decode_config,
+                    &ranked[target_idx].name,
+                    &frame_sender,
+                ) {
+                    Ok(handle) => {
+                        current_idx = target_idx;
+                        timers.last_switch_failure = None;
+                        selected_rendition.set(ranked[target_idx].name.clone()).ok();
+                        tracing::info!(
+                            rendition = %ranked[target_idx].name,
+                            loss = sigs.loss_rate,
+                            bw = sigs.available_bps,
+                            "emergency downgrade"
+                        );
+                        _current_handle = Some(handle);
+                    }
+                    Err(err) => {
+                        tracing::warn!("failed emergency rendition switch: {err:#}");
+                        timers.last_switch_failure = Some(now);
+                    }
+                }
+            }
+            Decision::Downgrade(_) => {
+                // In failure cooldown — skip.
+            }
+            Decision::StartProbe(probe_idx) if !in_failure_cooldown => {
+                tracing::debug!(
+                    rendition = %ranked[probe_idx].name,
+                    bw = sigs.available_bps,
+                    "starting upgrade probe"
+                );
+                match switch_rendition_v2(
+                    &broadcast,
+                    &decode_config,
+                    &ranked[probe_idx].name,
+                    &frame_sender,
+                ) {
+                    Ok(handle) => {
+                        let baseline = sigs.congestion_events;
+                        timers.probe_congestion_baseline = Some(baseline);
+                        timers.last_switch_failure = None;
+                        probe = Some((handle, now, baseline));
+                    }
+                    Err(err) => {
+                        tracing::warn!("failed to start probe: {err:#}");
+                        timers.last_probe = Some(now);
+                        timers.last_switch_failure = Some(now);
+                    }
+                }
+            }
+            Decision::StartProbe(_) => {
+                // In failure cooldown — skip.
+            }
+        }
+    }
+}
+
+/// Creates a new decoder pipeline that writes to the given frame sender.
+#[cfg(any_video_codec)]
+fn switch_rendition_v2(
+    broadcast: &RemoteBroadcast,
+    decode_config: &DecodeConfig,
+    rendition_name: &str,
+    frame_sender: &crate::frame_channel::FrameSender<VideoFrame>,
+) -> n0_error::Result<crate::pipeline::VideoDecoderHandle> {
+    use crate::{codec::DynamicVideoDecoder, pipeline::VideoDecoderPipeline};
+
+    let max_latency = broadcast.playback_policy.max_latency;
+    let catalog = broadcast.catalog();
+    let config = catalog
+        .video
+        .renditions
+        .get(rendition_name)
+        .context("rendition not found")?;
+    let track_consumer = broadcast
+        .broadcast
+        .subscribe_track(&moq_lite::Track {
+            name: rendition_name.to_string(),
+            priority: VIDEO_PRIORITY,
+        })
+        .anyerr()?;
+    let consumer = hang::container::OrderedConsumer::new(track_consumer, max_latency);
+    let source = MoqPacketSource::new(consumer);
+    let config: rusty_codecs::config::VideoConfig = config.clone().into();
+    let sender = frame_sender.clone();
+
+    Ok(VideoDecoderPipeline::with_sender::<DynamicVideoDecoder>(
+        rendition_name.to_string(),
+        source,
+        &config,
+        decode_config,
+        broadcast.pipeline_ctx(),
+        sender,
+    )?)
 }
 
 /// Creates a subscribe-side preview from any [`BroadcastConsumer`](moq_lite::BroadcastConsumer).
