@@ -1,8 +1,12 @@
-//! `irl room` — multi-party room with video grid.
+//! `irl room` — multi-party room with video grid and text chat.
 
-use std::time::Duration;
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 use eframe::egui::{self, Id, Vec2};
+use iroh::EndpointId;
 use iroh_gossip::TopicId;
 use iroh_live::{
     Live,
@@ -12,7 +16,7 @@ use iroh_live::{
         subscribe::{AudioTrack, MediaTracks, RemoteBroadcast},
     },
     moq::MoqSession,
-    rooms::{Room, RoomEvent, RoomTicket},
+    rooms::{Room, RoomEvent, RoomHandle, RoomTicket},
 };
 use moq_media_egui::VideoTrackView;
 use n0_error::{Result, StdResultExt, anyerr};
@@ -22,12 +26,17 @@ use crate::args::RoomArgs;
 
 const BROADCAST_NAME: &str = "cam";
 
+/// Maximum number of chat messages retained in the UI scrollback.
+const MAX_CHAT_HISTORY: usize = 200;
+
 pub fn run(args: RoomArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
     let (live, broadcast, room, audio_ctx) = rt.block_on(async {
         let audio_ctx = AudioBackend::default();
         let (live, broadcast, room) = setup(&args, audio_ctx.clone()).await?;
         n0_error::Ok((live, broadcast, room, audio_ctx))
     })?;
+
+    let (events, handle) = room.split();
 
     // eframe runs outside block_on.
     let _guard = rt.enter();
@@ -38,7 +47,8 @@ pub fn run(args: RoomArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
             crate::ui::spawn_ctrl_c_handler(&cc.egui_ctx);
 
             Ok(Box::new(RoomApp {
-                room,
+                events,
+                handle,
                 peers: vec![],
                 pending: tokio::task::JoinSet::new(),
                 self_video: broadcast
@@ -49,6 +59,7 @@ pub fn run(args: RoomArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
                 audio_ctx,
                 self_view_mode: SelfViewMode::Grid,
                 wgpu_render_state: cc.wgpu_render_state.clone(),
+                chat: ChatState::default(),
             }))
         }),
     )
@@ -58,7 +69,7 @@ pub fn run(args: RoomArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
 async fn setup(args: &RoomArgs, audio_ctx: AudioBackend) -> Result<(Live, LocalBroadcast, Room)> {
     let live = Live::from_env().await?.with_router().with_gossip().spawn();
 
-    let broadcast = LocalBroadcast::new();
+    let mut broadcast = LocalBroadcast::new();
     let video_sources = args
         .capture
         .video_sources()
@@ -74,15 +85,64 @@ async fn setup(args: &RoomArgs, audio_ctx: AudioBackend) -> Result<(Live, LocalB
     crate::source::setup_video(&broadcast, &video_sources, codec, &presets)?;
     crate::source::setup_audio(&broadcast, &audio_sources, &audio_ctx, audio_preset).await?;
 
+    // Enable chat on the broadcast so subscribers can read our messages.
+    let chat_publisher = broadcast.enable_chat()?;
+
     let ticket = match &args.ticket {
         Some(t) => t.clone(),
         None => RoomTicket::new(topic_id_from_env()?, vec![]),
     };
     let room = live.join_room(ticket).await?;
     room.publish(BROADCAST_NAME, &broadcast).await?;
+    room.set_chat_publisher(chat_publisher).await?;
     println!("room ticket: {}", room.ticket());
 
     Ok((live, broadcast, room))
+}
+
+// ---------------------------------------------------------------------------
+// Chat state
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct ChatState {
+    messages: VecDeque<ChatEntry>,
+    input: String,
+    /// Whether the text input currently has focus (used to scope Enter key).
+    input_focused: bool,
+}
+
+struct ChatEntry {
+    sender: String,
+    text: String,
+    _received_at: Instant,
+    is_system: bool,
+}
+
+impl ChatState {
+    fn push_message(&mut self, sender: impl Into<String>, text: impl Into<String>) {
+        self.messages.push_back(ChatEntry {
+            sender: sender.into(),
+            text: text.into(),
+            _received_at: Instant::now(),
+            is_system: false,
+        });
+        if self.messages.len() > MAX_CHAT_HISTORY {
+            self.messages.pop_front();
+        }
+    }
+
+    fn push_system(&mut self, text: impl Into<String>) {
+        self.messages.push_back(ChatEntry {
+            sender: String::new(),
+            text: text.into(),
+            _received_at: Instant::now(),
+            is_system: true,
+        });
+        if self.messages.len() > MAX_CHAT_HISTORY {
+            self.messages.pop_front();
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -149,7 +209,8 @@ impl RemoteTrackView {
 // ---------------------------------------------------------------------------
 
 struct RoomApp {
-    room: Room,
+    events: iroh_live::rooms::RoomEvents,
+    handle: RoomHandle,
     peers: Vec<RemoteTrackView>,
     /// Pending async media subscriptions for newly joined peers.
     pending: tokio::task::JoinSet<anyhow::Result<(MoqSession, MediaTracks)>>,
@@ -159,6 +220,28 @@ struct RoomApp {
     audio_ctx: AudioBackend,
     self_view_mode: SelfViewMode,
     wgpu_render_state: Option<moq_media_egui::egui_wgpu::RenderState>,
+    chat: ChatState,
+}
+
+impl RoomApp {
+    fn send_chat(&mut self) {
+        let text = self.chat.input.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        self.chat.input.clear();
+        self.chat.push_message("me", &text);
+        let handle = self.handle.clone();
+        tokio::spawn(async move {
+            if let Err(err) = handle.send_chat(text).await {
+                warn!("failed to send chat: {err:#}");
+            }
+        });
+    }
+}
+
+fn peer_short(remote: EndpointId) -> String {
+    remote.fmt_short().to_string()
 }
 
 impl eframe::App for RoomApp {
@@ -183,8 +266,8 @@ impl eframe::App for RoomApp {
             }
         }
 
-        // Dispatch new room events — spawn async media subscriptions.
-        while let Ok(event) = self.room.try_recv() {
+        // Dispatch new room events.
+        while let Ok(event) = self.events.try_recv() {
             match event {
                 RoomEvent::RemoteAnnounced { remote, broadcasts } => {
                     info!("peer announced: {} with {broadcasts:?}", remote.fmt_short());
@@ -201,15 +284,38 @@ impl eframe::App for RoomApp {
                         Ok((*session, tracks))
                     });
                 }
+                RoomEvent::PeerJoined {
+                    remote,
+                    display_name,
+                } => {
+                    let name = display_name.unwrap_or_else(|| peer_short(remote));
+                    self.chat.push_system(format!("{name} joined"));
+                }
+                RoomEvent::PeerLeft { remote } => {
+                    self.chat
+                        .push_system(format!("{} left", peer_short(remote)));
+                }
+                RoomEvent::ChatReceived { remote, message } => {
+                    self.chat.push_message(peer_short(remote), message.text);
+                }
                 _ => {}
             }
         }
+
+        // Layout: video grid on top, chat panel on bottom.
+        let chat_panel_h = 160.0;
+        let bar_h = 28.0;
+
+        egui::TopBottomPanel::bottom("chat_panel")
+            .exact_height(chat_panel_h)
+            .show(ctx, |ui| {
+                show_chat(ui, &mut self.chat);
+            });
 
         egui::CentralPanel::default()
             .frame(egui::Frame::new().inner_margin(0.0).outer_margin(0.0))
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-                let bar_h = 28.0;
                 let avail = ui.available_size();
                 let grid_avail = egui::vec2(avail.x, avail.y - bar_h);
 
@@ -253,12 +359,62 @@ impl eframe::App for RoomApp {
                     }
                 });
             });
+
+        // Handle Enter key for chat send — only when the text input has focus.
+        if self.chat.input_focused && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+            self.send_chat();
+        }
     }
 
     fn on_exit(&mut self) {
         info!("exit");
         crate::ui::shutdown_live_blocking(&self.live);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Chat panel
+// ---------------------------------------------------------------------------
+
+fn show_chat(ui: &mut egui::Ui, chat: &mut ChatState) {
+    ui.vertical(|ui| {
+        // Message history: scrollable area.
+        let input_h = 24.0;
+        let avail = ui.available_height() - input_h - 4.0;
+        egui::ScrollArea::vertical()
+            .max_height(avail)
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                for entry in &chat.messages {
+                    if entry.is_system {
+                        ui.label(
+                            egui::RichText::new(&entry.text)
+                                .italics()
+                                .color(egui::Color32::GRAY),
+                        );
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(format!("{}:", entry.sender)).strong());
+                            ui.label(&entry.text);
+                        });
+                    }
+                }
+            });
+
+        // Input field.
+        ui.horizontal(|ui| {
+            let response = ui.add_sized(
+                [ui.available_width() - 60.0, input_h],
+                egui::TextEdit::singleline(&mut chat.input).hint_text("Type a message..."),
+            );
+            chat.input_focused = response.has_focus();
+            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                // Re-focus so the user can keep typing after sending.
+                response.request_focus();
+                chat.input_focused = true;
+            }
+        });
+    });
 }
 
 // ---------------------------------------------------------------------------

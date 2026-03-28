@@ -22,7 +22,7 @@ pub use controller::{
     CaptureConfig, PublishCaptureController, PublishOpts, PublishUpdate, PublishUpdateError,
     StreamKind,
 };
-use hang::catalog::{Audio, AudioConfig, Catalog, Video, VideoConfig};
+use hang::catalog::{Audio, AudioConfig, Catalog, Chat, User, Video, VideoConfig};
 use moq_lite::{BroadcastProducer, TrackProducer};
 use n0_error::{Result, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
@@ -273,6 +273,41 @@ impl LocalBroadcast {
     /// Returns `true` if audio is currently configured.
     pub fn has_audio(&self) -> bool {
         self.state.lock().expect("poisoned").audio.is_some()
+    }
+
+    /// Enables the chat track on this broadcast and returns a publisher.
+    ///
+    /// Creates a new MoQ track for chat messages and advertises it in the
+    /// catalog. The returned [`ChatPublisher`](crate::chat::ChatPublisher)
+    /// can send text messages that all subscribers receive.
+    ///
+    /// Can only be called once per broadcast. Subsequent calls return an error.
+    pub fn enable_chat(&mut self) -> Result<crate::chat::ChatPublisher> {
+        let track_info = crate::chat::chat_track();
+        let track = self.producer.create_track(track_info.clone()).anyerr()?;
+        let publisher = crate::chat::ChatPublisher::new(track);
+
+        let mut state = self.state.lock().expect("poisoned");
+        state
+            .catalog
+            .set_chat(Some(Chat {
+                message: Some(track_info),
+                typing: None,
+            }))
+            .anyerr()?;
+
+        info!("chat track enabled");
+        Ok(publisher)
+    }
+
+    /// Sets user metadata in the broadcast catalog.
+    ///
+    /// Subscribers see this as `catalog.user` and can use it for display
+    /// names, avatars, and other identity information.
+    pub fn set_user(&self, user: User) -> Result<()> {
+        let mut state = self.state.lock().expect("poisoned");
+        state.catalog.set_user(Some(user)).anyerr()?;
+        Ok(())
     }
 
     /// Returns a consumer that reads from this broadcast's producer.
@@ -545,6 +580,18 @@ impl CatalogProducer {
 
     fn set_audio(&mut self, audio: Audio) -> Result<()> {
         self.catalog.audio = audio;
+        self.publish()?;
+        Ok(())
+    }
+
+    fn set_chat(&mut self, chat: Option<Chat>) -> Result<()> {
+        self.catalog.chat = chat;
+        self.publish()?;
+        Ok(())
+    }
+
+    fn set_user(&mut self, user: Option<User>) -> Result<()> {
+        self.catalog.user = user;
         self.publish()?;
         Ok(())
     }

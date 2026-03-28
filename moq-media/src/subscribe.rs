@@ -439,6 +439,28 @@ impl RemoteBroadcast {
         !self.catalog().audio.renditions.is_empty()
     }
 
+    /// Returns true if the catalog advertises a chat track.
+    pub fn has_chat(&self) -> bool {
+        self.catalog()
+            .chat
+            .as_ref()
+            .is_some_and(|c| c.message.is_some())
+    }
+
+    /// Subscribes to the chat track and returns a [`ChatSubscriber`](crate::chat::ChatSubscriber).
+    ///
+    /// Returns `None` if the catalog does not advertise a chat track.
+    pub fn chat(&self) -> Option<crate::chat::ChatSubscriber> {
+        let track_info = self.catalog().chat.as_ref()?.message.as_ref()?.clone();
+        let consumer = self.broadcast.subscribe_track(&track_info).ok()?;
+        Some(crate::chat::ChatSubscriber::new(consumer))
+    }
+
+    /// Returns the user metadata from the catalog, if set by the publisher.
+    pub fn user(&self) -> Option<hang::catalog::User> {
+        self.catalog().user.clone()
+    }
+
     /// Returns the subscribe-side stats. Decode and playout pipelines
     /// record into these automatically. External producers (e.g. iroh
     /// transport stats) can record additional metrics into the net

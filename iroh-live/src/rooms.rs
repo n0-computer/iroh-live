@@ -1,4 +1,9 @@
-use std::{collections::HashSet, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    pin::Pin,
+    sync::Arc,
+    time::Duration,
+};
 
 use bytes::Bytes;
 use iroh::{EndpointId, SecretKey};
@@ -6,7 +11,7 @@ use iroh_gossip::Gossip;
 use iroh_moq::MoqSession;
 use iroh_smol_kv::{ExpiryConfig, Filter, SignedValue, Subscribe, SubscribeMode, WriteScope};
 use moq_lite::BroadcastProducer;
-use moq_media::subscribe::RemoteBroadcast;
+use moq_media::{chat::ChatMessage, subscribe::RemoteBroadcast};
 use n0_error::{Result, StackResultExt, StdResultExt, anyerr};
 use n0_future::{FuturesUnordered, StreamExt, task::AbortOnDropHandle};
 use serde::{Deserialize, Serialize};
@@ -14,7 +19,7 @@ use tokio::{
     sync::mpsc::{self, error::TryRecvError},
     task,
 };
-use tracing::{Instrument, debug, error_span, warn};
+use tracing::{Instrument, debug, error, error_span, info, trace, warn};
 
 pub use self::{publisher::RoomPublisherSync, ticket::RoomTicket};
 use crate::Live;
@@ -84,6 +89,31 @@ impl RoomHandle {
                 name: name.to_string(),
                 producer,
             })
+            .await
+            .map_err(|_| anyerr!("room actor died"))
+    }
+
+    /// Registers a [`ChatPublisher`](moq_media::chat::ChatPublisher) with the room actor.
+    ///
+    /// Call this after [`LocalBroadcast::enable_chat`](moq_media::publish::LocalBroadcast::enable_chat)
+    /// to allow [`send_chat`](Self::send_chat) to work.
+    pub async fn set_chat_publisher(
+        &self,
+        publisher: moq_media::chat::ChatPublisher,
+    ) -> Result<()> {
+        self.tx
+            .send(ApiMessage::SetChatPublisher { publisher })
+            .await
+            .map_err(|_| anyerr!("room actor died"))
+    }
+
+    /// Sends a chat message to all peers in the room.
+    ///
+    /// Requires that a chat publisher has been registered via
+    /// [`set_chat_publisher`](Self::set_chat_publisher).
+    pub async fn send_chat(&self, text: impl Into<String>) -> Result<()> {
+        self.tx
+            .send(ApiMessage::SendChat { text: text.into() })
             .await
             .map_err(|_| anyerr!("room actor died"))
     }
@@ -168,12 +198,31 @@ impl Room {
     ) -> Result<()> {
         self.handle.publish_producer(name, producer).await
     }
+
+    /// Registers a chat publisher with the room. See [`RoomHandle::set_chat_publisher`].
+    pub async fn set_chat_publisher(
+        &self,
+        publisher: moq_media::chat::ChatPublisher,
+    ) -> Result<()> {
+        self.handle.set_chat_publisher(publisher).await
+    }
+
+    /// Sends a chat message. See [`RoomHandle::send_chat`].
+    pub async fn send_chat(&self, text: impl Into<String>) -> Result<()> {
+        self.handle.send_chat(text).await
+    }
 }
 
 enum ApiMessage {
     Publish {
         name: String,
         producer: BroadcastProducer,
+    },
+    SendChat {
+        text: String,
+    },
+    SetChatPublisher {
+        publisher: moq_media::chat::ChatPublisher,
     },
 }
 
@@ -195,6 +244,25 @@ pub enum RoomEvent {
         /// The subscribed broadcast, ready for video/audio decoding.
         broadcast: Box<RemoteBroadcast>,
     },
+    /// A peer appeared in the room for the first time.
+    PeerJoined {
+        /// The peer's endpoint ID.
+        remote: EndpointId,
+        /// Display name from the peer's gossip state, if set.
+        display_name: Option<String>,
+    },
+    /// A peer's gossip state expired or was removed.
+    PeerLeft {
+        /// The peer's endpoint ID.
+        remote: EndpointId,
+    },
+    /// A chat message was received from a remote peer's broadcast.
+    ChatReceived {
+        /// The peer that sent the message.
+        remote: EndpointId,
+        /// The chat message.
+        message: ChatMessage,
+    },
 }
 
 const PEER_STATE_KEY: &[u8] = b"s";
@@ -202,6 +270,12 @@ const PEER_STATE_KEY: &[u8] = b"s";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PeerState {
     broadcasts: Vec<String>,
+    /// Optional display name for the peer.
+    ///
+    /// Do NOT use `skip_serializing_if` here: postcard is a positional binary
+    /// format, so skipping a field during serialization causes the deserializer
+    /// to read past the buffer.
+    display_name: Option<String>,
 }
 
 type ConnectingFutures = FuturesUnordered<BoxFuture<(BroadcastId, Result<crate::Subscription>)>>;
@@ -211,15 +285,25 @@ type KvEntry = (EndpointId, Bytes, SignedValue);
 #[display("{}:{}", _0.fmt_short(), _1)]
 struct BroadcastId(EndpointId, String);
 
+type ChatFuture = BoxFuture<(
+    EndpointId,
+    Option<ChatMessage>,
+    moq_media::chat::ChatSubscriber,
+)>;
+
 struct Actor {
     me: EndpointId,
     _gossip: Gossip,
     live: Live,
     active_subscribe: HashSet<BroadcastId>,
     active_publish: HashSet<String>,
+    known_peers: HashMap<EndpointId, Option<String>>,
     connecting: ConnectingFutures,
     subscribe_closed: FuturesUnordered<BoxFuture<BroadcastId>>,
     publish_closed: FuturesUnordered<BoxFuture<String>>,
+    chat_messages: FuturesUnordered<ChatFuture>,
+    chat_publisher: Option<moq_media::chat::ChatPublisher>,
+    display_name: Option<String>,
     event_tx: mpsc::Sender<RoomEvent>,
     kv: iroh_smol_kv::Client,
     kv_writer: WriteScope,
@@ -254,9 +338,13 @@ impl Actor {
             _gossip: gossip,
             active_subscribe: Default::default(),
             active_publish: Default::default(),
+            known_peers: Default::default(),
             connecting: Default::default(),
             subscribe_closed: Default::default(),
             publish_closed: Default::default(),
+            chat_messages: Default::default(),
+            chat_publisher: None,
+            display_name: None,
             event_tx,
             kv,
             kv_writer,
@@ -273,12 +361,18 @@ impl Actor {
             .stream();
         tokio::pin!(updates);
 
+        debug!("room actor started, waiting for gossip updates");
+
         loop {
             tokio::select! {
-                Some(update) = updates.next() => {
+                update = updates.next() => {
                     match update {
-                        Err(err) => warn!("gossip kv update failed: {err:#}"),
-                        Ok(update) => if !self.handle_gossip_update(update).await { break },
+                        None => {
+                            warn!("gossip kv subscription stream ended unexpectedly");
+                            break;
+                        }
+                        Some(Err(err)) => warn!("gossip kv update failed: {err:#}"),
+                        Some(Ok(update)) => if !self.handle_gossip_update(update).await { break },
                     }
                 }
                 msg = inbox.recv() => {
@@ -290,10 +384,21 @@ impl Actor {
                 Some((id, res)) = self.connecting.next(), if !self.connecting.is_empty() => {
                     match res {
                         Ok(sub) => {
+                            let remote = id.0;
+                            info!(broadcast=%id, remote=%remote.fmt_short(), "broadcast subscription ready, emitting event");
                             let (session, broadcast, _signals) = sub.into_parts();
                             let closed_fut = broadcast.closed();
+
+                            // Spawn a chat subscriber task if the broadcast has a chat track.
+                            if let Some(mut chat_sub) = broadcast.chat() {
+                                self.chat_messages.push(Box::pin(async move {
+                                    let msg = chat_sub.recv().await;
+                                    (remote, msg, chat_sub)
+                                }));
+                            }
+
                             if self.event_tx.send(RoomEvent::BroadcastSubscribed { session: Box::new(session), broadcast: Box::new(broadcast) }).await.is_err() {
-                                tracing::debug!("room event receiver dropped, stopping actor");
+                                debug!("room event receiver dropped, stopping actor");
                                 return;
                             }
                             self.subscribe_closed.push(Box::pin(async move {
@@ -303,17 +408,42 @@ impl Actor {
                         }
                         Err(err) => {
                             self.active_subscribe.remove(&id);
-                            warn!("Subscribing to broadcast {id} failed: {err:#}");
+                            warn!(broadcast=%id, "subscribing to broadcast failed: {err:#}");
                         }
                     }
                 }
                 Some(id) = self.subscribe_closed.next(), if !self.subscribe_closed.is_empty() => {
                     debug!("broadcast closed: {id}");
+                    let remote = id.0;
                     self.active_subscribe.remove(&id);
+
+                    // Emit PeerLeft if this was the last broadcast from this peer.
+                    let still_active = self.active_subscribe.iter().any(|b| b.0 == remote);
+                    if !still_active
+                        && self.known_peers.remove(&remote).is_some()
+                        && self.event_tx.send(RoomEvent::PeerLeft { remote }).await.is_err()
+                    {
+                        debug!("room event receiver dropped, stopping actor");
+                        return;
+                    }
                 }
                 Some(name) = self.publish_closed.next(), if !self.publish_closed.is_empty() => {
                     self.active_publish.remove(&name);
                     self.update_kv().await;
+                }
+                Some((remote, maybe_msg, mut chat_sub)) = self.chat_messages.next(), if !self.chat_messages.is_empty() => {
+                    if let Some(message) = maybe_msg {
+                        if self.event_tx.send(RoomEvent::ChatReceived { remote, message }).await.is_err() {
+                            debug!("room event receiver dropped, stopping actor");
+                            return;
+                        }
+                        // Re-enqueue for the next message.
+                        self.chat_messages.push(Box::pin(async move {
+                            let msg = chat_sub.recv().await;
+                            (remote, msg, chat_sub)
+                        }));
+                    }
+                    // else: chat subscriber ended (track closed). No re-enqueue.
                 }
             }
         }
@@ -322,13 +452,14 @@ impl Actor {
     async fn handle_api_message(&mut self, msg: ApiMessage) {
         match msg {
             ApiMessage::Publish { name, producer } => {
+                info!(%name, "publishing broadcast to room");
                 let consume = producer.consume();
                 if let Err(err) = self
                     .live
                     .publish_broadcast_producer(name.clone(), producer)
                     .await
                 {
-                    tracing::warn!(%name, "failed to publish broadcast to room: {err:#}");
+                    warn!(%name, "failed to publish broadcast to room: {err:#}");
                     return;
                 }
                 self.active_publish.insert(name.clone());
@@ -336,7 +467,21 @@ impl Actor {
                     consume.closed().await;
                     name
                 }));
+                info!(broadcasts=?self.active_publish, "updating gossip kv with published broadcasts");
                 self.update_kv().await;
+            }
+            ApiMessage::SendChat { text } => {
+                if let Some(publisher) = self.chat_publisher.as_mut() {
+                    if let Err(err) = publisher.send(&text) {
+                        warn!("failed to send chat message: {err:#}");
+                    }
+                } else {
+                    warn!("chat not enabled; call enable_chat() on the broadcast first");
+                }
+            }
+            ApiMessage::SetChatPublisher { publisher } => {
+                self.chat_publisher = Some(publisher);
+                info!("room chat publisher set");
             }
         }
     }
@@ -344,22 +489,67 @@ impl Actor {
     /// Handles a gossip KV update. Returns `false` if the actor should stop.
     async fn handle_gossip_update(&mut self, entry: KvEntry) -> bool {
         let (remote, key, value) = entry;
-        if remote == self.me || key != PEER_STATE_KEY {
+        if remote == self.me {
+            trace!(remote=%remote.fmt_short(), "ignoring own kv update");
+            return true;
+        }
+        if key != PEER_STATE_KEY {
+            trace!(remote=%remote.fmt_short(), key=?key, "ignoring kv update for unknown key");
             return true;
         }
         let Ok(value) = postcard::from_bytes::<PeerState>(&value.value) else {
+            warn!(
+                remote=%remote.fmt_short(),
+                value_len=value.value.len(),
+                "failed to deserialize peer state from kv update"
+            );
             return true;
         };
-        let PeerState { broadcasts } = value;
+        let PeerState {
+            broadcasts,
+            display_name,
+        } = value;
+
+        info!(
+            remote=%remote.fmt_short(),
+            ?broadcasts,
+            ?display_name,
+            "received peer announcement via gossip"
+        );
+
+        // Emit PeerJoined on first sighting.
+        if let std::collections::hash_map::Entry::Vacant(e) = self.known_peers.entry(remote) {
+            e.insert(display_name.clone());
+            info!(remote=%remote.fmt_short(), "new peer joined room");
+            if self
+                .event_tx
+                .send(RoomEvent::PeerJoined {
+                    remote,
+                    display_name: display_name.clone(),
+                })
+                .await
+                .is_err()
+            {
+                debug!("room event receiver dropped, stopping actor");
+                return false;
+            }
+        }
+
         for name in broadcasts.clone() {
             let id = BroadcastId(remote, name.clone());
             if !self.active_subscribe.insert(id.clone()) {
+                debug!(broadcast=%id, "already subscribing to broadcast, skipping");
                 continue;
             }
+            info!(broadcast=%id, "initiating MoQ subscription to remote broadcast");
             let live = self.live.clone();
             self.connecting.push(Box::pin(async move {
-                let session = live.subscribe(remote, &name).await;
-                (id, session)
+                let res = live.subscribe(remote, &name).await;
+                match &res {
+                    Ok(_) => info!(broadcast=%id, "MoQ subscription established"),
+                    Err(err) => error!(broadcast=%id, "MoQ subscription failed: {err:#}"),
+                }
+                (id, res)
             }));
         }
         if self
@@ -368,7 +558,7 @@ impl Actor {
             .await
             .is_err()
         {
-            tracing::debug!("room event receiver dropped, stopping actor");
+            debug!("room event receiver dropped, stopping actor");
             return false;
         }
         true
@@ -377,6 +567,7 @@ impl Actor {
     async fn update_kv(&self) {
         let state = PeerState {
             broadcasts: self.active_publish.iter().cloned().collect(),
+            display_name: self.display_name.clone(),
         };
         if let Err(err) = self
             .kv_writer
