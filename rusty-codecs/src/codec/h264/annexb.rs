@@ -112,7 +112,7 @@ pub(crate) fn build_avcc(sps: &[u8], pps: &[u8]) -> Vec<u8> {
 
 /// Extract SPS and PPS NAL units from an avcC (ISO 14496-15) configuration record
 /// and return them as Annex B formatted data (with start codes).
-pub(crate) fn avcc_to_annex_b(avcc: &[u8]) -> Option<Vec<u8>> {
+pub fn avcc_to_annex_b(avcc: &[u8]) -> Option<Vec<u8>> {
     // Minimum avcC is 7 bytes header + at least 1 SPS entry
     if avcc.len() < 8 {
         return None;
@@ -161,7 +161,7 @@ pub(crate) fn avcc_to_annex_b(avcc: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Convert length-prefixed (4-byte big-endian) NALs to Annex B format with 4-byte start codes.
-pub(crate) fn length_prefixed_to_annex_b(data: &[u8]) -> Vec<u8> {
+pub fn length_prefixed_to_annex_b(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len());
     let mut i = 0;
     while i + 4 <= data.len() {

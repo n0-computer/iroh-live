@@ -13,6 +13,7 @@ mod import;
 #[cfg(feature = "wgpu")]
 mod play;
 mod publish;
+mod record;
 mod relay;
 #[cfg(feature = "wgpu")]
 mod room;
@@ -40,6 +41,8 @@ enum Command {
     /// Subscribe and play a remote broadcast.
     #[cfg(feature = "wgpu")]
     Play(args::PlayArgs),
+    /// Record a remote broadcast to file (no GUI needed).
+    Record(args::RecordArgs),
     /// 1:1 bidirectional video call.
     #[cfg(feature = "wgpu")]
     Call(args::CallArgs),
@@ -67,6 +70,7 @@ fn main() -> n0_error::Result {
         Command::Publish(args) => publish::run(*args, &rt),
         #[cfg(feature = "wgpu")]
         Command::Play(args) => play::run(args, &rt),
+        Command::Record(args) => record::run(args, &rt),
         #[cfg(feature = "wgpu")]
         Command::Call(args) => call::run(args, &rt),
         #[cfg(feature = "wgpu")]

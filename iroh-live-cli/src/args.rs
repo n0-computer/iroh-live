@@ -1,8 +1,4 @@
 use clap::{Args, Subcommand, ValueEnum};
-#[cfg(feature = "wgpu")]
-use iroh::EndpointId;
-#[cfg(feature = "wgpu")]
-use iroh_live::ticket::LiveTicket;
 use iroh_live::{
     media::{
         capture::CaptureBackend,
@@ -327,11 +323,11 @@ pub enum ImportFormat {
 pub struct PlayArgs {
     /// Connection ticket.
     #[arg(conflicts_with = "endpoint_id")]
-    pub ticket: Option<LiveTicket>,
+    pub ticket: Option<iroh_live::ticket::LiveTicket>,
 
     /// Remote endpoint ID (requires --name).
     #[arg(long, conflicts_with = "ticket", requires = "play_name")]
-    pub endpoint_id: Option<EndpointId>,
+    pub endpoint_id: Option<iroh::EndpointId>,
 
     /// Broadcast name (with --endpoint-id).
     #[arg(
@@ -384,10 +380,12 @@ impl PlayArgs {
         }
     }
 
-    pub fn ticket(&self) -> anyhow::Result<LiveTicket> {
+    pub fn ticket(&self) -> anyhow::Result<iroh_live::ticket::LiveTicket> {
         match (&self.ticket, &self.endpoint_id, &self.broadcast_name) {
             (Some(t), None, None) => Ok(t.clone()),
-            (None, Some(id), Some(name)) => Ok(LiveTicket::new(*id, name.clone())),
+            (None, Some(id), Some(name)) => {
+                Ok(iroh_live::ticket::LiveTicket::new(*id, name.clone()))
+            }
             _ => anyhow::bail!("provide either <TICKET> or --endpoint-id + --name"),
         }
     }
@@ -399,6 +397,62 @@ impl PlayArgs {
                 self.decoder
             )
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Record args (no wgpu needed — headless recording)
+// ---------------------------------------------------------------------------
+
+#[derive(Args, Debug)]
+pub struct RecordArgs {
+    /// Connection ticket.
+    #[arg(conflicts_with = "endpoint_id")]
+    pub ticket: Option<iroh_live::ticket::LiveTicket>,
+
+    /// Remote endpoint ID (requires --name).
+    #[arg(long, conflicts_with = "ticket", requires = "record_name")]
+    pub endpoint_id: Option<iroh::EndpointId>,
+
+    /// Broadcast name (with --endpoint-id).
+    #[arg(
+        long = "name",
+        id = "record_name",
+        conflicts_with = "ticket",
+        requires = "endpoint_id"
+    )]
+    pub broadcast_name: Option<String>,
+
+    /// Output file path. Video and audio are written to separate files
+    /// with appropriate extensions (e.g. output.h264, output.opus).
+    #[arg(short, long, default_value = "recording")]
+    pub output: std::path::PathBuf,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = RecordFormat::Raw)]
+    pub format: RecordFormat,
+}
+
+/// Output recording format.
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+pub enum RecordFormat {
+    /// Raw bitstreams: separate files per track (.h264/.av1 + .opus).
+    /// H.264 output uses Annex B framing and is playable directly with ffplay/mpv.
+    /// Raw .opus files need a container — see the remux hint printed after recording.
+    #[default]
+    Raw,
+}
+
+impl RecordArgs {
+    /// Resolves the connection ticket from CLI args.
+    pub fn ticket(&self) -> anyhow::Result<iroh_live::ticket::LiveTicket> {
+        match (&self.ticket, &self.endpoint_id, &self.broadcast_name) {
+            (Some(t), None, None) => Ok(t.clone()),
+            (None, Some(id), Some(name)) => {
+                Ok(iroh_live::ticket::LiveTicket::new(*id, name.clone()))
+            }
+            _ => anyhow::bail!("provide either <TICKET> or --endpoint-id + --name"),
+        }
     }
 }
 

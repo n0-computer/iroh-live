@@ -4,7 +4,7 @@ pub(crate) mod android;
 pub(crate) mod av1;
 pub(crate) mod dynamic;
 #[cfg(feature = "h264")]
-pub(crate) mod h264;
+pub mod h264;
 #[cfg(feature = "opus")]
 pub(crate) mod opus;
 #[cfg(all(target_os = "linux", feature = "v4l2"))]
