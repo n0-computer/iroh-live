@@ -34,15 +34,23 @@ impl ScaleMode {
 /// Image scaler wrapping pic-scale.
 ///
 /// Optionally scales RGBA frames to target dimensions using bilinear filtering.
-/// If no target dimensions are set, frames pass through unchanged. Reuses the
-/// destination buffer across calls when target dimensions are stable.
+/// If no target dimensions are set, frames pass through unchanged.
+///
+/// Uses double-buffering to avoid per-frame allocation: one buffer is used as
+/// the scaling destination, while the previously scaled buffer is returned to
+/// the caller. When the caller drops the returned `Vec`, the next call can
+/// reuse the other buffer. This eliminates the `buf.clone()` that previously
+/// allocated megabytes per frame at 1080p (DR20).
 #[derive(Debug)]
 pub struct Scaler {
     target_width: Option<u32>,
     target_height: Option<u32>,
     scaler: PicScaler,
-    /// Reusable destination buffer: `(width, height, data)`.
-    dst_buf: Option<(u32, u32, Vec<u8>)>,
+    /// Double-buffered destination: two buffers alternated each frame.
+    /// Each entry is `(width, height, data)`.
+    dst_bufs: [Option<(u32, u32, Vec<u8>)>; 2],
+    /// Index of the buffer to use next (0 or 1).
+    dst_idx: usize,
 }
 
 impl Scaler {
@@ -52,7 +60,8 @@ impl Scaler {
             target_width: dims.map(|(w, _)| w),
             target_height: dims.map(|(_, h)| h),
             scaler: PicScaler::new(ResamplingFunction::Bilinear),
-            dst_buf: None,
+            dst_bufs: [None, None],
+            dst_idx: 0,
         }
     }
 
@@ -66,7 +75,11 @@ impl Scaler {
     ///
     /// Returns `None` if no scaling is needed (pass-through).
     /// Returns `Some((scaled_data, new_w, new_h))` when scaling was performed.
-    /// Reuses the destination buffer when target dimensions are stable.
+    ///
+    /// The returned `Vec` is owned by the caller. Internally, the scaler
+    /// alternates between two buffers so it can hand one out while keeping
+    /// the other ready for the next call. This avoids the per-frame clone
+    /// that previously copied megabytes at 1080p (DR20).
     pub fn scale_rgba(
         &mut self,
         src: &[u8],
@@ -79,8 +92,8 @@ impl Scaler {
         };
 
         let expected = (tw as usize) * (th as usize) * 4;
-        // Reuse or allocate the destination buffer.
-        let mut buf = match self.dst_buf.take() {
+        // Take the current buffer slot; reuse if dimensions match, else allocate.
+        let mut buf = match self.dst_bufs[self.dst_idx].take() {
             Some((bw, bh, buf)) if bw == tw && bh == th => buf,
             _ => vec![0u8; expected],
         };
@@ -90,9 +103,11 @@ impl Scaler {
         self.scaler.resize_rgba(&src_store, &mut dst_store, false)?;
         drop(dst_store);
 
-        let out = buf.clone();
-        self.dst_buf = Some((tw, th, buf));
-        Ok(Some((out, tw, th)))
+        // Advance to the alternate slot for the next call. The caller owns
+        // `buf` now; when they drop it and call us again, the *other* slot
+        // may still hold a reusable buffer from two frames ago.
+        self.dst_idx ^= 1;
+        Ok(Some((buf, tw, th)))
     }
 
     /// Scales an RGBA buffer using cover mode: scale up preserving aspect ratio

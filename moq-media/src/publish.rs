@@ -1070,7 +1070,7 @@ impl SharedVideoSource {
 
                     // Park until a subscriber arrives. Stop the source while
                     // parked to release camera/screen resources.
-                    if !running.load(Ordering::Relaxed) {
+                    if !running.load(Ordering::Acquire) {
                         if ever_started && let Err(err) = source.stop() {
                             warn!("Failed to stop video source: {err:#}");
                         }
@@ -1079,7 +1079,7 @@ impl SharedVideoSource {
                                 break;
                             }
                             thread::park();
-                            if shutdown.is_cancelled() || running.load(Ordering::Relaxed) {
+                            if shutdown.is_cancelled() || running.load(Ordering::Acquire) {
                                 break;
                             }
                             // Spurious wakeup — park again.
@@ -1152,9 +1152,12 @@ impl VideoSource for SharedVideoSource {
     }
 
     fn start(&mut self) -> anyhow::Result<()> {
-        let prev_count = self.subscriber_count.fetch_add(1, Ordering::Relaxed);
+        // AcqRel on the count ensures the source thread sees all state written
+        // before start(), and Release on the flag makes the running=true visible
+        // to the source thread's Acquire load (ER28: consistent ordering).
+        let prev_count = self.subscriber_count.fetch_add(1, Ordering::AcqRel);
         if prev_count == 0 {
-            self.running.store(true, Ordering::Relaxed);
+            self.running.store(true, Ordering::Release);
             self.thread.thread().unpark();
         }
         Ok(())
@@ -1163,13 +1166,13 @@ impl VideoSource for SharedVideoSource {
     fn stop(&mut self) -> anyhow::Result<()> {
         if self
             .subscriber_count
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |val| {
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |val| {
                 Some(val.saturating_sub(1))
             })
             .expect("always returns Some")
             == 1
         {
-            self.running.store(false, Ordering::Relaxed);
+            self.running.store(false, Ordering::Release);
         }
         Ok(())
     }
