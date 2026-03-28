@@ -1,0 +1,19 @@
+[package]
+name = "headless-demo"
+version = "0.1.0"
+edition = "2024"
+description = "Headless loopback demo: publish test pattern, subscribe, verify frames, print stats"
+publish = false
+
+[dependencies]
+anyhow = "1.0.100"
+clap = { version = "4.5", features = ["derive"] }
+moq-media = { workspace = true, features = ["test-util", "h264", "opus"] }
+moq-lite = { workspace = true }
+n0-error = { version = "0.1.2", features = ["anyhow"] }
+tokio = { version = "1.48.0", features = ["full"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+
+[lints]
+workspace = true
