@@ -11,6 +11,7 @@ members = [
     "rusty-codecs",
     "demos/android/rust",
     "demos/pi-zero",
+    "demos/headless",
     "demos/opengl",
     "iroh-live-cli",
 ]
@@ -26,6 +27,7 @@ default-members = [
     "moq-media-egui",
     "rusty-capture",
     "rusty-codecs",
+    "demos/headless",
     "demos/pi-zero",
     "demos/opengl",
     "iroh-live-cli",

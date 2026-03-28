@@ -4624,6 +4624,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "headless-demo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "moq-lite",
+ "moq-media",
+ "n0-error",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "heapless"
 version = "0.7.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
