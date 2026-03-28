@@ -722,6 +722,58 @@ impl RemoteBroadcast {
         }
     }
 
+    /// Subscribes to a video track and returns a raw [`MoqPacketSource`]
+    /// for reading encoded packets without decoding.
+    ///
+    /// Useful for recording or relaying encoded media directly.
+    pub fn raw_video_track(
+        &self,
+        track_name: &str,
+    ) -> Result<(MoqPacketSource, hang::catalog::VideoConfig)> {
+        let catalog = self.catalog();
+        let config = catalog
+            .video
+            .renditions
+            .get(track_name)
+            .context("video rendition not found")?
+            .clone();
+        let track_consumer = self
+            .broadcast
+            .subscribe_track(&Track {
+                name: track_name.to_string(),
+                priority: VIDEO_PRIORITY,
+            })
+            .anyerr()?;
+        let consumer = OrderedConsumer::new(track_consumer, self.playback_policy.max_latency);
+        Ok((MoqPacketSource::new(consumer), config))
+    }
+
+    /// Subscribes to an audio track and returns a raw [`MoqPacketSource`]
+    /// for reading encoded packets without decoding.
+    ///
+    /// Useful for recording or relaying encoded media directly.
+    pub fn raw_audio_track(
+        &self,
+        track_name: &str,
+    ) -> Result<(MoqPacketSource, hang::catalog::AudioConfig)> {
+        let catalog = self.catalog();
+        let config = catalog
+            .audio
+            .renditions
+            .get(track_name)
+            .context("audio rendition not found")?
+            .clone();
+        let track_consumer = self
+            .broadcast
+            .subscribe_track(&Track {
+                name: track_name.to_string(),
+                priority: AUDIO_PRIORITY,
+            })
+            .anyerr()?;
+        let consumer = OrderedConsumer::new(track_consumer, self.playback_policy.max_latency);
+        Ok((MoqPacketSource::new(consumer), config))
+    }
+
     /// Shuts down this remote broadcast subscription.
     pub fn shutdown(&self) {
         self.sync.close();

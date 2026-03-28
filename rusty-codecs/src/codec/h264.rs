@@ -1,4 +1,4 @@
-pub(crate) mod annexb;
+pub mod annexb;
 pub(crate) mod decoder;
 pub(crate) mod encoder;
 #[allow(dead_code, reason = "SPS patcher kept for potential future use")]
