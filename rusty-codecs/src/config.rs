@@ -65,6 +65,8 @@ pub enum VideoCodec {
 pub enum AudioCodec {
     /// Opus.
     Opus,
+    /// PCM (raw f32 samples, no compression).
+    Pcm,
     /// Unsupported or unknown codec (preserved as mimetype string).
     Other(String),
 }
@@ -146,6 +148,7 @@ impl std::fmt::Display for AudioCodec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Opus => write!(f, "opus"),
+            Self::Pcm => write!(f, "pcm"),
             Self::Other(s) => write!(f, "{s}"),
         }
     }
@@ -241,6 +244,8 @@ mod hang_interop {
         fn from(h: hang::catalog::AudioCodec) -> Self {
             match h {
                 hang::catalog::AudioCodec::Opus => Self::Opus,
+                // Recognize "pcm" as our PCM codec when it comes back via the catalog.
+                hang::catalog::AudioCodec::Unknown(ref s) if s == "pcm" => Self::Pcm,
                 other => Self::Other(other.to_string()),
             }
         }
@@ -250,6 +255,8 @@ mod hang_interop {
         fn from(c: AudioCodec) -> Self {
             match c {
                 AudioCodec::Opus => Self::Opus,
+                // Hang does not have a native PCM variant, so we use Unknown("pcm").
+                AudioCodec::Pcm => Self::Unknown("pcm".to_string()),
                 AudioCodec::Other(s) => Self::Unknown(s),
             }
         }

@@ -7,6 +7,8 @@ pub(crate) mod dynamic;
 pub mod h264;
 #[cfg(feature = "opus")]
 pub(crate) mod opus;
+#[cfg(feature = "pcm")]
+pub(crate) mod pcm;
 #[cfg(all(target_os = "linux", feature = "v4l2"))]
 pub(crate) mod v4l2;
 #[cfg(all(target_os = "linux", feature = "vaapi"))]
@@ -41,6 +43,8 @@ pub use vtb::*;
 pub use self::h264::*;
 #[cfg(feature = "opus")]
 pub use self::opus::*;
+#[cfg(feature = "pcm")]
+pub use self::pcm::*;
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;
@@ -54,6 +58,8 @@ pub mod test_util;
 pub enum AudioCodec {
     #[cfg(feature = "opus")]
     Opus,
+    #[cfg(feature = "pcm")]
+    Pcm,
 }
 
 #[cfg(any_audio_codec)]
@@ -63,6 +69,8 @@ impl AudioCodec {
         vec![
             #[cfg(feature = "opus")]
             Self::Opus,
+            #[cfg(feature = "pcm")]
+            Self::Pcm,
         ]
     }
 
@@ -71,7 +79,17 @@ impl AudioCodec {
         match self {
             #[cfg(feature = "opus")]
             Self::Opus => "Opus",
+            #[cfg(feature = "pcm")]
+            Self::Pcm => "PCM (raw)",
         }
+    }
+
+    /// Parses a codec name, returning a helpful error listing available codecs on failure.
+    pub fn parse_or_list(s: &str) -> anyhow::Result<Self> {
+        s.parse().map_err(|_| {
+            let names: Vec<_> = Self::available().iter().map(|c| c.to_string()).collect();
+            anyhow::anyhow!("unknown audio codec '{s}'. Available: {}", names.join(", "))
+        })
     }
 }
 

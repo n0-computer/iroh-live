@@ -828,6 +828,10 @@ impl AudioRenditions {
         match codec {
             #[cfg(feature = "opus")]
             AudioCodec::Opus => self.add_with_generic::<codec::OpusEncoder>(preset),
+            #[cfg(feature = "pcm")]
+            AudioCodec::Pcm => {
+                self.add_with_generic::<codec::PcmEncoder>(preset);
+            }
         }
     }
 

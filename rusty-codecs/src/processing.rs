@@ -1,5 +1,5 @@
 #[cfg(any(feature = "h264", feature = "av1"))]
 pub mod convert;
-#[cfg(feature = "opus")]
+#[cfg(any(feature = "opus", feature = "pcm"))]
 pub mod resample;
 pub mod scale;

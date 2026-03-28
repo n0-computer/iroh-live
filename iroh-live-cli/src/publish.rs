@@ -41,13 +41,21 @@ fn run_capture(args: &PublishArgs, rt: &tokio::runtime::Runtime) -> n0_error::Re
         let codec = capture.video_codec()?;
         let presets = capture.presets()?;
         let audio_preset = capture.audio_preset_parsed()?;
+        let audio_codec = capture.audio_codec_parsed()?;
 
         let live = setup_live(!args.transport.no_serve).await?;
         let broadcast = LocalBroadcast::new();
         let audio_ctx = iroh_live::media::AudioBackend::default();
 
         crate::source::setup_video(&broadcast, &video_sources, codec, &presets)?;
-        crate::source::setup_audio(&broadcast, &audio_sources, &audio_ctx, audio_preset).await?;
+        crate::source::setup_audio(
+            &broadcast,
+            &audio_sources,
+            &audio_ctx,
+            audio_preset,
+            audio_codec,
+        )
+        .await?;
         let room = crate::transport::publish_broadcast(&live, &broadcast, &args.transport).await?;
 
         anyhow::Ok((live, broadcast, audio_ctx, room))
