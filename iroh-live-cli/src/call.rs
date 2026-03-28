@@ -170,6 +170,7 @@ impl InCallState {
 
         // Remote video — fills panel.
         let avail = ui.available_size();
+        let video_rect = egui::Rect::from_min_size(ui.cursor().min, avail);
         if let Some(video) = self.remote.video.as_mut() {
             let (img, _) = video.render(ctx, avail);
             ui.add_sized(avail, img);
@@ -202,7 +203,14 @@ impl InCallState {
                     });
             });
 
-        // Overlay with controls.
+        // Debug overlay bar — anchored to the bottom of the video rect,
+        // matching the layout used by `irl play`.
+        self.remote.update_overlay();
+        self.remote
+            .overlay
+            .show(ui, video_rect, self.remote.broadcast.stats());
+
+        // Controls overlay (rendition, decoder, sync, device selectors).
         egui::Area::new(Id::new("call-overlay"))
             .anchor(egui::Align2::LEFT_TOP, [8.0, 28.0])
             .order(egui::Order::Foreground)
@@ -224,18 +232,6 @@ impl InCallState {
                             ui.spacing_mut().item_spacing.x = 4.0;
                             self.devices.ui(ui, "call");
                         });
-
-                        ui.separator();
-
-                        self.remote.update_overlay();
-                        let stats_rect = egui::Rect::from_min_size(
-                            ui.cursor().min,
-                            egui::vec2(ui.available_width(), 100.0),
-                        );
-                        self.remote
-                            .overlay
-                            .show(ui, stats_rect, self.remote.broadcast.stats());
-                        ui.allocate_space(egui::vec2(ui.available_width(), 80.0));
                     });
             });
     }
