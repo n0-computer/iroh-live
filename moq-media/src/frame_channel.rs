@@ -13,7 +13,7 @@
 
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicU64, Ordering},
 };
 
 use tokio::sync::Notify;
@@ -23,8 +23,9 @@ struct SlotInner<T> {
     /// Monotonic count of values sent. Lets consumers check production
     /// count without needing to observe every value.
     produced: AtomicU64,
-    /// Set when the sender is dropped.
-    closed: AtomicBool,
+    /// Number of live senders. When this drops to zero, the channel is
+    /// considered closed.
+    sender_count: AtomicU64,
     /// Wakes [`FrameReceiver::recv`] waiters on send or close.
     notify: Notify,
 }
@@ -55,7 +56,7 @@ pub fn frame_channel<T>() -> (FrameSender<T>, FrameReceiver<T>) {
     let inner = Arc::new(SlotInner {
         value: Mutex::new(None),
         produced: AtomicU64::new(0),
-        closed: AtomicBool::new(false),
+        sender_count: AtomicU64::new(1),
         notify: Notify::new(),
     });
     (
@@ -77,10 +78,21 @@ impl<T> FrameSender<T> {
     }
 }
 
+impl<T> Clone for FrameSender<T> {
+    fn clone(&self) -> Self {
+        self.inner.sender_count.fetch_add(1, Ordering::Relaxed);
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
 impl<T> Drop for FrameSender<T> {
     fn drop(&mut self) {
-        self.inner.closed.store(true, Ordering::Release);
-        self.inner.notify.notify_waiters();
+        if self.inner.sender_count.fetch_sub(1, Ordering::Release) == 1 {
+            // Last sender dropped — wake waiters so they see closure.
+            self.inner.notify.notify_waiters();
+        }
     }
 }
 
@@ -97,15 +109,28 @@ impl<T> FrameReceiver<T> {
         self.inner.value.lock().expect("poisoned").is_some()
     }
 
-    /// Returns `true` if the sender has been dropped.
+    /// Returns `true` if all senders have been dropped.
     pub fn is_closed(&self) -> bool {
-        self.inner.closed.load(Ordering::Acquire)
+        self.inner.sender_count.load(Ordering::Acquire) == 0
     }
 
     /// Total number of values sent, including ones overwritten before
     /// the consumer could take them.
     pub fn produced(&self) -> u64 {
         self.inner.produced.load(Ordering::Relaxed)
+    }
+
+    /// Creates a new [`FrameSender`] that writes to the same slot.
+    ///
+    /// Used by the adaptation layer to redirect a new decoder pipeline's
+    /// output to the same receiver the consumer already holds. The
+    /// previous sender (from the old pipeline) can be dropped without
+    /// closing the channel as long as this new sender is alive.
+    pub fn new_sender(&self) -> FrameSender<T> {
+        self.inner.sender_count.fetch_add(1, Ordering::Relaxed);
+        FrameSender {
+            inner: self.inner.clone(),
+        }
     }
 
     /// Waits for the next value. Returns `None` when the sender is
@@ -206,5 +231,69 @@ mod tests {
         tx.send(Counted(drops.clone()));
         tx.send(Counted(drops.clone())); // first value dropped
         assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn clone_sender_keeps_channel_open() {
+        let (tx, rx) = frame_channel::<u32>();
+        let tx2 = tx.clone();
+        drop(tx);
+        // Channel stays open because tx2 is still alive.
+        assert!(!rx.is_closed());
+        tx2.send(99);
+        assert_eq!(rx.take(), Some(99));
+        drop(tx2);
+        assert!(rx.is_closed());
+    }
+
+    #[test]
+    fn new_sender_writes_to_same_slot() {
+        let (tx, rx) = frame_channel::<u32>();
+        tx.send(1);
+        assert_eq!(rx.take(), Some(1));
+
+        // Create a new sender from the receiver (simulating a pipeline swap).
+        let tx2 = rx.new_sender();
+        drop(tx); // old sender gone
+        assert!(!rx.is_closed(), "new_sender keeps channel open");
+
+        tx2.send(42);
+        assert_eq!(rx.take(), Some(42));
+        assert_eq!(rx.produced(), 2);
+    }
+
+    #[tokio::test]
+    async fn new_sender_wakes_recv() {
+        let (tx, rx) = frame_channel::<u32>();
+        let tx2 = rx.new_sender();
+        drop(tx);
+
+        let handle = tokio::spawn(async move { rx.recv().await });
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        tx2.send(7);
+        assert_eq!(handle.await.unwrap(), Some(7));
+    }
+
+    #[test]
+    fn sender_swap_no_frame_loss() {
+        // Simulates what adaptation does: old sender produces frames,
+        // then a new sender takes over via new_sender(). The consumer
+        // should see frames from both without gaps.
+        let (tx_old, rx) = frame_channel::<u32>();
+        tx_old.send(1);
+        assert_eq!(rx.take(), Some(1));
+
+        let tx_new = rx.new_sender();
+        // Both senders alive briefly (overlap during switch).
+        tx_new.send(2);
+        drop(tx_old);
+        assert_eq!(rx.take(), Some(2));
+        assert!(!rx.is_closed());
+
+        tx_new.send(3);
+        assert_eq!(rx.take(), Some(3));
+        drop(tx_new);
+        assert!(rx.is_closed());
+        assert_eq!(rx.produced(), 3);
     }
 }

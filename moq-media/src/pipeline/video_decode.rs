@@ -92,9 +92,42 @@ impl VideoDecoderPipeline {
         decode_config: &DecodeConfig,
         opts: PipelineContext,
     ) -> Result<Self> {
+        let (frame_tx, frame_rx) = crate::frame_channel::frame_channel();
+        let handle = Self::build::<D>(name, source, config, decode_config, opts, frame_tx)?;
+        Ok(Self {
+            frames: VideoDecoderFrames { rx: frame_rx },
+            handle,
+        })
+    }
+
+    /// Creates a pipeline that writes decoded frames to an externally
+    /// provided [`FrameSender`].
+    ///
+    /// Used by the adaptation layer to wire a new decoder pipeline into
+    /// the same frame channel the consumer already holds. Only the
+    /// [`VideoDecoderHandle`] is returned because the receiver stays with
+    /// the consumer.
+    pub fn with_sender<D: VideoDecoder>(
+        name: String,
+        source: impl crate::transport::PacketSource,
+        config: &rusty_codecs::config::VideoConfig,
+        decode_config: &DecodeConfig,
+        opts: PipelineContext,
+        frame_tx: crate::frame_channel::FrameSender<VideoFrame>,
+    ) -> Result<VideoDecoderHandle> {
+        Self::build::<D>(name, source, config, decode_config, opts, frame_tx)
+    }
+
+    fn build<D: VideoDecoder>(
+        name: String,
+        source: impl crate::transport::PacketSource,
+        config: &rusty_codecs::config::VideoConfig,
+        decode_config: &DecodeConfig,
+        opts: PipelineContext,
+        frame_tx: crate::frame_channel::FrameSender<VideoFrame>,
+    ) -> Result<VideoDecoderHandle> {
         let shutdown = CancellationToken::new();
         let (packet_tx, packet_rx) = mpsc::channel(32);
-        let (frame_tx, frame_rx) = crate::frame_channel::frame_channel();
         let viewport = n0_watcher::Watchable::new((1u32, 1u32));
         let viewport_watcher = viewport.watch();
 
@@ -136,14 +169,11 @@ impl VideoDecoderPipeline {
             _thread_handle: thread,
         };
 
-        Ok(Self {
-            frames: VideoDecoderFrames { rx: frame_rx },
-            handle: VideoDecoderHandle {
-                rendition: name,
-                decoder_name: decoder_name_for_handle,
-                viewport,
-                _guard: guard,
-            },
+        Ok(VideoDecoderHandle {
+            rendition: name,
+            decoder_name: decoder_name_for_handle,
+            viewport,
+            _guard: guard,
         })
     }
 }

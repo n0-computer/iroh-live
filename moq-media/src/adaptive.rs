@@ -94,7 +94,7 @@ impl Default for AdaptiveConfig {
 
 /// Rendition ranked by quality. Index 0 = highest quality.
 #[derive(Debug, Clone)]
-pub(crate) struct RankedRendition {
+pub struct RankedRendition {
     /// Catalog key (track name).
     pub name: String,
     /// Total pixel count (`coded_width * coded_height`).
@@ -115,7 +115,7 @@ fn unpack_dimensions(packed: u64) -> [u32; 2] {
 }
 
 /// Ranks video renditions by pixel count descending (highest quality first).
-pub(crate) fn rank_renditions(renditions: &BTreeMap<String, VideoConfig>) -> Vec<RankedRendition> {
+pub fn rank_renditions(renditions: &BTreeMap<String, VideoConfig>) -> Vec<RankedRendition> {
     let mut ranked: Vec<_> = renditions
         .iter()
         .map(|(name, config)| {
@@ -138,7 +138,7 @@ pub(crate) fn rank_renditions(renditions: &BTreeMap<String, VideoConfig>) -> Vec
 
 /// Decision produced by the adaptation algorithm.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Decision {
+pub enum Decision {
     /// Stay on the current rendition.
     Hold,
     /// Switch to a lower rendition at the given index.
@@ -151,7 +151,7 @@ pub(crate) enum Decision {
 
 /// Mutable state tracked across evaluation ticks.
 #[derive(Debug, Default)]
-pub(crate) struct AdaptationTimers {
+pub struct AdaptationTimers {
     /// When bad conditions were first detected (for downgrade_hold).
     pub bad_since: Option<Instant>,
     /// When good conditions were first detected (for upgrade_hold).
@@ -172,7 +172,7 @@ pub(crate) struct AdaptationTimers {
 ///
 /// `current_idx` is the index into `ranked` for the currently active rendition.
 /// Returns a [`Decision`].
-pub(crate) fn evaluate(
+pub fn evaluate(
     current_idx: usize,
     ranked: &[RankedRendition],
     signals: &NetworkSignals,
@@ -248,7 +248,7 @@ pub(crate) fn evaluate(
 }
 
 /// Checks whether an active probe should be aborted.
-pub(crate) fn should_abort_probe(
+pub fn should_abort_probe(
     signals: &NetworkSignals,
     congestion_baseline: u64,
     config: &AdaptiveConfig,
