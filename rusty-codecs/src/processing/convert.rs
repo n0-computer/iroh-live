@@ -124,6 +124,30 @@ pub fn yuv420_to_rgba_from_slices(
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>> {
+    let mut rgba = vec![0u8; (width * height * 4) as usize];
+    yuv420_to_rgba_into(
+        y, y_stride, u, u_stride, v, v_stride, width, height, &mut rgba,
+    )?;
+    Ok(rgba)
+}
+
+/// Convert YUV 4:2:0 planar slices to RGBA, writing into a caller-provided buffer.
+///
+/// The buffer must have at least `width * height * 4` bytes. Resized if too
+/// small, reused if large enough — this avoids per-frame allocation when the
+/// caller retains the buffer across calls.
+#[allow(clippy::too_many_arguments, reason = "mirrors YUV plane layout")]
+pub fn yuv420_to_rgba_into(
+    y: &[u8],
+    y_stride: u32,
+    u: &[u8],
+    u_stride: u32,
+    v: &[u8],
+    v_stride: u32,
+    width: u32,
+    height: u32,
+    dst: &mut Vec<u8>,
+) -> Result<()> {
     let planar = YuvPlanarImage {
         y_plane: y,
         y_stride,
@@ -135,15 +159,16 @@ pub fn yuv420_to_rgba_from_slices(
         height,
     };
     let rgba_stride = width * 4;
-    let mut rgba = vec![0u8; (width * height * 4) as usize];
+    let needed = (width * height * 4) as usize;
+    dst.resize(needed, 0);
     yuv420_to_rgba(
         &planar,
-        &mut rgba,
+        dst,
         rgba_stride,
         YuvRange::Limited,
         YuvStandardMatrix::Bt601,
     )?;
-    Ok(rgba)
+    Ok(())
 }
 
 /// Convert YUV 4:2:0 planar slices directly to BGRA (BT.601).
@@ -158,6 +183,28 @@ pub fn yuv420_to_bgra_from_slices(
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>> {
+    let mut bgra = vec![0u8; (width * height * 4) as usize];
+    yuv420_to_bgra_into(
+        y, y_stride, u, u_stride, v, v_stride, width, height, &mut bgra,
+    )?;
+    Ok(bgra)
+}
+
+/// Convert YUV 4:2:0 planar slices to BGRA, writing into a caller-provided buffer.
+///
+/// Same as [`yuv420_to_rgba_into`] but outputs BGRA byte order.
+#[allow(clippy::too_many_arguments, reason = "mirrors YUV plane layout")]
+pub fn yuv420_to_bgra_into(
+    y: &[u8],
+    y_stride: u32,
+    u: &[u8],
+    u_stride: u32,
+    v: &[u8],
+    v_stride: u32,
+    width: u32,
+    height: u32,
+    dst: &mut Vec<u8>,
+) -> Result<()> {
     let planar = YuvPlanarImage {
         y_plane: y,
         y_stride,
@@ -169,15 +216,16 @@ pub fn yuv420_to_bgra_from_slices(
         height,
     };
     let bgra_stride = width * 4;
-    let mut bgra = vec![0u8; (width * height * 4) as usize];
+    let needed = (width * height * 4) as usize;
+    dst.resize(needed, 0);
     yuv420_to_bgra(
         &planar,
-        &mut bgra,
+        dst,
         bgra_stride,
         YuvRange::Limited,
         YuvStandardMatrix::Bt601,
     )?;
-    Ok(bgra)
+    Ok(())
 }
 
 /// NV12 bi-planar data with Y and interleaved UV planes.

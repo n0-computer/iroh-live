@@ -8,7 +8,7 @@ use crate::{
     config::{VideoCodec, VideoConfig},
     format::{DecodeConfig, MediaPacket, NalFormat, PixelFormat, VideoFrame},
     processing::{
-        convert::{yuv420_to_bgra_from_slices, yuv420_to_rgba_from_slices},
+        convert::{yuv420_to_bgra_into, yuv420_to_rgba_into},
         scale::{Scaler, fit_within},
     },
     traits::VideoDecoder,
@@ -27,6 +27,10 @@ pub struct H264VideoDecoder {
     /// Decoded pixel data waiting to be collected via `pop_frame`: `(pixels, w, h)`.
     #[debug(skip)]
     pending_frame: Option<(Vec<u8>, u32, u32)>,
+    /// Reusable pixel buffer for YUV→RGBA/BGRA conversion. Avoids allocating
+    /// ~2.6 MB per frame at 1080p. Recycled when dimensions are stable.
+    #[debug(skip)]
+    pixel_buf: Option<(u32, u32, Vec<u8>)>,
 }
 
 impl VideoDecoder for H264VideoDecoder {
@@ -72,6 +76,7 @@ impl VideoDecoder for H264VideoDecoder {
             viewport_changed: None,
             last_timestamp: None,
             pending_frame: None,
+            pixel_buf: None,
         })
     }
 
@@ -102,11 +107,17 @@ impl VideoDecoder for H264VideoDecoder {
             let (w, h) = yuv.dimensions();
             let w = w as u32;
             let h = h as u32;
-            let pixels = match self.pixel_format {
+            // Reuse the pixel buffer when dimensions are stable, avoiding a
+            // ~2.6 MB allocation per frame at 1080p. The buffer is taken from
+            // pixel_buf if dimensions match, otherwise a fresh one is allocated.
+            let mut pixels = match self.pixel_buf.take() {
+                Some((bw, bh, buf)) if bw == w && bh == h => buf,
+                _ => Vec::new(),
+            };
+            let (y_stride, u_stride, v_stride) = yuv.strides();
+            match self.pixel_format {
                 PixelFormat::Bgra => {
-                    // Use yuvutils-rs for direct YUV→BGRA (avoids RGBA + swap).
-                    let (y_stride, u_stride, v_stride) = yuv.strides();
-                    yuv420_to_bgra_from_slices(
+                    yuv420_to_bgra_into(
                         yuv.y(),
                         y_stride as u32,
                         yuv.u(),
@@ -115,13 +126,11 @@ impl VideoDecoder for H264VideoDecoder {
                         v_stride as u32,
                         w,
                         h,
-                    )?
+                        &mut pixels,
+                    )?;
                 }
                 PixelFormat::Rgba => {
-                    // Use yuvutils-rs for consistent BT.601 limited-range conversion
-                    // across all backends (software, VAAPI, VideoToolbox).
-                    let (y_stride, u_stride, v_stride) = yuv.strides();
-                    yuv420_to_rgba_from_slices(
+                    yuv420_to_rgba_into(
                         yuv.y(),
                         y_stride as u32,
                         yuv.u(),
@@ -130,9 +139,10 @@ impl VideoDecoder for H264VideoDecoder {
                         v_stride as u32,
                         w,
                         h,
-                    )?
+                        &mut pixels,
+                    )?;
                 }
-            };
+            }
 
             self.pending_frame = Some((pixels, w, h));
         }
@@ -157,8 +167,13 @@ impl VideoDecoder for H264VideoDecoder {
 
         let (data, w, h) =
             if let Some((scaled, sw, sh)) = self.scaler.scale_rgba(&pixels, src_w, src_h)? {
+                // Scaling produced a new buffer; recycle the original for the
+                // next decode cycle's YUV→RGB conversion.
+                self.pixel_buf = Some((src_w, src_h, pixels));
                 (scaled, sw, sh)
             } else {
+                // No scaling needed; the pixels buffer is consumed. It will be
+                // turned into a VideoFrame (Bytes), so we cannot recycle it.
                 (pixels, src_w, src_h)
             };
 

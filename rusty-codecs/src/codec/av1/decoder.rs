@@ -1,14 +1,13 @@
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
-use image::RgbaImage;
 
 use super::rav1d_safe::{Decoder, PlanarImageComponent, Settings};
 use crate::{
     config::{VideoCodec, VideoConfig},
     format::{DecodeConfig, MediaPacket, PixelFormat, VideoFrame},
     processing::{
-        convert::{yuv420_to_bgra_from_slices, yuv420_to_rgba_from_slices},
+        convert::{yuv420_to_bgra_into, yuv420_to_rgba_into},
         scale::{Scaler, fit_within},
     },
     traits::VideoDecoder,
@@ -22,9 +21,13 @@ pub struct Av1VideoDecoder {
     pixel_format: PixelFormat,
     viewport_changed: Option<(u32, u32)>,
     last_timestamp: Option<Duration>,
-    /// Decoded frame waiting to be collected via `pop_frame`.
+    /// Decoded pixel data waiting to be collected via `pop_frame`: `(pixels, w, h)`.
     #[debug(skip)]
-    pending_frame: Option<(RgbaImage, u32, u32)>,
+    pending_frame: Option<(Vec<u8>, u32, u32)>,
+    /// Reusable pixel buffer for YUV→RGBA/BGRA conversion. Avoids per-frame
+    /// allocation (~2.6 MB at 1080p).
+    #[debug(skip)]
+    pixel_buf: Option<(u32, u32, Vec<u8>)>,
 }
 
 impl VideoDecoder for Av1VideoDecoder {
@@ -61,6 +64,7 @@ impl VideoDecoder for Av1VideoDecoder {
             viewport_changed: None,
             last_timestamp: None,
             pending_frame: None,
+            pixel_buf: None,
         })
     }
 
@@ -93,18 +97,38 @@ impl VideoDecoder for Av1VideoDecoder {
                     "invalid AV1 plane strides: Y={y_stride} U={u_stride} V={v_stride} for {w}x{h}"
                 );
 
-                let pixels = match self.pixel_format {
-                    PixelFormat::Bgra => yuv420_to_bgra_from_slices(
-                        y_plane, y_stride, u_plane, u_stride, v_plane, v_stride, w, h,
+                // Reuse the pixel buffer when dimensions are stable, avoiding a
+                // ~2.6 MB allocation per frame at 1080p.
+                let mut pixels = match self.pixel_buf.take() {
+                    Some((bw, bh, buf)) if bw == w && bh == h => buf,
+                    _ => Vec::new(),
+                };
+                match self.pixel_format {
+                    PixelFormat::Bgra => yuv420_to_bgra_into(
+                        y_plane,
+                        y_stride,
+                        u_plane,
+                        u_stride,
+                        v_plane,
+                        v_stride,
+                        w,
+                        h,
+                        &mut pixels,
                     )?,
-                    PixelFormat::Rgba => yuv420_to_rgba_from_slices(
-                        y_plane, y_stride, u_plane, u_stride, v_plane, v_stride, w, h,
+                    PixelFormat::Rgba => yuv420_to_rgba_into(
+                        y_plane,
+                        y_stride,
+                        u_plane,
+                        u_stride,
+                        v_plane,
+                        v_stride,
+                        w,
+                        h,
+                        &mut pixels,
                     )?,
                 };
 
-                let img = RgbaImage::from_raw(w, h, pixels)
-                    .context("failed to create RgbaImage from pixel data")?;
-                self.pending_frame = Some((img, w, h));
+                self.pending_frame = Some((pixels, w, h));
             }
             Err(e) if e.is_again() => {
                 // No picture available yet — decoder needs more data.
@@ -119,7 +143,7 @@ impl VideoDecoder for Av1VideoDecoder {
     }
 
     fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {
-        let Some((img, src_w, src_h)) = self.pending_frame.take() else {
+        let Some((pixels, src_w, src_h)) = self.pending_frame.take() else {
             return Ok(None);
         };
 
@@ -132,10 +156,13 @@ impl VideoDecoder for Av1VideoDecoder {
         }
 
         let (data, w, h) =
-            if let Some((scaled, sw, sh)) = self.scaler.scale_rgba(img.as_raw(), src_w, src_h)? {
+            if let Some((scaled, sw, sh)) = self.scaler.scale_rgba(&pixels, src_w, src_h)? {
+                // Scaling produced a new buffer; recycle the original for the
+                // next decode cycle's YUV→RGB conversion.
+                self.pixel_buf = Some((src_w, src_h, pixels));
                 (scaled, sw, sh)
             } else {
-                (img.into_raw(), src_w, src_h)
+                (pixels, src_w, src_h)
             };
 
         Ok(Some(VideoFrame::new_cpu_with_format(
