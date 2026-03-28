@@ -500,16 +500,42 @@ impl VideoDecoder for VaapiDecoder {
         };
 
         // Feed SPS/PPS from avcC description if available.
+        //
+        // The decode call with SPS/PPS NALs triggers a FormatChanged event
+        // inside cros-codecs, which surfaces as Err(CheckEvents). We must
+        // drain events and retry, otherwise the SPS/PPS data is never
+        // consumed and subsequent frames fail with "Could not get PPS".
         if let Some(description) = &config.description
             && let Some(mut annex_b) = avcc_to_annex_b(description)
         {
             patch_baseline_constraint_flag(&mut annex_b);
-            // patch_sps_low_latency(&mut annex_b);
             let ts = 0u64;
             let pool = this.framepool.clone();
-            let _ = this
-                .decoder
-                .decode(ts, &annex_b, &mut || pool.lock().expect("poisoned").alloc());
+            let mut remaining = &annex_b[..];
+            loop {
+                if remaining.is_empty() {
+                    break;
+                }
+                let mut alloc = || pool.lock().expect("poisoned").alloc();
+                match this.decoder.decode(ts, remaining, &mut alloc) {
+                    Ok(consumed) => {
+                        if consumed == 0 {
+                            break;
+                        }
+                        remaining = &remaining[consumed..];
+                    }
+                    Err(DecodeError::CheckEvents) => {
+                        this.drain_events();
+                    }
+                    Err(DecodeError::NotEnoughOutputBuffers(_)) => {
+                        this.drain_events();
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to feed SPS/PPS from avcC description: {e:?}");
+                        break;
+                    }
+                }
+            }
             this.drain_events();
         }
 
@@ -970,6 +996,126 @@ mod tests {
         assert!(
             decoded_after_reset >= 3,
             "expected decoder to recover after reset, got {decoded_after_reset} frames"
+        );
+    }
+
+    /// Exercises the AVCC (length-prefixed) NAL path that file import produces.
+    ///
+    /// The fmp4 importer writes AVC1 samples as 4-byte length-prefixed NALs
+    /// with SPS/PPS carried out-of-band in the avcC description. This is
+    /// a different code path from the live-capture path where the encoder
+    /// produces Annex B with inline SPS/PPS. If the AVCC-to-AnnexB conversion
+    /// or the out-of-band SPS/PPS feeding is broken, this test catches it.
+    #[test]
+    #[ignore = "requires VAAPI hardware"]
+    fn vaapi_decode_avcc_file_import_path() {
+        use crate::{
+            codec::h264::{
+                annexb::{build_avcc, extract_sps_pps, parse_annex_b},
+                encoder::H264Encoder,
+            },
+            format::{VideoEncoderConfig, VideoPreset},
+            traits::{VideoEncoder, VideoEncoderFactory},
+        };
+
+        // Encode with openh264 in AnnexB mode (the default).
+        let mut encoder = H264Encoder::with_config(
+            VideoEncoderConfig::from_preset(VideoPreset::P360).keyframe_interval(10),
+        )
+        .unwrap();
+
+        let w = 640u32;
+        let h = 360u32;
+        let rgba = vec![128u8; (w * h * 4) as usize];
+        let frame = VideoFrame::new_rgba(rgba.clone().into(), w, h, Duration::ZERO);
+
+        let mut annex_b_packets = Vec::new();
+        for _ in 0..35 {
+            encoder.push_frame(frame.clone()).unwrap();
+            while let Some(pkt) = encoder.pop_packet().unwrap() {
+                annex_b_packets.push(pkt);
+            }
+        }
+        assert!(!annex_b_packets.is_empty(), "encoder produced no packets");
+
+        // Extract SPS/PPS from the first keyframe to build an avcC record,
+        // then convert all packets from AnnexB to AVCC (length-prefixed).
+        // This simulates what the fmp4 container stores.
+        let first_kf = annex_b_packets
+            .iter()
+            .find(|p| p.is_keyframe)
+            .expect("no keyframe in encoder output");
+        let nals = parse_annex_b(&first_kf.payload);
+        let (sps, pps) = extract_sps_pps(&nals).expect("no SPS/PPS in keyframe");
+        let avcc_description = build_avcc(sps, pps);
+
+        // Build a config that matches what the fmp4 importer produces:
+        // inline=false, description=Some(avcc).
+        let config = crate::config::VideoConfig {
+            codec: crate::config::VideoCodec::H264(crate::config::H264 {
+                profile: sps.get(1).copied().unwrap_or(0x42),
+                constraints: sps.get(2).copied().unwrap_or(0xE0),
+                level: sps.get(3).copied().unwrap_or(0x1E),
+                inline: false,
+            }),
+            description: Some(avcc_description.into()),
+            coded_width: Some(w),
+            coded_height: Some(h),
+            display_ratio_width: None,
+            display_ratio_height: None,
+            bitrate: None,
+            framerate: Some(30.0),
+            optimize_for_latency: None,
+        };
+
+        let decode_config = DecodeConfig::default();
+        let mut decoder = VaapiDecoder::new(&config, &decode_config).unwrap();
+
+        // Convert packets to AVCC format, stripping SPS/PPS NALs from the
+        // payload. In a real fmp4 container (AVC1 box), SPS/PPS live in the
+        // avcC description and are not repeated inline in sample data. If
+        // the decoder fails to consume the out-of-band description during
+        // init, this test catches it.
+        let mut total_decoded = 0;
+        for pkt in &annex_b_packets {
+            // Strip SPS (type 7) and PPS (type 8) NALs — they are out-of-band.
+            let nals = parse_annex_b(&pkt.payload);
+            let mut stripped = Vec::with_capacity(pkt.payload.len());
+            for nal in &nals {
+                let nal_type = nal[0] & 0x1F;
+                if nal_type == 7 || nal_type == 8 {
+                    continue;
+                }
+                stripped.extend_from_slice(&(nal.len() as u32).to_be_bytes());
+                stripped.extend_from_slice(nal);
+            }
+            if stripped.is_empty() {
+                // Packet contained only SPS/PPS, skip it.
+                continue;
+            }
+            let media_pkt = MediaPacket {
+                timestamp: pkt.timestamp,
+                payload: stripped.into(),
+                is_keyframe: pkt.is_keyframe,
+            };
+            match decoder.push_packet(media_pkt) {
+                Ok(()) => {
+                    while let Ok(Some(_frame)) = decoder.pop_frame() {
+                        total_decoded += 1;
+                    }
+                }
+                Err(e) => {
+                    panic!(
+                        "VAAPI decode failed on AVCC packet (keyframe={}): {e:#}",
+                        pkt.is_keyframe
+                    );
+                }
+            }
+        }
+
+        assert!(
+            total_decoded >= 20,
+            "expected >= 20 decoded frames from AVCC path, got {total_decoded}"
         );
     }
 

@@ -359,6 +359,94 @@ mod tests {
         }
     }
 
+    /// Verifies the AVCC (length-prefixed NAL) decode path that fmp4 file
+    /// import produces. The fmp4 importer stores SPS/PPS in an avcC
+    /// description and frame data as 4-byte length-prefixed NALs. This is
+    /// different from the live-capture path where the encoder outputs
+    /// Annex B with inline SPS/PPS.
+    #[test]
+    fn decode_avcc_file_import_path() {
+        use crate::codec::h264::annexb::{build_avcc, extract_sps_pps, parse_annex_b};
+
+        let w = 320u32;
+        let h = 180u32;
+        let mut enc = H264Encoder::with_preset(VideoPreset::P180).unwrap();
+
+        let frames: Vec<VideoFrame> = (0..10)
+            .map(|i| make_rgba_frame(w, h, (i * 25) as u8, 128, 64))
+            .collect();
+        let mut annex_b_packets = Vec::new();
+        for f in &frames {
+            enc.push_frame(f.clone()).unwrap();
+            while let Some(pkt) = enc.pop_packet().unwrap() {
+                annex_b_packets.push(pkt);
+            }
+        }
+
+        // Extract SPS/PPS from the first keyframe and build an avcC record.
+        let first_kf = annex_b_packets
+            .iter()
+            .find(|p| p.is_keyframe)
+            .expect("no keyframe");
+        let nals = parse_annex_b(&first_kf.payload);
+        let (sps, pps) = extract_sps_pps(&nals).expect("no SPS/PPS");
+        let avcc_description = build_avcc(sps, pps);
+
+        // Config matching what the fmp4 importer produces for AVC1 streams.
+        let config = VideoConfig {
+            codec: VideoCodec::H264(H264 {
+                profile: sps.get(1).copied().unwrap_or(0x42u8),
+                constraints: sps.get(2).copied().unwrap_or(0xE0u8),
+                level: sps.get(3).copied().unwrap_or(0x1Eu8),
+                inline: false,
+            }),
+            description: Some(avcc_description.into()),
+            coded_width: Some(w),
+            coded_height: Some(h),
+            display_ratio_width: None,
+            display_ratio_height: None,
+            bitrate: None,
+            framerate: Some(30.0),
+            optimize_for_latency: None,
+        };
+
+        let decode_config = DecodeConfig::default();
+        let mut dec = H264VideoDecoder::new(&config, &decode_config).unwrap();
+
+        // Strip SPS/PPS NALs from packet payloads — in a real fmp4 container
+        // (AVC1 box) they live out-of-band in the avcC description, not inline
+        // in sample data. This ensures the test exercises the out-of-band path.
+        let mut decoded = 0;
+        for p in &annex_b_packets {
+            let p_nals = parse_annex_b(&p.payload);
+            let mut stripped = Vec::with_capacity(p.payload.len());
+            for nal in &p_nals {
+                let nal_type = nal[0] & 0x1F;
+                if nal_type == 7 || nal_type == 8 {
+                    continue;
+                }
+                stripped.extend_from_slice(&(nal.len() as u32).to_be_bytes());
+                stripped.extend_from_slice(nal);
+            }
+            if stripped.is_empty() {
+                continue;
+            }
+            let pkt = MediaPacket {
+                timestamp: p.timestamp,
+                payload: stripped.into(),
+                is_keyframe: p.is_keyframe,
+            };
+            dec.push_packet(pkt).unwrap();
+            if dec.pop_frame().unwrap().is_some() {
+                decoded += 1;
+            }
+        }
+        assert!(
+            decoded >= 5,
+            "expected >= 5 decoded frames from AVCC path, got {decoded}"
+        );
+    }
+
     #[test]
     fn unsupported_codec_errors() {
         let config = VideoConfig {
