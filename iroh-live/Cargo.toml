@@ -62,6 +62,7 @@ workspace = true
 default = ["h264", "opus", "capture", "wgpu", "vaapi", "videotoolbox", "dmabuf-import", "metal-import"]
 h264 = ["moq-media/h264"]
 opus = ["moq-media/opus"]
+pcm = ["moq-media/pcm"]
 av1 = ["moq-media/av1"]
 capture = ["moq-media/capture"]
 capture-camera = ["moq-media/capture-camera"]

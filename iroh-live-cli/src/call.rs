@@ -445,10 +445,17 @@ pub fn run(args: CallArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
             let codec = args.capture.video_codec()?;
             let presets = args.capture.presets()?;
             let audio_preset = args.capture.audio_preset_parsed()?;
+            let audio_codec = args.capture.audio_codec_parsed()?;
 
             crate::source::setup_video(&broadcast, &video_sources, codec, &presets)?;
-            crate::source::setup_audio(&broadcast, &audio_sources, &audio_ctx, audio_preset)
-                .await?;
+            crate::source::setup_audio(
+                &broadcast,
+                &audio_sources,
+                &audio_ctx,
+                audio_preset,
+                audio_codec,
+            )
+            .await?;
 
             let our_ticket = LiveTicket::new(live.endpoint().addr(), "call");
             let our_ticket_str = our_ticket.to_string();

@@ -299,17 +299,18 @@ pub async fn setup_audio(
     sources: &[AudioSourceSpec],
     audio_ctx: &AudioBackend,
     preset: AudioPreset,
+    audio_codec: AudioCodec,
 ) -> anyhow::Result<()> {
     for source in sources {
         match source {
             AudioSourceSpec::None | AudioSourceSpec::File { .. } => {}
             AudioSourceSpec::Test => {
                 let audio = TestToneSource::new();
-                broadcast.audio().set(audio, AudioCodec::Opus, [preset])?;
+                broadcast.audio().set(audio, audio_codec, [preset])?;
             }
             AudioSourceSpec::Default => {
                 let mic = audio_ctx.default_input().await?;
-                broadcast.audio().set(mic, AudioCodec::Opus, [preset])?;
+                broadcast.audio().set(mic, audio_codec, [preset])?;
             }
             AudioSourceSpec::File {
                 path,
@@ -329,7 +330,7 @@ pub async fn setup_audio(
                 })?;
                 audio_ctx.switch_input(Some(device_id)).await?;
                 let mic = audio_ctx.default_input().await?;
-                broadcast.audio().set(mic, AudioCodec::Opus, [preset])?;
+                broadcast.audio().set(mic, audio_codec, [preset])?;
             }
         }
     }

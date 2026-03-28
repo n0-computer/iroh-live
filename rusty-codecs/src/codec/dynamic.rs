@@ -180,6 +180,8 @@ impl VideoDecoder for DynamicVideoDecoder {
 pub enum DynamicAudioDecoder {
     #[cfg(feature = "opus")]
     Opus(super::OpusAudioDecoder),
+    #[cfg(feature = "pcm")]
+    Pcm(super::PcmAudioDecoder),
 }
 
 impl AudioDecoder for DynamicAudioDecoder {
@@ -190,6 +192,11 @@ impl AudioDecoder for DynamicAudioDecoder {
         match &config.codec {
             #[cfg(feature = "opus")]
             AudioCodec::Opus => Ok(Self::Opus(super::OpusAudioDecoder::new(
+                config,
+                target_format,
+            )?)),
+            #[cfg(feature = "pcm")]
+            AudioCodec::Pcm => Ok(Self::Pcm(super::PcmAudioDecoder::new(
                 config,
                 target_format,
             )?)),
@@ -205,6 +212,8 @@ impl AudioDecoder for DynamicAudioDecoder {
         match self {
             #[cfg(feature = "opus")]
             Self::Opus(d) => d.push_packet(packet),
+            #[cfg(feature = "pcm")]
+            Self::Pcm(d) => d.push_packet(packet),
             #[cfg(not(any_audio_codec))]
             _ => {
                 let _ = packet;
@@ -217,6 +226,8 @@ impl AudioDecoder for DynamicAudioDecoder {
         match self {
             #[cfg(feature = "opus")]
             Self::Opus(d) => d.pop_samples(),
+            #[cfg(feature = "pcm")]
+            Self::Pcm(d) => d.pop_samples(),
             #[cfg(not(any_audio_codec))]
             _ => unreachable!("no audio codec features enabled"),
         }

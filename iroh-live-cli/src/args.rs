@@ -4,7 +4,7 @@ use clap::{Args, ValueEnum};
 pub use iroh_live::media::source_spec::{AudioSourceSpec, BackendRef, DeviceRef, VideoSourceSpec};
 use iroh_live::{
     media::{
-        codec::VideoCodec,
+        codec::{AudioCodec, VideoCodec},
         format::{AudioPreset, VideoPreset},
     },
     rooms::RoomTicket,
@@ -74,6 +74,12 @@ pub struct CaptureArgs {
     /// Audio quality preset.
     #[arg(long, default_value = "hq")]
     pub audio_preset: String,
+
+    /// Audio codec (opus, pcm). Default: opus.
+    /// PCM sends raw samples with no compression — lower latency but higher
+    /// bandwidth. Useful on local networks.
+    #[arg(long, default_value = "opus")]
+    pub audio_codec: String,
 }
 
 impl Default for CaptureArgs {
@@ -85,6 +91,7 @@ impl Default for CaptureArgs {
             codec: None,
             video_presets: None,
             audio_preset: "hq".to_string(),
+            audio_codec: "opus".to_string(),
         }
     }
 }
@@ -135,8 +142,7 @@ impl CaptureArgs {
     }
 
     /// Returns the file path if exactly one `file:` video source is specified
-    /// and no capture video sources are present. Returns `None` for pure
-    /// capture mode.
+    /// and no capture video sources are present.
     pub fn file_video_source(&self) -> Result<Option<std::path::PathBuf>, String> {
         let sources = self.video_sources()?;
         let files: Vec<_> = sources
@@ -163,6 +169,11 @@ impl CaptureArgs {
             return Err("only one file: video source is supported".to_string());
         }
         Ok(Some(files.into_iter().next().unwrap()))
+    }
+
+    /// Parses the `--audio-codec` flag.
+    pub fn audio_codec_parsed(&self) -> anyhow::Result<AudioCodec> {
+        AudioCodec::parse_or_list(&self.audio_codec)
     }
 }
 
