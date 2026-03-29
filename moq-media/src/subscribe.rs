@@ -1069,6 +1069,24 @@ impl VideoTrack {
         self.rx.take()
     }
 
+    /// Non-blocking receive: returns the latest frame if one arrived since
+    /// the last call, or `None` otherwise.
+    ///
+    /// Identical to [`current_frame`](Self::current_frame). Provided as an
+    /// ergonomic alias for game-loop and ECS integrations that conventionally
+    /// name their poll method `try_recv`.
+    pub fn try_recv(&mut self) -> Option<VideoFrame> {
+        self.rx.take()
+    }
+
+    /// Returns `true` if a decoded frame is available without consuming it.
+    ///
+    /// Useful in game loops to check whether rendering work is needed before
+    /// committing to a `try_recv` call.
+    pub fn has_frame(&self) -> bool {
+        self.rx.has_value()
+    }
+
     /// Waits for the next frame. Returns `None` when the producer
     /// shuts down.
     pub async fn next_frame(&mut self) -> Option<VideoFrame> {
