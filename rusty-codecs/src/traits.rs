@@ -45,7 +45,13 @@ pub trait AudioSink: AudioSinkHandle {
 }
 
 /// Thread-safe handle for controlling an [`AudioSink`] (pause, resume, level metering).
-pub trait AudioSinkHandle: Send + 'static {
+///
+/// All methods take `&self` and the trait requires `Send + Sync`, so a
+/// `Box<dyn AudioSinkHandle>` (or `Arc<dyn AudioSinkHandle>`) can be
+/// shared across threads without wrapping in a `Mutex`.
+/// [`Clone`] is implemented for `Box<dyn AudioSinkHandle>` via
+/// [`cloned_boxed`](Self::cloned_boxed).
+pub trait AudioSinkHandle: Send + Sync + 'static {
     /// Returns a boxed clone of this handle.
     fn cloned_boxed(&self) -> Box<dyn AudioSinkHandle>;
     /// Pauses audio playback.
@@ -59,6 +65,12 @@ pub trait AudioSinkHandle: Send + 'static {
     /// Returns the smoothed peak level, normalized to `0.0..=1.0`.
     fn smoothed_peak_normalized(&self) -> Option<f32> {
         None
+    }
+}
+
+impl Clone for Box<dyn AudioSinkHandle> {
+    fn clone(&self) -> Self {
+        self.cloned_boxed()
     }
 }
 
