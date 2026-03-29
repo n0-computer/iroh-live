@@ -3,6 +3,10 @@
 //! Tests the full path: source → encoder → moq-lite transport → decoder → frames,
 //! using in-process moq-lite (no network). Each test is short and tests one behavior.
 //! The codec dimension is factored into a helper so adding codecs is a one-liner.
+//!
+//! Requires the `test-util` feature for deterministic video/audio sources:
+//! `cargo test -p moq-media --features test-util`
+#![cfg(feature = "test-util")]
 
 use std::time::Duration;
 
