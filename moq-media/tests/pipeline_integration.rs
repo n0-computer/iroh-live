@@ -1714,3 +1714,129 @@ fn frame_has_yellow_indicator(frame: &moq_media::format::VideoFrame) -> bool {
     // Use generous thresholds to survive BT.601 YUV roundtrip.
     r > 180 && g > 180 && b < 100
 }
+
+// ── Group: Non-blocking VideoTrack API (try_recv / has_frame) ─────
+
+#[cfg(feature = "h264")]
+#[tokio::test]
+async fn video_track_try_recv_returns_frame_after_decode() {
+    let (_broadcast, remote) = publish_and_subscribe(VideoCodec::H264, VideoPreset::P180).await;
+    let mut track = remote.video_ready().await.unwrap();
+
+    // Wait for at least one frame to arrive via the async path first.
+    let _ = tokio::time::timeout(TIMEOUT, track.next_frame())
+        .await
+        .expect("timeout")
+        .expect("no frame");
+
+    // Give the encoder time to produce another frame.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // try_recv should return a frame (the test source produces continuously).
+    let frame = track.try_recv();
+    assert!(frame.is_some(), "try_recv should return a buffered frame");
+    let frame = frame.unwrap();
+    assert!(frame.dimensions[0] > 0);
+}
+
+#[cfg(feature = "h264")]
+#[tokio::test]
+async fn video_track_has_frame_reflects_availability() {
+    let (_broadcast, remote) = publish_and_subscribe(VideoCodec::H264, VideoPreset::P180).await;
+    let mut track = remote.video_ready().await.unwrap();
+
+    // Consume any buffered frame first.
+    let _ = tokio::time::timeout(TIMEOUT, track.next_frame())
+        .await
+        .expect("timeout")
+        .expect("no frame");
+
+    // Drain whatever is buffered.
+    let _ = track.try_recv();
+
+    // After draining, wait for the next frame.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // The test source produces continuously, so has_frame should eventually be true.
+    assert!(track.has_frame(), "has_frame should be true after sleep");
+    // Consuming it should leave has_frame false (until the next one arrives).
+    let _ = track.try_recv();
+}
+
+// ── Group: LocalBroadcast::consume() ──────────────────────────────
+
+#[cfg(feature = "h264")]
+#[tokio::test]
+async fn local_broadcast_consume_creates_working_consumer() {
+    let broadcast = LocalBroadcast::new();
+    let (w, h) = VideoPreset::P180.dimensions();
+    broadcast
+        .video()
+        .set(VideoInput::new(
+            TestVideoSource::new(w, h),
+            VideoCodec::H264,
+            [VideoPreset::P180],
+        ))
+        .unwrap();
+
+    // consume() returns a BroadcastConsumer that can feed RemoteBroadcast.
+    let consumer = broadcast.consume();
+    let remote =
+        RemoteBroadcast::with_playback_policy("test", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
+    let mut track = remote.video_ready().await.unwrap();
+    let frame = tokio::time::timeout(TIMEOUT, track.next_frame())
+        .await
+        .expect("timeout")
+        .expect("no frame");
+    assert_eq!(frame.dimensions[0], w);
+}
+
+// ── Group: AudioSinkHandle Clone ──────────────────────────────────
+
+#[cfg(all(feature = "h264", feature = "opus"))]
+#[tokio::test]
+async fn audio_sink_handle_clone_preserves_pause_state() {
+    let (broadcast, consumer) = setup_broadcast();
+    broadcast
+        .video()
+        .set(VideoInput::new(
+            TestVideoSource::new(320, 180),
+            VideoCodec::H264,
+            [VideoPreset::P180],
+        ))
+        .unwrap();
+    broadcast
+        .audio()
+        .set(
+            TestAudioSource::new(AudioFormat::mono_48k()),
+            moq_media::codec::AudioCodec::Opus,
+            [AudioPreset::Lq],
+        )
+        .unwrap();
+
+    let remote =
+        RemoteBroadcast::with_playback_policy("test", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
+    let audio = remote.audio_ready(&NullAudioBackend).await.unwrap();
+
+    let handle_a: Box<dyn rusty_codecs::traits::AudioSinkHandle> = audio.handle().cloned_boxed();
+    let handle_b = handle_a.clone();
+
+    // Pause via one clone, verify the other sees the same state.
+    handle_a.pause();
+    assert!(handle_a.is_paused());
+    assert!(
+        handle_b.is_paused(),
+        "cloned handle should reflect pause state"
+    );
+
+    handle_b.resume();
+    assert!(!handle_b.is_paused());
+    assert!(
+        !handle_a.is_paused(),
+        "original handle should reflect resume from clone"
+    );
+}
