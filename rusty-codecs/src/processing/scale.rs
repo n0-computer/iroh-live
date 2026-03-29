@@ -71,6 +71,30 @@ impl Scaler {
         self.target_height = Some(h);
     }
 
+    /// Returns a previously-allocated buffer for reuse on the next scaling call.
+    ///
+    /// The double-buffering scheme alternates between two internal slots. When
+    /// the caller finishes with a scaled buffer, passing it back here lets the
+    /// scaler reuse its allocation instead of allocating a fresh `Vec` each
+    /// frame. The buffer is stored in whichever slot is currently empty, or
+    /// dropped if both slots are already populated.
+    pub fn return_buffer(&mut self, buf: Vec<u8>) {
+        let (Some(tw), Some(th)) = (self.target_width, self.target_height) else {
+            return;
+        };
+        let expected = (tw as usize) * (th as usize) * 4;
+        if buf.len() != expected {
+            return;
+        }
+        // Prefer the slot that will be used next, falling back to the other.
+        for &idx in &[self.dst_idx, self.dst_idx ^ 1] {
+            if self.dst_bufs[idx].is_none() {
+                self.dst_bufs[idx] = Some((tw, th, buf));
+                return;
+            }
+        }
+    }
+
     /// Scales an RGBA buffer to the target dimensions.
     ///
     /// Returns `None` if no scaling is needed (pass-through).
@@ -356,5 +380,33 @@ mod tests {
         let (w, h) = encoder_scale_scenario(1280, 720, 1920, 1080);
         assert_eq!(w, 1280);
         assert_eq!(h, 720);
+    }
+
+    #[test]
+    fn return_buffer_reuse() {
+        let mut scaler = Scaler::new(Some((320, 240)));
+        let src = vec![200u8; 640 * 480 * 4];
+
+        // Scale once to get a buffer.
+        let (buf, w, h) = scaler.scale_rgba(&src, 640, 480).unwrap().unwrap();
+        assert_eq!((w, h), (320, 240));
+        let ptr = buf.as_ptr();
+
+        // Return the buffer and scale again. The scaler should reuse the
+        // allocation instead of allocating a fresh Vec.
+        scaler.return_buffer(buf);
+        let (buf2, _, _) = scaler.scale_rgba(&src, 640, 480).unwrap().unwrap();
+        assert_eq!(buf2.as_ptr(), ptr, "returned buffer should be reused");
+    }
+
+    #[test]
+    fn return_buffer_wrong_size_ignored() {
+        let mut scaler = Scaler::new(Some((320, 240)));
+        // A buffer with the wrong size should be silently dropped.
+        let wrong = vec![0u8; 100];
+        scaler.return_buffer(wrong);
+        // Both internal slots should still be None.
+        assert!(scaler.dst_bufs[0].is_none());
+        assert!(scaler.dst_bufs[1].is_none());
     }
 }
