@@ -135,18 +135,27 @@ impl AudioSourceSpec {
     }
 }
 
+/// Known capture backend short names. Used to distinguish `cam:v4l2`
+/// (backend selection) from `cam:Logitech` (device name lookup).
+const KNOWN_BACKENDS: &[&str] = &[
+    "pw", "pipewire", "v4l2", "x11", "sck", "avf", "xcap", "nokhwa",
+];
+
 fn parse_device_spec(parts: &[&str]) -> Result<(Option<BackendRef>, Option<DeviceRef>), String> {
     match parts.len() {
         0 => Ok((None, None)),
         1 => {
-            // Single segment: try numeric index first, then treat as name.
-            if let Ok(idx) = parts[0].parse::<usize>() {
+            // Single segment precedence:
+            // 1. Known backend name (e.g. "cam:v4l2" → backend V4L2)
+            // 2. Numeric index (e.g. "cam:0" → device index 0)
+            // 3. Device name (e.g. "cam:Logitech" → device name lookup)
+            let s = parts[0];
+            if KNOWN_BACKENDS.contains(&s.to_lowercase().as_str()) {
+                Ok((Some(BackendRef::Name(s.to_string())), None))
+            } else if let Ok(idx) = s.parse::<usize>() {
                 Ok((None, Some(DeviceRef::Index(idx))))
             } else {
-                // Could be a backend name or device name. We treat single
-                // non-numeric segments as backend names, matching the CLI
-                // convention (e.g. "cam:v4l2" selects the V4L2 backend).
-                Ok((Some(BackendRef::Name(parts[0].to_string())), None))
+                Ok((None, Some(DeviceRef::Name(s.to_string()))))
             }
         }
         2 => {
@@ -248,6 +257,21 @@ mod tests {
             AudioSourceSpec::parse("hw:0,1").unwrap(),
             AudioSourceSpec::Device(_)
         ));
+    }
+
+    #[test]
+    fn parse_video_device_name_fallback() {
+        // A single non-numeric, non-backend segment falls back to device name.
+        match VideoSourceSpec::parse("cam:Logitech").unwrap() {
+            VideoSourceSpec::Camera { backend, device } => {
+                assert!(backend.is_none(), "should not be parsed as backend");
+                assert!(
+                    matches!(device, Some(DeviceRef::Name(ref n)) if n == "Logitech"),
+                    "expected DeviceRef::Name(\"Logitech\"), got {device:?}"
+                );
+            }
+            other => panic!("expected Camera, got {other:?}"),
+        }
     }
 
     #[test]
