@@ -1,4 +1,5 @@
 use std::{
+    cell::OnceCell,
     collections::VecDeque,
     fs::File,
     rc::Rc,
@@ -77,12 +78,27 @@ fn patch_baseline_constraint_flag(annex_b: &mut [u8]) {
 type VaapiFrame = PooledVideoFrame<GenericDmaVideoFrame>;
 type VaapiH264Decoder = StatelessDecoder<H264, VaapiBackend<VaapiFrame>>;
 
+/// Cached result of a `vaExportSurfaceHandle` call, storing the fd and
+/// stable metadata separately. On repeated `native_handle()` calls, the
+/// fd is dup'd from this cache, avoiding the full VA-API roundtrip
+/// (surface re-import + sync + PRIME export) on each call.
+struct CachedDmaBufExport {
+    fd: std::os::fd::OwnedFd,
+    modifier: u64,
+    drm_format: u32,
+    coded_width: u32,
+    coded_height: u32,
+    display_width: u32,
+    display_height: u32,
+    planes: Vec<DmaBufPlaneInfo>,
+}
+
 /// GPU-resident frame backed by DMA-BUF file descriptors from VAAPI decoding.
 ///
 /// DMA-BUF export happens on demand in [`native_handle()`](GpuFrameInner::native_handle),
-/// not at decode time. This keeps the per-frame FD cost at zero — matching
-/// the GStreamer/FFmpeg pattern where export FDs are transient handles
-/// created at the point of use and closed immediately after import.
+/// not at decode time. The result is cached so repeated calls (e.g., from both
+/// the render thread and playout buffer) reuse the same export and avoid
+/// redundant VA-API roundtrips (surface re-import, sync, PRIME export).
 #[derive(derive_more::Debug)]
 struct VaapiGpuFrame {
     frame: Arc<VaapiFrame>,
@@ -91,6 +107,10 @@ struct VaapiGpuFrame {
     /// Shared VAAPI display for frame mapping and DMA-BUF export.
     #[debug(skip)]
     display: Rc<Display>,
+    /// Cached DMA-BUF export. Populated on first `native_handle()` call,
+    /// then each subsequent call just dup's the fd.
+    #[debug(skip)]
+    cached_export: OnceCell<Option<CachedDmaBufExport>>,
 }
 
 // PooledVideoFrame<GenericDmaVideoFrame> holds owned File descriptors.
@@ -188,7 +208,34 @@ impl GpuFrameInner for VaapiGpuFrame {
     }
 
     fn native_handle(&self) -> Option<NativeFrameHandle> {
-        extract_dma_buf_info(&self.display, &self.frame, self.width, self.height)
+        let cached = self.cached_export.get_or_init(|| {
+            extract_dma_buf_info(&self.display, &self.frame, self.width, self.height).map(
+                |handle| match handle {
+                    NativeFrameHandle::DmaBuf(info) => CachedDmaBufExport {
+                        fd: info.fd,
+                        modifier: info.modifier,
+                        drm_format: info.drm_format,
+                        coded_width: info.coded_width,
+                        coded_height: info.coded_height,
+                        display_width: info.display_width,
+                        display_height: info.display_height,
+                        planes: info.planes,
+                    },
+                },
+            )
+        });
+        let export = cached.as_ref()?;
+        let fd = export.fd.try_clone().ok()?;
+        Some(NativeFrameHandle::DmaBuf(DmaBufInfo {
+            fd,
+            modifier: export.modifier,
+            drm_format: export.drm_format,
+            coded_width: export.coded_width,
+            coded_height: export.coded_height,
+            display_width: export.display_width,
+            display_height: export.display_height,
+            planes: export.planes.clone(),
+        }))
     }
 }
 
@@ -378,6 +425,7 @@ impl VaapiDecoder {
                         width: w,
                         height: h,
                         display: self.display.clone(),
+                        cached_export: OnceCell::new(),
                     };
 
                     let timestamp = self.timestamp_queue.pop_front().unwrap_or_default();

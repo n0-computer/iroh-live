@@ -7,8 +7,8 @@
 //! Current format: `raw` — writes separate files per track. Video gets an
 //! extension matching the codec (.h264, .av1), audio gets .opus. The H.264
 //! output uses Annex B framing (start codes), so it is directly playable with
-//! ffplay/mpv. Raw Opus packets are not containerized, so players need the
-//! ffmpeg remux shown after recording finishes.
+//! ffplay/mpv. Audio packets are written with a 4-byte big-endian length
+//! prefix so individual Opus frames can be recovered on playback.
 
 use std::{
     path::PathBuf,
@@ -375,12 +375,8 @@ fn print_remux_hint(
                 "the .h264 file is playable directly (ffplay {}).",
                 v.display()
             );
-            println!("the raw .opus file needs a container to play. to wrap it in ogg:");
-            println!(
-                "  ffmpeg -f opus -i {} -c copy {}",
-                a.display(),
-                output_base.with_extension("ogg").display()
-            );
+            println!("the .opus file uses 4-byte big-endian length-delimited framing.");
+            println!("to extract packets and wrap in ogg, use a script or custom demuxer.");
         }
         (Some(v), None) => {
             println!(
@@ -388,13 +384,9 @@ fn print_remux_hint(
                 v.display()
             );
         }
-        (None, Some(a)) => {
-            println!("the raw .opus file needs a container to play. to wrap it in ogg:");
-            println!(
-                "  ffmpeg -f opus -i {} -c copy {}",
-                a.display(),
-                output_base.with_extension("ogg").display()
-            );
+        (None, Some(_a)) => {
+            println!("the .opus file uses 4-byte big-endian length-delimited framing.");
+            println!("to extract packets and wrap in ogg, use a script or custom demuxer.");
         }
         (None, None) => {}
     }

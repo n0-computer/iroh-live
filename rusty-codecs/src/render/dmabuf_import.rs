@@ -46,6 +46,7 @@ pub struct DmaBufImporter {
     /// signals at the start of the next import. This defers the GPU stall
     /// so the copy overlaps with the caller's CPU work.
     in_flight: Option<InFlightImport>,
+    cached_nv12_import: Option<CachedNv12Import>,
     /// DRM render node path matching this Vulkan device (e.g. "/dev/dri/renderD128").
     /// Used by the VPP retiler to open the correct VA display.
     #[cfg(feature = "vaapi")]
@@ -62,6 +63,16 @@ pub struct DmaBufImporter {
 struct InFlightImport {
     nv12_image: vk::Image,
     nv12_memories: Vec<vk::DeviceMemory>,
+}
+
+/// Cached NV12 VkImage import for buffer identity caching.
+struct CachedNv12Import {
+    nv12_image: vk::Image,
+    nv12_memories: Vec<vk::DeviceMemory>,
+    inode: u64,
+    modifier: u64,
+    coded_width: u32,
+    coded_height: u32,
 }
 
 /// Cached Vulkan resources for the R8/RG8 copy targets, reused across frames.
@@ -202,6 +213,7 @@ impl DmaBufImporter {
                 supported_nv12_modifiers,
                 cached_targets: None,
                 in_flight: None,
+                cached_nv12_import: None,
                 #[cfg(feature = "vaapi")]
                 render_node_path,
                 #[cfg(feature = "vaapi")]
@@ -285,29 +297,49 @@ impl DmaBufImporter {
         // last call ran in parallel with the caller's CPU work between frames.
         self.reclaim_in_flight();
 
-        // Step 1: Import as multi-plane NV12 VkImage.
-        let (nv12_image, nv12_memories) = self.import_nv12_multiplane(info)?;
+        let fd_inode = fd_inode(info.fd.as_raw_fd());
+        let cache_hit = fd_inode != 0
+            && self.cached_nv12_import.as_ref().is_some_and(|c| {
+                c.inode == fd_inode
+                    && c.modifier == info.modifier
+                    && c.coded_width == info.coded_width
+                    && c.coded_height == info.coded_height
+            });
 
-        // Step 2: GPU-copy planes into cached R8/RG8 targets.
-        let result = self.copy_planes_to_textures(wgpu_device, nv12_image, w, h);
-
-        if result.is_ok() {
-            // Stash the NV12 source resources — they must stay alive until
-            // the GPU copy completes (signaled by the fence at next call).
-            self.in_flight = Some(InFlightImport {
+        let nv12_image = if cache_hit {
+            self.cached_nv12_import.as_ref().unwrap().nv12_image
+        } else {
+            if let Some(old) = self.cached_nv12_import.take() {
+                self.in_flight = Some(InFlightImport {
+                    nv12_image: old.nv12_image,
+                    nv12_memories: old.nv12_memories,
+                });
+                self.reclaim_in_flight();
+            }
+            let (nv12_image, nv12_memories) = self.import_nv12_multiplane(info)?;
+            self.cached_nv12_import = Some(CachedNv12Import {
                 nv12_image,
                 nv12_memories,
+                inode: fd_inode,
+                modifier: info.modifier,
+                coded_width: info.coded_width,
+                coded_height: info.coded_height,
             });
-        } else {
-            // On error, clean up immediately since no GPU work was submitted.
+            nv12_image
+        };
+
+        let result = self.copy_planes_to_textures(wgpu_device, nv12_image, w, h);
+        if result.is_err()
+            && !cache_hit
+            && let Some(bad) = self.cached_nv12_import.take()
+        {
             unsafe {
-                self.device.destroy_image(nv12_image, None);
-                for mem in nv12_memories {
+                self.device.destroy_image(bad.nv12_image, None);
+                for mem in bad.nv12_memories {
                     self.device.free_memory(mem, None);
                 }
             }
         }
-
         result
     }
 
@@ -935,9 +967,13 @@ impl DmaBufImporter {
 impl Drop for DmaBufImporter {
     fn drop(&mut self) {
         unsafe {
-            // Reclaim any in-flight NV12 import from the last frame.
             self.reclaim_in_flight();
-
+            if let Some(c) = self.cached_nv12_import.take() {
+                self.device.destroy_image(c.nv12_image, None);
+                for m in c.nv12_memories {
+                    self.device.free_memory(m, None);
+                }
+            }
             if let Some(targets) = self.cached_targets.take() {
                 self.device.destroy_image(targets.y_image, None);
                 self.device.free_memory(targets.y_memory, None);
@@ -948,6 +984,18 @@ impl Drop for DmaBufImporter {
             self.device.destroy_fence(self.fence, None);
             // Command buffer is freed implicitly when pool is destroyed.
             self.device.destroy_command_pool(self.command_pool, None);
+        }
+    }
+}
+
+/// Returns the inode number of the given fd, or 0 if `fstat` fails.
+fn fd_inode(fd: std::os::fd::RawFd) -> u64 {
+    unsafe {
+        let mut stat: libc::stat = std::mem::zeroed();
+        if libc::fstat(fd, &mut stat) == 0 {
+            stat.st_ino
+        } else {
+            0
         }
     }
 }

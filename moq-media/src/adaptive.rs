@@ -269,7 +269,7 @@ pub(crate) fn should_abort_probe(
 /// Wraps a [`RemoteBroadcast`] and manages rendition switching in a
 /// background task. Implements [`VideoSource`] for use in encoding
 /// pipelines (transcode relay) and also provides the familiar
-/// [`current_frame`](Self::current_frame) / [`next_frame`](Self::next_frame)
+/// [`try_recv`](Self::try_recv) / [`next_frame`](Self::next_frame)
 /// API.
 #[derive(derive_more::Debug)]
 pub struct AdaptiveVideoTrack {
