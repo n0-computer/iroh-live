@@ -1,40 +1,36 @@
 # Codebase review
 
 Open items only. Every item has been verified against the current codebase
-(2026-03-27). Items that have been fixed, completed, or no longer apply have
+(2026-03-29). Items that have been fixed, completed, or no longer apply have
 been removed. Short codes are prefixed by section abbreviation.
 
 ---
 
 ## Bugs and correctness
 
-- [x] **BUG-1**: ~~Rendition quality selection broken~~ — Fixed in `4456d77`: `select_rendition` now matches by suffix (`"720p"` matches `"video/h264-720p"`).
+- [ ] **BUG-1** *(critical, waiting for macOS)*: VTB decoder leaks an `Arc` refcon. `create_session()` calls `Arc::into_raw(state.clone())` to pass the refcon to `VTDecompressionSession`. The error path reclaims it via `Arc::from_raw`, but `VtbDecoder::Drop` never reclaims it. On SPS-change session recreation, the old refcon also leaks. The encoder's Drop shows the correct pattern. Fix: store the refcon pointer as a field and reclaim in Drop and before session recreation (`vtb/decoder.rs:285, 236-244`). (Previously DR1.)
 
-- [ ] **BUG-2** *(critical, waiting for macOS)*: VTB decoder leaks an `Arc` refcon. `create_session()` calls `Arc::into_raw(state.clone())` to pass the refcon to `VTDecompressionSession`. The error path reclaims it via `Arc::from_raw`, but `VtbDecoder::Drop` never reclaims it. On SPS-change session recreation, the old refcon also leaks. The encoder's Drop shows the correct pattern. Fix: store the refcon pointer as a field and reclaim in Drop and before session recreation (`vtb/decoder.rs:285, 236-244`). (Previously DR1.)
+- [ ] **BUG-2**: `unimplemented!()` panic in `VideoFrame::rgba_image()` for NV12/I420 when `h264`/`av1` features are disabled. The conversion functions should be available without codec features. Returns `&RgbaImage` via `OnceLock::get_or_init`, so can't return `Result` without a signature change (`format.rs:787, 805`). (Previously ER21.) **Action: make conversion functions available without any codec features.**
 
-- [ ] **BUG-3**: `unimplemented!()` panic in `VideoFrame::rgba_image()` for NV12/I420 when `h264`/`av1` features are disabled. The conversion functions should be available without codec features. Returns `&RgbaImage` via `OnceLock::get_or_init`, so can't return `Result` without a signature change (`format.rs:787, 805`). (Previously ER21.) **Action: make conversion functions available without any codec features.**
+- [ ] **BUG-3**: `Rc<Display>` cross-thread drop race in VAAPI decoder. `VaapiGpuFrame` clones `Rc<Display>` on the decode thread; if the frame is dropped on a different thread, the non-atomic refcount is a data race (UB). Blocked on cros-libva using `Rc<Display>` instead of `Arc<Display>` — needs upstream change or `Arc<Mutex<Rc<Display>>>` wrapper (`vaapi/decoder.rs`). (Previously ER5.)
 
-- [x] **BUG-4**: ~~Sync clock not closed on drop~~ — Fixed in `a4189ad`: `SyncInner` implements `Drop`, closing the clock when the last `Arc` handle drops.
+- [ ] **BUG-4**: PipeWire DMA-BUF modifier hardcoded to 0 (LINEAR). The actual DRM modifier from the compositor is never read; tiled DMA-BUFs produce garbled frames on modern GPUs. The VPP retiler partially works around this downstream. Fix requires parsing `SPA_FORMAT_VIDEO_modifier` from format negotiation (`pipewire.rs:701`). (Previously ER1.)
 
-- [ ] **BUG-5**: `Rc<Display>` cross-thread drop race in VAAPI decoder. `VaapiGpuFrame` clones `Rc<Display>` on the decode thread; if the frame is dropped on a different thread, the non-atomic refcount is a data race (UB). Blocked on cros-libva using `Rc<Display>` instead of `Arc<Display>` — needs upstream change or `Arc<Mutex<Rc<Display>>>` wrapper (`vaapi/decoder.rs`). (Previously ER5.)
+- [ ] **BUG-5**: PipeWire NV12 DMA-BUF reports a single plane. NV12 is two-plane; a single-plane report causes downstream importers to reject or corrupt chroma (`pipewire.rs:233`). (Previously ER2.)
 
-- [ ] **BUG-6**: PipeWire DMA-BUF modifier hardcoded to 0 (LINEAR). The actual DRM modifier from the compositor is never read; tiled DMA-BUFs produce garbled frames on modern GPUs. The VPP retiler partially works around this downstream. Fix requires parsing `SPA_FORMAT_VIDEO_modifier` from format negotiation (`pipewire.rs:701`). (Previously ER1.)
+- [ ] **BUG-6**: V4L2 NV12 size calculation ignores `bytesperline` stride padding. The code hardcodes `y_size = width * height` instead of using the driver-reported stride. Corrupted frames on drivers with row padding (common on hardware ISPs) (`v4l2.rs:415`). (Previously ER18.)
 
-- [ ] **BUG-7**: PipeWire NV12 DMA-BUF reports a single plane. NV12 is two-plane; a single-plane report causes downstream importers to reject or corrupt chroma (`pipewire.rs:233`). (Previously ER2.)
+- [ ] **BUG-7**: Relay `PullState::pull` has a TOCTOU race. Lock acquired, checked, dropped. Async connect happens without the lock. Re-acquire to insert. Two concurrent pulls for the same ticket both pass the check and connect; one overwrites the other. Fix: use `tokio::sync::Mutex` held across the async gap, or insert a sentinel before connecting (`pull.rs:50-60`). (Previously DR11.)
 
-- [ ] **BUG-8**: V4L2 NV12 size calculation ignores `bytesperline` stride padding. The code hardcodes `y_size = width * height` instead of using the driver-reported stride. Corrupted frames on drivers with row padding (common on hardware ISPs) (`v4l2.rs:415`). (Previously ER18.)
+- [ ] **BUG-8**: Relay pull handles never cleaned up. The `active` map only grows via `insert`. No background task monitors session health or removes entries on disconnect. On a long-running relay this leaks memory indefinitely (`pull.rs`). (Previously DR12.)
 
-- [ ] **BUG-9**: Relay `PullState::pull` has a TOCTOU race. Lock acquired, checked, dropped. Async connect happens without the lock. Re-acquire to insert. Two concurrent pulls for the same ticket both pass the check and connect; one overwrites the other. Fix: use `tokio::sync::Mutex` held across the async gap, or insert a sentinel before connecting (`pull.rs:50-60`). (Previously DR11.)
+- [ ] **BUG-9**: iroh-moq actor session map dedup race. `sessions.insert(remote, session)` replaces the old entry. The old session's close task returns `(remote, res)`, which could remove or update the new session's entry, prematurely marking it as closed (`iroh-moq/src/lib.rs:487`). (Previously DR14.)
 
-- [ ] **BUG-10**: Relay pull handles never cleaned up. The `active` map only grows via `insert`. No background task monitors session health or removes entries on disconnect. On a long-running relay this leaks memory indefinitely (`pull.rs`). (Previously DR12.)
+- [ ] **BUG-10**: GPU download panic in `OnceLock::get_or_init`. `gpu.download_rgba().expect("GPU frame download failed")` in `rgba_image()` panics on GPU context loss, driver bugs, or FD exhaustion. Needs a fallible signature (`format.rs:768`). (Previously DR17.)
 
-- [ ] **BUG-11**: iroh-moq actor session map dedup race. `sessions.insert(remote, session)` replaces the old entry. The old session's close task returns `(remote, res)`, which could remove or update the new session's entry, prematurely marking it as closed (`iroh-moq/src/lib.rs:487`). (Previously DR14.)
+- [ ] **BUG-11**: `FrameData::I420` has no stride fields. `rgba_image()` hardcodes `y_stride = width` and `uv_stride = width.div_ceil(2)`. Current I420 producers strip strides during conversion so this works today, but a future producer storing padded I420 would get silent corruption. Add stride fields for parity with NV12 (`format.rs:553`). (Previously DR2.)
 
-- [ ] **BUG-12**: GPU download panic in `OnceLock::get_or_init`. `gpu.download_rgba().expect("GPU frame download failed")` in `rgba_image()` panics on GPU context loss, driver bugs, or FD exhaustion. Needs a fallible signature (`format.rs:768`). (Previously DR17.)
-
-- [ ] **BUG-13**: `FrameData::I420` has no stride fields. `rgba_image()` hardcodes `y_stride = width` and `uv_stride = width.div_ceil(2)`. Current I420 producers strip strides during conversion so this works today, but a future producer storing padded I420 would get silent corruption. Add stride fields for parity with NV12 (`format.rs:553`). (Previously DR2.)
-
-- [ ] **BUG-14**: Android MediaCodec `set_bitrate` never takes effect under normal operation. The new bitrate is stored but only applied on codec reset, which only triggers after `MAX_CONSECUTIVE_ERRORS` (3) consecutive errors. No API to force a reset (`android/encoder.rs:349`). (Previously ON13.)
+- [ ] **BUG-12**: Android MediaCodec `set_bitrate` never takes effect under normal operation. The new bitrate is stored but only applied on codec reset, which only triggers after `MAX_CONSECUTIVE_ERRORS` (3) consecutive errors. No API to force a reset (`android/encoder.rs:349`). (Previously ON13.)
 
 ---
 
@@ -48,11 +44,9 @@ been removed. Short codes are prefixed by section abbreviation.
 
 - [ ] **PERF-4**: Per-frame TextureView + BindGroup in NV12 render path. `render_nv12_from_views` creates a new `wgpu::BindGroup` every frame. Should cache when fd/modifier/dimensions match (`render.rs:366`). (Previously RC12.)
 
-- [ ] **PERF-5**: `Scaler::scale_rgba` clones entire output buffer. `buf.clone()` allocates a fresh `Vec<u8>` every frame (potentially megabytes at 1080p). Could return the buffer and have the caller return it, or use `Bytes`/`Arc<[u8]>` (`processing/scale.rs:93`). (Previously DR20.)
+- [ ] **PERF-5**: All encoder backends use CPU scaling even when the HW encoder API supports native scaling. VAAPI has VPP, V4L2 M2M can scale on OUTPUT queue, VideoToolbox accepts arbitrary input dimensions, MediaCodec Surface mode does GPU scaling. Per-backend investigation needed (`codec/*/encoder.rs`). (Previously DR50.)
 
-- [ ] **PERF-6**: All encoder backends use CPU scaling even when the HW encoder API supports native scaling. VAAPI has VPP, V4L2 M2M can scale on OUTPUT queue, VideoToolbox accepts arbitrary input dimensions, MediaCodec Surface mode does GPU scaling. Per-backend investigation needed (`codec/*/encoder.rs`). (Previously DR50.)
-
-- [ ] **PERF-7**: Android MediaCodec encoder uses ByteBuffer mode with CPU scaling. Should use Surface input mode for zero-copy (`android/encoder.rs`). (Previously RC15.)
+- [ ] **PERF-6**: Android MediaCodec encoder uses ByteBuffer mode with CPU scaling. Should use Surface input mode for zero-copy (`android/encoder.rs`). (Previously RC15.)
 
 ---
 
@@ -180,15 +174,13 @@ been removed. Short codes are prefixed by section abbreviation.
 
 ## Minor and code hygiene
 
-- [ ] **HYGIENE-1**: `SharedVideoSource::stop` uses `SeqCst` ordering while `start` uses `Relaxed`. Inconsistent; `AcqRel`/`Acquire` would be sufficient and consistent (`publish.rs:1148, 1157`). (Previously ER28.)
+- [ ] **HYGIENE-1**: `CatalogSnapshot` `PartialEq` skips inner catalog (`#[eq(skip)]`). Equality based solely on `seq` number, which could surprise callers comparing snapshots from different broadcasts. Document this (`subscribe.rs:251`). (Previously ER29.)
 
-- [ ] **HYGIENE-2**: `CatalogSnapshot` `PartialEq` skips inner catalog (`#[eq(skip)]`). Equality based solely on `seq` number, which could surprise callers comparing snapshots from different broadcasts. Document this (`subscribe.rs:251`). (Previously ER29.)
+- [ ] **HYGIENE-2**: `VideoTrack::from_video_source` hardcodes `fps = 30` and uses fixed-cadence pacing. Sources faster than 30 fps are throttled; sources slower spin on empty `pop_frame()`. Should use PTS-based pacing or accept fps as a parameter (`subscribe.rs:855`). (Previously ER30, NR7.)
 
-- [ ] **HYGIENE-3**: `VideoTrack::from_video_source` hardcodes `fps = 30` and uses fixed-cadence pacing. Sources faster than 30 fps are throttled; sources slower spin on empty `pop_frame()`. Should use PTS-based pacing or accept fps as a parameter (`subscribe.rs:855`). (Previously ER30, NR7.)
+- [ ] **HYGIENE-3**: Room actor event channel capacity 16. In rooms with many simultaneous joins, the actor blocks on sends and stops processing gossip. Consider increasing capacity or `try_send` with logged warning (`rooms.rs:104-105`). (Previously ER31.)
 
-- [ ] **HYGIENE-4**: Room actor event channel capacity 16. In rooms with many simultaneous joins, the actor blocks on sends and stops processing gossip. Consider increasing capacity or `try_send` with logged warning (`rooms.rs:104-105`). (Previously ER31.)
-
-- [ ] **HYGIENE-5**: Room gossip dependency is implicit. `Room::new()` fails at runtime if gossip is not enabled; no type-level guard (`rooms.rs`). (Previously IL13.)
+- [ ] **HYGIENE-4**: Room gossip dependency is implicit. `Room::new()` fails at runtime if gossip is not enabled; no type-level guard (`rooms.rs`). (Previously IL13.)
 
 - [ ] **HYGIENE-6**: `LocalBroadcast::run` holds state mutex while calling `start_track`. Encoder factory calls can take tens of milliseconds for hardware codecs (VAAPI/VTB device negotiation), blocking all `has_video()`, `has_audio()`, `set_video()` callers. Factory call and thread spawn should happen after releasing the lock (`publish.rs:294-297`). (Previously ER24.)
 
