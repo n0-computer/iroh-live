@@ -125,7 +125,13 @@ fn setup_screen_source(
 /// Resolves a [`BackendRef`] to a concrete [`CaptureBackend`].
 fn resolve_backend(r: &BackendRef, available: &[CaptureBackend]) -> anyhow::Result<CaptureBackend> {
     match r {
-        BackendRef::Name(b) => Ok(*b),
+        BackendRef::Name(name) => name.parse::<CaptureBackend>().map_err(|_| {
+            let names: Vec<_> = available.iter().map(|b| b.cli_name()).collect();
+            anyhow::anyhow!(
+                "unknown backend '{name}' (available: {names:?}). \
+                 Run `irl devices` to list backends."
+            )
+        }),
         BackendRef::Index(idx) => available.get(*idx).copied().ok_or_else(|| {
             let names: Vec<_> = available.iter().map(|b| b.cli_name()).collect();
             anyhow::anyhow!(

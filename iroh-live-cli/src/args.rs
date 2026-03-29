@@ -1,7 +1,9 @@
 use clap::{Args, Subcommand, ValueEnum};
+// Re-export shared source spec types from moq-media so callers that
+// already import from this module keep working.
+pub use iroh_live::media::source_spec::{AudioSourceSpec, BackendRef, DeviceRef, VideoSourceSpec};
 use iroh_live::{
     media::{
-        capture::CaptureBackend,
         codec::VideoCodec,
         format::{AudioPreset, VideoPreset},
     },
@@ -33,141 +35,6 @@ pub struct TransportArgs {
     /// Suppress terminal QR code.
     #[arg(long)]
     pub no_qr: bool,
-}
-
-// ---------------------------------------------------------------------------
-// Source spec parsing
-// ---------------------------------------------------------------------------
-
-/// References a capture backend by name or by index from `list_backends()`.
-#[derive(Debug, Clone)]
-pub enum BackendRef {
-    Name(CaptureBackend),
-    Index(usize),
-}
-
-/// References a capture device by platform ID or by index from the device list.
-#[derive(Debug, Clone)]
-pub enum DeviceRef {
-    Name(String),
-    Index(usize),
-}
-
-/// Parsed video source specification from CLI `--video` values.
-#[derive(Debug, Clone)]
-pub enum VideoSourceSpec {
-    DefaultCamera,
-    Camera {
-        backend: Option<BackendRef>,
-        device: Option<DeviceRef>,
-    },
-    DefaultScreen,
-    Screen {
-        backend: Option<BackendRef>,
-        device: Option<DeviceRef>,
-    },
-    Test,
-    None,
-}
-
-impl VideoSourceSpec {
-    /// Parses a `--video` CLI value.
-    ///
-    /// Forms: `cam`, `cam:<device>`, `cam:<backend>:<device>`,
-    ///        `screen`, `screen:<device>`, `screen:<backend>:<device>`,
-    ///        `test`, `none`.
-    ///
-    /// Both backend and device accept names or numeric indices from
-    /// `irl devices`. For example, `cam:0` selects the first camera,
-    /// `cam:v4l2:1` selects V4L2 camera at index 1, and `cam:0:1`
-    /// selects camera 1 from backend 0.
-    pub fn parse(s: &str) -> Result<Self, String> {
-        let parts: Vec<&str> = s.split(':').collect();
-        match parts[0].to_lowercase().as_str() {
-            "cam" | "camera" => parse_device_spec(&parts[1..]).map(|(b, d)| {
-                if b.is_none() && d.is_none() {
-                    Self::DefaultCamera
-                } else {
-                    Self::Camera {
-                        backend: b,
-                        device: d,
-                    }
-                }
-            }),
-            "screen" => parse_device_spec(&parts[1..]).map(|(b, d)| {
-                if b.is_none() && d.is_none() {
-                    Self::DefaultScreen
-                } else {
-                    Self::Screen {
-                        backend: b,
-                        device: d,
-                    }
-                }
-            }),
-            "test" => Ok(Self::Test),
-            "none" => Ok(Self::None),
-            other => Err(format!(
-                "unknown video source '{other}'. Use cam, screen, test, or none.\n\
-                 Run `irl devices` to list available sources."
-            )),
-        }
-    }
-}
-
-fn parse_device_spec(parts: &[&str]) -> Result<(Option<BackendRef>, Option<DeviceRef>), String> {
-    match parts.len() {
-        0 => Ok((None, None)),
-        1 => {
-            // Single segment: try backend name first, then device index, then device name.
-            if let Ok(backend) = parts[0].parse::<CaptureBackend>() {
-                Ok((Some(BackendRef::Name(backend)), None))
-            } else if let Ok(idx) = parts[0].parse::<usize>() {
-                Ok((None, Some(DeviceRef::Index(idx))))
-            } else {
-                Ok((None, Some(DeviceRef::Name(parts[0].to_string()))))
-            }
-        }
-        2 => {
-            // Two segments: backend (name or index) + device (index or name).
-            let backend = if let Ok(b) = parts[0].parse::<CaptureBackend>() {
-                BackendRef::Name(b)
-            } else if let Ok(idx) = parts[0].parse::<usize>() {
-                BackendRef::Index(idx)
-            } else {
-                return Err(format!(
-                    "unknown backend '{}'. Run `irl devices` to list backends.",
-                    parts[0]
-                ));
-            };
-            let device = if let Ok(idx) = parts[1].parse::<usize>() {
-                DeviceRef::Index(idx)
-            } else {
-                DeviceRef::Name(parts[1].to_string())
-            };
-            Ok((Some(backend), Some(device)))
-        }
-        _ => Err("too many ':' segments; expected at most backend:device".to_string()),
-    }
-}
-
-/// Parsed audio source specification from CLI `--audio` values.
-#[derive(Debug, Clone)]
-pub enum AudioSourceSpec {
-    Default,
-    Device(String),
-    Test,
-    None,
-}
-
-impl AudioSourceSpec {
-    pub fn parse(s: &str) -> Result<Self, String> {
-        match s.to_lowercase().as_str() {
-            "none" => Ok(Self::None),
-            "test" => Ok(Self::Test),
-            "default" | "mic" => Ok(Self::Default),
-            _ => Ok(Self::Device(s.to_string())),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
