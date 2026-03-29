@@ -233,3 +233,77 @@ been removed. Short codes are prefixed by section abbreviation.
 - [ ] **HYGIENE-26**: Relay `serve_fingerprint` panics on lock poisoning. Acceptable in dev mode; a production relay would use real TLS certificates (`iroh-live-relay/src/lib.rs:221`). (Previously DR41.)
 
 - [ ] **HYGIENE-27**: `AecProcessor::set_stream_delay()` and `set_enabled()` are `pub(crate)` internal methods, `#[allow(unused)]`. Internal dead code reserved for future AEC work (`audio_backend/aec.rs:110, 164`). (Previously DR7.)
+
+---
+
+## Dev branch review (origin/dev..dev)
+
+Review of 21 commits on the `dev` branch ahead of `origin/dev`, covering
+bug fixes, performance work, new features (rooms chat, record command,
+headless demo), and API additions. Reviewed 2026-03-27.
+
+### Bugs and correctness
+
+- [ ] **DEV-1** *(medium)*: Rendition suffix match is ambiguous. `select_rendition` uses `ends_with` matching (`4456d77`), so a preset string `"p"` would match `"video/h264-720p"`, `"video/av1-1080p"`, etc. More critically, if rendition keys like `"video/h264-1080p"` and `"video/h264-360p"` are both present and the suffix is `"0p"`, both match and `find` returns whichever appears first in `BTreeMap` iteration order. Current `VideoPreset` values (`"180p"`, `"360p"`, `"720p"`, `"1080p"`) happen to be unique suffixes in practice, but the matching is fragile: a custom rendition name ending in the same suffix would confuse selection. Consider matching on the segment after the last `-` instead of bare `ends_with` (`subscribe.rs:737`).
+
+- [ ] **DEV-2** *(low)*: VAAPI SPS/PPS retry loop has no iteration limit. The `loop` in `VaapiDecoder::new` (`e8c6a9f`) handles `CheckEvents` and `NotEnoughOutputBuffers` by draining events and retrying, but if cros-codecs returns these errors indefinitely (e.g., broken SPS data triggers repeated `FormatChanged` events), the loop never exits. In practice the `remaining` slice shrinks on each successful `Ok(consumed)`, and `consumed == 0` breaks, so infinite loops require the decoder to consume zero bytes repeatedly on errors. Low risk, but a max-iteration guard (say, 32) would make it defensive (`vaapi/decoder.rs:516-540`).
+
+- [ ] **DEV-3** *(low)*: `render_to_owned_texture` does not handle NV12 GPU frames. The method (`568af84`) calls `self.render(frame)` which handles all formats, then copies from `output_texture`. However, the owned texture is created with `Rgba8UnormSrgb` format. If the internal render path ever changes to output a non-sRGB format, the `copy_texture_to_texture` would fail silently (textures with mismatched formats fail the wgpu validation). Currently safe because `render()` always writes to an `Rgba8UnormSrgb` output texture, but the format is hardcoded in two places (`render.rs:547, 712`).
+
+- [ ] **DEV-4** *(low)*: `VideoSourceSpec` parsing changes semantics of single-segment `cam:<string>`. The old code in `args.rs` tried to parse `parts[0]` as `CaptureBackend` first, then fell back to device index/name. The new code in `source_spec.rs` treats single non-numeric segments as backend names (via `BackendRef::Name`). This means `cam:my-webcam` used to be parsed as `DeviceRef::Name("my-webcam")` but now parses as `BackendRef::Name("my-webcam")`. The `resolve_backend` in `source.rs` calls `name.parse::<CaptureBackend>()` which will fail with a helpful error, so this does not silently break, but it is a behavior change for users who specified devices by name without a backend prefix. Document or restore the old disambiguation heuristic (`source_spec.rs:153-159`).
+
+- [ ] **DEV-5** *(info)*: `SyncInner::Drop` calls `get_mut().unwrap()` on a `Mutex`. If any thread panicked while holding the Sync lock, this unwrap panics during drop, which in turn aborts the process (panic in Drop during another panic). The only code that holds the lock is `Sync::wait()` inside the decode thread, and panics there would already be a critical failure, so the risk is academic. Using `get_mut().unwrap_or_else(|e| e.into_inner())` to recover from poisoning would be strictly safer (`sync.rs:67`).
+
+### Performance
+
+- [x] **DEV-6** *(done)*: Scaler double-buffer eliminates per-frame clone (PERF-5/DR20 fixed). Marks PERF-5 above as resolved.
+
+- [x] **DEV-7** *(done)*: Decoder pixel buffer reuse eliminates per-frame YUV conversion allocation. Good improvement, no issues found.
+
+- [ ] **DEV-8** *(low)*: Scaler double-buffer loses reuse when resolution changes. When `target_width/target_height` change (e.g., viewport resize), both buffers in `dst_bufs` will have stale dimensions and allocate fresh. The old single-buffer scheme had the same behavior, so this is not a regression, just an observation.
+
+- [ ] **DEV-9** *(info)*: `mul_f64` in audio tick timing (`7966429`) introduces floating-point imprecision. At `tick_num = 2^53` (about 2.85 billion years at 10ms), the f64 conversion loses precision and tick cadence becomes irregular. Not a practical concern but worth noting the fix trades overflow correctness for floating-point imprecision -- a good tradeoff.
+
+### API and compatibility
+
+- [ ] **DEV-10** *(medium)*: `AudioSinkHandle` now requires `Sync` (`0ffcd95`). This is a breaking change for any downstream `AudioSinkHandle` implementor that uses interior mutability with non-Sync types (e.g., `Cell`, `RefCell`). All in-tree implementations use `Arc<Mutex<>>` or atomics, so they are fine, but external implementations may break. The trait was previously `Send + 'static`; now it is `Send + Sync + 'static`. This should be called out in release notes.
+
+- [ ] **DEV-11** *(low)*: `h264` module and `annexb` module changed from `pub(crate)` to `pub` (`71bde95`). This exposes internal H.264 parsing functions (`avcc_to_annex_b`, `length_prefixed_to_annex_b`, `parse_annex_b`, `extract_sps_pps`, `build_avcc`) as public API of `rusty-codecs`. These are useful for the record command but create a new public API surface that needs stability consideration. Consider `#[doc(hidden)]` or a separate public utility module if this is not intended as a stable API.
+
+- [ ] **DEV-12** *(info)*: `LocalBroadcast::enable_chat` takes `&mut self` (`fab3327`), but most other broadcast methods take `&self`. The `setup` function in `room.rs` needed to change the local binding to `let mut broadcast`. This is consistent with the method's "can only be called once" semantics, but the asymmetry may surprise callers.
+
+- [ ] **DEV-13** *(info)*: `Room::split()` returns `(RoomEvents, RoomHandle)` -- new public API that separates event consumption from command sending. Good pattern for UI integration. No issues found.
+
+### Rooms and chat
+
+- [x] **DEV-14** *(done)*: Postcard serialization roundtrip tested with `peer_state_serialization_roundtrip`. The comment about `skip_serializing_if` is correctly documented in the struct. Good fix.
+
+- [ ] **DEV-15** *(medium)*: Chat messages are not authenticated. Any peer in the room can claim to be any other peer by forging the `remote` field in `RoomEvent::ChatReceived`. The `remote` comes from the gossip endpoint ID, which is authenticated by the transport layer, but the chat text comes from the broadcast's track data which is also keyed by endpoint. This is probably fine -- the transport already authenticates the sender. However, the comment in `chat.rs` says "sender's identity comes from the broadcast context" which is correct.
+
+- [ ] **DEV-16** *(low)*: `Room::send_chat` silently succeeds when no chat publisher is set -- it sends an `ApiMessage::SendChat` to the actor which logs a warning, but the caller gets `Ok(())`. The error path is a `warn!` log in the actor, not a returned error. This could confuse callers who forgot to call `enable_chat`/`set_chat_publisher`.
+
+- [ ] **DEV-17** *(low)*: Chat subscriber task in room actor is not cleaned up when a broadcast closes. When `broadcast.chat()` returns a `ChatSubscriber` and the subscriber's `recv()` returns `None` (track closed), the future completes and is not re-enqueued. This is correct. But if the `BroadcastSubscribed` event is sent for a new broadcast from the same peer, a second chat subscriber is created. Multiple chat subscribers for the same peer are harmless (they read the same track), but the `chat_messages` FuturesUnordered grows without bound across reconnections.
+
+### Record command
+
+- [ ] **DEV-18** *(low)*: `record_raw_track` writes raw Opus packets without any framing. The output `.opus` file contains concatenated Opus packets with no length delimiters or timestamps. This cannot be played back correctly since Opus packets are variable-length. The remux hint printed after recording suggests `ffmpeg -f opus -i file.opus`, but ffmpeg's raw Opus demuxer expects self-delimiting Opus packets (RFC 6716 appendix B). Standard Opus packets without OggS framing will fail. The H.264 path is fine because Annex B start codes provide framing.
+
+- [ ] **DEV-19** *(info)*: `record_video_track` uses `copy_to_bytes(payload.remaining())` which allocates a contiguous copy even when the payload is already contiguous (single-chunk Bytes). Minor allocation overhead per frame -- could check `payload.chunk().len() == payload.remaining()` first.
+
+### Testing
+
+- [x] **DEV-20** *(done)*: Room integration tests cover the exact scenarios the postcard bug broke: `two_peers_see_each_other`, `subscribe_and_receive_video_frames`, `chat_messages_flow`, `peer_disconnect_detected`, `peer_joined_fires`, and `peer_state_serialization_roundtrip`. Good coverage.
+
+- [x] **DEV-21** *(done)*: VAAPI AVCC decode path has both a software test (`decode_avcc_file_import_path` in `h264/decoder.rs`) and a hardware-gated test (`vaapi_decode_avcc_file_import_path` in `vaapi/decoder.rs`). Good coverage.
+
+- [ ] **DEV-22** *(low)*: `VideoTrack::try_recv` has no dedicated test. It is an alias for `current_frame` which is tested, so the risk is minimal, but a basic test would verify the alias works.
+
+- [ ] **DEV-23** *(low)*: `render_to_owned_texture` has no test (TEST-1 already notes the broader render.rs testing gap). Would need GPU hardware to test.
+
+### Code hygiene
+
+- [x] **DEV-24** *(done)*: `SharedVideoSource` atomic ordering standardized on `AcqRel`/`Acquire`/`Release` (marks HYGIENE-1 as resolved).
+
+- [ ] **DEV-25** *(info)*: Headless demo added to `default-members` in workspace `Cargo.toml`. This means `cargo build` in the workspace root now builds the demo, which depends on `test-util` feature. Not a problem, but `test-util` pulls in test-only source generators that are not needed for production builds.
+
+- [ ] **DEV-26** *(info)*: `iroh-live-cli` now depends on `hang` directly (`71bde95`) for `hang::catalog::{AudioCodec, VideoCodec, VideoConfig}` in the record command. Previously it accessed hang types only through moq-media re-exports. This is fine but adds a direct dependency edge.
