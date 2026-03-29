@@ -84,8 +84,6 @@ async fn main() -> anyhow::Result<()> {
 
     // --- Publish side ---
     let broadcast = LocalBroadcast::new();
-    // Yield so the broadcast's background task registers its dynamic producer.
-    tokio::task::yield_now().await;
 
     let source = TestVideoSource::new(width, height).with_fps(30.0);
     broadcast
