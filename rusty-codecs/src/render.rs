@@ -530,6 +530,56 @@ impl WgpuVideoRenderer {
             .view)
     }
 
+    /// Renders a frame and returns a standalone RGBA texture.
+    ///
+    /// Unlike [`render`](Self::render), which returns a borrowed view into the
+    /// renderer's internal texture (overwritten on the next call), this method
+    /// creates a fresh `wgpu::Texture` and GPU-copies the result into it. The
+    /// caller owns the texture and can hold it across frames.
+    ///
+    /// The returned texture has format [`wgpu::TextureFormat::Rgba8UnormSrgb`]
+    /// with `TEXTURE_BINDING | COPY_DST` usage.
+    pub fn render_to_owned_texture(&mut self, frame: &VideoFrame) -> Result<wgpu::Texture> {
+        self.render(frame)?;
+        let src = self
+            .output_texture
+            .as_ref()
+            .context("no output after render")?;
+
+        let owned = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("video_owned"),
+            size: wgpu::Extent3d {
+                width: src.width,
+                height: src.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("copy_to_owned"),
+            });
+        encoder.copy_texture_to_texture(
+            src.texture.as_image_copy(),
+            owned.as_image_copy(),
+            wgpu::Extent3d {
+                width: src.width,
+                height: src.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(iter::once(encoder.finish()));
+
+        Ok(owned)
+    }
+
     /// Returns the current output texture view, if any frame has been rendered.
     pub fn output_view(&self) -> Option<&wgpu::TextureView> {
         self.output_texture.as_ref().map(|t| &t.view)
