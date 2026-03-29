@@ -16,6 +16,7 @@ pub mod pipeline;
 pub mod playout;
 mod processing;
 pub mod publish;
+pub mod source_spec;
 pub mod stats;
 pub mod subscribe;
 pub mod sync;
