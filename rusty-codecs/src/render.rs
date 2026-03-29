@@ -62,6 +62,8 @@ pub struct WgpuVideoRenderer {
     metal_failures: u32,
     /// Which render path was used for the last frame.
     last_render_path: RenderPath,
+    /// Cached output texture for [`render_cached`](Self::render_cached).
+    cached_output: Option<CachedOutput>,
 }
 
 /// Describes which render path was used for the last frame.
@@ -112,6 +114,35 @@ struct Nv12PlaneTextures {
     bind_group: wgpu::BindGroup,
     width: u32,
     height: u32,
+}
+
+/// Standalone RGBA texture with its view and sampler, cached across frames.
+///
+/// Returned by [`WgpuVideoRenderer::render_cached`]. The texture is recreated
+/// only when the video resolution changes, so callers can hold a reference
+/// across frames without per-frame allocation.
+#[cfg(feature = "wgpu")]
+pub struct CachedOutput {
+    /// The RGBA texture (format: [`wgpu::TextureFormat::Rgba8UnormSrgb`]).
+    pub texture: wgpu::Texture,
+    /// A default view into `texture`.
+    pub view: wgpu::TextureView,
+    /// A linear-filtering sampler suitable for displaying the texture.
+    pub sampler: wgpu::Sampler,
+    /// Texture width in pixels.
+    pub width: u32,
+    /// Texture height in pixels.
+    pub height: u32,
+}
+
+#[cfg(feature = "wgpu")]
+impl fmt::Debug for CachedOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CachedOutput")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(feature = "wgpu")]
@@ -222,6 +253,7 @@ impl WgpuVideoRenderer {
             #[cfg(all(target_os = "macos", feature = "metal-import"))]
             metal_failures: 0,
             last_render_path: RenderPath::None,
+            cached_output: None,
         }
     }
 
@@ -530,54 +562,81 @@ impl WgpuVideoRenderer {
             .view)
     }
 
-    /// Renders a frame and returns a standalone RGBA texture.
+    /// Renders a frame into a cached RGBA texture that persists across calls.
     ///
-    /// Unlike [`render`](Self::render), which returns a borrowed view into the
-    /// renderer's internal texture (overwritten on the next call), this method
-    /// creates a fresh `wgpu::Texture` and GPU-copies the result into it. The
-    /// caller owns the texture and can hold it across frames.
+    /// Unlike [`render`](Self::render), which returns a borrowed view into an
+    /// internal texture that is overwritten on the next call, this method
+    /// maintains a separate [`CachedOutput`] texture and GPU-copies each
+    /// rendered frame into it. The cached texture is only recreated when the
+    /// video resolution changes, so there is no per-frame allocation.
     ///
-    /// The returned texture has format [`wgpu::TextureFormat::Rgba8UnormSrgb`]
-    /// with `TEXTURE_BINDING | COPY_DST` usage.
-    pub fn render_to_owned_texture(&mut self, frame: &VideoFrame) -> Result<wgpu::Texture> {
+    /// The returned [`CachedOutput`] contains the texture, a default view,
+    /// and a linear-filtering sampler, ready for use in external renderers
+    /// (e.g., Bevy, wgpu-based compositors).
+    pub fn render_cached(&mut self, frame: &VideoFrame) -> Result<&CachedOutput> {
         self.render(frame)?;
         let src = self
             .output_texture
             .as_ref()
             .context("no output after render")?;
 
-        let owned = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("video_owned"),
-            size: wgpu::Extent3d {
-                width: src.width,
-                height: src.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        let (w, h) = (src.width, src.height);
 
+        // Recreate the cached output when dimensions change.
+        let needs_recreate = self
+            .cached_output
+            .as_ref()
+            .is_none_or(|c| c.width != w || c.height != h);
+        if needs_recreate {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("video_cached"),
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("video_cached_sampler"),
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            });
+            self.cached_output = Some(CachedOutput {
+                texture,
+                view,
+                sampler,
+                width: w,
+                height: h,
+            });
+        }
+
+        // GPU-copy from the internal output texture to the cached texture.
+        let cached = self.cached_output.as_ref().unwrap();
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("copy_to_owned"),
+                label: Some("copy_to_cached"),
             });
         encoder.copy_texture_to_texture(
             src.texture.as_image_copy(),
-            owned.as_image_copy(),
+            cached.texture.as_image_copy(),
             wgpu::Extent3d {
-                width: src.width,
-                height: src.height,
+                width: w,
+                height: h,
                 depth_or_array_layers: 1,
             },
         );
         self.queue.submit(iter::once(encoder.finish()));
 
-        Ok(owned)
+        Ok(self.cached_output.as_ref().unwrap())
     }
 
     /// Returns the current output texture view, if any frame has been rendered.
