@@ -23,13 +23,10 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 
 // ── Helpers ────────────────────────────────────────────────────────
 
-/// Creates a broadcast and consumer pair, yielding to let the broadcast's
-/// background task register its dynamic producer (required for subscribe_track).
-async fn setup_broadcast() -> (LocalBroadcast, moq_lite::BroadcastConsumer) {
+/// Creates a broadcast and consumer pair. The consumer is immediately usable
+/// because `LocalBroadcast::new()` registers its dynamic producer synchronously.
+fn setup_broadcast() -> (LocalBroadcast, moq_lite::BroadcastConsumer) {
     let broadcast = LocalBroadcast::new();
-    // The broadcast's background task must call `producer.dynamic()` before
-    // any subscriber can subscribe_track. Yield to give it a chance to run.
-    tokio::task::yield_now().await;
     let consumer = broadcast.consume();
     (broadcast, consumer)
 }
@@ -40,7 +37,7 @@ async fn publish_and_subscribe(
     codec: VideoCodec,
     preset: VideoPreset,
 ) -> (LocalBroadcast, RemoteBroadcast) {
-    let (broadcast, consumer) = setup_broadcast().await;
+    let (broadcast, consumer) = setup_broadcast();
     let (w, h) = preset.dimensions();
     broadcast
         .video()
@@ -122,7 +119,7 @@ async fn catalog_lists_published_renditions() {
 #[cfg(feature = "h264")]
 #[tokio::test]
 async fn multiple_renditions_subscriber_selects_each() {
-    let (broadcast, consumer) = setup_broadcast().await;
+    let (broadcast, consumer) = setup_broadcast();
     broadcast
         .video()
         .set(VideoInput::new(
@@ -170,7 +167,7 @@ async fn multiple_renditions_subscriber_selects_each() {
 #[cfg(feature = "h264")]
 #[tokio::test]
 async fn multiple_renditions_have_distinct_dimensions() {
-    let (broadcast, consumer) = setup_broadcast().await;
+    let (broadcast, consumer) = setup_broadcast();
     broadcast
         .video()
         .set(VideoInput::new(
@@ -285,7 +282,7 @@ async fn publisher_replace_triggers_catalog_update() {
 #[cfg(all(feature = "h264", feature = "opus"))]
 #[tokio::test]
 async fn audio_and_video_roundtrip() {
-    let (broadcast, consumer) = setup_broadcast().await;
+    let (broadcast, consumer) = setup_broadcast();
     broadcast
         .video()
         .set(VideoInput::new(
@@ -406,7 +403,7 @@ async fn clear_video_updates_catalog() {
 #[cfg(feature = "h264")]
 #[tokio::test]
 async fn two_subscribers_receive_frames() {
-    let (broadcast, consumer1) = setup_broadcast().await;
+    let (broadcast, consumer1) = setup_broadcast();
     let consumer2 = broadcast.consume();
     let (w, h) = VideoPreset::P180.dimensions();
     broadcast
@@ -448,7 +445,7 @@ async fn two_subscribers_receive_frames() {
 #[cfg(feature = "h264")]
 #[tokio::test]
 async fn publisher_resolution_change_updates_subscriber() {
-    let (broadcast, consumer) = setup_broadcast().await;
+    let (broadcast, consumer) = setup_broadcast();
     broadcast
         .video()
         .set(VideoInput::new(
@@ -511,7 +508,7 @@ async fn publisher_resolution_change_updates_subscriber() {
 #[cfg(all(feature = "h264", feature = "opus"))]
 #[tokio::test]
 async fn audio_clear_while_video_continues() {
-    let (broadcast, consumer) = setup_broadcast().await;
+    let (broadcast, consumer) = setup_broadcast();
     broadcast
         .video()
         .set(VideoInput::new(
@@ -573,7 +570,7 @@ async fn audio_clear_while_video_continues() {
 #[cfg(feature = "h264")]
 #[tokio::test]
 async fn rapid_republish_does_not_panic() {
-    let (broadcast, consumer) = setup_broadcast().await;
+    let (broadcast, consumer) = setup_broadcast();
 
     // Rapid-fire video replacements
     for _ in 0..5 {
@@ -606,7 +603,7 @@ async fn rapid_republish_does_not_panic() {
 #[cfg(all(feature = "h264", feature = "opus"))]
 #[tokio::test]
 async fn audio_replace_source_subscriber_still_receives() {
-    let (broadcast, consumer) = setup_broadcast().await;
+    let (broadcast, consumer) = setup_broadcast();
     broadcast
         .video()
         .set(VideoInput::new(
@@ -671,7 +668,7 @@ async fn audio_replace_source_subscriber_still_receives() {
 #[cfg(all(feature = "h264", feature = "opus"))]
 #[tokio::test]
 async fn audio_clear_and_readd_works() {
-    let (broadcast, consumer) = setup_broadcast().await;
+    let (broadcast, consumer) = setup_broadcast();
     broadcast
         .video()
         .set(VideoInput::new(
@@ -742,7 +739,7 @@ async fn audio_clear_and_readd_works() {
 #[cfg(all(feature = "h264", feature = "opus"))]
 #[tokio::test]
 async fn video_source_switch_preserves_audio() {
-    let (broadcast, consumer) = setup_broadcast().await;
+    let (broadcast, consumer) = setup_broadcast();
     broadcast
         .video()
         .set(VideoInput::new(
@@ -808,7 +805,7 @@ async fn video_source_switch_preserves_audio() {
 #[cfg(all(feature = "h264", feature = "opus"))]
 #[tokio::test]
 async fn active_tracks_close_and_can_be_resubscribed_after_republish() {
-    let (broadcast, consumer) = setup_broadcast().await;
+    let (broadcast, consumer) = setup_broadcast();
     broadcast
         .video()
         .set(VideoInput::new(
@@ -889,7 +886,7 @@ async fn active_tracks_close_and_can_be_resubscribed_after_republish() {
 #[cfg(all(feature = "h264", feature = "opus"))]
 #[tokio::test]
 async fn rapid_audio_switches_do_not_panic() {
-    let (broadcast, consumer) = setup_broadcast().await;
+    let (broadcast, consumer) = setup_broadcast();
     broadcast
         .video()
         .set(VideoInput::new(
@@ -949,7 +946,7 @@ async fn rapid_audio_switches_do_not_panic() {
 #[cfg(all(feature = "h264", feature = "opus"))]
 #[tokio::test]
 async fn audio_data_flows_through_pipeline() {
-    let (broadcast, consumer) = setup_broadcast().await;
+    let (broadcast, consumer) = setup_broadcast();
 
     // Publish with a sine wave source instead of silence.
     broadcast
@@ -1036,7 +1033,6 @@ async fn remote_broadcast_name_matches_constructor_arg() {
 #[tokio::test]
 async fn remote_broadcast_empty_has_no_media() {
     let broadcast = LocalBroadcast::new();
-    tokio::task::yield_now().await;
     let consumer = broadcast.consume();
 
     // An empty broadcast still publishes a catalog (with no renditions).
@@ -1054,7 +1050,6 @@ async fn remote_broadcast_empty_has_no_media() {
 #[tokio::test]
 async fn remote_broadcast_video_appears_after_publish() {
     let broadcast = LocalBroadcast::new();
-    tokio::task::yield_now().await;
     let consumer = broadcast.consume();
 
     let remote =
@@ -1136,7 +1131,7 @@ async fn video_track_current_frame_returns_none_initially() {
 #[cfg(all(feature = "h264", feature = "opus"))]
 #[tokio::test]
 async fn audio_track_rendition_name_contains_codec() {
-    let (broadcast, consumer) = setup_broadcast().await;
+    let (broadcast, consumer) = setup_broadcast();
     broadcast
         .video()
         .set(VideoInput::new(
@@ -1170,7 +1165,7 @@ async fn audio_track_rendition_name_contains_codec() {
 #[cfg(all(feature = "h264", feature = "opus"))]
 #[tokio::test]
 async fn audio_track_handle_pause_resume() {
-    let (broadcast, consumer) = setup_broadcast().await;
+    let (broadcast, consumer) = setup_broadcast();
     broadcast
         .video()
         .set(VideoInput::new(
@@ -1324,7 +1319,7 @@ async fn audio_decoder_pipeline_stops_when_source_closes() {
 #[cfg(feature = "opus")]
 #[tokio::test]
 async fn parallel_audio_renditions_produce_independent_output() {
-    let (broadcast, consumer) = setup_broadcast().await;
+    let (broadcast, consumer) = setup_broadcast();
 
     // Publish video (needed for catalog propagation).
     broadcast
@@ -1539,7 +1534,7 @@ async fn av_sync_beep_flash_correlation() {
 
     use moq_media::test_util::TimestampingAudioBackend;
 
-    let (broadcast, consumer) = setup_broadcast().await;
+    let (broadcast, consumer) = setup_broadcast();
 
     // Publish video: test pattern with yellow flash indicator.
     broadcast

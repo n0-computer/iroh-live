@@ -198,7 +198,6 @@ async fn iroh_publish_iroh_subscribe() {
         .with_router()
         .spawn();
     let broadcast = moq_media::publish::LocalBroadcast::new();
-    tokio::task::yield_now().await;
     let source = moq_media::test_util::TestVideoSource::new(320, 240).with_fps(30.0);
     broadcast
         .video()
@@ -380,7 +379,6 @@ async fn pull_remote_broadcast_via_ticket() {
         .with_router()
         .spawn();
     let broadcast = moq_media::publish::LocalBroadcast::new();
-    tokio::task::yield_now().await;
     let source = moq_media::test_util::TestVideoSource::new(320, 240).with_fps(30.0);
     broadcast
         .video()
@@ -507,7 +505,6 @@ async fn iroh_publish_noq_subscribe() {
         .with_router()
         .spawn();
     let broadcast = moq_media::publish::LocalBroadcast::new();
-    tokio::task::yield_now().await;
     let source = moq_media::test_util::TestVideoSource::new(320, 240).with_fps(30.0);
     broadcast
         .video()

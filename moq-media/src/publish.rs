@@ -225,6 +225,9 @@ impl Default for LocalBroadcast {
 
 impl LocalBroadcast {
     /// Creates a new empty broadcast with no video or audio tracks.
+    ///
+    /// The consumer returned by [`consume`](Self::consume) is immediately
+    /// usable: callers do not need to yield before subscribing to tracks.
     pub fn new() -> Self {
         let mut producer = BroadcastProducer::default();
         let catalog = CatalogProducer::new(&mut producer).expect("not closed");
@@ -234,7 +237,14 @@ impl LocalBroadcast {
         let mut state = State::new(catalog);
         state.stats = Some(stats.encode.clone());
         let state = Arc::new(Mutex::new(state));
-        let task_handle = tokio::spawn(Self::run(state.clone(), producer.clone()));
+
+        // Register the dynamic handler *before* spawning the background task.
+        // BroadcastDynamic::new() increments the producer's `dynamic` counter
+        // synchronously, which signals to consumers that unknown tracks will be
+        // fulfilled on demand. Without this, subscribe_track returns NotFound
+        // until the spawned task runs, forcing callers to yield_now().
+        let dynamic = producer.dynamic();
+        let task_handle = tokio::spawn(Self::run_dynamic(state.clone(), dynamic));
 
         Self {
             producer,
@@ -315,10 +325,9 @@ impl LocalBroadcast {
         self.producer.consume()
     }
 
-    async fn run(state: Arc<Mutex<State>>, producer: BroadcastProducer) {
-        let mut producer = producer.dynamic();
+    async fn run_dynamic(state: Arc<Mutex<State>>, mut dynamic: moq_lite::BroadcastDynamic) {
         loop {
-            let track = match producer.requested_track().await {
+            let track = match dynamic.requested_track().await {
                 Ok(track) => track,
                 Err(err) => {
                     debug!("broadcast producer: closed ({err:#})");

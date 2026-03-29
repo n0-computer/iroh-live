@@ -346,7 +346,6 @@ async fn call_dial_accept() {
     let caller_live = Live::builder(caller_ep.clone()).with_router().spawn();
 
     let caller_broadcast = LocalBroadcast::new();
-    tokio::task::yield_now().await;
     let source = TestVideoSource::new(320, 240).with_fps(30.0);
     caller_broadcast
         .video()
@@ -362,7 +361,6 @@ async fn call_dial_accept() {
     let callee_live = Live::builder(callee_ep.clone()).with_router().spawn();
 
     let callee_broadcast = LocalBroadcast::new();
-    tokio::task::yield_now().await;
     let source = TestVideoSource::new(320, 240).with_fps(30.0);
     callee_broadcast
         .video()
