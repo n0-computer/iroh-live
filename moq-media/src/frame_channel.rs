@@ -92,6 +92,11 @@ impl<T> FrameReceiver<T> {
         self.inner.value.lock().expect("poisoned").take()
     }
 
+    /// Returns `true` if a value is available without consuming it.
+    pub fn has_value(&self) -> bool {
+        self.inner.value.lock().expect("poisoned").is_some()
+    }
+
     /// Returns `true` if the sender has been dropped.
     pub fn is_closed(&self) -> bool {
         self.inner.closed.load(Ordering::Acquire)
