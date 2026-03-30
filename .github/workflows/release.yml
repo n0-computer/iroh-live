@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    branches: [dev]  # TODO: change to main after merge
+    branches: [dev] # TODO: change to main after merge
 
 env:
   CARGO_TERM_COLOR: always
@@ -39,7 +39,6 @@ jobs:
 
           ### Platform notes
           - **linux-amd64**: Ubuntu 24.04, glibc 2.39
-          - **linux-aarch64**: Ubuntu 24.04 ARM, glibc 2.39
           - **macos-aarch64**: macOS 14, Apple Silicon
 
           ### Included features
@@ -63,9 +62,10 @@ jobs:
           - name: linux-amd64
             os: ubuntu-latest
             artifact: irl-linux-amd64
-          - name: linux-aarch64
-            os: ubuntu-latest-arm
-            artifact: irl-linux-aarch64
+          # TODO: Seems we can't get these runners atm.
+          # - name: linux-aarch64
+          #   os: ubuntu-latest-arm
+          #   artifact: irl-linux-aarch64
           - name: macos-aarch64
             os: macos-14
             artifact: irl-macos-aarch64
