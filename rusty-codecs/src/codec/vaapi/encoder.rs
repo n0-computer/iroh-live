@@ -365,8 +365,8 @@ const DRM_FORMAT_NV12: u32 = u32::from_le_bytes(*b"NV12");
 ///
 /// Not included in cros-libva's generated bindings.
 #[repr(C)]
-struct VaProcPipelineParameterBuffer {
-    surface: va::VASurfaceID,
+pub(crate) struct VaProcPipelineParameterBuffer {
+    pub(crate) surface: va::VASurfaceID,
     surface_region: *const va::VARectangle,
     surface_color_standard: u32,
     output_region: *const va::VARectangle,
@@ -391,7 +391,7 @@ struct VaProcPipelineParameterBuffer {
 }
 
 /// Checks a VAStatus and returns an error on failure.
-fn vpp_va_check(status: va::VAStatus, op: &str) -> Result<()> {
+pub(crate) fn vpp_va_check(status: va::VAStatus, op: &str) -> Result<()> {
     if status != va::VA_STATUS_SUCCESS as i32 {
         Err(anyhow::anyhow!("{op} failed: VA status {status}"))
     } else {
@@ -769,6 +769,12 @@ pub struct VaapiEncoder {
     vpp: Option<VppColorConverter>,
     /// Set when VPP init or conversion fails — prevents re-init every frame.
     vpp_disabled: bool,
+    /// VPP hardware scaler for NV12 DMA-BUF frames that need resizing.
+    /// Lazily initialized on first NV12 DMA-BUF with dimension mismatch.
+    #[debug(skip)]
+    vpp_scaler: Option<super::VppScaler>,
+    /// Set when VPP scaler init fails — prevents re-init every frame.
+    vpp_scaler_disabled: bool,
 }
 
 /// Computes the H.264 level that minimizes decoder DPB buffering.
@@ -970,6 +976,8 @@ impl VaapiEncoder {
             logged_frame_path: false,
             vpp: None,
             vpp_disabled: false,
+            vpp_scaler: None,
+            vpp_scaler_disabled: false,
         })
     }
 
@@ -1048,6 +1056,73 @@ impl VaapiEncoder {
                 tracing::warn!(
                     error = %e,
                     "VAAPI encode: VPP convert failed, falling back to CPU NV12 upload"
+                );
+                self.logged_frame_path = true;
+                self.build_nv12_input(frame)
+            }
+        }
+    }
+
+    /// Attempts VPP hardware scaling for NV12 DMA-BUF frames whose
+    /// dimensions don't match the encoder target. Falls back to CPU
+    /// scaling if VPP is unavailable or fails.
+    fn vpp_scale_or_cpu(&mut self, info: DmaBufInfo, frame: VideoFrame) -> Result<VaapiInputFrame> {
+        if self.vpp_scaler_disabled {
+            return self.build_nv12_input(frame);
+        }
+
+        // Lazy-init or recreate if dimensions changed.
+        let need_init = match &self.vpp_scaler {
+            Some(s) => {
+                s.src_dims() != (info.coded_width, info.coded_height)
+                    || s.dst_dims() != (self.width, self.height)
+            }
+            None => true,
+        };
+
+        if need_init {
+            match super::VppScaler::new(
+                info.coded_width,
+                info.coded_height,
+                self.width,
+                self.height,
+            ) {
+                Ok(scaler) => self.vpp_scaler = Some(scaler),
+                Err(e) => {
+                    self.vpp_scaler_disabled = true;
+                    tracing::info!(
+                        src_w = info.coded_width,
+                        src_h = info.coded_height,
+                        dst_w = self.width,
+                        dst_h = self.height,
+                        error = %e,
+                        "VAAPI encode: VPP scaler init failed, using CPU scaling"
+                    );
+                    self.logged_frame_path = true;
+                    return self.build_nv12_input(frame);
+                }
+            }
+        }
+
+        let scaler = self.vpp_scaler.as_ref().unwrap();
+        match scaler.scale(&info) {
+            Ok(scaled_info) => {
+                if !self.logged_frame_path {
+                    tracing::info!(
+                        src = format_args!("{}x{}", info.coded_width, info.coded_height),
+                        dst = format_args!("{}x{}", self.width, self.height),
+                        "VAAPI encode: VPP hardware scale (NV12 → NV12)"
+                    );
+                    self.logged_frame_path = true;
+                }
+                Ok(VaapiInputFrame::DmaBuf(scaled_info))
+            }
+            Err(e) => {
+                self.vpp_scaler_disabled = true;
+                self.vpp_scaler = None;
+                tracing::warn!(
+                    error = %e,
+                    "VAAPI encode: VPP scale failed, falling back to CPU scaling"
                 );
                 self.logged_frame_path = true;
                 self.build_nv12_input(frame)
@@ -1206,8 +1281,11 @@ impl VideoEncoder for VaapiEncoder {
                     self.logged_frame_path = true;
                 }
                 VaapiInputFrame::DmaBuf(info)
+            } else if info.drm_format == NV12_FOURCC && info.planes.len() <= 4 {
+                // NV12 but dimensions don't match — try VPP hardware scaling.
+                self.vpp_scale_or_cpu(info, frame)?
             } else {
-                // Non-NV12 or dimension mismatch — try VPP GPU conversion.
+                // Non-NV12 — try VPP GPU color conversion (includes scaling).
                 self.vpp_convert_or_cpu(info, frame)?
             }
         } else {
