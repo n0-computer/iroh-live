@@ -119,7 +119,7 @@ description = "Full CI-equivalent test suite: check-all, tests, browser E2E"
 workspace = false
 dependencies = ["check-all", "test", "test-e2e"]
 
-# ── Cross-compilation (aarch64) ──────────────────────────────────────
+# ── Cross-compilation (aarch64, Docker via cross-rs) ─────────────────
 
 [tasks.cross-check-aarch64]
 description = "Cross-check workspace for aarch64"
@@ -138,3 +138,49 @@ description = "Cross-build pi-zero demo for aarch64"
 workspace = false
 command = "cross"
 args = ["build", "--release", "--target", "aarch64-unknown-linux-gnu", "-p", "pi-zero-demo", "--features", "raspberry-pi"]
+
+# ── Cross-compilation (aarch64, zigbuild + sysroot) ──────────────────
+# Requires: zig, cargo-zigbuild, sysroot (run `./cross/create-sysroot.sh`)
+# These targets use a Debian Bookworm sysroot instead of Docker, giving
+# access to libcamera-dev, modern PipeWire, and other libraries not
+# available in the cross-rs Ubuntu 20.04 base image.
+
+[tasks.zig-create-sysroot]
+description = "Create aarch64 Debian Bookworm sysroot for zigbuild"
+workspace = false
+script = ["${CARGO_MAKE_WORKING_DIRECTORY}/cross/create-sysroot.sh"]
+
+[tasks.zig-check-aarch64]
+description = "Cross-check workspace for aarch64 via zigbuild"
+workspace = false
+script = [
+    "${CARGO_MAKE_WORKING_DIRECTORY}/cross/zigbuild.sh --workspace --exclude bevy-demo --exclude bevy-call --exclude gpu-debug"
+]
+
+[tasks.zig-build-irl]
+description = "Cross-build irl CLI for aarch64 via zigbuild"
+workspace = false
+script = [
+    "${CARGO_MAKE_WORKING_DIRECTORY}/cross/zigbuild.sh -p iroh-live-cli --release"
+]
+
+[tasks.zig-build-pi-zero]
+description = "Cross-build pi-zero demo for aarch64 via zigbuild"
+workspace = false
+script = [
+    "${CARGO_MAKE_WORKING_DIRECTORY}/cross/zigbuild.sh -p pi-zero-demo --release"
+]
+
+[tasks.zig-deploy-pi-zero]
+description = "Cross-build and deploy pi-zero demo via zigbuild"
+workspace = false
+env = { PI_HOST = { value = "livepizero", condition = { env_not_set = ["PI_HOST"] } } }
+script = [
+    '''
+    ${CARGO_MAKE_WORKING_DIRECTORY}/cross/zigbuild.sh -p pi-zero-demo --release
+    BINARY="target/aarch64-unknown-linux-gnu/release/pi-zero-demo"
+    aarch64-linux-gnu-strip "$BINARY" 2>/dev/null || echo "note: strip not available, deploying unstripped"
+    scp "$BINARY" "pi@${PI_HOST}:~/pi-zero-demo"
+    echo "deployed: pi@${PI_HOST}:~/pi-zero-demo"
+    '''
+]

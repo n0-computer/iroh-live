@@ -1,0 +1,114 @@
+name: CI (aarch64, zigbuild)
+
+# Docker-free aarch64 cross-compilation using cargo-zigbuild with a Debian
+# Bookworm sysroot. Unlike the cross-rs Docker approach, this gives us access
+# to modern libraries (libcamera-dev, PipeWire 0.3, etc.) that aren't
+# available in Ubuntu 20.04.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  zigbuild:
+    name: aarch64 zigbuild
+    runs-on: [self-hosted, linux, X64]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Install zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild
+
+      - name: Install cross-compilation toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            mmdebstrap \
+            qemu-user-static
+
+      - name: Cache sysroot
+        id: cache-sysroot
+        uses: actions/cache@v4
+        with:
+          path: cross/sysroot-aarch64
+          # Bust the cache when the sysroot script or this workflow changes.
+          key: sysroot-bookworm-aarch64-${{ hashFiles('cross/create-sysroot.sh') }}
+
+      - name: Create sysroot
+        if: steps.cache-sysroot.outputs.cache-hit != 'true'
+        run: ./cross/create-sysroot.sh
+
+      # Check all default workspace members.
+      - name: Zigbuild check (default features)
+        run: |
+          ./cross/zigbuild.sh \
+            -p iroh-live \
+            -p iroh-moq \
+            -p moq-media \
+            -p moq-media-egui \
+            -p moq-media-android \
+            -p rusty-codecs \
+            -p rusty-capture \
+            -p iroh-live-cli \
+            -p iroh-live-relay \
+            -p headless-demo \
+            -p opengl-viewer \
+            -p pi-zero-demo
+
+      # Extended features that need the Bookworm sysroot.
+      - name: Zigbuild check (extended features)
+        run: |
+          ./cross/zigbuild.sh \
+            -p rusty-codecs --features "vaapi,v4l2,wgpu,raspberry-pi"
+
+      - name: Zigbuild check (V4L2 + PipeWire capture)
+        run: |
+          ./cross/zigbuild.sh \
+            -p rusty-capture --features "v4l2,pipewire"
+
+      # Build release binaries.
+      - name: Build irl CLI (release)
+        run: ./cross/zigbuild.sh -p iroh-live-cli --release
+
+      - name: Build pi-zero demo (release)
+        run: ./cross/zigbuild.sh -p pi-zero-demo --release
+
+      - name: Strip binaries
+        run: |
+          aarch64-linux-gnu-strip target/aarch64-unknown-linux-gnu/release/irl || true
+          aarch64-linux-gnu-strip target/aarch64-unknown-linux-gnu/release/pi-zero-demo || true
+
+      - name: Upload irl binary to rolling release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp target/aarch64-unknown-linux-gnu/release/irl irl-linux-aarch64
+          chmod +x irl-linux-aarch64
+          gh release upload rolling-release irl-linux-aarch64 --clobber || true
+
+      - name: Upload pi-zero binary to rolling release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp target/aarch64-unknown-linux-gnu/release/pi-zero-demo pi-zero-demo-linux-aarch64
+          chmod +x pi-zero-demo-linux-aarch64
+          gh release upload rolling-release pi-zero-demo-linux-aarch64 --clobber || true
