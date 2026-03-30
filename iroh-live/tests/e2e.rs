@@ -7,9 +7,9 @@
 //! workspace feature unification can activate hardware codec features (V4L2,
 //! VAAPI) from other crates, and hardware encoders fail when no device exists.
 
-use std::time::Duration;
+use std::{sync::OnceLock, time::Duration};
 
-use iroh::Endpoint;
+use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets};
 use iroh_live::{Call, Live};
 use moq_media::{
     adaptive::AdaptiveConfig,
@@ -31,12 +31,16 @@ const FRAME_TIMEOUT: Duration = Duration::from_secs(30);
 /// hardware-codec features workspace unification activates.
 const TEST_VIDEO_CODEC: VideoCodec = VideoCodec::H264;
 
-/// Creates an endpoint bound to localhost with a random secret key.
 async fn endpoint() -> Endpoint {
-    Endpoint::builder(iroh::endpoint::presets::N0)
+    static LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
+    let lookup = LOOKUP.get_or_init(MemoryLookup::new);
+    let endpoint = Endpoint::builder(presets::Minimal)
+        .address_lookup(lookup.clone())
         .bind()
         .await
-        .expect("failed to bind endpoint")
+        .expect("failed to bind endpoint");
+    lookup.add_endpoint_info(endpoint.addr());
+    endpoint
 }
 
 /// Publishes video over one Live node and subscribes from another,

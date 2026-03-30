@@ -5,9 +5,9 @@
 //! Every test caught zero regressions before the postcard serialization
 //! bug that broke rooms entirely — that gap must not reopen.
 
-use std::time::Duration;
+use std::{sync::OnceLock, time::Duration};
 
-use iroh::Endpoint;
+use iroh::{Endpoint, address_lookup::MemoryLookup};
 use iroh_live::{
     Live,
     rooms::{Room, RoomEvent, RoomTicket},
@@ -33,10 +33,15 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 const TEST_VIDEO_CODEC: VideoCodec = VideoCodec::H264;
 
 async fn endpoint() -> Endpoint {
-    Endpoint::builder(iroh::endpoint::presets::N0)
+    static LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
+    let lookup = LOOKUP.get_or_init(MemoryLookup::new);
+    let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .address_lookup(lookup.clone())
         .bind()
         .await
-        .expect("failed to bind endpoint")
+        .expect("failed to bind endpoint");
+    lookup.add_endpoint_info(endpoint.addr());
+    endpoint
 }
 
 /// Creates a `Live` instance with router + gossip enabled.
