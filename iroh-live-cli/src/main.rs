@@ -17,6 +17,7 @@ mod record;
 mod relay;
 #[cfg(feature = "wgpu")]
 mod room;
+mod run;
 mod source;
 mod transport;
 #[cfg(feature = "wgpu")]
@@ -52,6 +53,8 @@ enum Command {
     Room(args::RoomArgs),
     /// Start a local relay server for browser WebTransport bridging.
     Relay(relay::RelayConfig),
+    /// Run a multi-stream session from a TOML config file.
+    Run(args::RunArgs),
 }
 
 fn main() -> n0_error::Result {
@@ -77,5 +80,6 @@ fn main() -> n0_error::Result {
         #[cfg(feature = "wgpu")]
         Command::Room(args) => room::run(args, &rt),
         Command::Relay(args) => relay::run(args, &rt),
+        Command::Run(args) => run::run(args, &rt),
     }
 }
