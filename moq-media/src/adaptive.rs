@@ -358,15 +358,15 @@ impl AdaptiveVideoTrack {
     }
 
     /// Returns the most recent decoded frame, draining any older buffered frames.
-    pub fn current_frame(&mut self) -> Option<VideoFrame> {
+    pub fn try_recv(&mut self) -> Option<VideoFrame> {
         self.check_swap();
-        self.current.current_frame()
+        self.current.try_recv()
     }
 
     /// Returns the next decoded frame, waiting if none is buffered.
     pub async fn next_frame(&mut self) -> Option<VideoFrame> {
         self.check_swap();
-        if let Some(frame) = self.current.current_frame() {
+        if let Some(frame) = self.current.try_recv() {
             return Some(frame);
         }
         // Race: wait for a frame from current track OR a swap notification.
@@ -378,7 +378,7 @@ impl AdaptiveVideoTrack {
                         Some(track) => {
                             self.current = track;
                             // Try to get a frame from the new track immediately.
-                            if let Some(frame) = self.current.current_frame() {
+                            if let Some(frame) = self.current.try_recv() {
                                 return Some(frame);
                             }
                             // Otherwise continue the loop waiting on the new track.
@@ -431,7 +431,7 @@ impl VideoSource for AdaptiveVideoTrack {
     }
 
     fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {
-        Ok(self.current_frame())
+        Ok(self.try_recv())
     }
 
     fn start(&mut self) -> Result<()> {

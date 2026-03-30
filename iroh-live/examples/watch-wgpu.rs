@@ -418,7 +418,7 @@ impl ApplicationHandler for WgpuApp {
             }
             WindowEvent::RedrawRequested => {
                 // Poll for a new decoded frame.
-                let frame = self.video_track.current_frame();
+                let frame = self.video_track.try_recv();
 
                 // Check if this is a genuinely new frame.
                 let is_new = frame

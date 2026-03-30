@@ -30,7 +30,7 @@ Subscribe to a remote broadcast:
 ```rust
 let (_session, remote) = live.subscribe(remote_addr, "my-stream").await?;
 let video = remote.video()?;
-// video.current_frame() returns the latest decoded VideoFrame
+// video.try_recv() returns the latest decoded VideoFrame
 ```
 
 ## Feature flags

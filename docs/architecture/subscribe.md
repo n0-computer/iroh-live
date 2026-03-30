@@ -75,7 +75,7 @@ Construction follows this path:
    channel.
 
 The output channel is stable across the lifetime of the `VideoTrack`.
-Callers receive frames via `current_frame()` (drain-to-latest, for
+Callers receive frames via `try_recv()` (drain-to-latest, for
 rendering) or the underlying receiver.
 
 ## AudioTrack

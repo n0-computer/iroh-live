@@ -35,7 +35,7 @@ use moq_media::subscribe::RemoteBroadcast;
 
 let remote = RemoteBroadcast::new("my-stream", consumer).await?;
 let video = remote.video()?;
-// video.current_frame() returns the latest decoded VideoFrame
+// video.try_recv() returns the latest decoded VideoFrame
 ```
 
 `AdaptiveVideoTrack` wraps a `VideoTrack` and switches renditions automatically based on `NetworkSignals` (bandwidth, loss, RTT). The switching uses WebRTC-aligned thresholds: below 2% loss is good, above 10% triggers a downgrade, and above 20% drops to the lowest rendition.

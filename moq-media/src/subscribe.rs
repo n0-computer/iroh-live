@@ -888,7 +888,7 @@ impl AudioTrack {
 
 /// Decoded video track from a remote broadcast.
 ///
-/// Produces [`VideoFrame`]s via [`current_frame`](Self::current_frame) (non-blocking)
+/// Produces [`VideoFrame`]s via [`try_recv`](Self::try_recv) (non-blocking)
 /// or [`next_frame`](Self::next_frame) (async). Can also wrap a raw [`VideoSource`]
 /// for local preview.
 #[derive(derive_more::Debug)]
@@ -1063,18 +1063,10 @@ impl VideoTrack {
         self.rx.is_closed()
     }
 
-    /// Returns the latest decoded frame, or `None` if no new frame
-    /// has arrived since the last call.
-    pub fn current_frame(&mut self) -> Option<VideoFrame> {
-        self.rx.take()
-    }
-
-    /// Non-blocking receive: returns the latest frame if one arrived since
-    /// the last call, or `None` otherwise.
+    /// Returns the latest decoded frame, draining any older buffered frames,
+    /// or `None` if no new frame has arrived since the last call.
     ///
-    /// Identical to [`current_frame`](Self::current_frame). Provided as an
-    /// ergonomic alias for game-loop and ECS integrations that conventionally
-    /// name their poll method `try_recv`.
+    /// Non-blocking: suitable for game loops, ECS ticks, and render callbacks.
     pub fn try_recv(&mut self) -> Option<VideoFrame> {
         self.rx.take()
     }

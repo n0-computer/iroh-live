@@ -266,7 +266,7 @@ impl VideoTrackView {
         }
 
         let mut frame_ts = None;
-        if let Some(frame) = self.track.current_frame() {
+        if let Some(frame) = self.track.try_recv() {
             frame_ts = Some(frame.timestamp);
             self.frame_view.render_frame(&frame);
         }
