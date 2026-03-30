@@ -259,7 +259,7 @@ pub fn setup_video(
 ) -> anyhow::Result<()> {
     for source in sources {
         match source {
-            VideoSourceSpec::None => {}
+            VideoSourceSpec::None | VideoSourceSpec::File { .. } => {}
             VideoSourceSpec::Test => {
                 let (w, h) = presets
                     .first()
@@ -302,7 +302,7 @@ pub async fn setup_audio(
 ) -> anyhow::Result<()> {
     for source in sources {
         match source {
-            AudioSourceSpec::None => {}
+            AudioSourceSpec::None | AudioSourceSpec::File { .. } => {}
             AudioSourceSpec::Test => {
                 let audio = TestToneSource::new();
                 broadcast.audio().set(audio, AudioCodec::Opus, [preset])?;

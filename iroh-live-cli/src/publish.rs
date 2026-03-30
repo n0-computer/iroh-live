@@ -1,6 +1,9 @@
-//! `irl publish` — publish capture or file over iroh.
+//! `irl publish` — publish capture or file sources over iroh.
 //!
-//! Subcommands: `capture` (default), `file`.
+//! Sources are specified via `--video` and `--audio` flags. Capture sources
+//! (cam, screen, test) go through the encode pipeline; file sources
+//! (`file:<path>`) go through the fmp4/avc3 import pipeline.
+//!
 //! Transport: serve by default, `--relay` pushes to relay, `--room` publishes
 //! into a room, `--no-serve` disables incoming connections.
 
@@ -8,24 +11,26 @@ use iroh_live::media::publish::LocalBroadcast;
 use moq_lite::BroadcastProducer;
 
 use crate::{
-    args::{PublishArgs, PublishInput},
+    args::PublishArgs,
     import::{init_import, open_input, run_import},
     transport::{publish_producer, setup_live},
 };
 
 pub fn run(args: PublishArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
-    match args.input {
-        Some(PublishInput::File(ref file_args)) => run_file_cmd(&args, file_args, rt),
-        Some(PublishInput::Capture(ref capture_args)) => run_capture_cmd(&args, capture_args, rt),
-        None => run_capture_cmd(&args, &crate::args::CaptureArgs::default(), rt),
+    let file_path = args
+        .capture
+        .file_video_source()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    if let Some(path) = file_path {
+        run_file(path, &args, rt)
+    } else {
+        run_capture(&args, rt)
     }
 }
 
-fn run_capture_cmd(
-    args: &PublishArgs,
-    capture: &crate::args::CaptureArgs,
-    rt: &tokio::runtime::Runtime,
-) -> n0_error::Result {
+fn run_capture(args: &PublishArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
+    let capture = &args.capture;
     let (live, broadcast, audio_ctx, _room) = rt.block_on(async {
         let video_sources = capture
             .video_sources()
@@ -73,19 +78,17 @@ fn run_capture_cmd(
     }
 }
 
-fn run_file_cmd(
+fn run_file(
+    path: std::path::PathBuf,
     args: &PublishArgs,
-    file_args: &crate::args::FileInputArgs,
     rt: &tokio::runtime::Runtime,
 ) -> n0_error::Result {
-    // Common setup: open input, init catalog, then publish.
-    // Publishing must happen after init so the catalog is available to subscribers.
     let (live, decoder, input, preview_consumer, _room) = rt.block_on(async {
-        let mut input = open_input(&file_args.file, file_args.transcode, file_args.format).await?;
+        let mut input = open_input(&Some(path), args.transcode, args.format).await?;
         let live = setup_live(!args.transport.no_serve).await?;
         let mut broadcast = BroadcastProducer::default();
         let preview_consumer = broadcast.consume();
-        let decoder = init_import(&mut broadcast, file_args.format, &mut input).await?;
+        let decoder = init_import(&mut broadcast, args.format, &mut input).await?;
         let room = publish_producer(&live, broadcast, &args.transport).await?;
         anyhow::Ok((live, decoder, input, preview_consumer, room))
     })?;

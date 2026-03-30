@@ -1,4 +1,4 @@
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{Args, ValueEnum};
 // Re-export shared source spec types from moq-media so callers that
 // already import from this module keep working.
 pub use iroh_live::media::source_spec::{AudioSourceSpec, BackendRef, DeviceRef, VideoSourceSpec};
@@ -43,10 +43,10 @@ pub struct TransportArgs {
 
 #[derive(Args, Debug)]
 pub struct CaptureArgs {
-    /// Video source: cam[:<backend>:<device>], screen[:<backend>:<device>], test, none.
+    /// Video source: cam[:<backend>:<device>], screen[:<backend>:<device>], file:<path>, test, none.
     ///
     /// Backend and device accept names or numeric indices from `irl devices`.
-    /// Examples: cam:0, cam:v4l2:1, screen:pw:0, screen:0.
+    /// Examples: cam:0, cam:v4l2:1, screen:pw:0, file:video.fmp4.
     /// When any --video is given, no default source is added.
     /// Multiple --video flags publish multiple sources.
     /// Without --video, defaults to first camera.
@@ -133,43 +133,60 @@ impl CaptureArgs {
     pub fn audio_preset_parsed(&self) -> anyhow::Result<AudioPreset> {
         AudioPreset::parse_or_list(&self.audio_preset)
     }
+
+    /// Returns the file path if exactly one `file:` video source is specified
+    /// and no capture video sources are present. Returns `None` for pure
+    /// capture mode.
+    pub fn file_video_source(&self) -> Result<Option<std::path::PathBuf>, String> {
+        let sources = self.video_sources()?;
+        let files: Vec<_> = sources
+            .iter()
+            .filter_map(|s| match s {
+                VideoSourceSpec::File { path } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        let captures: Vec<_> = sources
+            .iter()
+            .filter(|s| !matches!(s, VideoSourceSpec::File { .. } | VideoSourceSpec::None))
+            .collect();
+
+        if files.is_empty() {
+            return Ok(None);
+        }
+        if !captures.is_empty() {
+            return Err(
+                "cannot mix file: sources with capture sources in the same publish".to_string(),
+            );
+        }
+        if files.len() > 1 {
+            return Err("only one file: video source is supported".to_string());
+        }
+        Ok(Some(files.into_iter().next().unwrap()))
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Publish command (with subcommands: capture, file)
+// Publish command (unified: capture and file sources via --video / --audio)
 // ---------------------------------------------------------------------------
 
 #[derive(Args, Debug)]
 pub struct PublishArgs {
-    #[command(subcommand)]
-    pub input: Option<PublishInput>,
+    #[command(flatten)]
+    pub capture: CaptureArgs,
 
     #[command(flatten)]
     pub transport: TransportArgs,
 
-    /// Open egui preview window with controls (capture only).
-    #[arg(long, global = true)]
+    /// Open egui preview window with controls.
+    #[arg(long)]
     pub preview: bool,
-}
 
-#[derive(Subcommand, Debug)]
-pub enum PublishInput {
-    /// Publish live capture (camera, screen, mic). This is the default.
-    Capture(CaptureArgs),
-    /// Publish a media file.
-    File(FileInputArgs),
-}
-
-#[derive(Args, Debug)]
-pub struct FileInputArgs {
-    /// Input file (reads stdin if omitted).
-    pub file: Option<std::path::PathBuf>,
-
-    /// Input media format.
+    /// Input media format (for file: sources).
     #[arg(long, value_enum, default_value_t = ImportFormat::Fmp4)]
     pub format: ImportFormat,
 
-    /// Re-encode with ffmpeg.
+    /// Re-encode file sources with ffmpeg.
     #[arg(long)]
     pub transcode: bool,
 }
