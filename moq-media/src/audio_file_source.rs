@@ -94,8 +94,12 @@ impl AudioSource for AudioFileSource {
         let available = self.consumer.occupied_len();
         if available == 0 {
             if self.eof.load(Ordering::Relaxed) {
-                // ffmpeg finished and buffer is drained — signal end.
-                return Err(anyhow::anyhow!("audio file source ended"));
+                // ffmpeg finished and buffer is drained. Return an error to
+                // signal the encoder loop to stop — the AudioSource trait has
+                // no dedicated "end of stream" variant, so Err is the only
+                // way to break the caller out of its polling loop (Ok(None)
+                // means "temporarily empty, try again").
+                return Err(anyhow::anyhow!("audio file source ended (EOF)"));
             }
             // Buffer temporarily empty but ffmpeg is still running.
             return Ok(None);

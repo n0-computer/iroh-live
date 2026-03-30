@@ -106,7 +106,7 @@ impl AudioEncoderPipeline {
                         }
                         Ok(None) => {}
                         Err(err) => {
-                            error!("audio source failed: {err:#}");
+                            info!("audio source ended: {err:#}");
                             break;
                         }
                     }

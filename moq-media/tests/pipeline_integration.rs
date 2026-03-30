@@ -1858,3 +1858,143 @@ async fn audio_sink_handle_clone_preserves_pause_state() {
         "original handle should reflect resume from clone"
     );
 }
+
+// ── Group R: Audio file import end-to-end ─────────────────────────
+
+/// Generates a WAV file with a sine wave, imports it through AudioFileSource,
+/// publishes via Opus encoding, subscribes, and verifies non-zero decoded
+/// samples arrive through the full pipeline. Skips if ffmpeg is not installed.
+#[cfg(all(feature = "h264", feature = "opus"))]
+#[tokio::test]
+async fn audio_file_import_roundtrip() {
+    use std::process::Stdio;
+
+    use moq_media::audio_file_source::AudioFileSource;
+
+    // Skip gracefully if ffmpeg is not available.
+    let ffmpeg_ok = std::process::Command::new("ffmpeg")
+        .arg("-version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ffmpeg_ok {
+        eprintln!("skipping audio_file_import_roundtrip: ffmpeg not available");
+        return;
+    }
+
+    // Generate a short WAV file with a 440 Hz sine wave (0.5s, mono, 48 kHz).
+    let tmp_dir = std::env::temp_dir().join("iroh-live-test-audio-file-roundtrip");
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let wav_path = tmp_dir.join("sine_440hz.wav");
+    write_test_wav_file(&wav_path);
+
+    // Create the file source (no looping — plays once and ends).
+    let source = AudioFileSource::new(&wav_path, false).unwrap();
+
+    // Publish: video (required to drive the pipeline) + audio from file.
+    let (broadcast, consumer) = setup_broadcast();
+    broadcast
+        .video()
+        .set(VideoInput::new(
+            TestVideoSource::new(320, 180),
+            VideoCodec::H264,
+            [VideoPreset::P180],
+        ))
+        .unwrap();
+    broadcast
+        .audio()
+        .set(
+            source,
+            moq_media::codec::AudioCodec::Opus,
+            [AudioPreset::Hq],
+        )
+        .unwrap();
+
+    let remote =
+        RemoteBroadcast::with_playback_policy("test", consumer, PlaybackPolicy::unmanaged())
+            .await
+            .unwrap();
+
+    // Subscribe with a capturing backend to record decoded samples.
+    let backend = CapturingAudioBackend::new();
+    let captured = backend.captured_samples();
+
+    let _audio = remote.audio_ready(&backend).await.unwrap();
+
+    // Drain video frames to give the audio pipeline time to produce output.
+    // The file is 0.5s long and ffmpeg reads at realtime (-re), so 10 video
+    // frames at ~30 fps gives about 0.3s of pipeline time.
+    let mut track = remote.video_ready().await.unwrap();
+    for _ in 0..10 {
+        tokio::time::timeout(TIMEOUT, track.next_frame())
+            .await
+            .expect("timeout")
+            .expect("closed");
+    }
+
+    // Give audio decoder a moment to push samples through.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let samples = captured.lock().unwrap();
+    assert!(
+        !samples.is_empty(),
+        "expected captured audio samples from file import, got none"
+    );
+
+    // Verify non-zero samples (sine wave energy survives Opus encode/decode).
+    let rms: f32 = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+    assert!(
+        rms > 0.01,
+        "captured audio RMS {rms:.6} too low — expected audible sine wave after file import + Opus roundtrip"
+    );
+
+    // Cleanup.
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+/// Writes a minimal 48 kHz mono 16-bit PCM WAV file with a 440 Hz sine wave.
+///
+/// Duration: 0.5 seconds. This avoids depending on ffmpeg for test file
+/// generation (ffmpeg is only needed by `AudioFileSource` to decode it).
+#[cfg(all(feature = "h264", feature = "opus"))]
+fn write_test_wav_file(path: &std::path::Path) {
+    let sample_rate = 48_000u32;
+    let duration_samples = sample_rate / 2; // 0.5 seconds
+    let channels = 1u16;
+    let bits_per_sample = 16u16;
+    let byte_rate = sample_rate * u32::from(channels) * u32::from(bits_per_sample / 8);
+    let block_align = channels * (bits_per_sample / 8);
+    let data_size = duration_samples * u32::from(block_align);
+
+    let mut buf = Vec::with_capacity(44 + data_size as usize);
+
+    // RIFF header
+    buf.extend_from_slice(b"RIFF");
+    buf.extend_from_slice(&(36 + data_size).to_le_bytes());
+    buf.extend_from_slice(b"WAVE");
+
+    // fmt chunk
+    buf.extend_from_slice(b"fmt ");
+    buf.extend_from_slice(&16u32.to_le_bytes());
+    buf.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    buf.extend_from_slice(&channels.to_le_bytes());
+    buf.extend_from_slice(&sample_rate.to_le_bytes());
+    buf.extend_from_slice(&byte_rate.to_le_bytes());
+    buf.extend_from_slice(&block_align.to_le_bytes());
+    buf.extend_from_slice(&bits_per_sample.to_le_bytes());
+
+    // data chunk
+    buf.extend_from_slice(b"data");
+    buf.extend_from_slice(&data_size.to_le_bytes());
+
+    for i in 0..duration_samples {
+        let t = i as f64 / sample_rate as f64;
+        let sample = (t * 440.0 * std::f64::consts::TAU).sin() * 0.5;
+        let pcm = (sample * i16::MAX as f64) as i16;
+        buf.extend_from_slice(&pcm.to_le_bytes());
+    }
+
+    std::fs::write(path, buf).unwrap();
+}
