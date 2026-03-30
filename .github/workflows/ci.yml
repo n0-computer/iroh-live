@@ -11,22 +11,21 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   CARGO_INCREMENTAL: 0
+  RUSTC_WRAPPER: "sccache"
 
 jobs:
   check-linux:
     name: Linux
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, X64]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@v2
         with:
           tool: nextest
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
 
       - name: Install system deps
         run: |
@@ -45,21 +44,16 @@ jobs:
 
   check-macos:
     name: macOS
-    runs-on: macos-latest
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@v2
         with:
           tool: nextest
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-
-      - name: Install system deps
-        run: brew install libtool automake
 
       - run: cargo check --locked --workspace --exclude pi-zero-demo --exclude pi-zero-minimal --all-targets
       - run: cargo check --locked --workspace --exclude pi-zero-demo --exclude pi-zero-minimal --all-targets --all-features
@@ -71,16 +65,14 @@ jobs:
   # Check it weekly to catch breakage early.
   check-dioxus:
     name: Check moq-media-dioxus
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, X64]
     if: github.event_name == 'schedule' || contains(github.event.head_commit.message, '[check-dioxus]')
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Install system deps
-        run: >
+        run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends
           libasound2-dev libpipewire-0.3-dev libclang-dev
           libegl-dev libgbm-dev libdrm-dev libfontconfig-dev nasm
@@ -88,14 +80,12 @@ jobs:
 
   e2e-browser:
     name: Playwright E2E
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, X64]
     needs: check-linux
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
+      - uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Install system deps
         run: |
@@ -103,7 +93,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y --no-install-recommends \
             libasound2-dev libpipewire-0.3-dev libclang-dev \
             libegl-dev libgbm-dev libdrm-dev libfontconfig-dev \
-            libva-dev nasm
+            libva-dev nasm 
 
       - uses: taiki-e/install-action@v2
         with:
