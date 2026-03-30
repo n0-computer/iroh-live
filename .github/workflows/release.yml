@@ -39,6 +39,7 @@ jobs:
 
           ### Platform notes
           - **linux-amd64**: Ubuntu 24.04, glibc 2.39
+          - **linux-aarch64**: cross-compiled via cross-rs (Raspberry Pi compatible)
           - **macos-aarch64**: macOS 14, Apple Silicon
 
           ### Included features
@@ -62,10 +63,8 @@ jobs:
           - name: linux-amd64
             os: ubuntu-latest
             artifact: irl-linux-amd64
-          # TODO: Seems we can't get these runners atm.
-          # - name: linux-aarch64
-          #   os: ubuntu-latest-arm
-          #   artifact: irl-linux-aarch64
+          # linux-aarch64 is built via cross-compilation in ci-aarch64.yml
+          # and uploaded to the rolling release from there.
           - name: macos-aarch64
             os: macos-14
             artifact: irl-macos-aarch64

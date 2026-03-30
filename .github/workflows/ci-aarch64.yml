@@ -58,3 +58,18 @@ jobs:
         run: |
           cross check --target aarch64-unknown-linux-gnu \
             -p rusty-capture --features "v4l2,pipewire"
+
+      # Build a release binary for the rolling release.
+      - name: Cross build release binary
+        run: |
+          cross build --release --target aarch64-unknown-linux-gnu \
+            -p iroh-live-cli
+
+      - name: Upload aarch64 binary to rolling release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp target/aarch64-unknown-linux-gnu/release/irl irl-linux-aarch64
+          chmod +x irl-linux-aarch64
+          gh release upload rolling-release irl-linux-aarch64 --clobber || true
