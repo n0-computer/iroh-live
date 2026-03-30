@@ -74,6 +74,7 @@ Rust workspace for real-time media over iroh (QUIC-based transport).
 ### rusty-capture
 - `src/lib.rs` — public API: `ScreenCapture`, `CameraCapture`, list functions
 - `src/types.rs` — `MonitorInfo`, `CameraInfo`, `CapturedFrame`
+- `src/platform/linux/libcamera.rs` — Raspberry Pi CSI camera via rpicam-vid
 - `src/platform/linux/pipewire.rs` — PipeWire screen + camera capture
 - `src/platform/linux/v4l2.rs` — V4L2 camera capture
 - `src/platform/linux/x11.rs` — X11 screen capture (SHM)
@@ -190,7 +191,7 @@ This repo will be maintained for years. Tracing is a first-class concern.
 `h264`, `opus`, `av1` (default), `vaapi`, `v4l2`, `videotoolbox`, `wgpu`, `dmabuf-import`, `hang`, `raspberry-pi`
 
 ### rusty-capture
-`camera`, `screen` (default) → `pipewire`, `v4l2`, `x11`, `camera-apple`, `screen-apple`
+`camera`, `screen` (default) → `pipewire`, `v4l2`, `x11`, `libcamera`, `camera-apple`, `screen-apple`
 
 ### moq-media
 `h264`, `opus`, `av1`, `capture` (default), `vaapi`, `v4l2`, `videotoolbox`, `wgpu`, `dmabuf-import`, `test-util`

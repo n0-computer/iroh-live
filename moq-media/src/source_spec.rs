@@ -26,8 +26,9 @@ pub enum DeviceRef {
 /// Parsed video source specification.
 ///
 /// Parses the `cam[:<backend>:<device>]`, `screen[:<backend>:<device>]`,
-/// `test`, and `none` format used by the CLI and demos. Both backend and
-/// device segments accept names or numeric indices.
+/// `preenc:<backend>[:<arg>]`, `test`, and `none` format used by the CLI
+/// and demos. Both backend and device segments accept names or numeric
+/// indices.
 ///
 /// # Examples
 ///
@@ -70,6 +71,41 @@ pub enum VideoSourceSpec {
         /// Path to the media file.
         path: std::path::PathBuf,
     },
+    /// Pre-encoded video source that bypasses the software encode pipeline.
+    ///
+    /// Used when the capture device or external tool produces already-encoded
+    /// packets (e.g. `rpicam-vid --codec h264` on Raspberry Pi, hardware RTSP
+    /// cameras, or V4L2 M2M encoder output piped through a named device).
+    ///
+    /// # Pipeline behavior
+    ///
+    /// A `PreEncoded` source feeds [`MediaPacket`](crate::transport::MediaPacket)s
+    /// directly to the [`PacketSink`](crate::transport::PacketSink), skipping
+    /// the [`VideoEncoder`](rusty_codecs::traits::VideoEncoder) entirely. The
+    /// publish pipeline creates the source via `VideoInput::pre_encoded()` and
+    /// announces a single track in the catalog with the codec metadata from the
+    /// source's [`PreEncodedVideoSource::config()`](rusty_codecs::traits::PreEncodedVideoSource::config).
+    ///
+    /// Because there is no raw-frame stage, rendition switching (simulcast) is
+    /// not available for pre-encoded sources. Adaptive bitrate would require
+    /// either multiple pre-encoded streams at different quality levels, or
+    /// runtime reconfiguration of the external encoder's bitrate.
+    ///
+    /// # CLI format
+    ///
+    /// `preenc:<backend>` where `<backend>` identifies the pre-encoded source:
+    /// - `preenc:libcamera` — rpicam-vid H.264 hardware encoder (Raspberry Pi)
+    /// - `preenc:rtsp:<url>` — RTSP camera passthrough (future)
+    ///
+    /// Bitrate, resolution, and codec are configured via the backend itself
+    /// (e.g. `--bitrate` and `--fps` flags for the libcamera backend), not
+    /// through the source spec.
+    PreEncoded {
+        /// Backend identifier for the pre-encoded source (e.g. `"libcamera"`, `"rtsp"`).
+        backend: String,
+        /// Optional backend-specific argument (e.g. RTSP URL, device path).
+        arg: Option<String>,
+    },
     /// No video source.
     None,
 }
@@ -105,6 +141,18 @@ impl VideoSourceSpec {
                 }
             }),
             "test" => Ok(Self::Test),
+            "preenc" | "pre-encoded" | "preencoded" => {
+                if parts.len() < 2 {
+                    return Err("preenc: requires a backend (e.g. preenc:libcamera)".to_string());
+                }
+                let backend = parts[1].to_string();
+                let arg = if parts.len() > 2 {
+                    Some(parts[2..].join(":"))
+                } else {
+                    None
+                };
+                Ok(Self::PreEncoded { backend, arg })
+            }
             "file" => {
                 let path = parts[1..].join(":");
                 if path.is_empty() {
@@ -116,7 +164,7 @@ impl VideoSourceSpec {
             }
             "none" => Ok(Self::None),
             other => Err(format!(
-                "unknown video source '{other}': expected cam, screen, test, file, or none"
+                "unknown video source '{other}': expected cam, screen, test, file, preenc, or none"
             )),
         }
     }
@@ -180,7 +228,16 @@ impl AudioSourceSpec {
 /// Known capture backend short names. Used to distinguish `cam:v4l2`
 /// (backend selection) from `cam:Logitech` (device name lookup).
 const KNOWN_BACKENDS: &[&str] = &[
-    "pw", "pipewire", "v4l2", "x11", "sck", "avf", "xcap", "nokhwa",
+    "pw",
+    "pipewire",
+    "v4l2",
+    "x11",
+    "sck",
+    "avf",
+    "xcap",
+    "nokhwa",
+    "libcamera",
+    "rpicam",
 ];
 
 fn parse_device_spec(parts: &[&str]) -> Result<(Option<BackendRef>, Option<DeviceRef>), String> {
@@ -347,6 +404,33 @@ mod tests {
             }
             other => panic!("expected Camera, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_video_preenc_libcamera() {
+        match VideoSourceSpec::parse("preenc:libcamera").unwrap() {
+            VideoSourceSpec::PreEncoded { backend, arg } => {
+                assert_eq!(backend, "libcamera");
+                assert!(arg.is_none());
+            }
+            other => panic!("expected PreEncoded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_video_preenc_with_arg() {
+        match VideoSourceSpec::parse("preenc:rtsp:rtsp://192.168.1.1/stream").unwrap() {
+            VideoSourceSpec::PreEncoded { backend, arg } => {
+                assert_eq!(backend, "rtsp");
+                assert_eq!(arg.as_deref(), Some("rtsp://192.168.1.1/stream"));
+            }
+            other => panic!("expected PreEncoded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_video_preenc_requires_backend() {
+        assert!(VideoSourceSpec::parse("preenc").is_err());
     }
 
     #[test]

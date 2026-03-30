@@ -1,5 +1,8 @@
 //! Linux capture backends.
 
+#[cfg(feature = "libcamera")]
+pub(crate) mod libcamera;
+
 #[cfg(feature = "pipewire")]
 pub(crate) mod pipewire;
 

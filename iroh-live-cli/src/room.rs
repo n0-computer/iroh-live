@@ -70,28 +70,7 @@ async fn setup(args: &RoomArgs, audio_ctx: AudioBackend) -> Result<(Live, LocalB
     let live = Live::from_env().await?.with_router().with_gossip().spawn();
 
     let mut broadcast = LocalBroadcast::new();
-    let video_sources = args
-        .capture
-        .video_sources()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let audio_sources = args
-        .capture
-        .audio_sources()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let codec = args.capture.video_codec()?;
-    let presets = args.capture.presets()?;
-    let audio_preset = args.capture.audio_preset_parsed()?;
-    let audio_codec = args.capture.audio_codec_parsed()?;
-
-    crate::source::setup_video(&broadcast, &video_sources, codec, &presets)?;
-    crate::source::setup_audio(
-        &broadcast,
-        &audio_sources,
-        &audio_ctx,
-        audio_preset,
-        audio_codec,
-    )
-    .await?;
+    args.capture.setup_broadcast(&broadcast, &audio_ctx).await?;
 
     // Enable chat on the broadcast so subscribers can read our messages.
     let chat_publisher = broadcast.enable_chat()?;

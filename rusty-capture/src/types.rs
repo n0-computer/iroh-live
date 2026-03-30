@@ -23,6 +23,8 @@ pub enum CaptureBackend {
     Xcap,
     /// nokhwa cross-platform camera capture (Linux, macOS, Windows).
     Nokhwa,
+    /// libcamera via rpicam-vid subprocess (Raspberry Pi CSI cameras).
+    Libcamera,
 }
 
 impl std::fmt::Display for CaptureBackend {
@@ -35,6 +37,7 @@ impl std::fmt::Display for CaptureBackend {
             Self::AVFoundation => write!(f, "AVFoundation"),
             Self::Xcap => write!(f, "xcap"),
             Self::Nokhwa => write!(f, "nokhwa"),
+            Self::Libcamera => write!(f, "libcamera"),
         }
     }
 }
@@ -50,6 +53,7 @@ impl CaptureBackend {
             Self::AVFoundation => "avf",
             Self::Xcap => "xcap",
             Self::Nokhwa => "nokhwa",
+            Self::Libcamera => "libcamera",
         }
     }
 }
@@ -65,6 +69,7 @@ impl std::str::FromStr for CaptureBackend {
             "avfoundation" | "avf" => Ok(Self::AVFoundation),
             "xcap" => Ok(Self::Xcap),
             "nokhwa" => Ok(Self::Nokhwa),
+            "libcamera" | "rpicam" => Ok(Self::Libcamera),
             _ => Err(format!("unknown capture backend: {s}")),
         }
     }

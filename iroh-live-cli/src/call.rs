@@ -437,25 +437,10 @@ pub fn run(args: CallArgs, rt: &tokio::runtime::Runtime) -> Result<()> {
         .block_on(async {
             let audio_ctx = AudioBackend::default();
 
-            let live = Live::from_env().await?.with_router().spawn();
+            let live = crate::transport::setup_live(true).await?;
             let broadcast = LocalBroadcast::new();
 
-            let video_sources = args.capture.video_sources().map_err(|e| anyerr!("{e}"))?;
-            let audio_sources = args.capture.audio_sources().map_err(|e| anyerr!("{e}"))?;
-            let codec = args.capture.video_codec()?;
-            let presets = args.capture.presets()?;
-            let audio_preset = args.capture.audio_preset_parsed()?;
-            let audio_codec = args.capture.audio_codec_parsed()?;
-
-            crate::source::setup_video(&broadcast, &video_sources, codec, &presets)?;
-            crate::source::setup_audio(
-                &broadcast,
-                &audio_sources,
-                &audio_ctx,
-                audio_preset,
-                audio_codec,
-            )
-            .await?;
+            args.capture.setup_broadcast(&broadcast, &audio_ctx).await?;
 
             let our_ticket = LiveTicket::new(live.endpoint().addr(), "call");
             let our_ticket_str = our_ticket.to_string();

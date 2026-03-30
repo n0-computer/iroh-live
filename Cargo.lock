@@ -8445,6 +8445,7 @@ dependencies = [
  "n0-error",
  "qrcode",
  "raw-window-handle",
+ "rusty-capture",
  "rusty-codecs",
  "tokio",
  "tokio-util",
