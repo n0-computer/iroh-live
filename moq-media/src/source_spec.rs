@@ -65,6 +65,11 @@ pub enum VideoSourceSpec {
     },
     /// Synthetic SMPTE test pattern.
     Test,
+    /// Media file (fmp4, h264, etc.).
+    File {
+        /// Path to the media file.
+        path: std::path::PathBuf,
+    },
     /// No video source.
     None,
 }
@@ -74,7 +79,8 @@ impl VideoSourceSpec {
     ///
     /// Recognized forms: `cam`, `cam:<device>`, `cam:<backend>:<device>`,
     /// `screen`, `screen:<device>`, `screen:<backend>:<device>`,
-    /// `test`, `none`. Backend and device accept names or numeric indices.
+    /// `file:<path>`, `test`, `none`. Backend and device accept names or
+    /// numeric indices.
     pub fn parse(s: &str) -> Result<Self, String> {
         let parts: Vec<&str> = s.split(':').collect();
         match parts[0].to_lowercase().as_str() {
@@ -99,9 +105,18 @@ impl VideoSourceSpec {
                 }
             }),
             "test" => Ok(Self::Test),
+            "file" => {
+                let path = parts[1..].join(":");
+                if path.is_empty() {
+                    return Err("file: requires a path (e.g., file:video.fmp4)".to_string());
+                }
+                Ok(Self::File {
+                    path: std::path::PathBuf::from(path),
+                })
+            }
             "none" => Ok(Self::None),
             other => Err(format!(
-                "unknown video source '{other}': expected cam, screen, test, or none"
+                "unknown video source '{other}': expected cam, screen, test, file, or none"
             )),
         }
     }
@@ -109,14 +124,19 @@ impl VideoSourceSpec {
 
 /// Parsed audio source specification.
 ///
-/// Recognized forms: `none`, `test`, `default` / `mic`, or any other
-/// string as a device name/ID.
+/// Recognized forms: `none`, `test`, `default` / `mic`, `file:<path>`,
+/// or any other string as a device name/ID.
 #[derive(Debug, Clone)]
 pub enum AudioSourceSpec {
     /// System default microphone.
     Default,
     /// A specific audio device by name/ID.
     Device(String),
+    /// Audio file (mp3, ogg, etc.).
+    File {
+        /// Path to the audio file.
+        path: std::path::PathBuf,
+    },
     /// Synthetic test tone.
     Test,
     /// No audio source.
@@ -126,6 +146,14 @@ pub enum AudioSourceSpec {
 impl AudioSourceSpec {
     /// Parses an audio source specifier string.
     pub fn parse(s: &str) -> Result<Self, String> {
+        if let Some(path) = s.strip_prefix("file:") {
+            if path.is_empty() {
+                return Err("file: requires a path (e.g., file:music.mp3)".to_string());
+            }
+            return Ok(Self::File {
+                path: std::path::PathBuf::from(path),
+            });
+        }
         match s.to_lowercase().as_str() {
             "none" => Ok(Self::None),
             "test" => Ok(Self::Test),

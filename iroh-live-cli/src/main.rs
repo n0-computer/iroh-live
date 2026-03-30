@@ -33,10 +33,11 @@ struct Cli {
 enum Command {
     /// List available cameras, screens, audio devices, and codecs.
     Devices,
-    /// Publish capture or file over iroh.
+    /// Publish capture or file sources over iroh.
     ///
-    /// Subcommands: `capture` (default if omitted), `file`.
-    /// Serves locally by default; use --relay/--room to push elsewhere.
+    /// Sources are specified via --video and --audio flags: cam, screen,
+    /// file:<path>, test, none. Serves locally by default; use --relay/--room
+    /// to push elsewhere.
     Publish(Box<args::PublishArgs>),
     /// Subscribe and play a remote broadcast.
     #[cfg(feature = "wgpu")]
