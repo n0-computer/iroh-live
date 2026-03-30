@@ -13,8 +13,8 @@ bytemuck = "1.24.0"
 byte-unit = { version = "5.1", features = ["bit"] }
 data-encoding = "2.9.0"
 derive_more = { version = "2.0.1", features = ["display", "debug", "eq"] }
-ffmpeg-next = { version = "8.0.0", default-features = false, features = ["device", "format", "filter", "software-resampling", "software-scaling"] }
-ffmpeg-sys-next = { version = "8.0.1", optional = true }
+ffmpeg-next = { version = "8.1.0", default-features = false, features = ["device", "format", "filter", "software-resampling", "software-scaling"] }
+ffmpeg-sys-next = { version = "8.1.0", optional = true }
 firewheel = { version = "0.9.1", features = ["cpal", "peak_meter_node", "std", "stream_nodes", "cpal_resample_inputs"] }
 hang = "0.10"
 image = { version = "0.25.8", default-features = false }
@@ -62,20 +62,20 @@ static = [
 ]
 
 [target.'cfg(target_os = "macos")'.dependencies]
-ffmpeg-sys-next = { version = "8.0.1", optional = true, features = [
+ffmpeg-sys-next = { version = "8.1.0", optional = true, features = [
   "build-videotoolbox",
   "build-audiotoolbox",
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-ffmpeg-sys-next = { version = "8.0.1", optional = true, features = [
+ffmpeg-sys-next = { version = "8.1.0", optional = true, features = [
   "build-vaapi",
   # "build-vulkan",
   # "build-lib-libmfx",
 ] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-ffmpeg-sys-next = { version = "8.0.1", optional = true, features = [
+ffmpeg-sys-next = { version = "8.1.0", optional = true, features = [
   "build-lib-d3d11va",
   "build-lib-dxva2",
   # "build-nvidia",
@@ -83,6 +83,6 @@ ffmpeg-sys-next = { version = "8.0.1", optional = true, features = [
 ] }
 
 [target.'cfg(target_os = "android")'.dependencies]
-ffmpeg-sys-next = { version = "8.0.1", optional = true, features = [
+ffmpeg-sys-next = { version = "8.1.0", optional = true, features = [
   # "build-mediacodec",
 ] }

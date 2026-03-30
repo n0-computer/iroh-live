@@ -44,7 +44,8 @@ jobs:
           sudo apt-get update && sudo apt-get install -y \
             libx264-dev libpipewire-0.3-dev pkg-config libasound2-dev libegl1-mesa-dev libgl1-mesa-dev libx11-dev \
             clang curl ca-certificates llvm libssl-dev yasm nasm libopus-dev libva-dev libva-drm2 libdrm-dev \
-            libxext-dev libxfixes-dev libgbm-dev libxkbcommon-dev libxkbcommon-x11-dev libavutil-dev ffmpeg
+            libxext-dev libxfixes-dev libgbm-dev libxkbcommon-dev libxkbcommon-x11-dev libavutil-dev ffmpeg \
+            libtool automake autoconf
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -81,7 +82,8 @@ jobs:
           sudo apt-get update && sudo apt-get install -y \
             libx264-dev libpipewire-0.3-dev pkg-config libasound2-dev libegl1-mesa-dev libgl1-mesa-dev libx11-dev \
             clang curl ca-certificates llvm libssl-dev yasm nasm libopus-dev libva-dev libva-drm2 libdrm-dev \
-            libxext-dev libxfixes-dev libgbm-dev libxkbcommon-dev libxkbcommon-x11-dev libavutil-dev ffmpeg
+            libxext-dev libxfixes-dev libgbm-dev libxkbcommon-dev libxkbcommon-x11-dev libavutil-dev ffmpeg \
+            libtool automake autoconf
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla-actions/sccache-action@v0.0.9
