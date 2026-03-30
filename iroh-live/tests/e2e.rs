@@ -14,7 +14,7 @@ use iroh_live::{Call, Live};
 use moq_media::{
     adaptive::AdaptiveConfig,
     codec::{AudioCodec, VideoCodec},
-    format::{AudioFormat, AudioPreset, VideoPreset},
+    format::{AudioFormat, AudioPreset, DecodeConfig, VideoPreset},
     net::NetworkSignals,
     publish::{LocalBroadcast, VideoInput},
     test_util::{CapturingAudioBackend, TestAudioSource, TestVideoSource},
@@ -198,9 +198,10 @@ async fn publish_subscribe_audio() {
     subscriber.shutdown().await;
 }
 
-/// Publishes two video renditions (180p + 360p), creates an AdaptiveVideoTrack
-/// with synthetic NetworkSignals, injects high loss to trigger a downgrade,
-/// then restores good conditions and waits for an upgrade probe.
+/// Publishes two video renditions (180p + 360p), creates a VideoTrack with
+/// adaptation enabled via synthetic NetworkSignals, injects high loss to
+/// trigger a downgrade, then restores good conditions and waits for an
+/// upgrade probe.
 ///
 /// This exercises the full adaptive pipeline over a real QUIC connection
 /// without needing patchbay or real network impairment.
@@ -267,12 +268,14 @@ async fn adaptive_rendition_switching() {
         ..AdaptiveConfig::default()
     };
 
-    let mut adaptive = remote
-        .adaptive_video_with(signals_rx, config, Default::default())
-        .expect("failed to create adaptive track");
+    // Create a regular VideoTrack and enable adaptation on it.
+    let mut track = remote.video().expect("failed to create video track");
+    track
+        .enable_adaptation(remote.clone(), signals_rx, config, DecodeConfig::default())
+        .expect("failed to enable adaptation");
 
     // Get initial frame — should start on highest rendition (360p).
-    let first = tokio::time::timeout(FRAME_TIMEOUT, adaptive.next_frame())
+    let first = tokio::time::timeout(FRAME_TIMEOUT, track.next_frame())
         .await
         .expect("timed out waiting for first adaptive frame")
         .expect("adaptive track closed");
@@ -282,7 +285,7 @@ async fn adaptive_rendition_switching() {
         "first adaptive frame should have non-zero dimensions"
     );
 
-    let initial_rendition = adaptive.selected_rendition();
+    let initial_rendition = track.selected_rendition();
 
     // Inject high loss → expect downgrade.
     signals_tx
@@ -299,8 +302,8 @@ async fn adaptive_rendition_switching() {
     let downgrade_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         // Drain frames to keep the pipeline moving.
-        let _ = tokio::time::timeout(Duration::from_millis(500), adaptive.next_frame()).await;
-        let current = adaptive.selected_rendition();
+        let _ = tokio::time::timeout(Duration::from_millis(500), track.next_frame()).await;
+        let current = track.selected_rendition();
         if current != initial_rendition {
             break;
         }
@@ -309,7 +312,7 @@ async fn adaptive_rendition_switching() {
         }
     }
 
-    let downgraded_rendition = adaptive.selected_rendition();
+    let downgraded_rendition = track.selected_rendition();
     assert_ne!(
         downgraded_rendition, initial_rendition,
         "should have switched to a lower rendition"
@@ -320,8 +323,8 @@ async fn adaptive_rendition_switching() {
 
     let upgrade_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
-        let _ = tokio::time::timeout(Duration::from_millis(500), adaptive.next_frame()).await;
-        let current = adaptive.selected_rendition();
+        let _ = tokio::time::timeout(Duration::from_millis(500), track.next_frame()).await;
+        let current = track.selected_rendition();
         if current != downgraded_rendition {
             // Upgrade happened.
             break;

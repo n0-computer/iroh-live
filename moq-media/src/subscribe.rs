@@ -2,8 +2,8 @@
 //!
 //! [`RemoteBroadcast`] wraps a catalog consumer and provides
 //! [`VideoTrack`] and [`AudioTrack`] handles for decoded media.
-//! [`AdaptiveVideoTrack`](crate::adaptive::AdaptiveVideoTrack) adds
-//! automatic rendition switching based on network conditions.
+//! [`VideoTrack::enable_adaptation`] adds automatic rendition switching
+//! based on network conditions.
 
 use std::{
     collections::BTreeMap,
@@ -26,7 +26,7 @@ use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{Instrument, debug, warn};
 
 #[cfg(any_video_codec)]
-use crate::adaptive::{AdaptiveConfig, AdaptiveVideoTrack};
+use crate::adaptive::AdaptiveConfig;
 #[cfg(any_video_codec)]
 use crate::net::NetworkSignals;
 use crate::{
@@ -654,36 +654,6 @@ impl RemoteBroadcast {
     /// producers) to this broadcast subscription.
     pub fn shutdown_token(&self) -> CancellationToken {
         self.shutdown.clone()
-    }
-
-    /// Subscribes to an adaptive video track that automatically switches
-    /// renditions based on network conditions.
-    ///
-    /// Uses dynamic decoder dispatch and default [`AdaptiveConfig`].
-    /// Pass a [`NetworkSignals`] receiver produced by a signal poller
-    /// (e.g. from polling QUIC connection stats).
-    #[cfg(any_video_codec)]
-    pub fn adaptive_video(
-        &self,
-        signals: watch::Receiver<NetworkSignals>,
-    ) -> anyhow::Result<AdaptiveVideoTrack> {
-        AdaptiveVideoTrack::new(
-            self.clone(),
-            signals,
-            AdaptiveConfig::default(),
-            DecodeConfig::default(),
-        )
-    }
-
-    /// Subscribes to an adaptive video track with custom configuration.
-    #[cfg(any_video_codec)]
-    pub fn adaptive_video_with(
-        &self,
-        signals: watch::Receiver<NetworkSignals>,
-        config: AdaptiveConfig,
-        decode_config: DecodeConfig,
-    ) -> anyhow::Result<AdaptiveVideoTrack> {
-        AdaptiveVideoTrack::new(self.clone(), signals, config, decode_config)
     }
 
     /// Waits until the catalog contains at least one video or audio rendition.

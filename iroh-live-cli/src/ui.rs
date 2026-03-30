@@ -433,7 +433,7 @@ pub struct RemoteControls {
     pub broadcast: RemoteBroadcast,
     pub overlay: DebugOverlay,
     audio_ctx: AudioBackend,
-    #[allow(dead_code, reason = "reserved for AdaptiveVideoTrack wiring")]
+    #[allow(dead_code, reason = "reserved for adaptation wiring")]
     signals: Option<tokio::sync::watch::Receiver<NetworkSignals>>,
     wgpu_render_state: Option<moq_media_egui::egui_wgpu::RenderState>,
     use_wgpu: bool,
