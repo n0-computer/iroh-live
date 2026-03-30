@@ -117,6 +117,16 @@ impl RoomHandle {
             .await
             .map_err(|_| anyerr!("room actor died"))
     }
+
+    /// Sets the display name for this peer, visible in [`RoomEvent::PeerJoined`].
+    ///
+    /// Triggers a gossip KV update so remote peers see the new name.
+    pub async fn set_display_name(&self, name: impl Into<String>) -> Result<()> {
+        self.tx
+            .send(ApiMessage::SetDisplayName { name: name.into() })
+            .await
+            .map_err(|_| anyerr!("room actor died"))
+    }
 }
 
 impl Room {
@@ -223,6 +233,9 @@ enum ApiMessage {
     },
     SetChatPublisher {
         publisher: moq_media::chat::ChatPublisher,
+    },
+    SetDisplayName {
+        name: String,
     },
 }
 
@@ -482,6 +495,11 @@ impl Actor {
             ApiMessage::SetChatPublisher { publisher } => {
                 self.chat_publisher = Some(publisher);
                 info!("room chat publisher set");
+            }
+            ApiMessage::SetDisplayName { name } => {
+                info!(name, "display name set");
+                self.display_name = Some(name);
+                self.update_kv().await;
             }
         }
     }
