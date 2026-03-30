@@ -13,7 +13,7 @@ use iroh_live::media::{
     publish::LocalBroadcast,
     test_sources::TestPatternSource,
 };
-use moq_media::test_sources::TestToneSource;
+use moq_media::{audio_file_source::AudioFileSource, test_sources::TestToneSource};
 #[cfg(all(target_os = "linux", feature = "capture"))]
 use tracing::{debug, warn};
 
@@ -310,6 +310,16 @@ pub async fn setup_audio(
             AudioSourceSpec::Default => {
                 let mic = audio_ctx.default_input().await?;
                 broadcast.audio().set(mic, AudioCodec::Opus, [preset])?;
+            }
+            AudioSourceSpec::File {
+                path,
+                loop_playback,
+            } => {
+                let file_source = AudioFileSource::new(path, *loop_playback)
+                    .map_err(|e| anyhow::anyhow!("audio file source: {e:#}"))?;
+                broadcast
+                    .audio()
+                    .set(file_source, AudioCodec::Opus, [preset])?;
             }
             AudioSourceSpec::Device(id) => {
                 let device_id = id.parse().map_err(|e| {

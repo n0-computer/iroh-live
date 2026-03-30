@@ -124,18 +124,21 @@ impl VideoSourceSpec {
 
 /// Parsed audio source specification.
 ///
-/// Recognized forms: `none`, `test`, `default` / `mic`, `file:<path>`,
-/// or any other string as a device name/ID.
+/// Recognized forms: `none`, `test`, `default` / `mic`, `file:<path>`
+/// (with optional `file:<path>:loop`), or any other string as a device
+/// name/ID.
 #[derive(Debug, Clone)]
 pub enum AudioSourceSpec {
     /// System default microphone.
     Default,
     /// A specific audio device by name/ID.
     Device(String),
-    /// Audio file (mp3, ogg, etc.).
+    /// Audio file import via ffmpeg transcode.
     File {
         /// Path to the audio file.
         path: std::path::PathBuf,
+        /// Whether to loop playback indefinitely.
+        loop_playback: bool,
     },
     /// Synthetic test tone.
     Test,
@@ -145,19 +148,30 @@ pub enum AudioSourceSpec {
 
 impl AudioSourceSpec {
     /// Parses an audio source specifier string.
+    ///
+    /// Supports `file:<path>` and `file:<path>:loop` for audio file import.
     pub fn parse(s: &str) -> Result<Self, String> {
-        if let Some(path) = s.strip_prefix("file:") {
-            if path.is_empty() {
-                return Err("file: requires a path (e.g., file:music.mp3)".to_string());
-            }
-            return Ok(Self::File {
-                path: std::path::PathBuf::from(path),
-            });
-        }
-        match s.to_lowercase().as_str() {
+        let lower = s.to_lowercase();
+        match lower.as_str() {
             "none" => Ok(Self::None),
             "test" => Ok(Self::Test),
             "default" | "mic" => Ok(Self::Default),
+            _ if lower.starts_with("file:") => {
+                let rest = &s["file:".len()..];
+                if rest.is_empty() {
+                    return Err("file: requires a path (e.g. file:music.mp3)".to_string());
+                }
+                // Check for trailing :loop suffix (case-insensitive).
+                let (path_str, loop_playback) = if rest.to_lowercase().ends_with(":loop") {
+                    (&rest[..rest.len() - ":loop".len()], true)
+                } else {
+                    (rest, false)
+                };
+                Ok(Self::File {
+                    path: std::path::PathBuf::from(path_str),
+                    loop_playback,
+                })
+            }
             _ => Ok(Self::Device(s.to_string())),
         }
     }
@@ -285,6 +299,39 @@ mod tests {
             AudioSourceSpec::parse("hw:0,1").unwrap(),
             AudioSourceSpec::Device(_)
         ));
+    }
+
+    #[test]
+    fn parse_audio_file() {
+        match AudioSourceSpec::parse("file:music.mp3").unwrap() {
+            AudioSourceSpec::File {
+                path,
+                loop_playback,
+            } => {
+                assert_eq!(path, std::path::PathBuf::from("music.mp3"));
+                assert!(!loop_playback);
+            }
+            other => panic!("expected File, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_audio_file_loop() {
+        match AudioSourceSpec::parse("file:/tmp/song.flac:loop").unwrap() {
+            AudioSourceSpec::File {
+                path,
+                loop_playback,
+            } => {
+                assert_eq!(path, std::path::PathBuf::from("/tmp/song.flac"));
+                assert!(loop_playback);
+            }
+            other => panic!("expected File, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_audio_file_empty_path_rejected() {
+        assert!(AudioSourceSpec::parse("file:").is_err());
     }
 
     #[test]
