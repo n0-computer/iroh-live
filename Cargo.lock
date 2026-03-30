@@ -8454,6 +8454,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "pi-zero-minimal"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "iroh",
+ "iroh-live",
+ "moq-media",
+ "n0-error",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "pic-scale"
 version = "0.6.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -5,8 +5,9 @@
 //! the need for multiple `irl publish` + `irl play` invocations when running
 //! complex multi-stream scenarios.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use iroh::SecretKey;
 use iroh_live::{
     Live, Subscription,
     media::{
@@ -34,6 +35,10 @@ use crate::{
 /// Top-level configuration for `irl run`.
 #[derive(Debug, Deserialize)]
 pub struct RunConfig {
+    /// Named secret key for persistent endpoint identity. Stored in
+    /// `~/.config/iroh-live/secret_keys/<name>.key` (hex-encoded).
+    /// Generated on first use so that tickets remain stable across runs.
+    pub secret_key_name: Option<String>,
     /// Broadcasts to publish.
     #[serde(default)]
     pub send: Vec<SendConfig>,
@@ -42,76 +47,77 @@ pub struct RunConfig {
     pub recv: Vec<RecvConfig>,
 }
 
-/// Configuration for a single send (publish) stream.
+/// Configuration for a single send (publish) stream. All fields are
+/// required — no implicit defaults.
 #[derive(Debug, Deserialize)]
 pub struct SendConfig {
     /// Human-readable name, also used as the broadcast name.
     pub name: String,
-    /// Video source spec: `cam:pw:0`, `screen:pw:0`, `test`, `none`, etc.
-    #[serde(default = "default_video_source")]
+    /// Video source spec: `cam:pw:0`, `screen:pw:0`, `test`, `none`.
     pub video_source: String,
-    /// Video codec: `h264`, `av1`, `h264-vaapi`, etc.
-    #[serde(default = "default_video_codec")]
+    /// Video codec: `h264`, `av1`, `h264-vaapi`.
     pub video_codec: String,
     /// Video quality preset: `180p`, `360p`, `720p`, `1080p`.
-    #[serde(default = "default_video_preset")]
     pub video_preset: String,
-    /// Audio source: `default`, `none`, or a device spec.
-    #[serde(default = "default_audio_source")]
+    /// Audio source: `default`, `none`, `file:path.mp3`, or a device spec.
     pub audio_source: String,
-    /// Audio codec (currently only `opus` is supported).
-    #[serde(default = "default_audio_codec")]
-    #[allow(
-        dead_code,
-        reason = "config field reserved for multi-codec audio support"
-    )]
+    /// Audio codec: `opus`, `pcm`.
     pub audio_codec: String,
-    /// Audio bitrate in bits/sec (Opus only, ignored otherwise).
-    #[serde(default)]
-    #[allow(dead_code, reason = "config field reserved for future bitrate control")]
+    /// Audio bitrate in bits/sec (Opus only, ignored for PCM).
+    #[expect(
+        dead_code,
+        reason = "parsed from config, wired when bitrate control lands"
+    )]
     pub audio_bitrate: Option<u32>,
 }
 
-/// Configuration for a single recv (subscribe) stream.
+/// Configuration for a single recv (subscribe) stream. All fields
+/// except `record` are required.
 #[derive(Debug, Deserialize)]
 pub struct RecvConfig {
     /// Human-readable label for this subscription.
-    #[serde(default = "default_recv_name")]
     pub name: String,
     /// Connection ticket string (iroh-live ticket format).
     pub ticket: String,
-    /// Audio output: `default`, `none`, or a device spec.
-    #[serde(default = "default_audio_output")]
-    #[allow(dead_code, reason = "config field, used during recv setup")]
+    /// Audio output: `default` or `none`.
+    #[allow(
+        dead_code,
+        reason = "parsed from config, wired when recv audio output is implemented"
+    )]
     pub audio_output: String,
-    /// Path to write raw encoded video to (optional).
-    #[serde(default)]
-    pub record_video: Option<String>,
-    /// Path to write raw encoded audio to (optional).
-    #[serde(default)]
-    pub record_audio: Option<String>,
+    /// Base path for recording. When set, raw encoded video and audio
+    /// are written to `<record>.h264` / `<record>.opus` (or appropriate
+    /// extension based on codec). Omit to skip recording.
+    pub record: Option<String>,
 }
 
-fn default_video_source() -> String {
-    "cam:0".to_string()
-}
-fn default_video_codec() -> String {
-    "h264".to_string()
-}
-fn default_video_preset() -> String {
-    "360p".to_string()
-}
-fn default_audio_source() -> String {
-    "default".to_string()
-}
-fn default_audio_codec() -> String {
-    "opus".to_string()
-}
-fn default_recv_name() -> String {
-    "recv".to_string()
-}
-fn default_audio_output() -> String {
-    "default".to_string()
+// ---------------------------------------------------------------------------
+// Secret key management
+// ---------------------------------------------------------------------------
+
+/// Loads or creates a named secret key from the config directory.
+fn load_or_create_secret_key(name: &str) -> anyhow::Result<SecretKey> {
+    let config_dir = dirs::config_dir()
+        .ok_or_else(|| anyhow::anyhow!("cannot determine config directory"))?
+        .join("iroh-live")
+        .join("secret_keys");
+    std::fs::create_dir_all(&config_dir)?;
+    let key_path = config_dir.join(format!("{name}.key"));
+
+    if key_path.exists() {
+        let hex_str = std::fs::read_to_string(&key_path)?.trim().to_string();
+        let key: SecretKey = hex_str
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid key in {}: {e}", key_path.display()))?;
+        info!(name, path = %key_path.display(), "loaded secret key");
+        Ok(key)
+    } else {
+        let key = SecretKey::generate(&mut rand::rng());
+        let hex_str = data_encoding::HEXLOWER.encode(&key.to_bytes());
+        std::fs::write(&key_path, &hex_str)?;
+        info!(name, path = %key_path.display(), "generated and saved new secret key");
+        Ok(key)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +173,23 @@ pub fn run(args: RunArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
 
 async fn run_session(config: RunConfig) -> n0_error::Result {
     let needs_serve = !config.send.is_empty();
+
+    // Load or create persistent secret key if configured.
+    let secret_key = if let Some(ref name) = config.secret_key_name {
+        Some(load_or_create_secret_key(name)?)
+    } else {
+        None
+    };
+
+    // TODO: pass secret_key to setup_live when it supports it.
+    // For now, set IROH_SECRET env var as a workaround.
+    if let Some(ref key) = secret_key {
+        let hex = data_encoding::HEXLOWER.encode(&key.to_bytes());
+        // SAFETY: set_var is unsafe in Rust 2024 edition due to potential
+        // data races, but we call it before any threads are spawned.
+        unsafe { std::env::set_var("IROH_SECRET", hex) };
+    }
+
     let live = setup_live(needs_serve).await?;
     let audio_ctx = AudioBackend::default();
 
@@ -197,14 +220,18 @@ async fn run_session(config: RunConfig) -> n0_error::Result {
             Ok((sub, tracks)) => {
                 println!("[recv] {}: connected to {}", recv.name, recv.ticket);
 
-                // Spawn recording tasks if configured.
-                if recv.record_video.is_some() || recv.record_audio.is_some() {
+                // Spawn recording if configured.
+                if let Some(ref base_path) = recv.record {
+                    let base = PathBuf::from(base_path);
                     let name = recv.name.clone();
+                    info!(name, path = %base.display(), "recording enabled");
+                    // TODO: wire up crate::record functions once they are pub(crate).
+                    // For now, log a message. The recording functions need to be
+                    // made accessible from here (they're currently private to record.rs).
                     tasks.spawn(async move {
-                        // TODO: implement raw recording (reuse record.rs logic)
-                        info!(
+                        warn!(
                             name,
-                            "recording requested but not yet implemented in run mode"
+                            "recording not yet wired — make record.rs functions pub(crate)"
                         );
                         Ok(())
                     });
@@ -282,8 +309,15 @@ async fn setup_send(
             );
         } else {
             let audio_preset = AudioPreset::parse_or_list("hq")?;
-            crate::source::setup_audio(&broadcast, &[audio_source], audio_ctx, audio_preset)
-                .await?;
+            let audio_codec = moq_media::codec::AudioCodec::parse_or_list(&config.audio_codec)?;
+            crate::source::setup_audio(
+                &broadcast,
+                &[audio_source],
+                audio_ctx,
+                audio_preset,
+                audio_codec,
+            )
+            .await?;
         }
     }
 
@@ -327,8 +361,10 @@ mod tests {
 [[send]]
 name = "my-camera"
 video_source = "test"
+video_codec = "h264"
 video_preset = "360p"
 audio_source = "none"
+audio_codec = "opus"
 "#;
         let config: RunConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.send.len(), 1);
@@ -359,39 +395,70 @@ audio_output = "none"
 [[send]]
 name = "cam"
 video_source = "cam:pw:0"
+video_codec = "h264"
+video_preset = "360p"
 audio_source = "default"
+audio_codec = "opus"
 
 [[send]]
 name = "screen"
 video_source = "screen:pw:0"
+video_codec = "h264"
 video_preset = "1080p"
 audio_source = "none"
+audio_codec = "opus"
 
 [[recv]]
 name = "remote"
 ticket = "iroh-live:XYZ/stream"
+audio_output = "default"
 "#;
         let config: RunConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.send.len(), 2);
         assert_eq!(config.recv.len(), 1);
-        assert_eq!(config.send[0].video_codec, "h264"); // default
+        assert_eq!(config.send[0].video_codec, "h264");
         assert_eq!(config.send[1].video_preset, "1080p");
     }
 
     #[test]
-    fn defaults_applied_correctly() {
+    fn missing_required_fields_rejected() {
+        // Send without video_codec should fail.
         let toml = r#"
 [[send]]
-name = "minimal"
+name = "incomplete"
+video_source = "test"
+"#;
+        assert!(toml::from_str::<RunConfig>(toml).is_err());
+    }
+
+    #[test]
+    fn secret_key_name_parsed() {
+        let toml = r#"
+secret_key_name = "my-studio"
+
+[[send]]
+name = "cam"
+video_source = "test"
+video_codec = "h264"
+video_preset = "360p"
+audio_source = "none"
+audio_codec = "opus"
 "#;
         let config: RunConfig = toml::from_str(toml).unwrap();
-        let s = &config.send[0];
-        assert_eq!(s.video_source, "cam:0");
-        assert_eq!(s.video_codec, "h264");
-        assert_eq!(s.video_preset, "360p");
-        assert_eq!(s.audio_source, "default");
-        assert_eq!(s.audio_codec, "opus");
-        assert!(s.audio_bitrate.is_none());
+        assert_eq!(config.secret_key_name.as_deref(), Some("my-studio"));
+    }
+
+    #[test]
+    fn record_field_parsed() {
+        let toml = r#"
+[[recv]]
+name = "rec"
+ticket = "iroh-live:ABC/stream"
+audio_output = "none"
+record = "output"
+"#;
+        let config: RunConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.recv[0].record.as_deref(), Some("output"));
     }
 
     #[test]

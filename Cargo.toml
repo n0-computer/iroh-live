@@ -11,6 +11,7 @@ members = [
     "rusty-codecs",
     "demos/android/rust",
     "demos/pi-zero",
+    "demos/pi-zero-minimal",
     "demos/headless",
     "demos/opengl",
     "iroh-live-cli",
@@ -29,6 +30,7 @@ default-members = [
     "rusty-codecs",
     "demos/headless",
     "demos/pi-zero",
+    "demos/pi-zero-minimal",
     "demos/opengl",
     "iroh-live-cli",
 ]

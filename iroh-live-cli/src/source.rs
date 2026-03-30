@@ -303,7 +303,7 @@ pub async fn setup_audio(
 ) -> anyhow::Result<()> {
     for source in sources {
         match source {
-            AudioSourceSpec::None | AudioSourceSpec::File { .. } => {}
+            AudioSourceSpec::None => {}
             AudioSourceSpec::Test => {
                 let audio = TestToneSource::new();
                 broadcast.audio().set(audio, audio_codec, [preset])?;
