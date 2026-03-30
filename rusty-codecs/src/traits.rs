@@ -66,6 +66,13 @@ pub trait AudioSinkHandle: Send + Sync + 'static {
     fn smoothed_peak_normalized(&self) -> Option<f32> {
         None
     }
+    /// Sets the playback volume. `1.0` is unity gain (default), `0.0` is
+    /// silence. Values are clamped to `[0.0, 1.0]`.
+    fn set_volume(&self, _volume: f32) {}
+    /// Returns the current playback volume (`0.0..=1.0`).
+    fn volume(&self) -> f32 {
+        1.0
+    }
 }
 
 impl Clone for Box<dyn AudioSinkHandle> {
@@ -104,6 +111,12 @@ impl AudioSinkHandle for Box<dyn AudioSink> {
     }
     fn smoothed_peak_normalized(&self) -> Option<f32> {
         (**self).smoothed_peak_normalized()
+    }
+    fn set_volume(&self, volume: f32) {
+        (**self).set_volume(volume);
+    }
+    fn volume(&self) -> f32 {
+        (**self).volume()
     }
 }
 

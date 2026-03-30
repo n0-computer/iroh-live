@@ -337,6 +337,8 @@ pub struct OutputHandle {
     /// Fade state for declicking (FADE_PLAYING / FADE_OUT / FADE_PAUSED / FADE_IN).
     fade_state: Arc<AtomicU32>,
     peak_state: Arc<PeakState>,
+    /// Volume multiplier stored as `f32::to_bits`. Default: `1.0f32.to_bits()`.
+    volume: Arc<AtomicU32>,
 }
 
 impl AudioSinkHandle for OutputHandle {
@@ -370,6 +372,15 @@ impl AudioSinkHandle for OutputHandle {
     fn cloned_boxed(&self) -> Box<dyn AudioSinkHandle> {
         Box::new(self.clone())
     }
+
+    fn set_volume(&self, volume: f32) {
+        let clamped = volume.clamp(0.0, 1.0);
+        self.volume.store(clamped.to_bits(), Ordering::Relaxed);
+    }
+
+    fn volume(&self) -> f32 {
+        f32::from_bits(self.volume.load(Ordering::Relaxed))
+    }
 }
 
 impl AudioSinkHandle for OutputStream {
@@ -390,6 +401,12 @@ impl AudioSinkHandle for OutputStream {
     }
     fn cloned_boxed(&self) -> Box<dyn AudioSinkHandle> {
         self.handle.cloned_boxed()
+    }
+    fn set_volume(&self, volume: f32) {
+        self.handle.set_volume(volume);
+    }
+    fn volume(&self) -> f32 {
+        self.handle.volume()
     }
 }
 
@@ -857,6 +874,7 @@ enum OutputCmd {
         cons: ResamplingCons<f32>,
         fade_state: Arc<AtomicU32>,
         peak_state: Arc<PeakState>,
+        volume: Arc<AtomicU32>,
     },
     /// Removes a stream by ID.
     Remove { stream_id: u64 },
@@ -883,6 +901,8 @@ struct OutputEntry {
     cons: ResamplingCons<f32>,
     fade_state: Arc<AtomicU32>,
     peak_state: Arc<PeakState>,
+    /// Per-stream volume multiplier (f32 bits in AtomicU32). Default `1.0`.
+    volume: Arc<AtomicU32>,
     /// Progress through current fade (0..DECLICKER_SAMPLES).
     fade_progress: usize,
     /// Previous fade state — used to detect transitions and reset progress.
@@ -928,6 +948,7 @@ fn output_callback(state: &mut OutputCallbackState, data: &mut [f32]) {
                 cons,
                 fade_state,
                 peak_state,
+                volume,
             } => {
                 let initial = fade_state.load(Ordering::Acquire);
                 state.entries.push(OutputEntry {
@@ -935,6 +956,7 @@ fn output_callback(state: &mut OutputCallbackState, data: &mut [f32]) {
                     cons,
                     fade_state,
                     peak_state,
+                    volume,
                     fade_progress: 0,
                     prev_fade: initial,
                 });
@@ -977,8 +999,11 @@ fn output_callback(state: &mut OutputCallbackState, data: &mut [f32]) {
             // ReadStatus is informational; we always use whatever data we got.
             let _ = status;
 
-            // Apply fade gain and mix. Gain is computed once per frame so
-            // that L and R channels in the same frame receive identical gain.
+            let vol = f32::from_bits(entry.volume.load(Ordering::Relaxed));
+
+            // Apply fade gain, volume, and mix. Gain is computed once per
+            // frame so that L and R channels in the same frame receive
+            // identical gain.
             for frame in 0..stereo_samples / 2 {
                 let gain = match fade {
                     FADE_OUT => {
@@ -1004,8 +1029,9 @@ fn output_callback(state: &mut OutputCallbackState, data: &mut [f32]) {
                 };
                 let l = frame * 2;
                 let r = l + 1;
-                state.mix_buf[l] += state.stream_buf[l] * gain;
-                state.mix_buf[r] += state.stream_buf[r] * gain;
+                let effective = gain * vol;
+                state.mix_buf[l] += state.stream_buf[l] * effective;
+                state.mix_buf[r] += state.stream_buf[r] * effective;
             }
         }
 
@@ -1192,6 +1218,8 @@ struct TrackedOutput {
     prod: Arc<std::sync::Mutex<ResamplingProd<f32, INTERNAL_CHANNELS>>>,
     fade_state: Arc<AtomicU32>,
     peak_state: Arc<PeakState>,
+    /// Per-stream volume multiplier (f32 bits in AtomicU32).
+    volume: Arc<AtomicU32>,
 }
 
 /// Metadata for a tracked input stream.
@@ -1430,6 +1458,7 @@ impl AudioDriver {
                     cons,
                     fade_state: tracked.fade_state.clone(),
                     peak_state: tracked.peak_state.clone(),
+                    volume: tracked.volume.clone(),
                 })
                 .ok();
         }
@@ -1560,6 +1589,7 @@ impl AudioDriver {
         let paused = Arc::new(AtomicBool::new(false));
         let fade_state = Arc::new(AtomicU32::new(FADE_PLAYING));
         let peak_state = Arc::new(PeakState::new());
+        let volume = Arc::new(AtomicU32::new(1.0f32.to_bits()));
 
         // Send consumer to the output callback.
         if let Some(tx) = &self.output_cmd_tx {
@@ -1568,6 +1598,7 @@ impl AudioDriver {
                 cons,
                 fade_state: fade_state.clone(),
                 peak_state: peak_state.clone(),
+                volume: volume.clone(),
             })
             .map_err(|_| anyhow::anyhow!("output callback command channel closed"))?;
         } else {
@@ -1580,6 +1611,7 @@ impl AudioDriver {
             prod: prod.clone(),
             fade_state: fade_state.clone(),
             peak_state: peak_state.clone(),
+            volume: volume.clone(),
         });
 
         let drop_guard = Arc::new(StreamDropGuard {
@@ -1603,6 +1635,7 @@ impl AudioDriver {
                 paused,
                 fade_state,
                 peak_state,
+                volume,
             },
             _drop_guard: drop_guard,
             _driver_keepalive: driver_keepalive,
@@ -1896,16 +1929,22 @@ mod tests {
 
     /// Creates a resampling channel pair at 48kHz stereo and returns
     /// (producer, consumer, fade_state, peak_state).
+    #[allow(
+        clippy::type_complexity,
+        reason = "test helper returns all per-stream atomics"
+    )]
     fn make_output_stream() -> (
         ResamplingProd<f32, INTERNAL_CHANNELS>,
         ResamplingCons<f32>,
         Arc<AtomicU32>,
         Arc<PeakState>,
+        Arc<AtomicU32>,
     ) {
         let (prod, cons) = create_output_channel(AudioFormat::stereo_48k(), INTERNAL_RATE);
         let fade_state = Arc::new(AtomicU32::new(FADE_PLAYING));
         let peak_state = Arc::new(PeakState::new());
-        (prod, cons, fade_state, peak_state)
+        let volume = Arc::new(AtomicU32::new(1.0f32.to_bits()));
+        (prod, cons, fade_state, peak_state, volume)
     }
 
     /// Pushes constant stereo samples into the producer.
@@ -1943,7 +1982,7 @@ mod tests {
     #[test]
     fn output_callback_passes_through_single_stream() {
         let (mut state, cmd_tx) = make_output_state(2);
-        let (mut prod, cons, fade_state, peak_state) = make_output_stream();
+        let (mut prod, cons, fade_state, peak_state, volume) = make_output_stream();
 
         cmd_tx
             .send(OutputCmd::Add {
@@ -1951,6 +1990,7 @@ mod tests {
                 cons,
                 fade_state,
                 peak_state,
+                volume,
             })
             .unwrap();
 
@@ -1968,8 +2008,8 @@ mod tests {
     fn output_callback_mixes_two_streams() {
         let (mut state, cmd_tx) = make_output_state(2);
 
-        let (mut prod_a, cons_a, fade_a, peak_a) = make_output_stream();
-        let (mut prod_b, cons_b, fade_b, peak_b) = make_output_stream();
+        let (mut prod_a, cons_a, fade_a, peak_a, vol_a) = make_output_stream();
+        let (mut prod_b, cons_b, fade_b, peak_b, vol_b) = make_output_stream();
 
         cmd_tx
             .send(OutputCmd::Add {
@@ -1977,6 +2017,7 @@ mod tests {
                 cons: cons_a,
                 fade_state: fade_a,
                 peak_state: peak_a,
+                volume: vol_a,
             })
             .unwrap();
         cmd_tx
@@ -1985,6 +2026,7 @@ mod tests {
                 cons: cons_b,
                 fade_state: fade_b,
                 peak_state: peak_b,
+                volume: vol_b,
             })
             .unwrap();
 
@@ -2008,8 +2050,8 @@ mod tests {
         let (mut state, cmd_tx) = make_output_state(2);
 
         // Two streams each pushing 0.9 — sum is 1.8, should clamp to 1.0.
-        let (mut prod_a, cons_a, fade_a, peak_a) = make_output_stream();
-        let (mut prod_b, cons_b, fade_b, peak_b) = make_output_stream();
+        let (mut prod_a, cons_a, fade_a, peak_a, vol_a) = make_output_stream();
+        let (mut prod_b, cons_b, fade_b, peak_b, vol_b) = make_output_stream();
 
         cmd_tx
             .send(OutputCmd::Add {
@@ -2017,6 +2059,7 @@ mod tests {
                 cons: cons_a,
                 fade_state: fade_a,
                 peak_state: peak_a,
+                volume: vol_a,
             })
             .unwrap();
         cmd_tx
@@ -2025,6 +2068,7 @@ mod tests {
                 cons: cons_b,
                 fade_state: fade_b,
                 peak_state: peak_b,
+                volume: vol_b,
             })
             .unwrap();
 
@@ -2044,7 +2088,7 @@ mod tests {
     #[test]
     fn output_callback_declicker_fade_out() {
         let (mut state, cmd_tx) = make_output_state(2);
-        let (mut prod, cons, fade_state, peak_state) = make_output_stream();
+        let (mut prod, cons, fade_state, peak_state, volume) = make_output_stream();
 
         cmd_tx
             .send(OutputCmd::Add {
@@ -2052,6 +2096,7 @@ mod tests {
                 cons,
                 fade_state: fade_state.clone(),
                 peak_state,
+                volume,
             })
             .unwrap();
 
@@ -2092,7 +2137,7 @@ mod tests {
     fn output_callback_declicker_fade_in() {
         // Start playing, prime channel, then pause, then fade in.
         let (mut state, cmd_tx) = make_output_state(2);
-        let (mut prod, cons, fade_state, peak_state) = make_output_stream();
+        let (mut prod, cons, fade_state, peak_state, volume) = make_output_stream();
 
         cmd_tx
             .send(OutputCmd::Add {
@@ -2100,6 +2145,7 @@ mod tests {
                 cons,
                 fade_state: fade_state.clone(),
                 peak_state,
+                volume,
             })
             .unwrap();
 
@@ -2135,7 +2181,7 @@ mod tests {
     #[test]
     fn output_callback_mono_device() {
         let (mut state, cmd_tx) = make_output_state(1); // Mono device
-        let (mut prod, cons, fade, peak) = make_output_stream();
+        let (mut prod, cons, fade, peak, vol) = make_output_stream();
 
         cmd_tx
             .send(OutputCmd::Add {
@@ -2143,6 +2189,7 @@ mod tests {
                 cons,
                 fade_state: fade,
                 peak_state: peak,
+                volume: vol,
             })
             .unwrap();
 
@@ -2161,7 +2208,7 @@ mod tests {
     #[test]
     fn output_callback_stream_add_remove() {
         let (mut state, cmd_tx) = make_output_state(2);
-        let (mut prod, cons, fade, peak) = make_output_stream();
+        let (mut prod, cons, fade, peak, vol) = make_output_stream();
 
         cmd_tx
             .send(OutputCmd::Add {
@@ -2169,6 +2216,7 @@ mod tests {
                 cons,
                 fade_state: fade,
                 peak_state: peak,
+                volume: vol,
             })
             .unwrap();
 
@@ -2192,7 +2240,7 @@ mod tests {
     #[test]
     fn output_callback_peak_tracking() {
         let (mut state, cmd_tx) = make_output_state(2);
-        let (mut prod, cons, fade, peak) = make_output_stream();
+        let (mut prod, cons, fade, peak, vol) = make_output_stream();
 
         let peak_clone = peak.clone();
         cmd_tx
@@ -2201,6 +2249,7 @@ mod tests {
                 cons,
                 fade_state: fade,
                 peak_state: peak,
+                volume: vol,
             })
             .unwrap();
 
@@ -2248,13 +2297,14 @@ mod tests {
         };
 
         // Add an output stream.
-        let (mut prod, cons, fade, peak) = make_output_stream();
+        let (mut prod, cons, fade, peak, vol) = make_output_stream();
         output_cmd_tx
             .send(OutputCmd::Add {
                 stream_id: 1,
                 cons,
                 fade_state: fade,
                 peak_state: peak,
+                volume: vol,
             })
             .unwrap();
 
@@ -2344,7 +2394,7 @@ mod tests {
     fn fade_state_transitions_correctly() {
         // Verify the full lifecycle: PLAYING → FADE_OUT → PAUSED → FADE_IN → PLAYING
         let (mut state, cmd_tx) = make_output_state(2);
-        let (mut prod, cons, fade_state, peak_state) = make_output_stream();
+        let (mut prod, cons, fade_state, peak_state, volume) = make_output_stream();
 
         cmd_tx
             .send(OutputCmd::Add {
@@ -2352,6 +2402,7 @@ mod tests {
                 cons,
                 fade_state: fade_state.clone(),
                 peak_state,
+                volume,
             })
             .unwrap();
 

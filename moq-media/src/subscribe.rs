@@ -850,6 +850,17 @@ impl AudioTrack {
         self.pipeline.handle()
     }
 
+    /// Sets the playback volume. `1.0` is unity gain, `0.0` is silence.
+    /// Values are clamped to `[0.0, 1.0]`.
+    pub fn set_volume(&self, volume: f32) {
+        self.pipeline.handle().set_volume(volume);
+    }
+
+    /// Returns the current playback volume (`0.0..=1.0`).
+    pub fn volume(&self) -> f32 {
+        self.pipeline.handle().volume()
+    }
+
     /// Returns `true` if the decoder pipeline has already stopped.
     pub fn is_stopped(&self) -> bool {
         self.pipeline.is_stopped()
