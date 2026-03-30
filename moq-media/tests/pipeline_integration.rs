@@ -1733,14 +1733,20 @@ async fn video_track_try_recv_returns_frame_after_decode() {
         .expect("timeout")
         .expect("no frame");
 
-    // Give the encoder time to produce another frame.
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // try_recv should return a frame (the test source produces continuously).
-    let frame = track.try_recv();
-    assert!(frame.is_some(), "try_recv should return a buffered frame");
-    let frame = frame.unwrap();
-    assert!(frame.dimensions[0] > 0);
+    // Poll try_recv in a loop — the encoder/decoder pipeline has variable
+    // latency across platforms (macOS software codec can be slower).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(frame) = track.try_recv() {
+            assert!(frame.dimensions[0] > 0);
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "try_recv did not return a frame within 5 seconds"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 #[cfg(feature = "h264")]
@@ -1758,12 +1764,20 @@ async fn video_track_has_frame_reflects_availability() {
     // Drain whatever is buffered.
     let _ = track.try_recv();
 
-    // After draining, wait for the next frame.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Poll has_frame in a loop — the pipeline has variable latency.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if track.has_frame() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "has_frame did not become true within 5 seconds"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
-    // The test source produces continuously, so has_frame should eventually be true.
-    assert!(track.has_frame(), "has_frame should be true after sleep");
-    // Consuming it should leave has_frame false (until the next one arrives).
+    // Consuming the frame should leave has_frame false (until the next arrives).
     let _ = track.try_recv();
 }
 
