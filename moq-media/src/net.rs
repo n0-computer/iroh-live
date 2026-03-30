@@ -3,8 +3,8 @@ use std::time::Duration;
 /// Transport-level network quality signals for adaptive rendition selection.
 ///
 /// Produced by polling QUIC connection stats. Consumed by
-/// [`AdaptiveVideoTrack`](crate::adaptive::AdaptiveVideoTrack) to decide
-/// when to switch renditions.
+/// [`VideoTrack::enable_adaptation`](crate::subscribe::VideoTrack::enable_adaptation)
+/// to decide when to switch renditions.
 #[derive(Debug, Clone, Copy)]
 pub struct NetworkSignals {
     /// Round-trip time to the remote peer.

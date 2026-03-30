@@ -1000,9 +1000,9 @@ async fn reanchor_count_during_sustained_latency() {
 }
 
 /// Publishes two renditions (360p + 180p) over patchbay, feeds real QUIC
-/// stats into the AdaptiveVideoTrack, then injects heavy packet loss to
-/// trigger a downgrade. After clearing loss, verifies the track upgrades
-/// back to the higher rendition.
+/// stats into a VideoTrack with adaptation enabled, then injects heavy
+/// packet loss to trigger a downgrade. After clearing loss, verifies the
+/// track upgrades back to the higher rendition.
 ///
 /// Unlike the e2e adaptive test which uses synthetic signals, this test
 /// uses actual network impairment so the full feedback loop is exercised:
@@ -1105,21 +1105,26 @@ async fn adaptive_downgrade_upgrade_under_real_loss() {
         ..AdaptiveConfig::default()
     };
 
-    let mut adaptive = remote
-        .adaptive_video_with(signals_rx, config, patchbay_decode())
-        .expect("adaptive track");
+    // Create a regular VideoTrack and enable adaptation on it.
+    let decode_config = patchbay_decode();
+    let mut track = remote
+        .video_with(VideoOptions::default().playback(decode_config.clone()))
+        .expect("video track");
+    track
+        .enable_adaptation(remote.clone(), signals_rx, config, decode_config)
+        .expect("enable adaptation");
 
     // Get first frame and record initial rendition.
-    let _first = tokio::time::timeout(FRAME_TIMEOUT, adaptive.next_frame())
+    let _first = tokio::time::timeout(FRAME_TIMEOUT, track.next_frame())
         .await
         .expect("timeout")
         .expect("closed");
-    let initial_rendition = adaptive.selected_rendition();
+    let initial_rendition = track.selected_rendition();
     info!(rendition = %initial_rendition, "initial rendition");
 
     // Warmup: let the connection stabilize.
     for _ in 0..30 {
-        let _ = tokio::time::timeout(Duration::from_millis(200), adaptive.next_frame()).await;
+        let _ = tokio::time::timeout(Duration::from_millis(200), track.next_frame()).await;
     }
 
     // Inject 25% packet loss to trigger downgrade.
@@ -1138,8 +1143,8 @@ async fn adaptive_downgrade_upgrade_under_real_loss() {
     // Wait for downgrade (up to 15s).
     let downgrade_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
-        let _ = tokio::time::timeout(Duration::from_millis(500), adaptive.next_frame()).await;
-        let current = adaptive.selected_rendition();
+        let _ = tokio::time::timeout(Duration::from_millis(500), track.next_frame()).await;
+        let current = track.selected_rendition();
         if current != initial_rendition {
             info!(rendition = %current, "downgraded");
             break;
@@ -1149,7 +1154,7 @@ async fn adaptive_downgrade_upgrade_under_real_loss() {
         }
     }
 
-    let downgraded = adaptive.selected_rendition();
+    let downgraded = track.selected_rendition();
     assert_ne!(downgraded, initial_rendition, "should have downgraded");
 
     // Clear loss.
@@ -1165,8 +1170,8 @@ async fn adaptive_downgrade_upgrade_under_real_loss() {
     let upgrade_deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     let mut upgraded = false;
     loop {
-        let _ = tokio::time::timeout(Duration::from_millis(500), adaptive.next_frame()).await;
-        let current = adaptive.selected_rendition();
+        let _ = tokio::time::timeout(Duration::from_millis(500), track.next_frame()).await;
+        let current = track.selected_rendition();
         if current != downgraded {
             info!(rendition = %current, "upgraded");
             upgraded = true;
@@ -1182,8 +1187,7 @@ async fn adaptive_downgrade_upgrade_under_real_loss() {
     // Verify frames still flowing after the round-trip.
     let mut frames_after = 0;
     for _ in 0..10 {
-        if let Ok(Some(_)) =
-            tokio::time::timeout(Duration::from_secs(2), adaptive.next_frame()).await
+        if let Ok(Some(_)) = tokio::time::timeout(Duration::from_secs(2), track.next_frame()).await
         {
             frames_after += 1;
         }
