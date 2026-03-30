@@ -118,3 +118,23 @@ args = ["playwright", "test", "--workers=1"]
 description = "Full CI-equivalent test suite: check-all, tests, browser E2E"
 workspace = false
 dependencies = ["check-all", "test", "test-e2e"]
+
+# ── Cross-compilation (aarch64) ──────────────────────────────────────
+
+[tasks.cross-check-aarch64]
+description = "Cross-check workspace for aarch64"
+workspace = false
+command = "cross"
+args = ["check", "--target", "aarch64-unknown-linux-gnu", "--workspace", "--exclude", "bevy-demo", "--exclude", "bevy-call", "--exclude", "gpu-debug"]
+
+[tasks.cross-build-irl-aarch64]
+description = "Cross-build irl CLI for aarch64"
+workspace = false
+command = "cross"
+args = ["build", "--release", "--target", "aarch64-unknown-linux-gnu", "-p", "iroh-live-cli"]
+
+[tasks.cross-build-pi-zero-aarch64]
+description = "Cross-build pi-zero demo for aarch64"
+workspace = false
+command = "cross"
+args = ["build", "--release", "--target", "aarch64-unknown-linux-gnu", "-p", "pi-zero-demo", "--features", "raspberry-pi"]

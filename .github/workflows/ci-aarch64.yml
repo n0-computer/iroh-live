@@ -65,7 +65,7 @@ jobs:
           cross build --release --target aarch64-unknown-linux-gnu \
             -p iroh-live-cli
 
-      - name: Upload aarch64 binary to rolling release
+      - name: Upload irl binary to rolling release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -73,3 +73,17 @@ jobs:
           cp target/aarch64-unknown-linux-gnu/release/irl irl-linux-aarch64
           chmod +x irl-linux-aarch64
           gh release upload rolling-release irl-linux-aarch64 --clobber || true
+
+      - name: Cross build pi-zero demo
+        run: |
+          cross build --release --target aarch64-unknown-linux-gnu \
+            -p pi-zero-demo --features "raspberry-pi"
+
+      - name: Upload pi-zero binary to rolling release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp target/aarch64-unknown-linux-gnu/release/pi-zero-demo pi-zero-demo-linux-aarch64
+          chmod +x pi-zero-demo-linux-aarch64
+          gh release upload rolling-release pi-zero-demo-linux-aarch64 --clobber || true

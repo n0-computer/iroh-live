@@ -31,9 +31,38 @@ The e-paper display is optional --if the HAT is not connected or SPI is not enab
 
 The Pi Zero 2 W runs a 64-bit ARM (aarch64) Linux. Build on your host machine.
 
-Cross-compilation needs an aarch64 sysroot with C library headers (ALSA for audio, PipeWire for camera capture). The simplest approach is to grab the sysroot from a running Pi.
+### Option A: Docker via `cross` (recommended)
 
-### Option A: sysroot from your Pi (recommended)
+The workspace ships a Docker-based cross-compilation setup that handles all
+native dependencies automatically. No sysroot wrangling required.
+
+```sh
+# One-time: install cross
+cargo install cross --git https://github.com/cross-rs/cross
+
+# One-time: build the Docker image (from the repo root)
+docker build -t iroh-live-cross-aarch64 -f cross/Dockerfile.aarch64 .
+
+# Build the pi-zero demo
+cargo make cross-build-pi-zero-aarch64
+
+# Or build the irl CLI
+cargo make cross-build-irl-aarch64
+
+# Deploy to Pi
+scp target/aarch64-unknown-linux-gnu/release/pi-zero-demo pi@<PI_IP>:~/
+```
+
+CI also builds pre-compiled aarch64 binaries on every push to main. Check the
+`rolling-release` GitHub release for `pi-zero-demo-linux-aarch64` and
+`irl-linux-aarch64`.
+
+**libcamera note**: The cross Docker image does not include `libcamera-dev`
+because it is not available in the Ubuntu version used by the cross-rs base
+image. Camera capture on the Pi uses V4L2 directly (which is fully supported),
+so libcamera headers are not needed for this build.
+
+### Option B: sysroot from your Pi
 
 One-time setup on the Pi to install dev headers:
 
@@ -68,7 +97,7 @@ PI_SYSROOT=/path/to/sysroot ./demos/pi-zero/build.sh
 
 The script validates the sysroot, fixes missing `.so` symlinks, and passes the right `-L` flags so the linker can find aarch64 libraries like ALSA.
 
-### Option B: build natively on the Pi
+### Option C: build natively on the Pi
 
 Slower but avoids all cross-compilation issues:
 
