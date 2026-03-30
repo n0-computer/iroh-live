@@ -181,8 +181,9 @@ async fn run_session(config: RunConfig) -> n0_error::Result {
         None
     };
 
-    // TODO: pass secret_key to setup_live when it supports it.
-    // For now, set IROH_SECRET env var as a workaround.
+    // Workaround: Live::from_env() reads IROH_SECRET from env, so we set
+    // it here before calling setup_live. A proper API would accept a
+    // SecretKey directly on the LiveBuilder, but from_env covers this.
     if let Some(ref key) = secret_key {
         let hex = data_encoding::HEXLOWER.encode(&key.to_bytes());
         // SAFETY: set_var is unsafe in Rust 2024 edition due to potential
@@ -225,14 +226,12 @@ async fn run_session(config: RunConfig) -> n0_error::Result {
                     let base = PathBuf::from(base_path);
                     let name = recv.name.clone();
                     info!(name, path = %base.display(), "recording enabled");
-                    // TODO: wire up crate::record functions once they are pub(crate).
-                    // For now, log a message. The recording functions need to be
-                    // made accessible from here (they're currently private to record.rs).
+                    // TODO: wire up recording — record_video_track and record_raw_track
+                    // in record.rs are private. Making them pub(crate) and calling them
+                    // here requires access to raw_video_track / raw_audio_track from the
+                    // RemoteBroadcast, plus H264AnnexBState setup. Needs its own PR.
                     tasks.spawn(async move {
-                        warn!(
-                            name,
-                            "recording not yet wired — make record.rs functions pub(crate)"
-                        );
+                        warn!(name, "recording not yet wired — needs record.rs refactor");
                         Ok(())
                     });
                 }
@@ -300,25 +299,16 @@ async fn setup_send(
     // Audio
     let audio_source = parse_audio_source(&config.audio_source)?;
     if !matches!(audio_source, AudioSourceSpec::None) {
-        if config.audio_source.starts_with("file:") {
-            // TODO: audio file import not yet supported in run mode
-            warn!(
-                name = %config.name,
-                source = %config.audio_source,
-                "audio file import not yet supported, skipping audio"
-            );
-        } else {
-            let audio_preset = AudioPreset::parse_or_list("hq")?;
-            let audio_codec = moq_media::codec::AudioCodec::parse_or_list(&config.audio_codec)?;
-            crate::source::setup_audio(
-                &broadcast,
-                &[audio_source],
-                audio_ctx,
-                audio_preset,
-                audio_codec,
-            )
-            .await?;
-        }
+        let audio_preset = AudioPreset::parse_or_list("hq")?;
+        let audio_codec = moq_media::codec::AudioCodec::parse_or_list(&config.audio_codec)?;
+        crate::source::setup_audio(
+            &broadcast,
+            &[audio_source],
+            audio_ctx,
+            audio_preset,
+            audio_codec,
+        )
+        .await?;
     }
 
     // Publish locally so subscribers can connect.

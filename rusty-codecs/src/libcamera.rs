@@ -1,18 +1,16 @@
-//! Raspberry Pi camera capture via `rpicam-vid` (libcamera subprocess).
+//! Raspberry Pi pre-encoded H.264 capture via `rpicam-vid` (libcamera subprocess).
 //!
 //! On Raspberry Pi OS Bookworm, the CSI camera is only accessible through
 //! the libcamera stack. Direct V4L2 access to `/dev/video0` gives raw Bayer
 //! data from the Unicam sensor, which is unusable without the ISP pipeline.
 //!
-//! Two sources are provided:
+//! [`LibcameraH264Source`] produces pre-encoded H.264 Annex-B packets
+//! directly from rpicam-vid's internal hardware encoder. Preferred on Pi
+//! Zero 2 because it avoids the ~10 MB/s raw-YUV pipe and redundant NV12
+//! conversion, using rpicam-vid's DMABUF zero-copy ISP→encoder path.
 //!
-//! - [`LibcameraH264Source`] — produces pre-encoded H.264 Annex-B packets
-//!   directly from rpicam-vid's internal hardware encoder. Preferred on Pi
-//!   Zero 2 because it avoids the ~10 MB/s raw-YUV pipe and redundant NV12
-//!   conversion, using rpicam-vid's DMABUF zero-copy ISP→encoder path.
-//!
-//! - [`LibcameraYuvSource`] — produces raw I420 frames for use with a
-//!   separate encoder (V4L2 M2M, openh264, etc.).
+//! For raw YUV capture (to feed a separate encoder), use
+//! [`rusty_capture::LibcameraCapturer`] with the `libcamera` feature flag.
 
 use std::{
     io::Read,
@@ -26,8 +24,8 @@ use bytes::Bytes;
 use crate::{
     codec::h264::annexb::{build_avcc, extract_sps_pps, parse_annex_b},
     config::{H264, VideoCodec, VideoConfig},
-    format::{EncodedFrame, PixelFormat, VideoFormat, VideoFrame},
-    traits::{PreEncodedVideoSource, VideoSource},
+    format::EncodedFrame,
+    traits::PreEncodedVideoSource,
 };
 
 // ---------------------------------------------------------------------------
@@ -441,150 +439,6 @@ fn find_first_au_end(data: &[u8]) -> Option<usize> {
     None
 }
 
-// ---------------------------------------------------------------------------
-// Raw I420 source (fallback for software/V4L2 encoder path)
-// ---------------------------------------------------------------------------
-
-/// Raw I420 video source via `rpicam-vid --codec yuv420`.
-///
-/// Produces uncompressed I420 frames for use with a separate encoder.
-pub struct LibcameraYuvSource {
-    width: u32,
-    height: u32,
-    framerate: u32,
-    child: Option<Child>,
-    frame_size: usize,
-    frame_count: u64,
-}
-
-impl std::fmt::Debug for LibcameraYuvSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LibcameraYuvSource")
-            .field("width", &self.width)
-            .field("height", &self.height)
-            .field("framerate", &self.framerate)
-            .field("frame_count", &self.frame_count)
-            .field("running", &self.child.is_some())
-            .finish()
-    }
-}
-
-impl LibcameraYuvSource {
-    /// Creates a new raw YUV source at the given resolution and framerate.
-    pub fn new(width: u32, height: u32, framerate: u32) -> Self {
-        let frame_size = (width as usize) * (height as usize) * 3 / 2;
-        Self {
-            width,
-            height,
-            framerate,
-            child: None,
-            frame_size,
-            frame_count: 0,
-        }
-    }
-}
-
-impl VideoSource for LibcameraYuvSource {
-    fn name(&self) -> &str {
-        "libcamera-yuv"
-    }
-
-    fn format(&self) -> VideoFormat {
-        VideoFormat {
-            pixel_format: PixelFormat::Rgba,
-            dimensions: [self.width, self.height],
-        }
-    }
-
-    fn start(&mut self) -> Result<()> {
-        tracing::info!(
-            width = self.width,
-            height = self.height,
-            fps = self.framerate,
-            "starting rpicam-vid capture (YUV420)"
-        );
-
-        let child = Command::new("rpicam-vid")
-            .args([
-                "--codec",
-                "yuv420",
-                "--width",
-                &self.width.to_string(),
-                "--height",
-                &self.height.to_string(),
-                "--framerate",
-                &self.framerate.to_string(),
-                "--timeout",
-                "0",
-                "--nopreview",
-                "-o",
-                "-",
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("failed to spawn rpicam-vid — is libcamera installed?")?;
-
-        tracing::info!(pid = child.id(), "rpicam-vid started (YUV420 mode)");
-        self.child = Some(child);
-        self.frame_count = 0;
-        Ok(())
-    }
-
-    fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {
-        let child = self.child.as_mut().context("rpicam-vid not started")?;
-        let stdout = child
-            .stdout
-            .as_mut()
-            .context("rpicam-vid stdout unavailable")?;
-
-        let mut buf = vec![0u8; self.frame_size];
-        stdout
-            .read_exact(&mut buf)
-            .context("rpicam-vid: read failed (process exited?)")?;
-
-        let w = self.width;
-        let h = self.height;
-        let y_size = (w * h) as usize;
-        let uv_size = y_size / 4;
-
-        let all = Bytes::from(buf);
-        let y = all.slice(..y_size);
-        let u = all.slice(y_size..y_size + uv_size);
-        let v = all.slice(y_size + uv_size..y_size + 2 * uv_size);
-
-        let pts = Duration::from_secs_f64(self.frame_count as f64 / self.framerate as f64);
-        self.frame_count += 1;
-
-        if self.frame_count == 1 {
-            tracing::info!(
-                frame_size = self.frame_size,
-                "first YUV frame from rpicam-vid"
-            );
-        }
-        if self.frame_count.is_multiple_of(self.framerate as u64 * 5) {
-            tracing::debug!(frames = self.frame_count, "libcamera YUV capture running");
-        }
-
-        Ok(Some(VideoFrame::new_i420(y, u, v, w, h, pts)))
-    }
-
-    fn stop(&mut self) -> Result<()> {
-        if let Some(mut child) = self.child.take() {
-            tracing::info!("stopping rpicam-vid");
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        Ok(())
-    }
-}
-
-impl Drop for LibcameraYuvSource {
-    fn drop(&mut self) {
-        let _ = self.stop();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,15 +518,5 @@ mod tests {
         }
         source.stop().unwrap();
         assert!(got_keyframe, "should have received at least one keyframe");
-    }
-
-    #[test]
-    #[ignore = "requires Raspberry Pi with camera"]
-    fn yuv_source_produces_frames() {
-        let mut source = LibcameraYuvSource::new(640, 360, 30);
-        source.start().unwrap();
-        let frame = source.pop_frame().unwrap();
-        assert!(frame.is_some(), "should produce at least one frame");
-        source.stop().unwrap();
     }
 }

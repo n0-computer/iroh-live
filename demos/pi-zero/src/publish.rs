@@ -188,9 +188,13 @@ fn setup_encoder(
             ))?;
         }
         "software" | "sw" => {
-            use rusty_codecs::libcamera::LibcameraYuvSource;
+            use rusty_capture::{LibcameraCapturer, LibcameraConfig};
 
-            let camera = LibcameraYuvSource::new(capture_w, capture_h, opts.fps);
+            let camera = LibcameraCapturer::new(LibcameraConfig {
+                width: capture_w,
+                height: capture_h,
+                framerate: opts.fps,
+            });
             let codec = VideoCodec::H264;
             tracing::info!(%codec, presets = ?opts.video_presets, "software encoder + raw YUV capture");
             broadcast
@@ -198,9 +202,13 @@ fn setup_encoder(
                 .set(VideoInput::new(camera, codec, opts.video_presets.clone()))?;
         }
         "v4l2" => {
-            use rusty_codecs::libcamera::LibcameraYuvSource;
+            use rusty_capture::{LibcameraCapturer, LibcameraConfig};
 
-            let camera = LibcameraYuvSource::new(capture_w, capture_h, opts.fps);
+            let camera = LibcameraCapturer::new(LibcameraConfig {
+                width: capture_w,
+                height: capture_h,
+                framerate: opts.fps,
+            });
             let codec = VideoCodec::V4l2H264;
             tracing::info!(%codec, presets = ?opts.video_presets, "V4L2 M2M encoder + raw YUV capture");
             broadcast

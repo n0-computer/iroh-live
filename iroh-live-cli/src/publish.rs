@@ -30,32 +30,12 @@ pub fn run(args: PublishArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result 
 }
 
 fn run_capture(args: &PublishArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
-    let capture = &args.capture;
     let (live, broadcast, audio_ctx, _room) = rt.block_on(async {
-        let video_sources = capture
-            .video_sources()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let audio_sources = capture
-            .audio_sources()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let codec = capture.video_codec()?;
-        let presets = capture.presets()?;
-        let audio_preset = capture.audio_preset_parsed()?;
-        let audio_codec = capture.audio_codec_parsed()?;
-
         let live = setup_live(!args.transport.no_serve).await?;
         let broadcast = LocalBroadcast::new();
         let audio_ctx = iroh_live::media::AudioBackend::default();
 
-        crate::source::setup_video(&broadcast, &video_sources, codec, &presets)?;
-        crate::source::setup_audio(
-            &broadcast,
-            &audio_sources,
-            &audio_ctx,
-            audio_preset,
-            audio_codec,
-        )
-        .await?;
+        args.capture.setup_broadcast(&broadcast, &audio_ctx).await?;
         let room = crate::transport::publish_broadcast(&live, &broadcast, &args.transport).await?;
 
         anyhow::Ok((live, broadcast, audio_ctx, room))

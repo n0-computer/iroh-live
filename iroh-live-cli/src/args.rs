@@ -175,6 +175,34 @@ impl CaptureArgs {
     pub fn audio_codec_parsed(&self) -> anyhow::Result<AudioCodec> {
         AudioCodec::parse_or_list(&self.audio_codec)
     }
+
+    /// Configures video and audio sources on the broadcast from these CLI args.
+    ///
+    /// Parses all source specs, codec, presets, and calls `setup_video` / `setup_audio`.
+    /// This consolidates the repeated pattern across publish, call, and room commands.
+    pub async fn setup_broadcast(
+        &self,
+        broadcast: &iroh_live::media::publish::LocalBroadcast,
+        audio_ctx: &iroh_live::media::AudioBackend,
+    ) -> anyhow::Result<()> {
+        let video_sources = self.video_sources().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let audio_sources = self.audio_sources().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let codec = self.video_codec()?;
+        let presets = self.presets()?;
+        let audio_preset = self.audio_preset_parsed()?;
+        let audio_codec = self.audio_codec_parsed()?;
+
+        crate::source::setup_video(broadcast, &video_sources, codec, &presets)?;
+        crate::source::setup_audio(
+            broadcast,
+            &audio_sources,
+            audio_ctx,
+            audio_preset,
+            audio_codec,
+        )
+        .await?;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +235,24 @@ pub enum ImportFormat {
     #[default]
     Fmp4,
     Avc3,
+}
+
+// ---------------------------------------------------------------------------
+// Shared ticket resolution
+// ---------------------------------------------------------------------------
+
+/// Resolves a [`LiveTicket`] from the three-way CLI pattern:
+/// positional ticket, `--endpoint-id` + `--name`, or error.
+pub fn resolve_ticket(
+    ticket: &Option<iroh_live::ticket::LiveTicket>,
+    endpoint_id: &Option<iroh::EndpointId>,
+    broadcast_name: &Option<String>,
+) -> anyhow::Result<iroh_live::ticket::LiveTicket> {
+    match (ticket, endpoint_id, broadcast_name) {
+        (Some(t), None, None) => Ok(t.clone()),
+        (None, Some(id), Some(name)) => Ok(iroh_live::ticket::LiveTicket::new(*id, name.clone())),
+        _ => anyhow::bail!("provide either <TICKET> or --endpoint-id + --name"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -276,13 +322,7 @@ impl PlayArgs {
     }
 
     pub fn ticket(&self) -> anyhow::Result<iroh_live::ticket::LiveTicket> {
-        match (&self.ticket, &self.endpoint_id, &self.broadcast_name) {
-            (Some(t), None, None) => Ok(t.clone()),
-            (None, Some(id), Some(name)) => {
-                Ok(iroh_live::ticket::LiveTicket::new(*id, name.clone()))
-            }
-            _ => anyhow::bail!("provide either <TICKET> or --endpoint-id + --name"),
-        }
+        resolve_ticket(&self.ticket, &self.endpoint_id, &self.broadcast_name)
     }
 
     pub fn decoder_backend(&self) -> anyhow::Result<iroh_live::media::format::DecoderBackend> {
@@ -341,13 +381,7 @@ pub enum RecordFormat {
 impl RecordArgs {
     /// Resolves the connection ticket from CLI args.
     pub fn ticket(&self) -> anyhow::Result<iroh_live::ticket::LiveTicket> {
-        match (&self.ticket, &self.endpoint_id, &self.broadcast_name) {
-            (Some(t), None, None) => Ok(t.clone()),
-            (None, Some(id), Some(name)) => {
-                Ok(iroh_live::ticket::LiveTicket::new(*id, name.clone()))
-            }
-            _ => anyhow::bail!("provide either <TICKET> or --endpoint-id + --name"),
-        }
+        resolve_ticket(&self.ticket, &self.endpoint_id, &self.broadcast_name)
     }
 }
 

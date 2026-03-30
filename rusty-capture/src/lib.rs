@@ -19,6 +19,7 @@
 //! | Linux (V4L2) | — | `v4l2` feature | DMA-BUF via EXPBUF |
 //! | macOS | `screen-apple` feature | `camera-apple` feature | IOSurface (planned) |
 //! | iOS | — | `camera-apple` feature | IOSurface (planned) |
+//! | Linux (libcamera) | — | `libcamera` feature | No (subprocess pipe) |
 //! | Cross-platform | `xcap` feature | `nokhwa` feature | No (CPU only) |
 //!
 //! # Feature Flags
@@ -41,6 +42,8 @@
 //! - **`pipewire`** — PipeWire screen + camera capture on Linux (Wayland + libcamera).
 //!   Requires `libpipewire-0.3-dev` at build time.
 //! - **`v4l2`** — V4L2 camera capture on Linux.
+//! - **`libcamera`** — Raspberry Pi CSI camera via rpicam-vid subprocess.
+//!   No build-time dependencies; requires `rpicam-vid` at runtime.
 //! - **`x11`** — X11 screen capture via MIT-SHM. Not included in defaults.
 
 pub mod types;
@@ -57,6 +60,8 @@ pub use platform::apple::camera::AppleCameraCapturer;
 #[cfg(all(target_os = "macos", feature = "screen-apple"))]
 pub use platform::apple::screen::MacScreenCapturer;
 // Re-export platform-specific capturers at the crate root.
+#[cfg(all(target_os = "linux", feature = "libcamera"))]
+pub use platform::linux::libcamera::{LibcameraCapturer, LibcameraConfig};
 #[cfg(all(target_os = "linux", feature = "pipewire"))]
 pub use platform::linux::pipewire::{PipeWireCameraCapturer, PipeWireScreenCapturer};
 #[cfg(all(target_os = "linux", feature = "v4l2"))]
@@ -173,6 +178,13 @@ fn list_all_monitors() -> anyhow::Result<Vec<MonitorInfo>> {
     reason = "cfg-gated returns may make trailing code unreachable"
 )]
 fn list_cameras() -> anyhow::Result<Vec<CameraInfo>> {
+    #[cfg(all(target_os = "linux", feature = "libcamera"))]
+    {
+        let cams = platform::linux::libcamera::cameras()?;
+        if !cams.is_empty() {
+            return Ok(cams);
+        }
+    }
     #[cfg(all(target_os = "linux", feature = "v4l2"))]
     {
         return platform::linux::v4l2::cameras();
@@ -198,6 +210,10 @@ fn list_cameras() -> anyhow::Result<Vec<CameraInfo>> {
 #[allow(unused_mut, reason = "push count depends on compiled backends")]
 fn list_all_cameras() -> anyhow::Result<Vec<CameraInfo>> {
     let mut all = Vec::new();
+    #[cfg(all(target_os = "linux", feature = "libcamera"))]
+    if let Ok(cameras) = platform::linux::libcamera::cameras() {
+        all.extend(cameras);
+    }
     #[cfg(all(target_os = "linux", feature = "v4l2"))]
     if let Ok(cameras) = platform::linux::v4l2::cameras() {
         all.extend(cameras);
@@ -226,6 +242,21 @@ fn create_camera_backend(
     config: &CameraConfig,
 ) -> anyhow::Result<Box<dyn VideoSource>> {
     match info.backend {
+        #[cfg(all(target_os = "linux", feature = "libcamera"))]
+        CaptureBackend::Libcamera => {
+            let lc_config = platform::linux::libcamera::LibcameraConfig {
+                width: match &config.selector {
+                    CameraSelector::TargetResolution(w, _) => *w,
+                    _ => 640,
+                },
+                height: match &config.selector {
+                    CameraSelector::TargetResolution(_, h) => *h,
+                    _ => 360,
+                },
+                framerate: 30,
+            };
+            Ok(Box::new(LibcameraCapturer::new(lc_config)))
+        }
         #[cfg(all(target_os = "linux", feature = "pipewire"))]
         CaptureBackend::PipeWire => Ok(Box::new(PipeWireCameraCapturer::new(config)?)),
         #[cfg(all(target_os = "linux", feature = "v4l2"))]
@@ -339,6 +370,8 @@ impl CameraCapturer {
         // Order must match `list_all_cameras()` so that backend indexes from
         // `irl devices` resolve correctly via `BackendRef::Index`.
         let mut backends = Vec::new();
+        #[cfg(all(target_os = "linux", feature = "libcamera"))]
+        backends.push(CaptureBackend::Libcamera);
         #[cfg(all(target_os = "linux", feature = "v4l2"))]
         backends.push(CaptureBackend::V4l2);
         #[cfg(all(target_os = "linux", feature = "pipewire"))]

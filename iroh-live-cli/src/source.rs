@@ -260,6 +260,12 @@ pub fn setup_video(
     for source in sources {
         match source {
             VideoSourceSpec::None | VideoSourceSpec::File { .. } => {}
+            VideoSourceSpec::PreEncoded { backend, .. } => {
+                anyhow::bail!(
+                    "pre-encoded source '{backend}' is not supported in capture setup; \
+                     use the pipeline API directly"
+                );
+            }
             VideoSourceSpec::Test => {
                 let (w, h) = presets
                     .first()
