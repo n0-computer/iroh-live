@@ -1412,7 +1412,10 @@ mod tests {
     #[test]
     #[ignore = "requires VAAPI hardware"]
     fn vaapi_avcc_available_at_construction() {
-        let enc = VaapiEncoder::with_preset(VideoPreset::P360).unwrap();
+        use crate::format::{NalFormat, VideoEncoderConfig};
+        let mut config = VideoEncoderConfig::from_preset(VideoPreset::P360);
+        config.nal_format = NalFormat::Avcc;
+        let enc = VaapiEncoder::with_config(config).unwrap();
         let desc = enc.config().description;
         assert!(
             desc.is_some(),
@@ -1457,10 +1460,7 @@ mod tests {
         assert!(!packets.is_empty(), "should have produced packets");
 
         let config = enc.config();
-        assert!(
-            config.description.is_some(),
-            "avcC should be populated after encoding"
-        );
+        // AnnexB mode: SPS/PPS are inline in keyframes, no avcC description needed.
 
         let decode_config = DecodeConfig::default();
         let mut dec = H264VideoDecoder::new(&config, &decode_config).unwrap();
@@ -1505,8 +1505,10 @@ mod tests {
     fn vaapi_timestamps_increase() {
         let mut enc = VaapiEncoder::with_preset(VideoPreset::P180).unwrap();
         let mut prev_ts = None;
-        for _ in 0..10 {
-            let frame = make_rgba_frame(320, 180, 64, 64, 64);
+        for i in 0..10 {
+            let mut frame = make_rgba_frame(320, 180, 64, 64, 64);
+            // Each frame needs a distinct timestamp for the test to verify ordering.
+            frame.timestamp = std::time::Duration::from_millis(i * 33);
             enc.push_frame(frame).unwrap();
             if let Some(pkt) = enc.pop_packet().unwrap() {
                 if let Some(prev) = prev_ts {
