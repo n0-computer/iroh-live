@@ -55,6 +55,7 @@ videotoolbox = ["moq-media/videotoolbox"]
 dmabuf-import = ["wgpu", "moq-media/dmabuf-import"]
 metal-import = ["wgpu", "moq-media/metal-import"]
 v4l2 = ["moq-media/v4l2"]
+jack = ["moq-media/jack"]
 
 # Capture
 capture = ["moq-media/capture"]
