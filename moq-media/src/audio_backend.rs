@@ -82,6 +82,10 @@ const FADE_IN: u32 = 3;
 /// Options for configuring the [`AudioBackend`].
 #[derive(Debug, Clone)]
 pub struct AudioBackendOpts {
+    /// Audio host to use (e.g., "Alsa", "PipeWire", "Jack").
+    /// `None` uses the system default host.
+    // TODO(irl-run): wire `host` into RunConfig TOML on feat/irl-run branch.
+    pub host: Option<String>,
     /// Initial input device. `None` = system default.
     pub input_device: Option<DeviceId>,
     /// Initial output device. `None` = system default.
@@ -94,6 +98,7 @@ pub struct AudioBackendOpts {
 impl Default for AudioBackendOpts {
     fn default() -> Self {
         Self {
+            host: None,
             input_device: None,
             output_device: None,
             fallback_to_default: true,
@@ -140,6 +145,14 @@ impl Default for AudioBackend {
 }
 
 impl AudioBackend {
+    /// Lists available audio hosts (e.g., ALSA, PipeWire, JACK).
+    pub fn available_hosts() -> Vec<String> {
+        cpal::available_hosts()
+            .into_iter()
+            .map(|id| format!("{id:?}"))
+            .collect()
+    }
+
     /// Lists available audio input devices.
     pub fn list_inputs() -> Vec<AudioDevice> {
         list_devices(Direction::Input)
@@ -704,6 +717,31 @@ fn list_devices(direction: Direction) -> Vec<AudioDevice> {
         }
     }
     out
+}
+
+/// Resolves a cpal host by name, falling back to the default host when `None`.
+///
+/// The name is matched case-insensitively against the `Debug` representation
+/// of each available [`cpal::HostId`] (e.g., "alsa", "pipewire", "jack").
+fn resolve_host(name: Option<&str>) -> Result<cpal::Host> {
+    let Some(name) = name else {
+        return Ok(cpal::default_host());
+    };
+    let name_lower = name.to_lowercase();
+    for host_id in cpal::available_hosts() {
+        if format!("{host_id:?}").to_lowercase() == name_lower {
+            return cpal::host_from_id(host_id)
+                .context(format!("failed to initialize audio host '{name}'"));
+        }
+    }
+    let available: Vec<String> = cpal::available_hosts()
+        .into_iter()
+        .map(|id| format!("{id:?}"))
+        .collect();
+    anyhow::bail!(
+        "unknown audio host '{name}' (available: {})",
+        available.join(", ")
+    );
 }
 
 fn resolve_device(
@@ -1361,7 +1399,7 @@ impl AudioDriver {
     /// streams, rebuilds the resampling channels and swaps fresh producers/consumers
     /// into the existing handles.
     fn start_cpal_streams(&mut self) -> Result<()> {
-        let host = cpal::default_host();
+        let host = resolve_host(self.opts.host.as_deref())?;
 
         // Resolve output device and negotiate sample rate.
         let output_device = resolve_device(&host, &self.current_output_device, Direction::Output)
