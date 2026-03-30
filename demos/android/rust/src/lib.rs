@@ -522,7 +522,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_nextHardwareBuffer(
     };
 
     let video = guard.video.as_mut();
-    let frame = video.and_then(|v| v.current_frame());
+    let frame = video.and_then(|v| v.try_recv());
     let Some(frame) = frame else { return 0 };
 
     guard.dec_frames_rendered += 1;
@@ -656,7 +656,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
         let Ok(mut guard) = session.lock() else {
             return false;
         };
-        let frame = guard.video.as_mut().and_then(|v| v.current_frame());
+        let frame = guard.video.as_mut().and_then(|v| v.try_recv());
         let Some(frame) = frame else { return false };
         guard.dec_frames_rendered += 1;
         let (w, h) = (frame.width(), frame.height());

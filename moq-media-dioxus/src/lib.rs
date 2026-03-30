@@ -157,7 +157,7 @@ impl CustomPaintSource for DioxusVideoRenderer {
             .lock()
             .expect("poisoned")
             .as_mut()
-            .and_then(|t| t.current_frame());
+            .and_then(|t| t.try_recv());
 
         let Some(frame) = frame.as_ref() else {
             // No new frame — return the last registered texture if we have one.

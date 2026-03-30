@@ -788,7 +788,7 @@ impl eframe::App for ViewerApp {
                 for tile in self.tiles.iter_mut() {
                     match tile.pipeline.as_mut() {
                         Some(TilePipeline::EncodeDecode { video_track, .. }) => {
-                            if let Some(frame) = video_track.current_frame() {
+                            if let Some(frame) = video_track.try_recv() {
                                 tile.frame_size.update(&frame);
                                 tile.video_view.render_frame(&frame);
                             }

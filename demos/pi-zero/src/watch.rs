@@ -24,7 +24,7 @@ fn try_upload_frame(
     last_ts: &mut Option<Duration>,
     frame_count: &mut u64,
 ) -> bool {
-    let frame = track.current_frame();
+    let frame = track.try_recv();
     let is_new = frame
         .as_ref()
         .is_some_and(|f| last_ts.is_none_or(|prev| f.timestamp != prev));

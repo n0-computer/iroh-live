@@ -184,7 +184,7 @@ impl ApplicationHandler for App {
                 let Some(surface) = &self.surface else { return };
                 let Some(context) = &self.context else { return };
 
-                let frame = self.video_track.current_frame();
+                let frame = self.video_track.try_recv();
                 let is_new = frame
                     .as_ref()
                     .is_some_and(|f| self.last_ts.is_none_or(|prev| f.timestamp != prev));

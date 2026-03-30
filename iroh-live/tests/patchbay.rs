@@ -199,7 +199,7 @@ async fn drain_frames(
     arrivals
 }
 
-/// Polls frames at a fixed interval using `current_frame()`, mimicking
+/// Polls frames at a fixed interval using `try_recv()`, mimicking
 /// how egui's `render()` loop works. This is more realistic than
 /// `drain_frames` because it reveals bursty delivery: if multiple frames
 /// arrive between polls, only the latest is kept (the others are dropped).
@@ -213,7 +213,7 @@ fn poll_frames(track: &mut moq_media::subscribe::VideoTrack, duration: Duration)
         if Instant::now() >= deadline {
             break;
         }
-        if track.current_frame().is_some() {
+        if track.try_recv().is_some() {
             arrivals.push(Instant::now());
         }
         std::thread::sleep(poll_interval);
@@ -410,7 +410,7 @@ async fn latency_up_down_video_recovers() {
 /// that the pipeline recovers to smooth playback after the link comes back.
 ///
 /// Uses poll-based frame consumption to match the egui rendering pattern:
-/// polls at ~60Hz with current_frame(), which drops stale frames.
+/// polls at ~60Hz with try_recv(), which drops stale frames.
 #[tokio::test]
 #[traced_test]
 #[ignore = "poll/current_frame blackout recovery is too scheduler-sensitive; async drain coverage remains enforced"]

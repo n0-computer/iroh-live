@@ -145,9 +145,8 @@ fn spa_format_to_drm_fourcc(spa_format: u32) -> Option<u32> {
 struct PipeWireDmaBufFrame {
     fd: OwnedFd,
     drm_format: u32,
-    /// DRM format modifier (e.g. LINEAR, X_TILED, CCS). Currently always 0
-    /// (LINEAR) because PipeWire format negotiation doesn't propagate the
-    /// modifier yet. See ER1 in REVIEW.md.
+    /// DRM format modifier (e.g. LINEAR, X_TILED, CCS). Parsed from
+    /// `SPA_FORMAT_VIDEO_modifier` during format negotiation.
     modifier: u64,
     width: u32,
     height: u32,
@@ -222,6 +221,25 @@ impl GpuFrameInner for PipeWireDmaBufFrame {
         use std::os::unix::io::AsFd;
 
         let dup_fd = self.fd.as_fd().try_clone_to_owned().ok()?;
+        let planes = if self.spa_format == SpaVideoFormat::NV12.as_raw() {
+            let y_offset = self.offset as u32;
+            let uv_offset = y_offset + self.stride * self.height;
+            vec![
+                DmaBufPlaneInfo {
+                    offset: y_offset,
+                    pitch: self.stride,
+                },
+                DmaBufPlaneInfo {
+                    offset: uv_offset,
+                    pitch: self.stride,
+                },
+            ]
+        } else {
+            vec![DmaBufPlaneInfo {
+                offset: self.offset as u32,
+                pitch: self.stride,
+            }]
+        };
         Some(NativeFrameHandle::DmaBuf(DmaBufInfo {
             fd: dup_fd,
             modifier: self.modifier,
@@ -230,10 +248,7 @@ impl GpuFrameInner for PipeWireDmaBufFrame {
             coded_height: self.height,
             display_width: self.width,
             display_height: self.height,
-            planes: vec![DmaBufPlaneInfo {
-                offset: self.offset as u32,
-                pitch: self.stride,
-            }],
+            planes,
         }))
     }
 }
@@ -262,6 +277,7 @@ struct CaptureState {
     width: u32,
     height: u32,
     spa_format: u32,
+    drm_modifier: Option<u64>,
     /// Log buffer type once on first successful frame delivery.
     logged_buffer_type: bool,
     /// Timestamp origin for elapsed capture timestamps.
@@ -405,8 +421,33 @@ fn extract_rectangle(value: &Value) -> Option<Rectangle> {
     }
 }
 
-/// Parses a negotiated `Format` pod into `(width, height, spa_video_format)`.
-fn parse_format_pod(pod: &Pod) -> Option<(u32, u32, u32)> {
+/// Parsed result from a PipeWire format negotiation pod.
+struct ParsedFormat {
+    width: u32,
+    height: u32,
+    spa_format: u32,
+    /// DRM modifier negotiated via `SPA_FORMAT_VIDEO_modifier`. `None` when the
+    /// producer omits the property (shared-memory buffers, older compositors).
+    modifier: Option<u64>,
+}
+
+/// Extracts a `Long` (i64) from a [`Value`], handling both fixed values and
+/// single-element choices.
+fn extract_long(value: &Value) -> Option<i64> {
+    match value {
+        Value::Long(v) => Some(*v),
+        Value::Choice(ChoiceValue::Long(Choice(_, enum_val))) => match enum_val {
+            ChoiceEnum::None(default) => Some(*default),
+            ChoiceEnum::Enum { default, .. } => Some(*default),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Parses a negotiated `Format` pod into width, height, format, and optional
+/// DRM modifier.
+fn parse_format_pod(pod: &Pod) -> Option<ParsedFormat> {
     let bytes = pod.as_bytes();
 
     let (_, value) =
@@ -422,6 +463,7 @@ fn parse_format_pod(pod: &Pod) -> Option<(u32, u32, u32)> {
         let mut width = 0u32;
         let mut height = 0u32;
         let mut format = 0u32;
+        let mut modifier: Option<u64> = None;
 
         for prop in &obj.properties {
             if prop.key == FormatProperties::VideoFormat.as_raw() {
@@ -443,11 +485,24 @@ fn parse_format_pod(pod: &Pod) -> Option<(u32, u32, u32)> {
                         "VideoSize property has unexpected Value type"
                     );
                 }
+            } else if prop.key == FormatProperties::VideoModifier.as_raw()
+                && let Some(v) = extract_long(&prop.value)
+            {
+                modifier = Some(v as u64);
+                debug!(
+                    modifier = format!("0x{:x}", v as u64),
+                    "parsed DRM modifier"
+                );
             }
         }
 
         if width > 0 && height > 0 {
-            return Some((width, height, format));
+            return Some(ParsedFormat {
+                width,
+                height,
+                spa_format: format,
+                modifier,
+            });
         }
 
         warn!(width, height, format, "PipeWire format pod missing size");
@@ -681,6 +736,7 @@ fn dmabuf_to_frame(
     width: u32,
     height: u32,
     spa_format: u32,
+    drm_modifier: Option<u64>,
     timestamp: Duration,
 ) -> Option<VideoFrame> {
     if size == 0 || offset >= size {
@@ -698,7 +754,7 @@ fn dmabuf_to_frame(
         let gpu_frame = PipeWireDmaBufFrame {
             fd: dup_fd,
             drm_format,
-            modifier: 0, // TODO(ER1): parse from SPA_FORMAT_VIDEO_modifier
+            modifier: drm_modifier.unwrap_or(0),
             width,
             height,
             stride,
@@ -820,6 +876,7 @@ fn run_pipewire_stream(
         width: 0,
         height: 0,
         spa_format: 0,
+        drm_modifier: None,
         logged_buffer_type: false,
         capture_start: Instant::now(),
     };
@@ -849,10 +906,14 @@ fn run_pipewire_stream(
             }
             let Some(param) = param else { return };
 
-            if let Some((w, h, fmt)) = parse_format_pod(param) {
-                state.width = w;
-                state.height = h;
-                state.spa_format = fmt;
+            if let Some(parsed) = parse_format_pod(param) {
+                state.width = parsed.width;
+                state.height = parsed.height;
+                state.spa_format = parsed.spa_format;
+                state.drm_modifier = parsed.modifier;
+                let w = parsed.width;
+                let h = parsed.height;
+                let fmt = parsed.spa_format;
 
                 // Confirm buffer params (including DMA-BUF support) for
                 // the negotiated format. Without this call, PipeWire falls
@@ -931,6 +992,7 @@ fn run_pipewire_stream(
                     state.width,
                     state.height,
                     state.spa_format,
+                    state.drm_modifier,
                     timestamp,
                 ) {
                     if !state.logged_buffer_type {

@@ -1113,7 +1113,7 @@ async fn video_track_decoder_name_is_nonempty() {
 
 #[cfg(feature = "h264")]
 #[tokio::test]
-async fn video_track_current_frame_returns_none_initially() {
+async fn video_track_try_recv_returns_none_initially() {
     let (_broadcast, remote) = publish_and_subscribe(VideoCodec::H264, VideoPreset::P180).await;
     let mut track = remote.video_ready().await.unwrap();
 
@@ -1124,10 +1124,10 @@ async fn video_track_current_frame_returns_none_initially() {
         .expect("no frame");
     assert!(frame.dimensions[0] > 0);
 
-    // current_frame is non-blocking and returns the latest buffered frame (or None).
+    // try_recv is non-blocking and returns the latest buffered frame (or None).
     // After draining, it may or may not have another frame ready — just verify
     // it does not panic and returns a valid Option.
-    let _ = track.current_frame();
+    let _ = track.try_recv();
 }
 
 // ── Group P: AudioTrack metadata ──────────────────────────────────
