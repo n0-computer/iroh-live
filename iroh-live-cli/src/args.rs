@@ -394,3 +394,13 @@ pub struct RoomArgs {
     #[arg(long)]
     pub audio_device: Option<String>,
 }
+
+// ---------------------------------------------------------------------------
+// Run args (TOML-configured multi-stream session)
+// ---------------------------------------------------------------------------
+
+#[derive(Args, Debug)]
+pub struct RunArgs {
+    /// Path to the TOML config file.
+    pub config: std::path::PathBuf,
+}
