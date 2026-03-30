@@ -402,6 +402,15 @@ impl RemoteBroadcast {
         &self.broadcast_name
     }
 
+    /// Returns a reference to the underlying broadcast consumer for
+    /// arbitrary data track subscriptions.
+    ///
+    /// Allows subscribing to tracks (e.g. game state) that live outside
+    /// the catalog-managed video/audio renditions.
+    pub fn consumer(&self) -> &BroadcastConsumer {
+        &self.broadcast
+    }
+
     /// Builds a [`PipelineContext`] from the current policy and stats.
     ///
     /// When [`SyncMode::Synced`], the shared playout clock is included
