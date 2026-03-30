@@ -71,7 +71,7 @@ objc2-app-kit = { version = "0.3", optional = true, features = ["NSScreen", "NSG
 
 [features]
 default = ["camera", "screen"]
-all = ["camera", "screen", "xcap", "nokhwa", "x11"]
+all = ["camera", "screen", "xcap", "nokhwa", "x11", "libcamera"]
 
 # Capability features — what consumers should use.
 camera = ["camera-linux", "camera-apple"]
@@ -87,6 +87,7 @@ screen-linux = ["pipewire"]
 screen-apple = ["camera-apple", "dep:screencapturekit", "dep:objc2-app-kit", "rusty-codecs/apple-gpu"]
 
 # Low-level backend features — for fine-grained / embedded builds.
+libcamera = []
 pipewire = ["dep:pipewire", "dep:libspa", "dep:ashpd", "dep:nix", "dep:tokio"]
 v4l2 = ["dep:v4l2r", "dep:nix"]
 x11 = ["dep:x11rb"]
