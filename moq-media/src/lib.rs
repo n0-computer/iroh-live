@@ -9,6 +9,7 @@
 #[cfg(any_video_codec)]
 pub mod adaptive;
 pub mod audio_backend;
+pub mod audio_file_source;
 pub mod chat;
 pub mod frame_channel;
 pub mod net;
