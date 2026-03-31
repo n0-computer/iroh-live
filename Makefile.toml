@@ -118,3 +118,40 @@ args = ["playwright", "test", "--workers=1"]
 description = "Full CI-equivalent test suite: check-all, tests, browser E2E"
 workspace = false
 dependencies = ["check-all", "test", "test-e2e"]
+
+# ── Cross-compilation (aarch64, zigbuild + sysroot) ──────────────────
+#
+# Host-native (requires zig + cargo-zigbuild + sysroot):
+#   cargo make cross-sysroot-aarch64
+#   cargo make cross-build-aarch64 -- -p iroh-live-cli --release
+#
+# Docker (no host setup needed, just Docker):
+#   cargo make cross-build-aarch64-docker -- -p iroh-live-cli --release
+
+[tasks.cross-sysroot-aarch64]
+description = "Create the aarch64 Debian Bookworm sysroot (dpkg-deb, no sudo needed)."
+workspace = false
+script_runner = "@shell"
+script = '''
+"${CARGO_MAKE_WORKING_DIRECTORY}/cross/create-sysroot.sh"
+'''
+
+[tasks.cross-build-aarch64]
+description = "Cross-build for aarch64 via zigbuild. Pass extra args after --."
+workspace = false
+script_runner = "@shell"
+script = '''
+# cargo-make passes args after -- as positional params, with "--" itself
+# as the first param. Strip that leading "--" before forwarding.
+if [ "$1" = "--" ]; then shift; fi
+"${CARGO_MAKE_WORKING_DIRECTORY}/cross/zigbuild.sh" "$@"
+'''
+
+[tasks.cross-build-aarch64-docker]
+description = "Cross-build for aarch64 via zigbuild in Docker. Pass extra args after --."
+workspace = false
+script_runner = "@shell"
+script = '''
+if [ "$1" = "--" ]; then shift; fi
+"${CARGO_MAKE_WORKING_DIRECTORY}/cross/docker-zigbuild.sh" "$@"
+'''

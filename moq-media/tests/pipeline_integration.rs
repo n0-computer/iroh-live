@@ -246,8 +246,6 @@ async fn multiple_renditions_have_distinct_dimensions() {
 async fn publisher_replace_triggers_catalog_update() {
     let (broadcast, remote) = publish_and_subscribe(VideoCodec::H264, VideoPreset::P180).await;
 
-    let mut watcher = remote.catalog_watcher();
-
     // Drain initial frame to confirm pipeline is running
     let mut track = remote.video_ready().await.unwrap();
     tokio::time::timeout(TIMEOUT, track.next_frame())
@@ -256,17 +254,22 @@ async fn publisher_replace_triggers_catalog_update() {
         .expect("no frame");
     drop(track);
 
-    // Replace video with new source
+    // Get a fresh watcher AFTER the initial catalog is established,
+    // so we only see updates from the replacement below.
+    let mut watcher = remote.catalog_watcher();
+
+    // Replace video with a different preset so the catalog content changes
+    // (same preset would be deduped and the watcher would never fire)
     broadcast
         .video()
         .set(VideoInput::new(
-            TestVideoSource::new(320, 180),
+            TestVideoSource::new(640, 360),
             VideoCodec::H264,
-            [VideoPreset::P180],
+            [VideoPreset::P360],
         ))
         .unwrap();
 
-    // Catalog should update
+    // Catalog should update (different preset produces different serialized catalog)
     tokio::time::timeout(TIMEOUT, watcher.updated())
         .await
         .expect("timeout waiting for catalog update")

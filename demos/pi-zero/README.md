@@ -29,48 +29,32 @@ The e-paper display is optional --if the HAT is not connected or SPI is not enab
 
 ## Cross-compiling
 
-The Pi Zero 2 W runs a 64-bit ARM (aarch64) Linux. Build on your host machine.
+The Pi Zero 2 W runs a 64-bit ARM (aarch64) Linux. Build on your host machine
+using `cargo-zigbuild` with a Debian Bookworm sysroot. See
+[cross/README.md](../../cross/README.md) for full details on prerequisites and
+sysroot setup.
 
-Cross-compilation needs an aarch64 sysroot with C library headers (ALSA for audio, PipeWire for camera capture). The simplest approach is to grab the sysroot from a running Pi.
-
-### Option A: sysroot from your Pi (recommended)
-
-One-time setup on the Pi to install dev headers:
-
-```sh
-# On the Pi:
-sudo apt install libasound2-dev
-```
-
-One-time setup on your host machine to pull the sysroot and install the cross-compiler:
+### Quick start
 
 ```sh
-mkdir -p ~/pi-sysroot
-rsync -az pi@<PI_IP>:/usr/lib/aarch64-linux-gnu ~/pi-sysroot/usr/lib/
-rsync -az pi@<PI_IP>:/usr/include ~/pi-sysroot/usr/
-rsync -az pi@<PI_IP>:/lib/aarch64-linux-gnu ~/pi-sysroot/lib/
+# One-time: set up the aarch64 sysroot (from the repo root)
+cargo make cross-sysroot-aarch64
 
-rustup target add aarch64-unknown-linux-gnu
-# Arch Linux:
-sudo pacman -S aarch64-linux-gnu-gcc
-# Debian/Ubuntu:
-#   sudo apt install gcc-aarch64-linux-gnu
+# Build the pi-zero demo
+cargo make cross-build-aarch64 -- -p pi-zero-demo --release
+
+# With libcamera support
+cargo make cross-build-aarch64 -- -p pi-zero-demo --release --features libcamera
 ```
 
-Build with the included script (sets up pkg-config, linker search paths, etc.):
+The binary is at `target/aarch64-unknown-linux-gnu/release/pi-zero-demo`.
 
-```sh
-./demos/pi-zero/build.sh
+A Docker path is also available for macOS/Windows hosts that cannot install zig
+natively. See [cross/README.md](../../cross/README.md) for details.
 
-# Or with a custom sysroot path:
-PI_SYSROOT=/path/to/sysroot ./demos/pi-zero/build.sh
-```
+### Build natively on the Pi
 
-The script validates the sysroot, fixes missing `.so` symlinks, and passes the right `-L` flags so the linker can find aarch64 libraries like ALSA.
-
-### Option B: build natively on the Pi
-
-Slower but avoids all cross-compilation issues:
+Slower but avoids all cross-compilation setup:
 
 ```sh
 # On the Pi:
@@ -79,15 +63,19 @@ sudo apt install build-essential libasound2-dev libpipewire-0.3-dev pkg-config
 cargo build -p pi-zero-demo --release
 ```
 
-The binary is at `target/release/pi-zero-demo` (native) or
-`target/aarch64-unknown-linux-gnu/release/pi-zero-demo` (cross-compiled).
-
 ## Deploying to the Pi
 
 Copy the binary over SSH:
 
 ```sh
 scp target/aarch64-unknown-linux-gnu/release/pi-zero-demo pi@<PI_IP>:~/
+```
+
+Or use the cargo-make task, which builds, strips, and deploys in one step:
+
+```sh
+# Defaults to PI_HOST=livepizero; override with PI_HOST=<hostname>
+cargo make cross-deploy
 ```
 
 ## Pi setup
@@ -250,7 +238,7 @@ host, deploy, and run:
 
 ```sh
 # Build and deploy
-./demos/pi-zero/build.sh --deploy livepizero
+cargo make cross-deploy
 
 # Run all tests (encoder, decoder, roundtrip) at 640x360
 ssh pi@livepizero "./pi-zero-demo codec-test all --frames 60"

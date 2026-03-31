@@ -200,6 +200,19 @@ Then build with all features:
 cargo build --workspace --all-features
 ```
 
+### Cross-compilation (aarch64)
+
+Build for Raspberry Pi and other aarch64 Linux devices:
+
+```sh
+cargo make cross-sysroot-aarch64                              # one-time sysroot setup
+cargo make cross-build-aarch64 -- -p iroh-live-cli --release  # build irl CLI
+```
+
+A Docker path is available for macOS/Windows hosts. See
+[cross/README.md](cross/README.md) for setup, prerequisites, and the
+full Docker workflow.
+
 ### Feature flags
 
 The workspace uses many feature flags for codecs, hardware backends, and capture

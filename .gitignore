@@ -6,3 +6,4 @@
 /.zed
 /test-media
 /logs
+cross/sysroot-aarch64/

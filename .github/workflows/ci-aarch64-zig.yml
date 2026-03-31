@@ -1,0 +1,69 @@
+name: CI (aarch64, zigbuild)
+
+# Docker-free aarch64 cross-compilation using cargo-zigbuild with a Debian
+# Bookworm sysroot. Builds the irl CLI binary for aarch64 in release mode.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  zigbuild:
+    name: aarch64 zigbuild
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Install zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+
+      - name: Install cargo-zigbuild and cargo-make
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild,cargo-make
+
+      - name: Install dpkg-deb (for sysroot creation)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            dpkg-dev \
+            python3
+
+      - name: Cache sysroot
+        id: cache-sysroot
+        uses: actions/cache@v4
+        with:
+          path: cross/sysroot-aarch64
+          # Bust the cache when the sysroot script or this workflow changes.
+          key: sysroot-bookworm-aarch64-${{ hashFiles('cross/create-sysroot.sh') }}
+
+      - name: Create sysroot
+        if: steps.cache-sysroot.outputs.cache-hit != 'true'
+        run: cargo make cross-sysroot-aarch64
+
+      - name: Build irl CLI (release)
+        run: cargo make cross-build-aarch64 -- -p iroh-live-cli --release
+
+      - name: Strip binary
+        run: aarch64-linux-gnu-strip target/aarch64-unknown-linux-gnu/release/irl || true
+
+      - name: Upload irl binary to rolling release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp target/aarch64-unknown-linux-gnu/release/irl irl-linux-aarch64
+          chmod +x irl-linux-aarch64
+          gh release upload rolling-release irl-linux-aarch64 --clobber || true
