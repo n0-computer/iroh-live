@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [main, dev]
+    branches: [main, dev, dev-new]
   pull_request:
   schedule:
     # Weekly check for excluded workspace members (moq-media-dioxus).
