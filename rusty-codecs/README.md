@@ -17,6 +17,7 @@ All software codecs compile from bundled source with no system dependencies. Har
 | H.264 | MediaCodec (NDK) | Android | `android` |
 | AV1 | rav1e + rav1d (pure Rust) | All | `av1` |
 | Opus | unsafe-libopus (Rust port) | All | `opus` |
+| PCM | Raw samples (no codec) | All | `pcm` |
 
 See [`plans/platforms.md`](../plans/platforms.md) for tested hardware and the full support matrix.
 
@@ -58,4 +59,7 @@ A **video frame** (`VideoFrame`) is the central data type. It can be backed by C
 | `gles` | | OpenGL ES 2.0 rendering |
 | `dmabuf-import` | | Zero-copy DMA-BUF texture import (Linux) |
 | `metal-import` | | Zero-copy Metal texture import (macOS) |
+| `pcm` | | Raw PCM audio (no encoding/decoding) |
+| `gles-dmabuf` | | GLES DMA-BUF zero-copy import |
+| `test-util` | | Test helpers and pattern generators |
 | `hang` | | Integration with hang catalog format |

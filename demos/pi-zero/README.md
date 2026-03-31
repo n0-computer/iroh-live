@@ -234,11 +234,10 @@ export IROH_SECRET=abcdef...
 
 ## Watching the stream
 
-On another machine (with a display), use the `watch` example from the workspace:
+On another machine (with a display), use the `irl` CLI:
 
 ```sh
-# From the iroh-live2 repo on your laptop/desktop:
-cargo run --example watch -- <TICKET>
+irl play <TICKET>
 ```
 
 Replace `<TICKET>` with the ticket string printed by the Pi, or scan the QR code from the e-paper display.

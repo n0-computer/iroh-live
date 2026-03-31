@@ -9,6 +9,8 @@ Rust workspace for real-time media over iroh (QUIC-based transport).
 | Crate | Description |
 |-------|-------------|
 | `iroh-live` | High-level API: live sessions, rooms, tickets. Depends on `moq-media` + `iroh`. |
+| `iroh-live-cli` | CLI tool (`irl`) for publishing, playing, calls, and rooms. |
+| `iroh-live-relay` | Relay server for browser WebTransport bridging. |
 | `iroh-moq` | MoQ transport layer over iroh/quinn via `web-transport-iroh` (external crate). |
 | `moq-media` | Media pipelines: capture, encode, decode, publish, subscribe, playout, adaptive bitrate. No iroh dependency. |
 | `rusty-codecs` | Codec implementations (H.264 via openh264, AV1 via rav1e/rav1d, Opus) + VAAPI/V4L2/VideoToolbox HW accel + wgpu rendering. |
@@ -28,16 +30,18 @@ Rust workspace for real-time media over iroh (QUIC-based transport).
 - `src/rooms/publisher.rs` — room publisher
 - `src/ticket.rs` — connection tickets
 - `src/types.rs` — shared types
+- `src/subscription.rs` — subscription management
 - `src/util.rs` — `StatsSmoother` and helpers
-- `examples/` — `split.rs` (multi-source demo), `watch.rs` (egui viewer), `watch-wgpu.rs` (wgpu viewer), `rooms.rs`, `publish.rs`, `push.rs`, `room-publish-file.rs`, `viewer.rs` (in moq-media), `api_sketch.rs`
-- `examples/common/` — shared example helpers (`mod.rs`, `import.rs`)
+- `examples/` — `demo.rs`, `frame_dump.rs`, `split.rs` (multi-source demo), `subscribe_test.rs`, `watch-wgpu.rs` (wgpu viewer)
 - `tests/e2e.rs` — end-to-end integration tests
+- `tests/patchbay.rs` — patchbay integration tests
+- `tests/room.rs` — room integration tests
 
 ### moq-media
 - `src/lib.rs` — module re-exports
 - `src/publish.rs` — `LocalBroadcast`, `VideoPublisher`, `AudioPublisher`, `VideoRenditions`, `AudioRenditions`
 - `src/publish/controller.rs` — publish controller
-- `src/subscribe.rs` — `RemoteBroadcast`, `VideoTrack`, `AudioTrack`, `MediaTracks`, `AdaptiveVideoTrack`, `CatalogSnapshot`
+- `src/subscribe.rs` — `RemoteBroadcast`, `VideoTrack`, `AudioTrack`, `MediaTracks`, `CatalogSnapshot`
 - `src/playout.rs` — `PlaybackPolicy`, `SyncMode`
 - `src/sync.rs` — `Sync` (shared playout clock, ported from moq/js)
 - `src/adaptive.rs` — adaptive bitrate selection
@@ -48,6 +52,12 @@ Rust workspace for real-time media over iroh (QUIC-based transport).
 - `src/audio_backend.rs` — audio output (cpal/firewheel/sonora)
 - `src/audio_backend/aec.rs` — acoustic echo cancellation
 - `src/processing.rs`, `src/processing/mjpg.rs` — media processing
+- `src/chat.rs` — text chat over MoQ tracks
+- `src/frame_channel.rs` — bounded frame delivery channel
+- `src/source_spec.rs` — source specification types
+- `src/stats.rs` — media pipeline statistics
+- `src/util.rs` — shared helpers
+- `src/audio_file_source.rs` — audio file playback source
 - `src/test_util.rs` — deterministic test sources (`test-util` feature)
 - `tests/pipeline_integration.rs` — codec pipeline integration tests
 - `tests/zero_copy_pipeline.rs` — zero-copy pipeline tests
@@ -60,11 +70,16 @@ Rust workspace for real-time media over iroh (QUIC-based transport).
 - `src/codec/vaapi.rs`, `vaapi/encoder.rs`, `vaapi/decoder.rs` — VAAPI hardware codec
 - `src/codec/v4l2.rs`, `v4l2/encoder.rs`, `v4l2/decoder.rs` — V4L2 hardware codec
 - `src/codec/vtb.rs`, `vtb/encoder.rs`, `vtb/decoder.rs` — VideoToolbox (macOS)
+- `src/codec/pcm.rs`, `pcm/encoder.rs`, `pcm/decoder.rs` — PCM audio (raw samples)
+- `src/codec/android/` — Android MediaCodec H.264 (NDK)
 - `src/codec/dynamic.rs` — dynamic codec selection
 - `src/codec/test_util.rs` — test helpers
 - `src/codec/tests/` — `harness.rs`, `patterns.rs`, `vectors.rs`, `metrics.rs`, `latency.rs`
 - `src/render.rs` — wgpu video rendering
 - `src/render/dmabuf_import.rs` — DMA-BUF zero-copy import + VPP retiler
+- `src/render/gles.rs` — OpenGL ES 2.0 rendering
+- `src/render/gles_dmabuf.rs` — GLES DMA-BUF zero-copy import
+- `src/render/metal_import.rs` — Metal texture import (macOS)
 - `src/processing.rs` — image processing
 - `src/processing/scale.rs`, `convert.rs`, `resample.rs` — scale, colorspace, audio resample
 - `src/format.rs` — frame/sample format types
@@ -78,6 +93,8 @@ Rust workspace for real-time media over iroh (QUIC-based transport).
 - `src/platform/linux/pipewire.rs` — PipeWire screen + camera capture
 - `src/platform/linux/v4l2.rs` — V4L2 camera capture
 - `src/platform/linux/x11.rs` — X11 screen capture (SHM)
+- `src/platform/xcap_impl.rs` — cross-platform screen capture via xcap
+- `src/platform/nokhwa_impl.rs` — cross-platform camera capture via nokhwa
 - `src/platform/apple/screen.rs` — ScreenCaptureKit
 - `src/platform/apple/camera.rs` — AVFoundation camera
 - `src/platform/windows/mod.rs`, `src/platform/android/mod.rs` — stubs
@@ -170,7 +187,7 @@ This repo will be maintained for years. Tracing is a first-class concern.
 - `VideoTrack` / `AudioTrack` — decoded media tracks (frame channel + decoder handle)
 - `MediaTracks` — convenience: broadcast + optional video + optional audio
 - `CatalogSnapshot` — point-in-time catalog with rendition selection helpers
-- `AdaptiveVideoTrack` — auto-switches renditions based on `NetworkSignals`
+- `VideoTrack::enable_adaptation()` — enables automatic rendition switching based on `NetworkSignals`
 
 ### Playout and sync
 
@@ -188,16 +205,16 @@ This repo will be maintained for years. Tracing is a first-class concern.
 ## Feature flags (key crates)
 
 ### rusty-codecs
-`h264`, `opus`, `av1` (default), `vaapi`, `v4l2`, `videotoolbox`, `wgpu`, `dmabuf-import`, `hang`, `raspberry-pi`
+`h264`, `opus` (default), `pcm`, `av1`, `vaapi`, `v4l2`, `videotoolbox`, `android`, `wgpu`, `gles`, `gles-dmabuf`, `dmabuf-import`, `metal-import`, `hang`, `raspberry-pi`, `test-util`
 
 ### rusty-capture
-`camera`, `screen` (default) → `pipewire`, `v4l2`, `x11`, `libcamera`, `camera-apple`, `screen-apple`
+`camera`, `screen` (default) → `pipewire`, `v4l2`, `x11`, `libcamera`, `xcap`, `nokhwa`, `camera-apple`, `screen-apple`
 
 ### moq-media
-`h264`, `opus`, `av1`, `capture` (default), `vaapi`, `v4l2`, `videotoolbox`, `wgpu`, `dmabuf-import`, `test-util`
+`h264`, `opus`, `capture` (default), `pcm`, `av1`, `vaapi`, `v4l2`, `videotoolbox`, `android`, `wgpu`, `gles`, `gles-dmabuf`, `dmabuf-import`, `metal-import`, `pipewire`, `nokhwa`, `xcap`, `jack`, `test-util`
 
 ### iroh-live
-`av1` (default), `vaapi`, `wgpu`, `dmabuf-import`
+`h264`, `opus`, `capture`, `wgpu`, `vaapi`, `videotoolbox`, `dmabuf-import`, `metal-import` (default), `pcm`, `av1`, `v4l2`, `android`, `jack`
 
 ## iroh Connection & Path Stats
 
