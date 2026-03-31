@@ -224,9 +224,9 @@ shows the flags relevant to `iroh-live` (which delegates to `moq-media` and
 
 ## Contributing
 
-Open items and known issues are tracked in the
-[issue tracker](https://github.com/n0-computer/iroh-live/issues).
-Architecture documentation is in [docs/](docs/index.md).
+See [DEVELOPMENT.md](DEVELOPMENT.md) for workspace structure, key types,
+architecture notes, and build/test workflows. Open issues are tracked in
+the [issue tracker](https://github.com/n0-computer/iroh-live/issues).
 
 ```sh
 # Full check (all feature combinations, clippy, fmt)

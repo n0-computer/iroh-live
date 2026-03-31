@@ -22,8 +22,7 @@
 | [Publish pipeline](architecture/publish.md) | `LocalBroadcast`, encoder pipelines, `VideoInput` variants, `SharedVideoSource` fan-out, and the `PacketSink` boundary. |
 | [Subscribe pipeline](architecture/subscribe.md) | `RemoteBroadcast`, catalog watching, decoder pipelines, `VideoTrack`/`AudioTrack`, and viewport-driven scaling. |
 | [Playout and sync](architecture/playout.md) | Shared playout clock (`Sync`), `FramePacer` fallback, `PlaybackPolicy`, and lag tracking. |
-| [A/V sync and playout](av-sync/README.md) | Current sync design (ported from moq/js), history of earlier attempts, receive pipeline diagram. |
-| [A/V sync tuning](av-sync/tuning.md) | `PlaybackPolicy` knobs (`SyncMode`, `max_latency`), overlay metrics guide, and diagnostic interpretation. |
+| [A/V sync](architecture/av-sync.md) | Sync design (ported from moq/js), `PlaybackPolicy` tuning knobs, overlay metrics, and diagnostic interpretation. |
 | [Adaptive bitrate](architecture/adaptive.md) | Subscribe-side rendition switching driven by `NetworkSignals`, with bandwidth and loss thresholds, probe-based upgrades, and emergency downgrades. |
 | [Capture](architecture/capture.md) | The rusty-capture abstraction over PipeWire, V4L2, X11, ScreenCaptureKit, and AVFoundation backends. |
 | [Codecs](architecture/codecs.md) | `VideoEncoder`/`VideoDecoder` traits, software backends (openh264, rav1e/rav1d, Opus), and the `DynamicVideoDecoder` fallback chain. |
