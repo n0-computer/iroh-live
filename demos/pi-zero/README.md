@@ -29,77 +29,32 @@ The e-paper display is optional --if the HAT is not connected or SPI is not enab
 
 ## Cross-compiling
 
-The Pi Zero 2 W runs a 64-bit ARM (aarch64) Linux. Build on your host machine.
+The Pi Zero 2 W runs a 64-bit ARM (aarch64) Linux. Build on your host machine
+using `cargo-zigbuild` with a Debian Bookworm sysroot. See
+[cross/README.md](../../cross/README.md) for full details on prerequisites and
+sysroot setup.
 
-### Option A: Docker via `cross` (recommended)
-
-The workspace ships a Docker-based cross-compilation setup that handles all
-native dependencies automatically. No sysroot wrangling required.
+### Quick start
 
 ```sh
-# One-time: install cross
-cargo install cross --git https://github.com/cross-rs/cross
-
-# One-time: build the Docker image (from the repo root)
-docker build -t iroh-live-cross-aarch64 -f cross/Dockerfile.aarch64 .
+# One-time: set up the aarch64 sysroot (from the repo root)
+cargo make cross-sysroot-aarch64
 
 # Build the pi-zero demo
-cargo make cross-build-pi-zero-aarch64
+cargo make cross-build-aarch64 -- -p pi-zero-demo --release
 
-# Or build the irl CLI
-cargo make cross-build-irl-aarch64
-
-# Deploy to Pi
-scp target/aarch64-unknown-linux-gnu/release/pi-zero-demo pi@<PI_IP>:~/
+# With libcamera support
+cargo make cross-build-aarch64 -- -p pi-zero-demo --release --features libcamera
 ```
 
-CI also builds pre-compiled aarch64 binaries on every push to main. Check the
-`rolling-release` GitHub release for `pi-zero-demo-linux-aarch64` and
-`irl-linux-aarch64`.
+The binary is at `target/aarch64-unknown-linux-gnu/release/pi-zero-demo`.
 
-**libcamera note**: The cross Docker image does not include `libcamera-dev`
-because it is not available in the Ubuntu version used by the cross-rs base
-image. Camera capture on the Pi uses V4L2 directly (which is fully supported),
-so libcamera headers are not needed for this build.
+A Docker path is also available for macOS/Windows hosts that cannot install zig
+natively. See [cross/README.md](../../cross/README.md) for details.
 
-### Option B: sysroot from your Pi
+### Build natively on the Pi
 
-One-time setup on the Pi to install dev headers:
-
-```sh
-# On the Pi:
-sudo apt install libasound2-dev
-```
-
-One-time setup on your host machine to pull the sysroot and install the cross-compiler:
-
-```sh
-mkdir -p ~/pi-sysroot
-rsync -az pi@<PI_IP>:/usr/lib/aarch64-linux-gnu ~/pi-sysroot/usr/lib/
-rsync -az pi@<PI_IP>:/usr/include ~/pi-sysroot/usr/
-rsync -az pi@<PI_IP>:/lib/aarch64-linux-gnu ~/pi-sysroot/lib/
-
-rustup target add aarch64-unknown-linux-gnu
-# Arch Linux:
-sudo pacman -S aarch64-linux-gnu-gcc
-# Debian/Ubuntu:
-#   sudo apt install gcc-aarch64-linux-gnu
-```
-
-Build with the included script (sets up pkg-config, linker search paths, etc.):
-
-```sh
-./demos/pi-zero/build.sh
-
-# Or with a custom sysroot path:
-PI_SYSROOT=/path/to/sysroot ./demos/pi-zero/build.sh
-```
-
-The script validates the sysroot, fixes missing `.so` symlinks, and passes the right `-L` flags so the linker can find aarch64 libraries like ALSA.
-
-### Option C: build natively on the Pi
-
-Slower but avoids all cross-compilation issues:
+Slower but avoids all cross-compilation setup:
 
 ```sh
 # On the Pi:
@@ -108,15 +63,19 @@ sudo apt install build-essential libasound2-dev libpipewire-0.3-dev pkg-config
 cargo build -p pi-zero-demo --release
 ```
 
-The binary is at `target/release/pi-zero-demo` (native) or
-`target/aarch64-unknown-linux-gnu/release/pi-zero-demo` (cross-compiled).
-
 ## Deploying to the Pi
 
 Copy the binary over SSH:
 
 ```sh
 scp target/aarch64-unknown-linux-gnu/release/pi-zero-demo pi@<PI_IP>:~/
+```
+
+Or use the cargo-make task, which builds, strips, and deploys in one step:
+
+```sh
+# Defaults to PI_HOST=livepizero; override with PI_HOST=<hostname>
+cargo make cross-deploy
 ```
 
 ## Pi setup
@@ -279,7 +238,7 @@ host, deploy, and run:
 
 ```sh
 # Build and deploy
-./demos/pi-zero/build.sh --deploy livepizero
+cargo make cross-deploy
 
 # Run all tests (encoder, decoder, roundtrip) at 640x360
 ssh pi@livepizero "./pi-zero-demo codec-test all --frames 60"
