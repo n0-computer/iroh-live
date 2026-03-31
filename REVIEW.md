@@ -14,15 +14,15 @@ been removed. Short codes are prefixed by section abbreviation.
 
 - [ ] **BUG-3**: `Rc<Display>` cross-thread drop race in VAAPI decoder. `VaapiGpuFrame` clones `Rc<Display>` on the decode thread; if the frame is dropped on a different thread, the non-atomic refcount is a data race (UB). Blocked on cros-libva using `Rc<Display>` instead of `Arc<Display>` — needs upstream change or `Arc<Mutex<Rc<Display>>>` wrapper (`vaapi/decoder.rs`). (Previously ER5.)
 
-- [ ] **BUG-4**: PipeWire DMA-BUF modifier hardcoded to 0 (LINEAR). The actual DRM modifier from the compositor is never read; tiled DMA-BUFs produce garbled frames on modern GPUs. The VPP retiler partially works around this downstream. Fix requires parsing `SPA_FORMAT_VIDEO_modifier` from format negotiation (`pipewire.rs:701`). (Previously ER1.)
+- [x] **BUG-4**: ~~PipeWire DMA-BUF modifier~~ — Fixed in `e875a0e`: parses SPA_FORMAT_VIDEO_modifier.
 
-- [ ] **BUG-5**: PipeWire NV12 DMA-BUF reports a single plane. NV12 is two-plane; a single-plane report causes downstream importers to reject or corrupt chroma (`pipewire.rs:233`). (Previously ER2.)
+- [x] **BUG-5**: ~~PipeWire NV12 single-plane~~ — Fixed in `e875a0e`: reports Y + UV planes with correct offsets.
 
 - [ ] **BUG-6**: V4L2 NV12 size calculation ignores `bytesperline` stride padding. The code hardcodes `y_size = width * height` instead of using the driver-reported stride. Corrupted frames on drivers with row padding (common on hardware ISPs) (`v4l2.rs:415`). (Previously ER18.)
 
-- [ ] **BUG-7**: Relay `PullState::pull` has a TOCTOU race. Lock acquired, checked, dropped. Async connect happens without the lock. Re-acquire to insert. Two concurrent pulls for the same ticket both pass the check and connect; one overwrites the other. Fix: use `tokio::sync::Mutex` held across the async gap, or insert a sentinel before connecting (`pull.rs:50-60`). (Previously DR11.)
+- [x] **BUG-7**: ~~Relay pull TOCTOU~~ — Fixed in `e875a0e`: Connecting sentinel + Notify.
 
-- [ ] **BUG-8**: Relay pull handles never cleaned up. The `active` map only grows via `insert`. No background task monitors session health or removes entries on disconnect. On a long-running relay this leaks memory indefinitely (`pull.rs`). (Previously DR12.)
+- [x] **BUG-8**: ~~Relay pull cleanup~~ — Fixed in `8901059`: cluster lifecycle, no idle timeout.
 
 - [ ] **BUG-9**: iroh-moq actor session map dedup race. `sessions.insert(remote, session)` replaces the old entry. The old session's close task returns `(remote, res)`, which could remove or update the new session's entry, prematurely marking it as closed (`iroh-moq/src/lib.rs:487`). (Previously DR14.)
 
