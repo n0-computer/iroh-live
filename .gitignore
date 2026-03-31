@@ -1,6 +1,8 @@
 /target
-SANDBOX
+/plans
+/SANDBOX
 target
-.agents
-OVERNIGHT.md
-iroh-live-relay/web/package-lock.json
+/.agents
+/.claude
+/.zed
+/test-media
