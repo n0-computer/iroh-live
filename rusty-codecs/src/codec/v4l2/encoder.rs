@@ -467,11 +467,26 @@ mod raw_v4l2 {
     // SAFETY: we only access MmapBuffer from the encoder thread.
     unsafe impl Send for MmapBuffer {}
 
+    /// Format details returned by the driver after S_FMT.
+    #[derive(Debug, Clone, Copy)]
+    struct OutputFormat {
+        /// Row stride in bytes (may be > width due to alignment).
+        bytesperline: u32,
+        /// Total buffer size including alignment padding.
+        sizeimage: u32,
+        /// Actual pixel format accepted by the driver (may differ from requested).
+        pixelformat: u32,
+    }
+
     pub(super) struct RawEncoder {
         fd: std::fs::File,
         output_bufs: Vec<MmapBuffer>,  // raw NV12 input
         capture_bufs: Vec<MmapBuffer>, // encoded H264 output
         output_free: VecDeque<u32>,    // free OUTPUT buffer indices
+        /// Format negotiated with the driver for the OUTPUT (raw frame) queue.
+        output_fmt: OutputFormat,
+        width: u32,
+        height: u32,
     }
 
     impl Drop for RawEncoder {
@@ -538,24 +553,41 @@ mod raw_v4l2 {
             Self::s_ctrl(raw_fd, V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR, 1);
 
             // 2. S_FMT OUTPUT (NV12).
-            Self::s_fmt(
+            let output_fmt = Self::s_fmt(
                 raw_fd,
                 V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
                 fourcc(b'N', b'V', b'1', b'2'),
                 width,
                 height,
             )?;
-            tracing::debug!("V4L2 raw: OUTPUT format set to NV12 {width}x{height}");
+
+            let fmt_fourcc = output_fmt.pixelformat.to_le_bytes();
+            let fmt_str = std::str::from_utf8(&fmt_fourcc).unwrap_or("????");
+            tracing::info!(
+                format = fmt_str,
+                bytesperline = output_fmt.bytesperline,
+                sizeimage = output_fmt.sizeimage,
+                "V4L2 raw: OUTPUT format {width}x{height}"
+            );
+
+            let requested = fourcc(b'N', b'V', b'1', b'2');
+            let accepted_yu12 = output_fmt.pixelformat == fourcc(b'Y', b'U', b'1', b'2');
+            if output_fmt.pixelformat != requested && !accepted_yu12 {
+                anyhow::bail!("V4L2 encoder rejected NV12: driver selected {fmt_str} instead");
+            }
 
             // 3. S_FMT CAPTURE (H264).
-            Self::s_fmt(
+            let capture_fmt = Self::s_fmt(
                 raw_fd,
                 V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
                 fourcc(b'H', b'2', b'6', b'4'),
                 width,
                 height,
             )?;
-            tracing::debug!("V4L2 raw: CAPTURE format set to H264 {width}x{height}");
+            tracing::debug!(
+                sizeimage = capture_fmt.sizeimage,
+                "V4L2 raw: CAPTURE format set to H264 {width}x{height}"
+            );
 
             // 4. S_PARM (framerate).
             Self::s_parm(raw_fd, framerate);
@@ -578,21 +610,93 @@ mod raw_v4l2 {
                 output_bufs,
                 capture_bufs,
                 output_free,
+                output_fmt,
+                width,
+                height,
             })
         }
 
-        /// Queue a raw NV12 frame to the OUTPUT queue.
-        /// Returns false if no free buffer is available (caller should drain CAPTURE first).
+        /// Copies a tightly-packed NV12 frame into an OUTPUT buffer, respecting
+        /// the driver's stride and height alignment. If the driver selected YU12
+        /// (I420), deinterleaves the UV plane on the fly.
+        ///
+        /// Returns false if no free buffer is available.
         pub fn queue_frame(&mut self, nv12: &[u8], timestamp_us: u64) -> bool {
             let Some(idx) = self.output_free.pop_front() else {
                 return false;
             };
+
             let buf = &self.output_bufs[idx as usize];
-            let len = nv12.len().min(buf.length);
-            unsafe {
-                std::ptr::copy_nonoverlapping(nv12.as_ptr(), buf.ptr, len);
+            let dst = unsafe { std::slice::from_raw_parts_mut(buf.ptr, buf.length) };
+
+            let w = self.width as usize;
+            let h = self.height as usize;
+            let stride = self.output_fmt.bytesperline as usize;
+            let sizeimage = self.output_fmt.sizeimage as usize;
+            let is_yu12 = self.output_fmt.pixelformat == fourcc(b'Y', b'U', b'1', b'2');
+
+            // Zero-fill the entire buffer so alignment-padding regions are clean.
+            // The driver may read the full sizeimage worth of data.
+            let fill_len = sizeimage.min(dst.len());
+            dst[..fill_len].fill(0);
+
+            let src_y = &nv12[..w * h];
+            let src_uv = &nv12[w * h..];
+            let uv_h = h.div_ceil(2);
+
+            // The driver may align height to a multiple of 16. The aligned
+            // height determines where the chroma plane(s) start.
+            let aligned_h = if stride > 0 {
+                // Derive aligned height from sizeimage:
+                //   NV12: sizeimage = stride * aligned_h * 3/2
+                //   YU12: sizeimage = stride * aligned_h * 3/2  (same total)
+                // So: aligned_h = sizeimage * 2 / (stride * 3)
+                (sizeimage * 2) / (stride * 3)
+            } else {
+                h
+            };
+
+            // Copy Y plane row-by-row with stride padding.
+            for row in 0..h {
+                let src_start = row * w;
+                let dst_start = row * stride;
+                let copy_len = w.min(stride);
+                dst[dst_start..dst_start + copy_len]
+                    .copy_from_slice(&src_y[src_start..src_start + copy_len]);
             }
-            self.qbuf_output(idx, len as u32, timestamp_us);
+
+            if is_yu12 {
+                // YU12 (I420): separate U and V planes, each with stride/2.
+                let half_stride = stride / 2;
+                let u_offset = stride * aligned_h;
+                let aligned_uv_h = aligned_h / 2;
+                let v_offset = u_offset + half_stride * aligned_uv_h;
+
+                for row in 0..uv_h {
+                    let src_row = &src_uv[row * w..row * w + w];
+                    // Deinterleave: NV12 has [U0,V0,U1,V1,...], YU12 wants
+                    // separate [U0,U1,...] and [V0,V1,...].
+                    let u_start = u_offset + row * half_stride;
+                    let v_start = v_offset + row * half_stride;
+                    for i in 0..w / 2 {
+                        dst[u_start + i] = src_row[i * 2];
+                        dst[v_start + i] = src_row[i * 2 + 1];
+                    }
+                }
+            } else {
+                // NV12: interleaved UV plane, same stride as Y.
+                let uv_offset = stride * aligned_h;
+                for row in 0..uv_h {
+                    let src_start = row * w;
+                    let dst_start = uv_offset + row * stride;
+                    let copy_len = w.min(stride);
+                    dst[dst_start..dst_start + copy_len]
+                        .copy_from_slice(&src_uv[src_start..src_start + copy_len]);
+                }
+            }
+
+            // Use sizeimage as bytesused — some drivers require it to match.
+            self.qbuf_output(idx, sizeimage as u32, timestamp_us);
             true
         }
 
@@ -704,13 +808,16 @@ mod raw_v4l2 {
         /// Doing G_FMT first ensures all fields have valid defaults (colorspace,
         /// sizeimage, etc.) — S_FMT with a zeroed struct is rejected by
         /// bcm2835-codec.
+        ///
+        /// Returns the format the driver actually accepted — the pixel format,
+        /// stride, and buffer size may differ from what was requested.
         fn s_fmt(
             fd: RawFd,
             type_: u32,
             pixfmt: u32,
             width: u32,
             height: u32,
-        ) -> anyhow::Result<()> {
+        ) -> anyhow::Result<OutputFormat> {
             const VIDIOC_G_FMT: libc::c_ulong = 0xC0D05604; // _IOWR('V', 4, v4l2_format)
 
             let mut fmt: V4l2Format = unsafe { std::mem::zeroed() };
@@ -726,13 +833,21 @@ mod raw_v4l2 {
             }
 
             // Modify the fields we care about.
-            // Offsets within the 208-byte struct:
-            //   _rest[0..4] = padding (4 bytes for 8-byte union alignment)
-            //   _rest[4..] = v4l2_pix_format_mplane union start
-            //   pix_mp.width      at union offset 0   → _rest[4..8]
-            //   pix_mp.height     at union offset 4   → _rest[8..12]
-            //   pix_mp.pixelformat at union offset 8  → _rest[12..16]
-            //   pix_mp.num_planes at union offset 180 → _rest[184]
+            //
+            // Offsets within the 208-byte V4l2Format struct:
+            //   _rest[0..4]   = padding (4 bytes for 8-byte union alignment)
+            //   _rest[4..]    = v4l2_pix_format_mplane union start
+            //
+            // v4l2_pix_format_mplane layout (union-relative offsets):
+            //   0:   width              → _rest[4..8]
+            //   4:   height             → _rest[8..12]
+            //   8:   pixelformat        → _rest[12..16]
+            //   12:  field
+            //   16:  colorspace
+            //   20:  plane_fmt[0]       → _rest[24..]
+            //     20+0: sizeimage       → _rest[24..28]
+            //     20+4: bytesperline    → _rest[28..32]
+            //   180: num_planes         → _rest[184]
             fmt._rest[4..8].copy_from_slice(&width.to_ne_bytes());
             fmt._rest[8..12].copy_from_slice(&height.to_ne_bytes());
             fmt._rest[12..16].copy_from_slice(&pixfmt.to_ne_bytes());
@@ -745,7 +860,18 @@ mod raw_v4l2 {
                     std::io::Error::last_os_error()
                 );
             }
-            Ok(())
+
+            // Read back what the driver actually set — it may have adjusted
+            // the pixel format, stride, or buffer size.
+            let actual_pixfmt = u32::from_ne_bytes(fmt._rest[12..16].try_into().unwrap());
+            let sizeimage = u32::from_ne_bytes(fmt._rest[24..28].try_into().unwrap());
+            let bytesperline = u32::from_ne_bytes(fmt._rest[28..32].try_into().unwrap());
+
+            Ok(OutputFormat {
+                bytesperline,
+                sizeimage,
+                pixelformat: actual_pixfmt,
+            })
         }
 
         fn s_ctrl(fd: RawFd, id: u32, value: i32) {
