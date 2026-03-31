@@ -5,7 +5,10 @@
 //! the need for multiple `irl publish` + `irl play` invocations when running
 //! complex multi-stream scenarios.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, atomic::AtomicU64},
+};
 
 use iroh::SecretKey;
 use iroh_live::{
@@ -13,7 +16,7 @@ use iroh_live::{
     media::{
         AudioBackend,
         codec::VideoCodec,
-        format::{AudioPreset, PlaybackConfig, VideoPreset},
+        format::{AudioPreset, PlaybackConfig, Quality, VideoPreset},
         publish::LocalBroadcast,
         subscribe::MediaTracks,
     },
@@ -25,6 +28,10 @@ use tracing::{info, warn};
 
 use crate::{
     args::{AudioSourceSpec, RunArgs, VideoSourceSpec},
+    record::{
+        H264AnnexBState, audio_codec_extension, record_raw_track, record_video_track,
+        video_codec_extension,
+    },
     transport::setup_live,
 };
 
@@ -221,19 +228,62 @@ async fn run_session(config: RunConfig) -> n0_error::Result {
             Ok((sub, tracks)) => {
                 println!("[recv] {}: connected to {}", recv.name, recv.ticket);
 
+                if recv.record.is_none() {
+                    // No recording configured. MediaTracks already handles
+                    // decoding and audio playback via the AudioBackend.
+                    // Video frames are decoded but not displayed since wiring
+                    // an egui window from `irl run` requires owning the main
+                    // thread or spawning a dedicated render thread.
+                    // TODO: spawn egui viewer window when moq-media-egui is available
+                    info!(name = %recv.name, "receiving (audio playback active, video decode only)");
+                }
+
                 // Spawn recording if configured.
                 if let Some(ref base_path) = recv.record {
                     let base = PathBuf::from(base_path);
                     let name = recv.name.clone();
+                    let broadcast = sub.broadcast().clone();
+                    let catalog = broadcast.catalog();
                     info!(name, path = %base.display(), "recording enabled");
-                    // TODO: wire up recording — record_video_track and record_raw_track
-                    // in record.rs are private. Making them pub(crate) and calling them
-                    // here requires access to raw_video_track / raw_audio_track from the
-                    // RemoteBroadcast, plus H264AnnexBState setup. Needs its own PR.
-                    tasks.spawn(async move {
-                        warn!(name, "recording not yet wired — needs record.rs refactor");
-                        Ok(())
-                    });
+
+                    // Record video if available.
+                    if let Ok(video_name) = catalog.select_video_rendition(Quality::Highest) {
+                        match broadcast.raw_video_track(&video_name) {
+                            Ok((source, config)) => {
+                                let ext = video_codec_extension(&config.codec);
+                                let path = base.with_extension(ext);
+                                let h264_state = H264AnnexBState::from_config(&config);
+                                let vb = Arc::new(AtomicU64::new(0));
+                                let vf = Arc::new(AtomicU64::new(0));
+                                info!(name, track = %video_name, path = %path.display(), "recording video");
+                                tasks.spawn(async move {
+                                    record_video_track(source, &path, vb, vf, h264_state).await
+                                });
+                            }
+                            Err(e) => {
+                                warn!(name, err = %e, "failed to get raw video track for recording")
+                            }
+                        }
+                    }
+
+                    // Record audio if available.
+                    if let Ok(audio_name) = catalog.select_audio_rendition(Quality::Highest) {
+                        match broadcast.raw_audio_track(&audio_name) {
+                            Ok((source, config)) => {
+                                let ext = audio_codec_extension(&config.codec);
+                                let path = base.with_extension(ext);
+                                let ab = Arc::new(AtomicU64::new(0));
+                                let af = Arc::new(AtomicU64::new(0));
+                                info!(name, track = %audio_name, path = %path.display(), "recording audio");
+                                tasks.spawn(async move {
+                                    record_raw_track(source, &path, ab, af).await
+                                });
+                            }
+                            Err(e) => {
+                                warn!(name, err = %e, "failed to get raw audio track for recording")
+                            }
+                        }
+                    }
                 }
 
                 recv_handles.push((recv.name.clone(), sub, tracks));

@@ -168,7 +168,7 @@ fn setup_encoder(
 ) -> n0_error::Result {
     match opts.encoder.as_str() {
         "libcamera" | "hw" | "hardware" => {
-            use rusty_codecs::libcamera::{LibcameraH264Config, LibcameraH264Source};
+            use rusty_capture::{LibcameraH264Config, LibcameraH264Source};
 
             let config =
                 LibcameraH264Config::new(capture_w, capture_h, opts.fps).with_bitrate(opts.bitrate);
