@@ -139,11 +139,13 @@ rooms, and running a relay server.
 | `irl play <TICKET>` | Subscribe and render a remote broadcast |
 | `irl call [TICKET]` | 1:1 bidirectional video call |
 | `irl room [TICKET]` | Multi-party room with participant grid |
+| `irl record <TICKET>` | Record a remote broadcast to raw files |
+| `irl run <CONFIG.toml>` | Multi-stream session from TOML config |
 | `irl relay` | Start a local relay server for browser access |
 
-Common flags for `publish`: `--video cam`, `--video screen`, `--test-source`,
-`--codec av1`, `--video-presets 360p,720p`, `--relay <endpoint>`,
-`--room <ticket>`.
+Common flags for `publish`: `--video cam`, `--video screen`, `--video test`,
+`--video file:path.fmp4`, `--audio none`, `--codec h264`, `--audio-codec opus`,
+`--video-presets 360p,720p`, `--relay <endpoint>`, `--room <ticket>`.
 
 Details: [docs/cli.md](docs/cli.md)
 
@@ -223,10 +225,8 @@ shows the flags relevant to `iroh-live` (which delegates to `moq-media` and
 ## Contributing
 
 Open items and known issues are tracked in the
-[issue tracker](https://github.com/n0-computer/iroh-live/issues) and in
-[REVIEW.md](REVIEW.md). The [plans/](plans/PLANS.md) directory contains
-explorations of potential next steps. Architecture documentation is in 
-[docs/](docs/index.md).
+[issue tracker](https://github.com/n0-computer/iroh-live/issues).
+Architecture documentation is in [docs/](docs/index.md).
 
 ```sh
 # Full check (all feature combinations, clippy, fmt)
