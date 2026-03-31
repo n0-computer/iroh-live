@@ -53,17 +53,14 @@ jobs:
         if: steps.cache-sysroot.outputs.cache-hit != 'true'
         run: cargo make cross-sysroot-aarch64
 
-      - name: Build irl CLI (release)
-        run: cargo make cross-build-aarch64 -- -p iroh-live-cli --release
-
-      - name: Strip binary
-        run: aarch64-linux-gnu-strip target/aarch64-unknown-linux-gnu/release/irl || true
+      - name: Build irl CLI (release-dist)
+        run: cargo make cross-build-aarch64 -- -p iroh-live-cli --profile release-dist
 
       - name: Upload irl binary to rolling release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp target/aarch64-unknown-linux-gnu/release/irl irl-linux-aarch64
+          cp target/aarch64-unknown-linux-gnu/release-dist/irl irl-linux-aarch64
           chmod +x irl-linux-aarch64
           gh release upload rolling-release irl-linux-aarch64 --clobber || true

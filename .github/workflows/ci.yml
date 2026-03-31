@@ -61,11 +61,11 @@ jobs:
       - name: Install system deps
         run: brew install libtool automake
 
-      - run: cargo check --locked --workspace --exclude pi-zero-demo --all-targets
-      - run: cargo check --locked --workspace --exclude pi-zero-demo --all-targets --all-features
-      - run: cargo check --locked --workspace --exclude pi-zero-demo --all-targets --no-default-features
-      - run: cargo clippy --locked --workspace --exclude pi-zero-demo --all-targets --all-features -- -D warnings
-      - run: cargo nextest run --locked --workspace --exclude pi-zero-demo
+      - run: cargo check --locked --workspace --exclude pi-zero-demo --exclude pi-zero-minimal --all-targets
+      - run: cargo check --locked --workspace --exclude pi-zero-demo --exclude pi-zero-minimal --all-targets --all-features
+      - run: cargo check --locked --workspace --exclude pi-zero-demo --exclude pi-zero-minimal --all-targets --no-default-features
+      - run: cargo clippy --locked --workspace --exclude pi-zero-demo --exclude pi-zero-minimal --all-targets --all-features -- -D warnings
+      - run: cargo nextest run --locked --workspace --exclude pi-zero-demo --exclude pi-zero-minimal
 
   # moq-media-dioxus is excluded from default-members (heavy dep tree).
   # Check it weekly to catch breakage early.

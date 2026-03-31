@@ -9,53 +9,12 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  prepare-release:
-    name: Prepare rolling release
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Create or reset rolling release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          BUILD_DATE="$(date -u '+%Y-%m-%d %H:%M UTC')"
-
-          # Delete existing rolling release if present
-          gh release delete rolling-release --yes 2>/dev/null || true
-          git tag -f rolling-release HEAD
-          git push -f origin rolling-release
-
-          gh release create rolling-release \
-            --title "Development build" \
-            --notes "$(cat <<EOF
-          Rolling development build from \`dev\` branch.
-
-          **Commit:** ${{ github.sha }}
-          **Built:** ${BUILD_DATE}
-
-          ### Platform notes
-          - **linux-amd64**: Ubuntu 24.04, glibc 2.39
-          - **linux-aarch64**: cross-compiled via cross-rs (Raspberry Pi compatible)
-          - **macos-aarch64**: macOS 14, Apple Silicon
-
-          ### Included features
-          All codecs (H.264, Opus, AV1), PipeWire capture, wgpu rendering,
-          VAAPI hardware encoding (Linux), VideoToolbox (macOS).
-          EOF
-          )" \
-            --prerelease
-
   build:
     name: Build ${{ matrix.name }}
-    needs: prepare-release
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     permissions:
-      contents: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -63,8 +22,6 @@ jobs:
           - name: linux-amd64
             os: ubuntu-latest
             artifact: irl-linux-amd64
-          # linux-aarch64 is built via cross-compilation in ci-aarch64.yml
-          # and uploaded to the rolling release from there.
           - name: macos-aarch64
             os: macos-14
             artifact: irl-macos-aarch64
@@ -90,36 +47,82 @@ jobs:
         run: brew install libtool automake
 
       - name: Build release binary
-        run: cargo build --locked --profile release-dist -p iroh-live-cli --all-features
+        run: cargo build --locked --profile release-dist -p iroh-live-cli
 
-      - name: Upload to rolling release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          cp target/release-dist/irl "${{ matrix.artifact }}"
-          chmod +x "${{ matrix.artifact }}"
-          gh release upload rolling-release "${{ matrix.artifact }}" --clobber
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: target/release-dist/irl
 
-  finalize:
-    name: Add checksums
-    needs: [prepare-release, build]
-    if: always() && needs.prepare-release.result == 'success'
+  publish:
+    name: Publish rolling release
+    needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v6
 
-      - name: Generate and upload SHA256SUMS
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Prepare binaries
+        run: |
+          mkdir -p release
+          for dir in release-assets/irl-*; do
+            name="$(basename "$dir")"
+            cp "$dir/irl" "release/$name"
+            chmod +x "release/$name"
+          done
+
+      - name: Generate checksums
+        working-directory: release
+        run: sha256sum irl-* > SHA256SUMS
+
+      - name: Ensure rolling release exists
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p release
-          cd release
-          # Download whatever assets made it to the release
-          gh release download rolling-release --pattern 'irl-*' || true
-          if ls irl-* 1>/dev/null 2>&1; then
-            sha256sum irl-* > SHA256SUMS
-            gh release upload rolling-release SHA256SUMS --clobber
-          fi
+          # Create the release if it doesn't exist yet. If it does,
+          # this is a no-op. We never delete — other CI jobs (aarch64
+          # zigbuild) may have already uploaded assets to it.
+          git tag -f rolling-release HEAD
+          git push -f origin rolling-release
+          gh release create rolling-release \
+            --title "Development build" \
+            --latest 2>/dev/null || true
+
+      - name: Upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Upload binaries + checksums, replacing any existing ones.
+          for f in release/*; do
+            gh release upload rolling-release "$f" --clobber
+          done
+
+      - name: Update release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BUILD_DATE="$(date -u '+%Y-%m-%d %H:%M UTC')"
+          gh release edit rolling-release \
+            --title "Development build" \
+            --latest \
+            --prerelease=false \
+            --notes "$(cat <<NOTES
+          Rolling development build from \`main\` branch.
+
+          **Commit:** ${{ github.sha }}
+          **Built:** ${BUILD_DATE}
+
+          ### Platforms
+          - **irl-linux-amd64**: Ubuntu 24.04, glibc 2.39
+          - **irl-macos-aarch64**: macOS 14, Apple Silicon
+          - **irl-linux-aarch64**: cross-compiled via zigbuild, glibc 2.36, Raspberry Pi OS compatible
+          NOTES
+          )"
