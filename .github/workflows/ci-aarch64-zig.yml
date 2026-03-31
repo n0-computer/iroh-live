@@ -15,7 +15,7 @@ env:
 jobs:
   zigbuild:
     name: aarch64 zigbuild
-    runs-on: [self-hosted, linux, X64]
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
