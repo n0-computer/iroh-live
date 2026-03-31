@@ -1,8 +1,10 @@
 # Pi Zero 2 demo — cargo-make tasks.
 #
 # Usage:
-#   cargo make build              # cross-compile for aarch64
+#   cargo make build              # cross-compile for aarch64 (legacy GCC linker)
 #   cargo make deploy             # build + deploy to PI_HOST
+#   cargo make zig-build          # cross-compile via zigbuild + Bookworm sysroot
+#   cargo make zig-deploy         # zigbuild + deploy to PI_HOST
 #   cargo make pi-test            # run #[ignore] tests on Pi via SSH
 #
 # Environment:
@@ -71,5 +73,32 @@ script = [
     scp "$TEST_BIN" "pi@${PI_HOST}:~/rusty-codecs-test"
     echo "Running ignored (Pi-only) tests..."
     ssh "pi@${PI_HOST}" "~/rusty-codecs-test --ignored --test-threads=1" || true
+    '''
+]
+
+# ── Zigbuild tasks (preferred) ───────────────────────────────────────
+# These use cargo-zigbuild + Debian Bookworm sysroot instead of the
+# legacy GCC cross-linker approach. The sysroot includes libcamera-dev,
+# modern PipeWire, etc.
+
+[tasks.zig-build]
+description = "Cross-compile pi-zero-demo for aarch64 via zigbuild"
+script = [
+    '''
+    WORKSPACE_ROOT="$(cd "${CARGO_MAKE_WORKING_DIRECTORY}/../.." && pwd)"
+    "${WORKSPACE_ROOT}/cross/zigbuild.sh" -p pi-zero-demo --release
+    '''
+]
+
+[tasks.zig-deploy]
+description = "Cross-compile and deploy pi-zero demo via zigbuild"
+script = [
+    '''
+    WORKSPACE_ROOT="$(cd "${CARGO_MAKE_WORKING_DIRECTORY}/../.." && pwd)"
+    "${WORKSPACE_ROOT}/cross/zigbuild.sh" -p pi-zero-demo --release
+    BINARY="target/aarch64-unknown-linux-gnu/release/pi-zero-demo"
+    aarch64-linux-gnu-strip "$BINARY" 2>/dev/null || echo "note: strip not available, deploying unstripped"
+    scp "$BINARY" "pi@${PI_HOST}:~/pi-zero-demo"
+    echo "deployed: pi@${PI_HOST}:~/pi-zero-demo"
     '''
 ]
