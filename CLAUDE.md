@@ -240,13 +240,9 @@ Access chain: `MoqSession::conn()` → `&Connection<HandshakeCompleted>` (from `
 
 `iroh_live::util::StatsSmoother` — smooths bandwidth/RTT over 1s intervals.
 
-## Plans and docs
+## Docs
 
 - `docs/` — architecture docs and platform guides (see `docs/index.md`)
-- `plans/PLANS.md` — master index of open plans with checklists
-- `plans/future.md` — potential future features with use cases and effort estimates
-- `plans/platforms.md` — platform support matrix (codecs, capture, GPU rendering)
-- `REVIEW.md` — crate review findings and action items
 
 ## Platform testing
 

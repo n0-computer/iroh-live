@@ -159,7 +159,7 @@ impl AudioEncoderFactory for OpusEncoder {
 
     fn with_config(config: AudioEncoderConfig) -> Result<Self> {
         // Opus internally operates at 48 kHz regardless of the requested
-        // sample rate (see B10 in REVIEW.md).
+        // sample rate (Opus internally resamples to its native rates).
         Self::new(SAMPLE_RATE, config.channel_count, config.bitrate)
     }
 

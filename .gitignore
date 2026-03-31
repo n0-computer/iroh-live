@@ -1,8 +1,8 @@
 /target
 /plans
 /SANDBOX
-target
 /.agents
 /.claude
 /.zed
 /test-media
+/logs
