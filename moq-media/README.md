@@ -8,7 +8,7 @@ Media capture, encoding, decoding, and playout pipelines for real-time streaming
 - **Encoding** -- video and audio encoder pipelines running on dedicated OS threads
 - **Decoding** -- decoder pipelines with frame output channels
 - **Playout** -- `PlayoutClock` maps presentation timestamps to wall-clock time, measures jitter, and supports frame skipping for live streams
-- **Adaptive bitrate** -- `AdaptiveVideoTrack` switches between renditions based on network conditions (bandwidth, loss rate, RTT)
+- **Adaptive bitrate** -- `VideoTrack::enable_adaptation()` switches between renditions based on network conditions (bandwidth, loss rate, RTT)
 - **Audio** -- microphone input and speaker output via cpal/firewheel, with acoustic echo cancellation
 
 ## Publish side
@@ -38,7 +38,7 @@ let video = remote.video()?;
 // video.try_recv() returns the latest decoded VideoFrame
 ```
 
-`AdaptiveVideoTrack` wraps a `VideoTrack` and switches renditions automatically based on `NetworkSignals` (bandwidth, loss, RTT). The switching uses WebRTC-aligned thresholds: below 2% loss is good, above 10% triggers a downgrade, and above 20% drops to the lowest rendition.
+`VideoTrack::enable_adaptation()` activates automatic rendition switching based on `NetworkSignals` (bandwidth, loss, RTT). The switching uses WebRTC-aligned thresholds: below 2% loss is good, above 10% triggers a downgrade, and above 20% drops to the lowest rendition.
 
 ## Capture architecture
 
@@ -75,5 +75,7 @@ A shared playout clock (`sync::Sync`, ported from the moq/js player) coordinates
 | `v4l2` | | V4L2 hardware codecs |
 | `wgpu` | | GPU rendering |
 | `dmabuf-import` | | Zero-copy DMA-BUF import (Linux/Vulkan) |
+| `pcm` | | Raw PCM audio (no encoding) |
+| `jack` | | JACK audio backend via cpal |
 | `android` | | Android MediaCodec + CameraX |
 | `test-util` | | Deterministic test sources for integration tests |
