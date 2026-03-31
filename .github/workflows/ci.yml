@@ -1,12 +1,11 @@
 name: CI
 on:
   push:
-    branches: [main, dev]
+    branches: [main, dev, dev-test]
   pull_request:
-    branches: [main]
   schedule:
     # Weekly check for excluded workspace members (moq-media-dioxus).
-    - cron: '0 6 * * 1'
+    - cron: "0 6 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
@@ -33,10 +32,11 @@ jobs:
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           sudo apt-get update && sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libpipewire-0.3-dev libclang-dev \
+            libasound2-dev libpipewire-0.3-dev libjack-jackd2-dev libclang-dev \
             libegl-dev libgbm-dev libdrm-dev libfontconfig-dev \
             libva-dev nasm
 
+      - run: cargo check --locked --workspace --all-targets
       - run: cargo check --locked --workspace --all-targets --all-features
       - run: cargo check --locked --workspace --all-targets --no-default-features
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
@@ -61,6 +61,7 @@ jobs:
       - name: Install system deps
         run: brew install libtool automake
 
+      - run: cargo check --locked --workspace --exclude pi-zero-demo --all-targets
       - run: cargo check --locked --workspace --exclude pi-zero-demo --all-targets --all-features
       - run: cargo check --locked --workspace --exclude pi-zero-demo --all-targets --no-default-features
       - run: cargo clippy --locked --workspace --exclude pi-zero-demo --all-targets --all-features -- -D warnings

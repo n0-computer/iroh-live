@@ -42,7 +42,7 @@ eframe = { version = "0.33.0", default-features = false, features = ["wayland", 
 [features]
 default = [
     "h264", "opus", "pcm", "capture", "wgpu",
-    "vaapi", "videotoolbox", "dmabuf-import", "metal-import",
+    "vaapi", "videotoolbox", "dmabuf-import", "metal-import", "capture-all"
 ]
 qlog = ["iroh/qlog"]
 
