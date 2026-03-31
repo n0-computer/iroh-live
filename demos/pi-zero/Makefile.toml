@@ -7,7 +7,7 @@
 #   cargo make pi-test            # run #[ignore] tests on Pi via SSH
 #
 # For cross-compilation without deploy, use the workspace-level tasks:
-#   cargo make cross-build -- -p pi-zero-demo --release
+#   cargo make cross-build-aarch64 -- -p pi-zero-demo --release
 #
 # Environment:
 #   PI_HOST  — SSH hostname (default: livepizero)
@@ -83,7 +83,7 @@ script = [
 # libcamera-dev, modern PipeWire, etc.
 #
 # For build-only (no deploy), use the workspace-level task:
-#   cargo make cross-build -- -p pi-zero-demo --release
+#   cargo make cross-build-aarch64 -- -p pi-zero-demo --release
 
 [tasks.cross-deploy]
 description = "Cross-compile and deploy pi-zero demo via zigbuild"

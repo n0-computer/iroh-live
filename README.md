@@ -200,6 +200,48 @@ Then build with all features:
 cargo build --workspace --all-features
 ```
 
+### Cross-compilation (aarch64)
+
+Build for Raspberry Pi and other aarch64 Linux devices from an x86_64
+host. Two approaches are available depending on your OS.
+
+**Host-native (Linux only)** — uses [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild)
+with a Debian Bookworm aarch64 sysroot. No Docker needed.
+
+Prerequisites: `zig`, `cargo-zigbuild`, `cargo-make`, `dpkg-deb`, `curl`.
+
+```sh
+# Install tools (Arch)
+sudo pacman -S zig
+cargo install cargo-zigbuild cargo-make
+
+# Create the aarch64 sysroot (one-time, ~55 MB, no sudo)
+cargo make cross-sysroot-aarch64
+
+# Build
+cargo make cross-build-aarch64 -- -p iroh-live-cli --release
+cargo make cross-build-aarch64 -- -p pi-zero-demo --release --features libcamera
+```
+
+**Docker (macOS, Windows, any host)** — runs zigbuild inside a container
+with the sysroot baked in. Only needs Docker.
+
+```sh
+cargo install cargo-make  # if not already installed
+
+cargo make cross-build-aarch64-docker -- -p iroh-live-cli --release
+cargo make cross-build-aarch64-docker -- -p pi-zero-demo --release
+```
+
+The Docker image is built automatically on first use from
+`cross/Dockerfile-aarch64`. Both approaches produce identical binaries
+targeting glibc 2.36 (Raspberry Pi OS Bookworm compatible).
+
+Output: `target/aarch64-unknown-linux-gnu/release/<binary>`
+
+See `cross/README.md` for details on the sysroot contents, environment
+variables, and troubleshooting.
+
 ### Feature flags
 
 The workspace uses many feature flags for codecs, hardware backends, and capture

@@ -51,10 +51,10 @@ jobs:
 
       - name: Create sysroot
         if: steps.cache-sysroot.outputs.cache-hit != 'true'
-        run: cargo make cross-sysroot
+        run: cargo make cross-sysroot-aarch64
 
       - name: Build irl CLI (release)
-        run: cargo make cross-build -- -p iroh-live-cli --release
+        run: cargo make cross-build-aarch64 -- -p iroh-live-cli --release
 
       - name: Strip binary
         run: aarch64-linux-gnu-strip target/aarch64-unknown-linux-gnu/release/irl || true

@@ -22,7 +22,7 @@ rustup target add aarch64-unknown-linux-gnu
 ### Create the sysroot (one-time)
 
 ```sh
-cargo make cross-sysroot
+cargo make cross-sysroot-aarch64
 ```
 
 Downloads aarch64 .deb packages from Debian Bookworm and extracts headers
@@ -33,16 +33,16 @@ sudo needed. Takes 1-2 minutes on a decent connection.
 
 ```sh
 # irl CLI (release)
-cargo make cross-build -- -p iroh-live-cli --release
+cargo make cross-build-aarch64 -- -p iroh-live-cli --release
 
 # Pi Zero demo with libcamera
-cargo make cross-build -- -p pi-zero-demo --release --features libcamera
+cargo make cross-build-aarch64 -- -p pi-zero-demo --release --features libcamera
 
 # Check the whole workspace
-cargo make cross-build -- --workspace --exclude bevy-demo --exclude bevy-call
+cargo make cross-build-aarch64 -- --workspace --exclude bevy-demo --exclude bevy-call
 
 # Arbitrary example
-cargo make cross-build -- --release --example publish
+cargo make cross-build-aarch64 -- --release --example publish
 ```
 
 Everything after `--` is forwarded to `cargo zigbuild`.
@@ -53,10 +53,10 @@ No zig, no sysroot, no host packages needed. Just Docker.
 
 ```sh
 # irl CLI (release)
-cargo make cross-build-docker -- -p iroh-live-cli --release
+cargo make cross-build-aarch64-docker -- -p iroh-live-cli --release
 
 # Pi Zero demo
-cargo make cross-build-docker -- -p pi-zero-demo --release --features raspberry-pi
+cargo make cross-build-aarch64-docker -- -p pi-zero-demo --release --features raspberry-pi
 ```
 
 The Docker image is built on first use (~5 minutes) and cached. It

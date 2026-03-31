@@ -16,12 +16,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-IMAGE="iroh-live-zigbuild"
+IMAGE="iroh-live-aarch64"
 
 # Build image if it doesn't exist
 if ! docker image inspect "$IMAGE" &>/dev/null; then
     echo "Building Docker image $IMAGE (first time only)..."
-    docker build -t "$IMAGE" -f "$SCRIPT_DIR/Dockerfile.zigbuild" "$WORKSPACE_ROOT"
+    docker build -t "$IMAGE" -f "$SCRIPT_DIR/Dockerfile-aarch64" "$WORKSPACE_ROOT"
 fi
 
 # Run with source mounted and cargo registry cached to avoid re-downloading
