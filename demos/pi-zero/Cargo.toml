@@ -26,7 +26,7 @@ iroh-live = { workspace = true, features = ["h264", "opus"] }
 moq-media = { workspace = true, features = ["h264", "opus", "v4l2", "test-util"] }
 tokio-util = "0.7"
 rusty-codecs = { workspace = true, features = ["raspberry-pi", "gles", "gles-dmabuf"] }
-rusty-capture = { workspace = true, default-features = false, features = ["libcamera"] }
+rusty-capture = { workspace = true, default-features = false, features = ["libcamera", "libcamera-h264"] }
 
 # QR code generation
 qrcode = "0.14"
