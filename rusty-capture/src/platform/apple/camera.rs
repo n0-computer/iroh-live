@@ -1,191 +1,56 @@
-//! AVFoundation camera capture for macOS and iOS.
+//! macOS native camera capture is not yet functional. Use the nokhwa backend instead.
 //!
-//! Uses `AVCaptureSession` + `AVCaptureVideoDataOutput` to capture frames from
-//! the default camera device. Produces RGBA CPU frames.
+//! The AVFoundation camera implementation is stubbed out because the objc2
+//! delegate pattern for `AVCaptureVideoDataOutputSampleBufferDelegate` has
+//! not been completed. The struct and trait impls are preserved for future
+//! work, but all methods return errors or empty results.
 //!
-//! # Zero-Copy Plan
-//!
-//! AVFoundation delivers `CMSampleBuffer` containing IOSurface-backed
-//! `CVPixelBuffer`. The same `AppleGpuFrame` / `NativeFrameHandle::IoSurface`
-//! path described in `screen.rs` applies here — both screen and camera produce
-//! the same `CVPixelBuffer` type, so 100% of the downstream zero-copy code
-//! is shared.
-//!
-//! For VideoToolbox encoding:
-//! ```ignore
-//! // In vtb/encoder.rs push_frame():
-//! match &frame.data {
-//!     FrameData::Gpu(gpu) => {
-//!         if let Some(NativeFrameHandle::IoSurface(surface)) = gpu.native_handle() {
-//!             // Create CVPixelBuffer from IOSurface, pass to VTCompressionSession
-//!             VTCompressionSessionEncodeFrame(session, pixel_buffer, pts, dur, ...);
-//!             return Ok(());
-//!         }
-//!     }
-//!     // ... existing fallback
-//! }
-//! ```
-//!
-//! # iOS Notes
-//!
-//! On iOS, AVFoundation works identically but with additional permission
-//! requirements (`NSCameraUsageDescription` in Info.plist). The same code
-//! compiles for both macOS and iOS.
-
-use std::sync::mpsc;
+//! On macOS, enable the `nokhwa` feature for working camera capture.
 
 use anyhow::Result;
 use rusty_codecs::{
     format::{PixelFormat, VideoFormat, VideoFrame},
     traits::VideoSource,
 };
-use tracing::warn;
 
 use crate::types::{CameraConfig, CameraInfo};
 
 /// Lists available cameras via AVFoundation.
+///
+/// Returns an empty list because the native backend is not functional.
+/// Use the nokhwa backend for camera enumeration on macOS.
 pub fn cameras() -> Result<Vec<CameraInfo>> {
-    // TODO: Use objc2-av-foundation to enumerate AVCaptureDevice instances.
-    //
-    // Implementation:
-    // ```
-    // let device_types = NSArray::from_vec(vec![
-    //     AVCaptureDeviceTypeBuiltInWideAngleCamera,
-    //     AVCaptureDeviceTypeExternalUnknown, // macOS external cameras
-    // ]);
-    // let discovery = AVCaptureDeviceDiscoverySession::discovery_session_with_device_types(
-    //     &device_types,
-    //     AVMediaTypeVideo,
-    //     AVCaptureDevicePositionUnspecified,
-    // );
-    // for device in discovery.devices().iter() {
-    //     let name = device.localizedName().to_string();
-    //     let id = device.uniqueID().to_string();
-    //     // Enumerate formats via device.formats()
-    //     // Each AVCaptureDeviceFormat has formatDescription (pixel format, dimensions)
-    //     // and videoSupportedFrameRateRanges (min/max fps)
-    // }
-    // ```
-    //
-    // For now, return a placeholder for the default camera.
-    Ok(vec![CameraInfo {
-        backend: crate::CaptureBackend::AVFoundation,
-        id: "default".into(),
-        name: "Default Camera".into(),
-        supported_formats: vec![],
-    }])
+    Ok(vec![])
 }
 
 /// AVFoundation camera capturer for macOS and iOS.
 ///
-/// Currently a stub that outlines the full implementation. The capture session
-/// setup requires objc2 delegate patterns for `AVCaptureVideoDataOutputSampleBufferDelegate`.
+/// Not yet functional. All constructors return an error directing the
+/// caller to the nokhwa backend.
 #[derive(derive_more::Debug)]
 pub struct AppleCameraCapturer {
     width: u32,
     height: u32,
-    #[debug(skip)]
-    rx: mpsc::Receiver<VideoFrame>,
-    #[debug(skip)]
-    stop_tx: Option<mpsc::SyncSender<()>>,
 }
 
 impl AppleCameraCapturer {
-    /// Creates a camera capturer for the given device.
-    pub fn new(info: &CameraInfo, config: &CameraConfig) -> Result<Self> {
-        use crate::CameraSelector;
-
-        let (_frame_tx, frame_rx) = mpsc::sync_channel(2);
-        let (stop_tx, _stop_rx) = mpsc::sync_channel(1);
-
-        // Derive requested resolution from the selector strategy.
-        let (width, height) = if let Some(fmt) = config.select_format(&info.supported_formats) {
-            (fmt.dimensions[0], fmt.dimensions[1])
-        } else {
-            match &config.selector {
-                CameraSelector::TargetResolution(w, h) => (*w, *h),
-                _ => (1280, 720),
-            }
-        };
-        let _device_id = &info.id;
-
-        // TODO: Implement AVFoundation capture session.
-        //
-        // Full implementation outline:
-        //
-        // 1. DEVICE SETUP:
-        //    ```
-        //    let device = if device_id == "default" {
-        //        AVCaptureDevice::default_device_with_media_type(AVMediaTypeVideo)
-        //    } else {
-        //        AVCaptureDevice::device_with_unique_id(&device_id)
-        //    };
-        //    let input = AVCaptureDeviceInput::init_with_device(&device)?;
-        //    ```
-        //
-        // 2. SESSION CONFIGURATION:
-        //    ```
-        //    let session = AVCaptureSession::new();
-        //    session.beginConfiguration();
-        //    session.addInput(&input);
-        //
-        //    let output = AVCaptureVideoDataOutput::new();
-        //    output.setVideoSettings(&NSDictionary::from_keys_and_objects(
-        //        &[kCVPixelBufferPixelFormatTypeKey],
-        //        &[kCVPixelFormatType_32BGRA],
-        //    ));
-        //    output.setAlwaysDiscardsLateVideoFrames(true);
-        //
-        //    let queue = dispatch2::Queue::new("camera-capture", dispatch2::QueueAttribute::Serial);
-        //    output.setSampleBufferDelegate(&delegate, &queue);
-        //    session.addOutput(&output);
-        //    session.commitConfiguration();
-        //    ```
-        //
-        // 3. DELEGATE (frame callback):
-        //    ```
-        //    impl AVCaptureVideoDataOutputSampleBufferDelegate for CameraDelegate {
-        //        fn captureOutput_didOutputSampleBuffer_fromConnection(
-        //            &self, output, sample_buffer, connection
-        //        ) {
-        //            let pixel_buffer = CMSampleBufferGetImageBuffer(sample_buffer);
-        //            // CPU path: lock base address, copy BGRA→RGBA
-        //            // Zero-copy path: wrap CVPixelBuffer as AppleGpuFrame
-        //            frame_tx.send(VideoFrame::new_rgba(rgba, w, h));
-        //        }
-        //    }
-        //    ```
-        //
-        // 4. START:
-        //    ```
-        //    session.startRunning();
-        //    ```
-        //
-        // The objc2 delegate pattern requires defining a class with
-        // `declare_class!` macro. This is the most complex part.
-
-        warn!("AVFoundation camera capture not yet fully implemented");
-
-        // For now, produce no frames. The struct compiles and integrates
-        // into the VideoSource trait correctly.
-        Ok(Self {
-            width,
-            height,
-            rx: frame_rx,
-            stop_tx: Some(stop_tx),
-        })
+    /// Attempts to create a camera capturer for the given device.
+    ///
+    /// Always returns an error because the native backend is not implemented.
+    pub fn new(_info: &CameraInfo, _config: &CameraConfig) -> Result<Self> {
+        anyhow::bail!(
+            "AVFoundation camera capture is not yet implemented; \
+             enable the `nokhwa` feature for camera support on macOS"
+        )
     }
 
-    /// Opens the default camera.
+    /// Attempts to open the default camera.
+    ///
+    /// Always returns an error because the native backend is not implemented.
     pub fn open_default() -> Result<Self> {
-        Self::new(
-            &CameraInfo {
-                backend: crate::CaptureBackend::AVFoundation,
-                id: "default".into(),
-                name: "Default Camera".into(),
-                supported_formats: vec![],
-            },
-            &CameraConfig::default(),
+        anyhow::bail!(
+            "AVFoundation camera capture is not yet implemented; \
+             enable the `nokhwa` feature for camera support on macOS"
         )
     }
 }
@@ -203,29 +68,14 @@ impl VideoSource for AppleCameraCapturer {
     }
 
     fn start(&mut self) -> Result<()> {
-        Ok(())
+        anyhow::bail!("AVFoundation camera capture is not yet implemented")
     }
 
     fn stop(&mut self) -> Result<()> {
-        if let Some(tx) = self.stop_tx.take() {
-            let _ = tx.send(());
-        }
         Ok(())
     }
 
     fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {
-        let mut latest = None;
-        while let Ok(frame) = self.rx.try_recv() {
-            latest = Some(frame);
-        }
-        Ok(latest)
-    }
-}
-
-impl Drop for AppleCameraCapturer {
-    fn drop(&mut self) {
-        if let Some(tx) = self.stop_tx.take() {
-            let _ = tx.send(());
-        }
+        anyhow::bail!("AVFoundation camera capture is not yet implemented")
     }
 }

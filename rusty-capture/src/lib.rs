@@ -195,13 +195,18 @@ fn list_cameras() -> anyhow::Result<Vec<CameraInfo>> {
     if pipewire_available() {
         return Ok(vec![pipewire_camera_placeholder()]);
     }
-    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple"))]
-    {
-        return platform::apple::camera::cameras();
-    }
+    // nokhwa before apple-camera: the native AVFoundation backend is not yet
+    // functional, so prefer nokhwa for cross-platform camera support.
     #[cfg(feature = "nokhwa")]
     {
         return platform::nokhwa_impl::cameras();
+    }
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple"))]
+    {
+        let cams = platform::apple::camera::cameras()?;
+        if !cams.is_empty() {
+            return Ok(cams);
+        }
     }
     anyhow::bail!(
         "no camera capture backend available (enable `camera` or a platform-specific feature)"
@@ -224,12 +229,12 @@ fn list_all_cameras() -> anyhow::Result<Vec<CameraInfo>> {
     if pipewire_available() {
         all.push(pipewire_camera_placeholder());
     }
-    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple"))]
-    if let Ok(cameras) = platform::apple::camera::cameras() {
-        all.extend(cameras);
-    }
     #[cfg(feature = "nokhwa")]
     if let Ok(cameras) = platform::nokhwa_impl::cameras() {
+        all.extend(cameras);
+    }
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple"))]
+    if let Ok(cameras) = platform::apple::camera::cameras() {
         all.extend(cameras);
     }
     Ok(all)
@@ -380,8 +385,6 @@ impl CameraCapturer {
         if pipewire_available() {
             backends.push(CaptureBackend::PipeWire);
         }
-        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "camera-apple"))]
-        backends.push(CaptureBackend::AVFoundation);
         #[cfg(feature = "nokhwa")]
         backends.push(CaptureBackend::Nokhwa);
         backends
