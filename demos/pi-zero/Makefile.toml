@@ -3,9 +3,11 @@
 # Usage:
 #   cargo make build              # cross-compile for aarch64 (legacy GCC linker)
 #   cargo make deploy             # build + deploy to PI_HOST
-#   cargo make zig-build          # cross-compile via zigbuild + Bookworm sysroot
-#   cargo make zig-deploy         # zigbuild + deploy to PI_HOST
+#   cargo make cross-deploy       # zigbuild cross-compile + deploy to PI_HOST
 #   cargo make pi-test            # run #[ignore] tests on Pi via SSH
+#
+# For cross-compilation without deploy, use the workspace-level tasks:
+#   cargo make cross-build -- -p pi-zero-demo --release
 #
 # Environment:
 #   PI_HOST  — SSH hostname (default: livepizero)
@@ -76,21 +78,14 @@ script = [
     '''
 ]
 
-# ── Zigbuild tasks (preferred) ───────────────────────────────────────
-# These use cargo-zigbuild + Debian Bookworm sysroot instead of the
-# legacy GCC cross-linker approach. The sysroot includes libcamera-dev,
-# modern PipeWire, etc.
+# ── Zigbuild cross-deploy ─────────────────────────────────────────────
+# Uses cargo-zigbuild + Debian Bookworm sysroot. The sysroot includes
+# libcamera-dev, modern PipeWire, etc.
+#
+# For build-only (no deploy), use the workspace-level task:
+#   cargo make cross-build -- -p pi-zero-demo --release
 
-[tasks.zig-build]
-description = "Cross-compile pi-zero-demo for aarch64 via zigbuild"
-script = [
-    '''
-    WORKSPACE_ROOT="$(cd "${CARGO_MAKE_WORKING_DIRECTORY}/../.." && pwd)"
-    "${WORKSPACE_ROOT}/cross/zigbuild.sh" -p pi-zero-demo --release
-    '''
-]
-
-[tasks.zig-deploy]
+[tasks.cross-deploy]
 description = "Cross-compile and deploy pi-zero demo via zigbuild"
 script = [
     '''

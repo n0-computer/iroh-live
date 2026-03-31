@@ -34,14 +34,12 @@ jobs:
           cargo install cargo-zigbuild
           cargo install cargo-make
 
-      - name: Install cross-compilation toolchain
+      - name: Install dpkg-deb (for sysroot creation)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            gcc-aarch64-linux-gnu \
-            g++-aarch64-linux-gnu \
-            mmdebstrap \
-            qemu-user-static
+            dpkg-dev \
+            python3
 
       - name: Cache sysroot
         id: cache-sysroot
@@ -53,10 +51,10 @@ jobs:
 
       - name: Create sysroot
         if: steps.cache-sysroot.outputs.cache-hit != 'true'
-        run: ./cross/create-sysroot.sh
+        run: cargo make cross-sysroot
 
       - name: Build irl CLI (release)
-        run: cargo make zig-build-irl
+        run: cargo make cross-build -- -p iroh-live-cli --release
 
       - name: Strip binary
         run: aarch64-linux-gnu-strip target/aarch64-unknown-linux-gnu/release/irl || true

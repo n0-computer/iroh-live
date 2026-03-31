@@ -120,25 +120,38 @@ workspace = false
 dependencies = ["check-all", "test", "test-e2e"]
 
 # ── Cross-compilation (aarch64, zigbuild + sysroot) ──────────────────
-# Requires: zig, cargo-zigbuild, sysroot (run `./cross/create-sysroot.sh`)
-# Uses a Debian Bookworm sysroot with libcamera-dev, modern PipeWire,
-# and other libraries needed for aarch64 builds.
+#
+# Host-native (requires zig + cargo-zigbuild + sysroot):
+#   cargo make cross-sysroot
+#   cargo make cross-build -- -p iroh-live-cli --release
+#
+# Docker (no host setup needed, just Docker):
+#   cargo make cross-build-docker -- -p iroh-live-cli --release
 
-[tasks.zig-create-sysroot]
-description = "Create aarch64 Debian Bookworm sysroot for zigbuild"
+[tasks.cross-sysroot]
+description = "Create the aarch64 Debian Bookworm sysroot (dpkg-deb, no sudo needed)."
 workspace = false
-script = ["${CARGO_MAKE_WORKING_DIRECTORY}/cross/create-sysroot.sh"]
+script_runner = "@shell"
+script = '''
+"${CARGO_MAKE_WORKING_DIRECTORY}/cross/create-sysroot.sh"
+'''
 
-[tasks.zig-check-aarch64]
-description = "Cross-check workspace for aarch64 via zigbuild"
+[tasks.cross-build]
+description = "Cross-build for aarch64 via zigbuild. Pass extra args after --."
 workspace = false
-script = [
-    "${CARGO_MAKE_WORKING_DIRECTORY}/cross/zigbuild.sh --workspace --exclude bevy-demo --exclude bevy-call"
-]
+script_runner = "@shell"
+script = '''
+# cargo-make passes args after -- as positional params, with "--" itself
+# as the first param. Strip that leading "--" before forwarding.
+if [ "$1" = "--" ]; then shift; fi
+"${CARGO_MAKE_WORKING_DIRECTORY}/cross/zigbuild.sh" "$@"
+'''
 
-[tasks.zig-build-irl]
-description = "Cross-build irl CLI for aarch64 via zigbuild (release)"
+[tasks.cross-build-docker]
+description = "Cross-build for aarch64 via zigbuild in Docker. Pass extra args after --."
 workspace = false
-script = [
-    "${CARGO_MAKE_WORKING_DIRECTORY}/cross/zigbuild.sh -p iroh-live-cli --release"
-]
+script_runner = "@shell"
+script = '''
+if [ "$1" = "--" ]; then shift; fi
+"${CARGO_MAKE_WORKING_DIRECTORY}/cross/docker-zigbuild.sh" "$@"
+'''

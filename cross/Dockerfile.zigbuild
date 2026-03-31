@@ -1,0 +1,21 @@
+FROM ghcr.io/rust-cross/cargo-zigbuild:latest
+
+# Install dpkg-deb for sysroot creation and basic tools.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    dpkg-dev curl ca-certificates gzip python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install cargo-make for build tasks.
+RUN cargo install cargo-make
+
+# Add the Rust aarch64 target.
+RUN rustup target add aarch64-unknown-linux-gnu
+
+# Create sysroot inside the image so builds start immediately.
+COPY cross/create-sysroot.sh /tmp/create-sysroot.sh
+RUN /tmp/create-sysroot.sh /opt/sysroot-aarch64 && rm /tmp/create-sysroot.sh
+
+# Set env var so zigbuild.sh finds the pre-built sysroot.
+ENV SYSROOT=/opt/sysroot-aarch64
+
+WORKDIR /io

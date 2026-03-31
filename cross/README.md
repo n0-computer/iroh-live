@@ -1,49 +1,78 @@
 # Cross-compilation for aarch64
 
-Uses `cargo-zigbuild` with Zig as the linker and a Debian Bookworm aarch64
-sysroot for native headers/libraries. No Docker required.
+Two paths: host-native (Linux with zig installed) or Docker (any OS).
 
-## Prerequisites
+## Host-native (Linux)
+
+### Prerequisites
 
 ```sh
 # Arch Linux
-sudo pacman -S zig mmdebstrap aarch64-linux-gnu-gcc
+sudo pacman -S zig dpkg python
 cargo install cargo-zigbuild
 
 # Debian/Ubuntu
-sudo apt install zig mmdebstrap gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user-static
+sudo apt install zig dpkg-dev python3
 cargo install cargo-zigbuild
 
 # Rust target
 rustup target add aarch64-unknown-linux-gnu
 ```
 
-## Create the sysroot (one-time)
+### Create the sysroot (one-time)
 
 ```sh
-./cross/create-sysroot.sh
+cargo make cross-sysroot
 ```
 
-This bootstraps a minimal Debian Bookworm aarch64 filesystem under
-`cross/sysroot-aarch64/` containing all the development headers and
-pkg-config files. Takes 1-2 minutes. The sysroot is cached by CI.
+Downloads aarch64 .deb packages from Debian Bookworm and extracts headers
+and libraries into `cross/sysroot-aarch64/`. Uses `dpkg-deb` only, no
+sudo needed. Takes 1-2 minutes on a decent connection.
 
-## Build
+### Build
 
 ```sh
 # irl CLI (release)
-cargo make zig-build-irl
+cargo make cross-build -- -p iroh-live-cli --release
+
+# Pi Zero demo with libcamera
+cargo make cross-build -- -p pi-zero-demo --release --features libcamera
 
 # Check the whole workspace
-cargo make zig-check-aarch64
+cargo make cross-build -- --workspace --exclude bevy-demo --exclude bevy-call
 
-# Pi Zero demo (from demos/pi-zero/)
-cd demos/pi-zero && cargo make zig-build
-cd demos/pi-zero && cargo make zig-deploy
+# Arbitrary example
+cargo make cross-build -- --release --example publish
+```
 
-# Manual invocation with arbitrary arguments
+Everything after `--` is forwarded to `cargo zigbuild`.
+
+## Docker (macOS, Windows, any host)
+
+No zig, no sysroot, no host packages needed. Just Docker.
+
+```sh
+# irl CLI (release)
+cargo make cross-build-docker -- -p iroh-live-cli --release
+
+# Pi Zero demo
+cargo make cross-build-docker -- -p pi-zero-demo --release --features raspberry-pi
+```
+
+The Docker image is built on first use (~5 minutes) and cached. It
+includes zig, cargo-zigbuild, and a pre-built aarch64 sysroot.
+
+### Direct script invocation
+
+Both paths can also be used without cargo-make:
+
+```sh
+# Host-native
+./cross/create-sysroot.sh                               # one-time
 ./cross/zigbuild.sh -p iroh-live-cli --release
-./cross/zigbuild.sh -p pi-zero-demo --release --features raspberry-pi
+
+# Docker
+./cross/docker-zigbuild.sh -p iroh-live-cli --release
 
 # Custom sysroot location
 SYSROOT=/path/to/sysroot ./cross/zigbuild.sh -p pi-zero-demo --release
@@ -51,17 +80,20 @@ SYSROOT=/path/to/sysroot ./cross/zigbuild.sh -p pi-zero-demo --release
 
 ## How it works
 
-1. `create-sysroot.sh` uses `mmdebstrap` to extract aarch64 packages from
-   Debian Bookworm into a local directory (no chroot, no root needed).
+1. `create-sysroot.sh` downloads aarch64 `.deb` packages from the Debian
+   archive and extracts them with `dpkg-deb`. No chroot, no root, no
+   mmdebstrap needed.
 
-2. `zigbuild.sh` sets `PKG_CONFIG_SYSROOT_DIR` and `PKG_CONFIG_PATH` so
-   that `-sys` crates find the aarch64 `.pc` files and headers.
+2. `zigbuild.sh` sets `PKG_CONFIG_SYSROOT_DIR`, `PKG_CONFIG_PATH`, CC/CXX
+   (using zig as a cross-compiler), and linker flags so that `-sys` crates
+   find the aarch64 headers and libraries.
 
-3. `cargo-zigbuild` uses Zig as the linker, targeting `aarch64-unknown-linux-gnu.2.36`
-   (glibc 2.36 = Debian Bookworm = Raspberry Pi OS Bookworm).
+3. `cargo-zigbuild` uses Zig as the linker, targeting
+   `aarch64-unknown-linux-gnu.2.36` (glibc 2.36 = Debian Bookworm =
+   Raspberry Pi OS Bookworm).
 
-4. For C compilation in build scripts (aws-lc-sys, etc.), Zig is used as
-   CC/CXX with `--sysroot` pointing to the Debian sysroot.
+4. `docker-zigbuild.sh` wraps the above in a Docker container with
+   everything pre-installed, mounting the source tree and cargo registry.
 
 ## Libraries available in the sysroot
 
@@ -74,12 +106,6 @@ The Bookworm sysroot includes:
 - `libv4l-dev` -- V4L2 camera/encoder
 - `libssl-dev` -- TLS
 - `libx11-dev`, `libxkbcommon-dev`, `libwayland-dev` -- windowing
-
-## CI
-
-`.github/workflows/ci-aarch64-zig.yml` builds the `irl` CLI binary for
-aarch64 in release mode. Pre-built binaries are uploaded to the
-`rolling-release` GitHub release on push to main.
 
 ## Binary compatibility
 

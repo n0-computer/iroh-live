@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # Cross-compile an aarch64 binary using cargo-zigbuild with a Debian sysroot.
 #
-# This script sets up the environment variables needed for pkg-config and
-# the linker to find aarch64 libraries in the sysroot, then delegates to
-# cargo zigbuild.
+# Sets up pkg-config, CC/CXX, and linker environment for aarch64, then
+# delegates to `cargo zigbuild`. All arguments are forwarded.
 #
 # Usage:
 #   ./cross/zigbuild.sh -p pi-zero-demo --release
 #   ./cross/zigbuild.sh -p iroh-live-cli --release
 #   SYSROOT=/custom/path ./cross/zigbuild.sh -p pi-zero-demo --release
+#
+# The sysroot is found in this order:
+#   1. $SYSROOT env var (set by Docker or user)
+#   2. cross/sysroot-aarch64 (default for host-native builds)
 #
 # Prerequisites:
 #   - zig:            sudo pacman -S zig           (Arch)
@@ -46,7 +49,11 @@ if [ ! -d "$SYSROOT" ]; then
     echo "ERROR: sysroot not found at $SYSROOT" >&2
     echo "" >&2
     echo "Create it with:" >&2
-    echo "  ./cross/create-sysroot.sh" >&2
+    echo "  cargo make cross-sysroot" >&2
+    echo "  # or: ./cross/create-sysroot.sh" >&2
+    echo "" >&2
+    echo "For Docker builds (no host setup needed):" >&2
+    echo "  cargo make cross-build-docker -- -p iroh-live-cli --release" >&2
     exit 1
 fi
 
