@@ -1,0 +1,13 @@
+[package]
+name = "pi-zero-minimal"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+iroh-live = { path = "../../iroh-live", default-features = false, features = ["h264", "opus"] }
+rusty-capture = { path = "../../rusty-capture", default-features = false, features = ["libcamera"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+anyhow = "1"

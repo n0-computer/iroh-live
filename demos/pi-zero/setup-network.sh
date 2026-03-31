@@ -5,16 +5,15 @@ if [ $# -lt 2 ]; then
     echo "Usage: $0 <SSID> <PSK> [ROOTFS_PATH]"
     echo "  SSID        WiFi network name"
     echo "  PSK         WiFi password"
-    echo "  ROOTFS_PATH mount point (default: /media/$USER/rootfs)"
+    echo "  ROOTFS_PATH mount point (default: /var/run/media/$USER/rootfs)"
     exit 1
 fi
 
 SSID="$1"
 PSK="$2"
-ROOTFS="${3:-/media/$USER/rootfs}"
+ROOTFS="${3:-/var/run/media/$USER/rootfs}"
 
 CONN_DIR="$ROOTFS/etc/NetworkManager/system-connections"
-CONN_FILE="$CONN_DIR/preconfigured.nmconnection"
 
 if [ ! -d "$ROOTFS/etc/NetworkManager" ]; then
     echo "ERROR: $ROOTFS does not look like a Bookworm rootfs (no NetworkManager dir)"
@@ -22,12 +21,13 @@ if [ ! -d "$ROOTFS/etc/NetworkManager" ]; then
 fi
 
 UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || python3 -c 'import uuid; print(uuid.uuid4())')
+CONN_FILE="$CONN_DIR/$SSID.nmconnection"
 
 sudo mkdir -p "$CONN_DIR"
 
 sudo tee "$CONN_FILE" > /dev/null <<EOF
 [connection]
-id=preconfigured
+id=$SSID
 uuid=$UUID
 type=wifi
 autoconnect=true

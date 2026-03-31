@@ -335,7 +335,7 @@ fn create_screen_backend(
 /// Dispatches to the correct screen backend based on the monitor's backend field.
 fn create_screen_for_backend(
     monitor: &MonitorInfo,
-    config: &ScreenConfig,
+    #[allow(unused, reason = "depends on backend")] config: &ScreenConfig,
 ) -> anyhow::Result<Box<dyn VideoSource>> {
     match monitor.backend {
         #[cfg(all(target_os = "linux", feature = "pipewire"))]
