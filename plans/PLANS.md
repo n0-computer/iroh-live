@@ -7,12 +7,6 @@ notes. For the current architecture, see [docs/](../docs/).
 
 - [api.md](api.md) — remaining public API work: relay publishing, room
   participant model, mute/enable, source replacement, quality refinement
-- [api-ergonomics.md](api-ergonomics.md) — one remaining item: prelude
-  module for common re-exports
-- [call-example-simplification.md](call-example-simplification.md) —
-  library-level improvements: demo sources, source discovery, auto-resubscribe
-- [cli.md](cli.md) — CLI is implemented; remaining: preview mode, grid layout,
-  shared control widgets
 - [docs.md](docs.md) — documentation improvements checklist
 
 ## Media pipeline
@@ -27,6 +21,12 @@ notes. For the current architecture, see [docs/](../docs/).
 - [av-sync.md](av-sync.md) — research notes on A/V sync (disabled;
   unsynchronized PTS pacing works well enough)
 - [codesize.md](codesize.md) — remaining deduplication opportunities
+- [adaptive-track-refactor.md](adaptive-track-refactor.md) — refactor
+  `AdaptiveVideoTrack` into `VideoTrack::enable_adaptation()`
+- [capture-backend-trait.md](capture-backend-trait.md) — unify capture
+  backend cfg flags behind a trait
+- [data-channels.md](data-channels.md) — data channel support alongside
+  media tracks
 
 ## Rendering and UI
 
@@ -34,8 +34,8 @@ notes. For the current architecture, see [docs/](../docs/).
   Rust, GLES viewer mode
 - [debug-overlays.md](debug-overlays.md) — typed metrics refactor,
   timeline panel redesign, A/V sync measurement
-- [devtools.md](devtools.md) — extract common_egui, build multi-endpoint
-  dev tool
+- [bevy-demo.md](bevy-demo.md) — multiplayer 3D spatial video gallery
+  using Bevy
 
 ## Infrastructure
 
@@ -43,6 +43,10 @@ notes. For the current architecture, see [docs/](../docs/).
   Ticket trait
 - [dependencies.md](dependencies.md) — bindgen alignment, image crate
   replacement, crypto unification
+- [perf-pass.md](perf-pass.md) — full-pass audit of hot paths and
+  per-frame allocations
+- [rooms-overhaul.md](rooms-overhaul.md) — feature-complete AV rooms
+  with text chat
 
 ## Platforms
 
@@ -50,6 +54,8 @@ notes. For the current architecture, see [docs/](../docs/).
   remaining
 - [platform/raspberry-pi.md](platform/raspberry-pi.md) — stateless V4L2
   decoder for other SBCs is future work
+- [pi-zero-refactor.md](pi-zero-refactor.md) — refactor Pi Zero demo to
+  share patterns with the `irl` CLI
 - [platform/windows.md](platform/windows.md) — Media Foundation H.264,
   screen/camera capture (design only, no code)
 

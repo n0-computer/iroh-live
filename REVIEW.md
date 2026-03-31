@@ -58,7 +58,7 @@ been removed. Short codes are prefixed by section abbreviation.
 
 - [ ] **API-3**: `LocalBroadcast::producer()` exposes internal `BroadcastProducer`. Bypasses catalog/rendition safety (`publish.rs:248`). (Previously D15.)
 
-- [ ] **API-4**: No observability in `AdaptiveVideoTrack`. No way to query probe state or decision reasons (`adaptive.rs`). (Previously D16.)
+- [ ] **API-4**: No observability in `VideoTrack` adaptation. No way to query probe state or decision reasons (`adaptive.rs`). (Previously D16.)
 
 - [ ] **API-5**: `Quality` enum is coarse — four fixed presets, no custom resolution/bitrate (`format.rs:893`). (Previously A3.)
 
@@ -76,7 +76,7 @@ been removed. Short codes are prefixed by section abbreviation.
 
 - [ ] **API-12** *(design decision needed)*: `LiveTicket` URI format drops relay URLs on round-trip. `serialize()` encodes only `{SCHEME}{addr}/{name}`; `deserialize_url()` always returns `relay_urls: Vec::new()`. The `to_bytes`/`from_bytes` postcard path correctly preserves them. The URI format needs a relay URL encoding or should document the limitation (`ticket.rs`). (Previously DR8.)
 
-- [ ] **API-13**: Rendition switches not seamless. Old decoder dropped immediately, new decoder waits for keyframe, causing visible glitch. Fix: start new decoder first and switch once first frame of new decoder is ready (`adaptive.rs`). (Previously ER9.)
+- [ ] **API-13**: Rendition switches via `VideoTrack` adaptation not seamless. Old decoder dropped immediately, new decoder waits for keyframe, causing visible glitch. Fix: start new decoder first and switch once first frame of new decoder is ready (`adaptive.rs`). (Previously ER9.)
 
 - [ ] **API-14** *(design decision needed)*: Asymmetric encoder/decoder factory pattern. Encoders have a separate `VideoEncoderFactory` trait; decoders put `new()` on the `VideoDecoder` trait with `Self: Sized` bound (preventing `dyn VideoDecoder::new()`). Confusing but functional (`traits.rs:345-367`). (Previously DR25.)
 

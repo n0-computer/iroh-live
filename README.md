@@ -135,7 +135,7 @@ rooms, and running a relay server.
 |---------|-------------|
 | `irl devices` | List cameras, screens, audio devices, and codecs |
 | `irl publish` | Broadcast camera and microphone (default) |
-| `irl publish file <FILE>` | Stream a media file |
+| `irl publish --video file:<FILE>` | Stream a media file |
 | `irl play <TICKET>` | Subscribe and render a remote broadcast |
 | `irl call [TICKET]` | 1:1 bidirectional video call |
 | `irl room [TICKET]` | Multi-party room with participant grid |
@@ -216,6 +216,8 @@ shows the flags relevant to `iroh-live` (which delegates to `moq-media` and
 | `wgpu` | GPU rendering via wgpu | Yes |
 | `dmabuf-import` | Zero-copy VAAPI decode to Vulkan render (Linux) | Yes |
 | `metal-import` | Zero-copy VideoToolbox decode to Metal render (macOS) | Yes |
+| `pcm` | Raw PCM audio (no encoding) | No |
+| `jack` | JACK audio backend via cpal | No |
 | `v4l2` | V4L2 hardware codecs (Raspberry Pi, embedded Linux) | No |
 
 ## Contributing

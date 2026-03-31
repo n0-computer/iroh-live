@@ -46,6 +46,8 @@ let video = remote.video()?;
 | `videotoolbox` | | macOS VideoToolbox hardware codecs |
 | `wgpu` | | GPU-accelerated rendering |
 | `dmabuf-import` | | Zero-copy DMA-BUF texture import (Linux/Vulkan) |
+| `pcm` | | Raw PCM audio (no encoding) |
+| `jack` | | JACK audio backend via cpal |
 | `android` | | Android MediaCodec + CameraX support |
 
 ## Examples
