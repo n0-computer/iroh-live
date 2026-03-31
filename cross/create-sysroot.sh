@@ -41,6 +41,7 @@ PACKAGES=(
     libxfixes-dev
     libxkbcommon-dev
     libwayland-dev
+    libxcb1-dev
     # TLS
     libssl-dev
     # PipeWire
