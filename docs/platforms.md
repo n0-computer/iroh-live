@@ -23,7 +23,8 @@ For the full matrix with implementation status and hardware-specific notes, see
 All platforms marked as mostly working have been tested on at least one device
 and handle the core publish/subscribe flow. Testing coverage is still limited,
 especially for edge cases like device hot-plug, resolution changes, and error
-recovery. See [REVIEW.md](../REVIEW.md) for known issues.
+recovery. Known issues are tracked in the
+[issue tracker](https://github.com/n0-computer/iroh-live/issues).
 
 ## Next steps
 
