@@ -30,9 +30,9 @@ jobs:
           version: 0.14.0
 
       - name: Install cargo-zigbuild and cargo-make
-        run: |
-          cargo install cargo-zigbuild
-          cargo install cargo-make
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild,cargo-make
 
       - name: Install dpkg-deb (for sysroot creation)
         run: |
