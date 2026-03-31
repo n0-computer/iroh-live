@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    branches: [dev] # TODO: change to main after merge
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
