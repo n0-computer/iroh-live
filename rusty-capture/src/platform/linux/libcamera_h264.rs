@@ -7,10 +7,11 @@
 //! [`LibcameraH264Source`] produces pre-encoded H.264 Annex-B packets
 //! directly from rpicam-vid's internal hardware encoder. Preferred on Pi
 //! Zero 2 because it avoids the ~10 MB/s raw-YUV pipe and redundant NV12
-//! conversion, using rpicam-vid's DMABUF zero-copy ISP→encoder path.
+//! conversion, using rpicam-vid's DMABUF zero-copy ISP->encoder path.
 //!
 //! For raw YUV capture (to feed a separate encoder), use
-//! [`rusty_capture::LibcameraCapturer`] with the `libcamera` feature flag.
+//! [`LibcameraCapturer`](super::libcamera::LibcameraCapturer) with the
+//! `libcamera` feature flag.
 
 use std::{
     io::Read,
@@ -20,8 +21,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-
-use crate::{
+use rusty_codecs::{
     codec::h264::annexb::{build_avcc, extract_sps_pps, parse_annex_b},
     config::{H264, VideoCodec, VideoConfig},
     format::EncodedFrame,
@@ -85,9 +85,9 @@ impl LibcameraH264Config {
                 inline: true,
                 profile: 0x42,
                 constraints: 0xE0,
-                // Not hardcoded — rpicam-vid auto-selects level from
+                // Not hardcoded -- rpicam-vid auto-selects level from
                 // resolution/bitrate/framerate. 3.0 is a safe floor that
-                // covers 640×360@30 at 500 kbps; the actual SPS will carry
+                // covers 640x360@30 at 500 kbps; the actual SPS will carry
                 // the real value once the first keyframe arrives.
                 level: 0x1E, // 3.0
             }),
@@ -196,7 +196,7 @@ impl PreEncodedVideoSource for LibcameraH264Source {
                     &c.keyframe_interval.to_string(),
                     "--profile",
                     "baseline",
-                    // Note: do NOT pass --level — rpicam-vid (libcamera v0.3.0)
+                    // Note: do NOT pass --level -- rpicam-vid (libcamera v0.3.0)
                     // rejects the "3.1" format with "no such level 3.1". Let it
                     // auto-select from resolution/bitrate/framerate instead.
                     "--inline", // prepend SPS+PPS before every IDR
@@ -210,7 +210,7 @@ impl PreEncodedVideoSource for LibcameraH264Source {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
-                .context("failed to spawn rpicam-vid — is libcamera installed?")?;
+                .context("failed to spawn rpicam-vid -- is libcamera installed?")?;
 
             let pid = child.id();
             tracing::info!(pid, "rpicam-vid spawned (H.264 mode)");
@@ -222,7 +222,7 @@ impl PreEncodedVideoSource for LibcameraH264Source {
             // Check if the process already exited (immediate failure).
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    // Process died immediately — read stderr for the reason.
+                    // Process died immediately -- read stderr for the reason.
                     let stderr_msg = child
                         .stderr
                         .as_mut()
@@ -252,7 +252,7 @@ impl PreEncodedVideoSource for LibcameraH264Source {
                     );
                 }
                 Ok(None) => {
-                    // Still running — camera acquired successfully.
+                    // Still running -- camera acquired successfully.
                     tracing::info!(pid, "rpicam-vid started (H.264 mode)");
                     self.child = Some(child);
                     self.frame_count = 0;
@@ -266,7 +266,7 @@ impl PreEncodedVideoSource for LibcameraH264Source {
             }
         }
 
-        anyhow::bail!("rpicam-vid failed after {MAX_RETRIES} retries — camera unavailable");
+        anyhow::bail!("rpicam-vid failed after {MAX_RETRIES} retries -- camera unavailable");
     }
 
     fn pop_packet(&mut self) -> Result<Option<EncodedFrame>> {
@@ -297,7 +297,7 @@ impl PreEncodedVideoSource for LibcameraH264Source {
                 tracing::error!(stderr = stderr_trimmed, "rpicam-vid stderr");
             }
             anyhow::bail!(
-                "rpicam-vid EOF — process exited (status: {}, stderr: {:?})",
+                "rpicam-vid EOF -- process exited (status: {}, stderr: {:?})",
                 status.map_or_else(|| "unknown".into(), |s| format!("{s}")),
                 stderr_trimmed,
             );
@@ -400,7 +400,7 @@ fn contains_idr_nal(data: &[u8]) -> bool {
 /// Finds the end of the first complete access unit in an Annex-B bytestream.
 ///
 /// Scans forward for AU-starting NAL types (SPS=7, IDR=5, non-IDR=1).
-/// Returns the byte offset where the *second* such NAL starts — everything
+/// Returns the byte offset where the *second* such NAL starts -- everything
 /// before that offset is exactly one AU. Returns `None` if the buffer
 /// contains fewer than two AU boundaries (i.e. no complete AU yet).
 fn find_first_au_end(data: &[u8]) -> Option<usize> {
@@ -450,14 +450,14 @@ mod tests {
 
     #[test]
     fn au_boundary_single_nal() {
-        // Single IDR NAL — no second boundary, returns None.
+        // Single IDR NAL -- no second boundary, returns None.
         let data = [0, 0, 0, 1, 0x65, 0xAA, 0xBB];
         assert_eq!(find_first_au_end(&data), None);
     }
 
     #[test]
     fn au_boundary_two_slices() {
-        // IDR (AU 1) + non-IDR (AU 2) → split at second slice start code.
+        // IDR (AU 1) + non-IDR (AU 2) -> split at second slice start code.
         let mut data = vec![0, 0, 0, 1, 0x65, 0xAA, 0xBB]; // IDR NAL (type 5)
         let second_start = data.len();
         data.extend_from_slice(&[0, 0, 0, 1, 0x41, 0xCC, 0xDD]); // non-IDR (type 1)
@@ -470,13 +470,13 @@ mod tests {
         let mut data = vec![0, 0, 0, 1, 0x67, 0x42]; // SPS (type 7)
         data.extend_from_slice(&[0, 0, 0, 1, 0x68, 0xCE]); // PPS (type 8)
         data.extend_from_slice(&[0, 0, 0, 1, 0x65, 0xAA]); // IDR (type 5)
-        // Only one VCL NAL (IDR) → no second AU boundary → None
+        // Only one VCL NAL (IDR) -> no second AU boundary -> None
         assert_eq!(find_first_au_end(&data), None);
     }
 
     #[test]
     fn au_boundary_sps_pps_idr_then_p_frame() {
-        // SPS+PPS+IDR (AU 1) + P-frame (AU 2) → split at P-frame.
+        // SPS+PPS+IDR (AU 1) + P-frame (AU 2) -> split at P-frame.
         let mut data = vec![0, 0, 0, 1, 0x67, 0x42]; // SPS
         data.extend_from_slice(&[0, 0, 0, 1, 0x68, 0xCE]); // PPS
         data.extend_from_slice(&[0, 0, 0, 1, 0x65, 0xAA]); // IDR
@@ -487,7 +487,7 @@ mod tests {
 
     #[test]
     fn au_boundary_sps_only() {
-        // SPS alone — no VCL NAL, no AU boundary.
+        // SPS alone -- no VCL NAL, no AU boundary.
         let data = vec![0, 0, 0, 1, 0x67, 0x42];
         assert_eq!(find_first_au_end(&data), None);
     }

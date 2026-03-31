@@ -26,7 +26,7 @@ pub enum DeviceRef {
 /// Parsed video source specification.
 ///
 /// Parses the `cam[:<backend>:<device>]`, `screen[:<backend>:<device>]`,
-/// `preenc:<backend>[:<arg>]`, `test`, and `none` format used by the CLI
+/// `preenc:<backend>[:<arg>]`, `file:<path>`, `test`, and `none` format used by the CLI
 /// and demos. Both backend and device segments accept names or numeric
 /// indices.
 ///
@@ -95,13 +95,12 @@ pub enum VideoSourceSpec {
     ///
     /// `preenc:<backend>` where `<backend>` identifies the pre-encoded source:
     /// - `preenc:libcamera` — rpicam-vid H.264 hardware encoder (Raspberry Pi)
-    /// - `preenc:rtsp:<url>` — RTSP camera passthrough (future)
     ///
     /// Bitrate, resolution, and codec are configured via the backend itself
     /// (e.g. `--bitrate` and `--fps` flags for the libcamera backend), not
     /// through the source spec.
     PreEncoded {
-        /// Backend identifier for the pre-encoded source (e.g. `"libcamera"`, `"rtsp"`).
+        /// Backend identifier for the pre-encoded source (e.g. `"libcamera"`).
         backend: String,
         /// Optional backend-specific argument (e.g. RTSP URL, device path).
         arg: Option<String>,
@@ -110,7 +109,71 @@ pub enum VideoSourceSpec {
     None,
 }
 
+/// Describes a capture source (camera or screen) with optional backend/device selection.
+///
+/// Returned by [`VideoSourceSpec::as_capture`] for variants that represent
+/// live capture. Callers can pass this to `rusty_capture::CameraCapturer::open`
+/// or `rusty_capture::ScreenCapturer::open` without matching on spec variants.
+#[derive(Debug, Clone)]
+pub struct CaptureSpec {
+    /// Whether this is a camera or screen capture.
+    pub kind: CaptureKind,
+    /// Backend selector, if specified.
+    pub backend: Option<BackendRef>,
+    /// Device selector, if specified.
+    pub device: Option<DeviceRef>,
+}
+
+/// Distinguishes camera from screen capture sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureKind {
+    /// Camera input.
+    Camera,
+    /// Screen/monitor input.
+    Screen,
+}
+
 impl VideoSourceSpec {
+    /// Returns a [`CaptureSpec`] for capture-type variants.
+    ///
+    /// Returns `None` for `File`, `PreEncoded`, `Test`, and `None` variants.
+    pub fn as_capture(&self) -> Option<CaptureSpec> {
+        match self {
+            Self::DefaultCamera => Some(CaptureSpec {
+                kind: CaptureKind::Camera,
+                backend: None,
+                device: None,
+            }),
+            Self::Camera { backend, device } => Some(CaptureSpec {
+                kind: CaptureKind::Camera,
+                backend: backend.clone(),
+                device: device.clone(),
+            }),
+            Self::DefaultScreen => Some(CaptureSpec {
+                kind: CaptureKind::Screen,
+                backend: None,
+                device: None,
+            }),
+            Self::Screen { backend, device } => Some(CaptureSpec {
+                kind: CaptureKind::Screen,
+                backend: backend.clone(),
+                device: device.clone(),
+            }),
+            Self::Test | Self::File { .. } | Self::PreEncoded { .. } | Self::None => None,
+        }
+    }
+
+    /// Returns `true` when this spec produces encoded output that bypasses
+    /// the encoder pipeline (i.e. `PreEncoded` or `File`).
+    pub fn is_pre_encoded(&self) -> bool {
+        matches!(self, Self::PreEncoded { .. } | Self::File { .. })
+    }
+
+    /// Returns `true` when this spec requires a live capture device.
+    pub fn is_capture(&self) -> bool {
+        self.as_capture().is_some()
+    }
+
     /// Parses a video source specifier string.
     ///
     /// Recognized forms: `cam`, `cam:<device>`, `cam:<backend>:<device>`,
@@ -120,7 +183,7 @@ impl VideoSourceSpec {
     pub fn parse(s: &str) -> Result<Self, String> {
         let parts: Vec<&str> = s.split(':').collect();
         match parts[0].to_lowercase().as_str() {
-            "cam" | "camera" => parse_device_spec(&parts[1..]).map(|(b, d)| {
+            "cam" => parse_device_spec(&parts[1..]).map(|(b, d)| {
                 if b.is_none() && d.is_none() {
                     Self::DefaultCamera
                 } else {
@@ -141,7 +204,7 @@ impl VideoSourceSpec {
                 }
             }),
             "test" => Ok(Self::Test),
-            "preenc" | "pre-encoded" | "preencoded" => {
+            "preenc" => {
                 if parts.len() < 2 {
                     return Err("preenc: requires a backend (e.g. preenc:libcamera)".to_string());
                 }
@@ -164,7 +227,7 @@ impl VideoSourceSpec {
             }
             "none" => Ok(Self::None),
             other => Err(format!(
-                "unknown video source '{other}': expected cam, screen, test, file, preenc, or none"
+                "unknown video source '{other}': expected cam, screen, file, preenc, test, or none"
             )),
         }
     }
@@ -283,10 +346,6 @@ mod tests {
     fn parse_video_basic() {
         assert!(matches!(
             VideoSourceSpec::parse("cam").unwrap(),
-            VideoSourceSpec::DefaultCamera
-        ));
-        assert!(matches!(
-            VideoSourceSpec::parse("camera").unwrap(),
             VideoSourceSpec::DefaultCamera
         ));
         assert!(matches!(

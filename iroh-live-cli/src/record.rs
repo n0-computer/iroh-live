@@ -186,7 +186,7 @@ pub fn run(args: RecordArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
 /// Holds Annex B SPS/PPS extracted from the avcC description, if the source
 /// uses non-inline parameter sets (avc1). For inline sources (avc3) or
 /// non-H.264 codecs this is `None` and packets pass through unmodified.
-struct H264AnnexBState {
+pub(crate) struct H264AnnexBState {
     /// Annex B SPS/PPS to prepend before each keyframe. `None` for inline
     /// (avc3) sources where SPS/PPS appear in the bitstream itself.
     sps_pps_annex_b: Option<Vec<u8>>,
@@ -195,7 +195,7 @@ struct H264AnnexBState {
 impl H264AnnexBState {
     /// Builds the state from a catalog [`VideoConfig`]. Returns `None` when
     /// the codec is not H.264 (meaning no conversion is needed).
-    fn from_config(config: &VideoConfig) -> Option<Self> {
+    pub(crate) fn from_config(config: &VideoConfig) -> Option<Self> {
         let VideoCodec::H264(ref h264) = config.codec else {
             return None;
         };
@@ -245,7 +245,7 @@ impl H264AnnexBState {
 /// Records a video track, converting H.264 AVCC payloads to Annex B when needed.
 ///
 /// Non-H.264 codecs pass through without conversion.
-async fn record_video_track(
+pub(crate) async fn record_video_track(
     mut source: impl PacketSource,
     path: &PathBuf,
     bytes_written: Arc<AtomicU64>,
@@ -306,7 +306,7 @@ async fn record_video_track(
 }
 
 /// Records a non-video track by writing raw payloads directly.
-async fn record_raw_track(
+pub(crate) async fn record_raw_track(
     mut source: impl PacketSource,
     path: &PathBuf,
     bytes_written: Arc<AtomicU64>,
@@ -397,7 +397,7 @@ fn print_remux_hint(
 // ---------------------------------------------------------------------------
 
 /// Maps a video codec to a file extension for raw bitstream output.
-fn video_codec_extension(codec: &VideoCodec) -> &'static str {
+pub(crate) fn video_codec_extension(codec: &VideoCodec) -> &'static str {
     match codec {
         VideoCodec::H264(_) => "h264",
         VideoCodec::H265(_) => "h265",
@@ -409,7 +409,7 @@ fn video_codec_extension(codec: &VideoCodec) -> &'static str {
 }
 
 /// Maps an audio codec to a file extension for raw output.
-fn audio_codec_extension(codec: &AudioCodec) -> &'static str {
+pub(crate) fn audio_codec_extension(codec: &AudioCodec) -> &'static str {
     match codec {
         AudioCodec::Opus => "opus",
         AudioCodec::AAC(_) => "aac",
