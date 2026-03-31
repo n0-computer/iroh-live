@@ -155,6 +155,36 @@ echo "zigbuild: target=${TARGET_WITH_GLIBC}, sysroot=${SYSROOT}"
 echo "zigbuild: CC=${CC_aarch64_unknown_linux_gnu:-zig}"
 echo ""
 
-exec cargo zigbuild \
+cargo zigbuild \
     --target "${TARGET_WITH_GLIBC}" \
     "$@"
+
+# ── Strip ─────────────────────────────────────────────────────────────
+# The release profile keeps debug info for local profiling. Strip it from
+# cross-compiled binaries since they're deployed to constrained devices.
+
+# Determine the output directory for this target + profile.
+# Respect CARGO_TARGET_DIR env, then cargo config's target-dir, then default.
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$(cargo metadata --format-version 1 --no-deps 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['target_directory'])" 2>/dev/null || echo "${WORKSPACE_ROOT}/target")}"
+# Detect profile: --release → release, --profile X → X, default → debug.
+PROFILE="debug"
+PREV=""
+for arg in "$@"; do
+    if [ "$arg" = "--release" ]; then PROFILE="release"; fi
+    if [ "$PREV" = "--profile" ]; then PROFILE="$arg"; fi
+    PREV="$arg"
+done
+OUT_DIR="${CARGO_TARGET_DIR}/${TARGET}/${PROFILE}"
+
+if [ -d "$OUT_DIR" ]; then
+    STRIPPED=0
+    for bin in "$OUT_DIR"/*; do
+        [ -f "$bin" ] && [ -x "$bin" ] && file "$bin" | grep -q "ELF.*aarch64" && {
+            aarch64-linux-gnu-strip "$bin" 2>/dev/null && STRIPPED=$((STRIPPED + 1))
+        }
+    done
+    if [ "$STRIPPED" -gt 0 ]; then
+        echo ""
+        echo "zigbuild: stripped ${STRIPPED} binary(ies) in ${OUT_DIR}"
+    fi
+fi
