@@ -61,7 +61,7 @@ pub(crate) fn annex_b_nals(data: &[u8]) -> AnnexBNalIter<'_> {
 }
 
 /// Parses an Annex B bitstream into individual NAL units (without start codes).
-pub(crate) fn parse_annex_b(data: &[u8]) -> Vec<&[u8]> {
+pub fn parse_annex_b(data: &[u8]) -> Vec<&[u8]> {
     annex_b_nals(data).collect()
 }
 
@@ -69,7 +69,7 @@ pub(crate) fn parse_annex_b(data: &[u8]) -> Vec<&[u8]> {
 ///
 /// Returns borrowed slices into the original NAL data, avoiding per-keyframe
 /// allocation.
-pub(crate) fn extract_sps_pps<'a>(nals: &[&'a [u8]]) -> Option<(&'a [u8], &'a [u8])> {
+pub fn extract_sps_pps<'a>(nals: &[&'a [u8]]) -> Option<(&'a [u8], &'a [u8])> {
     let mut sps = None;
     let mut pps = None;
     for nal in nals {
@@ -87,7 +87,7 @@ pub(crate) fn extract_sps_pps<'a>(nals: &[&'a [u8]]) -> Option<(&'a [u8], &'a [u
 }
 
 /// Build an avcC (ISO 14496-15) decoder configuration record from SPS and PPS.
-pub(crate) fn build_avcc(sps: &[u8], pps: &[u8]) -> Vec<u8> {
+pub fn build_avcc(sps: &[u8], pps: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(11 + sps.len() + pps.len());
     // configurationVersion
     out.push(1);

@@ -62,6 +62,8 @@ pub use platform::apple::screen::MacScreenCapturer;
 // Re-export platform-specific capturers at the crate root.
 #[cfg(all(target_os = "linux", feature = "libcamera"))]
 pub use platform::linux::libcamera::{LibcameraCapturer, LibcameraConfig};
+#[cfg(all(target_os = "linux", feature = "libcamera"))]
+pub use platform::linux::libcamera_h264::{LibcameraH264Config, LibcameraH264Source};
 #[cfg(all(target_os = "linux", feature = "pipewire"))]
 pub use platform::linux::pipewire::{PipeWireCameraCapturer, PipeWireScreenCapturer};
 #[cfg(all(target_os = "linux", feature = "v4l2"))]

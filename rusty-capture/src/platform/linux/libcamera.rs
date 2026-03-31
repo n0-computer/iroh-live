@@ -10,7 +10,8 @@
 //! for encoding by a separate encoder (openh264, V4L2 M2M, etc.).
 //!
 //! For the pre-encoded H.264 path (where rpicam-vid does the encoding
-//! internally), see [`rusty_codecs::libcamera::LibcameraH264Source`].
+//! internally), see [`LibcameraH264Source`](super::libcamera_h264::LibcameraH264Source)
+//! (part of the `libcamera` feature).
 
 use std::{
     io::Read,
