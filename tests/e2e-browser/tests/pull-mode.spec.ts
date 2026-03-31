@@ -38,7 +38,6 @@ test("pull mode: standalone publisher → relay → browser watch", async ({
     "publish",
     "--name", "pull-test",
     "--no-qr",
-    "capture",
     "--video", "test",
     "--audio", "none",
     "--codec", "h264",

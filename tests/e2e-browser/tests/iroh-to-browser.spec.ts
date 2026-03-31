@@ -29,7 +29,6 @@ test("CLI publish → browser watch", async ({ page }) => {
     "publish",
     "--name", "hello",
     "--relay", relay.irohAddr,
-    "capture",
     "--video", "test",
     "--audio", "none",
     "--codec", "h264",
