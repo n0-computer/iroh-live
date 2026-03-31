@@ -82,7 +82,7 @@ jobs:
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev \
+            libasound2-dev libpipewire-0.3-dev libjack-jackd2-dev libspa-0.2-dev libclang-dev \
             libegl-dev libgbm-dev libdrm-dev libfontconfig-dev \
             libva-dev nasm
 
