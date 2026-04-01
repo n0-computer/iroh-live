@@ -18,7 +18,7 @@ use std::{
 
 use anyhow::{Context as _, Result, bail};
 use glow::HasContext;
-use tracing::{debug, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::format::DmaBufInfo;
 
@@ -57,6 +57,17 @@ type EglDestroyImageKhrFn = unsafe extern "C" fn(dpy: *mut c_void, image: *mut c
 type GlEglImageTargetTexture2dOesFn = unsafe extern "C" fn(target: u32, image: *mut c_void);
 type EglQueryStringFn =
     unsafe extern "C" fn(dpy: *mut c_void, name: i32) -> *const std::ffi::c_char;
+type EglGetErrorFn = unsafe extern "C" fn() -> i32;
+type EglQueryDmaBufFormatsFn =
+    unsafe extern "C" fn(dpy: *mut c_void, max: i32, formats: *mut i32, count: *mut i32) -> u32;
+type EglQueryDmaBufModifiersFn = unsafe extern "C" fn(
+    dpy: *mut c_void,
+    format: i32,
+    max: i32,
+    modifiers: *mut u64,
+    external_only: *mut u32,
+    count: *mut i32,
+) -> u32;
 
 // ── Cached function pointers ─────────────────────────────────────────
 
@@ -66,6 +77,9 @@ static FN_CREATE_IMAGE: OnceLock<Option<EglCreateImageKhrFn>> = OnceLock::new();
 static FN_DESTROY_IMAGE: OnceLock<Option<EglDestroyImageKhrFn>> = OnceLock::new();
 static FN_IMAGE_TARGET_TEXTURE: OnceLock<Option<GlEglImageTargetTexture2dOesFn>> = OnceLock::new();
 static FN_QUERY_STRING: OnceLock<Option<EglQueryStringFn>> = OnceLock::new();
+static FN_GET_ERROR: OnceLock<Option<EglGetErrorFn>> = OnceLock::new();
+static FN_QUERY_DMABUF_FORMATS: OnceLock<Option<EglQueryDmaBufFormatsFn>> = OnceLock::new();
+static FN_QUERY_DMABUF_MODIFIERS: OnceLock<Option<EglQueryDmaBufModifiersFn>> = OnceLock::new();
 
 /// Loads `eglGetProcAddress` from `libEGL.so` via dlopen.
 fn load_egl_get_proc_address() -> Option<EglGetProcAddressFn> {
@@ -144,6 +158,48 @@ fn query_string_fn() -> Option<EglQueryStringFn> {
     })
 }
 
+fn get_error_fn() -> Option<EglGetErrorFn> {
+    *FN_GET_ERROR.get_or_init(|| {
+        // SAFETY: function signature matches EGL spec.
+        unsafe { resolve_egl_proc(c"eglGetError") }
+    })
+}
+
+/// Returns the EGL error name for a given error code.
+fn egl_error_name(code: i32) -> &'static str {
+    match code {
+        0x3000 => "EGL_SUCCESS",
+        0x3001 => "EGL_NOT_INITIALIZED",
+        0x3002 => "EGL_BAD_ACCESS",
+        0x3003 => "EGL_BAD_ALLOC",
+        0x3004 => "EGL_BAD_ATTRIBUTE",
+        0x3005 => "EGL_BAD_CONFIG",
+        0x3006 => "EGL_BAD_CONTEXT",
+        0x3007 => "EGL_BAD_CURRENT_SURFACE",
+        0x3008 => "EGL_BAD_DISPLAY",
+        0x3009 => "EGL_BAD_MATCH",
+        0x300A => "EGL_BAD_NATIVE_PIXMAP",
+        0x300B => "EGL_BAD_NATIVE_WINDOW",
+        0x300C => "EGL_BAD_PARAMETER",
+        0x300D => "EGL_BAD_SURFACE",
+        _ => "UNKNOWN",
+    }
+}
+
+fn query_dmabuf_formats_fn() -> Option<EglQueryDmaBufFormatsFn> {
+    *FN_QUERY_DMABUF_FORMATS.get_or_init(|| {
+        // SAFETY: function signature matches EGL_EXT_image_dma_buf_import_modifiers spec.
+        unsafe { resolve_egl_proc(c"eglQueryDmaBufFormatsEXT") }
+    })
+}
+
+fn query_dmabuf_modifiers_fn() -> Option<EglQueryDmaBufModifiersFn> {
+    *FN_QUERY_DMABUF_MODIFIERS.get_or_init(|| {
+        // SAFETY: function signature matches EGL_EXT_image_dma_buf_import_modifiers spec.
+        unsafe { resolve_egl_proc(c"eglQueryDmaBufModifiersEXT") }
+    })
+}
+
 // ── Extension check ──────────────────────────────────────────────────
 
 /// Checks whether the current EGL display supports the required DMA-BUF
@@ -171,6 +227,199 @@ fn check_egl_extensions(dpy: *mut c_void) -> Result<()> {
     Ok(())
 }
 
+/// Formats a DRM fourcc as a human-readable string (e.g. `R8  `, `GR88`, `NV12`).
+fn fourcc_str(fourcc: u32) -> String {
+    let bytes = fourcc.to_le_bytes();
+    if bytes.iter().all(|b| b.is_ascii_graphic() || *b == b' ') {
+        format!(
+            "{}{}{}{}",
+            bytes[0] as char, bytes[1] as char, bytes[2] as char, bytes[3] as char
+        )
+    } else {
+        format!("0x{fourcc:08x}")
+    }
+}
+
+/// Formats a DRM modifier as a known name or hex value.
+///
+/// Values from `drm_fourcc.h` — `fourcc_mod_code(INTEL, N)` = `0x100000000000000 | N`.
+fn modifier_name(m: u64) -> String {
+    const INTEL: u64 = 0x100000000000000;
+    match m {
+        0x0 => "LINEAR".to_string(),
+        m if m == INTEL | 1 => "I915_X_TILED".to_string(),
+        m if m == INTEL | 2 => "I915_Y_TILED".to_string(),
+        m if m == INTEL | 3 => "I915_Yf_TILED".to_string(),
+        m if m == INTEL | 4 => "I915_Y_TILED_CCS".to_string(),
+        m if m == INTEL | 5 => "I915_Yf_TILED_CCS".to_string(),
+        m if m == INTEL | 6 => "I915_Y_TILED_GEN12_RC_CCS".to_string(),
+        m if m == INTEL | 7 => "I915_Y_TILED_GEN12_MC_CCS".to_string(),
+        m if m == INTEL | 8 => "I915_Y_TILED_GEN12_RC_CCS_CC".to_string(),
+        m if m == INTEL | 9 => "I915_4_TILED".to_string(),
+        m if m == INTEL | 10 => "I915_4_TILED_DG2_RC_CCS".to_string(),
+        m if m == INTEL | 11 => "I915_4_TILED_DG2_MC_CCS".to_string(),
+        m if m == INTEL | 12 => "I915_4_TILED_DG2_RC_CCS_CC".to_string(),
+        m if m == INTEL | 13 => "I915_4_TILED_MTL_RC_CCS".to_string(),
+        m if m == INTEL | 14 => "I915_4_TILED_MTL_MC_CCS".to_string(),
+        m if m == INTEL | 15 => "I915_4_TILED_MTL_RC_CCS_CC".to_string(),
+        m if m == INTEL | 16 => "I915_4_TILED_LNL_CCS".to_string(),
+        m if m == INTEL | 17 => "I915_4_TILED_BMG_CCS".to_string(),
+        _ => format!("0x{m:x}"),
+    }
+}
+
+/// Queries and logs DMA-BUF formats and modifiers supported by EGL.
+///
+/// Requires `EGL_EXT_image_dma_buf_import_modifiers`. Purely diagnostic —
+/// failures are logged and silently ignored.
+fn log_egl_dmabuf_support(dpy: *mut c_void) {
+    let Some(query_formats) = query_dmabuf_formats_fn() else {
+        debug!("eglQueryDmaBufFormatsEXT not available, skipping diagnostics");
+        return;
+    };
+    let Some(query_modifiers) = query_dmabuf_modifiers_fn() else {
+        debug!("eglQueryDmaBufModifiersEXT not available, skipping diagnostics");
+        return;
+    };
+
+    // Query format count.
+    let mut count: i32 = 0;
+    let ok = unsafe { query_formats(dpy, 0, std::ptr::null_mut(), &mut count) };
+    if ok != 1 || count <= 0 {
+        debug!("eglQueryDmaBufFormatsEXT returned no formats (ok={ok}, count={count})");
+        return;
+    }
+
+    // Query actual formats.
+    let mut formats = vec![0i32; count as usize];
+    let ok = unsafe { query_formats(dpy, count, formats.as_mut_ptr(), &mut count) };
+    if ok != 1 {
+        debug!("eglQueryDmaBufFormatsEXT failed on second call");
+        return;
+    }
+    formats.truncate(count as usize);
+
+    info!(count = formats.len(), "EGL DMA-BUF supported formats");
+
+    // For key formats, query modifiers.
+    let interesting = [
+        DRM_FORMAT_R8,
+        DRM_FORMAT_GR88,
+        u32::from_le_bytes(*b"NV12"),
+        u32::from_le_bytes(*b"P010"),
+    ];
+
+    for fourcc in interesting {
+        let supported = formats.contains(&(fourcc as i32));
+        let name = fourcc_str(fourcc);
+        if !supported {
+            info!(format = %name, "  format NOT supported by EGL");
+            continue;
+        }
+
+        // Query modifier count.
+        let mut mod_count: i32 = 0;
+        let ok = unsafe {
+            query_modifiers(
+                dpy,
+                fourcc as i32,
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut mod_count,
+            )
+        };
+        if ok != 1 || mod_count <= 0 {
+            info!(format = %name, "  format supported, no modifiers reported");
+            continue;
+        }
+
+        let mut modifiers = vec![0u64; mod_count as usize];
+        let mut external_only = vec![0u32; mod_count as usize];
+        let ok = unsafe {
+            query_modifiers(
+                dpy,
+                fourcc as i32,
+                mod_count,
+                modifiers.as_mut_ptr(),
+                external_only.as_mut_ptr(),
+                &mut mod_count,
+            )
+        };
+        if ok != 1 {
+            info!(format = %name, "  format supported, modifier query failed");
+            continue;
+        }
+        modifiers.truncate(mod_count as usize);
+        external_only.truncate(mod_count as usize);
+
+        let mod_strs: Vec<String> = modifiers
+            .iter()
+            .zip(external_only.iter())
+            .map(|(m, ext)| {
+                let ext_tag = if *ext != 0 { " (ext-only)" } else { "" };
+                format!("{}{ext_tag}", modifier_name(*m))
+            })
+            .collect();
+
+        info!(
+            format = %name,
+            modifiers = %mod_strs.join(", "),
+            "  format supported"
+        );
+    }
+}
+
+/// Queries non-external-only modifiers for a given DRM format.
+///
+/// Returns an empty list if the query extensions are unavailable or the
+/// format is not supported.
+fn query_non_external_modifiers(dpy: *mut c_void, fourcc: u32) -> Vec<u64> {
+    let Some(query_modifiers) = query_dmabuf_modifiers_fn() else {
+        return Vec::new();
+    };
+
+    let mut mod_count: i32 = 0;
+    let ok = unsafe {
+        query_modifiers(
+            dpy,
+            fourcc as i32,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut mod_count,
+        )
+    };
+    if ok != 1 || mod_count <= 0 {
+        return Vec::new();
+    }
+
+    let mut modifiers = vec![0u64; mod_count as usize];
+    let mut external_only = vec![0u32; mod_count as usize];
+    let ok = unsafe {
+        query_modifiers(
+            dpy,
+            fourcc as i32,
+            mod_count,
+            modifiers.as_mut_ptr(),
+            external_only.as_mut_ptr(),
+            &mut mod_count,
+        )
+    };
+    if ok != 1 {
+        return Vec::new();
+    }
+    modifiers.truncate(mod_count as usize);
+    external_only.truncate(mod_count as usize);
+
+    modifiers
+        .into_iter()
+        .zip(external_only)
+        .filter(|(_, ext)| *ext == 0)
+        .map(|(m, _)| m)
+        .collect()
+}
+
 // ── EGLImage wrapper ─────────────────────────────────────────────────
 
 /// RAII wrapper around an EGLImage — destroys on drop.
@@ -192,11 +441,21 @@ impl Drop for EglImage {
 /// Manages EGL DMA-BUF import state for zero-copy GLES rendering.
 ///
 /// Probes for required EGL extensions on creation and caches the EGL
-/// display handle. Falls back gracefully if extensions are missing.
+/// display handle. When the DMA-BUF modifier is incompatible (e.g.
+/// Y_TILED on Intel MTL), uses VPP retiling to convert to a supported
+/// modifier before import.
 pub struct GlesDmaBufImporter {
     dpy: *mut c_void,
     /// Consecutive import failure count — disables after threshold.
     failures: u32,
+    /// Non-external-only modifiers supported by EGL for R8 format (Y plane).
+    /// Used to decide whether VPP retiling is needed.
+    supported_r8_modifiers: Vec<u64>,
+    /// VAAPI VPP retiler for incompatible modifiers. Lazily initialized on
+    /// first use. `None` means not yet attempted; `Some(None)` means init
+    /// failed and we shouldn't retry.
+    #[cfg(feature = "vaapi")]
+    vpp_retiler: Option<Option<super::vpp_retiler::VppRetiler>>,
 }
 
 // SAFETY: The EGL display and function pointers are process-global singletons.
@@ -222,6 +481,7 @@ impl GlesDmaBufImporter {
         }
 
         check_egl_extensions(dpy)?;
+        log_egl_dmabuf_support(dpy);
 
         // Verify function pointers are resolvable.
         if create_image_fn().is_none() {
@@ -231,8 +491,19 @@ impl GlesDmaBufImporter {
             bail!("glEGLImageTargetTexture2DOES not available");
         }
 
-        debug!("EGL DMA-BUF import ready");
-        Ok(Some(Self { dpy, failures: 0 }))
+        let supported_r8_modifiers = query_non_external_modifiers(dpy, DRM_FORMAT_R8);
+        debug!(
+            modifiers = ?supported_r8_modifiers.iter().map(|m| modifier_name(*m)).collect::<Vec<_>>(),
+            "EGL DMA-BUF import ready, R8 supported modifiers"
+        );
+
+        Ok(Some(Self {
+            dpy,
+            failures: 0,
+            supported_r8_modifiers,
+            #[cfg(feature = "vaapi")]
+            vpp_retiler: None,
+        }))
     }
 
     /// Whether the importer has been disabled due to repeated failures.
@@ -266,10 +537,14 @@ impl GlesDmaBufImporter {
     /// The Y plane is imported as R8 (`DRM_FORMAT_R8`) and bound to `y_texture`.
     /// The UV plane is imported as RG88 (`DRM_FORMAT_GR88`) and bound to `uv_texture`.
     ///
+    /// When the DMA-BUF modifier is not in EGL's supported list (e.g. Y_TILED
+    /// on Intel MTL), uses VPP retiling to convert to a compatible modifier
+    /// before import.
+    ///
     /// # Safety
     /// The EGL/GL context must be current. The textures must be valid.
     pub unsafe fn import_nv12(
-        &self,
+        &mut self,
         gl: &glow::Context,
         info: &DmaBufInfo,
         y_texture: glow::Texture,
@@ -281,6 +556,59 @@ impl GlesDmaBufImporter {
                 info.planes.len()
             );
         }
+
+        // If the modifier is not EGL-compatible, try VPP re-tiling.
+        #[cfg(feature = "vaapi")]
+        let retiled: DmaBufInfo;
+        let info = if self.supported_r8_modifiers.is_empty()
+            || self.supported_r8_modifiers.contains(&info.modifier)
+        {
+            info
+        } else {
+            #[cfg(feature = "vaapi")]
+            {
+                let retiler_slot =
+                    self.vpp_retiler.get_or_insert_with(
+                        || match super::vpp_retiler::VppRetiler::new(None) {
+                            Ok(r) => {
+                                info!(
+                                    "initialized VPP retiler for EGL DMA-BUF modifier conversion"
+                                );
+                                Some(r)
+                            }
+                            Err(e) => {
+                                warn!("VPP retiler init failed: {e}");
+                                None
+                            }
+                        },
+                    );
+                let retiler = retiler_slot.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "DMA-BUF modifier {} ({:#x}) not EGL-compatible and VPP retiler unavailable",
+                        modifier_name(info.modifier),
+                        info.modifier,
+                    )
+                })?;
+                retiled = retiler.retile(info)?;
+                trace!(
+                    old_modifier = %modifier_name(info.modifier),
+                    new_modifier = %modifier_name(retiled.modifier),
+                    "VPP retiled for EGL import"
+                );
+                &retiled
+            }
+            #[cfg(not(feature = "vaapi"))]
+            bail!(
+                "DMA-BUF modifier {} ({:#x}) not EGL-compatible (supported: {:?}), \
+                 enable `vaapi` feature for VPP retiling",
+                modifier_name(info.modifier),
+                info.modifier,
+                self.supported_r8_modifiers
+                    .iter()
+                    .map(|m| modifier_name(*m))
+                    .collect::<Vec<_>>(),
+            )
+        };
 
         let fd = info.fd.as_raw_fd();
         let w = info.display_width;
@@ -380,9 +708,13 @@ impl GlesDmaBufImporter {
             )
         };
         if image.is_null() {
+            let egl_err = get_error_fn().map(|f| unsafe { f() }).unwrap_or(0);
             bail!(
-                "eglCreateImageKHR failed for fourcc={fourcc:#x} {width}x{height} \
-                 modifier={modifier:#x}"
+                "eglCreateImageKHR failed for fourcc={} ({fourcc:#x}) {width}x{height} \
+                 modifier={} ({modifier:#x}), eglGetError={} ({egl_err:#x})",
+                fourcc_str(fourcc),
+                modifier_name(modifier),
+                egl_error_name(egl_err),
             );
         }
 

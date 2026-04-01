@@ -45,7 +45,7 @@ use ringbuf::{
     traits::{Producer, Split},
 };
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use self::aec::{AecProcessor, AecProcessorConfig, AecState};
 use crate::{
@@ -818,7 +818,7 @@ fn negotiate_stream_config(
         anyhow::bail!("device reports no supported configurations");
     }
 
-    debug!(
+    trace!(
         count = supported_configs.len(),
         ?direction,
         "available stream configs"
