@@ -1,0 +1,41 @@
+[package]
+name = "moq-media-gtk"
+version = "0.1.0"
+edition = "2024"
+description = "GTK4 integration for moq-media video rendering"
+authors = ["Franz Heinzmann <frando@n0.computer>"]
+repository = "https://github.com/n0-computer/iroh-live"
+license = "MIT OR Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+gdk4 = { package = "gdk4", version = "0.9" }
+gtk4 = { package = "gtk4", version = "0.9", features = ["v4_14"] }
+glib = { package = "glib", version = "0.20" }
+moq-media = { workspace = true }
+tracing = "0.1.41"
+
+# GL path (feature = "gl")
+glow = { version = "0.16", optional = true }
+libc = { version = "0.2", optional = true }
+rusty-codecs = { workspace = true, features = ["gles", "gles-dmabuf"], optional = true }
+
+[dev-dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+iroh = { workspace = true }
+iroh-live = { workspace = true, features = ["h264", "opus", "vaapi"] }
+moq-media = { workspace = true, features = ["h264", "opus", "vaapi"] }
+tokio = { version = "1.48.0", features = ["full"] }
+tracing-subscriber = "0.3.20"
+
+[features]
+default = ["gl"]
+gl = ["dep:glow", "dep:libc", "dep:rusty-codecs"]
+gles-dmabuf = ["gl", "rusty-codecs/gles-dmabuf"]
+
+[[example]]
+name = "gtk-watch"
+path = "examples/gtk-watch.rs"
