@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn ticket_round_trip() {
-        let key = iroh::SecretKey::generate(&mut rand::rng());
+        let key = iroh::SecretKey::from_bytes(&[23u8; 32]);
         let addr = iroh::EndpointAddr::from(key.public());
         let ticket = LiveTicket::new(addr, "test-stream");
         let ticket_str = ticket.to_string();

@@ -13,6 +13,7 @@ use std::{sync::OnceLock, time::Duration};
 use iroh::address_lookup::MemoryLookup;
 use moq_media::publish::VideoInput;
 use moq_native::moq_lite::{Origin, Track};
+use moq_relay::{PublicConfig, PublicDetailed};
 use serial_test::serial;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -54,7 +55,7 @@ impl TestRelay {
 
         let iroh = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .address_lookup(shared_lookup())
-            .secret_key(iroh::SecretKey::generate(&mut rand::rng()))
+            .secret_key(iroh::SecretKey::generate())
             .alpns(alpns)
             .bind()
             .await
@@ -74,7 +75,12 @@ impl TestRelay {
         let noq_addr = server.local_addr().expect("get noq addr");
 
         let mut auth_config = moq_relay::AuthConfig::default();
-        auth_config.public = Some("".to_string());
+        let prefixes = vec!["".to_string()];
+        auth_config.public = Some(PublicConfig::Detailed(PublicDetailed {
+            subscribe: prefixes.clone(),
+            publish: prefixes,
+            api: None,
+        }));
         let auth = auth_config.init().await.expect("init auth");
 
         let cluster = moq_relay::Cluster::new(moq_relay::ClusterConfig::default(), client);
@@ -163,7 +169,7 @@ async fn noq_publish_noq_subscribe() {
     assert_eq!(path.as_str(), "test");
     let bc = bc.expect("announce");
     let mut track_sub = bc.subscribe_track(&Track::new("video")).expect("sub");
-    let mut group_sub = tokio::time::timeout(TIMEOUT, track_sub.next_group())
+    let mut group_sub = tokio::time::timeout(TIMEOUT, track_sub.next_group_ordered())
         .await
         .expect("timeout")
         .expect("err")
@@ -189,7 +195,7 @@ async fn iroh_publish_iroh_subscribe() {
     // Publisher
     let pub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .address_lookup(shared_lookup())
-        .secret_key(iroh::SecretKey::generate(&mut rand::rng()))
+        .secret_key(iroh::SecretKey::generate())
         .bind()
         .await
         .expect("bind pub");
@@ -221,7 +227,7 @@ async fn iroh_publish_iroh_subscribe() {
     // Subscriber
     let sub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .address_lookup(shared_lookup())
-        .secret_key(iroh::SecretKey::generate(&mut rand::rng()))
+        .secret_key(iroh::SecretKey::generate())
         .bind()
         .await
         .expect("bind sub");
@@ -304,7 +310,7 @@ async fn noq_publish_iroh_subscribe() {
     // ── Subscriber (iroh via Live::subscribe) ──
     let sub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .address_lookup(shared_lookup())
-        .secret_key(iroh::SecretKey::generate(&mut rand::rng()))
+        .secret_key(iroh::SecretKey::generate())
         .bind()
         .await
         .expect("bind sub");
@@ -370,7 +376,7 @@ async fn pull_remote_broadcast_via_ticket() {
     // ── Publisher (standalone iroh, NOT connected to relay) ──
     let pub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .address_lookup(shared_lookup())
-        .secret_key(iroh::SecretKey::generate(&mut rand::rng()))
+        .secret_key(iroh::SecretKey::generate())
         .bind()
         .await
         .expect("bind pub");
@@ -402,7 +408,7 @@ async fn pull_remote_broadcast_via_ticket() {
     // ── Pull: relay connects to publisher and injects broadcast ──
     let pull_ep = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .address_lookup(shared_lookup())
-        .secret_key(iroh::SecretKey::generate(&mut rand::rng()))
+        .secret_key(iroh::SecretKey::generate())
         .bind()
         .await
         .expect("bind pull");
@@ -463,7 +469,7 @@ async fn pull_remote_broadcast_via_ticket() {
     let mut catalog_track = bc
         .subscribe_track(&Track::new("catalog.json"))
         .expect("catalog sub");
-    let mut group = tokio::time::timeout(TIMEOUT, catalog_track.next_group())
+    let mut group = tokio::time::timeout(TIMEOUT, catalog_track.next_group_ordered())
         .await
         .expect("catalog group timeout")
         .expect("catalog group err")
@@ -496,7 +502,7 @@ async fn iroh_publish_noq_subscribe() {
     // Publisher (iroh via iroh-live)
     let pub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .address_lookup(shared_lookup())
-        .secret_key(iroh::SecretKey::generate(&mut rand::rng()))
+        .secret_key(iroh::SecretKey::generate())
         .bind()
         .await
         .expect("bind pub");

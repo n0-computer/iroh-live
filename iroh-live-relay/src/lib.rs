@@ -13,7 +13,7 @@ use std::{
 use axum::{extract::State, response::IntoResponse, routing::get};
 use clap::Args;
 use include_dir::{Dir, include_dir};
-use moq_relay::{AuthConfig, Cluster, ClusterConfig, Connection};
+use moq_relay::{AuthConfig, Cluster, ClusterConfig, Connection, PublicConfig, PublicDetailed};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::debug;
 
@@ -43,7 +43,7 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     let relay = RelayServer::from_env()?;
 
     let mut server_config = moq_native::ServerConfig::default();
-    server_config.bind = Some(config.bind);
+    server_config.bind = Some(config.bind.to_string());
     server_config.backend = Some(moq_native::QuicBackend::Noq);
     server_config.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
     // Self-signed TLS for dev mode. ACME/Let's Encrypt support is planned
@@ -72,8 +72,14 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
 
     let tls_info = server.tls_info();
 
+    // TODO: Implement auth (free for all atm)
     let mut auth_config = AuthConfig::default();
-    auth_config.public = Some("".to_string());
+    let prefixes = vec!["".to_string()];
+    auth_config.public = Some(PublicConfig::Detailed(PublicDetailed {
+        subscribe: prefixes.clone(),
+        publish: prefixes,
+        api: None,
+    }));
     let auth = auth_config.init().await?;
 
     let cluster = Cluster::new(ClusterConfig::default(), client);

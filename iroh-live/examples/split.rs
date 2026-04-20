@@ -819,7 +819,7 @@ impl eframe::App for SplitApp {
 
 /// Creates both endpoints directly (no network simulation).
 async fn setup_direct(audio_ctx: &AudioBackend) -> Result<(PublishView, SubscribeView)> {
-    let secret_key = SecretKey::generate(&mut rand::rng());
+    let secret_key = SecretKey::generate();
     let pub_endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
         .secret_key(secret_key)
         .bind()
@@ -867,7 +867,7 @@ async fn setup_patchbay(
 
     info!("patchbay lab ready");
 
-    let secret_key = SecretKey::generate(&mut rand::rng());
+    let secret_key = SecretKey::generate();
     let pub_endpoint = pub_device
         .spawn({
             let secret_key = secret_key.clone();
