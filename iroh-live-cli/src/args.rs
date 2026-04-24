@@ -20,9 +20,25 @@ pub struct TransportArgs {
     #[arg(long, default_value = "hello")]
     pub name: String,
 
-    /// Additionally push to a relay (iroh endpoint ID or URL).
+    /// Additionally push to a relay, specified by its iroh endpoint ID.
+    ///
+    /// The connection is opened as WebTransport-over-iroh (HTTP/3) so that
+    /// URL-level context propagates to the relay. Combine with `--api-key`
+    /// to present a JWT and `--relay-path` to set a namespace prefix.
     #[arg(long)]
-    pub relay: Option<String>,
+    pub relay: Option<iroh::EndpointId>,
+
+    /// Path prefix to use on the relay, appended to `<broadcast>`.
+    ///
+    /// Defaults to `/`. Use this when the JWT's `publish` claim scopes
+    /// access to a particular namespace.
+    #[arg(long, default_value = "/")]
+    pub relay_path: String,
+
+    /// API key (JWT) to present to the relay. Required when the relay
+    /// enforces auth; ignored in permissive dev mode.
+    #[arg(long)]
+    pub api_key: Option<String>,
 
     /// Additionally publish into a room.
     #[arg(long)]
@@ -342,20 +358,38 @@ impl PlayArgs {
 #[derive(Args, Debug)]
 pub struct RecordArgs {
     /// Connection ticket.
-    #[arg(conflicts_with = "endpoint_id")]
+    #[arg(conflicts_with = "endpoint_id", conflicts_with = "relay")]
     pub ticket: Option<iroh_live::ticket::LiveTicket>,
 
-    /// Remote endpoint ID (requires --name).
-    #[arg(long, conflicts_with = "ticket", requires = "record_name")]
+    /// Remote endpoint ID of a direct publisher (requires --name).
+    #[arg(
+        long,
+        conflicts_with = "ticket",
+        conflicts_with = "relay",
+        requires = "record_name"
+    )]
     pub endpoint_id: Option<iroh::EndpointId>,
 
-    /// Broadcast name (with --endpoint-id).
+    /// Relay endpoint ID — subscribe through an iroh-live-relay over H3.
+    /// Requires `--name`. Combine with `--api-key` to present a JWT.
     #[arg(
-        long = "name",
-        id = "record_name",
+        long,
         conflicts_with = "ticket",
-        requires = "endpoint_id"
+        conflicts_with = "endpoint_id",
+        requires = "record_name"
     )]
+    pub relay: Option<iroh::EndpointId>,
+
+    /// URL path prefix sent to the relay. Used with `--relay`.
+    #[arg(long, default_value = "/")]
+    pub relay_path: String,
+
+    /// API key (JWT) to present to the relay. Used with `--relay`.
+    #[arg(long)]
+    pub api_key: Option<String>,
+
+    /// Broadcast name (with --endpoint-id or --relay).
+    #[arg(long = "name", id = "record_name", conflicts_with = "ticket")]
     pub broadcast_name: Option<String>,
 
     /// Output file path. Video and audio are written to separate files
@@ -378,10 +412,40 @@ pub enum RecordFormat {
     Raw,
 }
 
+/// Where `irl record` should subscribe from.
+pub enum RecordSource {
+    /// Direct iroh peer subscribe (ticket or endpoint-id).
+    Direct(iroh_live::ticket::LiveTicket),
+    /// Subscribe from a relay via H3 with an optional JWT.
+    Relay {
+        target: iroh_live::relay::RelayTarget,
+        broadcast_name: String,
+    },
+}
+
 impl RecordArgs {
-    /// Resolves the connection ticket from CLI args.
-    pub fn ticket(&self) -> anyhow::Result<iroh_live::ticket::LiveTicket> {
-        resolve_ticket(&self.ticket, &self.endpoint_id, &self.broadcast_name)
+    /// Resolves the record source, covering both direct-peer and relay
+    /// subscribe modes.
+    pub fn source(&self) -> anyhow::Result<RecordSource> {
+        if let Some(relay_id) = self.relay {
+            let broadcast_name = self
+                .broadcast_name
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("--relay requires --name"))?;
+            let target = iroh_live::relay::RelayTarget::new(relay_id)
+                .with_path(&self.relay_path)
+                .with_api_key(self.api_key.clone());
+            Ok(RecordSource::Relay {
+                target,
+                broadcast_name,
+            })
+        } else {
+            Ok(RecordSource::Direct(resolve_ticket(
+                &self.ticket,
+                &self.endpoint_id,
+                &self.broadcast_name,
+            )?))
+        }
     }
 }
 

@@ -1,8 +1,10 @@
 //! Shared transport: create Live, publish via serve/relay/room combinations.
 
+use iroh::EndpointId;
 use iroh_live::{
     Live,
     media::publish::LocalBroadcast,
+    relay::RelayTarget,
     rooms::{Room, RoomTicket},
     ticket::LiveTicket,
 };
@@ -37,8 +39,14 @@ pub async fn publish_broadcast(
         print_ticket(live, &args.name, args.no_qr);
     }
 
-    if let Some(ref relay_addr) = args.relay {
-        push_to_relay(live, &args.name, broadcast.producer().consume(), relay_addr).await?;
+    if let Some(id) = args.relay {
+        push_to_relay(
+            live,
+            &args.name,
+            broadcast.producer().consume(),
+            &build_relay_target(args, id),
+        )
+        .await?;
     }
 
     let room = if let Some(ref room_ticket) = args.room {
@@ -65,8 +73,14 @@ pub async fn publish_producer(
         print_ticket(live, &args.name, args.no_qr);
     }
 
-    if let Some(ref relay_addr) = args.relay {
-        push_to_relay(live, &args.name, producer.consume(), relay_addr).await?;
+    if let Some(id) = args.relay {
+        push_to_relay(
+            live,
+            &args.name,
+            producer.consume(),
+            &build_relay_target(args, id),
+        )
+        .await?;
     }
 
     let room = if let Some(ref room_ticket) = args.room {
@@ -78,18 +92,21 @@ pub async fn publish_producer(
     Ok(room)
 }
 
+fn build_relay_target(args: &TransportArgs, endpoint: EndpointId) -> RelayTarget {
+    RelayTarget::new(endpoint)
+        .with_path(&args.relay_path)
+        .with_api_key(args.api_key.clone())
+}
+
 async fn push_to_relay(
     live: &Live,
     name: &str,
     consumer: moq_lite::BroadcastConsumer,
-    relay_addr: &str,
+    target: &RelayTarget,
 ) -> anyhow::Result<()> {
-    let id: iroh::EndpointId = relay_addr
-        .parse()
-        .map_err(|e| anyhow::anyhow!("invalid relay address: {e}"))?;
-    let session = live.transport().connect(id).await?;
+    let session = live.connect_relay(target).await?;
     session.publish(name, consumer);
-    info!(%relay_addr, "published to relay");
+    info!(relay=%target.endpoint(), "published to relay");
     Ok(())
 }
 
