@@ -12,36 +12,52 @@ use n0_error::anyerr;
 use tracing::info;
 
 use crate::{
-    args::PlayArgs,
+    args::{PlayArgs, SubscribeSource},
     transport::setup_live,
     ui::{MouseHide, RemoteControls},
 };
 
 /// Entry point — does async setup inside block_on, then runs eframe outside it.
 pub fn run(args: PlayArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
-    let ticket = args.ticket()?;
+    let source = args.source()?;
     let backend = args.decoder_backend()?;
     let render_mode = args.render_mode()?;
     let no_video = args.no_video;
 
     let (live, sub, track, audio_ctx, broadcast_name) = rt.block_on(async {
         let audio_ctx = AudioBackend::default();
-
-        println!("connecting to {ticket} ...");
         let live = setup_live(false).await?;
         let playback_config = PlaybackConfig {
             backend,
             ..Default::default()
         };
 
-        let sub = live
-            .subscribe(ticket.endpoint, &ticket.broadcast_name)
-            .await?;
+        let (sub, broadcast_name) = match source {
+            SubscribeSource::Direct(ticket) => {
+                println!("connecting to {ticket} ...");
+                let sub = live
+                    .subscribe(ticket.endpoint, &ticket.broadcast_name)
+                    .await?;
+                (sub, ticket.broadcast_name)
+            }
+            SubscribeSource::Relay {
+                target,
+                broadcast_name,
+            } => {
+                println!(
+                    "connecting via relay {} ({}) ...",
+                    target.endpoint(),
+                    broadcast_name
+                );
+                let sub = live.subscribe_from_relay(&target, &broadcast_name).await?;
+                (sub, broadcast_name)
+            }
+        };
         info!("session established");
         let track = sub.broadcast().media(&audio_ctx, playback_config).await?;
         info!("media tracks subscribed");
 
-        n0_error::Ok((live, sub, track, audio_ctx, ticket.broadcast_name))
+        n0_error::Ok((live, sub, track, audio_ctx, broadcast_name))
     })?;
 
     if no_video {

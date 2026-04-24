@@ -279,20 +279,33 @@ pub fn resolve_ticket(
 #[derive(Args, Debug)]
 pub struct PlayArgs {
     /// Connection ticket.
-    #[arg(conflicts_with = "endpoint_id")]
+    #[arg(conflicts_with = "endpoint_id", conflicts_with = "relay")]
     pub ticket: Option<iroh_live::ticket::LiveTicket>,
 
-    /// Remote endpoint ID (requires --name).
-    #[arg(long, conflicts_with = "ticket", requires = "play_name")]
+    /// Remote endpoint ID of a direct publisher (requires --name).
+    #[arg(
+        long,
+        conflicts_with = "ticket",
+        conflicts_with = "relay",
+        requires = "play_name"
+    )]
     pub endpoint_id: Option<iroh::EndpointId>,
 
-    /// Broadcast name (with --endpoint-id).
-    #[arg(
-        long = "name",
-        id = "play_name",
-        conflicts_with = "ticket",
-        requires = "endpoint_id"
-    )]
+    /// Relay endpoint ID — subscribe through an iroh-live-relay over H3.
+    /// Requires `--name`. Combine with `--api-key` to present a JWT.
+    #[arg(long, conflicts_with = "ticket", conflicts_with = "endpoint_id")]
+    pub relay: Option<iroh::EndpointId>,
+
+    /// URL path prefix sent to the relay. Used with `--relay`.
+    #[arg(long, default_value = "/")]
+    pub relay_path: String,
+
+    /// API key (JWT) to present to the relay. Used with `--relay`.
+    #[arg(long)]
+    pub api_key: Option<String>,
+
+    /// Broadcast name (with --endpoint-id or --relay).
+    #[arg(long = "name", id = "play_name", conflicts_with = "ticket")]
     pub broadcast_name: Option<String>,
 
     /// No video — audio only, no window opened.
@@ -337,8 +350,17 @@ impl PlayArgs {
         }
     }
 
-    pub fn ticket(&self) -> anyhow::Result<iroh_live::ticket::LiveTicket> {
-        resolve_ticket(&self.ticket, &self.endpoint_id, &self.broadcast_name)
+    /// Resolves the subscribe source, covering both direct-peer and relay
+    /// subscribe modes.
+    pub fn source(&self) -> anyhow::Result<SubscribeSource> {
+        SubscribeSource::resolve(
+            &self.ticket,
+            &self.endpoint_id,
+            &self.relay,
+            &self.relay_path,
+            &self.api_key,
+            &self.broadcast_name,
+        )
     }
 
     pub fn decoder_backend(&self) -> anyhow::Result<iroh_live::media::format::DecoderBackend> {
@@ -412,8 +434,12 @@ pub enum RecordFormat {
     Raw,
 }
 
-/// Where `irl record` should subscribe from.
-pub enum RecordSource {
+/// Where a subscribe-shaped command (`irl play`, `irl record`) pulls from.
+///
+/// Keeps the three sources (ticket, direct endpoint, relay) behind one
+/// enum so the CLI layer handles the resolution once and commands
+/// consume the result.
+pub enum SubscribeSource {
     /// Direct iroh peer subscribe (ticket or endpoint-id).
     Direct(iroh_live::ticket::LiveTicket),
     /// Subscribe from a relay via H3 with an optional JWT.
@@ -423,29 +449,50 @@ pub enum RecordSource {
     },
 }
 
-impl RecordArgs {
-    /// Resolves the record source, covering both direct-peer and relay
-    /// subscribe modes.
-    pub fn source(&self) -> anyhow::Result<RecordSource> {
-        if let Some(relay_id) = self.relay {
-            let broadcast_name = self
-                .broadcast_name
+impl SubscribeSource {
+    /// Builds a source from the common argument triple. Callers pass the
+    /// `Option`s directly from their `clap::Args` struct.
+    pub fn resolve(
+        ticket: &Option<iroh_live::ticket::LiveTicket>,
+        endpoint_id: &Option<iroh::EndpointId>,
+        relay: &Option<iroh::EndpointId>,
+        relay_path: &str,
+        api_key: &Option<String>,
+        broadcast_name: &Option<String>,
+    ) -> anyhow::Result<Self> {
+        if let Some(relay_id) = *relay {
+            let name = broadcast_name
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("--relay requires --name"))?;
             let target = iroh_live::relay::RelayTarget::new(relay_id)
-                .with_path(&self.relay_path)
-                .with_api_key(self.api_key.clone());
-            Ok(RecordSource::Relay {
+                .with_path(relay_path)
+                .with_api_key(api_key.clone());
+            Ok(SubscribeSource::Relay {
                 target,
-                broadcast_name,
+                broadcast_name: name,
             })
         } else {
-            Ok(RecordSource::Direct(resolve_ticket(
-                &self.ticket,
-                &self.endpoint_id,
-                &self.broadcast_name,
+            Ok(SubscribeSource::Direct(resolve_ticket(
+                ticket,
+                endpoint_id,
+                broadcast_name,
             )?))
         }
+    }
+}
+
+impl RecordArgs {
+    /// Resolves the record source, covering both direct-peer and relay
+    /// subscribe modes.
+    pub fn source(&self) -> anyhow::Result<SubscribeSource> {
+        SubscribeSource::resolve(
+            &self.ticket,
+            &self.endpoint_id,
+            &self.relay,
+            &self.relay_path,
+            &self.api_key,
+            &self.broadcast_name,
+        )
     }
 }
 

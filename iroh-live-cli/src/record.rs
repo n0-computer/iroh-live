@@ -26,7 +26,7 @@ use tokio::io::AsyncWriteExt;
 use tracing::{debug, info, warn};
 
 use crate::{
-    args::{RecordArgs, RecordSource},
+    args::{RecordArgs, SubscribeSource},
     transport::setup_live,
 };
 
@@ -38,12 +38,12 @@ pub fn run(args: RecordArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
     rt.block_on(async {
         let live = setup_live(false).await?;
         let sub = match source {
-            RecordSource::Direct(ticket) => {
+            SubscribeSource::Direct(ticket) => {
                 println!("connecting to {ticket} ...");
                 live.subscribe(ticket.endpoint, &ticket.broadcast_name)
                     .await?
             }
-            RecordSource::Relay {
+            SubscribeSource::Relay {
                 target,
                 broadcast_name,
             } => {
