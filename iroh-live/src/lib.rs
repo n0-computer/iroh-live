@@ -6,6 +6,8 @@
 
 mod call;
 mod live;
+/// Client-side helpers for addressing an iroh-live-relay.
+pub mod relay;
 /// Multi-party room coordination over gossip.
 pub mod rooms;
 mod subscription;

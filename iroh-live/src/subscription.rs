@@ -20,6 +20,15 @@ pub struct Subscription {
 }
 
 impl Subscription {
+    /// Creates a subscription from an externally established session.
+    ///
+    /// Use this when the caller already owns a [`MoqSession`] (for example
+    /// from [`Live::connect_relay`](crate::Live::connect_relay)) and wants
+    /// the same stats and signal wiring as [`Live::subscribe`].
+    pub fn from_session(session: MoqSession, broadcast: RemoteBroadcast) -> Self {
+        Self::new(session, broadcast)
+    }
+
     /// Creates a new subscription with pre-wired stats and signals.
     ///
     /// Called internally by [`Live::subscribe`](crate::Live::subscribe).

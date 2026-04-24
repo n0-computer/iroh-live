@@ -16,6 +16,7 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler},
 };
 use moq_lite::{BroadcastConsumer, BroadcastProducer, OriginConsumer, OriginProducer};
+use url::Url;
 use n0_error::{AnyError, Result, StdResultExt, anyerr, e, stack_error};
 use n0_future::{
     FuturesUnordered, StreamExt,
@@ -40,6 +41,11 @@ pub enum Error {
     Moq(#[error(source, std_err)] moq_lite::Error),
     #[error(transparent)]
     Server(#[error(source, std_err)] web_transport_iroh::ServerError),
+    #[error("h3 handshake failed: {err}")]
+    H3 {
+        #[error(std_err)]
+        err: Arc<web_transport_iroh::ClientError>,
+    },
     #[error("internal consistency error")]
     InternalConsistencyError(#[error(source)] LiveActorDiedError),
     #[error("failed to perform request")]
@@ -143,6 +149,30 @@ impl Moq {
             .await
             .map_err(|_| LiveActorDiedError)?
             .map_err(|err| anyerr!(err))
+    }
+
+    /// Connects to a remote peer via HTTP/3, exposing the URL to the remote.
+    ///
+    /// Unlike [`Moq::connect`], H3 sessions are not deduplicated by the actor:
+    /// each call opens a fresh QUIC connection so that distinct URLs (for
+    /// example, different auth tokens or paths) do not share a session.
+    /// The returned session is registered with the actor so that locally
+    /// published broadcasts are forwarded to the remote, and it stays alive
+    /// for the lifetime of the actor (or until the peer closes it).
+    pub async fn connect_h3(
+        &self,
+        endpoint: &Endpoint,
+        remote: impl Into<EndpointAddr>,
+        url: Url,
+    ) -> Result<MoqSession, AnyError> {
+        let session = MoqSession::connect_h3(endpoint, remote, url).await?;
+        self.tx
+            .send(ActorMessage::HandleSession {
+                session: Box::new(session.clone()),
+            })
+            .await
+            .map_err(|_| LiveActorDiedError)?;
+        Ok(session)
     }
 
     /// Returns a stream of incoming MoQ sessions from remote peers.
@@ -269,6 +299,32 @@ impl MoqSession {
         tracing::Span::current().record("remote", field::display(addr.id.fmt_short()));
         let connection = endpoint.connect(addr, ALPN).await?;
         let wt_session = web_transport_iroh::Session::raw(connection);
+        Self::session_connect(wt_session).await
+    }
+
+    /// Connects to a remote MoQ endpoint via HTTP/3 over iroh, performing a
+    /// WebTransport handshake.
+    ///
+    /// Use this when the remote needs URL-level context such as a path or
+    /// query parameters (for example, `?jwt=...` auth). `url` must use the
+    /// `https` scheme; its host is ignored and the connection is routed to
+    /// `remote_addr`.
+    #[instrument(skip_all, fields(remote=field::Empty, url=field::Empty))]
+    pub async fn connect_h3(
+        endpoint: &Endpoint,
+        remote_addr: impl Into<EndpointAddr>,
+        url: Url,
+    ) -> Result<Self, Error> {
+        let addr = remote_addr.into();
+        tracing::Span::current()
+            .record("remote", field::display(addr.id.fmt_short()))
+            .record("url", field::display(redact_url(&url)));
+        let client = web_transport_iroh::Client::new(endpoint.clone());
+        let wt_session = client.connect_h3(addr, url).await.map_err(|err| {
+            e!(Error::H3 {
+                err: Arc::new(err)
+            })
+        })?;
         Self::session_connect(wt_session).await
     }
 
@@ -551,4 +607,23 @@ impl Actor {
             }
         }
     }
+}
+
+/// Returns a display form of `url` with sensitive query parameters (today
+/// just `jwt`) stripped. Used when tracing URLs into spans that may be
+/// persisted to long-lived logs.
+fn redact_url(url: &Url) -> String {
+    let mut redacted = url.clone();
+    let pairs: Vec<(String, String)> = redacted
+        .query_pairs()
+        .map(|(k, v)| {
+            let v = if k == "jwt" { "<redacted>".into() } else { v.into_owned() };
+            (k.into_owned(), v)
+        })
+        .collect();
+    redacted.query_pairs_mut().clear();
+    for (k, v) in pairs {
+        redacted.query_pairs_mut().append_pair(&k, &v);
+    }
+    redacted.to_string()
 }

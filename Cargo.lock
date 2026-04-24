@@ -5563,6 +5563,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "url",
  "wgpu 27.0.1",
  "winit 0.30.13",
 ]
