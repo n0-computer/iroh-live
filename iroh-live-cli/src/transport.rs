@@ -1,4 +1,11 @@
 //! Shared transport: create Live, publish via serve/relay/room combinations.
+//!
+//! Publishing into an iroh-live actor registers the broadcast on the actor's
+//! publish origin. The actor forwards the announcement to every session that
+//! shares the transport, whether the session was established outbound (for
+//! example a push to a relay) or inbound (a subscriber dialing us directly).
+//! This lets the three transport modes (serve, relay, room) coexist without
+//! each of them needing their own explicit publish call on every session.
 
 use iroh::EndpointId;
 use iroh_live::{
@@ -33,20 +40,19 @@ pub async fn publish_broadcast(
     broadcast: &LocalBroadcast,
     args: &TransportArgs,
 ) -> anyhow::Result<Option<Room>> {
-    let serve = !args.no_serve;
-    if serve {
-        live.publish(&args.name, broadcast).await?;
+    // The actor forwards this broadcast to every session we have now or
+    // open later, so we register once here rather than pushing it
+    // per-session. `--no-serve` only suppresses the incoming router and
+    // the ticket print; the publish itself is still registered so relay
+    // or room pushes pick it up.
+    live.publish(&args.name, broadcast).await?;
+
+    if !args.no_serve {
         print_ticket(live, &args.name, args.no_qr);
     }
 
     if let Some(id) = args.relay {
-        push_to_relay(
-            live,
-            &args.name,
-            broadcast.producer().consume(),
-            &build_relay_target(args, id),
-        )
-        .await?;
+        connect_to_relay(live, &build_relay_target(args, id)).await?;
     }
 
     let room = if let Some(ref room_ticket) = args.room {
@@ -66,21 +72,15 @@ pub async fn publish_producer(
     producer: BroadcastProducer,
     args: &TransportArgs,
 ) -> anyhow::Result<Option<Room>> {
-    let serve = !args.no_serve;
-    if serve {
-        live.publish_broadcast_producer(&args.name, producer.clone())
-            .await?;
+    live.publish_broadcast_producer(&args.name, producer.clone())
+        .await?;
+
+    if !args.no_serve {
         print_ticket(live, &args.name, args.no_qr);
     }
 
     if let Some(id) = args.relay {
-        push_to_relay(
-            live,
-            &args.name,
-            producer.consume(),
-            &build_relay_target(args, id),
-        )
-        .await?;
+        connect_to_relay(live, &build_relay_target(args, id)).await?;
     }
 
     let room = if let Some(ref room_ticket) = args.room {
@@ -98,15 +98,12 @@ fn build_relay_target(args: &TransportArgs, endpoint: EndpointId) -> RelayTarget
         .with_api_key(args.api_key.clone())
 }
 
-async fn push_to_relay(
-    live: &Live,
-    name: &str,
-    consumer: moq_lite::BroadcastConsumer,
-    target: &RelayTarget,
-) -> anyhow::Result<()> {
-    let session = live.connect_relay(target).await?;
-    session.publish(name, consumer);
-    info!(relay=%target.endpoint(), "published to relay");
+/// Opens a session to the relay. The broadcast registered on the actor is
+/// forwarded to the new session automatically via
+/// [`Live::connect_relay`]'s `HandleSession` integration.
+async fn connect_to_relay(live: &Live, target: &RelayTarget) -> anyhow::Result<()> {
+    let _session = live.connect_relay(target).await?;
+    info!(relay=%target.endpoint(), "connected to relay");
     Ok(())
 }
 
