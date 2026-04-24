@@ -221,14 +221,24 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
 
 /// Assembles the [`AuthConfig`] from CLI flags.
 ///
-/// If `--auth-key` is set, the relay runs with JWT auth only (no public
-/// fallback). Otherwise it opens the gates with a catch-all public prefix,
-/// which is what the previous builds did unconditionally.
+/// When `--auth-key` is set, JWTs are required for publish (and for any
+/// scoped subscribe) but anonymous subscribers retain read access on all
+/// paths so a browser can open a broadcast URL without holding a token.
+/// Operators who want authenticated reads too can layer a more
+/// restrictive JWT on the subscribe side via the same key.
+///
+/// Without `--auth-key` the relay keeps a catch-all public prefix so
+/// dev loops work out of the box.
 fn build_auth_config(config: &RelayConfig) -> anyhow::Result<AuthConfig> {
     let mut auth_config = AuthConfig::default();
     if let Some(path) = config.auth_key.as_deref() {
         anyhow::ensure!(path.is_file(), "auth key path is not a file: {path:?}");
         auth_config.key = Some(path.to_string_lossy().into_owned());
+        auth_config.public = Some(PublicConfig::Detailed(PublicDetailed {
+            subscribe: vec!["".to_string()],
+            publish: Vec::new(),
+            api: None,
+        }));
     } else {
         let prefixes = vec!["".to_string()];
         auth_config.public = Some(PublicConfig::Detailed(PublicDetailed {
