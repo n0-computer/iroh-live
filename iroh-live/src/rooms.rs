@@ -223,12 +223,14 @@ impl RoomBuilder {
     /// publishes will also be announced on the relay, and the offer
     /// is advertised via gossip so other peers can subscribe via the
     /// relay as a fallback.
+    #[must_use]
     pub fn with_relay(mut self, offer: RelayOffer) -> Self {
         self.relay = Some(offer);
         self
     }
 
     /// Sets the preferred subscribe mode. See [`RoomSubscribeMode`].
+    #[must_use]
     pub fn subscribe_mode(mut self, mode: RoomSubscribeMode) -> Self {
         self.subscribe_mode = mode;
         self
@@ -245,6 +247,7 @@ impl RoomBuilder {
     /// interval, which tolerates short network blips without
     /// declaring a peer dead. Tests that need to observe expiry
     /// quickly can shorten both values.
+    #[must_use]
     pub fn kv_expiry(mut self, horizon: Duration, check_interval: Duration) -> Self {
         self.kv_expiry = ExpiryConfig {
             horizon,
@@ -524,6 +527,22 @@ const MAX_BROADCAST_NAME_LEN: usize = 128;
 /// same log-spam concern as `MAX_BROADCAST_NAME_LEN`.
 const MAX_DISPLAY_NAME_LEN: usize = 64;
 
+/// Maximum number of bootstrap peers in a [`RoomTicket`].
+///
+/// Tickets reach a room actor through `Live::join_room`. A
+/// hostile ticket could otherwise list thousands of peers,
+/// each of which the gossip layer would dial.
+pub(crate) const MAX_BOOTSTRAP_PEERS: usize = 16;
+
+/// Maximum number of distinct peers tracked in a single room.
+///
+/// The actor refuses new gossip and relay announcements once the
+/// cap is hit, so a hostile gossip member cannot drive
+/// `peer_relays` or `known_peers` toward unbounded growth.
+/// Reached only under pathological churn; honest rooms do not
+/// get close.
+const MAX_KNOWN_PEERS: usize = 256;
+
 type ConnectingFutures = FuturesUnordered<BoxFuture<(BroadcastId, SubscribeResult)>>;
 type KvEntry = (EndpointId, Bytes, SignedValue);
 
@@ -665,7 +684,12 @@ impl Actor {
         let mode = ticket.mode;
         let relay = ticket.relay.clone();
 
-        let (closed_tx, closed_rx) = mpsc::channel(MAX_PEER_BROADCASTS);
+        // Sized to the worst case `MAX_KNOWN_PEERS *
+        // MAX_PEER_BROADCASTS` so a mass-disconnect storm cannot
+        // back-pressure the watcher tasks into dropping signals.
+        // Under normal operation only a handful of slots are in
+        // flight at once.
+        let (closed_tx, closed_rx) = mpsc::channel(MAX_KNOWN_PEERS * MAX_PEER_BROADCASTS);
 
         // Make sure our own KV entry refreshes well before its
         // horizon, otherwise other peers will see us as expired
@@ -782,6 +806,18 @@ impl Actor {
             let relay_rx_present = self.relay_discovery.is_some();
 
             tokio::select! {
+                // `biased;` keeps API messages from being starved
+                // by gossip / relay event traffic. The inbox arm
+                // is the first branch below, so heavy discovery
+                // traffic still cannot delay an `enable_relay`
+                // call beyond the inbox queue depth.
+                biased;
+                msg = inbox.recv() => {
+                    match msg {
+                        None => break,
+                        Some(msg) => self.handle_api_message(msg).await
+                    }
+                }
                 _ = refresh.tick(), if self.gossip.is_some() => {
                     self.update_kv().await;
                 }
@@ -843,12 +879,6 @@ impl Actor {
                         }
                     }
                 }
-                msg = inbox.recv() => {
-                    match msg {
-                        None => break,
-                        Some(msg) => self.handle_api_message(msg).await
-                    }
-                }
                 Some((id, res)) = self.connecting.next(), if !self.connecting.is_empty() => {
                     match res.ready {
                         Some((_multi, active)) => {
@@ -885,12 +915,12 @@ impl Actor {
                     self.announced.remove(&id);
 
                     let still_active = self.active_subscribe.keys().any(|b| b.0 == remote);
-                    if !still_active
-                        && self.known_peers.remove(&remote).is_some()
-                        && self.event_tx.send(RoomEvent::PeerLeft { remote }).await.is_err()
-                    {
-                        debug!("room event receiver dropped, stopping actor");
-                        return;
+                    if !still_active && self.known_peers.remove(&remote).is_some() {
+                        self.peer_relays.remove(&remote);
+                        if self.event_tx.send(RoomEvent::PeerLeft { remote }).await.is_err() {
+                            debug!("room event receiver dropped, stopping actor");
+                            return;
+                        }
                     }
                 }
                 Some(name) = self.publish_closed.next(), if !self.publish_closed.is_empty() => {
@@ -939,15 +969,23 @@ impl Actor {
                         if current.is_some() {
                             ever_active = true;
                         }
-                        let via_relay = current.as_ref().is_some_and(|id| id.is_relay());
-                        if tx
-                            .send(RoomEvent::BroadcastSwitched {
-                                remote,
-                                broadcast_name: name.clone(),
-                                via_relay,
-                            })
-                            .await
-                            .is_err()
+                        // Suppress `BroadcastSwitched` when the
+                        // subscription transitions to no active
+                        // source. The downstream `closed_tx`
+                        // signal a few lines below carries the
+                        // bad-news semantics; emitting
+                        // `via_relay=false` here would falsely
+                        // suggest a swap to the direct path
+                        // during the death window.
+                        if current.is_some()
+                            && tx
+                                .send(RoomEvent::BroadcastSwitched {
+                                    remote,
+                                    broadcast_name: name.clone(),
+                                    via_relay: current.as_ref().is_some_and(|id| id.is_relay()),
+                                })
+                                .await
+                                .is_err()
                         {
                             break;
                         }
@@ -958,7 +996,12 @@ impl Actor {
                             // to clean up; the discovery layer
                             // re-creates the entry if the peer
                             // re-announces.
-                            let _ = closed_tx.try_send(id_for_closed.clone());
+                            // Await rather than try_send so the
+                            // close signal is not silently dropped
+                            // under back-pressure. The watcher
+                            // task is its own tokio task, so
+                            // blocking here is fine.
+                            let _ = closed_tx.send(id_for_closed.clone()).await;
                             break;
                         }
                     }
@@ -1082,9 +1125,11 @@ impl Actor {
                     }
                 }
                 if endpoint_changed || self.relay_publisher.is_none() {
-                    if let Some(prev) = self.relay_publisher.take() {
-                        prev.shutdown();
-                    }
+                    // Spawn the new publisher before tearing down
+                    // the old one. If `spawn` fails, the previous
+                    // publisher keeps relaying every active
+                    // broadcast instead of leaving them silently
+                    // un-relayed.
                     match RelayPublisher::spawn(
                         self.live.clone(),
                         self.ticket.clone(),
@@ -1094,14 +1139,14 @@ impl Actor {
                     .await
                     {
                         Ok(publisher) => {
-                            // Re-issue every active broadcast on
-                            // the new publisher.
                             for (name, entry) in &self.active_publish {
                                 publisher
                                     .publish(name.clone(), entry.global_consumer.clone())
                                     .await;
                             }
-                            self.relay_publisher = Some(publisher);
+                            if let Some(prev) = self.relay_publisher.replace(publisher) {
+                                prev.shutdown();
+                            }
                         }
                         Err(err) => {
                             warn!(relay=%offer.endpoint.fmt_short(), "failed to open relay publisher: {err:#}");
@@ -1307,6 +1352,16 @@ impl Actor {
             "received peer announcement via gossip"
         );
 
+        let known = self.known_peers.contains_key(&remote);
+        if !known && self.known_peers.len() >= MAX_KNOWN_PEERS {
+            warn!(
+                remote=%remote.fmt_short(),
+                cap = MAX_KNOWN_PEERS,
+                "dropping gossip announcement; known-peers cap reached"
+            );
+            return true;
+        }
+
         let relay_changed = self
             .peer_relays
             .get(&remote)
@@ -1445,6 +1500,16 @@ impl Actor {
                     );
                     return true;
                 }
+                if !self.known_peers.contains_key(&peer)
+                    && self.known_peers.len() >= MAX_KNOWN_PEERS
+                {
+                    warn!(
+                        peer=%peer.fmt_short(),
+                        cap = MAX_KNOWN_PEERS,
+                        "dropping relay announcement; known-peers cap reached"
+                    );
+                    return true;
+                }
                 if let std::collections::hash_map::Entry::Vacant(e) = self.known_peers.entry(peer) {
                     e.insert(None);
                     if self
@@ -1486,6 +1551,7 @@ impl Actor {
                 self.announced.remove(&id);
                 let still_active = self.active_subscribe.keys().any(|b| b.0 == peer);
                 if !still_active && self.known_peers.remove(&peer).is_some() {
+                    self.peer_relays.remove(&peer);
                     let _ = self
                         .event_tx
                         .send(RoomEvent::PeerLeft { remote: peer })
@@ -1728,6 +1794,24 @@ mod ticket {
             self.mode
         }
 
+        /// Validates the ticket's external-input fields against
+        /// the runtime caps.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error when the bootstrap list exceeds
+        /// `MAX_BOOTSTRAP_PEERS` or the relay offer (if present)
+        /// fails its own [`RelayOffer::validate`] check.
+        pub fn validate(&self) -> std::result::Result<(), &'static str> {
+            if self.bootstrap.len() > super::MAX_BOOTSTRAP_PEERS {
+                return Err("ticket carries more than MAX_BOOTSTRAP_PEERS");
+            }
+            if let Some(offer) = &self.relay {
+                offer.validate()?;
+            }
+            Ok(())
+        }
+
         /// Returns the relay path component for this room.
         ///
         /// Equal to `format!("room/{}", topic_hex)` where
@@ -1796,7 +1880,10 @@ mod ticket {
         }
 
         fn from_bytes(bytes: &[u8]) -> Result<Self, iroh_tickets::ParseError> {
-            let ticket = postcard::from_bytes(bytes)?;
+            let ticket: Self = postcard::from_bytes(bytes)?;
+            ticket
+                .validate()
+                .map_err(iroh_tickets::ParseError::verification_failed)?;
             Ok(ticket)
         }
     }

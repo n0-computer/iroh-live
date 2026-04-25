@@ -374,47 +374,69 @@ async fn peer_joined_fires() {
     live_b.shutdown().await;
 }
 
-/// `PeerState` postcard serialization roundtrip — with and without
-/// display_name. This is the exact bug class that broke rooms: postcard
-/// is positional, so `skip_serializing_if` on `Option` fields causes
-/// deserialization to read past the buffer.
+/// `PeerState` postcard serialization roundtrip with and without
+/// the optional fields. Postcard is positional, so a stray
+/// `skip_serializing_if` on any `Option` field would cause
+/// deserialization to read past the buffer; this test guards the
+/// shape across every `Option` permutation.
+///
+/// The shape mirrors the private `PeerState` struct in
+/// `iroh-live/src/rooms.rs` (broadcasts, display_name, relay). Any
+/// new field added there must be appended on both sides.
 #[test]
 fn peer_state_serialization_roundtrip() {
-    // Replicate the PeerState struct from rooms.rs. We test the same
-    // serde attributes by defining an identical layout here, since the
-    // real struct is private.
+    use iroh_live::sources::RelayOffer;
+
     #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
     struct PeerState {
         broadcasts: Vec<String>,
         display_name: Option<String>,
+        relay: Option<RelayOffer>,
     }
 
-    let with_name = PeerState {
-        broadcasts: vec!["cam".into(), "screen".into()],
-        display_name: Some("Alice".into()),
-    };
-    let without_name = PeerState {
-        broadcasts: vec!["cam".into()],
-        display_name: None,
-    };
-    let empty = PeerState {
-        broadcasts: vec![],
-        display_name: None,
+    let relay = RelayOffer {
+        endpoint: iroh::SecretKey::generate().public(),
+        path: "/r".into(),
+        api_key: Some("token".into()),
     };
 
-    for state in [&with_name, &without_name, &empty] {
+    let cases = [
+        PeerState {
+            broadcasts: vec!["cam".into(), "screen".into()],
+            display_name: Some("Alice".into()),
+            relay: Some(relay.clone()),
+        },
+        PeerState {
+            broadcasts: vec!["cam".into()],
+            display_name: None,
+            relay: Some(relay.clone()),
+        },
+        PeerState {
+            broadcasts: vec![],
+            display_name: Some("Bob".into()),
+            relay: None,
+        },
+        PeerState {
+            broadcasts: vec![],
+            display_name: None,
+            relay: None,
+        },
+    ];
+
+    for state in &cases {
         let bytes = postcard::to_stdvec(state).expect("serialize");
         let decoded: PeerState = postcard::from_bytes(&bytes).expect("deserialize");
         assert_eq!(&decoded, state, "roundtrip failed for {state:?}");
     }
 
-    // Cross-compatibility: bytes from "with name" must not decode as
-    // "without name" and vice versa. This catches the skip_serializing_if
-    // bug where None was serialized as absent rather than as a 0-tag.
-    let with_bytes = postcard::to_stdvec(&with_name).unwrap();
-    let without_bytes = postcard::to_stdvec(&without_name).unwrap();
+    // Cross-compatibility: bytes from a populated state must not
+    // decode as an empty one. Catches the regression class where
+    // a `None` would be serialized as absent rather than as a
+    // zero tag.
+    let full_bytes = postcard::to_stdvec(&cases[0]).unwrap();
+    let empty_bytes = postcard::to_stdvec(&cases[3]).unwrap();
     assert_ne!(
-        with_bytes, without_bytes,
-        "with_name and without_name should produce different bytes"
+        full_bytes, empty_bytes,
+        "full and empty PeerState should produce different bytes"
     );
 }

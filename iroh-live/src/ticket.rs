@@ -32,7 +32,13 @@ pub struct LiveTicket {
     /// The broadcast name to subscribe to.
     pub broadcast_name: String,
     /// Additional relay sources that also serve this broadcast.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ///
+    /// Always serialized as a length-prefixed sequence, even when
+    /// empty. Postcard is positional, so a `skip_serializing_if`
+    /// would drop the length byte on the writer side and misalign
+    /// the reader, breaking the binary form for tickets without
+    /// relays.
+    #[serde(default)]
     pub relays: Vec<RelayOffer>,
 }
 

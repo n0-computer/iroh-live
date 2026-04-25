@@ -537,15 +537,40 @@ impl RelayOffer {
             .with_api_key(self.api_key.clone())
     }
 
-    /// Validates that the offer's path length is within
-    /// [`MAX_RELAY_PATH_LEN`].
+    /// Validates that the offer's path is within the runtime
+    /// length and character caps.
+    ///
+    /// The path becomes part of the relay's URL on the wire. The
+    /// check closes off three classes of mistake on the client
+    /// side, before a peer-supplied offer reaches the URL parser:
+    ///
+    /// - over-long paths (covered by [`MAX_RELAY_PATH_LEN`])
+    /// - paths that smuggle a query string or fragment (`?`,
+    ///   `#`) into what should be a plain path slot
+    /// - paths that contain control characters or NUL bytes,
+    ///   which round-trip through `Url::set_path` in surprising
+    ///   ways and inflate logs
+    ///
+    /// `..` segments are not rejected here: the relay decides how
+    /// to interpret its own namespace and may use them
+    /// legitimately. Path-segment-to-subject binding is enforced
+    /// at the relay (tracked upstream in `moq-relay`).
     ///
     /// # Errors
     ///
-    /// Returns `Err` when the path is longer than the limit.
+    /// Returns `Err` with a brief reason when the path violates
+    /// any of the rules above.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.path.len() > MAX_RELAY_PATH_LEN {
             return Err("relay offer path exceeds the maximum allowed length");
+        }
+        for ch in self.path.chars() {
+            if ch == '?' || ch == '#' {
+                return Err("relay offer path contains a query or fragment delimiter");
+            }
+            if ch == '\0' || ch.is_control() {
+                return Err("relay offer path contains a control character");
+            }
         }
         Ok(())
     }
@@ -770,6 +795,38 @@ mod tests {
         };
         offer.path = "/".repeat(MAX_RELAY_PATH_LEN + 1);
         assert!(offer.validate().is_err());
+    }
+
+    #[test]
+    fn relay_offer_validate_rejects_query_or_fragment() {
+        let endpoint = SecretKey::generate().public();
+        for path in ["/foo?bar=1", "/foo#section", "/?x"] {
+            let offer = RelayOffer {
+                endpoint,
+                path: path.into(),
+                api_key: None,
+            };
+            assert!(
+                offer.validate().is_err(),
+                "expected path {path:?} to fail validation"
+            );
+        }
+    }
+
+    #[test]
+    fn relay_offer_validate_rejects_control_chars() {
+        let endpoint = SecretKey::generate().public();
+        for ch in ['\0', '\x01', '\n', '\r', '\x7F'] {
+            let offer = RelayOffer {
+                endpoint,
+                path: format!("/foo{ch}bar"),
+                api_key: None,
+            };
+            assert!(
+                offer.validate().is_err(),
+                "expected path with control char {ch:?} to fail validation"
+            );
+        }
     }
 
     #[test]

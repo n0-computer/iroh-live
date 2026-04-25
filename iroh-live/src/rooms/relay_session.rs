@@ -63,14 +63,20 @@ impl Backoff {
         }
     }
 
+    /// Returns the next delay (with jitter) and advances the
+    /// schedule. The returned delay is the current step scaled
+    /// by a uniform factor in `[0.5, 1.0]`, which spreads a
+    /// thundering-herd reconnect across the step instead of
+    /// landing every client at the same instant.
     fn next(&mut self) -> Duration {
-        let result = self.current;
+        let step = self.current;
         let scaled = self
             .current
             .checked_mul(RECONNECT_MULTIPLIER)
             .unwrap_or(RECONNECT_CAP);
         self.current = scaled.min(RECONNECT_CAP);
-        result
+        let jitter: f64 = 0.5 + rand::random::<f64>() * 0.5;
+        step.mul_f64(jitter)
     }
 
     fn reset(&mut self) {
@@ -298,8 +304,14 @@ impl RelayPublisher {
         state.publishes.remove(name);
     }
 
-    /// Cancels the reconnect task and clears all tracked
-    /// publishes. After this call the publisher is inert.
+    /// Cancels the reconnect task. After this call the publisher
+    /// is inert: no further reconnect attempts run, the current
+    /// session (if any) is dropped, and any in-flight `publish` /
+    /// `unpublish` calls return without effect on the relay. The
+    /// tracked-publishes map is left intact so the caller can
+    /// inspect what was active at shutdown; the room actor drops
+    /// the whole [`RelayPublisher`] right after, which clears
+    /// everything.
     pub(crate) fn shutdown(&self) {
         self.cancel.cancel();
     }
@@ -395,27 +407,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backoff_grows_then_caps() {
+    fn backoff_steps_within_jittered_bounds() {
         let mut b = Backoff::new();
+        // First step uses RECONNECT_INITIAL with [0.5, 1.0)
+        // jitter; the result lies in [INITIAL/2, INITIAL].
         let d1 = b.next();
-        let d2 = b.next();
-        let d3 = b.next();
-        assert!(d2 > d1);
-        assert!(d3 > d2);
-        // Eventually saturates.
+        assert!(d1 >= RECONNECT_INITIAL / 2 && d1 <= RECONNECT_INITIAL);
+        // After saturation, every step lies in [CAP/2, CAP].
         for _ in 0..32 {
             b.next();
         }
-        assert_eq!(b.next(), RECONNECT_CAP);
+        let d_saturated = b.next();
+        assert!(d_saturated >= RECONNECT_CAP / 2 && d_saturated <= RECONNECT_CAP);
     }
 
     #[test]
-    fn backoff_reset_returns_to_initial() {
+    fn backoff_reset_returns_to_initial_step() {
         let mut b = Backoff::new();
         for _ in 0..8 {
             b.next();
         }
         b.reset();
-        assert_eq!(b.next(), RECONNECT_INITIAL);
+        let d = b.next();
+        assert!(d >= RECONNECT_INITIAL / 2 && d <= RECONNECT_INITIAL);
     }
 }

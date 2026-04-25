@@ -49,6 +49,22 @@ fn broadcast_with_video() -> LocalBroadcast {
     broadcast
 }
 
+/// A ticket without relays serialises and deserialises through the
+/// binary form. Postcard is positional, so dropping the relay
+/// length on the writer side would misalign the reader; this test
+/// guards the wire format for the empty case.
+#[test]
+fn ticket_without_relays_round_trip() {
+    let endpoint = iroh::SecretKey::generate().public();
+    let addr = EndpointAddr::from(endpoint);
+    let ticket = LiveTicket::new(addr, "stream");
+    let bytes = ticket.to_bytes();
+    let parsed = LiveTicket::from_bytes(&bytes).expect("decode");
+    assert_eq!(parsed.broadcast_name, "stream");
+    assert_eq!(parsed.endpoint, ticket.endpoint);
+    assert!(parsed.relays.is_empty());
+}
+
 /// Serialises a ticket with relays and parses it back; the relay
 /// offers round-trip exactly.
 #[test]
