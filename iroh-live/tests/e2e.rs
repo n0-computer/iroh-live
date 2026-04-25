@@ -23,7 +23,7 @@ use n0_tracing_test::traced_test;
 use tokio::sync::watch;
 use tracing::{Instrument, info_span};
 
-/// Generous timeout for frame arrival — must survive CPU contention when the
+/// Generous timeout for frame arrival - must survive CPU contention when the
 /// full workspace test suite runs in parallel.
 const FRAME_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -248,7 +248,7 @@ async fn adaptive_rendition_switching() {
         "expected 2 video renditions, got {rendition_count}"
     );
 
-    // Synthetic signals channel — start with good conditions.
+    // Synthetic signals channel - start with good conditions.
     let good = NetworkSignals {
         rtt: Duration::from_millis(20),
         loss_rate: 0.0,
@@ -274,7 +274,7 @@ async fn adaptive_rendition_switching() {
         .enable_adaptation(remote.clone(), signals_rx, config, DecodeConfig::default())
         .expect("failed to enable adaptation");
 
-    // Get initial frame — should start on highest rendition (360p).
+    // Get initial frame - should start on highest rendition (360p).
     let first = tokio::time::timeout(FRAME_TIMEOUT, track.next_frame())
         .await
         .expect("timed out waiting for first adaptive frame")
@@ -290,7 +290,7 @@ async fn adaptive_rendition_switching() {
     // Inject high loss → expect downgrade.
     signals_tx
         .send(NetworkSignals {
-            loss_rate: 0.25, // 25% — triggers emergency
+            loss_rate: 0.25, // 25% - triggers emergency
             available_bps: 10_000_000,
             congestion_events: 0,
             rtt: Duration::from_millis(200),
@@ -331,7 +331,7 @@ async fn adaptive_rendition_switching() {
         }
         if tokio::time::Instant::now() > upgrade_deadline {
             // Upgrade may not happen within the test window due to cooldowns.
-            // This is acceptable — the downgrade already proved adaptation works.
+            // This is acceptable - the downgrade already proved adaptation works.
             break;
         }
     }

@@ -202,11 +202,11 @@ impl VideoDecoderPipeline {
 ///
 /// When `opts.sync` is `Some`:
 ///
-/// 1. **Receive path** — `sync.received(packet.timestamp)` is called for
+/// 1. **Receive path** - `sync.received(packet.timestamp)` is called for
 ///    every packet popped from `input_rx`, recording the arrival time
 ///    so the shared clock can compute the tightest reference offset.
 ///
-/// 2. **Render path** — `sync.wait(frame.timestamp)` gates each decoded
+/// 2. **Render path** - `sync.wait(frame.timestamp)` gates each decoded
 ///    frame before it is sent to `output_tx`, sleeping until the
 ///    playout time (reference + pts + latency) arrives. This replaces
 ///    the `FramePacer`.

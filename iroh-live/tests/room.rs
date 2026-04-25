@@ -3,7 +3,7 @@
 //! These tests exercise the room lifecycle over real QUIC connections:
 //! join, announce, subscribe, receive frames, chat, and peer departure.
 //! Every test caught zero regressions before the postcard serialization
-//! bug that broke rooms entirely — that gap must not reopen.
+//! bug that broke rooms entirely - that gap must not reopen.
 
 use std::{sync::OnceLock, time::Duration};
 
@@ -25,7 +25,7 @@ use tracing::info;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Generous timeout — must survive CPU contention when the full workspace
+/// Generous timeout - must survive CPU contention when the full workspace
 /// test suite runs in parallel.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -102,7 +102,7 @@ async fn wait_for_event(room: &mut Room, msg: &str, mut predicate: impl FnMut(&R
 // Tests
 // ---------------------------------------------------------------------------
 
-/// Two peers join a room and see each other's broadcasts — the exact
+/// Two peers join a room and see each other's broadcasts - the exact
 /// scenario the postcard serialization bug broke.
 #[tokio::test]
 #[traced_test]

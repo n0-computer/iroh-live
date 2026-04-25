@@ -46,13 +46,13 @@ async fn publish_side() -> anyhow::Result<()> {
     let live = Live::from_env().await?.with_router().spawn();
     let broadcast = LocalBroadcast::new();
 
-    // Attach camera — encodes a 720p rendition with H.264
+    // Attach camera - encodes a 720p rendition with H.264
     let camera = CameraCapturer::new()?;
     broadcast
         .video()
         .set_source(camera, VideoCodec::H264, [VideoPreset::P720])?;
 
-    // Attach microphone — encodes with Opus
+    // Attach microphone - encodes with Opus
     let audio = AudioBackend::default();
     let mic = audio.default_input().await?;
     broadcast

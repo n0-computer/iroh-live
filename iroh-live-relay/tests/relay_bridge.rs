@@ -318,7 +318,7 @@ async fn noq_publish_iroh_subscribe() {
     shared_lookup().add_endpoint_info(sub_ep.addr());
     let subscriber = iroh_live::Live::builder(sub_ep.clone()).spawn();
 
-    // Retry subscribe a few times — the relay may need time to propagate
+    // Retry subscribe a few times - the relay may need time to propagate
     // the noq publisher's announcement to the iroh side.
     let mut last_err = None;
     for attempt in 0..3 {
@@ -333,7 +333,7 @@ async fn noq_publish_iroh_subscribe() {
                     has_audio = active.broadcast().has_audio(),
                     "subscribed to browser-stream via iroh"
                 );
-                // Success — clean up and return.
+                // Success - clean up and return.
                 drop(active);
                 drop(sub);
                 drop(_pub_session);
@@ -455,7 +455,7 @@ async fn pull_remote_broadcast_via_ticket() {
     // Should see the pulled broadcast announced.
     let (path, bc) = tokio::time::timeout(TIMEOUT, announcements.announced())
         .await
-        .expect("announce timeout — pull mode may not work")
+        .expect("announce timeout - pull mode may not work")
         .expect("closed");
     // The pulled broadcast is published under the full ticket string.
     assert!(
@@ -548,7 +548,7 @@ async fn iroh_publish_noq_subscribe() {
 
     let (path, bc) = tokio::time::timeout(TIMEOUT, announcements.announced())
         .await
-        .expect("announce timeout — iroh→noq bridging may not work")
+        .expect("announce timeout - iroh→noq bridging may not work")
         .expect("closed");
     assert_eq!(path.as_str(), "cli-stream");
     let _bc = bc.expect("announce");

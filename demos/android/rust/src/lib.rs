@@ -67,7 +67,7 @@ const LOGCAT_FILTER: &str = "\
 #[unsafe(no_mangle)]
 pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut std::ffi::c_void) -> jint {
     // SAFETY: The JVM guarantees `vm` is valid during JNI_OnLoad.
-    // Null activity — cpal only needs the VM pointer for Oboe init.
+    // Null activity - cpal only needs the VM pointer for Oboe init.
     unsafe {
         ndk_context::initialize_android_context(
             vm.get_java_vm_pointer().cast(),
@@ -99,7 +99,7 @@ fn runtime() -> &'static Runtime {
 /// `Arc<Mutex<..>>` allows concurrent JNI calls from different threads
 /// (render loop vs camera callback).
 struct SessionHandle {
-    /// Network session — `None` for local debug pipelines.
+    /// Network session - `None` for local debug pipelines.
     live: Option<Live>,
     /// Subscribe-only MoQ session (from `connect`).
     #[allow(dead_code, reason = "kept alive to sustain the transport session")]
@@ -111,10 +111,10 @@ struct SessionHandle {
     remote: Option<RemoteBroadcast>,
     /// Decoded video track.
     video: Option<VideoTrack>,
-    /// Audio track — kept alive to sustain playback via cpal/Oboe.
+    /// Audio track - kept alive to sustain playback via cpal/Oboe.
     #[allow(dead_code, reason = "kept alive to sustain audio playout")]
     audio: Option<AudioTrack>,
-    /// Audio backend — must outlive audio tracks.
+    /// Audio backend - must outlive audio tracks.
     #[allow(dead_code, reason = "must outlive audio tracks")]
     audio_backend: Option<AudioBackend>,
     /// Local broadcast for publish mode.
@@ -122,10 +122,10 @@ struct SessionHandle {
     broadcast: Option<LocalBroadcast>,
     /// Connection ticket string (set after publish).
     ticket: Option<String>,
-    /// Encoder pipeline — kept alive to sustain the H264 debug pipeline.
+    /// Encoder pipeline - kept alive to sustain the H264 debug pipeline.
     #[allow(dead_code, reason = "kept alive to sustain the encoder thread")]
     encoder_pipeline: Option<VideoEncoderPipeline>,
-    /// GLES2 renderer — behind its own lock so rendering doesn't block
+    /// GLES2 renderer - behind its own lock so rendering doesn't block
     /// camera frame pushes on the SessionHandle mutex.
     renderer: Arc<Mutex<Option<AndroidRenderer>>>,
     /// Actual decoded frame dimensions (more reliable than catalog).
@@ -1190,4 +1190,4 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_switchRendition(
     }
 }
 
-// (EGL extension JNI wrappers removed — Rust now owns the full EGL lifecycle.)
+// (EGL extension JNI wrappers removed - Rust now owns the full EGL lifecycle.)

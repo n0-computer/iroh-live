@@ -86,17 +86,17 @@ mod app {
     fn cmd_epaper_demo() -> n0_error::Result {
         println!("step 1/3: checkerboard test pattern");
         epaper::display_test_pattern()?;
-        println!("  displayed — you should see a checkerboard now");
+        println!("  displayed - you should see a checkerboard now");
         wait_for_enter();
 
         println!("step 2/3: QR code with dummy data");
         epaper::display_qr("https://iroh.computer/hello-from-pi-zero")?;
-        println!("  displayed — you should see a QR code now");
+        println!("  displayed - you should see a QR code now");
         wait_for_enter();
 
         println!("step 3/3: clearing display");
         epaper::clear_display()?;
-        println!("  done — display should be white");
+        println!("  done - display should be white");
 
         Ok(())
     }
@@ -107,7 +107,7 @@ mod app {
         std::io::stdin().read_line(&mut buf).ok();
     }
 
-    /// Renders a test pattern directly to HDMI — no network, no window system.
+    /// Renders a test pattern directly to HDMI - no network, no window system.
     fn cmd_fb_demo() -> n0_error::Result {
         use moq_media::{subscribe::VideoTrack, test_util::TestVideoSource};
         use tokio_util::sync::CancellationToken;
@@ -173,7 +173,7 @@ mod app {
             #[cfg(not(feature = "windowed"))]
             {
                 eprintln!(
-                    "windowed mode not compiled in — use --fb or build with --features windowed"
+                    "windowed mode not compiled in - use --fb or build with --features windowed"
                 );
                 std::process::exit(1);
             }

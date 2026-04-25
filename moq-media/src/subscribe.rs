@@ -246,7 +246,7 @@ pub struct RemoteBroadcast {
 ///
 /// Derefs to [`Catalog`] for direct access to video/audio configuration.
 /// Each snapshot carries a sequence number for change detection.
-/// Equality compares only the sequence number, not the catalog content — two
+/// Equality compares only the sequence number, not the catalog content - two
 /// snapshots from different broadcasts with the same `seq` compare as equal.
 #[derive(Debug, derive_more::PartialEq, derive_more::Eq, Default, Clone, derive_more::Deref)]
 pub struct CatalogSnapshot {
@@ -1455,7 +1455,7 @@ async fn adaptation_task_v2(
                 continue;
             }
             if now.duration_since(started) >= config.probe_duration {
-                // Probe succeeded — commit.
+                // Probe succeeded - commit.
                 let probe_idx = current_idx.saturating_sub(1);
                 current_idx = probe_idx;
                 selected_rendition.set(ranked[probe_idx].name.clone()).ok();
@@ -1530,7 +1530,7 @@ async fn adaptation_task_v2(
                 }
             }
             Decision::Downgrade(_) => {
-                // In failure cooldown — skip.
+                // In failure cooldown - skip.
             }
             Decision::StartProbe(probe_idx) if !in_failure_cooldown => {
                 tracing::debug!(
@@ -1558,7 +1558,7 @@ async fn adaptation_task_v2(
                 }
             }
             Decision::StartProbe(_) => {
-                // In failure cooldown — skip.
+                // In failure cooldown - skip.
             }
         }
     }

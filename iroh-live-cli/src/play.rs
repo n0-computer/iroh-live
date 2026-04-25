@@ -1,4 +1,4 @@
-//! `irl play` — subscribe and render a remote broadcast.
+//! `irl play` - subscribe and render a remote broadcast.
 
 use std::time::Duration;
 
@@ -17,7 +17,7 @@ use crate::{
     ui::{MouseHide, RemoteControls},
 };
 
-/// Entry point — does async setup inside block_on, then runs eframe outside it.
+/// Entry point - does async setup inside block_on, then runs eframe outside it.
 pub fn run(args: PlayArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
     let source = args.source()?;
     let backend = args.decoder_backend()?;

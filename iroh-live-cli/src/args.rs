@@ -279,7 +279,7 @@ pub enum ImportFormat {
 }
 
 // ---------------------------------------------------------------------------
-// Play args (wgpu only — needs egui window)
+// Play args (wgpu only - needs egui window)
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "wgpu")]
@@ -312,7 +312,7 @@ pub struct PlayArgs {
     #[arg(long = "name", id = "play_name", conflicts_with = "ticket")]
     pub broadcast_name: Option<String>,
 
-    /// No video — audio only, no window opened.
+    /// No video - audio only, no window opened.
     #[arg(long)]
     pub no_video: bool,
 
@@ -376,7 +376,7 @@ impl PlayArgs {
 }
 
 // ---------------------------------------------------------------------------
-// Record args (no wgpu needed — headless recording)
+// Record args (no wgpu needed - headless recording)
 // ---------------------------------------------------------------------------
 
 #[derive(Args, Debug)]
@@ -423,7 +423,7 @@ pub struct RecordArgs {
 pub enum RecordFormat {
     /// Raw bitstreams: separate files per track (.h264/.av1 + .opus).
     /// H.264 output uses Annex B framing and is playable directly with ffplay/mpv.
-    /// Raw .opus files need a container — see the remux hint printed after recording.
+    /// Raw .opus files need a container - see the remux hint printed after recording.
     #[default]
     Raw,
 }

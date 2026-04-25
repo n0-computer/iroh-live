@@ -1,4 +1,4 @@
-//! Patchbay integration tests — verify smooth playback under dynamic
+//! Patchbay integration tests - verify smooth playback under dynamic
 //! network conditions (latency ramps, recovery after impairment).
 //!
 //! Linux-only: patchbay requires unprivileged user namespaces.
@@ -269,7 +269,7 @@ async fn latency_up_down_video_recovers() {
     let warmup = drain_frames(&mut track, Duration::from_secs(2)).await;
     info!(frames = warmup.len(), "warmup complete");
 
-    // Phase 1: baseline — drain 3s of frames at zero latency.
+    // Phase 1: baseline - drain 3s of frames at zero latency.
     // Source runs at 15fps; in debug builds the actual throughput may be
     // slightly lower due to encode/decode overhead.
     let baseline_arrivals = drain_frames(&mut track, Duration::from_secs(3)).await;
@@ -315,7 +315,7 @@ async fn latency_up_down_video_recovers() {
         "phase 3: settling after latency drop"
     );
 
-    // Phase 4: measure recovery — drain 3s and assert smooth playback.
+    // Phase 4: measure recovery - drain 3s and assert smooth playback.
     let recovery_arrivals = drain_frames(&mut track, Duration::from_secs(3)).await;
     let recovery_gaps = inter_frame_gaps(&recovery_arrivals);
 
@@ -720,10 +720,10 @@ async fn slider_drag_latency_ramp() {
 
     // Threshold is low because this test can run under CPU contention
     // from the full workspace test suite. The key assertion is that
-    // frames flow at all — before the playout overflow fix, this was 0.
+    // frames flow at all - before the playout overflow fix, this was 0.
     // In debug builds at 15fps, the 0→500→0ms ramp can overwhelm the
     // pipeline. Recovery may produce 0 frames. The key assertion below
-    // (violation rate) is what matters — it verifies gaps are bounded
+    // (violation rate) is what matters - it verifies gaps are bounded
     // IF frames arrive.
     assert!(
         !recovery.is_empty() || cfg!(debug_assertions),
@@ -734,7 +734,7 @@ async fn slider_drag_latency_ramp() {
     fixture.shutdown().await;
 }
 
-/// Tests latency transitions at 30fps 720p — matching the split example's
+/// Tests latency transitions at 30fps 720p - matching the split example's
 /// default settings. If the playout buffer's zero-buffer default causes
 /// excessive re-anchoring under jitter, this test will show it as stuttering.
 ///
@@ -796,7 +796,7 @@ async fn latency_at_split_example_settings() {
     let publisher = Live::builder(pub_endpoint).with_router().spawn();
     let broadcast = LocalBroadcast::new();
 
-    // 30fps at 720p — same as split example default.
+    // 30fps at 720p - same as split example default.
     let source = TestVideoSource::new(1280, 720).with_fps(30.0);
     broadcast
         .video()
@@ -871,7 +871,7 @@ async fn latency_at_split_example_settings() {
         .expect("sub");
     info!("latency set to 300ms");
 
-    // Absorb with poll — this is where re-anchoring stutters would show up.
+    // Absorb with poll - this is where re-anchoring stutters would show up.
     let absorb = poll_frames(&mut track, Duration::from_secs(5));
     let absorb_gaps = inter_frame_gaps(&absorb);
     let max_gap = absorb_gaps.iter().max().copied().unwrap_or(Duration::ZERO);
@@ -1167,7 +1167,7 @@ async fn adaptive_downgrade_upgrade_under_real_loss() {
         .expect("sub");
     info!("cleared packet loss");
 
-    // Wait for upgrade (up to 20s — needs upgrade_hold + probe_duration + margin).
+    // Wait for upgrade (up to 20s - needs upgrade_hold + probe_duration + margin).
     let upgrade_deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     let mut upgraded = false;
     loop {
@@ -1562,21 +1562,21 @@ fn patchbay_decode() -> DecodeConfig {
     }
 }
 
-/// A/V sync with zero added latency — baseline measurement.
+/// A/V sync with zero added latency - baseline measurement.
 #[tokio::test]
 #[traced_test]
 async fn av_sync_zero_latency() {
     av_sync_at_latency(0, 0).await;
 }
 
-/// A/V sync at 50 ms latency with 20 ms jitter — typical LAN/WAN.
+/// A/V sync at 50 ms latency with 20 ms jitter - typical LAN/WAN.
 #[tokio::test]
 #[traced_test]
 async fn av_sync_50ms_latency() {
     av_sync_at_latency(50, 20).await;
 }
 
-/// A/V sync at 200 ms latency with 20 ms jitter — relayed/intercontinental.
+/// A/V sync at 200 ms latency with 20 ms jitter - relayed/intercontinental.
 #[tokio::test]
 #[traced_test]
 async fn av_sync_200ms_latency() {
@@ -1624,7 +1624,7 @@ async fn av_sync_at_latency(latency_ms: u32, jitter_ms: u32) {
     // Both audio and video use wall-clock PTS. If video PTS advances
     // at approximately wall-clock rate, video is in sync with audio
     // (which also runs at wall-clock rate). This works reliably at
-    // any framerate — no beep detection needed.
+    // any framerate - no beep detection needed.
     let measure_start = Instant::now();
     let mut first_pts: Option<Duration> = None;
     let mut last_pts: Option<Duration> = None;
@@ -1679,12 +1679,12 @@ async fn av_sync_at_latency(latency_ms: u32, jitter_ms: u32) {
         );
 
         // PTS should advance at roughly real-time rate. Allow 0.3-2.0
-        // range — in debug builds with latency, the decoder skips frames
+        // range - in debug builds with latency, the decoder skips frames
         // which makes PTS jump forward (ratio > 1.0), and slow encode
         // can make PTS lag (ratio < 1.0).
         assert!(
             ratio > 0.3 && ratio < 2.0,
-            "{label}: PTS rate {ratio:.2} is outside [0.3, 2.0] — \
+            "{label}: PTS rate {ratio:.2} is outside [0.3, 2.0] - \
              video PTS not tracking wall-clock"
         );
 
@@ -1723,7 +1723,7 @@ async fn av_sync_at_latency(latency_ms: u32, jitter_ms: u32) {
 /// desync after recovery.
 #[tokio::test]
 #[traced_test]
-#[ignore = "A/V sync disabled — re-enable when sync is re-added (plans/av-sync.md)"]
+#[ignore = "A/V sync disabled - re-enable when sync is re-added (plans/av-sync.md)"]
 async fn av_sync_recovery_after_blackout() {
     let fixture = AvSyncFixture::new().await;
 
@@ -1860,7 +1860,7 @@ async fn av_sync_recovery_after_blackout() {
         info!("post-recovery PTS rate = {ratio:.2}");
         assert!(
             ratio > 0.2,
-            "post-recovery PTS rate {ratio:.2} too low — video not advancing"
+            "post-recovery PTS rate {ratio:.2} too low - video not advancing"
         );
     }
 
@@ -1874,7 +1874,7 @@ async fn av_sync_recovery_after_blackout() {
 /// Both audio and video should resume normal delivery after the spike.
 #[tokio::test]
 #[traced_test]
-#[ignore = "A/V sync disabled — re-enable when sync is re-added (plans/av-sync.md)"]
+#[ignore = "A/V sync disabled - re-enable when sync is re-added (plans/av-sync.md)"]
 async fn av_sync_latency_spike_recovery() {
     let fixture = AvSyncFixture::new().await;
 
@@ -2005,7 +2005,7 @@ async fn av_sync_high_jitter() {
         jitter_beeps
     );
 
-    // Video gaps should be bounded — no single gap > 500ms.
+    // Video gaps should be bounded - no single gap > 500ms.
     let gaps = inter_frame_gaps(&jitter_video);
     let max_gap = gaps.iter().max().copied().unwrap_or(Duration::ZERO);
     info!(max_gap_ms = max_gap.as_millis(), "jitter frame gaps");

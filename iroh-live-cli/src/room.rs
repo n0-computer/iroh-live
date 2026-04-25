@@ -1,4 +1,4 @@
-//! `irl room` — multi-party room with video grid and text chat.
+//! `irl room` - multi-party room with video grid and text chat.
 
 use std::{
     collections::VecDeque,
@@ -349,7 +349,7 @@ impl eframe::App for RoomApp {
                 });
             });
 
-        // Handle Enter key for chat send — only when the text input has focus.
+        // Handle Enter key for chat send - only when the text input has focus.
         if self.chat.input_focused && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
             self.send_chat();
         }

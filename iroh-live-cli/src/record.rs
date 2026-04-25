@@ -1,10 +1,10 @@
-//! `irl record` — subscribe to a remote broadcast and write encoded packets to file.
+//! `irl record` - subscribe to a remote broadcast and write encoded packets to file.
 //!
 //! Unlike `play`, this command runs headless (no GUI, no decoding). It captures
 //! raw encoded packets from the transport layer and writes them directly to disk,
 //! avoiding the decode-then-re-encode overhead.
 //!
-//! Current format: `raw` — writes separate files per track. Video gets an
+//! Current format: `raw` - writes separate files per track. Video gets an
 //! extension matching the codec (.h264, .av1), audio gets .opus. The H.264
 //! output uses Annex B framing (start codes), so it is directly playable with
 //! ffplay/mpv. Audio packets are written with a 4-byte big-endian length
@@ -219,7 +219,7 @@ impl H264AnnexBState {
 
         if !h264.inline && sps_pps_annex_b.is_none() {
             warn!(
-                "H.264 avc1 source has no description — SPS/PPS will be missing from output; \
+                "H.264 avc1 source has no description - SPS/PPS will be missing from output; \
                  players may fail to decode"
             );
         }

@@ -5,7 +5,7 @@
 //! renders. Useful for testing the full encode → transport → decode pipeline
 //! without needing two separate processes.
 //!
-//! `PublishView` and `SubscribeView` are fully independent — they share
+//! `PublishView` and `SubscribeView` are fully independent - they share
 //! nothing except the publisher's endpoint address.
 //!
 //! With `--patchbay` (Linux only), endpoints run in separate patchbay

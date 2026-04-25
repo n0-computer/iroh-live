@@ -1,4 +1,4 @@
-//! `irl run` — TOML-configured multi-stream publish/subscribe sessions.
+//! `irl run` - TOML-configured multi-stream publish/subscribe sessions.
 //!
 //! Reads a config file that declares multiple send and recv blocks, each
 //! running as its own tokio task on a shared [`Live`] instance. This replaces
@@ -55,7 +55,7 @@ pub struct RunConfig {
 }
 
 /// Configuration for a single send (publish) stream. All fields are
-/// required — no implicit defaults.
+/// required - no implicit defaults.
 #[derive(Debug, Deserialize)]
 pub struct SendConfig {
     /// Human-readable name, also used as the broadcast name.

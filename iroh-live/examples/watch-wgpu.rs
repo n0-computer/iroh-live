@@ -1,4 +1,4 @@
-//! Minimal wgpu+winit video viewer — no egui dependency.
+//! Minimal wgpu+winit video viewer - no egui dependency.
 //!
 //! Connects to a remote broadcast and renders decoded video frames
 //! fullscreen using wgpu. Press ESC or close the window to quit.
@@ -35,7 +35,7 @@ use winit::{
     window::{Fullscreen, Window, WindowId},
 };
 
-/// Target repaint interval — polls for new frames at this rate instead of
+/// Target repaint interval - polls for new frames at this rate instead of
 /// spinning in a busy-loop.
 const REPAINT_INTERVAL: Duration = Duration::from_millis(4);
 
@@ -412,7 +412,7 @@ impl ApplicationHandler for WgpuApp {
                     state
                         .surface
                         .configure(&state.device, &state.surface_config);
-                    // Invalidate cached bind group — output texture may be recreated.
+                    // Invalidate cached bind group - output texture may be recreated.
                     state.blit_bind_group = None;
                     state.window.request_redraw();
                 }
@@ -443,7 +443,7 @@ impl ApplicationHandler for WgpuApp {
 
                 // Present the current frame (or re-present the last one).
                 if !state.present() {
-                    // No frame rendered yet or surface error — schedule next poll.
+                    // No frame rendered yet or surface error - schedule next poll.
                 }
 
                 // Schedule next frame poll instead of spinning.
