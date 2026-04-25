@@ -10,7 +10,7 @@ use std::{sync::OnceLock, time::Duration};
 use iroh::{Endpoint, address_lookup::MemoryLookup};
 use iroh_live::{
     Live,
-    rooms::{Room, RoomEvent, RoomTicket},
+    rooms::{Room, RoomBuilder, RoomEvent, RoomTicket},
 };
 use moq_media::{
     codec::VideoCodec,
@@ -264,6 +264,65 @@ async fn peer_disconnect_detected() {
     live_a.shutdown().await;
 
     // B should see PeerLeft for A.
+    wait_for_event(
+        &mut room_b,
+        "room_b: PeerLeft",
+        |ev| matches!(ev, RoomEvent::PeerLeft { remote } if *remote == peer_a_id),
+    )
+    .await;
+
+    live_b.shutdown().await;
+}
+
+/// A peer that joins the room and then disappears without any direct
+/// session is detected via the gossip KV horizon and surfaces as
+/// `PeerLeft`. This complements `peer_disconnect_detected`, which
+/// covers the case where a direct session was active and its closure
+/// signals the loss; here we exercise the slower expiry path that
+/// covers no-broadcast-yet peers.
+#[tokio::test]
+#[traced_test]
+async fn peer_expiry_fires_peer_left() {
+    let live_a = live_with_gossip(endpoint().await);
+    let ticket = RoomTicket::new(
+        iroh_gossip::TopicId::from_bytes(rand::random()),
+        vec![live_a.endpoint().id()],
+    );
+
+    // Short horizon so the test runs in seconds. The check
+    // interval drives how often the underlying KV scans, so it
+    // bounds the test's lower runtime; the horizon bounds the
+    // upper.
+    let horizon = Duration::from_secs(2);
+    let check_interval = Duration::from_millis(200);
+
+    let room_a = RoomBuilder::new(ticket.clone())
+        .kv_expiry(horizon, check_interval)
+        .spawn(&live_a)
+        .await
+        .expect("room_a: failed to join");
+
+    let live_b = live_with_gossip(endpoint().await);
+    let mut room_b = RoomBuilder::new(ticket)
+        .kv_expiry(horizon, check_interval)
+        .spawn(&live_b)
+        .await
+        .expect("room_b: failed to join");
+
+    let peer_a_id = live_a.endpoint().id();
+
+    wait_for_event(
+        &mut room_b,
+        "room_b: PeerJoined",
+        |ev| matches!(ev, RoomEvent::PeerJoined { remote, .. } if *remote == peer_a_id),
+    )
+    .await;
+
+    // Drop A's room handle and shut down its Live so the actor
+    // task exits and the KV writer stops refreshing the entry.
+    drop(room_a);
+    live_a.shutdown().await;
+
     wait_for_event(
         &mut room_b,
         "room_b: PeerLeft",

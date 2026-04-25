@@ -19,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(%cli.relay, %cli.name, frames = cli.frames, "subscribing");
 
-    // Retry the initial source attach — the publisher may not have
+    // Retry the initial source attach: the publisher may not have
     // announced the catalog yet.
     let sub = live.subscribe(id, &cli.name);
     let active = {

@@ -5,7 +5,9 @@ use iroh::{EndpointId, SecretKey};
 use iroh_gossip::Gossip;
 pub use iroh_gossip::TopicId;
 use iroh_moq::MoqSession;
-use iroh_smol_kv::{ExpiryConfig, Filter, SignedValue, Subscribe, SubscribeMode, WriteScope};
+use iroh_smol_kv::{
+    ExpiryConfig, Filter, SignedValue, Subscribe, SubscribeItem, SubscribeMode, WriteScope,
+};
 use moq_lite::BroadcastProducer;
 use moq_media::{chat::ChatMessage, subscribe::RemoteBroadcast};
 use n0_error::{Result, StackResultExt, StdResultExt, anyerr};
@@ -200,6 +202,7 @@ pub struct RoomBuilder {
     ticket: RoomTicket,
     relay: Option<RelayOffer>,
     subscribe_mode: RoomSubscribeMode,
+    kv_expiry: ExpiryConfig,
 }
 
 impl RoomBuilder {
@@ -209,6 +212,7 @@ impl RoomBuilder {
             ticket,
             relay: None,
             subscribe_mode: RoomSubscribeMode::PreferDirect,
+            kv_expiry: default_kv_expiry(),
         }
     }
 
@@ -227,9 +231,37 @@ impl RoomBuilder {
         self
     }
 
+    /// Overrides the gossip KV expiry config.
+    ///
+    /// `horizon` is how long a peer's `PeerState` survives without a
+    /// refresh before the actor evicts the peer and emits
+    /// [`RoomEvent::PeerLeft`]. `check_interval` controls how often
+    /// the underlying KV scans for expired entries.
+    ///
+    /// The default is a two-minute horizon with a ten-second check
+    /// interval, which tolerates short network blips without
+    /// declaring a peer dead. Tests that need to observe expiry
+    /// quickly can shorten both values.
+    pub fn kv_expiry(mut self, horizon: Duration, check_interval: Duration) -> Self {
+        self.kv_expiry = ExpiryConfig {
+            horizon,
+            check_interval,
+        };
+        self
+    }
+
     /// Spawns the room actor and returns the [`Room`].
     pub async fn spawn(self, live: &Live) -> Result<Room> {
         Room::from_builder(live, self).await
+    }
+}
+
+/// Default expiry config used by [`RoomBuilder::new`]. Two-minute
+/// horizon, ten-second check interval.
+fn default_kv_expiry() -> ExpiryConfig {
+    ExpiryConfig {
+        horizon: Duration::from_secs(60 * 2),
+        check_interval: Duration::from_secs(10),
     }
 }
 
@@ -285,6 +317,7 @@ impl Room {
             event_tx,
             ticket.clone(),
             builder.subscribe_mode,
+            builder.kv_expiry,
         )
         .await?;
         let actor_task = task::spawn(
@@ -553,6 +586,11 @@ struct Actor {
     relay: Option<RelayOffer>,
     subscribe_mode: RoomSubscribeMode,
     event_tx: mpsc::Sender<RoomEvent>,
+    /// How often the actor re-writes its own
+    /// [`PEER_STATE_KEY`] entry. Set to a fraction of the KV
+    /// horizon so other peers never see this peer expire while
+    /// it is still alive.
+    kv_refresh_interval: Duration,
 }
 
 /// Gossip discovery state attached to a room actor.
@@ -639,12 +677,18 @@ impl Actor {
         event_tx: mpsc::Sender<RoomEvent>,
         ticket: RoomTicket,
         subscribe_mode: RoomSubscribeMode,
+        kv_expiry: ExpiryConfig,
     ) -> Result<Self> {
         let me_pub = me.public();
         let mode = ticket.mode;
         let relay = ticket.relay.clone();
 
         let (closed_tx, closed_rx) = mpsc::channel(MAX_PEER_BROADCASTS);
+
+        // Make sure our own KV entry refreshes well before its
+        // horizon, otherwise other peers will see us as expired
+        // even though we are still alive.
+        let kv_refresh_interval = (kv_expiry.horizon / 3).max(Duration::from_millis(100));
 
         let gossip = match mode {
             RoomMode::Gossip | RoomMode::Hybrid => {
@@ -660,10 +704,7 @@ impl Actor {
                     iroh_smol_kv::Config {
                         anti_entropy_interval: Duration::from_secs(60),
                         fast_anti_entropy_interval: Duration::from_secs(1),
-                        expiry: Some(ExpiryConfig {
-                            check_interval: Duration::from_secs(10),
-                            horizon: Duration::from_secs(60 * 2),
-                        }),
+                        expiry: Some(kv_expiry),
                     },
                 );
                 let kv_writer = kv.write(me.clone());
@@ -711,6 +752,7 @@ impl Actor {
             relay,
             subscribe_mode,
             event_tx,
+            kv_refresh_interval,
         })
     }
 
@@ -718,12 +760,18 @@ impl Actor {
         // Build the gossip KV update stream when gossip is
         // attached, otherwise the corresponding select branch is
         // a no-op.
+        //
+        // `stream_raw` is preferred over `stream` so the actor can
+        // observe [`SubscribeItem::Expired`] events alongside
+        // entries. Expiry fires when a peer stops heartbeating
+        // and the configured horizon elapses, which is the only
+        // signal we get for an unannounced departure.
         let gossip_updates = self.gossip.as_ref().map(|g| {
             g.kv.subscribe_with_opts(Subscribe {
                 mode: SubscribeMode::Both,
                 filter: Filter::ALL,
             })
-            .stream()
+            .stream_raw()
         });
         let mut gossip_updates = gossip_updates.map(Box::pin);
 
@@ -732,6 +780,17 @@ impl Actor {
         // Seed the gossip KV so peers in the topic see us.
         self.update_kv().await;
 
+        // Refresh our own KV entry well before the configured
+        // horizon. Without this, other peers expire us while we
+        // are still alive. The first tick fires after one
+        // interval, so the seed write above covers the startup
+        // window.
+        let mut refresh = tokio::time::interval(self.kv_refresh_interval);
+        refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Skip the immediate first tick so we do not double-write
+        // right after the startup seed.
+        refresh.tick().await;
+
         loop {
             // Take ownership of the relay discovery rx for the
             // duration of this iteration so the borrow checker is
@@ -739,6 +798,9 @@ impl Actor {
             let relay_rx_present = self.relay_discovery.is_some();
 
             tokio::select! {
+                _ = refresh.tick(), if self.gossip.is_some() => {
+                    self.update_kv().await;
+                }
                 update = async {
                     match gossip_updates.as_mut() {
                         Some(s) => s.next().await,
@@ -760,7 +822,19 @@ impl Actor {
                             }
                         }
                         Some(Err(err)) => warn!("gossip kv update failed: {err:#}"),
-                        Some(Ok(update)) => if !self.handle_gossip_update(update).await { break },
+                        Some(Ok(SubscribeItem::Entry(entry))) => {
+                            if !self.handle_gossip_update(entry).await {
+                                break;
+                            }
+                        }
+                        Some(Ok(SubscribeItem::Expired((peer, key, ts)))) => {
+                            if !self.handle_gossip_expiry(peer, key, ts).await {
+                                break;
+                            }
+                        }
+                        Some(Ok(SubscribeItem::CurrentDone)) => {
+                            trace!("gossip kv snapshot done");
+                        }
                     }
                 }
                 event = async {
@@ -1335,6 +1409,56 @@ impl Actor {
             })
             .await
             .is_err()
+        {
+            debug!("room event receiver dropped, stopping actor");
+            return false;
+        }
+        true
+    }
+
+    /// Reacts to a [`SubscribeItem::Expired`] event from the
+    /// gossip KV. Treats expiry of a peer's `PEER_STATE_KEY` as
+    /// the peer leaving: drops the cached relay hint, tears down
+    /// every active subscription rooted at this peer, and emits
+    /// [`RoomEvent::PeerLeft`].
+    ///
+    /// Returns `false` if the event-emit loop should stop.
+    async fn handle_gossip_expiry(&mut self, peer: EndpointId, key: Bytes, ts: u64) -> bool {
+        if peer == self.me {
+            // Our own entry expiring just means we have not
+            // refreshed it recently; the next `update_kv` call
+            // re-seeds it. Nothing to do.
+            return true;
+        }
+        if key != PEER_STATE_KEY {
+            trace!(remote=%peer.fmt_short(), key=?key, "ignoring kv expiry for unknown key");
+            return true;
+        }
+        debug!(remote=%peer.fmt_short(), ts, "gossip peer state expired");
+        self.peer_relays.remove(&peer);
+
+        // Drop every (peer, name) entry that was sourced from
+        // this peer. The relay path may keep its own
+        // subscription alive (and re-announce later via the
+        // relay-discovery channel) but the gossip-driven
+        // direct attempt is gone.
+        let to_drop: Vec<BroadcastId> = self
+            .active_subscribe
+            .keys()
+            .filter(|id| id.0 == peer)
+            .cloned()
+            .collect();
+        for id in &to_drop {
+            self.active_subscribe.remove(id);
+            self.announced.remove(id);
+        }
+
+        if self.known_peers.remove(&peer).is_some()
+            && self
+                .event_tx
+                .send(RoomEvent::PeerLeft { remote: peer })
+                .await
+                .is_err()
         {
             debug!("room event receiver dropped, stopping actor");
             return false;
