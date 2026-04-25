@@ -153,11 +153,12 @@ impl RoomHandle {
             .map_err(|_| anyerr!("room actor died"))
     }
 
-    /// Sets the default selection policy for how this peer's
-    /// subscribers pick between candidate transports for a given
-    /// remote peer's broadcasts. Currently informational: the
-    /// preferred-ordered policy is hardcoded internally.
-    #[doc(hidden)]
+    /// Sets the policy this peer uses to pick between candidate
+    /// transports for a remote peer's broadcasts.
+    ///
+    /// The new mode applies to existing subscriptions; the room
+    /// rebuilds each peer's source set under the new mode and the
+    /// subscription's selection policy re-evaluates immediately.
     pub async fn set_subscribe_mode(&self, mode: RoomSubscribeMode) -> Result<()> {
         self.tx
             .send(ApiMessage::SetSubscribeMode { mode })
@@ -421,28 +422,35 @@ pub enum RoomEvent {
 
 const PEER_STATE_KEY: &[u8] = b"s";
 
-/// Gossip KV message advertising a peer's presence and publish state.
-///
-/// Carries the list of broadcasts the peer is publishing and, when
-/// the peer opted into relay-backed publishing, the [`RelayOffer`]
-/// other peers should use as a fallback source. Older versions of
-/// this struct wire-compatibly omit the `relay` field by carrying
-/// `None`; note that postcard is positional, so new fields must be
-/// appended and older clients will simply stop reading at the
-/// struct's previous tail.
+// Gossip KV message advertising a peer's presence and publish
+// state. New fields must be appended (postcard is positional).
+// `display_name` cannot use `skip_serializing_if`: a skipped
+// `Option` field causes the deserializer to read past the buffer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PeerState {
     broadcasts: Vec<String>,
-    /// Optional display name for the peer.
-    ///
-    /// Do NOT use `skip_serializing_if` here: postcard is a positional binary
-    /// format, so skipping a field during serialization causes the deserializer
-    /// to read past the buffer.
     display_name: Option<String>,
     /// Relay this peer advertises as an alternate source for its
     /// broadcasts. `None` means peers must subscribe directly.
     relay: Option<RelayOffer>,
 }
+
+/// Maximum number of broadcasts a peer can advertise in a single
+/// gossip [`PeerState`] payload. Hostile peers can otherwise force
+/// every subscriber to spawn a [`Subscription`] per fictitious
+/// broadcast.
+const MAX_PEER_BROADCASTS: usize = 32;
+
+/// Maximum byte length of a peer's advertised broadcast name. The
+/// name flows through `Subscription`'s span fields, the gossip
+/// announce log, and `BroadcastId`'s `Display`; long names inflate
+/// every trace. The cap is generous for typical names and bounds
+/// the worst case.
+const MAX_BROADCAST_NAME_LEN: usize = 128;
+
+/// Maximum byte length of a peer's `display_name`. Tied to the
+/// same log-spam concern as `MAX_BROADCAST_NAME_LEN`.
+const MAX_DISPLAY_NAME_LEN: usize = 64;
 
 type ConnectingFutures = FuturesUnordered<BoxFuture<(BroadcastId, SubscribeResult)>>;
 type KvEntry = (EndpointId, Bytes, SignedValue);
@@ -485,12 +493,15 @@ struct Actor {
 
 /// Tracks an active subscription to one remote peer's broadcast.
 ///
-/// The [`Subscription`] owns the candidate sessions and
-/// swaps between them when the preferred source disappears. The
-/// handle is stored so that relay-hint changes can mutate the source
-/// set in place without tearing down the subscription.
+/// The [`Subscription`] owns the candidate sessions and swaps
+/// between them when the preferred source disappears. The
+/// `_event_watcher` task forwards
+/// [`SubscriptionEvent::ActiveChanged`](crate::SubscriptionEvent::ActiveChanged)
+/// from the subscription to the room's [`RoomEvent::BroadcastSwitched`]
+/// stream and is aborted when this entry is dropped.
 struct ActiveSubscribe {
     multi: Subscription,
+    _event_watcher: AbortOnDropHandle<()>,
 }
 
 /// Tracks an active publish on the room.
@@ -505,7 +516,7 @@ struct ActivePublish {
     /// Consumer for the producer registered globally with the
     /// `Moq` actor. Held so the broadcaster's lifetime ties to
     /// this entry; dropped when the publish ends.
-    _global_consumer: moq_lite::BroadcastConsumer,
+    global_consumer: moq_lite::BroadcastConsumer,
     /// Relay-side announce, present only when the room has a
     /// relay attached. Replaced when the relay configuration
     /// changes at runtime.
@@ -620,11 +631,14 @@ impl Actor {
                             let broadcast = active.broadcast().clone();
                             let session = active.session().clone();
 
-                            self.active_subscribe.insert(id.clone(), ActiveSubscribe { multi: multi.clone() });
-
-                            // Spawn a watcher task that forwards active-source
-                            // changes into a BroadcastSwitched event.
-                            self.spawn_active_watcher(id.clone(), multi.clone());
+                            // The active-source watcher was installed
+                            // when the subscription was originally
+                            // started in `handle_gossip_update`; we
+                            // only refresh the `multi` reference
+                            // here in case it differs.
+                            if let Some(entry) = self.active_subscribe.get_mut(&id) {
+                                entry.multi = multi.clone();
+                            }
 
                             // Spawn a chat subscriber task if the broadcast has a chat track.
                             if let Some(mut chat_sub) = broadcast.chat() {
@@ -688,32 +702,44 @@ impl Actor {
         }
     }
 
-    fn spawn_active_watcher(&self, id: BroadcastId, multi: Subscription) {
+    fn spawn_active_watcher(&self, id: BroadcastId, multi: Subscription) -> AbortOnDropHandle<()> {
         let tx = self.event_tx.clone();
         let remote = id.0;
         let name = id.1.clone();
-        tokio::spawn(async move {
-            let mut last_active = multi.active_id();
-            while let Some(event) = multi.next_event().await {
-                if let crate::SubscriptionEvent::ActiveChanged { current, .. } = event
-                    && current != last_active
-                {
-                    let via_relay = current.as_ref().is_some_and(|id| id.is_relay());
-                    if tx
-                        .send(RoomEvent::BroadcastSwitched {
-                            remote,
-                            broadcast_name: name.clone(),
-                            via_relay,
-                        })
-                        .await
-                        .is_err()
-                    {
-                        break;
+        let mut events = multi.events();
+        let last_active = multi.active_id();
+        let handle = tokio::spawn(async move {
+            let mut last_active = last_active;
+            loop {
+                match events.recv().await {
+                    Ok(crate::SubscriptionEvent::ActiveChanged { current, .. }) => {
+                        if current == last_active {
+                            continue;
+                        }
+                        let via_relay = current.as_ref().is_some_and(|id| id.is_relay());
+                        if tx
+                            .send(RoomEvent::BroadcastSwitched {
+                                remote,
+                                broadcast_name: name.clone(),
+                                via_relay,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        last_active = current;
                     }
-                    last_active = current;
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        // Re-sync from the watchable on lag.
+                        last_active = multi.active_id();
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
         });
+        AbortOnDropHandle::new(handle)
     }
 
     async fn handle_api_message(&mut self, msg: ApiMessage) {
@@ -734,7 +760,7 @@ impl Actor {
                 self.active_publish.insert(
                     name.clone(),
                     ActivePublish {
-                        _global_consumer: global_consumer,
+                        global_consumer,
                         relay: relay_announce,
                     },
                 );
@@ -821,7 +847,7 @@ impl Actor {
         let names: Vec<String> = self.active_publish.keys().cloned().collect();
         for name in names {
             let consumer = match self.active_publish.get(&name) {
-                Some(pub_state) => pub_state._global_consumer.clone(),
+                Some(pub_state) => pub_state.global_consumer.clone(),
                 None => continue,
             };
             let new_announce = self.attach_relay_announce(&name, &consumer).await;
@@ -906,16 +932,55 @@ impl Actor {
             return true;
         };
         let PeerState {
-            broadcasts,
+            mut broadcasts,
             display_name,
             relay,
         } = value;
 
+        // Enforce caps on attacker-controlled fields. Truncation
+        // is preferred over rejection so a single bad field does
+        // not silently drop the whole announcement.
+        if broadcasts.len() > MAX_PEER_BROADCASTS {
+            warn!(
+                remote=%remote.fmt_short(),
+                received = broadcasts.len(),
+                cap = MAX_PEER_BROADCASTS,
+                "peer announced too many broadcasts; truncating"
+            );
+            broadcasts.truncate(MAX_PEER_BROADCASTS);
+        }
+        broadcasts.retain(|b| {
+            let ok = b.len() <= MAX_BROADCAST_NAME_LEN;
+            if !ok {
+                warn!(remote=%remote.fmt_short(), len=b.len(), "dropping over-long broadcast name");
+            }
+            ok
+        });
+        let display_name = display_name.filter(|n| {
+            let ok = n.len() <= MAX_DISPLAY_NAME_LEN;
+            if !ok {
+                warn!(
+                    remote=%remote.fmt_short(),
+                    len = n.len(),
+                    cap = MAX_DISPLAY_NAME_LEN,
+                    "dropping over-long display name"
+                );
+            }
+            ok
+        });
+        let relay = relay.filter(|offer| {
+            let ok = offer.validate().is_ok();
+            if !ok {
+                warn!(remote=%remote.fmt_short(), "dropping invalid relay offer");
+            }
+            ok
+        });
+
         info!(
             remote=%remote.fmt_short(),
-            ?broadcasts,
-            ?display_name,
-            relay=%relay.as_ref().map(|r| r.endpoint.fmt_short().to_string()).unwrap_or_else(|| "none".into()),
+            broadcast_count = broadcasts.len(),
+            has_display_name = display_name.is_some(),
+            has_relay = relay.is_some(),
             "received peer announcement via gossip"
         );
 
@@ -973,13 +1038,18 @@ impl Actor {
                 continue;
             }
             let multi = self.live.subscribe(set, name.clone());
-            // Reserve the slot so we don't issue a duplicate subscribe
-            // on the next gossip tick. The ActiveSubscribe gets its
-            // final shape when `connecting` resolves.
+            // Reserve the slot so we don't issue a duplicate
+            // subscribe on the next gossip tick. The watcher abort
+            // handle is installed here so the watcher's lifetime
+            // tracks the entry; on `connecting` resolving we keep
+            // the same entry but may replace the multi if the wait
+            // failed.
+            let event_watcher = self.spawn_active_watcher(id.clone(), multi.clone());
             self.active_subscribe.insert(
                 id.clone(),
                 ActiveSubscribe {
                     multi: multi.clone(),
+                    _event_watcher: event_watcher,
                 },
             );
             let id_for_task = id.clone();

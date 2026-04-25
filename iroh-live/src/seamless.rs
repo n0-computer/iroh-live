@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use moq_media::{
-    format::{DecodeConfig, PlaybackConfig, Quality, VideoFrame},
+    format::{DecodeConfig, PlaybackConfig, VideoFrame},
     frame_channel::FrameReceiver,
     pipeline::{VideoDecoderHandle, VideoDecoderPipeline},
     subscribe::CatalogSnapshot,
@@ -76,15 +76,15 @@ impl std::fmt::Debug for SeamlessVideoTrack {
 impl SeamlessVideoTrack {
     /// Awaits the next decoded frame.
     ///
-    /// Returns `None` when the underlying subscription is shut down
-    /// or when no decoder pipeline is currently feeding the
+    /// Returns `None` when the underlying subscription is shut
+    /// down or when no decoder pipeline is currently feeding the
     /// receiver.
-    pub async fn next_frame(&mut self) -> Option<VideoFrame> {
+    pub async fn next_frame(&self) -> Option<VideoFrame> {
         self.rx.recv().await
     }
 
     /// Returns the latest decoded frame without blocking.
-    pub fn try_recv(&mut self) -> Option<VideoFrame> {
+    pub fn try_recv(&self) -> Option<VideoFrame> {
         self.rx.take()
     }
 
@@ -151,14 +151,12 @@ impl Subscription {
             .ok();
 
         let video = match video_rendition {
-            Some(rendition) => Some(
-                spawn_seamless_video::<D::Video>(
-                    self.clone(),
-                    rendition,
-                    playback_config.decode_config(),
-                )
-                .await?,
-            ),
+            Some(rendition) => Some(spawn_seamless_video::<D::Video>(
+                self.clone(),
+                active,
+                rendition,
+                playback_config.decode_config(),
+            )?),
             None => None,
         };
         let audio = match audio_rendition {
@@ -173,16 +171,20 @@ impl Subscription {
     }
 }
 
-async fn spawn_seamless_video<V: moq_media::traits::VideoDecoder>(
+fn spawn_seamless_video<V: moq_media::traits::VideoDecoder>(
     subscription: Subscription,
+    active: crate::ActiveSource,
     initial_rendition: String,
     decode_config: DecodeConfig,
 ) -> Result<SeamlessVideoTrack, AnyError> {
-    let active = subscription
-        .active()
-        .await
-        .std_context("no active source")?;
     let broadcast = active.broadcast().clone();
+    let initial_codec = broadcast
+        .catalog()
+        .video
+        .renditions
+        .get(&initial_rendition)
+        .map(|c| c.codec.clone())
+        .std_context("initial rendition not in catalog")?;
     let pipeline = broadcast.build_video_pipeline::<V>(&initial_rendition, &decode_config)?;
     let VideoDecoderPipeline { frames, handle } = pipeline;
     let rx = Arc::new(frames.into_receiver());
@@ -196,6 +198,7 @@ async fn spawn_seamless_video<V: moq_media::traits::VideoDecoder>(
             handle: Some(handle),
             source_id: active.id.clone(),
             rendition: initial_rendition,
+            codec: initial_codec,
         }),
     });
 
@@ -224,19 +227,47 @@ struct SwapState {
 #[derive(Debug)]
 struct SwapCurrent {
     /// Holds the live decoder pipeline. Dropping `handle` cancels
-    /// the previous decoder; we hold it across swap attempts so the
-    /// old pipeline keeps producing frames until the new one is
-    /// ready.
+    /// the previous decoder; we hold it across swap attempts so
+    /// the old pipeline keeps producing frames until the new one
+    /// is ready.
     handle: Option<VideoDecoderHandle>,
     source_id: SourceId,
     rendition: String,
+    /// Codec the consumer's decoder was instantiated for. Seamless
+    /// swap requires the new source to advertise a rendition with
+    /// the same codec; on a mismatch the swap is refused and the
+    /// caller has to rebuild the pipeline.
+    codec: hang::catalog::VideoCodec,
 }
 
-fn pick_rendition(catalog: &CatalogSnapshot, prev: &str) -> Option<String> {
-    if catalog.video.renditions.contains_key(prev) {
+/// Picks a rendition from `catalog` whose codec matches `codec`.
+///
+/// Prefers the previous rendition name when it is still present;
+/// otherwise falls back to the highest-quality rendition that
+/// uses the same codec. Returns `None` when nothing matches; the
+/// caller must then refuse the seamless swap.
+fn pick_rendition(
+    catalog: &CatalogSnapshot,
+    prev: &str,
+    codec: &hang::catalog::VideoCodec,
+) -> Option<String> {
+    if let Some(cfg) = catalog.video.renditions.get(prev)
+        && &cfg.codec == codec
+    {
         return Some(prev.to_string());
     }
-    catalog.select_video_rendition(Quality::Highest).ok()
+    let mut compatible: Vec<(&String, &hang::catalog::VideoConfig)> = catalog
+        .video
+        .renditions
+        .iter()
+        .filter(|(_, cfg)| &cfg.codec == codec)
+        .collect();
+    if compatible.is_empty() {
+        return None;
+    }
+    // Prefer highest-quality compatible rendition.
+    compatible.sort_by_key(|(_, cfg)| std::cmp::Reverse(cfg.coded_width));
+    Some(compatible[0].0.clone())
 }
 
 fn spawn_video_swap_task<V: moq_media::traits::VideoDecoder>(
@@ -297,11 +328,27 @@ async fn perform_swap<V: moq_media::traits::VideoDecoder>(
     if current.source_id == new_active.id {
         return Ok(());
     }
+    // Re-check the active id under the lock: between the
+    // `subscription.active()` read above and the lock acquire, the
+    // active source could have moved on. Bail and let the next
+    // watcher tick converge instead of swapping to a stale source.
+    if subscription.active_id() != Some(new_active.id.clone()) {
+        debug!(
+            seen = %new_active.id,
+            current = ?subscription.active_id(),
+            "active source moved on while waiting for swap lock; skipping"
+        );
+        return Ok(());
+    }
+
     let prev_rendition = current.rendition.clone();
     let broadcast = new_active.broadcast().clone();
     let catalog = broadcast.catalog();
-    let Some(rendition) = pick_rendition(&catalog, &prev_rendition) else {
-        warn!("new source has no video rendition; cannot continue seamless");
+    let Some(rendition) = pick_rendition(&catalog, &prev_rendition, &current.codec) else {
+        warn!(
+            decoder_codec = ?current.codec,
+            "new source advertises no rendition with the consumer's codec; refusing seamless swap"
+        );
         return Ok(());
     };
     let new_sender = rx.new_sender();

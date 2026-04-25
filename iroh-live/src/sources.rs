@@ -16,11 +16,28 @@
 //! Publishers attach a single producer to all sessions named by the
 //! set; a removed source ends the announce on that session only.
 
+use std::sync::Mutex;
+
 use iroh::{EndpointAddr, EndpointId};
 use n0_watcher::Watchable;
 use serde::{Deserialize, Serialize};
 
 use crate::relay::RelayTarget;
+
+/// Maximum number of [`RelayOffer`]s a single peer or ticket may
+/// advertise. Decoders that hit this limit reject the input.
+///
+/// Caps the per-source-set fan-out a malicious or buggy advertiser
+/// can force on a subscriber, since each offer becomes one MoQ
+/// session attempt.
+pub const MAX_RELAY_OFFERS: usize = 16;
+
+/// Maximum byte length of a [`RelayOffer::path`] string. The path
+/// becomes part of the H3 URL and the [`SourceId`] hash key, so
+/// long paths inflate every cache, log line, and trace span. The
+/// limit is generous enough for a typical room namespace and
+/// strict enough to bound the worst case.
+pub const MAX_RELAY_PATH_LEN: usize = 256;
 
 /// One place where a broadcast can be reached or published.
 ///
@@ -115,12 +132,12 @@ enum SourceIdInner {
 }
 
 impl SourceId {
-    /// Identifier for a direct-peer source.
+    /// Returns the identifier for a direct-peer source.
     pub fn direct(peer: EndpointId) -> Self {
         Self(SourceIdInner::Direct(peer))
     }
 
-    /// Identifier for a relay source.
+    /// Returns the identifier for a relay source.
     pub fn relay(endpoint: EndpointId, path: impl Into<String>) -> Self {
         Self(SourceIdInner::Relay {
             endpoint,
@@ -305,19 +322,31 @@ impl From<EndpointId> for SourceSet {
 
 /// Reactive handle around a [`SourceSet`].
 ///
-/// Wraps a [`Watchable`] so callers observe mutations through a
-/// [`Watcher`](n0_watcher::Watcher). Clones share the same
-/// underlying set.
+/// Holds the set in an `std::sync::Mutex` so concurrent
+/// [`update`](Self::update) / [`push`](Self::push) /
+/// [`remove`](Self::remove) calls are atomic, then publishes the
+/// post-mutation snapshot through a [`Watchable`] so observers
+/// react via a [`Watcher`](n0_watcher::Watcher). Clones share the
+/// same underlying mutex and watchable.
 #[derive(Debug, Clone)]
 pub struct SourceSetHandle {
-    inner: Watchable<SourceSet>,
+    inner: std::sync::Arc<SourceSetHandleInner>,
+}
+
+#[derive(Debug)]
+struct SourceSetHandleInner {
+    set: Mutex<SourceSet>,
+    watch: Watchable<SourceSet>,
 }
 
 impl SourceSetHandle {
     /// Creates a handle from an existing set.
     pub fn new(set: SourceSet) -> Self {
         Self {
-            inner: Watchable::new(set),
+            inner: std::sync::Arc::new(SourceSetHandleInner {
+                set: Mutex::new(set.clone()),
+                watch: Watchable::new(set),
+            }),
         }
     }
 
@@ -328,27 +357,37 @@ impl SourceSetHandle {
 
     /// Returns a snapshot of the current set.
     pub fn get(&self) -> SourceSet {
-        self.inner.get()
+        self.inner.set.lock().expect("poisoned").clone()
     }
 
     /// Returns a watcher that fires on each mutation.
     pub fn watch(&self) -> n0_watcher::Direct<SourceSet> {
-        self.inner.watch()
+        self.inner.watch.watch()
     }
 
     /// Replaces the full set.
     pub fn set(&self, set: SourceSet) {
-        self.inner.set(set).ok();
+        let snapshot = {
+            let mut guard = self.inner.set.lock().expect("poisoned");
+            *guard = set;
+            guard.clone()
+        };
+        self.inner.watch.set(snapshot).ok();
     }
 
-    /// Applies `f` to a clone of the current set and publishes the
-    /// result. The closure runs without holding a lock so it must
-    /// not assume atomic read-modify-write semantics; the writer
-    /// races against any other writer.
+    /// Applies `f` to the current set and publishes the result.
+    ///
+    /// The closure runs while holding an internal mutex, so
+    /// concurrent calls serialise rather than racing. Avoid
+    /// long-running or blocking work inside `f`: it stalls every
+    /// other mutator and observer.
     pub fn update(&self, f: impl FnOnce(&mut SourceSet)) {
-        let mut set = self.inner.get();
-        f(&mut set);
-        self.inner.set(set).ok();
+        let snapshot = {
+            let mut guard = self.inner.set.lock().expect("poisoned");
+            f(&mut guard);
+            guard.clone()
+        };
+        self.inner.watch.set(snapshot).ok();
     }
 
     /// Appends a source. No-op when an entry with the same
@@ -362,10 +401,13 @@ impl SourceSetHandle {
     /// Removes the source with the given id. Returns `true` when a
     /// source was removed.
     pub fn remove(&self, id: &SourceId) -> bool {
-        let mut set = self.inner.get();
-        let removed = set.remove(id);
+        let (removed, snapshot) = {
+            let mut guard = self.inner.set.lock().expect("poisoned");
+            let removed = guard.remove(id);
+            (removed, guard.clone())
+        };
         if removed {
-            self.inner.set(set).ok();
+            self.inner.watch.set(snapshot).ok();
         }
         removed
     }
@@ -438,16 +480,43 @@ impl SelectionPolicy for Pinned {
 
 /// Offer to reach a broadcast through a relay.
 ///
-/// Suitable for embedding in tickets or gossip announcements; the
-/// receiver builds a [`RelayTarget`] from this.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Embed in [`LiveTicket`](crate::ticket::LiveTicket)s or in
+/// gossip announcements; the receiver builds a [`RelayTarget`]
+/// from the offer.
+///
+/// # Security
+///
+/// `api_key` is broadcast verbatim to every recipient of the
+/// containing message. When the offer rides a gossip
+/// `PeerState`, every member of the topic sees it. When it rides
+/// a [`LiveTicket`](crate::ticket::LiveTicket) binary form, every
+/// holder of the ticket sees it. Mint tokens scoped narrowly to
+/// the broadcast namespace and with the shortest expiry that
+/// still covers the intended use.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayOffer {
     /// Endpoint id of the relay.
     pub endpoint: EndpointId,
-    /// URL path the client should observe when connecting.
+    /// URL path the client should observe when connecting. The
+    /// runtime caps the path length at [`MAX_RELAY_PATH_LEN`].
     pub path: String,
-    /// Optional JWT for the H3 handshake's `jwt` query parameter.
-    pub jwt: Option<String>,
+    /// Optional API key (typically a JWT) carried as the `jwt`
+    /// query parameter on the H3 handshake. The relay treats it as
+    /// opaque; iroh-live never inspects or signs it.
+    pub api_key: Option<String>,
+}
+
+impl std::fmt::Debug for RelayOffer {
+    /// Hand-written Debug that elides `api_key` so JWT material
+    /// does not slip into traces. Operators who need the full
+    /// value can log the field directly.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RelayOffer")
+            .field("endpoint", &self.endpoint.fmt_short().to_string())
+            .field("path", &self.path)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 impl RelayOffer {
@@ -455,7 +524,20 @@ impl RelayOffer {
     pub fn to_target(&self) -> RelayTarget {
         RelayTarget::new(self.endpoint)
             .with_path(&self.path)
-            .with_api_key(self.jwt.clone())
+            .with_api_key(self.api_key.clone())
+    }
+
+    /// Validates that the offer's path length is within
+    /// [`MAX_RELAY_PATH_LEN`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the path is longer than the limit.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.path.len() > MAX_RELAY_PATH_LEN {
+            return Err("relay offer path exceeds the maximum allowed length");
+        }
+        Ok(())
     }
 }
 
@@ -660,11 +742,36 @@ mod tests {
         let offer = RelayOffer {
             endpoint,
             path: "/r".into(),
-            jwt: Some("token".into()),
+            api_key: Some("token".into()),
         };
         let target: RelayTarget = (&offer).into();
         assert_eq!(target.endpoint(), endpoint);
         assert_eq!(target.path(), "/r");
         assert_eq!(target.api_key(), Some("token"));
+    }
+
+    #[test]
+    fn relay_offer_validate_rejects_long_path() {
+        let endpoint = SecretKey::generate().public();
+        let mut offer = RelayOffer {
+            endpoint,
+            path: String::new(),
+            api_key: None,
+        };
+        offer.path = "/".repeat(MAX_RELAY_PATH_LEN + 1);
+        assert!(offer.validate().is_err());
+    }
+
+    #[test]
+    fn relay_offer_debug_redacts_api_key() {
+        let endpoint = SecretKey::generate().public();
+        let offer = RelayOffer {
+            endpoint,
+            path: "/p".into(),
+            api_key: Some("super-secret-jwt".into()),
+        };
+        let s = format!("{offer:?}");
+        assert!(!s.contains("super-secret-jwt"));
+        assert!(s.contains("<redacted>"));
     }
 }

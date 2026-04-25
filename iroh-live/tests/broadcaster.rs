@@ -155,6 +155,54 @@ async fn broadcaster_pushes_to_two_targets() {
     broadcaster_live.shutdown().await;
 }
 
+/// Removing a source from the broadcaster ends the announce on
+/// that target's session, while a co-attached target keeps
+/// receiving frames.
+#[tokio::test]
+#[traced_test]
+async fn broadcaster_remove_source_ends_announce_on_that_session_only() {
+    let target_a = live_with_router(endpoint().await);
+    let target_b = live_with_router(endpoint().await);
+    let broadcaster_live = live_with_router(endpoint().await);
+
+    let mut incoming_a = watch_incoming(&target_a);
+    let mut incoming_b = watch_incoming(&target_b);
+
+    let broadcast = broadcast_with_video();
+    let producer = broadcast.producer();
+    let mut set = SourceSet::new();
+    set.push(TransportSource::direct(target_a.endpoint().addr()));
+    set.push(TransportSource::direct(target_b.endpoint().addr()));
+    let id_a = set.get(0).expect("a").id();
+    let bc = broadcaster_live.broadcaster("broadcast", producer, set);
+
+    let consumer_a = accept_and_subscribe(
+        &mut incoming_a,
+        broadcaster_live.endpoint().id(),
+        "broadcast",
+    )
+    .await;
+    let _consumer_b = accept_and_subscribe(
+        &mut incoming_b,
+        broadcaster_live.endpoint().id(),
+        "broadcast",
+    )
+    .await;
+
+    // Remove target_a; the announce on its session ends. Wait
+    // for the broadcast consumer to observe close, with a
+    // bounded timeout.
+    assert!(bc.remove_source(&id_a));
+    tokio::time::timeout(Duration::from_secs(5), consumer_a.closed())
+        .await
+        .expect("expected announce on target_a to end after remove_source");
+
+    drop(broadcast);
+    target_a.shutdown().await;
+    target_b.shutdown().await;
+    broadcaster_live.shutdown().await;
+}
+
 /// Adding a source to the broadcaster's set at runtime opens a
 /// session to that target.
 #[tokio::test]

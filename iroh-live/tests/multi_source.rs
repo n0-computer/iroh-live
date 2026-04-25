@@ -15,7 +15,7 @@
 use std::{sync::OnceLock, time::Duration};
 
 use iroh::{Endpoint, address_lookup::MemoryLookup};
-use iroh_live::{Live, SourceSet, Subscription, SubscriptionEvent, TransportSource};
+use iroh_live::{Live, SourceSet, SubscriptionEvent, SubscriptionEvents, TransportSource};
 use moq_media::{
     codec::VideoCodec,
     format::VideoPreset,
@@ -66,18 +66,23 @@ fn broadcast_with_video() -> LocalBroadcast {
 }
 
 /// Awaits the next [`SubscriptionEvent`] matching `predicate` or
-/// panics with `msg` after [`TIMEOUT`].
+/// panics with `msg` after [`TIMEOUT`]. Uses the receiver in
+/// `events` so the caller is responsible for subscribing to the
+/// stream before the events of interest fire.
 async fn wait_for_event(
-    sub: &Subscription,
+    events: &mut SubscriptionEvents,
     msg: &str,
     mut predicate: impl FnMut(&SubscriptionEvent) -> bool,
 ) -> SubscriptionEvent {
     let deadline = tokio::time::Instant::now() + TIMEOUT;
     while tokio::time::Instant::now() < deadline {
-        match tokio::time::timeout(Duration::from_secs(2), sub.next_event()).await {
-            Ok(Some(ev)) if predicate(&ev) => return ev,
-            Ok(Some(_)) => continue,
-            Ok(None) => panic!("{msg}: subscription event stream closed"),
+        match tokio::time::timeout(Duration::from_secs(2), events.recv()).await {
+            Ok(Ok(ev)) if predicate(&ev) => return ev,
+            Ok(Ok(_)) => continue,
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                panic!("{msg}: subscription event stream closed")
+            }
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
             Err(_) => continue,
         }
     }
@@ -149,6 +154,9 @@ async fn subscription_falls_over_when_preferred_source_is_removed() {
 
     let subscriber = live_with_router(endpoint().await);
     let sub = subscriber.subscribe(set, BROADCAST_NAME);
+    // Subscribe to events before triggering the transition so the
+    // broadcast channel captures every emit.
+    let mut events = sub.events();
 
     let initial = tokio::time::timeout(TIMEOUT, sub.ready())
         .await
@@ -161,7 +169,7 @@ async fn subscription_falls_over_when_preferred_source_is_removed() {
     assert!(removed, "source a should be present");
 
     wait_for_event(
-        &sub,
+        &mut events,
         "active should switch to second source",
         |ev| matches!(ev, SubscriptionEvent::ActiveChanged { current: Some(id), .. } if id == &id_b),
     )
@@ -190,6 +198,7 @@ async fn subscription_runtime_push_attaches_new_source() {
         .await
         .expect("ready timeout")
         .expect("ready failed");
+    let mut events = sub.events();
 
     // Spin up a second publisher and add it to the live source set.
     let pub_b = live_with_router(endpoint().await);
@@ -203,7 +212,7 @@ async fn subscription_runtime_push_attaches_new_source() {
     sub.sources().push(new_source);
 
     wait_for_event(
-        &sub,
+        &mut events,
         "Attached event for newly added source",
         |ev| matches!(ev, SubscriptionEvent::Attached { id } if id == &new_id),
     )
@@ -245,21 +254,23 @@ async fn unreachable_source_emits_attach_failed_without_blocking_others() {
 
     let subscriber = live_with_router(endpoint().await);
     let sub = subscriber.subscribe(set, BROADCAST_NAME);
+    let mut events = sub.events();
 
     // The working source attaches; the unreachable one fails.
     let mut saw_failed = false;
     let mut saw_attached = false;
     let deadline = tokio::time::Instant::now() + TIMEOUT;
     while tokio::time::Instant::now() < deadline && !(saw_failed && saw_attached) {
-        match tokio::time::timeout(Duration::from_secs(2), sub.next_event()).await {
-            Ok(Some(SubscriptionEvent::AttachFailed { id, .. })) if id == unreachable_id => {
+        match tokio::time::timeout(Duration::from_secs(2), events.recv()).await {
+            Ok(Ok(SubscriptionEvent::AttachFailed { id, .. })) if id == unreachable_id => {
                 saw_failed = true;
             }
-            Ok(Some(SubscriptionEvent::Attached { id })) if id == working_id => {
+            Ok(Ok(SubscriptionEvent::Attached { id })) if id == working_id => {
                 saw_attached = true;
             }
-            Ok(Some(_)) => {}
-            Ok(None) => break,
+            Ok(Ok(_)) => {}
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
             Err(_) => continue,
         }
     }
@@ -274,6 +285,99 @@ async fn unreachable_source_emits_attach_failed_without_blocking_others() {
     assert_eq!(active.id, working_id);
 
     pub_a.shutdown().await;
+    subscriber.shutdown().await;
+}
+
+/// When the preferred source is unhealthy and the subscription
+/// has fallen over to a fallback, restoring the preferred source
+/// switches the active back. `PreferOrdered` honours priority
+/// recovery without hysteresis.
+#[tokio::test]
+#[traced_test]
+async fn subscription_recovers_preferred_when_it_returns() {
+    let pub_a = live_with_router(endpoint().await);
+    let broadcast_a = broadcast_with_video();
+    pub_a
+        .publish(BROADCAST_NAME, &broadcast_a)
+        .await
+        .expect("publish a");
+
+    let pub_b = live_with_router(endpoint().await);
+    let broadcast_b = broadcast_with_video();
+    pub_b
+        .publish(BROADCAST_NAME, &broadcast_b)
+        .await
+        .expect("publish b");
+
+    let mut set = SourceSet::new();
+    set.push(TransportSource::direct(pub_a.endpoint().addr()));
+    set.push(TransportSource::direct(pub_b.endpoint().addr()));
+    let id_a = set.get(0).expect("a").id();
+    let id_b = set.get(1).expect("b").id();
+
+    let subscriber = live_with_router(endpoint().await);
+    let sub = subscriber.subscribe(set, BROADCAST_NAME);
+    let mut events = sub.events();
+
+    let initial = sub.ready().await.expect("ready");
+    assert_eq!(initial.id, id_a, "should start on preferred");
+
+    // Remove preferred; expect fall-over to b.
+    sub.sources().remove(&id_a);
+    wait_for_event(
+        &mut events,
+        "fall over to b",
+        |ev| matches!(ev, SubscriptionEvent::ActiveChanged { current: Some(id), .. } if id == &id_b),
+    )
+    .await;
+
+    // Restore preferred at the front of the set; expect swap
+    // back. `PreferOrdered` honours the set's order, so callers
+    // that want a stable preferred reset by replacing the whole
+    // set rather than appending.
+    let mut restored = SourceSet::new();
+    restored.push(TransportSource::direct(pub_a.endpoint().addr()));
+    restored.push(TransportSource::direct(pub_b.endpoint().addr()));
+    sub.sources().set(restored);
+    wait_for_event(
+        &mut events,
+        "recover to a",
+        |ev| matches!(ev, SubscriptionEvent::ActiveChanged { current: Some(id), .. } if id == &id_a),
+    )
+    .await;
+
+    pub_a.shutdown().await;
+    pub_b.shutdown().await;
+    subscriber.shutdown().await;
+}
+
+/// `wait_active` returns `None` when the subscription is shut
+/// down before any source becomes healthy.
+#[tokio::test]
+#[traced_test]
+async fn wait_active_returns_none_when_shut_down_with_empty_set() {
+    let subscriber = live_with_router(endpoint().await);
+    let sub = subscriber.subscribe(SourceSet::new(), BROADCAST_NAME);
+
+    // No sources, no publisher; cancel the subscription so the
+    // actor exits and `wait_active` resolves with `None`.
+    let waiter = sub.clone();
+    let waiter_task = tokio::spawn(async move { waiter.wait_active().await });
+
+    // Give the actor a moment to enter its select loop, then
+    // shut it down.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    sub.shutdown();
+
+    let result = tokio::time::timeout(TIMEOUT, waiter_task)
+        .await
+        .expect("waiter timeout")
+        .expect("waiter task panicked");
+    assert!(
+        result.is_none(),
+        "wait_active should return None on shutdown with no healthy source"
+    );
+
     subscriber.shutdown().await;
 }
 

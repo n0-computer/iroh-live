@@ -19,7 +19,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use iroh_moq::MoqSession;
 use moq_lite::{BroadcastConsumer, BroadcastProducer};
-use n0_error::{AnyError, Result, StdResultExt};
+use n0_error::{Result, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::Watcher;
 use tokio::{sync::Mutex, task};
@@ -30,34 +30,6 @@ use crate::{
     Live,
     sources::{SourceId, SourceSet, SourceSetHandle, TransportSource},
 };
-
-/// Errors a [`Broadcaster`] reports while attaching a source.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum BroadcasterError {
-    /// Opening or upgrading a session to the source failed.
-    Connect {
-        /// Identifier of the source the broadcaster was attaching to.
-        source: SourceId,
-        /// The underlying transport error.
-        error: AnyError,
-    },
-    /// The broadcaster's task was cancelled.
-    Shutdown,
-}
-
-impl std::fmt::Display for BroadcasterError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Connect { source, error } => {
-                write!(f, "failed to attach source {source}: {error:#}")
-            }
-            Self::Shutdown => write!(f, "broadcaster has been shut down"),
-        }
-    }
-}
-
-impl std::error::Error for BroadcasterError {}
 
 /// Fans a single broadcast producer out to a dynamic set of
 /// sessions.
@@ -176,14 +148,26 @@ struct BroadcasterState {
     attached: HashMap<SourceId, AttachedSource>,
 }
 
+/// Per-source state held by the broadcaster.
+///
+/// Owns the outbound MoQ session opened for the target. Dropping
+/// the wrapper closes the session, which ends every announce that
+/// rode it: there is no per-broadcast unpublish in moq-lite, so
+/// "remove this source" is implemented by tearing down the
+/// session entirely.
 struct AttachedSource {
-    /// Held so the session stays alive while the broadcast is
-    /// announced. For direct sources this may be a clone of a shared
-    /// session; for relay sources we own it.
-    _session: MoqSession,
-    /// Held so the broadcast announce stays live. Dropping this ends
-    /// the announce on the associated session.
+    session: MoqSession,
+    /// Held so the consumer ref-count stays high while the
+    /// announce is live. Drop order is consumer-then-session.
     _consumer: BroadcastConsumer,
+}
+
+impl Drop for AttachedSource {
+    fn drop(&mut self) {
+        // Close the session so the announce ends on the wire.
+        // Code 0 + empty reason is the conventional "clean close".
+        self.session.close(0, b"broadcaster source removed");
+    }
 }
 
 async fn reconcile(
@@ -238,7 +222,7 @@ async fn attach(
     let consumer = producer.consume();
     session.publish(name.to_string(), consumer.clone());
     Ok(AttachedSource {
-        _session: session,
+        session,
         _consumer: consumer,
     })
 }

@@ -219,19 +219,51 @@ impl Live {
     ///
     /// `sources` accepts anything convertible into a
     /// [`SourceSetHandle`](crate::sources::SourceSetHandle):
-    /// [`EndpointAddr`] or [`EndpointId`](iroh::EndpointId) for a
-    /// single direct peer, [`RelayTarget`](crate::relay::RelayTarget)
-    /// for a single relay, [`SourceSet`](crate::sources::SourceSet)
-    /// for a static set of candidates, a `SourceSetHandle` for a
-    /// reactively mutable set, or a [`LiveTicket`](crate::ticket::LiveTicket)
-    /// (whose direct endpoint plus any embedded relay offers form
-    /// the set).
+    /// [`EndpointAddr`](iroh::EndpointAddr) or
+    /// [`EndpointId`](iroh::EndpointId) for a single direct peer,
+    /// [`RelayTarget`](crate::relay::RelayTarget) for a single
+    /// relay, [`SourceSet`](crate::sources::SourceSet) for a
+    /// static set of candidates, or a `SourceSetHandle` for a
+    /// reactively mutable set.
     ///
     /// The returned [`Subscription`](crate::Subscription) opens a
     /// MoQ session for every source in the set, picks the active
-    /// one through the default [`PreferOrdered`](crate::PreferOrdered)
-    /// policy, and emits [`SubscriptionEvent`](crate::SubscriptionEvent)s
-    /// as sources come and go.
+    /// one through the default
+    /// [`PreferOrdered`](crate::PreferOrdered) policy, and emits
+    /// [`SubscriptionEvent`](crate::SubscriptionEvent)s as sources
+    /// come and go.
+    ///
+    /// # Examples
+    ///
+    /// Single direct peer:
+    ///
+    /// ```rust,no_run
+    /// # async fn example(live: iroh_live::Live, peer: iroh::EndpointAddr) -> n0_error::Result<()> {
+    /// let sub = live.subscribe(peer, "cam");
+    /// let active = sub.ready().await?;
+    /// let _video = active.broadcast().video_ready().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Mutable set with two candidates:
+    ///
+    /// ```rust,no_run
+    /// # async fn example(
+    /// #     live: iroh_live::Live,
+    /// #     peer: iroh::EndpointAddr,
+    /// #     relay: iroh_live::relay::RelayTarget,
+    /// # ) -> n0_error::Result<()> {
+    /// use iroh_live::{SourceSet, SourceSetHandle, TransportSource};
+    ///
+    /// let mut set = SourceSet::new();
+    /// set.push(TransportSource::direct(peer));
+    /// set.push(TransportSource::relay(relay));
+    /// let sources = SourceSetHandle::new(set);
+    /// let _sub = live.subscribe(sources, "cam");
+    /// # Ok(())
+    /// # }
+    /// ```
     #[instrument("Subscribe", skip_all, fields(broadcast = %broadcast_name.to_string()))]
     pub fn subscribe(
         &self,

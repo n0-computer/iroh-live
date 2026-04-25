@@ -58,12 +58,12 @@ fn ticket_with_relays_round_trip() {
     let relay_a = RelayOffer {
         endpoint: iroh::SecretKey::generate().public(),
         path: "/r1".into(),
-        jwt: Some("token-a".into()),
+        api_key: Some("token-a".into()),
     };
     let relay_b = RelayOffer {
         endpoint: iroh::SecretKey::generate().public(),
         path: "/r2".into(),
-        jwt: None,
+        api_key: None,
     };
     let ticket = LiveTicket::new(addr, "stream").with_relays([relay_a.clone(), relay_b.clone()]);
 
@@ -78,7 +78,7 @@ fn ticket_with_relays_round_trip() {
 
 /// A ticket without relays still produces a single-direct-source
 /// subscription. The URL form (used in QR codes) does not yet carry
-/// relay offers; only the binary form does, by design — relay
+/// relay offers; only the binary form does. By design: relay
 /// material is sensitive (JWTs in particular) and should not be
 /// embedded in scannable URIs by default.
 #[test]
@@ -88,7 +88,7 @@ fn ticket_url_form_does_not_carry_relays() {
     let ticket = LiveTicket::new(addr, "stream").with_relays([RelayOffer {
         endpoint: iroh::SecretKey::generate().public(),
         path: "/r".into(),
-        jwt: Some("secret".into()),
+        api_key: Some("secret".into()),
     }]);
 
     let url = ticket.to_string();
@@ -152,7 +152,7 @@ async fn subscribe_ticket_prefers_direct_over_unreachable_relay() {
     let unreachable_relay = RelayOffer {
         endpoint: iroh::SecretKey::generate().public(),
         path: "/".into(),
-        jwt: None,
+        api_key: None,
     };
     let ticket =
         LiveTicket::new(publisher.endpoint().addr(), "stream").with_relays([unreachable_relay]);

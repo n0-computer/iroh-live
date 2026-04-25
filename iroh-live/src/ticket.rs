@@ -4,7 +4,7 @@ use iroh::EndpointAddr;
 use n0_error::{Result, StackResultExt, StdResultExt};
 use serde::{Deserialize, Serialize};
 
-use crate::sources::{RelayOffer, SourceSet, TransportSource};
+use crate::sources::{MAX_RELAY_OFFERS, RelayOffer, SourceSet, TransportSource};
 
 /// URI scheme prefix for iroh-live tickets.
 pub(crate) const SCHEME: &str = "iroh-live:";
@@ -13,10 +13,15 @@ pub(crate) const SCHEME: &str = "iroh-live:";
 ///
 /// Contains the publisher's direct endpoint address, the broadcast
 /// name, and any additional [`RelayOffer`]s the publisher also
-/// serves through. Subscribers that want dynamic transport behaviour
-/// call [`Live::subscribe_from_ticket`](crate::Live::subscribe_from_ticket);
+/// serves through. Subscribers that want dynamic transport
+/// behaviour call [`Live::subscribe_ticket`](crate::Live::subscribe_ticket);
 /// the direct endpoint becomes the preferred source and each relay
 /// offer becomes a fallback in declaration order.
+///
+/// The URL form does not carry relay offers (so the form remains
+/// QR-friendly and JWT material does not leak into scannable
+/// representations); the binary [`to_bytes`](Self::to_bytes) /
+/// [`from_bytes`](Self::from_bytes) round-trip carries them.
 ///
 /// Serializes to a URI: `iroh-live:<base64url(postcard(EndpointAddr))>/<name>`
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, Serialize, Deserialize)]
@@ -73,9 +78,36 @@ impl LiveTicket {
     }
 
     /// Deserializes from raw postcard bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the bytes are not valid postcard, when
+    /// the embedded `EndpointAddr` is malformed, or when the
+    /// ticket carries more than [`MAX_RELAY_OFFERS`] relay offers
+    /// or a single offer's path exceeds the per-offer length cap.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let ticket = postcard::from_bytes(bytes).std_context("failed to deserialize")?;
+        let ticket: Self = postcard::from_bytes(bytes).std_context("failed to deserialize")?;
+        ticket
+            .validate()
+            .map_err(|msg| n0_error::anyerr!("ticket validation failed: {msg}"))?;
         Ok(ticket)
+    }
+
+    /// Validates that the ticket's relay offers are within the
+    /// per-ticket and per-offer caps.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the relay list is too long or when any
+    /// individual offer fails its own validation.
+    pub fn validate(&self) -> std::result::Result<(), &'static str> {
+        if self.relays.len() > MAX_RELAY_OFFERS {
+            return Err("ticket carries more than MAX_RELAY_OFFERS entries");
+        }
+        for offer in &self.relays {
+            offer.validate()?;
+        }
+        Ok(())
     }
 
     /// Serializes to a URI string: `iroh-live:<addr>/<name>`

@@ -25,10 +25,10 @@ use std::{collections::HashMap, sync::Arc};
 use iroh_moq::MoqSession;
 use moq_media::subscribe::RemoteBroadcast;
 use n0_error::{AnyError, Result, StdResultExt};
-use n0_future::task::AbortOnDropHandle;
+use n0_future::{FuturesUnordered, StreamExt, task::AbortOnDropHandle};
 use n0_watcher::{Watchable, Watcher};
 use tokio::{
-    sync::{Mutex, mpsc},
+    sync::{Mutex, broadcast, mpsc},
     task,
 };
 use tokio_util::sync::CancellationToken;
@@ -42,10 +42,18 @@ use crate::{
     },
 };
 
-/// Capacity of the bounded event channel. Events that exceed this
-/// queue depth are coalesced by the consumer waking up and reading
-/// the latest [`Subscription::active`] state directly.
-const EVENT_CHANNEL_CAPACITY: usize = 32;
+/// Capacity of the broadcast event channel. Subscribers that lag
+/// further than this miss intermediate events and re-read the
+/// current state via [`Subscription::active`] /
+/// [`Subscription::active_id`]; missed events are reported as
+/// [`broadcast::error::RecvError::Lagged`] on the receiver and a
+/// `warn!` is logged from the actor.
+const EVENT_CHANNEL_CAPACITY: usize = 64;
+
+/// Capacity of the internal session-closed signal channel.
+/// Watchdog tasks send through this when their session ends; the
+/// actor's main loop drains it inside `tokio::select!`.
+const SESSION_CLOSED_CHANNEL_CAPACITY: usize = 32;
 
 /// A subscription to a broadcast across a set of candidate transport
 /// sources.
@@ -70,8 +78,7 @@ struct Inner {
     sources: SourceSetHandle,
     state: Arc<Mutex<State>>,
     active_id: Watchable<Option<SourceId>>,
-    events_tx: mpsc::Sender<SubscriptionEvent>,
-    events_rx: Mutex<mpsc::Receiver<SubscriptionEvent>>,
+    events_tx: broadcast::Sender<SubscriptionEvent>,
     _task: AbortOnDropHandle<()>,
     shutdown: CancellationToken,
 }
@@ -104,6 +111,30 @@ impl ActiveSource {
     /// observe this watcher.
     pub fn signals(&self) -> &tokio::sync::watch::Receiver<moq_media::net::NetworkSignals> {
         &self.inner.signals
+    }
+}
+
+/// Receiver returned by [`Subscription::events`].
+///
+/// Wraps a [`broadcast::Receiver`] so cloning the subscription
+/// does not load-balance events across observers; each call to
+/// [`Subscription::events`] returns an independent receiver that
+/// observes the full stream from the moment it was created.
+#[derive(Debug)]
+pub struct SubscriptionEvents {
+    rx: broadcast::Receiver<SubscriptionEvent>,
+}
+
+impl SubscriptionEvents {
+    /// Awaits the next event.
+    ///
+    /// Returns `Ok(event)` on a fresh event,
+    /// `Err(RecvError::Lagged(n))` when this consumer fell more
+    /// than [`EVENT_CHANNEL_CAPACITY`] events behind, or
+    /// `Err(RecvError::Closed)` once the subscription is shut
+    /// down.
+    pub async fn recv(&mut self) -> Result<SubscriptionEvent, broadcast::error::RecvError> {
+        self.rx.recv().await
     }
 }
 
@@ -166,7 +197,7 @@ impl Subscription {
         let active_id = Watchable::new(None);
         let shutdown = CancellationToken::new();
         let state: Arc<Mutex<State>> = Arc::new(Mutex::new(State::default()));
-        let (events_tx, events_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
+        let (events_tx, _events_rx_anchor) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let task = spawn_loop(
             live,
             broadcast_name.clone(),
@@ -184,7 +215,6 @@ impl Subscription {
                 state,
                 active_id,
                 events_tx,
-                events_rx: Mutex::new(events_rx),
                 _task: AbortOnDropHandle::new(task),
                 shutdown,
             }),
@@ -233,17 +263,23 @@ impl Subscription {
     /// Waits for the subscription to pick an active source and
     /// returns it.
     ///
-    /// Returns `None` when the subscription is dropped or the
-    /// source set is empty without becoming non-empty before
-    /// shutdown.
+    /// Returns `None` when the subscription is shut down or the
+    /// source set never produces a healthy source before the
+    /// caller drops the subscription.
     pub async fn wait_active(&self) -> Option<ActiveSource> {
         let mut watcher = self.inner.active_id.watch();
         loop {
             if let Some(active) = self.active().await {
                 return Some(active);
             }
-            if watcher.updated().await.is_err() {
-                return None;
+            tokio::select! {
+                biased;
+                _ = self.inner.shutdown.cancelled() => return None,
+                res = watcher.updated() => {
+                    if res.is_err() {
+                        return None;
+                    }
+                }
             }
         }
     }
@@ -273,10 +309,39 @@ impl Subscription {
         self.inner.active_id.watch()
     }
 
-    /// Returns the next [`SubscriptionEvent`] from the event
-    /// stream. Returns `None` when the subscription is shut down.
+    /// Subscribes to the [`SubscriptionEvent`] stream.
+    ///
+    /// Each call returns an independent receiver; cloning the
+    /// [`Subscription`] does not share a single receiver. The
+    /// channel is bounded by [`EVENT_CHANNEL_CAPACITY`]; a slow
+    /// consumer that lags further is delivered
+    /// [`broadcast::error::RecvError::Lagged`] and should re-read
+    /// the current state via [`Subscription::active`].
+    pub fn events(&self) -> SubscriptionEvents {
+        SubscriptionEvents {
+            rx: self.inner.events_tx.subscribe(),
+        }
+    }
+
+    /// Awaits the next [`SubscriptionEvent`].
+    ///
+    /// Convenience around [`Subscription::events`] for callers that
+    /// only need one receiver. Returns `None` once the subscription
+    /// is shut down. Lag events surface as a stream restart from
+    /// the latest available event; callers tracking distinct event
+    /// counts should use `events()` directly to observe lag.
     pub async fn next_event(&self) -> Option<SubscriptionEvent> {
-        self.inner.events_rx.lock().await.recv().await
+        let mut rx = self.inner.events_tx.subscribe();
+        loop {
+            match rx.recv().await {
+                Ok(event) => return Some(event),
+                Err(broadcast::error::RecvError::Closed) => return None,
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    warn!(skipped, "subscription event consumer lagged");
+                    continue;
+                }
+            }
+        }
     }
 
     /// Stops the subscription and closes every owned session.
@@ -284,14 +349,6 @@ impl Subscription {
     /// Equivalent to dropping all clones of the subscription.
     pub fn shutdown(&self) {
         self.inner.shutdown.cancel();
-    }
-
-    /// Returns a sender for re-emitting events. Used internally by
-    /// the seamless media layer to fan events out without consuming
-    /// the public event queue. Hidden from the public API.
-    #[doc(hidden)]
-    pub fn _internal_events_clone(&self) -> mpsc::Sender<SubscriptionEvent> {
-        self.inner.events_tx.clone()
     }
 }
 
@@ -315,6 +372,9 @@ pub(crate) struct AttachedSubscription {
     _watchdog: AbortOnDropHandle<()>,
 }
 
+type AttachFuture =
+    std::pin::Pin<Box<dyn Future<Output = (SourceId, Result<AttachedRaw, AnyError>)> + Send>>;
+
 #[allow(
     clippy::too_many_arguments,
     reason = "private spawn helper, grouping the args would add complexity for one call site"
@@ -326,33 +386,43 @@ fn spawn_loop(
     policy: AnyPolicy,
     state: Arc<Mutex<State>>,
     active_id: Watchable<Option<SourceId>>,
-    events_tx: mpsc::Sender<SubscriptionEvent>,
+    events_tx: broadcast::Sender<SubscriptionEvent>,
     shutdown: CancellationToken,
 ) -> task::JoinHandle<()> {
     let span = info_span!("Subscription", name = %broadcast_name);
     task::spawn(
         async move {
-            let (closed_tx, mut closed_rx) = mpsc::channel::<SourceId>(EVENT_CHANNEL_CAPACITY);
+            let (closed_tx, mut closed_rx) =
+                mpsc::channel::<SourceId>(SESSION_CLOSED_CHANNEL_CAPACITY);
             let mut watcher = sources.watch();
+            // In-flight attach futures driven in parallel so an
+            // unreachable peer cannot block attach of every other
+            // source. The actor's main `select!` polls them
+            // alongside the source-set watcher and the close-watchdog
+            // channel.
+            let mut attaching = FuturesUnordered::<AttachFuture>::new();
+            let mut attaching_ids: std::collections::HashSet<SourceId> =
+                std::collections::HashSet::new();
+
             debug!(
                 source_count = sources.get().len(),
                 "subscription actor started"
             );
 
+            // Seed: one attach per source already in the set.
+            let initial = sources.get();
+            schedule_attaches(
+                &live,
+                &broadcast_name,
+                &initial,
+                &state,
+                &mut attaching,
+                &mut attaching_ids,
+            )
+            .await;
+            pick_active(&initial, &policy, &state, &active_id, &events_tx).await;
+
             loop {
-                let desired = sources.get();
-                reconcile(
-                    &live,
-                    &broadcast_name,
-                    &desired,
-                    &state,
-                    &events_tx,
-                    &closed_tx,
-                )
-                .await;
-
-                pick_active(&desired, &policy, &state, &active_id, &events_tx).await;
-
                 tokio::select! {
                     biased;
                     _ = shutdown.cancelled() => {
@@ -364,13 +434,29 @@ fn spawn_loop(
                             debug!("source set watcher closed");
                             break;
                         }
+                        let desired = sources.get();
+                        prune_removed_sources(&desired, &state, &active_id, &events_tx).await;
+                        schedule_attaches(
+                            &live,
+                            &broadcast_name,
+                            &desired,
+                            &state,
+                            &mut attaching,
+                            &mut attaching_ids,
+                        )
+                        .await;
+                        pick_active(&desired, &policy, &state, &active_id, &events_tx).await;
+                    }
+                    Some((id, result)) = attaching.next(), if !attaching.is_empty() => {
+                        attaching_ids.remove(&id);
+                        complete_attach(id, result, &state, &events_tx, &closed_tx).await;
+                        let desired = sources.get();
+                        pick_active(&desired, &policy, &state, &active_id, &events_tx).await;
                     }
                     Some(closed_id) = closed_rx.recv() => {
-                        debug!(source=%closed_id, "session closed");
-                        state.lock().await.attached.remove(&closed_id);
-                        let _ = events_tx
-                            .send(SubscriptionEvent::Detached { id: closed_id })
-                            .await;
+                        handle_session_closed(closed_id, &state, &active_id, &events_tx).await;
+                        let desired = sources.get();
+                        pick_active(&desired, &policy, &state, &active_id, &events_tx).await;
                     }
                 }
             }
@@ -381,60 +467,133 @@ fn spawn_loop(
     )
 }
 
-async fn reconcile(
+/// Drops every entry in `state.attached` whose id is not in the
+/// desired set. Emits `Detached` for each removed entry. If the
+/// active source was removed, clears `active_id` immediately so
+/// readers see a consistent state without waiting for the next
+/// `pick_active` pass.
+async fn prune_removed_sources(
+    desired: &SourceSet,
+    state: &Mutex<State>,
+    active_id: &Watchable<Option<SourceId>>,
+    events_tx: &broadcast::Sender<SubscriptionEvent>,
+) {
+    let desired_ids: std::collections::HashSet<SourceId> = desired.iter().map(|s| s.id()).collect();
+    let removed: Vec<SourceId> = {
+        let mut st = state.lock().await;
+        let removed: Vec<SourceId> = st
+            .attached
+            .keys()
+            .filter(|id| !desired_ids.contains(id))
+            .cloned()
+            .collect();
+        for id in &removed {
+            st.attached.remove(id);
+        }
+        removed
+    };
+    if let Some(current) = active_id.get()
+        && removed.contains(&current)
+    {
+        active_id.set(None).ok();
+    }
+    for id in removed {
+        emit_event(events_tx, SubscriptionEvent::Detached { id });
+    }
+}
+
+/// Schedules an attach future for every source that is neither
+/// already attached nor in flight. The futures complete onto the
+/// actor's `tokio::select!` and the actor installs them into the
+/// state map there.
+async fn schedule_attaches(
     live: &Live,
     broadcast_name: &str,
     desired: &SourceSet,
     state: &Mutex<State>,
-    events_tx: &mpsc::Sender<SubscriptionEvent>,
-    closed_tx: &mpsc::Sender<SourceId>,
+    attaching: &mut FuturesUnordered<AttachFuture>,
+    attaching_ids: &mut std::collections::HashSet<SourceId>,
 ) {
-    let mut st = state.lock().await;
-    let desired_ids: Vec<SourceId> = desired.iter().map(|s| s.id()).collect();
-
-    let removed: Vec<SourceId> = st
-        .attached
-        .keys()
-        .filter(|id| !desired_ids.contains(id))
-        .cloned()
-        .collect();
-    for id in removed {
-        st.attached.remove(&id);
-        let _ = events_tx.send(SubscriptionEvent::Detached { id }).await;
-    }
-
+    let attached_ids: std::collections::HashSet<SourceId> = {
+        let st = state.lock().await;
+        st.attached.keys().cloned().collect()
+    };
     for source in desired.iter() {
         let id = source.id();
-        if st.attached.contains_key(&id) {
+        if attached_ids.contains(&id) || attaching_ids.contains(&id) {
             continue;
         }
-        drop(st);
-        match attach_source(live, broadcast_name, source.clone()).await {
-            Ok(attached) => {
-                let watchdog =
-                    spawn_watchdog(attached.session.clone(), id.clone(), closed_tx.clone());
-                let attached = Arc::new(AttachedSubscription {
-                    session: attached.session,
-                    broadcast: attached.broadcast,
-                    signals: attached.signals,
-                    _watchdog: AbortOnDropHandle::new(watchdog),
-                });
-                info!(source=%id, "attached source");
-                state.lock().await.attached.insert(id.clone(), attached);
-                let _ = events_tx.send(SubscriptionEvent::Attached { id }).await;
-            }
-            Err(err) => {
-                warn!(source=%id, "attach failed: {err:#}");
-                let _ = events_tx
-                    .send(SubscriptionEvent::AttachFailed {
-                        id,
-                        error: format!("{err:#}"),
-                    })
-                    .await;
-            }
-        }
-        st = state.lock().await;
+        attaching_ids.insert(id.clone());
+        let live = live.clone();
+        let broadcast_name = broadcast_name.to_string();
+        let source = source.clone();
+        let id_for_future = id.clone();
+        attaching.push(Box::pin(async move {
+            let res = attach_source(&live, &broadcast_name, source).await;
+            (id_for_future, res)
+        }));
     }
+}
+
+/// Installs (or reports the failure of) one in-flight attach. On
+/// success, spawns the close watchdog before inserting into state
+/// so a session that closed between connect and insert still
+/// surfaces as `Detached` immediately.
+async fn complete_attach(
+    id: SourceId,
+    result: Result<AttachedRaw, AnyError>,
+    state: &Mutex<State>,
+    events_tx: &broadcast::Sender<SubscriptionEvent>,
+    closed_tx: &mpsc::Sender<SourceId>,
+) {
+    match result {
+        Ok(attached) => {
+            let watchdog = spawn_watchdog(attached.session.clone(), id.clone(), closed_tx.clone());
+            let attached = Arc::new(AttachedSubscription {
+                session: attached.session,
+                broadcast: attached.broadcast,
+                signals: attached.signals,
+                _watchdog: AbortOnDropHandle::new(watchdog),
+            });
+            info!(source = %id, "attached source");
+            state.lock().await.attached.insert(id.clone(), attached);
+            emit_event(events_tx, SubscriptionEvent::Attached { id });
+        }
+        Err(err) => {
+            warn!(source = %id, "attach failed: {err:#}");
+            emit_event(
+                events_tx,
+                SubscriptionEvent::AttachFailed {
+                    id,
+                    error: format!("{err:#}"),
+                },
+            );
+        }
+    }
+}
+
+/// Removes the closed source from state and clears `active_id` if
+/// the active source was the one that closed. Emits `Detached`.
+async fn handle_session_closed(
+    id: SourceId,
+    state: &Mutex<State>,
+    active_id: &Watchable<Option<SourceId>>,
+    events_tx: &broadcast::Sender<SubscriptionEvent>,
+) {
+    debug!(source = %id, "session closed");
+    state.lock().await.attached.remove(&id);
+    if active_id.get().as_ref() == Some(&id) {
+        active_id.set(None).ok();
+    }
+    emit_event(events_tx, SubscriptionEvent::Detached { id });
+}
+
+/// Non-blocking event emit on the broadcast channel. A `Send`
+/// failure means there are no live receivers, which is fine; it
+/// just means no one is listening yet. Lag handling lives on the
+/// receiver side.
+fn emit_event(events_tx: &broadcast::Sender<SubscriptionEvent>, event: SubscriptionEvent) {
+    let _ = events_tx.send(event);
 }
 
 struct AttachedRaw {
@@ -498,7 +657,7 @@ async fn pick_active(
     policy: &AnyPolicy,
     state: &Mutex<State>,
     active_id: &Watchable<Option<SourceId>>,
-    events_tx: &mpsc::Sender<SubscriptionEvent>,
+    events_tx: &broadcast::Sender<SubscriptionEvent>,
 ) {
     let st = state.lock().await;
     let candidates: Vec<Candidate<'_>> = desired
@@ -514,17 +673,18 @@ async fn pick_active(
 
     if current != next {
         if let Some(ref n) = next {
-            info!(source=%n, "active source changed");
+            info!(source = %n, "active source changed");
         } else {
             info!("no healthy source");
         }
         active_id.set(next.clone()).ok();
-        let _ = events_tx
-            .send(SubscriptionEvent::ActiveChanged {
+        emit_event(
+            events_tx,
+            SubscriptionEvent::ActiveChanged {
                 previous: current,
                 current: next,
-            })
-            .await;
+            },
+        );
     }
 }
 

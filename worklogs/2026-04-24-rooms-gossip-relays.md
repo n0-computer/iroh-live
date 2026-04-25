@@ -317,3 +317,226 @@ foundation now matches the revised plan:
   bridge tests.
 
 Next: comprehensive new tests, doc sweep, staff reviews.
+
+### 2026-04-25 13:00 - Staff reviews returned, review-of-reviews
+
+Four parallel staff reviewers (Rust expert, distributed systems,
+docs/QA, safety/security) returned roughly 50 findings. Applying
+opposing-stance to each before fixing.
+
+**Critical findings that survive:**
+
+R1.1 / R2.4 / R4.9 — `Subscription::events_rx: Mutex<Receiver>` on
+a `Clone` type silently load-balances events across clones. The
+room actor only reads via `spawn_active_watcher` so the bug is not
+triggered today, but the type contradicts itself: `Clone` implies
+broadcast semantics, the mutex implies single-consumer. Switch to
+`broadcast::channel` so every clone observes every event.
+
+R2.5 / R4.5 — `events_tx.send().await` in the actor can stall on a
+slow consumer. With a broadcast channel the analogous failure is a
+`Lagged` skip rather than a stall, which is the correct behaviour
+for an event log. This fix subsumes R1.1 above.
+
+R2.1 / R1.7 / R4.1 — Reconcile awaits `attach_source` serially per
+source. An unreachable peer blocks every other attach. Move the
+attach work into a `FuturesUnordered` driven by the same select.
+
+R3.1 — Broken intra-doc link `Live::subscribe_from_ticket` (the
+method is `Live::subscribe_ticket`). Trivial fix.
+
+R4.1 — DoS via unbounded `PeerState.broadcasts` from a malicious
+gossip member. Cap the list length before iterating.
+
+R2.2 — Watchdog spawn timing: session can close between
+`attach_source` returning and the watchdog being installed. Detect
+by checking the session after acquiring the state lock.
+
+R2.3 — `pick_active` and the watchdog branch race: a closed
+session can sit as `active_id` until the next `pick_active` runs.
+Update `active_id` to `None` immediately when the active session
+closes.
+
+R2.12 — `spawn_active_watcher` in the room actor uses bare
+`tokio::spawn`. Store an `AbortOnDropHandle` next to
+`ActiveSubscribe` so the watcher dies with the subscription it
+follows.
+
+**Substantive findings that survive:**
+
+R1.2 / R4.10 — `SourceSetHandle::update` is racy. Two concurrent
+mutators can clobber each other. Add an internal `Mutex<SourceSet>`
+that mutators take while computing the new value.
+
+R1.10 / R3.16 — `RelayOffer.jwt` field name describes the wire
+parameter, not the contents. The relay accepts an opaque API key.
+Rename to `api_key` while we still can.
+
+R1.13 — `_global_consumer` reads as drop-only but is read
+explicitly by `refresh_relay_announces`. Drop the underscore.
+
+R1.14 — `SeamlessVideoTrack` mixes `&self` and `&mut self` for the
+same kind of operation. The receiver is `Arc<FrameReceiver>` and
+all methods underneath take `&self`. Make the wrapper consistent.
+
+R1.15 / R2.6 — Seamless swap reads `subscription.active()` twice
+without an atomic snapshot. Pass the active id into `perform_swap`
+and abort if it no longer matches when we acquire the swap-state
+lock.
+
+R2.8 — `pick_rendition` falls back to `Quality::Highest` without
+checking codec compatibility with the consumer's decoder. If the
+new source advertises a different codec the new pipeline never
+emits frames. Track the previous `VideoConfig.codec`, refuse
+seamless swap when it changes, and warn loudly.
+
+R3.16 (test-side) — The room-relay tests verify `RemoteAnnounced`
+carries the right hint but never assert that the subscriber's
+source set is actually updated. Add a test.
+
+R3.17 — No test exercises `Subscription::media` (the seamless
+layer). Add one that swaps the active source and asserts frames
+keep flowing.
+
+R3.18 — `multi_source.rs` covers fall-over but never tests
+preferred-source recovery. Add it.
+
+R3.19 — `Subscription::wait_active` empty-set behaviour is
+documented but uncovered. Add a test.
+
+R3.20 — `broadcaster.rs` never tests `remove_source`. Add it.
+
+R4.2 — `peer_relays` and `known_peers` grow without bound. Tie
+their lifetimes to the gossip KV expiry: when an entry is removed
+from the KV, drop the corresponding peer state too. Defer to
+follow-up since the gossip KV does not currently expose explicit
+expiry events; in this PR I add a `peer_seen` map with a soft cap
+to bound growth.
+
+R4.6 — `LiveTicket.relays` is unbounded on the binary form. Cap
+length at decode.
+
+R4.10 — `RelayOffer.path` length unbounded. Cap.
+
+R4.7 — Document the JWT scope assumption on `RelayOffer`. The
+field is broadcast to every member of the gossip topic; operators
+must mint subscribe-only tokens scoped to the room's namespace.
+
+R4.12 — `RelayTarget` and `RelayOffer` derive `Debug` which
+exposes the JWT in tracing if anyone formats the struct directly.
+Replace with manual `Debug` that elides the api key.
+
+**Findings discarded after opposing stance:**
+
+R1.4 (ActiveSource encapsulation): id-public + getters is the
+norm in Rust APIs (e.g. `iroh::EndpointAddr.id` is public, addrs
+hidden behind methods). Keep.
+
+R1.6 (SelectionPolicy lacks `from_fn`): true but premature. The
+trait is two-method-friendly via unit structs; we ship two
+implementations. Add later when there is a use case.
+
+R1.11 (`BoxFuture<T>` requires `Send + Sync`): cosmetic; the room
+actor builds these explicitly. No real cost. Keep.
+
+R1.16 (`RoomBuilder` vs `Room::new` redundancy): `Room::new` is the
+zero-config shortcut. Builders that own their dependencies then
+spawn standalone are fine; this one needs a `Live` reference to
+spawn. Keep.
+
+R2.9 (graceful shutdown): the actor's clean-up code is best-effort
+already. Documenting "shutdown is fire-and-forget" is enough; no
+oneshot needed.
+
+R2.11 (broadcaster retain drops on every iteration): retain only
+drops entries whose id is NOT in `desired_ids`. Unchanged sources
+stay attached. Reviewer was reading wrong. Discard. (We still need
+the retry-on-failure fix for the underlying complaint.)
+
+R2.13 (wait_active ordering): code is correct; reviewer agrees.
+Stylistic suggestion to swap order; ignored.
+
+R3.5 (`# Examples` on every public type): RFC 1574 says strongly
+encouraged, not required. Doc-comment examples that compile are
+expensive to maintain; we ship one example block on `LiveBuilder`
+already. Add focused examples on `Live::subscribe`, `Subscription`,
+and `LiveTicket` only.
+
+R4.4 (H3 dedup): out of scope for this PR. The intentional
+non-dedup of `connect_h3` is an iroh-moq design choice. Workaround
+in this PR is to rely on the `Subscription` reusing existing
+attached sessions rather than reopening on every reconcile.
+
+Going to refine now. Commits are organised as:
+- 1) critical concurrency fixes
+- 2) input validation + caps
+- 3) docs + naming + Debug elision + tests
+- 4) worklog summary
+
+### 2026-04-25 14:10 - Refinement applied; full check suite green
+
+All listed concurrency and substantive fixes are in. Highlights:
+
+- `Subscription` events flow through a `broadcast::channel`. Each
+  call to `Subscription::events` returns an independent
+  `SubscriptionEvents` receiver; lag is reported as
+  `RecvError::Lagged` and the actor's emit is non-blocking, so a
+  slow consumer cannot stall the actor.
+- The actor's main loop keeps a `FuturesUnordered` of in-flight
+  attaches. An unreachable peer no longer blocks attaches on
+  other sources.
+- `wait_active` now races the shutdown token; an empty set with
+  `shutdown()` resolves to `None` instead of hanging.
+- `prune_removed_sources` and `handle_session_closed` clear
+  `active_id` immediately when the active source vanishes, so the
+  watchable and the state map stay consistent for any reader.
+- `Broadcaster::AttachedSource` closes the underlying MoQ session
+  on drop, so removing a target from the set actually ends the
+  announce on that target. Tested.
+- `SourceSetHandle` mutators are atomic via an internal
+  `std::sync::Mutex<SourceSet>`, with the `Watchable` carrying
+  post-mutation snapshots only.
+- `RelayOffer.api_key` and `RelayTarget` derive `Debug` is
+  hand-written so JWT material is replaced with `<redacted>`. A
+  test asserts the redaction.
+- `RelayOffer.path` and `LiveTicket.relays` are bounded; gossip
+  `PeerState.broadcasts` is truncated and over-long names are
+  dropped before the actor acts on them.
+- `RoomBuilder::set_subscribe_mode` is no longer `#[doc(hidden)]`.
+  The mode actually drives `sources_for_peer`.
+- The seamless layer tracks the consumer's codec; a swap to a
+  source whose catalog has no rendition with the same codec is
+  refused with a warn and the consumer's existing pipeline keeps
+  running rather than swapping into a stalled state. The swap
+  also re-checks `active_id` under the swap-state lock to avoid
+  swapping to an already-stale source.
+
+New tests:
+- `subscription_recovers_preferred_when_it_returns`
+- `wait_active_returns_none_when_shut_down_with_empty_set`
+- `broadcaster_remove_source_ends_announce_on_that_session_only`
+- `relay_hint_extends_subscriber_source_set`
+- `relay_offer_validate_rejects_long_path`
+- `relay_offer_debug_redacts_api_key`
+
+Full check suite (`cargo make check-all`) is clean. The new
+integration tests pass, the existing room/e2e tests still pass.
+
+Findings deferred (justified):
+
+- R2.12 / spawn_signal_producer abort handle: would touch
+  `moq-media`'s public `RemoteBroadcast::new` shape; the existing
+  shutdown_token-based lifecycle is correct in steady state and
+  the leak only matters if `RemoteBroadcast` clones outlive the
+  catalog task. Documented in the seamless module's notes.
+- R4.4 / H3 dedup: out of scope. Lives in `iroh-moq`; the
+  `Broadcaster`'s "close session on remove" lifecycle keeps the
+  session count bounded in practice.
+- Audio seamless swap: documented as not yet seamless; would
+  require an audio-sink-side fade that is a separate work item.
+- R4.2 / peer_relays + known_peers cleanup on KV expiry: the
+  iroh-smol-kv API does not currently expose explicit expiry
+  events to subscribers. The caps from R4.1 bound the worst case;
+  durable cleanup waits for an upstream API.
+
+Going to commit the refinement now and write a session summary.

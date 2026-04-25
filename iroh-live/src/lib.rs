@@ -30,11 +30,11 @@ pub use moq_media as media;
 pub use self::{
     call::{Call, CallError},
     live::{Live, LiveBuilder},
-    publisher::{Broadcaster, BroadcasterError},
+    publisher::Broadcaster,
     sources::{
         Candidate, DirectSource, Pinned, PreferOrdered, RelayOffer, SelectionPolicy, SourceId,
         SourceSet, SourceSetHandle, TransportSource,
     },
-    subscription::{ActiveSource, Subscription, SubscriptionEvent},
+    subscription::{ActiveSource, Subscription, SubscriptionEvent, SubscriptionEvents},
     types::DisconnectReason,
 };

@@ -16,13 +16,25 @@ use crate::Live;
 
 /// A resolved target for [`Live::connect_relay`].
 ///
-/// Wraps the remote endpoint id with the path and auth material the client
-/// wants the relay to see during the H3 handshake.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Wraps the remote endpoint id with the path and auth material
+/// the client wants the relay to see during the H3 handshake. The
+/// `Debug` impl elides `api_key` so JWT material never lands in
+/// traces.
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct RelayTarget {
     endpoint: EndpointId,
     path: String,
     api_key: Option<String>,
+}
+
+impl std::fmt::Debug for RelayTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RelayTarget")
+            .field("endpoint", &self.endpoint.fmt_short().to_string())
+            .field("path", &self.path)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 impl RelayTarget {

@@ -75,7 +75,7 @@ async fn subscribe_side(ticket: LiveTicket) -> anyhow::Result<()> {
     let audio = AudioBackend::default();
     let tracks = sub.media(&audio, Default::default()).await?;
 
-    if let Some(mut video) = tracks.video {
+    if let Some(video) = tracks.video {
         while let Some(frame) = video.next_frame().await {
             println!("frame {}x{}", frame.dimensions[0], frame.dimensions[1]);
         }
