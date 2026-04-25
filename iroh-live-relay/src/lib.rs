@@ -14,6 +14,14 @@
 //! the relay falls back to the permissive mode used during development:
 //! every path is publicly subscribable and publishable.
 //!
+//! Room-mode publishers announce at `room/<topic>/<peer_id>/<broadcast>`.
+//! `moq-relay` does not yet bind a token's subject to the path's
+//! `<peer_id>` segment, so an operator who wants per-peer integrity
+//! must mint a separate token per peer with its `publish` claim scoped
+//! to `room/<topic>/<peer_id>/`. Wider tokens (one per topic) let any
+//! holder publish under any peer id within the topic. Path-segment
+//! enforcement at the relay is tracked as an upstream follow-up.
+//!
 //! # Metrics
 //!
 //! A Prometheus-compatible `/metrics` endpoint is served from the HTTP

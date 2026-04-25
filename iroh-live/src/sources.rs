@@ -493,6 +493,16 @@ impl SelectionPolicy for Pinned {
 /// holder of the ticket sees it. Mint tokens scoped narrowly to
 /// the broadcast namespace and with the shortest expiry that
 /// still covers the intended use.
+///
+/// In room-mode topologies the publisher path is
+/// `room/<topic>/<peer_id>/<broadcast>`. The relay does not
+/// today verify that the connecting peer's identity matches the
+/// `<peer_id>` segment, so a malicious holder of any room-scoped
+/// JWT could publish under another peer's path. Operators who
+/// need that binding must mint per-peer JWTs whose `publish`
+/// claim is scoped to `room/<topic>/<peer_id>/`. Path-segment
+/// enforcement at the relay is tracked as a `moq-relay`
+/// follow-up.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayOffer {
     /// Endpoint id of the relay.

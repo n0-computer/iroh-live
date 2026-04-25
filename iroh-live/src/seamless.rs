@@ -11,8 +11,15 @@
 //! The swap boundary is the next frame the new pipeline produces;
 //! for video that is the next keyframe on the new source. Audio is
 //! not yet seamless: the audio pipeline is rebuilt on swap and the
-//! consumer experiences a brief gap. Future work to extend the
-//! audio backend can close that gap.
+//! consumer experiences a brief gap. The path to closing that gap
+//! reuses [`OutputHandle`]'s existing fade-out / fade-in machinery
+//! (the same ramp that declicks pause and resume) so the swap
+//! announces itself as a fade rather than a cut. The work is
+//! self-contained in the audio backend and the
+//! [`SeamlessMediaTracks`] swap loop here; tracked separately so
+//! this commit can ship without it.
+//!
+//! [`OutputHandle`]: moq_media::audio_backend::OutputHandle
 
 use std::sync::Arc;
 
