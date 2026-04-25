@@ -11,12 +11,13 @@ use iroh_live::{
     Live,
     media::publish::LocalBroadcast,
     rooms::{Room, RoomTicket},
+    sources::RelayOffer,
     ticket::LiveTicket,
 };
 use moq_lite::BroadcastProducer;
 use tracing::info;
 
-use crate::args::{RelaySpec, TransportArgs};
+use crate::args::TransportArgs;
 
 /// Creates a [`Live`] instance. When `serve` is true, spawns with router so
 /// incoming subscribers are accepted. When false, only outbound connections work.
@@ -91,7 +92,7 @@ pub async fn publish_producer(
 /// automatically via [`Live::connect_relay`]'s `HandleSession`
 /// integration, so a single `--relay` flag fans the publish out
 /// across every relay listed.
-async fn connect_to_relays(live: &Live, relays: &[RelaySpec]) -> anyhow::Result<()> {
+async fn connect_to_relays(live: &Live, relays: &[RelayOffer]) -> anyhow::Result<()> {
     for spec in relays {
         let target = spec.to_target();
         let _session = live.connect_relay(&target).await?;

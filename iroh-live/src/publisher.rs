@@ -170,6 +170,17 @@ impl Drop for AttachedSource {
     }
 }
 
+/// Drives `state.attached` toward `desired` for one source set
+/// snapshot.
+///
+/// For every source already attached but absent from `desired`,
+/// the corresponding [`AttachedSource`] is dropped, which closes
+/// the session and ends the announce. For every source present
+/// in `desired` but not yet attached, a new direct or relay
+/// session is opened in parallel and the producer is published
+/// against it. Failed attaches surface through the returned
+/// [`Result`] but do not stop the loop; partially-applied state
+/// is left in `state.attached` for the next reconcile pass.
 async fn reconcile(
     live: &Live,
     name: &str,

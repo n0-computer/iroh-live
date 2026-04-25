@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use clap::{Args, ValueEnum};
 // Re-export shared source spec types from moq-media so callers that
 // already import from this module keep working.
@@ -10,14 +8,16 @@ use iroh_live::{
         format::{AudioPreset, VideoPreset},
     },
     rooms::RoomTicket,
+    sources::RelayOffer,
 };
 
-/// One relay attachment as parsed from the CLI.
+/// Parses a relay attachment from the CLI text format
+/// `<endpoint_id>[=<jwt>][@<path>]`.
 ///
-/// Wire format: `<endpoint_id>[=<jwt>][@<path>]`. The `=<jwt>`
-/// segment carries an API key; the `@<path>` segment carries a
-/// path prefix that the broadcast name appends to. Both are
-/// optional and may appear in either order. Examples:
+/// The `=<jwt>` segment carries an API key, the `@<path>` segment
+/// a URL path prefix. Both are optional. Path order matters: `@`
+/// always opens the path segment, `=` opens the api key segment.
+/// Examples:
 ///
 /// ```text
 /// 1234abcd...
@@ -25,46 +25,23 @@ use iroh_live::{
 /// 1234abcd...@/streams
 /// 1234abcd...=eyJhbGciOi...@/streams
 /// ```
-#[derive(Debug, Clone)]
-pub struct RelaySpec {
-    pub endpoint: iroh::EndpointId,
-    pub api_key: Option<String>,
-    pub path: String,
-}
-
-impl RelaySpec {
-    /// Returns this spec as a [`RelayTarget`] for direct relay
-    /// connections.
-    pub fn to_target(&self) -> iroh_live::relay::RelayTarget {
-        iroh_live::relay::RelayTarget::new(self.endpoint)
-            .with_path(&self.path)
-            .with_api_key(self.api_key.clone())
-    }
-}
-
-impl FromStr for RelaySpec {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // Path is set off by `@`. Whatever is before `@` is the
-        // id-or-id-equals-jwt portion.
-        let (head, path) = match s.split_once('@') {
-            Some((h, p)) => (h, format!("/{}", p.trim_start_matches('/'))),
-            None => (s, "/".to_string()),
-        };
-        let (id_str, api_key) = match head.split_once('=') {
-            Some((id, key)) => (id, Some(key.to_string())),
-            None => (head, None),
-        };
-        let endpoint = id_str
-            .parse::<iroh::EndpointId>()
-            .map_err(|e| format!("invalid endpoint id `{id_str}`: {e}"))?;
-        Ok(Self {
-            endpoint,
-            api_key,
-            path,
-        })
-    }
+fn parse_relay_offer(s: &str) -> Result<RelayOffer, String> {
+    let (head, path) = match s.split_once('@') {
+        Some((h, p)) => (h, format!("/{}", p.trim_start_matches('/'))),
+        None => (s, "/".to_string()),
+    };
+    let (id_str, api_key) = match head.split_once('=') {
+        Some((id, key)) => (id, Some(key.to_string())),
+        None => (head, None),
+    };
+    let endpoint = id_str
+        .parse::<iroh::EndpointId>()
+        .map_err(|e| format!("invalid endpoint id `{id_str}`: {e}"))?;
+    Ok(RelayOffer {
+        endpoint,
+        api_key,
+        path,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -85,8 +62,8 @@ pub struct TransportArgs {
     ///
     /// Connections are opened as WebTransport-over-iroh (HTTP/3) so
     /// URL-level context propagates to the relay.
-    #[arg(long = "relay", value_name = "SPEC")]
-    pub relays: Vec<RelaySpec>,
+    #[arg(long = "relay", value_name = "SPEC", value_parser = parse_relay_offer)]
+    pub relays: Vec<RelayOffer>,
 
     /// Additionally publish into a room.
     #[arg(long)]
@@ -325,10 +302,11 @@ pub struct PlayArgs {
     #[arg(
         long = "relay",
         value_name = "SPEC",
+        value_parser = parse_relay_offer,
         conflicts_with = "ticket",
         requires = "play_name"
     )]
-    pub relays: Vec<RelaySpec>,
+    pub relays: Vec<RelayOffer>,
 
     /// Broadcast name (with --endpoint-id or --relay).
     #[arg(long = "name", id = "play_name", conflicts_with = "ticket")]
@@ -420,10 +398,11 @@ pub struct RecordArgs {
     #[arg(
         long = "relay",
         value_name = "SPEC",
+        value_parser = parse_relay_offer,
         conflicts_with = "ticket",
         requires = "record_name"
     )]
-    pub relays: Vec<RelaySpec>,
+    pub relays: Vec<RelayOffer>,
 
     /// Broadcast name (with --endpoint-id or --relay).
     #[arg(long = "name", id = "record_name", conflicts_with = "ticket")]
@@ -480,7 +459,7 @@ impl SubscribeSource {
     pub fn resolve(
         ticket: &Option<iroh_live::ticket::LiveTicket>,
         endpoint_id: &Option<iroh::EndpointId>,
-        relays: &[RelaySpec],
+        relays: &[RelayOffer],
         broadcast_name: &Option<String>,
     ) -> anyhow::Result<Self> {
         use iroh_live::sources::{SourceSet, TransportSource};
@@ -598,48 +577,47 @@ mod tests {
     }
 
     #[test]
-    fn relay_spec_id_only() {
+    fn relay_offer_id_only() {
         let id = sample_id();
-        let spec: RelaySpec = id.parse().expect("parse id-only");
-        assert_eq!(spec.endpoint.to_string(), id);
-        assert_eq!(spec.api_key, None);
-        assert_eq!(spec.path, "/");
+        let offer = parse_relay_offer(&id).expect("parse id-only");
+        assert_eq!(offer.endpoint.to_string(), id);
+        assert_eq!(offer.api_key, None);
+        assert_eq!(offer.path, "/");
     }
 
     #[test]
-    fn relay_spec_with_jwt() {
+    fn relay_offer_with_jwt() {
         let id = sample_id();
         let s = format!("{id}=eyJhbGciOiJIUzI1NiJ9.body.sig");
-        let spec: RelaySpec = s.parse().expect("parse id=jwt");
-        assert_eq!(spec.endpoint.to_string(), id);
+        let offer = parse_relay_offer(&s).expect("parse id=jwt");
+        assert_eq!(offer.endpoint.to_string(), id);
         assert_eq!(
-            spec.api_key.as_deref(),
+            offer.api_key.as_deref(),
             Some("eyJhbGciOiJIUzI1NiJ9.body.sig")
         );
-        assert_eq!(spec.path, "/");
+        assert_eq!(offer.path, "/");
     }
 
     #[test]
-    fn relay_spec_with_path() {
+    fn relay_offer_with_path() {
         let id = sample_id();
         let s = format!("{id}@streams/room1");
-        let spec: RelaySpec = s.parse().expect("parse id@path");
-        assert_eq!(spec.path, "/streams/room1");
-        assert_eq!(spec.api_key, None);
+        let offer = parse_relay_offer(&s).expect("parse id@path");
+        assert_eq!(offer.path, "/streams/room1");
+        assert_eq!(offer.api_key, None);
     }
 
     #[test]
-    fn relay_spec_with_jwt_and_path() {
+    fn relay_offer_with_jwt_and_path() {
         let id = sample_id();
         let s = format!("{id}=token123@/streams");
-        let spec: RelaySpec = s.parse().expect("parse id=jwt@path");
-        assert_eq!(spec.api_key.as_deref(), Some("token123"));
-        assert_eq!(spec.path, "/streams");
+        let offer = parse_relay_offer(&s).expect("parse id=jwt@path");
+        assert_eq!(offer.api_key.as_deref(), Some("token123"));
+        assert_eq!(offer.path, "/streams");
     }
 
     #[test]
-    fn relay_spec_invalid_id() {
-        let res: Result<RelaySpec, _> = "not-an-endpoint".parse();
-        assert!(res.is_err());
+    fn relay_offer_invalid_id() {
+        assert!(parse_relay_offer("not-an-endpoint").is_err());
     }
 }
