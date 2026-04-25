@@ -126,7 +126,7 @@ mod tests {
     use super::*;
 
     fn test_endpoint_addr() -> EndpointAddr {
-        let key = SecretKey::generate(&mut rand::rng());
+        let key = SecretKey::generate();
         EndpointAddr::from(key.public())
     }
 

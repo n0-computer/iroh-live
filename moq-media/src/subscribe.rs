@@ -273,7 +273,7 @@ impl CatalogSnapshot {
             .iter()
             .map(|(name, config)| (name.as_str(), config.coded_width))
             .collect();
-        renditions.sort_by(|a, b| a.1.cmp(&b.1));
+        renditions.sort_by_key(|a| a.1);
         renditions.into_iter().map(|(name, _w)| name)
     }
 

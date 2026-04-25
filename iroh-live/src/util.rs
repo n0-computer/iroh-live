@@ -15,7 +15,7 @@ pub fn secret_key_from_env() -> n0_error::Result<SecretKey> {
     Ok(match std::env::var("IROH_SECRET") {
         Ok(key) => key.parse()?,
         Err(_) => {
-            let key = SecretKey::generate(&mut rand::rng());
+            let key = SecretKey::generate();
             tracing::info!(
                 "Generated new secret key. Reuse with IROH_SECRET={}",
                 data_encoding::HEXLOWER.encode(&key.to_bytes())

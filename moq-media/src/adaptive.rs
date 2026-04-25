@@ -105,7 +105,7 @@ pub fn rank_renditions(renditions: &BTreeMap<String, VideoConfig>) -> Vec<Ranked
             }
         })
         .collect();
-    ranked.sort_by(|a, b| b.pixels.cmp(&a.pixels));
+    ranked.sort_by_key(|b| std::cmp::Reverse(b.pixels));
     ranked
 }
 

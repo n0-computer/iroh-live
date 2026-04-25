@@ -119,7 +119,7 @@ fn load_or_create_secret_key(name: &str) -> anyhow::Result<SecretKey> {
         info!(name, path = %key_path.display(), "loaded secret key");
         Ok(key)
     } else {
-        let key = SecretKey::generate(&mut rand::rng());
+        let key = SecretKey::generate();
         let hex_str = data_encoding::HEXLOWER.encode(&key.to_bytes());
         std::fs::write(&key_path, &hex_str)?;
         info!(name, path = %key_path.display(), "generated and saved new secret key");

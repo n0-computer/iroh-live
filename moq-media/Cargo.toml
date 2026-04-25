@@ -13,7 +13,7 @@ workspace = true
 [dependencies]
 anyhow = "1.0.100"
 derive_more = { version = "2.0.1", features = ["display", "debug", "eq", "deref"] }
-cpal = { git = "https://github.com/RustAudio/cpal.git", branch = "master" }
+cpal = { git = "https://github.com/RustAudio/cpal.git", rev = "e172208edd47f0077077d47b9f6991bdc248fd36" }
 fixed-resample = { version = "0.9", features = ["resampler"] }
 ringbuf = "0.4"
 hang = { workspace = true }

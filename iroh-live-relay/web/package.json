@@ -7,8 +7,8 @@
     "build": "vite build"
   },
   "dependencies": {
-    "@moq/watch": "^0.2.3",
-    "@moq/publish": "^0.2.3"
+    "@moq/watch": "=0.2.8",
+    "@moq/publish": "=0.2.4"
   },
   "devDependencies": {
     "solid-js": "^1.9.10",

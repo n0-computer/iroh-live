@@ -91,7 +91,7 @@ impl ChatSubscriber {
     /// Returns `None` when the track ends (peer left or broadcast closed).
     pub async fn recv(&mut self) -> Option<ChatMessage> {
         loop {
-            let group = match self.track.next_group().await {
+            let group = match self.track.next_group_ordered().await {
                 Ok(Some(g)) => g,
                 Ok(None) => {
                     debug!("chat track ended");

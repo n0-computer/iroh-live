@@ -65,7 +65,7 @@ impl PatchbayFixture {
             .expect("sub device");
         let sub_node = sub_device.id();
 
-        let secret_key = SecretKey::generate(&mut rand::rng());
+        let secret_key = SecretKey::generate();
         let pub_endpoint = pub_device
             .spawn({
                 let secret_key = secret_key.clone();
@@ -764,7 +764,7 @@ async fn latency_at_split_example_settings() {
         .expect("sub device");
     let sub_node = sub_device.id();
 
-    let secret_key = SecretKey::generate(&mut rand::rng());
+    let secret_key = SecretKey::generate();
     let pub_endpoint = pub_device
         .spawn({
             let secret_key = secret_key.clone();
@@ -1031,7 +1031,7 @@ async fn adaptive_downgrade_upgrade_under_real_loss() {
         .expect("sub device");
     let sub_node = sub_device.id();
 
-    let secret_key = SecretKey::generate(&mut rand::rng());
+    let secret_key = SecretKey::generate();
     let pub_endpoint = pub_device
         .spawn({
             let secret_key = secret_key.clone();
@@ -1249,7 +1249,7 @@ impl AvSyncFixture {
             .expect("sub device");
         let sub_node = sub_device.id();
 
-        let secret_key = SecretKey::generate(&mut rand::rng());
+        let secret_key = SecretKey::generate();
         let pub_endpoint = pub_device
             .spawn({
                 let secret_key = secret_key.clone();

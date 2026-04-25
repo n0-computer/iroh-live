@@ -1438,7 +1438,7 @@ mod tests {
 
         let _pipeline = VideoEncoderPipeline::new(source, encoder, sink, Default::default());
 
-        let result = tokio::time::timeout(timeout, consumer.next_group()).await;
+        let result = tokio::time::timeout(timeout, consumer.next_group_ordered()).await;
 
         drop(_pipeline);
 
