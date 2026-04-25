@@ -16,7 +16,6 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler},
 };
 use moq_lite::{BroadcastConsumer, BroadcastProducer, OriginConsumer, OriginProducer};
-use url::Url;
 use n0_error::{AnyError, Result, StdResultExt, anyerr, e, stack_error};
 use n0_future::{
     FuturesUnordered, StreamExt,
@@ -26,6 +25,7 @@ use n0_future::{
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error_span, field, info, instrument};
+use url::Url;
 use web_transport_iroh::SessionError;
 
 // TODO: Use export from moq_lite after next update
@@ -320,11 +320,10 @@ impl MoqSession {
             .record("remote", field::display(addr.id.fmt_short()))
             .record("url", field::display(redact_url(&url)));
         let client = web_transport_iroh::Client::new(endpoint.clone());
-        let wt_session = client.connect_h3(addr, url).await.map_err(|err| {
-            e!(Error::H3 {
-                err: Arc::new(err)
-            })
-        })?;
+        let wt_session = client
+            .connect_h3(addr, url)
+            .await
+            .map_err(|err| e!(Error::H3 { err: Arc::new(err) }))?;
         Self::session_connect(wt_session).await
     }
 
@@ -617,7 +616,11 @@ fn redact_url(url: &Url) -> String {
     let pairs: Vec<(String, String)> = redacted
         .query_pairs()
         .map(|(k, v)| {
-            let v = if k == "jwt" { "<redacted>".into() } else { v.into_owned() };
+            let v = if k == "jwt" {
+                "<redacted>".into()
+            } else {
+                v.into_owned()
+            };
             (k.into_owned(), v)
         })
         .collect();

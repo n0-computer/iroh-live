@@ -467,12 +467,12 @@ impl SubscribeSource {
             let target = iroh_live::relay::RelayTarget::new(relay_id)
                 .with_path(relay_path)
                 .with_api_key(api_key.clone());
-            Ok(SubscribeSource::Relay {
+            Ok(Self::Relay {
                 target,
                 broadcast_name: name,
             })
         } else {
-            Ok(SubscribeSource::Direct(resolve_ticket(
+            Ok(Self::Direct(resolve_ticket(
                 ticket,
                 endpoint_id,
                 broadcast_name,

@@ -334,8 +334,8 @@ enum AuthMode {
 impl AuthMode {
     fn as_str(self) -> &'static str {
         match self {
-            AuthMode::Permissive => "permissive",
-            AuthMode::Jwt => "jwt",
+            Self::Permissive => "permissive",
+            Self::Jwt => "jwt",
         }
     }
 }
