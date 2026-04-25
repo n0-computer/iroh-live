@@ -512,11 +512,12 @@ impl SubscribeView {
         audio_ctx: &AudioBackend,
     ) -> Result<Self> {
         let live = Live::new(endpoint);
-        let sub = live.subscribe(publisher_addr, BROADCAST_NAME).await?;
+        let sub = live.subscribe(publisher_addr, BROADCAST_NAME);
+        let active = sub.ready().await?;
         info!("subscriber connected");
 
         let playback_config = PlaybackConfig::default();
-        let tracks = sub.broadcast().media(audio_ctx, playback_config).await?;
+        let tracks = active.broadcast().media(audio_ctx, playback_config).await?;
 
         Ok(Self {
             sub,
@@ -759,7 +760,13 @@ impl SubscribeView {
 
     fn shutdown(&self) {
         self.broadcast.shutdown();
-        self.sub.session().close(0, b"bye");
+        // Best-effort close of the active session, if any.
+        let sub = self.sub.clone();
+        tokio::spawn(async move {
+            if let Some(active) = sub.active().await {
+                active.session().close(0, b"bye");
+            }
+        });
     }
 }
 

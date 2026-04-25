@@ -4,14 +4,19 @@ use iroh::EndpointAddr;
 use n0_error::{Result, StackResultExt, StdResultExt};
 use serde::{Deserialize, Serialize};
 
+use crate::sources::{RelayOffer, SourceSet, TransportSource};
+
 /// URI scheme prefix for iroh-live tickets.
 pub(crate) const SCHEME: &str = "iroh-live:";
 
 /// Ticket for subscribing to a live broadcast.
 ///
-/// Contains the publisher's endpoint address, the broadcast name, and
-/// optional relay URLs for reaching the publisher through a relay when
-/// direct P2P is unavailable.
+/// Contains the publisher's direct endpoint address, the broadcast
+/// name, and any additional [`RelayOffer`]s the publisher also
+/// serves through. Subscribers that want dynamic transport behaviour
+/// call [`Live::subscribe_from_ticket`](crate::Live::subscribe_from_ticket);
+/// the direct endpoint becomes the preferred source and each relay
+/// offer becomes a fallback in declaration order.
 ///
 /// Serializes to a URI: `iroh-live:<base64url(postcard(EndpointAddr))>/<name>`
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, Serialize, Deserialize)]
@@ -21,9 +26,9 @@ pub struct LiveTicket {
     pub endpoint: EndpointAddr,
     /// The broadcast name to subscribe to.
     pub broadcast_name: String,
-    /// Optional relay URLs for indirect connectivity.
+    /// Additional relay sources that also serve this broadcast.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub relay_urls: Vec<String>,
+    pub relays: Vec<RelayOffer>,
 }
 
 impl LiveTicket {
@@ -32,15 +37,32 @@ impl LiveTicket {
         Self {
             endpoint: endpoint.into(),
             broadcast_name: broadcast_name.to_string(),
-            relay_urls: Vec::new(),
+            relays: Vec::new(),
         }
     }
 
-    /// Adds relay URLs to this ticket.
+    /// Attaches one or more relay offers to this ticket.
     #[must_use]
-    pub fn with_relay_urls(mut self, urls: impl IntoIterator<Item = String>) -> Self {
-        self.relay_urls = urls.into_iter().collect();
+    pub fn with_relays(mut self, offers: impl IntoIterator<Item = RelayOffer>) -> Self {
+        self.relays = offers.into_iter().collect();
         self
+    }
+
+    /// Appends a relay offer.
+    pub fn push_relay(&mut self, offer: RelayOffer) {
+        if !self.relays.contains(&offer) {
+            self.relays.push(offer);
+        }
+    }
+
+    /// Returns a [`SourceSet`] with the direct endpoint as the preferred
+    /// source and each relay offer as a fallback in declaration order.
+    pub fn source_set(&self) -> SourceSet {
+        let mut set = SourceSet::direct(self.endpoint.clone());
+        for offer in &self.relays {
+            set.push(TransportSource::relay(offer.to_target()));
+        }
+        set
     }
 
     /// Serializes to raw postcard bytes.
@@ -91,7 +113,7 @@ impl LiveTicket {
         Ok(Self {
             endpoint,
             broadcast_name: broadcast_name.to_string(),
-            relay_urls: Vec::new(),
+            relays: Vec::new(),
         })
     }
 
@@ -107,7 +129,7 @@ impl LiveTicket {
         Ok(Self {
             broadcast_name: broadcast_name.to_string(),
             endpoint,
-            relay_urls: Vec::new(),
+            relays: Vec::new(),
         })
     }
 }

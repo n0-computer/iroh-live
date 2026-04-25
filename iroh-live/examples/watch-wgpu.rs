@@ -91,16 +91,17 @@ fn main() -> Result<()> {
                 backend,
                 ..Default::default()
             };
-            let (session, track) = live
-                .subscribe_media(
-                    ticket.endpoint,
-                    &ticket.broadcast_name,
-                    &audio_ctx,
-                    playback_config,
-                )
+            let sub = live.subscribe_ticket(&ticket);
+            let active = sub.ready().await?;
+            let session = active.session().clone();
+            let track = active
+                .broadcast()
+                .media(&audio_ctx, playback_config)
                 .await?;
             println!("connected!");
             let video = track.video.expect("no video track in broadcast");
+            // The subscription must outlive the session and video track.
+            let _sub = sub;
             n0_error::Ok((endpoint, session, video))
         }
     })?;

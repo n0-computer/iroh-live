@@ -242,7 +242,11 @@ async fn run_session(config: RunConfig) -> n0_error::Result {
                 if let Some(ref base_path) = recv.record {
                     let base = PathBuf::from(base_path);
                     let name = recv.name.clone();
-                    let broadcast = sub.broadcast().clone();
+                    let Some(active) = sub.active().await else {
+                        warn!("recv stream has no active source; skipping recording setup");
+                        continue;
+                    };
+                    let broadcast = active.broadcast().clone();
                     let catalog = broadcast.catalog();
                     info!(name, path = %base.display(), "recording enabled");
 
@@ -312,7 +316,9 @@ async fn run_session(config: RunConfig) -> n0_error::Result {
     // Close recv sessions so remote peers get a clean close.
     for (name, sub, _tracks) in &recv_handles {
         info!(name, "closing recv");
-        sub.session().close(0, b"bye");
+        if let Some(active) = sub.active().await {
+            active.session().close(0, b"bye");
+        }
     }
 
     // Abort any background tasks.
@@ -381,12 +387,11 @@ async fn setup_recv(
         .parse()
         .map_err(|e| anyhow::anyhow!("invalid ticket for recv '{}': {e}", config.name))?;
 
-    let sub = live
-        .subscribe(ticket.endpoint, &ticket.broadcast_name)
-        .await?;
+    let sub = live.subscribe_ticket(&ticket);
+    let active = sub.ready().await?;
 
     let playback = PlaybackConfig::default();
-    let tracks = sub.broadcast().media(audio_ctx, playback).await?;
+    let tracks = active.broadcast().media(audio_ctx, playback).await?;
 
     Ok((sub, tracks))
 }

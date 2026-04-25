@@ -39,6 +39,7 @@ struct PatchbayFixture {
     publisher: Live,
     _broadcast: LocalBroadcast,
     subscriber: Live,
+    _subscription: iroh_live::Subscription,
     _sub_session: iroh_moq::MoqSession,
     remote: moq_media::subscribe::RemoteBroadcast,
 }
@@ -113,11 +114,10 @@ impl PatchbayFixture {
 
         let pub_addr = publisher.endpoint().addr();
         let subscriber = Live::builder(sub_endpoint).spawn();
-        let (sub_session, mut remote, _signals) = subscriber
-            .subscribe(pub_addr, "test")
-            .await
-            .expect("subscribe")
-            .into_parts();
+        let subscription = subscriber.subscribe(pub_addr, "test");
+        let active = subscription.ready().await.expect("subscribe");
+        let mut remote = active.broadcast().clone();
+        let sub_session = active.session().clone();
         remote.set_playback_policy(
             PlaybackPolicy::unmanaged().with_max_latency(Duration::from_millis(300)),
         );
@@ -130,6 +130,7 @@ impl PatchbayFixture {
             publisher,
             _broadcast: broadcast,
             subscriber,
+            _subscription: subscription,
             _sub_session: sub_session,
             remote,
         }
@@ -812,11 +813,10 @@ async fn latency_at_split_example_settings() {
 
     let pub_addr = publisher.endpoint().addr();
     let subscriber = Live::builder(sub_endpoint).spawn();
-    let (_session, mut remote, _signals) = subscriber
-        .subscribe(pub_addr, "test")
-        .await
-        .expect("subscribe")
-        .into_parts();
+    let subscription = subscriber.subscribe(pub_addr, "test");
+    let active = subscription.ready().await.expect("subscribe");
+    let _session = active.session().clone();
+    let mut remote = active.broadcast().clone();
     remote
         .set_playback_policy(PlaybackPolicy::unmanaged().with_max_latency(Duration::from_secs(5)));
 
@@ -824,6 +824,9 @@ async fn latency_at_split_example_settings() {
         .await
         .expect("timeout")
         .expect("video_with");
+
+    // Hold subscription alive for the duration of the test.
+    let _subscription = subscription;
 
     // Warmup.
     let warmup = drain_frames(&mut track, Duration::from_secs(3)).await;
@@ -1078,12 +1081,10 @@ async fn adaptive_downgrade_upgrade_under_real_loss() {
 
     // Subscriber with adaptive track.
     let subscriber = Live::builder(sub_endpoint).spawn();
-    let sub = subscriber
-        .subscribe(publisher.endpoint().addr(), "test")
-        .await
-        .expect("subscribe");
+    let sub = subscriber.subscribe(publisher.endpoint().addr(), "test");
+    let active = sub.ready().await.expect("subscribe");
+    let remote = active.broadcast();
 
-    let remote = sub.broadcast();
     tokio::time::timeout(FRAME_TIMEOUT, remote.ready())
         .await
         .expect("catalog timeout");
@@ -1092,7 +1093,7 @@ async fn adaptive_downgrade_upgrade_under_real_loss() {
     assert_eq!(renditions, 2, "expected 2 renditions, got {renditions}");
 
     // Network signals are already produced by the Subscription.
-    let signals_rx = sub.signals().clone();
+    let signals_rx = active.signals().clone();
 
     // Use fast timers so the test doesn't take forever.
     let config = AdaptiveConfig {
@@ -1223,6 +1224,7 @@ struct AvSyncFixture {
     publisher: Live,
     _broadcast: LocalBroadcast,
     subscriber: Live,
+    _subscription: iroh_live::Subscription,
     _sub_session: iroh_moq::MoqSession,
     remote: moq_media::subscribe::RemoteBroadcast,
 }
@@ -1311,11 +1313,10 @@ impl AvSyncFixture {
         let pub_addr = publisher.endpoint().addr();
         let subscriber = Live::builder(sub_endpoint).spawn();
         // Default playout mode is audio-master playout.
-        let (sub_session, remote, _signals) = subscriber
-            .subscribe(pub_addr, "test")
-            .await
-            .expect("subscribe")
-            .into_parts();
+        let subscription = subscriber.subscribe(pub_addr, "test");
+        let active = subscription.ready().await.expect("subscribe");
+        let sub_session = active.session().clone();
+        let remote = active.broadcast().clone();
 
         Self {
             lab,
@@ -1325,6 +1326,7 @@ impl AvSyncFixture {
             publisher,
             _broadcast: broadcast,
             subscriber,
+            _subscription: subscription,
             _sub_session: sub_session,
             remote,
         }

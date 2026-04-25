@@ -256,7 +256,9 @@ impl eframe::App for RoomApp {
         // Dispatch new room events.
         while let Ok(event) = self.events.try_recv() {
             match event {
-                RoomEvent::RemoteAnnounced { remote, broadcasts } => {
+                RoomEvent::RemoteAnnounced {
+                    remote, broadcasts, ..
+                } => {
                     info!("peer announced: {} with {broadcasts:?}", remote.fmt_short());
                 }
                 RoomEvent::BroadcastSubscribed { session, broadcast } => {

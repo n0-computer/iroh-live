@@ -152,16 +152,17 @@ mod app {
             backend,
             ..Default::default()
         };
-        let (session, track) = live
-            .subscribe_media(
-                ticket.endpoint,
-                &ticket.broadcast_name,
-                &audio_ctx,
-                playback_config,
-            )
+        let sub = live.subscribe_ticket(&ticket);
+        let active = sub.ready().await?;
+        let session = active.session().clone();
+        let track = active
+            .broadcast()
+            .media(&audio_ctx, playback_config)
             .await?;
         println!("connected!");
 
+        // Hold subscription handle alive for the lifetime of the watcher.
+        let _sub = sub;
         let video_track = track.video.expect("no video track in broadcast");
 
         if opts.fb {

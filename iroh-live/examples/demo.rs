@@ -71,10 +71,7 @@ async fn publish_side() -> anyhow::Result<()> {
 
 async fn subscribe_side(ticket: LiveTicket) -> anyhow::Result<()> {
     let live = Live::from_env().await?.spawn();
-    let sub = live
-        .subscribe(ticket.endpoint, &ticket.broadcast_name)
-        .await?;
-
+    let sub = live.subscribe(ticket.endpoint, &ticket.broadcast_name);
     let audio = AudioBackend::default();
     let tracks = sub.media(&audio, Default::default()).await?;
 

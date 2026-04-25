@@ -24,7 +24,7 @@ pub fn run(args: PlayArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
     let render_mode = args.render_mode()?;
     let no_video = args.no_video;
 
-    let (live, sub, track, audio_ctx, broadcast_name) = rt.block_on(async {
+    let (live, sub, track, audio_ctx, broadcast_name, signals) = rt.block_on(async {
         let audio_ctx = AudioBackend::default();
         let live = setup_live(false).await?;
         let playback_config = PlaybackConfig {
@@ -35,9 +35,7 @@ pub fn run(args: PlayArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
         let (sub, broadcast_name) = match source {
             SubscribeSource::Direct(ticket) => {
                 println!("connecting to {ticket} ...");
-                let sub = live
-                    .subscribe(ticket.endpoint, &ticket.broadcast_name)
-                    .await?;
+                let sub = live.subscribe_ticket(&ticket);
                 (sub, ticket.broadcast_name)
             }
             SubscribeSource::Relay {
@@ -49,15 +47,20 @@ pub fn run(args: PlayArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
                     target.endpoint(),
                     broadcast_name
                 );
-                let sub = live.subscribe_from_relay(&target, &broadcast_name).await?;
+                let sub = live.subscribe(target, broadcast_name.clone());
                 (sub, broadcast_name)
             }
         };
+        let active = sub.ready().await?;
         info!("session established");
-        let track = sub.broadcast().media(&audio_ctx, playback_config).await?;
+        let track = active
+            .broadcast()
+            .media(&audio_ctx, playback_config)
+            .await?;
         info!("media tracks subscribed");
 
-        n0_error::Ok((live, sub, track, audio_ctx, broadcast_name))
+        let signals = active.signals().clone();
+        n0_error::Ok((live, sub, track, audio_ctx, broadcast_name, signals))
     })?;
 
     if no_video {
@@ -66,14 +69,24 @@ pub fn run(args: PlayArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
             let _audio = track.audio;
             let _broadcast = track.broadcast;
             tokio::signal::ctrl_c().await?;
-            sub.session().close(0, b"bye");
+            if let Some(active) = sub.active().await {
+                active.session().close(0, b"bye");
+            }
             live.shutdown().await;
             n0_error::Ok(())
         })
     } else {
         // GUI: eframe runs on the main thread, tokio workers stay alive via rt.enter().
         let _guard = rt.enter();
-        run_egui(live, sub, track, audio_ctx, broadcast_name, render_mode)
+        run_egui(
+            live,
+            sub,
+            track,
+            audio_ctx,
+            broadcast_name,
+            render_mode,
+            signals,
+        )
     }
 }
 
@@ -84,6 +97,7 @@ fn run_egui(
     audio_ctx: AudioBackend,
     broadcast_name: String,
     render_mode: crate::args::RenderMode,
+    signals: tokio::sync::watch::Receiver<moq_media::net::NetworkSignals>,
 ) -> n0_error::Result {
     let native_options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
@@ -92,12 +106,12 @@ fn run_egui(
     };
 
     eframe::run_native(
-        "irl — play",
+        "irl - play",
         native_options,
         Box::new(move |cc| {
             crate::ui::spawn_ctrl_c_handler(&cc.egui_ctx);
 
-            let signals = Some(sub.signals().clone());
+            let signals = Some(signals.clone());
             let use_wgpu = render_mode == crate::args::RenderMode::Auto;
             let remote = RemoteControls::with_render_mode(
                 track.broadcast,
@@ -186,7 +200,12 @@ impl eframe::App for PlayApp {
     fn on_exit(&mut self) {
         info!("exit");
         self.remote.broadcast.shutdown();
-        self.sub.session().close(0, b"bye");
+        let sub = self.sub.clone();
+        tokio::spawn(async move {
+            if let Some(active) = sub.active().await {
+                active.session().close(0, b"bye");
+            }
+        });
         crate::ui::shutdown_live_blocking(&self.live);
     }
 }

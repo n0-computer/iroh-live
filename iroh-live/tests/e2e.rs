@@ -77,12 +77,12 @@ async fn publish_subscribe_video() {
     let subscriber = async move {
         let live = Live::builder(endpoint().await).spawn();
 
-        let sub = live
-            .subscribe(pub_addr, "test-stream")
+        let sub = live.subscribe(pub_addr, "test-stream");
+        let active = sub
+            .ready()
             .await
-            .expect("failed to subscribe");
-
-        let remote = sub.broadcast();
+            .expect("subscription failed to attach a source");
+        let remote = active.broadcast();
         // video_ready waits for the catalog to contain video before subscribing,
         // avoiding the race where ready() returns on audio alone.
         let mut video_track = tokio::time::timeout(FRAME_TIMEOUT, remote.video_ready())
@@ -158,12 +158,12 @@ async fn publish_subscribe_audio() {
     // --- Subscriber ---
     let subscriber = Live::builder(endpoint().await).spawn();
 
-    let sub = subscriber
-        .subscribe(publisher.endpoint().addr(), "av-stream")
+    let sub = subscriber.subscribe(publisher.endpoint().addr(), "av-stream");
+    let active = sub
+        .ready()
         .await
-        .expect("failed to subscribe");
-
-    let remote = sub.broadcast();
+        .expect("subscription failed to attach a source");
+    let remote = active.broadcast();
     // Wait for both tracks to appear in the catalog.
     let mut video_track = tokio::time::timeout(FRAME_TIMEOUT, remote.video_ready())
         .await
@@ -230,12 +230,12 @@ async fn adaptive_rendition_switching() {
     // --- Subscriber with adaptive track ---
     let subscriber = Live::builder(endpoint().await).spawn();
 
-    let sub = subscriber
-        .subscribe(publisher.endpoint().addr(), "adaptive-stream")
+    let sub = subscriber.subscribe(publisher.endpoint().addr(), "adaptive-stream");
+    let active = sub
+        .ready()
         .await
-        .expect("failed to subscribe");
-
-    let remote = sub.broadcast();
+        .expect("subscription failed to attach a source");
+    let remote = active.broadcast();
     // Wait for catalog to arrive with video renditions.
     tokio::time::timeout(FRAME_TIMEOUT, remote.ready())
         .await

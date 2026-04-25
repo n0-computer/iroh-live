@@ -6,15 +6,20 @@
 
 mod call;
 mod live;
+mod publisher;
 /// Client-side helpers for addressing an iroh-live-relay.
 pub mod relay;
 /// Multi-party room coordination over gossip.
 pub mod rooms;
+/// Frame-level seamless track swap on top of [`Subscription`].
+pub mod seamless;
+/// Transport source abstractions for multi-origin publish and subscribe.
+pub mod sources;
 mod subscription;
 /// Ticket types for sharing connection info.
 pub mod ticket;
 mod types;
-/// Utility helpers (stats smoothing, etc.).
+/// Utility helpers (stats smoothing, network signal production).
 pub mod util;
 
 pub use hang::catalog;
@@ -25,6 +30,11 @@ pub use moq_media as media;
 pub use self::{
     call::{Call, CallError},
     live::{Live, LiveBuilder},
-    subscription::Subscription,
+    publisher::{Broadcaster, BroadcasterError},
+    sources::{
+        Candidate, DirectSource, Pinned, PreferOrdered, RelayOffer, SelectionPolicy, SourceId,
+        SourceSet, SourceSetHandle, TransportSource,
+    },
+    subscription::{ActiveSource, Subscription, SubscriptionEvent},
     types::DisconnectReason,
 };

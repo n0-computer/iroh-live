@@ -46,23 +46,21 @@ fn main() -> Result<()> {
     let audio_ctx = AudioBackend::default();
 
     println!("connecting to {} ...", cli.ticket);
-    let (live, video_track) = rt.block_on({
+    let (live, _sub, video_track) = rt.block_on({
         let audio_ctx = audio_ctx.clone();
         let ticket = cli.ticket.clone();
         async move {
             let endpoint = Endpoint::bind(iroh::endpoint::presets::N0).await?;
             let live = Live::new(endpoint);
-            let (_session, track) = live
-                .subscribe_media(
-                    ticket.endpoint,
-                    &ticket.broadcast_name,
-                    &audio_ctx,
-                    PlaybackConfig::default(),
-                )
+            let sub = live.subscribe_ticket(&ticket);
+            let active = sub.ready().await?;
+            let track = active
+                .broadcast()
+                .media(&audio_ctx, PlaybackConfig::default())
                 .await?;
             let video = track.video.context("broadcast has no video track")?;
             println!("connected");
-            anyhow::Ok((live, video))
+            anyhow::Ok((live, sub, video))
         }
     })?;
 

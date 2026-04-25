@@ -9,18 +9,16 @@
 
 use iroh::EndpointId;
 use iroh_moq::MoqSession;
-use moq_media::subscribe::RemoteBroadcast;
 use n0_error::{AnyError, Result};
-use tracing::info;
 use url::Url;
 
-use crate::{Live, Subscription};
+use crate::Live;
 
-/// A resolved target for `Live::connect_relay`.
+/// A resolved target for [`Live::connect_relay`].
 ///
 /// Wraps the remote endpoint id with the path and auth material the client
 /// wants the relay to see during the H3 handshake.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RelayTarget {
     endpoint: EndpointId,
     path: String,
@@ -64,6 +62,16 @@ impl RelayTarget {
         self.endpoint
     }
 
+    /// Returns the URL path this target operates under.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Returns the api key the target carries, if any.
+    pub fn api_key(&self) -> Option<&str> {
+        self.api_key.as_deref()
+    }
+
     /// Returns the URL the client will hand to the relay during the H3
     /// handshake.
     pub fn url(&self) -> Url {
@@ -79,34 +87,16 @@ impl RelayTarget {
 }
 
 impl Live {
-    /// Connects to a remote relay via HTTP/3-over-iroh, returning a MoQ
-    /// session that can publish or subscribe under the target's path scope.
+    /// Connects to a remote relay via HTTP/3-over-iroh, returning a
+    /// MoQ session that can publish or subscribe under the target's
+    /// path scope.
     ///
-    /// Each call opens a fresh QUIC connection: distinct URLs (for example
-    /// different tokens) must not share session state.
+    /// Each call opens a fresh QUIC connection: distinct URLs (for
+    /// example different tokens) must not share session state.
     pub async fn connect_relay(&self, target: &RelayTarget) -> Result<MoqSession, AnyError> {
         let addr = iroh::EndpointAddr::new(target.endpoint);
         self.transport()
             .connect_h3(self.endpoint(), addr, target.url())
             .await
-    }
-
-    /// Subscribes to a broadcast served by a relay, returning a full
-    /// [`Subscription`] with stats and signals wired up.
-    ///
-    /// Opens an H3-over-iroh session to the relay using `target`, then
-    /// subscribes to `broadcast_name` on that session. The resulting
-    /// [`Subscription`] behaves identically to one returned by
-    /// [`Live::subscribe`].
-    pub async fn subscribe_from_relay(
-        &self,
-        target: &RelayTarget,
-        broadcast_name: &str,
-    ) -> Result<Subscription, AnyError> {
-        let mut session = self.connect_relay(target).await?;
-        info!(relay = %target.endpoint(), broadcast = broadcast_name, "subscribing via relay");
-        let consumer = session.subscribe(broadcast_name).await?;
-        let broadcast = RemoteBroadcast::new(broadcast_name, consumer).await?;
-        Ok(Subscription::from_session(session, broadcast))
     }
 }

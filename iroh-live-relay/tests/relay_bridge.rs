@@ -233,13 +233,14 @@ async fn iroh_publish_iroh_subscribe() {
         .expect("bind sub");
     shared_lookup().add_endpoint_info(sub_ep.addr());
     let subscriber = iroh_live::Live::builder(sub_ep.clone()).spawn();
-    let sub = tokio::time::timeout(TIMEOUT, subscriber.subscribe(relay_id, "relay-test"))
+    let sub = subscriber.subscribe(relay_id, "relay-test");
+    let active = tokio::time::timeout(TIMEOUT, sub.ready())
         .await
         .expect("timeout")
         .expect("subscribe");
 
-    assert!(sub.broadcast().has_video());
-    let mut video = sub.broadcast().video().expect("video track");
+    assert!(active.broadcast().has_video());
+    let mut video = active.broadcast().video().expect("video track");
     let frame = tokio::time::timeout(Duration::from_secs(10), video.next_frame())
         .await
         .expect("timeout")
@@ -321,21 +322,19 @@ async fn noq_publish_iroh_subscribe() {
     // the noq publisher's announcement to the iroh side.
     let mut last_err = None;
     for attempt in 0..3 {
-        let result = tokio::time::timeout(
-            Duration::from_secs(5),
-            subscriber.subscribe(relay_id, "browser-stream"),
-        )
-        .await;
+        let sub = subscriber.subscribe(relay_id, "browser-stream");
+        let result = tokio::time::timeout(Duration::from_secs(5), sub.ready()).await;
 
         match result {
-            Ok(Ok(sub)) => {
+            Ok(Ok(active)) => {
                 tracing::info!(
                     attempt,
-                    has_video = sub.broadcast().has_video(),
-                    has_audio = sub.broadcast().has_audio(),
+                    has_video = active.broadcast().has_video(),
+                    has_audio = active.broadcast().has_audio(),
                     "subscribed to browser-stream via iroh"
                 );
                 // Success — clean up and return.
+                drop(active);
                 drop(sub);
                 drop(_pub_session);
                 sub_ep.close().await;

@@ -40,8 +40,7 @@ pub fn run(args: RecordArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
         let sub = match source {
             SubscribeSource::Direct(ticket) => {
                 println!("connecting to {ticket} ...");
-                live.subscribe(ticket.endpoint, &ticket.broadcast_name)
-                    .await?
+                live.subscribe_ticket(&ticket)
             }
             SubscribeSource::Relay {
                 target,
@@ -52,12 +51,13 @@ pub fn run(args: RecordArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
                     target.endpoint(),
                     broadcast_name
                 );
-                live.subscribe_from_relay(&target, &broadcast_name).await?
+                live.subscribe(target, broadcast_name)
             }
         };
+        let active = sub.ready().await?;
         info!("session established");
 
-        let broadcast = sub.broadcast().clone();
+        let broadcast = active.broadcast().clone();
         let catalog = broadcast.catalog();
         println!(
             "catalog: {} video renditions, {} audio renditions",
@@ -189,7 +189,9 @@ pub fn run(args: RecordArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
 
         print_remux_hint(&video_path, &audio_path, &output);
 
-        sub.session().close(0, b"bye");
+        if let Some(active) = sub.active().await {
+            active.session().close(0, b"bye");
+        }
         live.shutdown().await;
         anyhow::Ok(())
     })?;

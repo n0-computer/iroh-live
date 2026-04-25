@@ -1,17 +1,12 @@
 use derive_more::Debug;
 use iroh::{
-    Endpoint, EndpointAddr,
+    Endpoint,
     endpoint::presets,
     protocol::{Router, RouterBuilder},
 };
 use iroh_gossip::Gossip;
-use iroh_moq::{Moq, MoqProtocolHandler, MoqSession};
-use moq_media::{
-    format::PlaybackConfig,
-    publish::LocalBroadcast,
-    subscribe::{MediaTracks, RemoteBroadcast},
-    traits::AudioStreamFactory,
-};
+use iroh_moq::{Moq, MoqProtocolHandler};
+use moq_media::publish::LocalBroadcast;
 use n0_error::Result;
 use tracing::{error, info, instrument};
 
@@ -220,67 +215,61 @@ impl Live {
         self.moq.publish(name, producer).await
     }
 
-    /// Connects to a remote peer and subscribes to a named broadcast.
+    /// Subscribes to a broadcast across one or more transport sources.
     ///
-    /// Returns a [`Subscription`](crate::Subscription) that owns the
-    /// [`MoqSession`], [`RemoteBroadcast`], and a network signals receiver.
-    /// Stats recording and signal production are wired up automatically.
-    #[instrument("Subscribe", skip_all, fields(remote=tracing::field::Empty))]
-    pub async fn subscribe(
+    /// `sources` accepts anything convertible into a
+    /// [`SourceSetHandle`](crate::sources::SourceSetHandle):
+    /// [`EndpointAddr`] or [`EndpointId`](iroh::EndpointId) for a
+    /// single direct peer, [`RelayTarget`](crate::relay::RelayTarget)
+    /// for a single relay, [`SourceSet`](crate::sources::SourceSet)
+    /// for a static set of candidates, a `SourceSetHandle` for a
+    /// reactively mutable set, or a [`LiveTicket`](crate::ticket::LiveTicket)
+    /// (whose direct endpoint plus any embedded relay offers form
+    /// the set).
+    ///
+    /// The returned [`Subscription`](crate::Subscription) opens a
+    /// MoQ session for every source in the set, picks the active
+    /// one through the default [`PreferOrdered`](crate::PreferOrdered)
+    /// policy, and emits [`SubscriptionEvent`](crate::SubscriptionEvent)s
+    /// as sources come and go.
+    #[instrument("Subscribe", skip_all, fields(broadcast = %broadcast_name.to_string()))]
+    pub fn subscribe(
         &self,
-        remote: impl Into<EndpointAddr>,
-        broadcast_name: &str,
-    ) -> Result<crate::Subscription> {
-        let remote = remote.into();
-        tracing::Span::current().record("remote", tracing::field::display(remote.id.fmt_short()));
-        let mut session = self.moq.connect(remote).await?;
-        info!(id=%session.conn().remote_id(), "connected");
-        let consumer = session.subscribe(broadcast_name).await?;
-        let broadcast = RemoteBroadcast::new(broadcast_name, consumer).await?;
-        Ok(crate::Subscription::new(session, broadcast))
+        sources: impl Into<crate::sources::SourceSetHandle>,
+        broadcast_name: impl ToString,
+    ) -> crate::Subscription {
+        crate::Subscription::spawn(self.clone(), broadcast_name, sources)
     }
 
-    /// Connects, subscribes, and decodes video and audio in one call.
+    /// Subscribes to the broadcast named in `ticket` using the ticket's
+    /// direct endpoint and any embedded relay offers as candidate
+    /// sources.
     ///
-    /// Uses dynamic decoder dispatch based on the codec in the catalog.
-    /// For explicit decoder selection, use
-    /// [`subscribe_media_with_decoders`](Self::subscribe_media_with_decoders).
-    pub async fn subscribe_media(
-        &self,
-        remote: impl Into<EndpointAddr>,
-        broadcast_name: &str,
-        audio_backend: &dyn AudioStreamFactory,
-        config: PlaybackConfig,
-    ) -> Result<(MoqSession, MediaTracks)> {
-        self.subscribe_media_with_decoders::<moq_media::codec::DefaultDecoders>(
-            remote,
-            broadcast_name,
-            audio_backend,
-            config,
-        )
-        .await
-    }
-
-    /// Connects, subscribes, and decodes with a specific decoder type.
-    pub async fn subscribe_media_with_decoders<D: moq_media::traits::Decoders>(
-        &self,
-        remote: impl Into<EndpointAddr>,
-        broadcast_name: &str,
-        audio_backend: &dyn AudioStreamFactory,
-        config: PlaybackConfig,
-    ) -> Result<(MoqSession, MediaTracks)> {
-        let sub = self.subscribe(remote, broadcast_name).await?;
-        let track = sub
-            .broadcast()
-            .media_with_decoders::<D>(audio_backend, config)
-            .await?;
-        let (session, _, _) = sub.into_parts();
-        Ok((session, track))
+    /// Equivalent to building a `SourceSet` from the ticket and
+    /// calling [`Live::subscribe`].
+    pub fn subscribe_ticket(&self, ticket: &crate::ticket::LiveTicket) -> crate::Subscription {
+        let sources = ticket.source_set();
+        self.subscribe(sources, ticket.broadcast_name.clone())
     }
 
     /// Joins a room using the given ticket.
     pub async fn join_room(&self, ticket: RoomTicket) -> Result<Room> {
         Room::new(self, ticket).await
+    }
+
+    /// Spawns a [`Broadcaster`](crate::Broadcaster) that attaches
+    /// `producer` to every session named by `sources`.
+    ///
+    /// Adding a source opens an outbound session and starts
+    /// announcing `name` there; removing a source drops the announce
+    /// on that session only.
+    pub fn broadcaster(
+        &self,
+        name: impl ToString,
+        producer: moq_lite::BroadcastProducer,
+        sources: impl Into<crate::sources::SourceSetHandle>,
+    ) -> crate::Broadcaster {
+        crate::Broadcaster::spawn(self.clone(), name, producer, sources)
     }
 
     /// Shuts down the [`Live`] instance.

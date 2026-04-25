@@ -19,28 +19,35 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(%cli.relay, %cli.name, frames = cli.frames, "subscribing");
 
-    // Retry subscribe — the publisher may not have announced the catalog yet.
-    let _sub = {
-        let mut last_err = String::new();
+    // Retry the initial source attach — the publisher may not have
+    // announced the catalog yet.
+    let sub = live.subscribe(id, &cli.name);
+    let active = {
+        let mut last_err = None;
         let mut result = None;
         for attempt in 0..5 {
-            match live.subscribe(id, &cli.name).await {
-                Ok(r) => {
-                    result = Some(r);
+            match sub.ready().await {
+                Ok(active) => {
+                    result = Some(active);
                     break;
                 }
                 Err(e) => {
-                    tracing::warn!(attempt, %e, "subscribe failed, retrying in 1s");
-                    last_err = format!("{e:#}");
+                    tracing::warn!(attempt, %e, "ready failed, retrying in 1s");
+                    last_err = Some(format!("{e:#}"));
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
             }
         }
-        result.ok_or_else(|| anyhow::anyhow!("subscribe failed after retries: {last_err}"))?
+        result.ok_or_else(|| {
+            anyhow::anyhow!(
+                "subscribe failed after retries: {}",
+                last_err.unwrap_or_default()
+            )
+        })?
     };
 
     tracing::info!("subscribed, waiting for video");
-    let mut track = _sub.broadcast().video_ready().await?;
+    let mut track = active.broadcast().video_ready().await?;
 
     let mut received = 0u32;
     while received < cli.frames {

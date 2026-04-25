@@ -199,10 +199,12 @@ async fn connect_impl(ticket_str: String) -> Result<jlong> {
     let live = Live::from_env().await?.with_router().with_gossip().spawn();
     info!(broadcast = %ticket.broadcast_name, "connecting to broadcast");
 
-    let sub = live
-        .subscribe(ticket.endpoint.clone(), &ticket.broadcast_name)
-        .await?;
-    let (session, remote, _signals) = sub.into_parts();
+    let sub = live.subscribe(ticket.endpoint.clone(), &ticket.broadcast_name);
+    let active = sub.ready().await?;
+    let session = active.session().clone();
+    let remote = active.broadcast().clone();
+    // Hold the subscription so candidate sessions stay alive.
+    let _subscription = sub;
 
     let video = remote
         .video()

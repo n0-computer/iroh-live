@@ -109,12 +109,11 @@ async fn cmd_watch(opts: WatchOpts) -> anyhow::Result<()> {
 
     println!("connecting to {} ...", opts.ticket);
 
-    let _sub = live
-        .subscribe(opts.ticket.endpoint, &opts.ticket.broadcast_name)
-        .await?;
+    let sub = live.subscribe(opts.ticket.endpoint, &opts.ticket.broadcast_name);
+    let active = sub.ready().await?;
 
     println!("subscribed, waiting for video track");
-    let mut track = _sub.broadcast().video_ready().await?;
+    let mut track = active.broadcast().video_ready().await?;
 
     let mut received = 0u32;
     let start = Instant::now();
