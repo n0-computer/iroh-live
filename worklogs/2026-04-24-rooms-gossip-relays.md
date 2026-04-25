@@ -540,3 +540,76 @@ Findings deferred (justified):
   durable cleanup waits for an upstream API.
 
 Going to commit the refinement now and write a session summary.
+
+## Summary
+
+Five commits on `feat/rooms-gossip-relays`, base
+`ca8e65a` (tip of `feat/relay-auth-for-svc`):
+
+1. `fix(workspace)`: clippy and fmt fixes that were blocking the
+   project's `cargo make check-all`.
+2. `feat(moq-media)`: expose `RemoteBroadcast::build_video_pipeline*`
+   and `VideoDecoderFrames::into_receiver`/`receiver` so the
+   iroh-live seamless layer can rebuild a decoder pipeline against
+   a swapped source.
+3. `feat(iroh-live)!`: dynamic multi-origin transport. New
+   `TransportSource` / `SourceSet` / `SourceSetHandle` /
+   `SelectionPolicy`. `Subscription` is the unified
+   multi-source-capable type. `Live::subscribe(sources, name)` and
+   `Live::subscribe_ticket(&LiveTicket)` are the unified entries.
+   `Broadcaster` fans a producer to a controlled set of sessions.
+   `Subscription::media` returns frame-level seamless video tracks
+   that survive transport swap. Rooms grow `RoomBuilder`,
+   `enable_relay`/`disable_relay`, and a `relay` hint in the
+   gossip `PeerState`. `LiveTicket` grows `relays`. Examples,
+   CLI, demos, and tests are migrated.
+4. `docs(rooms-gossip-relays)`: full plan + this worklog,
+   superseding the prior research-only sketch.
+5. `refactor(iroh-live)`: staff-review findings applied. Key
+   wins: broadcast-channel events with `Lagged` semantics,
+   parallel attach via `FuturesUnordered`, atomic
+   `SourceSetHandle` mutations, JWT redaction in `Debug`, input
+   caps on gossip and ticket payloads, codec-aware seamless swap
+   refusal, `Broadcaster` closes its sessions on remove, and
+   `Subscription::wait_active` honours shutdown.
+
+End state of the branch:
+
+* `cargo make check-all` clean (workspace clippy with `-D
+  warnings`, fmt check, and the workspace check).
+* New integration tests pass: 7 in `multi_source.rs`, 4 in
+  `broadcaster.rs`, 4 in `room_relay.rs`, 4 in `ticket_relays.rs`.
+* Existing tests still pass: room (6), e2e (4), patchbay
+  (left untouched aside from API migration).
+* Public API changes are documented in the big commit's body.
+
+What the user should look at first
+
+1. `iroh-live/src/sources.rs` for the
+   `TransportSource`/`SourceSet`/`SelectionPolicy` shape.
+2. `iroh-live/src/subscription.rs` for the unified multi-origin
+   `Subscription` actor, including the parallel-attach
+   reconcile loop.
+3. `iroh-live/src/seamless.rs` for the frame-level seamless video
+   swap on top of the subscription.
+4. `iroh-live/src/rooms.rs` for the new `RoomBuilder`,
+   `enable_relay`/`disable_relay`, and `PeerState.relay` hint.
+5. `iroh-live/tests/multi_source.rs` and
+   `iroh-live/tests/room_relay.rs` for the runtime-mutation and
+   relay-hint scenarios.
+6. The plan at `plans/rooms-gossip-relays.md` for the design
+   trail.
+
+Open follow-ups (justified deferrals)
+
+* `peer_relays` / `known_peers` cleanup tied to gossip KV expiry
+  events: waits for an upstream `iroh-smol-kv` API. The R4.1
+  truncation cap bounds the worst case.
+* Audio seamless swap: needs an audio-sink-side fade-in; out of
+  scope this session.
+* `Moq::connect_h3` deduplication in iroh-moq: out of scope.
+* CLI `--relay` ergonomic improvements (e.g. supplying multiple
+  relays, ticket-based dynamic switching) are wired through the
+  new types but the command-line flags themselves still match
+  the prior `--relay <id> --api-key <jwt>` shape; expanding to
+  multi-source CLI flags is a follow-up.
