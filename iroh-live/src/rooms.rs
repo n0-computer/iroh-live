@@ -3,6 +3,7 @@ use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
 use bytes::Bytes;
 use iroh::{EndpointId, SecretKey};
 use iroh_gossip::Gossip;
+pub use iroh_gossip::TopicId;
 use iroh_moq::MoqSession;
 use iroh_smol_kv::{ExpiryConfig, Filter, SignedValue, Subscribe, SubscribeMode, WriteScope};
 use moq_lite::BroadcastProducer;
@@ -16,7 +17,10 @@ use tokio::{
 };
 use tracing::{Instrument, debug, error_span, info, trace, warn};
 
-pub use self::{publisher::RoomPublisherSync, ticket::RoomTicket};
+pub use self::{
+    publisher::RoomPublisherSync,
+    ticket::{RoomMode, RoomTicket},
+};
 use crate::{
     Live, Subscription,
     sources::{RelayOffer, SourceSet, TransportSource},
@@ -239,10 +243,37 @@ impl Room {
     }
 
     async fn from_builder(live: &Live, builder: RoomBuilder) -> Result<Self> {
-        let gossip = live
-            .gossip()
-            .context("Cannot join room: Gossip is disabled")?
-            .clone();
+        // The builder's `relay` overrides whatever is in the
+        // ticket. Surface it in the ticket so downstream code has
+        // one source of truth for "the room's relay".
+        let mut ticket = builder.ticket.clone();
+        if let Some(relay) = builder.relay.clone() {
+            ticket.relay = Some(relay);
+            ticket.mode = match ticket.mode {
+                RoomMode::Gossip => RoomMode::Hybrid,
+                other => other,
+            };
+        }
+
+        // Mode-specific preconditions.
+        match ticket.mode {
+            RoomMode::Gossip | RoomMode::Hybrid => {
+                if live.gossip().is_none() {
+                    return Err(anyerr!(
+                        "Cannot join room: gossip is required for {:?} mode but not enabled on Live",
+                        ticket.mode
+                    ));
+                }
+            }
+            RoomMode::Relay => {
+                if ticket.relay.is_none() {
+                    return Err(anyerr!(
+                        "Cannot join room: Relay mode requires a relay attachment on the ticket"
+                    ));
+                }
+            }
+        }
+
         let endpoint = live.endpoint();
         let endpoint_id = endpoint.id();
         let (actor_tx, actor_rx) = mpsc::channel(16);
@@ -252,19 +283,18 @@ impl Room {
             endpoint.secret_key(),
             live.clone(),
             event_tx,
-            gossip,
-            builder.ticket.clone(),
-            builder.relay,
+            ticket.clone(),
             builder.subscribe_mode,
         )
         .await?;
-        let actor_task = task::spawn(async move { actor.run(actor_rx).await }.instrument(
-            error_span!("RoomActor", id = builder.ticket.topic_id.fmt_short()),
-        ));
+        let actor_task = task::spawn(
+            async move { actor.run(actor_rx).await }
+                .instrument(error_span!("RoomActor", id = ticket.topic_id.fmt_short())),
+        );
 
         Ok(Self {
             handle: RoomHandle {
-                ticket: builder.ticket,
+                ticket,
                 me: endpoint_id,
                 tx: actor_tx,
                 _actor_handle: Arc::new(AbortOnDropHandle::new(actor_task)),
@@ -472,8 +502,21 @@ type ChatFuture = BoxFuture<(
 
 struct Actor {
     me: EndpointId,
-    _gossip: Gossip,
+    mode: RoomMode,
+    ticket: RoomTicket,
     live: Live,
+    /// Gossip-based discovery state. Present in
+    /// [`RoomMode::Gossip`] and [`RoomMode::Hybrid`]; absent in
+    /// [`RoomMode::Relay`].
+    gossip: Option<GossipState>,
+    /// Relay-based discovery state. Present in
+    /// [`RoomMode::Relay`] and [`RoomMode::Hybrid`]; absent in
+    /// [`RoomMode::Gossip`].
+    relay_discovery: Option<RelayDiscovery>,
+    /// Outbound publisher session at `room/<topic>/<my_id>` on the
+    /// relay. Present in [`RoomMode::Relay`] and
+    /// [`RoomMode::Hybrid`].
+    relay_publisher: Option<MoqSession>,
     active_subscribe: HashMap<BroadcastId, ActiveSubscribe>,
     active_publish: HashMap<String, ActivePublish>,
     known_peers: HashMap<EndpointId, Option<String>>,
@@ -487,8 +530,35 @@ struct Actor {
     relay: Option<RelayOffer>,
     subscribe_mode: RoomSubscribeMode,
     event_tx: mpsc::Sender<RoomEvent>,
+}
+
+/// Gossip discovery state attached to a room actor.
+struct GossipState {
+    _gossip: Gossip,
     kv: iroh_smol_kv::Client,
     kv_writer: WriteScope,
+}
+
+/// Relay discovery state attached to a room actor.
+///
+/// The discovery session is rooted at `room/<topic>` and the
+/// background watcher task forwards parsed `(peer, name, present)`
+/// events from the announce stream onto `rx`.
+struct RelayDiscovery {
+    _session: MoqSession,
+    rx: mpsc::Receiver<RelayDiscoveryEvent>,
+    _watcher: AbortOnDropHandle<()>,
+}
+
+/// Event surfaced by the relay-discovery watcher task.
+#[derive(Debug)]
+enum RelayDiscoveryEvent {
+    /// Relay's primary origin announced a broadcast at the given
+    /// path. The path is relative to the discovery session's
+    /// root and parses as `<peer>/<broadcast>`.
+    Announce { peer: EndpointId, name: String },
+    /// Relay's announce stream reports the broadcast went away.
+    Unannounce { peer: EndpointId, name: String },
 }
 
 /// Tracks an active subscription to one remote peer's broadcast.
@@ -517,10 +587,15 @@ struct ActivePublish {
     /// `Moq` actor. Held so the broadcaster's lifetime ties to
     /// this entry; dropped when the publish ends.
     global_consumer: moq_lite::BroadcastConsumer,
-    /// Relay-side announce, present only when the room has a
-    /// relay attached. Replaced when the relay configuration
-    /// changes at runtime.
+    /// Relay-side announce, present in [`RoomMode::Relay`] and
+    /// [`RoomMode::Hybrid`]. Replaced when the relay
+    /// configuration changes at runtime.
     relay: Option<RelayAnnounce>,
+    /// Wire name the broadcast was registered globally under, in
+    /// [`RoomMode::Gossip`] and [`RoomMode::Hybrid`] modes. Held
+    /// only for diagnostic purposes; the actual lifetime is
+    /// governed by the global Moq actor.
+    _direct_wire: Option<String>,
 }
 
 /// Announce of a single broadcast on a relay session. Dropping
@@ -535,38 +610,67 @@ struct RelayAnnounce {
 }
 
 impl Actor {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "actor constructor takes one arg per piece of injected state"
-    )]
     async fn new(
         me: &SecretKey,
         live: Live,
         event_tx: mpsc::Sender<RoomEvent>,
-        gossip: Gossip,
         ticket: RoomTicket,
-        relay: Option<RelayOffer>,
         subscribe_mode: RoomSubscribeMode,
     ) -> Result<Self> {
-        let topic = gossip
-            .subscribe(ticket.topic_id, ticket.bootstrap.clone())
-            .await?;
-        let kv = iroh_smol_kv::Client::local(
-            topic,
-            iroh_smol_kv::Config {
-                anti_entropy_interval: Duration::from_secs(60),
-                fast_anti_entropy_interval: Duration::from_secs(1),
-                expiry: Some(ExpiryConfig {
-                    check_interval: Duration::from_secs(10),
-                    horizon: Duration::from_secs(60 * 2),
-                }),
-            },
-        );
-        let kv_writer = kv.write(me.clone());
+        let me_pub = me.public();
+        let mode = ticket.mode;
+        let relay = ticket.relay.clone();
+
+        let gossip = match mode {
+            RoomMode::Gossip | RoomMode::Hybrid => {
+                let gossip = live
+                    .gossip()
+                    .context("gossip is enabled at Live level")?
+                    .clone();
+                let topic = gossip
+                    .subscribe(ticket.topic_id, ticket.bootstrap.clone())
+                    .await?;
+                let kv = iroh_smol_kv::Client::local(
+                    topic,
+                    iroh_smol_kv::Config {
+                        anti_entropy_interval: Duration::from_secs(60),
+                        fast_anti_entropy_interval: Duration::from_secs(1),
+                        expiry: Some(ExpiryConfig {
+                            check_interval: Duration::from_secs(10),
+                            horizon: Duration::from_secs(60 * 2),
+                        }),
+                    },
+                );
+                let kv_writer = kv.write(me.clone());
+                Some(GossipState {
+                    _gossip: gossip,
+                    kv,
+                    kv_writer,
+                })
+            }
+            RoomMode::Relay => None,
+        };
+
+        let (relay_discovery, relay_publisher) = match mode {
+            RoomMode::Relay | RoomMode::Hybrid => {
+                let offer = relay
+                    .clone()
+                    .context("relay attached for Relay/Hybrid mode")?;
+                let discovery = open_relay_discovery(&live, &ticket, &offer).await?;
+                let publisher = open_relay_publisher(&live, &ticket, me_pub, &offer).await?;
+                (Some(discovery), Some(publisher))
+            }
+            RoomMode::Gossip => (None, None),
+        };
+
         Ok(Self {
-            me: me.public(),
+            me: me_pub,
+            mode,
+            ticket,
             live,
-            _gossip: gossip,
+            gossip,
+            relay_discovery,
+            relay_publisher,
             active_subscribe: Default::default(),
             active_publish: Default::default(),
             known_peers: Default::default(),
@@ -580,29 +684,40 @@ impl Actor {
             relay,
             subscribe_mode,
             event_tx,
-            kv,
-            kv_writer,
         })
     }
 
     pub(crate) async fn run(mut self, mut inbox: mpsc::Receiver<ApiMessage>) {
-        let updates = self
-            .kv
-            .subscribe_with_opts(Subscribe {
+        // Build the gossip KV update stream when gossip is
+        // attached, otherwise the corresponding select branch is
+        // a no-op.
+        let gossip_updates = self.gossip.as_ref().map(|g| {
+            g.kv.subscribe_with_opts(Subscribe {
                 mode: SubscribeMode::Both,
                 filter: Filter::ALL,
             })
-            .stream();
-        tokio::pin!(updates);
+            .stream()
+        });
+        let mut gossip_updates = gossip_updates.map(Box::pin);
 
-        debug!("room actor started, waiting for gossip updates");
+        debug!(mode = ?self.mode, "room actor started");
 
-        // Seed the KV so peers that are already in the topic see us.
+        // Seed the gossip KV so peers in the topic see us.
         self.update_kv().await;
 
         loop {
+            // Take ownership of the relay discovery rx for the
+            // duration of this iteration so the borrow checker is
+            // happy with `self` mutations inside select branches.
+            let relay_rx_present = self.relay_discovery.is_some();
+
             tokio::select! {
-                update = updates.next() => {
+                update = async {
+                    match gossip_updates.as_mut() {
+                        Some(s) => s.next().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
                     match update {
                         None => {
                             warn!("gossip kv subscription stream ended unexpectedly");
@@ -610,6 +725,20 @@ impl Actor {
                         }
                         Some(Err(err)) => warn!("gossip kv update failed: {err:#}"),
                         Some(Ok(update)) => if !self.handle_gossip_update(update).await { break },
+                    }
+                }
+                event = async {
+                    match self.relay_discovery.as_mut() {
+                        Some(d) => d.rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                }, if relay_rx_present => {
+                    match event {
+                        Some(event) => if !self.handle_relay_discovery_event(event).await { break },
+                        None => {
+                            warn!("relay discovery channel closed unexpectedly");
+                            break;
+                        }
                     }
                 }
                 msg = inbox.recv() => {
@@ -745,23 +874,56 @@ impl Actor {
     async fn handle_api_message(&mut self, msg: ApiMessage) {
         match msg {
             ApiMessage::Publish { name, producer } => {
-                info!(%name, "publishing broadcast to room");
+                info!(%name, mode = ?self.mode, "publishing broadcast to room");
                 let consume_for_close = producer.consume();
                 let global_consumer = producer.consume();
-                if let Err(err) = self
-                    .live
-                    .publish_broadcast_producer(name.clone(), producer)
-                    .await
-                {
-                    warn!(%name, "failed to register broadcast: {err:#}");
-                    return;
-                }
-                let relay_announce = self.attach_relay_announce(&name, &global_consumer).await;
+
+                // Direct-mode wire registration. In Gossip and
+                // Hybrid modes, register the wire-uniform name
+                // `<my_id>/<name>` globally with the Moq actor so
+                // every direct session announces it. In pure Relay
+                // mode we skip this; Direct sessions don't carry
+                // room broadcasts.
+                let direct_wire = match self.mode {
+                    RoomMode::Gossip | RoomMode::Hybrid => {
+                        let wire = wire_name(self.me, &name);
+                        if let Err(err) = self
+                            .live
+                            .publish_broadcast_producer(wire.clone(), producer)
+                            .await
+                        {
+                            warn!(%name, "failed to register direct broadcast: {err:#}");
+                            return;
+                        }
+                        Some(wire)
+                    }
+                    RoomMode::Relay => None,
+                };
+
+                // Relay-mode announce. The publisher session has
+                // root `room/<topic>/<my_id>`, so a bare-name
+                // publish lands at `room/<topic>/<my_id>/<name>`
+                // on the relay's primary origin, which is the
+                // wire-uniform `<my_id>/<name>` form once
+                // subscribers strip the room root.
+                let relay_announce = match (self.relay_publisher.as_ref(), self.mode) {
+                    (Some(session), RoomMode::Relay | RoomMode::Hybrid) => {
+                        let consumer = global_consumer.clone();
+                        session.publish(name.clone(), consumer.clone());
+                        Some(RelayAnnounce {
+                            _session: session.clone(),
+                            _consumer: consumer,
+                        })
+                    }
+                    _ => None,
+                };
+
                 self.active_publish.insert(
                     name.clone(),
                     ActivePublish {
                         global_consumer,
                         relay: relay_announce,
+                        _direct_wire: direct_wire,
                     },
                 );
                 self.publish_closed.push(Box::pin(async move {
@@ -770,7 +932,7 @@ impl Actor {
                 }));
                 info!(
                     broadcasts=?self.active_publish.keys().collect::<Vec<_>>(),
-                    "updating gossip kv with published broadcasts",
+                    "updated active publishes",
                 );
                 self.update_kv().await;
             }
@@ -814,43 +976,53 @@ impl Actor {
         }
     }
 
-    /// Opens the relay session and announces `name` on it when a
-    /// relay is configured for this room. Returns `None` when the
-    /// room has no relay attached or when the connection or
-    /// announce setup fails.
-    async fn attach_relay_announce(
-        &self,
-        name: &str,
-        consumer: &moq_lite::BroadcastConsumer,
-    ) -> Option<RelayAnnounce> {
-        let offer = self.relay.as_ref()?;
-        let target = offer.to_target();
-        let session = match self.live.connect_relay(&target).await {
-            Ok(session) => session,
-            Err(err) => {
-                warn!(name, "failed to connect to relay for announce: {err:#}");
-                return None;
-            }
-        };
-        let consumer = consumer.clone();
-        session.publish(name.to_string(), consumer.clone());
-        Some(RelayAnnounce {
-            _session: session,
-            _consumer: consumer,
-        })
-    }
-
-    /// Re-runs [`Self::attach_relay_announce`] for every active
-    /// publish so that toggling the room's relay at runtime adds
-    /// or drops the relay-side announce for each broadcast.
+    /// Re-runs the relay-side publish for every active broadcast.
+    ///
+    /// In [`RoomMode::Gossip`] this is invoked on
+    /// `enable_relay`/`disable_relay`: the actor opens or closes
+    /// the publisher session and re-announces on the new state.
+    /// In [`RoomMode::Relay`]/[`RoomMode::Hybrid`] the publisher
+    /// session is set up at construction; this routine is a no-op
+    /// when the relay configuration matches.
     async fn refresh_relay_announces(&mut self) {
+        // Open or close the publisher session to match
+        // `self.relay`.
+        match (&self.relay, self.relay_publisher.as_ref()) {
+            (Some(offer), None) => {
+                match open_relay_publisher(&self.live, &self.ticket, self.me, offer).await {
+                    Ok(session) => self.relay_publisher = Some(session),
+                    Err(err) => {
+                        warn!("failed to open relay publisher session: {err:#}");
+                        return;
+                    }
+                }
+            }
+            (None, Some(_)) => {
+                self.relay_publisher = None;
+            }
+            _ => {}
+        }
+
         let names: Vec<String> = self.active_publish.keys().cloned().collect();
         for name in names {
-            let consumer = match self.active_publish.get(&name) {
-                Some(pub_state) => pub_state.global_consumer.clone(),
-                None => continue,
+            let new_announce = match (self.relay_publisher.as_ref(), &self.relay) {
+                (Some(session), Some(_)) => {
+                    let consumer = self
+                        .active_publish
+                        .get(&name)
+                        .map(|s| s.global_consumer.clone());
+                    if let Some(consumer) = consumer {
+                        session.publish(name.clone(), consumer.clone());
+                        Some(RelayAnnounce {
+                            _session: session.clone(),
+                            _consumer: consumer,
+                        })
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
             };
-            let new_announce = self.attach_relay_announce(&name, &consumer).await;
             if let Some(pub_state) = self.active_publish.get_mut(&name) {
                 pub_state.relay = new_announce;
             }
@@ -872,40 +1044,83 @@ impl Actor {
     }
 
     /// Builds the source set a subscriber should use for `remote`'s
-    /// broadcasts given its advertised relay (if any) and this
-    /// peer's subscribe mode.
+    /// broadcasts.
+    ///
+    /// The set is mode-aware:
+    /// - [`RoomMode::Gossip`]: a `Direct` source for `remote`. If
+    ///   the peer advertised a relay hint and the subscribe mode
+    ///   permits, the relay is added as a fallback.
+    /// - [`RoomMode::Relay`]: a single `Relay` source pointing at
+    ///   the room's relay rooted at `room/<topic>`. Subscribing to
+    ///   `<remote>/<name>` on that session pulls the peer's
+    ///   broadcast.
+    /// - [`RoomMode::Hybrid`]: both sources.
     fn sources_for_peer(&self, remote: EndpointId, peer_relay: Option<&RelayOffer>) -> SourceSet {
         let mut set = SourceSet::new();
-        let include_direct = matches!(
-            self.subscribe_mode,
-            RoomSubscribeMode::PreferDirect
-                | RoomSubscribeMode::PreferRelay
-                | RoomSubscribeMode::DirectOnly
-        );
-        let include_relay = matches!(
-            self.subscribe_mode,
-            RoomSubscribeMode::PreferDirect
-                | RoomSubscribeMode::PreferRelay
-                | RoomSubscribeMode::RelayOnly
-        );
-        let direct = TransportSource::direct(iroh::EndpointAddr::new(remote));
-        let relay = peer_relay.map(|offer| TransportSource::relay(offer.to_target()));
+
+        let want_direct = matches!(self.mode, RoomMode::Gossip | RoomMode::Hybrid)
+            && matches!(
+                self.subscribe_mode,
+                RoomSubscribeMode::PreferDirect
+                    | RoomSubscribeMode::PreferRelay
+                    | RoomSubscribeMode::DirectOnly
+            );
+        let want_relay = matches!(self.mode, RoomMode::Relay | RoomMode::Hybrid)
+            && matches!(
+                self.subscribe_mode,
+                RoomSubscribeMode::PreferDirect
+                    | RoomSubscribeMode::PreferRelay
+                    | RoomSubscribeMode::RelayOnly
+            );
+        let want_peer_relay_hint = matches!(self.mode, RoomMode::Gossip)
+            && matches!(
+                self.subscribe_mode,
+                RoomSubscribeMode::PreferDirect
+                    | RoomSubscribeMode::PreferRelay
+                    | RoomSubscribeMode::RelayOnly
+            );
+
+        let direct = if want_direct {
+            Some(TransportSource::direct(iroh::EndpointAddr::new(remote)))
+        } else {
+            None
+        };
+        let room_relay = if want_relay && let Some(offer) = self.relay.as_ref() {
+            use crate::relay::RelayTarget;
+            let target = RelayTarget::new(offer.endpoint)
+                .with_path(&self.ticket.relay_room_path())
+                .with_api_key(offer.api_key.clone());
+            Some(TransportSource::relay(target))
+        } else {
+            None
+        };
+        let peer_relay = if want_peer_relay_hint {
+            peer_relay.map(|offer| TransportSource::relay(offer.to_target()))
+        } else {
+            None
+        };
 
         match self.subscribe_mode {
             RoomSubscribeMode::PreferDirect | RoomSubscribeMode::DirectOnly => {
-                if include_direct {
-                    set.push(direct);
+                if let Some(s) = direct {
+                    set.push(s);
                 }
-                if include_relay && let Some(relay) = relay {
-                    set.push(relay);
+                if let Some(s) = room_relay {
+                    set.push(s);
+                }
+                if let Some(s) = peer_relay {
+                    set.push(s);
                 }
             }
             RoomSubscribeMode::PreferRelay | RoomSubscribeMode::RelayOnly => {
-                if include_relay && let Some(relay) = relay {
-                    set.push(relay);
+                if let Some(s) = room_relay {
+                    set.push(s);
                 }
-                if include_direct {
-                    set.push(TransportSource::direct(iroh::EndpointAddr::new(remote)));
+                if let Some(s) = peer_relay {
+                    set.push(s);
+                }
+                if let Some(s) = direct {
+                    set.push(s);
                 }
             }
         }
@@ -1026,48 +1241,7 @@ impl Actor {
         }
 
         for name in broadcasts.clone() {
-            let id = BroadcastId(remote, name.clone());
-            if self.active_subscribe.contains_key(&id) {
-                debug!(broadcast=%id, "already subscribing to broadcast, skipping");
-                continue;
-            }
-            info!(broadcast=%id, "initiating multi-source subscription to remote broadcast");
-            let set = self.sources_for_peer(remote, relay.as_ref());
-            if set.is_empty() {
-                warn!(broadcast=%id, "no sources for peer under current subscribe mode");
-                continue;
-            }
-            let multi = self.live.subscribe(set, name.clone());
-            // Reserve the slot so we don't issue a duplicate
-            // subscribe on the next gossip tick. The watcher abort
-            // handle is installed here so the watcher's lifetime
-            // tracks the entry; on `connecting` resolving we keep
-            // the same entry but may replace the multi if the wait
-            // failed.
-            let event_watcher = self.spawn_active_watcher(id.clone(), multi.clone());
-            self.active_subscribe.insert(
-                id.clone(),
-                ActiveSubscribe {
-                    multi: multi.clone(),
-                    _event_watcher: event_watcher,
-                },
-            );
-            let id_for_task = id.clone();
-            self.connecting.push(Box::pin(async move {
-                let res = match multi.wait_active().await {
-                    Some(_) => SubscribeResult {
-                        subscription: Some(multi),
-                        err: None,
-                    },
-                    None => SubscribeResult {
-                        subscription: None,
-                        err: Some(anyerr!(
-                            "multi-source subscription closed with no active source"
-                        )),
-                    },
-                };
-                (id_for_task, res)
-            }));
+            self.ensure_subscription(remote, name);
         }
         if self
             .event_tx
@@ -1085,13 +1259,123 @@ impl Actor {
         true
     }
 
+    /// Reacts to one event from the relay-discovery watcher.
+    ///
+    /// Returns `false` if the event-emit loop should stop.
+    async fn handle_relay_discovery_event(&mut self, event: RelayDiscoveryEvent) -> bool {
+        match event {
+            RelayDiscoveryEvent::Announce { peer, name } => {
+                if name.len() > MAX_BROADCAST_NAME_LEN {
+                    warn!(
+                        peer=%peer.fmt_short(),
+                        len=name.len(),
+                        cap=MAX_BROADCAST_NAME_LEN,
+                        "dropping over-long relay announce name"
+                    );
+                    return true;
+                }
+                if let std::collections::hash_map::Entry::Vacant(e) = self.known_peers.entry(peer) {
+                    e.insert(None);
+                    if self
+                        .event_tx
+                        .send(RoomEvent::PeerJoined {
+                            remote: peer,
+                            display_name: None,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        return false;
+                    }
+                }
+                self.ensure_subscription(peer, name.clone());
+                if self
+                    .event_tx
+                    .send(RoomEvent::RemoteAnnounced {
+                        remote: peer,
+                        broadcasts: vec![name],
+                        relay: None,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return false;
+                }
+                true
+            }
+            RelayDiscoveryEvent::Unannounce { peer, name } => {
+                let id = BroadcastId(peer, name);
+                self.active_subscribe.remove(&id);
+                let still_active = self.active_subscribe.keys().any(|b| b.0 == peer);
+                if !still_active && self.known_peers.remove(&peer).is_some() {
+                    let _ = self
+                        .event_tx
+                        .send(RoomEvent::PeerLeft { remote: peer })
+                        .await;
+                }
+                true
+            }
+        }
+    }
+
+    /// Idempotent: builds (or refreshes) the subscription for a
+    /// `(peer, broadcast_name)` pair. Called from both the gossip
+    /// and relay-discovery paths.
+    fn ensure_subscription(&mut self, remote: EndpointId, name: String) {
+        let id = BroadcastId(remote, name.clone());
+        if self.active_subscribe.contains_key(&id) {
+            debug!(broadcast=%id, "already subscribing to broadcast, skipping");
+            return;
+        }
+        let peer_relay = self
+            .peer_relays
+            .get(&remote)
+            .and_then(|r| r.as_ref())
+            .cloned();
+        let set = self.sources_for_peer(remote, peer_relay.as_ref());
+        if set.is_empty() {
+            warn!(broadcast=%id, mode=?self.mode, "no sources for peer under current configuration");
+            return;
+        }
+        let wire = wire_name(remote, &name);
+        info!(broadcast=%id, wire=%wire, "initiating multi-source subscription");
+        let multi = self.live.subscribe(set, wire);
+        let event_watcher = self.spawn_active_watcher(id.clone(), multi.clone());
+        self.active_subscribe.insert(
+            id.clone(),
+            ActiveSubscribe {
+                multi: multi.clone(),
+                _event_watcher: event_watcher,
+            },
+        );
+        let id_for_task = id.clone();
+        self.connecting.push(Box::pin(async move {
+            let res = match multi.wait_active().await {
+                Some(_) => SubscribeResult {
+                    subscription: Some(multi),
+                    err: None,
+                },
+                None => SubscribeResult {
+                    subscription: None,
+                    err: Some(anyerr!(
+                        "multi-source subscription closed with no active source"
+                    )),
+                },
+            };
+            (id_for_task, res)
+        }));
+    }
+
     async fn update_kv(&self) {
+        let Some(gossip) = self.gossip.as_ref() else {
+            return;
+        };
         let state = PeerState {
             broadcasts: self.active_publish.keys().cloned().collect(),
             display_name: self.display_name.clone(),
             relay: self.relay.clone(),
         };
-        if let Err(err) = self
+        if let Err(err) = gossip
             .kv_writer
             .put(
                 PEER_STATE_KEY,
@@ -1104,6 +1388,110 @@ impl Actor {
     }
 }
 
+/// Wire-uniform broadcast name for a peer's broadcast within this
+/// room. Direct sessions, gossip-published `PeerState` entries,
+/// and relay announces all converge on this string shape.
+fn wire_name(peer: EndpointId, broadcast_name: &str) -> String {
+    format!("{}/{}", peer, broadcast_name)
+}
+
+/// Parses a wire path of the form `<peer>/<broadcast_name>` into
+/// its components. Returns `None` for paths with the wrong shape
+/// or an unparseable peer id.
+fn parse_wire_name(path: &str) -> Option<(EndpointId, String)> {
+    let (peer_part, name) = path.split_once('/')?;
+    let peer: EndpointId = peer_part.parse().ok()?;
+    Some((peer, name.to_string()))
+}
+
+/// Opens the relay discovery session for a room.
+///
+/// The session is rooted at `room/<topic_hex>`. The spawned watcher
+/// task forwards parsed announce events through the returned
+/// channel.
+async fn open_relay_discovery(
+    live: &Live,
+    ticket: &RoomTicket,
+    offer: &RelayOffer,
+) -> Result<RelayDiscovery> {
+    use crate::relay::RelayTarget;
+    let target = RelayTarget::new(offer.endpoint)
+        .with_path(&ticket.relay_room_path())
+        .with_api_key(offer.api_key.clone());
+    let session = live
+        .connect_relay(&target)
+        .await
+        .std_context("connect to relay for room discovery")?;
+    let (tx, rx) = mpsc::channel(MAX_PEER_BROADCASTS);
+    let me = live.endpoint().id();
+    let watcher = spawn_relay_announce_watcher(session.clone(), me, tx);
+    Ok(RelayDiscovery {
+        _session: session,
+        rx,
+        _watcher: AbortOnDropHandle::new(watcher),
+    })
+}
+
+/// Opens the relay publisher session for this peer.
+///
+/// The session is rooted at `room/<topic_hex>/<my_id>`. Calls to
+/// `session.publish(name, ...)` register at
+/// `room/<topic_hex>/<my_id>/<name>` on the relay's primary origin.
+async fn open_relay_publisher(
+    live: &Live,
+    ticket: &RoomTicket,
+    me: EndpointId,
+    offer: &RelayOffer,
+) -> Result<MoqSession> {
+    use crate::relay::RelayTarget;
+    let target = RelayTarget::new(offer.endpoint)
+        .with_path(&ticket.relay_publisher_path(me))
+        .with_api_key(offer.api_key.clone());
+    live.connect_relay(&target)
+        .await
+        .std_context("connect to relay for publisher session")
+}
+
+/// Spawns a task that walks the relay discovery session's announce
+/// stream and emits parsed `(peer, name, present)` events.
+fn spawn_relay_announce_watcher(
+    session: MoqSession,
+    me: EndpointId,
+    tx: mpsc::Sender<RelayDiscoveryEvent>,
+) -> task::JoinHandle<()> {
+    let span = tracing::info_span!("RelayDiscovery");
+    task::spawn(
+        async move {
+            let mut consumer = session.origin_consumer().clone();
+            loop {
+                let Some((path, present)) = consumer.announced().await else {
+                    debug!("relay discovery announce stream closed");
+                    break;
+                };
+                let path_str = path.as_str();
+                let Some((peer, name)) = parse_wire_name(path_str) else {
+                    debug!(path = %path_str, "ignoring unparseable announce path");
+                    continue;
+                };
+                if peer == me {
+                    // Echo of our own publish; suppress.
+                    continue;
+                }
+                let event = if present.is_some() {
+                    RelayDiscoveryEvent::Announce { peer, name }
+                } else {
+                    RelayDiscoveryEvent::Unannounce { peer, name }
+                };
+                if tx.send(event).await.is_err() {
+                    debug!("room actor dropped relay discovery channel");
+                    break;
+                }
+            }
+        }
+        .instrument(span),
+    )
+}
+
 mod ticket {
     use std::{env, str::FromStr};
 
@@ -1112,48 +1500,153 @@ mod ticket {
     use n0_error::{Result, StdResultExt};
     use serde::{Deserialize, Serialize};
 
+    use crate::sources::RelayOffer;
+
+    /// Mode a [`RoomTicket`] joins under.
+    ///
+    /// The mode selects how peers discover each other and how
+    /// broadcasts move between them. The user-facing API
+    /// ([`Live::join_room`](crate::Live::join_room),
+    /// [`Room::publish`](super::Room::publish)) is identical
+    /// across modes; only the wire-level mechanics differ.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[non_exhaustive]
+    pub enum RoomMode {
+        /// Discovery via gossip; transport via direct iroh
+        /// sessions. The gossip topic is `topic_id`. The optional
+        /// relay (if attached) acts purely as a hint other peers
+        /// can use as a fallback transport.
+        Gossip,
+        /// Discovery and transport via the relay. No gossip is
+        /// used. Peers connect to the relay rooted at
+        /// `room/<topic_hex>` and watch its announce stream.
+        Relay,
+        /// Discovery via both gossip and the relay; transport via
+        /// direct sessions when reachable, relay otherwise. Same
+        /// gossip topic and relay path as in the single-mode
+        /// variants.
+        Hybrid,
+    }
+
     /// Ticket for joining a room.
     ///
-    /// Contains the gossip topic ID and optional bootstrap peer IDs.
-    /// Serializes to a compact string via the `iroh_tickets` crate.
+    /// Carries the room id (`topic_id`), the gossip bootstrap
+    /// peers (used in [`RoomMode::Gossip`] and [`RoomMode::Hybrid`]),
+    /// the optional relay attachment (required in
+    /// [`RoomMode::Relay`] and [`RoomMode::Hybrid`]), and the mode
+    /// itself. Serializes to a compact string via the
+    /// `iroh_tickets` crate.
     #[derive(Debug, Serialize, Deserialize, Clone, derive_more::Display)]
     #[display("{}", iroh_tickets::Ticket::serialize(self))]
     pub struct RoomTicket {
-        /// Peers to contact initially for gossip bootstrap.
+        /// Peers to contact initially for gossip bootstrap. Empty
+        /// in [`RoomMode::Relay`].
         pub bootstrap: Vec<EndpointId>,
-        /// The gossip topic that identifies this room.
+        /// The room id. Doubles as the gossip topic in modes that
+        /// use gossip and as the relay path component
+        /// (`room/<topic_hex>`) in modes that use the relay.
         pub topic_id: TopicId,
-        /// Optional relay offer baked into the ticket. Peers that join
-        /// via this ticket MAY use the relay as an additional source
-        /// for any broadcast in the room that the relay carries.
+        /// Optional relay attachment. Required in
+        /// [`RoomMode::Relay`] and [`RoomMode::Hybrid`]; carried
+        /// as a hint in [`RoomMode::Gossip`].
         #[serde(default)]
-        pub relay: Option<crate::sources::RelayOffer>,
+        pub relay: Option<RelayOffer>,
+        /// Mode the ticket was minted for.
+        #[serde(default = "default_mode")]
+        pub mode: RoomMode,
+    }
+
+    fn default_mode() -> RoomMode {
+        RoomMode::Gossip
     }
 
     impl RoomTicket {
-        /// Creates a ticket with the given topic and bootstrap peers.
+        /// Creates a ticket with the given topic and bootstrap
+        /// peers in [`RoomMode::Gossip`].
         pub fn new(topic_id: TopicId, bootstrap: impl IntoIterator<Item = EndpointId>) -> Self {
             Self {
                 bootstrap: bootstrap.into_iter().collect(),
                 topic_id,
                 relay: None,
+                mode: RoomMode::Gossip,
             }
         }
 
-        /// Attaches a relay offer to the ticket.
+        /// Generates a [`RoomMode::Gossip`] ticket with a random
+        /// topic and no bootstrap peers.
+        pub fn generate() -> Self {
+            Self::new(TopicId::from_bytes(rand::random()), [])
+        }
+
+        /// Creates a [`RoomMode::Relay`] ticket with a random topic
+        /// id and the given relay attachment. Peers using the
+        /// returned ticket discover each other through the relay's
+        /// announce stream and route broadcasts through the relay.
+        pub fn for_relay(offer: RelayOffer) -> Self {
+            Self::for_relay_at(TopicId::from_bytes(rand::random()), offer)
+        }
+
+        /// Creates a [`RoomMode::Relay`] ticket with an explicit
+        /// topic id.
+        pub fn for_relay_at(topic_id: TopicId, offer: RelayOffer) -> Self {
+            Self {
+                bootstrap: Vec::new(),
+                topic_id,
+                relay: Some(offer),
+                mode: RoomMode::Relay,
+            }
+        }
+
+        /// Attaches a relay to the ticket.
+        ///
+        /// Promotes the mode from [`Gossip`](RoomMode::Gossip) to
+        /// [`Hybrid`](RoomMode::Hybrid). [`Relay`](RoomMode::Relay)
+        /// stays [`Relay`](RoomMode::Relay) but the offer is
+        /// replaced.
         #[must_use]
-        pub fn with_relay(mut self, offer: crate::sources::RelayOffer) -> Self {
+        pub fn with_relay(mut self, offer: RelayOffer) -> Self {
             self.relay = Some(offer);
+            self.mode = match self.mode {
+                RoomMode::Gossip => RoomMode::Hybrid,
+                other => other,
+            };
             self
         }
 
-        /// Generates a new room with a random topic ID and no bootstrap peers.
-        pub fn generate() -> Self {
-            Self {
-                bootstrap: vec![],
-                topic_id: TopicId::from_bytes(rand::random()),
-                relay: None,
+        /// Adds a bootstrap peer.
+        #[must_use]
+        pub fn with_bootstrap(mut self, peer: EndpointId) -> Self {
+            if !self.bootstrap.contains(&peer) {
+                self.bootstrap.push(peer);
             }
+            self
+        }
+
+        /// Returns the mode this ticket was minted for.
+        pub fn mode(&self) -> RoomMode {
+            self.mode
+        }
+
+        /// Returns the relay path component for this room.
+        ///
+        /// Equal to `format!("room/{}", topic_hex)` where
+        /// `topic_hex` is the lowercase-hex of the topic id.
+        /// Used by [`RoomMode::Relay`] and [`RoomMode::Hybrid`]
+        /// peers when connecting their discovery session.
+        pub fn relay_room_path(&self) -> String {
+            format!(
+                "/room/{}",
+                data_encoding::HEXLOWER.encode(self.topic_id.as_bytes())
+            )
+        }
+
+        /// Returns the per-peer relay path component for this
+        /// room. Used by publishers when opening their outbound
+        /// publisher session. The peer id is encoded in its full
+        /// canonical form so the discovery path components round-
+        /// trip through `EndpointId::from_str`.
+        pub fn relay_publisher_path(&self, me: EndpointId) -> String {
+            format!("{}/{}", self.relay_room_path(), me)
         }
 
         /// Creates a ticket from environment variables.

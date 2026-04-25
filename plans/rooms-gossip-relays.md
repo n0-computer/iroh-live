@@ -371,3 +371,229 @@ Conventional prefixes required: `feat:`, `fix:`, `refactor:`,
 `test:`, `docs:`, `chore:`. Refactors land first with no behaviour
 change. Feature commits add behaviour. Test changes land with the
 code they exercise. No standalone doc-only commits.
+
+## Phase 2: relay-only rooms and three-mode unification
+
+### User stories
+
+**Mode A (gossip + direct).** Two friends starting a call. No
+infrastructure.
+
+```rust
+let ticket = RoomTicket::generate();
+let room = live.join_room(ticket).await?;
+room.publish("cam", &broadcast).await?;
+```
+
+**Mode B (relay-only).** Web app provider hosting users behind NAT.
+No peer-to-peer; everything routes through the relay.
+
+```rust
+let ticket = RoomTicket::for_relay(relay_offer);
+let room = live.join_room(ticket).await?;
+room.publish("cam", &broadcast).await?;
+```
+
+**Mode C (hybrid: direct + relay fallback).** Streaming app where
+direct is preferred when reachable, relay handles the long tail.
+
+```rust
+let ticket = RoomTicket::generate().with_relay(relay_offer);
+let room = live.join_room(ticket).await?;
+room.publish("cam", &broadcast).await?;
+```
+
+The user-facing surface is identical across modes. Mode selection
+lives entirely on the ticket.
+
+### Wire-level naming
+
+A room's broadcasts ride a uniform name shape on the wire:
+
+```
+<peer_endpoint_id>/<broadcast_name>
+```
+
+For mode A (direct), the publisher registers
+`Live::publish_broadcast_producer(format!("{my_id}/{name}"), ...)`.
+The bare-name registration the prior plan envisioned becomes a
+subdirectory on the publisher's MoQ origin. Direct subscribers see
+the same `<my_id>/<name>` path as relay subscribers do, so the
+multi-source [`Subscription`] can use one broadcast name across
+sources without per-source name plumbing.
+
+For modes B and C, the publisher opens an outbound H3 session to
+the relay rooted at `room/<topic_hex>/<my_id>`. A bare `cam`
+publish on that session lands at `room/<topic_hex>/<my_id>/cam`
+on the relay's primary origin.
+
+For modes B and C, the discovery session connects rooted at
+`room/<topic_hex>` and consumes `<peer>/<name>` announces; the
+relay strips the discovery root automatically.
+
+`<topic_hex>` is the room's [`TopicId`] hex-encoded. The same
+identifier doubles as the gossip topic id in modes A and C.
+
+### Discovery
+
+Mode A: gossip KV. Existing path. Each peer's `PeerState` carries
+the user-facing names (e.g. `cam`); the room actor turns them into
+`<peer>/<name>` for subscribe.
+
+Mode B: relay's [`OriginConsumer::announced`]
+(moq_lite::OriginConsumer::announced) stream filtered by prefix.
+The room opens one discovery session rooted at `room/<topic>` and
+walks the announce stream. Each `(path, Some(consumer))` becomes
+"peer announced"; each `(path, None)` becomes "peer ended".
+
+Mode C: both. The actor has both a gossip KV update stream and a
+relay announce stream. Events from either source feed the same
+`(peer, broadcast)` map; the actor dedupes. Either signal is
+sufficient to start a subscription.
+
+### Transport
+
+Subscriptions use the unified `Live::subscribe` path. The
+`SourceSet` per `(peer, broadcast)` is built mode-aware:
+
+- Mode A: `[Direct(peer)]`.
+- Mode B: `[Relay(target_room_root)]`. The broadcast name is
+  `<peer>/<name>` (relative to the relay root).
+- Mode C: `[Direct(peer), Relay(target_room_root)]`. Same name on
+  both.
+
+`PreferOrdered` keeps direct preferred when both work.
+
+### Room actor refactor
+
+`Discovery` enum captures the three modes:
+
+```rust
+enum Discovery {
+    Gossip(GossipDiscovery),
+    Relay(RelayDiscovery),
+    Hybrid { gossip: GossipDiscovery, relay: RelayDiscovery },
+}
+```
+
+Each variant implements one event-producing method. The actor's
+top-level select polls events from each active variant and feeds
+them into the same `(peer, broadcast)` reconciliation logic.
+
+`RelayDiscovery` owns:
+- The discovery session (rooted at `room/<topic>`).
+- A spawned task that walks `OriginConsumer::announced` and forwards
+  parsed `(peer_id, broadcast_name, present)` tuples through an
+  mpsc.
+
+`GossipDiscovery` is the existing gossip+KV plumbing renamed.
+
+### Publisher refactor
+
+`ActivePublish` gains both a direct entry (when gossip/hybrid) and
+a relay entry (when relay/hybrid):
+
+```rust
+struct ActivePublish {
+    /// Global publish under `<my_id>/<name>`. Present for modes A,
+    /// C. Absent in mode B.
+    direct: Option<BroadcastConsumer>,
+    /// Outbound publisher session at `room/<topic>/<my_id>`,
+    /// announcing `<name>` (relative). Present for modes B, C.
+    relay: Option<RelayPublishHandle>,
+    /// Held for close-detection regardless of mode.
+    close_consumer: BroadcastConsumer,
+}
+```
+
+`enable_relay`/`disable_relay` mutate the relay portion at runtime
+in modes A and C. Mode B requires the relay; disable_relay is a
+no-op (or returns an error).
+
+### RoomTicket layout
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoomTicket {
+    /// 32-byte identifier; doubles as gossip topic and relay
+    /// path component.
+    pub topic_id: TopicId,
+    /// Gossip bootstrap peers; empty disables gossip.
+    pub bootstrap: Vec<EndpointId>,
+    /// Optional relay attachment. Required in `RoomMode::Relay`.
+    pub relay: Option<RelayOffer>,
+    /// Explicit mode. Constructors set this; callers may toggle
+    /// to switch modes.
+    pub mode: RoomMode,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RoomMode {
+    /// Discovery via gossip; transport direct (with optional
+    /// relay fallback).
+    Gossip,
+    /// Discovery and transport via relay; no gossip.
+    Relay,
+    /// Discovery via both gossip and relay; transport via direct
+    /// preferred, relay as fallback.
+    Hybrid,
+}
+```
+
+Constructors:
+
+```rust
+RoomTicket::generate()           // Gossip + random topic
+RoomTicket::new(topic, bootstrap) // Gossip explicit
+RoomTicket::for_relay(offer)     // Relay + random topic
+RoomTicket::for_relay_at(topic, offer) // Relay explicit
+ticket.with_relay(offer)         // Gossip -> Hybrid, attach offer
+ticket.with_bootstrap(peer)      // add a bootstrap peer
+```
+
+### Mode validation
+
+`Live::join_room` validates the ticket against the live instance:
+
+- `RoomMode::Gossip` / `Hybrid` requires `Live` to have gossip
+  enabled. Returns an error if not.
+- `RoomMode::Relay` does not require gossip. Returns an error if
+  the ticket's `relay` field is `None`.
+
+### Tests
+
+- Mode A: existing room.rs tests cover.
+- Mode B: new test using a real moq-relay (the bridge tests
+  already spin one up). Three peers join via relay, publish
+  broadcasts, see each other's via the announce stream. No gossip.
+- Mode C: extension of room_relay.rs to exercise both gossip and
+  relay simultaneously.
+
+### Risks
+
+- Relay JWT scoping. The publisher's session needs to be allowed
+  to publish at `room/<topic>/<my_id>`. The discovery session
+  needs subscribe access to `room/<topic>`. The simplest token
+  shape is: root `room/<topic>`, subscribe `[""]`, publish
+  `["<my_id>"]`. Callers (or the relay operator) mint the token
+  out of band; the room ticket carries the JWT verbatim.
+
+  For the V1 we accept any JWT in the ticket and document the
+  requirement. The permissive-mode tests do not require a JWT.
+
+- Multiple sessions to one relay. Each `Subscription` opens its
+  own H3 session. With N peers and M broadcasts each, that's
+  N\*M sessions. For typical room sizes this is fine; for very
+  large rooms, follow-up work may share a single session across
+  subscriptions.
+
+- Gossip + relay event dedup. In hybrid mode, both gossip and
+  the relay announce stream may report the same broadcast. The
+  actor deduplicates by `(peer, name)` and keeps a single
+  `Subscription` per pair.
+
+- Path leakage. The relay publisher session's path
+  `room/<topic>/<my_id>` is encoded in its JWT/URL. A relay
+  operator can see all peers in all rooms by watching their
+  primary origin. This is the intended trust model.

@@ -613,3 +613,105 @@ Open follow-ups (justified deferrals)
   new types but the command-line flags themselves still match
   the prior `--relay <id> --api-key <jwt>` shape; expanding to
   multi-source CLI flags is a follow-up.
+
+### 2026-04-25 15:00 - Phase 2: relay-only rooms
+
+User asked for relay-only rooms: discovery happens through the
+relay's announce stream, not gossip; publish paths follow
+`room/<topic>/<peer>/<name>`. Three modes must work equally well
+with minimal API friction.
+
+Research summary
+
+- moq-lite's `OriginConsumer::announced` yields `(path, Option<consumer>)`
+  on a long-lived stream and supports prefix filtering via
+  `consume_only(["room/abc/"])`. Closes are surfaced as
+  `(path, None)`. (See moq-lite `model/origin.rs`.)
+- moq-relay derives `AuthToken.root` from the URL path. A
+  publisher rooted at `room/abc/peer1` publishing `cam` lands at
+  `room/abc/peer1/cam` on the primary origin. A subscriber rooted
+  at `room/abc` sees announces relative to its root, i.e.
+  `peer1/cam`. (See moq-relay `auth.rs`, `cluster.rs`.)
+- Per-peer subdirectory roots naturally partition publishes; no
+  collision across peers in the same room.
+
+Wire-uniform name
+
+The breakthrough: by publishing direct broadcasts under
+`<my_id>/<name>` instead of bare `<name>`, the wire path matches
+the relay's `<peer>/<name>` (relative-to-root) form. The
+multi-source `Subscription` can use one broadcast name across
+direct and relay sources without per-source name plumbing. The
+prior plan flirted with adding a per-source name resolver to
+`Subscription`; this name-shape unification removes the need.
+
+Plan updated; adversarial review noted three concerns (session
+multiplication on the relay side, hybrid-mode event dedup, and
+JWT scoping). All three have known answers in the plan. Going
+to implement now.
+
+### 2026-04-25 16:30 - Phase 2 implementation complete
+
+Shipped the three modes end-to-end:
+
+- `RoomTicket` grew `mode: RoomMode { Gossip, Relay, Hybrid }`
+  along with constructors `for_relay`, `for_relay_at`, and a
+  `with_relay` that promotes Gossip to Hybrid.
+- The actor now carries optional `gossip: Option<GossipState>`
+  and `relay_discovery: Option<RelayDiscovery>`. `Actor::new`
+  selects which to spawn based on the ticket's mode. Gossip-mode
+  preconditions remain: `Live::join_room` rejects a Gossip or
+  Hybrid ticket when gossip is not enabled on `Live`, and a
+  Relay-mode ticket when no `relay` is attached.
+- `RelayDiscovery` opens a long-lived H3 session at
+  `room/<topic_hex>` and a watcher task forwards the relay's
+  announce stream as `RelayDiscoveryEvent::{Announce, Unannounce}`
+  events. The actor polls the events channel alongside its
+  gossip stream in the same `tokio::select!`.
+- Wire-uniform broadcast names: in Gossip and Hybrid modes, the
+  room's direct publish registers under `<my_id>/<name>` (not
+  bare `<name>`). In Relay and Hybrid modes, the relay publisher
+  session is rooted at `room/<topic_hex>/<my_id>` and publishes
+  bare `<name>`. Both shapes converge on `<peer>/<name>` from a
+  subscriber's point of view, so the multi-source `Subscription`
+  can use one broadcast name across direct and relay candidates.
+- `sources_for_peer` returns mode-aware candidates: direct only
+  in Gossip, relay only in Relay, both in Hybrid.
+
+Tests
+- `iroh-live-relay/tests/relay_room.rs` (new): three-peer
+  Relay-only room over a real moq-relay; hybrid two-peer room
+  with gossip discovery and relay attachment;
+  Live::join_room rejects a Relay-mode ticket without a relay.
+- All existing tests still pass: 21 unit, 7 multi-source, 4
+  broadcaster, 4 e2e, 4 ticket-relays, 4 room-relay, 6 room.
+- `cargo make check-all` clean.
+
+Public API additions
+
+- `iroh_live::rooms::RoomMode` (new enum).
+- `iroh_live::rooms::TopicId` (re-export of `iroh_gossip::TopicId`).
+- `RoomTicket::for_relay(offer)`, `RoomTicket::for_relay_at(topic, offer)`.
+- `RoomTicket::mode()`, `relay_room_path()`, `relay_publisher_path()`.
+- `RoomTicket::with_bootstrap(peer)`.
+- `RoomMode::Gossip` / `Relay` / `Hybrid`.
+- `with_relay(self, offer)` promotes Gossip to Hybrid.
+
+User-facing flow is identical across modes:
+
+```rust
+// Mode A (gossip + direct)
+let ticket = RoomTicket::generate();
+let room = live.join_room(ticket).await?;
+room.publish("cam", &broadcast).await?;
+
+// Mode B (relay only)
+let ticket = RoomTicket::for_relay(offer);
+let room = live.join_room(ticket).await?;
+room.publish("cam", &broadcast).await?;
+
+// Mode C (hybrid)
+let ticket = RoomTicket::generate().with_relay(offer);
+let room = live.join_room(ticket).await?;
+room.publish("cam", &broadcast).await?;
+```
