@@ -72,8 +72,9 @@ async fn publish_side() -> anyhow::Result<()> {
 async fn subscribe_side(ticket: LiveTicket) -> anyhow::Result<()> {
     let live = Live::from_env().await?.spawn();
     let sub = live.subscribe(ticket.endpoint, &ticket.broadcast_name);
-    let audio = AudioBackend::default();
-    let tracks = sub.media(&audio, Default::default()).await?;
+    let audio: std::sync::Arc<dyn moq_media::traits::AudioStreamFactory> =
+        std::sync::Arc::new(AudioBackend::default());
+    let tracks = sub.media(audio, Default::default()).await?;
 
     if let Some(video) = tracks.video {
         while let Some(frame) = video.next_frame().await {

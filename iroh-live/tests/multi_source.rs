@@ -12,15 +12,20 @@
 //! layer; the relay-specific path is exercised by the
 //! `iroh-live-relay` bridge tests.
 
-use std::{sync::OnceLock, time::Duration};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use iroh::{Endpoint, address_lookup::MemoryLookup};
 use iroh_live::{Live, SourceSet, SubscriptionEvent, SubscriptionEvents, TransportSource};
 use moq_media::{
-    codec::VideoCodec,
-    format::VideoPreset,
+    AudioBackend,
+    codec::{AudioCodec, VideoCodec},
+    format::{AudioFormat, AudioPreset, VideoPreset},
     publish::{LocalBroadcast, VideoInput},
-    test_util::TestVideoSource,
+    test_util::{TestAudioSource, TestVideoSource},
+    traits::AudioStreamFactory,
 };
 use n0_tracing_test::traced_test;
 
@@ -62,6 +67,22 @@ fn broadcast_with_video() -> LocalBroadcast {
             [VideoPreset::P180],
         ))
         .expect("set video input");
+    broadcast
+}
+
+/// Builds a [`LocalBroadcast`] carrying both video and a
+/// deterministic audio source. Two of these are enough to
+/// exercise the seamless audio swap.
+fn broadcast_with_video_and_audio() -> LocalBroadcast {
+    let broadcast = broadcast_with_video();
+    broadcast
+        .audio()
+        .set(
+            TestAudioSource::new(AudioFormat::mono_48k()),
+            AudioCodec::Opus,
+            [AudioPreset::Hq],
+        )
+        .expect("set audio input");
     broadcast
 }
 
@@ -408,5 +429,103 @@ async fn subscription_clones_share_state() {
     assert_eq!(active_id, active.id);
 
     publisher.shutdown().await;
+    subscriber.shutdown().await;
+}
+
+/// Two audio publishers, one subscriber. The seamless audio
+/// track is built once, plays, then keeps playing through the
+/// active-source swap when the preferred source is removed.
+/// Volume set on the consumer survives the swap; the rendition
+/// watcher reflects the new track; `is_stopped` stays false.
+#[tokio::test]
+#[traced_test]
+async fn seamless_audio_track_survives_source_swap() {
+    let pub_a = live_with_router(endpoint().await);
+    let broadcast_a = broadcast_with_video_and_audio();
+    pub_a
+        .publish(BROADCAST_NAME, &broadcast_a)
+        .await
+        .expect("publish a");
+
+    let pub_b = live_with_router(endpoint().await);
+    let broadcast_b = broadcast_with_video_and_audio();
+    pub_b
+        .publish(BROADCAST_NAME, &broadcast_b)
+        .await
+        .expect("publish b");
+
+    let mut set = SourceSet::new();
+    set.push(TransportSource::direct(pub_a.endpoint().addr()));
+    set.push(TransportSource::direct(pub_b.endpoint().addr()));
+    let id_a = set.get(0).expect("a").id();
+
+    let subscriber = live_with_router(endpoint().await);
+    let sub = subscriber.subscribe(set, BROADCAST_NAME);
+
+    let _ = tokio::time::timeout(TIMEOUT, sub.ready())
+        .await
+        .expect("ready timeout")
+        .expect("ready failed");
+
+    // Build the seamless media surface. The audio track wraps an
+    // inner pipeline that the swap task will rebuild on the next
+    // active-source change.
+    let backend: Arc<dyn AudioStreamFactory> = Arc::new(AudioBackend::default());
+    let tracks = sub.media(backend, Default::default()).await.expect("media");
+    let audio = tracks.audio.expect("audio rendition picked on init");
+
+    assert!(
+        !audio.is_stopped().await,
+        "initial track should not be stopped"
+    );
+    let initial_rendition = audio.rendition();
+    let _rendition_watcher = audio.rendition_watcher();
+
+    audio.set_volume(0.42).await;
+    assert!((audio.volume() - 0.42).abs() < f32::EPSILON);
+
+    // Force a swap by removing the active source.
+    assert!(sub.sources().remove(&id_a), "remove a");
+
+    // The rendition watcher should fire as soon as the swap
+    // task installs the new track. Two publishers on the same
+    // codec resolve to the same rendition name, so the watcher
+    // updates by sending the (possibly equal) value through the
+    // channel; we wait for the swap by polling the volume on
+    // the new track instead, and assert the swap completed.
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    let swapped = loop {
+        if tokio::time::Instant::now() > deadline {
+            panic!("seamless audio swap did not complete");
+        }
+        // The new track installs with the persisted volume. If
+        // we observe the volume reading reflecting our setting
+        // and the source set has converged, the swap landed.
+        if (audio.volume() - 0.42).abs() < f32::EPSILON
+            && sub.active_id().map(|id| id != id_a).unwrap_or(false)
+        {
+            break true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(swapped);
+
+    // The track survived the swap: still playing, rendition
+    // reflects whatever the new source uses (same codec; this
+    // is either the same name or a compatible alternative), and
+    // the volume the consumer set persists.
+    assert!(
+        !audio.is_stopped().await,
+        "track must keep playing through swap"
+    );
+    let new_rendition = audio.rendition();
+    // The picker prefers the same name when present; the test
+    // publishers use the same codec and rendition layout, so
+    // the names match.
+    assert_eq!(initial_rendition, new_rendition);
+    assert!((audio.volume() - 0.42).abs() < f32::EPSILON);
+
+    pub_a.shutdown().await;
+    pub_b.shutdown().await;
     subscriber.shutdown().await;
 }

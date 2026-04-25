@@ -87,8 +87,9 @@ struct Inner {
 ///
 /// Held by reference so callers can read `session()` and
 /// `broadcast()` without cloning. Returned by
-/// [`Subscription::active`].
-#[derive(Debug)]
+/// [`Subscription::active`]. `Clone`d snapshots share the same
+/// underlying [`AttachedSubscription`] state.
+#[derive(Debug, Clone)]
 pub struct ActiveSource {
     /// Identifier of the active source.
     pub id: SourceId,
