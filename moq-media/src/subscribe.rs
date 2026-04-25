@@ -417,7 +417,7 @@ impl RemoteBroadcast {
     /// so the video decode loop gates frames on playout time. When
     /// [`SyncMode::Unmanaged`], `sync` is `None` and the decode loop
     /// falls back to PTS-cadence pacing.
-    fn pipeline_ctx(&self) -> PipelineContext {
+    pub fn pipeline_ctx(&self) -> PipelineContext {
         let sync = match self.playback_policy.sync {
             SyncMode::Synced => Some(self.sync.clone()),
             SyncMode::Unmanaged => None,
@@ -721,6 +721,84 @@ impl RemoteBroadcast {
                 return;
             }
         }
+    }
+
+    /// Builds a [`VideoDecoderPipeline`] for a named rendition.
+    ///
+    /// Returns the pipeline whose [`VideoDecoderFrames`](crate::pipeline::VideoDecoderFrames)
+    /// owns the receiver and whose [`VideoDecoderHandle`] keeps the
+    /// decoder thread alive. Used by callers that want to manage
+    /// the receiver themselves, for instance to implement seamless
+    /// transport-level swap on top of [`Self::video_rendition`].
+    pub fn build_video_pipeline<D: VideoDecoder>(
+        &self,
+        rendition: &str,
+        decode_config: &crate::format::DecodeConfig,
+    ) -> Result<crate::pipeline::VideoDecoderPipeline> {
+        let max_latency = self.playback_policy.max_latency;
+        let catalog = self.catalog();
+        let video = &catalog.video;
+        let config = video
+            .renditions
+            .get(rendition)
+            .context("rendition not found")?;
+        let track_consumer = self
+            .broadcast
+            .subscribe_track(&Track {
+                name: rendition.to_string(),
+                priority: VIDEO_PRIORITY,
+            })
+            .anyerr()?;
+        let consumer = OrderedConsumer::new(track_consumer, max_latency);
+        let source = MoqPacketSource::new(consumer);
+        let codec_config: rusty_codecs::config::VideoConfig = config.clone().into();
+        crate::pipeline::VideoDecoderPipeline::new::<D>(
+            rendition.to_string(),
+            source,
+            &codec_config,
+            decode_config,
+            self.pipeline_ctx(),
+        )
+        .map_err(n0_error::AnyError::from_anyhow)
+    }
+
+    /// Builds a [`VideoDecoderHandle`] feeding decoded frames into
+    /// the supplied [`FrameSender`](crate::frame_channel::FrameSender).
+    ///
+    /// Used by the seamless layer to swap an active decoder for a
+    /// new one writing into the consumer's existing receiver.
+    pub fn build_video_pipeline_with_sender<D: VideoDecoder>(
+        &self,
+        rendition: &str,
+        decode_config: &crate::format::DecodeConfig,
+        sender: crate::frame_channel::FrameSender<VideoFrame>,
+    ) -> Result<crate::pipeline::VideoDecoderHandle> {
+        let max_latency = self.playback_policy.max_latency;
+        let catalog = self.catalog();
+        let video = &catalog.video;
+        let config = video
+            .renditions
+            .get(rendition)
+            .context("rendition not found")?;
+        let track_consumer = self
+            .broadcast
+            .subscribe_track(&Track {
+                name: rendition.to_string(),
+                priority: VIDEO_PRIORITY,
+            })
+            .anyerr()?;
+        let consumer = OrderedConsumer::new(track_consumer, max_latency);
+        let source = MoqPacketSource::new(consumer);
+        let codec_config: rusty_codecs::config::VideoConfig = config.clone().into();
+        crate::pipeline::VideoDecoderPipeline::with_sender::<D>(
+            rendition.to_string(),
+            source,
+            &codec_config,
+            decode_config,
+            self.pipeline_ctx(),
+            sender,
+        )
+        .map_err(n0_error::AnyError::from_anyhow)
     }
 
     /// Subscribes to a video track and returns a raw [`MoqPacketSource`]

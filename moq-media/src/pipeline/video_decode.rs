@@ -68,6 +68,21 @@ impl VideoDecoderFrames {
     pub fn produced(&self) -> u64 {
         self.rx.produced()
     }
+
+    /// Consumes the wrapper and returns the underlying frame
+    /// receiver. Used by callers that swap the upstream pipeline
+    /// while keeping the same downstream consumer.
+    pub fn into_receiver(self) -> crate::frame_channel::FrameReceiver<VideoFrame> {
+        self.rx
+    }
+
+    /// Returns a reference to the underlying receiver. Useful when
+    /// the caller wants to mint additional senders via
+    /// [`FrameReceiver::new_sender`](crate::frame_channel::FrameReceiver::new_sender)
+    /// without taking ownership.
+    pub fn receiver(&self) -> &crate::frame_channel::FrameReceiver<VideoFrame> {
+        &self.rx
+    }
 }
 
 impl VideoDecoderHandle {
