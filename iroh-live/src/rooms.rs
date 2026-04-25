@@ -31,6 +31,9 @@ use crate::{
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + Sync + 'static>>;
 
 mod publisher;
+mod relay_session;
+
+pub(crate) use self::relay_session::{RelayDiscovery, RelayPublisher};
 
 /// Multi-party room backed by gossip-based peer discovery.
 ///
@@ -558,8 +561,10 @@ struct Actor {
     relay_discovery: Option<RelayDiscovery>,
     /// Outbound publisher session at `room/<topic>/<my_id>` on the
     /// relay. Present in [`RoomMode::Relay`] and
-    /// [`RoomMode::Hybrid`].
-    relay_publisher: Option<MoqSession>,
+    /// [`RoomMode::Hybrid`]. The wrapper transparently
+    /// reconnects on session drop and re-issues every active
+    /// publish against the new session.
+    relay_publisher: Option<RelayPublisher>,
     active_subscribe: HashMap<BroadcastId, ActiveSubscribe>,
     active_publish: HashMap<String, ActivePublish>,
     known_peers: HashMap<EndpointId, Option<String>>,
@@ -600,20 +605,9 @@ struct GossipState {
     kv_writer: WriteScope,
 }
 
-/// Relay discovery state attached to a room actor.
-///
-/// The discovery session is rooted at `room/<topic>` and the
-/// background watcher task forwards parsed `(peer, name, present)`
-/// events from the announce stream onto `rx`.
-struct RelayDiscovery {
-    _session: MoqSession,
-    rx: mpsc::Receiver<RelayDiscoveryEvent>,
-    _watcher: AbortOnDropHandle<()>,
-}
-
 /// Event surfaced by the relay-discovery watcher task.
 #[derive(Debug)]
-enum RelayDiscoveryEvent {
+pub(crate) enum RelayDiscoveryEvent {
     /// Relay's primary origin announced a broadcast at the given
     /// path. The path is relative to the discovery session's
     /// root and parses as `<peer>/<broadcast>`.
@@ -646,28 +640,16 @@ struct ActiveSubscribe {
 struct ActivePublish {
     /// Consumer for the producer registered globally with the
     /// `Moq` actor. Held so the broadcaster's lifetime ties to
-    /// this entry; dropped when the publish ends.
+    /// this entry; dropped when the publish ends. Cloned into
+    /// [`RelayPublisher`] when a relay is attached so the
+    /// reconnect path can re-issue the publish without the
+    /// actor needing to remember it.
     global_consumer: moq_lite::BroadcastConsumer,
-    /// Relay-side announce, present in [`RoomMode::Relay`] and
-    /// [`RoomMode::Hybrid`]. Replaced when the relay
-    /// configuration changes at runtime.
-    relay: Option<RelayAnnounce>,
     /// Wire name the broadcast was registered globally under, in
     /// [`RoomMode::Gossip`] and [`RoomMode::Hybrid`] modes. Held
     /// only for diagnostic purposes; the actual lifetime is
     /// governed by the global Moq actor.
     _direct_wire: Option<String>,
-}
-
-/// Announce of a single broadcast on a relay session. Dropping
-/// this ends the announce on the relay only; the global publish
-/// continues to serve direct peers.
-struct RelayAnnounce {
-    /// The relay session this broadcast is announced on.
-    _session: MoqSession,
-    /// Consumer attached to the session via `session.publish`.
-    /// Dropping ends the announce.
-    _consumer: moq_lite::BroadcastConsumer,
 }
 
 impl Actor {
@@ -722,8 +704,10 @@ impl Actor {
                 let offer = relay
                     .clone()
                     .context("relay attached for Relay/Hybrid mode")?;
-                let discovery = open_relay_discovery(&live, &ticket, &offer).await?;
-                let publisher = open_relay_publisher(&live, &ticket, me_pub, &offer).await?;
+                let discovery =
+                    RelayDiscovery::spawn(live.clone(), ticket.clone(), offer.clone()).await?;
+                let publisher =
+                    RelayPublisher::spawn(live.clone(), ticket.clone(), me_pub, offer).await?;
                 (Some(discovery), Some(publisher))
             }
             RoomMode::Gossip => (None, None),
@@ -911,6 +895,9 @@ impl Actor {
                 }
                 Some(name) = self.publish_closed.next(), if !self.publish_closed.is_empty() => {
                     self.active_publish.remove(&name);
+                    if let Some(publisher) = self.relay_publisher.as_ref() {
+                        publisher.unpublish(&name).await;
+                    }
                     self.update_kv().await;
                 }
                 Some((remote, maybe_msg, mut chat_sub)) = self.chat_messages.next(), if !self.chat_messages.is_empty() => {
@@ -1021,24 +1008,21 @@ impl Actor {
                 // publish lands at `room/<topic>/<my_id>/<name>`
                 // on the relay's primary origin, which is the
                 // wire-uniform `<my_id>/<name>` form once
-                // subscribers strip the room root.
-                let relay_announce = match (self.relay_publisher.as_ref(), self.mode) {
-                    (Some(session), RoomMode::Relay | RoomMode::Hybrid) => {
-                        let consumer = global_consumer.clone();
-                        session.publish(name.clone(), consumer.clone());
-                        Some(RelayAnnounce {
-                            _session: session.clone(),
-                            _consumer: consumer,
-                        })
-                    }
-                    _ => None,
-                };
+                // subscribers strip the room root. The
+                // [`RelayPublisher`] keeps the publish alive
+                // across reconnects.
+                if let (Some(publisher), RoomMode::Relay | RoomMode::Hybrid) =
+                    (self.relay_publisher.as_ref(), self.mode)
+                {
+                    publisher
+                        .publish(name.clone(), global_consumer.clone())
+                        .await;
+                }
 
                 self.active_publish.insert(
                     name.clone(),
                     ActivePublish {
                         global_consumer,
-                        relay: relay_announce,
                         _direct_wire: direct_wire,
                     },
                 );
@@ -1077,33 +1061,66 @@ impl Actor {
                     .as_ref()
                     .is_some_and(|prev| prev.endpoint != offer.endpoint);
                 self.relay = Some(offer.clone());
-                // Open (or replace) the relay discovery session so
-                // peers announcing on this relay are visible. The
-                // session must be torn down explicitly when the
-                // relay endpoint changes; the watcher only forwards
-                // events from one origin.
+                // Open (or replace) discovery and publisher when
+                // the endpoint changes. Each wrapper reconnects
+                // internally on transient drops; we only rebuild
+                // them here when the relay identity itself
+                // changes.
                 if endpoint_changed || self.relay_discovery.is_none() {
                     self.relay_discovery = None;
-                    match open_relay_discovery(&self.live, &self.ticket, &offer).await {
+                    match RelayDiscovery::spawn(
+                        self.live.clone(),
+                        self.ticket.clone(),
+                        offer.clone(),
+                    )
+                    .await
+                    {
                         Ok(d) => self.relay_discovery = Some(d),
                         Err(err) => {
                             warn!(relay=%offer.endpoint.fmt_short(), "failed to open relay discovery: {err:#}");
                         }
                     }
                 }
-                self.refresh_relay_announces().await;
+                if endpoint_changed || self.relay_publisher.is_none() {
+                    if let Some(prev) = self.relay_publisher.take() {
+                        prev.shutdown();
+                    }
+                    match RelayPublisher::spawn(
+                        self.live.clone(),
+                        self.ticket.clone(),
+                        self.me,
+                        offer.clone(),
+                    )
+                    .await
+                    {
+                        Ok(publisher) => {
+                            // Re-issue every active broadcast on
+                            // the new publisher.
+                            for (name, entry) in &self.active_publish {
+                                publisher
+                                    .publish(name.clone(), entry.global_consumer.clone())
+                                    .await;
+                            }
+                            self.relay_publisher = Some(publisher);
+                        }
+                        Err(err) => {
+                            warn!(relay=%offer.endpoint.fmt_short(), "failed to open relay publisher: {err:#}");
+                        }
+                    }
+                }
                 self.apply_peer_sources();
                 self.update_kv().await;
             }
             ApiMessage::DisableRelay => {
                 info!("disabling relay for room");
                 self.relay = None;
-                // Tear down discovery so we stop receiving announces
-                // from the relay's primary origin. Active relay-only
+                // Tear down both relay sessions. Active relay-only
                 // subscriptions lose their source on the next
                 // `apply_peer_sources` call below.
                 self.relay_discovery = None;
-                self.refresh_relay_announces().await;
+                if let Some(prev) = self.relay_publisher.take() {
+                    prev.shutdown();
+                }
                 self.apply_peer_sources();
                 self.update_kv().await;
             }
@@ -1111,59 +1128,6 @@ impl Actor {
                 info!(?mode, "setting subscribe mode");
                 self.subscribe_mode = mode;
                 self.apply_peer_sources();
-            }
-        }
-    }
-
-    /// Re-runs the relay-side publish for every active broadcast.
-    ///
-    /// In [`RoomMode::Gossip`] this is invoked on
-    /// `enable_relay`/`disable_relay`: the actor opens or closes
-    /// the publisher session and re-announces on the new state.
-    /// In [`RoomMode::Relay`]/[`RoomMode::Hybrid`] the publisher
-    /// session is set up at construction; this routine is a no-op
-    /// when the relay configuration matches.
-    async fn refresh_relay_announces(&mut self) {
-        // Open or close the publisher session to match
-        // `self.relay`.
-        match (&self.relay, self.relay_publisher.as_ref()) {
-            (Some(offer), None) => {
-                match open_relay_publisher(&self.live, &self.ticket, self.me, offer).await {
-                    Ok(session) => self.relay_publisher = Some(session),
-                    Err(err) => {
-                        warn!("failed to open relay publisher session: {err:#}");
-                        return;
-                    }
-                }
-            }
-            (None, Some(_)) => {
-                self.relay_publisher = None;
-            }
-            _ => {}
-        }
-
-        let names: Vec<String> = self.active_publish.keys().cloned().collect();
-        for name in names {
-            let new_announce = match (self.relay_publisher.as_ref(), &self.relay) {
-                (Some(session), Some(_)) => {
-                    let consumer = self
-                        .active_publish
-                        .get(&name)
-                        .map(|s| s.global_consumer.clone());
-                    if let Some(consumer) = consumer {
-                        session.publish(name.clone(), consumer.clone());
-                        Some(RelayAnnounce {
-                            _session: session.clone(),
-                            _consumer: consumer,
-                        })
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            };
-            if let Some(pub_state) = self.active_publish.get_mut(&name) {
-                pub_state.relay = new_announce;
             }
         }
     }
@@ -1612,98 +1576,10 @@ fn wire_name(peer: EndpointId, broadcast_name: &str) -> String {
 /// Parses a wire path of the form `<peer>/<broadcast_name>` into
 /// its components. Returns `None` for paths with the wrong shape
 /// or an unparseable peer id.
-fn parse_wire_name(path: &str) -> Option<(EndpointId, String)> {
+pub(crate) fn parse_wire_name(path: &str) -> Option<(EndpointId, String)> {
     let (peer_part, name) = path.split_once('/')?;
     let peer: EndpointId = peer_part.parse().ok()?;
     Some((peer, name.to_string()))
-}
-
-/// Opens the relay discovery session for a room.
-///
-/// The session is rooted at `room/<topic_hex>`. The spawned watcher
-/// task forwards parsed announce events through the returned
-/// channel.
-async fn open_relay_discovery(
-    live: &Live,
-    ticket: &RoomTicket,
-    offer: &RelayOffer,
-) -> Result<RelayDiscovery> {
-    use crate::relay::RelayTarget;
-    let target = RelayTarget::new(offer.endpoint)
-        .with_path(&ticket.relay_room_path())
-        .with_api_key(offer.api_key.clone());
-    let session = live
-        .connect_relay(&target)
-        .await
-        .std_context("connect to relay for room discovery")?;
-    let (tx, rx) = mpsc::channel(MAX_PEER_BROADCASTS);
-    let me = live.endpoint().id();
-    let watcher = spawn_relay_announce_watcher(session.clone(), me, tx);
-    Ok(RelayDiscovery {
-        _session: session,
-        rx,
-        _watcher: AbortOnDropHandle::new(watcher),
-    })
-}
-
-/// Opens the relay publisher session for this peer.
-///
-/// The session is rooted at `room/<topic_hex>/<my_id>`. Calls to
-/// `session.publish(name, ...)` register at
-/// `room/<topic_hex>/<my_id>/<name>` on the relay's primary origin.
-async fn open_relay_publisher(
-    live: &Live,
-    ticket: &RoomTicket,
-    me: EndpointId,
-    offer: &RelayOffer,
-) -> Result<MoqSession> {
-    use crate::relay::RelayTarget;
-    let target = RelayTarget::new(offer.endpoint)
-        .with_path(&ticket.relay_publisher_path(me))
-        .with_api_key(offer.api_key.clone());
-    live.connect_relay(&target)
-        .await
-        .std_context("connect to relay for publisher session")
-}
-
-/// Spawns a task that walks the relay discovery session's announce
-/// stream and emits parsed `(peer, name, present)` events.
-fn spawn_relay_announce_watcher(
-    session: MoqSession,
-    me: EndpointId,
-    tx: mpsc::Sender<RelayDiscoveryEvent>,
-) -> task::JoinHandle<()> {
-    let span = tracing::info_span!("RelayDiscovery");
-    task::spawn(
-        async move {
-            let mut consumer = session.origin_consumer().clone();
-            loop {
-                let Some((path, present)) = consumer.announced().await else {
-                    debug!("relay discovery announce stream closed");
-                    break;
-                };
-                let path_str = path.as_str();
-                let Some((peer, name)) = parse_wire_name(path_str) else {
-                    debug!(path = %path_str, "ignoring unparseable announce path");
-                    continue;
-                };
-                if peer == me {
-                    // Echo of our own publish; suppress.
-                    continue;
-                }
-                let event = if present.is_some() {
-                    RelayDiscoveryEvent::Announce { peer, name }
-                } else {
-                    RelayDiscoveryEvent::Unannounce { peer, name }
-                };
-                if tx.send(event).await.is_err() {
-                    debug!("room actor dropped relay discovery channel");
-                    break;
-                }
-            }
-        }
-        .instrument(span),
-    )
 }
 
 mod ticket {
