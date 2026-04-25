@@ -400,14 +400,20 @@ enum ApiMessage {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum RoomEvent {
-    /// A remote peer announced its available broadcasts via gossip.
+    /// A remote peer announced one or more new broadcasts. Each
+    /// `(peer, broadcast)` pair is reported at most once; in
+    /// [`RoomMode::Hybrid`] the actor dedups across the gossip and
+    /// relay discovery channels.
     RemoteAnnounced {
         /// The announcing peer's endpoint ID.
         remote: EndpointId,
-        /// Broadcast names the peer is publishing.
+        /// Broadcast names the peer started publishing since the last
+        /// event. Only freshly seen names appear here.
         broadcasts: Vec<String>,
         /// The relay this peer offers, if any. Other peers can use
         /// this as a fallback source for the peer's broadcasts.
+        /// `None` when discovered through the relay-only path or
+        /// when no offer was advertised over gossip.
         relay: Option<RelayOffer>,
     },
     /// Successfully subscribed to a remote peer's broadcast.
@@ -486,7 +492,11 @@ type ConnectingFutures = FuturesUnordered<BoxFuture<(BroadcastId, SubscribeResul
 type KvEntry = (EndpointId, Bytes, SignedValue);
 
 struct SubscribeResult {
-    subscription: Option<Subscription>,
+    /// `Some` once the multi-source subscription picked an active
+    /// source. The pair is reported atomically: re-fetching
+    /// `multi.active()` afterwards races with policy-driven swaps
+    /// and can spuriously yield `None`.
+    ready: Option<(Subscription, crate::subscription::ActiveSource)>,
     err: Option<n0_error::AnyError>,
 }
 
@@ -521,8 +531,21 @@ struct Actor {
     active_publish: HashMap<String, ActivePublish>,
     known_peers: HashMap<EndpointId, Option<String>>,
     peer_relays: HashMap<EndpointId, Option<RelayOffer>>,
+    /// `(peer, broadcast)` pairs already surfaced as
+    /// [`RoomEvent::RemoteAnnounced`]. In Hybrid mode the same
+    /// announcement can arrive over both gossip and relay
+    /// discovery; this set ensures consumers see each new
+    /// broadcast once.
+    announced: std::collections::HashSet<BroadcastId>,
+    /// Sender end of the per-subscription end-of-life channel.
+    /// Cloned into every active watcher task so the watcher can
+    /// signal subscription exhaustion (active source went `None`
+    /// with no remaining attached candidates) back to the actor.
+    closed_tx: mpsc::Sender<BroadcastId>,
+    /// Receiver paired with [`Self::closed_tx`]. Drained from the
+    /// actor's main `select!`.
+    closed_rx: mpsc::Receiver<BroadcastId>,
     connecting: ConnectingFutures,
-    subscribe_closed: FuturesUnordered<BoxFuture<BroadcastId>>,
     publish_closed: FuturesUnordered<BoxFuture<String>>,
     chat_messages: FuturesUnordered<ChatFuture>,
     chat_publisher: Option<moq_media::chat::ChatPublisher>,
@@ -621,6 +644,8 @@ impl Actor {
         let mode = ticket.mode;
         let relay = ticket.relay.clone();
 
+        let (closed_tx, closed_rx) = mpsc::channel(MAX_PEER_BROADCASTS);
+
         let gossip = match mode {
             RoomMode::Gossip | RoomMode::Hybrid => {
                 let gossip = live
@@ -675,8 +700,10 @@ impl Actor {
             active_publish: Default::default(),
             known_peers: Default::default(),
             peer_relays: Default::default(),
+            announced: Default::default(),
+            closed_tx,
+            closed_rx,
             connecting: Default::default(),
-            subscribe_closed: Default::default(),
             publish_closed: Default::default(),
             chat_messages: Default::default(),
             chat_publisher: None,
@@ -720,8 +747,17 @@ impl Actor {
                 } => {
                     match update {
                         None => {
-                            warn!("gossip kv subscription stream ended unexpectedly");
-                            break;
+                            // Gossip KV stream ended. In Hybrid the
+                            // relay-discovery channel may still
+                            // deliver peers, so degrade rather than
+                            // tear the actor down. Pure Gossip mode
+                            // has nothing left to do and exits.
+                            warn!("gossip kv subscription stream ended");
+                            gossip_updates = None;
+                            self.gossip = None;
+                            if self.relay_discovery.is_none() {
+                                break;
+                            }
                         }
                         Some(Err(err)) => warn!("gossip kv update failed: {err:#}"),
                         Some(Ok(update)) => if !self.handle_gossip_update(update).await { break },
@@ -736,8 +772,16 @@ impl Actor {
                     match event {
                         Some(event) => if !self.handle_relay_discovery_event(event).await { break },
                         None => {
-                            warn!("relay discovery channel closed unexpectedly");
-                            break;
+                            // Relay discovery channel closed. In
+                            // Hybrid the gossip stream may still
+                            // deliver peers, so degrade rather than
+                            // tear the actor down. Pure Relay mode
+                            // has nothing left to do and exits.
+                            warn!("relay discovery channel closed");
+                            self.relay_discovery = None;
+                            if gossip_updates.is_none() {
+                                break;
+                            }
                         }
                     }
                 }
@@ -748,26 +792,12 @@ impl Actor {
                     }
                 }
                 Some((id, res)) = self.connecting.next(), if !self.connecting.is_empty() => {
-                    match res.subscription {
-                        Some(multi) => {
+                    match res.ready {
+                        Some((_multi, active)) => {
                             let remote = id.0;
                             info!(broadcast=%id, remote=%remote.fmt_short(), "multi-source subscription live");
-                            let Some(active) = multi.active().await else {
-                                warn!(broadcast=%id, "multi-source subscription closed before picking a source");
-                                self.active_subscribe.remove(&id);
-                                continue;
-                            };
                             let broadcast = active.broadcast().clone();
                             let session = active.session().clone();
-
-                            // The active-source watcher was installed
-                            // when the subscription was originally
-                            // started in `handle_gossip_update`; we
-                            // only refresh the `multi` reference
-                            // here in case it differs.
-                            if let Some(entry) = self.active_subscribe.get_mut(&id) {
-                                entry.multi = multi.clone();
-                            }
 
                             // Spawn a chat subscriber task if the broadcast has a chat track.
                             if let Some(mut chat_sub) = broadcast.chat() {
@@ -776,13 +806,6 @@ impl Actor {
                                     (remote, msg, chat_sub)
                                 }));
                             }
-
-                            let closed_fut = broadcast.closed();
-                            let id_for_closed = id.clone();
-                            self.subscribe_closed.push(Box::pin(async move {
-                                closed_fut.await;
-                                id_for_closed
-                            }));
 
                             if self.event_tx.send(RoomEvent::BroadcastSubscribed { session: Box::new(session), broadcast: Box::new(broadcast) }).await.is_err() {
                                 debug!("room event receiver dropped, stopping actor");
@@ -797,10 +820,11 @@ impl Actor {
                         }
                     }
                 }
-                Some(id) = self.subscribe_closed.next(), if !self.subscribe_closed.is_empty() => {
-                    debug!("broadcast closed: {id}");
+                Some(id) = self.closed_rx.recv() => {
+                    debug!(broadcast=%id, "subscription exhausted: no active source remains");
                     let remote = id.0;
                     self.active_subscribe.remove(&id);
+                    self.announced.remove(&id);
 
                     let still_active = self.active_subscribe.keys().any(|b| b.0 == remote);
                     if !still_active
@@ -833,17 +857,26 @@ impl Actor {
 
     fn spawn_active_watcher(&self, id: BroadcastId, multi: Subscription) -> AbortOnDropHandle<()> {
         let tx = self.event_tx.clone();
+        let closed_tx = self.closed_tx.clone();
         let remote = id.0;
         let name = id.1.clone();
+        let id_for_closed = id.clone();
         let mut events = multi.events();
         let last_active = multi.active_id();
         let handle = tokio::spawn(async move {
             let mut last_active = last_active;
+            // Set true once the subscription has had at least one
+            // active source. Until then, `current: None` is just the
+            // initial state, not a lost peer.
+            let mut ever_active = last_active.is_some();
             loop {
                 match events.recv().await {
                     Ok(crate::SubscriptionEvent::ActiveChanged { current, .. }) => {
                         if current == last_active {
                             continue;
+                        }
+                        if current.is_some() {
+                            ever_active = true;
                         }
                         let via_relay = current.as_ref().is_some_and(|id| id.is_relay());
                         if tx
@@ -858,6 +891,15 @@ impl Actor {
                             break;
                         }
                         last_active = current;
+                        if last_active.is_none() && ever_active {
+                            // All candidate sources for this
+                            // broadcast went away. Signal the actor
+                            // to clean up; the discovery layer
+                            // re-creates the entry if the peer
+                            // re-announces.
+                            let _ = closed_tx.try_send(id_for_closed.clone());
+                            break;
+                        }
                     }
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
@@ -956,7 +998,25 @@ impl Actor {
             }
             ApiMessage::EnableRelay { offer } => {
                 info!(relay=%offer.endpoint.fmt_short(), path=%offer.path, "enabling relay for room");
+                let endpoint_changed = self
+                    .relay
+                    .as_ref()
+                    .is_some_and(|prev| prev.endpoint != offer.endpoint);
                 self.relay = Some(offer.clone());
+                // Open (or replace) the relay discovery session so
+                // peers announcing on this relay are visible. The
+                // session must be torn down explicitly when the
+                // relay endpoint changes; the watcher only forwards
+                // events from one origin.
+                if endpoint_changed || self.relay_discovery.is_none() {
+                    self.relay_discovery = None;
+                    match open_relay_discovery(&self.live, &self.ticket, &offer).await {
+                        Ok(d) => self.relay_discovery = Some(d),
+                        Err(err) => {
+                            warn!(relay=%offer.endpoint.fmt_short(), "failed to open relay discovery: {err:#}");
+                        }
+                    }
+                }
                 self.refresh_relay_announces().await;
                 self.apply_peer_sources();
                 self.update_kv().await;
@@ -964,6 +1024,11 @@ impl Actor {
             ApiMessage::DisableRelay => {
                 info!("disabling relay for room");
                 self.relay = None;
+                // Tear down discovery so we stop receiving announces
+                // from the relay's primary origin. Active relay-only
+                // subscriptions lose their source on the next
+                // `apply_peer_sources` call below.
+                self.relay_discovery = None;
                 self.refresh_relay_announces().await;
                 self.apply_peer_sources();
                 self.update_kv().await;
@@ -1072,7 +1137,12 @@ impl Actor {
                     | RoomSubscribeMode::PreferRelay
                     | RoomSubscribeMode::RelayOnly
             );
-        let want_peer_relay_hint = matches!(self.mode, RoomMode::Gossip)
+        // Per-peer relay hints carried over gossip apply whenever
+        // gossip is the discovery channel. In Hybrid the room's
+        // own relay is preferred (already covered by `room_relay`
+        // above), and the hint serves as a secondary fallback when
+        // the peer publishes elsewhere.
+        let want_peer_relay_hint = matches!(self.mode, RoomMode::Gossip | RoomMode::Hybrid)
             && matches!(
                 self.subscribe_mode,
                 RoomSubscribeMode::PreferDirect
@@ -1240,14 +1310,27 @@ impl Actor {
             }
         }
 
-        for name in broadcasts.clone() {
+        for name in broadcasts.iter().cloned() {
             self.ensure_subscription(remote, name);
+        }
+        // Dedup against the relay-discovery path: in Hybrid mode the
+        // same broadcasts arrive over both channels and consumers
+        // expect each new pair once. Filter the outgoing list to
+        // freshly seen names, but still emit when the relay hint
+        // transitioned (added, removed, or replaced) so callers can
+        // observe peer-relay state changes.
+        let fresh: Vec<String> = broadcasts
+            .into_iter()
+            .filter(|name| self.announced.insert(BroadcastId(remote, name.clone())))
+            .collect();
+        if fresh.is_empty() && !relay_changed {
+            return true;
         }
         if self
             .event_tx
             .send(RoomEvent::RemoteAnnounced {
                 remote,
-                broadcasts,
+                broadcasts: fresh,
                 relay,
             })
             .await
@@ -1289,6 +1372,12 @@ impl Actor {
                     }
                 }
                 self.ensure_subscription(peer, name.clone());
+                let id = BroadcastId(peer, name.clone());
+                if !self.announced.insert(id) {
+                    // Already surfaced via gossip in Hybrid mode;
+                    // suppress the duplicate event.
+                    return true;
+                }
                 if self
                     .event_tx
                     .send(RoomEvent::RemoteAnnounced {
@@ -1306,6 +1395,7 @@ impl Actor {
             RelayDiscoveryEvent::Unannounce { peer, name } => {
                 let id = BroadcastId(peer, name);
                 self.active_subscribe.remove(&id);
+                self.announced.remove(&id);
                 let still_active = self.active_subscribe.keys().any(|b| b.0 == peer);
                 if !still_active && self.known_peers.remove(&peer).is_some() {
                     let _ = self
@@ -1351,12 +1441,12 @@ impl Actor {
         let id_for_task = id.clone();
         self.connecting.push(Box::pin(async move {
             let res = match multi.wait_active().await {
-                Some(_) => SubscribeResult {
-                    subscription: Some(multi),
+                Some(active) => SubscribeResult {
+                    ready: Some((multi, active)),
                     err: None,
                 },
                 None => SubscribeResult {
-                    subscription: None,
+                    ready: None,
                     err: Some(anyerr!(
                         "multi-source subscription closed with no active source"
                     )),
@@ -1536,6 +1626,17 @@ mod ticket {
     /// [`RoomMode::Relay`] and [`RoomMode::Hybrid`]), and the mode
     /// itself. Serializes to a compact string via the
     /// `iroh_tickets` crate.
+    ///
+    /// # Wire compatibility
+    ///
+    /// The wire format is postcard, which is positional and not
+    /// self-describing. The `#[serde(default)]` attributes below
+    /// document defaults for in-memory deserialization but do not
+    /// rescue tickets emitted by older binaries: postcard runs out
+    /// of input when a trailing field is missing and surfaces a
+    /// hard error. Treat the layout as fixed and bump the wire
+    /// version (a fresh ticket type or an explicit envelope) before
+    /// changing any field.
     #[derive(Debug, Serialize, Deserialize, Clone, derive_more::Display)]
     #[display("{}", iroh_tickets::Ticket::serialize(self))]
     pub struct RoomTicket {

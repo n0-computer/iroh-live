@@ -715,3 +715,77 @@ let ticket = RoomTicket::generate().with_relay(offer);
 let room = live.join_room(ticket).await?;
 room.publish("cam", &broadcast).await?;
 ```
+
+## Phase 2 review pass (2026-04-25)
+
+Independent staff review of `cc0f5c0` flagged 14 issues; this
+session addresses ten of them. Three follow-ups (no relay
+reconnect, N×M H3 session scaling, relay can't authenticate the
+peer-id segment in announce paths) are deferred with notes;
+`wire_name` namespace collision is a structural change for a
+later pass.
+
+Substantive corrections
+
+- Subscription lifecycle (#2): the per-broadcast `subscribe_closed`
+  future was driven by the *first* attached source's
+  `RemoteBroadcast::closed()`. In multi-source that fires on a
+  policy-driven swap, not on subscription end, so entries for a
+  still-healthy peer were silently torn down. The mechanism is
+  gone. Cleanup is now driven by the active-source watcher, which
+  signals the actor over a dedicated `closed_tx` channel only when
+  the subscription's `active_id` transitions Some → None — the
+  state that means every candidate source for this broadcast has
+  detached. The discovery layer recreates the entry if the peer
+  re-announces.
+- Subscription event consistency: `handle_session_closed` and
+  `prune_removed_sources` cleared `active_id` silently; the
+  follow-up `pick_active` then read `current = None` and stayed
+  silent because `current == next`. Both sites now emit
+  `ActiveChanged { previous: Some, current: None }` so observers
+  see the transition.
+- Hybrid event dedup (#3): the same `(peer, broadcast)` pair
+  arrived over both the gossip and relay-discovery channels, so
+  consumers saw `RemoteAnnounced` twice in Hybrid mode. An
+  `announced: HashSet<BroadcastId>` filters fresh names per pair;
+  relay-hint transitions still emit (the gossip path keeps
+  emitting when `relay_changed` is true even with no fresh
+  broadcasts).
+- Independent stream EOF (#4): a closed gossip stream or relay
+  discovery channel used to `break` the actor. In Hybrid the other
+  channel can still deliver, so each branch now drops its own
+  state and exits only when both are gone.
+- Race-free active source delivery (#7): the connecting future
+  used to call `wait_active().await` then re-fetch
+  `multi.active().await`, which can return `None` if a
+  policy-driven swap raced the call. The future now returns the
+  `(Subscription, ActiveSource)` pair atomically.
+- Symmetric `enable_relay` / `disable_relay` (#9): both now
+  manage `relay_discovery` in lockstep with
+  `relay_publisher` — `enable_relay` opens (or replaces) the
+  discovery session, `disable_relay` tears it down.
+- Hybrid uses peer relay hints (#12): `sources_for_peer` was
+  Gossip-only for `want_peer_relay_hint`. Hybrid now includes the
+  hint as a secondary fallback alongside the room's own relay.
+  `SourceSet::push` already dedupes by id, so a hint that points
+  at the same target as the room relay collapses to one entry.
+- Dead code removal (#13): the `entry.multi = multi.clone()`
+  refresh in the connecting branch never differed from what
+  `ensure_subscription` had already installed.
+- Stronger test assertions (#14): the relay-only and Hybrid tests
+  now assert `session.remote_id()` against the relay endpoint
+  vs the broadcasting peer, so a regression that swapped the
+  preferred source would fail loudly.
+- Wire-format honesty (#1): the `RoomTicket` doc now states that
+  postcard is positional — `#[serde(default)]` annotations
+  describe in-memory defaults but cannot rescue tickets emitted
+  by older binaries with a missing trailing field.
+
+Verified state
+
+- `cargo make check-all` clean (clippy `-D warnings` + fmt
+  check + workspace build).
+- Full test suite passes: 21 unit + 7 multi-source + 4
+  broadcaster + 4 e2e + 4 ticket-relays + 4 room-relay + 6 room +
+  3 relay_room.
+```

@@ -153,10 +153,27 @@ async fn relay_only_three_peer_room() {
     room_c.publish("c-cam", &bc_c).await.expect("c publish");
 
     // Each peer should see the other two peers' broadcasts via
-    // the relay's announce stream.
-    expect_remote_broadcasts(&mut room_a, &[(id_b, "b-cam"), (id_c, "c-cam")]).await;
-    expect_remote_broadcasts(&mut room_b, &[(id_a, "a-cam"), (id_c, "c-cam")]).await;
-    expect_remote_broadcasts(&mut room_c, &[(id_a, "a-cam"), (id_b, "b-cam")]).await;
+    // the relay's announce stream. Each subscription's active
+    // session must be the relay endpoint (no direct fallback in
+    // pure relay-mode rooms).
+    expect_remote_broadcasts(
+        &mut room_a,
+        &[(id_b, "b-cam"), (id_c, "c-cam")],
+        ExpectedSource::Relay(relay_id),
+    )
+    .await;
+    expect_remote_broadcasts(
+        &mut room_b,
+        &[(id_a, "a-cam"), (id_c, "c-cam")],
+        ExpectedSource::Relay(relay_id),
+    )
+    .await;
+    expect_remote_broadcasts(
+        &mut room_c,
+        &[(id_a, "a-cam"), (id_b, "b-cam")],
+        ExpectedSource::Relay(relay_id),
+    )
+    .await;
 
     drop(bc_a);
     drop(bc_b);
@@ -201,8 +218,11 @@ async fn hybrid_room_prefers_direct() {
     room_a.publish("a-cam", &bc_a).await.expect("a publish");
     room_b.publish("b-cam", &bc_b).await.expect("b publish");
 
-    expect_remote_broadcasts(&mut room_a, &[(id_b, "b-cam")]).await;
-    expect_remote_broadcasts(&mut room_b, &[(id_a, "a-cam")]).await;
+    // Hybrid rooms run the default subscribe mode, which prefers
+    // direct over relay. Verify each peer's active session is the
+    // peer itself, not the relay.
+    expect_remote_broadcasts(&mut room_a, &[(id_b, "b-cam")], ExpectedSource::Direct).await;
+    expect_remote_broadcasts(&mut room_b, &[(id_a, "a-cam")], ExpectedSource::Direct).await;
 
     drop(bc_a);
     drop(bc_b);
@@ -245,10 +265,29 @@ async fn relay_mode_requires_relay_attachment() {
     live.shutdown().await;
 }
 
+/// What kind of session is expected to back a `BroadcastSubscribed`
+/// event in a given test scenario.
+#[derive(Clone, Copy, Debug)]
+enum ExpectedSource {
+    /// Active session must run directly to the broadcasting peer.
+    Direct,
+    /// Active session must terminate at the relay endpoint.
+    Relay(iroh::EndpointId),
+}
+
 /// Awaits the union of (peer, broadcast) pairs from
 /// `BroadcastSubscribed` events on `room` and panics if not all
 /// `expected` pairs arrive within [`TIMEOUT`].
-async fn expect_remote_broadcasts(room: &mut Room, expected: &[(iroh::EndpointId, &str)]) {
+///
+/// Each event's active session is also checked against `kind`: in
+/// pure relay-mode the session must terminate at the relay; in
+/// direct-preferring modes it must terminate at the broadcasting
+/// peer itself.
+async fn expect_remote_broadcasts(
+    room: &mut Room,
+    expected: &[(iroh::EndpointId, &str)],
+    kind: ExpectedSource,
+) {
     let mut needed: HashSet<(iroh::EndpointId, String)> = expected
         .iter()
         .map(|(id, n)| (*id, (*n).to_string()))
@@ -257,19 +296,28 @@ async fn expect_remote_broadcasts(room: &mut Room, expected: &[(iroh::EndpointId
     while !needed.is_empty() && tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_secs(2), room.recv()).await {
             Ok(Ok(RoomEvent::BroadcastSubscribed { broadcast, session })) => {
-                let remote = session.remote_id();
+                let session_remote = session.remote_id();
                 let name = broadcast.broadcast_name().to_string();
                 // Wire-uniform broadcast names ride as
                 // "<peer>/<name>"; recover the user-facing pair by
-                // splitting the wire form. The `session.remote_id`
-                // is the relay (in Mode B), so we trust the wire
-                // name's first component for the peer.
-                if let Some((peer_part, user_name)) = name.split_once('/')
-                    && let Ok(peer) = peer_part.parse::<iroh::EndpointId>()
-                {
-                    let _ = remote;
-                    let _ = needed.remove(&(peer, user_name.to_string()));
+                // splitting the wire form.
+                let Some((peer_part, user_name)) = name.split_once('/') else {
+                    continue;
+                };
+                let Ok(peer) = peer_part.parse::<iroh::EndpointId>() else {
+                    continue;
+                };
+                match kind {
+                    ExpectedSource::Direct => assert_eq!(
+                        session_remote, peer,
+                        "expected direct session for {peer}/{user_name}, got remote {session_remote}",
+                    ),
+                    ExpectedSource::Relay(relay_id) => assert_eq!(
+                        session_remote, relay_id,
+                        "expected relay session for {peer}/{user_name}, got remote {session_remote}",
+                    ),
                 }
+                let _ = needed.remove(&(peer, user_name.to_string()));
             }
             Ok(Ok(_)) => continue,
             Ok(Err(e)) => panic!("room recv error: {e:#}"),

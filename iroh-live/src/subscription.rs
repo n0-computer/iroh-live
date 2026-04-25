@@ -496,6 +496,13 @@ async fn prune_removed_sources(
         && removed.contains(&current)
     {
         active_id.set(None).ok();
+        emit_event(
+            events_tx,
+            SubscriptionEvent::ActiveChanged {
+                previous: Some(current),
+                current: None,
+            },
+        );
     }
     for id in removed {
         emit_event(events_tx, SubscriptionEvent::Detached { id });
@@ -582,8 +589,16 @@ async fn handle_session_closed(
 ) {
     debug!(source = %id, "session closed");
     state.lock().await.attached.remove(&id);
-    if active_id.get().as_ref() == Some(&id) {
+    let was_active = active_id.get();
+    if was_active.as_ref() == Some(&id) {
         active_id.set(None).ok();
+        emit_event(
+            events_tx,
+            SubscriptionEvent::ActiveChanged {
+                previous: was_active,
+                current: None,
+            },
+        );
     }
     emit_event(events_tx, SubscriptionEvent::Detached { id });
 }
