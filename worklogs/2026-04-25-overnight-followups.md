@@ -152,3 +152,106 @@ occurrences and the older plan `plans/rooms-gossip-relays.md`
 had five. Replaced each with a colon or a sentence break as
 context dictated.
 
+
+### 2026-04-25 - Phase 4: four-reviewer staff round
+
+Spawned four parallel staff review agents (Rust expert,
+distributed systems, documentation/QA, safety/security) on the
+full branch diff against `main` (`ca8e65a`). Each saw only the
+code, not the design intent. Findings cross-referenced and
+filtered through opposing-stance.
+
+Surviving substantive findings (cross-cutting):
+
+- **closed_tx try_send** (Rust C1, DistSys S1, Security S5):
+  signal-loss vector under back-pressure. Switch to
+  `send().await`, resize channel.
+- **LiveTicket.relays skip_serializing_if** (Security S2):
+  postcard wire-format break for empty tickets.
+- **RoomTicket::from_bytes skips validation** (Security S1):
+  bypass of the per-offer caps that the gossip path enforces.
+- **peer_relays not cleaned on Unannounce / closed_rx**
+  (DistSys S2): unbounded growth under churn.
+- **Spurious BroadcastSwitched(via_relay=false) on death**
+  (DistSys S7): consumers see a phantom swap to direct.
+- **EnableRelay shutdown-before-replace ordering**
+  (DistSys S6): a failed spawn leaves active publishes
+  un-relayed.
+- **Actor inbox starvation** (DistSys S3): API messages
+  delayed under heavy gossip / relay traffic.
+- **MAX_KNOWN_PEERS missing** (Security S3): gossip-flood
+  amplification.
+- **RelayOffer.path char validation** (Security S4): smuggled
+  query / fragment / control characters in URL slot.
+- **Reconnect backoff lacks jitter** (Rust Q6, DistSys Q6):
+  thundering-herd on relay restart.
+- **`#[must_use]` on RoomBuilder** (Docs S6): inconsistent with
+  RoomTicket.
+- **RelayPublisher::shutdown doc claim** (Docs C1): doc said
+  "clears all tracked publishes" without the body doing so.
+- **peer_state_serialization_roundtrip out of date** (Docs C2):
+  test redefined the struct with two fields, real has three.
+
+Discarded after opposing-stance:
+
+- **AttachedSource::Drop closes session** (Rust C2): intentional
+  per the Broadcaster's "one session per source" model.
+- **SourceSetHandle Mutex+Watchable double storage** (Rust S2):
+  Watchable lacks atomic in-place mutation; the Mutex
+  serializes mutations; the race window is brief and bounded.
+- **Subscription Clone shares actor task** (Rust S1, Q1): per
+  the iroh handle convention; cloning the handle keeping the
+  actor alive is the documented contract.
+- **SelectionPolicy trait for two impls is overkill**
+  (Rust S7): trait shape is justified by extensibility; KISS
+  does not warrant collapsing to an enum.
+- **Reconnect E2E test gap** (Docs C4): documented hole, needs
+  a restartable relay test fixture - separate piece of work.
+
+### 2026-04-25 - Phase 5: review fixes applied
+
+Substantive fixes landed in commit a7cd7b6, split across the
+themes the reviewers raised:
+
+- Wire format and validation: ticket layout fix, RoomTicket
+  validate, path char validation, peer_state test correction.
+- Concurrency and lifecycle: closed_tx await + larger channel,
+  BroadcastSwitched suppression, EnableRelay reorder, biased
+  select for inbox priority, peer_relays cleanup.
+- Resource bounds: MAX_KNOWN_PEERS cap, backoff jitter.
+- Doc and ergonomics: must_use builders, RelayPublisher
+  shutdown doc.
+
+A bulk regex sweep on em dashes initially destroyed `::` Rust
+paths in 16 files (the regex `r':\s*:\s*'` matched the path
+separator). All damaged files restored via `git restore` and
+the substantive fixes re-applied carefully one at a time. The
+em-dash sweep was redone with a single-character replacement
+(`'—' -> '-'`, `'–' -> '-'`) that does not touch surrounding
+punctuation. Committed in 1d4a520.
+
+Lesson recorded for future bulk text edits: never use a regex
+that matches across two characters when one of them is in a
+common Rust syntax sequence. Single-char replacement is safe;
+regex over `:` and surrounding whitespace is not.
+
+### 2026-04-25 - Done state
+
+Branch `feat/rooms-gossip-relays` at tip
+`1d4a520`. `git log ca8e65a..HEAD` shows fifteen commits, eight
+of which are this overnight session's work (4 substantive
+features, 1 review-pass refactor, 3 docs/cleanup). Tests: 90
+passing across iroh-live + iroh-live-relay + iroh-live-cli.
+`cargo make check-all` clean.
+
+Outstanding items for the next session, all explicitly out of
+scope per the autocode discipline:
+
+- Reconnect E2E test fixture (needs restartable relay).
+- Audio seamless swap (needs OutputHandle fade integration).
+- moq-relay path-segment-to-subject binding (upstream).
+- iroh-smol-kv `ExpiryConfig::check_interval` is currently
+  ignored upstream; a 30s hardcoded period drives the expiry
+  test runtime.
+
+Each is documented at the relevant code site.
