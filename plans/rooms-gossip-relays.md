@@ -29,10 +29,10 @@ hard-coding "direct" and "relay" as two special cases.
 
 - Relay-side changes to moq-relay or on-wire MoQ protocol.
 - A full peer-as-relay implementation (the model admits it; the
-  implementation defers).
+ implementation defers).
 - Replacing gossip or the smol-kv layer.
 - Changing the catalog on-wire format beyond adding optional fields
-  to the room's gossip KV message.
+ to the room's gossip KV message.
 
 ## Background
 
@@ -40,17 +40,17 @@ See `worklogs/2026-04-24-rooms-gossip-relays.md` for the research
 summary. Three facts drive the design:
 
 1. MoQ is natively multi-origin. A publisher can ANNOUNCE the same
-   broadcast path on several sessions; a subscriber sees multiple
-   `(path, consumer)` pairs via `OriginConsumer::announced()` and
-   picks one.
+ broadcast path on several sessions; a subscriber sees multiple
+ `(path, consumer)` pairs via `OriginConsumer::announced()` and
+ picks one.
 2. `moq_lite::BroadcastProducer::consume()` returns independent
-   `BroadcastConsumer` handles, each of which can be handed to a
-   different session. Publish to N sessions is already possible at
-   the moq-lite level; nothing above it exposes this cleanly.
+ `BroadcastConsumer` handles, each of which can be handed to a
+ different session. Publish to N sessions is already possible at
+ the moq-lite level; nothing above it exposes this cleanly.
 3. `frame_channel::new_sender()` already enables seamless pipeline
-   swap for rendition switching. The same primitive applied one
-   level up lets us swap the underlying `BroadcastConsumer` without
-   tearing down the decoder.
+ swap for rendition switching. The same primitive applied one
+ level up lets us swap the underlying `BroadcastConsumer` without
+ tearing down the decoder.
 
 ## Concepts
 
@@ -59,16 +59,16 @@ summary. Three facts drive the design:
 A single place where a broadcast is available or where a publish
 can be directed. Concrete variants:
 
-- `Direct { peer: EndpointId }` — a direct peer session. The caller
-  can dial this peer and subscribe, or accept an incoming dial and
-  publish on the resulting session.
-- `Relay { target: RelayTarget }` — an H3 session to a moq-relay.
-  The caller holds or opens the session, then publishes or
-  subscribes on it.
-- Future: `PeerRelay { peer: EndpointId, path: String }` — a peer
-  that agreed to relay a specific namespace. Same wire shape as
-  relay; the model already supports it as a first-class variant
-  rather than a hack.
+- `Direct { peer: EndpointId }` - a direct peer session. The caller
+ can dial this peer and subscribe, or accept an incoming dial and
+ publish on the resulting session.
+- `Relay { target: RelayTarget }` - an H3 session to a moq-relay.
+ The caller holds or opens the session, then publishes or
+ subscribes on it.
+- Future: `PeerRelay { peer: EndpointId, path: String }` - a peer
+ that agreed to relay a specific namespace. Same wire shape as
+ relay; the model already supports it as a first-class variant
+ rather than a hack.
 
 `TransportSource` is pure data: identity and how to reach it. It
 carries no session state.
@@ -110,11 +110,11 @@ a preferred source reappears, wait an upgrade hysteresis window
 before switching back. Thresholds are tunable.
 
 Implementations:
-- `PreferOrdered` — pick the highest-priority source that is
-  currently healthy. Default. Ordered list from the `SourceSet` is
-  the preference.
-- `Fixed(SourceId)` — pin to one specific source. Used for tests
-  and for callers who do not want dynamic behaviour.
+- `PreferOrdered` - pick the highest-priority source that is
+ currently healthy. Default. Ordered list from the `SourceSet` is
+ the preference.
+- `Fixed(SourceId)` - pin to one specific source. Used for tests
+ and for callers who do not want dynamic behaviour.
 
 Future implementations can add loss-rate-based selection, latency
 tiers, or load-aware selection; the trait is stable once shipped.
@@ -125,13 +125,13 @@ tiers, or load-aware selection; the trait is stable once shipped.
 
 ```text
 LocalBroadcast --producer--> Broadcaster
-                               |
-                       SourceSet (Watchable)
-                               |
-              +----------------+---------------+
-              v                v               v
-        session_direct   session_relay   session_peer_relay
-        (MoqSession)    (MoqSession)     (MoqSession)
+ |
+ SourceSet (Watchable)
+ |
+ +----------------+---------------+
+ v v v
+ session_direct session_relay session_peer_relay
+ (MoqSession) (MoqSession) (MoqSession)
 ```
 
 Broadcaster owns a single `BroadcastProducer` and owns its consume
@@ -149,31 +149,31 @@ broadcast has been configured for."
 
 ```text
 SourceSet (Watchable) --+
-                        |
-                        v
-                   SelectionPolicy --picks--> active_source
-                        |
-                        v
-                 session_active.subscribe(name) --> BroadcastConsumer
-                        |
-             +----------+----------+
-             v                     v
-     CatalogWatcher          VideoTrack / AudioTrack
-    (reads active's         (new_sender swap on active change)
-     catalog)
+ |
+ v
+ SelectionPolicy --picks--> active_source
+ |
+ v
+ session_active.subscribe(name) --> BroadcastConsumer
+ |
+ +----------+----------+
+ v v
+ CatalogWatcher VideoTrack / AudioTrack
+ (reads active's (new_sender swap on active change)
+ catalog)
 ```
 
 When the active source changes, the subscription:
 
 1. Takes the new source's session (opening it if it is not already
-   open; sessions are owned by the subscription).
+ open; sessions are owned by the subscription).
 2. Subscribes the broadcast name on that session, obtaining a new
-   `BroadcastConsumer`.
+ `BroadcastConsumer`.
 3. Takes a fresh sender on each output `frame_channel` from the
-   existing receivers via `FrameReceiver::new_sender()`.
+ existing receivers via `FrameReceiver::new_sender()`.
 4. Spawns new decode pipelines fed by the new consumer, writing
-   into the same slots. Drops the old pipelines; their decoders
-   stop when their `OrderedConsumer` closes.
+ into the same slots. Drops the old pipelines; their decoders
+ stop when their `OrderedConsumer` closes.
 
 Seamless switch at the decoded-frame level. The caller sees an
 uninterrupted stream of frames. The switch boundary is the next
@@ -189,20 +189,20 @@ peers can use to reach their broadcasts.
 
 ```rust
 struct PeerState {
-    broadcasts: Vec<String>,
-    display_name: Option<String>,
-    /// Relay where this peer also publishes their broadcasts.
-    /// When set, other peers MAY subscribe via this relay instead
-    /// of (or in addition to) the direct path.
-    relay: Option<RelayHint>,
+ broadcasts: Vec<String>,
+ display_name: Option<String>,
+ /// Relay where this peer also publishes their broadcasts.
+ /// When set, other peers MAY subscribe via this relay instead
+ /// of (or in addition to) the direct path.
+ relay: Option<RelayHint>,
 }
 
 struct RelayHint {
-    endpoint: EndpointId,
-    path: String,
-    /// Optional JWT. When the room ticket was minted with a baked
-    /// JWT, this is absent (peers resolve the JWT from the ticket).
-    jwt: Option<String>,
+ endpoint: EndpointId,
+ path: String,
+ /// Optional JWT. When the room ticket was minted with a baked
+ /// JWT, this is absent (peers resolve the JWT from the ticket).
+ jwt: Option<String>,
 }
 ```
 
@@ -214,15 +214,15 @@ alternative sources.
 
 ```rust
 pub struct LiveTicket {
-    pub endpoint: EndpointAddr,       // canonical direct source
-    pub broadcast_name: String,
-    pub relays: Vec<RelayOffer>,      // additional sources
+ pub endpoint: EndpointAddr, // canonical direct source
+ pub broadcast_name: String,
+ pub relays: Vec<RelayOffer>, // additional sources
 }
 
 pub struct RelayOffer {
-    pub endpoint: EndpointId,
-    pub path: String,
-    pub jwt: Option<String>,
+ pub endpoint: EndpointId,
+ pub path: String,
+ pub jwt: Option<String>,
 }
 ```
 
@@ -237,18 +237,18 @@ the owner of bespoke subscribe code. Concretely:
 
 1. The gossip KV delivers `PeerState` with relay hints.
 2. For each `(remote, broadcast_name)` the room builds a `SourceSet`
-   with `Direct { peer: remote }` plus `Relay { target }` for the
-   peer's relay hint when present.
+ with `Direct { peer: remote }` plus `Relay { target }` for the
+ peer's relay hint when present.
 3. Room hands the `SourceSet` to `Live::subscribe_multi` and treats
-   the returned `Subscription` the same as before.
+ the returned `Subscription` the same as before.
 4. On relay hint changes, the room updates the `SourceSet`
-   in place (via its `Watchable`). The subscription re-evaluates
-   and switches if policy says to.
+ in place (via its `Watchable`). The subscription re-evaluates
+ and switches if policy says to.
 5. For publishing, the room constructs a `Broadcaster` seeded with
-   the direct accept-loop source; when the room was built with a
-   relay target, the relay is also seeded. Callers can also
-   dynamically `enable_relay()` / `disable_relay()` on a
-   `RoomHandle`.
+ the direct accept-loop source; when the room was built with a
+ relay target, the relay is also seeded. Callers can also
+ dynamically `enable_relay()` / `disable_relay()` on a
+ `RoomHandle`.
 
 ### Single-watch extension
 
@@ -265,105 +265,105 @@ embedded relay offers.
 Each step must build and pass tests in isolation.
 
 1. **refactor(moq-media): swappable `BroadcastConsumer` for
-   RemoteBroadcast**. Add an internal primitive that lets a
-   subscriber swap the underlying `BroadcastConsumer` of a
-   `RemoteBroadcast` without rebuilding it. No caller change.
+ RemoteBroadcast**. Add an internal primitive that lets a
+ subscriber swap the underlying `BroadcastConsumer` of a
+ `RemoteBroadcast` without rebuilding it. No caller change.
 
 2. **feat(iroh-live): `TransportSource`, `SourceSet`,
-   `SelectionPolicy`**. Pure types. No callers yet. Tests for
-   ordering and hysteresis.
+ `SelectionPolicy`**. Pure types. No callers yet. Tests for
+ ordering and hysteresis.
 
 3. **feat(iroh-live): `Live::subscribe_multi`**. Implementation of
-   `MultiSourceSubscription`. Existing `subscribe` and
-   `subscribe_from_relay` become wrappers. Tests: single-source
-   parity, multi-source happy path.
+ `MultiSourceSubscription`. Existing `subscribe` and
+ `subscribe_from_relay` become wrappers. Tests: single-source
+ parity, multi-source happy path.
 
 4. **feat(iroh-live): `Broadcaster` for multi-source publish**.
-   Tests: two-session fan-out, removal cancels the right announce.
+ Tests: two-session fan-out, removal cancels the right announce.
 
 5. **feat(iroh-live): extend `LiveTicket` with `relays`** and add
-   `Live::subscribe_from_ticket`. Tests for serialize/deserialize
-   compatibility across old and new fields.
+ `Live::subscribe_from_ticket`. Tests for serialize/deserialize
+ compatibility across old and new fields.
 
 6. **feat(iroh-live/rooms): `PeerState.relay` hint**. Room actor
-   threads relay hints into `SourceSet`. `RoomBuilder` adds
-   optional relay configuration (new; rooms currently have no
-   builder). `Room::join` keeps working with default settings.
+ threads relay hints into `SourceSet`. `RoomBuilder` adds
+ optional relay configuration (new; rooms currently have no
+ builder). `Room::join` keeps working with default settings.
 
 7. **feat(iroh-live/rooms): runtime relay toggling**.
-   `RoomHandle::enable_relay(target)` and `disable_relay()`.
-   Changes gossip announcement and broadcaster targets. Peers
-   re-evaluate.
+ `RoomHandle::enable_relay(target)` and `disable_relay()`.
+ Changes gossip announcement and broadcaster targets. Peers
+ re-evaluate.
 
 8. **feat(iroh-live-cli): flags for dynamic mode**. `irl play`,
-   `irl record`, `irl publish` accept a ticket with embedded relay
-   offers via the existing positional argument. The explicit
-   `--relay` / `--endpoint-id` / `--api-key` flags remain for raw
-   single-source use.
+ `irl record`, `irl publish` accept a ticket with embedded relay
+ offers via the existing positional argument. The explicit
+ `--relay` / `--endpoint-id` / `--api-key` flags remain for raw
+ single-source use.
 
 9. **test(iroh-live): end-to-end integration tests**. Four
-   scenarios:
-   - Single-watch starts via relay, direct becomes available, swap.
-   - Single-watch starts direct, direct session closes, fall over
-     to relay.
-   - Three-peer room: two direct, the third reachable only via
-     relay, all three see each other's broadcasts.
-   - Mid-session publisher flip: room runs P2P, publisher enables
-     relay, subscribers switch.
+ scenarios:
+ - Single-watch starts via relay, direct becomes available, swap.
+ - Single-watch starts direct, direct session closes, fall over
+ to relay.
+ - Three-peer room: two direct, the third reachable only via
+ relay, all three see each other's broadcasts.
+ - Mid-session publisher flip: room runs P2P, publisher enables
+ relay, subscribers switch.
 
 10. **docs**: module-level docs and a short `docs/rooms.md` guide
-    covering the three room modes and ticket flows. Bundle with
-    step 6 or 8; no standalone docs commit.
+ covering the three room modes and ticket flows. Bundle with
+ step 6 or 8; no standalone docs commit.
 
 ## Risks and open questions
 
 - **Session ownership.** Today `Moq::connect` dedupes direct
-  sessions across callers. If a room owns a session to a peer and
-  another caller also connects, dedup returns the same session.
-  Plan: let dedup stand; track session ownership via `Arc` semantics
-  in the higher layers.
+ sessions across callers. If a room owns a session to a peer and
+ another caller also connects, dedup returns the same session.
+ Plan: let dedup stand; track session ownership via `Arc` semantics
+ in the higher layers.
 
 - **Catalog disagreement across sources.** A direct and a relay
-  source for the same broadcast should deliver the same catalog.
-  In practice they will when the publisher's encode pipeline is a
-  single producer. Plan: the active source's catalog wins; on swap
-  the adaptation layer re-picks the best rendition.
+ source for the same broadcast should deliver the same catalog.
+ In practice they will when the publisher's encode pipeline is a
+ single producer. Plan: the active source's catalog wins; on swap
+ the adaptation layer re-picks the best rendition.
 
 - **JWT lifetimes.** Room tickets carry room-scoped JWTs; operators
-  mint them with a policy-appropriate expiry. No auto-refresh this
-  session. Surface expiry in the API so callers can rotate.
+ mint them with a policy-appropriate expiry. No auto-refresh this
+ session. Surface expiry in the API so callers can rotate.
 
 - **Switch flapping.** Hysteresis prevents pathological oscillation
-  under mixed signals. Defaults: downgrade after 500 ms of sustained
-  bad signal, upgrade after 4 s of sustained good signal, matching
-  the rendition-switching plan.
+ under mixed signals. Defaults: downgrade after 500 ms of sustained
+ bad signal, upgrade after 4 s of sustained good signal, matching
+ the rendition-switching plan.
 
 - **Ordering during swap.** Two sources may have different playout
-  latencies. The subscribe pipeline rebases on the new source's
-  PTS, so a brief jump is possible. Accept this the same way the
-  rendition-swap pattern does; call it out in docs.
+ latencies. The subscribe pipeline rebases on the new source's
+ PTS, so a brief jump is possible. Accept this the same way the
+ rendition-swap pattern does; call it out in docs.
 
 - **Peer-as-relay.** Not implemented. The data model handles it. A
-  `PeerRelay` variant on `TransportSource` becomes real once a peer
-  can advertise "I relay X" in a gossip message and accept pull
-  requests on its own MoQ session. Separate plan.
+ `PeerRelay` variant on `TransportSource` becomes real once a peer
+ can advertise "I relay X" in a gossip message and accept pull
+ requests on its own MoQ session. Separate plan.
 
 ## Adversarial review checklist
 
 Filled in before implementation starts (logged in the worklog).
 
 - [ ] The same broadcast published to two sessions: does the
-      publisher fan-out double-count frames? Test first.
+ publisher fan-out double-count frames? Test first.
 - [ ] When a session dies mid-subscribe, does policy pick another
-      source fast enough to keep the frame_channel fed? Write a
-      failing test before the implementation.
+ source fast enough to keep the frame_channel fed? Write a
+ failing test before the implementation.
 - [ ] When every source fails, what does the subscriber see? Define
-      the surface.
+ the surface.
 - [ ] Gossip KV anti-entropy delivers updated `PeerState` when a
-      peer flips relay on/off: measured latency acceptable for
-      user-visible switching? Record what we observe.
+ peer flips relay on/off: measured latency acceptable for
+ user-visible switching? Record what we observe.
 - [ ] Tickets with stale relay offers: subscriber tries the relay,
-      fails, falls back to direct. Covered by tests.
+ fails, falls back to direct. Covered by tests.
 
 ## Commit discipline
 
@@ -458,9 +458,9 @@ Subscriptions use the unified `Live::subscribe` path. The
 
 - Mode A: `[Direct(peer)]`.
 - Mode B: `[Relay(target_room_root)]`. The broadcast name is
-  `<peer>/<name>` (relative to the relay root).
+ `<peer>/<name>` (relative to the relay root).
 - Mode C: `[Direct(peer), Relay(target_room_root)]`. Same name on
-  both.
+ both.
 
 `PreferOrdered` keeps direct preferred when both work.
 
@@ -470,9 +470,9 @@ Subscriptions use the unified `Live::subscribe` path. The
 
 ```rust
 enum Discovery {
-    Gossip(GossipDiscovery),
-    Relay(RelayDiscovery),
-    Hybrid { gossip: GossipDiscovery, relay: RelayDiscovery },
+ Gossip(GossipDiscovery),
+ Relay(RelayDiscovery),
+ Hybrid { gossip: GossipDiscovery, relay: RelayDiscovery },
 }
 ```
 
@@ -483,8 +483,8 @@ them into the same `(peer, broadcast)` reconciliation logic.
 `RelayDiscovery` owns:
 - The discovery session (rooted at `room/<topic>`).
 - A spawned task that walks `OriginConsumer::announced` and forwards
-  parsed `(peer_id, broadcast_name, present)` tuples through an
-  mpsc.
+ parsed `(peer_id, broadcast_name, present)` tuples through an
+ mpsc.
 
 `GossipDiscovery` is the existing gossip+KV plumbing renamed.
 
@@ -495,14 +495,14 @@ a relay entry (when relay/hybrid):
 
 ```rust
 struct ActivePublish {
-    /// Global publish under `<my_id>/<name>`. Present for modes A,
-    /// C. Absent in mode B.
-    direct: Option<BroadcastConsumer>,
-    /// Outbound publisher session at `room/<topic>/<my_id>`,
-    /// announcing `<name>` (relative). Present for modes B, C.
-    relay: Option<RelayPublishHandle>,
-    /// Held for close-detection regardless of mode.
-    close_consumer: BroadcastConsumer,
+ /// Global publish under `<my_id>/<name>`. Present for modes A,
+ /// C. Absent in mode B.
+ direct: Option<BroadcastConsumer>,
+ /// Outbound publisher session at `room/<topic>/<my_id>`,
+ /// announcing `<name>` (relative). Present for modes B, C.
+ relay: Option<RelayPublishHandle>,
+ /// Held for close-detection regardless of mode.
+ close_consumer: BroadcastConsumer,
 }
 ```
 
@@ -515,41 +515,41 @@ no-op (or returns an error).
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoomTicket {
-    /// 32-byte identifier; doubles as gossip topic and relay
-    /// path component.
-    pub topic_id: TopicId,
-    /// Gossip bootstrap peers; empty disables gossip.
-    pub bootstrap: Vec<EndpointId>,
-    /// Optional relay attachment. Required in `RoomMode::Relay`.
-    pub relay: Option<RelayOffer>,
-    /// Explicit mode. Constructors set this; callers may toggle
-    /// to switch modes.
-    pub mode: RoomMode,
+ /// 32-byte identifier; doubles as gossip topic and relay
+ /// path component.
+ pub topic_id: TopicId,
+ /// Gossip bootstrap peers; empty disables gossip.
+ pub bootstrap: Vec<EndpointId>,
+ /// Optional relay attachment. Required in `RoomMode::Relay`.
+ pub relay: Option<RelayOffer>,
+ /// Explicit mode. Constructors set this; callers may toggle
+ /// to switch modes.
+ pub mode: RoomMode,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RoomMode {
-    /// Discovery via gossip; transport direct (with optional
-    /// relay fallback).
-    Gossip,
-    /// Discovery and transport via relay; no gossip.
-    Relay,
-    /// Discovery via both gossip and relay; transport via direct
-    /// preferred, relay as fallback.
-    Hybrid,
+ /// Discovery via gossip; transport direct (with optional
+ /// relay fallback).
+ Gossip,
+ /// Discovery and transport via relay; no gossip.
+ Relay,
+ /// Discovery via both gossip and relay; transport via direct
+ /// preferred, relay as fallback.
+ Hybrid,
 }
 ```
 
 Constructors:
 
 ```rust
-RoomTicket::generate()           // Gossip + random topic
+RoomTicket::generate() // Gossip + random topic
 RoomTicket::new(topic, bootstrap) // Gossip explicit
-RoomTicket::for_relay(offer)     // Relay + random topic
+RoomTicket::for_relay(offer) // Relay + random topic
 RoomTicket::for_relay_at(topic, offer) // Relay explicit
-ticket.with_relay(offer)         // Gossip -> Hybrid, attach offer
-ticket.with_bootstrap(peer)      // add a bootstrap peer
+ticket.with_relay(offer) // Gossip -> Hybrid, attach offer
+ticket.with_bootstrap(peer) // add a bootstrap peer
 ```
 
 ### Mode validation
@@ -557,43 +557,43 @@ ticket.with_bootstrap(peer)      // add a bootstrap peer
 `Live::join_room` validates the ticket against the live instance:
 
 - `RoomMode::Gossip` / `Hybrid` requires `Live` to have gossip
-  enabled. Returns an error if not.
+ enabled. Returns an error if not.
 - `RoomMode::Relay` does not require gossip. Returns an error if
-  the ticket's `relay` field is `None`.
+ the ticket's `relay` field is `None`.
 
 ### Tests
 
 - Mode A: existing room.rs tests cover.
 - Mode B: new test using a real moq-relay (the bridge tests
-  already spin one up). Three peers join via relay, publish
-  broadcasts, see each other's via the announce stream. No gossip.
+ already spin one up). Three peers join via relay, publish
+ broadcasts, see each other's via the announce stream. No gossip.
 - Mode C: extension of room_relay.rs to exercise both gossip and
-  relay simultaneously.
+ relay simultaneously.
 
 ### Risks
 
 - Relay JWT scoping. The publisher's session needs to be allowed
-  to publish at `room/<topic>/<my_id>`. The discovery session
-  needs subscribe access to `room/<topic>`. The simplest token
-  shape is: root `room/<topic>`, subscribe `[""]`, publish
-  `["<my_id>"]`. Callers (or the relay operator) mint the token
-  out of band; the room ticket carries the JWT verbatim.
+ to publish at `room/<topic>/<my_id>`. The discovery session
+ needs subscribe access to `room/<topic>`. The simplest token
+ shape is: root `room/<topic>`, subscribe `[""]`, publish
+ `["<my_id>"]`. Callers (or the relay operator) mint the token
+ out of band; the room ticket carries the JWT verbatim.
 
-  For the V1 we accept any JWT in the ticket and document the
-  requirement. The permissive-mode tests do not require a JWT.
+ For the V1 we accept any JWT in the ticket and document the
+ requirement. The permissive-mode tests do not require a JWT.
 
 - Multiple sessions to one relay. Each `Subscription` opens its
-  own H3 session. With N peers and M broadcasts each, that's
-  N\*M sessions. For typical room sizes this is fine; for very
-  large rooms, follow-up work may share a single session across
-  subscriptions.
+ own H3 session. With N peers and M broadcasts each, that's
+ N\*M sessions. For typical room sizes this is fine; for very
+ large rooms, follow-up work may share a single session across
+ subscriptions.
 
 - Gossip + relay event dedup. In hybrid mode, both gossip and
-  the relay announce stream may report the same broadcast. The
-  actor deduplicates by `(peer, name)` and keeps a single
-  `Subscription` per pair.
+ the relay announce stream may report the same broadcast. The
+ actor deduplicates by `(peer, name)` and keeps a single
+ `Subscription` per pair.
 
 - Path leakage. The relay publisher session's path
-  `room/<topic>/<my_id>` is encoded in its JWT/URL. A relay
-  operator can see all peers in all rooms by watching their
-  primary origin. This is the intended trust model.
+ `room/<topic>/<my_id>` is encoded in its JWT/URL. A relay
+ operator can see all peers in all rooms by watching their
+ primary origin. This is the intended trust model.
