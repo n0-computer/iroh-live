@@ -12,7 +12,7 @@ use n0_error::anyerr;
 use tracing::info;
 
 use crate::{
-    args::{PlayArgs, SubscribeSource},
+    args::PlayArgs,
     transport::setup_live,
     ui::{MouseHide, RemoteControls},
 };
@@ -32,25 +32,13 @@ pub fn run(args: PlayArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
             ..Default::default()
         };
 
-        let (sub, broadcast_name) = match source {
-            SubscribeSource::Direct(ticket) => {
-                println!("connecting to {ticket} ...");
-                let sub = live.subscribe_ticket(&ticket);
-                (sub, ticket.broadcast_name)
-            }
-            SubscribeSource::Relay {
-                target,
-                broadcast_name,
-            } => {
-                println!(
-                    "connecting via relay {} ({}) ...",
-                    target.endpoint(),
-                    broadcast_name
-                );
-                let sub = live.subscribe(target, broadcast_name.clone());
-                (sub, broadcast_name)
-            }
-        };
+        println!(
+            "subscribing to {} via {} candidate source(s) ...",
+            source.broadcast_name,
+            source.sources.len()
+        );
+        let broadcast_name = source.broadcast_name.clone();
+        let sub = live.subscribe(source.sources, broadcast_name.clone());
         let active = sub.ready().await?;
         info!("session established");
         let track = active

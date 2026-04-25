@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use clap::{Args, ValueEnum};
 // Re-export shared source spec types from moq-media so callers that
 // already import from this module keep working.
@@ -10,6 +12,61 @@ use iroh_live::{
     rooms::RoomTicket,
 };
 
+/// One relay attachment as parsed from the CLI.
+///
+/// Wire format: `<endpoint_id>[=<jwt>][@<path>]`. The `=<jwt>`
+/// segment carries an API key; the `@<path>` segment carries a
+/// path prefix that the broadcast name appends to. Both are
+/// optional and may appear in either order. Examples:
+///
+/// ```text
+/// 1234abcd...
+/// 1234abcd...=eyJhbGciOi...
+/// 1234abcd...@/streams
+/// 1234abcd...=eyJhbGciOi...@/streams
+/// ```
+#[derive(Debug, Clone)]
+pub struct RelaySpec {
+    pub endpoint: iroh::EndpointId,
+    pub api_key: Option<String>,
+    pub path: String,
+}
+
+impl RelaySpec {
+    /// Returns this spec as a [`RelayTarget`] for direct relay
+    /// connections.
+    pub fn to_target(&self) -> iroh_live::relay::RelayTarget {
+        iroh_live::relay::RelayTarget::new(self.endpoint)
+            .with_path(&self.path)
+            .with_api_key(self.api_key.clone())
+    }
+}
+
+impl FromStr for RelaySpec {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Path is set off by `@`. Whatever is before `@` is the
+        // id-or-id-equals-jwt portion.
+        let (head, path) = match s.split_once('@') {
+            Some((h, p)) => (h, format!("/{}", p.trim_start_matches('/'))),
+            None => (s, "/".to_string()),
+        };
+        let (id_str, api_key) = match head.split_once('=') {
+            Some((id, key)) => (id, Some(key.to_string())),
+            None => (head, None),
+        };
+        let endpoint = id_str
+            .parse::<iroh::EndpointId>()
+            .map_err(|e| format!("invalid endpoint id `{id_str}`: {e}"))?;
+        Ok(Self {
+            endpoint,
+            api_key,
+            path,
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Transport args (shared by publish capture + publish file)
 // ---------------------------------------------------------------------------
@@ -20,25 +77,16 @@ pub struct TransportArgs {
     #[arg(long, default_value = "hello")]
     pub name: String,
 
-    /// Additionally push to a relay, specified by its iroh endpoint ID.
+    /// Additionally push to one or more relays. Repeat the flag for
+    /// each relay. Each value parses as
+    /// `<endpoint_id>[=<jwt>][@<path>]`: the optional `=<jwt>`
+    /// segment is the API key, the optional `@<path>` segment is
+    /// the URL path prefix (defaults to `/`).
     ///
-    /// The connection is opened as WebTransport-over-iroh (HTTP/3) so that
-    /// URL-level context propagates to the relay. Combine with `--api-key`
-    /// to present a JWT and `--relay-path` to set a namespace prefix.
-    #[arg(long)]
-    pub relay: Option<iroh::EndpointId>,
-
-    /// Path prefix to use on the relay, appended to `<broadcast>`.
-    ///
-    /// Defaults to `/`. Use this when the JWT's `publish` claim scopes
-    /// access to a particular namespace.
-    #[arg(long, default_value = "/")]
-    pub relay_path: String,
-
-    /// API key (JWT) to present to the relay. Required when the relay
-    /// enforces auth; ignored in permissive dev mode.
-    #[arg(long)]
-    pub api_key: Option<String>,
+    /// Connections are opened as WebTransport-over-iroh (HTTP/3) so
+    /// URL-level context propagates to the relay.
+    #[arg(long = "relay", value_name = "SPEC")]
+    pub relays: Vec<RelaySpec>,
 
     /// Additionally publish into a room.
     #[arg(long)]
@@ -92,8 +140,8 @@ pub struct CaptureArgs {
     pub audio_preset: String,
 
     /// Audio codec (opus, pcm). Default: opus.
-    /// PCM sends raw samples with no compression — lower latency but higher
-    /// bandwidth. Useful on local networks.
+    /// PCM sends raw samples with no compression: lower latency but
+    /// higher bandwidth. Useful on local networks.
     #[arg(long, default_value = "opus")]
     pub audio_codec: String,
 }
@@ -254,24 +302,6 @@ pub enum ImportFormat {
 }
 
 // ---------------------------------------------------------------------------
-// Shared ticket resolution
-// ---------------------------------------------------------------------------
-
-/// Resolves a [`LiveTicket`] from the three-way CLI pattern:
-/// positional ticket, `--endpoint-id` + `--name`, or error.
-pub fn resolve_ticket(
-    ticket: &Option<iroh_live::ticket::LiveTicket>,
-    endpoint_id: &Option<iroh::EndpointId>,
-    broadcast_name: &Option<String>,
-) -> anyhow::Result<iroh_live::ticket::LiveTicket> {
-    match (ticket, endpoint_id, broadcast_name) {
-        (Some(t), None, None) => Ok(t.clone()),
-        (None, Some(id), Some(name)) => Ok(iroh_live::ticket::LiveTicket::new(*id, name.clone())),
-        _ => anyhow::bail!("provide either <TICKET> or --endpoint-id + --name"),
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Play args (wgpu only — needs egui window)
 // ---------------------------------------------------------------------------
 
@@ -279,30 +309,26 @@ pub fn resolve_ticket(
 #[derive(Args, Debug)]
 pub struct PlayArgs {
     /// Connection ticket.
-    #[arg(conflicts_with = "endpoint_id", conflicts_with = "relay")]
+    #[arg(conflicts_with = "endpoint_id", conflicts_with = "relays")]
     pub ticket: Option<iroh_live::ticket::LiveTicket>,
 
-    /// Remote endpoint ID of a direct publisher (requires --name).
-    #[arg(
-        long,
-        conflicts_with = "ticket",
-        conflicts_with = "relay",
-        requires = "play_name"
-    )]
+    /// Remote endpoint ID of a direct publisher. Requires `--name`.
+    /// Can be combined with one or more `--relay` flags so the
+    /// subscription has both direct and relay candidate sources.
+    #[arg(long, conflicts_with = "ticket", requires = "play_name")]
     pub endpoint_id: Option<iroh::EndpointId>,
 
-    /// Relay endpoint ID — subscribe through an iroh-live-relay over H3.
-    /// Requires `--name`. Combine with `--api-key` to present a JWT.
-    #[arg(long, conflicts_with = "ticket", conflicts_with = "endpoint_id")]
-    pub relay: Option<iroh::EndpointId>,
-
-    /// URL path prefix sent to the relay. Used with `--relay`.
-    #[arg(long, default_value = "/")]
-    pub relay_path: String,
-
-    /// API key (JWT) to present to the relay. Used with `--relay`.
-    #[arg(long)]
-    pub api_key: Option<String>,
+    /// Relay attachment for the subscription. Same syntax as in
+    /// `irl publish`: `<endpoint_id>[=<jwt>][@<path>]`. Repeat the
+    /// flag to attach multiple relays as fallback sources.
+    /// Requires `--name`.
+    #[arg(
+        long = "relay",
+        value_name = "SPEC",
+        conflicts_with = "ticket",
+        requires = "play_name"
+    )]
+    pub relays: Vec<RelaySpec>,
 
     /// Broadcast name (with --endpoint-id or --relay).
     #[arg(long = "name", id = "play_name", conflicts_with = "ticket")]
@@ -350,15 +376,13 @@ impl PlayArgs {
         }
     }
 
-    /// Resolves the subscribe source, covering both direct-peer and relay
-    /// subscribe modes.
+    /// Resolves the subscribe source, covering ticket, direct peer,
+    /// and one or more relay attachments.
     pub fn source(&self) -> anyhow::Result<SubscribeSource> {
         SubscribeSource::resolve(
             &self.ticket,
             &self.endpoint_id,
-            &self.relay,
-            &self.relay_path,
-            &self.api_key,
+            &self.relays,
             &self.broadcast_name,
         )
     }
@@ -380,35 +404,26 @@ impl PlayArgs {
 #[derive(Args, Debug)]
 pub struct RecordArgs {
     /// Connection ticket.
-    #[arg(conflicts_with = "endpoint_id", conflicts_with = "relay")]
+    #[arg(conflicts_with = "endpoint_id", conflicts_with = "relays")]
     pub ticket: Option<iroh_live::ticket::LiveTicket>,
 
-    /// Remote endpoint ID of a direct publisher (requires --name).
-    #[arg(
-        long,
-        conflicts_with = "ticket",
-        conflicts_with = "relay",
-        requires = "record_name"
-    )]
+    /// Remote endpoint ID of a direct publisher. Requires `--name`.
+    /// Can be combined with one or more `--relay` flags so the
+    /// subscription has both direct and relay candidate sources.
+    #[arg(long, conflicts_with = "ticket", requires = "record_name")]
     pub endpoint_id: Option<iroh::EndpointId>,
 
-    /// Relay endpoint ID — subscribe through an iroh-live-relay over H3.
-    /// Requires `--name`. Combine with `--api-key` to present a JWT.
+    /// Relay attachment for the subscription. Same syntax as in
+    /// `irl publish`: `<endpoint_id>[=<jwt>][@<path>]`. Repeat the
+    /// flag to attach multiple relays as fallback sources.
+    /// Requires `--name`.
     #[arg(
-        long,
+        long = "relay",
+        value_name = "SPEC",
         conflicts_with = "ticket",
-        conflicts_with = "endpoint_id",
         requires = "record_name"
     )]
-    pub relay: Option<iroh::EndpointId>,
-
-    /// URL path prefix sent to the relay. Used with `--relay`.
-    #[arg(long, default_value = "/")]
-    pub relay_path: String,
-
-    /// API key (JWT) to present to the relay. Used with `--relay`.
-    #[arg(long)]
-    pub api_key: Option<String>,
+    pub relays: Vec<RelaySpec>,
 
     /// Broadcast name (with --endpoint-id or --relay).
     #[arg(long = "name", id = "record_name", conflicts_with = "ticket")]
@@ -436,61 +451,84 @@ pub enum RecordFormat {
 
 /// Where a subscribe-shaped command (`irl play`, `irl record`) pulls from.
 ///
-/// Keeps the three sources (ticket, direct endpoint, relay) behind one
-/// enum so the CLI layer handles the resolution once and commands
-/// consume the result.
-pub enum SubscribeSource {
-    /// Direct iroh peer subscribe (ticket or endpoint-id).
-    Direct(iroh_live::ticket::LiveTicket),
-    /// Subscribe from a relay via H3 with an optional JWT.
-    Relay {
-        target: iroh_live::relay::RelayTarget,
-        broadcast_name: String,
-    },
+/// Resolved from a positional ticket, an `--endpoint-id`, or one or
+/// more `--relay` flags. Carries the broadcast name and a populated
+/// [`SourceSet`](iroh_live::sources::SourceSet) so the caller can
+/// pass it straight to [`Live::subscribe`].
+///
+/// [`Live::subscribe`]: iroh_live::Live::subscribe
+pub struct SubscribeSource {
+    pub broadcast_name: String,
+    pub sources: iroh_live::sources::SourceSet,
 }
 
 impl SubscribeSource {
-    /// Builds a source from the common argument triple. Callers pass the
-    /// `Option`s directly from their `clap::Args` struct.
+    /// Builds a source set from the parsed argument triple.
+    ///
+    /// Accepted shapes:
+    ///
+    /// - positional ticket alone, which embeds its own direct peer
+    ///   and any baked-in relay offers
+    /// - `--endpoint-id` with optional `--relay` flags, plus
+    ///   `--name`
+    /// - one or more `--relay` flags with `--name`
+    ///
+    /// The resulting [`SourceSet`] contains every direct peer and
+    /// relay candidate discovered in those inputs.
+    ///
+    /// [`SourceSet`]: iroh_live::sources::SourceSet
     pub fn resolve(
         ticket: &Option<iroh_live::ticket::LiveTicket>,
         endpoint_id: &Option<iroh::EndpointId>,
-        relay: &Option<iroh::EndpointId>,
-        relay_path: &str,
-        api_key: &Option<String>,
+        relays: &[RelaySpec],
         broadcast_name: &Option<String>,
     ) -> anyhow::Result<Self> {
-        if let Some(relay_id) = *relay {
-            let name = broadcast_name
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("--relay requires --name"))?;
-            let target = iroh_live::relay::RelayTarget::new(relay_id)
-                .with_path(relay_path)
-                .with_api_key(api_key.clone());
-            Ok(Self::Relay {
-                target,
-                broadcast_name: name,
-            })
-        } else {
-            Ok(Self::Direct(resolve_ticket(
-                ticket,
-                endpoint_id,
-                broadcast_name,
-            )?))
+        use iroh_live::sources::{SourceSet, TransportSource};
+
+        // Ticket-only path: every source is encoded in the ticket.
+        if let Some(t) = ticket {
+            if endpoint_id.is_some() || !relays.is_empty() || broadcast_name.is_some() {
+                anyhow::bail!(
+                    "ticket already carries direct peer, relays, and broadcast name; do not mix with --endpoint-id, --relay, or --name"
+                );
+            }
+            return Ok(Self {
+                broadcast_name: t.broadcast_name.clone(),
+                sources: t.source_set(),
+            });
         }
+
+        // Otherwise we need at least one of --endpoint-id or --relay,
+        // and a --name.
+        let name = broadcast_name
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("--name is required with --endpoint-id or --relay"))?;
+        if endpoint_id.is_none() && relays.is_empty() {
+            anyhow::bail!("provide either <TICKET>, --endpoint-id + --name, or --relay + --name");
+        }
+
+        let mut sources = SourceSet::new();
+        if let Some(id) = endpoint_id {
+            sources.push(TransportSource::direct(iroh::EndpointAddr::new(*id)));
+        }
+        for spec in relays {
+            sources.push(TransportSource::relay(spec.to_target()));
+        }
+        Ok(Self {
+            broadcast_name: name,
+            sources,
+        })
     }
 }
 
 impl RecordArgs {
-    /// Resolves the record source, covering both direct-peer and relay
-    /// subscribe modes.
+    /// Resolves the record source, covering ticket, direct-peer, and
+    /// one or more relay attachments.
     pub fn source(&self) -> anyhow::Result<SubscribeSource> {
         SubscribeSource::resolve(
             &self.ticket,
             &self.endpoint_id,
-            &self.relay,
-            &self.relay_path,
-            &self.api_key,
+            &self.relays,
             &self.broadcast_name,
         )
     }
@@ -548,4 +586,60 @@ pub struct RoomArgs {
 pub struct RunArgs {
     /// Path to the TOML config file.
     pub config: std::path::PathBuf,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_id() -> String {
+        // Any valid 32-byte base32 endpoint id round-trips.
+        iroh::SecretKey::generate().public().to_string()
+    }
+
+    #[test]
+    fn relay_spec_id_only() {
+        let id = sample_id();
+        let spec: RelaySpec = id.parse().expect("parse id-only");
+        assert_eq!(spec.endpoint.to_string(), id);
+        assert_eq!(spec.api_key, None);
+        assert_eq!(spec.path, "/");
+    }
+
+    #[test]
+    fn relay_spec_with_jwt() {
+        let id = sample_id();
+        let s = format!("{id}=eyJhbGciOiJIUzI1NiJ9.body.sig");
+        let spec: RelaySpec = s.parse().expect("parse id=jwt");
+        assert_eq!(spec.endpoint.to_string(), id);
+        assert_eq!(
+            spec.api_key.as_deref(),
+            Some("eyJhbGciOiJIUzI1NiJ9.body.sig")
+        );
+        assert_eq!(spec.path, "/");
+    }
+
+    #[test]
+    fn relay_spec_with_path() {
+        let id = sample_id();
+        let s = format!("{id}@streams/room1");
+        let spec: RelaySpec = s.parse().expect("parse id@path");
+        assert_eq!(spec.path, "/streams/room1");
+        assert_eq!(spec.api_key, None);
+    }
+
+    #[test]
+    fn relay_spec_with_jwt_and_path() {
+        let id = sample_id();
+        let s = format!("{id}=token123@/streams");
+        let spec: RelaySpec = s.parse().expect("parse id=jwt@path");
+        assert_eq!(spec.api_key.as_deref(), Some("token123"));
+        assert_eq!(spec.path, "/streams");
+    }
+
+    #[test]
+    fn relay_spec_invalid_id() {
+        let res: Result<RelaySpec, _> = "not-an-endpoint".parse();
+        assert!(res.is_err());
+    }
 }

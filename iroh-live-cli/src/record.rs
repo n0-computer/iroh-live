@@ -25,10 +25,7 @@ use moq_media::{codec::h264::annexb, format::Quality, transport::PacketSource};
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, info, warn};
 
-use crate::{
-    args::{RecordArgs, SubscribeSource},
-    transport::setup_live,
-};
+use crate::{args::RecordArgs, transport::setup_live};
 
 /// Entry point for the `irl record` command.
 pub fn run(args: RecordArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
@@ -37,23 +34,12 @@ pub fn run(args: RecordArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
 
     rt.block_on(async {
         let live = setup_live(false).await?;
-        let sub = match source {
-            SubscribeSource::Direct(ticket) => {
-                println!("connecting to {ticket} ...");
-                live.subscribe_ticket(&ticket)
-            }
-            SubscribeSource::Relay {
-                target,
-                broadcast_name,
-            } => {
-                println!(
-                    "connecting via relay {} ({}) ...",
-                    target.endpoint(),
-                    broadcast_name
-                );
-                live.subscribe(target, broadcast_name)
-            }
-        };
+        println!(
+            "subscribing to {} via {} candidate source(s) ...",
+            source.broadcast_name,
+            source.sources.len()
+        );
+        let sub = live.subscribe(source.sources, source.broadcast_name);
         let active = sub.ready().await?;
         info!("session established");
 

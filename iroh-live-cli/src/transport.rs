@@ -7,18 +7,16 @@
 //! This lets the three transport modes (serve, relay, room) coexist without
 //! each of them needing their own explicit publish call on every session.
 
-use iroh::EndpointId;
 use iroh_live::{
     Live,
     media::publish::LocalBroadcast,
-    relay::RelayTarget,
     rooms::{Room, RoomTicket},
     ticket::LiveTicket,
 };
 use moq_lite::BroadcastProducer;
 use tracing::info;
 
-use crate::args::TransportArgs;
+use crate::args::{RelaySpec, TransportArgs};
 
 /// Creates a [`Live`] instance. When `serve` is true, spawns with router so
 /// incoming subscribers are accepted. When false, only outbound connections work.
@@ -51,9 +49,7 @@ pub async fn publish_broadcast(
         print_ticket(live, &args.name, args.no_qr);
     }
 
-    if let Some(id) = args.relay {
-        connect_to_relay(live, &build_relay_target(args, id)).await?;
-    }
+    connect_to_relays(live, &args.relays).await?;
 
     let room = if let Some(ref room_ticket) = args.room {
         Some(push_to_room(live, &args.name, broadcast.producer(), room_ticket).await?)
@@ -79,9 +75,7 @@ pub async fn publish_producer(
         print_ticket(live, &args.name, args.no_qr);
     }
 
-    if let Some(id) = args.relay {
-        connect_to_relay(live, &build_relay_target(args, id)).await?;
-    }
+    connect_to_relays(live, &args.relays).await?;
 
     let room = if let Some(ref room_ticket) = args.room {
         Some(push_to_room(live, &args.name, producer, room_ticket).await?)
@@ -92,18 +86,17 @@ pub async fn publish_producer(
     Ok(room)
 }
 
-fn build_relay_target(args: &TransportArgs, endpoint: EndpointId) -> RelayTarget {
-    RelayTarget::new(endpoint)
-        .with_path(&args.relay_path)
-        .with_api_key(args.api_key.clone())
-}
-
-/// Opens a session to the relay. The broadcast registered on the actor is
-/// forwarded to the new session automatically via
-/// [`Live::connect_relay`]'s `HandleSession` integration.
-async fn connect_to_relay(live: &Live, target: &RelayTarget) -> anyhow::Result<()> {
-    let _session = live.connect_relay(target).await?;
-    info!(relay=%target.endpoint(), "connected to relay");
+/// Opens a session to every relay in `relays`. The broadcast
+/// registered on the actor is forwarded to each new session
+/// automatically via [`Live::connect_relay`]'s `HandleSession`
+/// integration, so a single `--relay` flag fans the publish out
+/// across every relay listed.
+async fn connect_to_relays(live: &Live, relays: &[RelaySpec]) -> anyhow::Result<()> {
+    for spec in relays {
+        let target = spec.to_target();
+        let _session = live.connect_relay(&target).await?;
+        info!(relay = %target.endpoint(), path = %spec.path, "connected to relay");
+    }
     Ok(())
 }
 
