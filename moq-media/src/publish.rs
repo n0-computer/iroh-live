@@ -22,8 +22,8 @@ pub use controller::{
     CaptureConfig, PublishCaptureController, PublishOpts, PublishUpdate, PublishUpdateError,
     StreamKind,
 };
-use hang::catalog::{Audio, AudioConfig, Catalog, Chat, User, Video, VideoConfig};
-use moq_lite::{BroadcastProducer, TrackProducer};
+use hang::catalog::{Audio, AudioConfig, Video, VideoConfig};
+use moq_lite::{Broadcast, BroadcastProducer, TrackProducer};
 use n0_error::{Result, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::watch;
@@ -35,6 +35,7 @@ use crate::codec::AudioCodec;
 #[cfg(any_video_codec)]
 use crate::codec::VideoCodec;
 use crate::{
+    catalog::{Catalog, Chat, User},
     codec,
     format::{
         AudioEncoderConfig, AudioFormat, AudioPreset, VideoEncoderConfig, VideoFormat, VideoFrame,
@@ -229,7 +230,7 @@ impl LocalBroadcast {
     /// The consumer returned by [`consume`](Self::consume) is immediately
     /// usable: callers do not need to yield before subscribing to tracks.
     pub fn new() -> Self {
-        let mut producer = BroadcastProducer::default();
+        let mut producer = Broadcast::default().produce();
         let catalog = CatalogProducer::new(&mut producer).expect("not closed");
 
         let stats = crate::stats::PublishStats::default();
@@ -334,7 +335,7 @@ impl LocalBroadcast {
                     break;
                 }
             };
-            let name = track.info.name.clone();
+            let name = track.name.clone();
             if state
                 .lock()
                 .unwrap()
@@ -559,7 +560,9 @@ impl Drop for LocalBroadcast {
     }
 }
 
-struct CatalogProducer {
+#[derive(derive_more::Debug)]
+#[debug("CatalogProducer({})", self.track.name)]
+pub struct CatalogProducer {
     track: TrackProducer,
     catalog: Catalog,
     /// Last published catalog bytes, used to skip duplicate publishes.
@@ -567,7 +570,7 @@ struct CatalogProducer {
 }
 
 impl CatalogProducer {
-    fn new(broadcast: &mut BroadcastProducer) -> Result<Self> {
+    pub fn new(broadcast: &mut BroadcastProducer) -> Result<Self> {
         let track = broadcast
             .create_track(hang::Catalog::default_track())
             .anyerr()?;
@@ -581,25 +584,25 @@ impl CatalogProducer {
         Ok(this)
     }
 
-    fn set_video(&mut self, video: Video) -> Result<()> {
-        self.catalog.video = video;
+    pub fn set_video(&mut self, video: Video) -> Result<()> {
+        self.catalog.hang.video = video;
         self.publish()?;
         Ok(())
     }
 
-    fn set_audio(&mut self, audio: Audio) -> Result<()> {
-        self.catalog.audio = audio;
+    pub fn set_audio(&mut self, audio: Audio) -> Result<()> {
+        self.catalog.hang.audio = audio;
         self.publish()?;
         Ok(())
     }
 
-    fn set_chat(&mut self, chat: Option<Chat>) -> Result<()> {
+    pub fn set_chat(&mut self, chat: Option<Chat>) -> Result<()> {
         self.catalog.chat = chat;
         self.publish()?;
         Ok(())
     }
 
-    fn set_user(&mut self, user: Option<User>) -> Result<()> {
+    pub fn set_user(&mut self, user: Option<User>) -> Result<()> {
         self.catalog.user = user;
         self.publish()?;
         Ok(())
@@ -665,7 +668,7 @@ impl State {
     }
 
     fn start_track(&mut self, track: moq_lite::TrackProducer) -> Result<()> {
-        let name = track.info.name.clone();
+        let name = track.name.clone();
 
         // Try video first.
         match self.video.as_mut() {
@@ -1438,7 +1441,7 @@ mod tests {
 
         let _pipeline = VideoEncoderPipeline::new(source, encoder, sink, Default::default());
 
-        let result = tokio::time::timeout(timeout, consumer.next_group_ordered()).await;
+        let result = tokio::time::timeout(timeout, consumer.next_group()).await;
 
         drop(_pipeline);
 
@@ -1446,7 +1449,7 @@ mod tests {
             .expect("timed out waiting for first video group")
             .expect("track error")
             .expect("track closed without producing any groups");
-        assert_eq!(group.info.sequence, 0, "first group should be sequence 0");
+        assert_eq!(group.sequence, 0, "first group should be sequence 0");
     }
 
     #[cfg(feature = "h264")]

@@ -47,16 +47,16 @@ lto = "thin"
 
 [workspace.dependencies]
 # External
-iroh = { version = "0.98.0", default-features = false, features = ["metrics", "portmapper", "fast-apple-datapath", "tls-aws-lc-rs"] }
-iroh-gossip = "0.98.0"
-iroh-tickets = "0.5.0"
-iroh-smol-kv = { git = "https://github.com/n0-computer/iroh-smol-kv", branch = "iroh-098", default-features = false }
-hang = { git = "https://github.com/Frando/moq", branch = "deps/iroh-098" }
-moq-lite = { git = "https://github.com/Frando/moq", branch = "deps/iroh-098" }
-moq-mux = { git = "https://github.com/Frando/moq", branch = "deps/iroh-098" }
-moq-relay = { git = "https://github.com/Frando/moq", branch = "deps/iroh-098", default-features = false }
-moq-native = { git = "https://github.com/Frando/moq", branch = "deps/iroh-098", default-features = false }
-web-transport-iroh = { git = "https://github.com/moq-dev/web-transport", branch = "deps/iroh-098" }
+iroh = { version = "1.0.0", default-features = false, features = ["metrics", "portmapper", "fast-apple-datapath", "tls-aws-lc-rs"] }
+iroh-gossip = "0.101.0"
+iroh-tickets = "1.0.0"
+iroh-smol-kv = { version = "0.4.0", default-features = false }
+hang = "0.19.1"
+moq-lite = { package = "moq-net", version = "0.1.11" }
+moq-mux = "0.5.5"
+moq-relay = { version = "0.12.2", default-features = false }
+moq-native = { version = "0.17.1", default-features = false }
+web-transport-iroh = "0.6.0"
 
 # In-repo crates
 iroh-live = { path = "iroh-live", default-features = false }

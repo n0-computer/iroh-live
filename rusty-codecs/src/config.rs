@@ -178,19 +178,18 @@ mod hang_interop {
 
     impl From<VideoConfig> for hang::catalog::VideoConfig {
         fn from(c: VideoConfig) -> Self {
-            Self {
-                codec: c.codec.into(),
-                description: c.description,
-                coded_width: c.coded_width,
-                coded_height: c.coded_height,
-                display_ratio_width: c.display_ratio_width,
-                display_ratio_height: c.display_ratio_height,
-                bitrate: c.bitrate,
-                framerate: c.framerate,
-                optimize_for_latency: c.optimize_for_latency,
-                container: Default::default(),
-                jitter: None,
-            }
+            let mut config = Self::new(c.codec);
+            config.description = c.description;
+            config.coded_width = c.coded_width;
+            config.coded_height = c.coded_height;
+            config.display_ratio_width = c.display_ratio_width;
+            config.display_ratio_height = c.display_ratio_height;
+            config.bitrate = c.bitrate;
+            config.framerate = c.framerate;
+            config.optimize_for_latency = c.optimize_for_latency;
+            config.container = Default::default();
+            config.jitter = None;
+            config
         }
     }
 
@@ -208,15 +207,10 @@ mod hang_interop {
 
     impl From<AudioConfig> for hang::catalog::AudioConfig {
         fn from(c: AudioConfig) -> Self {
-            Self {
-                codec: c.codec.into(),
-                sample_rate: c.sample_rate,
-                channel_count: c.channel_count,
-                bitrate: c.bitrate,
-                description: c.description,
-                container: Default::default(),
-                jitter: None,
-            }
+            let mut config = Self::new(c.codec, c.sample_rate, c.channel_count);
+            config.bitrate = c.bitrate;
+            config.description = c.description;
+            config
         }
     }
 
@@ -324,16 +318,16 @@ mod hang_interop {
 
     // EncodedFrame ↔ hang::container::Frame conversions
 
-    impl From<hang::container::OrderedFrame> for crate::format::MediaPacket {
-        fn from(f: hang::container::OrderedFrame) -> Self {
-            let is_keyframe = f.is_keyframe();
-            Self {
-                timestamp: f.timestamp.into(),
-                payload: f.payload,
-                is_keyframe,
-            }
-        }
-    }
+    // impl From<hang::container::Frame> for crate::format::MediaPacket {
+    //     fn from(f: hang::container::Frame) -> Self {
+    //         let is_keyframe = f.is_keyframe();
+    //         Self {
+    //             timestamp: f.timestamp.into(),
+    //             payload: f.payload,
+    //             is_keyframe,
+    //         }
+    //     }
+    // }
 
     impl crate::format::EncodedFrame {
         /// Converts to a hang [`Frame`](hang::container::Frame) for MoQ transport.
@@ -343,7 +337,7 @@ mod hang_interop {
                     self.timestamp.as_micros() as u64
                 )
                 .expect("timestamp overflow"),
-                payload: self.payload.clone().into(),
+                payload: self.payload.clone(),
             }
         }
     }

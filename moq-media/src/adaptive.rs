@@ -240,24 +240,16 @@ mod tests {
     use super::*;
 
     fn test_config(w: u32, h: u32, bitrate: u64) -> VideoConfig {
-        VideoConfig {
-            codec: VideoCodec::H264(H264 {
-                inline: true,
-                profile: 0x64,
-                constraints: 0,
-                level: 0x1f,
-            }),
-            coded_width: Some(w),
-            coded_height: Some(h),
-            bitrate: Some(bitrate),
-            description: None,
-            display_ratio_width: None,
-            display_ratio_height: None,
-            framerate: None,
-            optimize_for_latency: None,
-            container: Default::default(),
-            jitter: None,
-        }
+        let mut config = VideoConfig::new(VideoCodec::H264(H264 {
+            inline: true,
+            profile: 0x64,
+            constraints: 0,
+            level: 0x1f,
+        }));
+        config.coded_width = Some(w);
+        config.coded_height = Some(h);
+        config.bitrate = Some(bitrate);
+        config
     }
 
     fn test_ranked() -> Vec<RankedRendition> {

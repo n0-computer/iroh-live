@@ -14,7 +14,7 @@ use std::{
 };
 
 use clap::Parser;
-use iroh::{Endpoint, EndpointId, Watcher};
+use iroh::{Endpoint, EndpointId};
 use iroh_live::{
     Live,
     media::{
@@ -232,11 +232,11 @@ impl WgpuApp {
             self.fps_last_update = Instant::now();
             // Print stats to stdout.
             let conn = self.session.conn();
-            let path_list = conn.paths().get();
+            let path_list = conn.paths();
             let rtt = path_list
                 .iter()
                 .find(|p| p.is_selected())
-                .and_then(|p| p.rtt())
+                .map(|p| p.rtt())
                 .unwrap_or_default();
             println!(
                 "fps: {:.0}  rtt: {}ms  decoder: {}",

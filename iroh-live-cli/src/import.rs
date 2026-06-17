@@ -22,15 +22,24 @@ pub async fn open_input(
     format: ImportFormat,
 ) -> anyhow::Result<Pin<Box<dyn AsyncRead + Send + 'static>>> {
     match (file, transcode) {
-        (Some(path), true) => Ok(Box::pin(transcode_file(path.clone(), format).await?)),
+        (Some(path), true) => {
+            let stream = transcode_file(path.clone(), format).await?;
+            let stream: Pin<Box<dyn AsyncRead + Send + 'static>> = Box::pin(stream);
+            Ok(stream)
+        }
         (Some(path), false) => {
             let path = path.clone();
             let file = tokio::fs::File::open(&path)
                 .await
                 .map_err(|e| anyhow::anyhow!("failed to open {}: {e}", path.display()))?;
-            Ok(Box::pin(file))
+            let file: Pin<Box<dyn AsyncRead + Send + 'static>> = Box::pin(file);
+            Ok(file)
         }
-        (None, false) => Ok(Box::pin(tokio::io::stdin())),
+        (None, false) => {
+            let stream = tokio::io::stdin();
+            let stream: Pin<Box<dyn AsyncRead + Send + 'static>> = Box::pin(stream);
+            Ok(stream)
+        }
         (None, true) => anyhow::bail!("transcoding stdin is not supported"),
     }
 }
@@ -43,14 +52,13 @@ pub async fn init_import(
     broadcast: &mut BroadcastProducer,
     format: ImportFormat,
     input: &mut Pin<Box<dyn AsyncRead + Send + 'static>>,
-) -> anyhow::Result<moq_mux::import::StreamDecoder> {
-    let catalog = moq_mux::CatalogProducer::new(broadcast).unwrap();
+) -> anyhow::Result<moq_mux::import::Stream> {
+    let catalog = moq_mux::catalog::Producer::new(broadcast).unwrap();
     let stream_format = match format {
         ImportFormat::Fmp4 => StreamFormat::Fmp4,
         ImportFormat::Avc3 => StreamFormat::Avc3,
     };
-    let mut decoder =
-        moq_mux::import::StreamDecoder::new(broadcast.clone(), catalog, stream_format);
+    let mut decoder = moq_mux::import::Stream::new(broadcast.clone(), catalog, stream_format)?;
 
     let mut buffer = BytesMut::new();
     let mut total_read = 0usize;
@@ -85,7 +93,7 @@ pub async fn init_import(
 
 /// Continues reading media data from `input` until EOF.
 pub async fn run_import(
-    mut decoder: moq_mux::import::StreamDecoder,
+    mut decoder: moq_mux::import::Stream,
     mut input: Pin<Box<dyn AsyncRead + Send + 'static>>,
 ) -> anyhow::Result<()> {
     let mut buffer = BytesMut::new();

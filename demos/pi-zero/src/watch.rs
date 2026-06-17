@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use glow::HasContext;
-use iroh::Watcher;
 use iroh_live::{
     media::{format::VideoFrame, subscribe::VideoTrack},
     moq::MoqSession,
@@ -62,11 +61,11 @@ fn print_stats(
     *fps_last = Instant::now();
 
     let conn = session.conn();
-    let path_list = conn.paths().get();
+    let path_list = conn.paths();
     let rtt = path_list
         .iter()
         .find(|p| p.is_selected())
-        .and_then(|p| p.rtt())
+        .map(|p| p.rtt())
         .unwrap_or_default();
     println!(
         "fps: {fps:.0}  rtt: {}ms  decoder: {}",
