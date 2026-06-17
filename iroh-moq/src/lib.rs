@@ -274,9 +274,13 @@ impl MoqSession {
 
     /// Establishes a MoQ session as the client (initiator) over an existing WebTransport session.
     pub async fn session_connect(wt_session: web_transport_iroh::Session) -> Result<Self, Error> {
-        // TODO: make use of origin ids
-        let publish_prod = OriginProducer::new(Origin { id: 0 });
-        let subscribe_prod = OriginProducer::new(Origin { id: 0 });
+        // One origin id identifies this node in broadcast hop chains. Sharing it
+        // across the publish and subscribe sides lets loop detection recognize a
+        // broadcast that a peer echoes back to us. The id must be non-zero: zero
+        // is the reserved `UNKNOWN` placeholder and fails to round-trip on the wire.
+        let origin = Origin::random();
+        let publish_prod = OriginProducer::new(origin);
+        let subscribe_prod = OriginProducer::new(origin);
         let subscribe = subscribe_prod.consume();
         let client = moq_lite::Client::new()
             .with_publish(publish_prod.consume())
@@ -292,9 +296,10 @@ impl MoqSession {
 
     /// Accepts a MoQ session as the server (responder) over an existing WebTransport session.
     pub async fn session_accept(wt_session: web_transport_iroh::Session) -> Result<Self, Error> {
-        // TODO: make use of origin ids
-        let publish_prod = OriginProducer::new(Origin { id: 0 });
-        let subscribe_prod = OriginProducer::new(Origin { id: 0 });
+        // See `session_connect` for why both sides share one non-zero origin id.
+        let origin = Origin::random();
+        let publish_prod = OriginProducer::new(origin);
+        let subscribe_prod = OriginProducer::new(origin);
         let subscribe = subscribe_prod.consume();
         let server = moq_lite::Server::new()
             .with_publish(publish_prod.consume())
@@ -327,27 +332,10 @@ impl MoqSession {
         if let Some(reason) = self.conn().close_reason() {
             return Err(SessionError::from(reason).into());
         }
-        let consumer = self.subscribe.announced_broadcast(name).await;
-        match consumer {
+        match self.subscribe.announced_broadcast(name).await {
             None => Err(e!(SubscribeError::Closed)),
             Some(consumer) => Ok(consumer),
         }
-        // if let Some(consumer) = self.subscribe.consume_broadcast(name) {
-        //     return Ok(consumer);
-        // }
-        // loop {
-        //     let res = tokio::select! {
-        //         res = self.subscribe.announced() => res,
-        //         reason = self.wt_session.closed() => {
-        //             return Err(reason.into())
-        //         }
-        //     };
-        //     let (path, consumer) = res.ok_or_else(|| e!(SubscribeError::NotAnnounced))?;
-        //     debug!("peer announced broadcast: {path}");
-        //     if path.as_str() == name {
-        //         return consumer.ok_or_else(|| e!(SubscribeError::Closed));
-        //     }
-        // }
     }
 
     /// Publishes a broadcast on this session, making it available to the remote peer.

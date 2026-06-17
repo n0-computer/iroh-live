@@ -208,7 +208,7 @@ impl RelayServer {
             Ok(key)
         } else {
             let key = SecretKey::generate();
-            std::fs::write(path, &key.to_bytes())?;
+            std::fs::write(path, key.to_bytes())?;
             Ok(key)
         }
     }

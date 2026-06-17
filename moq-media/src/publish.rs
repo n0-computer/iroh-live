@@ -585,13 +585,13 @@ impl CatalogProducer {
     }
 
     pub fn set_video(&mut self, video: Video) -> Result<()> {
-        self.catalog.hang.video = video;
+        self.catalog.video = video;
         self.publish()?;
         Ok(())
     }
 
     pub fn set_audio(&mut self, audio: Audio) -> Result<()> {
-        self.catalog.hang.audio = audio;
+        self.catalog.audio = audio;
         self.publish()?;
         Ok(())
     }
@@ -609,7 +609,10 @@ impl CatalogProducer {
     }
 
     fn publish(&mut self) -> Result<()> {
-        let serialized = self.catalog.to_string().anyerr()?;
+        // Serialize the full catalog, not `self.catalog.to_string()`: the latter
+        // resolves through the `Deref` to `hang::Catalog` and serializes only the
+        // video and audio sections, silently dropping the chat and user fields.
+        let serialized = serde_json::to_string(&self.catalog).anyerr()?;
         if self.last_published.as_ref() == Some(&serialized) {
             return Ok(());
         }

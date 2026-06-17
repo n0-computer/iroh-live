@@ -346,6 +346,7 @@ impl RemoteBroadcast {
             debug!(
                 video = initial_catalog.video.renditions.len(),
                 audio = initial_catalog.audio.renditions.len(),
+                chat = initial_catalog.chat.is_some(),
                 "initial catalog received"
             );
             let watchable = Watchable::new(CatalogSnapshot::new(initial_catalog, 0));

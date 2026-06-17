@@ -1,13 +1,24 @@
+use hang::catalog::{Audio, Video};
 use serde::{Deserialize, Serialize};
 
 #[serde_with::serde_as]
 #[serde_with::skip_serializing_none]
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, derive_more::Deref)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Catalog {
-    #[serde(flatten)]
-    #[deref]
-    pub hang: hang::Catalog,
+    /// Video track information with multiple renditions.
+    ///
+    /// Contains a map of video track renditions that the viewer can choose from
+    /// based on their preferences (resolution, bitrate, codec, etc).
+    #[serde(default)]
+    pub video: Video,
+
+    /// Audio track information with multiple renditions.
+    ///
+    /// Contains a map of audio track renditions that the viewer can choose from
+    /// based on their preferences (codec, bitrate, language, etc).
+    #[serde(default)]
+    pub audio: Audio,
     pub chat: Option<Chat>,
     pub user: Option<User>,
 }

@@ -127,7 +127,7 @@ async fn noq_publish_noq_subscribe() {
     let relay = TestRelay::start().await;
 
     // Publisher
-    let pub_origin = Origin { id: 0 }.produce();
+    let pub_origin = Origin::random().produce();
     let mut broadcast = pub_origin.create_broadcast("test").expect("create bc");
     let mut track = broadcast.create_track(Track::new("video")).expect("track");
     let mut group = track.append_group().expect("group");
@@ -148,7 +148,7 @@ async fn noq_publish_noq_subscribe() {
         .expect("connect");
 
     // Subscriber
-    let sub_origin = Origin { id: 0 }.produce();
+    let sub_origin = Origin::random().produce();
     let mut announcements = sub_origin.consume();
     let mut sub_cfg = moq_native::ClientConfig::default();
     sub_cfg.tls.disable_verify = Some(true);
@@ -271,7 +271,7 @@ async fn noq_publish_iroh_subscribe() {
 
     // ── Publisher (noq, simulating browser) ──
     // Publish a broadcast with a hang-compatible catalog and video track.
-    let pub_origin = Origin { id: 0 }.produce();
+    let pub_origin = Origin::random().produce();
     let mut broadcast = pub_origin.create_broadcast("browser-stream").expect("bc");
 
     // hang catalog format: renditions keyed by track name
@@ -439,7 +439,7 @@ async fn pull_remote_broadcast_via_ticket() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // ── Subscriber (noq, simulating browser) ──
-    let sub_origin = Origin { id: 0 }.produce();
+    let sub_origin = Origin::random().produce();
     let mut announcements = sub_origin.consume();
     let mut sub_cfg = moq_native::ClientConfig::default();
     sub_cfg.tls.disable_verify = Some(true);
@@ -533,7 +533,7 @@ async fn iroh_publish_noq_subscribe() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Subscriber (noq)
-    let sub_origin = Origin { id: 0 }.produce();
+    let sub_origin = Origin::random().produce();
     let mut announcements = sub_origin.consume();
     let mut sub_cfg = moq_native::ClientConfig::default();
     sub_cfg.tls.disable_verify = Some(true);
