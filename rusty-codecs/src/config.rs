@@ -315,30 +315,4 @@ mod hang_interop {
             }
         }
     }
-
-    // EncodedFrame ↔ hang::container::Frame conversions
-
-    // impl From<hang::container::Frame> for crate::format::MediaPacket {
-    //     fn from(f: hang::container::Frame) -> Self {
-    //         let is_keyframe = f.is_keyframe();
-    //         Self {
-    //             timestamp: f.timestamp.into(),
-    //             payload: f.payload,
-    //             is_keyframe,
-    //         }
-    //     }
-    // }
-
-    impl crate::format::EncodedFrame {
-        /// Converts to a hang [`Frame`](hang::container::Frame) for MoQ transport.
-        pub fn to_hang_frame(&self) -> hang::container::Frame {
-            hang::container::Frame {
-                timestamp: hang::container::Timestamp::from_micros(
-                    self.timestamp.as_micros() as u64
-                )
-                .expect("timestamp overflow"),
-                payload: self.payload.clone(),
-            }
-        }
-    }
 }
