@@ -27,9 +27,12 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error_span, field, info, instrument};
 use web_transport_iroh::SessionError;
 
-// TODO: Use export from moq_lite after next update
 /// The ALPN protocol identifier for MoQ-lite connections.
-pub const ALPN: &[u8] = b"moq-lite-03";
+///
+/// `moq-lite-04` is the current wire version: it carries real origin ids in
+/// announce hop chains (lite-03 sent anonymous `UNKNOWN` placeholders) and
+/// supports `AnnounceInterest.exclude_hop` for sender-side loop suppression.
+pub const ALPN: &[u8] = b"moq-lite-04";
 
 #[stack_error(derive, add_meta, from_sources)]
 #[allow(private_interfaces, reason = "trait impl uses private types")]
