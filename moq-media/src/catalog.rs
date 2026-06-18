@@ -1,29 +1,31 @@
-use hang::catalog::{Audio, Video};
+use moq_mux::catalog::hang::CatalogExt;
 use serde::{Deserialize, Serialize};
 
-#[serde_with::serde_as]
+/// The iroh-live broadcast catalog: hang's base catalog (the `video` and
+/// `audio` sections) extended with the iroh-live [`IrohLiveExt`] sections.
+///
+/// Use [`moq_mux::catalog::Producer`] to publish it and [`CatalogConsumer`] to
+/// receive updates.
+pub type Catalog = moq_mux::catalog::hang::Catalog<IrohLiveExt>;
+
+/// Receives [`Catalog`] updates and lets a subscriber discover available tracks.
+pub type CatalogConsumer = moq_mux::catalog::hang::Consumer<IrohLiveExt>;
+
+/// The iroh-live catalog extension, flattened alongside hang's `video`/`audio`.
+///
+/// Carries the chat and user sections specific to iroh-live. Extending hang's
+/// catalog through [`CatalogExt`] keeps it wire-compatible with base consumers,
+/// which ignore the extra sections.
 #[serde_with::skip_serializing_none]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(default, rename_all = "camelCase")]
-pub struct Catalog {
-    /// Video track information with multiple renditions.
-    ///
-    /// Contains a map of video track renditions that the viewer can choose from
-    /// based on their preferences (resolution, bitrate, codec, etc).
-    #[serde(default)]
-    pub video: Video,
-
-    /// Audio track information with multiple renditions.
-    ///
-    /// Contains a map of audio track renditions that the viewer can choose from
-    /// based on their preferences (codec, bitrate, language, etc).
-    #[serde(default)]
-    pub audio: Audio,
+pub struct IrohLiveExt {
     pub chat: Option<Chat>,
     pub user: Option<User>,
 }
 
-#[serde_with::serde_as]
+impl CatalogExt for IrohLiveExt {}
+
 #[serde_with::skip_serializing_none]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(default, rename_all = "camelCase")]
@@ -32,7 +34,6 @@ pub struct Chat {
     pub typing: Option<moq_lite::Track>,
 }
 
-#[serde_with::serde_as]
 #[serde_with::skip_serializing_none]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(default, rename_all = "camelCase")]
@@ -43,58 +44,32 @@ pub struct User {
     pub color: Option<String>,
 }
 
-/// A catalog consumer, used to receive catalog updates and discover tracks.
-///
-/// This wraps a `moq_lite::TrackConsumer` and automatically deserializes JSON
-/// catalog data to discover available audio and video tracks in a broadcast.
-#[derive(Clone, derive_more::Debug)]
-#[debug("CatalogConsumer({})", track.name)]
-pub struct CatalogConsumer {
-    /// Access to the underlying track consumer.
-    pub track: moq_lite::TrackConsumer,
-    group: Option<moq_lite::GroupConsumer>,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl CatalogConsumer {
-    /// Create a new catalog consumer from a MoQ track consumer.
-    pub fn new(track: moq_lite::TrackConsumer) -> Self {
-        Self { track, group: None }
-    }
+    #[test]
+    fn ext_flattens_into_catalog() {
+        let mut catalog = Catalog::default();
+        catalog.ext.chat = Some(Chat {
+            message: Some(moq_lite::Track {
+                name: "chat".to_string(),
+                priority: 10,
+            }),
+            typing: None,
+        });
+        catalog.ext.user = Some(User {
+            name: Some("alice".to_string()),
+            ..Default::default()
+        });
 
-    /// Get the next catalog update.
-    ///
-    /// This method waits for the next catalog publication and returns the
-    /// catalog data. If there are no more updates, `None` is returned.
-    pub async fn next(&mut self) -> anyhow::Result<Option<Catalog>> {
-        loop {
-            tokio::select! {
-                res = self.track.next_group() => {
-                    match res? {
-                        Some(group) => {
-                            // Use the new group.
-                            self.group = Some(group);
-                        }
-                        // The track has ended, so we should return None.
-                        None => return Ok(None),
-                    }
-                },
-                Some(frame) = async { self.group.as_mut()?.read_frame().await.transpose() } => {
-                    self.group.take(); // We don't support deltas yet
-                    let catalog: Catalog = serde_json::from_slice(&frame?)?;
-                    return Ok(Some(catalog));
-                }
-            }
-        }
-    }
+        // chat and user flatten to the top level alongside video/audio.
+        let json = serde_json::to_string(&catalog).expect("serialize");
+        assert!(json.contains("\"chat\""), "chat section missing: {json}");
+        assert!(json.contains("\"user\""), "user section missing: {json}");
 
-    /// Wait until the catalog track is closed.
-    pub async fn closed(&self) -> anyhow::Result<()> {
-        Ok(self.track.closed().await?)
-    }
-}
-
-impl From<moq_lite::TrackConsumer> for CatalogConsumer {
-    fn from(inner: moq_lite::TrackConsumer) -> Self {
-        Self::new(inner)
+        let parsed: Catalog = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.ext.chat, catalog.ext.chat);
+        assert_eq!(parsed.ext.user, catalog.ext.user);
     }
 }

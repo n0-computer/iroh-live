@@ -341,7 +341,7 @@ impl RemoteBroadcast {
             let initial_catalog = catalog_consumer
                 .next()
                 .await
-                .context("Broadcast closed before receiving catalog")?
+                .anyerr()?
                 .context("Catalog track closed before receiving catalog")?;
             debug!(
                 video = initial_catalog.video.renditions.len(),
