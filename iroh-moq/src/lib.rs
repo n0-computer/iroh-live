@@ -79,6 +79,7 @@ pub struct Moq {
     tx: mpsc::Sender<ActorMessage>,
     incoming_session_tx: broadcast::Sender<MoqSession>,
     shutdown_token: CancellationToken,
+    origin: Origin,
     _actor_handle: Arc<AbortOnDropHandle<()>>,
 }
 
@@ -87,7 +88,12 @@ impl Moq {
     pub fn new(endpoint: Endpoint) -> Self {
         let (tx, rx) = mpsc::channel(16);
         let (incoming_session_tx, _) = broadcast::channel(16);
-        let actor = Actor::new(endpoint, incoming_session_tx.clone());
+        // One non-zero origin id identifies this node in broadcast announce hop
+        // chains. It is created once here and shared across every session this
+        // node opens or accepts, matching the per-node identity that relays use
+        // for loop detection and shortest-path routing.
+        let origin = Origin::random();
+        let actor = Actor::new(endpoint, incoming_session_tx.clone(), origin);
         let shutdown_token = actor.shutdown_token.clone();
         let actor_task =
             spawn(async move { actor.run(rx).await }.instrument(error_span!("LiveActor")));
@@ -95,6 +101,7 @@ impl Moq {
             shutdown_token,
             tx,
             incoming_session_tx,
+            origin,
             _actor_handle: Arc::new(AbortOnDropHandle::new(actor_task)),
         }
     }
@@ -103,6 +110,7 @@ impl Moq {
     pub fn protocol_handler(&self) -> MoqProtocolHandler {
         MoqProtocolHandler {
             tx: self.tx.clone(),
+            origin: self.origin,
         }
     }
 
@@ -168,13 +176,14 @@ impl Moq {
 #[derive(Debug, Clone)]
 pub struct MoqProtocolHandler {
     tx: mpsc::Sender<ActorMessage>,
+    origin: Origin,
 }
 
 impl MoqProtocolHandler {
     async fn handle_connection(&self, connection: Connection) -> Result<(), Error> {
         info!(remote = %connection.remote_id().fmt_short(), "accepted");
         let session = web_transport_iroh::Session::raw(connection);
-        let session = MoqSession::session_accept(session).await?;
+        let session = MoqSession::session_accept(session, self.origin).await?;
         self.tx
             .send(ActorMessage::HandleSession {
                 session: Box::new(session),
@@ -267,21 +276,25 @@ impl MoqSession {
     pub async fn connect(
         endpoint: &Endpoint,
         remote_addr: impl Into<EndpointAddr>,
+        origin: Origin,
     ) -> Result<Self, Error> {
         let addr = remote_addr.into();
         tracing::Span::current().record("remote", field::display(addr.id.fmt_short()));
         let connection = endpoint.connect(addr, ALPN).await?;
         let wt_session = web_transport_iroh::Session::raw(connection);
-        Self::session_connect(wt_session).await
+        Self::session_connect(wt_session, origin).await
     }
 
     /// Establishes a MoQ session as the client (initiator) over an existing WebTransport session.
-    pub async fn session_connect(wt_session: web_transport_iroh::Session) -> Result<Self, Error> {
-        // One origin id identifies this node in broadcast hop chains. Sharing it
-        // across the publish and subscribe sides lets loop detection recognize a
-        // broadcast that a peer echoes back to us. The id must be non-zero: zero
-        // is the reserved `UNKNOWN` placeholder and fails to round-trip on the wire.
-        let origin = Origin::random();
+    ///
+    /// `origin` is this node's identity, stamped onto the broadcasts it announces
+    /// to the peer. The same id is used for the publish and subscribe sides so
+    /// loop detection sees one consistent hop for this node. It must be non-zero:
+    /// zero is the reserved `UNKNOWN` placeholder and is never encoded on the wire.
+    pub async fn session_connect(
+        wt_session: web_transport_iroh::Session,
+        origin: Origin,
+    ) -> Result<Self, Error> {
         let publish_prod = OriginProducer::new(origin);
         let subscribe_prod = OriginProducer::new(origin);
         let subscribe = subscribe_prod.consume();
@@ -298,9 +311,12 @@ impl MoqSession {
     }
 
     /// Accepts a MoQ session as the server (responder) over an existing WebTransport session.
-    pub async fn session_accept(wt_session: web_transport_iroh::Session) -> Result<Self, Error> {
-        // See `session_connect` for why both sides share one non-zero origin id.
-        let origin = Origin::random();
+    ///
+    /// See [`session_connect`](Self::session_connect) for the role of `origin`.
+    pub async fn session_accept(
+        wt_session: web_transport_iroh::Session,
+        origin: Origin,
+    ) -> Result<Self, Error> {
         let publish_prod = OriginProducer::new(origin);
         let subscribe_prod = OriginProducer::new(origin);
         let subscribe = subscribe_prod.consume();
@@ -391,6 +407,7 @@ struct Actor {
     endpoint: Endpoint,
     shutdown_token: CancellationToken,
     incoming_session_tx: broadcast::Sender<MoqSession>,
+    origin: Origin,
     publishing: HashMap<BroadcastName, BroadcastProducer>,
     publishing_closed_futs: FuturesUnordered<BoxFuture<BroadcastName>>,
     sessions: HashMap<EndpointId, MoqSession>,
@@ -403,11 +420,13 @@ impl Actor {
     pub(crate) fn new(
         endpoint: Endpoint,
         incoming_session_tx: broadcast::Sender<MoqSession>,
+        origin: Origin,
     ) -> Self {
         Self {
             endpoint,
             shutdown_token: CancellationToken::new(),
             incoming_session_tx,
+            origin,
             publishing: Default::default(),
             publishing_closed_futs: Default::default(),
             sessions: Default::default(),
@@ -539,8 +558,9 @@ impl Actor {
             }
             hash_map::Entry::Vacant(entry) => {
                 let endpoint = self.endpoint.clone();
+                let origin = self.origin;
                 self.pending_connect_tasks.spawn(async move {
-                    let res = MoqSession::connect(&endpoint, remote)
+                    let res = MoqSession::connect(&endpoint, remote, origin)
                         .await
                         .map_err(Into::into);
                     (remote_id, res)
