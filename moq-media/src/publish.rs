@@ -34,9 +34,13 @@ use tracing::{debug, info, warn};
 use crate::codec::AudioCodec;
 #[cfg(any_video_codec)]
 use crate::codec::VideoCodec;
+// The `codec` module is only referenced by the codec-gated encoder selection
+// (e.g. `codec::H264Encoder`), so gate the import to match and avoid an unused
+// import when the crate is built without any codec features.
+#[cfg(any(any_audio_codec, any_video_codec))]
+use crate::codec;
 use crate::{
     catalog::{Catalog, Chat, User},
-    codec,
     format::{
         AudioEncoderConfig, AudioFormat, AudioPreset, VideoEncoderConfig, VideoFormat, VideoFrame,
         VideoPreset,

@@ -1005,7 +1005,7 @@ pub struct VideoEncoderConfig {
             feature = "videotoolbox",
             feature = "android"
         )),
-        allow(dead_code)
+        allow(dead_code, reason = "only read by H.264 encoders")
     )]
     pub(crate) nal_format: NalFormat,
 }
