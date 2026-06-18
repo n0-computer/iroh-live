@@ -55,8 +55,23 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     client_config.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
 
     let iroh_secret = relay.iroh_secret_key()?;
+    // Register the MoQ ALPNs so the endpoint accepts iroh-native MoQ clients
+    // (e.g. the `irl` CLI and `subscribe_test`). Mirrors the ALPN set that
+    // `moq_native::iroh::EndpointConfig::bind` registers: every MoQ-lite/IETF
+    // version plus the WebTransport-over-HTTP/3 ALPN. Without this the endpoint
+    // rejects MoQ connections with "peer doesn't support any known protocol".
+    let mut alpns: Vec<Vec<u8>> = moq_native::moq_net::ALPNS
+        .iter()
+        .map(|alpn| alpn.as_bytes().to_vec())
+        .collect();
+    alpns.push(
+        moq_native::iroh::web_transport_iroh::ALPN_H3
+            .as_bytes()
+            .to_vec(),
+    );
     let iroh_endpoint = iroh::Endpoint::builder(presets::N0)
         .secret_key(iroh_secret)
+        .alpns(alpns)
         .bind()
         .await?;
 
