@@ -11,6 +11,7 @@ pub mod adaptive;
 pub mod audio_backend;
 pub mod audio_file_source;
 mod audio_file_symphonia;
+pub mod catalog;
 pub mod chat;
 pub mod frame_channel;
 pub mod net;
@@ -26,6 +27,8 @@ pub mod sync;
 pub mod test_util;
 pub mod transport;
 mod util;
+
+pub(crate) type OrderedConsumer = moq_mux::container::Consumer<moq_mux::catalog::hang::Container>;
 
 pub use audio_backend::{AudioBackend, AudioBackendOpts, AudioDevice};
 // Re-export from rusty-capture

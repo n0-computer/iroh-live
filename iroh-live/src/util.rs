@@ -2,7 +2,6 @@ use std::{thread, time::Duration};
 
 use iroh::{SecretKey, endpoint::Connection};
 use moq_media::net::NetworkSignals;
-use n0_watcher::Watcher;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
@@ -61,17 +60,13 @@ pub fn spawn_signal_producer(
                 _ = shutdown.cancelled() => break,
             }
 
-            let paths = conn.paths().get();
+            let paths = conn.paths();
             let Some(selected) = paths.iter().find(|p| p.is_selected()) else {
                 continue;
             };
 
-            let Some(stats) = selected.stats() else {
-                continue;
-            };
-            let Some(rtt) = selected.rtt() else {
-                continue;
-            };
+            let stats = selected.stats();
+            let rtt = selected.rtt();
 
             // Delta-based loss rate.
             let total_lost = stats.lost_packets;
@@ -136,16 +131,12 @@ pub fn spawn_stats_recorder(
                 _ = shutdown.cancelled() => break,
             }
 
-            let paths = conn.paths().get();
+            let paths = conn.paths();
             let Some(selected) = paths.iter().find(|p| p.is_selected()) else {
                 continue;
             };
-            let Some(stats) = selected.stats() else {
-                continue;
-            };
-            let Some(rtt) = selected.rtt() else {
-                continue;
-            };
+            let stats = selected.stats();
+            let rtt = selected.rtt();
 
             let rtt_ms = rtt.as_secs_f64() * 1000.0;
             net.rtt_ms.record(rtt_ms);
@@ -160,7 +151,7 @@ pub fn spawn_stats_recorder(
             net.path_addr.set(format!("{:?}", selected.remote_addr()));
 
             // Path counts.
-            let active = paths.iter().filter(|p| !p.is_closed()).count();
+            let active = paths.iter().count();
             net.paths_active.record(active as f64);
 
             // Delta-based loss rate (recent interval, not session-lifetime).

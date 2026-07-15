@@ -12,7 +12,7 @@ use std::{sync::OnceLock, time::Duration};
 
 use iroh::address_lookup::MemoryLookup;
 use moq_media::publish::VideoInput;
-use moq_native::moq_lite::{Origin, Track};
+use moq_native::moq_net::{Origin, Track};
 use moq_relay::{PublicConfig, PublicDetailed};
 use serial_test::serial;
 
@@ -47,7 +47,7 @@ impl TestRelay {
         // Build the relay's iroh endpoint with Minimal preset + MemoryLookup
         // instead of IrohEndpointConfig (which uses presets::N0 and real DNS
         // discovery). This makes tests reliable in CI without network access.
-        let mut alpns: Vec<Vec<u8>> = moq_native::moq_lite::ALPNS
+        let mut alpns: Vec<Vec<u8>> = moq_native::moq_net::ALPNS
             .iter()
             .map(|alpn| alpn.as_bytes().to_vec())
             .collect();
@@ -83,7 +83,8 @@ impl TestRelay {
         }));
         let auth = auth_config.init().await.expect("init auth");
 
-        let cluster = moq_relay::Cluster::new(moq_relay::ClusterConfig::default(), client);
+        let cluster =
+            moq_relay::Cluster::new(moq_relay::ClusterConfig::default()).with_client(client);
         let cluster_handle = cluster.clone();
         tokio::spawn(async move {
             cluster_handle.run().await.expect("cluster failed");
@@ -126,7 +127,7 @@ async fn noq_publish_noq_subscribe() {
     let relay = TestRelay::start().await;
 
     // Publisher
-    let pub_origin = Origin::produce();
+    let pub_origin = Origin::random().produce();
     let mut broadcast = pub_origin.create_broadcast("test").expect("create bc");
     let mut track = broadcast.create_track(Track::new("video")).expect("track");
     let mut group = track.append_group().expect("group");
@@ -147,7 +148,7 @@ async fn noq_publish_noq_subscribe() {
         .expect("connect");
 
     // Subscriber
-    let sub_origin = Origin::produce();
+    let sub_origin = Origin::random().produce();
     let mut announcements = sub_origin.consume();
     let mut sub_cfg = moq_native::ClientConfig::default();
     sub_cfg.tls.disable_verify = Some(true);
@@ -169,7 +170,7 @@ async fn noq_publish_noq_subscribe() {
     assert_eq!(path.as_str(), "test");
     let bc = bc.expect("announce");
     let mut track_sub = bc.subscribe_track(&Track::new("video")).expect("sub");
-    let mut group_sub = tokio::time::timeout(TIMEOUT, track_sub.next_group_ordered())
+    let mut group_sub = tokio::time::timeout(TIMEOUT, track_sub.next_group())
         .await
         .expect("timeout")
         .expect("err")
@@ -270,7 +271,7 @@ async fn noq_publish_iroh_subscribe() {
 
     // ── Publisher (noq, simulating browser) ──
     // Publish a broadcast with a hang-compatible catalog and video track.
-    let pub_origin = Origin::produce();
+    let pub_origin = Origin::random().produce();
     let mut broadcast = pub_origin.create_broadcast("browser-stream").expect("bc");
 
     // hang catalog format: renditions keyed by track name
@@ -432,13 +433,13 @@ async fn pull_remote_broadcast_via_ticket() {
     let local_name = ticket.to_string();
     relay
         .cluster
-        .primary
+        .origin
         .publish_broadcast(&local_name, consumer);
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // ── Subscriber (noq, simulating browser) ──
-    let sub_origin = Origin::produce();
+    let sub_origin = Origin::random().produce();
     let mut announcements = sub_origin.consume();
     let mut sub_cfg = moq_native::ClientConfig::default();
     sub_cfg.tls.disable_verify = Some(true);
@@ -469,7 +470,7 @@ async fn pull_remote_broadcast_via_ticket() {
     let mut catalog_track = bc
         .subscribe_track(&Track::new("catalog.json"))
         .expect("catalog sub");
-    let mut group = tokio::time::timeout(TIMEOUT, catalog_track.next_group_ordered())
+    let mut group = tokio::time::timeout(TIMEOUT, catalog_track.next_group())
         .await
         .expect("catalog group timeout")
         .expect("catalog group err")
@@ -532,7 +533,7 @@ async fn iroh_publish_noq_subscribe() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Subscriber (noq)
-    let sub_origin = Origin::produce();
+    let sub_origin = Origin::random().produce();
     let mut announcements = sub_origin.consume();
     let mut sub_cfg = moq_native::ClientConfig::default();
     sub_cfg.tls.disable_verify = Some(true);

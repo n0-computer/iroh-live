@@ -15,7 +15,7 @@ use iroh::{
     endpoint::{ConnectError, Connection, ConnectionError, WriteError},
     protocol::{AcceptError, ProtocolHandler},
 };
-use moq_lite::{BroadcastConsumer, BroadcastProducer, OriginConsumer, OriginProducer};
+use moq_lite::{BroadcastConsumer, BroadcastProducer, Origin, OriginConsumer, OriginProducer};
 use n0_error::{AnyError, Result, StdResultExt, anyerr, e, stack_error};
 use n0_future::{
     FuturesUnordered, StreamExt,
@@ -27,9 +27,12 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error_span, field, info, instrument};
 use web_transport_iroh::SessionError;
 
-// TODO: Use export from moq_lite after next update
 /// The ALPN protocol identifier for MoQ-lite connections.
-pub const ALPN: &[u8] = b"moq-lite-03";
+///
+/// `moq-lite-04` is the current wire version: it carries real origin ids in
+/// announce hop chains (lite-03 sent anonymous `UNKNOWN` placeholders) and
+/// supports `AnnounceInterest.exclude_hop` for sender-side loop suppression.
+pub const ALPN: &[u8] = b"moq-lite-04";
 
 #[stack_error(derive, add_meta, from_sources)]
 #[allow(private_interfaces, reason = "trait impl uses private types")]
@@ -76,6 +79,7 @@ pub struct Moq {
     tx: mpsc::Sender<ActorMessage>,
     incoming_session_tx: broadcast::Sender<MoqSession>,
     shutdown_token: CancellationToken,
+    origin: Origin,
     _actor_handle: Arc<AbortOnDropHandle<()>>,
 }
 
@@ -84,7 +88,12 @@ impl Moq {
     pub fn new(endpoint: Endpoint) -> Self {
         let (tx, rx) = mpsc::channel(16);
         let (incoming_session_tx, _) = broadcast::channel(16);
-        let actor = Actor::new(endpoint, incoming_session_tx.clone());
+        // One non-zero origin id identifies this node in broadcast announce hop
+        // chains. It is created once here and shared across every session this
+        // node opens or accepts, matching the per-node identity that relays use
+        // for loop detection and shortest-path routing.
+        let origin = Origin::random();
+        let actor = Actor::new(endpoint, incoming_session_tx.clone(), origin);
         let shutdown_token = actor.shutdown_token.clone();
         let actor_task =
             spawn(async move { actor.run(rx).await }.instrument(error_span!("LiveActor")));
@@ -92,6 +101,7 @@ impl Moq {
             shutdown_token,
             tx,
             incoming_session_tx,
+            origin,
             _actor_handle: Arc::new(AbortOnDropHandle::new(actor_task)),
         }
     }
@@ -100,6 +110,7 @@ impl Moq {
     pub fn protocol_handler(&self) -> MoqProtocolHandler {
         MoqProtocolHandler {
             tx: self.tx.clone(),
+            origin: self.origin,
         }
     }
 
@@ -165,13 +176,14 @@ impl Moq {
 #[derive(Debug, Clone)]
 pub struct MoqProtocolHandler {
     tx: mpsc::Sender<ActorMessage>,
+    origin: Origin,
 }
 
 impl MoqProtocolHandler {
     async fn handle_connection(&self, connection: Connection) -> Result<(), Error> {
         info!(remote = %connection.remote_id().fmt_short(), "accepted");
         let session = web_transport_iroh::Session::raw(connection);
-        let session = MoqSession::session_accept(session).await?;
+        let session = MoqSession::session_accept(session, self.origin).await?;
         self.tx
             .send(ActorMessage::HandleSession {
                 session: Box::new(session),
@@ -264,18 +276,27 @@ impl MoqSession {
     pub async fn connect(
         endpoint: &Endpoint,
         remote_addr: impl Into<EndpointAddr>,
+        origin: Origin,
     ) -> Result<Self, Error> {
         let addr = remote_addr.into();
         tracing::Span::current().record("remote", field::display(addr.id.fmt_short()));
         let connection = endpoint.connect(addr, ALPN).await?;
         let wt_session = web_transport_iroh::Session::raw(connection);
-        Self::session_connect(wt_session).await
+        Self::session_connect(wt_session, origin).await
     }
 
     /// Establishes a MoQ session as the client (initiator) over an existing WebTransport session.
-    pub async fn session_connect(wt_session: web_transport_iroh::Session) -> Result<Self, Error> {
-        let publish_prod = OriginProducer::new();
-        let subscribe_prod = OriginProducer::new();
+    ///
+    /// `origin` is this node's identity, stamped onto the broadcasts it announces
+    /// to the peer. The same id is used for the publish and subscribe sides so
+    /// loop detection sees one consistent hop for this node. It must be non-zero:
+    /// zero is the reserved `UNKNOWN` placeholder and is never encoded on the wire.
+    pub async fn session_connect(
+        wt_session: web_transport_iroh::Session,
+        origin: Origin,
+    ) -> Result<Self, Error> {
+        let publish_prod = OriginProducer::new(origin);
+        let subscribe_prod = OriginProducer::new(origin);
         let subscribe = subscribe_prod.consume();
         let client = moq_lite::Client::new()
             .with_publish(publish_prod.consume())
@@ -290,9 +311,14 @@ impl MoqSession {
     }
 
     /// Accepts a MoQ session as the server (responder) over an existing WebTransport session.
-    pub async fn session_accept(wt_session: web_transport_iroh::Session) -> Result<Self, Error> {
-        let publish_prod = OriginProducer::new();
-        let subscribe_prod = OriginProducer::new();
+    ///
+    /// See [`session_connect`](Self::session_connect) for the role of `origin`.
+    pub async fn session_accept(
+        wt_session: web_transport_iroh::Session,
+        origin: Origin,
+    ) -> Result<Self, Error> {
+        let publish_prod = OriginProducer::new(origin);
+        let subscribe_prod = OriginProducer::new(origin);
         let subscribe = subscribe_prod.consume();
         let server = moq_lite::Server::new()
             .with_publish(publish_prod.consume())
@@ -325,21 +351,9 @@ impl MoqSession {
         if let Some(reason) = self.conn().close_reason() {
             return Err(SessionError::from(reason).into());
         }
-        if let Some(consumer) = self.subscribe.consume_broadcast(name) {
-            return Ok(consumer);
-        }
-        loop {
-            let res = tokio::select! {
-                res = self.subscribe.announced() => res,
-                reason = self.wt_session.closed() => {
-                    return Err(reason.into())
-                }
-            };
-            let (path, consumer) = res.ok_or_else(|| e!(SubscribeError::NotAnnounced))?;
-            debug!("peer announced broadcast: {path}");
-            if path.as_str() == name {
-                return consumer.ok_or_else(|| e!(SubscribeError::Closed));
-            }
+        match self.subscribe.announced_broadcast(name).await {
+            None => Err(e!(SubscribeError::Closed)),
+            Some(consumer) => Ok(consumer),
         }
     }
 
@@ -393,6 +407,7 @@ struct Actor {
     endpoint: Endpoint,
     shutdown_token: CancellationToken,
     incoming_session_tx: broadcast::Sender<MoqSession>,
+    origin: Origin,
     publishing: HashMap<BroadcastName, BroadcastProducer>,
     publishing_closed_futs: FuturesUnordered<BoxFuture<BroadcastName>>,
     sessions: HashMap<EndpointId, MoqSession>,
@@ -405,11 +420,13 @@ impl Actor {
     pub(crate) fn new(
         endpoint: Endpoint,
         incoming_session_tx: broadcast::Sender<MoqSession>,
+        origin: Origin,
     ) -> Self {
         Self {
             endpoint,
             shutdown_token: CancellationToken::new(),
             incoming_session_tx,
+            origin,
             publishing: Default::default(),
             publishing_closed_futs: Default::default(),
             sessions: Default::default(),
@@ -541,8 +558,9 @@ impl Actor {
             }
             hash_map::Entry::Vacant(entry) => {
                 let endpoint = self.endpoint.clone();
+                let origin = self.origin;
                 self.pending_connect_tasks.spawn(async move {
-                    let res = MoqSession::connect(&endpoint, remote)
+                    let res = MoqSession::connect(&endpoint, remote, origin)
                         .await
                         .map_err(Into::into);
                     (remote_id, res)

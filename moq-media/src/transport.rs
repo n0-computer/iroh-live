@@ -1,12 +1,14 @@
 use std::{fmt, future::Future, time::Duration};
 
 use anyhow::Result;
-use hang::container::OrderedProducer;
-use moq_lite::TrackProducer;
+use moq_lite::{Timescale, TrackProducer};
 use tokio::sync::mpsc;
 use tracing::trace;
 
-use crate::format::{EncodedFrame, MediaPacket};
+use crate::{
+    OrderedConsumer,
+    format::{EncodedFrame, MediaPacket},
+};
 
 /// Reads encoded media packets asynchronously.
 ///
@@ -29,11 +31,11 @@ pub trait PacketSink: Send + 'static {
 }
 
 /// Wraps a hang [`OrderedConsumer`](hang::container::OrderedConsumer) as a [`PacketSource`].
-pub struct MoqPacketSource(pub hang::container::OrderedConsumer, u64);
+pub struct MoqPacketSource(pub OrderedConsumer, u64);
 
 impl MoqPacketSource {
     /// Creates a new packet source from an ordered consumer.
-    pub fn new(consumer: hang::container::OrderedConsumer) -> Self {
+    pub fn new(consumer: OrderedConsumer) -> Self {
         Self(consumer, 0)
     }
 }
@@ -50,7 +52,7 @@ impl PacketSource for MoqPacketSource {
         let seq = self.1;
         match self.0.read().await {
             Ok(Some(frame)) => {
-                let pkt: MediaPacket = frame.into();
+                let pkt: MediaPacket = moq_frame_to_media_packet(frame);
                 throttled_tracing::trace_every!(
                     Duration::from_secs(2),
                     seq,
@@ -72,16 +74,27 @@ impl PacketSource for MoqPacketSource {
     }
 }
 
+fn moq_frame_to_media_packet(frame: moq_mux::container::Frame) -> MediaPacket {
+    MediaPacket {
+        timestamp: frame.timestamp.into(),
+        payload: frame.payload.into(),
+        is_keyframe: frame.keyframe,
+    }
+}
+
 /// Wraps a hang [`OrderedProducer`] as a [`PacketSink`].
 ///
 /// Handles keyframe grouping: calls `keyframe()` on the underlying producer
 /// when an `EncodedFrame` with `is_keyframe = true` is written.
-pub struct MoqPacketSink(OrderedProducer);
+pub struct MoqPacketSink(moq_mux::container::Producer<moq_mux::catalog::hang::Container>);
 
 impl MoqPacketSink {
     /// Creates a new sink from a [`TrackProducer`].
     pub fn new(producer: TrackProducer) -> Self {
-        Self(OrderedProducer::new(producer))
+        Self(moq_mux::container::Producer::new(
+            producer,
+            moq_mux::catalog::hang::Container::Legacy,
+        ))
     }
 }
 
@@ -93,10 +106,12 @@ impl fmt::Debug for MoqPacketSink {
 
 impl PacketSink for MoqPacketSink {
     fn write(&mut self, packet: EncodedFrame) -> Result<()> {
-        if packet.is_keyframe {
-            self.0.keyframe()?;
-        }
-        self.0.write(packet.to_hang_frame())?;
+        let frame = moq_mux::container::Frame {
+            timestamp: Timescale::from_millis_unchecked(packet.timestamp.as_millis() as u64),
+            payload: packet.payload,
+            keyframe: packet.is_keyframe,
+        };
+        self.0.write(frame)?;
         Ok(())
     }
 

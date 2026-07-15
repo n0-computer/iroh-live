@@ -26,7 +26,7 @@ rustls = { version = "0.23", features = ["aws-lc-rs"], default-features = false 
 moq-media = { workspace = true }
 moq-media-egui = { workspace = true, optional = true }
 moq-mux = { workspace = true }
-n0-error = { version = "0.1.2", features = ["anyhow"] }
+n0-error = { version = "1", features = ["anyhow"] }
 qr2term = "0.3"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"

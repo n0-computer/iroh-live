@@ -51,8 +51,9 @@ impl PullState {
         // Fast path: broadcast already exists in the cluster.
         if self
             .cluster
-            .primary
-            .consume_broadcast(&local_name)
+            .origin
+            .consume()
+            .get_broadcast(&local_name)
             .is_some()
         {
             tracing::debug!(
@@ -85,8 +86,9 @@ impl PullState {
                 // appeared in the cluster (success) or not (failure).
                 if self
                     .cluster
-                    .primary
-                    .consume_broadcast(&local_name)
+                    .origin
+                    .consume()
+                    .get_broadcast(&local_name)
                     .is_some()
                 {
                     Ok(local_name)
@@ -128,7 +130,7 @@ impl PullState {
             .await
             .map_err(|e| anyhow::anyhow!("failed to subscribe to broadcast: {e}"))?;
 
-        self.cluster.primary.publish_broadcast(local_name, consumer);
+        self.cluster.origin.publish_broadcast(local_name, consumer);
 
         tracing::info!(
             local_name = %local_name,

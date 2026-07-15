@@ -613,7 +613,7 @@ mod ticket {
     /// Contains the gossip topic ID and optional bootstrap peer IDs.
     /// Serializes to a compact string via the `iroh_tickets` crate.
     #[derive(Debug, Serialize, Deserialize, Clone, derive_more::Display)]
-    #[display("{}", iroh_tickets::Ticket::serialize(self))]
+    #[display("{}", iroh_tickets::Ticket::encode_string(self))]
     pub struct RoomTicket {
         /// Peers to contact initially for gossip bootstrap.
         pub bootstrap: Vec<EndpointId>,
@@ -676,18 +676,18 @@ mod ticket {
         type Err = iroh_tickets::ParseError;
 
         fn from_str(s: &str) -> Result<Self, Self::Err> {
-            iroh_tickets::Ticket::deserialize(s)
+            iroh_tickets::Ticket::decode_string(s)
         }
     }
 
     impl iroh_tickets::Ticket for RoomTicket {
         const KIND: &'static str = "room";
 
-        fn to_bytes(&self) -> Vec<u8> {
+        fn encode_bytes(&self) -> Vec<u8> {
             postcard::to_stdvec(self).expect("RoomTicket serialization is infallible")
         }
 
-        fn from_bytes(bytes: &[u8]) -> Result<Self, iroh_tickets::ParseError> {
+        fn decode_bytes(bytes: &[u8]) -> Result<Self, iroh_tickets::ParseError> {
             let ticket = postcard::from_bytes(bytes)?;
             Ok(ticket)
         }

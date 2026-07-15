@@ -13,6 +13,7 @@ use std::{
 use axum::{extract::State, response::IntoResponse, routing::get};
 use clap::Args;
 use include_dir::{Dir, include_dir};
+use iroh::{SecretKey, endpoint::presets};
 use moq_relay::{AuthConfig, Cluster, ClusterConfig, Connection, PublicConfig, PublicDetailed};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::debug;
@@ -53,22 +54,36 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     let mut client_config = moq_native::ClientConfig::default();
     client_config.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
 
-    let mut iroh_config = moq_native::IrohEndpointConfig::default();
-    iroh_config.enabled = Some(true);
-    iroh_config.secret = Some(relay.iroh_secret_path_str());
+    let iroh_secret = relay.iroh_secret_key()?;
+    // Register the MoQ ALPNs so the endpoint accepts iroh-native MoQ clients
+    // (e.g. the `irl` CLI and `subscribe_test`). Mirrors the ALPN set that
+    // `moq_native::iroh::EndpointConfig::bind` registers: every MoQ-lite/IETF
+    // version plus the WebTransport-over-HTTP/3 ALPN. Without this the endpoint
+    // rejects MoQ connections with "peer doesn't support any known protocol".
+    let mut alpns: Vec<Vec<u8>> = moq_native::moq_net::ALPNS
+        .iter()
+        .map(|alpn| alpn.as_bytes().to_vec())
+        .collect();
+    alpns.push(
+        moq_native::iroh::web_transport_iroh::ALPN_H3
+            .as_bytes()
+            .to_vec(),
+    );
+    let iroh_endpoint = iroh::Endpoint::builder(presets::N0)
+        .secret_key(iroh_secret)
+        .alpns(alpns)
+        .bind()
+        .await?;
 
     let server = server_config.init()?;
     let client = client_config.init()?;
-    let iroh = iroh_config.bind().await?;
     let (mut server, client) = (
-        server.with_iroh(iroh.clone()),
-        client.with_iroh(iroh.clone()),
+        server.with_iroh(Some(iroh_endpoint.clone())),
+        client.with_iroh(Some(iroh_endpoint.clone())),
     );
 
-    if let Some(ref iroh_ep) = iroh {
-        tracing::info!(endpoint_id = %iroh_ep.id(), "iroh endpoint bound");
-        println!("iroh endpoint: {}", iroh_ep.id());
-    }
+    tracing::info!(endpoint_id = %iroh_endpoint.id(), "iroh endpoint bound");
+    println!("iroh endpoint: {}", iroh_endpoint.id());
 
     let tls_info = server.tls_info();
 
@@ -82,18 +97,16 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     }));
     let auth = auth_config.init().await?;
 
-    let cluster = Cluster::new(ClusterConfig::default(), client);
+    let cluster = Cluster::new(ClusterConfig::default()).with_client(client);
     let cluster_handle = cluster.clone();
     tokio::spawn(async move {
         cluster_handle.run().await.expect("cluster failed");
     });
 
-    let pull_state = if iroh.is_some() {
+    let pull_state = {
         let pull_ep = iroh::Endpoint::bind(iroh::endpoint::presets::N0).await?;
         let pull_live = iroh_live::Live::new(pull_ep);
         Some(Arc::new(pull::PullState::new(pull_live, cluster.clone())))
-    } else {
-        None
     };
 
     let http_state = Arc::new(HttpState {
@@ -136,9 +149,7 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
             .expect("http server failed");
     });
 
-    if let Some(ref iroh_ep) = iroh {
-        tracing::info!(iroh_addr = %iroh_ep.id(), "relay ready");
-    }
+    tracing::info!(iroh_addr = %iroh_endpoint.id(), "relay ready");
 
     let mut conn_id = 0u64;
     while let Some(request) = server.accept().await {
@@ -204,13 +215,22 @@ impl RelayServer {
         self.data_dir.join("iroh_secret_key")
     }
 
-    fn iroh_secret_path_str(&self) -> String {
-        self.iroh_secret_key_path().to_string_lossy().into_owned()
+    fn iroh_secret_key(&self) -> anyhow::Result<iroh::SecretKey> {
+        let path = self.iroh_secret_key_path();
+        if let Ok(true) = std::fs::exists(&path) {
+            let key = std::fs::read(&path)?;
+            let key = SecretKey::from_bytes((&key[..]).try_into()?);
+            Ok(key)
+        } else {
+            let key = SecretKey::generate();
+            std::fs::write(path, key.to_bytes())?;
+            Ok(key)
+        }
     }
 }
 
 struct HttpState {
-    tls_info: Arc<RwLock<moq_native::ServerTlsInfo>>,
+    tls_info: Arc<RwLock<moq_native::tls::Info>>,
 }
 
 fn extract_name_from_url(request: &moq_native::Request) -> Option<String> {

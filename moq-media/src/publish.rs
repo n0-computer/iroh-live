@@ -22,20 +22,25 @@ pub use controller::{
     CaptureConfig, PublishCaptureController, PublishOpts, PublishUpdate, PublishUpdateError,
     StreamKind,
 };
-use hang::catalog::{Audio, AudioConfig, Catalog, Chat, User, Video, VideoConfig};
-use moq_lite::{BroadcastProducer, TrackProducer};
+use hang::catalog::{Audio, AudioConfig, Video, VideoConfig};
+use moq_lite::{Broadcast, BroadcastProducer, TrackProducer};
 use n0_error::{Result, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+// The `codec` module is only referenced by the codec-gated encoder selection
+// (e.g. `codec::H264Encoder`), so gate the import to match and avoid an unused
+// import when the crate is built without any codec features.
+#[cfg(any(any_audio_codec, any_video_codec))]
+use crate::codec;
 #[cfg(any_audio_codec)]
 use crate::codec::AudioCodec;
 #[cfg(any_video_codec)]
 use crate::codec::VideoCodec;
 use crate::{
-    codec,
+    catalog::{Catalog, Chat, User},
     format::{
         AudioEncoderConfig, AudioFormat, AudioPreset, VideoEncoderConfig, VideoFormat, VideoFrame,
         VideoPreset,
@@ -229,7 +234,7 @@ impl LocalBroadcast {
     /// The consumer returned by [`consume`](Self::consume) is immediately
     /// usable: callers do not need to yield before subscribing to tracks.
     pub fn new() -> Self {
-        let mut producer = BroadcastProducer::default();
+        let mut producer = Broadcast::default().produce();
         let catalog = CatalogProducer::new(&mut producer).expect("not closed");
 
         let stats = crate::stats::PublishStats::default();
@@ -334,7 +339,7 @@ impl LocalBroadcast {
                     break;
                 }
             };
-            let name = track.info.name.clone();
+            let name = track.name.clone();
             if state
                 .lock()
                 .unwrap()
@@ -559,61 +564,44 @@ impl Drop for LocalBroadcast {
     }
 }
 
-struct CatalogProducer {
-    track: TrackProducer,
-    catalog: Catalog,
-    /// Last published catalog bytes, used to skip duplicate publishes.
-    last_published: Option<String>,
-}
+/// Publishes the broadcast catalog and exposes setters for its sections.
+///
+/// Wraps [`moq_mux::catalog::Producer`], which owns the `catalog.json` (hang)
+/// and MSF catalog tracks and publishes a fresh snapshot whenever a section
+/// changes.
+#[derive(derive_more::Debug)]
+#[debug("CatalogProducer")]
+pub struct CatalogProducer(#[debug(skip)] moq_mux::catalog::Producer<crate::catalog::IrohLiveExt>);
 
 impl CatalogProducer {
-    fn new(broadcast: &mut BroadcastProducer) -> Result<Self> {
-        let track = broadcast
-            .create_track(hang::Catalog::default_track())
-            .anyerr()?;
-        let catalog = Catalog::default();
-        let mut this = Self {
-            track,
-            catalog,
-            last_published: None,
-        };
-        this.publish()?;
-        Ok(this)
+    pub fn new(broadcast: &mut BroadcastProducer) -> Result<Self> {
+        let mut producer =
+            moq_mux::catalog::Producer::with_catalog(broadcast, Catalog::default()).anyerr()?;
+        // `lock()` only publishes when the catalog is mutated, so touch it once
+        // to publish the initial (empty) catalog. Without this, a subscriber
+        // that connects before the first track is configured would block on the
+        // catalog track instead of receiving an empty catalog.
+        producer.lock().video = Video::default();
+        Ok(Self(producer))
     }
 
-    fn set_video(&mut self, video: Video) -> Result<()> {
-        self.catalog.video = video;
-        self.publish()?;
+    pub fn set_video(&mut self, video: Video) -> Result<()> {
+        self.0.lock().video = video;
         Ok(())
     }
 
-    fn set_audio(&mut self, audio: Audio) -> Result<()> {
-        self.catalog.audio = audio;
-        self.publish()?;
+    pub fn set_audio(&mut self, audio: Audio) -> Result<()> {
+        self.0.lock().audio = audio;
         Ok(())
     }
 
-    fn set_chat(&mut self, chat: Option<Chat>) -> Result<()> {
-        self.catalog.chat = chat;
-        self.publish()?;
+    pub fn set_chat(&mut self, chat: Option<Chat>) -> Result<()> {
+        self.0.lock().ext.chat = chat;
         Ok(())
     }
 
-    fn set_user(&mut self, user: Option<User>) -> Result<()> {
-        self.catalog.user = user;
-        self.publish()?;
-        Ok(())
-    }
-
-    fn publish(&mut self) -> Result<()> {
-        let serialized = self.catalog.to_string().anyerr()?;
-        if self.last_published.as_ref() == Some(&serialized) {
-            return Ok(());
-        }
-        let mut group = self.track.append_group().anyerr()?;
-        group.write_frame(serialized.clone()).anyerr()?;
-        group.finish().anyerr()?;
-        self.last_published = Some(serialized);
+    pub fn set_user(&mut self, user: Option<User>) -> Result<()> {
+        self.0.lock().ext.user = user;
         Ok(())
     }
 }
@@ -665,7 +653,7 @@ impl State {
     }
 
     fn start_track(&mut self, track: moq_lite::TrackProducer) -> Result<()> {
-        let name = track.info.name.clone();
+        let name = track.name.clone();
 
         // Try video first.
         match self.video.as_mut() {
@@ -1438,7 +1426,7 @@ mod tests {
 
         let _pipeline = VideoEncoderPipeline::new(source, encoder, sink, Default::default());
 
-        let result = tokio::time::timeout(timeout, consumer.next_group_ordered()).await;
+        let result = tokio::time::timeout(timeout, consumer.next_group()).await;
 
         drop(_pipeline);
 
@@ -1446,7 +1434,7 @@ mod tests {
             .expect("timed out waiting for first video group")
             .expect("track error")
             .expect("track closed without producing any groups");
-        assert_eq!(group.info.sequence, 0, "first group should be sequence 0");
+        assert_eq!(group.sequence, 0, "first group should be sequence 0");
     }
 
     #[cfg(feature = "h264")]

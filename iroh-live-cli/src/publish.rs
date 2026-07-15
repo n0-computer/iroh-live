@@ -8,7 +8,7 @@
 //! into a room, `--no-serve` disables incoming connections.
 
 use iroh_live::media::publish::LocalBroadcast;
-use moq_lite::BroadcastProducer;
+use moq_lite::{Broadcast, BroadcastProducer};
 
 use crate::{
     args::PublishArgs,
@@ -74,7 +74,7 @@ fn run_file(
     let (live, decoder, input, preview_consumer, _room) = rt.block_on(async {
         let mut input = open_input(&Some(path), args.transcode, args.format).await?;
         let live = setup_live(!args.transport.no_serve).await?;
-        let mut broadcast = BroadcastProducer::default();
+        let mut broadcast = BroadcastProducer::new(Broadcast::default());
         let preview_consumer = broadcast.consume();
         let decoder = init_import(&mut broadcast, args.format, &mut input).await?;
         let room = publish_producer(&live, broadcast, &args.transport).await?;
