@@ -1,5 +1,92 @@
 # Worklog: moq-alignment refactor planning
 
+## ROUND 3 (2026-07-22): upstream PR campaign planning (plans/upstream/)
+
+Goal: full upstream of all iroh-live codec + capture code to moq (or
+improve moq's existing code). Produce plans/upstream/ as a tree-shaped,
+ordered, independently-executable plan set ready for a coordinated
+multi-subagent session that opens a base PR series then a fan of leaf
+PRs to moq. moq is one codebase now (HEAD 3a3e0ea8).
+
+Git setup done first, per the user:
+- .gitignore: removed /plans, kept /plans/old ignored.
+- New branch plan-upstream; committed the current plan set (36 files,
+  refactor/ + worklog, no plans/old) as f45b663 "docs: track refactor
+  planning docs...". No push (not requested).
+
+plans/upstream/ structure:
+- 0-overview.md (authored by coordinator): goal, base-then-leaves
+  strategy, the FROZEN BASE API CONTRACT (Native enum + DmaBuf accessor,
+  Backend::encode timestamp + Packet, decode::Frame::native(),
+  register_encoder/decoder), dependency tree, wave ordering, 6
+  coordination points, the autonomous-agent runbook, plan template,
+  git/PR model, and the plan index.
+- comparisons/ (copied from refactor): codecs, capture, audio, zerocopy,
+  traits-api, moq-changes, iroh-live-code-map, moq-inventory + maps/.
+- base/ B1-B5, codec/ (vaapi-decode/encode, vtb-mf-decode-surface,
+  v4l2-encode/decode, android, av1, opus, pcm, bitstream), capture/
+  (pipewire-dmabuf, v4l2-camera-enum, libcamera-preencoded), render/
+  (moq-video-render). ~19 leaf/base plans.
+
+Base API contract frozen from moq-changes.md changes 1,2,3,7 (verified
+against 3u sketches). Change map: 1=B1 (keystone), 2=B2 (PTS), 3=B3
+(native accessor), 7=B4 (public Backend trait, breaking, Path B only),
+9=B5 (conventions). Leaves = changes 4,5,6,8,10,11,12 + the codec
+comparison backends (v4l2, android, av1).
+
+Six plan-writing agents dispatched in parallel, each reading the
+overview (contract+template) + its comparison sections + real source,
+writing concrete executable plans. After they land: review set for
+template/contract/dependency consistency, fix anchor mismatches, then
+commit plans/upstream on plan-upstream.
+
+All six done; 19 plans written, all anchors verified against source.
+Notable source confirmations: our VAAPI decoder is H.264-only;
+moq-vaapi is external crates.io 0.0.2 encode-only (so its growth is a
+real version-bump, owned by vaapi-decode); neither our nor moq's Opus
+decoder has a real PLC/decode_lost path (FEC/PLC framed as reservation);
+moq's PipeWire capture is CPU-only (the gap pipewire-dmabuf fills); the
+V4L2 and Android encoders are genuinely pipelined (bounded SyncSender,
+immediate push_frame return, PTS on the driver buffer) = B2 justified.
+Base agent flagged one contract-anchor asymmetry: decode SOFTWARE is a
+single const, not a slice (encode has two slices) -> fixed the overview
+prose at line 165; B4 already captured it. Consistency review dispatched
+(contract adherence, dependency tree, the moq-vaapi/B4/render seams,
+coordination declarations). Then fix + commit.
+
+### Round 3 closing (2026-07-22)
+
+Consistency review (review-consistency.md): verdict MOSTLY consistent,
+ready after one substantive fix; 0 blocking, 2 substantive, 4 nits. The
+frozen contract is quoted verbatim across all consumers, dependency
+headers match the tree, the three hard seams (moq-vaapi ownership, B4/
+Android, render deps) are declared without contradiction. All findings
+survived the opposing stance; all fixed inline by the coordinator:
+- av1-software invented a false breaking-change gate (claimed the encode
+  Codec enum is not #[non_exhaustive]; source encoder.rs:22 IS, so
+  adding Av1 is additive). Removed the false gate; replaced with the
+  real coordination point 4 (rav1d fork). This mattered: it would have
+  sent a PR agent to an unnecessary maintainer stop.
+- B1 left the DmaBuf feature-gate undecided (vaapi vs dmabuf). Committed
+  to a shared `dmabuf` Cargo feature that vaapi/pipewire/v4l2 each
+  enable, so DMA-BUF producers pull the variant without depending on
+  vaapi. Updated B1 (4 sites) + the overview contract.
+- Nits fixed: render into_i420 signature (consumes self, not &self;
+  noted the ownership implication for the fallback), v4l2-decode
+  candidate-table anchor (HARDWARE :89-107 not :89-114), overview
+  v4l2-camera-enum index row qualifier.
+
+Deliverable complete: plans/upstream/ is a self-contained campaign kit
+(overview + frozen contract + comparisons + 19 base/leaf plans + the
+consistency review) ready to hand to a coordinated multi-subagent
+session that opens the base PR series (B1 keystone first) then the fan
+of leaf PRs to moq. Committed on plan-upstream. No push (not requested).
+
+Wall-clock: git setup + overview authoring + 6 parallel plan agents +
+consistency review + fixes. moq HEAD re-verified 3a3e0ea8 throughout.
+
+
+
 ## ROUND 2 (2026-07-21): dev merged into main; full rewrite
 
 Trigger: moq merged dev into main (commit 3c22ecb8 "Merge
