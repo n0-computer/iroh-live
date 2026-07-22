@@ -136,6 +136,14 @@ our `config.rs` catalog mirror. The construction config comes from moq's encode
 - Coordination point 4 (rav1d fork): do not open this PR until the git-fork pin
   is resolved (published, moved to a released rav1d, or vendored).
 
+## Transcode and rate control (overview coordination point 7)
+
+A fresh rav1e `Context` per group fits per-group transcoding naturally and is the
+cheapest reconfigure of any backend, so rav1e with rav1d is the software
+transcode fallback for relay hosts without hardware, subject to the CPU cost of
+software encode. Expose a per-encode target-bitrate and defer the rate-control
+policy to moq-transcode rather than embedding a streaming controller.
+
 ## Acceptance checklist
 
 - rav1d dependency resolved to a non-git source, confirmed with a human.

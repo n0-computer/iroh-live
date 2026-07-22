@@ -188,6 +188,25 @@ hardware and name the compositor, because moq's runners cannot exercise it.
   encoder work landing first (the CPU fallback keeps the backend whole on its
   own).
 
+## Scope: the PipeWire portal camera source
+
+This plan contributes the screen path (moq already owns portal screen capture;
+we add DMA-BUF zero-copy delivery to it). Our `rusty-capture` also has a PipeWire
+portal CAMERA capturer (`PipeWireCameraCapturer`), and moq has no portal camera
+source at all, so `comparisons/capture.md`'s PipeWire verdict to keep our camera
+support has no home elsewhere. Carry it here as an in-scope camera sibling: a
+`org.freedesktop.portal.Camera` counterpart to the screen `ScreenCast` path,
+reusing the same SPA negotiation, DRM-fourcc mapping, and `Frame::DmaBuf`
+delivery. It is a follow-up commit within this leaf (or a near sibling branch off
+the same base), sequenced after the screen path proves the DMA-BUF delivery, so
+the camera source is not lost. If the maintainer prefers it as a separate leaf,
+that is the alternative disposition; either way it is tracked, not dropped.
+
+Note on CPU scaling: our `processing/scale` (pic-scale) CPU scaler is dropped by
+decision, not lost, because moq ships `fast_image_resize` for the same job
+(`comparisons/codecs.md`); GPU scaling for the zero-copy path is VPP, carried by
+the VAAPI leaves.
+
 ## Acceptance checklist
 
 - The PipeWire backend offers dmabuf modifiers and, on a compositor that

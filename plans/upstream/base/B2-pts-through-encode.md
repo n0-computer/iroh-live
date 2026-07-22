@@ -190,6 +190,14 @@ is the v4l2-encode leaf, not B2; B2 only prepares the seam it needs.
   `Candidate` tables, so it does not collide with the per-leaf candidate additions
   (coordination point 2).
 
+## Transcode and rate control (overview coordination point 7)
+
+Beyond live pipelined encode, the per-`Packet` timestamp and `finish()` draining
+also serve one-shot FETCH transcoding: moq-transcode builds a fresh encoder per
+fetched group, which must drain and stamp its packets correctly on `finish()`.
+This reinforces that B2 is needed for per-group transcoding, not only for a
+continuous stream.
+
 ## Acceptance checklist
 
 - [ ] `Backend::encode(&mut self, frame: &Frame, timestamp: Timestamp, keyframe:

@@ -85,6 +85,72 @@ of leaf PRs to moq. Committed on plan-upstream. No push (not requested).
 Wall-clock: git setup + overview authoring + 6 parallel plan agents +
 consistency review + fixes. moq HEAD re-verified 3a3e0ea8 throughout.
 
+### Round 3b (2026-07-22): review + comprehensiveness + transcode alignment
+
+User asked to: review the plan/structure; make comparisons readable
+(top matrix + inline links); ensure comprehensiveness (nothing lost vs
+our status quo, no moq main feature regressed). Plus maintainer info to
+avoid collision: "per segment transcoding with FETCH support is the
+goal ... 1080p -> 360p for group 45 ... rate control needs to be pretty
+custom", source = "relay memory, possibly disk".
+
+Assessment: comparison docs have rich per-section tables but NO
+top-level consolidated matrix/index (readability gap); the plans/
+overview say nothing about transcode/FETCH/rate-control (collision-avoid
+gap). Three agents dispatched:
+- A: coverage audit (every iroh-live codec/capture feature + subtle
+  optimization -> the plan that carries it; flag LOST/PARTIAL). ->
+  review-coverage.md.
+- B: moq no-regression (B2/B4/vaapi-encode/vtb-mf/opus are strictly
+  additive, no moq feature removed) + per-segment-FETCH-transcoding
+  alignment (our VAAPI decode+VPP+encode = Intel/AMD analog of
+  NVDEC->NVENC for moq-transcode; rate control must expose per-segment
+  primitives + cheap reconfigure, not a streaming controller; propose
+  overview coordination point #7). -> review-transcode-alignment.md.
+- C: comparisons/0-index.md = consolidated capability matrix with
+  inline links to detailed sections + key findings.
+Then integrate: fix coverage gaps, add coordination point #7 + per-plan
+transcode/rate-control notes, land the index, re-verify, commit.
+
+Agent results:
+- Coverage (review-coverage.md): 28 COVERED, 19 dropped-by-decision,
+  1 PARTIAL, 0 LOST. Comprehensive. PARTIAL = PipeWire portal camera
+  capturer (screen-only plan drops it; capture.md verdict keeps camera).
+- No-regression (review-transcode-alignment.md): PASS, no moq feature
+  removed. Transcode-alignment: MOSTLY - our encoders plug into
+  moq-transcode's public encode::{Kind,Config,Encoder} seam with zero
+  integration (per-rung CBR via Config.bitrate, fresh encoder per group,
+  never uses rate::Control). Correction: our decoders have reset() but
+  our ENCODERS do not; per-group re-open cost rav1e<VAAPI<V4L2
+  (expensive: device open+REQBUFS+STREAMON) -> VAAPI/V4L2 encode plans
+  need a session-reuse note.
+- Index (comparisons/0-index.md): 31-row consolidated capability matrix
+  with inline links, all machine-verified to resolve.
+Coordinator added overview coordination point #7 (per-segment
+transcoding + FETCH) + scope note (audio device layer out of scope,
+separate effort) + provenance pointer to 0-index.md. Dispatched a fixer
+for the per-plan transcode notes + the PipeWire camera partial.
+
+### Round 3c (2026-07-22, OVERNIGHT): migrate + delete refactor + full review
+
+New user instruction (overnight discipline): ensure everything from
+plans/refactor/ is preserved in plans/upstream/ (add if missing unless
+obsolete), remove plans/refactor/, commit; then a fresh adversarial
+review of the whole upstream plan cross-checked against source, adding
+missing details, written to plans/upstream-review-0722-plan.md.
+
+Migration plan (refactor/ is committed in f45b663, so anything not
+migrated survives in git history):
+- comparisons already hold 1,2,3,3t,3u,3z,4,6 + the 8 current maps.
+- ADD comparisons/pubsub.md <- 5-compare-pubsub.
+- NEW analysis/ <- refactor 0-overview, 7-cut-plan, 8-upstream-plan,
+  9-room-layer, 10-summary (broader refactor synthesis beyond the
+  codec/capture campaign) + an analysis/README explaining status.
+- OBSOLETE, not migrated (in git history): the 6 stub maps
+  (moq-main-media, moq-dev-*, moq-origin-hop), the 6 review artifacts
+  (superseded process notes).
+Then git rm -r plans/refactor; commit; then the full adversarial review.
+
 
 
 ## ROUND 2 (2026-07-21): dev merged into main; full rewrite

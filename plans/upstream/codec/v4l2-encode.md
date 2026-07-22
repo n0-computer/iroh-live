@@ -252,6 +252,16 @@ encoded SPS in its `Producer`.
 - No B1, B3, or B4 dependency: this is a CPU-input, in-tree backend, so it needs
   neither the GPU-frame vocabulary nor the registration API.
 
+## Transcode and rate control (overview coordination point 7)
+
+Per-group transcoding builds a fresh encoder per fetched group. Our V4L2 encoder
+is the most expensive backend to re-open (full device open plus `REQBUFS` plus
+`STREAMON`), unlike rav1e (cheap) and VAAPI (a VA context). This backend must add
+a reset or session-reuse path so a per-group transcode loop reuses one V4L2
+session rather than re-opening per group. Expose per-segment rate primitives (an
+honest `set_bitrate`, forced IDR per GOP, and a target-bitrate knob) and defer
+the rate-control policy to moq-transcode; do not embed a streaming controller.
+
 ## Acceptance checklist
 
 - The crate builds with `--features v4l2` and without it, on a Linux target and a

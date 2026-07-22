@@ -28,8 +28,13 @@ In scope: the base API changes, the VAAPI, V4L2, Android, and software AV1
 backends, the Opus and PCM codec work, the bitstream helpers, the PipeWire,
 V4L2, and libcamera capture sources, and the out-of-tree renderer crate. Out of
 scope: adopting moq's existing backends (openh264, VideoToolbox encode, NVENC,
-NVDEC, Media Foundation), which iroh-live consumes rather than contributes, and
-the room, pub/sub, and adaptive work, which is a separate effort.
+NVDEC, Media Foundation), which iroh-live consumes rather than contributes; the
+room, pub/sub, and adaptive work, which is a separate effort; and the audio
+device layer (the `audio_backend` echo-cancellation engine, the playback sink,
+and the symphonia file source), which is neither codec nor capture and is a
+separate future audio-device effort. The Opus and PCM codecs are in scope; the
+audio device I/O around them is not. `comparisons/audio.md` flags the AEC engine
+as a standalone-crate candidate for that later effort.
 
 ## Strategy: one base series, then a fan of leaves
 
@@ -292,6 +297,27 @@ Most work is autonomous. These are the only places an agent must stop and defer.
    Android placement decision (in-tree with its NDK build cost, or external over
    the registration API). Do not open B4 as a PR until that decision is made with
    the maintainer.
+7. **Per-segment transcoding and FETCH.** The maintainer's stated moq codec
+   direction is per-group (per-segment) transcoding with FETCH support: a FETCH
+   for group 45 of a lower rendition triggers transcoding that one group from the
+   source (held in relay memory, possibly disk) down to, for example, 360p, with
+   custom per-GOP rate control. moq-transcode already owns this. Our contributions
+   plug into it with no integration work, because moq-transcode drives encoders
+   only through the public `encode::{Kind, Config, Encoder}` front end: it selects
+   by `Kind`, sets a per-rung CBR target through `Config.bitrate` at construction,
+   forces an IDR per group, and builds a fresh encoder per fetched group; it never
+   uses `rate::Control`. Our zero-copy VAAPI decode into VPP scale into VAAPI
+   encode is the Intel and AMD analog of moq-transcode's NVDEC to NVENC path, and
+   rav1e with rav1d is the software fallback, so both slot in by `Kind` selection.
+   The RULE this imposes on every encoder contribution: expose per-segment
+   rate-control primitives (an honest `set_bitrate` with no forced-IDR side effect,
+   a per-encode target-bitrate or QP knob, forced IDR per GOP, and cheap
+   reconfigure or session reuse between groups) and defer the rate-control POLICY
+   to moq-transcode. Never embed a streaming rate controller in a backend. Note
+   the per-group re-open cost, which the encode plans must address: rav1e is cheap,
+   VAAPI opens a VA context, and V4L2 is expensive (full device open plus REQBUFS
+   plus STREAMON), so the VAAPI and V4L2 encode plans add a session-reuse path
+   rather than constructing fresh per group.
 
 ## How to work a plan autonomously (agent runbook)
 
@@ -423,9 +449,13 @@ Render leaf (in `render/`):
 
 ## Provenance
 
-`comparisons/` holds the evidence base, copied from `plans/refactor/` on
-2026-07-22: the codec, capture, audio, zero-copy, and trait comparisons, the
-moq-side change design (`moq-changes.md`), the iroh-live code map, the moq
-inventory, and the `maps/` of both codebases. Read a comparison for the reasoning
-and evidence behind a plan; read a plan for what to build. The refactor analysis
-that produced these lives in `plans/refactor/` with its own overview and summary.
+`comparisons/` holds the evidence base: the codec, capture, audio, pub/sub,
+zero-copy, and trait comparisons, the moq-side change design (`moq-changes.md`),
+the iroh-live code map, the moq inventory, and the `maps/` of both codebases.
+Start at `comparisons/0-index.md`, which carries the consolidated capability
+matrix with inline links into the detailed sections and the plan each verdict
+feeds. Read a comparison for the reasoning and evidence behind a plan; read a
+plan for what to build. The broader refactor analysis that these were drawn from
+(the iroh-live cut plan, the room-layer redesign, and the whole-refactor summary,
+which reach beyond this codec and capture campaign) is preserved under
+`analysis/`.

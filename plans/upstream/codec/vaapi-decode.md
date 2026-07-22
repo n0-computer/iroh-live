@@ -209,6 +209,17 @@ no decode path and no surface export at all.
   plus VPP plus decode-half growth. vaapi-encode builds on these additions and must
   not duplicate them; coordinate their shape with the encode agent.
 
+## Transcode and rate control (overview coordination point 7)
+
+The decode side feeds moq-transcode's decode-once plus GPU-resize fanout. Our
+VAAPI decode exporting `Frame::DmaBuf` plus VPP GPU scale is the Intel and AMD
+analog of the NVDEC free-scaling that fanout uses on NVIDIA, so VAAPI decode into
+VPP scale into VAAPI encode is a full Intel and AMD per-segment transcode
+pipeline. `reset()` and `burst_size()` support the per-group fetch and seek
+pattern, and where moq-transcode requests scaled decode, that maps to our VPP
+scale. This is alignment with the maintainer's per-segment transcoding goal, not
+a collision.
+
 ## Acceptance checklist
 
 - `moq-vaapi` grown with decode plus surface export, released, and pinned in

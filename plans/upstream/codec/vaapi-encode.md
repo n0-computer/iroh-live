@@ -172,6 +172,19 @@ zero-copy story that pairs with vaapi-decode's decode-to-render half.
   duplicate them. If authored in parallel, the two agents agree the moq-vaapi API
   before either lands.
 
+## Transcode and rate control (overview coordination point 7)
+
+moq-transcode drives this backend through the public `encode::{Kind, Config,
+Encoder}` front end: it selects by `Kind`, sets a per-rung CBR target through
+`Config.bitrate` at construction, and forces an IDR per group. This backend must
+therefore honor `Config.bitrate` as a per-encoder CBR target, expose a QP or
+target-quality knob for custom per-GOP rate control, and keep `set_bitrate`
+honest and free of any forced-IDR side effect. Add an encoder-session-reuse path
+so a per-group transcode loop does not pay a fresh VA-context open per group (our
+encoder constructs via `new` and has no `reset`, and per-group re-open opens a VA
+context). Defer the rate-control policy to moq-transcode; do not embed a
+streaming controller.
+
 ## Acceptance checklist
 
 - `encode/backend/vaapi.rs` consumes `Frame::DmaBuf` zero-copy, routes mismatches

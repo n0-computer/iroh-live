@@ -210,6 +210,13 @@ than a generic factory trait.
   shapes are frozen contract for the android-mediacodec leaf, which is the sole
   consumer.
 
+## Transcode and rate control (overview coordination point 7)
+
+moq-transcode selects encoders by `Kind`, so `Kind::Named` and registered
+backends are transcode-selectable: a registered external backend can also serve
+as a transcode encoder for a rung. Registration therefore benefits the
+per-segment transcoding path as well as live capture.
+
 ## Acceptance checklist
 
 - [ ] Both `Backend` traits are `pub` and documented additive-sealed, trafficking
