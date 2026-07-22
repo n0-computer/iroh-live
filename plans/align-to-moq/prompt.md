@@ -24,10 +24,11 @@ ride the upstream campaign's paired counterpart branches
   tree, the wave ordering, the coordination points, and the task template.
   Everything structural lives there; this prompt does not restate it.
 - `tasks/` holds the self-contained task plans, one per node of the tree.
-  `room-layer.md` is the room redesign the rooms task executes.
-  `../upstream/comparisons/` (start at `0-index.md`) is the shared evidence, and
-  `../upstream/cut-plan.md` and `../upstream/DISPOSITION.md` are the deletion
-  ledger and module register kept by the upstream campaign.
+  `cut-plan.md` is this campaign's deletion ledger (transport, pubsub, rooms,
+  adaptive, sync; stages A0 to A2) and `room-layer.md` is the room redesign the
+  rooms task executes. `../upstream/comparisons/` (start at `0-index.md`) is
+  the shared evidence; the media ledger and module register are
+  `../upstream/cut-plan.md` and `../upstream/DISPOSITION.md`.
 
 ## Done-signal per task
 

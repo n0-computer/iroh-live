@@ -43,7 +43,7 @@ measured rather than asserted.
   matter to us": the `to_json` rename, `#[non_exhaustive]` construction,
   `Duration` jitter typing, the `broadcast` cross-reference field), and the
   section 10 catalog verdict ("keep as is ... Migration chores on the bump").
-- Deletion ledger: `../../upstream/cut-plan.md` section 2, moq-media table, `catalog.rs`
+- Deletion ledger: `../cut-plan.md` section 2, moq-media table, `catalog.rs`
   row: 75 LOC, verdict **keep**, "already the sanctioned `CatalogExt` shape; the
   floor." The related `publish.rs` row (verdict **merge**) names the priming hack
   "replaced by `Reserved` semantics" with prerequisite "release `Reserved`."
@@ -118,7 +118,7 @@ bespoke catalog to delete; the audit finding it described is closed.
    `#[non_exhaustive]` sweep land at the bump.
 2. Migration chores first (they unblock compilation): `to_json` rename at every
    catalog-to-string site, `#[non_exhaustive]` construction, `Duration` jitter
-   typing. `refactor:` commit, docs riding the code (cut-plan section 6).
+   typing. `refactor:` commit, docs riding the code (../cut-plan.md section 5).
 3. Adopt `Reserved` gating in `CatalogProducer`: reserve the initial renditions,
    drop the priming touch, and verify an early subscriber receives a complete
    first snapshot rather than an empty one. `feat:`/`refactor:` commit; delete the
@@ -144,7 +144,7 @@ chat and user still flatten alongside video and audio.
 - No zero-copy path is touched (coordination point 2 does not apply).
 - The priming-hack removal shares a boundary with the `pubsub-align` task's
   subscribe-side work and with the broader publish.rs `encode::Producer` collapse,
-  which is upstream-gated (cut-plan stage 4); keep this task to the catalog
+  which is upstream-gated (stage A1, ../cut-plan.md); keep this task to the catalog
   produce side and the `Reserved` gating so it stays independent of the codec
   adoption.
 - Do not pursue moving chat and user upstream into hang (pubsub.md section 4

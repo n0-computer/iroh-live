@@ -55,7 +55,7 @@ is correct.
   decode error + reset"), and section 10 (subscribe verdict: "keep. Ordering and
   skipping are already delegated ... Enablers to adopt on the pin bump:
   `set_latency` ..., `discontinuity()` ...").
-- `../../upstream/cut-plan.md` section 2, moq-media table, `subscribe.rs` row: 1,566 LOC,
+- `../cut-plan.md` section 2, moq-media table, `subscribe.rs` row: 1,566 LOC,
   verdict **keep (merge at the edges)**, "quality selection, hot-swap, and
   adaptation driver have no upstream counterpart," prerequisite "release for
   `set_latency`, `discontinuity()`."
@@ -110,7 +110,7 @@ the bump:
   rewrite; add a comment pinning the contract so it is not regressed.
 - Fix the stale `adaptation_task` doc comment (`subscribe.rs:1281-1287`,
   pubsub.md section 10 subscribe verdict), riding a code commit that touches the
-  same area (cut-plan section 6, no standalone doc commits).
+  same area (../cut-plan.md section 5, no standalone doc commits).
 
 No module is deleted by this task: the reimplementation that a deletion would
 target is already absent. The net change is the adoption of two consumer methods,
@@ -120,7 +120,7 @@ one contract guard, and doc corrections.
 
 1. Confirm the pin bump (Wave 0) landed so `set_latency` and `discontinuity()`
    are on the pinned moq-mux; re-diff `container/consumer.rs` against the release
-   (cut-plan risk R-b: signatures may drift from `3a3e0ea8`).
+   (../../upstream/cut-plan.md risk R-b: signatures may drift from `3a3e0ea8`).
 2. Adopt `discontinuity()` in `decode_loop`: read the counter each iteration,
    flush and `reset()` on increment, keep the keyframe-wait recovery. Verify a
    timeline-rewind flushes cleanly instead of surfacing as a decode error.
@@ -141,7 +141,7 @@ must pass with `set_latency` and `discontinuity()` adopted. Add a targeted test
 that changes `PlaybackPolicy::max_latency` on a live subscription and asserts the
 skip threshold retunes without a resubscribe, and a test that drives a timeline
 discontinuity and asserts a clean decoder flush rather than an error-path
-recovery. Note the risk-register gap (cut-plan R-g): there is no adaptive-switching
+recovery. Note the risk-register gap (../cut-plan.md section 4, test gaps): there is no adaptive-switching
 integration test driving `adaptation_task_v2` end to end today, so the
 `set_latency` policy test is the first coverage of live-latency retuning and
 should be checked in with the change.
@@ -151,7 +151,7 @@ should be checked in with the change.
 - No zero-copy path is touched (coordination point 2 does not apply).
 - `discontinuity()` adoption borders the decode-pipeline internals that swap onto
   the sans-IO `moq_video::decode::Decoder` under the upstream-gated codec adoption
-  (cut-plan stage 2/4). Keep this task to the consumer-level signal so it stays
+  (media stage M1 in ../../upstream/cut-plan.md, then stage A1 in ../cut-plan.md). Keep this task to the consumer-level signal so it stays
   independent of the codec swap; the flush trigger is orthogonal to which decoder
   runs.
 - `set_latency` is the enabler for the phase-3b `PlayoutMode::Auto { min, max }`

@@ -41,7 +41,7 @@ and the public `Room` / `RoomHandle` API is unchanged.
   user metadata belong (catalog `CatalogExt` extension versus room layer), and the
   moq-net 0.1.11 catalog-serialization gotcha that dropped chat and user
   extensions, which the metadata-move step must cover with tests.
-- `../../upstream/cut-plan.md` for the deletion ledger verdict on `iroh_smol_kv` and the
+- `../cut-plan.md` for the deletion ledger verdict on `iroh_smol_kv` and the
   `PeerState` machinery.
 
 ## moq primitive adopted

@@ -63,7 +63,7 @@ that acts on it. Cells link to the detailed section that backs the verdict.
 | V4L2 (Linux camera) | enumeration, NV12 passthrough ([details](capture.md#linux-camera-v4l2)) | none | keep-ours, adopt MJPEG decode | [v4l2-camera-enum](../capture/v4l2-camera-enum.md) |
 | X11 | fallback ([ours only](capture.md#backends-only-we-have)) | none | keep-ours | none |
 | libcamera (raw) | ours only ([details](capture.md#backends-only-we-have)) | none | keep-ours | none |
-| libcamera H.264 (pre-encoded) | rpicam-vid, strongest candidate ([details](capture.md#backends-only-we-have)) | none | [upstream ours](capture.md#5-verdict) | [libcamera-preencoded](../capture/libcamera-preencoded.md) |
+| libcamera H.264 (pre-encoded) | rpicam-vid pre-encoded source ([details](capture.md#backends-only-we-have)) | none | [upstream ours](capture.md#5-verdict) | [libcamera-preencoded](../capture/libcamera-preencoded.md) |
 | ScreenCaptureKit (macOS screen) | functional subset plus BGRA ([details](capture.md#macos-screen-screencapturekit)) | app capture, NV12 surfaces | [adopt-theirs](capture.md#macos-screen-screencapturekit) | none |
 | AVFoundation (macOS camera) | stub ([details](capture.md#macos-camera)) | complete, zero-copy, TCC | [adopt-theirs](capture.md#macos-camera) | none |
 | Windows (camera, screen) | doc stubs ([details](capture.md#windows)) | MF, Desktop Duplication, GPU-resident | [adopt-theirs](capture.md#windows) | none |

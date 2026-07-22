@@ -33,14 +33,18 @@ The dependency runs one way: the upstream campaign's counterpart branches build
 on the alignments made here (a bumped pin, an adopted catalog), never the
 reverse.
 
-## Anchor document
+## Anchor documents
 
-`room-layer.md` carries the room-layer redesign onto moq's origin,
-`announced(prefix)`, and token path-scoping: rooms move from gossip plus signed
-KV to moq announce, with gossip retained for bootstrap and moq-token
-path-scoping providing cryptographic announce-under-your-own-id. Phased, with
-the tradeoffs stated. The deletion reasoning that used to sit beside it lives
-with the upstream campaign now (`../upstream/cut-plan.md`).
+- `cut-plan.md`: the alignment deletion ledger. Per-module verdicts, staging
+  (stages A0 to A2), and risks for everything this campaign deletes or
+  reshapes: transport, pubsub and pipeline wiring, adaptive, sync, and rooms.
+  It stops at the media boundary; the media ledger is
+  `../upstream/cut-plan.md`.
+- `room-layer.md`: the room-layer redesign onto moq's origin,
+  `announced(prefix)`, and token path-scoping: rooms move from gossip plus
+  signed KV to moq announce, with gossip retained for bootstrap and moq-token
+  path-scoping providing cryptographic announce-under-your-own-id. Phased,
+  with the tradeoffs stated.
 
 ## Task tree
 

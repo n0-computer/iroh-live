@@ -89,17 +89,17 @@ moq release that must land first. LOC are verified against the working tree.
 | openh264 encode+decode | `rusty-codecs/src/codec/h264/encoder.rs`, `.../decoder.rs` | 906 | adopt-theirs | release bump; replacement is moq-video openh264, already on main (codecs.md sec 1, verdict "cut and replace with theirs") |
 | annexb helpers | `rusty-codecs/src/codec/h264/annexb.rs` | 364 | adopt-theirs | release bump; replacement is `moq_mux::codec`; park `build_avcc` (codecs.md sec 7) |
 | sps VUI patcher | `rusty-codecs/src/codec/h264/sps.rs` | 586 | local dead-code delete | nothing; `#[allow(dead_code)]` today, deletable now; the patcher logic is offered upstream as `../codec/bitstream-sps-vui.md`, which does not gate this deletion (codecs.md sec 7) |
-| catalog mirror | `rusty-codecs/src/config.rs` | 318 | local delete | nothing (local; cut-plan stage 1); mirror no longer compiles against hang 0.19.5; replaced by `hang::catalog` types (codecs.md final section; cut-plan D5) |
+| catalog mirror | `rusty-codecs/src/config.rs` | 318 | local delete | nothing (local; cut-plan stage M0); mirror no longer compiles against hang 0.19.5; replaced by `hang::catalog` types (codecs.md final section; cut-plan D5) |
 | VTB encode | `rusty-codecs/src/codec/vtb/encoder.rs` | 895 | adopt-theirs | release bump, plus atomic-macOS hold: flips only when the VTB decode swap is also ready (codecs.md sec 1; atomic per-platform rule below) |
-| VTB decode | `rusty-codecs/src/codec/vtb/decoder.rs` (+`vtb.rs`) | 599 | cut-after-upstream | `../codec/vtb-mf-decode-surface.md` (retain CVPixelBuffer, needs B1+B3) in a release, plus `render-adopt` (U1, U2; zerocopy.md sec 5); pair branch `up/vtb-mf-decode-surface` |
-| VAAPI encode+decode | `rusty-codecs/src/codec/vaapi/` | 3,257 | upstream-ours-then-remove | `../codec/vaapi-decode.md` and `../codec/vaapi-encode.md` (grow moq-vaapi export and VPP; B1, B2, B3; U1, U2, U3) merged and released (cut-plan VAAPI row; zerocopy.md sec 5); pair branches `up/vaapi-decode`, `up/vaapi-encode` |
-| V4L2 encode+decode | `rusty-codecs/src/codec/v4l2/` | 1,856 | upstream-ours-then-remove | `../codec/v4l2-encode.md` (needs B2 = D3, PTS through encode) and `../codec/v4l2-decode.md` (B1, B3) merged and released (cut-plan V4L2 row); pair branches `up/v4l2-encode`, `up/v4l2-decode` |
-| Android encode+decode | `rusty-codecs/src/codec/android/` | 1,528 | upstream-ours-then-remove | `../codec/android-mediacodec.md` (B1 HardwareBuffer variant, B2, B4 registration or in-tree per D2) merged and released (cut-plan Android row); pair branch `up/android-mediacodec` |
+| VTB decode | `rusty-codecs/src/codec/vtb/decoder.rs` (+`vtb.rs`) | 599 | adopt-theirs (after leaf) | `../codec/vtb-mf-decode-surface.md` (retain CVPixelBuffer, needs B1+B3) in a release, plus `render-adopt` (U1, U2; zerocopy.md sec 5); pair branch `up/vtb-mf-decode-surface` |
+| VAAPI encode+decode | `rusty-codecs/src/codec/vaapi/` | 3,257 | upstream-ours | `../codec/vaapi-decode.md` and `../codec/vaapi-encode.md` (grow moq-vaapi export and VPP; B1, B2, B3; U1, U2, U3) merged and released (cut-plan VAAPI row; zerocopy.md sec 5); pair branches `up/vaapi-decode`, `up/vaapi-encode` |
+| V4L2 encode+decode | `rusty-codecs/src/codec/v4l2/` | 1,856 | upstream-ours | `../codec/v4l2-encode.md` (needs B2 = D3, PTS through encode) and `../codec/v4l2-decode.md` (B1, B3) merged and released (cut-plan V4L2 row); pair branches `up/v4l2-encode`, `up/v4l2-decode` |
+| Android encode+decode | `rusty-codecs/src/codec/android/` | 1,528 | upstream-ours | `../codec/android-mediacodec.md` (B1 HardwareBuffer variant, B2, B4 registration or in-tree per D2) merged and released (cut-plan Android row); pair branch `up/android-mediacodec` |
 | software AV1 | `rusty-codecs/src/codec/av1/` | 936 | local rip-out | nothing; AV1 is deferred upstream and dropped locally (`../0-overview.md`: rav1e too slow, rav1d dependency too heavy), so `../codec/av1-software.md` stays a deferred plan and this backend is deleted locally now with no moq replacement. It can be re-added later if a use case needs it (codecs.md sec 3) |
-| Opus | `rusty-codecs/src/codec/opus/` | 804 | cut-after-upstream | `../audio/opus-improvements.md` landing runtime `set_bitrate`, lookahead pre-skip fix, and a channel-remap policy (D11) in a release, then adopt moq-audio (codecs.md sec 5) |
-| dispatch | `rusty-codecs/src/codec.rs`, `.../codec/dynamic.rs` | 522 | cut-after-upstream | release bump plus every held backend admitted upstream (VAAPI, V4L2, Android), with `reset()` and `burst_size()` carried into moq's decode trait; this is the last codec cut (codecs.md sec 8) |
+| Opus | `rusty-codecs/src/codec/opus/` | 804 | adopt-theirs (after leaf) | `../audio/opus-improvements.md` landing runtime `set_bitrate`, lookahead pre-skip fix, and a channel-remap policy (D11) in a release, then adopt moq-audio (codecs.md sec 5) |
+| dispatch | `rusty-codecs/src/codec.rs`, `.../codec/dynamic.rs` | 522 | adopt-theirs (after leaf) | release bump plus every held backend admitted upstream (VAAPI, V4L2, Android), with `reset()` and `burst_size()` carried into moq's decode trait; this is the last codec cut (codecs.md sec 8) |
 | codec-trait half | `rusty-codecs/src/traits.rs` | part of 410 | merge | D1-D3, D11, release; the device traits (`VideoSource`, `AudioSource`, `AudioSink`, `AudioSinkHandle`, `AudioStreamFactory`) stay local (cut-plan traits row) |
-| frame-model half | `rusty-codecs/src/format.rs` | part of 1,292 | merge, cut-after-upstream | B1 (`Native`) plus `render-adopt`; `NativeFrameHandle`/`DmaBufInfo` are the U1 donors and collapse into moq's public vocabulary (cut-plan format row; zerocopy.md sec 6) |
+| frame-model half | `rusty-codecs/src/format.rs` | part of 1,292 | merge (after B1 + render-adopt) | B1 (`Native`) plus `render-adopt`; `NativeFrameHandle`/`DmaBufInfo` are the U1 donors and collapse into moq's public vocabulary (cut-plan format row; zerocopy.md sec 6) |
 | resample half | `rusty-codecs/src/processing/resample.rs` | 123 | merge | converges on `moq_audio::Resampler`, already on main; the remix helper stays (cut-plan processing row) |
 | test shrink | `rusty-codecs/src/codec/tests/`, `test_sources.rs`, `test_util.rs` | ~1,200 | shrinks with cuts | each adopted backend's conformance vectors retire as moq-video's own tests cover them (cut-plan test row) |
 
@@ -116,7 +116,7 @@ Explicitly not deleted by this task: `processing/scale.rs` (360) and
 processing row); the device traits in `traits.rs`; and the whole `render.rs`
 plus `render/` tree, which leaves the crate under `render-adopt`, not here. Any
 contribution upstream declines (a plausible outcome for Android per cut-plan R-c)
-keeps its module in-tree indefinitely under keep-and-upstream-copy. AV1 is
+keeps its module in-tree indefinitely under the upstream-ours verdict. AV1 is
 handled differently: it is not offered upstream this series, so rather than being
 kept pending a decline it is ripped out locally now, and re-added later only if a
 use case needs it.
@@ -138,7 +138,7 @@ backend flips atomically per the atomic per-platform rule.
    platform and regresses no zero-copy path (openh264 output is CPU I420).
 3. Windows adopts immediately and atomically: it has no held backend and no
    working local codec today, so adopting moq-video NVENC, Media Foundation, and
-   H.265 is pure gain with nothing to bridge (cut-plan stage 2 bridge-cost
+   H.265 is pure gain with nothing to bridge (cut-plan stage M1 atomic-switchover
    paragraph).
 4. Hold macOS entirely on the local stack until `vtb-mf-decode-surface` has
    released and `render-adopt` consumes moq's `decode::Frame::native()`. Then
@@ -204,11 +204,11 @@ deleted until the new path passes an end-to-end test in this repository.
   decode-to-render path survives. `render-adopt` must land before or with these
   deletions.
 - Upstream gating (`../cut-plan.md` P3, and coordination point 12 of
-  `../0-overview.md`): the upstream-ours-then-remove rows are blocked on their
+  `../0-overview.md`): the upstream-ours rows are blocked on their
   named moq leaf reaching a pinned moq release; each cut lands on the paired
   `up/<name>` branch, and the deletion commit and the version bump are a single
   commit.
-- Atomic per platform (cut-plan stage 2 bridge-cost recommendation): Linux,
+- Atomic per platform (cut-plan stage M1 atomic-switchover recommendation): Linux,
   macOS, and Android flip whole; the repository never holds two frame models
   within one platform at once. Windows adopts immediately because it has no held
   backend.
@@ -217,7 +217,7 @@ deleted until the new path passes an end-to-end test in this repository.
 
 - Every adopt-theirs module (openh264, annexb, VTB encode, dispatch) is deleted,
   with its replacement passing the harness and pipeline tests.
-- Every upstream-ours-then-remove module (VAAPI, V4L2, Android) is deleted only
+- Every upstream-ours module (VAAPI, V4L2, Android) is deleted only
   against a pinned moq release containing the merged contribution, verified on
   hardware, with the deletion and bump in one revertible commit on the paired
   `up/<name>` branch.

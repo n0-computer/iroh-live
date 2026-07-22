@@ -1076,3 +1076,22 @@ Second review feedback, all applied:
   author, counterpart/cut-plan/render/pcm reframe, mechanical sweep for
   headers + paths + RFD tone + history scrub across ~50 files) with
   coordinator doing structure, prompts, overviews, branches.md.
+
+## Round 7 (2026-07-23, cut-plan split and verdict rename)
+
+User review: cut-plan verdicts renamed to the DISPOSITION vocabulary
+(adopt-theirs / adopt-theirs (after <leaf>) / upstream-ours / keep / drop /
+merge; keep-and-upstream-copy and cut-after-upstream retired). "Keep +
+upstream candidate someday" hedging removed: everything codec/capture-land
+that moq lacks is upstream-ours via a leaf (Linux capture column now
+upstream-ours matching DISPOSITION; x11.rs flipped to upstream-ours, leaf
+pending, since moq's portal-less story is Unsupported). Cut-plan split at
+the media boundary: upstream/cut-plan.md is media-only (rusty-codecs,
+rusty-capture, moq-media device/file rows; stages M0-M2) and the new
+align-to-moq/cut-plan.md carries transport/pubsub/rooms/adaptive/sync
+(iroh-moq, iroh-live, moq-media alignment rows; stages A0-A2). All
+cross-references updated (align tasks now cite ../cut-plan.md sections and
+A-stages; counterpart plans cite M-stages); DISPOSITION rows reconciled
+(opus and VTB decoder relabeled adopt-theirs-after-leaf; sps.rs note
+clarified; adaptive/sync candidate-speak removed). In-tree module list
+verified against the working tree before the rewrite.

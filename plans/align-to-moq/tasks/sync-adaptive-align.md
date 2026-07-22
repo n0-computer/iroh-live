@@ -20,8 +20,8 @@ clock reads catalog `jitter` to seed its per-codec latency terms rather than
 leaving them dead, and the ABR selects on honest measured bitrate rather than
 asserted static preset values. Both layers stay in iroh-live: they are Rust-side
 gaps with no moq equivalent (moq Rust has no subscriber-side rendition selection
-and no playout clock), and they are separate upstream candidates tracked under
-`plans/upstream/`, so this is an alignment and wiring task that reads and uses the
+and no playout clock), and they are not media-land, so the upstream campaign does
+not touch them; this is an alignment and wiring task that reads and uses the
 catalog `Estimate`, not a deletion. Direct deletion here is small, on the order of
 a few stale doc lines, so the proof is a proof-of-behavior rather than a
 proof-before-deletion. The deeper upstreaming of adaptive and sync into moq is out
@@ -33,16 +33,16 @@ of scope.
   catalog `jitter` and `bitrate`. Section 5 (adaptive) establishes that no
   subscriber-side rendition selection exists in moq Rust, that `adaptive.rs` is
   strictly richer than the JS `recvBandwidth * 0.8` heuristic, and that the layer
-  stays in iroh-live and is a separate upstream candidate. Section 6 (sync)
+  stays in iroh-live. Section 6 (sync)
   establishes that no Rust playout clock exists upstream, that the catalog `jitter`
   field is present (correcting the stale claim in `sync.rs`), that the producing
   half is now closed by moq-mux metrics, and that the reading half is ours to wire.
-  Section 10 gives the per-area verdicts: keep both layers, then upstream
+  Section 10 gives the per-area verdicts: keep both layers in iroh-live
   separately; the local fixes now are to correct the stale `sync.rs` doc and read
   catalog `jitter` into the clock.
 - `../upstream/comparisons/maps/moq-media.md` for the moq-media module map, and
   the stale "our Rust catalog does not carry this field yet" claim it repeats.
-- `../../upstream/cut-plan.md` for the keep verdict on `sync.rs`, `playout.rs`, and `adaptive.rs`.
+- `../cut-plan.md` for the keep verdict on `sync.rs`, `playout.rs`, and `adaptive.rs`.
 
 ## moq primitive adopted
 moq-mux's per-rendition catalog `Estimate` and the catalog fields it populates.

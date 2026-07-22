@@ -46,8 +46,7 @@ relay-adjacent builds light: everything lands behind non-default `playback` and
   has timestamps and `latency_max` but no pacing surface because it has no
   sink.
 - `comparisons/audio.md` section 7, verdict "audio_backend + AEC: keep; no moq
-  equivalent exists": the strongest asset of our audio stack and the candidate
-  to upstream.
+  equivalent exists": the audio-device layer this plan upstreams.
 
 ## moq API consumed
 

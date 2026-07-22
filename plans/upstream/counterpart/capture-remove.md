@@ -83,7 +83,7 @@ section 5):
   `../capture/v4l2-camera-enum.md` (pair branch `up/v4l2-camera-enum`).
 - `platform/linux/libcamera_h264.rs` (522) and `platform/linux/libcamera.rs`
   (268): the Raspberry Pi story and the only pre-encoded source on either side;
-  the strongest capture upstream candidate, `../capture/libcamera-preencoded.md`
+  upstreamed through `../capture/libcamera-preencoded.md`
   (pair branch `up/libcamera-preencoded`), which carries the open question on the
   `publish_preencoded` shape (coordination point 5 of `../0-overview.md`). That
   question again does not gate this keep.
@@ -97,7 +97,7 @@ section 5):
 1. Land the pin bump and `codec-remove` for macOS before touching macOS capture,
    because moq's capture backends emit moq's frame model straight into moq's
    encoders; adopting capture before codecs on a platform would need a throwaway
-   conversion layer (cut-plan stage 3 entry condition).
+   conversion layer (cut-plan stage M2 entry condition).
 2. Establish the R-g platform verification gate: macOS and Windows CI, or
    checked-in scripted on-hardware smoke tests with recorded results, doing
    camera and screen open, capture, and close per adopted backend.

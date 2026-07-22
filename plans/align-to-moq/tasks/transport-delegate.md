@@ -26,7 +26,7 @@ list the browser, the relay, and iroh-live-relay already speak.
 
 ## Evidence
 
-- Deletion ledger, iroh-moq rows: `../../upstream/cut-plan.md` section 2, the `iroh-moq`
+- Deletion ledger, iroh-moq rows: `../cut-plan.md` section 2, the `iroh-moq`
   table. The `lib.rs handshake + ALPN (~200)` row is verdict **cut**, replacement
   `moq_native::iroh` connect/accept plus `moq_net::{Client, Server}` with the full
   `moq_net::ALPNS` list registered and offered, prerequisite `local`, marked
@@ -47,7 +47,7 @@ list the browser, the relay, and iroh-live-relay already speak.
   finding recorded the const as `moq-lite-03`; the current code has since bumped
   to `moq-lite-04` (`iroh-moq/src/lib.rs:35`), so the pin has moved once already,
   which is exactly why hardcoding it is the wrong shape.
-- Wave and staging: `../../upstream/cut-plan.md` section 3, stage 0, names this delegation as
+- Wave and staging: `../cut-plan.md` section 3, stage A0, names this delegation as
   a local quick win, notes the merged main collapsed the older two-phase accept to
   one phase (so part of this is known rework at bump time), and states the ALPN
   change is wire-visible, so `e2e.rs` and `room.rs` must pass before and after.
@@ -131,7 +131,7 @@ Adoption before deletion, each step a compiling commit.
 4. Register the full `moq_net::ALPNS` list (plus H3 if the WebTransport path is
    kept) in `iroh-live/src/live.rs` `register_protocols` and in endpoint binding,
    replacing the single `iroh_moq::ALPN`. This is the wire-visible change; land it
-   as its own commit with the e2e evidence in the message (cut-plan section 6,
+   as its own commit with the e2e evidence in the message (../cut-plan.md section 5,
    wire-visible commits are the revert points).
 5. Switch `MoqSession::connect` and `MoqProtocolHandler::handle_connection` to the
    delegated helpers; run the proof suite.
@@ -139,7 +139,7 @@ Adoption before deletion, each step a compiling commit.
    `iroh-live/src/lib.rs` re-export, and any now-dead imports. `chore:` deletion
    commit containing nothing else, so a revert restores the old path cleanly.
 7. Update the module doc on `iroh-moq/src/lib.rs:1-5` and the `ALPN` doc comment
-   removal; fold doc edits into the code commits, never standalone (cut-plan
+   removal; fold doc edits into the code commits, never standalone (../cut-plan.md
    section 6).
 
 ## Proof before deletion
@@ -148,22 +148,22 @@ Coordination point 1 gate: `iroh-live/tests/e2e.rs` (4 tests) and
 `iroh-live/tests/room.rs` (6 tests) must pass on the new delegated path before
 the `session_connect`/`session_accept`/`ALPN` deletion commit lands. Because the
 ALPN change is wire-visible, run both suites before and after the ALPN commit and
-record the result in the commit message (cut-plan section 3 stage 0, and the
-risk register R-g note that stage 0 relies on `e2e.rs`/`room.rs` alone). A manual
+record the result in the commit message (../cut-plan.md section 3 stage A0, and the
+section 4 test-gap note that stage A0 relies on `e2e.rs`/`room.rs` alone). A manual
 interop check against a browser or relay peer that negotiates `moq-lite-05` is a
 recommended extra, since the local suites exercise only the iroh-to-iroh path.
 
 ## Coordination
 
-- Wire-visible change (coordination point in cut-plan section 6): the ALPN commit
+- Wire-visible change (coordination point in ../cut-plan.md section 5): the ALPN commit
   is the revert point if interop breaks; keep it isolated.
-- Known bump-time rework (cut-plan churn accounting): the merged main collapsed
+- Known bump-time rework (known bump-time rework): the merged main collapsed
   the two-phase accept to one phase and returns `(Session, Driver)` from connect,
   so the delegated path must drive the `Driver`; this is expected, not a surprise.
 - No zero-copy path is touched (coordination point 2 does not apply).
 - This task produces the shared origin wiring that rooms phase 2
-  (`rooms-announce`, Wave 2) builds on: cut-plan section 3 states stage 0 gates
-  stage 5 phase 2. Keep the single shared `Origin` per node intact through the
+  (`rooms-announce`, Wave 2) builds on: ../cut-plan.md section 3 states stage A0 gates
+  stage A2 phase 2. Keep the single shared `Origin` per node intact through the
   delegation so that later work has an origin to scope.
 
 ## Acceptance checklist
