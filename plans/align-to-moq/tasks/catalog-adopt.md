@@ -1,8 +1,11 @@
 # catalog-adopt
 
-Branch: align/catalog-adopt          Wave: 1
+> Campaign: align-to-moq | Kind: task plan | Branch: align/catalog-adopt |
+> Read ../0-overview.md first.
+
+Wave: 1
 Depends on: Wave 0 pin bump (the moq release carrying moq-mux with `Reserved`/`Rendition` and per-rendition `Estimate`, `hang` with the `to_json` rename)
-Kind: independent
+Coupling: independent
 
 ## Goal
 
@@ -40,7 +43,7 @@ measured rather than asserted.
   matter to us": the `to_json` rename, `#[non_exhaustive]` construction,
   `Duration` jitter typing, the `broadcast` cross-reference field), and the
   section 10 catalog verdict ("keep as is ... Migration chores on the bump").
-- Deletion ledger: `../cut-plan.md` section 2, moq-media table, `catalog.rs`
+- Deletion ledger: `../../upstream/cut-plan.md` section 2, moq-media table, `catalog.rs`
   row: 75 LOC, verdict **keep**, "already the sanctioned `CatalogExt` shape; the
   floor." The related `publish.rs` row (verdict **merge**) names the priming hack
   "replaced by `Reserved` semantics" with prerequisite "release `Reserved`."
@@ -111,7 +114,7 @@ bespoke catalog to delete; the audit finding it described is closed.
 1. Confirm the pin bump (Wave 0) landed, so moq-mux with `Reserved`/`Rendition`
    and the per-rendition `Estimate` detector, and `hang` with `to_json`, are
    available. Re-diff the moq-mux catalog surface against the pinned release, since
-   `../cut-plan.md` risk R-b warns the `to_json` rename class of change and the
+   `../../upstream/cut-plan.md` risk R-b warns the `to_json` rename class of change and the
    `#[non_exhaustive]` sweep land at the bump.
 2. Migration chores first (they unblock compilation): `to_json` rename at every
    catalog-to-string site, `#[non_exhaustive]` construction, `Duration` jitter

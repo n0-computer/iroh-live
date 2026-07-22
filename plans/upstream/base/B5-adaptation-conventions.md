@@ -1,6 +1,9 @@
 # B5. Adaptation conventions + moq Error variants
 
-Branch: moq-upstream/base (the Error variants ride whichever base or leaf PR first needs them; this file itself produces no standalone PR)          PR target: base branch, then moq main
+> Campaign: upstream | Kind: base plan | Branch: up/base (the Error variants ride
+> whichever base or leaf PR first needs them; this file itself produces no
+> standalone PR) | PR target: base branch, then moq main | Read ../0-overview.md first.
+
 Depends on: none
 Path: shared (a reference every leaf cites, plus the concrete moq-side `Error` additions a full upstreaming needs)
 Size: S (the `Error` variants are a few lines each; the checklist is documentation)

@@ -1,6 +1,8 @@
 # Review 0722 — V4L2 / Android / AV1 / bitstream backend plans
 
-Adversarial staff review of `codec/{v4l2-encode,v4l2-decode,android-mediacodec,av1-software,bitstream-sps-vui}.md`
+> Campaign: upstream | Kind: review | Read ../0-overview.md first.
+
+Adversarial staff review of `../codec/{v4l2-encode,v4l2-decode,android-mediacodec,av1-software,bitstream-sps-vui}.md`
 cross-checked against real source: moq `/home/bit/Code/rust/moq` (HEAD 3a3e0ea8) and
 iroh-live `/home/bit/Code/rust/iroh-live` (rusty-codecs working tree).
 
@@ -148,7 +150,7 @@ the transcode cost ranking all hold against source.
 
 ## Not independently verified
 
-The plans' cross-references into `comparisons/maps/moq-video.md` and the other `comparisons/`
+The plans' cross-references into `../comparisons/maps/moq-video.md` and the other `../comparisons/`
 map docs (e.g. `moq-video.md:100-153`, `:711-713`) are plan artifacts, not source; only the
 real source anchors above were checked. The sibling `vaapi-decode` leaf is referenced for
 rebase ordering — moq has no vaapi **decode** backend yet (`decode/backend/` has none), which

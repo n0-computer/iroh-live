@@ -1,9 +1,11 @@
 # Code Map: What iroh-live Owns
 
+> Campaign: upstream | Kind: comparison | Read ../0-overview.md first; index at 0-index.md.
+
 This document is the full inventory of media code owned by the iroh-live workspace, measured
 against the goal of cutting most of it by aligning to the moq stack (moq-net, moq-mux, hang,
 moq-native). LOC figures are `wc -l` over `src/**/*.rs` per crate, taken 2026-07-18. Detailed
-per-module evidence lives in the four map files under `plans/refactor/maps/`:
+per-module evidence lives in the four map files under `maps/`:
 [rusty-codecs.md](maps/rusty-codecs.md), [rusty-capture.md](maps/rusty-capture.md),
 [moq-media.md](maps/moq-media.md), and [room-layer.md](maps/room-layer.md).
 

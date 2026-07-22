@@ -1,5 +1,8 @@
 # moq-alignment refactor: overview and index
 
+> Campaign: upstream | Kind: analysis | Preserved context; superseded by
+> ../0-overview.md where they disagree. Read ../0-overview.md first.
+
 Status: round 2 rewrite in progress (2026-07-21), aligning to current moq
 main. This is a planning artifact; no source changes were made. Entry
 point: `10-summary.md`.

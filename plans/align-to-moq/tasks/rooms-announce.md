@@ -1,12 +1,15 @@
 # rooms-announce
 
-Branch: align/rooms-announce          Wave: 2
+> Campaign: align-to-moq | Kind: task plan | Branch: align/rooms-announce |
+> Read ../0-overview.md first.
+
+Wave: 2
 Depends on: Wave 0 pin bump (moq release cut from main carrying `create_broadcast`
 + `Route`, the scoped `announced()` bus, moq-token `Scope`, and #2419 unannounce
 liveness); the transport-delegate task for phase 1 (shared per-node
 `origin::Producer`, sessions wired to it). Independent of the codec work, so it
 runs in parallel with Wave 1.
-Kind: independent
+Coupling: independent
 
 ## Goal
 This task rebuilds iroh-live's room discovery on moq's announce bus. Today a room
@@ -38,7 +41,7 @@ and the public `Room` / `RoomHandle` API is unchanged.
   user metadata belong (catalog `CatalogExt` extension versus room layer), and the
   moq-net 0.1.11 catalog-serialization gotcha that dropped chat and user
   extensions, which the metadata-move step must cover with tests.
-- `cut-plan.md` for the deletion ledger verdict on `iroh_smol_kv` and the
+- `../../upstream/cut-plan.md` for the deletion ledger verdict on `iroh_smol_kv` and the
   `PeerState` machinery.
 
 ## moq primitive adopted

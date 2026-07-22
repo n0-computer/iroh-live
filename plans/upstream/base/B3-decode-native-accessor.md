@@ -1,6 +1,8 @@
 # B3. decode::Frame::native() accessor
 
-Branch: moq-upstream/base (lands after B1 in the base series)          PR target: base branch, then moq main
+> Campaign: upstream | Kind: base plan | Branch: up/base (lands after B1 in the
+> base series) | PR target: base branch, then moq main | Read ../0-overview.md first.
+
 Depends on: B1 (the `Native` vocabulary this accessor returns)
 Path: Both (needed for Path A and Path B)
 Size: S (roughly 40 lines)
@@ -14,8 +16,8 @@ downloaded to system memory even though the surface is right there. B3 adds
 `decode::Frame::native() -> Option<Native>`, which returns the platform GPU handle
 when the frame is GPU-resident and `None` when it is CPU I420, so a renderer or a
 zero-copy consumer can import the surface directly. `into_i420` stays as the
-universal CPU fallback. This is the one accessor the out-of-tree renderer (render
-leaf, Option B) and the decode-to-render leaves need, and it is what gives the
+universal CPU fallback. This is the one accessor the moq-video-render crate
+(render leaf) and the decode-to-render leaves need, and it is what gives the
 `Native` vocabulary something to return on Linux and Apple.
 
 ## Evidence
@@ -97,8 +99,8 @@ can land the vocabulary without waiting on B3.
   `inner` variant already retains, and `DmaBuf::export` (B1) dups fresh on access.
 - `into_i420` is unchanged and remains the documented universal fallback, so a
   consumer that cannot use a given handle (an unsupported modifier, a missing
-  importer) always has the CPU path (`comparisons/moq-changes.md` section 1b,
-  Option B: "falls back to `into_i420()` when a zero-copy path fails").
+  importer) always has the CPU path (`comparisons/moq-changes.md` section 1b:
+  "falls back to `into_i420()` when a zero-copy path fails").
 - No backend name appears: `native()` returns `Native`, a vocabulary type, upholding
   the `lib.rs:37-44` rule.
 

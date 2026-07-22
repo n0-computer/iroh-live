@@ -1,6 +1,9 @@
 # B4. Public registerable Backend trait + registration
 
-Branch: moq-upstream/b4-backend-registration (its own branch, off base; not folded into the base PR)          PR target: base branch, then moq main
+> Campaign: upstream | Kind: base plan | Branch: up/b4-backend-registration (its
+> own branch, off base; not folded into the base PR) | PR target: base branch,
+> then moq main | Read ../0-overview.md first.
+
 Depends on: B1 (the public `Frame`/`Native` vocabulary the trait traffics in), B2 (the `encode` timestamp signature and `Packet`), B3 (the public `decode::Frame` wrapper, required so `Decoded.frame` is a public type rather than a leaked `pub(crate)` enum)
 Path: B only (external-backend path); BREAKING
 Size: M (roughly 250 lines across both sides)
@@ -20,8 +23,11 @@ exposed), folds the two per-tier candidate slices into one tier-tagged
 `Mutex` staging area, and adds `register_encoder` and a non-mirror
 `register_decoder`. This is the only breaking change in the whole program and the
 only one exclusive to Path B; an in-tree backend needs none of it. It is
-CONDITIONAL on the Android placement decision and must not be opened as a PR until
-that decision is made with the maintainer.
+CONDITIONAL on the Android placement question. Open question: the Android
+placement (in-tree with its NDK build cost, or external over the registration
+API), discussed in `../codec/android-mediacodec.md` and coordination point 6 of
+`../0-overview.md`; current proposal: external (Path B). Do not open B4 as a PR
+until that question is settled upstream.
 
 ## Evidence
 
@@ -283,10 +289,11 @@ than a generic factory trait.
 ## Coordination
 
 - Coordination point 6 (the B4 breaking change): this is the only breaking item and
-  is worth it only if moq wants out-of-tree backends. It gates on the Android
-  placement decision (in-tree with its NDK build cost, or external over
-  registration). Do NOT open B4 as a PR until that decision is made with the
-  maintainer. In-tree VAAPI, V4L2, and AV1 backends need only B1, B2, and B3 and add
+  is worth it only if moq wants out-of-tree backends. Open question: the Android
+  placement (in-tree with its NDK build cost, or external over registration),
+  discussed in `../codec/android-mediacodec.md`; current proposal: external
+  (Path B). Do NOT open B4 as a PR until that question is settled upstream.
+  In-tree VAAPI, V4L2, and AV1 backends need only B1, B2, and B3 and add
   a `const Candidate`; they must not wait on B4.
 - Coordination point 1 (base API freeze): the `Registration` and `DecodeRegistration`
   shapes are frozen contract for the android-mediacodec leaf, which is the sole

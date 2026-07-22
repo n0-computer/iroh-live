@@ -1,6 +1,9 @@
 # vaapi-encode. VAAPI H.264 encode with DMA-BUF input, VPP, and honest set_bitrate
 
-Branch: moq-upstream/vaapi-encode          PR targets: external `moq-dev/vaapi` repo (VA-layer encode) + moq main (moq-video backend)
+> Campaign: upstream | Kind: leaf plan | Branch: up/vaapi-encode | PR targets:
+> external `moq-dev/vaapi` repo (VA-layer encode) + moq main (moq-video backend) |
+> Read ../0-overview.md first.
+
 Depends on: B1 (frame vocabulary), B2 (PTS through encode); shares moq-vaapi with vaapi-decode
 Path: two-target contribution. The encoder logic (DMA-BUF import, VPP, honest
 `set_bitrate`, forced IDR) is contributed into the external `moq-vaapi` crate's
@@ -208,10 +211,10 @@ drop-in.
   logic; vaapi-decode owns the decode stack. The two agents agree the shared moq-vaapi
   API (encode extensions, any shared VPP execution path) before either lands.
 - Coordination point 11 (external moq-vaapi repo, overview): the VA-layer encode work
-  is a PR to `github.com/moq-dev/vaapi`, a separate repository under the maintainer's
+  is a PR to `github.com/moq-dev/vaapi`, a separate repository under the moq-dev
   org with its own review path and release cadence. The moq-video backend change is a
   separate monorepo PR that bumps the pin. We do not hold publish rights to the crate
-  name; the critical path runs through the maintainer's release.
+  name; the critical path runs through the upstream release.
 - Licensing and provenance: moq-vaapi already carries `LICENSE.libva` and
   `LICENSE.cros-codecs` alongside its BSD-3-Clause `LICENSE`, and is self-described as
   derived from discord/cros-libva and discord/cros-codecs. Our re-vendored encode logic
@@ -236,7 +239,7 @@ encoder session across groups and resetting the rate-control state and forcing a
 fresh IDR, rather than reopening a VA context per group. If a same-resolution
 same-GOP session cannot re-arm rate control without a rebuild, the fallback is a
 controlled teardown and rebuild of the encoder session over a retained `Display`.
-This is new work on moq-vaapi (or cros-codecs), coordinated with the maintainer's
+This is new work on moq-vaapi (or cros-codecs), coordinated with moq's
 per-segment-transcode goal, not a one-liner. Defer the rate-control policy to
 moq-transcode; do not embed a streaming controller.
 

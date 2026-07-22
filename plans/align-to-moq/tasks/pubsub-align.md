@@ -1,8 +1,11 @@
 # pubsub-align
 
-Branch: align/pubsub-align          Wave: 1
+> Campaign: align-to-moq | Kind: task plan | Branch: align/pubsub-align |
+> Read ../0-overview.md first.
+
+Wave: 1
 Depends on: Wave 0 pin bump (the moq release carrying `moq_mux::container::Consumer::set_latency` and `discontinuity()`)
-Kind: independent
+Coupling: independent
 
 ## Goal
 
@@ -52,7 +55,7 @@ is correct.
   decode error + reset"), and section 10 (subscribe verdict: "keep. Ordering and
   skipping are already delegated ... Enablers to adopt on the pin bump:
   `set_latency` ..., `discontinuity()` ...").
-- `../cut-plan.md` section 2, moq-media table, `subscribe.rs` row: 1,566 LOC,
+- `../../upstream/cut-plan.md` section 2, moq-media table, `subscribe.rs` row: 1,566 LOC,
   verdict **keep (merge at the edges)**, "quality selection, hot-swap, and
   adaptation driver have no upstream counterpart," prerequisite "release for
   `set_latency`, `discontinuity()`."

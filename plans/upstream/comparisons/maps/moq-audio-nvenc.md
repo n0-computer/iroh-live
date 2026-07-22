@@ -1,4 +1,6 @@
-# Map: moq main — moq-audio + moq-nvenc (HEAD 3a3e0ea8, 2026-07-21)
+# Map: moq main - moq-audio + moq-nvenc (HEAD 3a3e0ea8, 2026-07-21)
+
+> Campaign: upstream | Kind: map | Read ../../0-overview.md first; index at ../0-index.md.
 
 SOURCE: moq main, HEAD 3a3e0ea8 (2026-07-21); dev merged into main.
 
@@ -9,13 +11,13 @@ Provenance: this map was first written on the pre-merge dev branch at SHA 261c20
 Since the merge, `git diff 261c2048..main -- rs/moq-audio/src rs/moq-nvenc/src` shows
 only **two trivial one-line changes**, both in moq-audio, neither structural:
 
-- `encode/producer.rs:136` — `catalog.timeline_section(&name)` became
+- `encode/producer.rs:136` - `catalog.timeline_section(&name)` became
   `catalog.timeline(&name).section()`, following moq-mux #2420's shareable-timeline
   API (the old `timeline_section` helper was replaced by
   `catalog::Producer::timeline(name) -> timeline::Producer` with `.section()`; see the
   moq-mux map). Same catalog field is written; the rendition still advertises its
   per-track timeline.
-- `resample.rs:39` — `f_cutoff: 0.95` became `f_cutoff: Some(0.95)`, a rubato API bump
+- `resample.rs:39` - `f_cutoff: 0.95` became `f_cutoff: Some(0.95)`, a rubato API bump
   (the sinc cutoff field is now `Option`).
 
 **moq-nvenc source is byte-identical since 261c2048** (zero diff). moq-audio is still
@@ -23,10 +25,10 @@ version 0.0.9, moq-nvenc still 0.0.1. Everything below is exact against main.
 
 Layout history that produced the current shape (still current):
 
-- `b9c539c0` — `refactor(audio)!: align the moq-audio capture/encode surface with moq-video (#2350)`. This produced the current layout: it deleted the flat `codec.rs` (534 lines) and split it into `encode/{encoder,producer,capture}.rs`, `decode/{decoder,consumer}.rs`, and `opus.rs`.
-- `9090a68b` — `feat(capture): macOS window/app/system-audio sources and device enumeration (#2293)`: added `capture/screencapture.rs` (system audio) and `capture::devices`.
-- `3479ecc2` — `fix(moq-video, moq-audio): threading/correctness fixes + dedicated capture encode thread (#2038)`. The moq-audio part: "await the mic-permission prompt via oneshot + timeout instead of blocking a tokio worker with recv_timeout(30s)". The "dedicated capture encode thread" part is moq-video only.
-- `dbc589f4` — `refactor(moq-video): vendor NVENC fork in-tree as moq-nvenc (#2042)`; `5fa30c72` — `feat(moq-video): NVDEC hardware decode, zero-copy NVDEC -> NVENC transcode (#2145)`.
+- `b9c539c0` - `refactor(audio)!: align the moq-audio capture/encode surface with moq-video (#2350)`. This produced the current layout: it deleted the flat `codec.rs` (534 lines) and split it into `encode/{encoder,producer,capture}.rs`, `decode/{decoder,consumer}.rs`, and `opus.rs`.
+- `9090a68b` - `feat(capture): macOS window/app/system-audio sources and device enumeration (#2293)`: added `capture/screencapture.rs` (system audio) and `capture::devices`.
+- `3479ecc2` - `fix(moq-video, moq-audio): threading/correctness fixes + dedicated capture encode thread (#2038)`. The moq-audio part: "await the mic-permission prompt via oneshot + timeout instead of blocking a tokio worker with recv_timeout(30s)". The "dedicated capture encode thread" part is moq-video only.
+- `dbc589f4` - `refactor(moq-video): vendor NVENC fork in-tree as moq-nvenc (#2042)`; `5fa30c72` - `feat(moq-video): NVDEC hardware decode, zero-copy NVDEC -> NVENC transcode (#2145)`.
 
 ---
 
@@ -74,7 +76,7 @@ Layering per module doc: `capture` (feature-gated device I/O) → `encode`
 
 `rs/moq-audio/Cargo.toml`:
 
-- Opus via **`unsafe-libopus = "0.2"`** — a pure-Rust c2rust transpilation of libopus 1.3.1. Rationale in a long comment (`Cargo.toml:56-63`): "No CMake toolchain, no C linker hackery ... unlike the `opus`/`audiopus_sys` combo which is stuck on a 5-year-old vendored libopus that breaks under CMake 4 (RUSTSEC-2026-0150). Trade-off: ~20% slower than the C version".
+- Opus via **`unsafe-libopus = "0.2"`** - a pure-Rust c2rust transpilation of libopus 1.3.1. Rationale in a long comment (`Cargo.toml:56-63`): "No CMake toolchain, no C linker hackery ... unlike the `opus`/`audiopus_sys` combo which is stuck on a 5-year-old vendored libopus that breaks under CMake 4 (RUSTSEC-2026-0150). Trade-off: ~20% slower than the C version".
 - `cpal = "0.18"` (optional, `capture` feature) for mic; `rubato = "3.0"` (default-features off, sinc only) for resampling; `hang`, `moq-mux`, `moq-net` workspace deps; `tokio` optional (capture loop only).
 - macOS-only, capture-gated objc2 stack: `objc2-av-foundation` (TCC mic permission pre-check), `objc2-screen-capture-kit` + `objc2-core-media` + `objc2-core-audio-types` (system audio), `block2`, `dispatch2` (`Cargo.toml:71-81`).
 - The `capture` feature is **off by default** "so audio-only consumers (e.g. moq-ffi) don't pull cpal and, on Linux, the ALSA build dependency" (`Cargo.toml:19-24` comment).
@@ -109,7 +111,7 @@ impl Codec {
 The module doc rejects a trait for now: "Single-codec implementation today ...
 When AAC or other codecs land we'll factor out a backend dispatch behind
 `Codec`; introducing a trait now would be premature"
-(`encode/encoder.rs:1-7`). No codec trait exists anywhere in the crate — the
+(`encode/encoder.rs:1-7`). No codec trait exists anywhere in the crate - the
 encoder/decoder are concrete structs with `match config.codec` dispatch
 (`encode/encoder.rs:152-155`).
 
@@ -143,7 +145,7 @@ pub struct Frame {
 
 (`Timestamp` is `moq_net::Timestamp`, microsecond-resolution.)
 
-`rs/moq-audio/src/format.rs:5-35` — explicitly mirrors WebCodecs
+`rs/moq-audio/src/format.rs:5-35` - explicitly mirrors WebCodecs
 `AudioData.format`, named `Format`:
 
 ```rust
@@ -255,7 +257,7 @@ unsafe impl Send for Encoder {}
 
 API: `new(&Config)` (`:152`), `config()` (`:204`), `codec()` (`:210`),
 `codec_rate()` (`:216`), `codec_channels()` (`:222`), `frame_size()` (`:228`),
-`encode(&mut self, pcm: &[f32]) -> Result<Bytes, Error>` (`:237` — one frame
+`encode(&mut self, pcm: &[f32]) -> Result<Bytes, Error>` (`:237` - one frame
 of interleaved f32 at exactly `frame_size() * codec_channels()` samples, else
 `Error::Misaligned`), and `catalog() -> hang::catalog::AudioConfig` (`:263`)
 which builds a hang catalog entry with an OpusHead description
@@ -264,12 +266,12 @@ bitrate, and `Container::Legacy`. `MAX_PACKET_BYTES: usize = 4_000` scratch
 per RFC 6716 §3.4 (`encode/encoder.rs:22`). `Drop` calls
 `opus_encoder_destroy`. Bitrate is applied at construction via
 `opus_encoder_ctl_impl(inner, OPUS_SET_BITRATE_REQUEST, ...)`
-(`encode/encoder.rs:180-188`) — **no runtime bitrate change** on the audio
+(`encode/encoder.rs:180-188`) - **no runtime bitrate change** on the audio
 side (unlike moq-nvenc's `Session::reconfigure`).
 
 ### Producer (encode/producer.rs)
 
-`Options` — the layout-agnostic counterpart of `Config`
+`Options` - the layout-agnostic counterpart of `Config`
 (`encode/producer.rs:15-56`):
 
 ```rust
@@ -314,22 +316,22 @@ pub struct Producer<E: CatalogExt = ()> {
 ```
 
 API: `new(&mut moq_net::broadcast::Producer, moq_mux::catalog::Producer<E>,
-Input, &Options)` (`:98`) — creates the Encoder, an optional `Resampler` if
+Input, &Options)` (`:98`) - creates the Encoder, an optional `Resampler` if
 input rate ≠ codec rate, creates the track (named or
 `moq_mux::import::unique_track` derived from codec), wraps it in
 `catalog.media_producer(track, moq_mux::container::legacy::Wire)`, inserts
 the rendition into `catalog.lock().audio` including a per-track timeline
 (`config.timeline = Some(catalog.timeline(&name).section())` at
-`producer.rs:136` — the shareable-timeline API from moq-mux #2420; previously
+`producer.rs:136` - the shareable-timeline API from moq-mux #2420; previously
 `catalog.timeline_section(&name)`). Other methods: `track_name()` (`:152`),
 `track() -> &moq_net::track::Producer` (`:158`, for `used()`/`unused()` demand
-watching), `reset_epoch()` (`:168` — re-anchor PTS after idle gap), `write(&Frame)`
-(`:185` — format-convert, resample, accumulate `pending`, drain full Opus frames,
-PTS = epoch + running sample count), `finish()` (`:237` — zero-pads the trailing
+watching), `reset_epoch()` (`:168` - re-anchor PTS after idle gap), `write(&Frame)`
+(`:185` - format-convert, resample, accumulate `pending`, drain full Opus frames,
+PTS = epoch + running sample count), `finish()` (`:237` - zero-pads the trailing
 partial frame, finalizes the track), `abort(err)` (`:252`). `Drop` removes the
 catalog rendition (`:258-262`). Publishing detail (`:219-233`): "Each audio packet is
 its own moq-lite group, matching `moq_mux::codec::opus::Import`. Opus PLC handles
-dropped groups" — `keyframe: true`, `duration: None`, followed by `track.cut(None)`.
+dropped groups" - `keyframe: true`, `duration: None`, followed by `track.cut(None)`.
 
 ### Decoder (decode/decoder.rs)
 
@@ -376,11 +378,11 @@ pub struct Decoder {
 unsafe impl Send for Decoder {}
 ```
 
-API: `new(&hang::catalog::AudioConfig)` (`:75`) — parses the OpusHead
+API: `new(&hang::catalog::AudioConfig)` (`:75`) - parses the OpusHead
 `description` via `moq_mux::codec::opus::Config::parse`, falling back to the
 catalog's declared rate/channels; `sample_rate()` (`:107`),
 `channel_count()` (`:112`), `decode(&mut self, packet: &[u8]) ->
-Result<Vec<f32>, Error>` (`:117`) — allocates for the 120 ms max Opus packet
+Result<Vec<f32>, Error>` (`:117`) - allocates for the 120 ms max Opus packet
 (`MAX_FRAME_MS = 120`, `:14`) and truncates to the decoded sample count.
 Notably **no PLC/FEC entry point**: `opus_decode_float(..., 0)` is always
 called with real packet data; there is no `decode_lost()`.
@@ -488,7 +490,7 @@ forwards over an **unbounded** tokio mpsc channel, first buffer awaited with
 `capture/permission.rs` (macOS): `ensure_microphone_access()` queries
 AVFoundation TCC status and, if `NotDetermined`, triggers the system prompt
 bridged to a oneshot with `PROMPT_TIMEOUT` = 30 s
-(`capture/permission.rs:14-80`) — the #2034/#2038 "blocking mic prompt" fix
+(`capture/permission.rs:14-80`) - the #2034/#2038 "blocking mic prompt" fix
 (await via oneshot + timeout instead of parking a tokio worker). No-op on
 other platforms.
 
@@ -526,20 +528,20 @@ input.read() => ... }`). On resume it calls `producer.reset_epoch()` so the
 idle gap lands in the PTS, "keeping audio aligned with a wall-clock video
 track". Frames are stamped from the shared `moq_mux::Clock`. Everything is
 cancel-safe: dropping the future drops the cpal/SCK stream. It is an async
-loop on the runtime — no dedicated encode thread on the audio side (Opus
+loop on the runtime - no dedicated encode thread on the audio side (Opus
 encode of 20 ms frames is cheap; contrast moq-video's dedicated capture
 encode thread from #2038).
 
 ### Error and resampler
 
-`error.rs:1-55` — single crate-wide `#[non_exhaustive] enum Error`:
+`error.rs:1-55` - single crate-wide `#[non_exhaustive] enum Error`:
 `Unsupported(String)`, `Device(String)`, `Capture(String)`, `Misaligned {
 got, expected }`, `ResamplerConstruction(rubato::...)`,
 `Resample(rubato::...)`, `Hang(hang::Error)`, `Mux(moq_mux::Error)`,
-`Net(moq_net::Error)`, `TimeOverflow(moq_net::TimeOverflow)` — each variant
+`Net(moq_net::Error)`, `TimeOverflow(moq_net::TimeOverflow)` - each variant
 documented with actionable recovery guidance.
 
-`resample.rs:14-70` — `pub struct Resampler` wraps rubato's
+`resample.rs:14-70` - `pub struct Resampler` wraps rubato's
 `Async::<f32>::new_sinc` (`FixedAsync::Input`, sinc_len 128, `f_cutoff:
 Some(0.95)`, BlackmanHarris2) behind an interleaved-f32 `process(&mut self,
 &[f32]) -> Result<Vec<f32>>` API with internal chunk buffering; sample-rate
@@ -626,7 +628,7 @@ pub use result::{EncodeError, ErrorKind};
 pub use session::{CodecPictureParams, EncodePictureParams, Session};
 ```
 
-**safe/api.rs** — `ENCODE_API: EncodeAPI` lazy static (`api.rs:16-23`): a
+**safe/api.rs** - `ENCODE_API: EncodeAPI` lazy static (`api.rs:16-23`): a
 struct of ~40 raw function pointers mirroring `NV_ENCODE_API_FUNCTION_LIST`
 (`open_encode_session_ex`, `initialize_encoder`, `reconfigure_encoder`,
 `create_input_buffer`, `create_bitstream_buffer`, `encode_picture`,
@@ -635,10 +637,10 @@ struct of ~40 raw function pointers mirroring `NV_ENCODE_API_FUNCTION_LIST`
 `libnvidia-encode` and calling the two NVENC bootstrap symbols. Note the
 asymmetry called out in `cuvid.rs:8-10`: the encode-side lazy static
 **panics** when the driver is absent, while the decode-side `cuvid::Api::get`
-returns a `Result` — which is why moq-video probes `driver_libs_present()`
+returns a `Result` - which is why moq-video probes `driver_libs_present()`
 before touching either (`rs/moq-video/src/encode/backend/nvenc.rs:72-82`).
 
-**safe/encoder.rs** — the entrypoint (`encoder.rs:38-44`):
+**safe/encoder.rs** - the entrypoint (`encoder.rs:38-44`):
 
 ```rust
 #[derive(Debug)]
@@ -649,12 +651,12 @@ pub struct Encoder {
 }
 ```
 
-- `Encoder::initialize_with_cuda(cuda_ctx: Arc<CudaContext>) -> Result<Self, EncodeError>` (`encoder.rs:83`) — opens an NVENC session with the CUDA context as the device (`NV_ENC_DEVICE_TYPE_CUDA`).
+- `Encoder::initialize_with_cuda(cuda_ctx: Arc<CudaContext>) -> Result<Self, EncodeError>` (`encoder.rs:83`) - opens an NVENC session with the CUDA context as the device (`NV_ENC_DEVICE_TYPE_CUDA`).
 - Capability queries: `get_encode_guids()` (`:139`), `get_preset_guids(GUID)` (`:184`), `get_profile_guids`, `get_supported_input_formats`, `get_preset_config(encode_guid, preset_guid, tuning)`.
-- `start_session(self, buffer_format: NV_ENC_BUFFER_FORMAT, initialize_params: EncoderInitParams<'_>) -> Result<Session, EncodeError>` (`encoder.rs:424-427`). `EncoderInitParams<'a>` (`encoder.rs:464-467`) is a lifetime-tagged builder over `NV_ENC_INITIALIZE_PARAMS` (`new(encode_guid, width, height)`, `preset_guid`, `encode_config`, `display_aspect_ratio`, `framerate`, `enable_picture_type_decision` — `builders.rs:17-75`). `start_session` copies the caller's `NV_ENC_CONFIG` into a `Box` and re-points `init.encodeConfig` at the owned copy so `reconfigure` can resubmit it later (`encoder.rs:433-456`).
+- `start_session(self, buffer_format: NV_ENC_BUFFER_FORMAT, initialize_params: EncoderInitParams<'_>) -> Result<Session, EncodeError>` (`encoder.rs:424-427`). `EncoderInitParams<'a>` (`encoder.rs:464-467`) is a lifetime-tagged builder over `NV_ENC_INITIALIZE_PARAMS` (`new(encode_guid, width, height)`, `preset_guid`, `encode_config`, `display_aspect_ratio`, `framerate`, `enable_picture_type_decision` - `builders.rs:17-75`). `start_session` copies the caller's `NV_ENC_CONFIG` into a `Box` and re-points `init.encodeConfig` at the owned copy so `reconfigure` can resubmit it later (`encoder.rs:433-456`).
 - `Drop` destroys the encoder (`encoder.rs:56-62`).
 
-**safe/session.rs** — the moq-relevant additions to the upstream fork live
+**safe/session.rs** - the moq-relevant additions to the upstream fork live
 here (`session.rs:30-49`):
 
 ```rust
@@ -676,8 +678,8 @@ pub struct Session {
 }
 ```
 
-- **`reconfigure(&mut self, bitrate: u32)`** (`session.rs:123-146`) — moq's fork addition: changes `rcParams.averageBitRate` on the running session with `resetEncoder = 0`, `forceIDR = 0`: "safe to call as often as a congestion controller updates ... no IDR is forced and no state is reset" (`session.rs:107-121`). moq-video's `Backend::set_bitrate` maps straight onto it (`rs/moq-video/src/encode/backend/nvenc.rs:253-259`).
-- `encode_picture<I: EncoderInput, O: EncoderOutput>(&self, input, output, params: EncodePictureParams)` (`session.rs:235-273`). Keyframes use the `NV_ENC_PIC_FLAG_FORCEIDR` flag rather than `pictureType` (honored even with picture-type decision enabled — comment at `session.rs:260-268`; hardware-verified fix `3b87a3dd`).
+- **`reconfigure(&mut self, bitrate: u32)`** (`session.rs:123-146`) - moq's fork addition: changes `rcParams.averageBitRate` on the running session with `resetEncoder = 0`, `forceIDR = 0`: "safe to call as often as a congestion controller updates ... no IDR is forced and no state is reset" (`session.rs:107-121`). moq-video's `Backend::set_bitrate` maps straight onto it (`rs/moq-video/src/encode/backend/nvenc.rs:253-259`).
+- `encode_picture<I: EncoderInput, O: EncoderOutput>(&self, input, output, params: EncodePictureParams)` (`session.rs:235-273`). Keyframes use the `NV_ENC_PIC_FLAG_FORCEIDR` flag rather than `pictureType` (honored even with picture-type decision enabled - comment at `session.rs:260-268`; hardware-verified fix `3b87a3dd`).
 - `end_of_stream()` (`session.rs:287`); `Drop` sends EOS (`session.rs:296-301`).
 
 `EncodePictureParams` / `CodecPictureParams` (`session.rs:302-341`):
@@ -703,7 +705,7 @@ pub enum CodecPictureParams {
 }
 ```
 
-**safe/buffer.rs** — I/O buffer types, all RAII with `Drop` cleanup. The
+**safe/buffer.rs** - I/O buffer types, all RAII with `Drop` cleanup. The
 core traits (`buffer.rs:15-31`):
 
 ```rust
@@ -727,9 +729,9 @@ pub trait EncoderOutput {
 
 Concrete types:
 
-- `Buffer<'a>` (`buffer.rs:255-259`, `pub(crate) ptr, pitch, encoder: &'a Encoder`; `unsafe impl Send`): NVENC-allocated CPU-writable input buffer, created by `Session::create_input_buffer` (`buffer.rs:85`). `lock()`/`try_lock()` return `BufferLock` (`buffer.rs:321,342,396-400`) whose `unsafe fn write(&mut self, data: &[u8])` copies into the driver's mapping, and which exposes `pitch()` — NVENC's chosen row stride, which "may exceed the visible width" (`buffer.rs:423-424`; moq-video writes each plane pitched via a `write_rows` helper).
+- `Buffer<'a>` (`buffer.rs:255-259`, `pub(crate) ptr, pitch, encoder: &'a Encoder`; `unsafe impl Send`): NVENC-allocated CPU-writable input buffer, created by `Session::create_input_buffer` (`buffer.rs:85`). `lock()`/`try_lock()` return `BufferLock` (`buffer.rs:321,342,396-400`) whose `unsafe fn write(&mut self, data: &[u8])` copies into the driver's mapping, and which exposes `pitch()` - NVENC's chosen row stride, which "may exceed the visible width" (`buffer.rs:423-424`; moq-video writes each plane pitched via a `write_rows` helper).
 - `Bitstream<'a>` / `BitstreamLock` (`buffer.rs:471-604`): output buffer from `Session::create_output_bitstream` (`buffer.rs:153`); `lock()` blocks until the frame is encoded and exposes `data() -> &[u8]`, `frame_index()`, `timestamp()`, `duration()`, `picture_type()` (`buffer.rs:577-601`).
-- **`RegisteredResource<'a, T>` — the zero-copy hook** (`buffer.rs:614-657`):
+- **`RegisteredResource<'a, T>` - the zero-copy hook** (`buffer.rs:614-657`):
 
 ```rust
 /// Abstraction for a registered and mapped external resource.
@@ -758,16 +760,16 @@ Created by `Session::register_cuda_resource(pitch, MappedBuffer)`
 *mut c_void, pitch)` (`buffer.rs:208-249`), which calls
 `NvEncRegisterResource` + `NvEncMapInputResource` and unwinds both in `Drop`.
 It implements `EncoderInput` (`buffer.rs:649+`) so a mapped GPU buffer plugs
-straight into `encode_picture` — this is what makes GPU-resident frames
+straight into `encode_picture` - this is what makes GPU-resident frames
 encodable without a host copy.
 
-**safe/result.rs** — `EncodeError { kind: ErrorKind, string: Option<String>
+**safe/result.rs** - `EncodeError { kind: ErrorKind, string: Option<String>
 }` mapping `NVENCSTATUS`, with recoverable kinds `EncoderBusy`,
 `NeedMoreInput`, `LockBusy` documented on the calling methods.
 
 ### cuvid.rs (NVDEC decode surface)
 
-Not a safe wrapper — a runtime-resolved function table
+Not a safe wrapper - a runtime-resolved function table
 (`cuvid.rs:1-11`): "The raw bindings in `sys` declare the functions in an
 `extern "C"` block, but calling those directly would make the *linker*
 require `libnvcuvid` ... everything is resolved at runtime with dlopen.
@@ -863,7 +865,7 @@ decode (`nvdec.rs:1`). A hardware test asserts the loop stays on GPU:
 "NVDEC produced a non-CUDA frame; the zero-copy path is not exercised"
 (`nvdec.rs:666-667`). So the "zero-copy" story is precisely: one D2D copy out
 of the cuvid surface pool, then NVENC reads that CUDA buffer in place through
-`RegisteredResource` — zero host copies end to end.
+`RegisteredResource` - zero host copies end to end.
 
 ### Standalone / publishable?
 

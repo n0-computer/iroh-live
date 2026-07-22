@@ -1,5 +1,8 @@
 # Upstream Plan: the PR program that delivers iroh-live's contributions to moq
 
+> Campaign: upstream | Kind: analysis | Preserved context; superseded by
+> ../0-overview.md where they disagree. Read ../0-overview.md first.
+
 Status: planning artifact, rewritten 2026-07-22 after moq merged its long-lived
 rewrite branch into main on 2026-07-21. There is no dev line to target: every
 upstream target named here is a moq main crate, working tree

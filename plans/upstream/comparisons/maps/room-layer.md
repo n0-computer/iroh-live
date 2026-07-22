@@ -1,5 +1,7 @@
 # Room / transport-integration layer map
 
+> Campaign: upstream | Kind: map | Read ../../0-overview.md first; index at ../0-index.md.
+
 Scope: the `iroh-moq` crate (`iroh-moq/src/lib.rs`, ~572 LOC) and the `iroh-live`
 crate (`iroh-live/src/{lib,live,rooms,call,subscription,ticket,types,util}.rs`
 plus `rooms/publisher.rs`). This is the layer that binds MoQ-over-iroh transport
@@ -15,7 +17,7 @@ key to the overlap analysis in the final section.
 
 ---
 
-## 1. `iroh-moq` — what the crate owns
+## 1. `iroh-moq` - what the crate owns
 
 `iroh-moq/src/lib.rs:1` describes itself as "MoQ transport layer over iroh".
 Functionally it is a **MoQ-over-iroh transport adapter plus a per-node session
@@ -29,7 +31,7 @@ sessions. It is not a relay and has no room/gossip concept.
 - `pub const ALPN: &[u8] = b"moq-lite-04";` (`iroh-moq/src/lib.rs:35`). Hardcoded
   single wire version. This exact string is `ALPN_LITE_04`, the first entry of
   `moq_net::ALPNS` (see §7).
-- `Moq` (`iroh-moq/src/lib.rs:77`) — the handle. Core type:
+- `Moq` (`iroh-moq/src/lib.rs:77`) - the handle. Core type:
 
   ```rust
   #[derive(Debug, Clone)]
@@ -43,19 +45,19 @@ sessions. It is not a relay and has no room/gossip concept.
   ```
 
   Constructed by `Moq::new(endpoint: Endpoint)` (`iroh-moq/src/lib.rs:88`), which
-  mints one `Origin::random()` per node (`:95`) — "One non-zero origin id
+  mints one `Origin::random()` per node (`:95`) - "One non-zero origin id
   identifies this node in broadcast announce hop chains … shared across every
-  session" (`:91`) — and spawns the `Actor` (`:96-99`).
+  session" (`:91`) - and spawns the `Actor` (`:96-99`).
   Methods: `protocol_handler()` (`:110`), `publish(name, BroadcastProducer)`
   (`:118`), `published_broadcasts()` (`:130`), `connect(remote) -> MoqSession`
   (`:144`), `incoming_sessions() -> IncomingSessionStream` (`:160`),
   `shutdown()` (`:167`).
-- `MoqProtocolHandler` (`iroh-moq/src/lib.rs:177`) — implements
+- `MoqProtocolHandler` (`iroh-moq/src/lib.rs:177`) - implements
   `iroh::protocol::ProtocolHandler` (`:197`); `accept()` wraps the raw iroh
   `Connection` in `web_transport_iroh::Session::raw(connection)` and runs
   `MoqSession::session_accept` (`:185-186`). This is the iroh-`Router` mount
   point.
-- `MoqSession` (`iroh-moq/src/lib.rs:259`) — a live session. Core type:
+- `MoqSession` (`iroh-moq/src/lib.rs:259`) - a live session. Core type:
 
   ```rust
   #[derive(Clone)]
@@ -74,7 +76,7 @@ sessions. It is not a relay and has no room/gossip concept.
   `self.subscribe.announced_broadcast(name)` (`:354`); `publish(name, consumer)`
   calls `self.publish.publish_broadcast(...)` (`:362`). Also exposes
   `origin_producer()`/`origin_consumer()` (`:366`, `:371`) and `conn()` (`:342`).
-- `IncomingSessionStream` / `IncomingSession` (`:208`, `:233`) — inspect
+- `IncomingSessionStream` / `IncomingSession` (`:208`, `:233`) - inspect
   `remote_id()` then `accept()`/`reject()`.
 - Errors: `Error` (`:39`) and `SubscribeError` (`:54`).
 
@@ -85,14 +87,14 @@ MoqSession>` (`:413`), `publishing: HashMap<BroadcastName, BroadcastProducer>`
 (`:411`), and `pending_connects` (`:415`). Its select loop (`run`, `:439`)
 provides the three behaviours that distinguish this crate from a plain transport:
 
-1. **Connection dedup** — `handle_connect` (`:545`) returns an existing session
+1. **Connection dedup** - `handle_connect` (`:545`) returns an existing session
    for an `EndpointId` if present (`:551`), and coalesces concurrent dials into
    one `pending_connects` entry (`:555-568`). One connection per remote node.
-2. **Broadcast fan-out** — `handle_publish_broadcast` (`:529`) republishes a
+2. **Broadcast fan-out** - `handle_publish_broadcast` (`:529`) republishes a
    producer onto every current session (`:530-534`); `handle_session` (`:499`)
    replays all currently-published broadcasts onto each newly established session
    (`:501-503`). So `Moq::publish` is node-wide, not session-scoped.
-3. **Session lifecycle + incoming fan-in** — new sessions are broadcast on
+3. **Session lifecycle + incoming fan-in** - new sessions are broadcast on
    `incoming_session_tx` (`:506`) and their close is tracked in `session_tasks`
    (`:512-526`), removing them from the map on exit (`:451-452`).
 
@@ -104,7 +106,7 @@ entirely via `web_transport_iroh` (`:28`, `:185`, `:284`).
 
 ---
 
-## 2. `iroh-live/src/live.rs` — top-level entry (300 LOC)
+## 2. `iroh-live/src/live.rs` - top-level entry (300 LOC)
 
 `Live` (`iroh-live/src/live.rs:23`) is the application handle:
 
@@ -143,13 +145,13 @@ expose the inner handles.
 
 ---
 
-## 3. `iroh-live/src/rooms.rs` (695 LOC) + `rooms/publisher.rs` — the room layer
+## 3. `iroh-live/src/rooms.rs` (695 LOC) + `rooms/publisher.rs` - the room layer
 
 **Discovery/membership mechanism (the central redesign question): rooms are
 formed by a shared iroh-gossip topic, and membership + broadcast announcements
 are carried as a CRDT-style signed key-value state over that topic via
 `iroh-smol-kv`.** There is no relay and no MoQ origin/announce hop involvement at
-the room layer — MoQ is only used *after* discovery, to pull each announced
+the room layer - MoQ is only used *after* discovery, to pull each announced
 broadcast point-to-point.
 
 ### `Room` and handles
@@ -248,9 +250,9 @@ logic lives in `moq-media`; this file only bridges producers to
 
 ---
 
-## 4. `call.rs`, `subscription.rs`, `ticket.rs`, `types.rs` — purpose + key types
+## 4. `call.rs`, `subscription.rs`, `ticket.rs`, `types.rs` - purpose + key types
 
-**`call.rs` — `Call` (`call.rs:39`).** Standalone 1:1 call sugar over MoQ
+**`call.rs` - `Call` (`call.rs:39`).** Standalone 1:1 call sugar over MoQ
 primitives; the doc comment calls it "Pure sugar" and notes "Everything Call does
 can be done directly with `Live::transport()` + `LocalBroadcast` +
 `RemoteBroadcast`" (`:23-37`). Holds `{ session: MoqSession, local:
@@ -262,14 +264,14 @@ shared `setup` (`:82`) publishes the local broadcast under the fixed name
 (`:93-98`). `closed()` maps QUIC `ConnectionError` variants to `DisconnectReason`
 (`:145-157`). Errors: `CallError` (`:11`).
 
-**`subscription.rs` — `Subscription` (`subscription.rs:16`).** Bundles a
+**`subscription.rs` - `Subscription` (`subscription.rs:16`).** Bundles a
 `MoqSession`, a `RemoteBroadcast`, and a `watch::Receiver<NetworkSignals>` into
 one handle returned by `Live::subscribe`. Its `new` (`:28`) auto-wires the same
 stats recorder + signal producer as `Call`. Convenience `media[_with_decoders]`
 (`:62`, `:73`) delegate to `RemoteBroadcast`; `into_parts()` (`:84`)
 destructures. This is the non-room subscribe result type.
 
-**`ticket.rs` — `LiveTicket` (`ticket.rs:19`).** A *point-to-point broadcast*
+**`ticket.rs` - `LiveTicket` (`ticket.rs:19`).** A *point-to-point broadcast*
 ticket (distinct from `RoomTicket`): `{ endpoint: EndpointAddr, broadcast_name:
 String, relay_urls: Vec<String> }`. It encodes connection info by postcard-
 serialising the full iroh `EndpointAddr` and base64url-encoding it into the URI
@@ -277,10 +279,10 @@ serialising the full iroh `EndpointAddr` and base64url-encoding it into the URI
 `deserialize` also accepts a legacy `name@base32` form (`:68-112`). Because it
 embeds the whole `EndpointAddr`, it self-describes how to reach the publisher
 (endpoint id + optional relay URLs). Tests assert it stays QR-sized (`:172`).
-Note this type is **not re-exported from `iroh-live/src/lib.rs`** — only
+Note this type is **not re-exported from `iroh-live/src/lib.rs`** - only
 `rooms::RoomTicket` is (see §6).
 
-**`types.rs` — `DisconnectReason` (`types.rs:6`).** A small
+**`types.rs` - `DisconnectReason` (`types.rs:6`).** A small
 `#[non_exhaustive]` enum `{ LocalClose, RemoteClose, TransportError }` with a
 `Display` impl (`:15`); used by `Call::closed`.
 
@@ -313,17 +315,17 @@ Read from the moq working tree at `/home/bit/Code/rust/moq/rs` (branch `main`).
 
 ### What `moq-native/src/iroh.rs` provides
 
-- `EndpointConfig` (`iroh.rs:75`) — a `clap::Args`/serde config
+- `EndpointConfig` (`iroh.rs:75`) - a `clap::Args`/serde config
   (`MOQ_IROH_*` env, secret as hex-or-file, `bind_v4/v6`, `disable_relay`). Its
   `bind()` (`:117`) builds the iroh `Endpoint` with the same `presets::N0` /
   `N0DisableRelay` (`:146-150`) and, crucially, registers **all** MoQ ALPNs plus
   H3: `moq_net::ALPNS` mapped to bytes, then `web_transport_iroh::ALPN_H3`
   (`:143-144`, `:151`).
-- `Request` (`iroh.rs:167`) — an accepted incoming iroh connection, either raw
+- `Request` (`iroh.rs:167`) - an accepted incoming iroh connection, either raw
   QUIC (`moq_net::ALPNS.contains(alpn)` → `QuicRequest`) or WebTransport/H3
   (`ALPN_H3` → `H3Request`) (`accept`, `:177-196`); `ok()` completes the
   handshake and yields a `web_transport_iroh::Session` (`:199-210`).
-- `connect(endpoint, url, addrs)` (`iroh.rs:231`) — parses an `iroh://<endpoint-id>`
+- `connect(endpoint, url, addrs)` (`iroh.rs:231`) - parses an `iroh://<endpoint-id>`
   URL into an `EndpointAddr` (optionally with direct IPs), dials with
   multi-ALPN `ConnectOptions`, negotiates H3 vs raw QUIC, and returns a
   `web_transport_iroh::Session` (`:255-278`). This is the *same*
@@ -343,7 +345,7 @@ Option<iroh::Endpoint>` (`:132`) set via `with_iroh` (`:227`) and multiplexes
 websocket (`server.rs:292-301`, `:380-389`), producing a `Request` whose `ok()`
 runs `self.server.accept(...)` (`:570-574`). `with_publish`/`with_consume` take
 `moq_net::OriginConsumer`/`OriginProducer` (`client.rs:201-209`,
-`server.rs:232-240`) — the very same origin types `MoqSession` threads through.
+`server.rs:232-240`) - the very same origin types `MoqSession` threads through.
 
 ### Overlap assessment (evidence-backed)
 
@@ -372,7 +374,7 @@ they build on the identical underlying crate**:
   `moq-native = "0.17.1"`, and the sibling `iroh-live-relay` crate already uses
   `moq_native::{ServerConfig, ClientConfig, iroh::EndpointConfig, QuicBackend}`
   (`iroh-live-relay/src/lib.rs:46-63`). So the project already depends on and
-  uses moq-native's transport for its relay — but `iroh-moq`/`iroh-live` bypass
+  uses moq-native's transport for its relay - but `iroh-moq`/`iroh-live` bypass
   it and re-implement the iroh path directly.
 
 **What `iroh-moq` owns that moq-native does *not* provide** (the genuine
@@ -382,9 +384,9 @@ non-overlap, and the reason it exists):
    `iroh-moq/src/lib.rs:177-204`). moq-native instead owns its own
    multi-transport `Server::accept()` loop and does not integrate with the iroh
    `Router`/`ProtocolHandler` model.
-2. **Connection deduplication** — one `MoqSession` per `EndpointId`, with
+2. **Connection deduplication** - one `MoqSession` per `EndpointId`, with
    coalesced concurrent dials (`Actor::handle_connect`, `:545-571`).
-3. **Node-wide broadcast fan-out** — publish once, auto-replayed onto every
+3. **Node-wide broadcast fan-out** - publish once, auto-replayed onto every
    current and future session (`:501-503`, `:529-543`). moq-native's origins are
    configured per-session (`with_publish`/`with_consume`), with no cross-session
    fan-out.

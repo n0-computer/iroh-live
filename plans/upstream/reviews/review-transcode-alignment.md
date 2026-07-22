@@ -1,5 +1,7 @@
 # Review: moq no-regression + per-segment transcoding / FETCH alignment
 
+> Campaign: upstream | Kind: review | Read ../0-overview.md first.
+
 Scope: audits the upstream plan set against (1) moq no-regression — every plan
 that edits moq's own code must be strictly additive — and (2) the maintainer's
 stated codec direction: *"per segment transcoding with FETCH support is the goal
@@ -208,7 +210,7 @@ bake in continuous-stream-only assumptions around:
 
 ### 3. Proposed coordination point #7
 
-Add to `0-overview.md` after coordination point 6:
+Add to `../0-overview.md` after coordination point 6:
 
 > **7. Per-segment transcoding and FETCH.** The maintainer's stated codec direction
 > is per-segment (per-GROUP) transcoding with FETCH support — a fetch for group 45

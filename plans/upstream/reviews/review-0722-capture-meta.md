@@ -1,5 +1,7 @@
 # Adversarial review 2026-07-22: capture / audio / render plans + campaign structure
 
+> Campaign: upstream | Kind: review | Read ../0-overview.md first.
+
 Skeptical staff review, cross-checked against real source: moq `/home/bit/Code/rust/moq`
 HEAD `3a3e0ea80c2103269992dd4352061b4807f6fdb7` (matches the cited `3a3e0ea8`), iroh-live
 working tree. Every anchor below was opened and read, not inferred.
@@ -38,7 +40,7 @@ target) are absent from the seven coordination points.
 ## Capture / audio / render findings
 
 ### C1 — v4l2-camera-enum cites the wrong moq line for YUYV conversion — SUBSTANTIVE
-Location: `capture/v4l2-camera-enum.md` Evidence, "rs/moq-video/src/capture/v4l2.rs:88-96,
+Location: `../capture/v4l2-camera-enum.md` Evidence, "rs/moq-video/src/capture/v4l2.rs:88-96,
 146-151 YUYV via `I420::from_yuyv` and MJPEG via `zune_jpeg::JpegDecoder`".
 Issue: In moq's `v4l2.rs`, lines 88–96 are `Camera::open` / format negotiation, not YUYV
 conversion. The YUYV `I420::from_yuyv` arm and the MJPEG `JpegDecoder` block are BOTH in
@@ -49,7 +51,7 @@ Fix: cite `v4l2.rs:141-159` for both conversion arms; drop `88-96` or re-label i
 format-negotiation site (`Camera::open`/`negotiate`).
 
 ### C2 — pipewire-dmabuf: iroh-live dmabuf-to-frame anchor drifts ~10 lines — NIT
-Location: `capture/pipewire-dmabuf.md` Source-to-port and step 4: "`dmabuf_to_frame`
+Location: `../capture/pipewire-dmabuf.md` Source-to-port and step 4: "`dmabuf_to_frame`
 (`pipewire.rs:721-766`)" and "our NV12-only zero-copy gate (`pipewire.rs:721`)".
 Issue: In iroh-live `pipewire.rs`, `fn dmabuf_to_frame` is at line 731 (with
 `dmabuf_to_frame_cpu` at 782), not 721. The `spa_format_to_drm_fourcc` (114) and
@@ -57,7 +59,7 @@ Issue: In iroh-live `pipewire.rs`, `fn dmabuf_to_frame` is at line 731 (with
 Fix: change `721-766` to `731-780` and move the NV12-gate anchor accordingly.
 
 ### C3 — pipewire-dmabuf: moq re-pace-timer anchor points at the quit handler — NIT
-Location: `capture/pipewire-dmabuf.md` Target-in-moq: "The static-screen re-pacing timer
+Location: `../capture/pipewire-dmabuf.md` Target-in-moq: "The static-screen re-pacing timer
 (`pipewire.rs:462-475`) keeps working because it re-emits `state.last`".
 Issue: In moq's `pipewire.rs` the re-pace timer (`add_timer`, `chan.push(Frame::I420(last))`)
 is at lines 440–457; lines 460–467 are the `_quit` handler, not the timer. Also `convert()` is
@@ -65,7 +67,7 @@ at 473–482, not the cited 474–485 (474–485 spills into `format_offer`).
 Fix: cite `440-457` for the re-pace timer and `473-482` for `convert()`.
 
 ### C4 — opus-improvements: cluster of ±1–2 line anchor drifts — NIT
-Location: `codec/opus-improvements.md` Evidence/Target.
+Location: `../audio/opus-improvements.md` Evidence/Target.
 Issue: moq `opus.rs` `RATES` is line 12 (cited `:13`), `FRAME_DURATIONS` line 15 (cited `:16`),
 `pick_rate` 19–21 (cited `:20-22`); moq-audio `encoder.rs` construction bitrate block is 182–191
 (cited `:180-188`) and `catalog()` is at line 262 (cited `:263`). `validate_channels` (33-40),
@@ -74,10 +76,10 @@ groups" are all exact. Low impact; tighten for the PR author.
 Fix: shift the five drifted anchors by 1–2 lines.
 
 ### C5 — opus-improvements: VOIP anchor is the import, not the apply site — NIT
-Location: `codec/opus-improvements.md` step 6: "Ours defaults to `OPUS_APPLICATION_VOIP`
+Location: `../audio/opus-improvements.md` step 6: "Ours defaults to `OPUS_APPLICATION_VOIP`
 (`opus/encoder.rs:5`)".
 Issue: iroh-live `opus/encoder.rs:5` is the `use unsafe_libopus::{... OPUS_APPLICATION_VOIP ...}`
-import line. The application-mode is *selected* at `encoder.rs:58` (per `comparisons/audio.md:37`).
+import line. The application-mode is *selected* at `encoder.rs:58` (per `../comparisons/audio.md:37`).
 Fix: cite `:58` (or `:5` for the import AND `:58` for the choice) so the reader finds the knob.
 
 ---
@@ -85,7 +87,7 @@ Fix: cite `:58` (or `:5` for the import AND `:58` for the choice) so the reader 
 ## Structure / meta findings
 
 ### M1 — the "shared moq-vaapi crate" does not exist; scope hides an existing VAAPI encoder — SUBSTANTIVE (blocks the vaapi sub-tree)
-Location: `0-overview.md` dependency tree (lines 227-228), coordination point 3 (283-290),
+Location: `../0-overview.md` dependency tree (lines 227-228), coordination point 3 (283-290),
 plan-index (425-426), and the Wave 1 text (256-258).
 Issue: `ls rs/` in moq shows NO `moq-vaapi` crate. moq's VAAPI lives in-tree at
 `rs/moq-video/src/encode/backend/vaapi.rs` (encode). There is no decode VAAPI backend. The
@@ -107,13 +109,13 @@ creation/ownership/workspace placement and PR target, and say vaapi-encode *repl
 Either way, add moq's existing VAAPI encode to the scope discussion.
 
 ### M2 — the base-branch/leaf-PR git model does not work for an external contribution — BLOCKING
-Location: `0-overview.md` "Strategy" (49-58), "Git and PR model" (394-407), runbook step 7.
+Location: `../0-overview.md` "Strategy" (49-58), "Git and PR model" (394-407), runbook step 7.
 Issue: "leaves target the base branch directly so they compile against the proposed API before
 it merges" and "PRs target the base branch until base merges to moq main." For a contribution
 worked from a fork (which the overview itself calls "a contribution to an external project"),
 a PR opened against upstream moq must set its base to a branch that lives IN the upstream repo.
-You cannot target your own fork's `moq-upstream/base` as the base of an upstream PR. So either
-the maintainer must first create `moq-upstream/base` inside the upstream repo (an ask never
+You cannot target your own fork's `up/base` as the base of an upstream PR. So either
+the maintainer must first create `up/base` inside the upstream repo (an ask never
 surfaced), or every leaf PR opened before base merges will render as the UNION diff
 (B1–B5 + leaf) against moq main and cannot be reviewed as an isolated leaf. The realistic model
 for an external contribution is: land the base series to moq main first, fully, then open leaves
@@ -124,7 +126,7 @@ local base branch for compilation but are only *opened as PRs* after base merges
 or negotiate an upstream integration branch with the maintainer as an explicit prerequisite.
 
 ### M3 — four cross-cutting concerns missing from the coordination points — SUBSTANTIVE
-Location: `0-overview.md` "Coordination points" (265-320).
+Location: `../0-overview.md` "Coordination points" (265-320).
 Issue: the seven points cover API freeze, candidate tables, moq-vaapi, rav1d, the pre-encoded
 concept, B4, and transcode. Absent:
   - **Licensing / provenance.** The render crate ports raw libva FFI hand-transcribed from
@@ -142,7 +144,7 @@ concept, B4, and transcode. Absent:
 Fix: add these as explicit cross-cutting concerns or coordination points.
 
 ### M4 — missing API/negotiation details the leaves should specify — SUBSTANTIVE
-Location: `capture/libcamera-preencoded.md` and `capture/pipewire-dmabuf.md`.
+Location: `../capture/libcamera-preencoded.md` and `../capture/pipewire-dmabuf.md`.
 Issue:
   - **`publish_preencoded` exact shape.** The plan sketches the `PreEncoded` trait well but
     never nails the entry-point signature. moq's sibling is
@@ -160,7 +162,7 @@ Fix: add the concrete `publish_preencoded` signature and Options resolution; add
 portal fd/enumeration specifics to the scope note.
 
 ### M5 — "leaves are independent of each other" is contradicted by the tree — NIT
-Location: `0-overview.md` lines 51-52 and 399-400 vs coordination point 3 and the render dep.
+Location: `../0-overview.md` lines 51-52 and 399-400 vs coordination point 3 and the render dep.
 Issue: the tree has leaf→leaf edges — vaapi-encode branches off vaapi-decode (coord pt 3), and
 moq-video-render depends on vtb-mf-decode-surface. Acyclic, yes, but the blanket "leaves are
 independent" / "leaves do not branch off each other" overstates it and could mislead an agent.
@@ -172,8 +174,8 @@ Fix: soften to "independent except where a coordination point says otherwise."
 
 1. moq PipeWire capture is CPU-only: shm offer, no dmabuf modifiers, `convert()` to I420
    (`pipewire.rs:383,404-406,423-436,473-482`). `Frame::I420` push + `state.last` re-pace present.
-2. moq `FrameStream` is `pub(crate)` push-model (comparison-verified; `capture/mod.rs`).
-3. `cameras()` is macOS-only, returns `Error::Unsupported` off macOS (`capture/mod.rs:365-374`);
+2. moq `FrameStream` is `pub(crate)` push-model (comparison-verified; `../capture/mod.rs`).
+3. `cameras()` is macOS-only, returns `Error::Unsupported` off macOS (`../capture/mod.rs:365-374`);
    `Camera { id, name }` at 116-123. moq has a working `v4l2` capture module using the `v4l`
    crate + `zune-jpeg` (`v4l2.rs:1-7,146-159`); no `cameras()` there yet.
 4. `Producer::publish(Vec<Bytes>, Timestamp)` exists and runs external Annex-B through

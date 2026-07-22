@@ -1,4 +1,6 @@
-# Map: moq main — moq-transcode, moq-stats, hang + moq-mux (HEAD 3a3e0ea8, 2026-07-21)
+# Map: moq main - moq-transcode, moq-stats, hang + moq-mux (HEAD 3a3e0ea8, 2026-07-21)
+
+> Campaign: upstream | Kind: map | Read ../../0-overview.md first; index at ../0-index.md.
 
 SOURCE: moq main, HEAD 3a3e0ea8 (2026-07-21); dev merged into main.
 
@@ -9,7 +11,7 @@ Provenance and what changed since the pre-merge analysis (dev SHA 261c2048):
 
 - **moq-transcode**: source logic **unchanged**. `git diff 261c2048..main -- rs/moq-transcode`
   touches only `Cargo.toml` (dropped three deps), `README.md`, and `examples/transcode.rs`
-  — and those two are just the moq-net broadcast API migration
+  - and those two are just the moq-net broadcast API migration
   (`origin.publish_broadcast(path, &output)` became
   `origin.create_broadcast(path, moq_net::broadcast::Route::new().with_announce(true))`).
   Every `src/` citation below is exact against main. Still version 0.0.1.
@@ -71,7 +73,7 @@ pub async fn run(
 
 `run` flow (lib.rs:49-150):
 1. Creates a `moq_mux::catalog::Producer` on the output broadcast and grabs `output.dynamic()`
-   (lib.rs:52-54) — consumers asking for a rung track before it exists queue in the dynamic handler.
+   (lib.rs:52-54) - consumers asking for a rung track before it exists queue in the dynamic handler.
 2. Subscribes the source `catalog.json` and loops `moq_mux::catalog::hang::Consumer` until a
    snapshot has a transcodable video rendition (`catalog::choose_source`, lib.rs:57-71).
 3. `catalog::resolve_rungs` sizes the configured ladder against the source (lib.rs:72).
@@ -121,7 +123,7 @@ pub struct Config {
 Default ladder (`config.rs:65-71`): `1080p/5M, 720p/2.5M, 480p/1.2M, 360p/600k, 240p/350k`, top
 rung first, filtered at runtime so only strictly-lower-than-source renditions are offered
 (`config.rs:34-38`: dropped when height exceeds source, when bitrate is not below a known source
-bitrate, or when height matches the source without a known source bitrate to undercut — "A 480p
+bitrate, or when height matches the source without a known source bitrate to undercut - "A 480p
 source is never transcoded up to 720p").
 
 `Config::source` is the cross-broadcast reference wiring (`config.rs:41-47`): a relative path
@@ -138,8 +140,8 @@ Track names are `format!("video/{height}p")` (catalog.rs:82).
 - `choose_source` (catalog.rs:22-33): picks the highest-resolution decodable rendition
   (H.264/H.265/8-bit-4:2:0 AV1) that is local to the source broadcast (`config.broadcast.is_none()`).
 - `rung_entry` (catalog.rs:96-116): the rung's `VideoConfig` codec string is computed from the
-  ladder, not the bitstream — avc3 (in-band parameter sets), High profile 0x64, level from a
-  Table A-1 lookup (`h264_level`, catalog.rs:174-200) — "so the catalog can be published before
+  ladder, not the bitstream - avc3 (in-band parameter sets), High profile 0x64, level from a
+  Table A-1 lookup (`h264_level`, catalog.rs:174-200) - "so the catalog can be published before
   any encoder exists and stays deterministic."
 - `populate` (catalog.rs:122-169): resets `out.video`/`out.audio`, copies display/rotation/flip
   from the source, inserts rung entries, then (when `Config::source` is set) re-inserts every
@@ -165,7 +167,7 @@ Mechanics:
   on the rung side via `Frame::resize`. GPU path per lib.rs:18-22: NVDEC decodes/scales in
   hardware, NVENC encodes the CUDA frame in place, no CPU copies; other decoders scale on CPU.
 
-### rung.rs: on-demand — encode only while subscribed
+### rung.rs: on-demand - encode only while subscribed
 
 `rs/moq-transcode/src/rung.rs:1-14` (module doc): "Nothing is encoded until someone asks, via the
 two demand paths moq-net exposes on the output track: a live subscription (`used`) starts a live
@@ -206,7 +208,7 @@ Details:
 ### Where it runs
 
 Standalone library (`moq_transcode::run(source_consumer, output_producer, config)`) plus a CLI
-verb: `rs/moq-cli/src/transcode.rs:1-8` — "The `transcode` verb: consume a source broadcast and
+verb: `rs/moq-cli/src/transcode.rs:1-8` - "The `transcode` verb: consume a source broadcast and
 publish a just-in-time transcoded ladder next to it. The derivative appears at
 `<broadcast>/transcode.hang` (or `--output`)". The CLI subscribes to the source through the relay
 and publishes the derivative back through the same session (`transcode.rs:53-55`). It is a sidecar
@@ -215,7 +217,7 @@ publisher-encoder ABR and not relay-integrated logic. `Error` type:
 `rs/moq-transcode/src/error.rs:6-39` (`NoSource`, `SourceDimensions`, transparent
 Net/Mux/Hang/Video, `TimeOverflow`, `Scale`).
 
-### CRITICAL: publish-side vs subscriber-side — complementary, not overlapping
+### CRITICAL: publish-side vs subscriber-side - complementary, not overlapping
 
 **moq-transcode is strictly publish-side ABR**: it *produces* the multi-rendition ladder and
 advertises it in the catalog. It contains zero selection logic (beyond `choose_source`, which
@@ -224,7 +226,7 @@ picks which *input* to transcode from).
 **moq has NO subscriber-side rendition selection in Rust.** Evidence at 3a3e0ea8:
 - `git grep -in "select_rendition|switch_rendition|abr|adaptive" -- rs/` yields no selection
   logic; the only ABR mentions are NVENC headers, changelogs, and a libmoq doc TODO.
-- `rs/libmoq/src/audio.rs`: subscription is by catalog *index* — "The catalog `index` identifies
+- `rs/libmoq/src/audio.rs`: subscription is by catalog *index* - "The catalog `index` identifies
   which audio rendition to subscribe ... TODO: a future API will pick the right rendition". Same
   for video (`rs/libmoq/src/video.rs`).
 - `rs/moq-cli/src/subscribe.rs`: rendition selection is static CLI flags (exact name or
@@ -232,9 +234,9 @@ picks which *input* to transcode from).
 - `rs/moq-mux/src/catalog/select.rs` (`Select`) is a static narrowing filter for exporters, not
   an adaptive switcher.
 
-**The JS side DOES have it** — the asymmetry is real. `js/watch/src/video/source.ts`:
-- `source.ts` "Manual selection by name — skip all ABR logic."
-- "Auto-select: use recv bandwidth if no explicit bitrate target" — reads
+**The JS side DOES have it** - the asymmetry is real. `js/watch/src/video/source.ts`:
+- `source.ts` "Manual selection by name - skip all ABR logic."
+- "Auto-select: use recv bandwidth if no explicit bitrate target" - reads
   `connection?.recvBandwidth` (the QUIC receive-bandwidth estimate signal) and applies
   `const safeBitrate = Math.round(estimate * 0.8); // Apply a safety margin (80%) to avoid
   oscillation`, then runs a filter/ranking pipeline (`byPixels`/`byDimensions`/`byBitrate`).
@@ -243,7 +245,7 @@ picks which *input* to transcode from).
 
 **Comparison with iroh-live**: iroh-live's `moq-media/src/adaptive.rs` (subscriber-side,
 bandwidth-primary selection with loss thresholds, asymmetric downgrade/upgrade timers, seamless
-decoder swap) has no Rust counterpart in moq — it fills exactly the gap moq punts to JS. The two
+decoder swap) has no Rust counterpart in moq - it fills exactly the gap moq punts to JS. The two
 systems are complementary: moq-transcode is the supply side (mint the rungs, encode lazily),
 iroh-live adaptive.rs is the demand side (pick the rung). moq-transcode's design anticipates a
 switching consumer: output group N of every rung is the same content as source group N precisely
@@ -261,7 +263,7 @@ Crate: `rs/moq-stats`, version **0.1.0**. Files: `src/lib.rs`, `src/produce.rs`,
 The counter collection itself lives in `rs/moq-net/src/stats.rs` and is re-exported
 (`rs/moq-stats/src/lib.rs:59-62`: `pub use moq_net::stats::{Handle, Presence, Registry, Role,
 Tier, Traffic};`). Deps (Cargo.toml): moq-json, moq-net, serde, serde_json, thiserror, tracing,
-web-async — no media deps.
+web-async - no media deps.
 
 ### Model: on-the-wire stats, published as MoQ broadcasts
 
@@ -286,7 +288,7 @@ Wire format (lib.rs:12-49):
   multi-segment, e.g. `sjc/1`). A grouping `depth` splits into `<prefix>/<group>/node/<node>`
   per leading broadcast-path segments; parse announce paths back with `parse_node_path`
   (returning `NodePath { group, node }`).
-- Traffic is bucketed by `Tier` — "an arbitrary label chosen by business logic: billing class,
+- Traffic is bucketed by `Tier` - "an arbitrary label chosen by business logic: billing class,
   region, ..." (lib.rs:21-23). Default tier unprefixed; named tiers prefix track names.
   Note #2411 removed the internal tier defaults; a `Tier` is now just a path-like label
   (`moq_net::stats::Tier(PathOwned)`, stats.rs:350).
@@ -312,7 +314,7 @@ pub type TrafficFrame = BTreeMap<String, Traffic>;
 pub type SessionsFrame = BTreeMap<String, Presence>;
 ```
 
-### Metric set (quoted from moq-net) — UPDATED: `fetches` + `datagrams` are new
+### Metric set (quoted from moq-net) - UPDATED: `fetches` + `datagrams` are new
 
 `rs/moq-net/src/stats.rs:228-262` (current), with the two fields added since 261c2048 by #2427
 (model-layer counters) and #2430 (datagrams):
@@ -361,10 +363,10 @@ Counters are bumped from RAII guards on `Registry` handles; the datagram path bu
 also increments `groups`/`frames`/`bytes` alongside `datagrams`." `Presence` (stats.rs:319):
 `pub sessions: u64, pub sessions_closed: u64` with `active()`. `Role` (stats.rs:401),
 `Registry` (stats.rs:539). #2427's "model layer" framing is that the counting now lives on the
-model types (Registry/Traffic) rather than being scattered through the session code — a breaking
+model types (Registry/Traffic) rather than being scattered through the session code - a breaking
 0.1.0 reshuffle.
 
-### Producer/Consumer API — UPDATED: `Config` is now `ProducerConfig`
+### Producer/Consumer API - UPDATED: `Config` is now `ProducerConfig`
 
 `rs/moq-stats/src/produce.rs:22-49`:
 
@@ -402,13 +404,13 @@ TrafficConsumer` (consume).
 ### Target comparison with iroh-live's moq-media/src/stats.rs
 
 Different layer entirely. iroh-live's `moq-media/src/stats.rs` is a *local, subscriber-side
-transport probe*: it samples iroh `PathStats` (rtt, cwnd, lost_packets — see `rtt_ms` at
+transport probe*: it samples iroh `PathStats` (rtt, cwnd, lost_packets - see `rtt_ms` at
 `/home/bit/Code/rust/iroh-live/moq-media/src/stats.rs:243`) and derives `available_bps` to feed
 the adaptive rendition loop. moq-stats is a *server-side accounting exporter*: cumulative
 per-broadcast delivery counters (bytes/frames/groups/subscriptions/fetches/datagrams/sessions),
 published on the wire for dashboards and billing, with no rtt/cwnd/loss/bandwidth-estimate
 anywhere. The closest moq analogue to iroh-live's stats.rs is the JS-side
-`connection.recvBandwidth` signal used by `js/watch/src/video/source.ts` — which has no Rust
+`connection.recvBandwidth` signal used by `js/watch/src/video/source.ts` - which has no Rust
 counterpart. Also note the publisher-side catalog `Metrics` (live jitter + bitrate measurement)
 in moq-mux, covered below, which feeds *catalog* fields rather than a stats channel. Conclusion
 for the refactor: moq-stats does not overlap with moq-media's stats.rs purpose; if anything it is
@@ -478,7 +480,7 @@ pub struct VideoConfig {
 }
 ```
 
-`rs/hang/src/catalog/audio/mod.rs` (fields only): same shape —
+`rs/hang/src/catalog/audio/mod.rs` (fields only): same shape -
 `broadcast, codec, sample_rate, channel_count (#[serde(rename="numberOfChannels")]), bitrate,
 description, container, jitter, timeline`. Renditions live in
 `Video.renditions: BTreeMap<String, VideoConfig>` / `Audio.renditions: BTreeMap<String,
@@ -491,7 +493,7 @@ jitter buffer.
 video: 60 }`; `Catalog::default_subscription()` / `default_track_info()`. `to_json`/`to_json_pretty`
 (the rename that bit iroh-live's Deref-to_string gotcha).
 
-### container::Frame — NO keyframe field
+### container::Frame - NO keyframe field
 
 `rs/hang/src/container/frame.rs`:
 
@@ -506,7 +508,7 @@ pub struct Frame {
 }
 ```
 
-The keyframe bit does NOT live on hang's wire `Frame` — the "first frame in a group is a keyframe"
+The keyframe bit does NOT live on hang's wire `Frame` - the "first frame in a group is a keyframe"
 convention carries it, and the richer decoded `Frame` with a `keyframe: bool` field is
 `moq_mux::container::Frame` (below). `Timestamp` is the `moq_net::{Timescale, Timestamp}` pair with
 `pub const TIMESCALE: Timescale = Timescale::MICRO` (frame.rs:13); `track_info()` (frame.rs:23-25)
@@ -515,7 +517,7 @@ net-level timescale to micros.
 
 ### Live Catalog Producer/Consumer
 
-**Rust hang has no Catalog Producer/Consumer** — the live catalog producer/consumer lives in
+**Rust hang has no Catalog Producer/Consumer** - the live catalog producer/consumer lives in
 **moq-mux**: `moq_mux::catalog::Producer` (both tracks + merge-patch snapshots via `moq_json`) and
 `moq_mux::catalog::hang::Consumer` / `moq_mux::catalog::Consumer`. For the refactor comparison:
 iroh-live's `moq-media/src/catalog.rs` (CatalogWrapper with sequence numbers) maps onto
@@ -566,12 +568,12 @@ container::Producer<C>` (producer.rs:209-220, wires the 1:1-default timeline rec
 -> timeline::Producer` (producer.rs:225-235, memoized), `snapshot()` (producer.rs:152),
 `timestamp(hint)` (producer.rs:132), `consume()` (producer.rs:237), `finish()` (producer.rs:242).
 
-### #2420 — unsealed renditions: `RenditionConfig` trait + `Estimate` (catalog/tracks.rs)
+### #2420 - unsealed renditions: `RenditionConfig` trait + `Estimate` (catalog/tracks.rs)
 
 The rendition layer is now generic over any config type, so an app extension can publish its own
 tracks with the full lifecycle (reservation gating, removal on drop, jitter/bitrate detection).
 
-`Estimate` — the auto-detectable catalog fields (tracks.rs:15-34):
+`Estimate` - the auto-detectable catalog fields (tracks.rs:15-34):
 
 ```rust
 #[derive(Clone, Default, Debug, PartialEq)]
@@ -585,7 +587,7 @@ pub struct Estimate {
 // with_jitter / with_bitrate builders
 ```
 
-`RenditionConfig<E>` — the public trait (tracks.rs:88-108):
+`RenditionConfig<E>` - the public trait (tracks.rs:88-108):
 
 ```rust
 pub trait RenditionConfig<E: CatalogExt>: Sized + 'static {
@@ -621,10 +623,10 @@ from the catalog on drop. Type aliases `VideoTrack<E> = Rendition<E, VideoConfig
   (tracks.rs:395-410): feed the per-rendition `Metrics` (`container/jitter.rs`), auto-filling
   jitter (from frames/reorder) and bitrate (from group boundaries, 1s window) only for fields the
   config left absent. This is the publish-side measurement loop that keeps the catalog's
-  `bitrate`/`jitter` honest — the values the (JS) subscriber-side ABR then selects on.
+  `bitrate`/`jitter` honest - the values the (JS) subscriber-side ABR then selects on.
 - `Drop` (tracks.rs:413-425): removes the config from the catalog if present.
 
-### #2425 — shared video-import catalog helper (codec/video.rs, NEW)
+### #2425 - shared video-import catalog helper (codec/video.rs, NEW)
 
 `rs/moq-mux/src/codec/video.rs` (new file) factors out the catalog-publishing state every video
 codec importer (h264/h265/av1/vp8/vp9) shares: overlay the caller's `VideoHint`, advertise the
@@ -636,12 +638,12 @@ Catalog { hint: VideoHint, timeline: hang::catalog::Timeline, last: Option<Video
 - `publish(rendition, config)`: applies the hint, sets `config.timeline`, dedupes against `last`,
   then `rendition.set(config)`. "A changed config just re-mirrors the rendition; there are no fixed
   tracks to reject a reconfiguration." (The generic `Rendition::set` no longer advertises the
-  timeline itself — this helper does it for the video importers.)
+  timeline itself - this helper does it for the video importers.)
 
 This is invisible to callers of `moq_video::encode::Producer` (which drives `codec::h264::Import`
 / `codec::h265::Import`); only the importer internals moved.
 
-### #2426 — per-frame fragments, empty-batch contract (container/mod.rs, consumer.rs)
+### #2426 - per-frame fragments, empty-batch contract (container/mod.rs, consumer.rs)
 
 The `Container::poll_read` / `read` trait contract was clarified (container/mod.rs:96-120): "Only
 `Ok(None)` signals the end of the group. `Ok(Some(batch))` may carry an empty `batch`: a wire frame
@@ -652,7 +654,7 @@ loop-on-empty. This enables emitting per-frame CMAF fragments without waiting fo
 sample. **Anyone writing a new consumer against `moq_mux::container::Consumer` must key completion
 off `None`, not an empty batch.** (moq-video/moq-audio `read` loops already do.)
 
-### #2428 — emit timelines from CMAF passthrough (container/fmp4/import.rs)
+### #2428 - emit timelines from CMAF passthrough (container/fmp4/import.rs)
 
 The fMP4 passthrough importer now indexes each track's group opens into its `<name>.timeline.z`
 timeline, so a playlist/seek/VOD reader can map time to group even for passthrough (non-transcoded)
@@ -666,7 +668,7 @@ sidecar ... a recording failure must NOT abort the passthrough." Passthrough wri
 
 ### container::Frame / Producer / cut(end)
 
-`rs/moq-mux/src/container/mod.rs` — the decoded frame WITH the keyframe bit:
+`rs/moq-mux/src/container/mod.rs` - the decoded frame WITH the keyframe bit:
 
 ```rust
 #[derive(Clone, Debug)]
@@ -678,7 +680,7 @@ pub struct Frame {
 }
 ```
 
-`container::Producer<C: Container>` manages group boundaries — "Every group must start with a
+`container::Producer<C: Container>` manages group boundaries - "Every group must start with a
 keyframe. Writing a frame with `keyframe = true` closes the previous group ... and starts a new
 one"; a keyframe-less write with no open group returns `MissingKeyframe`. `with_recorder(recorder)`
 is **now public** (container/producer.rs, was `pub(crate)`): mint a recorder from a
@@ -686,14 +688,14 @@ is **now public** (container/producer.rs, was `pub(crate)`): mint a recorder fro
 for you. `cut(&mut self, end: Option<Timestamp>)` is the group boundary (a keyframe cuts the
 previous group using its timestamp as the boundary).
 
-### timeline.rs — shareable timelines (#2420)
+### timeline.rs - shareable timelines (#2420)
 
 Timelines are now **shareable across aligned renditions** (a transcode ladder whose rungs mirror
 the source's group boundaries can point at one timeline). `timeline::Producer<E>` is now `#[derive(Clone)]`
 (was not `Clone`); every clone shares one track and a `wall: Arc<Mutex<Option<u64>>>` anchor, so N
 renditions advertising the same timeline share it. Get one from `catalog::Producer::timeline(name)`.
 `Recorder` is now **public** (was `pub(crate)`) and still move-only (owns its throttle cursor), so
-wire exactly one recorder per timeline — a shared timeline is filled by its source alone, and the
+wire exactly one recorder per timeline - a shared timeline is filled by its source alone, and the
 other renditions only advertise `timeline.section()`. `Producer::recorder()` is now public too.
 
 ### Importer + source API
@@ -719,7 +721,7 @@ other renditions only advertise `timeline.section()`. `Producer::recorder()` is 
   bitrate/jitter measurement into the catalog (moq-mux `Rendition` metrics / `container/jitter.rs`),
   a latency-tunable ordering consumer with mid-stream `set_latency` and discontinuity signaling,
   per-rendition (and now shareable) timeline tracks for group indexing, and cross-broadcast
-  rendition references — but still no Rust subscriber-side selection loop and no transport-level
+  rendition references - but still no Rust subscriber-side selection loop and no transport-level
   congestion sampling comparable to iroh-live's `stats.rs` (`PathStats` -> `available_bps`).
 - iroh-live's subscriber pipeline (adaptive.rs + stats.rs + sync.rs + catalog.rs) would sit on top
   of exactly these primitives: catalog `jitter` seeds the jitter buffer, `timeline` + 1:1 rung group

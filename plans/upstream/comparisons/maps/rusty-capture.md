@@ -1,5 +1,7 @@
 # Code Map: `rusty-capture`
 
+> Campaign: upstream | Kind: map | Read ../../0-overview.md first; index at ../0-index.md.
+
 Scope: `rusty-capture/src/**` only. iroh-live's owned capture layer (camera + screen).
 All citations are `file:line` against the repo at the time of writing.
 
@@ -11,7 +13,7 @@ for the encode pipeline. It has **no MoQ/iroh dependency**; it depends only on
 
 ## 1. Core abstraction
 
-### The capture-source trait is not defined here — it is `rusty_codecs::traits::VideoSource`
+### The capture-source trait is not defined here - it is `rusty_codecs::traits::VideoSource`
 
 `rusty-capture` does **not** define its own capture trait. Every backend
 implements `VideoSource` (and one implements `PreEncodedVideoSource`), both from
@@ -131,33 +133,33 @@ coded/display dims, and per-plane `offset`/`pitch`
 
 ### Capture crate's own public types (`rusty-capture/src/types.rs`)
 
-- `CaptureBackend` — `#[non_exhaustive]` enum of the 8 backends: `PipeWire, V4l2,
+- `CaptureBackend` - `#[non_exhaustive]` enum of the 8 backends: `PipeWire, V4l2,
   X11, ScreenCaptureKit, AVFoundation, Xcap, Nokhwa, Libcamera`
   (`types.rs:11-28`), with `Display`, `cli_name()` (`pw/v4l2/x11/sck/avf/xcap/
   nokhwa/libcamera`), and `FromStr` (`types.rs:30-76`).
 - `MonitorInfo` (backend, id, name, position, dimensions, scale_factor,
-  refresh_rate_hz, is_primary) — `types.rs:96-115`.
-- `WindowInfo` (macOS window capture metadata) — `types.rs:117-134`.
-- `CameraInfo` (backend, id, name, `supported_formats: Vec<CameraFormat>`) —
+  refresh_rate_hz, is_primary) - `types.rs:96-115`.
+- `WindowInfo` (macOS window capture metadata) - `types.rs:117-134`.
+- `CameraInfo` (backend, id, name, `supported_formats: Vec<CameraFormat>`) -
   `types.rs:136-147`.
-- `CameraFormat` (dimensions, fps, `pixel_format: CapturePixelFormat`) —
+- `CameraFormat` (dimensions, fps, `pixel_format: CapturePixelFormat`) -
   `types.rs:150-165`.
-- `CameraSelector` — `HighestFramerate | HighestResolution(default) |
+- `CameraSelector` - `HighestFramerate | HighestResolution(default) |
   TargetResolution(w,h)`, with the format-selection algorithm
   (`types.rs:167-259`).
 - `CameraConfig` (selector, `preferred_format: Option<CapturePixelFormat>`,
-  `zero_copy: bool` default true) — `types.rs:320-343`; `select_format()` filters
+  `zero_copy: bool` default true) - `types.rs:320-343`; `select_format()` filters
   by preferred format then applies the selector (`types.rs:345-368`).
 - `ScreenConfig` (target_fps default 30, show_cursor default true,
-  `pipewire_restore_token: Option<String>`) — `types.rs:370-394`.
+  `pipewire_restore_token: Option<String>`) - `types.rs:370-394`.
 
 ### High-level façade capturers (`lib.rs`)
 
 `CameraCapturer` (`lib.rs:362-529`) and `ScreenCapturer` (`lib.rs:535-685`) are
 thin `Box<dyn VideoSource>` wrappers that auto-select a backend and forward all
 five trait methods. Selection logic:
-- `list_monitors` / `list_cameras` — preferred-backend **cascade**
-  (`lib.rs:132-214`); `list_all_*` — union across compiled-in backends
+- `list_monitors` / `list_cameras` - preferred-backend **cascade**
+  (`lib.rs:132-214`); `list_all_*` - union across compiled-in backends
   (`lib.rs:156-241`).
 - Camera preference order: libcamera → v4l2 → PipeWire(if running) → nokhwa →
   AVFoundation (`lib.rs:182-214`). Screen: PipeWire(if running) → x11 → SCK →
@@ -189,15 +191,15 @@ Modules are `pub(crate)`; concrete capturers are re-exported at the crate root
 | libcamera (YUV) | camera | `rpicam-vid --codec yuv420` subprocess | I420 CPU (pipe) | No | `platform/linux/libcamera.rs` |
 | libcamera H264 | camera, **encoded** | `rpicam-vid --codec h264` subprocess | **`EncodedFrame` H.264 Annex-B** | n/a (on-device HW encode) | `platform/linux/libcamera_h264.rs` |
 | ScreenCaptureKit | screen (+window) | `screencapturekit` 1.5 + objc2 (macOS 12.3+) | BGRA IOSurface `CVPixelBuffer` → `FrameData::Gpu` | **Yes (IOSurface/CVPixelBuffer)** | `platform/apple/screen.rs` |
-| AVFoundation | camera | objc2-av-foundation | — | — (**stub, non-functional**) | `platform/apple/camera.rs` |
+| AVFoundation | camera | objc2-av-foundation | - | - (**stub, non-functional**) | `platform/apple/camera.rs` |
 | nokhwa | camera | `nokhwa` 0.10 (v4l2/AVFoundation/MediaFoundation) | RGBA CPU | No | `platform/nokhwa_impl.rs` |
 | xcap | screen | `xcap` 0.9 (X11/Wayland/mac/Win) | RGBA CPU, sleep-based fps limiter | No | `platform/xcap_impl.rs` |
-| Windows | — | stub only (WGC/DXGI/MediaFoundation plan) | — | planned D3D11 | `platform/windows/mod.rs` |
-| Android | — | stub only (MediaProjection/Camera2 plan) | — | planned AHardwareBuffer | `platform/android/mod.rs` |
+| Windows | - | stub only (WGC/DXGI/MediaFoundation plan) | - | planned D3D11 | `platform/windows/mod.rs` |
+| Android | - | stub only (MediaProjection/Camera2 plan) | - | planned AHardwareBuffer | `platform/android/mod.rs` |
 
 Details:
 
-**PipeWire** (`platform/linux/pipewire.rs`, 1655 lines) — the richest backend.
+**PipeWire** (`platform/linux/pipewire.rs`, 1655 lines) - the richest backend.
 Both `PipeWireScreenCapturer` (`:1347`) and `PipeWireCameraCapturer` (`:1513`)
 own a `mpsc::Receiver<VideoFrame>` fed from a PipeWire stream callback via
 `mpsc::sync_channel(2)` (`:1381`, `:1570`). Screen capture negotiates a source
@@ -210,7 +212,7 @@ delivers `SPA_DATA_DmaBuf` buffers, the FD is dup'd and wrapped as a
 `:721-766`). Only NV12 DMA-BUFs take the zero-copy path (`:721`); others fall
 back to CPU frames.
 
-**V4L2** (`platform/linux/v4l2.rs`, 552 lines) — `V4l2CameraCapturer` (`:158`)
+**V4L2** (`platform/linux/v4l2.rs`, 552 lines) - `V4l2CameraCapturer` (`:158`)
 uses `v4l2r` MMAP streaming with `NUM_BUFFERS = 4` (`:146`, `:277`).
 `pop_frame` (`:357`) blocks on `dqbuf` and converts by capture format to
 `new_nv12` / `new_i420` / `new_rgba` / `new_packed` (`:423-476`). Despite the
@@ -220,20 +222,20 @@ current `pop_frame` path produces CPU frames; the DMA-BUF export field is marked
 `/dev/video0..63`, filters to `VIDEO_CAPTURE` devices, enumerates FourCC formats
 (`cameras()` `:47-95`).
 
-**X11** (`platform/linux/x11.rs`, 373 lines) — `X11ScreenCapturer` (`:134`),
+**X11** (`platform/linux/x11.rs`, 373 lines) - `X11ScreenCapturer` (`:134`),
 CPU-only MIT-SHM. `monitors()` uses RANDR for multihead, falls back to root
 screens (`:32-61`). `pop_frame` (`:311`) calls `shm::get_image` and builds an
 RGBA frame (`:353`). Explicitly "No zero-copy path" (`:7`). Not in default
 features.
 
-**libcamera raw** (`platform/linux/libcamera.rs`, 268 lines) —
+**libcamera raw** (`platform/linux/libcamera.rs`, 268 lines) -
 `LibcameraCapturer` (`:128`) spawns `rpicam-vid --codec yuv420`, reads
 `w*h*3/2`-byte I420 frames via `read_exact` from stdout, slices into y/u/v and
 emits `VideoFrame::new_i420` (`:213-252`). PTS is synthesized from a frame
 counter and configured fps (`:235`). `cameras()` probes `rpicam-vid
 --list-cameras` (`:35-95`).
 
-**libcamera H264** (`platform/linux/libcamera_h264.rs`, 522 lines) — the **only
+**libcamera H264** (`platform/linux/libcamera_h264.rs`, 522 lines) - the **only
 encoded backend** and the only `PreEncodedVideoSource`. `LibcameraH264Source`
 (`:116`) spawns `rpicam-vid --codec h264 --inline --flush` (`:183-213`), reads
 the Annex-B bytestream in 32 KB chunks, splits into access units by scanning
@@ -247,7 +249,7 @@ exponential backoff for the Pi's single-camera exclusive-lock race (`:174-269`).
 Rationale: on Pi Zero 2 this avoids the ~10 MB/s raw-YUV pipe and uses the
 ISP→encoder DMABUF path internally (`:8-10`).
 
-**Apple ScreenCaptureKit** (`platform/apple/screen.rs`, 394 lines) —
+**Apple ScreenCaptureKit** (`platform/apple/screen.rs`, 394 lines) -
 `MacScreenCapturer` (`:221`) supports display capture (`new` `:276`) and window
 capture (`new_window` `:238`). An `SCStreamOutputTrait` callback (`:182`) wraps
 each IOSurface `CVPixelBuffer` as an `AppleGpuFrame` (BGRA) →
@@ -258,24 +260,24 @@ data stays in GPU memory for VideoToolbox encode / Metal render (`:1-6`). Checks
 `windows()` (`:120`) and `monitors()` (`:95`) enumerate via
 `SCShareableContent`.
 
-**Apple AVFoundation camera** (`platform/apple/camera.rs`, 81 lines) —
+**Apple AVFoundation camera** (`platform/apple/camera.rs`, 81 lines) -
 **stub/non-functional**: `cameras()` returns empty, `new()` bails directing
 callers to nokhwa; the objc2 sample-buffer delegate is unfinished (`:1-8`,
 `:40-56`). This is why `list_cameras` places nokhwa *before* AVFoundation
 (`lib.rs:198-210`).
 
-**nokhwa** (`platform/nokhwa_impl.rs`, 246 lines) — cross-platform camera via
+**nokhwa** (`platform/nokhwa_impl.rs`, 246 lines) - cross-platform camera via
 `nokhwa` 0.10 with `input-native` + `camera-sync-impl` (making `Camera: Send`,
 so `pop_frame` runs on the caller thread, `:6-10`). CPU RGBA only. Maps nokhwa
 `FrameFormat` → `CapturePixelFormat` (`:30-39`), enumerates via
 `nokhwa::query(ApiBackend::Auto)` (`:42`).
 
-**xcap** (`platform/xcap_impl.rs`, 175 lines) — cross-platform screen via `xcap`
+**xcap** (`platform/xcap_impl.rs`, 175 lines) - cross-platform screen via `xcap`
 0.9 (X11/Wayland-portal/mac/Win). `XcapScreenCapturer` (`:51`) captures
 screenshots via `Monitor::capture_image`, converts to RGBA, and rate-limits with
 a sleep-based limiter (`target_interval`, `:46-59`). CPU only.
 
-**Windows / Android** — documentation-only stubs (`platform/windows/mod.rs`,
+**Windows / Android** - documentation-only stubs (`platform/windows/mod.rs`,
 `platform/android/mod.rs`) describing intended WGC/DXGI + MediaFoundation and
 MediaProjection + Camera2 designs with D3D11 / AHardwareBuffer zero-copy. No
 code. `build.rs:1-11` sets a `capture_fallback` cfg on Windows so xcap/nokhwa are
@@ -287,18 +289,18 @@ used there.
 
 Two distinct producer traits and two distinct output types:
 
-- **Raw-frame capture** — implements `VideoSource`, yields `VideoFrame`
+- **Raw-frame capture** - implements `VideoSource`, yields `VideoFrame`
   (`FrameData` in CPU RGBA/I420/NV12 or GPU DMA-BUF/CVPixelBuffer). This is every
   backend except one: PipeWire, V4L2, X11, libcamera-YUV, ScreenCaptureKit,
   AVFoundation(stub), nokhwa, xcap. The downstream encoder does color conversion
   and PTS assignment.
 
-- **On-device encoded capture** — implements `PreEncodedVideoSource`, yields
+- **On-device encoded capture** - implements `PreEncodedVideoSource`, yields
   `EncodedFrame` (compressed H.264 Annex-B AUs). **Only `LibcameraH264Source`**
   (`platform/linux/libcamera_h264.rs`). Here `rpicam-vid` runs the Pi's hardware
   H.264 encoder internally, so the crate parses/repackages the bitstream rather
   than raw pixels and supplies a `VideoConfig` (codec params + avcC) for the MoQ
-  catalog directly — bypassing iroh-live's encoder entirely. The two libcamera
+  catalog directly - bypassing iroh-live's encoder entirely. The two libcamera
   backends are a deliberate fork: `libcamera.rs` for raw-to-external-encoder,
   `libcamera_h264.rs` for the pre-encoded fast path (`libcamera.rs:11-14`,
   `libcamera_h264.rs:6-14`). Both share the `libcamera` feature and are
@@ -373,7 +375,7 @@ CVPixelBuffer path.
 Cross-repo lookup against `/home/bit/Code/rust/moq` on branch **main**. moq keeps
 capture inside its per-medium crates, not a standalone crate.
 
-### `rs/moq-video/src/capture.rs` (256 lines) — webcam/screen via libavdevice
+### `rs/moq-video/src/capture.rs` (256 lines) - webcam/screen via libavdevice
 
 - **No public capture trait.** The public surface is a plain `Config` struct
   (`device: Option<String>`, `width`/`height`/`framerate: Option`,
@@ -389,9 +391,9 @@ capture inside its per-medium crates, not a standalone crate.
 - Frame model: `Camera::read()` returns `ffmpeg::frame::Video` in the source's
   native pixel format; the encoder converts to YUV420P (`:124-163`). Pull-based
   and blocking, like rusty-capture, but the frame type is an ffmpeg frame, not a
-  purpose-built `VideoFrame` enum. Only one variant — no GPU-frame abstraction.
+  purpose-built `VideoFrame` enum. Only one variant - no GPU-frame abstraction.
 
-### `rs/moq-audio/src/capture.rs` (369 lines) — microphone via cpal
+### `rs/moq-audio/src/capture.rs` (369 lines) - microphone via cpal
 
 - Public `Microphone` type (this one *is* `pub`) plus a `Config`
   (`device/sample_rate/channels`, `#[non_exhaustive]`, `:27-34`). Backed by
@@ -405,9 +407,9 @@ capture inside its per-medium crates, not a standalone crate.
   from rusty-capture: `publish_microphone` wires the mic to a MoQ broadcast, and
   a `Gate`/`monitor_demand` mechanism opens the device only while a subscriber is
   listening and releases it when idle, re-anchoring the PTS epoch on resume
-  (`:180-329`). rusty-capture has no MoQ awareness — that lives in iroh-live.
+  (`:180-329`). rusty-capture has no MoQ awareness - that lives in iroh-live.
 
-### `rs/moq-audio/src/capture/permission.rs` (86 lines) — macOS TCC pre-check
+### `rs/moq-audio/src/capture/permission.rs` (86 lines) - macOS TCC pre-check
 
 - `ensure_microphone_access()` queries AVFoundation `AVCaptureDevice
   authorizationStatusForMediaType` and, when `NotDetermined`, triggers the system
@@ -420,7 +422,7 @@ capture inside its per-medium crates, not a standalone crate.
 
 moq's capture is **thinner and ffmpeg/cpal-centric**: a `Config`-struct + concrete
 worker per medium (`Camera`, `Microphone`) with `read() -> native frame`, and no
-shared `VideoSource`-style trait, no backend enum, no zero-copy/GPU frame model —
+shared `VideoSource`-style trait, no backend enum, no zero-copy/GPU frame model -
 one libavdevice path covers camera+screen+all OSes. rusty-capture is **broader and
 native-backend-centric**: a shared `VideoSource`/`PreEncodedVideoSource` trait
 pair, a `CaptureBackend` enum with runtime selection cascades, and first-class

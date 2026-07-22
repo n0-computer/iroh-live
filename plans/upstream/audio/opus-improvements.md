@@ -1,6 +1,8 @@
 # opus-improvements. Merge Opus improvements into moq-audio
 
-Branch: moq-upstream/opus-improvements          PR target: base branch, then moq main
+> Campaign: upstream | Kind: leaf plan | Branch: up/opus-improvements |
+> PR target: base branch, then moq main | Read ../0-overview.md first.
+
 Depends on: independent of the base (no frame vocabulary, no PTS change)
 Path: independent (merge into moq-audio's existing in-tree Opus)
 Size: S-M
@@ -76,7 +78,7 @@ assumptions, which moq's `pick_rate` and `frame_size` already generalize.
 - `rs/moq-audio/src/decode/decoder.rs`: replace the `channels: None`-only policy
   that rejects remap "since remapping isn't implemented" (`decode/decoder.rs:16-46`)
   with the ported remix helper, or with an explicit resolved mono/stereo policy
-  if the maintainer prefers to keep remap out of the decoder.
+  if upstream prefers to keep remap out of the decoder.
 - `rs/moq-audio/src/opus.rs`: no change needed; its `RATES` (`opus.rs:12`),
   `FRAME_DURATIONS` (`:15`), `pick_rate` (`:19-21`), `validate_channels`
   (`:33-40`), and `frame_size` (`:43-51`) are the moq-side pieces we adopt.
@@ -100,7 +102,7 @@ assumptions, which moq's `pick_rate` and `frame_size` already generalize.
    real data and has no null-data path. Frame the FEC and PLC as reserved surface
    for phase 3c, not a delivered feature.
 5. Port the decoder-side channel remix, or land an explicit resolved policy for
-   the mono/stereo mismatch that today errors, whichever the maintainer accepts.
+   the mono/stereo mismatch that today errors, whichever upstream review accepts.
 6. Decide the application mode explicitly. Ours selects
    `OPUS_APPLICATION_VOIP` (imported at `opus/encoder.rs:5`, passed to
    `opus_encoder_create` at `opus/encoder.rs:58`), theirs `OPUS_APPLICATION_AUDIO`

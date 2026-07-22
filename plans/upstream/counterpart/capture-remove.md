@@ -1,39 +1,45 @@
 # capture-remove
 
-Branch: align/capture-remove          Wave: 3
-Depends on: pin bump to the moq release carrying the merged capture stack (Wave 0);
-`codec-remove` on the same platform (moq capture emits moq's frame model into moq's
-encoders, so codecs adopt first); and the platform verification gate R-g for macOS
+> Campaign: upstream | Kind: counterpart plan | Branch: iroh-live `up/<leaf>`
+> pair branches for rows tied to a moq leaf (see `../../branches.md`); the
+> adopt-theirs macOS and Windows cuts land with the release bump | Read
+> ../0-overview.md first.
+
+Depends on: the align campaign's pin bump to the moq release carrying the merged
+capture stack (`../../align-to-moq/0-overview.md`); `codec-remove.md` on the same
+platform (moq capture emits moq's frame model into moq's encoders, so codecs
+adopt first); and the platform verification gate R-g (`../cut-plan.md`) for macOS
 and Windows.
-Kind: upstream-gated
 
 ## Goal
 
 Shrink `rusty-capture` from 5,507 LOC to about 4,250 by deleting the macOS and
 Windows capture arms as moq's own backends replace them, and retiring the
 cross-platform `nokhwa` and `xcap` fallbacks once those arms no longer need them.
+This plan is the iroh-live pair side of the upstream campaign's capture leaves.
 The net removal is roughly 1,250 LOC, matching the cut-plan's `rusty-capture`
 figure for both scenarios; the discrepancy with the 5,507-LOC crate size is
 deliberate, because the entire Linux column and the Android stub stay. The macOS
 and Windows removals are adopt-theirs: their replacements already ship on moq main
-and land with the release bump, so this task waits on a release and a platform
+and land with the release bump, so those cuts wait on a release and a platform
 verification gate rather than on any upstream contribution of ours. The Linux
-backends we keep are the subjects of separate upstream offers (`pipewire-dmabuf`,
-`v4l2-camera-enum`, and `libcamera-preencoded`), but those offers add moq
-capability and never gate a deletion here, because the Linux column remains the
-working path regardless of whether moq accepts them.
+backends we keep are the subjects of the campaign's capture leaves
+(`../capture/pipewire-dmabuf.md`, `../capture/v4l2-camera-enum.md`, and
+`../capture/libcamera-preencoded.md`, with iroh-live pair branches
+`up/pipewire-dmabuf`, `up/v4l2-camera-enum`, and `up/libcamera-preencoded`), but
+those leaves add moq capability and never gate a deletion here, because the Linux
+column remains the working path regardless of whether moq accepts them.
 
 ## Evidence
 
-- `../cut-plan.md` section 2, the `rusty-capture` ledger, gives every verdict, LOC,
-  and prerequisite, and section 4 lists the deliberate keeps.
-- `../../upstream/comparisons/capture.md` sections 2 and 5 carry the per-backend
-  comparison and verdicts: theirs wins on macOS camera, macOS screen, and both
-  Windows backends; ours wins across the whole Linux column.
-- `../../upstream/comparisons/zerocopy.md` section 2a establishes that the adopted
-  macOS and Windows paths are self-contained within moq (surface or texture into
-  moq's own encoder), so no iroh-live zero-copy path is regressed by their
-  adoption.
+- `../cut-plan.md` section 2, the `rusty-capture` ledger, gives every verdict,
+  LOC, and prerequisite, and section 4 lists the deliberate keeps.
+- `../comparisons/capture.md` sections 2 and 5 carry the per-backend comparison
+  and verdicts: theirs wins on macOS camera, macOS screen, and both Windows
+  backends; ours wins across the whole Linux column.
+- `../comparisons/zerocopy.md` section 2a establishes that the adopted macOS and
+  Windows paths are self-contained within moq (surface or texture into moq's own
+  encoder), so no iroh-live zero-copy path is regressed by their adoption.
 
 ## moq primitive adopted
 
@@ -68,18 +74,19 @@ section 5):
 
 - `platform/linux/pipewire.rs` (1,655): moq's PipeWire is CPU-only; ours delivers
   DMA-BUF into VAAPI. Port their restore-token replay, static-screen re-pacing,
-  and open-per-demand lifecycle. The DMA-BUF path is upstream candidate
-  `../../upstream/capture/pipewire-dmabuf.md` (U3), which does not gate this keep.
+  and open-per-demand lifecycle. The DMA-BUF path is the upstream leaf
+  `../capture/pipewire-dmabuf.md` (U3, pair branch `up/pipewire-dmabuf`), which
+  does not gate this keep.
 - `platform/linux/v4l2.rs` (552): keep for enumeration, format negotiation, and
   NV12 passthrough; adopt their zune-jpeg MJPEG shortcut and either implement or
-  delete the dead EXPBUF claim. Upstream offer:
-  `../../upstream/capture/v4l2-camera-enum.md`.
+  delete the dead EXPBUF claim. Upstream leaf:
+  `../capture/v4l2-camera-enum.md` (pair branch `up/v4l2-camera-enum`).
 - `platform/linux/libcamera_h264.rs` (522) and `platform/linux/libcamera.rs`
   (268): the Raspberry Pi story and the only pre-encoded source on either side;
-  the strongest capture upstream candidate,
-  `../../upstream/capture/libcamera-preencoded.md`, gated on the pre-encoded-source
-  concept buy-in (coordination point 5 of the upstream overview), which again does
-  not gate this keep.
+  the strongest capture upstream candidate, `../capture/libcamera-preencoded.md`
+  (pair branch `up/libcamera-preencoded`), which carries the open question on the
+  `publish_preencoded` shape (coordination point 5 of `../0-overview.md`). That
+  question again does not gate this keep.
 - `platform/linux/x11.rs` (373): portal-less Linux coverage moq answers only with
   `Error::Unsupported`.
 - `platform/android/mod.rs` (40, stub): our MediaProjection plus Camera2 plan with
@@ -111,7 +118,7 @@ section 5):
 
 ## Proof before deletion
 
-Mandatory, per coordination point 1.
+Mandatory, per the proof-before-deletion rule (`../cut-plan.md` P1).
 
 - No macOS or Windows module is deleted until the adopted moq backend passes the
   R-g open, capture, and close smoke test on real hardware, with recorded results
@@ -126,18 +133,18 @@ Mandatory, per coordination point 1.
 
 ## Coordination
 
-- Coordination point 1 (proof before deletion): adopt behind a flag, prove on
-  hardware, delete.
-- Coordination point 3 (upstream gating): although the macOS and Windows removals
-  are adopt-theirs and wait only on the release, they are still release-gated and
-  R-g-gated; do not delete before the replacement is in a pinned release and
-  proven.
-- Coordination point 4 (atomic per platform, in concert with `codec-remove`):
-  macOS capture flips only after macOS codecs flip, and likewise for Windows, so a
-  platform never mixes frame models.
-- The keeps here interlock with `codec-remove`: the kept PipeWire DMA-BUF capture
-  feeds the kept-then-upstreamed VAAPI encoder, so neither is cut while the other
-  stands (coordination point 2).
+- The proof-before-deletion rule (`../cut-plan.md` P1): adopt behind a flag,
+  prove on hardware, delete.
+- Upstream gating (`../cut-plan.md` P3, and coordination point 12 of
+  `../0-overview.md`): although the macOS and Windows removals are adopt-theirs
+  and wait only on the release, they are still release-gated and R-g-gated; do
+  not delete before the replacement is in a pinned release and proven.
+- Atomic per platform, in concert with `codec-remove.md`: macOS capture flips
+  only after macOS codecs flip, and likewise for Windows, so a platform never
+  mixes frame models.
+- The keeps here interlock with `codec-remove.md` under the zero-copy rule
+  (`../cut-plan.md` P2): the kept PipeWire DMA-BUF capture feeds the
+  kept-then-upstreamed VAAPI encoder, so neither is cut while the other stands.
 
 ## Acceptance checklist
 
@@ -151,4 +158,3 @@ Mandatory, per coordination point 1.
 - moq's PipeWire behaviors and the demand-driven `FrameStream` lifecycle are ported
   into the kept backends, retiring the cannot-stop-before-start wart.
 - `cargo make check-all` is green at every commit, with deletion-only commits.
-</content>

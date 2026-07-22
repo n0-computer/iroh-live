@@ -1,6 +1,8 @@
 # B1. Public GPU-frame vocabulary (Native + Frame variants + moq-frame crate)
 
-Branch: moq-upstream/base (B1 lands first in the base series)          PR target: base branch, then moq main
+> Campaign: upstream | Kind: base plan | Branch: up/base (B1 lands first in the
+> base series) | PR target: base branch, then moq main | Read ../0-overview.md first.
+
 Depends on: none (this is the keystone every GPU leaf rests on)
 Path: Both (needed for Path A and Path B)
 Size: M-L (roughly 300 lines as a public module in moq-video, 700 to 1000 as a standalone `moq-frame` crate)
@@ -17,8 +19,8 @@ descriptor on demand rather than storing one per buffered frame, and adds the tw
 cfg-gated private `crate::frame::Frame` variants (`DmaBuf` on Linux+vaapi,
 `HardwareBuffer` on Android) that feed the public vocabulary. It is the single
 change every zero-copy leaf, the decode-side `native()` accessor (B3), and the
-out-of-tree renderer depend on, and it is designed to be the first thing landed
-and the first thing agreed with the maintainer in the base RFC.
+moq-video-render crate depend on, and it is designed to be the first thing landed
+and the first thing agreed upstream in the base RFC.
 
 ## Evidence
 
@@ -155,7 +157,7 @@ producer of the vocabulary, not a consumer.
      moq-vaapi surface exporter and back its download with moq-video's `I420`
      (`frame.rs:80`) and `Error` (`error.rs`), because the module lives inside
      moq-video and sits above moq-vaapi, exactly where those types already are. It
-     is also the smaller ask of the maintainer. The one thing it cannot do is let an
+     is also the smaller ask upstream. The one thing it cannot do is let an
      out-of-tree render crate share the vocabulary without depending on all of
      moq-video; that is the tradeoff, and it is acceptable because the renderer can
      consume `Native` through moq-video's public API.
@@ -267,8 +269,8 @@ producer of the vocabulary, not a consumer.
 1. Land the public vocabulary types first, standalone and testable, in whichever
    home the RFC picks: `Native`, `DmaBuf`, `Plane`, and a `Size` alias or re-export
    of moq's `Size`. On non-Linux, non-Android hosts the enum still has the macOS /
-   Windows / CUDA arms, so the type compiles everywhere. This is the piece the
-   maintainer reviews for the public-API commitment; keep it minimal.
+   Windows / CUDA arms, so the type compiles everywhere. This is the piece
+   upstream review weighs as the public-API commitment; keep it minimal.
 2. Add the `dmabuf::Frame` backing type behind
    `cfg(all(target_os = "linux", feature = "dmabuf"))` with `download_i420`,
    `export`, and the descriptor accessors, so `Frame::DmaBuf` has a payload. Where

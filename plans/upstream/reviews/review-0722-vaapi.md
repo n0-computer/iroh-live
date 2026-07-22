@@ -1,7 +1,9 @@
 # Adversarial review: VAAPI + zero-copy upstreaming plans (2026-07-22)
 
-Reviewer pass over `codec/{vaapi-decode,vaapi-encode,vtb-mf-decode-surface}.md`,
-`render/moq-video-render.md`, and `comparisons/{zerocopy.md, moq-changes.md §1a/§1b}`,
+> Campaign: upstream | Kind: review | Read ../0-overview.md first.
+
+Reviewer pass over `../codec/{vaapi-decode,vaapi-encode,vtb-mf-decode-surface}.md`,
+`../render/moq-video-render.md`, and `../comparisons/{zerocopy.md, moq-changes.md §1a/§1b}`,
 cross-checked against moq HEAD `3a3e0ea8` (`/home/bit/Code/rust/moq`), iroh-live working
 tree, and the actual `moq-vaapi 0.0.2` crate source
 (`~/.cargo/registry/src/.../moq-vaapi-0.0.2`).

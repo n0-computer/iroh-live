@@ -1,8 +1,11 @@
 # transport-delegate
 
-Branch: align/transport-delegate          Wave: 1
+> Campaign: align-to-moq | Kind: task plan | Branch: align/transport-delegate |
+> Read ../0-overview.md first.
+
+Wave: 1
 Depends on: Wave 0 pin bump (the moq release carrying the merged native stack, `moq-net`/`moq-native`/`hang` bumped in `Cargo.toml`)
-Kind: independent
+Coupling: independent
 
 ## Goal
 
@@ -23,7 +26,7 @@ list the browser, the relay, and iroh-live-relay already speak.
 
 ## Evidence
 
-- Deletion ledger, iroh-moq rows: `../cut-plan.md` section 2, the `iroh-moq`
+- Deletion ledger, iroh-moq rows: `../../upstream/cut-plan.md` section 2, the `iroh-moq`
   table. The `lib.rs handshake + ALPN (~200)` row is verdict **cut**, replacement
   `moq_native::iroh` connect/accept plus `moq_net::{Client, Server}` with the full
   `moq_net::ALPNS` list registered and offered, prerequisite `local`, marked
@@ -44,7 +47,7 @@ list the browser, the relay, and iroh-live-relay already speak.
   finding recorded the const as `moq-lite-03`; the current code has since bumped
   to `moq-lite-04` (`iroh-moq/src/lib.rs:35`), so the pin has moved once already,
   which is exactly why hardcoding it is the wrong shape.
-- Wave and staging: `../cut-plan.md` section 3, stage 0, names this delegation as
+- Wave and staging: `../../upstream/cut-plan.md` section 3, stage 0, names this delegation as
   a local quick win, notes the merged main collapsed the older two-phase accept to
   one phase (so part of this is known rework at bump time), and states the ALPN
   change is wire-visible, so `e2e.rs` and `room.rs` must pass before and after.

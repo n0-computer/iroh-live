@@ -1,5 +1,8 @@
 # analysis: broader refactor context
 
+> Campaign: upstream | Kind: analysis | Preserved context; superseded by
+> ../0-overview.md where they disagree. Read ../0-overview.md first.
+
 These documents are the wider iroh-live-to-moq refactor analysis that the codec
 and capture upstream campaign was drawn from. They reach beyond this campaign's
 scope (which is upstreaming codec and capture code) into the pub/sub layer, the

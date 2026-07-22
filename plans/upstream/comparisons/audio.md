@@ -1,5 +1,7 @@
 # 6. Audio stack comparison: iroh-live vs moq
 
+> Campaign: upstream | Kind: comparison | Read ../0-overview.md first; index at 0-index.md.
+
 Compares iroh-live's audio stack (rusty-codecs `opus`/`pcm`, moq-media
 `audio_backend` + `aec`, `pipeline/audio_{encode,decode}`, and the symphonia file
 source) against moq's `moq-audio` at main HEAD `3a3e0ea8`. moq is a single branch
@@ -14,8 +16,8 @@ is two trivial one-liners (`encode/producer.rs:136` moved to the shareable
 line citation below is exact against main. iroh-live paths are relative to this
 repo; moq paths are prefixed `3a3e0ea8:` and read via `git show`. Trait and
 API-shape questions are analyzed in
-[3t-compare-traits-api.md](3t-compare-traits-api.md); concrete moq-side change
-proposals live in [3u-moq-changes.md](3u-moq-changes.md).
+[traits-api.md](traits-api.md); concrete moq-side change
+proposals live in [moq-changes.md](moq-changes.md).
 
 Both stacks encode Opus with the same backend, `unsafe-libopus 0.2`
 (rusty-codecs/src/codec/opus/encoder.rs:4, `3a3e0ea8:rs/moq-audio/Cargo.toml:56-63`,
@@ -286,7 +288,7 @@ exactly two of the inputs a playout clock needs, per-frame timestamps
 `latency_max` group-skip bound, but with no sink there is no buffered-duration
 signal and no pacing point; a sync clock built on their consumer must own its
 own output buffering to have anything to steer. The full sync analysis is in
-5-compare-pubsub.
+pubsub.md.
 
 ---
 
@@ -420,11 +422,12 @@ retires the part of that mirror we own on the audio side rather than chasing
   (sinc 128, pending-buffer handling, preallocated scratch); ours is
   higher-quality but allocates per call. Channel remix stays ours since they
   reject it. The fixed_resample device channel is orthogonal and stays.
-- **audio_backend + AEC: keep; no moq equivalent exists.** Playback, mixing,
+- **audio_backend + AEC: keep, and upstream.** Playback, mixing,
   declicker fades, volume, metering, device switching, restart with backoff,
   and sonora AEC have zero counterpart anywhere in moq-audio. This is the
-  strongest asset of our audio stack and a candidate to upstream as a standalone
-  playback/duplex crate, but it must not be cut in any alignment.
+  strongest asset of our audio stack. Its upstreaming (playback sink plus AEC
+  into moq-audio behind features) is in scope for the campaign via
+  `../audio/audio-device-unify.md`; it must not be cut before that lands.
 - **Capture: adopt theirs.** System audio (macOS SCK), `format()` without
   opening the device, TCC permission flow, device enumeration, and
   demand-gated open/close with `reset_epoch` are all things ours lacks. Port
@@ -432,6 +435,6 @@ retires the part of that mirror we own on the audio side rather than chasing
   async mpsc (`capture.rs:162`).
 - **File source: keep ours, use their importers alongside.** Decoded-PCM
   sources and container remuxers solve different problems.
-- **Pipelines and sync hooks: keep ours, pending 5-compare-pubsub.** Their
+- **Pipelines and sync hooks: keep ours, pending pubsub.md.** Their
   consumer gives timestamps and `latency_max` but no pacing surface; our
   `AudioSink::occupied_seconds` anchor has no replacement on their side.

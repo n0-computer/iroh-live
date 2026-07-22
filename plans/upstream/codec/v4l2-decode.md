@@ -1,6 +1,8 @@
 # v4l2-decode. V4L2 M2M hardware H.264 decode for Raspberry Pi and embedded ARM
 
-Branch: moq-upstream/v4l2-decode          PR target: base branch, then moq main
+> Campaign: upstream | Kind: leaf plan | Branch: up/v4l2-decode |
+> PR target: base branch, then moq main | Read ../0-overview.md first.
+
 Depends on: B1 (frame vocabulary), B3 (decode native accessor)
 Path: A (in-tree)
 Size: M-L
@@ -29,7 +31,7 @@ CPU path needs neither.
   predicate, and `open(codec, config)` dispatch),
   `comparisons/maps/moq-video.md:386-407` (the public `decode::Frame`).
 - The B1 frame vocabulary and B3 accessor this depends on for the zero-copy
-  follow-up: `0-overview.md:54-130` and `comparisons/moq-changes.md:206-243`
+  follow-up: `../0-overview.md:54-130` and `comparisons/moq-changes.md:206-243`
   (decoders export a handle, the `native()` accessor, the VAAPI decode reference
   including the `vaSyncSurface`-before-export and per-frame export caching notes).
 

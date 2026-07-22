@@ -1,5 +1,7 @@
 # Room layer: analysis and redesign on moq origin/announce
 
+> Campaign: align-to-moq | Kind: design | Read ../0-overview.md first.
+
 Task 4 of the moq-alignment planning effort. Question: can iroh-live rebuild its
 room layer on moq's origin, announce, and session primitives, and what does it
 gain and lose by doing so?
@@ -8,10 +10,9 @@ Sources: [maps/room-layer.md](../upstream/comparisons/maps/room-layer.md) (curre
 design), [maps/moq-net-origin.md](../upstream/comparisons/maps/moq-net-origin.md) (moq net layer),
 `plans/old/review-moq-usage.md` (prior ALPN finding), and the code itself
 (`iroh-moq/src/lib.rs`, `iroh-live/src/rooms.rs`, moq working tree at
-`/home/bit/Code/rust/moq`, HEAD `3a3e0ea8`). On 2026-07-21 moq merged `dev`
-into `main`, so the routing, subscription, session, and token features that
-earlier drafts of this document called "dev-only" are now plain moq main. This
-rewrite removes the main-vs-dev split entirely; the only version gate left is
+`/home/bit/Code/rust/moq`, HEAD `3a3e0ea8`). The routing, subscription,
+session, and token features cited here are all plain moq main; there is no
+main-vs-dev split. The only version gate is
 that iroh-live still pins the crates.io `moq-net 0.1.11` / `moq-native 0.17.1`
 release and picks these features up when it bumps to the next release cut from
 main. Upstream's own concept documentation states that `announced(prefix)` "is
@@ -316,7 +317,7 @@ redials, `resume::Producer` splices the new session's tracks into the same
 logical track at the next group boundary, with no dup or skip. That much is real
 and carries over.
 
-What earlier drafts got wrong is the publish side. With #2419 removing
+The publish side does not get the same smoothing. With #2419 removing
 `ROUTE_LINGER`, a peer whose session drops unannounces everything synchronously
 the moment its last route detaches (`origin.rs:1123-1145`); there is no lingering
 front for a reconnecting peer to splice back into. A peer that reconnects
@@ -373,12 +374,12 @@ with different policy:
 
 ## 5. Security: token path-scoping closes the announce-spoofing gap
 
-Earlier drafts framed this as an open design question and treated gossip's signed
-KV state as a decisive advantage over announce, on the grounds that a moq announce
+On its face, gossip's signed KV state looks like a decisive advantage over
+announce: a moq announce
 is only transport-authenticated (the iroh session proves the peer's `EndpointId`,
 nothing signs the announced path) while a `PeerState` row is signed by the peer's
 key and attributable no matter who relayed it. moq-token path-scoping (#2416)
-turns that open question into a solved one for the direct case.
+closes that gap for the direct case.
 
 **The mechanism** (maps/moq-net-origin.md section 5). moq-token now has two
 layers. A `Claims` token carries a `root` plus per-role `publish` / `subscribe`

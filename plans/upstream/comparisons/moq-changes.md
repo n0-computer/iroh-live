@@ -1,13 +1,15 @@
 # 3u. moq Changes to Upstream Everything Capture and Codec
 
+> Campaign: upstream | Kind: comparison | Read ../0-overview.md first; index at 0-index.md.
+
 Status: design artifact. This document specifies, concretely and in moq's own
 vocabulary, every change moq-video (and its sibling crates moq-vaapi, moq-audio,
 moq-mux) would need so that iroh-live can upstream its entire capture and codec
 surface: the hardware encoders and decoders, the zero-copy capture-to-encode and
 decode-to-render paths, the renderer, the audio codecs, and the pre-encoded
 capture concept. It is the concrete follow-on to the conclusions in
-[8-upstream-plan.md](8-upstream-plan.md) (the contribution catalog C1 through
-C14) and [3z-compare-zerocopy.md](3z-compare-zerocopy.md) (requirements U1
+[../analysis/refactor-upstream-plan.md](../analysis/refactor-upstream-plan.md) (the contribution catalog C1 through
+C14) and [zerocopy.md](zerocopy.md) (requirements U1
 through U4), and it draws its inventory of both codebases from
 [maps/rusty-codecs.md](maps/rusty-codecs.md), [maps/rusty-capture.md](maps/rusty-capture.md),
 and [maps/moq-video.md](maps/moq-video.md).
@@ -19,8 +21,8 @@ citation was read from that tree directly. Where a line number differs by a few
 lines from the older map pin, the citation below is the value verified at
 `3a3e0ea8`.
 
-The framing is deliberately honest about a fork in the road that the maintainer
-must decide, and Section 4 is written as the agenda item for that decision: moq
+The framing is deliberately honest about a fork in the road that must be decided
+upstream, and Section 4 is written as the agenda item for that decision: moq
 vendors every backend in-tree behind `pub(crate)` seams, and asking it to accept
 external out-of-tree backends is a different and larger request than asking it to
 accept our backends into its tree. Sections 1 through 3 specify the changes that
@@ -245,7 +247,7 @@ surface publicly:
 **The moq changes for problem two (a home for the renderer).** The maintainer
 named three placements, and all three rest on the same enabling change (the public
 `native()` accessor of change 1); they differ only in who carries the graphics
-dependency tree and the vendor FFI. [3z section 4](3z-compare-zerocopy.md) works
+dependency tree and the vendor FFI. [3z section 4](zerocopy.md) works
 through each in full; the summary is:
 
 - Option A, an in-tree `moq-video-render` crate. moq gains a Rust playback story,
@@ -267,13 +269,15 @@ through each in full; the summary is:
   vocabulary rather than two, but the render stack stays iroh-live-private and
   never becomes part of the moq ecosystem.
 
-**Recommendation revised 2026-07-22 to in-tree (Option A, off-default member).**
-Per `../0-overview.md` Review revisions, revision 1, the render primitives go into
-moq as a new `moq-video-render` workspace crate kept off the default and relay
-dependency graphs, not the out-of-tree crate recommended below. The original
-recommendation is retained as the record of the reasoning.
+**Decision: in-tree (Option A, heavy dependencies behind non-default features).**
+Per `../0-overview.md`, the render primitives go into
+moq as a new `moq-video-render` workspace crate, a normal workspace member whose
+heavy graphics dependencies sit behind non-default features so moq's default and
+relay builds stay light; both the wgpu and GLES backends land behind feature
+flags. The Option B case below is retained as the record of the reasoning; where
+it disagrees, `../0-overview.md` governs.
 
-**Recommendation (original): Option B.** It is aligned with moq's own scope decision (they
+**The recorded Option B case.** It is aligned with moq's own scope decision (they
 render nothing today and say so), it keeps 3,500 lines of graphics code and its
 dependency weight out of moq's tree, and its strategic value is precisely the
 proof: a third-party renderer working purely over the public handles is the
@@ -339,7 +343,7 @@ the PTS through `encode`.
    pub struct Packet { pub payload: Bytes, pub timestamp: Timestamp }
    ```
 
-   The PTS-through-encode change is the same one 8-upstream-plan.md calls C3 and
+   The PTS-through-encode change is the same one `../analysis/refactor-upstream-plan.md` calls C3 and
    D3: today `Backend::encode(&mut self, frame: &Frame, keyframe: bool) ->
    Result<Vec<Bytes>, Error>` (`encode/backend/mod.rs:40`) stamps output at the
    call site, which is correct only for the zero-frame-delay backends moq ships
@@ -428,7 +432,7 @@ does not need this change for any backend it is willing to carry in-tree: an
 in-tree VAAPI decode backend just adds a `const` `Candidate`, no public trait
 required. The registration API is worth it to moq only if it decides it wants an
 ecosystem of out-of-tree backends, which is the Section 4 question. So Section 2
-is best presented to the maintainer as conditional: the PTS-through-encode change
+is best presented upstream as conditional: the PTS-through-encode change
 (point 1's timestamp argument) is unconditionally needed and small; the public
 trait and registration (points 2 and 3) are needed only on the external-backend
 path.
@@ -528,8 +532,8 @@ reconciliation and who changes for each.
 
 ## Section 4: Would moq accept external codecs at all?
 
-This is the open question the maintainer flagged, and it must be decided with
-them rather than assumed. The evidence, then both paths, then a per-backend
+This is an open question flagged upstream, and it must be decided there rather
+than assumed. The evidence, then both paths, then a per-backend
 recommendation.
 
 ### The evidence from moq's code and posture
@@ -568,7 +572,7 @@ ecosystem moq would not control and would freeze interfaces moq currently keeps
 private on purpose. But the tension is bounded, because the trait traffics only
 in public vocabulary types (Section 2, point 3), so it does not expose codec
 internals, and because registration is additive to the existing table mechanism
-rather than a redesign. The realistic maintainer position is that they will
+rather than a redesign. The realistic upstream position is that they will
 accept backends they can carry and test in-tree far more readily than they will
 open a public plugin surface, because the former costs them nothing structurally
 and the latter costs them refactoring freedom permanently.
@@ -591,8 +595,8 @@ and the latter costs them refactoring freedom permanently.
 
 ### Recommendation per backend
 
-The decision is not uniform, and this is the agenda item to settle with the
-maintainer:
+The decision is not uniform, and this is the agenda item to settle
+upstream:
 
 - **VAAPI (encode and decode): in-tree, Path A.** It is moq's largest platform
   gap (no VAAPI decode at all, an unvalidated CPU-only VAAPI encoder), it belongs
@@ -626,13 +630,13 @@ maintainer:
   improvements (runtime `set_bitrate`, lookahead-derived pre-skip, FEC/PLC
   groundwork) merge into moq-audio's existing in-tree Opus rather than standing up
   a separate backend, so there is no out-of-tree question to answer. Detail in
-  [6-compare-audio.md](6-compare-audio.md) and Section 3 item 5.
+  [audio.md](audio.md) and Section 3 item 5.
 
 - **PCM: offer in-tree as a simple `Codec::Pcm`, no external case, low value.** It
   slots into moq-audio's `#[non_exhaustive]` codec enum as an in-tree addition, but
   the hang catalog has no PCM variant, so interop value is nil and a decline is the
   expected outcome (keep it local for tests). Detail in
-  [6-compare-audio.md](6-compare-audio.md) and Section 3 item 6.
+  [audio.md](audio.md) and Section 3 item 6.
 
 - **The renderer: out-of-tree over public handles, always (Section 1b, Option
   B).** Not a backend, but the same shape of answer: it stays ours, consuming
@@ -658,12 +662,12 @@ are moq-side authoring estimates excluding review reshaping.
 |---|---|---|---|---|---|---|
 | 1 | Public frame vocabulary `Native` + `frame.rs` `DmaBuf`/`HardwareBuffer` variants (`frame.rs:23-36`, new `moq-frame` crate or module) | C1, C5, C11, C13, and the render `native()` accessor | M-L (300 minimal, 700-1000 as a crate) | additive (variants cfg-gated; new public enum) | none; keystone | Both (needed for A and B) |
 | 2 | PTS through `Backend::encode` (timestamp arg + `Packet` type, `encode/backend/mod.rs:40`, producer stamping) | V4L2 M2M, Android MediaCodec | S-M (~150, 7 files) | additive (private trait today; behavior unchanged) | none | Both |
-| 3 | `decode::Frame::native()` accessor (`decode/mod.rs:94-101`) | C13 renderer, out-of-tree render (Option B) | S (~40) | additive | change 1 | Both |
+| 3 | `decode::Frame::native()` accessor (`decode/mod.rs:94-101`) | C13 renderer, the moq-video-render crate | S (~40) | additive | change 1 | Both |
 | 4 | VAAPI decode backend exporting `Frame::DmaBuf` (`decode/backend/mod.rs` table; moq-vaapi export + VPP FFI) | Linux hardware decode, decode-to-render | L-XL (moq-vaapi ~1000-1400 + backend ~900) | additive (new candidate) | changes 1, 3; moq-vaapi growth | A (Path A backend) |
 | 5 | VAAPI encoder GPU input + honest `set_bitrate` (`encode/backend/vaapi.rs`) | Linux capture-to-encode zero-copy | L (~800) | additive (backend-internal) | changes 1, 2 | A |
 | 6 | VideoToolbox / Media Foundation decode retain surface (U2) | macOS + Windows decode-to-render | S-M (~120) | additive (backend-internal) | changes 1, 3 | A |
 | 7 | Public + registerable `Backend` trait, `register_encoder`/`register_decoder`, `Kind` includes registered (`encode/backend/mod.rs:37,60-134`) | out-of-tree backends (Android) | M (~250, both sides) | breaking (trait goes public; semver commitment) | changes 1, 2 | B only |
-| 8 | Render crate home: a new in-tree `moq-video-render` workspace crate, off the default and relay dependency graphs (revised 2026-07-22 from out-of-tree; overview revision 1) | the whole render stack | L-XL (the render port lands in moq) | additive (new off-default crate) | changes 1, 3, 6 | A |
+| 8 | Render crate home: a new in-tree `moq-video-render` workspace crate, a normal workspace member with its heavy graphics dependencies behind non-default features | the whole render stack | L-XL (the render port lands in moq) | additive (new crate; heavy deps non-default) | changes 1, 3, 6 | A |
 | 9 | Timestamp/config/error unification (adopt `moq_net::Timestamp`, hang catalog, moq `Error`) | every contributed backend compiles in moq shape | S per backend (mechanical) | additive (new `Error` variants) | none | Both |
 | 10 | Audio Opus knobs: `set_bitrate`, pre-skip, FEC/PLC reservation (moq-audio, moq-mux) | audio rate control, decoder delay correctness | S each (~200 total) | additive | none | independent |
 | 11 | PCM codec offer (moq-audio `#[non_exhaustive]` enum) | PCM interop (low value) | S (~350) | additive | hang catalog PCM variant (likely declined) | independent |

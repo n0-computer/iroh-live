@@ -1,5 +1,7 @@
 # moq-net Origin / announce / session / subscription map
 
+> Campaign: upstream | Kind: map | Read ../../0-overview.md first; index at ../0-index.md.
+
 SOURCE: moq main, HEAD `3a3e0ea8` (2026-07-21); dev merged into main.
 
 Scope: the networking layer of the upstream moq repo at `/home/bit/Code/rust/moq`,
@@ -10,12 +12,12 @@ in the "DEV" column (transparent subscription migration, `(Session, Driver)`,
 ids) is now plain `main`. This rewrite collapses the two columns and folds in the
 net-layer commits that landed *after* the old dev pin `261c2048`:
 
-- **#2396** `7671feb8` — route everything through `create_broadcast`; gate announce on `Route.announce`.
-- **#2424** `f5fa0263` — route by cumulative cost on lite-06 announcements.
-- **#2419** `1bf9d9c9` — unannounce as soon as the last route detaches (linger removed).
-- **#2414** `99ff58e6` — accept an empty PATH, default to `""` across protocols.
-- **#2416** `6b86e612` — moq-token: scope signing keys to publish/subscribe paths.
-- **#2423** `5e72d2da` — pre-bump API polish (signature churn).
+- **#2396** `7671feb8` - route everything through `create_broadcast`; gate announce on `Route.announce`.
+- **#2424** `f5fa0263` - route by cumulative cost on lite-06 announcements.
+- **#2419** `1bf9d9c9` - unannounce as soon as the last route detaches (linger removed).
+- **#2414** `99ff58e6` - accept an empty PATH, default to `""` across protocols.
+- **#2416** `6b86e612` - moq-token: scope signing keys to publish/subscribe paths.
+- **#2423** `5e72d2da` - pre-bump API polish (signature churn).
 
 Companion document: [room-layer.md](room-layer.md) maps the iroh-live side
 (`iroh-moq` + `iroh-live` rooms). Section 6 here does the cross-mapping. Naming is
@@ -26,7 +28,7 @@ Consumer,Route}`, `track::{Consumer,Subscriber}`, `stats::Handle`.
 
 ## 1. Origin / Path / announce model
 
-**`Origin` is a relay identity, not a registry** — a non-zero 62-bit id used in
+**`Origin` is a relay identity, not a registry** - a non-zero 62-bit id used in
 hop chains (`rs/moq-net/src/model/origin.rs:26-96`):
 
 ```rust
@@ -134,7 +136,7 @@ pub struct Route {
     pub hops: OriginList,        // chain traversed, oldest first; loop detection + tie-break
     pub cost: u64,               // #2424: marginal pull cost, accumulated per link; lower wins
     advertised: u64,             // (crate-private) cost as advertised before this link's charge
-    pub announce: bool,          // #2396: gate — advertised via Consumer::announced only if true
+    pub announce: bool,          // #2396: gate - advertised via Consumer::announced only if true
 }
     pub fn new() -> Self         // unannounced direct route (reachable by exact path only)
     pub fn announced() -> Self   // announced direct route
@@ -142,14 +144,14 @@ pub struct Route {
 ```
 
 **Route selection** (`route_order`, `origin.rs:392-395`): the ordering key is
-`(!announce, cost, hop_len, fnv_hash)`, lower wins — **announced routes first**
+`(!announce, cost, hop_len, fnv_hash)`, lower wins - **announced routes first**
 (a live source beats an offline one), **then lowest cumulative cost** (#2424),
 then shortest hop chain, then a deterministic FNV tie-break so every node converges
 on the same route. Only the best source gets served; the rest park as hot standbys
 and are promoted (with re-splice) when the active source dies. Consumers never
 observe the swap; tracks resume at the first missing group.
 
-**#2396 — publish + announce gating.** `create_broadcast(path, route)` is now the
+**#2396 - publish + announce gating.** `create_broadcast(path, route)` is now the
 single entry point. The `Route.announce` flag (internally called `live`, hence the
 commit title "gate announce on Route.live") controls advertisement independently
 of the broadcast's existence: a non-announced broadcast stays reachable by exact
@@ -158,7 +160,7 @@ to `announced()`. Toggling it via `broadcast::Producer::set_route` announces or
 unannounces without touching the broadcast. `sync_front` (`origin.rs:1103-1114`)
 re-derives the advertised route and the announce flag after every table change.
 
-**#2424 — cumulative-cost multi-hop routing.** `RouteCost` rides lite-06
+**#2424 - cumulative-cost multi-hop routing.** `RouteCost` rides lite-06
 announcements. The original publisher seeds `cost` with its production cost (zero
 for a live publish, large for a cold standby transcoder); each link adds its
 configured price as the announcement crosses it, so a metered-backbone route ranks
@@ -171,7 +173,7 @@ keys on. Pre-lite-06 peers report zero, so hop-count remains the effective metri
 exactly as before. The client seeds its own production cost via
 `Client::with_cost(cost)` (`client.rs:90`).
 
-**#2419 — unannounce liveness (linger removed).** Detaching the last source now
+**#2419 - unannounce liveness (linger removed).** Detaching the last source now
 **closes the broadcast and unannounces synchronously** (`detach_source`,
 `origin.rs:1123-1145`: when `routes.is_empty()`, set `closed=true` and abort). The
 old front-level `ROUTE_LINGER = 5s` grace that kept a path announced so a
@@ -179,7 +181,7 @@ reconnecting session could transparently re-attach is **gone**; an unannounce no
 fires the moment the last route detaches. (An upstream-subscription linger still
 exists at the relay's subscriber layer, `broadcast.rs:1243`, unrelated to the
 front's announce liveness.) Net effect for rooms: departure signalling is now
-immediate and unambiguous, at the cost of the 5s seamless-reconnect window — a
+immediate and unambiguous, at the cost of the 5s seamless-reconnect window - a
 reconnecting peer re-announces rather than splicing into a lingering front.
 
 **Transparent subscription migration** (`model/resume.rs`, 1334 lines) still
@@ -271,7 +273,7 @@ subscriber leaves.
 moq-token has **two layers** now, both enforcing segment-aware, role-independent
 path containment:
 
-**Claims** (`rs/moq-token/src/claims.rs`) — the token payload:
+**Claims** (`rs/moq-token/src/claims.rs`) - the token payload:
 
 ```rust
 #[non_exhaustive]
@@ -285,9 +287,9 @@ pub struct Permissions { pub publish: Vec<String>, pub subscribe: Vec<String> } 
 direction), rebases each granted prefix relative to `path`, drops prefixes outside
 it, and errors `RootMismatch` / `NoAccess`. Publish and subscribe are checked
 independently; an empty prefix grants everything beneath. This is **authorization
-only** — verify the signature (and expiry) with `Key::verify` first.
+only** - verify the signature (and expiry) with `Key::verify` first.
 
-**Scope** (`claims.rs:5-70`, NEW in #2416) — an immutable ceiling embedded in the
+**Scope** (`claims.rs:5-70`, NEW in #2416) - an immutable ceiling embedded in the
 signing key's JWK (`Key.scope: Option<Scope>`, `key.rs:165`):
 
 ```rust
@@ -302,7 +304,7 @@ impl Key {
 
 **What it enforces:** a scoped signing key can only mint (and only accepts on
 verify) tokens whose every publish/subscribe grant sits at or beneath a scope
-prefix in the same role — segment-aware (`live` ∌ `lively`), roles independent
+prefix in the same role - segment-aware (`live` ∌ `lively`), roles independent
 (a publish-only scope rejects any subscribe grant). The scope is fixed at key
 generation: widening means minting a new key, so a leaked scoped key can never be
 talked into signing beyond its ceiling. Keys with no scope stay unrestricted
@@ -311,7 +313,7 @@ talked into signing beyond its ceiling. Keys with no scope stay unrestricted
 **How a session/relay validates a path-scoped token** (`moq-relay/src/{auth,
 cluster,connection}.rs`): `Key::verify(token)` checks signature + expiry +
 `validate_scope`, yielding `Claims`; `Claims::authorize(check_root)` yields the
-rebased `Permissions`; then the relay **scopes the origin cryptographically** —
+rebased `Permissions`; then the relay **scopes the origin cryptographically** -
 `self.origin.with_root(&token.root)?.scope(&token.publish)` for the publisher
 handle and `.scope(&token.subscribe)` for the subscriber handle
 (`cluster.rs:446-453`), wired via `with_publisher` / `with_subscriber`
@@ -320,11 +322,11 @@ constrained to exactly the granted prefixes: a `create_broadcast` outside them
 fails `Error::Unauthorized` (`origin.rs:877`), and announces outside them never
 land.
 
-**Room announce-spoofing question — yes, addressable.** A peer *can* be
+**Room announce-spoofing question - yes, addressable.** A peer *can* be
 cryptographically constrained to publish/announce only under its own path: issue
 each peer a token rooted at `<room>/<endpoint-id>` with `put: [""]` (and `get` as
 policy dictates). The verifying side scopes that session's origin to that prefix,
-so the peer cannot `create_broadcast` — and therefore cannot announce — outside
+so the peer cannot `create_broadcast` - and therefore cannot announce - outside
 its own id. The key-level `Scope` lets a room server hold one signing key that can
 *only* mint such per-peer tokens, so even the token-minting path is bounded. The
 one caveat unchanged from before: this hard-wires "announce only your own
@@ -357,7 +359,7 @@ pub(crate) async fn connect(endpoint: &Endpoint, url: Url,
 ```
 
 `accept` is **single-phase**: it negotiates ALPN, completes the WebTransport
-handshake (sends the H3 OK), and returns `(session, url, None)` — the deferred
+handshake (sends the H3 OK), and returns `(session, url, None)` - the deferred
 two-phase `Request::accept` → `ok()`/`close()` authorization window that old MAIN
 had no longer exists; the server reads SETUP immediately and authorizes from token
 + path there. `peer_identity()` is always `None` for iroh (no client-cert
@@ -397,11 +399,11 @@ broadcast. MoQ announce is used only degenerately on the single direct session.
 
 What moq announce gives that gossip+KV does not:
 
-- **No second protocol.** Discovery and media share the moq session — no gossip
+- **No second protocol.** Discovery and media share the moq session - no gossip
   swarm, no smol-kv CRDT, one ALPN. The room layer shrinks to "scope a prefix,
   watch announces, publish under your id".
 - **Deterministic liveness, now immediate (#2419).** An unannounce arrives the
-  moment the last route to a broadcast detaches — no 5s linger, no KV expiry
+  moment the last route to a broadcast detaches - no 5s linger, no KV expiry
   horizon. The current design infers departure from broadcast-close plus a
   2-minute KV expiry (room-layer.md §3.4): slower and lossier. Trade-off: the
   removed linger means a reconnecting peer re-announces rather than splicing
@@ -422,13 +424,13 @@ What gossip+KV gives that announce does not:
   ticket's bootstrap peers and spreads epidemically; announce presupposes moq
   sessions already exist and has no peer-sampling. Someone must still decide whom
   to dial. (Announce paths carry `EndpointId`s, so the roster can propagate
-  transitively — but only if peers re-announce across sessions, which implies a
+  transitively - but only if peers re-announce across sessions, which implies a
   relay/forwarding policy.)
 - **Offline-tolerant, signed, attributable state.** smol-kv entries are signed and
   merged CRDT-style. moq announces are paths trusted per-session. **This is now
   addressable at the moq layer: moq-token path-scoping (§5) constrains each
   accepted session's origin to `<room>/<peer-id>/`, cryptographically enforcing
-  "you may only announce your own broadcasts"** — exactly what `with_root` + `scope`
+  "you may only announce your own broadcasts"** - exactly what `with_root` + `scope`
   are for, and what the relay already does with verified tokens. It is room-layer
   code to wire, and it conflicts with transitive forwarding unless relay nodes get
   a broader scope. This closes the announce-spoofing gap that previously made
@@ -437,10 +439,10 @@ What gossip+KV gives that announce does not:
   announce carries only path existence (the moq answer is a metadata track inside
   each broadcast, hang-catalog style, which iroh-live half-does via its chat track).
 
-For a relay-less p2p mesh at call scale (small N, full mesh — what iroh-live
+For a relay-less p2p mesh at call scale (small N, full mesh - what iroh-live
 builds), the honest summary: gossip currently does membership *and* announcement;
 moq announce can take over announcement entirely, with immediate liveness (#2419),
-cost-aware multi-hop (#2424), and — new — token-enforced authorship (#2416),
+cost-aware multi-hop (#2424), and - new - token-enforced authorship (#2416),
 while membership bootstrap (who to dial first) still needs the ticket plus gossip,
 transitive announce-derived dialing, or another side channel. A pragmatic redesign
 keeps the ticket bootstrap, replaces `PeerState.broadcasts` + per-broadcast

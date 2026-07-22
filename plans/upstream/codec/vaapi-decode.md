@@ -1,6 +1,9 @@
 # vaapi-decode. VAAPI H.264 decode exporting DMA-BUF, and the shared moq-vaapi growth
 
-Branch: moq-upstream/vaapi-decode          PR targets: external `moq-dev/vaapi` repo (VA-layer decode) + moq main (moq-video backend wiring)
+> Campaign: upstream | Kind: leaf plan | Branch: up/vaapi-decode | PR targets:
+> external `moq-dev/vaapi` repo (VA-layer decode) + moq main (moq-video backend
+> wiring) | Read ../0-overview.md first.
+
 Depends on: B1 (frame vocabulary), B3 (`decode::Frame::native()`); shares moq-vaapi with vaapi-encode
 Path: two-target contribution. The VA-layer decode work lands in the external
 `moq-vaapi` crate (`github.com/moq-dev/vaapi`, overview coordination point 11);
@@ -20,7 +23,7 @@ moq's only H.264 decode today is software openh264 into CPU I420
 VideoToolbox, Windows Media Foundation, and Linux NVDEC only), so every Intel and
 AMD Linux host decodes in software. The DMA-BUF handle the new backend attaches to
 each decoded frame is also what gives `decode::Frame::native()` something to return
-on Linux, which is the input the out-of-tree renderer imports (requirement U2).
+on Linux, which is the input the moq-video-render crate imports (requirement U2).
 
 The genuinely missing piece in `moq-vaapi` is the decode stack, not export
 infrastructure. Verified against the cargo-cache crate source (`moq-vaapi 0.0.2`,
@@ -161,18 +164,20 @@ re-vendored into moq-vaapi's binding style, not lifted across intact.
   `VADRMPRIMESurfaceDescriptor` into the fd, modifier, fourcc, coded and display size,
   and per-plane offset and pitch, plus any VPP scale/CSC execution path (context, caps,
   submit) not yet present. Because `moq-vaapi` is a separate external crate
-  (`Cargo.toml:95`), this is a PR to `moq-dev/vaapi` and a maintainer-cut release, not
+  (`Cargo.toml:95`), this is a PR to `moq-dev/vaapi` and an upstream-cut release, not
   an in-tree moq-video edit; the moq-video PR then bumps the pin.
-- Dependency-spine decision (coordination point 11, a maintainer conversation, not a
-  leaf-agent choice). Our decoder is written against the crates.io `cros-codecs 0.0.6`
-  crate, which moq-vaapi does not depend on. Before decode can be contributed, the
-  spine must be chosen: (i) re-vendor the cros-codecs decode half into moq-vaapi's
-  binding style (matches the crate's current provenance, but grows the AI-generated
-  divergence to maintain), (ii) add a real `cros-codecs` dependency to moq-vaapi and
-  retire the vendored fork for the decode path (cleaner, but large and needs maintainer
-  buy-in), or (iii) another route such as moq-video depending on `cros-codecs`
-  directly. This plan does not pick one unilaterally; it surfaces the decision for the
-  maintainer.
+- Open question: the dependency spine (coordination point 11), discussed here and
+  in `../0-overview.md`. Our decoder is written against the crates.io
+  `cros-codecs 0.0.6` crate, which moq-vaapi does not depend on. Before decode
+  can be contributed, the spine must be chosen: (i) re-vendor the cros-codecs
+  decode half into moq-vaapi's binding style (matches the crate's current
+  provenance, but grows the AI-generated divergence to maintain), (ii) add a real
+  `cros-codecs` dependency to moq-vaapi and retire the vendored fork for the
+  decode path (cleaner, but large and needs upstream buy-in), or (iii) another
+  route such as moq-video depending on `cros-codecs` directly. Current proposal:
+  route (i), re-vendor into moq-vaapi's style, matching how the crate already
+  treats cros-libva. This plan does not pick one unilaterally; the question is
+  settled upstream before code.
 - `rs/moq-video/src/frame.rs` gains the `dmabuf` module backing `Frame::DmaBuf` (owned
   by B1; this plan consumes it and, if B1 leaves the backing type a stub, fills in the
   exporter that mints the fd on demand).
@@ -185,13 +190,13 @@ re-vendored into moq-vaapi's binding style, not lifted across intact.
    dup'ing an fd per `export()` call, our `decoder.rs:85-113,228` design), stop and
    file the gap against B1 (coordination point 1); do not invent a divergent type.
 2. Grow `moq-vaapi` (coordination point 3, external repo per coordination point 11):
-   settle the dependency-spine decision above with the maintainer, then re-vendor the
+   settle the dependency-spine question above upstream, then re-vendor the
    decode half of cros-codecs (a stateless H.264 decode path) into moq-vaapi's diverged
    bindings. Reuse the crate's existing `export_prime()` (`surface.rs:341`) and DRM
    PRIME types rather than adding export; add only the caller-side
    `VADRMPRIMESurfaceDescriptor` reader and any missing VPP execution path. Agree the
-   crate's public surface with the maintainer, land the PR in `moq-dev/vaapi`, have the
-   maintainer cut a new release, and bump the pin at `rs/moq-video/Cargo.toml` and the
+   crate's public surface upstream, land the PR in `moq-dev/vaapi`, wait for the
+   new release, and bump the pin at `rs/moq-video/Cargo.toml` and the
    workspace `Cargo.toml:95`. This is the largest and most resistance-prone piece;
    treat it as the critical path.
 3. Write `decode/backend/vaapi.rs`: construct the shared `Display`, the
@@ -266,11 +271,12 @@ re-vendored into moq-vaapi's binding style, not lifted across intact.
   reuses the same existing export/VPP and must not duplicate the decode work;
   coordinate the shared moq-vaapi API shape with the encode agent.
 - Coordination point 11 (external moq-vaapi repo, overview): the VA-layer decode work
-  is a PR to `github.com/moq-dev/vaapi`, a separate repository under the maintainer's
+  is a PR to `github.com/moq-dev/vaapi`, a separate repository under the moq-dev
   org with its own review path and release cadence. We do not hold publish rights to
-  the crate name; the critical path runs through the maintainer's release, followed by
-  the moq-video pin bump. The dependency-spine decision (re-vendor vs. `cros-codecs`
-  dependency vs. another route) is settled here, with the maintainer, before code.
+  the crate name; the critical path runs through the upstream release, followed by
+  the moq-video pin bump. Open question: the dependency spine (re-vendor vs.
+  `cros-codecs` dependency vs. another route), discussed in Target in moq above;
+  current proposal: re-vendor into moq-vaapi's style. Settle it upstream before code.
 - Licensing and provenance: moq-vaapi already carries `LICENSE.libva` and
   `LICENSE.cros-codecs` alongside its BSD-3-Clause `LICENSE`, and is self-described as
   derived from discord/cros-libva and discord/cros-codecs. Our re-vendored decode half
@@ -285,14 +291,14 @@ analog of the NVDEC free-scaling that fanout uses on NVIDIA, so VAAPI decode int
 VPP scale into VAAPI encode is a full Intel and AMD per-segment transcode
 pipeline. `reset()` and `burst_size()` support the per-group fetch and seek
 pattern, and where moq-transcode requests scaled decode, that maps to our VPP
-scale. This is alignment with the maintainer's per-segment transcoding goal, not
+scale. This is alignment with moq's per-segment transcoding goal, not
 a collision.
 
 ## Acceptance checklist
 
 - `moq-vaapi` grown with the re-vendored decode stack (reusing its existing
   `export_prime()` and VPP wrapper), landed in `moq-dev/vaapi`, released, and pinned in
-  moq-video, with the dependency-spine decision and API shape agreed with the maintainer.
+  moq-video, with the dependency-spine question and API shape agreed upstream.
 - `decode/backend/vaapi.rs` decodes H.264 to `Frame::DmaBuf`; `decode::Frame::native()`
   returns `Some(Native::DmaBuf(_))` for its output.
 - `vaSyncSurface`-before-export and per-frame export caching both preserved and

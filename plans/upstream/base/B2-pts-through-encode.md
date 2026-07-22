@@ -1,6 +1,8 @@
 # B2. Presentation timestamp through the encode path
 
-Branch: moq-upstream/base (lands alongside B1 in the base series)          PR target: base branch, then moq main
+> Campaign: upstream | Kind: base plan | Branch: up/base (lands alongside B1 in
+> the base series) | PR target: base branch, then moq main | Read ../0-overview.md first.
+
 Depends on: none (independent of B1; the base series can land B1 and B2 in either order)
 Path: Both (needed for Path A and Path B)
 Size: S-M (roughly 150 lines across about 7 files)

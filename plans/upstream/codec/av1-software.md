@@ -1,19 +1,20 @@
 # av1-software. Software AV1: rav1e encode and rav1d decode
 
-> DEFERRED, not part of the active series. Per overview revision 4 (2026-07-22),
-> this plan is deferred and dropped from this upstream series, and it is retained
-> here as the reference for a later round rather than deleted. The two reasons are
-> that rav1e is too slow to carry as a live encoder now (roughly 4x slower per
-> resolution step at speed 10, usable at conference resolutions but not at 1080p60
-> on small cores), and that the rav1d decode dependency is too heavy and
-> unresolved to carry now (the pure-Rust `memorysafety/rav1d` path is a git-fork
-> pin moq forbids, and the crates.io `dav1d-rs` alternative pulls in a C libdav1d
-> system dependency). AV1 can be revisited later if a use case needs it. iroh-live
-> rips out its own AV1 backend in the meantime (see
-> `plans/align-to-moq/tasks/codec-remove.md`).
+> Campaign: upstream | Kind: leaf plan | Branch: up/av1-software |
+> PR target: base branch, then moq main | Read ../0-overview.md first.
 
-Branch: moq-upstream/av1-software          PR target: base branch, then moq main
-Status: DEFERRED (overview revision 4), not scheduled in this series
+DEFERRED, not part of the active series. This plan is deferred and dropped from
+this upstream series, and it is retained here as the reference for a later round
+rather than deleted. The two reasons are that rav1e is too slow to carry as a
+live encoder now (roughly 4x slower per resolution step at speed 10, usable at
+conference resolutions but not at 1080p60 on small cores), and that the rav1d
+decode dependency is too heavy and unresolved to carry now (the pure-Rust
+`memorysafety/rav1d` path is a git-fork pin moq forbids, and the crates.io
+`dav1d-rs` alternative pulls in a C libdav1d system dependency). AV1 can be
+revisited later if a use case needs it. iroh-live rips out its own AV1 backend in
+the meantime (see `../counterpart/codec-remove.md`).
+
+Status: DEFERRED, not scheduled in this series
 Depends on: B2 (PTS through encode); external prerequisite: rav1d fork resolution (coordination point 4)
 Path: A (in-tree)
 Size: M-L
@@ -171,8 +172,11 @@ our `config.rs` catalog mirror. The construction config comes from moq's encode
   only path that keeps moq on crates.io today, explicitly accepting that it adds a
   C libdav1d system dependency and that the "pure Rust" claim then holds only for
   the rav1e encoder, not the decoder. Prefer pure-Rust `rav1d` only if and when it
-  is published to crates.io, or under an explicitly accepted git exception. This
-  is a maintainer conversation, not a leaf-agent decision. The rav1e 0.8 encoder
+  is published to crates.io, or under an explicitly accepted git exception. Open
+  question: the rav1d dependency route (crates.io release, accepted git
+  exception, or `dav1d-rs`), discussed in this section; current proposal: wait
+  for a crates.io `rav1d` release, which is part of why this plan is deferred.
+  The rav1e 0.8 encoder
   dependency is crates.io, pure Rust, and unproblematic. Flag this and proceed
   only once resolved.
 - Coordination point 2 (shared candidate tables): add only the AV1 candidates;

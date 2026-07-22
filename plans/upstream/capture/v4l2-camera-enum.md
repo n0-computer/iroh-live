@@ -1,6 +1,8 @@
 # v4l2-camera-enum. V4L2 camera capture and Linux device enumeration
 
-Branch: moq-upstream/v4l2-camera-enum          PR target: base branch, then moq main
+> Campaign: upstream | Kind: leaf plan | Branch: up/v4l2-camera-enum |
+> PR target: base branch, then moq main | Read ../0-overview.md first.
+
 Depends on: B1 (only if zero-copy EXPBUF is pursued); otherwise independent
 Path: A (in-tree)
 Size: M

@@ -1,5 +1,7 @@
 # Map: moq main `rs/moq-video` (HEAD 3a3e0ea8, 2026-07-21)
 
+> Campaign: upstream | Kind: map | Read ../../0-overview.md first; index at ../0-index.md.
+
 SOURCE: moq main, HEAD 3a3e0ea8 (2026-07-21); dev merged into main.
 
 Evidence-backed map of the native video codec + capture stack. All `file:line`
@@ -17,7 +19,7 @@ is unchanged since the pre-merge analysis.
 Crate: `moq-video 0.0.6`, "Native video capture/encoding/decoding for Media over QUIC"
 (Cargo.toml). Layout (`src/lib.rs:46-58`): public modules `capture`, `decode`,
 `encode`; private `error`, `frame`, `size`, and Windows-only `mf`. The public API is
-deliberately codec/backend-agnostic — no public type names a backend, all configs are
+deliberately codec/backend-agnostic - no public type names a backend, all configs are
 `#[non_exhaustive]` (`lib.rs:35-44`).
 
 Sibling context: `rs/moq-nvenc` is an in-tree fork of nvidia-video-codec-sdk (dlopen
@@ -81,18 +83,18 @@ pub struct Encoder {
 ```
 
 Public surface:
-- `Encoder::new(&Config)` — validates framerate != 0 and even dimensions, then
+- `Encoder::new(&Config)` - validates framerate != 0 and even dimensions, then
   `backend::open` (`encoder.rs:115-133`).
-- `encode_rgba(&[u8], Size, keyframe: bool) -> Result<Vec<Bytes>>` — tightly packed
+- `encode_rgba(&[u8], Size, keyframe: bool) -> Result<Vec<Bytes>>` - tightly packed
   RGBA, converted to I420 via the `yuv` crate (BT.601 limited) (`encoder.rs:219-227`).
-- `encode_i420(&[u8], Size, keyframe) -> Result<Vec<Bytes>>` — bring-your-own I420,
+- `encode_i420(&[u8], Size, keyframe) -> Result<Vec<Bytes>>` - bring-your-own I420,
   copies to take ownership (`encoder.rs:240-249`).
-- `encode(&crate::decode::Frame, keyframe)` — **the transcode input path**: takes a
+- `encode(&crate::decode::Frame, keyframe)` - **the transcode input path**: takes a
   decoded frame directly and keeps a GPU frame on the GPU (NVDEC -> NVENC)
   (`encoder.rs:279-281`).
-- `set_bitrate(u64)` — live retune, no IDR forced; state updated only after the
+- `set_bitrate(u64)` - live retune, no IDR forced; state updated only after the
   backend accepts (`encoder.rs:196-205`).
-- `finish(self) -> Result<Vec<Bytes>>` — consuming flush (`encoder.rs:300-302`).
+- `finish(self) -> Result<Vec<Bytes>>` - consuming flush (`encoder.rs:300-302`).
 
 Raw input type: the crate-private `Frame` enum (see §4). Encoded output type:
 `Vec<Bytes>`, one Annex-B access unit per packet, in-band parameter sets.
@@ -168,7 +170,7 @@ them per `Kind` (Auto = hardware then software), and tries each in order; a fail
   `objc2-video-toolbox` (`VTCompressionSession`), H.264 + H.265. VT emits
   AVCC/HVCC; the backend rewrites to Annex-B and splices SPS/PPS (+VPS) from the
   format description ahead of every keyframe (:1-14, `annexb_from_sample` :253-256).
-  Zero-copy input: `Frame::Surface(surface) => surface.buffer.clone()` — the captured
+  Zero-copy input: `Frame::Surface(surface) => surface.buffer.clone()` - the captured
   `CVPixelBuffer` goes straight into `encode_frame` (:162-166); CPU I420 is uploaded
   into a planar pixel buffer. Synchronous output via `complete_frames` per encode
   (:193-199). `set_bitrate` = live `kVTCompressionPropertyKey_AverageBitRate`, no IDR
@@ -190,7 +192,7 @@ them per `Kind` (Auto = hardware then software), and tries each in order; a fail
   (:104-126); input is written row-by-row at NVENC's chosen pitch (a flat copy would
   shear). Zero-copy input: a `Frame::Cuda` (NVDEC output, already NV12 in device
   memory) is registered as an external resource
-  (`NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR`) and encoded in place — "no CPU round
+  (`NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR`) and encoded in place - "no CPU round
   trip and no GPU copy" (:177-200). `set_bitrate` = `session.reconfigure(rate)`, in
   place, no IDR (:251-257). A `driver_libs_present()` libloading probe of
   `libcuda.so.1` / `libnvidia-encode.so.1` prevents cudarc's panic-on-missing-driver
@@ -198,14 +200,14 @@ them per `Kind` (Auto = hardware then software), and tries each in order; a fail
   hosts (:275-294).
 - **vaapi** (`encode/backend/vaapi.rs`, 111 lines; Linux, feature `vaapi`): via
   `moq-vaapi 0.0.2` (trimmed cros-libva/cros-codecs), H.264 only. Takes tightly
-  packed NV12 (the backend interleaves I420 -> NV12 on the CPU each frame, :95-111 —
+  packed NV12 (the backend interleaves I420 -> NV12 on the CPU each frame, :95-111 -
   no GPU-surface input path). libva is dynamically *linked*, not dlopen'd: a
   libva-less host fails to load the binary before fallback can happen (#1837 tracks
   making it dlopen) (:6-14). `set_bitrate` returns `Error::BitrateUnsupported`
   because moq-vaapi 0.0.2 has no setter for its private bitrate field (:80-88).
   Header caveat: "NOT YET VALIDATED ON HARDWARE" (:19-21).
 
-### Rate control (#2303) — encode/rate.rs
+### Rate control (#2303) - encode/rate.rs
 
 Commit `821dc951 feat(moq-video)!: adapt the encoder bitrate to the
 congestion-control estimate (#2303)`. The mechanism is a pure policy object fed by
@@ -241,7 +243,7 @@ pub struct Control {
 ```
 
 `Control::update(estimate: Option<u64>, now: Instant) -> Option<u64>`
-(`rate.rs:116-160`): asymmetric attack/decay — a drop applies immediately
+(`rate.rs:116-160`): asymmetric attack/decay - a drop applies immediately
 (`desired <= target` branch), a raise is ramp-limited from the last applied change;
 hysteresis suppresses <5% moves without resetting the ramp anchor (so suppressed
 raises are not starved, :147-154); a `None` estimate holds the current target rather
@@ -259,7 +261,7 @@ retrying.
 
 Note on #2246 ("upload bitrate from encoder Stats", commit `b03fd264`): this landed
 **only in the JS publisher** (`js/publish/src/{audio,video}/encoder.ts`,
-`video/index.ts`, `ui/components/stats-tab.ts`) — a `Stats { frames, bytes, keyframes }`
+`video/index.ts`, `ui/components/stats-tab.ts`) - a `Stats { frames, bytes, keyframes }`
 getter aggregated across simulcast renditions. There is no `Stats` type in the Rust
 `rs/moq-video` crate (grep confirms zero hits).
 
@@ -298,7 +300,7 @@ a shared `moq_mux::Clock` so audio/video stay aligned (:183-188). A forced IDR i
 emitted on the first frame of each (re)open (:344-346).
 
 NOTE: `moq_mux::codec::{h264,h265}::Import` are the video importers reworked by moq-mux
-#2425 (shared video-import catalog helper) — see the moq-mux map. The moq-video
+#2425 (shared video-import catalog helper) - see the moq-mux map. The moq-video
 producer wiring is unchanged; only the moq-mux internals it calls were refactored.
 
 ---
@@ -430,7 +432,7 @@ frame (`payload`, `timestamp`, `keyframe`) and decode (:58-73). Direct mirror of
 NOTE: the `moq_mux::container::Consumer` this wraps got the #2426 empty-batch contract
 clarification (a wire frame may decode to zero media frames; only `None` ends the
 group). moq-video's `read` loop already keys completion off `None`, so it is
-unaffected — but see the moq-mux map before writing a new consumer against that trait.
+unaffected - but see the moq-mux map before writing a new consumer against that trait.
 
 ### Per-backend decode notes
 
@@ -442,7 +444,7 @@ unaffected — but see the moq-mux map before writing a new consumer against tha
   VPS/SPS/PPS out of the Annex-B stream, builds a `CMVideoFormatDescription`
   (rebuilding the session when parameter sets change, :62-78), repackages slices as
   AVCC/HVCC in a `CMSampleBuffer`, requests NV12 output and downloads to packed I420
-  (:1-18) — macOS decoded frames are always CPU I420 (`Sink { frames: Vec<I420> }`,
+  (:1-18) - macOS decoded frames are always CPU I420 (`Sink { frames: Vec<I420> }`,
   :56-60). Decoding is synchronous (callback fires inside `decode_frame`), which is
   what keeps the `!Send` CF handles thread-confined (:16-18).
 - **mediafoundation** (`decode/backend/mediafoundation.rs`, 448 lines; #1854
@@ -452,7 +454,7 @@ unaffected — but see the moq-mux map before writing a new consumer against tha
   fail `open` (H.264 then falls back to openh264; H.265 has no fallback) (:4-13).
   H.265 needs an HEVC decoder MFT present (HEVC Video Extensions) (:10-12). Output
   NV12 textures from the DXVA pool are downloaded and deinterleaved to `Frame::I420`
-  (:391-393) — Windows decode output is CPU I420, not a retained texture. Picture
+  (:391-393) - Windows decode output is CPU I420, not a retained texture. Picture
   size is learned from the first output-type negotiation (:18-22).
 - **nvdec** (`decode/backend/nvdec.rs`, 706 lines; #2145 `5fa30c72` introduced it,
   #2178 `7a9d1844` added AV1): cuvid parser + decoder via moq-nvenc's dlopen'd cuvid
@@ -462,7 +464,7 @@ unaffected — but see the moq-mux map before writing a new consumer against tha
   `ulMaxDisplayDelay: 0`, `ulClockRate: 1_000_000` so timestamps ride the parser in
   microseconds and survive reordering (:135-148, :173-183). The sequence callback
   (re)creates the decoder on geometry/crop changes and maps `Config::resize` to
-  cuvid's `ulTargetWidth/Height` — **hardware scaling during decode, free**
+  cuvid's `ulTargetWidth/Height` - **hardware scaling during decode, free**
   (:284-311). `map_frame` copies each mapped surface device-to-device into an owned
   `cuda::Frame` (the fixed surface pool must be released promptly), producing
   `Frame::Cuda` that NVENC registers directly (:339-392). Decoder uses the device's
@@ -530,7 +532,7 @@ public; the way in is `encode::publish_capture`.
 
 ### Plumbing
 
-- **channel.rs**: `FrameChannel` — a hand-rolled bounded (DEPTH = 4) MPSC with
+- **channel.rs**: `FrameChannel` - a hand-rolled bounded (DEPTH = 4) MPSC with
   `Mutex<VecDeque<Frame>> + Notify`; `push` from foreign threads drops the **oldest**
   frame when full (latency over completeness, :18-57); async `recv` uses the
   register-before-check Notify pattern and is cancel-safe (:66-82).
@@ -543,7 +545,7 @@ public; the way in is `encode::publish_capture`.
 ### Per-platform backends
 
 - **avfoundation.rs** (macOS camera, 244 lines): `AVCaptureVideoDataOutput` delegate
-  wraps each IOSurface-backed `CVPixelBuffer` as `Frame::Surface` — "Frames reach
+  wraps each IOSurface-backed `CVPixelBuffer` as `Frame::Surface` - "Frames reach
   VideoToolbox with no copy and no color conversion" (:1-6). Handles TCC permission
   prompts (60s access timeout) and a 5s first-frame timeout. `cameras()` enumerates
   via `AVCaptureDevice::devicesWithMediaType` and returns `uniqueID`s (:38-54).
@@ -562,7 +564,7 @@ public; the way in is `encode::publish_capture`.
   dedicated thread runs the PipeWire main loop converting BGRx/BGRA shm buffers to
   CPU I420 (`I420::from_bgra`). Portal restore token cached process-wide so
   demand-driven reopen skips the picker; a damage-driven compositor is re-paced by
-  re-emitting the last frame each interval (:1-19, :50-53). No dmabuf import — CPU
+  re-emitting the last frame each interval (:1-19, :50-53). No dmabuf import - CPU
   path only.
 - **mediafoundation.rs** (Windows camera, 403 lines): `IMFSourceReader` with a D3D11
   DXGI manager + advanced video processor; each sample arrives as a GPU NV12 texture
@@ -670,7 +672,7 @@ registration rejects stream-ordered pool memory (`cuMemAllocAsync`, what cudarc'
 copy destination / NVENC's registration (:541-545). `resize` runs the vendored
 box-filter kernels (`frame/nv12_resize.cu`, compiled offline to
 `frame/nv12_resize.ptx`, embedded via `include_str!` and driver-JIT'd so no CUDA
-toolkit is needed — :450-479, cu file :9-13); destination pitch is aligned to 256
+toolkit is needed - :450-479, cu file :9-13); destination pitch is aligned to 256
 (NVENC-friendly), and the stream is synchronized before return because NVENC does
 not order against it (:594-658). Kernels: `resize_luma` / `resize_chroma`, one
 thread per destination pixel / UV pair, box-average over the full source box so
@@ -697,7 +699,7 @@ pub(crate) struct Texture {
 
 `download_i420` (the DXVA NV12 offset fix, #2034 `6684226e`, `frame.rs:791-796`):
 the UV plane begins after the *texture's* Y plane spanning the **allocated** height,
-not the display height — "A DXVA decode pool allocates textures at the coded size
+not the display height - "A DXVA decode pool allocates textures at the coded size
 (e.g. 1088 rows for a 1080p display), so keying the offset off `self.height` would
 read chroma from inside the still-luma padding rows and produce garbage color."
 The shared multithread-protected `d3d11::create_device` (:689-714) underpins MF
@@ -715,7 +717,7 @@ and a refcounted `ComGuard` (MTA CoInitializeEx + MFStartup) (`mf.rs:37-82`).
 | Cross-thread / cross-task GPU frame sharing (#2225, #2162) | `Surface: Send + Sync`, `cuda::Frame: Clone` (Arc), `Texture: Clone` (AddRef); `decode::Frame: Send + Sync`, pinned by a compile-time test | `frame.rs:359-369`, `decode/mod.rs:104-118` |
 
 Not zero-copy: VAAPI encode input (CPU NV12 interleave), all Linux/Windows *screen*
-capture (BGRA -> CPU I420), macOS and Windows *decode* output (downloaded to I420 —
+capture (BGRA -> CPU I420), macOS and Windows *decode* output (downloaded to I420 -
 only NVDEC keeps decoded frames on the GPU), and there is no decode -> render GPU
 handoff API at all: the only public escape hatches are `decode::Frame::into_i420()`
 and `Encoder::encode(&decode::Frame)`.
@@ -730,8 +732,8 @@ Encode (`encode/backend/mod.rs:68-102`):
 |---|---|---|---|---|
 | H.264 | VideoToolbox | Media Foundation MFT | NVENC, VAAPI | openh264 (always compiled) |
 | H.265 | VideoToolbox | Media Foundation MFT | NVENC | none (hardware-only) |
-| AV1 | — | — | — | — |
-| VP9 | — | — | — | — |
+| AV1 | - | - | - | - |
+| VP9 | - | - | - | - |
 
 Decode (`decode/backend/mod.rs:89-114`, `decode/mod.rs:9-12`):
 
@@ -739,8 +741,8 @@ Decode (`decode/backend/mod.rs:89-114`, `decode/mod.rs:9-12`):
 |---|---|---|---|---|
 | H.264 | VideoToolbox (#1859 infra) | MF/DXVA | NVDEC | openh264 |
 | H.265 | VideoToolbox (#1859) | MF/DXVA + HEVC MFT (#1854) | NVDEC | none |
-| AV1 | — | — | NVDEC only (#2178), 8-bit 4:2:0 non-mono (`decoder.rs:187-189`) | none |
-| VP9 | — | — | — | — |
+| AV1 | - | - | NVDEC only (#2178), 8-bit 4:2:0 non-mono (`decoder.rs:187-189`) | none |
+| VP9 | - | - | - | - |
 
 AV1 is decode-only (no encoder anywhere). VP9 appears nowhere in the crate (the only
 grep hit is a historical note in `DESIGN-native-codecs.md`). Public encode `Codec`
@@ -772,7 +774,7 @@ pipewire = ["dep:pipewire", "dep:ashpd"]   # off by default (links libpipewire a
 
 Runtime-dependency character differs per feature (all documented inline in
 Cargo.toml): `nvenc`/`nvdec` are fully dlopen'd (cudarc `fallback-dynamic-loading` +
-`cuda-12020` pin, pre-built PTX so libnvrtc is never loaded) — a GPU-less build links
+`cuda-12020` pin, pre-built PTX so libnvrtc is never loaded) - a GPU-less build links
 and a driverless host falls back; `vaapi` hard-links libva.so.2 (a libva-less host
 fails to *load*; #1837 tracks dlopen); `pipewire` needs pkg-config + libclang at
 build. macOS/Windows backends are cfg-gated by target, not features.
@@ -786,7 +788,7 @@ smaller crate: a thin ffmpeg wrapper (`capture.rs` + `encode/{mod,encoder,produc
 + `error.rs` + `lib.rs`, 5 source files) with a single `ffmpeg-next = { version = "8" }`
 dependency covering H.264 encode + libavdevice capture, encode-only and H.264-only, no
 decode module, no GPU frame types, everything through CPU swscale. **That crate no
-longer exists** — the merge replaced it wholesale with the 41-file native stack mapped
+longer exists** - the merge replaced it wholesale with the 41-file native stack mapped
 above. What survived shape-wise: the `Kind` selection enum, the `#[non_exhaustive]`
 Config pattern with the same ~0.07 bpp default bitrate and 2s GOP,
 `Producer`/`publish_capture` with demand-driven on-demand capture, and the "no backend
@@ -819,5 +821,5 @@ main-vs-dev split anymore.
   graceful retirement for backends that can't retune.
 - Frames flow one way: capture (Surface/Texture/I420) -> encoder; decoder
   (Cuda/I420) -> `Encoder::encode` or `into_i420`. There is no shared "video frame"
-  public type between capture and decode — `crate::frame::Frame` is the private
+  public type between capture and decode - `crate::frame::Frame` is the private
   union, and the public decode `Frame` wraps it with timestamp + size.

@@ -1,149 +1,115 @@
 # Align iroh-live to moq: shrink and improve by adopting moq primitives
 
+> Campaign: align-to-moq | Kind: overview | Read this first, then the task plans
+> under `tasks/`. The campaign prompt is `prompt.md`; the shared evidence is
+> `../upstream/comparisons/` (start at `0-index.md`).
+
 This campaign is about iroh-live, not moq. Its goal is to make iroh-live smaller
 and better by adopting moq's primitives where moq now covers what we built by
-hand, deleting the owned code that adoption replaces, and rebuilding the room
-layer on moq's origin, announce, and token primitives. It is the counterpart to
-the upstream campaign in `plans/upstream/`: that campaign moves our codec and
-capture code into moq; this one removes code from iroh-live once moq carries an
-equivalent, and aligns the pieces that stay to moq's shapes.
+hand, and to rebuild the room layer on moq's origin, announce, and token
+primitives. It is the counterpart to the upstream campaign in `plans/upstream/`:
+that campaign moves our codec, capture, audio-device, and render code into moq
+and carries, on each contribution's paired iroh-live branch, the deletion of the
+local code the contribution replaces. What remains here is the work that needs
+no upstream contribution at all: pure alignment of iroh-live to what moq already
+ships. moq is a single codebase (`/home/bit/Code/rust/moq`, HEAD `3a3e0ea8`).
 
-Read this overview first. It frames the two campaigns and their dependency, the
-task tree with what is doable now versus what waits on upstream, the wave
-ordering, the coordination points, and where the detailed plans live. moq is a
-single codebase (`/home/bit/Code/rust/moq`, HEAD `3a3e0ea8`).
+## The two campaigns and their split
 
-## The two campaigns and their dependency
+- `plans/upstream/` contributes iroh-live's media stack into moq as paired
+  branches: a moq branch that adds, an iroh-live branch that depends on it and
+  cuts. All codec, capture, render, and audio-device deletions live there, in
+  `../upstream/counterpart/`, governed by the deletion ledger
+  `../upstream/cut-plan.md` and the module register
+  `../upstream/DISPOSITION.md`.
+- `plans/align-to-moq/` (this campaign) adopts what moq's current releases
+  already provide: delegating the iroh-moq transport to moq-native, adopting the
+  moq-mux catalog and ordered-consumer primitives, rebuilding rooms on moq
+  announce, and aligning the sync and adaptive layers to moq-mux's per-rendition
+  estimation. Every task here is independent of the upstream campaign and can
+  start once the pins are bumped.
 
-- `plans/upstream/` contributes iroh-live's codec and capture work into moq
-  (VAAPI, V4L2, Android, the frame vocabulary, the in-tree renderer crate, and so
-  on) as pull requests to moq and moq-vaapi.
-- `plans/align-to-moq/` (this campaign) removes and realigns iroh-live code by
-  adopting moq. It splits into two kinds of task:
-  - Independent tasks that need no upstream work and can start now against the
-    moq release iroh-live already tracks, once the pins are bumped: delegating
-    the iroh-moq transport to moq-native, adopting the moq-mux catalog and
-    ordered-consumer primitives, rebuilding rooms on moq announce, and aligning
-    the sync and adaptive layers to moq-mux's per-rendition estimation.
-  - Upstream-gated tasks that delete iroh-live code only after the matching
-    upstream contribution lands in moq and releases: removing `rusty-codecs` and
-    `rusty-capture` module by module, and adopting moq's in-tree
-    `moq-video-render` crate (an off-default moq workspace member) in place of
-    iroh-live's `render/`, while the dioxus and egui UI integrations stay in
-    iroh-live for now.
+The dependency runs one way: the upstream campaign's counterpart branches build
+on the alignments made here (a bumped pin, an adopted catalog), never the
+reverse.
 
-The dependency runs one way: the upstream-gated removals here consume what the
-upstream campaign produces. The independent tasks do not, and are the natural
-place to start because they shrink iroh-live without waiting on any moq release.
+## Anchor document
 
-## Scope and the two anchor documents
-
-Two documents carry the analysis this campaign executes, both grounded in the
-comparisons under `../upstream/comparisons/` (start at
-`../upstream/comparisons/0-index.md`):
-
-- `cut-plan.md`: the deletion ledger. Every iroh-live module with a verdict (cut,
-  cut-after-upstream, keep, keep-and-upstream-copy, or merge), the moq replacement,
-  the prerequisite, and the staged order. It models two scenarios: adopt current
-  moq main as-is (about 4,800 LOC removed, one version bump) and adopt plus land
-  the upstream contributions (about 17,400 LOC, 42% of the 41,564-LOC core). This
-  is the source of truth for what gets deleted and when.
-- `room-layer.md`: the room-layer redesign onto moq's origin, `announced(prefix)`,
-  and token path-scoping. Rooms move from gossip plus signed KV to moq announce,
-  with gossip retained for bootstrap, and moq-token path-scoping providing
-  cryptographic announce-under-your-own-id. Phased, with the honest tradeoffs.
-
-Out of scope: contributing code to moq (that is `plans/upstream/`), and the audio
-device layer (the AEC engine, the playback sink, the symphonia file source),
-which stays local and is a separate future effort.
+`room-layer.md` carries the room-layer redesign onto moq's origin,
+`announced(prefix)`, and token path-scoping: rooms move from gossip plus signed
+KV to moq announce, with gossip retained for bootstrap and moq-token
+path-scoping providing cryptographic announce-under-your-own-id. Phased, with
+the tradeoffs stated. The deletion reasoning that used to sit beside it lives
+with the upstream campaign now (`../upstream/cut-plan.md`).
 
 ## Task tree
 
-Each task is a self-contained unit a small agent can take over from its plan in
-`tasks/`. The tree groups them by dependency.
+Each task is a self-contained unit a small agent can execute from its plan in
+`tasks/`. All are independent of upstream work.
 
 ```
 iroh-live (41,564 LOC core)
-|
-+-- Independent tasks (no upstream dependency; start now)
++-- Wave 0
+|   +-- pin-bump             bump moq-net/moq-native/hang pins to the merged native stack
++-- Wave 1 (independent alignments)
 |   +-- transport-delegate   iroh-moq handshake -> moq-native::iroh + full ALPN list
 |   +-- catalog-adopt        hand-rolled catalog -> moq-mux catalog::Producer + CatalogExt
 |   +-- pubsub-align         group ordering/latency -> moq-mux ordered consumer
-|   +-- rooms-announce       gossip+KV discovery -> moq announce + token path-scoping
 |   +-- sync-adaptive-align  read moq-mux per-rendition Estimate{jitter,bitrate}
-|
-+-- Upstream-gated tasks (delete only after the matching upstream PR releases)
-    +-- codec-remove         delete rusty-codecs modules as moq gains each backend
-    +-- capture-remove       delete rusty-capture backends as moq gains each source
-    +-- render-adopt         adopt moq-video-render crate, delete iroh-live render/
++-- Wave 2 (room redesign, parallel to Wave 1)
+    +-- rooms-announce       gossip+KV discovery -> moq announce + token path-scoping
 ```
 
-The independent tasks are the campaign's near-term value: they shrink iroh-live
-and align it to moq without any moq release beyond the pin bump. The
-upstream-gated tasks are the large LOC removals, and each keys on a specific
-upstream contribution reaching a moq release.
+Branch names are `align/<task>`; the registry is `../branches.md`.
 
 ## Wave ordering
 
-- Wave 0, the pin bump. iroh-live currently pins the older `moq-net 0.1.11` /
+- Wave 0, the pin bump. iroh-live pins the older `moq-net 0.1.11` /
   `moq-native 0.17.1` / `hang 0.19.1` line. Bump to the moq release that carries
-  the merged native stack. This unblocks every independent task and is the
-  prerequisite for all of them.
-- Wave 1, the independent alignments. transport-delegate, catalog-adopt,
-  pubsub-align, and sync-adaptive-align. These are self-contained refactors of
-  iroh-live against the bumped moq.
-- Wave 2, the room redesign. rooms-announce, in the phases of `room-layer.md`.
-  It is independent of the codec work and can run in parallel with Wave 1.
-- Wave 3, the upstream-gated removals. codec-remove, capture-remove, and
-  render-adopt, each gated on its upstream contribution releasing, and each
-  following the cut-plan's principle that nothing is deleted until its
-  replacement passes an end-to-end test on the new path.
+  the merged native stack. This unblocks every other task.
+- Wave 1, the independent alignments: transport-delegate, catalog-adopt,
+  pubsub-align, sync-adaptive-align. Self-contained refactors against the bumped
+  moq.
+- Wave 2, the room redesign: rooms-announce, in the phases of `room-layer.md`.
+  Independent of Wave 1 and may run in parallel with it.
 
 ## Coordination points
 
-1. Nothing is cut until its replacement is proven in iroh-live: an example or an
-   end-to-end test passes on the new path before the old module is deleted
-   (cut-plan principle P1). This is the hard rule for every removal.
-2. No cut regresses a zero-copy path. A removal that would drop a zero-copy path
-   waits for the render-adopt task and the upstream frame vocabulary, so the
-   decode-to-render and capture-to-encode paths survive the transition
-   (cut-plan principle P2).
-3. Upstream gating. Each upstream-gated task names the exact upstream
-   contribution and moq release it waits on. Do not start a removal before its
-   replacement is in a release iroh-live can pin.
-4. The bridge period. While a platform is partly migrated, iroh-live runs a mixed
-   stack; the cut-plan's atomic-per-platform recommendation governs the order so
-   the repository never holds two frame models within one platform at once.
-5. Rooms security. The announce redesign relies on moq-token path-scoping to
-   enforce announce-under-your-own-id; the multi-room scoping question in
-   `room-layer.md` phase 2 must be settled before that phase's implementation.
+1. Adoption is proven before anything is removed: an example or end-to-end test
+   passes on the new path before the old wiring is deleted. This is the hard
+   rule for every task that replaces working code.
+2. Rooms security. The announce redesign relies on moq-token path-scoping to
+   enforce announce-under-your-own-id. Open question: the multi-room scoping
+   model, discussed in `room-layer.md` phase 2, with the current proposal stated
+   there; settle it before that phase's implementation.
+3. Handoff to upstream counterparts. When an upstream pair-side branch needs an
+   alignment from this campaign (for example the bumped pin), it builds on the
+   merged align branch; coordinate through `../branches.md` rather than
+   duplicating work.
 
 ## How a task is executed
 
 Each task plan in `tasks/` is written so a capable but non-expert agent can
 execute it end to end: the goal, the iroh-live code it changes with `file:line`,
-the moq primitive it adopts, the ordered steps, the test that must pass before any
-deletion, and the coordination points it touches. An agent reads this overview,
-then its task plan, then the referenced comparison sections under
-`../upstream/comparisons/`, and works on a branch. It does not delete a module
-until the task's proof test passes on the new path.
+the moq primitive it adopts, the ordered steps, the proof test, and the
+coordination points it touches. An agent reads this overview, then its task
+plan, then the referenced comparison sections, and works on its `align/<task>`
+branch in its own worktree.
 
 ## Task plan template
-
-Every task plan in `tasks/` uses this structure, so any agent knows where to look.
 
 ```
 # <task-name>
 
-Branch: align/<task-name>          Wave: 0 | 1 | 2 | 3
-Depends on: <pin bump / other tasks / upstream contribution + moq release>
-Kind: independent | upstream-gated
+> Campaign: align-to-moq | Kind: task plan | Branch: align/<task-name> |
+> Wave: 0 | 1 | 2 | Read ../0-overview.md first.
+Depends on: <pin bump / other tasks>
 
 ## Goal
-One paragraph: what iroh-live gains and what it deletes.
+One paragraph: what iroh-live gains and what it replaces.
 
 ## Evidence
-Links into ../upstream/comparisons/ and the cut-plan or room-layer for the verdict.
+Links into ../upstream/comparisons/ and room-layer.md for the verdict.
 
 ## moq primitive adopted
 The moq type/API this replaces our code with (with file:line in moq).
@@ -154,13 +120,12 @@ The modules and file:line this edits or deletes, with current LOC.
 ## Steps
 Ordered, each small enough to commit, adoption before deletion.
 
-## Proof before deletion
-The example or end-to-end test that must pass on the new path before the old
-module is removed (coordination point 1).
+## Proof
+The example or end-to-end test that must pass on the new path before old wiring
+is removed (coordination point 1).
 
 ## Coordination
-Any point this task must defer on (upstream gating, the bridge period, rooms
-security).
+Any point this task must defer on.
 
 ## Acceptance checklist
 The gate for calling the task done.
@@ -168,7 +133,6 @@ The gate for calling the task done.
 
 ## Status
 
-The two anchor documents (`cut-plan.md`, `room-layer.md`) are in place, and the
-per-task plans live under `tasks/`, one per node of the task tree above. Read a
-task plan for what to build; read the anchor documents and the comparisons for
-the reasoning behind it.
+`room-layer.md` and the per-task plans under `tasks/` are in place, one per node
+of the task tree above. Read a task plan for what to build; read `room-layer.md`
+and the comparisons for the reasoning behind it.

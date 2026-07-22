@@ -1,8 +1,10 @@
 # moq Primitives Inventory: What the Upstream Stack Offers
 
+> Campaign: upstream | Kind: comparison | Read ../0-overview.md first; index at 0-index.md.
+
 This document catalogs the primitives the moq workspace (`/home/bit/Code/rust/moq`) exposes,
 per crate, as the reference for the cut and upstream plans. It is built from the map files
-under `plans/refactor/maps/` (moq-media.md, moq-video.md, moq-audio-nvenc.md,
+under `maps/` (moq-media.md, moq-video.md, moq-audio-nvenc.md,
 moq-transcode-stats.md, and moq-net-origin.md), spot-verified against the repo. The
 iroh-live side it is measured against is [1-code-map.md](1-code-map.md); category names
 (codec-impl, capture-backend, pubsub-glue, adaptive, sync, and so on) refer to its section 2

@@ -1,11 +1,13 @@
 # Adversarial review of the moq upstream plan (2026-07-22)
 
+> Campaign: upstream | Kind: review | Read ../0-overview.md first.
+
 This is a source-grounded adversarial review of the whole `plans/upstream/`
 campaign: the overview, the five base plans, the ten codec leaves, the three
 capture leaves, and the render leaf. Four specialist reviewers cross-checked
 every load-bearing claim against real source (moq at HEAD `3a3e0ea8`, the
 iroh-live working tree, and the `moq-vaapi` crate in the cargo cache). Their
-full per-area findings are in `plans/upstream/review-0722-base.md`,
+full per-area findings are in `review-0722-base.md`,
 `review-0722-vaapi.md`, `review-0722-backends.md`, and
 `review-0722-capture-meta.md`. This document consolidates them, resolves one
 cross-reviewer contradiction against source, and gives a prioritized fix list.

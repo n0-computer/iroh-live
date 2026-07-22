@@ -1,6 +1,8 @@
 # android-mediacodec. Android MediaCodec H.264 encode and decode via the NDK
 
-Branch: moq-upstream/android-mediacodec          PR target: base branch, then moq main
+> Campaign: upstream | Kind: leaf plan | Branch: up/android-mediacodec |
+> PR target: base branch, then moq main | Read ../0-overview.md first.
+
 Depends on: B1 (frame vocabulary, HardwareBuffer variant), B2 (PTS through encode), B4 (public registerable Backend trait)
 Path: B (external, registered) with an in-tree fallback
 Size: L
@@ -16,8 +18,8 @@ campaign: moq cannot build or test NDK code in its CI (no Android emulator with
 hardware codecs), so the primary plan targets the external registration path,
 where the code stays in our tree and plugs in through
 `register_encoder`/`register_decoder` rather than an in-tree `const Candidate`.
-An in-tree fallback is written up but gated on the maintainer's decision
-(coordination point 6).
+An in-tree fallback is written up but gated on the open placement question
+(coordination point 6; current proposal: external, Path B).
 
 ## Evidence
 
@@ -30,13 +32,13 @@ An in-tree fallback is written up but gated on the maintainer's decision
 - Path B rationale and the in-tree-versus-external decision:
   `comparisons/moq-changes.md:523-639` (section 4, the vendor-in-tree posture, the
   two paths, and the per-backend recommendation naming Android as "the strongest
-  case for Path B"), and `0-overview.md:132-175, 283-287` (the B4 contract and
+  case for Path B"), and `../0-overview.md:132-175, 283-287` (the B4 contract and
   coordination point 6).
-- The B4 registration API this consumes: `0-overview.md:132-168` and
+- The B4 registration API this consumes: `../0-overview.md:132-168` and
   `comparisons/moq-changes.md:313-401` (the public `Backend` trait, `Registration`
   and `DecodeRegistration`, `register_encoder`/`register_decoder`, and the
   `OnceLock<Vec<Candidate>>` seeding).
-- The B1 HardwareBuffer variant: `0-overview.md:79-93` and
+- The B1 HardwareBuffer variant: `../0-overview.md:79-93` and
   `comparisons/moq-changes.md:91-134` (the `HardwareBuffer(HwBuffer)` arm and the
   public `Native::HardwareBuffer`).
 
@@ -155,12 +157,12 @@ Primary (Path B, external and registered):
 
 In-tree fallback (Path A, gated on coordination point 6):
 
-- If the maintainer chooses to carry Android in-tree, the same backend code moves
+- If the placement question resolves to carrying Android in-tree, the same backend code moves
   to `rs/moq-video/src/encode/backend/android.rs` and
   `rs/moq-video/src/decode/backend/{android,android_hw}.rs`, cfg-gated
   `#[cfg(target_os = "android")]`, and adds two `const Candidate` entries to the
   encode and decode tables instead of registering. In that case B4 is not needed
-  (an in-tree backend just adds a candidate; `0-overview.md:170-175`), and the
+  (an in-tree backend just adds a candidate; `../0-overview.md:170-175`), and the
   plan's dependency set drops to B1 and B2. The moq CI gate becomes compile-only
   for the Android target, matching moq-nvenc's compile-everywhere stub, with our
   device validation standing in for runtime tests
@@ -168,13 +170,14 @@ In-tree fallback (Path A, gated on coordination point 6):
 
 ## Implementation steps
 
-1. Settle coordination point 6 with the maintainer before authoring the moq-facing
+1. Settle coordination point 6 upstream before authoring the moq-facing
    wiring: Android in-tree (Path A, adds candidates, needs B1 and B2, does not need
-   B4) or external registered (Path B, needs B1, B2, and B4). Author the backend
-   code first, since it is identical either way, and defer only the ten-line
-   registration-versus-candidate seam until the decision lands. Propose Android
-   in-tree first per the campaign recommendation, and fall back to Path B if moq
-   declines to carry code it cannot test (`comparisons/moq-changes.md:610-617`).
+   B4) or external registered (Path B, needs B1, B2, and B4). Open question: the
+   Android placement, discussed in `../0-overview.md` coordination point 6;
+   current proposal: external (Path B), since moq cannot test NDK code in CI
+   (`comparisons/moq-changes.md:610-617`). Author the backend code first, since
+   it is identical either way, and defer only the ten-line
+   registration-versus-candidate seam until the question is settled.
 2. Port `format.rs` MediaFormat builders to construct from moq's `Config`
    (width, height, bitrate, framerate, gop as the IDR interval) rather than our
    config mirror.
@@ -264,8 +267,8 @@ In-tree fallback (Path A, gated on coordination point 6):
   Android code stay in our tree and cadence while plugging into moq's selection
   (`comparisons/moq-changes.md:610-617, 635-639`). B4 is the only breaking change
   in the whole campaign and the only one exclusive to Path B
-  (`0-overview.md:166-175`), so it must not be opened as a PR until the maintainer
-  decides placement. Write the backend against the B4 public trait so the same code
+  (`../0-overview.md:166-175`), so it must not be opened as a PR until the placement
+  question is settled upstream. Write the backend against the B4 public trait so the same code
   serves the in-tree fallback with only the registration-versus-candidate seam
   changing.
 - The zero-copy decoder is the standout capability: it keeps decoded frames as
@@ -281,10 +284,12 @@ In-tree fallback (Path A, gated on coordination point 6):
 
 ## Coordination
 
-- Coordination point 6 (the B4 breaking change and the Android placement
-  decision): do not open the B4 PR or the registration wiring until the maintainer
-  decides in-tree versus external. This is the explicit defer-to-human gate. Author
-  the backend code, then apply the decided seam.
+- Coordination point 6 (the B4 breaking change and the Android placement).
+  Open question: in-tree versus external, discussed in `../0-overview.md`
+  coordination point 6; current proposal: external (Path B). Do not open the B4
+  PR or the registration wiring until it is settled upstream. This is the
+  explicit defer-to-human gate. Author the backend code, then apply the decided
+  seam.
 - Coordination point 1 (base API freeze): code against the frozen B1, B2, and B4
   contracts. If the B4 `Registration`/`DecodeRegistration` shape cannot express the
   two-decoder selection (HW then ByteBuffer under one name), or B1's `HwBuffer`

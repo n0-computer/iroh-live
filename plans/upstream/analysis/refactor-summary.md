@@ -1,5 +1,8 @@
 # Summary: iroh-live after the moq alignment
 
+> Campaign: upstream | Kind: analysis | Preserved context; superseded by
+> ../0-overview.md where they disagree. Read ../0-overview.md first.
+
 This is the executive synthesis of the refactor planning documents in this
 directory. Read this first; every claim links to the doc that carries the
 evidence. moq state as analyzed on 2026-07-21: moq merged its long-lived

@@ -1,7 +1,9 @@
 # Adversarial review — upstream BASE plans (B1-B5) vs moq HEAD 3a3e0ea8
 
+> Campaign: upstream | Kind: review | Read ../0-overview.md first.
+
 Date: 2026-07-22. Reviewer pass cross-checked every cited moq `file:line` against
-`/home/bit/Code/rust/moq`. Plans read: `0-overview.md`, `base/B1..B5`.
+`/home/bit/Code/rust/moq`. Plans read: `../0-overview.md`, `../base/B1..B5`.
 
 ## Verdict
 

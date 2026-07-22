@@ -1,7 +1,9 @@
 # Codec-by-Codec Comparison: rusty-codecs vs moq
 
-Status: planning artifact (overnight session 2026-07-18, revised 2026-07-22
-after moq merged dev into main). Compares iroh-live's `rusty-codecs` against
+> Campaign: upstream | Kind: comparison | Read ../0-overview.md first; index at 0-index.md.
+
+Status: planning artifact, verified against moq main at HEAD `3a3e0ea8`.
+Compares iroh-live's `rusty-codecs` against
 moq's `moq-video`, `moq-audio`, and `moq-nvenc`, per codec and per backend, to
 decide for each piece: cut-and-replace, keep, or upstream. For every backend it
 states which implementation is more capable, exactly how they differ, and what
@@ -33,8 +35,8 @@ all. moq's backend trait is synchronous call-in/packets-out
 (`moq:encode/backend/mod.rs:37-57`). Their contract is the better one, and it
 is what their rate control (section 9) depends on. The trait and API-shape
 questions this raises are analyzed in
-[3t-compare-traits-api.md](3t-compare-traits-api.md), and the concrete
-moq-side change proposals in [3u-moq-changes.md](3u-moq-changes.md).
+[traits-api.md](traits-api.md), and the concrete
+moq-side change proposals in [moq-changes.md](moq-changes.md).
 
 ---
 

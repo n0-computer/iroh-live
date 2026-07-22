@@ -1,6 +1,8 @@
 # Comparison: publish, subscribe, catalog, adaptive, and sync
 
-Part of the moq-alignment refactor series (see [0-overview.md](0-overview.md)).
+> Campaign: upstream | Kind: comparison | Read ../0-overview.md first; index at 0-index.md.
+
+Part of the comparison evidence base (see [../0-overview.md](../0-overview.md)).
 This document compares iroh-live's `moq-media` publish/subscribe/catalog/
 adaptive/sync layer against the corresponding moq stack: `hang`, `moq-mux`,
 `moq-video`/`moq-audio` (their track-facing Producer/Consumer layer),

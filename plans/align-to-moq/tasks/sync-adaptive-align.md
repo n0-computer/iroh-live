@@ -1,10 +1,13 @@
 # sync-adaptive-align
 
-Branch: align/sync-adaptive-align          Wave: 1
+> Campaign: align-to-moq | Kind: task plan | Branch: align/sync-adaptive-align |
+> Read ../0-overview.md first.
+
+Wave: 1
 Depends on: Wave 0 pin bump (moq release cut from main carrying moq-mux 0.7.x with
 the per-rendition `Estimate` metrics that populate catalog `jitter` and
 `bitrate`). Independent of every other task.
-Kind: independent
+Coupling: independent
 
 ## Goal
 This task aligns iroh-live's two subscriber-side gap-filler layers, the playout
@@ -39,7 +42,7 @@ of scope.
   catalog `jitter` into the clock.
 - `../upstream/comparisons/maps/moq-media.md` for the moq-media module map, and
   the stale "our Rust catalog does not carry this field yet" claim it repeats.
-- `cut-plan.md` for the keep verdict on `sync.rs`, `playout.rs`, and `adaptive.rs`.
+- `../../upstream/cut-plan.md` for the keep verdict on `sync.rs`, `playout.rs`, and `adaptive.rs`.
 
 ## moq primitive adopted
 moq-mux's per-rendition catalog `Estimate` and the catalog fields it populates.

@@ -1,5 +1,7 @@
 # Consistency review: upstream plan set (19 plans + overview)
 
+> Campaign: upstream | Kind: review | Read ../0-overview.md first.
+
 Reviewer pass over the frozen-contract adherence, dependency tree, seam
 declarations, coordination points, template/anchor sanity, and overview accuracy.
 Verified moq anchors against `/home/bit/Code/rust/moq` at HEAD `3a3e0ea8`.
@@ -27,7 +29,7 @@ exist. The rest are anchor-slop nits.
 
 ### 1. av1-software falsely claims the encode `Codec` enum is not `#[non_exhaustive]` (SUBSTANTIVE)
 
-- Location: `codec/av1-software.md` lines 74-78 ("The enum is not currently
+- Location: `../codec/av1-software.md` lines 74-78 ("The enum is not currently
   `#[non_exhaustive]` on the encode side, so confirm whether adding the variant is
   breaking and, if so, flag it to the B-plan owner"), and Coordination lines
   137-138 ("If adding the `Av1` variant to the encode `Codec` enum is breaking, stop
@@ -45,9 +47,9 @@ exist. The rest are anchor-slop nits.
 
 ### 2. Unresolved feature-gate name for private `Frame::DmaBuf` (SUBSTANTIVE)
 
-- Location: `base/B1-frame-vocabulary.md` lines 85, 84 ("Gated on `vaapi` (or a new
-  `dmabuf` feature)"); `capture/pipewire-dmabuf.md` lines 51, 138-140, 176;
-  `codec/v4l2-decode.md` lines 49-52, 137.
+- Location: `../base/B1-frame-vocabulary.md` lines 85, 84 ("Gated on `vaapi` (or a new
+  `dmabuf` feature)"); `../capture/pipewire-dmabuf.md` lines 51, 138-140, 176;
+  `../codec/v4l2-decode.md` lines 49-52, 137.
 - Issue: B1 gates the private `Frame::DmaBuf` variant under `cfg(all(target_os =
   "linux", feature = "vaapi"))` but hedges "or a new `dmabuf` feature". pipewire-dmabuf
   and the v4l2-decode EXPBUF follow-up are DMA-BUF *producers* that do not otherwise
@@ -64,7 +66,7 @@ exist. The rest are anchor-slop nits.
 
 ### 3. render plan states `into_i420(&self)`; actual signature consumes `self` (NIT)
 
-- Location: `render/moq-video-render.md` line 76 ("`decode::Frame::into_i420(&self)
+- Location: `../render/moq-video-render.md` line 76 ("`decode::Frame::into_i420(&self)
   -> Result<Bytes, Error>`") and the fallback pattern `self.render_i420(frame)` over
   `&Frame` (lines 170-213, 239).
 - Issue: `rs/moq-video/src/decode/mod.rs:94` is `pub fn into_i420(self)` — it consumes
@@ -81,7 +83,7 @@ exist. The rest are anchor-slop nits.
 
 ### 4. v4l2-decode conflates the decode HARDWARE slice and SOFTWARE const anchor (NIT)
 
-- Location: `codec/v4l2-decode.md` line 100 ("decode `HARDWARE` slice of
+- Location: `../codec/v4l2-decode.md` line 100 ("decode `HARDWARE` slice of
   `rs/moq-video/src/decode/backend/mod.rs:89-114`").
 - Issue: in source the decode `const HARDWARE` slice is lines 89-107 and the single
   `const SOFTWARE` Candidate is 110-114 (as B4 and vaapi-decode correctly cite,
@@ -92,7 +94,7 @@ exist. The rest are anchor-slop nits.
 
 ### 5. Overview plan-index "Depends on" for v4l2-camera-enum omits the qualifier (NIT)
 
-- Location: `0-overview.md` line 412 (plan-index table row: "v4l2-camera-enum ... B1")
+- Location: `../0-overview.md` line 412 (plan-index table row: "v4l2-camera-enum ... B1")
   vs line 233 (dependency tree: "`v4l2-camera-enum [B1 for zero-copy; else
   independent]`") and the plan header ("B1 (only if zero-copy EXPBUF is pursued);
   otherwise independent").
@@ -104,7 +106,7 @@ exist. The rest are anchor-slop nits.
 
 ### 6. av1 Coordination describes but does not name coordination point 1 (NIT)
 
-- Location: `codec/av1-software.md` Coordination lines 137-138.
+- Location: `../codec/av1-software.md` Coordination lines 137-138.
 - Issue: every other base-consumer leaf explicitly cites "coordination point 1 (base
   API freeze)" in its Coordination section; av1 describes filing against "the base
   plan" without naming the point. Cosmetic inconsistency in an otherwise uniform set.

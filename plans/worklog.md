@@ -1021,3 +1021,58 @@ remaining edits + the align overview + the UI-stay note by hand).
 Comparisons carry dated "decision revised" notes (analysis-of-record
 preserved). Final sweep clean (no em dashes; render out-of-tree mentions
 only in the rejected-Option-B contingency section).
+
+## Round 6 (2026-07-22, second review feedback + full reorganization)
+
+Second review feedback, all applied:
+- Comprehensive reorganization of every file in plans/ (except old/):
+  * Reviews moved to plans/upstream/reviews/ (7 review-* files + the root
+    upstream-review-0722-plan.md as reviews/review-0722-consolidated.md).
+  * Cut concerns moved out of align-to-moq into upstream: cut-plan.md ->
+    upstream/cut-plan.md; codec-remove/capture-remove/render-adopt ->
+    upstream/counterpart/ (reframed as pair-side counterpart plans).
+  * New upstream/audio/ group: opus-improvements + pcm moved from codec/,
+    plus new audio/audio-device-unify.md (playback sink + AEC into
+    moq-audio behind features; audio device layer is IN scope of the
+    upstream worktree, reversing the earlier scope-out). symphonia file
+    source: open question, proposal keep in iroh-live.
+  * New render/moq-egui.md (moq-media-egui moves to moq as moq-egui;
+    dioxus stays in iroh-live for now).
+  * New upstream/DISPOSITION.md: standing register of every iroh-live
+    media module (upstream-ours / adopt-theirs / keep / defer / drop);
+    nothing silently dropped.
+  * New capture/parity-ports.md: port-our-fixes items for adopt-theirs
+    backends (macOS/Windows capture, VTB encode, etc.).
+  * New plans/branches.md: registry of all branch names in both repos
+    with doc links.
+- Branch model settled and written into prompt-base.md: paired branches
+  up/<name> in moq (adds) and iroh-live (cuts + path dep during dev, git
+  branch dep at handoff); flat branches rebased on up/base, no stacking
+  unless forced; foundational work moves to base only by coordinator (or a
+  single delegated agent) cherry-picking; one git worktree per active
+  branch. Align campaign keeps align/<task> branches, iroh-live only.
+- prompt/overview dedup: campaign prompts slimmed to mission, authorities,
+  done-signals, model routing, seed, blockers; all structure lives in the
+  0-overviews; prompt-base explicitly sequences campaign prompt ->
+  base prompt -> 0-overview. State files pinned to the campaign directory
+  (status.md, worklog.md, learnings.md per campaign).
+- Document conventions in prompt-base: quoted 1-3 line header on every
+  doc (campaign | kind | branch | read-first), current-state-only (no
+  session history in docs; history lives in worklogs and git), RFD tone
+  (never "maintainer's decision/input"; "open question: ... discussed in
+  ..., current proposal: ..."), length budgets, style.
+- History scrub: the "Review revisions" section in upstream/0-overview.md
+  dissolved into current-state text; render decision restated as: in-tree
+  normal workspace member, heavy deps behind non-default features, both
+  wgpu AND GLES backends behind feature flags (GLES explicitly not
+  dropped). PCM: hang catalog variant in the same branch.
+- Prompt validation vs Opus 4.8/Fable docs (claude-api skill,
+  model-migration guide): lengths fine (base prompt 267 lines, campaign
+  prompts ~75); added the doc-recommended autonomy guidance (proceed on
+  plan-authorized reversible actions, evidence-grounded progress claims,
+  no context-anxiety stops) and the brief-calibration rule (prescriptive
+  briefs for cheap workers, goal+constraints for frontier tiers).
+- Executed via 4 parallel agents (new-plan author, disposition/parity
+  author, counterpart/cut-plan/render/pcm reframe, mechanical sweep for
+  headers + paths + RFD tone + history scrub across ~50 files) with
+  coordinator doing structure, prompts, overviews, branches.md.

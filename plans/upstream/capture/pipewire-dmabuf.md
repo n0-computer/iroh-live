@@ -1,6 +1,8 @@
 # pipewire-dmabuf. PipeWire DMA-BUF zero-copy capture delivery
 
-Branch: moq-upstream/pipewire-dmabuf          PR target: base branch, then moq main
+> Campaign: upstream | Kind: leaf plan | Branch: up/pipewire-dmabuf |
+> PR target: base branch, then moq main | Read ../0-overview.md first.
+
 Depends on: B1 (frame vocabulary: `Native`, `Frame::DmaBuf(dmabuf::Frame)`)
 Path: A (in-tree)
 Size: M
@@ -211,7 +213,7 @@ the chosen node. So the camera sibling adds a fd-open plus node-enumeration step
 ahead of the shared negotiation, rather than receiving a node id from a picker.
 It is a follow-up commit within this leaf (or a near sibling branch off the same
 base), sequenced after the screen path proves the DMA-BUF delivery, so the camera
-source is not lost. If the maintainer prefers it as a separate leaf,
+source is not lost. If upstream review prefers it as a separate leaf,
 that is the alternative disposition; either way it is tracked, not dropped.
 
 Note on CPU scaling: our `processing/scale` (pic-scale) CPU scaler is dropped by

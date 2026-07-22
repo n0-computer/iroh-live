@@ -1,12 +1,14 @@
 # 3z. Zero-Copy Deep Dive: iroh-live and moq
 
+> Campaign: upstream | Kind: comparison | Read ../0-overview.md first; index at 0-index.md.
+
 Scope: the GPU frame models and every zero-copy path (capture to encode, decode to
 render, transcode, and render) in iroh-live's rusty-codecs and rusty-capture against
 moq's `rs/moq-video`, `rs/moq-nvenc`, and `rs/moq-transcode`. iroh-live citations are
 working-tree `file:line`; moq citations are `rs/...:line` read directly from the moq
 working tree at HEAD `3a3e0ea8` (dev merged into main on 2026-07-21, so there is a
 single moq codebase now and no branch split to reconcile). This document is the
-companion of `3u-moq-changes.md`, which carries the concrete moq API sketches; the
+companion of `moq-changes.md`, which carries the concrete moq API sketches; the
 requirements here reference that document rather than repeating its code.
 
 Conclusion up front: the two zero-copy investments barely overlap. moq built the
@@ -330,20 +332,19 @@ exists in the frame model but no in-tree consumer imports it.
 
 ## 4. Render upstreaming decision
 
-DECISION REVISED (2026-07-22, maintainer feedback): the render stack goes in-tree
-to moq, as a new `moq-video-render` crate that is an optional, off-default member
-of the moq workspace (Option A, adapted so the graphics dependencies stay off
-moq's default and relay builds), not the out-of-tree crate this section
-originally recommended. The UI-framework integrations stay in iroh-live for now.
-See `../0-overview.md` Review revisions, revision 1. The analysis below is the
-record of the options as they were weighed; the in-tree decision is the current
-plan.
+DECISION: the render stack goes in-tree to moq, as a new `moq-video-render`
+crate that is a normal member of the moq workspace with its heavy graphics
+dependencies behind non-default features, so moq's default and relay builds stay
+light; both the wgpu and GLES backends land behind feature flags. The egui
+integration follows as `moq-egui`. See `../0-overview.md` and
+`../render/moq-video-render.md`. The analysis below is the record of the options
+as they were weighed; where it disagrees, `../0-overview.md` governs.
 
 The maintainer intends to upstream the render stack, not merely tolerate it living
 downstream. That reframes the decision. Every option below requires the same enabling
 change on the moq side, namely a public frame vocabulary with native-handle accessors
 plus decoders that export handles instead of downloading (sketched in
-`3u-moq-changes.md`, U1 and U2 in section 5). Without those, the renderer has nothing
+`moq-changes.md`, U1 and U2 in section 5). Without those, the renderer has nothing
 to import regardless of where it lives, because `crate::frame::Frame` and its GPU
 variants are `pub(crate)` and the only public exits are `into_i420()` and
 `Encoder::encode` (`decode/mod.rs:94-101, encode/encoder.rs:249`). Given that shared
@@ -425,14 +426,14 @@ public-handle work stalls, since it still deletes our parallel frame model and a
 to moq's vocabulary, but it forgoes reusability and keeps the render stack out of the
 upstream. All three depend on the same moq API additions; the concrete sketches for the
 public handle enum, the `decode::Frame` accessor, and the per-decoder export live in
-`3u-moq-changes.md`, and Option B is the one that gets the most value from them.
+`moq-changes.md`, and Option B is the one that gets the most value from them.
 
 ---
 
 ## 5. Concrete upstream requirements
 
 This list supersedes the earlier R1 through R7 enumeration. It is scoped to what Option
-B needs, and each item names what it touches. The API drafts are in `3u-moq-changes.md`.
+B needs, and each item names what it touches. The API drafts are in `moq-changes.md`.
 
 U1. Public frame vocabulary and native-handle accessor. This is the keystone; every
 other item depends on it. A public handle enum equivalent to our `NativeFrameHandle` and
@@ -443,7 +444,7 @@ Touches `rs/moq-video/src/frame.rs` (the private enum grows cfg-gated variants a
 `Cuda`) and `rs/moq-video/src/decode/mod.rs` (a public accessor beside `into_i420()`,
 returning the public handle enum and `None` for CPU frames). This is the on-demand-export
 shape their enum lacks (section 1.3) and it respects the no-backend-types rule, because
-the handle names a kernel or OS object, not a backend. See `3u-moq-changes.md` for the
+the handle names a kernel or OS object, not a backend. See `moq-changes.md` for the
 enum and accessor signatures.
 
 U2. Per-decoder surface export (VAAPI, VideoToolbox, D3D). Three decoder-side changes so
@@ -461,7 +462,7 @@ mediafoundation}.rs`. The VAAPI addition also requires `moq-vaapi` to grow surfa
 (`vaExportSurfaceHandle` plus `VADRMPRIMESurfaceDescriptor`) and the decode half of
 cros-codecs it currently omits, which is the largest single piece of enabling work.
 Reference impls: our `vaapi/decoder.rs` and `vtb/decoder.rs:219-220`. Sketches in
-`3u-moq-changes.md`.
+`moq-changes.md`.
 
 U3. Capture DMA-BUF and AHardwareBuffer delivery, with the matching encoder input. The
 PipeWire capture source negotiates `SPA_DATA_DmaBuf` and produces the DMA-BUF handle
@@ -475,7 +476,7 @@ is part of this requirement rather than a separate one. Touches
 `rs/moq-video/src/capture/pipewire.rs`, a new Android capture module, and
 `rs/moq-video/src/encode/backend/vaapi.rs`, and it requires VPP bindings in `moq-vaapi`
 (raw FFI on our side today, since cros-libva does not wrap VPP). Sketches in
-`3u-moq-changes.md`.
+`moq-changes.md`.
 
 U4. The render-crate home. A published, out-of-tree `moq-video-render` crate (Option B)
 consuming only the public handle types from U1, into which our importers and renderer
@@ -525,4 +526,4 @@ the two-model translation we carry today disappears. moq-video stays render-free
 Intel Y_TILED re-tile and the Vulkan import stay where they are tested on real hardware,
 and the render stack becomes reusable across the moq ecosystem rather than iroh-live
 private. The concrete moq API additions that make this possible are drafted in
-`3u-moq-changes.md`.
+`moq-changes.md`.

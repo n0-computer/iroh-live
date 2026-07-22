@@ -1,5 +1,7 @@
 # Capture Comparison: rusty-capture vs moq capture
 
+> Campaign: upstream | Kind: comparison | Read ../0-overview.md first; index at 0-index.md.
+
 Compares iroh-live's `rusty-capture` (plus the capture-adjacent pieces of
 `moq-media`) against moq's capture layer at main HEAD `3a3e0ea8`. moq is a
 single branch since the dev line merged into main on 2026-07-21, so the full
@@ -11,8 +13,8 @@ citations are `file:line` against the working tree; moq citations are against
 `git show 3a3e0ea8:<path>`. The capture source files are byte-identical to the
 pre-merge analysis SHA `261c2048`, so the line citations are exact against main.
 Trait and API-shape questions are analyzed in
-[3t-compare-traits-api.md](3t-compare-traits-api.md); concrete moq-side change
-proposals live in [3u-moq-changes.md](3u-moq-changes.md).
+[traits-api.md](traits-api.md); concrete moq-side change
+proposals live in [moq-changes.md](moq-changes.md).
 
 ---
 

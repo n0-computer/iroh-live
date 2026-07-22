@@ -1,6 +1,8 @@
 # vtb-mf-decode-surface. VideoToolbox and Media Foundation decode retain their GPU surface
 
-Branch: moq-upstream/vtb-mf-decode-surface          PR target: base branch, then moq main
+> Campaign: upstream | Kind: leaf plan | Branch: up/vtb-mf-decode-surface |
+> PR target: base branch, then moq main | Read ../0-overview.md first.
+
 Depends on: B1 (frame vocabulary), B3 (`decode::Frame::native()`)
 Path: A (in-tree)
 Size: S-M
@@ -10,7 +12,7 @@ Size: S-M
 Make moq's VideoToolbox (macOS) and Media Foundation (Windows) decode backends keep
 their decoded frame on the GPU instead of downloading it to CPU I420, so that
 `decode::Frame::native()` has something to return on Apple and Windows and the
-out-of-tree renderer can import a surface with no CPU round trip (requirement U2).
+moq-video-render crate can import a surface with no CPU round trip (requirement U2).
 VideoToolbox keeps its NV12 `CVPixelBuffer` as `Frame::Surface`; Media Foundation
 keeps its DXVA NV12 texture as `Frame::Texture`. This is moq-internal work: it improves
 moq's own decoders and ports nothing from iroh-live's tree. The VideoToolbox half is

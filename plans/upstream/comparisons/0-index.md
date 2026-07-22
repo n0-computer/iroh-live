@@ -1,5 +1,7 @@
 # Comparisons index and consolidated capability matrix
 
+> Campaign: upstream | Kind: comparison (index) | Read ../0-overview.md first.
+
 These documents establish, component by component, where iroh-live's owned media
 stack (rusty-codecs, rusty-capture, moq-media) stands against current moq main
 (HEAD `3a3e0ea8`, the `dev` line merged into `main` on 2026-07-21, so there is no
@@ -48,10 +50,10 @@ that acts on it. Cells link to the detailed section that backs the verdict.
 | VP9 decode | none | none ([catalog-only](codecs.md#4-vp9)) | n/a | none |
 | AV1 encode | rav1e software ([only one, either stack](codecs.md#3-av1)) | none | [upstream ours](codecs.md#3-av1) | [av1-software](../codec/av1-software.md) |
 | AV1 decode | rav1d software (universal fallback) | NVDEC 8-bit only ([details](codecs.md#3-av1)) | [upstream ours](codecs.md#3-av1) | [av1-software](../codec/av1-software.md) |
-| Opus encode | libopus, runtime bitrate, pre-skip ([details](codecs.md#5-opus)) | libopus, rate snap, validation | [merge](audio.md#15-verdict-on-the-codec-layer) | [opus-improvements](../codec/opus-improvements.md) |
-| Opus decode | libopus, decoder remix ([details](audio.md#12-opus-decoder-feature-by-feature)) | libopus ([no PLC either side](audio.md#15-verdict-on-the-codec-layer)) | [merge](audio.md#15-verdict-on-the-codec-layer) | [opus-improvements](../codec/opus-improvements.md) |
-| PCM encode | raw f32 ([ours only](codecs.md#6-pcm)) | none | keep-ours | [pcm](../codec/pcm.md) |
-| PCM decode | raw f32 ([ours only](audio.md#14-pcm-codec-ours-only)) | none | keep-ours | [pcm](../codec/pcm.md) |
+| Opus encode | libopus, runtime bitrate, pre-skip ([details](codecs.md#5-opus)) | libopus, rate snap, validation | [merge](audio.md#15-verdict-on-the-codec-layer) | [opus-improvements](../audio/opus-improvements.md) |
+| Opus decode | libopus, decoder remix ([details](audio.md#12-opus-decoder-feature-by-feature)) | libopus ([no PLC either side](audio.md#15-verdict-on-the-codec-layer)) | [merge](audio.md#15-verdict-on-the-codec-layer) | [opus-improvements](../audio/opus-improvements.md) |
+| PCM encode | raw f32 ([ours only](codecs.md#6-pcm)) | none | keep-ours | [pcm](../audio/pcm.md) |
+| PCM decode | raw f32 ([ours only](audio.md#14-pcm-codec-ours-only)) | none | keep-ours | [pcm](../audio/pcm.md) |
 
 ### Capture backends
 
@@ -76,14 +78,14 @@ that acts on it. Cells link to the detailed section that backs the verdict.
 | Capture to encode | Linux DMA-BUF, macOS CVPixelBuffer ([details](zerocopy.md#2a-capture-to-encode-verdict-complementary)) | macOS, Windows surfaces into encoder | [complementary](zerocopy.md#2a-capture-to-encode-verdict-complementary) | [pipewire-dmabuf](../capture/pipewire-dmabuf.md), [B1](../base/B1-frame-vocabulary.md) |
 | Decode to render | only such path, 3 platforms, 2 graphics APIs ([details](zerocopy.md#2b-decode-to-render-verdict-ours)) | downloads to I420 except NVDEC | [upstream ours](zerocopy.md#2b-decode-to-render-verdict-ours) | [vtb-mf-decode-surface](../codec/vtb-mf-decode-surface.md), [B3](../base/B3-decode-native-accessor.md) |
 | Transcode (decode, scale, encode) | none ([details](zerocopy.md#2c-transcode-decode-then-scale-then-encode-verdict-theirs)) | NVDEC to NVENC GPU loop, decode-once fanout | [complementary](zerocopy.md#2c-transcode-decode-then-scale-then-encode-verdict-theirs) | none |
-| Render | only renderer, Vulkan, EGL, Metal ([details](zerocopy.md#2d-render-itself-verdict-ours)) | none | keep-ours, [out-of-tree](zerocopy.md#4-render-upstreaming-decision) | [moq-video-render](../render/moq-video-render.md) |
+| Render | only renderer, Vulkan, EGL, Metal ([details](zerocopy.md#2d-render-itself-verdict-ours)) | none | upstream-ours, [in-tree crate](zerocopy.md#4-render-upstreaming-decision) | [moq-video-render](../render/moq-video-render.md) |
 
 ### Audio device layer
 
 | Component | iroh-live | moq main | Verdict | Plan |
 |---|---|---|---|---|
-| Playback / sink | full duplex engine, mixing, metering ([details](audio.md#3-device-io)) | [no playback surface](audio.md#7-verdict) | keep-ours | none |
-| AEC | sonora acoustic echo cancellation ([details](audio.md#3-device-io)) | [none](capture.md#4-audio-capture) | keep-ours | none |
+| Playback / sink | full duplex engine, mixing, metering ([details](audio.md#3-device-io)) | [no playback surface](audio.md#7-verdict) | upstream-ours | [audio-device-unify](../audio/audio-device-unify.md) |
+| AEC | sonora acoustic echo cancellation ([details](audio.md#3-device-io)) | [none](capture.md#4-audio-capture) | upstream-ours | [audio-device-unify](../audio/audio-device-unify.md) |
 | Resample | higher quality, per-call alloc ([details](audio.md#2-resampling)) | leaner sinc-128, preallocated | [merge](audio.md#2-resampling) | none |
 | System-audio capture | none ([the missing half](audio.md#34-the-missing-half)) | SCK loopback, TCC, `format()` ([details](audio.md#32-what-their-capture-does-and-does-better)) | [adopt-theirs](audio.md#7-verdict) | none |
 
@@ -103,8 +105,9 @@ that acts on it. Cells link to the detailed section that backs the verdict.
   DMA-BUF encoder plus a full stateless decode against moq's 111-line unvalidated
   CPU-only encoder placeholder and no VAAPI decode at all
   ([codecs.md](codecs.md#vaapi-vs-vaapi--moq-vaapi)).
-- The renderer becomes an out-of-tree `moq-video-render` crate over moq's public
-  frame handles (Option B), which keeps moq-video render-free and the Intel
+- The renderer becomes an in-tree `moq-video-render` crate over moq's public
+  frame handles, a normal workspace member with its heavy GPU dependencies
+  behind non-default features, keeping the Intel
   Y_TILED re-tile where it is tested on hardware
   ([zerocopy.md](zerocopy.md#4-render-upstreaming-decision),
   [moq-changes.md](moq-changes.md#recommendation-per-backend),
@@ -116,7 +119,7 @@ that acts on it. Cells link to the detailed section that backs the verdict.
 - The Opus PLC story is open on both sides: neither stack actually performs PLC or
   FEC decode today, so a merged wrapper must add a `decode_lost` entry point that
   neither has ([audio.md](audio.md#15-verdict-on-the-codec-layer),
-  [opus-improvements](../codec/opus-improvements.md)).
+  [opus-improvements](../audio/opus-improvements.md)).
 - moq-transcode is the complementary supply side of ABR: it mints a rendition
   ladder on demand but contains zero selection logic, which is exactly the gap
   iroh-live's adaptive path fills

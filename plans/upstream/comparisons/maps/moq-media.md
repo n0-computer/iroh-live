@@ -1,5 +1,7 @@
 # moq-media crate map (refactor planning)
 
+> Campaign: upstream | Kind: map | Read ../../0-overview.md first; index at ../0-index.md.
+
 Scope: `moq-media/src/**` only. Crate role: iroh-live's transport-agnostic
 publish / subscribe / adaptive / A-V-sync layer built on `hang` +
 `moq-lite` (aliased in the workspace as `moq-net`) + `moq-mux` +
@@ -22,7 +24,7 @@ thing a refactor has to reason about.
 
 ---
 
-## 0. lib.rs — public API surface (`moq-media/src/lib.rs`)
+## 0. lib.rs - public API surface (`moq-media/src/lib.rs`)
 
 Module doc (lib.rs:1-7) states the crate has no iroh dependency and works
 with any transport implementing `transport::PacketSource` /
@@ -35,7 +37,7 @@ private `processing`, `util`; `test_util` under `test-util`.
 Re-exports (lib.rs:33-39): `audio_backend::{AudioBackend,
 AudioBackendOpts, AudioDevice}`; `rusty_capture as capture` (under
 capture features); `rusty_codecs::render` (under `wgpu`); and
-`rusty_codecs::{codec, config, format, test_sources, traits}` — meaning
+`rusty_codecs::{codec, config, format, test_sources, traits}` - meaning
 the codec traits (`VideoEncoder`, `AudioDecoder`, …), pixel/format
 types, and `codec` enums all live in **rusty-codecs**, not here. This
 crate consumes them.
@@ -57,7 +59,7 @@ and delegate to rusty-codecs / rusty-capture.
 Module doc (publish.rs:1-6): main entry is `LocalBroadcast`, configured
 via `VideoPublisher` / `AudioPublisher`.
 
-**`LocalBroadcast`** (publish.rs:214-223) — the primary publish type:
+**`LocalBroadcast`** (publish.rs:214-223) - the primary publish type:
 
 ```rust
 #[derive(derive_more::Debug, Clone)]
@@ -104,7 +106,7 @@ closure. Rendition names are `format!("video/{}-{}", E::ID, preset)`
 (`add_with_generic::<E>`), so the codec matrix (h264/av1/vtb/vaapi/v4l2/
 android) is dispatched here but implemented in rusty-codecs.
 
-**`SharedVideoSource`** (publish.rs:1087-1095) — a fan-out wrapper around
+**`SharedVideoSource`** (publish.rs:1087-1095) - a fan-out wrapper around
 a single OS capture thread using `tokio::sync::watch<Option<VideoFrame>>`.
 It reference-counts subscribers (`subscriber_count`, AtomicU32) and
 parks/unparks the capture thread to release the camera when idle
@@ -116,7 +118,7 @@ per-subscriber lifecycle that moq/hang do not provide.
 `moq_mux::catalog::Producer<crate::catalog::IrohLiveExt>`. Its setters
 (`set_video`/`set_audio`/`set_chat`/`set_user`) mutate the locked
 catalog; moq_mux publishes a fresh snapshot on mutation. This is a thin
-wrapper over moq_mux — **not** a reimplementation.
+wrapper over moq_mux - **not** a reimplementation.
 
 **`ActiveVideoPipeline`** (publish.rs:98-110) bundles a pipeline with its
 `TrackProducer` and aborts the producer on drop (moq-lite close
@@ -151,9 +153,9 @@ iroh-live-specific.
 
 **Duplication verdict (publish):** No hang/moq duplication. Catalog
 production is delegated to `moq_mux::catalog::Producer`; track producers
-are moq-lite; encoding is rusty-codecs. The novel logic — dynamic
+are moq-lite; encoding is rusty-codecs. The novel logic - dynamic
 on-demand track start, per-subscriber source parking, simulcast rendition
-registry, source leasing — is legitimately iroh-live's. One thing to
+registry, source leasing - is legitimately iroh-live's. One thing to
 watch in refactor: the manual "publish empty catalog once to unblock
 early subscribers" hack (publish.rs:582-585) and the dynamic-handler
 race workaround (publish.rs:246-252) are compensating for moq-lite/hang
@@ -193,7 +195,7 @@ under `SyncMode::Synced` (see `pipeline_ctx`, subscribe.rs:420-429).
 **`CatalogSnapshot`** (subscribe.rs:250-256) derefs to `Catalog`, carries
 a `seq`, and equality compares only `seq`. Selection helpers
 `select_video_rendition` / `select_audio_rendition` (subscribe.rs:807-826)
-implement a **preset-suffix ordering** table per `Quality` — this is
+implement a **preset-suffix ordering** table per `Quality` - this is
 iroh-live selection logic on top of the hang catalog's rendition map, not
 provided by hang.
 
@@ -205,7 +207,7 @@ provided by hang.
 `raw_audio_track` (732-782) returning a bare `MoqPacketSource` for
 relay/record without decode. Every one of these builds the same
 `OrderedConsumer::new(track_consumer, Container::Legacy).with_latency(...)`
-(e.g. subscribe.rs:558-560, 597, 750-752) — the `moq_mux` ordered
+(e.g. subscribe.rs:558-560, 597, 750-752) - the `moq_mux` ordered
 consumer is where group-level latency skipping happens.
 
 **`VideoTrack`** (subscribe.rs:895-903):
@@ -220,7 +222,7 @@ pub struct VideoTrack {
 
 `VideoTrackInner` (subscribe.rs:916-928) is either `Pipeline(VideoDecoderHandle)`
 or a raw `VideoSource` capture thread (used by `from_video_source`,
-936-1027, for local preview — it runs its own 30fps loop with a `Scaler`).
+936-1027, for local preview - it runs its own 30fps loop with a `Scaler`).
 Frame delivery uses the single-slot `frame_channel` (latest-wins). Methods:
 `try_recv` (non-blocking, 1089), `next_frame` (async, 1103), `has_frame`,
 `set_viewport`, and the adaptation surface (`enable_adaptation` 1123,
@@ -238,7 +240,7 @@ consumer and an `AudioDecoderPipeline`. Exposes volume/handle/stopped.
 video + optional audio; `new::<D>` (1244-1277) selects renditions by
 quality and subscribes both.
 
-**Adaptation task** (`adaptation_task_v2`, subscribe.rs:1293-1493) — the
+**Adaptation task** (`adaptation_task_v2`, subscribe.rs:1293-1493) - the
 runtime driver for the `adaptive.rs` state machine (see §3). It holds the
 current `VideoDecoderHandle`, runs an interval loop, refreshes rendition
 ranking on catalog change, handles `Fixed` mode, runs upgrade "probes"
@@ -247,10 +249,10 @@ loss/congestion), and applies `Downgrade`/`Emergency`/`StartProbe`
 decisions via `switch_rendition_v2` (1497-1533), which builds a new
 `VideoDecoderPipeline::with_sender` writing into the shared frame sender.
 Note the doc at 1281-1287 references an older `adaptation_task` in
-adaptive.rs that no longer exists — a stale comment worth cleaning up.
+adaptive.rs that no longer exists - a stale comment worth cleaning up.
 
 **Duplication verdict (subscribe):** No hang/moq container reimplementation
-— it wraps `BroadcastConsumer` (moq-lite) and the `moq_mux` ordered
+- it wraps `BroadcastConsumer` (moq-lite) and the `moq_mux` ordered
 consumer. Rendition selection-by-quality, the latest-wins frame channel,
 seamless decoder swapping, and adaptation orchestration are genuine
 iroh-live glue. The `NoCatalog`/`RenditionNotFound`/`Ended` error enum
@@ -277,11 +279,11 @@ carried across ticks (`bad_since`, `good_since`, `last_downgrade`,
 `last_probe`, `probe_congestion_baseline`, `last_switch_failure`).
 
 **Algorithm** (`evaluate`, adaptive.rs:150-223). Per tick, in order:
-(1) **Emergency** — if `loss >= loss_emergency` and not already lowest,
-drop straight to lowest immediately. (2) **Downgrade** — bandwidth-primary:
+(1) **Emergency** - if `loss >= loss_emergency` and not already lowest,
+drop straight to lowest immediately. (2) **Downgrade** - bandwidth-primary:
 `bandwidth_stressed = available_bps < current.bitrate_bps * 0.85` OR
 `loss >= 0.10`; if sustained for `downgrade_hold`, step down one rendition.
-(3) **Upgrade gating** — blocked while highest, during
+(3) **Upgrade gating** - blocked while highest, during
 `post_downgrade_cooldown`, or during `probe_cooldown`; otherwise if the
 next-higher rendition has bandwidth headroom
 (`available_bps >= next.bitrate_bps * 1.2`) AND `loss <= loss_good`
@@ -293,7 +295,7 @@ not in `evaluate` (see subscribe.rs:1402-1404), except Emergency bypasses
 it. The seamless "probe" (parallel decode, commit on success) lives in
 the task, not here. Extensive unit tests (adaptive.rs:236-592).
 
-**Duplication verdict (adaptive):** Nothing to do with hang/moq — this is
+**Duplication verdict (adaptive):** Nothing to do with hang/moq - this is
 original ABR logic. Depends only on `hang::catalog::VideoConfig` (to read
 width/height/bitrate) and `crate::net::NetworkSignals`. Fully
 iroh-live-specific.
@@ -305,7 +307,7 @@ iroh-live-specific.
 ### sync.rs (`moq-media/src/sync.rs`, 420 LOC)
 
 **Direct port of `moq/js` `js/watch/src/sync.ts` @ 53fe78d8** (module doc
-sync.rs:1-40). Not a wrapper of any hang/moq Rust type — a reimplementation
+sync.rs:1-40). Not a wrapper of any hang/moq Rust type - a reimplementation
 of the JS playout clock.
 
 **`Sync`** (sync.rs:56-59) is an `Arc<SyncInner>`; `SyncInner`
@@ -314,16 +316,16 @@ of the JS playout clock.
 milliseconds: `reference` (earliest `now_ms - pts_ms` ever seen),
 `jitter_ms` (default 100), `audio_ms`/`video_ms` (per-codec latency,
 currently always `None` because the Rust catalog doesn't carry the JS
-`jitter` field — noted at sync.rs:99-106), `latency_ms = max(audio,video)+
+`jitter` field - noted at sync.rs:99-106), `latency_ms = max(audio,video)+
 jitter`, and `closed`.
 
 **Algorithm.** `received(pts)` (sync.rs:151-164): update `reference` to
-`min(reference, now_ms - pts_ms)` — only tightens. Called on the video
+`min(reference, now_ms - pts_ms)` - only tightens. Called on the video
 receive path only. `wait(pts)` (sync.rs:187-224): computes
 `sleep = (reference - (now - pts)) + latency`; if `<= 0` render now, else
 `Condvar::wait_timeout`; woken early when reference/latency change; returns
 `false` if closed (pipeline teardown). Frame renders at wall time
-`reference + pts + latency`. Audio does not participate — it paces via its
+`reference + pts + latency`. Audio does not participate - it paces via its
 own sink ring buffer (doc sync.rs:36-40). Setters recompute latency and
 notify. `Drop for SyncInner` (sync.rs:65-70) sets closed + notifies so
 blocked decode threads wake.
@@ -347,11 +349,11 @@ group-skip threshold; the doc explicitly maps it to the JS container
 consumer `latency` param (playout.rs:47-53).
 
 **Duplication verdict (sync/playout):** `sync.rs` is a deliberate port of
-the JS `sync.ts`, so it does *reimplement* moq-js behavior — but there is
+the JS `sync.ts`, so it does *reimplement* moq-js behavior - but there is
 no Rust hang/moq-lite equivalent to wrap (the Rust hang stack has no
 playout clock; group-latency skipping in `moq_mux` is a different,
 coarser mechanism). The `audio_ms`/`video_ms` fields are dead until the
-Rust catalog gains the per-codec `jitter` field that hang-js has —
+Rust catalog gains the per-codec `jitter` field that hang-js has -
 flagged as a real hang-catalog feature gap. `playout.rs` is thin policy
 glue.
 
@@ -381,7 +383,7 @@ Both cancel via a `CancellationToken` on drop. Source = rusty-codecs
 **video_decode.rs** (446 LOC). `VideoDecoderPipeline` (video_decode.rs:24-27)
 splits into `VideoDecoderFrames` (the `frame_channel` receiver) and
 `VideoDecoderHandle` (control: rendition, decoder name, viewport, RAII
-guard). `new` / `with_sender` (88-119) — the latter lets the adaptation
+guard). `new` / `with_sender` (88-119) - the latter lets the adaptation
 layer inject an external `FrameSender`. `build` (121-178) spawns the decode
 OS thread and a `forward_packets` tokio task. The core is `decode_loop`
 (213-409): drains packets into the decoder, buffers decoded frames, and
@@ -403,13 +405,13 @@ holds the sink handle + shutdown + task/thread. `audio_decode_loop`
 (116-274) ticks every 10 ms, decodes packets, pushes samples straight to
 the sink's ring buffer (which does the jitter smoothing), and inserts a
 960-sample silence chunk when the sink buffer drops below 20 ms to avoid
-underruns. Records audio lag/buffer stats. Does **not** use `Sync` — audio
+underruns. Records audio lag/buffer stats. Does **not** use `Sync` - audio
 is the pacing master; video syncs to it.
 
 **Duplication verdict (pipeline):** This is the glue that will change most
 in a refactor. It reimplements, in Rust OS-thread form, what the moq-js
 watch/publish pipelines do (the code says so). It does not duplicate hang
-container framing — that is delegated to `MoqPacketSink`/`MoqPacketSource`
+container framing - that is delegated to `MoqPacketSink`/`MoqPacketSource`
 (transport.rs) → `moq_mux`. The keyframe-gating, jitter/silence handling,
 FramePacer, and stats plumbing are genuine iroh-live logic. The 20ms/10ms
 tick loops and `mpsc(32)` handoff are candidate simplification targets.
@@ -432,7 +434,7 @@ mechanism; wire-compatible with hang; no duplication.
 `frame_channel<T>()` at 55) replacing a drained-to-latest `mpsc`. `send`
 overwrites; `new_sender` (129) lets the adaptation layer re-point the
 producer during decoder swaps. **Neither wraps nor reimplements** hang/moq
-— a std/tokio concurrency primitive; no moq imports.
+- a std/tokio concurrency primitive; no moq imports.
 
 **source_spec.rs** (499 LOC). Pure CLI/source-string parsing.
 `VideoSourceSpec` (48: DefaultCamera/Camera/Screen/Test/File/PreEncoded/None)
@@ -448,7 +450,7 @@ seam between iroh-live media and the container layer. Traits `PacketSource`
 `moq_mux::container::Producer<...hang::Container>` and delegates
 framing/keyframe-grouping to it (94-116). `media_pipe`/`PipeSink`/`PipeSource`
 (125-168) give an in-memory non-network implementation. `moq_frame_to_media_packet`
-(77) converts `moq_mux::container::Frame` → `MediaPacket`. **WRAPS** —
+(77) converts `moq_mux::container::Frame` → `MediaPacket`. **WRAPS** -
 container framing and keyframe grouping are delegated to `moq_mux`, not
 reimplemented. This trait pair is the intended refactor boundary and the
 crate's only structural coupling to the container format.
@@ -469,7 +471,7 @@ one UTF-8 frame per group (doc 1-9). `ChatPublisher` (47) wraps
 yields `ChatMessage` (34). Track descriptor via `chat_track()`/
 `CHAT_TRACK_NAME`/`CHAT_PRIORITY` (18-25). **WRAPS** moq-lite group/frame
 APIs directly; the only new logic is trivial UTF-8 framing + `received_at`
-timestamp — application payload, not container duplication.
+timestamp - application payload, not container duplication.
 
 **audio_file_source.rs** (104 LOC). Facade: `pub use
 crate::audio_file_symphonia::AudioFileSource` (6) plus tests. No moq.
@@ -521,7 +523,7 @@ input callback holds the consumer, so `process_stereo_interleaved`
 serialized on the input thread (avoids cross-callback mutex contention).
 AEC types are `pub(crate)`.
 
-**Duplication verdict (audio_backend):** **No moq involvement whatsoever** —
+**Duplication verdict (audio_backend):** **No moq involvement whatsoever** -
 imports are std/anyhow/cpal/fixed_resample/ringbuf/tokio/sonora plus the
 crate's own `format::AudioFormat` and `traits::{AudioSink,AudioSource,
 AudioStreamFactory}`. Any moq integration is behind those traits, not here.
@@ -533,31 +535,31 @@ single file in the crate).
 ## Summary: wrapping vs reimplementation vs genuine glue
 
 Wraps / extends hang·moq-lite·moq-mux (correct, keep):
-- **catalog.rs** — extends hang catalog via `CatalogExt`.
-- **transport.rs** — `MoqPacketSink`/`MoqPacketSource` delegate container
+- **catalog.rs** - extends hang catalog via `CatalogExt`.
+- **transport.rs** - `MoqPacketSink`/`MoqPacketSource` delegate container
   framing to `moq_mux`; the intended refactor seam.
-- **chat.rs** — moq-lite track/group/frame directly.
-- **publish.rs `CatalogProducer`** — wraps `moq_mux::catalog::Producer`.
-- **subscribe.rs / publish.rs track handling** — moq-lite
+- **chat.rs** - moq-lite track/group/frame directly.
+- **publish.rs `CatalogProducer`** - wraps `moq_mux::catalog::Producer`.
+- **subscribe.rs / publish.rs track handling** - moq-lite
   BroadcastConsumer/Producer + `moq_mux` ordered consumer.
 
-Reimplements moq-js behavior (no Rust hang/moq equivalent to wrap — but
+Reimplements moq-js behavior (no Rust hang/moq equivalent to wrap - but
 verify against upstream during refactor):
-- **sync.rs** — direct port of moq-js `sync.ts` playout clock. Its dead
+- **sync.rs** - direct port of moq-js `sync.ts` playout clock. Its dead
   `audio_ms`/`video_ms` fields flag a **missing per-codec `jitter` field in
   the Rust hang catalog** (present in hang-js). Real gap to raise upstream.
-- **pipeline/video_decode.rs `decode_loop`** and the encode/decode threads —
+- **pipeline/video_decode.rs `decode_loop`** and the encode/decode threads -
   Rust OS-thread analogues of the moq-js watch/publish pipelines.
 
 Genuinely iroh-live-specific glue (no overlap with hang/moq):
-- **adaptive.rs** — original ABR state machine.
-- **audio_backend.rs + aec.rs** — cpal device I/O + sonora AEC (largest,
+- **adaptive.rs** - original ABR state machine.
+- **audio_backend.rs + aec.rs** - cpal device I/O + sonora AEC (largest,
   fully independent).
-- **frame_channel.rs** — latest-wins single-slot channel enabling seamless
+- **frame_channel.rs** - latest-wins single-slot channel enabling seamless
   decoder swaps.
-- **publish `SharedVideoSource`** — ref-counted parking capture fan-out.
+- **publish `SharedVideoSource`** - ref-counted parking capture fan-out.
 - **stats.rs, net.rs, source_spec.rs, playout.rs, audio_file_symphonia.rs,
-  publish/controller.rs** — metrics, signals, parsing, policy, file import,
+  publish/controller.rs** - metrics, signals, parsing, policy, file import,
   capture orchestration.
 
 No file was found to duplicate hang container/catalog logic or moq

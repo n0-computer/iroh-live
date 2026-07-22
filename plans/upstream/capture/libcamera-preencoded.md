@@ -1,8 +1,10 @@
 # libcamera-preencoded. Pre-encoded source concept and on-device H.264 libcamera capture
 
-Branch: moq-upstream/libcamera-preencoded          PR target: base branch, then moq main
-Status: REQUIRED deliverable (overview revision 2); libcamera on-device H.264 through moq is a committed outcome
-Depends on: `publish_preencoded` API-shape input from the maintainer (coordination point 5); independent of the base API contract
+> Campaign: upstream | Kind: leaf plan | Branch: up/libcamera-preencoded |
+> PR target: base branch, then moq main | Read ../0-overview.md first.
+
+Status: REQUIRED deliverable; libcamera on-device H.264 through moq is a committed outcome
+Depends on: the `publish_preencoded` API shape (open question, coordination point 5); independent of the base API contract
 Path: independent
 Size: M
 
@@ -10,18 +12,21 @@ Size: M
 
 Give moq a capture source that emits an already-encoded bitstream and bypasses
 the software encoder entirely, then implement the Raspberry Pi on-device H.264
-path on top of it. This is moq-changes change 12, and per overview revision 2 it
+path on top of it. This is moq-changes change 12, and it
 is a required deliverable of this series: iroh-live's Raspberry Pi libcamera
 on-device H.264 path working well through moq is a committed outcome, not an
 opportunistic maybe. It has two parts, in order: first a `publish_preencoded`
 sibling of `publish_capture` that takes a source yielding H.264 (or H.265) access
 units plus a hang catalog config and drives them straight to the track, and
 second the concrete implementation, a libcamera backend that runs `rpicam-vid`'s
-hardware H.264 encoder and emits Annex-B directly. The open question that needs
-maintainer input is only the exact shape of the `publish_preencoded` API, since a
-source that bypasses the encoder is a pattern no existing moq path uses. That is
-a design conversation about the signature, not a gate on whether libcamera support
-lands: the outcome is committed, and only the API shape is negotiable.
+hardware H.264 encoder and emits Annex-B directly. Open question: the exact
+shape of the `publish_preencoded` API, discussed under Target in moq below and
+in `../0-overview.md` coordination point 5; current proposal: mirror
+`publish_capture` minus `encode::Options`, taking a bitstream source plus a
+catalog config. A source that bypasses the encoder is a pattern no existing moq
+path uses, so that is a design conversation about the signature, not a gate on
+whether libcamera support lands: the outcome is committed, and only the API
+shape is negotiable.
 
 ## Why it matters
 
@@ -41,8 +46,8 @@ this class of device moq cannot capture at all without this concept. It is also
 already compressed, and it is called out as the strongest single upstream
 candidate we have short of adding the concept
 (`comparisons/capture.md:487-492, 523-525`). This is why libcamera support is a
-required deliverable of the series rather than an opportunistic one (overview
-revision 2): on the Pi-class devices iroh-live targets, the pre-encoded path is
+required deliverable of the series rather than an opportunistic
+one: on the Pi-class devices iroh-live targets, the pre-encoded path is
 the only way to capture at all, so the outcome that it works well through moq is
 committed, and the negotiable part is only the shape of the entry point that
 carries it.
@@ -60,7 +65,7 @@ carries it.
   buy-in").
 - The concept gate: overview coordination point 5
   (`plans/upstream/0-overview.md:279-282`) and Wave 3 placement
-  (`0-overview.md:250-251`).
+  (`../0-overview.md:250-251`).
 - moq already has the primitive the concept rests on, verified against HEAD
   3a3e0ea8:
   - `rs/moq-video/src/encode/producer.rs:85-105` `Producer::publish(packets:
@@ -134,17 +139,17 @@ the middle. In moq's vocabulary:
   The `clock` stays because `Producer::publish` still needs a `Timestamp` and the
   source may pace off the clock the same way `publish_capture` does.
 
-The key design questions for the maintainer, which shape the API rather than
+The key open design questions, which shape the API rather than
 decide whether libcamera support ships:
 
 1. What is the right shape for an encoder-bypassing source in moq's model, given
    its posture that the encoder always runs? The honest framing is that
    `Producer::publish` already accepts external Annex-B, so the wire and catalog
    machinery exists; the ask is the turnkey source-side loop and where an
-   encoder-bypassing source sits as a first-class entry point. If the maintainer
+   encoder-bypassing source sits as a first-class entry point. If upstream
    prefers not to add it to moq, the same libcamera source lives in iroh-live over
-   `Producer::publish` directly, so the deliverable holds either way (overview
-   revision 2); this question decides where the entry point lives, not whether the
+   `Producer::publish` directly, so the deliverable holds either
+   way; this question decides where the entry point lives, not whether the
    Pi path works.
 2. Where does the catalog config come from? Our source supplies a full
    `VideoConfig` up front (profile, constraints, level, dimensions, bitrate,
@@ -157,11 +162,11 @@ decide whether libcamera support ships:
    same shape since `Producer` already has an `H265` codec arm
    (`producer.rs:97-104`).
 
-Agree the `publish_preencoded` signature with the maintainer before implementing
+Agree the `publish_preencoded` signature upstream before implementing
 the moq-side entry point past step 1's synthetic-source proof. This is an
 API-shape conversation, not a go/no-go on the deliverable: libcamera on-device
-H.264 working well through moq is required (overview revision 2). If the
-maintainer prefers the entry point not live in moq, the fallback keeps the
+H.264 working well through moq is required. If
+upstream prefers the entry point not live in moq, the fallback keeps the
 libcamera H.264 source in iroh-live over moq's `Producer::publish` directly, which
 needs no moq change and still delivers the committed outcome; in that case the
 leaf closes as "kept local," with the capability delivered rather than dropped.
@@ -271,23 +276,25 @@ What is dropped:
 
 - Coordination point 5 (the `publish_preencoded` API shape). This is the one open
   question, and it is about the signature, not about whether libcamera support
-  ships. Agree the exact shape of the entry point with the maintainer before
-  implementing the moq-side loop past step 1's synthetic-source proof. libcamera
-  on-device H.264 working well through moq is a required deliverable (overview
-  revision 2); the backend is the motivating user, and the API shape is the ask.
+  ships. Current proposal: mirror `publish_capture` minus `encode::Options`,
+  taking a bitstream source plus a catalog config. Agree the exact shape of the
+  entry point upstream before implementing the moq-side loop past step 1's
+  synthetic-source proof. libcamera on-device H.264 working well through moq is
+  a required deliverable; the backend is the motivating user, and the API shape
+  is the ask.
 - Independent of the base API contract: this leaf touches no `Native`/`Frame`
   GPU vocabulary and adds no candidate table entry, so B1 through B4 and
   coordination points 1 and 2 do not apply. Its only open point is point 5.
-- If the maintainer prefers the entry point not live in moq, fall back to keeping
+- If upstream prefers the entry point not live in moq, fall back to keeping
   `LibcameraH264Source` in iroh-live over moq's existing `Producer::publish`,
   needing no moq change; the committed outcome still holds.
 
 ## Acceptance checklist
 
-- The `publish_preencoded` API shape is agreed with the maintainer before
+- The `publish_preencoded` API shape is agreed upstream before
   implementation past the synthetic-source proof (coordination point 5 satisfied
   and recorded in the PR), with libcamera support treated as required regardless
-  of where the entry point lives (overview revision 2).
+  of where the entry point lives.
 - `publish_preencoded` advertises the track from `source.config()`, registers the
   rendition from the first keyframe, and forwards access units to
   `Producer::publish` under demand gating.

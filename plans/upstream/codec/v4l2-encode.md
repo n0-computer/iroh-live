@@ -1,6 +1,8 @@
 # v4l2-encode. V4L2 M2M hardware H.264 encode for Raspberry Pi and embedded ARM
 
-Branch: moq-upstream/v4l2-encode          PR target: base branch, then moq main
+> Campaign: upstream | Kind: leaf plan | Branch: up/v4l2-encode |
+> PR target: base branch, then moq main | Read ../0-overview.md first.
+
 Depends on: B2 (PTS through encode)
 Path: A (in-tree)
 Size: L
@@ -131,9 +133,9 @@ encoded SPS in its `Producer`.
   Candidate { name: v4l2::NAME, codecs: &[Codec::H264], open: v4l2::open },
   ```
 
-  It sits alongside the existing `nvenc` and `vaapi` entries. Ordering within
-  `HARDWARE` is a maintainer call; propose placing it after `vaapi` so desktop GPU
-  encoders win on hosts that have both.
+  It sits alongside the existing `nvenc` and `vaapi` entries. Open question: the
+  ordering within `HARDWARE`, settled in upstream review; current proposal: place
+  it after `vaapi` so desktop GPU encoders win on hosts that have both.
 - A new `v4l2` feature in `rs/moq-video/Cargo.toml`. It must add `dep:libc`
   (optional), because `libc` is not currently a moq-video dependency: it is
   declared nowhere in `rs/moq-video/Cargo.toml` and used nowhere under
@@ -208,7 +210,7 @@ encoded SPS in its `Producer`.
   `feature = "nvdec"`-gated module and skip at runtime with an `hw_available()`
   guard (`nvdec.rs:465`, `if !hw_available() { return; }` at each test) instead of
   `#[ignore]`. Gate the V4L2 test module behind the `v4l2` feature and skip at
-  runtime when no M2M encoder node opens. The moq maintainer has no Pi in CI, so
+  runtime when no M2M encoder node opens. moq CI has no Pi, so
   the compile-only gate plus our hardware validation is the agreed story
   (`comparisons/moq-changes.md:597-603`).
 - A pure-unit test for the NV12-versus-YU12 deinterleave and the aligned-height
@@ -231,7 +233,7 @@ encoded SPS in its `Producer`.
   observable behavior. This backend cannot be contributed honestly without it.
 - dlopen and degrade, adapted to a device backend: moq's convention is that a
   backend builds on hosts without the hardware and degrades cleanly, matching
-  moq-nvenc's dlopen stub (`0-overview.md:184-186`). The V4L2 encoder has no
+  moq-nvenc's dlopen stub (`../0-overview.md:184-186`). The V4L2 encoder has no
   system library to dlopen. It is pure `libc` ioctl against a character device, so
   it compiles on every Linux host unconditionally, and the "degrade cleanly" half
   of the convention is satisfied at runtime: opening the device node fails on a
@@ -247,8 +249,8 @@ encoded SPS in its `Producer`.
   without fighting v4l2r's type-state generics. The raw approach was also
   cross-validated against ffmpeg's h264_v4l2m2m for driver compatibility
   (`encoder.rs:308`). Keep the two backends on their respective mechanisms rather
-  than forcing one crate on both; note the split in the PR description so the
-  maintainer sees it is intentional.
+  than forcing one crate on both; note the split in the PR description so
+  reviewers see it is intentional.
 - Timestamps, errors, and config follow base plan B5: `moq_net::Timestamp` at the
   boundary, moq's `Error` with an additive device-failure variant, and moq's
   `Config` rather than our `config.rs` mirror. No ffmpeg is introduced; the port

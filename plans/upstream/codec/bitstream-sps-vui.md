@@ -1,6 +1,8 @@
 # bitstream-sps-vui. Offer the SPS VUI low-latency patcher as an optional pass
 
-Branch: moq-upstream/bitstream-sps-vui          PR target: base branch, then moq main
+> Campaign: upstream | Kind: leaf plan | Branch: up/bitstream-sps-vui |
+> PR target: base branch, then moq main | Read ../0-overview.md first.
+
 Depends on: independent
 Path: independent (optional offer)
 Size: S
@@ -61,8 +63,10 @@ our helpers do not.
   container producer to force a low-latency VUI on emitted SPS.
 - Alternatively an encoder-side pass, next to the VideoToolbox backend's existing
   AVCC-to-Annex-B rewrite with format-description splicing
-  (`encode/backend/videotoolbox.rs:1-14`). The placement is moq's call; offer the
-  pass and let the maintainer decide where it lives.
+  (`encode/backend/videotoolbox.rs:1-14`). Open question: where the pass lives
+  (a bitstream utility module or an encoder-side pass), discussed in this
+  section; current proposal: offer it as an optional bitstream pass and let
+  upstream review settle the placement.
 
 ## Implementation steps
 

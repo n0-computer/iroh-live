@@ -1,10 +1,12 @@
 # Trait / Interface / Rust-API Comparison: rusty-codecs and moq-media versus moq-video / moq-audio
 
+> Campaign: upstream | Kind: comparison | Read ../0-overview.md first; index at 0-index.md.
+
 Scope: the API-level comparison the alignment discussion has to be grounded in.
 Every decision that adopting or converging with moq's codec surface would force is
 listed in section 8 with options and a recommendation. This is the primary discussion
 artifact; the concrete upstream change proposals live in the companion
-`plans/refactor/3u-moq-changes.md`, which this document references rather than drafts.
+`moq-changes.md`, which this document references rather than drafts.
 
 Sources, read directly from the working trees on 2026-07-22:
 
@@ -16,7 +18,7 @@ Sources, read directly from the working trees on 2026-07-22:
   every moq citation is the current tree. Paths are abbreviated to `rs/moq-video/...`,
   `rs/moq-audio/...`, `rs/moq-net/...`, and `rs/hang/...`.
 
-Companion evidence maps live under `plans/refactor/maps/`.
+Companion evidence maps live under `maps/`.
 
 ---
 
@@ -472,7 +474,7 @@ volume, AEC, and level metering stay entirely on our side.
 
 Two models sit at the center of the alignment question. Ours is public and open; theirs
 is private and closed. The concrete proposal for a shared type lives in the companion
-`3u-moq-changes.md`; this section is the field-by-field comparison that motivates it.
+`moq-changes.md`; this section is the field-by-field comparison that motivates it.
 
 ### 3.1 CPU representations
 
@@ -642,7 +644,7 @@ concrete inventory, with what each backend needs from the moq API:
 The three realistic postures (upstream each backend in-tree with `Backend` private; make
 `Backend` public or sealed; or add a public registration API over the existing candidate
 table) plus their trade-offs and the recommended split are worked out in the companion
-`3u-moq-changes.md`. The one load-bearing observation to record here is that the candidate
+`moq-changes.md`. The one load-bearing observation to record here is that the candidate
 table is already data-driven and internal (encode/backend/mod.rs:60-102), so a
 registration mechanism is small in principle, but it is only useful if the frame type
 external backends receive and produce is public, which makes any registration proposal
@@ -782,7 +784,7 @@ Priority-ordered. Each item gives the question, the options, our recommendation,
 estimated diff size (S under ~150 lines, M ~150-600, L larger). Items 1 through 3 gate
 the rest. Items marked "upstream ask" require moq buy-in; items marked "local" we can
 decide alone. The concrete upstream proposals for the upstream-ask items are drafted in
-`3u-moq-changes.md`.
+`moq-changes.md`.
 
 D1. Public frame model (upstream ask; gates D2, the render integration, and the VAAPI and
 Android backends). Question: does a public raw-frame type with GPU handle variants (DmaBuf,
