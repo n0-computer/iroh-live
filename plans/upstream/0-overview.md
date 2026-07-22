@@ -36,6 +36,42 @@ separate future audio-device effort. The Opus and PCM codecs are in scope; the
 audio device I/O around them is not. `comparisons/audio.md` flags the AEC engine
 as a standalone-crate candidate for that later effort.
 
+## Review revisions (2026-07-22, maintainer feedback)
+
+A first review revised five decisions in this campaign. They override the
+corresponding text in the plans and the comparisons; where a comparison still
+argues the old conclusion, that is the analysis of record and this section is the
+decision.
+
+1. Render goes in-tree, not out-of-tree. The render primitives (the zero-copy
+   importers over the `Native` vocabulary, and the NV12 and I420 to RGBA shaders)
+   belong in moq, as a new `moq-video-render` crate that is a member of the moq
+   workspace. To keep the dependency weight off the default and relay builds, the
+   crate is a separate, optional workspace member that `moq-video` and `moq-relay`
+   do not pull in by default, and its heaviest importers may be further
+   feature-gated. This is the "partially out of tree because of workspace
+   dependency size" nuance: in the workspace, off the default dependency graph.
+   The UI-framework integrations (dioxus, egui, and iroh-live's demo shells) stay
+   in iroh-live for now, consuming the moq primitives, to be moved elsewhere
+   later. This replaces the earlier Option B (out-of-tree) recommendation.
+2. Pre-encoded capture is required, and perfect libcamera support is a committed
+   deliverable of this series, not an opportunistic maybe. The exact
+   `publish_preencoded` API shape needs maintainer input, but that iroh-live's
+   Raspberry Pi libcamera on-device H.264 path works well through moq after this
+   series is a given, not contingent on the concept being accepted as sketched.
+3. PCM is required, not low value. iroh-live needs the uncompressed PCM path, so
+   the offer of `Codec::Pcm` to moq-audio (with the matching hang catalog variant)
+   is a real contribution, and if moq declines, iroh-live keeps its PCM codec
+   rather than losing the capability.
+4. AV1 is dropped from this series. rav1e is too slow and the rav1d dependency is
+   too heavy and unresolved (the git-fork pin) to carry now. The `av1-software`
+   plan is deferred, not deleted, and iroh-live may rip out its own AV1 backend
+   for now; AV1 can be revisited later if a use case needs it.
+5. The dependency-weight concern that drove render (point 1) is a first-class
+   constraint: contributions that add heavy dependencies to moq land as optional,
+   feature-gated, off-default workspace members, so moq's default and relay builds
+   stay light.
+
 ## Strategy: one base series, then a fan of leaves
 
 The whole program rests on a small set of additive API changes to moq-video
@@ -230,7 +266,7 @@ moq main (3a3e0ea8)
 |   +-- v4l2-encode           [B2]
 |   +-- v4l2-decode           [B1,B3]
 |   +-- android-mediacodec    [B1,B2,B4]                            *Path B decision*
-|   +-- av1-software          [B2; rav1d fork resolution]           *prereq*
+|   +-- av1-software          DEFERRED (revision 4: too slow/heavy for now)
 |   +-- opus-improvements     [independent of base]
 |   +-- pcm                   [independent; low value]
 |   +-- bitstream-sps-vui     [independent; optional]
@@ -238,10 +274,10 @@ moq main (3a3e0ea8)
 +-- capture leaves
 |   +-- pipewire-dmabuf       [B1]
 |   +-- v4l2-camera-enum      [B1 for zero-copy; else independent]
-|   +-- libcamera-preencoded  [pre-encoded-source concept buy-in]   *concept gate*
+|   +-- libcamera-preencoded  REQUIRED [publish_preencoded API needs maintainer input]
 |
 +-- render leaf (out-of-tree crate, not a moq source PR)
-    +-- moq-video-render      [B1,B3,vtb-mf-decode-surface]
+    +-- moq-video-render      in-tree moq crate, off-default member [B1,B3,vtb-mf-decode-surface]
 ```
 
 ## Wave ordering
@@ -250,17 +286,21 @@ The tree says what depends on what; the waves say what to attempt in what order,
 balancing value against the coordination gates.
 
 - **Wave 0, base.** The RFC for B1, B2, B3, and B5 (one design conversation with
-  the maintainer, led by the VAAPI decode motivation and the AV1 offer), then
-  land B1, B2, B3, B5. Defer B4 until the Android decision forces it.
+  the maintainer, led by the VAAPI decode motivation and the embedded and
+  Raspberry Pi story), then land B1, B2, B3, B5. Defer B4 until the Android
+  decision forces it.
 - **Wave 1, the high-value zero-copy series.** vaapi-decode and vaapi-encode
   (the largest value and the moq-vaapi growth), vtb-mf-decode-surface, and
   pipewire-dmabuf. All rest on B1 and B3.
 - **Wave 2, the remaining backends and capture.** v4l2-encode, v4l2-decode,
-  av1-software, v4l2-camera-enum, opus-improvements. opus is independent and can
-  slot earlier as relationship-building.
-- **Wave 3, the conditional and opportunistic items.** android-mediacodec (after
-  the B4 decision), libcamera-preencoded (after the concept buy-in), the
-  moq-video-render crate, pcm, bitstream-sps-vui.
+  v4l2-camera-enum, opus-improvements, and pcm (required, see revision 3). opus
+  is independent and can slot earlier as relationship-building.
+- **Wave 3, the required and conditional items.** The in-tree moq-video-render
+  crate (revision 1), libcamera-preencoded (required, revision 2; the
+  `publish_preencoded` API shape still needs maintainer input),
+  android-mediacodec (after the B4 decision), and bitstream-sps-vui.
+- **Deferred, not in this series.** av1-software (revision 4): too slow and too
+  heavy a dependency to carry now, kept as a deferred plan for later.
 
 ## Coordination points (read before authoring any leaf)
 
@@ -287,14 +327,17 @@ Most work is autonomous. These are the only places an agent must stop and defer.
    the VA-layer work and the monorepo for the moq-video backend wiring. If the two
    are authored in parallel, they coordinate on the shared moq-vaapi types rather
    than one growing export or VPP the other duplicates.
-4. **rav1d fork resolution.** av1-software is blocked until the rav1d git-fork pin
-   is resolved (published to crates.io, moved to a released rav1d, or vendored).
-   This is a prerequisite, not something the leaf agent decides alone; flag it and
-   proceed only once resolved.
-5. **The pre-encoded-source concept.** libcamera-preencoded needs a new moq
-   `publish_preencoded` concept (a capture source that emits an already-encoded
-   bitstream plus a catalog config). This needs maintainer buy-in before
-   implementation; it is a design conversation, not a silent addition.
+4. **AV1 is deferred (revision 4), so its rav1d fork resolution is not a gate for
+   this series.** av1-software would have been blocked on the rav1d git-fork pin;
+   since AV1 is dropped for now, that prerequisite is parked with the deferred
+   plan. Do not spend the series on it.
+5. **The pre-encoded-source concept, API only.** libcamera-preencoded is a
+   required deliverable (revision 2): perfect libcamera on-device H.264 support is
+   a committed outcome of this series. What needs maintainer input is only the
+   exact shape of the `publish_preencoded` API (a capture source that emits an
+   already-encoded bitstream plus a catalog config). Bring the API to the
+   maintainer as a design conversation, but treat libcamera support as required,
+   not contingent on the concept being accepted exactly as sketched.
 6. **The B4 breaking change.** Publishing the `Backend` trait is the only breaking
    change and is worth it only if moq wants out-of-tree backends. It gates on the
    Android placement decision (in-tree with its NDK build cost, or external over
@@ -468,9 +511,9 @@ Codec leaves (in `codec/`):
 | v4l2-encode | V4L2 M2M encode (Pi and embedded), stride handling | B2 | A | L |
 | v4l2-decode | V4L2 M2M decode | B1, B3 | A | M-L |
 | android-mediacodec | Android MediaCodec encode and decode, HardwareBuffer | B1, B2, B4 | B | L |
-| av1-software | rav1e encode and rav1d decode | B2, rav1d pin | A | M-L |
+| av1-software | rav1e encode and rav1d decode | DEFERRED (revision 4) | A | M-L |
 | opus-improvements | runtime set_bitrate, pre-skip, FEC/PLC groundwork, remix | none | independent | S-M |
-| pcm | `Codec::Pcm` offer | none | independent | S |
+| pcm | `Codec::Pcm` offer (required, revision 3) | none | independent | S |
 | bitstream-sps-vui | SPS VUI low-latency patcher as an optional pass | none | independent | S |
 
 Capture leaves (in `capture/`):
@@ -479,13 +522,13 @@ Capture leaves (in `capture/`):
 |---|---|---|---|---|
 | pipewire-dmabuf | PipeWire DMA-BUF zero-copy capture delivery | B1 | A | M |
 | v4l2-camera-enum | V4L2 camera capture and device enumeration | B1 for EXPBUF zero-copy, else independent | A | M |
-| libcamera-preencoded | libcamera raw and on-device H.264 pre-encoded source | pre-encoded concept | independent | M |
+| libcamera-preencoded | libcamera raw and on-device H.264 pre-encoded source (required, revision 2) | publish_preencoded API input | independent | M |
 
 Render leaf (in `render/`):
 
 | Plan | Delivers | Depends on | Path | Size |
 |---|---|---|---|---|
-| moq-video-render | out-of-tree renderer crate over public handles | B1, B3, vtb-mf-decode-surface | Both (out-of-tree) | 0 upstream |
+| moq-video-render | in-tree moq render crate (off-default workspace member; revision 1) | B1, B3, vtb-mf-decode-surface | A (in-tree, feature-gated) | L-XL |
 
 ## Provenance
 

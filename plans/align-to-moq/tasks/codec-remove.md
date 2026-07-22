@@ -16,11 +16,15 @@ iroh-live encodes and decodes through `moq-video`, `moq-audio`, and
 run side by side. Adopt-theirs backends (openh264, VideoToolbox encode, the
 bitstream front end, and the Candidate dispatch) are replaced by code already on
 moq main and land with the release bump. Upstream-ours-then-remove backends
-(VAAPI, V4L2, Android, AV1, and Opus) are deleted only after the matching upstream
+(VAAPI, V4L2, Android, and Opus) are deleted only after the matching upstream
 pull request from `plans/upstream/` merges into a moq release, because deleting
 them before their replacement exists would drop hardware decode on Intel and AMD
 Linux, ARM SoCs, and Android, and would regress the decode-to-render zero-copy
-inputs. This is the largest removal in the campaign, roughly 12,000 to 15,000 LOC
+inputs. AV1 is the exception among the once-held backends: per overview revision
+4 it is not upstreamed this series (rav1e too slow, rav1d dependency too heavy),
+so its module is a local rip-out deleted immediately with the independent
+deletions rather than gated on an upstream contribution, and it can be re-added
+later if a use case needs it. This is the largest removal in the campaign, roughly 12,000 to 15,000 LOC
 of the 22,310, matching the cut-plan's Scenario B `rusty-codecs` figure of about
 15,100 once the render row leaves the crate under `render-adopt`.
 
@@ -54,8 +58,10 @@ of the 22,310, matching the cut-plan's Scenario B `rusty-codecs` figure of about
   `moq:decode/decoder.rs`) once the three upstream items land.
 - The public `Native` frame vocabulary from base plan B1, consumed for the frame
   model that `format.rs` sheds (adopted concretely in `render-adopt`).
-- `moq-video` VAAPI, V4L2, and AV1 backends, and the registered or in-tree Android
-  backend, once our own contributions land them upstream.
+- `moq-video` VAAPI and V4L2 backends, and the registered or in-tree Android
+  backend, once our own contributions land them upstream. AV1 has no adopted
+  replacement this series (deferred per overview revision 4); its local backend is
+  ripped out rather than swapped for a moq equivalent.
 
 ## iroh-live code changed
 
@@ -73,7 +79,7 @@ moq release that must land first. LOC are verified against the working tree.
 | VAAPI encode+decode | `rusty-codecs/src/codec/vaapi/` | 3,257 | upstream-ours-then-remove | `../../upstream/codec/vaapi-decode.md` and `../../upstream/codec/vaapi-encode.md` (grow moq-vaapi export and VPP; B1, B2, B3; U1, U2, U3) merged and released (cut-plan VAAPI row; zerocopy.md sec 5) |
 | V4L2 encode+decode | `rusty-codecs/src/codec/v4l2/` | 1,856 | upstream-ours-then-remove | `../../upstream/codec/v4l2-encode.md` (needs B2 = D3, PTS through encode) and `../../upstream/codec/v4l2-decode.md` (B1, B3) merged and released (cut-plan V4L2 row) |
 | Android encode+decode | `rusty-codecs/src/codec/android/` | 1,528 | upstream-ours-then-remove | `../../upstream/codec/android-mediacodec.md` (B1 HardwareBuffer variant, B2, B4 registration or in-tree per D2) merged and released (cut-plan Android row) |
-| software AV1 | `rusty-codecs/src/codec/av1/` | 936 | upstream-ours-then-remove | `../../upstream/codec/av1-software.md` (B2; rav1d git-fork pin resolved per coordination point 4) merged and released (cut-plan AV1 row; codecs.md sec 3) |
+| software AV1 | `rusty-codecs/src/codec/av1/` | 936 | local rip-out | nothing; AV1 is not upstreamed this series (overview revision 4: rav1e too slow, rav1d dependency too heavy), so `av1-software` is deferred and this backend is deleted locally now rather than gated on it. It can be re-added later if a use case needs it (codecs.md sec 3) |
 | Opus | `rusty-codecs/src/codec/opus/` | 804 | cut-after-upstream | `../../upstream/codec/opus-improvements.md` landing runtime `set_bitrate`, lookahead pre-skip fix, and a channel-remap policy (D11) in a release, then adopt moq-audio (codecs.md sec 5) |
 | dispatch | `rusty-codecs/src/codec.rs`, `.../codec/dynamic.rs` | 522 | cut-after-upstream | release bump plus every held backend admitted upstream (VAAPI, V4L2, Android), with `reset()` and `burst_size()` carried into moq's decode trait; this is the last codec cut (codecs.md sec 8) |
 | codec-trait half | `rusty-codecs/src/traits.rs` | part of 410 | merge | D1-D3, D11, release; the device traits (`VideoSource`, `AudioSource`, `AudioSink`, `AudioSinkHandle`, `AudioStreamFactory`) stay local (cut-plan traits row) |
@@ -82,14 +88,19 @@ moq release that must land first. LOC are verified against the working tree.
 | test shrink | `rusty-codecs/src/codec/tests/`, `test_sources.rs`, `test_util.rs` | ~1,200 | shrinks with cuts | each adopted backend's conformance vectors retire as moq-video's own tests cover them (cut-plan test row) |
 
 Explicitly not deleted by this task: the PCM codec
-(`rusty-codecs/src/codec/pcm/`, 559 LOC), kept as the uncompressed test and
-diagnostics path with no hang catalog codec and no interop value (codecs.md sec 6);
+(`rusty-codecs/src/codec/pcm/`, 559 LOC), kept because iroh-live requires the
+uncompressed PCM path (overview revision 3). Do not delete `rusty-codecs/pcm`
+unless moq accepts the `Codec::Pcm` offer in `../../upstream/codec/pcm.md` and
+releases it, at which point iroh-live can adopt moq-audio's PCM; if moq declines,
+iroh-live keeps its own PCM codec so the capability is never lost (codecs.md sec 6);
 `processing/scale.rs` (360) and `processing/convert.rs` (598), which stay serving
 capture and render (cut-plan processing row); the device traits in `traits.rs`;
 and the whole `render.rs` plus `render/` tree, which leaves the crate under
 `render-adopt`, not here. Any contribution upstream declines (a plausible outcome
-for Android per cut-plan R-c, or AV1 if the rav1d pin cannot be resolved per R-d)
-keeps its module in-tree indefinitely under keep-and-upstream-copy.
+for Android per cut-plan R-c) keeps its module in-tree indefinitely under
+keep-and-upstream-copy. AV1 is handled differently: it is not offered upstream
+this series (overview revision 4), so rather than being kept pending a decline it
+is ripped out locally now, and re-added later only if a use case needs it.
 
 ## Steps
 
@@ -125,8 +136,13 @@ backend flips atomically per coordination point 4.
 6. Hold Android until `android-mediacodec` is accepted (in-tree or registered per
    the D2 decision), then delete `codec/android/`, preserving the HardwareBuffer
    decode-to-render input via `render-adopt` (zerocopy.md sec 2b).
-7. Hold AV1 until the rav1d git-fork pin is resolved and `av1-software` releases,
-   then delete `codec/av1/`.
+7. Delete `codec/av1/` as a local rip-out with the Wave 1 independent deletions,
+   not gated on any upstream contribution, since AV1 is not upstreamed this series
+   (overview revision 4). Software AV1 decodes to CPU I420 and feeds no zero-copy
+   render input, so its removal regresses no held frame model and needs no
+   platform-atomic hold. The proof-before-deletion rule still applies: a local
+   end-to-end test must pass without the AV1 backend before the module is deleted.
+   AV1 can be re-added later if a use case needs it.
 8. Adopt moq-audio Opus once its three upstream items release, then delete
    `codec/opus/`.
 9. Only after every held backend above is cut, replace the local dispatch with
@@ -173,9 +189,12 @@ passes an end-to-end test in this repository.
 
 - Every adopt-theirs module (openh264, annexb, VTB encode, dispatch) is deleted,
   with its replacement passing the harness and pipeline tests.
-- Every upstream-ours-then-remove module (VAAPI, V4L2, Android, AV1) is deleted
+- Every upstream-ours-then-remove module (VAAPI, V4L2, Android) is deleted
   only against a pinned moq release containing the merged contribution, verified on
   hardware, with the deletion and bump in one revertible commit.
+- The AV1 module (`codec/av1/`) is ripped out locally with the independent
+  deletions, not gated on an upstream release (overview revision 4), after a local
+  end-to-end test passes without it.
 - Opus is deleted only after `opus-improvements` releases the three required items.
 - The codec half of `traits.rs` and the frame-model half of `format.rs` are gone;
   the device traits, `scale.rs`, `convert.rs`, and PCM remain.

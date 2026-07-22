@@ -3,16 +3,18 @@
 Branch: align/render-adopt          Wave: 3
 Depends on: upstream base plan B1 (public `Native` frame vocabulary), base plan B3
 (`decode::Frame::native()` accessor), the `vtb-mf-decode-surface` leaf (so the
-macOS and Windows decoders retain their GPU surface), and the out-of-tree
-`moq-video-render` crate being published from `../../upstream/render/moq-video-render.md`.
+macOS and Windows decoders retain their GPU surface), and moq's in-tree
+`moq-video-render` crate (an off-default moq workspace member) being released from
+`../../upstream/render/moq-video-render.md`.
 On Linux the DMA-BUF import additionally needs `vaapi-decode` to have something to
 export, though the crate and its CPU fallback compile and run without it.
 Kind: upstream-gated
 
 ## Goal
 
-Replace iroh-live's in-tree renderer with the published, out-of-tree
-`moq-video-render` crate, deleting `render.rs` and the whole `render/` tree
+Replace iroh-live's renderer with moq's in-tree `moq-video-render` crate (an
+off-default moq workspace member iroh-live consumes as a normal dependency once
+moq releases it), deleting `render.rs` and the whole `render/` tree
 (3,463 LOC) and collapsing iroh-live's parallel `FrameData`/`NativeFrameHandle`
 frame model onto moq's public `Native` vocabulary, so there is one frame model in
 the pipeline rather than the two-model translation carried today. The renderer,
@@ -29,12 +31,12 @@ It must therefore land before or together with `codec-remove`'s decode deletions
 ## Evidence
 
 - `../../upstream/comparisons/zerocopy.md` section 4 (the render upstreaming
-  decision, recommending Option B, the out-of-tree crate) and section 5 (the U1
+  decision, originally Option B but REVISED 2026-07-22 to in-tree, an off-default moq workspace crate; see ../../upstream/0-overview.md Review revisions revision 1) and section 5 (the U1
   through U4 requirements), plus section 2b, which shows the decode-to-render path
   is iroh-live's alone and has no upstream code to merge into, so it can only be
   preserved by carrying it forward.
 - `../cut-plan.md` section 2, the `render.rs + render/` row (3,463 LOC, "keep, then
-  upstream as out-of-tree crate", prerequisite U1), and section 4, which fixes the
+  upstream as an in-tree off-default crate", prerequisite U1), and section 4, which fixes the
   end-state: the importers and renderer move to a published crate over U1 public
   handles.
 - `../../upstream/render/moq-video-render.md` is the upstream plan that authors the
@@ -133,6 +135,12 @@ task is the guarantee for coordination point 2.
 - Coordination point 4 (atomic per platform): the frame-model collapse in
   `format.rs` is done per platform in lockstep with `codec-remove`, so a platform
   never holds both the local `NativeFrameHandle` and moq's `Native` at once.
+- The UI-framework integrations stay in iroh-live for now (overview Review
+  revisions revision 1): this task deletes `rusty-codecs/src/render/`, the
+  low-level importers and renderer, but the dioxus and egui shells
+  (`moq-media-dioxus`, `moq-media-egui`) and the demo apps are not deleted. They
+  are rewired to consume `moq-video-render`'s output instead of iroh-live's
+  renderer, and moving them elsewhere is a later, separate effort.
 
 ## Acceptance checklist
 

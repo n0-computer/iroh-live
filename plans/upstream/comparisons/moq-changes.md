@@ -267,7 +267,13 @@ through each in full; the summary is:
   vocabulary rather than two, but the render stack stays iroh-live-private and
   never becomes part of the moq ecosystem.
 
-**Recommendation: Option B.** It is aligned with moq's own scope decision (they
+**Recommendation revised 2026-07-22 to in-tree (Option A, off-default member).**
+Per `../0-overview.md` Review revisions, revision 1, the render primitives go into
+moq as a new `moq-video-render` workspace crate kept off the default and relay
+dependency graphs, not the out-of-tree crate recommended below. The original
+recommendation is retained as the record of the reasoning.
+
+**Recommendation (original): Option B.** It is aligned with moq's own scope decision (they
 render nothing today and say so), it keeps 3,500 lines of graphics code and its
 dependency weight out of moq's tree, and its strategic value is precisely the
 proof: a third-party renderer working purely over the public handles is the
@@ -657,7 +663,7 @@ are moq-side authoring estimates excluding review reshaping.
 | 5 | VAAPI encoder GPU input + honest `set_bitrate` (`encode/backend/vaapi.rs`) | Linux capture-to-encode zero-copy | L (~800) | additive (backend-internal) | changes 1, 2 | A |
 | 6 | VideoToolbox / Media Foundation decode retain surface (U2) | macOS + Windows decode-to-render | S-M (~120) | additive (backend-internal) | changes 1, 3 | A |
 | 7 | Public + registerable `Backend` trait, `register_encoder`/`register_decoder`, `Kind` includes registered (`encode/backend/mod.rs:37,60-134`) | out-of-tree backends (Android) | M (~250, both sides) | breaking (trait goes public; semver commitment) | changes 1, 2 | B only |
-| 8 | Render crate home (out-of-tree `moq-video-render` over public handles) | the whole render stack | 0 upstream (one paragraph in the U1 RFC) | n/a | changes 1, 3, 6 | Both |
+| 8 | Render crate home: a new in-tree `moq-video-render` workspace crate, off the default and relay dependency graphs (revised 2026-07-22 from out-of-tree; overview revision 1) | the whole render stack | L-XL (the render port lands in moq) | additive (new off-default crate) | changes 1, 3, 6 | A |
 | 9 | Timestamp/config/error unification (adopt `moq_net::Timestamp`, hang catalog, moq `Error`) | every contributed backend compiles in moq shape | S per backend (mechanical) | additive (new `Error` variants) | none | Both |
 | 10 | Audio Opus knobs: `set_bitrate`, pre-skip, FEC/PLC reservation (moq-audio, moq-mux) | audio rate control, decoder delay correctness | S each (~200 total) | additive | none | independent |
 | 11 | PCM codec offer (moq-audio `#[non_exhaustive]` enum) | PCM interop (low value) | S (~350) | additive | hang catalog PCM variant (likely declined) | independent |

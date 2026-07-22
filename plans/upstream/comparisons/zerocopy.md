@@ -330,6 +330,15 @@ exists in the frame model but no in-tree consumer imports it.
 
 ## 4. Render upstreaming decision
 
+DECISION REVISED (2026-07-22, maintainer feedback): the render stack goes in-tree
+to moq, as a new `moq-video-render` crate that is an optional, off-default member
+of the moq workspace (Option A, adapted so the graphics dependencies stay off
+moq's default and relay builds), not the out-of-tree crate this section
+originally recommended. The UI-framework integrations stay in iroh-live for now.
+See `../0-overview.md` Review revisions, revision 1. The analysis below is the
+record of the options as they were weighed; the in-tree decision is the current
+plan.
+
 The maintainer intends to upstream the render stack, not merely tolerate it living
 downstream. That reframes the decision. Every option below requires the same enabling
 change on the moq side, namely a public frame vocabulary with native-handle accessors

@@ -1,6 +1,19 @@
 # av1-software. Software AV1: rav1e encode and rav1d decode
 
+> DEFERRED, not part of the active series. Per overview revision 4 (2026-07-22),
+> this plan is deferred and dropped from this upstream series, and it is retained
+> here as the reference for a later round rather than deleted. The two reasons are
+> that rav1e is too slow to carry as a live encoder now (roughly 4x slower per
+> resolution step at speed 10, usable at conference resolutions but not at 1080p60
+> on small cores), and that the rav1d decode dependency is too heavy and
+> unresolved to carry now (the pure-Rust `memorysafety/rav1d` path is a git-fork
+> pin moq forbids, and the crates.io `dav1d-rs` alternative pulls in a C libdav1d
+> system dependency). AV1 can be revisited later if a use case needs it. iroh-live
+> rips out its own AV1 backend in the meantime (see
+> `plans/align-to-moq/tasks/codec-remove.md`).
+
 Branch: moq-upstream/av1-software          PR target: base branch, then moq main
+Status: DEFERRED (overview revision 4), not scheduled in this series
 Depends on: B2 (PTS through encode); external prerequisite: rav1d fork resolution (coordination point 4)
 Path: A (in-tree)
 Size: M-L

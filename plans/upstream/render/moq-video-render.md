@@ -1,46 +1,57 @@
-# moq-video-render. Out-of-tree renderer crate over moq's public frame handles
+# moq-video-render. In-tree moq render crate over moq's public frame handles
 
-Branch: moq-upstream/moq-video-render (our own repository; not a moq source branch)
-PR target: none against moq source, except the one-paragraph docs link of change 8, which rides in the B1 RFC
+Branch: moq-upstream/moq-video-render (a branch on the moq monorepo)
+PR target: moq main, adding a new `moq-video-render` crate as a member of the moq workspace
 Depends on: B1 (Native vocabulary), B3 (decode::Frame::native()), vtb-mf-decode-surface (Apple and Windows decoders retain a surface); on Linux the DMA-BUF path additionally needs vaapi-decode to have something to import, though the crate compiles and its CPU fallback works without it
-Path: Both (out-of-tree). The crate is publishable and reusable across the moq ecosystem, yet it lives in our tree and touches no moq source.
-Size: 0 upstream. The moq-side diff is a single documentation paragraph (change 8). The crate itself is a port of roughly 3,500 lines of our existing render code, but that authoring lands in our repository, not moq's.
+Path: A (in-tree, off-default member). A new member of the moq workspace, kept off the default and relay dependency graphs: neither `moq-video` nor `moq-relay` lists it, and its heaviest importers are further feature-gated within the crate.
+Size: L-XL. A new moq workspace crate carrying the port of roughly 3,500 lines of our existing render code (3,463 LOC across five files), plus the workspace wiring that keeps it off the default build. This is a real moq contribution, not a documentation paragraph.
 
 ## Goal
 
-Publish `moq-video-render`, an out-of-tree crate that renders a `moq_video::decode::Frame`
-to a wgpu (or GLES) RGBA texture with zero copies where the platform allows and a CPU
-download everywhere else. This is the maintainer's decided approach for the render stack
-(Option B of `comparisons/zerocopy.md` section 4 and `comparisons/moq-changes.md` section
-1b): moq-video stays render-free by deliberate scope, so the renderer does not enter moq's
-tree, does not add `wgpu`, `ash`, `glow`, or `objc2-metal` to moq's dependency graph, and
-does not force per-vendor GPU CI onto maintainers who cannot exercise the code. Instead the
-crate consumes moq's public frame handles: it reads `decode::Frame::native()` (B3) to obtain
-a `Native` handle (B1), selects a per-frame import path from the handle variant, and falls
-back to `into_i420()` when a zero-copy path fails, exactly as our `render.rs:267-359` does
-today over our own `NativeFrameHandle`. Its strategic value is the existence proof: a working
-third-party renderer built purely on the public `Native` vocabulary is the strongest argument
-that B1 is a complete public contract rather than a private convenience. Its downstream value
-is that it is the home into which iroh-live moves its `render/` code, letting iroh-live delete
-its parallel `FrameData` and `NativeFrameHandle` model and consume moq's single frame
-vocabulary.
+Add `moq-video-render`, a new crate in the moq workspace that renders a
+`moq_video::decode::Frame` to a wgpu (or GLES) RGBA texture with zero copies where the
+platform allows and a CPU download everywhere else. This is the maintainer's decided
+approach for the render stack, revised on 2026-07-22 (overview "Review revisions",
+revision 1): the render primitives live in moq, in-tree, as a separate workspace member
+rather than a feature of moq-video, so moq owns the render vocabulary while its default
+and relay builds stay render-free. The crate is off the default dependency graph, since
+`moq-video` and `moq-relay` do not depend on it, so building moq-video, moq-relay, or
+moq-transcode never pulls `wgpu`, `ash`, `glow`, or `objc2-metal`, and the heaviest
+importers are further feature-gated inside the crate. It consumes moq's public frame
+handles: it reads `decode::Frame::native()` (B3) to obtain a `Native` handle (B1), selects
+a per-frame import path from the handle variant, and falls back to `into_i420()` when a
+zero-copy path fails, exactly as our `render.rs:267-359` does today over our own
+`NativeFrameHandle`. Its value is twofold. It is a real moq contribution, a new workspace
+crate carrying the ported render code rather than a single documentation paragraph. It is
+also the existence proof that B1 is a complete public contract, since a renderer built
+purely on the public `Native` vocabulary is the strongest argument that the vocabulary is
+a real public API rather than a private convenience. Its downstream value is that it is the
+home into which iroh-live moves its `render/` code, letting iroh-live delete its parallel
+`FrameData` and `NativeFrameHandle` model and consume moq's single frame vocabulary.
 
-This plan is not a moq source pull request. moq renders nothing in Rust on purpose
-(`comparisons/zerocopy.md` section 2d), and the only thing the renderer needs from moq is the
-public `native()` accessor of B3 over the B1 handle enum, plus decoders that actually export a
-handle rather than downloading (vtb-mf-decode-surface for Apple and Windows, vaapi-decode for
-Linux). The crate is what those base and decoder changes unlock.
+The UI-framework integrations stay in iroh-live for now. The dioxus, egui, and demo-shell
+layers (iroh-live's `moq-media-dioxus` and `moq-media-egui`) do not move into moq with this
+crate; they remain in iroh-live and consume these moq render primitives, to be moved
+elsewhere later.
+
+This plan is a moq source pull request that adds the `moq-video-render` member to the moq
+workspace. moq's default and relay builds still render nothing
+(`comparisons/zerocopy.md` section 2d), because the render code lives in a member they do
+not depend on. What the crate needs from moq beyond its own place in the workspace is the
+public `native()` accessor of B3 over the B1 handle enum, plus decoders that actually
+export a handle rather than downloading (vtb-mf-decode-surface for Apple and Windows,
+vaapi-decode for Linux). The crate is what those base and decoder changes unlock.
 
 ## Evidence
 
 - Render upstreaming decision and the Option A/B/C analysis: `comparisons/zerocopy.md`
-  section 4 (lines 332-419), with the Option B recommendation at lines 404-419 and the
-  discrete requirements U1 through U4 in section 5 (lines 423-487). U4 (lines 471-478) is
-  this crate.
+  section 4 (lines 332-419), whose recommendation was revised on 2026-07-22 to Option A,
+  the in-tree crate (overview "Review revisions", revision 1), plus the discrete
+  requirements U1 through U4 in section 5 (lines 423-487). U4 (lines 471-478) is this crate.
 - The render-side problem statement and the three placements restated in moq naming:
   `comparisons/moq-changes.md` section 1b, "Problem two: moq renders nothing in Rust"
-  (lines 195-202), Option B (lines 257-262), and change 8 in the sequenced list (line 660,
-  "Render crate home ... 0 upstream (one paragraph in the U1 RFC)").
+  (lines 195-202), and change 8 in the sequenced list, both now carrying the revised
+  in-tree decision (a new off-default workspace member).
 - Our render module inventory: `comparisons/maps/rusty-codecs.md` section 3, "render/ GPU
   renderers" (lines 267-297), naming each importer and its role.
 - The two frame models side by side, and why on-demand export is the shape moq's enum lacks:
@@ -115,8 +126,9 @@ rewritten from our vocabulary to moq's:
   into R8 and RG8 textures, the `VppRetiler` Y_TILED-to-CCS identity blit for Intel ANV
   modifiers Vulkan cannot import (raw libva FFI because cros-libva does not wrap VPP), and
   `create_device_with_dmabuf_extensions`. Carries over whole; this is the hardest and most
-  hardware-specific code in the crate, and Option B keeps it where we run the Meteor Lake
-  hardware that validates it.
+  hardware-specific code in the crate, and the off-default member keeps it out of moq's
+  default and relay builds while the iroh-live device test runner validates it on the Meteor
+  Lake hardware we run.
 - `render/gles.rs` (536 lines) and `render/gles_dmabuf.rs` (402 lines): the GLES2 renderer
   and the EGLImage import via `EGL_EXT_image_dma_buf_import` for GL-only contexts. Carry over
   whole.
@@ -131,13 +143,35 @@ moq's. The `VideoFrame::rgba_image()` lazy cache and the `PixelFormat`, `Nv12Pla
 `GpuPixelFormat` types either move into the crate as private import-side helpers or are
 replaced by reading `Native` directly.
 
-## Target in moq (docs only)
+## Target in moq (a new off-default workspace member)
 
-No moq source file changes. The one moq-side artifact is change 8
-(`comparisons/moq-changes.md:660`): a single documentation paragraph, added to the B1 RFC or
-the `moq-video` crate docs, that points readers wanting to render decoded frames to the
-external `moq-video-render` crate, and states that moq-video renders nothing in Rust by
-scope. No code, no dependency, no feature flag on the moq side.
+A new `moq-video-render` crate under `rs/moq-video-render`, added to the moq workspace. The
+Cargo wiring is what keeps its graphics dependencies off the default and relay builds while
+the crate itself lives in the tree:
+
+- It is added to the `[workspace] members` array in moq's root `Cargo.toml` (the members
+  list at `Cargo.toml:2-30`, alongside members such as `moq-nvenc` at `Cargo.toml:20`), so
+  release-plz and the workspace tooling own it like any other member.
+- It is deliberately left out of `default-members` (`Cargo.toml:31-59`), following the
+  precedent of members already excluded from the default build (`moq-wasm`, `moq-gst`,
+  `moq-ffi`, and `libmoq`), so a plain `cargo build` at the workspace root does not compile
+  the graphics stack.
+- Neither `moq-video` (`rs/moq-video/Cargo.toml`) nor `moq-relay`
+  (`rs/moq-relay/Cargo.toml`, which does not depend on `moq-video` at all) lists
+  `moq-video-render` as a dependency, so building moq-video, moq-relay, or moq-transcode
+  never pulls `wgpu`, `ash`, `glow`, or `objc2-metal`. This mirrors how `moq-nvenc` is a
+  separate workspace member (`Cargo.toml:83`) that `moq-video` reaches only through its
+  optional `nvenc` and `nvdec` features (`moq-nvenc = { workspace = true, optional = true }`
+  in `rs/moq-video/Cargo.toml`), except that `moq-video-render` goes one step further and is
+  referenced by no other moq crate.
+- Within the crate, the heaviest importers are feature-gated: `dmabuf-import` (Vulkan via
+  `ash`), `metal-import` (`objc2-metal`), and `gles` and `gles-dmabuf` (`glow`), so even a
+  consumer that does depend on `moq-video-render` pulls only the importers it enables.
+
+The one documentation touch, the former change 8, becomes a paragraph in the B1 RFC or the
+`moq-video` crate docs that points readers wanting to render decoded frames to the sibling
+`moq-video-render` member and states that moq-video itself renders nothing in Rust by scope.
+That is now a pointer to another crate in the same workspace, not to an external repository.
 
 ## Public API
 
@@ -147,7 +181,7 @@ The crate exposes one renderer type parameterized on nothing moq-internal. It ta
 ```rust
 //! Renders `moq_video::decode::Frame` to a GPU texture with zero copies where the
 //! platform allows and a CPU download otherwise. moq-video renders nothing in Rust;
-//! this crate is the out-of-tree renderer over its public `Native` frame handles.
+//! this crate is moq's in-tree render member over its public `Native` frame handles.
 
 use moq_video::decode::Frame;
 use moq_video::frame::Native; // or the moq-frame crate, per B1's chosen home
@@ -272,16 +306,21 @@ crate to track a small, `#[non_exhaustive]` public API.
   reads `export() -> OwnedFd` per frame instead of holding our cached `DmaBufInfo.fd`; moq's
   `DmaBuf` is the on-demand exporter (`comparisons/zerocopy.md:160-166`), so the crate never
   stores a descriptor.
-- No moq source dependency beyond the public API: the crate depends on the `moq-video` crate
-  (or the `moq-frame` crate if B1 homes the vocabulary there) at a released version, plus
-  `wgpu`, `ash`, `glow`, and `objc2-metal`, all crates.io, none of which touch moq's graph.
+- Dependencies: as a workspace member the crate depends on the `moq-video` crate (or the
+  `moq-frame` crate if B1 homes the vocabulary there) through the workspace, plus `wgpu`,
+  `ash`, `glow`, and `objc2-metal` from crates.io behind the crate's own features. Because
+  neither `moq-video` nor `moq-relay` depends on `moq-video-render`, none of these graphics
+  crates reach the default or relay dependency graph, so the crate is in the tree yet off
+  the default build.
 - Timestamps: read `frame.timestamp` as `moq_net::Timestamp`; the renderer does no `Duration`
   boundary conversion.
 - Errors: the crate defines its own `thiserror` `Error` (import failure, device creation,
   unsupported modifier), independent of moq's `Error`, since it is downstream and publishes
   its own semver.
-- CI and hardware: the crate is tested through the iroh-live device test runner already on
-  the roadmap, so no GPU CI burden lands on moq (`comparisons/zerocopy.md:384-385`).
+- CI and hardware: the crate is off the default build (not in `default-members` and pulled
+  in by no other moq crate), so moq's default CI does not compile the graphics stack, and
+  the zero-copy paths are validated through the iroh-live device test runner already on the
+  roadmap rather than on moq's runners (`comparisons/zerocopy.md:384-385`).
 
 ## Coordination
 
@@ -295,25 +334,26 @@ crate to track a small, `#[non_exhaustive]` public API.
   Metal and Windows paths until vtb-mf-decode-surface does. The crate compiles and its CPU
   fallback works before any of them land, so it is not blocked, but its zero-copy paths only
   become exercisable as those decoder leaves merge.
-- Placement decision already made. Option B is the maintainer's decided approach, so no
-  decision gate remains here. The two documented alternatives are recorded below only as
+- Placement decision already made. The render stack goes in-tree as a separate,
+  off-default workspace member (overview "Review revisions", revision 1), so no decision
+  gate remains here. The two documented alternatives are recorded below only as
   contingencies.
 
-## Alternatives (recorded, not chosen)
-
+- Option B, an out-of-tree `moq-video-render` crate we publish and maintain in our own
+  repository over moq's public handles (`comparisons/zerocopy.md:368-385`), was the earlier
+  recommendation. It needs exactly the same moq API as the chosen in-tree crate and keeps
+  the graphics dependency tree off moq entirely, but it makes the renderer a downstream crate
+  rather than a moq contribution, and the 2026-07-22 revision chose the in-tree member so the
+  render vocabulary lives in moq. The dependency weight that argued for out-of-tree is met
+  here instead by the off-default separate member.
 - Option C, keep the renderer inside iroh-live fully aligned to moq's frame model
   (`comparisons/zerocopy.md:386-402`, `comparisons/moq-changes.md:264-268`), is the minimal
   fallback if the public-handle work (B1 and B3) stalls. It still consumes
   `moq_video::decode::Frame` and its `native()` accessor directly and still deletes our
   parallel `FrameData` and `NativeFrameHandle`, so it collapses the two-model translation we
-  carry today, but it forgoes reusability and keeps the render stack out of the moq ecosystem.
-  It needs exactly the same moq API as Option B; the only difference is that the renderer
-  stays iroh-live-private rather than a published crate.
-- Option A, an in-tree `moq-video-render` crate inside the moq workspace
-  (`comparisons/zerocopy.md:344-367`), is revisit-only, and only if moq-video is ever
-  repositioned as a client playback SDK rather than a relay and transcode stack. It would drag
-  `wgpu`, `ash`, `glow`, and `objc2-metal` and per-vendor GPU CI into moq's tree, which
-  contradicts moq's minimal-dependency and render-free scope, so it is not the opening move.
+  carry today, but it forgoes the shared render crate and keeps the render stack out of the
+  moq ecosystem. It needs exactly the same moq API as the chosen approach; the only
+  difference is that the renderer stays iroh-live-private rather than a moq workspace member.
 
 ## Acceptance checklist
 
@@ -328,8 +368,10 @@ crate to track a small, `#[non_exhaustive]` public API.
   VideoToolbox decoder.
 - Every zero-copy path falls back to `into_i420()` on failure and disables itself after three
   strikes, verified by a test that forces an import error.
-- The moq side carries only the change 8 documentation paragraph, with no code, dependency,
-  or feature added to moq-video.
+- The `moq-video-render` crate is a new moq workspace member that neither `moq-video` nor
+  `moq-relay` depends on, and it is left out of `default-members`, so moq's default and relay
+  builds add no `wgpu`, `ash`, `glow`, or `objc2-metal`; the only moq-video source touch is
+  the change 8 documentation paragraph pointing to the new member.
 - iroh-live can drop its `rusty-codecs/src/render/` tree and its `FrameData`,
   `NativeFrameHandle`, and `GpuFrameInner` types in favor of this crate over
   `moq_video::decode::Frame`, confirming the crate is a complete replacement for the parallel

@@ -16,7 +16,7 @@ single codebase (`/home/bit/Code/rust/moq`, HEAD `3a3e0ea8`).
 ## The two campaigns and their dependency
 
 - `plans/upstream/` contributes iroh-live's codec and capture work into moq
-  (VAAPI, V4L2, Android, AV1, the frame vocabulary, the renderer crate, and so
+  (VAAPI, V4L2, Android, the frame vocabulary, the in-tree renderer crate, and so
   on) as pull requests to moq and moq-vaapi.
 - `plans/align-to-moq/` (this campaign) removes and realigns iroh-live code by
   adopting moq. It splits into two kinds of task:
@@ -27,8 +27,10 @@ single codebase (`/home/bit/Code/rust/moq`, HEAD `3a3e0ea8`).
     the sync and adaptive layers to moq-mux's per-rendition estimation.
   - Upstream-gated tasks that delete iroh-live code only after the matching
     upstream contribution lands in moq and releases: removing `rusty-codecs` and
-    `rusty-capture` module by module, and adopting the out-of-tree
-    `moq-video-render` crate in place of iroh-live's `render/`.
+    `rusty-capture` module by module, and adopting moq's in-tree
+    `moq-video-render` crate (an off-default moq workspace member) in place of
+    iroh-live's `render/`, while the dioxus and egui UI integrations stay in
+    iroh-live for now.
 
 The dependency runs one way: the upstream-gated removals here consume what the
 upstream campaign produces. The independent tasks do not, and are the natural

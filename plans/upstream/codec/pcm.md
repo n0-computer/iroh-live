@@ -9,22 +9,30 @@ Size: S
 
 Offer moq-audio an uncompressed PCM codec as a new `Codec::Pcm` variant on its
 `#[non_exhaustive]` codec enum, porting our dependency-free PCM encoder and
-decoder. The value is low and honest: PCM is a test and diagnostics codec that
-lets the pipeline behave identically to Opus without compression or lookahead
-confounding latency measurements. moq has no PCM codec, and, more decisively, the
-hang catalog has no PCM codec variant, so a PCM track would ride an
-`Unknown("pcm")` string with no interop meaning and no browser consumer. This
-plan is deliberately small, states the low value plainly, and expects that moq
-may decline it and keep PCM local. It is independent of the base API.
+decoder, and propose the matching hang catalog PCM variant so a PCM track carries
+real interop meaning. PCM is a required capability for iroh-live (overview
+revision 3): the uncompressed path lets the pipeline behave identically to Opus
+without compression or lookahead confounding latency measurements, and iroh-live
+depends on having it. This plan contributes `Codec::Pcm` to moq-audio together
+with a hang catalog PCM variant, so a PCM track advertises a first-class codec
+rather than an `Unknown("pcm")` string with no interop meaning and no browser
+consumer. The hang catalog variant is a genuine ask on a separate project, and
+the plan is honest that moq may not take the whole offer; the load-bearing point
+is that the capability is never lost. If moq declines the upstream, iroh-live
+keeps `rusty-codecs/pcm` as a supported local codec. This plan is independent of
+the base API.
 
 ## Evidence
 
 - `comparisons/moq-changes.md` change 11 and section 4 (PCM recommendation):
-  slots into moq-audio's `#[non_exhaustive]` codec enum, but the hang catalog has
-  no PCM variant, so interop value is nil and a decline is the expected outcome.
-- `comparisons/codecs.md` section 6 (PCM): the raw f32 20-ms framing, the 559
-  dependency-free LOC, and the "keep local; do not upstream" verdict, with the
-  offer framed as costless.
+  slots into moq-audio's `#[non_exhaustive]` codec enum; the comparison notes the
+  hang catalog has no PCM variant, which this plan addresses by proposing one so
+  the track carries interop meaning. Per overview revision 3 the comparison's
+  low-value framing is superseded: PCM is a required iroh-live capability.
+- `comparisons/codecs.md` section 6 (PCM): the raw f32 20-ms framing and the 559
+  dependency-free LOC. The comparison's "keep local; do not upstream" verdict is
+  the analysis of record, and overview revision 3 is the decision that overrides
+  it: the offer stands, and PCM is kept locally if the offer is declined.
 - `comparisons/audio.md` section 1.4 (PCM codec, ours only): moq-audio's
   single-variant `Codec` enum and our `PcmEncoder`/`PcmAudioDecoder` pair.
 
@@ -56,12 +64,15 @@ config.codec` on the concrete structs.
   shape moq chose over a trait.
 - New PCM encode and decode paths in moq-audio, following the existing Opus
   module layout.
-- The catalog output is the open question: moq-audio's `Encoder::catalog()`
+- The catalog output is the substantive ask: moq-audio's `Encoder::catalog()`
   returns a `hang::catalog::AudioConfig`, and hang's `AudioCodec` is
-  `{AAC, Opus, Mp2, Ac3, Ec3, Unknown}` with no PCM member, so a PCM rendition
-  would have to advertise `Unknown("pcm")`. This likely needs a hang catalog PCM
-  variant to carry real interop meaning; propose it, but expect the offer to be
-  declined or kept behind a test-only feature.
+  `{AAC, Opus, Mp2, Ac3, Ec3, Unknown}` with no PCM member, so absent a new
+  variant a PCM rendition would advertise `Unknown("pcm")`. Propose a hang catalog
+  PCM variant so the track carries real interop meaning rather than an opaque
+  string. This is a genuine request on a separate project, so it may not land as
+  asked; if it does not, the `Codec::Pcm` offer can still ship advertising
+  `Unknown("pcm")`, and if moq declines the whole offer, iroh-live keeps PCM
+  locally.
 
 ## Implementation steps
 
@@ -70,12 +81,14 @@ config.codec` on the concrete structs.
 2. Port the PCM encoder and decoder, keeping the 20-ms LE-f32 framing so the PCM
    path behaves identically to Opus for pipeline and latency tests.
 3. Wire the truthful `rate * channels * 32` bitrate into the catalog output.
-4. Handle the catalog gap honestly: either advertise `Unknown("pcm")` and
-   document the lack of interop, or, if the maintainer is open to it, propose a
-   hang `AudioCodec::Pcm` variant in the same conversation. Do not force the
-   hang change; it is out of moq-audio's scope.
+4. Close the catalog gap: propose a hang `AudioCodec::Pcm` variant so the
+   rendition advertises a first-class codec, and lead with that as the interop
+   ask. It lives in a separate project and is outside moq-audio's scope, so do not
+   force it; if it cannot land in this conversation, advertise `Unknown("pcm")`
+   and document the interim, and keep pursuing the hang variant.
 5. Keep the whole contribution small and gated so audio-only consumers do not pay
-   for it if it lands.
+   for it if it lands. If moq declines the offer entirely, iroh-live keeps
+   `rusty-codecs/pcm` so the capability is retained.
 
 ## Tests
 
@@ -88,16 +101,20 @@ config.codec` on the concrete structs.
 
 - No dependencies added: PCM is raw passthrough.
 - Errors adopt moq-audio's `Error`.
-- Frame this as low value in the PR. It earns its keep locally as a test and
-  diagnostics codec; upstream, its worth is contingent on a hang catalog variant
-  that does not exist, so a decline is a reasonable outcome and the PR should say
-  so.
+- Frame this in the PR as a required iroh-live capability (overview revision 3),
+  not a costless nicety. The substantive ask is the hang catalog PCM variant that
+  gives the track interop meaning; be honest that it lives in a separate project
+  and may not land as asked. State plainly that if moq declines the offer,
+  iroh-live keeps its own PCM codec, so the capability is not lost either way.
 
 ## Coordination
 
-None from the coordination list. The only external dependency is a hang catalog
-PCM variant, which is a separate project's decision and the likely reason to
-decline; do not treat it as a blocker to keep the offer small.
+None from the coordination list. The one external ask is a hang catalog PCM
+variant, which is a separate project's decision; lead with it as the interop
+value, but do not treat it as a blocker to shipping the moq-audio offer. If moq
+declines the offer, iroh-live keeps `rusty-codecs/pcm` locally
+(`plans/align-to-moq/tasks/codec-remove.md`), so the capability is retained
+regardless.
 
 ## Acceptance checklist
 
@@ -105,5 +122,6 @@ decline; do not treat it as a blocker to keep the offer small.
 - PCM encode and decode ported with 20-ms LE-f32 framing.
 - Truthful bitrate in the catalog output.
 - Bit-exact round-trip test passes.
-- The catalog interop gap and the low-value, likely-declined framing are stated
-  plainly in the PR.
+- The hang catalog PCM variant is proposed as the interop ask, and the PR states
+  plainly that PCM is a required iroh-live capability kept locally if the offer is
+  declined (overview revision 3).

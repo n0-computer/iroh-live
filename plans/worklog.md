@@ -989,3 +989,35 @@ with 0-overview + prompt.md + plans/tasks + comparisons; prompts load
 the base and reference their overview/tasks; git clean. Ready to launch
 a coordinated fleet session from either campaign prompt.
 Commits this round: 19d6d3c, c68027a, 643019e (on plan-upstream; not pushed).
+
+## ROUND 5 (2026-07-22): first-review revisions
+
+User first-review feedback, five decisions, applied and committed:
+1. Render goes IN-TREE to moq (not out-of-tree Option B): a new
+   moq-video-render crate as an OFF-DEFAULT moq workspace member (moq-video
+   and moq-relay do not depend on it, heaviest importers feature-gated), so
+   default/relay builds stay light. The "partially out of tree because
+   workspace dep size" nuance = in the workspace, off the default graph. UI
+   integrations (dioxus/egui) stay in iroh-live for now.
+2. Pre-encoded/libcamera REQUIRED: perfect libcamera on-device H.264 support
+   is a committed deliverable; only the publish_preencoded API shape needs
+   maintainer input.
+3. PCM REQUIRED (not low value): offer Codec::Pcm + a hang catalog PCM
+   variant; keep rusty-codecs/pcm if moq declines, so the capability is
+   never lost.
+4. AV1 DEFERRED and dropped from this series (rav1e too slow, rav1d fork too
+   heavy); iroh-live rips out its own AV1 backend now as a local deletion,
+   re-addable later.
+5. Dep-weight is a first-class constraint: heavy-dep contributions land as
+   optional off-default feature-gated workspace members.
+
+Encoded the 5 decisions authoritatively in upstream/0-overview.md (new
+"Review revisions" section + waves + coordination points 4/5 + tree +
+plan-index rows), then propagated via 2 agents (render across
+moq-video-render.md + zerocopy.md + moq-changes.md + render-adopt.md;
+av1/pcm/libcamera across their leaf plans + align codec-remove) with
+coordinator finish-up (render agent died mid-file; completed its 3
+remaining edits + the align overview + the UI-stay note by hand).
+Comparisons carry dated "decision revised" notes (analysis-of-record
+preserved). Final sweep clean (no em dashes; render out-of-tree mentions
+only in the rejected-Option-B contingency section).
