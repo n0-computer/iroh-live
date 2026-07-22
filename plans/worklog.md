@@ -958,3 +958,34 @@ full re-map (handled); one usage-limit stall killed the first fix wave
 at ~18:40 (resets 19:20; relaunched 20:12, no data lost); the
 net/origin mapper stalled twice on lost child results and was
 redirected to inline reads.
+
+## ROUND 4 (2026-07-22): align-to-moq campaign + fleet prompts
+
+User asks, all done and committed on plan-upstream:
+1. The room stuff belongs to iroh-live improvement, not upstreaming.
+   Created plans/align-to-moq/ (the counterpart to plans/upstream/):
+   moved room-layer.md + cut-plan.md there (fixed cross-refs to
+   ../upstream/comparisons/), authored 0-overview.md framing the two
+   campaigns + their one-way dependency (align-gated tasks consume
+   upstream output). Commit 19d6d3c.
+2. Reviewed/optimized for small agents: broke the ledger+redesign into
+   8 self-contained tasks/ plans (5 independent adoptions + 3
+   upstream-gated removals), each with wave/deps/moq-primitive/file:line/
+   proof-before-deletion. Added a task template to the overview. Commit
+   c68027a.
+3. Read cursor.com agent-swarm-model-economics for fleet principles
+   (planner/worker tiers, capability-matched model economics, the five
+   failure modes, decorrelated review, stigmergy). Wrote the fleet
+   prompts: plans/prompt-base.md (coordinator base: survive stop and
+   restart-from-empty via on-disk status.md/worklog.md/learnings.md +
+   startup-reconcile protocol; model economics = cheap workers for easy
+   tasks, coordinator keeps design+oversight; failure-mode discipline;
+   safety+authorization), plus plans/upstream/prompt.md (base-merges-
+   first serialization, two PR targets) and plans/align-to-moq/prompt.md
+   (adoption-before-deletion, upstream-gating). Commit 643019e.
+
+Final structure verified: plans/prompt-base.md + two campaign dirs each
+with 0-overview + prompt.md + plans/tasks + comparisons; prompts load
+the base and reference their overview/tasks; git clean. Ready to launch
+a coordinated fleet session from either campaign prompt.
+Commits this round: 19d6d3c, c68027a, 643019e (on plan-upstream; not pushed).
