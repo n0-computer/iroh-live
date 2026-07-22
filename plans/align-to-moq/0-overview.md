@@ -126,8 +126,47 @@ then its task plan, then the referenced comparison sections under
 `../upstream/comparisons/`, and works on a branch. It does not delete a module
 until the task's proof test passes on the new path.
 
+## Task plan template
+
+Every task plan in `tasks/` uses this structure, so any agent knows where to look.
+
+```
+# <task-name>
+
+Branch: align/<task-name>          Wave: 0 | 1 | 2 | 3
+Depends on: <pin bump / other tasks / upstream contribution + moq release>
+Kind: independent | upstream-gated
+
+## Goal
+One paragraph: what iroh-live gains and what it deletes.
+
+## Evidence
+Links into ../upstream/comparisons/ and the cut-plan or room-layer for the verdict.
+
+## moq primitive adopted
+The moq type/API this replaces our code with (with file:line in moq).
+
+## iroh-live code changed
+The modules and file:line this edits or deletes, with current LOC.
+
+## Steps
+Ordered, each small enough to commit, adoption before deletion.
+
+## Proof before deletion
+The example or end-to-end test that must pass on the new path before the old
+module is removed (coordination point 1).
+
+## Coordination
+Any point this task must defer on (upstream gating, the bridge period, rooms
+security).
+
+## Acceptance checklist
+The gate for calling the task done.
+```
+
 ## Status
 
-The two anchor documents (`cut-plan.md`, `room-layer.md`) are in place. The
-per-task plans under `tasks/` are the next organization step, breaking the cut
-ledger and the room phases into the self-contained units the tree above names.
+The two anchor documents (`cut-plan.md`, `room-layer.md`) are in place, and the
+per-task plans live under `tasks/`, one per node of the task tree above. Read a
+task plan for what to build; read the anchor documents and the comparisons for
+the reasoning behind it.
