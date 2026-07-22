@@ -43,13 +43,22 @@ CPU path needs neither.
   -> bool` predicate and `open: fn(Codec, &Config) -> Result<Box<dyn Backend>,
   Error>` (`rs/moq-video/src/decode/backend/mod.rs:80-85`); this backend supports
   only `Codec::H264`.
-- CPU path: constructs `Frame::I420` (`rs/moq-video/src/frame.rs:79-85`), building
-  it from the decoder's strided NV12 output via moq's `I420::from_nv12`
-  (`frame.rs:208-225`).
+- CPU path: constructs `Frame::I420` (`rs/moq-video/src/frame.rs:79-85`) from the
+  decoder's strided NV12 output. moq's `I420::from_nv12` (`frame.rs:208-225`)
+  cannot be reused as-is: it is gated `#[cfg(target_os = "windows")]`
+  (`frame.rs:210`) so it does not compile on the Linux target this backend runs
+  on, and its signature `from_nv12(nv12: &[u8], width, height)` assumes a
+  tightly-packed NV12 buffer (`luma = w*h`) with no stride, so it cannot honor the
+  per-plane stride the V4L2 `DqBuffer` reports. The backend must supply its own
+  stride-aware NV12-to-I420 pack (port the `copy_plane`/`interleave_uv` logic from
+  our `extract_decoded_frame`, `decoder.rs:356-411`), or the leaf must de-gate and
+  extend moq's `from_nv12` to take strides; see the adaptation notes.
 - Zero-copy follow-up: the B1 `Frame::DmaBuf(dmabuf::Frame)` variant under
-  `#[cfg(all(target_os = "linux", feature = "vaapi"))]` (or a shared `dmabuf`
-  feature) and the B3 `decode::Frame::native() -> Option<Native>` accessor, so
-  the exported EXPBUF descriptor reaches a renderer without a CPU download.
+  `#[cfg(all(target_os = "linux", feature = "dmabuf"))]` and the B3
+  `decode::Frame::native() -> Option<Native>` accessor, so the exported EXPBUF
+  descriptor reaches a renderer without a CPU download. The EXPBUF follow-up would
+  add `v4l2` to the set of features that enable `dmabuf` (B1 documents `v4l2` as a
+  future `dmabuf` producer for exactly this path).
 - `moq_net::Timestamp` and moq's `Error` with an additive device-failure variant.
 
 ## Source to port
@@ -60,22 +69,28 @@ working tree:
 - The `VideoDecoder` impl (`decoder.rs:50`) and `new` (`decoder.rs:55`) construct
   the decoder and hand the whole V4L2 lifecycle to a dedicated thread, "to contain
   v4l2r's unnameable type-state generics" (`decoder.rs:22-24`). All `v4l2r`
-  generics stay local to `run_decoder` (`decoder.rs:161`).
+  generics stay local to `decoder_thread` (`decoder.rs:162`; `:161` is its doc
+  comment). There is no `run_decoder` symbol.
 - It uses `v4l2r`'s high-level stateful decoder API (`decoder.rs:169-172`) with
   `MemoryType::Mmap` and an `MmapProvider` for the CAPTURE queue
   (`decoder.rs:171, 261`). Decoded frames are downloaded from MMAP buffers.
 - Output is CPU NV12: the frame extraction path builds `VideoFrame::new_nv12(...)`
   from the dequeued CAPTURE buffer's planes (`decoder.rs:394` and
-  `decoder.rs:421`), honoring the per-plane stride reported by the `DqBuffer`
+  `decoder.rs:421`), honoring the per-plane stride. The stride comes from
+  `FormatState.stride` (read at `decoder.rs:360`), populated in the
+  format-changed callback (`decoder.rs:252`), not from the `DqBuffer` type
+  parameter that appears in the extraction function's signature
   (`decoder.rs:352-354`).
 - Device path selection: `decoder_device_path()`
-  (`rusty-codecs/src/codec/v4l2.rs:67-73`) checks `V4L2_DEC_DEVICE` then falls
+  (`rusty-codecs/src/codec/v4l2.rs:68-74`) checks `V4L2_DEC_DEVICE` then falls
   back to `/dev/video10`.
 
-There is no EXPBUF or DMA-BUF export in our decoder today: the only zero-copy
-export machinery in the V4L2 tree is the `#[allow(dead_code)]` FFI in the
-encoder's `raw_v4l2` submodule (`encoder.rs:311-315`), and the decoder is CPU MMAP
-end to end. The zero-copy decode path is therefore new work, not a port.
+There is no EXPBUF or DMA-BUF export anywhere in the V4L2 tree today: a grep for
+`EXPBUF`, `DmaBuf`, `DMABUF`, and `dma_buf` across `src/codec/v4l2/` returns
+nothing. The encoder's `raw_v4l2` submodule (`encoder.rs:316`) is `QBUF`/`DQBUF`/
+`S_FMT`/`STREAMON` encode FFI with no `VIDIOC_EXPBUF` and no export machinery, and
+the decoder is CPU MMAP end to end. The zero-copy decode path is therefore new
+work, not a port; it starts from nothing.
 
 Carried over: the dedicated-thread model that contains the v4l2r generics, the
 stateful decoder setup, the strided-plane extraction, and the device-path
@@ -117,8 +132,9 @@ follow-up.
 1. Add the `v4l2` feature (or extend it if v4l2-encode landed first to add
    `v4l2r`), the cfg-gated `mod v4l2;`, and the decode `HARDWARE` candidate entry.
    Verify the crate builds with the feature on and off, on Linux and off Linux.
-2. Port the dedicated-thread stateful decoder from `run_decoder`, keeping every
-   `v4l2r` type-state generic local to the thread as our code does. Open the node
+2. Port the dedicated-thread stateful decoder from `decoder_thread`
+   (`decoder.rs:162`), keeping every `v4l2r` type-state generic local to the
+   thread as our code does. Open the node
    from `decoder_device_path()` semantics (env override then `/dev/video10`); on
    open or negotiation failure return a moq `Error` so `Kind::Auto` falls through.
 3. Implement `Backend::decode(access_unit, timestamp, keyframe)`: feed the
@@ -132,9 +148,12 @@ follow-up.
    `Timestamp` and returns it per `Decoded`. For a one-in one-out stateful decoder
    the timestamp echoes the input; carry it straight through, matching openh264's
    backend (`comparisons/maps/moq-video.md:437-439`).
-5. Convert the decoder's strided NV12 output to a tightly packed `Frame::I420` via
-   moq's `I420::from_nv12`, honoring the per-plane stride the `DqBuffer` reports.
-   This is the CPU path and the first shippable PR.
+5. Convert the decoder's strided NV12 output to a tightly packed `Frame::I420`.
+   moq's `I420::from_nv12` is Windows-gated and stride-less (see "moq API
+   consumed"), so pack it with an own stride-aware NV12-to-I420 routine ported
+   from `extract_decoded_frame` (`decoder.rs:356-411`), reading the per-plane
+   stride from `FormatState.stride`. This is the CPU path and the first shippable
+   PR.
 6. Follow-up, zero-copy EXPBUF: switch the CAPTURE queue to `MemoryType::DmaBuf`
    or export MMAP buffers with `VIDIOC_EXPBUF`, wrap each exported descriptor as
    the B1 `dmabuf::Frame` (fourcc, modifier, coded and display size, per-plane
@@ -145,12 +164,16 @@ follow-up.
 
 ## Tests
 
-- A hardware round-trip test in moq's style (`comparisons/maps/moq-video.md:711`):
-  feed a short H.264 Annex-B sequence produced by openh264 (no ffmpeg, per the
-  conventions) into the V4L2 decoder, assert one decoded I420 frame per input
-  access unit after the first keyframe, that timestamps are preserved, and that
-  the decoded luma matches the source within a tolerance. Mark `#[ignore]` with a
-  reason when no V4L2 M2M decoder node is present.
+- A hardware round-trip test modeled on moq's own `round_trip(encoder, decoder,
+  w, h)` helper (`rs/moq-video/src/decode/backend/nvdec.rs:513`), which encodes a
+  gradient with openh264 and decodes it through the hardware backend: feed a short
+  H.264 Annex-B sequence produced by openh264 (no ffmpeg, per the conventions)
+  into the V4L2 decoder, assert one decoded I420 frame per input access unit after
+  the first keyframe, that timestamps are preserved, and that the decoded luma
+  matches the source within a tolerance. Follow nvdec's gating rather than
+  `#[ignore]`: put the test in a `feature = "v4l2"`-gated module and skip at
+  runtime with an `hw_available()`-style guard (`nvdec.rs:465`) when no V4L2 M2M
+  decoder node opens.
 - For the follow-up: assert `decode::Frame::native()` returns `Some(Native::
   DmaBuf(_))` on the zero-copy path and that `into_i420()` still yields a correct
   CPU download from the exported descriptor.

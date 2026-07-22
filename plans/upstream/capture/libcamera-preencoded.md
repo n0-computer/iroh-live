@@ -102,7 +102,27 @@ the middle. In moq's vocabulary:
   `demand.unused()`, forces an IDR-aligned restart on each reopen, and forwards
   each read access unit to `Producer::publish`. It is `publish_capture` with the
   encoder step deleted and the catalog config taken from the source rather than
-  synthesized from the first encoded SPS.
+  synthesized from the first encoded SPS. Its concrete signature mirrors
+  `publish_capture` (verified async form at `producer.rs:183-215`) with the
+  encoder inputs removed:
+
+  ```rust
+  pub async fn publish_preencoded(
+      broadcast: moq_net::broadcast::Producer,
+      catalog: moq_mux::catalog::Producer,
+      source: impl PreEncoded,
+      clock: moq_mux::Clock,
+  ) -> Result<(), Error>;
+  ```
+
+  The `encode::Options` argument that `publish_capture` carries
+  (`producer.rs:186`) is dropped, not merely defaulted: with no encoder there is
+  nothing for it to configure. Everything it would supply now comes from
+  `source.config()`, which returns a `hang::catalog::VideoConfig` carrying the
+  codec, dimensions, bitrate, and latency hints, and `Producer::new` takes the
+  codec from that config (`producer.rs:51-83`) rather than from `Options::codec`.
+  The `clock` stays because `Producer::publish` still needs a `Timestamp` and the
+  source may pace off the clock the same way `publish_capture` does.
 
 The key design questions for the maintainer, which this is a conversation about
 rather than a silent addition:

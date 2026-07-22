@@ -80,9 +80,12 @@ producer of the vocabulary, not a consumer.
        #[cfg(all(target_os = "linux", feature = "nvdec"))]
        Cuda(cuda::Frame),
        // NEW: any Linux GPU frame with a PRIME-exportable descriptor, produced by
-       // VAAPI decode, PipeWire DMA-BUF capture, and V4L2 EXPBUF, consumed by the
-       // VAAPI encoder. Gated on a new shared `dmabuf` feature (see below), not on
-       // `vaapi`, because PipeWire and V4L2 produce DMA-BUF without VAAPI.
+       // VAAPI decode and PipeWire DMA-BUF capture, consumed by the VAAPI encoder.
+       // Gated on a new shared `dmabuf` feature (see below), not on `vaapi`,
+       // because PipeWire produces DMA-BUF without VAAPI. V4L2 EXPBUF would be a
+       // third producer, but only once the V4L2 zero-copy follow-up is pursued
+       // (see the feature-design note below); today V4L2 capture is always
+       // compiled and downloads to I420, so it is not yet a `dmabuf` producer.
        #[cfg(all(target_os = "linux", feature = "dmabuf"))]
        DmaBuf(dmabuf::Frame),
        // NEW: Android MediaCodec / ImageReader output and camera capture.
@@ -126,17 +129,49 @@ producer of the vocabulary, not a consumer.
    leaf fills in, and gates the whole module so a `vaapi`-less build never compiles
    it.
 
-4. **The public `Native` vocabulary.** Two homes are on the table; the decision is
-   an RFC item (see Adaptation notes):
+   `download_i420` is real work, not a trivial mmap-and-copy, and B1 must say so.
+   The `DmaBuf` carries a DRM `modifier` precisely because the buffer may be tiled
+   or compressed (a CCS modifier), and a PRIME fd under a tiled or compressed
+   modifier cannot be plain-`mmap`'d into linear I420. The download path branches on
+   `modifier()`: a linear modifier (`DRM_FORMAT_MOD_LINEAR`) can map and NV12- or
+   I420-pack directly, while any tiled or compressed modifier needs a VA readback,
+   binding the surface and calling `vaDeriveImage` / `vaGetImage` (or a VPP detile
+   blit to a linear surface) before packing. The VA-surface-backed implementation,
+   including this readback, is the vaapi-decode leaf's job (it owns the moq-vaapi
+   VA display); B1 declares the method and documents the linear-versus-tiled branch
+   keyed on `modifier()` so the leaf and the PipeWire producer agree on the
+   contract. On Android, `android::HwBuffer::download_i420` is likewise real work:
+   `AHardwareBuffer_lock` maps the buffer, and the NV12 result is deinterleaved into
+   I420 before returning; the android-mediacodec leaf supplies that body.
 
-   - Preferred: a new small crate `rs/moq-frame` with `Cargo.toml`, `src/lib.rs`,
-     and the `Native`, `DmaBuf`, `Plane`, and `Size` public types. moq-video,
-     moq-transcode, and an out-of-tree render crate then share one vocabulary.
-     moq-video depends on `moq-frame` and re-exports `Native` at `lib.rs` beside
-     `Error` and `Size` (`rs/moq-video/src/lib.rs:57-58`).
-   - Fallback: a public module `pub mod native;` in moq-video, re-exported at
-     `lib.rs`. Same types, no new crate, but not shareable by a render crate without
-     depending on all of moq-video.
+4. **The public `Native` vocabulary.** Two homes are on the table; the decision is
+   an RFC item (see Adaptation notes). The recommendation is the in-moq-video
+   module, because the standalone crate as first sketched is a dependency cycle:
+
+   - Recommended: a public module `pub mod native;` in moq-video, re-exported at
+     `lib.rs` beside `pub use error::Error;` and `pub use size::Size;`
+     (`rs/moq-video/src/lib.rs:57-58`). It holds `Native`, `DmaBuf`, `Plane`, and a
+     re-export of moq's `Size`. This home has no cycle: `DmaBuf` can hold a
+     moq-vaapi surface exporter and back its download with moq-video's `I420`
+     (`frame.rs:80`) and `Error` (`error.rs`), because the module lives inside
+     moq-video and sits above moq-vaapi, exactly where those types already are. It
+     is also the smaller ask of the maintainer. The one thing it cannot do is let an
+     out-of-tree render crate share the vocabulary without depending on all of
+     moq-video; that is the tradeoff, and it is acceptable because the renderer can
+     consume `Native` through moq-video's public API.
+   - Alternative (a standalone `rs/moq-frame` crate): only viable if the exporter is
+     abstracted behind a trait and the crate carries its own error type. A leaf
+     crate that other crates depend on cannot itself depend on them, so a `DmaBuf`
+     that stored a concrete moq-vaapi exporter or returned moq-video's `Error` /
+     `I420` (all of which sit *above* a would-be `moq-frame`) is a cycle and does not
+     compile. To make the crate work, `DmaBuf` would hold the exporter behind a
+     trait or boxed closure (for example `Arc<dyn Fn() -> Result<OwnedFd,
+     ExportError>>`), define its own `ExportError` (not moq-video's `Error`), and
+     keep all I420 download on the moq-video-side `crate::frame::dmabuf::Frame`
+     (Target 3) rather than on the public type. moq-video would then depend on
+     `moq-frame` and re-export `Native`, and the root `Cargo.toml` would need the
+     workspace wiring in step 7. Take this route only if a shared render crate is a
+     firm requirement; otherwise the module home is simpler and cycle-free.
 
    The public surface, identical either way, and the frozen contract leaves code
    against verbatim:
@@ -147,7 +182,7 @@ producer of the vocabulary, not a consumer.
    /// (rs/moq-video/src/lib.rs:37-44).
    #[non_exhaustive]
    pub enum Native {
-       #[cfg(target_os = "linux")]
+       #[cfg(all(target_os = "linux", feature = "dmabuf"))]
        DmaBuf(DmaBuf),          // fd on demand, fourcc, modifier, planes
        #[cfg(target_os = "macos")]
        CvPixelBuffer(Surface),  // moq's existing macos::Surface, made public
@@ -186,13 +221,42 @@ producer of the vocabulary, not a consumer.
    }
    ```
 
-   The Linux arm is gated `target_os = "linux"` (not the `vaapi` feature) so a
-   caller can name `Native::DmaBuf` on any Linux build; the arm carries a `DmaBuf`
-   whose exporter is only constructible where a producer feature (`vaapi`,
-   `pipewire`) is on. `CvPixelBuffer(Surface)`, `D3d11(Texture)`, and `Cuda(Cuda)`
-   wrap moq's existing `macos::Surface`, `d3d11::Texture`, and `cuda::Frame` by
-   making a thin public newtype, not by making the internal types public, so moq
-   keeps those internals free to change.
+   The Linux arm is gated `all(target_os = "linux", feature = "dmabuf")`, matching
+   the cfg of the `DmaBuf` payload's exporter. An earlier sketch gated the arm on
+   bare `target_os = "linux"`, but that does not compile on a
+   `--no-default-features` Linux build: the `DmaBuf` type and its exporter only
+   exist under `dmabuf` (pulled in by `vaapi` or `pipewire`), so a Linux build with
+   `dmabuf` off would name an arm whose field type is absent. Gating the arm on
+   `feature = "dmabuf"` keeps the enum total on every build. A caller that wants to
+   name `Native::DmaBuf` therefore compiles with a producer feature on, which is the
+   only configuration where a `DmaBuf` can exist anyway. The alternative (keep the
+   bare `target_os` gate and give the field an uninhabited placeholder plus an
+   `unreachable!` on a `dmabuf`-less build) is more machinery for no gain, so the
+   feature gate is the frozen-contract choice.
+
+   `CvPixelBuffer(Surface)`, `D3d11(Texture)`, and `Cuda(Cuda)` wrap moq's existing
+   `macos::Surface`, `d3d11::Texture`, and `cuda::Frame` by making a thin public
+   newtype, not by making the internal types public, so moq keeps those internals
+   free to change. Because `native(&self)` (step 5) builds an owned `Native` from a
+   borrow, each wrapped handle must be cheaply clonable. `cuda::Frame` already
+   derives `Clone` (`frame.rs:508`, a refcount bump), but `macos::Surface`
+   (`frame.rs:352`) and `d3d11::Texture` (`frame.rs:721`) do NOT, despite their doc
+   comments describing clone as a cheap retain / `AddRef`. B1 must add `Clone` to
+   both (a `CFRetained` clone and a COM `AddRef` respectively, no pixel copy), or
+   give each a `retain()` helper the newtype calls. Without this, `native()` cannot
+   return an owned `Native` and will not compile. The public newtypes then clone the
+   inner handle through.
+
+   Send/Sync of the new handles is not a free compile check. The
+   `frame_and_consumer_are_thread_safe` test (`decode/mod.rs:104-118`) requires
+   `Frame: Send + Sync`, and the same must hold for every `Native` variant. A VA
+   surface (a raw `VADisplay` pointer plus a `VASurfaceID`) and an `AHardwareBuffer`
+   are `!Send`/`!Sync` by default, exactly as `objc2`'s CoreVideo types are, so
+   `dmabuf::Frame`, `android::HwBuffer`, and their public wrappers each need an
+   explicit `unsafe impl Send`/`Sync` carrying a written safety argument, modeled on
+   the one `macos::Surface` already states (`frame.rs:359-369`: refcounted handle,
+   thread-safe retain/release, `&self` access is a plain read, no shared write). B1
+   spells out that argument per variant rather than assuming the bound is inherited.
 
 5. **The re-export** at `rs/moq-video/src/lib.rs` beside `pub use error::Error;` and
    `pub use size::Size;` (`lib.rs:57-58`): `pub use native::Native;` (module home)
@@ -213,12 +277,31 @@ producer of the vocabulary, not a consumer.
    fills, and gate the module so a build without `dmabuf` never sees it.
 
 Feature design: add a new `dmabuf` Cargo feature to moq-video. It is the base
-gate for the `Frame::DmaBuf` variant and its `dmabuf` module. The `vaapi`,
-`pipewire`, and `v4l2` features each enable `dmabuf` (`dmabuf = []`, `vaapi =
-["dmabuf", ...]`, and so on), so any producer or consumer of DMA-BUF pulls the
-variant in without depending on `vaapi`. This resolves the open question the
-pipewire-dmabuf and v4l2-decode leaves raise: they are DMA-BUF producers that do
-not otherwise need VAAPI, and they gate on `dmabuf`.
+gate for the `Frame::DmaBuf` variant and its `dmabuf` module. The DMA-BUF
+producers and consumers that exist today are the `vaapi` and `pipewire` features,
+so those two are the enablers of `dmabuf`. moq-video declares exactly four
+features today (`nvenc`, `nvdec`, `vaapi`, `pipewire`, at
+`rs/moq-video/Cargo.toml:15-39`); there is no `v4l2` feature, because V4L2 capture
+is unconditional through `v4l = "0.14"` (`Cargo.toml:101`) and downloads to I420.
+A `v4l2` feature that also enabled `dmabuf` would be introduced only later, if and
+when V4L2 EXPBUF zero-copy is pursued, at which point it joins the enabler set.
+The concrete `[features]` edits, spelled out so a PR agent applies them verbatim:
+
+```toml
+# NEW: base gate for the DMA-BUF frame variant and its `frame/dmabuf.rs` module.
+# Enabled by every feature that produces or consumes a PRIME-exportable buffer.
+dmabuf = []
+# was `vaapi = ["dep:moq-vaapi"]` (Cargo.toml:34)
+vaapi = ["dmabuf", "dep:moq-vaapi"]
+# was `pipewire = ["dep:pipewire", "dep:ashpd"]` (Cargo.toml:39)
+pipewire = ["dmabuf", "dep:pipewire", "dep:ashpd"]
+```
+
+`dmabuf = []` adds no dependency of its own: the variant is pure descriptor
+metadata plus an fd dup, and `export` needs only `use std::os::fd::OwnedFd;` from
+`std`, so no new crate is pulled in by the feature itself. This resolves the open
+question the pipewire-dmabuf leaf raises: it is a DMA-BUF producer that does not
+otherwise need VAAPI, and it gates on `dmabuf` (pulled in by `pipewire`).
 3. Add the two variants to the private `crate::frame::Frame`
    (`frame.rs:23-36`) with their cfg gates.
 4. Add the matching arms to `width`, `height`, and `to_i420`
@@ -233,6 +316,18 @@ not otherwise need VAAPI, and they gate on `dmabuf`.
    compile-only declaration (fields plus `download_i420`), so the enum is total on
    Android; the real MediaCodec / ImageReader producer is the android-mediacodec
    leaf. moq builds on non-Android hosts do not compile it.
+7. Wire the Cargo and workspace pieces. For the recommended module home this is
+   just the `[features]` stanzas above (`dmabuf = []`, `vaapi = ["dmabuf", ...]`,
+   `pipewire = ["dmabuf", ...]`) plus the `use std::os::fd::OwnedFd;` import in the
+   `dmabuf` module and the public `native` module for `DmaBuf::export`; no root
+   `Cargo.toml` change is needed, since no new crate is added. For the alternative
+   `moq-frame` crate home this step also edits the root `Cargo.toml`: add
+   `"rs/moq-frame"` to both `members` (`Cargo.toml:2-31`) and `default-members`
+   (`Cargo.toml:32-60`), neither of which lists it today, add a
+   `[workspace.dependencies] moq-frame = { version = "...", path = "rs/moq-frame" }`
+   entry, and change moq-video's dependency block to `moq-frame = { workspace = true
+   }`. The crate's own `Cargo.toml` declares the same `dmabuf` feature so the gated
+   types line up across the two crates.
 
 ## Tests
 
@@ -257,11 +352,15 @@ not otherwise need VAAPI, and they gate on `dmabuf`.
 - The public arm carries a kernel or OS object name (`DmaBuf`, `CvPixelBuffer`,
   `D3d11`, `Cuda`, `HardwareBuffer`), never a backend name, so the "no backend type
   in the public API" rule (`lib.rs:37-44`) holds even with a public enum.
-- The `moq-frame` crate versus in-moq-video module choice is the RFC decision. The
-  crate is preferred because the out-of-tree renderer (render leaf, Option B) and
-  moq-transcode can share the vocabulary without depending on all of moq-video, and
-  because it is the cleanest proof that the vocabulary is self-contained. The module
-  is the smaller ask if the maintainer resists a new crate. Whichever lands, the
+- The in-moq-video module versus `moq-frame` crate choice is the RFC decision, and
+  the module is now the recommendation (Target 4). The crate as first sketched is a
+  dependency cycle: a public `DmaBuf` that holds a moq-vaapi exporter and returns
+  moq-video's `Error` and `I420` sits above both crates, so a leaf crate they depend
+  on cannot hold those types. The module home avoids the cycle entirely because it
+  lives inside moq-video. The crate stays a noted alternative, viable only if the
+  exporter is abstracted behind a trait or boxed closure and the crate carries its
+  own `ExportError`, and it is worth that extra machinery only if a render crate must
+  share the vocabulary without depending on all of moq-video. Whichever lands, the
   public type shape above is identical, so leaves are unaffected by the choice.
 - Mint-on-access is the one place our model is strictly better than a store-the-fd
   design (`comparisons/moq-changes.md` section 1a, change 2): a buffered playout

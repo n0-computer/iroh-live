@@ -42,9 +42,11 @@ stated below.
   - `rs/moq-video/src/capture/v4l2.rs:1-7` the backend's own doc: MMAP CPU path,
     YUYV resampled and MJPEG decoded with `zune-jpeg`, "no GPU surface here".
   - `rs/moq-video/src/capture/v4l2.rs:24-53` `open()` selecting the device by
-    index or path through `Camera::open` on the pump thread.
-  - `rs/moq-video/src/capture/v4l2.rs:88-96, 146-151` YUYV via `I420::from_yuyv`
-    and MJPEG via `zune_jpeg::JpegDecoder`.
+    index or path through `Camera::open` on the pump thread; the `Camera::open`
+    impl and `negotiate` at `v4l2.rs:88-96`.
+  - `rs/moq-video/src/capture/v4l2.rs:141-159` the conversion arms inside `read()`:
+    YUYV via `I420::from_yuyv` (`v4l2.rs:146`) and MJPEG via
+    `zune_jpeg::JpegDecoder` (`v4l2.rs:151`).
   - `rs/moq-video/src/capture/pump.rs` the blocking-device bridge this backend
     already uses.
 - Our reference: `comparisons/maps/rusty-capture.md:213-222` (V4L2 backend, 552

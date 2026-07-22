@@ -45,8 +45,10 @@ encoder node.
   "Adaptation notes".
 - moq's private input `Frame` enum (`rs/moq-video/src/frame.rs:23-36`), consumed
   through its CPU arm only. This backend takes CPU input, so it matches
-  `Frame::I420` and calls `frame.to_i420()` for any other CPU-representable
-  variant. It needs no new `Frame` variant and therefore does not depend on B1.
+  `Frame::I420` directly and calls `frame.to_i420()` for any other variant. The
+  other variants (`Surface`, `Texture`, `Cuda`; `frame.rs:24-33`) are all GPU
+  handles, so `to_i420()` performs a device download rather than a cheap CPU
+  repack. It needs no new `Frame` variant and therefore does not depend on B1.
 - moq's `Error` (`rs/moq-video/src/error.rs`), including
   `Error::BitrateUnsupported` (unused here because V4L2 retune is honest) and a
   new additive variant for device or ioctl failure per base plan B5.
@@ -86,9 +88,11 @@ genuinely pipelined M2M driver, verified against the working tree:
   Y plane row-by-row honoring stride padding (`encoder.rs:659-664`), and
   deinterleaves to YU12 when the driver negotiated I420 instead of NV12
   (`encoder.rs:669-684`), zero-filling padding regions (`encoder.rs:638-640`).
-- Profile and level are auto-selected because bcm2835-codec defaults to Level 1.0
-  (max 128x96): `h264_level_for_resolution` (`encoder.rs:365-388`) picks a level
-  that admits the requested resolution, applied at `encoder.rs:541-542`.
+- The level is auto-selected because bcm2835-codec defaults to Level 1.0
+  (max 128x96): `h264_level_for_resolution` (`encoder.rs:365-380`) picks a level
+  that admits the requested resolution, applied at `encoder.rs:541-542`. The
+  profile is not auto-selected; it is hardcoded to `CONSTRAINED_BASELINE`
+  (`encoder.rs:539`, the constant defined at `encoder.rs:359`).
 - Both SPS/PPS-repeat controls are set so every IDR is self-contained for late
   joiners: `V4L2_CID_MPEG_VIDEO_REPEAT_SEQ_HEADER` (the bcm2835-codec spelling)
   and `V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR` at `encoder.rs:549-553`.
@@ -97,7 +101,7 @@ genuinely pipelined M2M driver, verified against the working tree:
   `encoder.rs:741`, `VIDIOC_S_FMT`, `VIDIOC_S_CTRL`, `VIDIOC_STREAMON`), inside a
   `raw_v4l2` FFI submodule (`encoder.rs:311-315`).
 - Device path selection: `encoder_device_path()`
-  (`rusty-codecs/src/codec/v4l2.rs:57-62`) checks `V4L2_ENC_DEVICE` then falls
+  (`rusty-codecs/src/codec/v4l2.rs:57-63`) checks `V4L2_ENC_DEVICE` then falls
   back to `/dev/video11`.
 
 Carried over: the pipelined thread and channel model, the stride and aligned
@@ -119,7 +123,8 @@ encoded SPS in its `Producer`.
   its `Backend` impl, the `pub const NAME: &str = "v4l2"`, and the `raw_v4l2` FFI
   submodule, cfg-gated `#[cfg(all(target_os = "linux", feature = "v4l2"))]`.
 - One additive `Candidate` in the `const HARDWARE` slice of
-  `rs/moq-video/src/encode/backend/mod.rs:68-102`:
+  `rs/moq-video/src/encode/backend/mod.rs:68-93` (the `const SOFTWARE` slice
+  follows at `:98-102`):
 
   ```rust
   #[cfg(all(target_os = "linux", feature = "v4l2"))]
@@ -129,10 +134,15 @@ encoded SPS in its `Producer`.
   It sits alongside the existing `nvenc` and `vaapi` entries. Ordering within
   `HARDWARE` is a maintainer call; propose placing it after `vaapi` so desktop GPU
   encoders win on hosts that have both.
-- A new `v4l2` feature in `rs/moq-video/Cargo.toml`. Unlike `nvenc` and `vaapi`,
-  it pulls in no external system-library crate: the backend is pure `libc` ioctl,
-  and `libc` is already a moq dependency. The feature exists only to gate the
-  module and the candidate.
+- A new `v4l2` feature in `rs/moq-video/Cargo.toml`. It must add `dep:libc`
+  (optional), because `libc` is not currently a moq-video dependency: it is
+  declared nowhere in `rs/moq-video/Cargo.toml` and used nowhere under
+  `rs/moq-video/src/` (it appears only transitively in `Cargo.lock`). Unlike
+  `nvenc` and `vaapi`, the feature still pulls in no external system-library:
+  `libc` is a crates.io crate providing the raw ioctl bindings, not a `.so`
+  loaded at build or run time, so the backend links against no vendor library and
+  the degrade-cleanly posture holds. But the feature does more than gate the
+  module and the candidate; it also enables the `libc` dependency.
 
 ## Implementation steps
 
@@ -158,7 +168,8 @@ encoded SPS in its `Producer`.
    `Config::bitrate` (already computed by the front end), not our config mirror.
 5. Implement `Backend::encode(&mut self, frame, timestamp, keyframe)`. Convert
    the moq `Frame` to a contiguous NV12 buffer (match `Frame::I420` and pack; for
-   any other CPU variant call `frame.to_i420()` then interleave to NV12), send it
+   any GPU variant call `frame.to_i420()`, which downloads it, then interleave to
+   NV12), send it
    plus `timestamp.as_micros()` and the `keyframe` flag over the bounded command
    channel, then drain any completed CAPTURE buffers into `Vec<Packet>`, stamping
    each `Packet` with the timestamp read back off its dequeued buffer. Return zero
@@ -191,10 +202,15 @@ encoded SPS in its `Producer`.
   (proving the PTS survives the queue), that a forced-keyframe frame produces an
   IDR carrying in-band SPS/PPS, and that the total packet count matches the frame
   count once `finish` drains the tail.
-- Mark the test `#[ignore]` with a reason when no V4L2 M2M encoder node is
-  present, exactly as the plan runbook prescribes for hardware not in CI runners.
-  The moq maintainer has no Pi in CI, so the compile-only gate plus our hardware
-  validation is the agreed story (`comparisons/moq-changes.md:597-603`).
+- Follow moq's own hardware-test pattern rather than `#[ignore]`: model the test
+  on the cfg-gated `round_trip(encoder, decoder, w, h)` helper in
+  `rs/moq-video/src/decode/backend/nvdec.rs:513`, whose tests live in a
+  `feature = "nvdec"`-gated module and skip at runtime with an `hw_available()`
+  guard (`nvdec.rs:465`, `if !hw_available() { return; }` at each test) instead of
+  `#[ignore]`. Gate the V4L2 test module behind the `v4l2` feature and skip at
+  runtime when no M2M encoder node opens. The moq maintainer has no Pi in CI, so
+  the compile-only gate plus our hardware validation is the agreed story
+  (`comparisons/moq-changes.md:597-603`).
 - A pure-unit test for the NV12-versus-YU12 deinterleave and the aligned-height
   derivation, driven by a fabricated `sizeimage`/`bytesperline` pair, so the
   625c16f logic is covered without a device.
@@ -256,11 +272,19 @@ encoded SPS in its `Producer`.
 
 Per-group transcoding builds a fresh encoder per fetched group. Our V4L2 encoder
 is the most expensive backend to re-open (full device open plus `REQBUFS` plus
-`STREAMON`), unlike rav1e (cheap) and VAAPI (a VA context). This backend must add
-a reset or session-reuse path so a per-group transcode loop reuses one V4L2
-session rather than re-opening per group. Expose per-segment rate primitives (an
-honest `set_bitrate`, forced IDR per GOP, and a target-bitrate knob) and defer
-the rate-control policy to moq-transcode; do not embed a streaming controller.
+`STREAMON`), unlike rav1e (cheap) and VAAPI (a VA context). There is no reset
+path today: `EncoderCmd` has only the `Encode` variant (`encoder.rs:45`), `new()`
+blocks on the init one-shot only after the device thread has opened the fd,
+negotiated formats, run `REQBUFS`, and issued `STREAMON` (`encoder.rs:58`,
+sequence around `encoder.rs:595-780`), and `Drop` merely closes the command
+channel and joins the thread (`encoder.rs:280`). The concrete change is a new
+`EncoderCmd::Reset { config }` (or a `RawEncoder` re-negotiate method) that makes
+the device thread re-run `S_FMT` and re-apply the controls without re-opening the
+fd or re-running `REQBUFS`/`STREAMON`, so a per-group transcode loop holds one
+open V4L2 session and only resets its rate state and forces an IDR at each group
+boundary. Expose per-segment rate primitives (an honest `set_bitrate`, forced IDR
+per GOP, and a target-bitrate knob) and defer the rate-control policy to
+moq-transcode; do not embed a streaming controller.
 
 ## Acceptance checklist
 

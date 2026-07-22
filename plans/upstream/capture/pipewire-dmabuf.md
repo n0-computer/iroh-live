@@ -11,7 +11,7 @@ Contribute zero-copy DMA-BUF delivery to moq's existing PipeWire screen-capture
 backend. moq already has a PipeWire backend, but it is CPU only: its ScreenCast
 format offer carries no dmabuf modifiers, so the compositor hands back shared
 memory and a dedicated loop thread converts every frame to CPU `I420` before it
-reaches the encoder (`rs/moq-video/src/capture/pipewire.rs:383, 424, 474-485`).
+reaches the encoder (`rs/moq-video/src/capture/pipewire.rs:383, 424, 474-482`).
 This plan makes the backend negotiate `SPA_DATA_DmaBuf`, wrap the delivered fd as
 a `Frame::DmaBuf`, and push it into the same `FrameStream` the backend already
 feeds, so that on a compositor delivering GPU buffers the VAAPI encoder imports
@@ -35,7 +35,7 @@ the "software paths keep working" rule of the base contract.
     dmabuf modifiers in our format offer the compositor uses shared memory").
   - `rs/moq-video/src/capture/pipewire.rs:422-435` the `format_offer` connect with
     `MAP_BUFFERS` and the "No dmabuf modifiers" comment.
-  - `rs/moq-video/src/capture/pipewire.rs:474-485` `convert()`, BGRx/BGRA to
+  - `rs/moq-video/src/capture/pipewire.rs:474-482` `convert()`, BGRx/BGRA to
     `I420::from_bgra`, RGBx/RGBA to `I420::from_rgba`.
   - `rs/moq-video/src/capture/mod.rs:230-242` the `pub(crate) FrameStream` every
     backend feeds, and `mod.rs:225-229` the drop-releases-device contract.
@@ -48,9 +48,11 @@ the "software paths keep working" rule of the base contract.
 
 From the frozen base contract (B1):
 - `crate::frame::Frame::DmaBuf(dmabuf::Frame)`, the new cfg-gated private variant
-  under `cfg(all(target_os = "linux", feature = "vaapi"))` (or a new `dmabuf`
-  feature), with its `width`/`height`/`to_i420` arms. This backend is a producer
-  of that variant.
+  under `cfg(all(target_os = "linux", feature = "dmabuf"))`, with its
+  `width`/`height`/`to_i420` arms. This backend is a producer of that variant, and
+  PipeWire is exactly why B1 gates it on the shared `dmabuf` feature rather than on
+  `vaapi`: PipeWire capture produces DMA-BUF without VAAPI, so this leaf enables the
+  `dmabuf` feature (it does not depend on `vaapi`).
 - The backing `dmabuf::Frame` exporter type from B1 (holds the dup source, mints
   an `OwnedFd` on demand, carries DRM fourcc, modifier, coded and display size,
   and per-plane offset and pitch). This backend constructs one per delivered
@@ -68,13 +70,14 @@ so it is free of the shared-table conflict.
 - The DMA-BUF negotiation and delivery. `PipeWireDmaBufFrame`
   (`pipewire.rs:145-159`) is the shape of the exporter: dup'd `OwnedFd`,
   `drm_format`, `modifier` parsed from `SPA_FORMAT_VIDEO_modifier`, width, height,
-  stride, offset. `dmabuf_to_frame` (`pipewire.rs:721-766`) is the construction
+  stride, offset. `dmabuf_to_frame` (`pipewire.rs:731-780`) is the construction
   path: on a known DRM fourcc it dups the fd and wraps it as a GPU frame,
-  otherwise it falls back to mmap plus copy.
+  otherwise it falls back to mmap plus copy (`dmabuf_to_frame_cpu`,
+  `pipewire.rs:782`).
 - The DRM fourcc mapping. `spa_format_to_drm_fourcc` (`pipewire.rs:114-133`) maps
   SPA video formats to DRM fourcc: BGRA to `AR24`, BGRx to `XR24`, RGBA to `AB24`,
   RGBx to `XB24`, NV12 to `NV12`, YUY2 to `YUYV`. Port the table; drop our
-  NV12-only zero-copy gate (`pipewire.rs:721`), which existed because our
+  NV12-only zero-copy gate (`pipewire.rs:731`), which existed because our
   `GpuPixelFormat` only modeled NV12. moq's `dmabuf::Frame` carries the fourcc
   verbatim, so all mapped formats can take the DMA-BUF path and the encoder side
   decides what it can import.
@@ -116,7 +119,8 @@ existing `pub(crate)` seam:
 
 No change to `capture/mod.rs`, `capture/channel.rs`, or `capture/pump.rs`. The
 `FrameStream` and `FrameChannel` already accept any `Frame` variant. The
-static-screen re-pacing timer (`pipewire.rs:462-475`) keeps working because it
+static-screen re-pacing timer (`pipewire.rs:440-457`, the `add_timer` that pushes
+`Frame::I420(last.clone())` at `pipewire.rs:449`) keeps working because it
 re-emits `state.last`; extend `state.last` to hold whichever variant was last
 delivered so a static screen on the DMA-BUF path re-emits the last DMA-BUF frame.
 
@@ -195,11 +199,19 @@ we add DMA-BUF zero-copy delivery to it). Our `rusty-capture` also has a PipeWir
 portal CAMERA capturer (`PipeWireCameraCapturer`), and moq has no portal camera
 source at all, so `comparisons/capture.md`'s PipeWire verdict to keep our camera
 support has no home elsewhere. Carry it here as an in-scope camera sibling: a
-`org.freedesktop.portal.Camera` counterpart to the screen `ScreenCast` path,
-reusing the same SPA negotiation, DRM-fourcc mapping, and `Frame::DmaBuf`
-delivery. It is a follow-up commit within this leaf (or a near sibling branch off
-the same base), sequenced after the screen path proves the DMA-BUF delivery, so
-the camera source is not lost. If the maintainer prefers it as a separate leaf,
+`org.freedesktop.portal.Camera` counterpart to the screen `ScreenCast` path. It
+reuses the same SPA format negotiation, DRM-fourcc mapping, and `Frame::DmaBuf`
+delivery once a stream is running, but the connection setup differs from
+`ScreenCast` and does not transfer unchanged. `ScreenCast` returns a
+picker-selected node id that the client connects to directly. The Camera portal
+has no picker-provided node id: after `AccessCamera`, `OpenPipeWireRemote` hands
+back a single PipeWire remote fd, and the client connects to that fd and
+enumerates the camera nodes announced on the remote registry itself, then binds
+the chosen node. So the camera sibling adds a fd-open plus node-enumeration step
+ahead of the shared negotiation, rather than receiving a node id from a picker.
+It is a follow-up commit within this leaf (or a near sibling branch off the same
+base), sequenced after the screen path proves the DMA-BUF delivery, so the camera
+source is not lost. If the maintainer prefers it as a separate leaf,
 that is the alternative disposition; either way it is tracked, not dropped.
 
 Note on CPU scaling: our `processing/scale` (pic-scale) CPU scaler is dropped by

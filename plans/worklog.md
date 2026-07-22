@@ -151,6 +151,82 @@ migrated survives in git history):
   (superseded process notes).
 Then git rm -r plans/refactor; commit; then the full adversarial review.
 
+Integration + migration DONE and committed (d09e2af). The per-plan
+fixer agent had died silently (usage limit); applied all its notes
+myself (6 transcode notes + PipeWire camera scope + processing/scale
+drop note). Migration: pubsub -> comparisons/, 5 broader docs ->
+analysis/ (with README), refactor/ removed (dups/stubs/reviews in git
+history). Two prior commits: f45b663 (refactor set), 07f5613 (upstream
+tree), now d09e2af (consolidate + retire refactor).
+
+Full adversarial review launched: 4 specialist agents cross-checking
+the whole plan against source -> review-0722-{base,vaapi,backends,
+capture-meta}.md. Then consolidate into plans/upstream-review-0722-plan.md
+and fold critical missing details into the plans. Focus areas: base
+buildability (moq-frame crate wiring, dmabuf feature graph, Packet/
+error types), the moq-vaapi ownership/PR-target risk (external crate),
+backend anchors + session-reuse cost claims, capture/render, and the
+meta-review of the base-then-leaf git model + dependency tree + waves +
+coordination completeness (licensing, CI hardware gating).
+
+### Round 3c review results + fixes
+
+All 4 reviews done (review-0722-{base,vaapi,backends,capture-meta}.md).
+Consolidated into plans/upstream-review-0722-plan.md. Verdict:
+anchor-accurate, analysis holds, but 6 blocking + ~24 substantive.
+Two structural corrections:
+1. Git model unworkable for external contribution: a PR to upstream moq
+   can't target a fork base branch; base (B1/B2/B3/B5) must MERGE on moq
+   main FIRST, so Wave 0 serializes. Fixed the overview Git/PR model.
+2. moq-vaapi reality (resolved a reviewer contradiction against source):
+   moq-vaapi IS a real external crate (crates.io 0.0.2, moq-dev/vaapi),
+   moq-video depends on it (Cargo.toml:34,95; encode/backend/vaapi.rs
+   imports moq_vaapi::encode). It ALREADY has encode + vaExportSurface
+   export + VPP wrapper, has NO decode, uses diverged bindgen types (not
+   the cros-codecs crate our decoder uses), encode is unvalidated. So
+   vaapi-decode = re-vendor (not port); vaapi-encode = replace+validate;
+   two PR targets (moq-dev/vaapi repo + monorepo wiring). The meta
+   reviewer's "moq-vaapi doesn't exist" claim was WRONG (verified).
+Base buildability: B1 v4l2-feature-graph (fixed: dmabuf enabled by
+vaapi/pipewire, not a nonexistent v4l2 feature), moq-frame cycle (->
+module home), Native cfg/Clone/Send-Sync/download_i420/workspace wiring;
+B4 tier flag + Mutex staging + public Decoded, drop "additive-sealed".
+Added overview coordination points 8-11 (licensing, CI hardware gating,
+semver-across-fan, moq-vaapi PR target). Fixed overview coordination
+point 3 to the corrected moq-vaapi reality.
+Dispatched 3 fixers (disjoint files): base B1/B4; vaapi decode/encode
+vs real moq-vaapi source; leaf details + nit sweep (v4l2 dep:libc,
+strided NV12->I420 packer, decoder_thread name, dav1d-rs/rav1d reality,
+render into_i420-borrow gap, vtb-mf Sync, publish_preencoded sig, portal
+Camera flow, v4l2 YUYV anchor, round_trip test pattern).
+SEAMS TO VERIFY after fixers land: vaapi plans fully drop "no surface
+export" false premise; DmaBuf feature reference aligned to `dmabuf`
+(B1) not `vaapi` across vaapi-decode/encode/pipewire. Then commit.
+
+### Round 3c closing
+
+All 3 fixers landed. base: B1 feature graph fixed (dmabuf<-vaapi+pipewire,
+v4l2 future-only), moq-frame home = in-moq-video module (cycle-free),
+Clone/Send-Sync/download_i420/workspace detail; B4 tier flag + Mutex
+staging + public decode::Frame + dropped "additive-sealed". vaapi:
+decode/encode reframed to real moq-vaapi (external, has export+VPP, no
+decode; re-vendor not port; two PR targets; spine = re-vendor into
+moq-vaapi encode.rs, moq-video keeps consuming moq_vaapi::encode).
+leaves: v4l2 dep:libc + EncoderCmd::Reset; v4l2-decode own strided
+NV12->I420 packer (from_nv12 is windows-only) + decoder_thread name;
+av1 dav1d-rs-vs-rav1d honesty (recommend crates.io dav1d-rs); render
+into_i420-consumes gap (take by value or ask for to_i420(&self)); vtb-mf
+Sync argument; publish_preencoded sig; portal Camera flow; anchor nits;
+round_trip test pattern.
+Coordinator seam pass: 3 DmaBuf-variant refs realigned vaapi->dmabuf
+(vaapi-decode, v4l2-decode, pipewire); overview coordination point 3
+corrected to moq-vaapi reality; points 8-11 added; git model rewritten
+(base merges first, Wave 0 serializes). Final sweep clean (no hedges,
+no stale gates, no em dashes).
+Deliverable plans/upstream-review-0722-plan.md written (consolidated,
+with the moq-vaapi contradiction resolved against source). All fixes
+folded into the plans. Committing.
+
 
 
 ## ROUND 2 (2026-07-21): dev merged into main; full rewrite

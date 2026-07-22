@@ -71,8 +71,9 @@ our `config.rs` catalog mirror. The construction config comes from moq's encode
 - One `const Candidate` added to the SOFTWARE slice in
   `rs/moq-video/src/encode/backend/mod.rs` and one to
   `rs/moq-video/src/decode/backend/mod.rs`, each additive (coordination point 2).
-- The public encode `Codec` enum in `rs/moq-video/src/encode/encoder.rs:21-40`
-  gains an `Av1` variant. The enum is `#[non_exhaustive]` (`encoder.rs:22`), so
+- The public encode `Codec` enum in `rs/moq-video/src/encode/encoder.rs:21-30`
+  gains an `Av1` variant (the `Kind` enum follows at `encoder.rs:32-48`). The enum
+  is `#[non_exhaustive]` (`encoder.rs:22`), so
   adding the variant is additive, not breaking. The decode path already knows
   AV1 (NVDEC), so decode registration is likewise purely additive.
 
@@ -88,7 +89,10 @@ our `config.rs` catalog mirror. The construction config comes from moq's encode
    timestamps through it.
 3. Implement an honest `set_bitrate`: rav1e cannot cheaply retune a live context,
    so return `Error::BitrateUnsupported` rather than a silent no-op, per the
-   adaptation conventions. State the limitation in the backend doc.
+   adaptation conventions. The variant takes a `&'static str` reason
+   (`error.rs:32`), so supply one, for example
+   `Error::BitrateUnsupported("rav1e cannot retune a live context")`. State the
+   limitation in the backend doc.
 4. Support per-frame forced IDR through the `keyframe` argument, as every moq
    encoder must.
 5. Add the rav1d decode backend, producing `Frame::I420`. Port the safe shim and
@@ -99,12 +103,16 @@ our `config.rs` catalog mirror. The construction config comes from moq's encode
 
 ## Tests
 
-- A software round-trip test in moq's style: encode a synthetic frame sequence
-  through rav1e, decode it through rav1d, and assert frames come back with
-  monotonic timestamps (mirrors our `timestamps_increase` test at
-  `av1/encoder.rs:324-334`). Unlike moq's `av1_is_supported_by_hardware_only`
-  test, which pins that software AV1 decode currently fails to open, this test
-  demonstrates the software path now opening and round-tripping.
+- A software round-trip test modeled on moq's own `round_trip(encoder, decoder,
+  w, h)` helper (`rs/moq-video/src/decode/backend/nvdec.rs:513`): encode a
+  synthetic frame sequence through rav1e, decode it through the AV1 decoder, and
+  assert frames come back with monotonic timestamps (mirrors our
+  `timestamps_increase` test at `av1/encoder.rs:324-334`). Because both codecs are
+  software, this test runs unconditionally in CI with no `#[ignore]` and no
+  hardware gate, unlike the hardware backends' feature-gated `hw_available()`
+  skip. Unlike moq's `av1_is_supported_by_hardware_only` test, which pins that
+  software AV1 decode currently fails to open, this test demonstrates the software
+  path now opening and round-tripping.
 - Keep resolution and frame count small: rav1e at speed 10 is roughly 4x slower
   per resolution step and dominates CI time (our own note at
   `av1/encoder.rs:342`). State the CPU-cost honesty in the PR: rav1e at speed 10
@@ -114,27 +122,52 @@ our `config.rs` catalog mirror. The construction config comes from moq's encode
 
 - Timestamps are `moq_net::Timestamp` at the boundary; the internal lookahead map
   may keep `Duration` behind the boundary if convenient.
-- No ffmpeg, no dlopen needed (rav1e and rav1d are pure Rust plus optional asm).
-- Errors adopt moq's `Error`; `set_bitrate` returns `Error::BitrateUnsupported`.
+- No ffmpeg. The rav1e encoder is pure Rust with no dlopen. The decoder's purity
+  depends on the fork resolution above: pure-Rust only with `memorysafety/rav1d`,
+  whereas the recommended crates.io `dav1d-rs` links C libdav1d as a system
+  dependency (see coordination point 4).
+- Errors adopt moq's `Error`; `set_bitrate` returns
+  `Error::BitrateUnsupported(reason)` with a `&'static str` reason (`error.rs:32`).
 - Configs come from hang catalog types, not our `config.rs`.
 
 ## Coordination
 
-- Coordination point 4 (rav1d fork resolution) is a hard gating prerequisite.
-  Our rav1d dependency is a git pin on the memorysafety fork with `bitdepth_8`,
-  `bitdepth_16`, and `asm` features (`rusty-codecs/Cargo.toml:33`, feature at
-  `:65`), which is unacceptable upstream: moq pins crates.io versions throughout,
-  runs release-plz, and explicitly forbids git dependencies (overview adaptation
-  conventions, and moq-changes.md section 4). This is not a decision the leaf
-  agent makes alone. The pin must first be resolved to a published rav1d or
-  dav1d-rs release, a vendored safe wrapper in the style of moq-nvenc, or an
-  explicitly accepted exception, coordinated with a human. The rav1e 0.8
-  dependency is crates.io and unproblematic. Flag this and proceed only once
-  resolved.
+- Coordination point 4 (rav1d fork resolution) is a hard gating prerequisite, and
+  the three candidate resolutions are not interchangeable, so the "pure Rust,
+  compile-everywhere" framing must be stated honestly. Our decoder is written
+  against the `dav1d-rs` API surface (`Settings::new`, `Decoder::with_settings`,
+  `get_picture`, `PlanarImageComponent`; `av1/decoder.rs:46-93`), and the same
+  surface is offered by two different crates with very different build stories:
+  - The published crates.io option is `dav1d-rs`, which is a binding to
+    **C libdav1d**. It is not pure Rust; it links a system library and needs the
+    libdav1d build tooling or a pkg-config-discoverable system libdav1d. It
+    satisfies moq's no-git-dependency rule but breaks the "no system library,
+    builds everywhere" spirit.
+  - The pure-Rust decode option is `memorysafety/rav1d`, which is exactly the git
+    pin the plan is trying to eliminate: our dependency is a git pin on that fork
+    with `bitdepth_8`, `bitdepth_16`, and `asm` (`rusty-codecs/Cargo.toml:33`,
+    feature at `:65`). moq pins crates.io versions throughout, runs release-plz,
+    and forbids git dependencies (overview adaptation conventions, and
+    moq-changes.md section 4), so this is unacceptable upstream as a git pin.
+  - The git pin additionally enables `asm`, which requires a NASM assembler at
+    build time. Even under an accepted git exception, `asm` should likely be
+    dropped for moq's default build to keep it toolchain-clean, at a decode-speed
+    cost.
+  Recommended resolution for the prerequisite: default to the crates.io `dav1d-rs`
+  release with `asm` disabled, because it is published (no git pin) and is the
+  only path that keeps moq on crates.io today, explicitly accepting that it adds a
+  C libdav1d system dependency and that the "pure Rust" claim then holds only for
+  the rav1e encoder, not the decoder. Prefer pure-Rust `rav1d` only if and when it
+  is published to crates.io, or under an explicitly accepted git exception. This
+  is a maintainer conversation, not a leaf-agent decision. The rav1e 0.8 encoder
+  dependency is crates.io, pure Rust, and unproblematic. Flag this and proceed
+  only once resolved.
 - Coordination point 2 (shared candidate tables): add only the AV1 candidates;
   do not refactor the tables.
-- Coordination point 4 (rav1d fork): do not open this PR until the git-fork pin
-  is resolved (published, moved to a released rav1d, or vendored).
+- Coordination point 4 (rav1d fork): do not open this PR until the decoder
+  dependency is resolved to a crates.io source (recommended: `dav1d-rs` without
+  `asm`, accepting the C libdav1d system dependency), a published pure-Rust
+  `rav1d`, or an explicitly accepted git exception.
 
 ## Transcode and rate control (overview coordination point 7)
 
@@ -148,8 +181,8 @@ policy to moq-transcode rather than embedding a streaming controller.
 
 - rav1d dependency resolved to a non-git source, confirmed with a human.
 - Encode and decode backends implemented against the frozen B2 signature.
-- Honest `set_bitrate` returning `Error::BitrateUnsupported`, per-frame forced
-  IDR supported.
+- Honest `set_bitrate` returning `Error::BitrateUnsupported(reason)` with a
+  `&'static str` reason, per-frame forced IDR supported.
 - One encode candidate and one decode candidate added, additively.
 - Software round-trip test passes with small dimensions; CPU-cost note in the PR.
 - `hang::catalog::VideoConfig` output, no `config.rs` mirror in contributed code.

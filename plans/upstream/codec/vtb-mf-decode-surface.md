@@ -132,11 +132,23 @@ inside moq's existing backends.
 - No new `Error` variants are required; retaining a surface cannot fail the way an
   export can. Any download-on-demand from the retained handle reuses the existing
   I420 readback error path.
-- `decode::Frame` must stay `Send + Sync` on every platform (the compile-time pin at
-  `rs/moq-video/src/decode/mod.rs:111-118`): `macos::Surface` is already `Send + Sync`
-  by the capture-side justification, and `d3d11::Texture` clones via COM AddRef, so
-  retaining them in a decoded frame does not break that pin. Verify the pin still
-  holds.
+- `decode::Frame` must stay `Send + Sync` on every platform (the compile-time pin
+  at `rs/moq-video/src/decode/mod.rs:111-118`, whose comment states callers hold
+  frames across `.await`s and share them via `Arc` in the transcode fanout). The
+  compile pin will still pass, because `macos::Surface` carries an
+  `unsafe impl Send + Sync` and `d3d11::Texture` clones via COM AddRef. But the
+  pin only asserts the bounds; it does not prove them. Today the decode backends
+  download to I420 before returning, so the retained `CVPixelBuffer` and DXVA
+  texture never cross into the `Arc<decode::Frame>` fanout, and the capture-side
+  `unsafe impl` safety comment was written for the capture lifecycle, not for a
+  surface shared across the transcode fanout threads. Retaining the surface past
+  decode is exactly what changes that: the safety argument behind the
+  `unsafe impl Send + Sync` must be revisited for the retained-surface decode
+  path (concurrent access to a `CVPixelBuffer` or `ID3D11Texture2D` shared by
+  reference across fanout threads), not assumed to carry over from capture. If the
+  argument does not hold for shared read access, the fix is a documented
+  synchronization contract or a fallback to the download, not a silent reliance on
+  the existing comment.
 - No ffmpeg, no new dependencies: both surface types and their download fallbacks
   already exist in moq for the capture path.
 
@@ -156,7 +168,9 @@ inside moq's existing backends.
 - Media Foundation decode emits `Frame::Texture`; `native()` returns
   `Some(Native::D3d11(_))` and the `into_i420()` fallback preserves the #2034
   allocated-height correctness.
-- The `decode::Frame: Send + Sync` compile-time pin still holds on all platforms.
+- The `decode::Frame: Send + Sync` compile-time pin still holds on all platforms,
+  and the `unsafe impl Send + Sync` safety argument is re-examined for the
+  retained surface crossing the transcode `Arc` fanout, not assumed from capture.
 - No candidate-table edit, no new dependency, no ffmpeg.
 - macOS test passes; Windows test passes or is `#[ignore]`d with a stated reason.
 - Conventional commit with `moq-video` scope.

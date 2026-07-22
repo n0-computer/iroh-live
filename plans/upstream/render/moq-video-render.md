@@ -73,10 +73,23 @@ Only the frozen base contract, nothing behind a `pub(crate)` seam:
   `rs/moq-video/src/decode/mod.rs:36-46`).
 - `decode::Frame::native(&self) -> Option<Native>` (B3, the accessor beside `into_i420()` at
   `decode/mod.rs:94-101`). `None` means the frame is CPU-resident I420.
-- `decode::Frame::into_i420(self) -> Result<Bytes, Error>` (existing, `decode/mod.rs:94-101`;
-  note it consumes the frame, so call `native()` first and fall back to `into_i420()`
-  only when no zero-copy path applies, or clone the frame before attempting import)
-  as the universal fallback when `native()` is `None` or a zero-copy import fails.
+- `decode::Frame::into_i420(self) -> Result<Bytes, Error>` (existing,
+  `decode/mod.rs:94`; it consumes the frame, as its doc states) as the universal
+  CPU fallback when `native()` is `None` or a zero-copy import fails. This
+  consuming signature collides with a renderer that borrows: `render(&mut self,
+  frame: &Frame)` holds only a shared reference, and moq exposes no borrowing
+  download on `decode::Frame` (the private `frame::Frame::to_i420(&self) -> Cow`
+  at `frame.rs:64` is not surfaced publicly). There are two ways to resolve it,
+  and the crate must pick one and hold to it. Either (a) take the frame by value,
+  `render(&mut self, frame: Frame)`, call `native()` first (it borrows `&self`,
+  leaving the frame intact for a zero-copy import) and consume the frame with
+  `into_i420()` only on the no-handle or import-failed branch; or (b) ask B1/B3
+  for a borrowing `to_i420(&self)` accessor on `decode::Frame` (a thin public
+  wrapper over the existing private `frame::Frame::to_i420`) so `render(&Frame)`
+  keeps its borrowing signature. Option (b) is a base-API request under
+  coordination point 1; option (a) needs no moq change and is the default. Do not
+  clone the frame to work around this, since a GPU-backed frame is not cheaply
+  cloneable in general.
 - The `Native` enum and its `DmaBuf`, `CvPixelBuffer`, `D3d11`, `Cuda`, and `HardwareBuffer`
   variants (B1). For DMA-BUF the crate calls `Native::DmaBuf`'s accessors: `fourcc()`,
   `modifier()`, `coded_size()`, `display_size()`, `planes()` (offset and pitch per plane),
@@ -168,11 +181,14 @@ impl VideoRenderer {
 
     /// Renders one decoded frame and returns the RGBA texture view. Selects a path from
     /// `frame.native()`, and on any zero-copy failure disables that path after three
-    /// strikes and falls through to `frame.into_i420()`.
-    pub fn render(&mut self, frame: &Frame) -> Result<&wgpu::TextureView, Error> { /* ... */ }
+    /// strikes and falls through to the CPU download. The parameter is `Frame` by value
+    /// (option (a) in "moq API consumed") so the CPU fallback can consume it through
+    /// `into_i420(self)`; switch to `&Frame` only if B1/B3 add a borrowing `to_i420(&self)`.
+    pub fn render(&mut self, frame: Frame) -> Result<&wgpu::TextureView, Error> { /* ... */ }
 
     /// Renders into a persistent, cheaply cloneable texture for external compositors.
-    pub fn render_cached(&mut self, frame: &Frame) -> Result<&CachedOutput, Error> { /* ... */ }
+    /// Takes `Frame` by value for the same CPU-fallback ownership reason as `render`.
+    pub fn render_cached(&mut self, frame: Frame) -> Result<&CachedOutput, Error> { /* ... */ }
 
     pub fn last_path(&self) -> RenderPath { self.last_path }
 }

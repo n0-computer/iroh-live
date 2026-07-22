@@ -78,7 +78,8 @@ the working tree:
   drains that queue. Output for a frame surfaces on a later drain, and its PTS
   comes back on the dequeued output buffer's info, not from the frame being
   pushed. It has a consecutive-error counter that triggers `try_reset`
-  (`encoder.rs:237-253, 326`) after `MAX` failures, and a `set_bitrate`
+  (`try_reset` fn at `encoder.rs:238`, called at `encoder.rs:326`) after `MAX`
+  failures, and a `set_bitrate`
   (`encoder.rs:349-359`) that is honest but weak: `AMediaCodec_setParameters`
   needs API 26+ plumbing, so it stores the target and applies it on the next
   codec reset.
@@ -87,7 +88,9 @@ the working tree:
 - `hw_decoder.rs` (325 LOC). Zero-copy decoder using an `ImageReader` surface as
   the MediaCodec output target (`hw_decoder.rs:1-6, 67, 72`). Decoded frames stay
   in GPU memory: the output buffer is released with `render=true` to route it
-  through the ImageReader surface (`hw_decoder.rs:247`), then the latest image is
+  through the ImageReader surface (the `release_output_buffer(output_buf, true)`
+  call at `hw_decoder.rs:249`; the comment is at `hw_decoder.rs:247`), then the
+  latest image is
   acquired as a HardwareBuffer-backed `AndroidGpuFrame` and wrapped as a
   `GpuFrame` (`hw_decoder.rs:254-270`). The `ImageReader` is created with
   `GPU_SAMPLED_IMAGE | CPU_READ_OFTEN` usage so a consumer can import the buffer
@@ -176,8 +179,9 @@ In-tree fallback (Path A, gated on coordination point 6):
    (width, height, bitrate, framerate, gop as the IDR interval) rather than our
    config mirror.
 3. Port the encoder as a B4 `Backend`. `encode(frame, timestamp, keyframe)`
-   converts the moq `Frame` to NV12 (match `Frame::I420` and pack; other CPU
-   variants via `frame.to_i420()`), queues it with `timestamp.as_micros()` as the
+   converts the moq `Frame` to NV12 (match `Frame::I420` and pack; any GPU variant
+   via `frame.to_i420()`, which downloads it), queues it with
+   `timestamp.as_micros()` as the
    MediaCodec `presentationTimeUs`, requests a sync frame from MediaCodec when
    `keyframe` is true, drains completed output buffers, and returns a `Vec<Packet>`
    stamping each `Packet` with the PTS read back off its output-buffer info. Keep
@@ -188,20 +192,30 @@ In-tree fallback (Path A, gated on coordination point 6):
    level supports it, so the backend does not force an IDR. If the minimum API
    level cannot guarantee it, keep the store-and-apply-on-reset behavior but
    surface it honestly: return `Error::BitrateUnsupported` rather than a silent
-   success when a live retune is impossible, since moq's rate controller retires
-   cleanly on that error (`comparisons/codecs.md:524-540`). Decide the API-level
-   floor and document it.
+   success when a live retune is impossible. The variant takes a `&'static str`
+   reason (`error.rs:32`), so supply one, for example
+   `Error::BitrateUnsupported("MediaCodec live retune needs API 26+")`. moq's rate
+   controller retires cleanly on that error (`comparisons/codecs.md:524-540`).
+   Decide the API-level floor and document it.
 5. Port the ByteBuffer CPU decoder as a B4 decode `Backend` producing
    `Decoded { timestamp, frame: Frame::I420(...) }`, converting MediaCodec's NV12
    output to tightly packed I420. Echo the input timestamp per picture.
 6. Port the ImageReader zero-copy decoder as a second B4 decode `Backend`
    producing `Decoded { timestamp, frame: Frame::HardwareBuffer(...) }`. Wrap the
-   acquired `AHardwareBuffer` as moq's B1 `android::HwBuffer`, carrying the NV12
-   plane layout (y stride, uv offset, uv stride) our `AndroidGpuFrame::new` already
-   computes (`hw_decoder.rs:268`), and acquire the extra reference so the buffer
-   outlives the Image, exactly as `gpu_frame.rs:195-200` does. The B3 `native()`
-   accessor then exposes it as `Native::HardwareBuffer`, and `into_i420()` remains
-   the CPU download fallback.
+   acquired `AHardwareBuffer` as moq's B1 `android::HwBuffer`, and acquire the
+   extra reference so the buffer outlives the Image, exactly as
+   `gpu_frame.rs:195-200` does. Field reconciliation: our
+   `NativeFrameHandle::HardwareBuffer(HardwareBufferInfo { .. })`
+   (`gpu_frame.rs:200`, struct at `format.rs:96`) carries the acquired buffer
+   handle plus `width`, `height`, `y_stride`, `uv_offset`, and `uv_stride`, the
+   NV12 plane layout `AndroidGpuFrame::new` computes (`hw_decoder.rs:268`). B1's
+   `android::HwBuffer` does not exist yet, so B1 must be shaped to carry exactly
+   that field set: the acquired `AHardwareBuffer` handle (owning an extra ref) plus
+   `width`, `height`, `y_stride`, `uv_offset`, and `uv_stride`. If B1 carries the
+   handle but omits the strides and UV offset, the ImageReader path cannot describe
+   its NV12 layout to an importer; call that out under coordination point 1. The B3
+   `native()` accessor then exposes it as `Native::HardwareBuffer`, and
+   `into_i420()` remains the CPU download fallback.
 7. Wire selection. Under Path B, register both decoders (the dispatcher probes HW
    ImageReader first, then ByteBuffer, then software openh264, matching our current
    order at `comparisons/maps/rusty-codecs.md:214-216`); under Path A, add the two
@@ -217,12 +231,16 @@ In-tree fallback (Path A, gated on coordination point 6):
 - Because moq cannot run Android device tests in CI, the primary gate is
   compile-only for the `aarch64-linux-android` target plus device validation on our
   hardware. State this in the PR (`comparisons/moq-changes.md:610-617`).
-- Device-gated round-trip tests, marked `#[ignore]` with a reason off-device: an
-  encode round trip asserting per-packet timestamps survive the MediaCodec queue
-  and forced keyframes carry in-band SPS/PPS, a ByteBuffer decode round trip, and a
-  zero-copy decode test asserting `decode::Frame::native()` returns
-  `Some(Native::HardwareBuffer(_))` and that `into_i420()` still downloads a
-  correct frame from it.
+- Device-gated round-trip tests modeled on moq's own `round_trip(encoder,
+  decoder, w, h)` helper (`rs/moq-video/src/decode/backend/nvdec.rs:513`): follow
+  nvdec's gating rather than `#[ignore]`, putting the tests in a
+  `target_os = "android"`-gated (Path A) or crate-gated (Path B) module that skips
+  at runtime with an `hw_available()`-style guard (`nvdec.rs:465`) when no device
+  MediaCodec is reachable. Cover an encode round trip asserting per-packet
+  timestamps survive the MediaCodec queue and forced keyframes carry in-band
+  SPS/PPS, a ByteBuffer decode round trip, and a zero-copy decode test asserting
+  `decode::Frame::native()` returns `Some(Native::HardwareBuffer(_))` and that
+  `into_i420()` still downloads a correct frame from it.
 - A unit test for the NV12 packing and the encoder's error-reset counter that
   needs no device.
 
@@ -287,8 +305,8 @@ In-tree fallback (Path A, gated on coordination point 6):
 - `encode` returns `Vec<Packet>` with per-packet timestamps that survive the
   MediaCodec queue; forced keyframes carry in-band SPS/PPS.
 - `set_bitrate` is honest: it retunes at runtime where the API level allows, and
-  returns `Error::BitrateUnsupported` rather than silently succeeding where it
-  cannot.
+  returns `Error::BitrateUnsupported(reason)` with a `&'static str` reason rather
+  than silently succeeding where it cannot.
 - The zero-copy decoder returns `Frame::HardwareBuffer`, reachable as
   `Native::HardwareBuffer` through `native()`, with `into_i420()` correct as the
   fallback; the ByteBuffer decoder returns correct `Frame::I420`.

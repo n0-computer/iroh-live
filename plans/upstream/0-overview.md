@@ -277,13 +277,16 @@ Most work is autonomous. These are the only places an agent must stop and defer.
    but touch the same lines, so two leaf PRs will conflict there. Rule: each leaf
    adds only its own candidate; PRs land one at a time and later leaves rebase.
    Do not refactor the tables from a leaf.
-3. **The shared moq-vaapi crate.** vaapi-decode and vaapi-encode both grow
-   moq-vaapi (surface export, VPP). To avoid a two-way dependency, vaapi-decode
-   owns the shared moq-vaapi infrastructure PR (surface export plus VPP plus the
-   decode half of cros-codecs, the largest single piece), and vaapi-encode builds
-   on it. If the two are authored in parallel, the encode agent treats the
-   moq-vaapi additions as provided by the decode branch and coordinates on their
-   shape.
+3. **The shared moq-vaapi crate (see coordination point 11 for the reality).**
+   moq-vaapi already ships an encoder, surface export, and a VPP wrapper; what it
+   lacks is a decode stack. vaapi-decode owns the decode contribution to the
+   moq-vaapi repo (the largest single piece, a re-vendor against moq-vaapi's
+   diverged bindgen types, not a drop-in of our cros-codecs decoder), and
+   vaapi-encode contributes the validation and hardware-correctness fixes to
+   moq-vaapi's existing encode path. Both target the external moq-vaapi repo for
+   the VA-layer work and the monorepo for the moq-video backend wiring. If the two
+   are authored in parallel, they coordinate on the shared moq-vaapi types rather
+   than one growing export or VPP the other duplicates.
 4. **rav1d fork resolution.** av1-software is blocked until the rav1d git-fork pin
    is resolved (published to crates.io, moved to a released rav1d, or vendored).
    This is a prerequisite, not something the leaf agent decides alone; flag it and
@@ -318,6 +321,34 @@ Most work is autonomous. These are the only places an agent must stop and defer.
    VAAPI opens a VA context, and V4L2 is expensive (full device open plus REQBUFS
    plus STREAMON), so the VAAPI and V4L2 encode plans add a session-reuse path
    rather than constructing fresh per group.
+8. **Licensing and provenance of ported FFI.** The VAAPI, V4L2, Vulkan, and Metal
+   code carries libva, DRM, and graphics-API bindings, each with its own license,
+   and some is ported from cros-libva and cros-codecs. Every contribution states
+   the provenance and license of what it vendors or binds, and matches moq's
+   existing posture (moq-vaapi already ships `LICENSE.libva` and
+   `LICENSE.cros-codecs`). Do not introduce a license-incompatible dependency.
+9. **CI hardware gating.** Most of this cannot run in moq CI: there is no Intel or
+   AMD GPU, no Raspberry Pi, and no Android device on the runners. Every hardware
+   path ships a cfg-gated round-trip test modeled on moq's own `round_trip` helper
+   (`decode/backend/nvdec.rs:513`, which is cfg-gated rather than `#[ignore]`),
+   plus a reproducible host-validation script, and each plan states plainly what
+   CI can and cannot verify. A backend that only compiles in CI is explicitly
+   marked unvalidated, as moq's own VAAPI encoder is today.
+10. **Semver across the fan.** B1 through B4 change moq-video's public surface, and
+    a string of leaf PRs follow. Agree the versioning expectation with the
+    maintainer up front (one base bump, then additive leaves) so the fan of PRs
+    does not thrash the crate version.
+11. **The moq-vaapi PR target.** `moq-vaapi` is a separate external crate
+    (crates.io 0.0.2, the maintainer's own org, github.com/moq-dev/vaapi), not a
+    crate in the moq monorepo. It already ships an encoder, `vaExportSurfaceHandle`
+    surface export, and a VPP `VAProcPipelineParameterBuffer` wrapper, but no
+    decode stack, and its types are a diverged bindgen trim of cros-libva and
+    cros-codecs that does not use the `cros-codecs` crate our decoder is written
+    against. The VAAPI VA-layer work (a decode stack, plus any export or VPP
+    additions) is a PR to that repo, and the dependency-spine decision (re-vendor
+    cros-codecs decode into moq-vaapi's style, add a `cros-codecs` dependency, or
+    another route) is a maintainer conversation, not a leaf-agent decision. The
+    moq-video backend wiring that consumes it is a separate monorepo PR.
 
 ## How to work a plan autonomously (agent runbook)
 
@@ -393,18 +424,27 @@ The gate for calling the PR done.
 
 ## Git and PR model
 
-- One base branch off moq main carries B1, B2, B3, and B5 (B4 later, on its own
-  branch, only if pursued). It may be one PR or a small series in dependency
-  order; B1 first.
-- Each leaf branches off the base branch as `moq-upstream/<plan-name>`. Leaves do
-  not branch off each other. A leaf that shares infrastructure (the moq-vaapi
-  pair) branches off the branch that owns the shared infrastructure, per
-  coordination point 3.
-- PRs target the base branch until base merges to moq main, then rebase onto main
-  and retarget. Land order follows the waves: base, then Wave 1, and so on.
-- This is a contribution to an external project. Opening PRs, and any push to
-  moq, happens only with explicit human authorization; the plans produce the
-  branches and PR descriptions, they do not self-publish.
+This is a contribution to an external project, so the PR model is not the private
+base-branch-then-leaf-branch model a single worktree would use. A pull request to
+upstream moq targets moq `main`, not a branch on our fork, and a leaf opened
+before the base API merges would render as the union of the base diff plus the
+leaf diff, which cannot be reviewed in isolation. The model is therefore:
+
+- The base API (B1, B2, B3, B5) lands on moq `main` first, as its own PR or a
+  short dependency-ordered series, B1 first. This is a hard serializing gate:
+  Wave 0 must merge upstream before any leaf PR can be reviewed. B4 is a later,
+  separate PR, pursued only on the Path B decision.
+- Each leaf is then a normal PR against moq `main`, rebased onto the merged base.
+  Leaves do not depend on each other, subject to the shared-file coordination
+  points (the candidate tables and the moq-vaapi work). The moq-vaapi VA-layer
+  work is a separate PR to the `moq-dev/vaapi` repo, not the monorepo (see
+  coordination point 11).
+- Locally, a base integration branch off moq main is still useful so leaves can
+  compile against the proposed API before base merges, but that is a development
+  convenience, not the PR path. Land order follows the waves.
+- Opening PRs, and any push to moq or moq-vaapi, happens only with explicit human
+  authorization; the plans produce the branches and PR descriptions, they do not
+  self-publish.
 
 ## Plan index
 

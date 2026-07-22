@@ -61,7 +61,7 @@ assumptions, which moq's `pick_rate` and `frame_size` already generalize.
 ## Target in moq
 
 - `rs/moq-audio/src/encode/encoder.rs`: add a runtime `set_bitrate` method
-  beside the construction-only bitrate application at `encoder.rs:180-188`, and
+  beside the construction-only bitrate application at `encoder.rs:182-191`, and
   make the encoder query `OPUS_GET_LOOKAHEAD` so its `catalog()` output at
   `encoder.rs:263` carries the real pre-skip. Add FEC and DTX ctl calls behind
   config fields, defaulting off, so the plumbing exists without changing default
@@ -77,8 +77,8 @@ assumptions, which moq's `pick_rate` and `frame_size` already generalize.
   that rejects remap "since remapping isn't implemented" (`decode/decoder.rs:16-46`)
   with the ported remix helper, or with an explicit resolved mono/stereo policy
   if the maintainer prefers to keep remap out of the decoder.
-- `rs/moq-audio/src/opus.rs`: no change needed; its `RATES` (`opus.rs:13`),
-  `FRAME_DURATIONS` (`:16`), `pick_rate` (`:20-22`), `validate_channels`
+- `rs/moq-audio/src/opus.rs`: no change needed; its `RATES` (`opus.rs:12`),
+  `FRAME_DURATIONS` (`:15`), `pick_rate` (`:19-21`), `validate_channels`
   (`:33-40`), and `frame_size` (`:43-51`) are the moq-side pieces we adopt.
 
 ## Implementation steps
@@ -101,10 +101,11 @@ assumptions, which moq's `pick_rate` and `frame_size` already generalize.
    for phase 3c, not a delivered feature.
 5. Port the decoder-side channel remix, or land an explicit resolved policy for
    the mono/stereo mismatch that today errors, whichever the maintainer accepts.
-6. Decide the application mode explicitly. Ours defaults to
-   `OPUS_APPLICATION_VOIP` (`opus/encoder.rs:5`), theirs to
-   `OPUS_APPLICATION_AUDIO`; make it a config field rather than inheriting either
-   hardcoded choice.
+6. Decide the application mode explicitly. Ours selects
+   `OPUS_APPLICATION_VOIP` (imported at `opus/encoder.rs:5`, passed to
+   `opus_encoder_create` at `opus/encoder.rs:58`), theirs `OPUS_APPLICATION_AUDIO`
+   (`rs/moq-audio/src/encode/encoder.rs:177`); make it a config field rather than
+   inheriting either hardcoded choice.
 
 ## Tests
 
