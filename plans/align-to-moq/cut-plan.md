@@ -4,12 +4,12 @@ Status: planning artifact, rewritten 2026-07-22 after moq merged its long-lived
 rewrite branch into main on 2026-07-21. There is no longer a dev line to target:
 the native codec and capture stack that round 1 called "dev-only" is now simply
 moq main, working tree `/home/bit/Code/rust/moq` at HEAD `3a3e0ea8`. This
-document consolidates the verdicts of [1-code-map.md](1-code-map.md),
-[2-moq-inventory.md](2-moq-inventory.md), [3-compare-codecs.md](3-compare-codecs.md),
-[3z-compare-zerocopy.md](3z-compare-zerocopy.md), [3t-compare-traits-api.md](3t-compare-traits-api.md),
-[3u-moq-changes.md](3u-moq-changes.md), [4-compare-capture.md](4-compare-capture.md),
-[5-compare-pubsub.md](5-compare-pubsub.md), [6-compare-audio.md](6-compare-audio.md),
-and [9-room-layer.md](9-room-layer.md) into a single deletion ledger and staged
+document consolidates the verdicts of [1-code-map.md](../upstream/comparisons/iroh-live-code-map.md),
+[2-moq-inventory.md](../upstream/comparisons/moq-inventory.md), [3-compare-codecs.md](../upstream/comparisons/codecs.md),
+[3z-compare-zerocopy.md](../upstream/comparisons/zerocopy.md), [3t-compare-traits-api.md](../upstream/comparisons/traits-api.md),
+[3u-moq-changes.md](../upstream/comparisons/moq-changes.md), [4-compare-capture.md](../upstream/comparisons/capture.md),
+[5-compare-pubsub.md](../upstream/comparisons/pubsub.md), [6-compare-audio.md](../upstream/comparisons/audio.md),
+and [9-room-layer.md](room-layer.md) into a single deletion ledger and staged
 sequence. It invents no verdicts; every row cites the document that established
 it. The denominator is the 41,564 LOC of the five core crates (1-code-map.md
 section 3).

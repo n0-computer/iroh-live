@@ -14,16 +14,15 @@ codec and capture evidence from that analysis lives in `../comparisons/`.
 - `refactor-summary.md`: the executive summary of the whole refactor (codec,
   capture, pub/sub, rooms, and the iroh-live cuts), with the scenario expectations
   and the priced alternatives.
-- `iroh-live-cut-plan.md`: what iroh-live deletes once moq carries the upstreamed
-  code. This is the counterpart to the upstream campaign: the campaign moves code
-  into moq, this plan removes the local copies once each contribution lands and
-  releases.
-- `room-layer.md`: the room-layer redesign onto moq's origin, announce, and token
-  primitives. A separate effort from this campaign, preserved for when it starts.
 - `refactor-upstream-plan.md`: the earlier PR-program write-up. Superseded as the
   actionable plan by `../0-overview.md` plus the `../base`, `../codec`,
   `../capture`, and `../render` plans, but kept for its engagement strategy, the
   velocity gate, and the per-contribution size catalog.
+
+The iroh-live-side alignment work (the room-layer redesign and the iroh-live cut
+plan, which are about shrinking and improving iroh-live rather than contributing
+to moq) moved to `plans/align-to-moq/` on 2026-07-22; see that directory's
+overview.
 
 For the codec and capture upstream campaign itself, start at `../0-overview.md`
 and `../comparisons/0-index.md`. The full history of the refactor analysis rounds,

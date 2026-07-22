@@ -4,8 +4,8 @@ Task 4 of the moq-alignment planning effort. Question: can iroh-live rebuild its
 room layer on moq's origin, announce, and session primitives, and what does it
 gain and lose by doing so?
 
-Sources: [maps/room-layer.md](maps/room-layer.md) (current iroh-live room
-design), [maps/moq-net-origin.md](maps/moq-net-origin.md) (moq net layer),
+Sources: [maps/room-layer.md](../upstream/comparisons/maps/room-layer.md) (current iroh-live room
+design), [maps/moq-net-origin.md](../upstream/comparisons/maps/moq-net-origin.md) (moq net layer),
 `plans/old/review-moq-usage.md` (prior ALPN finding), and the code itself
 (`iroh-moq/src/lib.rs`, `iroh-live/src/rooms.rs`, moq working tree at
 `/home/bit/Code/rust/moq`, HEAD `3a3e0ea8`). On 2026-07-21 moq merged `dev`
@@ -110,7 +110,7 @@ can take over the second job natively; the first is the open question.
 ## 2. What moq main provides to build rooms on
 
 All of the following is current moq main (HEAD `3a3e0ea8`), verified per commit
-in [maps/moq-net-origin.md](maps/moq-net-origin.md). iroh-live picks it up when
+in [maps/moq-net-origin.md](../upstream/comparisons/maps/moq-net-origin.md). iroh-live picks it up when
 it bumps its `moq-net` / `moq-native` pins to the next release cut from main.
 
 - **Origin as relay identity.** `Origin { id: u64 }` is a non-zero 62-bit id
