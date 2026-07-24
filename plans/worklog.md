@@ -1095,3 +1095,28 @@ A-stages; counterpart plans cite M-stages); DISPOSITION rows reconciled
 (opus and VTB decoder relabeled adopt-theirs-after-leaf; sps.rs note
 clarified; adaptive/sync candidate-speak removed). In-tree module list
 verified against the working tree before the rewrite.
+
+## Round 8 (2026-07-23, branch split: plan-upstream standalone + plan-align)
+
+Split the two campaigns across two branches so plan-upstream is a
+self-contained upstream deliverable:
+- plan-upstream: only prompt-base.md + plans/upstream/. The align-to-moq
+  campaign is removed here.
+- plan-align: branches on top of plan-upstream and adds plans/align-to-moq/
+  back.
+Shared cleanup (on the split base, inherited by both):
+- Moved the branch registry from plans/branches.md into
+  plans/upstream/branches.md as an upstream-only registry (align table
+  dropped, plan paths made relative to the campaign dir).
+- Retired the adversarial review files (plans/upstream/reviews/) now that
+  their findings are folded into the plans; the coverage audit recorded
+  zero lost capabilities before removal.
+- Genericized prompt-base.md to name no individual campaign: the branch
+  model and registry are defined per campaign in its 0-overview.md; the
+  paired-branch mechanics moved from the base prompt into
+  upstream/0-overview.md (Strategy + Git and PR model).
+- Decoupled the upstream docs from the align campaign: descriptive
+  out-of-scope mentions, no ../align-to-moq/ path links, so plan-upstream
+  has no dangling references.
+- Fixed align task plans' upstream comparison links that were one
+  directory level short (../upstream -> ../../upstream from tasks/).
