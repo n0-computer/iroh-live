@@ -720,11 +720,10 @@ fn list_devices(direction: Direction) -> Vec<AudioDevice> {
         let Ok(devices) = devices else { continue };
         for device in devices {
             let Ok(id) = device.id() else { continue };
-            #[allow(
-                deprecated,
-                reason = "DeviceTrait::name is deprecated in cpal 0.18 but description() is not yet stable on all backends"
-            )]
-            let name = device.name().unwrap_or_else(|_| id.to_string());
+            let name = device
+                .description()
+                .map(|d| d.name().to_string())
+                .unwrap_or_else(|_| id.to_string());
             let is_default = default_id.as_ref() == Some(&id);
             out.push(AudioDevice {
                 id: DeviceId(id),
@@ -1233,7 +1232,7 @@ struct TrackedInput {
 #[derive(Debug)]
 struct StreamErrorInfo {
     direction: &'static str,
-    error: cpal::StreamError,
+    error: cpal::Error,
 }
 
 impl fmt::Debug for AudioDriver {
@@ -1367,8 +1366,8 @@ impl AudioDriver {
 
     fn drain_errors(&mut self) {
         while let Ok(err_info) = self.error_rx.try_recv() {
-            match &err_info.error {
-                cpal::StreamError::BufferUnderrun => {
+            match err_info.error.kind() {
+                cpal::ErrorKind::Xrun => {
                     self.underrun_count += 1;
                     if self.underrun_window_start.elapsed() > Duration::from_secs(5) {
                         self.underrun_count = 1;
@@ -1384,11 +1383,11 @@ impl AudioDriver {
                         self.attempt_restart();
                     }
                 }
-                cpal::StreamError::DeviceNotAvailable => {
+                cpal::ErrorKind::DeviceNotAvailable => {
                     warn!(direction = err_info.direction, "audio device unavailable");
                     self.attempt_restart();
                 }
-                cpal::StreamError::StreamInvalidated => {
+                cpal::ErrorKind::StreamInvalidated => {
                     warn!(direction = err_info.direction, "audio stream invalidated");
                     self.attempt_restart();
                 }
