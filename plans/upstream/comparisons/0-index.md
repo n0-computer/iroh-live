@@ -6,11 +6,11 @@ These documents establish, component by component, where iroh-live's owned media
 stack (rusty-codecs, rusty-capture, moq-media) stands against current moq main
 (HEAD `3a3e0ea8`, the `dev` line merged into `main` on 2026-07-21, so there is no
 branch distinction). For every codec, capture backend, zero-copy path, and audio
-device concern they name who is stronger and why, and they resolve each into one
-of five verdicts: adopt theirs, keep ours, upstream ours, merge, or complementary.
+device concern they name who is stronger and why; the matrix below consolidates
+each into the module's disposition, matching [../DISPOSITION.md](../DISPOSITION.md).
 The upstream campaign plans in [../base](../base), [../codec](../codec),
 [../capture](../capture), and [../render](../render) act on these verdicts,
-turning each "upstream ours" and "merge" into an ordered, independently executable
+turning each `upstream-ours` into an ordered, independently executable
 PR plan against moq. Read [../0-overview.md](../0-overview.md) first for the
 campaign structure, the wave ordering, and the frozen base API contract that every
 leaf plan codes against.
@@ -38,47 +38,53 @@ Rows are every codec by direction, then the capture backends, the zero-copy path
 and the audio device layer. Columns are the two stacks, the verdict, and the plan
 that acts on it. Cells link to the detailed section that backs the verdict.
 
+The verdict is each row's disposition in [`../DISPOSITION.md`](../DISPOSITION.md):
+`upstream-ours` for anything moq lacks, `adopt-theirs` where moq's implementation
+wins, `drop` for a redundant fallback, `remove-for-now` for AV1 (deferred
+upstream, ripped out locally), and `n/a` where neither stack has it. A row that
+spans several backends names the split.
+
 ### Codecs
 
 | Component | iroh-live | moq main | Verdict | Plan |
 |---|---|---|---|---|
-| H.264 encode | openh264, VAAPI, V4L2, VideoToolbox, Android ([details](codecs.md#1-h264)) | openh264, VAAPI stub, VT, MF, NVENC | merge | [vaapi-encode](../codec/vaapi-encode.md), [v4l2-encode](../codec/v4l2-encode.md), [android](../codec/android-mediacodec.md) |
-| H.264 decode | openh264, VAAPI, V4L2, VideoToolbox, Android ([details](codecs.md#1-h264)) | openh264, VT, MF, NVDEC ([no VAAPI](codecs.md#vaapi-vs-vaapi--moq-vaapi)) | merge, [upstream ours](codecs.md#vaapi-vs-vaapi--moq-vaapi) | [vaapi-decode](../codec/vaapi-decode.md), [v4l2-decode](../codec/v4l2-decode.md), [android](../codec/android-mediacodec.md) |
+| H.264 encode | openh264, VAAPI, V4L2, VideoToolbox, Android ([details](codecs.md#1-h264)) | openh264, VAAPI stub, VT, MF, NVENC | upstream-ours (VAAPI, V4L2, Android), adopt-theirs (openh264, VT) | [vaapi-encode](../codec/vaapi-encode.md), [v4l2-encode](../codec/v4l2-encode.md), [android](../codec/android-mediacodec.md) |
+| H.264 decode | openh264, VAAPI, V4L2, VideoToolbox, Android ([details](codecs.md#1-h264)) | openh264, VT, MF, NVDEC ([no VAAPI](codecs.md#vaapi-vs-vaapi--moq-vaapi)) | upstream-ours (VAAPI, V4L2, Android), adopt-theirs (openh264, VT) | [vaapi-decode](../codec/vaapi-decode.md), [v4l2-decode](../codec/v4l2-decode.md), [android](../codec/android-mediacodec.md) |
 | H.265 encode | none | VT, MF, NVENC ([details](codecs.md#2-h265)) | adopt-theirs | none |
 | H.265 decode | none | VT, MF, NVDEC ([details](codecs.md#2-h265)) | adopt-theirs | none |
 | VP9 encode | none | none ([catalog-only](codecs.md#4-vp9)) | n/a | none |
 | VP9 decode | none | none ([catalog-only](codecs.md#4-vp9)) | n/a | none |
-| AV1 encode | rav1e software ([only one, either stack](codecs.md#3-av1)) | none | [upstream ours](codecs.md#3-av1) | [av1-software](../codec/av1-software.md) |
-| AV1 decode | rav1d software (universal fallback) | NVDEC 8-bit only ([details](codecs.md#3-av1)) | [upstream ours](codecs.md#3-av1) | [av1-software](../codec/av1-software.md) |
-| Opus encode | libopus, runtime bitrate, pre-skip ([details](codecs.md#5-opus)) | libopus, rate snap, validation | [merge](audio.md#15-verdict-on-the-codec-layer) | [opus-improvements](../audio/opus-improvements.md) |
-| Opus decode | libopus, decoder remix ([details](audio.md#12-opus-decoder-feature-by-feature)) | libopus ([no PLC either side](audio.md#15-verdict-on-the-codec-layer)) | [merge](audio.md#15-verdict-on-the-codec-layer) | [opus-improvements](../audio/opus-improvements.md) |
-| PCM encode | raw f32 ([ours only](codecs.md#6-pcm)) | none | keep-ours | [pcm](../audio/pcm.md) |
-| PCM decode | raw f32 ([ours only](audio.md#14-pcm-codec-ours-only)) | none | keep-ours | [pcm](../audio/pcm.md) |
+| AV1 encode | rav1e software ([only one, either stack](codecs.md#3-av1)) | none | [remove-for-now](codecs.md#3-av1) | [av1-software](../codec/av1-software.md) (deferred) |
+| AV1 decode | rav1d software (universal fallback) | NVDEC 8-bit only ([details](codecs.md#3-av1)) | [remove-for-now](codecs.md#3-av1) | [av1-software](../codec/av1-software.md) (deferred) |
+| Opus encode | libopus, runtime bitrate, pre-skip ([details](codecs.md#5-opus)) | libopus, rate snap, validation | [adopt-theirs (after opus-improvements)](audio.md#15-verdict-on-the-codec-layer) | [opus-improvements](../audio/opus-improvements.md) |
+| Opus decode | libopus, decoder remix ([details](audio.md#12-opus-decoder-feature-by-feature)) | libopus ([no PLC either side](audio.md#15-verdict-on-the-codec-layer)) | [adopt-theirs (after opus-improvements)](audio.md#15-verdict-on-the-codec-layer) | [opus-improvements](../audio/opus-improvements.md) |
+| PCM encode | raw f32 ([ours only](codecs.md#6-pcm)) | none | upstream-ours | [pcm](../audio/pcm.md) |
+| PCM decode | raw f32 ([ours only](audio.md#14-pcm-codec-ours-only)) | none | upstream-ours | [pcm](../audio/pcm.md) |
 
 ### Capture backends
 
 | Component | iroh-live | moq main | Verdict | Plan |
 |---|---|---|---|---|
-| PipeWire (Linux screen) | DMA-BUF into VAAPI ([details](capture.md#linux-screen-pipewire)) | CPU-only ([#2238](capture.md#linux-screen-pipewire)) | keep-ours, [upstream ours](zerocopy.md#2a-capture-to-encode-verdict-complementary) | [pipewire-dmabuf](../capture/pipewire-dmabuf.md) |
-| V4L2 (Linux camera) | enumeration, NV12 passthrough ([details](capture.md#linux-camera-v4l2)) | none | keep-ours, adopt MJPEG decode | [v4l2-camera-enum](../capture/v4l2-camera-enum.md) |
-| X11 | fallback ([ours only](capture.md#backends-only-we-have)) | none | keep-ours | none |
-| libcamera (raw) | ours only ([details](capture.md#backends-only-we-have)) | none | keep-ours | none |
-| libcamera H.264 (pre-encoded) | rpicam-vid pre-encoded source ([details](capture.md#backends-only-we-have)) | none | [upstream ours](capture.md#5-verdict) | [libcamera-preencoded](../capture/libcamera-preencoded.md) |
+| PipeWire (Linux screen) | DMA-BUF into VAAPI ([details](capture.md#linux-screen-pipewire)) | CPU-only ([#2238](capture.md#linux-screen-pipewire)) | [upstream-ours](zerocopy.md#2a-capture-to-encode-verdict-complementary) | [pipewire-dmabuf](../capture/pipewire-dmabuf.md) |
+| V4L2 (Linux camera) | enumeration, NV12 passthrough ([details](capture.md#linux-camera-v4l2)) | none | upstream-ours (adopts their MJPEG decode) | [v4l2-camera-enum](../capture/v4l2-camera-enum.md) |
+| X11 | fallback ([ours only](capture.md#backends-only-we-have)) | none | upstream-ours (leaf pending) | none |
+| libcamera (raw) | ours only ([details](capture.md#backends-only-we-have)) | none | upstream-ours | [libcamera-preencoded](../capture/libcamera-preencoded.md) |
+| libcamera H.264 (pre-encoded) | rpicam-vid pre-encoded source ([details](capture.md#backends-only-we-have)) | none | [upstream-ours](capture.md#5-verdict) | [libcamera-preencoded](../capture/libcamera-preencoded.md) |
 | ScreenCaptureKit (macOS screen) | functional subset plus BGRA ([details](capture.md#macos-screen-screencapturekit)) | app capture, NV12 surfaces | [adopt-theirs](capture.md#macos-screen-screencapturekit) | none |
 | AVFoundation (macOS camera) | stub ([details](capture.md#macos-camera)) | complete, zero-copy, TCC | [adopt-theirs](capture.md#macos-camera) | none |
 | Windows (camera, screen) | doc stubs ([details](capture.md#windows)) | MF, Desktop Duplication, GPU-resident | [adopt-theirs](capture.md#windows) | none |
-| Android | HardwareBuffer plan ([ours only](capture.md#5-verdict)) | none | keep-ours | [android](../codec/android-mediacodec.md) |
-| nokhwa | fallback camera ([details](capture.md#backends-only-we-have)) | none | keep-ours (fallback) | none |
-| xcap | fallback screen ([details](capture.md#backends-only-we-have)) | none | keep-ours (fallback) | none |
+| Android | HardwareBuffer plan ([ours only](capture.md#5-verdict)) | none | upstream-ours (B4-gated) | [android](../codec/android-mediacodec.md) |
+| nokhwa | fallback camera ([details](capture.md#backends-only-we-have)) | none | drop | none |
+| xcap | fallback screen ([details](capture.md#backends-only-we-have)) | none | drop | none |
 
 ### Zero-copy paths
 
 | Component | iroh-live | moq main | Verdict | Plan |
 |---|---|---|---|---|
-| Capture to encode | Linux DMA-BUF, macOS CVPixelBuffer ([details](zerocopy.md#2a-capture-to-encode-verdict-complementary)) | macOS, Windows surfaces into encoder | [complementary](zerocopy.md#2a-capture-to-encode-verdict-complementary) | [pipewire-dmabuf](../capture/pipewire-dmabuf.md), [B1](../base/B1-frame-vocabulary.md) |
-| Decode to render | only such path, 3 platforms, 2 graphics APIs ([details](zerocopy.md#2b-decode-to-render-verdict-ours)) | downloads to I420 except NVDEC | [upstream ours](zerocopy.md#2b-decode-to-render-verdict-ours) | [vtb-mf-decode-surface](../codec/vtb-mf-decode-surface.md), [B3](../base/B3-decode-native-accessor.md) |
-| Transcode (decode, scale, encode) | none ([details](zerocopy.md#2c-transcode-decode-then-scale-then-encode-verdict-theirs)) | NVDEC to NVENC GPU loop, decode-once fanout | [complementary](zerocopy.md#2c-transcode-decode-then-scale-then-encode-verdict-theirs) | none |
-| Render | only renderer, Vulkan, EGL, Metal ([details](zerocopy.md#2d-render-itself-verdict-ours)) | none | upstream-ours, [in-tree crate](zerocopy.md#4-render-upstreaming-decision) | [moq-video-render](../render/moq-video-render.md) |
+| Capture to encode | Linux DMA-BUF, macOS CVPixelBuffer ([details](zerocopy.md#2a-capture-to-encode-verdict-complementary)) | macOS, Windows surfaces into encoder | [upstream-ours (Linux), adopt-theirs (macOS/Windows)](zerocopy.md#2a-capture-to-encode-verdict-complementary) | [pipewire-dmabuf](../capture/pipewire-dmabuf.md), [B1](../base/B1-frame-vocabulary.md) |
+| Decode to render | only such path, 3 platforms, 2 graphics APIs ([details](zerocopy.md#2b-decode-to-render-verdict-ours)) | downloads to I420 except NVDEC | [upstream-ours](zerocopy.md#2b-decode-to-render-verdict-ours) | [vtb-mf-decode-surface](../codec/vtb-mf-decode-surface.md), [B3](../base/B3-decode-native-accessor.md) |
+| Transcode (decode, scale, encode) | none ([details](zerocopy.md#2c-transcode-decode-then-scale-then-encode-verdict-theirs)) | NVDEC to NVENC GPU loop, decode-once fanout | [adopt-theirs](zerocopy.md#2c-transcode-decode-then-scale-then-encode-verdict-theirs) | none |
+| Render | only renderer, Vulkan, EGL, Metal ([details](zerocopy.md#2d-render-itself-verdict-ours)) | none | [upstream-ours](zerocopy.md#4-render-upstreaming-decision) | [moq-video-render](../render/moq-video-render.md) |
 
 ### Audio device layer
 
@@ -86,7 +92,7 @@ that acts on it. Cells link to the detailed section that backs the verdict.
 |---|---|---|---|---|
 | Playback / sink | full duplex engine, mixing, metering ([details](audio.md#3-device-io)) | [no playback surface](audio.md#7-verdict) | upstream-ours | [audio-device-unify](../audio/audio-device-unify.md) |
 | AEC | sonora acoustic echo cancellation ([details](audio.md#3-device-io)) | [none](capture.md#4-audio-capture) | upstream-ours | [audio-device-unify](../audio/audio-device-unify.md) |
-| Resample | higher quality, per-call alloc ([details](audio.md#2-resampling)) | leaner sinc-128, preallocated | [merge](audio.md#2-resampling) | none |
+| Resample | higher quality, per-call alloc ([details](audio.md#2-resampling)) | leaner sinc-128, preallocated | [adopt-theirs](audio.md#2-resampling) | none |
 | System-audio capture | none ([the missing half](audio.md#34-the-missing-half)) | SCK loopback, TCC, `format()` ([details](audio.md#32-what-their-capture-does-and-does-better)) | [adopt-theirs](audio.md#7-verdict) | none |
 
 ## Key findings
