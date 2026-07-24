@@ -2,7 +2,7 @@
 
 > Campaign: upstream | Kind: overview | Read this in full before touching any
 > plan. The campaign prompt is `prompt.md`; the branch registry is
-> `../branches.md`; the evidence is `comparisons/` (start at
+> `branches.md`; the evidence is `comparisons/` (start at
 > `comparisons/0-index.md`).
 
 This directory is the execution kit for upstreaming iroh-live's codec, capture,
@@ -10,8 +10,9 @@ audio-device, and render code into moq, either as new backends and crates or as
 improvements to moq's existing code. The output is a series of pull requests
 against moq (and moq-vaapi): one base PR series that everything depends on, then
 a fan of leaf PRs, each with a paired iroh-live counterpart branch that adopts
-the contribution and cuts the local code it replaces (see `counterpart/` and the
-paired-branch model in `../prompt-base.md`). moq is a single codebase
+the contribution and cuts the local code it replaces (see `counterpart/`; the
+paired-branch mechanics are in the Strategy and Git and PR model sections
+below). moq is a single codebase
 (`/home/bit/Code/rust/moq`, HEAD `3a3e0ea8`); the VA layer lives in the external
 `moq-dev/vaapi` repo.
 
@@ -42,8 +43,8 @@ In scope:
   Windows capture), porting our fixes and improvements upstream before the local
   code is cut (`capture/parity-ports.md` and the per-module DISPOSITION rows).
 
-Out of scope: the room, pub/sub, and adaptive alignment work, which is the
-`plans/align-to-moq/` campaign. Deferred, not dropped: AV1 (rav1e is too slow
+Out of scope: the room, pub/sub, and adaptive alignment work, which a separate
+alignment effort handles. Deferred, not dropped: AV1 (rav1e is too slow
 and the rav1d git-fork dependency too heavy to carry now; `codec/av1-software.md`
 stays as a deferred plan and iroh-live rips out its own AV1 backend meanwhile).
 
@@ -65,7 +66,7 @@ the pipelined encoders depend on that vocabulary. So:
 - A **fan of leaf branches** (`up/<name>`), each cut from the base branch, one
   per plan. Leaves are independent of each other and can be authored and
   reviewed in parallel, except at the coordination points below.
-- A **paired iroh-live branch** per leaf that has a cut side (`../branches.md`
+- A **paired iroh-live branch** per leaf that has a cut side (`branches.md`
   lists the pairs): same name, path dep on the moq branch during development,
   git branch dep at handoff, carrying the counterpart deletion.
 
@@ -263,7 +264,7 @@ moq main (3a3e0ea8)
 ```
 
 Each leaf with a cut side has a paired iroh-live `up/<name>` branch; the pair
-table is `../branches.md` and the cut guidance is `counterpart/` plus
+table is `branches.md` and the cut guidance is `counterpart/` plus
 `cut-plan.md`.
 
 ## Wave ordering
@@ -460,7 +461,7 @@ cannot be reviewed in isolation. Therefore:
 - Locally, `up/base` exists in both worktrees so leaves and their iroh-live
   pairs compile against the proposed API before base merges; that is a
   development convenience, not the PR path. Branch and worktree mechanics are in
-  `../prompt-base.md`; the registry is `../branches.md`.
+  `../prompt-base.md`; the registry is `branches.md`.
 - Opening PRs, and any push to moq or moq-vaapi, happens only with explicit
   human authorization; the plans produce branches and PR descriptions, they do
   not self-publish.
@@ -525,7 +526,9 @@ Render leaves (in `render/`):
 - `comparisons/`: the evidence base (start at `comparisons/0-index.md`, the
   consolidated capability matrix with inline links). `comparisons/moq-changes.md`
   is the moq-side change design the contract is lifted from.
-- `reviews/`: the standing adversarial reviews; findings already folded into the
-  plans.
 - `analysis/`: the broader refactor analysis these plans were drawn from,
   preserved for context.
+
+The adversarial reviews that hardened this plan set are folded in and their
+source files retired; the coverage audit found zero lost capabilities before
+removal.

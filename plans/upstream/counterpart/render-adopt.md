@@ -1,7 +1,7 @@
 # render-adopt
 
 > Campaign: upstream | Kind: counterpart plan | Branch: `up/video-render`
-> (iroh-live pair of the moq `up/video-render` leaf; see `../../branches.md`) |
+> (iroh-live pair of the moq `up/video-render` leaf; see `../branches.md`) |
 > Read ../0-overview.md first.
 
 Depends on: upstream base plan B1 (public `Native` frame vocabulary), base plan

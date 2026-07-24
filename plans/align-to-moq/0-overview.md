@@ -64,7 +64,7 @@ iroh-live (41,564 LOC core)
     +-- rooms-announce       gossip+KV discovery -> moq announce + token path-scoping
 ```
 
-Branch names are `align/<task>`; the registry is `../branches.md`.
+Branch names are `align/<task>`; the registry is `../upstream/branches.md`.
 
 ## Wave ordering
 
@@ -88,7 +88,7 @@ Branch names are `align/<task>`; the registry is `../branches.md`.
    there; settle it before that phase's implementation.
 3. Handoff to upstream counterparts. When an upstream pair-side branch needs an
    alignment from this campaign (for example the bumped pin), it builds on the
-   merged align branch; coordinate through `../branches.md` rather than
+   merged align branch; coordinate through `../upstream/branches.md` rather than
    duplicating work.
 
 ## How a task is executed

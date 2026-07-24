@@ -36,8 +36,8 @@ list the browser, the relay, and iroh-live-relay already speak.
   constant and connect/accept glue; the ~370-LOC keep is the actor core plus the
   public `Moq`/`MoqSession`/`IncomingSession` wrappers.
 - Overlap analysis with `file:line` on both sides:
-  `../upstream/comparisons/maps/moq-net-origin.md` section 6 (moq-native iroh
-  transport surface) and `../upstream/comparisons/maps/room-layer.md` section 7
+  `../../upstream/comparisons/maps/moq-net-origin.md` section 6 (moq-native iroh
+  transport surface) and `../../upstream/comparisons/maps/room-layer.md` section 7
   (the overlap assessment: same crate underneath, same iroh-to-WebTransport
   bridge, same ALPN, moq-native already a workspace dependency, and the list of
   four things iroh-moq genuinely owns).
@@ -76,7 +76,7 @@ list the browser, the relay, and iroh-live-relay already speak.
   negotiation.
 
 Note the `(Session, Driver)` return of `Client::connect`
-(`../upstream/comparisons/maps/moq-net-origin.md` section 3): the merged net layer
+(`../../upstream/comparisons/maps/moq-net-origin.md` section 3): the merged net layer
 spawns nothing behind your back, so the delegated path must own driving the
 `Driver` (spawn it, or step `Driver::poll`), which the current `session_connect`
 does not have to think about. This is part of the known bump-time rework.

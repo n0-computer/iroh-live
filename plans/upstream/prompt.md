@@ -15,7 +15,7 @@ moq (and moq-vaapi) is authored, reviewed, and ready for a human to open as a
 pull request, and every leaf's iroh-live counterpart branch (the pair-side cut
 and dependency switch) is ready to land once its moq side merges. You do not
 open PRs or push; you produce paired branches, diffs, and PR text, per the
-paired-branch model in the base prompt and the registry in `plans/branches.md`.
+paired-branch model in `0-overview.md` and the registry in `branches.md`.
 
 ## Authorities
 
@@ -28,10 +28,10 @@ paired-branch model in the base prompt and the registry in `plans/branches.md`.
   plans, and `cut-plan.md` is the deletion ledger behind them.
 - `DISPOSITION.md` is the standing register of every iroh-live media module and
   its fate; no module is dropped silently. Consult it before and after any cut.
-- `comparisons/` (start at `comparisons/0-index.md`) is the evidence.
-  `reviews/` holds the standing adversarial reviews; their findings are folded
-  into the plans already. Do not re-litigate them; do re-run their cross-checks
-  against source when a plan looks stale.
+- `comparisons/` (start at `comparisons/0-index.md`) is the evidence. The
+  adversarial reviews that hardened these plans are already folded in and their
+  source files retired; do not re-litigate settled findings, but re-run a
+  cross-check against source when a plan looks stale.
 
 ## Done-signal per task
 

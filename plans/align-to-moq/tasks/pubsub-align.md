@@ -26,7 +26,7 @@ is correct.
 ## What is already aligned (do not touch, do not re-implement)
 
 - Group ordering, cross-group advance, and latency-bounded skipping are delegated
-  to `moq_mux::container::Consumer` (`../upstream/comparisons/pubsub.md`
+  to `moq_mux::container::Consumer` (`../../upstream/comparisons/pubsub.md`
   section 3, "our `MoqPacketSource` ... just adapts `read()`"; capability matrix
   section 9, "Group ordering + latency skip: delegated to
   `moq_mux::container::Consumer`"). Verified in source:
@@ -48,7 +48,7 @@ is correct.
 
 ## Evidence
 
-- `../upstream/comparisons/pubsub.md` section 3 (subscribe path, the stale-model
+- `../../upstream/comparisons/pubsub.md` section 3 (subscribe path, the stale-model
   correction, the `set_latency`/`discontinuity()` gap, and the `#2426`
   empty-batch contract), section 9 (capability matrix rows "Mid-stream latency
   change: no; resubscribe required" and "Discontinuity signal: no; inferred via

@@ -37,8 +37,8 @@ as the port: they are the evidence the counterpart cuts cite.
 - The audio capture channel finding: `../comparisons/audio.md` section 3.3
   (their unbounded realtime-to-async channel against our bounded-buffer
   discipline).
-- Coverage cross-check: `../reviews/review-coverage.md` (every ours-ahead
-  capability named there is accounted for below).
+- Coverage: the campaign's coverage audit confirmed every ours-ahead
+  capability is either upstreamed by a leaf or accounted for below.
 
 ## moq API consumed
 

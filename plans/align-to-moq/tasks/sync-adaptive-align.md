@@ -28,7 +28,7 @@ proof-before-deletion. The deeper upstreaming of adaptive and sync into moq is o
 of scope.
 
 ## Evidence
-- `../upstream/comparisons/pubsub.md` is the anchor. Section 2 (publish path)
+- `../../upstream/comparisons/pubsub.md` is the anchor. Section 2 (publish path)
   describes moq-mux's per-rendition `Estimate` and `record_frame` metrics that fill
   catalog `jitter` and `bitrate`. Section 5 (adaptive) establishes that no
   subscriber-side rendition selection exists in moq Rust, that `adaptive.rs` is
@@ -40,7 +40,7 @@ of scope.
   Section 10 gives the per-area verdicts: keep both layers in iroh-live
   separately; the local fixes now are to correct the stale `sync.rs` doc and read
   catalog `jitter` into the clock.
-- `../upstream/comparisons/maps/moq-media.md` for the moq-media module map, and
+- `../../upstream/comparisons/maps/moq-media.md` for the moq-media module map, and
   the stale "our Rust catalog does not carry this field yet" claim it repeats.
 - `../cut-plan.md` for the keep verdict on `sync.rs`, `playout.rs`, and `adaptive.rs`.
 

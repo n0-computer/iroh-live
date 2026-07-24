@@ -1,14 +1,14 @@
 # codec-remove
 
 > Campaign: upstream | Kind: counterpart plan | Branch: iroh-live `up/<leaf>`
-> pair branches, one per gated row (see `../../branches.md`) |
+> pair branches, one per gated row (see `../branches.md`) |
 > Read ../0-overview.md first.
 
-Depends on: the align campaign's pin bump to the moq release carrying the merged
-media stack (`../../align-to-moq/0-overview.md`); the frame-model collapse in
-`render-adopt.md` for every decode deletion (the zero-copy rule, `../cut-plan.md`
-P2); and, per backend, the specific moq leaf named in the ledger below reaching a
-moq release iroh-live can pin.
+Depends on: the pin bump to the moq release carrying the merged media stack (a
+prerequisite iroh-live does separately from this campaign); the frame-model
+collapse in `render-adopt.md` for every decode deletion (the zero-copy rule,
+`../cut-plan.md` P2); and, per backend, the specific moq leaf named in the
+ledger below reaching a moq release iroh-live can pin.
 
 ## Goal
 
@@ -21,7 +21,7 @@ on the paired iroh-live `up/<name>` branch matching the moq leaf it waits on (th
 VAAPI rows on `up/vaapi-decode` and `up/vaapi-encode`, the VTB decode row on
 `up/vtb-mf-decode-surface`, the V4L2 rows on `up/v4l2-encode` and `up/v4l2-decode`,
 the Android rows on `up/android-mediacodec`, the PCM adoption on `up/pcm`), not on
-one campaign-wide branch; see the pair table in `../../branches.md`. Where a
+one campaign-wide branch; see the pair table in `../branches.md`. Where a
 platform flips atomically across several leaves (Linux needs both the VAAPI and
 V4L2 leaves), the pair branches coordinate and the flip lands once every leaf it
 needs has released.
@@ -126,10 +126,9 @@ use case needs it.
 Ordered so adoption always precedes deletion, and each platform with a held
 backend flips atomically per the atomic per-platform rule.
 
-1. Land the align campaign's pin bump (`align/pin-bump`,
-   `../../align-to-moq/0-overview.md`) and the independent local cuts first, so
-   `config.rs` and `sps.rs` are gone and the `Timestamp` and catalog-type
-   convergence is done before any codec diff has to carry a conversion shim.
+1. Land the moq pin bump and the independent local cuts first, so `config.rs`
+   and `sps.rs` are gone and the `Timestamp` and catalog-type convergence is
+   done before any codec diff has to carry a conversion shim.
 2. Adopt moq-video openh264 encode and decode and the `moq_mux::codec` bitstream
    front end behind a `moq-native-codecs` cargo feature. Run both paths through
    the conformance harness, flip the default, then delete

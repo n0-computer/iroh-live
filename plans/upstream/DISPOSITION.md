@@ -19,7 +19,7 @@ The disposition vocabulary:
   Where our version carries fixes or capabilities theirs lacks, the Notes name
   them and the porting is tracked in `capture/parity-ports.md`.
 - **keep**: the module stays in iroh-live, with the reason stated. Rows owned
-  by the sibling `plans/align-to-moq/` campaign are marked as such.
+  by the separate alignment effort are tagged `align` in the ownership column.
 - **defer**: parked with a written plan and a stated re-entry condition.
 - **drop**: deleted with no replacement, with the reason that is acceptable.
 
@@ -28,8 +28,8 @@ Inventory and LOC come from `comparisons/iroh-live-code-map.md` (`wc -l`,
 documents. Scope: this register covers the media modules (rusty-codecs,
 rusty-capture, moq-media, the render tree, the audio device layer, and the
 media support crates). The room and transport layer (the `iroh-moq` and
-`iroh-live` crates) is owned by `plans/align-to-moq/` and registered in
-`cut-plan.md`; it has no rows here. `iroh-live-cli`, `iroh-live-relay`, and
+`iroh-live` crates) is owned by the separate alignment effort and has no rows
+here. `iroh-live-cli`, `iroh-live-relay`, and
 `demos/` are applications composing these libraries; they change with every
 adoption but contain no owned media implementation and have no rows.
 
@@ -80,21 +80,21 @@ adoption but contain no owned media implementation and have no rows.
 
 ## moq-media (11,441 LOC)
 
-The pubsub, adaptive, and sync rows below are owned by the sibling
-`plans/align-to-moq/` campaign; they appear here because they share the crate
-with the audio device layer and completeness is the point of this register.
+The pubsub, adaptive, and sync rows below are owned by the separate alignment
+effort (tagged `align`); they appear here because they share the crate with the
+audio device layer and completeness is the point of this register.
 
 | Module | Path | LOC | Disposition | Where the work lives | Notes |
 |---|---|---:|---|---|---|
 | Audio engine (duplex, mixing, AEC) | `moq-media/src/audio_backend.rs`, `audio_backend/aec.rs` | 2,837 | upstream-ours | `audio/audio-device-unify.md` | Playback sink, mixing, declicker fades, metering, device switching, recovery, and sonora AEC have zero moq counterpart (audio.md sec 3.4). Unifies into moq-audio behind features. |
 | Audio file sources (symphonia) | `moq-media/src/audio_file_source.rs`, `audio_file_symphonia.rs` | 472 | keep | n/a | Decoded-PCM sources and moq-mux container importers are complementary (audio.md sec 4). Open question: whether the symphonia source folds into the unified moq-audio device layer or stays local, discussed in `audio/audio-device-unify.md`; current proposal: keep local. |
 | MJPEG helper processing | `moq-media/src/processing.rs`, `processing/mjpg.rs` | 87 | keep | n/a | Small local helper serving capture paths. |
-| Publish layer | `moq-media/src/publish.rs`, `publish/controller.rs` | 1,830 | keep | align-to-moq | Simulcast registry, `SharedVideoSource`, and leasing have no moq equivalent; the per-track encode wiring collapses onto `encode::Producer` per the cut-plan merge row. |
-| Subscribe layer | `moq-media/src/subscribe.rs` | 1,566 | keep | align-to-moq | Quality selection, decoder hot-swap, and the adaptation driver have no upstream counterpart; internals swap on codec adoption. |
-| Encode and decode pipelines | `moq-media/src/pipeline/` | 1,212 | keep | align-to-moq | The encode half collapses onto moq producers; the decode loops stay on our OS threads over the sans-IO decoders. |
-| Packet transport seam | `moq-media/src/transport.rs` | 204 | keep | align-to-moq | The sink half is replaced by `encode::Producer`; `MoqPacketSource` stays feeding the decoders. |
-| Adaptive bitrate policy | `moq-media/src/adaptive.rs`, `net.rs` | 621 | keep | align-to-moq | The only Rust subscriber-side ABR on either side; `sync-adaptive-align` reads moq-mux per-rendition `Estimate{jitter,bitrate}` into it. Not media-land, so not part of the upstream campaign. |
-| Playout clock and sync | `moq-media/src/sync.rs`, `playout.rs` | 512 | keep | align-to-moq | No Rust playout clock exists upstream; `sync-adaptive-align` reads catalog `jitter` populated by moq-mux `Metrics`. Not media-land, so not part of the upstream campaign. |
+| Publish layer | `moq-media/src/publish.rs`, `publish/controller.rs` | 1,830 | keep | align | Simulcast registry, `SharedVideoSource`, and leasing have no moq equivalent; the per-track encode wiring collapses onto `encode::Producer` per the cut-plan merge row. |
+| Subscribe layer | `moq-media/src/subscribe.rs` | 1,566 | keep | align | Quality selection, decoder hot-swap, and the adaptation driver have no upstream counterpart; internals swap on codec adoption. |
+| Encode and decode pipelines | `moq-media/src/pipeline/` | 1,212 | keep | align | The encode half collapses onto moq producers; the decode loops stay on our OS threads over the sans-IO decoders. |
+| Packet transport seam | `moq-media/src/transport.rs` | 204 | keep | align | The sink half is replaced by `encode::Producer`; `MoqPacketSource` stays feeding the decoders. |
+| Adaptive bitrate policy | `moq-media/src/adaptive.rs`, `net.rs` | 621 | keep | align | The only Rust subscriber-side ABR on either side; `sync-adaptive-align` reads moq-mux per-rendition `Estimate{jitter,bitrate}` into it. Not media-land, so not part of the upstream campaign. |
+| Playout clock and sync | `moq-media/src/sync.rs`, `playout.rs` | 512 | keep | align | No Rust playout clock exists upstream; `sync-adaptive-align` reads catalog `jitter` populated by moq-mux `Metrics`. Not media-land, so not part of the upstream campaign. |
 | Stats | `moq-media/src/stats.rs` | 494 | keep | n/a | Does not overlap moq-stats or moq-net session stats. |
 | Source spec parsing | `moq-media/src/source_spec.rs` | 499 | keep | n/a | CLI parsing, ours alone. |
 | Frame channel | `moq-media/src/frame_channel.rs` | 299 | keep | n/a | Latest-wins channel enabling decoder hot-swap; no counterpart. |

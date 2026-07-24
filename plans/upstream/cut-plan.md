@@ -2,19 +2,20 @@
 
 > Campaign: upstream | Kind: reference | Read `0-overview.md` first. This is the
 > deletion ledger behind the pair-side counterpart plans in `counterpart/`; the
-> per-module fate register is `DISPOSITION.md`. The alignment ledger (transport,
-> pubsub, rooms, adaptive, sync) is `../align-to-moq/cut-plan.md`.
+> per-module fate register is `DISPOSITION.md`. Transport, pubsub, rooms,
+> adaptive, and sync are out of scope here; a separate alignment effort covers
+> them.
 
 This document is the standing deletion ledger for iroh-live's media code: the
 per-module verdicts, staging, and risk register that the counterpart plans
 (`counterpart/codec-remove.md`, `counterpart/capture-remove.md`,
 `counterpart/render-adopt.md`) execute on the paired iroh-live `up/<name>`
-branches (`../branches.md`). It stops at the media boundary: rusty-codecs,
+branches (`branches.md`). It stops at the media boundary: rusty-codecs,
 rusty-capture, and the media modules of moq-media (the audio device layer, the
 file sources, the processing helpers). Everything about transport, pubsub,
-rooms, adaptive, and sync lives in the alignment ledger at
-`../align-to-moq/cut-plan.md`. Every replacement named here is on moq main,
-working tree `/home/bit/Code/rust/moq` at HEAD `3a3e0ea8`.
+rooms, adaptive, and sync is out of scope here and belongs to a separate
+alignment effort. Every replacement named here is on moq main, working tree
+`/home/bit/Code/rust/moq` at HEAD `3a3e0ea8`.
 
 It consolidates the verdicts of the comparisons; rows cite them with the
 shorthand codes: 1-code-map = `comparisons/iroh-live-code-map.md`,
@@ -115,7 +116,7 @@ LOC figures are from 1-code-map section 2.
 | platform/linux/x11.rs | 373 | upstream-ours (leaf pending) | portal-less X11 screen capture, which moq lacks entirely (their story is `Unsupported`); needs a small follow-up leaf after the Linux capture series | a leaf to be written | 4-compare sec 2 |
 | android stub (~34) | 34 | keep (stub) | nothing to move yet on either side; Android capture is future work beside `codec/android-mediacodec.md` | n/a | 4-compare sec 2 |
 
-### moq-media, media modules only (the rest is in `../align-to-moq/cut-plan.md`)
+### moq-media, media modules only (the alignment modules are out of scope here)
 
 | Module | LOC | Verdict | Replacement / leaf | Gate | Evidence |
 |---|---:|---|---|---|---|
@@ -128,9 +129,9 @@ LOC figures are from 1-code-map section 2.
 
 Sums are ledger-row estimates, cumulative, rounded; treat as +/-15%. Scenario A
 is adopting the next moq release as-is; Scenario B adds our upstream leaves
-being accepted and released. The alignment ledger's totals are in
-`../align-to-moq/cut-plan.md`; combined across both ledgers the totals are
-about 4,800 LOC (12% of the 41,564 core) for A and about 17,400 (42%) for B.
+being accepted and released. Combined with the separate alignment effort's cuts, the two together
+remove about 4,800 LOC (12% of the 41,564 core) on the release bump alone and
+about 17,400 (42%) with the upstream leaves accepted.
 
 | Crate | Scenario A | Scenario B |
 |---|---:|---:|
@@ -149,8 +150,8 @@ so the net saving is somewhat below the gross figures.
 
 ## 3. Ordering
 
-Stages are sequential per platform; the alignment ledger's stages (A0 to A2 in
-`../align-to-moq/cut-plan.md`) interleave with these where noted.
+Stages are sequential per platform; the separate alignment effort's stages
+interleave with these where its pubsub work depends on the codec adoption.
 
 **Stage M0: type convergence (local).**
 Adopt `moq_net::Timestamp` in place of `Duration` through format.rs and the

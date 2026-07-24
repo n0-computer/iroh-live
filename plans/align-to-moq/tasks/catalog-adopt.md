@@ -28,7 +28,7 @@ measured rather than asserted.
 
 ## Evidence
 
-- The resolved finding, verified against source: `../upstream/comparisons/pubsub.md`
+- The resolved finding, verified against source: `../../upstream/comparisons/pubsub.md`
   section 4 ("Current state on our side"), which quotes `catalog.rs:9-27` and
   states "the current code is exactly the recommended shape ... Nothing to cut
   here; 75 LOC is the floor," and names the prior audit
@@ -37,7 +37,7 @@ measured rather than asserted.
   whole module is `type Catalog = moq_mux::catalog::hang::Catalog<IrohLiveExt>`,
   `type CatalogConsumer = ...hang::Consumer<IrohLiveExt>`, and
   `struct IrohLiveExt { chat, user } impl CatalogExt`.
-- What remains to adopt: `../upstream/comparisons/pubsub.md` section 2
+- What remains to adopt: `../../upstream/comparisons/pubsub.md` section 2
   (the priming hack at `publish.rs:578-585`, and the moq-mux `Reserved`
   machinery as its principled replacement), section 4 ("Field-level items that
   matter to us": the `to_json` rename, `#[non_exhaustive]` construction,
@@ -47,7 +47,7 @@ measured rather than asserted.
   row: 75 LOC, verdict **keep**, "already the sanctioned `CatalogExt` shape; the
   floor." The related `publish.rs` row (verdict **merge**) names the priming hack
   "replaced by `Reserved` semantics" with prerequisite "release `Reserved`."
-- Chat and user placement: `../upstream/comparisons/pubsub.md` section 4
+- Chat and user placement: `../../upstream/comparisons/pubsub.md` section 4
   ("Where do chat and user belong?"), verdict (b) keep as a `CatalogExt`
   extension today, and section 8 (chat stays entirely ours).
 

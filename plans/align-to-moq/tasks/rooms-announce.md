@@ -34,10 +34,10 @@ and the public `Room` / `RoomHandle` API is unchanged.
   section 3.3, roaming and reconnect in section 3.4, multi-peer topologies in
   section 4, the token-scoping security argument in section 5, the risks in
   section 6, and the phases in section 7 (this task follows those phases).
-- `../upstream/comparisons/maps/moq-net-origin.md` sections 1, 2, 5, and 7 for the
+- `../../upstream/comparisons/maps/moq-net-origin.md` sections 1, 2, 5, and 7 for the
   Origin, announce, `Route`, unannounce-liveness, and token model, with per-commit
   moq citations.
-- `../upstream/comparisons/pubsub.md` section 4 for where display name, chat, and
+- `../../upstream/comparisons/pubsub.md` section 4 for where display name, chat, and
   user metadata belong (catalog `CatalogExt` extension versus room layer), and the
   moq-net 0.1.11 catalog-serialization gotcha that dropped chat and user
   extensions, which the metadata-move step must cover with tests.

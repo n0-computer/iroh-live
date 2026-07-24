@@ -1,12 +1,13 @@
 # capture-remove
 
 > Campaign: upstream | Kind: counterpart plan | Branch: iroh-live `up/<leaf>`
-> pair branches for rows tied to a moq leaf (see `../../branches.md`); the
+> pair branches for rows tied to a moq leaf (see `../branches.md`); the
 > adopt-theirs macOS and Windows cuts land with the release bump | Read
 > ../0-overview.md first.
 
-Depends on: the align campaign's pin bump to the moq release carrying the merged
-capture stack (`../../align-to-moq/0-overview.md`); `codec-remove.md` on the same
+Depends on: the pin bump to the moq release carrying the merged capture stack
+(a prerequisite iroh-live does separately from this campaign); `codec-remove.md`
+on the same
 platform (moq capture emits moq's frame model into moq's encoders, so codecs
 adopt first); and the platform verification gate R-g (`../cut-plan.md`) for macOS
 and Windows.

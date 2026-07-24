@@ -22,10 +22,9 @@ codec and capture evidence from that analysis lives in `../comparisons/`.
   `../capture`, and `../render` plans, but kept for its engagement strategy, the
   velocity gate, and the per-contribution size catalog.
 
-The iroh-live-side alignment work (the room-layer redesign and the iroh-live cut
+The iroh-live-side alignment work (the room-layer redesign and the alignment cut
 plan, which are about shrinking and improving iroh-live rather than contributing
-to moq) moved to `plans/align-to-moq/` on 2026-07-22; see that directory's
-overview.
+to moq) is a separate effort, tracked outside this campaign.
 
 For the codec and capture upstream campaign itself, start at `../0-overview.md`
 and `../comparisons/0-index.md`. The full history of the refactor analysis rounds,
