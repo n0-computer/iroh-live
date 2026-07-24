@@ -1120,3 +1120,37 @@ Shared cleanup (on the split base, inherited by both):
   has no dangling references.
 - Fixed align task plans' upstream comparison links that were one
   directory level short (../upstream -> ../../upstream from tasks/).
+
+## Round 9 (2026-07-23, upstream2: module-centric reorganization)
+
+Built plans/upstream2/, a module-centric rewrite of the upstream campaign,
+alongside the existing plans/upstream/ (kept for the loss-check diff):
+- prompt.md: consolidated how-to-work (prompt-base + upstream/prompt) into one
+  self-contained coordinator prompt.
+- overview.md: high-level summary + navigation hub + module index.
+- comparison.md: master table consolidating the 0-index capability matrix and
+  the DISPOSITION register; every module row links to its module doc + a
+  "Kept local, not upstreamed" completeness section.
+- zerocopy.md: elevated to top level (from comparisons/zerocopy.md) with a
+  prominent "decisive asset" framing; every doc references it.
+- base/: B1-B5 copied.
+- modules/: 29 per-capability docs, each leading with a VERDICT line (move /
+  apply improvements / use moq remove ours / remove-for-now). Written by 7
+  parallel agents from the old leaf plans + counterpart + comparison +
+  DISPOSITION; coordinator did structure, top-level docs, evidence copies,
+  link-rewriting, and the review/loss-check.
+- comparison/: media comparison docs + media maps copied, links rewritten to
+  the new layout (leaf->module, 0-overview->overview, zerocopy elevated).
+  pubsub + net-origin + room-layer maps excluded (align concern).
+- notes-unstructured/: staging-and-risks.md (M0/M1/M2 staging + risk register
+  R-a..R-g from the old cut-plan), coordination.md (moq-vaapi repo, licensing,
+  CI gating, semver, B4), transcode-and-fetch.md (the per-segment rate rule),
+  branches.md (branch registry), parity-ports.md (copied), analysis/ (copied
+  preserved history), README index.
+Loss-check: coverage confirmed complete (base, all leaf plans, counterpart,
+cut-plan staging+risks, DISPOSITION incl. kept-local completeness, comparisons,
+branches, analysis, coordination points 1-12 all mapped). Link-check: 0 broken
+real links except pre-existing dangling refs in the preserved analysis doc.
+After the loss-check passed, the old plans/upstream/ was deleted and upstream2
+renamed to plans/upstream/, so the module-centric layout is now the campaign.
+Nothing pushed.
