@@ -229,7 +229,7 @@ impl DebugOverlay {
                 painter.rect_filled(section_rect, 2.0, egui::Color32::from_white_alpha(30));
                 painter.line_segment(
                     [section_rect.left_bottom(), section_rect.right_bottom()],
-                    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(80)),
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(80)),
                 );
             }
             if response.clicked() {
@@ -252,7 +252,7 @@ impl DebugOverlay {
                         egui::pos2(sep_x, bar_rect.min.y + 3.0),
                         egui::pos2(sep_x, bar_rect.max.y - 3.0),
                     ],
-                    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(40)),
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(40)),
                 );
                 x += 12.0;
             }
@@ -334,7 +334,7 @@ impl DebugOverlay {
                 painter.rect_filled(section_rect, 2.0, egui::Color32::from_white_alpha(30));
                 painter.line_segment(
                     [section_rect.left_bottom(), section_rect.right_bottom()],
-                    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(80)),
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(80)),
                 );
             }
             if response.clicked() {
@@ -356,7 +356,7 @@ impl DebugOverlay {
                         egui::pos2(sep_x, bar_rect.min.y + 3.0),
                         egui::pos2(sep_x, bar_rect.max.y - 3.0),
                     ],
-                    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(40)),
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(40)),
                 );
                 x += 12.0;
             }
@@ -631,7 +631,7 @@ fn paint_sparkline(
         })
         .collect();
 
-    let stroke = egui::Stroke::new(1.0, color.linear_multiply(0.7));
+    let stroke = egui::Stroke::new(1.0_f32, color.linear_multiply(0.7));
     for pair in points.windows(2) {
         painter.line_segment([pair[0], pair[1]], stroke);
     }
@@ -721,7 +721,7 @@ fn paint_timeline_panel(
                 egui::pos2(x, rect.min.y),
                 egui::pos2(x, rect.max.y - AXIS_H),
             ],
-            egui::Stroke::new(1.0, COLOR_GRID),
+            egui::Stroke::new(1.0_f32, COLOR_GRID),
         );
     }
 
@@ -770,7 +770,7 @@ fn paint_timeline_panel(
                 let y2 = lat_rect.max.y - (l2 / max_lat) * h;
                 painter.line_segment(
                     [egui::pos2(x1, y1), egui::pos2(x2, y2)],
-                    egui::Stroke::new(1.5, latency_color((l1 + l2) / 2.0)),
+                    egui::Stroke::new(1.5_f32, latency_color((l1 + l2) / 2.0)),
                 );
             }
             if let Some((_, lat)) = latencies.last() {
@@ -838,7 +838,7 @@ fn paint_timeline_panel(
             if entry.is_keyframe {
                 painter.line_segment(
                     [r.left_top(), r.left_bottom()],
-                    egui::Stroke::new(1.0, egui::Color32::WHITE),
+                    egui::Stroke::new(1.0_f32, egui::Color32::WHITE),
                 );
             }
         }
@@ -892,7 +892,7 @@ fn paint_timeline_panel(
                 egui::pos2(sync_rect.min.x, zero_y),
                 egui::pos2(sync_rect.max.x, zero_y),
             ],
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 60, 60)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(60, 60, 60)),
         );
 
         let g = painter.layout_no_wrap("A/V".to_string(), font.clone(), COLOR_GRAY);
@@ -939,7 +939,7 @@ fn paint_timeline_panel(
                 };
                 painter.line_segment(
                     [egui::pos2(x1, y1), egui::pos2(x2, y2)],
-                    egui::Stroke::new(1.0, color),
+                    egui::Stroke::new(1.0_f32, color),
                 );
             }
             if let Some((_, offset)) = sync_points.last() {
@@ -992,7 +992,7 @@ fn paint_timeline_panel(
                 } else {
                     COLOR_RED
                 };
-                painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5, color));
+                painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5_f32, color));
             }
         }
         let buf_ms = timing.audio_buf_ms.current();
@@ -1031,7 +1031,7 @@ fn paint_timeline_panel(
                 })
                 .collect();
             for pair in points.windows(2) {
-                painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5, COLOR_CYAN));
+                painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5_f32, COLOR_CYAN));
             }
         }
         let g = painter.layout_no_wrap(

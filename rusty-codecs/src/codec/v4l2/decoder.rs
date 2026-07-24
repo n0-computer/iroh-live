@@ -338,7 +338,7 @@ fn decoder_thread(
 }
 
 /// YU12 (I420) fourcc: 'Y','U','1','2' = 0x32315559
-const PIXFMT_YU12: u32 = u32::from_le_bytes([b'Y', b'U', b'1', b'2']);
+const PIXFMT_YU12: u32 = u32::from_le_bytes(*b"YU12");
 
 /// Extracts a decoded frame from a dequeued CAPTURE buffer as NV12.
 ///
