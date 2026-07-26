@@ -4,6 +4,9 @@
 //! - `gles` feature: [`gles::GlesRenderer`] — GLES2 fullscreen textured triangle.
 //! - `dmabuf-import` feature: zero-copy Vulkan import from DMA-BUF.
 
+#[cfg(all(target_os = "linux", feature = "vaapi"))]
+pub mod vpp_retiler;
+
 #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
 pub mod dmabuf_import;
 

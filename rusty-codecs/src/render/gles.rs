@@ -59,13 +59,58 @@ void main() {
     gl_FragColor = vec4(clamp(r, 0.0, 1.0), clamp(g, 0.0, 1.0), clamp(b, 0.0, 1.0), 1.0);
 }";
 
+/// BT.601 limited-range NV12→RGBA conversion for RG8 UV texture.
+///
+/// Same color math as [`NV12_FRAG_SRC`], but reads UV from `.r`/`.g` instead
+/// of `.r`/`.a`. Used when the UV plane comes from DMA-BUF import as
+/// `DRM_FORMAT_GR88`, which EGL maps to `GL_RG8` (not `LUMINANCE_ALPHA`).
+const NV12_RG_FRAG_SRC: &str = "\
+#version 100
+precision mediump float;
+varying vec2 v_uv;
+uniform sampler2D u_y_tex;
+uniform sampler2D u_uv_tex;
+void main() {
+    float y_raw = texture2D(u_y_tex, v_uv).r;
+    float u_raw = texture2D(u_uv_tex, v_uv).r;
+    float v_raw = texture2D(u_uv_tex, v_uv).g;
+    float y = (y_raw - 16.0 / 255.0) * (255.0 / 219.0);
+    float u = (u_raw - 16.0 / 255.0) * (255.0 / 224.0) - 0.5;
+    float v = (v_raw - 16.0 / 255.0) * (255.0 / 224.0) - 0.5;
+    float r = y + 1.402 * v;
+    float g = y - 0.344136 * u - 0.714136 * v;
+    float b = y + 1.772 * u;
+    gl_FragColor = vec4(clamp(r, 0.0, 1.0), clamp(g, 0.0, 1.0), clamp(b, 0.0, 1.0), 1.0);
+}";
+
 // ── GlesRenderer ───────────────────────────────────────────────────
 
 /// Tracks which upload path was last used, so `draw` picks the right program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActiveMode {
     Rgba,
+    /// CPU upload NV12 — UV in `LUMINANCE_ALPHA` (U in `.r`, V in `.a`).
     Nv12,
+    /// DMA-BUF import NV12 — UV in `RG8` (U in `.r`, V in `.g`).
+    Nv12Rg,
+}
+
+/// Describes which render path was used for the last frame upload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, derive_more::Display)]
+pub enum GlesRenderPath {
+    /// No frame uploaded yet.
+    #[default]
+    #[display("none")]
+    None,
+    /// CPU RGBA packed upload.
+    #[display("cpu-rgba")]
+    CpuRgba,
+    /// CPU NV12 plane upload + GPU shader conversion.
+    #[display("gpu-nv12")]
+    CpuNv12,
+    /// Zero-copy DMA-BUF EGL import (Linux).
+    #[display("dmabuf-zerocopy")]
+    DmaBuf,
 }
 
 /// GLES2 renderer with RGBA, NV12, and zero-copy DMA-BUF upload paths.
@@ -85,9 +130,12 @@ pub struct GlesRenderer {
     // RGBA path.
     rgba_program: glow::Program,
     rgba_texture: glow::Texture,
-    // NV12 path.
+    // NV12 path (LUMINANCE_ALPHA UV — CPU upload).
     nv12_program: glow::Program,
     nv12_a_pos_loc: u32,
+    // NV12 path (RG8 UV — DMA-BUF import).
+    nv12_rg_program: glow::Program,
+    nv12_rg_a_pos_loc: u32,
     y_texture: glow::Texture,
     uv_texture: glow::Texture,
     // State tracking.
@@ -96,6 +144,8 @@ pub struct GlesRenderer {
     tex_height: u32,
     uv_tex_width: u32,
     uv_tex_height: u32,
+    /// Which render path was used for the last frame.
+    last_render_path: GlesRenderPath,
     // DMA-BUF zero-copy import (Linux only).
     #[cfg(all(target_os = "linux", feature = "gles-dmabuf"))]
     dmabuf_importer: Option<super::gles_dmabuf::GlesDmaBufImporter>,
@@ -153,11 +203,10 @@ impl GlesRenderer {
         let a_pos_loc = unsafe { gl.get_attrib_location(rgba_program, "a_pos") }
             .context("a_pos not found in RGBA program")?;
 
-        // NV12 program.
+        // NV12 program (LUMINANCE_ALPHA UV — CPU upload).
         let nv12_fs = compile_shader(&gl, glow::FRAGMENT_SHADER, NV12_FRAG_SRC)?;
         let nv12_program = link_program(&gl, vs, nv12_fs)?;
         unsafe { gl.delete_shader(nv12_fs) };
-        unsafe { gl.delete_shader(vs) };
         let nv12_a_pos_loc = unsafe { gl.get_attrib_location(nv12_program, "a_pos") }
             .context("a_pos not found in NV12 program")?;
 
@@ -167,6 +216,22 @@ impl GlesRenderer {
             unsafe { gl.uniform_1_i32(Some(&loc), 0) };
         }
         if let Some(loc) = unsafe { gl.get_uniform_location(nv12_program, "u_uv_tex") } {
+            unsafe { gl.uniform_1_i32(Some(&loc), 1) };
+        }
+
+        // NV12 RG program (RG8 UV — DMA-BUF import).
+        let nv12_rg_fs = compile_shader(&gl, glow::FRAGMENT_SHADER, NV12_RG_FRAG_SRC)?;
+        let nv12_rg_program = link_program(&gl, vs, nv12_rg_fs)?;
+        unsafe { gl.delete_shader(nv12_rg_fs) };
+        unsafe { gl.delete_shader(vs) };
+        let nv12_rg_a_pos_loc = unsafe { gl.get_attrib_location(nv12_rg_program, "a_pos") }
+            .context("a_pos not found in NV12 RG program")?;
+
+        unsafe { gl.use_program(Some(nv12_rg_program)) };
+        if let Some(loc) = unsafe { gl.get_uniform_location(nv12_rg_program, "u_y_tex") } {
+            unsafe { gl.uniform_1_i32(Some(&loc), 0) };
+        }
+        if let Some(loc) = unsafe { gl.get_uniform_location(nv12_rg_program, "u_uv_tex") } {
             unsafe { gl.uniform_1_i32(Some(&loc), 1) };
         }
 
@@ -204,6 +269,8 @@ impl GlesRenderer {
             rgba_texture,
             nv12_program,
             nv12_a_pos_loc,
+            nv12_rg_program,
+            nv12_rg_a_pos_loc,
             y_texture,
             uv_texture,
             active: ActiveMode::Rgba,
@@ -211,6 +278,7 @@ impl GlesRenderer {
             tex_height: 0,
             uv_tex_width: 0,
             uv_tex_height: 0,
+            last_render_path: GlesRenderPath::None,
             #[cfg(all(target_os = "linux", feature = "gles-dmabuf"))]
             dmabuf_importer,
         })
@@ -322,6 +390,11 @@ impl GlesRenderer {
         }
     }
 
+    /// Returns which render path was used for the last uploaded frame.
+    pub fn last_render_path(&self) -> GlesRenderPath {
+        self.last_render_path
+    }
+
     /// Uploads a [`VideoFrame`], choosing the best available path.
     ///
     /// Priority: DMA-BUF zero-copy (if `gles-dmabuf` feature and GPU frame)
@@ -340,9 +413,10 @@ impl GlesRenderer {
             match unsafe { importer.import_nv12(&self.gl, info, self.y_texture, self.uv_texture) } {
                 Ok((w, h)) => {
                     importer.record_success();
-                    self.active = ActiveMode::Nv12;
+                    self.active = ActiveMode::Nv12Rg;
                     self.tex_width = w;
                     self.tex_height = h;
+                    self.set_render_path(GlesRenderPath::DmaBuf);
                     return;
                 }
                 Err(e) => {
@@ -366,12 +440,22 @@ impl GlesRenderer {
                         planes.height,
                     )
                 };
+                self.set_render_path(GlesRenderPath::CpuNv12);
             }
             _ => {
                 let rgba = frame.rgba_image();
                 // SAFETY: caller guarantees GL context is current.
                 unsafe { self.upload_rgba(rgba.as_raw(), rgba.width(), rgba.height()) };
+                self.set_render_path(GlesRenderPath::CpuRgba);
             }
+        }
+    }
+
+    /// Updates the render path and logs on first change.
+    fn set_render_path(&mut self, path: GlesRenderPath) {
+        if self.last_render_path != path {
+            tracing::info!(path = %path, prev = %self.last_render_path, "GLES render path changed");
+            self.last_render_path = path;
         }
     }
 
@@ -400,17 +484,16 @@ impl GlesRenderer {
                     self.gl
                         .bind_texture(glow::TEXTURE_2D, Some(self.rgba_texture));
                 }
-                ActiveMode::Nv12 => {
-                    self.gl.use_program(Some(self.nv12_program));
-                    self.gl.vertex_attrib_pointer_f32(
-                        self.nv12_a_pos_loc,
-                        2,
-                        glow::FLOAT,
-                        false,
-                        0,
-                        0,
-                    );
-                    self.gl.enable_vertex_attrib_array(self.nv12_a_pos_loc);
+                ActiveMode::Nv12 | ActiveMode::Nv12Rg => {
+                    let (program, a_pos) = if self.active == ActiveMode::Nv12Rg {
+                        (self.nv12_rg_program, self.nv12_rg_a_pos_loc)
+                    } else {
+                        (self.nv12_program, self.nv12_a_pos_loc)
+                    };
+                    self.gl.use_program(Some(program));
+                    self.gl
+                        .vertex_attrib_pointer_f32(a_pos, 2, glow::FLOAT, false, 0, 0);
+                    self.gl.enable_vertex_attrib_array(a_pos);
                     self.gl.active_texture(glow::TEXTURE0);
                     self.gl.bind_texture(glow::TEXTURE_2D, Some(self.y_texture));
                     self.gl.active_texture(glow::TEXTURE1);
@@ -424,6 +507,7 @@ impl GlesRenderer {
             match self.active {
                 ActiveMode::Rgba => self.gl.disable_vertex_attrib_array(self.a_pos_loc),
                 ActiveMode::Nv12 => self.gl.disable_vertex_attrib_array(self.nv12_a_pos_loc),
+                ActiveMode::Nv12Rg => self.gl.disable_vertex_attrib_array(self.nv12_rg_a_pos_loc),
             }
         }
     }
@@ -461,6 +545,7 @@ impl Drop for GlesRenderer {
             self.gl.delete_texture(self.uv_texture);
             self.gl.delete_program(self.rgba_program);
             self.gl.delete_program(self.nv12_program);
+            self.gl.delete_program(self.nv12_rg_program);
             self.gl.delete_buffer(self.vbo);
         }
     }

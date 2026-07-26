@@ -7,6 +7,7 @@ members = [
     "moq-media-android",
     "moq-media-dioxus",
     "moq-media-egui",
+    "moq-media-gtk",
     "rusty-capture",
     "rusty-codecs",
     "demos/android/rust",
