@@ -7,6 +7,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  RUSTC_WRAPPER: "sccache"
 
 jobs:
   build:
@@ -20,31 +21,24 @@ jobs:
       matrix:
         include:
           - name: linux-amd64
-            os: ubuntu-latest
+            os: [self-hosted, linux, X64]
             artifact: irl-linux-amd64
           - name: macos-aarch64
-            os: macos-14
+            os: [self-hosted, macOS, ARM64]
             artifact: irl-macos-aarch64
 
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-          key: release-${{ matrix.name }}
+      - uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Install system deps (Linux)
-        if: startsWith(matrix.os, 'ubuntu')
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends \
             libasound2-dev libpipewire-0.3-dev libjack-jackd2-dev libspa-0.2-dev libclang-dev \
             libegl-dev libgbm-dev libdrm-dev libfontconfig-dev \
-            libva-dev nasm
-
-      - name: Install system deps (macOS)
-        if: startsWith(matrix.os, 'macos')
-        run: brew install libtool automake
+            libva-dev nasm 
 
       - name: Build release binary
         run: cargo build --locked --profile release-dist -p iroh-live-cli
