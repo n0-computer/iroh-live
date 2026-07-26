@@ -68,12 +68,23 @@ impl VideoSource for CameraFrameSource {
     }
 
     fn start(&mut self) -> Result<()> {
+        // Drop any frame left over from a previous session. The source is a
+        // process-lifetime singleton on Android, so a stale frame from a prior
+        // call would otherwise be the first frame the new pipeline consumes —
+        // anchoring downstream PTS pacing (SharedVideoSource) on an old
+        // timestamp and throttling the whole encode path to ~1 fps.
+        self.pending_frame = None;
         self.started = true;
         Ok(())
     }
 
     fn stop(&mut self) -> Result<()> {
         self.started = false;
+        // Clear the buffered frame so it cannot leak into the next session.
+        // The camera callback may still push a few frames after stop() (the
+        // app-side capture stops asynchronously), which is why start() also
+        // clears defensively.
+        self.pending_frame = None;
         Ok(())
     }
 }
@@ -103,12 +114,10 @@ impl VideoSource for SharedCameraSource {
     }
 
     fn start(&mut self) -> Result<()> {
-        self.inner.lock().expect("poisoned").started = true;
-        Ok(())
+        self.inner.lock().expect("poisoned").start()
     }
 
     fn stop(&mut self) -> Result<()> {
-        self.inner.lock().expect("poisoned").started = false;
-        Ok(())
+        self.inner.lock().expect("poisoned").stop()
     }
 }
