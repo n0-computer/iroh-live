@@ -23,7 +23,7 @@ state. Each session supports both publishing local broadcasts and
 subscribing to remote ones.
 
 `MoqProtocolHandler` implements iroh's `ProtocolHandler` trait, registered
-on a `Router` with the ALPN `moq-lite-03`. When the endpoint accepts an
+on a `Router` with the ALPN `moq-lite-04`. When the endpoint accepts an
 incoming connection with this ALPN, the handler completes the MoQ
 handshake and delivers the session to the actor.
 

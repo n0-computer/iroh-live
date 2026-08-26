@@ -36,4 +36,4 @@ let mut session = moq.connect(remote_addr).await?;
 let consumer = session.subscribe("my-stream").await?;
 ```
 
-The ALPN is `moq-lite-03`, matching the moq-lite protocol version.
+The ALPN is `moq-lite-04`, matching the moq-lite protocol version.
