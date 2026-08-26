@@ -63,10 +63,6 @@ irl room <TICKET>
 
 ## Using iroh-live in Rust
 
-> **Note**: Right now iroh-live uses unreleased versions of several crates.
-> Downstream users should copy the `[patch.crates-io]` section of [Cargo.toml](Cargo.toml)
-> for now.
-
 The `iroh-live` crate provides the high-level API. A minimal publisher that
 captures camera and microphone, encodes them, and prints a ticket:
 
