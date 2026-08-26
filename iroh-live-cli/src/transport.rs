@@ -6,7 +6,7 @@ use iroh_live::{
     rooms::{Room, RoomTicket},
     ticket::LiveTicket,
 };
-use moq_lite::BroadcastProducer;
+use moq_lite::broadcast::Producer as BroadcastProducer;
 use tracing::info;
 
 use crate::args::TransportArgs;
@@ -81,7 +81,7 @@ pub async fn publish_producer(
 async fn push_to_relay(
     live: &Live,
     name: &str,
-    consumer: moq_lite::BroadcastConsumer,
+    consumer: moq_lite::broadcast::Consumer,
     relay_addr: &str,
 ) -> anyhow::Result<()> {
     let id: iroh::EndpointId = relay_addr

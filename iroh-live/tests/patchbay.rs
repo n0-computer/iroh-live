@@ -1109,6 +1109,7 @@ async fn adaptive_downgrade_upgrade_under_real_loss() {
     let decode_config = patchbay_decode();
     let mut track = remote
         .video_with(VideoOptions::default().playback(decode_config.clone()))
+        .await
         .expect("video track");
     track
         .enable_adaptation(remote.clone(), signals_rx, config, decode_config)
@@ -1516,7 +1517,9 @@ async fn video_ready_with_patchbay_decode(
     remote: &moq_media::subscribe::RemoteBroadcast,
 ) -> std::result::Result<moq_media::subscribe::VideoTrack, n0_error::AnyError> {
     remote.ready().await;
-    remote.video_with(VideoOptions::default().playback(patchbay_decode()))
+    remote
+        .video_with(VideoOptions::default().playback(patchbay_decode()))
+        .await
 }
 
 async fn wait_for_audio_beeps(
@@ -1606,6 +1609,7 @@ async fn av_sync_at_latency(latency_ms: u32, jitter_ms: u32) {
         fixture
             .remote
             .video_with(VideoOptions::default().playback(patchbay_decode()))
+            .await
     })
     .await
     .expect("video timeout")
@@ -1736,6 +1740,7 @@ async fn av_sync_recovery_after_blackout() {
         fixture
             .remote
             .video_with(VideoOptions::default().playback(patchbay_decode()))
+            .await
     })
     .await
     .expect("video timeout")
@@ -1887,6 +1892,7 @@ async fn av_sync_latency_spike_recovery() {
         fixture
             .remote
             .video_with(VideoOptions::default().playback(patchbay_decode()))
+            .await
     })
     .await
     .expect("video timeout")
@@ -2037,6 +2043,7 @@ async fn av_sync_sustained_loss() {
         fixture
             .remote
             .video_with(VideoOptions::default().playback(patchbay_decode()))
+            .await
     })
     .await
     .expect("video timeout")

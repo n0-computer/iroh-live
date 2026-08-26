@@ -13,7 +13,7 @@ use std::{
 };
 
 use hang::catalog::{AudioConfig, VideoConfig};
-use moq_lite::{BroadcastConsumer, Track};
+use moq_lite::{broadcast::Consumer as BroadcastConsumer, track::Subscription};
 use n0_error::{Result, StackResultExt, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
 use n0_watcher::{Watchable, Watcher};
@@ -334,8 +334,11 @@ impl RemoteBroadcast {
 
         let (catalog_watchable, catalog_task) = {
             let track = broadcast
-                .subscribe_track(&hang::catalog::Catalog::default_track())
-                .std_context("missing catalog track")?;
+                .track(hang::catalog::Catalog::DEFAULT_NAME)
+                .std_context("missing catalog track")?
+                .subscribe(hang::catalog::Catalog::default_subscription())
+                .await
+                .std_context("failed to subscribe to catalog track")?;
             debug!("catalog track subscribed");
             let mut catalog_consumer = CatalogConsumer::new(track);
             let initial_catalog = catalog_consumer
@@ -461,8 +464,11 @@ impl RemoteBroadcast {
     /// Returns `None` if the catalog does not advertise a chat track.
     pub fn chat(&self) -> Option<crate::chat::ChatSubscriber> {
         let track_info = self.catalog().chat.as_ref()?.message.as_ref()?.clone();
-        let consumer = self.broadcast.subscribe_track(&track_info).ok()?;
-        Some(crate::chat::ChatSubscriber::new(consumer))
+        let consumer = self.broadcast.track(&track_info.name).ok()?;
+        Some(crate::chat::ChatSubscriber::new(
+            consumer,
+            track_info.priority,
+        ))
     }
 
     /// Returns the user metadata from the catalog, if set by the publisher.
@@ -520,17 +526,18 @@ impl RemoteBroadcast {
     }
 
     /// Subscribes to video with explicit config and a custom decoder.
-    pub fn video_with_decoder<D: VideoDecoder>(
+    pub async fn video_with_decoder<D: VideoDecoder>(
         &self,
         playback_config: &DecodeConfig,
         quality: Quality,
     ) -> Result<VideoTrack> {
         let track_name = self.catalog().select_video_rendition(quality)?;
         self.video_rendition::<D>(playback_config, &track_name)
+            .await
     }
 
     /// Subscribes to a specific video rendition with a custom decoder.
-    pub fn video_rendition<D: VideoDecoder>(
+    pub async fn video_rendition<D: VideoDecoder>(
         &self,
         playback_config: &DecodeConfig,
         track_name: &str,
@@ -549,10 +556,10 @@ impl RemoteBroadcast {
         );
         let track_consumer = self
             .broadcast
-            .subscribe_track(&Track {
-                name: track_name.to_string(),
-                priority: VIDEO_PRIORITY,
-            })
+            .track(track_name)
+            .anyerr()?
+            .subscribe(Subscription::default().with_priority(VIDEO_PRIORITY))
+            .await
             .anyerr()?;
         tracing::debug!(track = track_name, "track subscription created");
         let consumer =
@@ -589,10 +596,10 @@ impl RemoteBroadcast {
         let config = audio.renditions.get(name).context("rendition not found")?;
         let track = self
             .broadcast
-            .subscribe_track(&Track {
-                name: name.to_string(),
-                priority: AUDIO_PRIORITY,
-            })
+            .track(name)
+            .anyerr()?
+            .subscribe(Subscription::default().with_priority(AUDIO_PRIORITY))
+            .await
             .anyerr()?;
         let consumer = OrderedConsumer::new(track, moq_mux::catalog::hang::Container::Legacy)
             .with_latency(max_latency);
@@ -611,8 +618,8 @@ impl RemoteBroadcast {
     /// Uses dynamic decoder dispatch based on the codec in the catalog.
     /// For explicit decoder selection, use [`video_with_decoder`](Self::video_with_decoder).
     #[cfg(any_video_codec)]
-    pub fn video(&self) -> Result<VideoTrack> {
-        self.video_with(Default::default())
+    pub async fn video(&self) -> Result<VideoTrack> {
+        self.video_with(Default::default()).await
     }
 
     /// Subscribes to the best-quality audio rendition.
@@ -626,14 +633,17 @@ impl RemoteBroadcast {
 
     /// Subscribes to video with options (non-generic, uses dynamic decoder dispatch).
     #[cfg(any_video_codec)]
-    pub fn video_with(&self, opts: VideoOptions) -> Result<VideoTrack> {
+    pub async fn video_with(&self, opts: VideoOptions) -> Result<VideoTrack> {
         use crate::codec::DynamicVideoDecoder;
         let decode_config = opts.decode_config();
         if let Some(rendition) = opts.target.as_ref().and_then(|t| t.rendition.as_ref()) {
-            return self.video_rendition::<DynamicVideoDecoder>(&decode_config, rendition);
+            return self
+                .video_rendition::<DynamicVideoDecoder>(&decode_config, rendition)
+                .await;
         }
         let quality = opts.resolve_quality();
         self.video_with_decoder::<DynamicVideoDecoder>(&decode_config, quality)
+            .await
     }
 
     /// Subscribes to audio with options (non-generic, uses dynamic decoder dispatch).
@@ -687,7 +697,7 @@ impl RemoteBroadcast {
     #[cfg(any_video_codec)]
     pub async fn video_ready(&self) -> Result<VideoTrack> {
         self.wait_for_video().await;
-        self.video()
+        self.video().await
     }
 
     /// Waits for audio renditions to appear, then subscribes to the best quality.
@@ -729,7 +739,7 @@ impl RemoteBroadcast {
     /// for reading encoded packets without decoding.
     ///
     /// Useful for recording or relaying encoded media directly.
-    pub fn raw_video_track(
+    pub async fn raw_video_track(
         &self,
         track_name: &str,
     ) -> Result<(MoqPacketSource, hang::catalog::VideoConfig)> {
@@ -742,10 +752,10 @@ impl RemoteBroadcast {
             .clone();
         let track_consumer = self
             .broadcast
-            .subscribe_track(&Track {
-                name: track_name.to_string(),
-                priority: VIDEO_PRIORITY,
-            })
+            .track(track_name)
+            .anyerr()?
+            .subscribe(Subscription::default().with_priority(VIDEO_PRIORITY))
+            .await
             .anyerr()?;
         let consumer =
             OrderedConsumer::new(track_consumer, moq_mux::catalog::hang::Container::Legacy)
@@ -757,7 +767,7 @@ impl RemoteBroadcast {
     /// for reading encoded packets without decoding.
     ///
     /// Useful for recording or relaying encoded media directly.
-    pub fn raw_audio_track(
+    pub async fn raw_audio_track(
         &self,
         track_name: &str,
     ) -> Result<(MoqPacketSource, hang::catalog::AudioConfig)> {
@@ -770,10 +780,10 @@ impl RemoteBroadcast {
             .clone();
         let track_consumer = self
             .broadcast
-            .subscribe_track(&Track {
-                name: track_name.to_string(),
-                priority: AUDIO_PRIORITY,
-            })
+            .track(track_name)
+            .anyerr()?
+            .subscribe(Subscription::default().with_priority(AUDIO_PRIORITY))
+            .await
             .anyerr()?;
         let consumer =
             OrderedConsumer::new(track_consumer, moq_mux::catalog::hang::Container::Legacy)
@@ -1262,12 +1272,14 @@ impl MediaTracks {
             .catalog()
             .select_video_rendition(playback_config.quality)
             .ok();
-        let video = track_name.and_then(|name| {
-            broadcast
+        let video = match track_name {
+            Some(name) => broadcast
                 .video_rendition::<D::Video>(&playback_config.decode_config(), &name)
+                .await
                 .inspect_err(|err| tracing::warn!("no video track: {err}"))
-                .ok()
-        });
+                .ok(),
+            None => None,
+        };
         Ok(Self {
             broadcast,
             audio,
@@ -1352,7 +1364,9 @@ async fn adaptation_task_v2(
                     &decode_config,
                     &ranked[idx].name,
                     &frame_sender,
-                ) {
+                )
+                .await
+                {
                     Ok(handle) => {
                         current_idx = idx;
                         selected_rendition.set(ranked[idx].name.clone()).ok();
@@ -1412,7 +1426,9 @@ async fn adaptation_task_v2(
                     &decode_config,
                     &ranked[target_idx].name,
                     &frame_sender,
-                ) {
+                )
+                .await
+                {
                     Ok(handle) => {
                         current_idx = target_idx;
                         timers.last_switch_failure = None;
@@ -1438,7 +1454,9 @@ async fn adaptation_task_v2(
                     &decode_config,
                     &ranked[target_idx].name,
                     &frame_sender,
-                ) {
+                )
+                .await
+                {
                     Ok(handle) => {
                         current_idx = target_idx;
                         timers.last_switch_failure = None;
@@ -1471,7 +1489,9 @@ async fn adaptation_task_v2(
                     &decode_config,
                     &ranked[probe_idx].name,
                     &frame_sender,
-                ) {
+                )
+                .await
+                {
                     Ok(handle) => {
                         let baseline = sigs.congestion_events;
                         timers.probe_congestion_baseline = Some(baseline);
@@ -1494,7 +1514,7 @@ async fn adaptation_task_v2(
 
 /// Creates a new decoder pipeline that writes to the given frame sender.
 #[cfg(any_video_codec)]
-fn switch_rendition_v2(
+async fn switch_rendition_v2(
     broadcast: &RemoteBroadcast,
     decode_config: &DecodeConfig,
     rendition_name: &str,
@@ -1511,10 +1531,10 @@ fn switch_rendition_v2(
         .context("rendition not found")?;
     let track_consumer = broadcast
         .broadcast
-        .subscribe_track(&moq_lite::Track {
-            name: rendition_name.to_string(),
-            priority: VIDEO_PRIORITY,
-        })
+        .track(rendition_name)
+        .anyerr()?
+        .subscribe(Subscription::default().with_priority(VIDEO_PRIORITY))
+        .await
         .anyerr()?;
     let consumer = OrderedConsumer::new(track_consumer, moq_mux::catalog::hang::Container::Legacy)
         .with_latency(max_latency);
@@ -1532,13 +1552,13 @@ fn switch_rendition_v2(
     )?)
 }
 
-/// Creates a subscribe-side preview from any [`BroadcastConsumer`](moq_lite::BroadcastConsumer).
+/// Creates a subscribe-side preview from any [`BroadcastConsumer`](moq_lite::broadcast::Consumer).
 ///
 /// Subscribes to the consumer's catalog, spawns decoders, and returns media
 /// tracks suitable for rendering. This is the building block for previewing
 /// both live capture and file import output.
 pub async fn subscribe_preview_from_consumer<D: Decoders>(
-    consumer: moq_lite::BroadcastConsumer,
+    consumer: moq_lite::broadcast::Consumer,
     audio_backend: &dyn crate::traits::AudioStreamFactory,
     config: crate::format::PlaybackConfig,
 ) -> Result<MediaTracks> {
@@ -1553,7 +1573,7 @@ pub async fn subscribe_preview_from_consumer<D: Decoders>(
 /// Non-generic convenience over [`subscribe_preview_from_consumer`] that uses
 /// [`DefaultDecoders`](crate::codec::DefaultDecoders).
 pub async fn subscribe_preview(
-    consumer: moq_lite::BroadcastConsumer,
+    consumer: moq_lite::broadcast::Consumer,
     audio_backend: &dyn crate::traits::AudioStreamFactory,
     config: crate::format::PlaybackConfig,
 ) -> Result<MediaTracks> {

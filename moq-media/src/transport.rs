@@ -1,7 +1,7 @@
 use std::{fmt, future::Future, time::Duration};
 
 use anyhow::Result;
-use moq_lite::{Timescale, TrackProducer};
+use moq_lite::{Timestamp, track::Producer as TrackProducer};
 use tokio::sync::mpsc;
 use tracing::trace;
 
@@ -107,7 +107,10 @@ impl fmt::Debug for MoqPacketSink {
 impl PacketSink for MoqPacketSink {
     fn write(&mut self, packet: EncodedFrame) -> Result<()> {
         let frame = moq_mux::container::Frame {
-            timestamp: Timescale::from_millis_unchecked(packet.timestamp.as_millis() as u64),
+            timestamp: Timestamp::from_millis(packet.timestamp.as_millis() as u64)
+                .map_err(|err| anyhow::anyhow!("frame timestamp out of range: {err}"))?,
+            // The encoder pipeline has no per-sample duration; only CMAF carries one.
+            duration: None,
             payload: packet.payload,
             keyframe: packet.is_keyframe,
         };

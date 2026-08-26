@@ -248,7 +248,7 @@ async fn run_session(config: RunConfig) -> n0_error::Result {
 
                     // Record video if available.
                     if let Ok(video_name) = catalog.select_video_rendition(Quality::Highest) {
-                        match broadcast.raw_video_track(&video_name) {
+                        match broadcast.raw_video_track(&video_name).await {
                             Ok((source, config)) => {
                                 let ext = video_codec_extension(&config.codec);
                                 let path = base.with_extension(ext);
@@ -268,7 +268,7 @@ async fn run_session(config: RunConfig) -> n0_error::Result {
 
                     // Record audio if available.
                     if let Ok(audio_name) = catalog.select_audio_rendition(Quality::Highest) {
-                        match broadcast.raw_audio_track(&audio_name) {
+                        match broadcast.raw_audio_track(&audio_name).await {
                             Ok((source, config)) => {
                                 let ext = audio_codec_extension(&config.codec);
                                 let path = base.with_extension(ext);

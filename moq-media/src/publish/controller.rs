@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use moq_lite::BroadcastProducer;
+use moq_lite::broadcast::Producer as BroadcastProducer;
 use n0_error::{AnyError, Result};
 use n0_watcher::{Direct, Watchable};
 use tracing::info;

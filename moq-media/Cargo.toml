@@ -13,7 +13,7 @@ workspace = true
 [dependencies]
 anyhow = "1.0.100"
 derive_more = { version = "2.0.1", features = ["display", "debug", "eq", "deref"] }
-cpal = "0.18.1"
+cpal = "0.18.2"
 fixed-resample = { version = "0.9", features = ["resampler"] }
 ringbuf = "0.4"
 hang = { workspace = true }

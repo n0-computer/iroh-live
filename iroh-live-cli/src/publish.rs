@@ -8,7 +8,7 @@
 //! into a room, `--no-serve` disables incoming connections.
 
 use iroh_live::media::publish::LocalBroadcast;
-use moq_lite::{Broadcast, BroadcastProducer};
+use moq_lite::broadcast::{Info as Broadcast, Producer as BroadcastProducer};
 
 use crate::{
     args::PublishArgs,

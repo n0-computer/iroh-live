@@ -269,7 +269,7 @@ async fn adaptive_rendition_switching() {
     };
 
     // Create a regular VideoTrack and enable adaptation on it.
-    let mut track = remote.video().expect("failed to create video track");
+    let mut track = remote.video().await.expect("failed to create video track");
     track
         .enable_adaptation(remote.clone(), signals_rx, config, DecodeConfig::default())
         .expect("failed to enable adaptation");
@@ -422,6 +422,7 @@ async fn call_dial_accept() {
     let mut caller_video = caller_call
         .remote()
         .video()
+        .await
         .expect("caller: failed to create video track");
     let mut prev_ts = None;
     for i in 0..3 {
@@ -446,6 +447,7 @@ async fn call_dial_accept() {
     let mut callee_video = callee_call
         .remote()
         .video()
+        .await
         .expect("callee: failed to create video track");
     let mut prev_ts = None;
     for i in 0..3 {

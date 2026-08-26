@@ -10,7 +10,7 @@ use iroh::{EndpointId, SecretKey};
 use iroh_gossip::Gossip;
 use iroh_moq::MoqSession;
 use iroh_smol_kv::{ExpiryConfig, Filter, SignedValue, Subscribe, SubscribeMode, WriteScope};
-use moq_lite::BroadcastProducer;
+use moq_lite::broadcast::Producer as BroadcastProducer;
 use moq_media::{chat::ChatMessage, subscribe::RemoteBroadcast};
 use n0_error::{Result, StackResultExt, StdResultExt, anyerr};
 use n0_future::{FuturesUnordered, StreamExt, task::AbortOnDropHandle};

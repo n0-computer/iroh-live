@@ -29,7 +29,7 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Creates a broadcast and consumer pair. The consumer is immediately usable
 /// because `LocalBroadcast::new()` registers its dynamic producer synchronously.
-fn setup_broadcast() -> (LocalBroadcast, moq_lite::BroadcastConsumer) {
+fn setup_broadcast() -> (LocalBroadcast, moq_lite::broadcast::Consumer) {
     let broadcast = LocalBroadcast::new();
     let consumer = broadcast.consume();
     (broadcast, consumer)
@@ -151,6 +151,7 @@ async fn multiple_renditions_subscriber_selects_each() {
     for name in &renditions {
         let mut track = remote
             .video_rendition::<moq_media::codec::DynamicVideoDecoder>(&Default::default(), name)
+            .await
             .unwrap();
         let frame = tokio::time::timeout(TIMEOUT, track.next_frame())
             .await
@@ -199,6 +200,7 @@ async fn multiple_renditions_have_distinct_dimensions() {
     for name in &renditions {
         let mut track = remote
             .video_rendition::<moq_media::codec::DynamicVideoDecoder>(&Default::default(), name)
+            .await
             .unwrap();
         let mut dims = Vec::new();
         for _ in 0..3 {

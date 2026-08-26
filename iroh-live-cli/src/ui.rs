@@ -525,13 +525,18 @@ impl RemoteControls {
         };
 
         // Video — respect rendition mode.
+        // Subscribing became async in moq-lite 0.2; this is a sync egui callback,
+        // so block on it the same way the Ctrl-C helper above does.
+        let handle = tokio::runtime::Handle::current();
         let video_result = match &self.rendition_mode {
-            RenditionMode::Fixed(name) => self
-                .broadcast
-                .video_rendition::<DynamicVideoDecoder>(&decode_config, name),
-            RenditionMode::Auto => self
-                .broadcast
-                .video_with(VideoOptions::default().playback(decode_config.clone())),
+            RenditionMode::Fixed(name) => handle.block_on(
+                self.broadcast
+                    .video_rendition::<DynamicVideoDecoder>(&decode_config, name),
+            ),
+            RenditionMode::Auto => handle.block_on(
+                self.broadcast
+                    .video_with(VideoOptions::default().playback(decode_config.clone())),
+            ),
         };
         match video_result {
             Ok(track) => {

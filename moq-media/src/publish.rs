@@ -23,7 +23,10 @@ pub use controller::{
     StreamKind,
 };
 use hang::catalog::{Audio, AudioConfig, Video, VideoConfig};
-use moq_lite::{Broadcast, BroadcastProducer, TrackProducer};
+use moq_lite::{
+    broadcast::{Info as Broadcast, Producer as BroadcastProducer},
+    track::Producer as TrackProducer,
+};
 use n0_error::{Result, StdResultExt};
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::watch;
@@ -105,7 +108,8 @@ struct ActiveVideoPipeline {
 
 impl Drop for ActiveVideoPipeline {
     fn drop(&mut self) {
-        self.track.abort(moq_lite::Error::Cancel).ok();
+        // `abort` consumes the producer and Drop only has `&mut self`; Producer is Clone.
+        self.track.clone().abort(moq_lite::Error::Cancel).ok();
     }
 }
 
@@ -189,7 +193,7 @@ struct VideoRenditionEntry {
     factory: MakeVideoEncoder,
 }
 
-/// Creates a subscribe-side preview from any [`BroadcastConsumer`](moq_lite::BroadcastConsumer).
+/// Creates a subscribe-side preview from any [`BroadcastConsumer`](moq_lite::broadcast::Consumer).
 ///
 /// Subscribes to the consumer's catalog, spawns decoders, and returns media
 /// tracks suitable for rendering. This is the building block for previewing
@@ -198,7 +202,7 @@ struct VideoRenditionEntry {
 /// Re-exported from [`crate::subscribe::subscribe_preview_from_consumer`] for
 /// backwards compatibility. Prefer calling the subscribe module directly.
 pub async fn subscribe_preview_from_consumer<D: crate::traits::Decoders>(
-    consumer: moq_lite::BroadcastConsumer,
+    consumer: moq_lite::broadcast::Consumer,
     audio_backend: &dyn crate::traits::AudioStreamFactory,
     config: crate::format::PlaybackConfig,
 ) -> Result<crate::subscribe::MediaTracks> {
@@ -218,8 +222,29 @@ pub struct LocalBroadcast {
     #[debug(skip)]
     state: Arc<Mutex<State>>,
     #[debug(skip)]
-    _task: Arc<AbortOnDropHandle<()>>,
+    _guard: Arc<BroadcastGuard>,
     stats: crate::stats::PublishStats,
+}
+
+/// Closes the broadcast once the last [`LocalBroadcast`] clone goes away.
+///
+/// moq-lite 0.2 expects a producer to be finished explicitly — dropping one warns
+/// and leaves the broadcast open for any other live handle, and the dynamic handler
+/// counts as one. Holding both here means the last clone finishes the producer and
+/// only then drops the handler, so subscribers see the close rather than a broadcast
+/// left open by a handle nobody owns any more.
+#[derive(derive_more::Debug)]
+struct BroadcastGuard {
+    #[debug(skip)]
+    producer: Mutex<BroadcastProducer>,
+    #[debug(skip)]
+    _task: AbortOnDropHandle<()>,
+}
+
+impl Drop for BroadcastGuard {
+    fn drop(&mut self) {
+        self.producer.lock().expect("poisoned").finish();
+    }
 }
 
 impl Default for LocalBroadcast {
@@ -252,9 +277,12 @@ impl LocalBroadcast {
         let task_handle = tokio::spawn(Self::run_dynamic(state.clone(), dynamic));
 
         Self {
-            producer,
+            producer: producer.clone(),
             state,
-            _task: Arc::new(AbortOnDropHandle::new(task_handle)),
+            _guard: Arc::new(BroadcastGuard {
+                producer: Mutex::new(producer),
+                _task: AbortOnDropHandle::new(task_handle),
+            }),
             stats,
         }
     }
@@ -299,7 +327,13 @@ impl LocalBroadcast {
     /// Can only be called once per broadcast. Subsequent calls return an error.
     pub fn enable_chat(&mut self) -> Result<crate::chat::ChatPublisher> {
         let track_info = crate::chat::chat_track();
-        let track = self.producer.create_track(track_info.clone()).anyerr()?;
+        let track = self
+            .producer
+            .create_track(
+                track_info.name.clone(),
+                moq_lite::track::Info::default().with_priority(track_info.priority),
+            )
+            .anyerr()?;
         let publisher = crate::chat::ChatPublisher::new(track);
 
         let mut state = self.state.lock().expect("poisoned");
@@ -326,11 +360,11 @@ impl LocalBroadcast {
     }
 
     /// Returns a consumer that reads from this broadcast's producer.
-    pub fn consume(&self) -> moq_lite::BroadcastConsumer {
+    pub fn consume(&self) -> moq_lite::broadcast::Consumer {
         self.producer.consume()
     }
 
-    async fn run_dynamic(state: Arc<Mutex<State>>, mut dynamic: moq_lite::BroadcastDynamic) {
+    async fn run_dynamic(state: Arc<Mutex<State>>, mut dynamic: moq_lite::broadcast::Dynamic) {
         loop {
             let track = match dynamic.requested_track().await {
                 Ok(track) => track,
@@ -339,7 +373,10 @@ impl LocalBroadcast {
                     break;
                 }
             };
-            let name = track.name.clone();
+            let name = track.name().to_string();
+            // 0.2 hands back a request; accepting it yields the producer that
+            // `requested_track` used to return directly.
+            let track = track.accept(None);
             if state
                 .lock()
                 .unwrap()
@@ -414,12 +451,8 @@ impl LocalBroadcast {
                         .map(|t| (t.name.clone(), t.config.clone()))
                         .collect(),
                 };
-                let video = Video {
-                    renditions: configs,
-                    display: None,
-                    rotation: None,
-                    flip: None,
-                };
+                let mut video = Video::default();
+                video.renditions = configs;
                 // Tear down existing video, install new input, then publish catalog.
                 // Order matters: the input must be available before the catalog is
                 // published, otherwise subscribers may request tracks we can't serve.
@@ -440,9 +473,8 @@ impl LocalBroadcast {
         match renditions {
             Some(renditions) => {
                 let configs = renditions.available_renditions()?;
-                let audio = Audio {
-                    renditions: configs,
-                };
+                let mut audio = Audio::default();
+                audio.renditions = configs;
                 state.remove_audio();
                 state.audio = Some(renditions);
                 state.catalog.set_audio(audio)?;
@@ -652,8 +684,8 @@ impl State {
         self.video = None;
     }
 
-    fn start_track(&mut self, track: moq_lite::TrackProducer) -> Result<()> {
-        let name = track.name.clone();
+    fn start_track(&mut self, track: moq_lite::track::Producer) -> Result<()> {
+        let name = track.name().to_string();
 
         // Try video first.
         match self.video.as_mut() {
@@ -1419,9 +1451,11 @@ mod tests {
         let (w, h) = preset.dimensions();
         let source = TestVideoSource::new(w, h);
         let encoder = E::with_preset(preset).unwrap();
-        let track = moq_lite::Track::new("test-video");
-        let producer = TrackProducer::new(track);
-        let mut consumer = producer.consume();
+        let mut broadcast = Broadcast::default().produce();
+        let producer = broadcast
+            .create_track("test-video", moq_lite::track::Info::default())
+            .unwrap();
+        let mut consumer = producer.subscribe(None);
         let sink = MoqPacketSink::new(producer);
 
         let _pipeline = VideoEncoderPipeline::new(source, encoder, sink, Default::default());

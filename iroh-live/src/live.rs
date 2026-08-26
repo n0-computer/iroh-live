@@ -205,7 +205,7 @@ impl Live {
         self.moq.publish(name, broadcast.producer()).await
     }
 
-    /// Registers a raw [`BroadcastProducer`](moq_lite::BroadcastProducer).
+    /// Registers a raw [`BroadcastProducer`](moq_lite::broadcast::Producer).
     ///
     /// Prefer [`publish`](Self::publish) with a [`LocalBroadcast`] for the
     /// common case. This method exists for situations where you construct the
@@ -215,7 +215,7 @@ impl Live {
     pub async fn publish_broadcast_producer(
         &self,
         name: impl ToString,
-        producer: moq_lite::BroadcastProducer,
+        producer: moq_lite::broadcast::Producer,
     ) -> Result<()> {
         self.moq.publish(name, producer).await
     }

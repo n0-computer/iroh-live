@@ -28,6 +28,10 @@ pub(crate) struct PullState {
     /// duplicate concurrent connections to the same remote (TOCTOU guard).
     /// Entries are removed once the connection completes or fails.
     connecting: Arc<Mutex<HashMap<String, Arc<Notify>>>>,
+    /// Broadcasts this relay currently announces into the cluster, keyed by local
+    /// name. moq-lite 0.2 dropped `origin::Consumer::get_broadcast`, so presence is
+    /// tracked here instead; the handle also owns the forwarding task.
+    served: Arc<Mutex<HashMap<String, iroh_moq::AbortOnDropHandle<()>>>>,
 }
 
 impl PullState {
@@ -36,6 +40,7 @@ impl PullState {
             live,
             cluster,
             connecting: Arc::new(Mutex::new(HashMap::new())),
+            served: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -49,13 +54,7 @@ impl PullState {
         let local_name = ticket.to_string();
 
         // Fast path: broadcast already exists in the cluster.
-        if self
-            .cluster
-            .origin
-            .consume()
-            .get_broadcast(&local_name)
-            .is_some()
-        {
+        if self.served.lock().expect("lock").contains_key(&local_name) {
             tracing::debug!(
                 local_name = %local_name,
                 "pull: broadcast already available in cluster"
@@ -84,13 +83,7 @@ impl PullState {
                 notify.notified().await;
                 // The connecting task finished. Check whether the broadcast
                 // appeared in the cluster (success) or not (failure).
-                if self
-                    .cluster
-                    .origin
-                    .consume()
-                    .get_broadcast(&local_name)
-                    .is_some()
-                {
+                if self.served.lock().expect("lock").contains_key(&local_name) {
                     Ok(local_name)
                 } else {
                     anyhow::bail!("pull for ticket failed or was removed")
@@ -130,7 +123,12 @@ impl PullState {
             .await
             .map_err(|e| anyhow::anyhow!("failed to subscribe to broadcast: {e}"))?;
 
-        self.cluster.origin.publish_broadcast(local_name, consumer);
+        let handle = iroh_moq::announce_broadcast(&self.cluster.origin, local_name, consumer)
+            .map_err(|e| anyhow::anyhow!("failed to announce broadcast locally: {e}"))?;
+        self.served
+            .lock()
+            .expect("lock")
+            .insert(local_name.to_owned(), handle);
 
         tracing::info!(
             local_name = %local_name,
