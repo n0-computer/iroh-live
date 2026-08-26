@@ -16,9 +16,11 @@ members = [
     "demos/opengl",
     "iroh-live-cli",
 ]
-# moq-media-dioxus is a workspace member but excluded from default builds.
-# It pulls ~224 additional deps (blitz-dom, vello, etc.) and is prototype-quality.
-# Build it explicitly with: cargo build -p moq-media-dioxus
+# moq-media-dioxus pulls ~224 additional deps (blitz-dom, vello, etc.) and is
+# prototype-quality, so it is left out of default-members: a bare `cargo build`
+# at the workspace root skips it. Note that `--workspace` overrides this and does
+# build it — CI passes `--workspace`, so it is compiled on every run.
+# Build it on its own with: cargo build -p moq-media-dioxus
 default-members = [
     "iroh-live",
     "iroh-live-relay",

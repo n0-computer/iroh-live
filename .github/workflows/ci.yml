@@ -4,7 +4,7 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    # Weekly check for excluded workspace members (moq-media-dioxus).
+    # Weekly run of the whole suite, including the dioxus feature-unification check.
     - cron: "0 6 * * 1"
 
 env:
@@ -67,8 +67,10 @@ jobs:
       - run: cargo clippy --locked --workspace --exclude pi-zero-demo --exclude pi-zero-minimal --all-targets --all-features -- -D warnings
       - run: cargo nextest run --locked --workspace --exclude pi-zero-demo --exclude pi-zero-minimal
 
-  # moq-media-dioxus is excluded from default-members (heavy dep tree).
-  # Check it weekly to catch breakage early.
+  # The Linux and macOS jobs above pass --workspace, which overrides
+  # default-members and already compiles moq-media-dioxus. This job checks it as
+  # a lone package, where feature unification differs from a workspace-wide build
+  # and can surface breakage the other jobs hide.
   check-dioxus:
     name: Check moq-media-dioxus
     runs-on: ubuntu-latest
