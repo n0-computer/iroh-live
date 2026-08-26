@@ -80,7 +80,9 @@ impl Call {
     /// Auto-wires stats recording and network signal production on the
     /// connection, so callers do not need to do this manually.
     async fn setup(mut session: MoqSession, local: LocalBroadcast) -> Result<Self, CallError> {
-        session.publish(CALL_BROADCAST_NAME, local.consume());
+        session
+            .publish(CALL_BROADCAST_NAME, local.consume())
+            .map_err(|err| CallError::ConnectionFailed(n0_error::anyerr!("{err:#}")))?;
 
         let consumer = session
             .subscribe(CALL_BROADCAST_NAME)

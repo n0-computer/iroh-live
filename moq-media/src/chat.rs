@@ -11,9 +11,7 @@
 use std::time::Instant;
 
 use bytes::Bytes;
-use moq_lite::track::{
-    Consumer as TrackConsumer, Producer as TrackProducer, Subscriber, Subscription,
-};
+use moq_lite::track::{Producer as TrackProducer, Subscriber};
 
 use crate::catalog::ChatTrack;
 use tracing::{debug, warn};
@@ -69,10 +67,7 @@ impl ChatPublisher {
         }
         // Chat has no media timeline; every message is its own group.
         self.track
-            .write_frame(
-                moq_lite::Timestamp::from_millis(0).expect("zero is in range"),
-                Bytes::from(text),
-            )
+            .write_frame(moq_lite::Timestamp::ZERO, Bytes::from(text))
             .map_err(|e| anyhow::anyhow!("chat send failed: {e}"))?;
         Ok(())
     }
@@ -85,44 +80,21 @@ impl ChatPublisher {
 #[derive(derive_more::Debug)]
 pub struct ChatSubscriber {
     #[debug(skip)]
-    track: TrackConsumer,
-    priority: u8,
-    /// Opened on the first [`recv`](Self::recv). 0.2 made subscribing async, and
-    /// this type is handed out from a sync constructor, so it happens lazily.
-    #[debug(skip)]
-    subscriber: Option<Subscriber>,
+    subscriber: Subscriber,
 }
 
 impl ChatSubscriber {
-    /// Creates a new chat subscriber from a track consumer.
-    pub fn new(track: TrackConsumer, priority: u8) -> Self {
-        Self {
-            track,
-            priority,
-            subscriber: None,
-        }
+    /// Creates a new chat subscriber from an established track subscription.
+    pub fn new(subscriber: Subscriber) -> Self {
+        Self { subscriber }
     }
 
     /// Waits for the next chat message.
     ///
     /// Returns `None` when the track ends (peer left or broadcast closed).
     pub async fn recv(&mut self) -> Option<ChatMessage> {
-        if self.subscriber.is_none() {
-            match self
-                .track
-                .subscribe(Subscription::default().with_priority(self.priority))
-                .await
-            {
-                Ok(subscriber) => self.subscriber = Some(subscriber),
-                Err(e) => {
-                    warn!("chat subscribe failed: {e:#}");
-                    return None;
-                }
-            }
-        }
-        let subscriber = self.subscriber.as_mut().expect("subscribed above");
         loop {
-            let group = match subscriber.next_group().await {
+            let group = match self.subscriber.next_group().await {
                 Ok(Some(g)) => g,
                 Ok(None) => {
                     debug!("chat track ended");
@@ -173,10 +145,10 @@ mod tests {
                 moq_lite::track::Info::default().with_priority(track_info.priority),
             )
             .unwrap();
-        let consumer = producer.consume();
+        let subscription = producer.subscribe(None);
 
         let mut publisher = ChatPublisher::new(producer);
-        let mut subscriber = ChatSubscriber::new(consumer, track_info.priority);
+        let mut subscriber = ChatSubscriber::new(subscription);
 
         publisher.send("hello").unwrap();
         publisher.send("world").unwrap();
@@ -198,10 +170,10 @@ mod tests {
                 moq_lite::track::Info::default().with_priority(track_info.priority),
             )
             .unwrap();
-        let consumer = producer.consume();
+        let subscription = producer.subscribe(None);
 
         let mut publisher = ChatPublisher::new(producer);
-        let mut subscriber = ChatSubscriber::new(consumer, track_info.priority);
+        let mut subscriber = ChatSubscriber::new(subscription);
 
         publisher.send("").unwrap();
         publisher.send("after empty").unwrap();
@@ -220,9 +192,9 @@ mod tests {
                 moq_lite::track::Info::default().with_priority(track_info.priority),
             )
             .unwrap();
-        let consumer = producer.consume();
+        let subscription = producer.subscribe(None);
 
-        let mut subscriber = ChatSubscriber::new(consumer, track_info.priority);
+        let mut subscriber = ChatSubscriber::new(subscription);
         producer.finish().unwrap();
 
         let result = subscriber.recv().await;

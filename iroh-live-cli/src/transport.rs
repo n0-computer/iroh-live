@@ -88,7 +88,9 @@ async fn push_to_relay(
         .parse()
         .map_err(|e| anyhow::anyhow!("invalid relay address: {e}"))?;
     let session = live.transport().connect(id).await?;
-    session.publish(name, consumer);
+    session
+        .publish(name, consumer)
+        .map_err(|e| anyhow::anyhow!("failed to publish to relay: {e}"))?;
     info!(%relay_addr, "published to relay");
     Ok(())
 }

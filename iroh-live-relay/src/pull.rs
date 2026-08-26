@@ -30,8 +30,8 @@ pub(crate) struct PullState {
     connecting: Arc<Mutex<HashMap<String, Arc<Notify>>>>,
     /// Broadcasts this relay currently announces into the cluster, keyed by local
     /// name. moq-lite 0.2 dropped `origin::Consumer::get_broadcast`, so presence is
-    /// tracked here instead; the handle also owns the forwarding task.
-    served: Arc<Mutex<HashMap<String, iroh_moq::AbortOnDropHandle<()>>>>,
+    /// tracked here instead; holding the announcement also keeps it served.
+    served: Arc<Mutex<HashMap<String, iroh_moq::BroadcastAnnouncement>>>,
 }
 
 impl PullState {

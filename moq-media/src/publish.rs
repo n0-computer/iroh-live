@@ -103,13 +103,16 @@ struct ActiveVideoPipeline {
     #[debug(skip)]
     _pipeline: VideoPipeline,
     #[debug(skip)]
-    track: TrackProducer,
+    track: Option<TrackProducer>,
 }
 
 impl Drop for ActiveVideoPipeline {
     fn drop(&mut self) {
-        // `abort` consumes the producer and Drop only has `&mut self`; Producer is Clone.
-        self.track.clone().abort(moq_lite::Error::Cancel).ok();
+        // `abort` consumes the producer, so take it out rather than cloning to
+        // satisfy Drop's `&mut self`.
+        if let Some(track) = self.track.take() {
+            track.abort(moq_lite::Error::Cancel).ok();
+        }
     }
 }
 
@@ -236,14 +239,14 @@ pub struct LocalBroadcast {
 #[derive(derive_more::Debug)]
 struct BroadcastGuard {
     #[debug(skip)]
-    producer: Mutex<BroadcastProducer>,
+    producer: BroadcastProducer,
     #[debug(skip)]
     _task: AbortOnDropHandle<()>,
 }
 
 impl Drop for BroadcastGuard {
     fn drop(&mut self) {
-        self.producer.lock().expect("poisoned").finish();
+        self.producer.finish();
     }
 }
 
@@ -280,7 +283,7 @@ impl LocalBroadcast {
             producer: producer.clone(),
             state,
             _guard: Arc::new(BroadcastGuard {
-                producer: Mutex::new(producer),
+                producer,
                 _task: AbortOnDropHandle::new(task_handle),
             }),
             stats,
@@ -374,16 +377,21 @@ impl LocalBroadcast {
                 }
             };
             let name = track.name().to_string();
-            // 0.2 hands back a request; accepting it yields the producer that
-            // `requested_track` used to return directly.
-            let track = track.accept(None);
-            if state
-                .lock()
-                .unwrap()
+            // 0.2 hands back a request to accept or reject. Decide before accepting:
+            // an accepted track we cannot serve would just be dropped on the peer.
+            let mut guard = state.lock().unwrap();
+            if !guard.serves(&name) {
+                info!("ignoring track request {name}: rendition not available");
+                track.reject(moq_lite::Error::NotFound);
+                continue;
+            }
+            let track = track.accept(guard.catalog.track_info());
+            let started = guard
                 .start_track(track.clone())
                 .inspect_err(|err| warn!(%name, "failed to start requested track: {err:#}"))
-                .is_ok()
-            {
+                .is_ok();
+            drop(guard);
+            if started {
                 info!("started track: {name}");
                 tokio::spawn({
                     let state = state.clone();
@@ -395,6 +403,8 @@ impl LocalBroadcast {
                         state.lock().expect("poisoned").stop_track(&name);
                     }
                 });
+            } else {
+                let _ = track.abort(moq_lite::Error::Cancel);
             }
         }
     }
@@ -451,8 +461,12 @@ impl LocalBroadcast {
                         .map(|t| (t.name.clone(), t.config.clone()))
                         .collect(),
                 };
+                // `Video` is #[non_exhaustive], so build it through `insert` rather
+                // than a struct literal; it also rejects duplicate rendition names.
                 let mut video = Video::default();
-                video.renditions = configs;
+                for (name, config) in configs {
+                    video.insert(&name, config).anyerr()?;
+                }
                 // Tear down existing video, install new input, then publish catalog.
                 // Order matters: the input must be available before the catalog is
                 // published, otherwise subscribers may request tracks we can't serve.
@@ -474,7 +488,9 @@ impl LocalBroadcast {
             Some(renditions) => {
                 let configs = renditions.available_renditions()?;
                 let mut audio = Audio::default();
-                audio.renditions = configs;
+                for (name, config) in configs {
+                    audio.insert(&name, config).anyerr()?;
+                }
                 state.remove_audio();
                 state.audio = Some(renditions);
                 state.catalog.set_audio(audio)?;
@@ -606,6 +622,11 @@ impl Drop for LocalBroadcast {
 pub struct CatalogProducer(#[debug(skip)] moq_mux::catalog::Producer<crate::catalog::IrohLiveExt>);
 
 impl CatalogProducer {
+    /// Track properties for a media track under this catalog.
+    pub fn track_info(&self) -> moq_lite::track::Info {
+        self.0.track_info()
+    }
+
     pub fn new(broadcast: &mut BroadcastProducer) -> Result<Self> {
         let mut producer =
             moq_mux::catalog::Producer::with_catalog(broadcast, Catalog::default()).anyerr()?;
@@ -684,6 +705,21 @@ impl State {
         self.video = None;
     }
 
+    /// Whether a rendition by this name can be served, checked before accepting a
+    /// request so an unknown name is rejected rather than accepted and then dropped.
+    fn serves(&self, name: &str) -> bool {
+        let video = match self.video.as_ref() {
+            Some(VideoInput::Renditions(renditions)) => renditions.contains_rendition(name),
+            Some(VideoInput::PreEncoded(tracks)) => tracks.iter().any(|t| t.name == name),
+            None => false,
+        };
+        video
+            || self
+                .audio
+                .as_ref()
+                .is_some_and(|audio| audio.contains_rendition(name))
+    }
+
     fn start_track(&mut self, track: moq_lite::track::Producer) -> Result<()> {
         let name = track.name().to_string();
 
@@ -696,7 +732,7 @@ impl State {
                     name,
                     ActiveVideoPipeline {
                         _pipeline: VideoPipeline::Encoder(pipeline),
-                        track,
+                        track: Some(track),
                     },
                 );
                 return Ok(());
@@ -710,7 +746,7 @@ impl State {
                         name,
                         ActiveVideoPipeline {
                             _pipeline: VideoPipeline::PreEncoded(pipeline),
-                            track,
+                            track: Some(track),
                         },
                     );
                     return Ok(());

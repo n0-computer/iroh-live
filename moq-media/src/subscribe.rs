@@ -303,6 +303,30 @@ impl CatalogSnapshot {
     }
 }
 
+/// Subscribes to `name` at `priority` and wraps it in a latency-bounded container
+/// consumer — the shape every media track subscription needs.
+///
+/// Subscribing became a wire round-trip in moq-lite 0.2, so this is async; the
+/// catalog track is deliberately not routed through here, since hang provides its
+/// own subscription preferences for it.
+async fn subscribe_ordered(
+    broadcast: &BroadcastConsumer,
+    name: &str,
+    priority: u8,
+    max_latency: Duration,
+) -> Result<OrderedConsumer> {
+    let track = broadcast
+        .track(name)
+        .anyerr()?
+        .subscribe(Subscription::default().with_priority(priority))
+        .await
+        .anyerr()?;
+    Ok(
+        OrderedConsumer::new(track, moq_mux::catalog::hang::Container::Legacy)
+            .with_latency(max_latency),
+    )
+}
+
 impl RemoteBroadcast {
     /// Creates a new remote broadcast subscription with the default
     /// [`PlaybackPolicy`] (synced playout, 150 ms max latency).
@@ -461,14 +485,25 @@ impl RemoteBroadcast {
 
     /// Subscribes to the chat track and returns a [`ChatSubscriber`](crate::chat::ChatSubscriber).
     ///
-    /// Returns `None` if the catalog does not advertise a chat track.
-    pub fn chat(&self) -> Option<crate::chat::ChatSubscriber> {
-        let track_info = self.catalog().chat.as_ref()?.message.as_ref()?.clone();
-        let consumer = self.broadcast.track(&track_info.name).ok()?;
-        Some(crate::chat::ChatSubscriber::new(
-            consumer,
-            track_info.priority,
-        ))
+    /// Returns `Ok(None)` if the catalog does not advertise a chat track, and an
+    /// error if it does but the subscription fails.
+    pub async fn chat(&self) -> Result<Option<crate::chat::ChatSubscriber>> {
+        let Some(track_info) = self
+            .catalog()
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.message.clone())
+        else {
+            return Ok(None);
+        };
+        let subscriber = self
+            .broadcast
+            .track(&track_info.name)
+            .anyerr()?
+            .subscribe(Subscription::default().with_priority(track_info.priority))
+            .await
+            .anyerr()?;
+        Ok(Some(crate::chat::ChatSubscriber::new(subscriber)))
     }
 
     /// Returns the user metadata from the catalog, if set by the publisher.
@@ -554,17 +589,9 @@ impl RemoteBroadcast {
             max_latency_ms = max_latency.as_millis(),
             "subscribing to video rendition"
         );
-        let track_consumer = self
-            .broadcast
-            .track(track_name)
-            .anyerr()?
-            .subscribe(Subscription::default().with_priority(VIDEO_PRIORITY))
-            .await
-            .anyerr()?;
-        tracing::debug!(track = track_name, "track subscription created");
         let consumer =
-            OrderedConsumer::new(track_consumer, moq_mux::catalog::hang::Container::Legacy)
-                .with_latency(max_latency);
+            subscribe_ordered(&self.broadcast, track_name, VIDEO_PRIORITY, max_latency).await?;
+        tracing::debug!(track = track_name, "track subscription created");
         VideoTrack::from_consumer::<D>(
             track_name.to_string(),
             consumer,
@@ -594,15 +621,8 @@ impl RemoteBroadcast {
         let catalog = self.catalog();
         let audio = &catalog.audio;
         let config = audio.renditions.get(name).context("rendition not found")?;
-        let track = self
-            .broadcast
-            .track(name)
-            .anyerr()?
-            .subscribe(Subscription::default().with_priority(AUDIO_PRIORITY))
-            .await
-            .anyerr()?;
-        let consumer = OrderedConsumer::new(track, moq_mux::catalog::hang::Container::Legacy)
-            .with_latency(max_latency);
+        let consumer =
+            subscribe_ordered(&self.broadcast, name, AUDIO_PRIORITY, max_latency).await?;
         AudioTrack::spawn::<D>(
             name.to_string(),
             consumer,
@@ -750,16 +770,13 @@ impl RemoteBroadcast {
             .get(track_name)
             .context("video rendition not found")?
             .clone();
-        let track_consumer = self
-            .broadcast
-            .track(track_name)
-            .anyerr()?
-            .subscribe(Subscription::default().with_priority(VIDEO_PRIORITY))
-            .await
-            .anyerr()?;
-        let consumer =
-            OrderedConsumer::new(track_consumer, moq_mux::catalog::hang::Container::Legacy)
-                .with_latency(self.playback_policy.max_latency);
+        let consumer = subscribe_ordered(
+            &self.broadcast,
+            track_name,
+            VIDEO_PRIORITY,
+            self.playback_policy.max_latency,
+        )
+        .await?;
         Ok((MoqPacketSource::new(consumer), config))
     }
 
@@ -778,16 +795,13 @@ impl RemoteBroadcast {
             .get(track_name)
             .context("audio rendition not found")?
             .clone();
-        let track_consumer = self
-            .broadcast
-            .track(track_name)
-            .anyerr()?
-            .subscribe(Subscription::default().with_priority(AUDIO_PRIORITY))
-            .await
-            .anyerr()?;
-        let consumer =
-            OrderedConsumer::new(track_consumer, moq_mux::catalog::hang::Container::Legacy)
-                .with_latency(self.playback_policy.max_latency);
+        let consumer = subscribe_ordered(
+            &self.broadcast,
+            track_name,
+            AUDIO_PRIORITY,
+            self.playback_policy.max_latency,
+        )
+        .await?;
         Ok((MoqPacketSource::new(consumer), config))
     }
 
@@ -1529,15 +1543,13 @@ async fn switch_rendition_v2(
         .renditions
         .get(rendition_name)
         .context("rendition not found")?;
-    let track_consumer = broadcast
-        .broadcast
-        .track(rendition_name)
-        .anyerr()?
-        .subscribe(Subscription::default().with_priority(VIDEO_PRIORITY))
-        .await
-        .anyerr()?;
-    let consumer = OrderedConsumer::new(track_consumer, moq_mux::catalog::hang::Container::Legacy)
-        .with_latency(max_latency);
+    let consumer = subscribe_ordered(
+        &broadcast.broadcast,
+        rendition_name,
+        VIDEO_PRIORITY,
+        max_latency,
+    )
+    .await?;
     let source = MoqPacketSource::new(consumer);
     let config: rusty_codecs::config::VideoConfig = config.clone().into();
     let sender = frame_sender.clone();

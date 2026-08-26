@@ -403,11 +403,17 @@ impl Actor {
                             let closed_fut = broadcast.closed();
 
                             // Spawn a chat subscriber task if the broadcast has a chat track.
-                            if let Some(mut chat_sub) = broadcast.chat() {
-                                self.chat_messages.push(Box::pin(async move {
-                                    let msg = chat_sub.recv().await;
-                                    (remote, msg, chat_sub)
-                                }));
+                            match broadcast.chat().await {
+                                Ok(Some(mut chat_sub)) => {
+                                    self.chat_messages.push(Box::pin(async move {
+                                        let msg = chat_sub.recv().await;
+                                        (remote, msg, chat_sub)
+                                    }));
+                                }
+                                Ok(None) => {}
+                                Err(err) => {
+                                    warn!(broadcast=%id, "failed to subscribe to chat: {err:#}")
+                                }
                             }
 
                             if self.event_tx.send(RoomEvent::BroadcastSubscribed { session: Box::new(session), broadcast: Box::new(broadcast) }).await.is_err() {
