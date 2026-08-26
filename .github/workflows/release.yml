@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  # Serialised, not cancelled: this replaces assets on the rolling release, and a
+  # run killed mid-upload can leave binaries and SHA256SUMS out of sync.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0

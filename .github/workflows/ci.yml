@@ -7,6 +7,12 @@ on:
     # Weekly run of the whole suite, including the dioxus feature-unification check.
     - cron: "0 6 * * 1"
 
+concurrency:
+  # One run per workflow per ref. A new push supersedes whatever is still running,
+  # so force-pushes and rapid follow-ups don't leave stale jobs burning runners.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
