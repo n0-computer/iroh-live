@@ -517,7 +517,12 @@ fn yuyv_to_rgba(data: &[u8], width: u32, height: u32) -> Vec<u8> {
 fn rgb_to_rgba(data: &[u8], width: u32, height: u32) -> Vec<u8> {
     let pixel_count = (width * height) as usize;
     let mut rgba = vec![255u8; pixel_count * 4];
-    for (src, dst) in data.chunks_exact(3).zip(rgba.chunks_exact_mut(4)) {
+    for (src, dst) in data
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(rgba.as_chunks_mut::<4>().0)
+    {
         dst[0] = src[0];
         dst[1] = src[1];
         dst[2] = src[2];

@@ -261,7 +261,12 @@ impl AppleGpuFrame {
             for y in 0..h {
                 let src = std::slice::from_raw_parts(base.add(y * stride), row_bytes);
                 let dst = &mut rgba[y * row_bytes..(y + 1) * row_bytes];
-                for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+                for (s, d) in src
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(dst.as_chunks_mut::<4>().0)
+                {
                     d[0] = s[2]; // R ← B
                     d[1] = s[1]; // G
                     d[2] = s[0]; // B ← R
@@ -759,7 +764,7 @@ impl VideoFrame {
                     data,
                 } => {
                     let mut rgba = data.to_vec();
-                    for chunk in rgba.chunks_exact_mut(4) {
+                    for chunk in rgba.as_chunks_mut::<4>().0 {
                         chunk.swap(0, 2);
                     }
                     RgbaImage::from_raw(w, h, rgba)

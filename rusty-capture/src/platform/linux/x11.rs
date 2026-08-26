@@ -343,7 +343,12 @@ impl VideoSource for X11ScreenCapturer {
 
                 // Convert BGRX → RGBA.
                 let mut rgba = vec![0u8; state.buf_size];
-                for (src, dst) in shm_slice.chunks_exact(4).zip(rgba.chunks_exact_mut(4)) {
+                for (src, dst) in shm_slice
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(rgba.as_chunks_mut::<4>().0)
+                {
                     dst[0] = src[2]; // R ← B
                     dst[1] = src[1]; // G ← G
                     dst[2] = src[0]; // B ← R

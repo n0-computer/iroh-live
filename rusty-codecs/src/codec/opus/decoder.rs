@@ -152,7 +152,7 @@ fn convert_channels_into(samples: &[f32], from_ch: u32, to_ch: u32, out: &mut Ve
             }
         }
         (2, 1) => {
-            for pair in samples.chunks_exact(2) {
+            for pair in samples.as_chunks::<2>().0 {
                 out.push((pair[0] + pair[1]) * 0.5);
             }
         }
@@ -338,7 +338,7 @@ mod tests {
         // 960 frames * 2 channels = 1920 interleaved samples
         assert_eq!(samples.len(), 960 * 2);
         // Each stereo pair should be identical (mono duplicated)
-        for pair in samples.chunks_exact(2) {
+        for pair in samples.as_chunks::<2>().0 {
             assert_eq!(
                 pair[0], pair[1],
                 "stereo pair should be equal for mono upmix"
