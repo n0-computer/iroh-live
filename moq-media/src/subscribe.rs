@@ -536,6 +536,11 @@ impl VideoTrack {
 /// A playing audio track.
 #[derive(Debug)]
 pub struct AudioTrack {
+    /// Keeps the broadcast alive for as long as the track plays. `Drop for
+    /// Inner` cancels every decode task, so an audio-only subscription whose
+    /// `RemoteBroadcast` went out of scope would otherwise fall silent.
+    /// `VideoTrack` holds one through its control block for the same reason.
+    _broadcast: RemoteBroadcast,
     rendition: String,
     #[cfg(feature = "playback")]
     control: moq_audio::playback::Control,

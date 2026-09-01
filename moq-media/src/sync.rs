@@ -167,18 +167,13 @@ impl Sync {
 
         state.reference = Some(ref_val);
         self.inner.changed.notify_waiters();
-        self.inner.changed.notify_waiters();
-        self.inner.changed.notify_waiters();
-        self.inner.changed.notify_waiters();
-        self.inner.changed.notify_waiters();
-        self.inner.changed.notify_waiters();
     }
 
     // ── Playout gating (video render path) ─────────────────────────
 
     /// Waits until it is time to render the frame with the given PTS.
     ///
-    /// The async counterpart of [`wait`](Self::wait), for a decode loop that
+    /// The async counterpart of [`wait_async`](Self::wait_async), for a decode loop that
     /// runs on the executor rather than an OS thread. Recomputes the delay once
     /// after sleeping, so a reference that moved earlier while we slept still
     /// holds the frame back.
@@ -211,7 +206,7 @@ impl Sync {
 
     /// How long the frame with the given PTS still has to wait.
     ///
-    /// The arithmetic behind both [`wait`](Self::wait) and
+    /// The arithmetic behind both [`wait_async`](Self::wait_async) and
     /// [`wait_async`](Self::wait_async), exposed so a caller can drive its own
     /// timer.
     pub fn delay(&self, timestamp: Duration) -> Delay {
@@ -272,7 +267,7 @@ impl Sync {
         self.inner.changed.notify_waiters();
     }
 
-    /// Wakes all threads blocked in [`wait`](Self::wait) and causes
+    /// Wakes all threads blocked in [`wait_async`](Self::wait_async) and causes
     /// future `wait` calls to return `false` immediately. No JS
     /// equivalent — Rust needs explicit cleanup since OS threads are
     /// not cancelled automatically.

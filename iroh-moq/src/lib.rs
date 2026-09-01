@@ -250,6 +250,31 @@ impl ProtocolHandler for MoqProtocolHandler {
     }
 }
 
+/// Dials `remote` and completes the WebTransport handshake.
+///
+/// Offers every version this build speaks rather than only the newest, so a
+/// peer built against an older moq release still finds one in common, and
+/// branches on what was actually negotiated. Public because an application that
+/// drives `moq_net` itself, such as a relay pulling from a publisher, needs the
+/// same negotiation and should not hand-roll a second copy of it.
+///
+/// # Errors
+///
+/// Fails if the dial fails, or if the peer negotiates an ALPN this build does
+/// not speak.
+pub async fn dial(
+    endpoint: &Endpoint,
+    remote: impl Into<EndpointAddr>,
+) -> Result<web_transport_iroh::Session, Error> {
+    let others: Vec<Vec<u8>> = alpns()[1..].iter().map(|alpn| alpn.to_vec()).collect();
+    let options = iroh::endpoint::ConnectOptions::new().with_additional_alpns(others);
+    let mut connecting = endpoint.connect_with_opts(remote, ALPN, options).await?;
+    let alpn = String::from_utf8_lossy(&connecting.alpn().await?).into_owned();
+    let connection = connecting.await?;
+    debug!(%alpn, "negotiated");
+    connect_transport(connection, &alpn).await
+}
+
 /// Completes the client half of the WebTransport handshake the negotiated ALPN
 /// calls for.
 async fn connect_transport(
@@ -302,13 +327,14 @@ async fn accept_transport(
     Ok(web_transport_iroh::Session::raw(connection))
 }
 
-/// Sessions accepted from remote peers, in arrival order.
+/// Every session this node establishes, in arrival order, whether it dialed or
+/// accepted. [`MoqSession::dialed`] tells the two apart.
 ///
 /// A session is already established and already usable by the peer by the time
-/// it appears here: the MoQ handshake completes in the protocol handler, before
-/// the application sees anything. This reports what happened, it does not gate
-/// it. An application that needs to refuse a peer does so at the iroh layer,
-/// before the ALPN is accepted.
+/// it appears here: the handshake completes in the protocol handler, before the
+/// application sees anything. This reports what happened, it does not gate it.
+/// An application that needs to refuse a peer does so at the iroh layer, before
+/// the ALPN is accepted.
 #[derive(Debug)]
 pub struct IncomingSessionStream {
     rx: tokio_broadcast::Receiver<MoqSession>,
@@ -366,15 +392,8 @@ impl MoqSession {
     ) -> Result<(Self, moq_net::Driver), Error> {
         let addr = remote_addr.into();
         tracing::Span::current().record("remote", field::display(addr.id.fmt_short()));
-        // Offer every version rather than only the newest, so a peer built
-        // against an older moq release still finds one in common.
-        let others: Vec<Vec<u8>> = alpns()[1..].iter().map(|alpn| alpn.to_vec()).collect();
-        let options = iroh::endpoint::ConnectOptions::new().with_additional_alpns(others);
-        let mut connecting = endpoint.connect_with_opts(addr, ALPN, options).await?;
-        let alpn = String::from_utf8_lossy(&connecting.alpn().await?).into_owned();
-        let connection = connecting.await?;
-        debug!(%alpn, "negotiated");
-        let transport = connect_transport(connection.clone(), &alpn).await?;
+        let transport = dial(endpoint, addr).await?;
+        let connection = transport.conn().clone();
         let subscribe = origin.info().produce();
         let (session, driver) = moq_net::Client::new()
             .with_publisher(origin.consume())
@@ -480,6 +499,10 @@ enum ActorMessage {
         reply: oneshot::Sender<Result<MoqSession, Arc<Error>>>,
     },
 }
+
+/// The generation given to a session that does not own its peer's slot, so its
+/// exit never evicts the one that does. Generations start at one.
+const NO_GENERATION: u64 = 0;
 
 type PendingConnects = HashMap<EndpointId, Vec<oneshot::Sender<Result<MoqSession, Arc<Error>>>>>;
 type ConnectResult = (EndpointId, Result<(MoqSession, moq_net::Driver), Error>);
@@ -597,8 +620,9 @@ impl Actor {
                 reply.send(Ok(existing.clone())).ok();
             }
             // Still drive it: the peer may be using this one, and an undriven
-            // session stalls rather than closing.
-            self.spawn_driver(remote, session, driver);
+            // session stalls rather than closing. `NO_GENERATION` keeps its
+            // exit from evicting the session that does own the slot.
+            self.spawn_driver(remote, NO_GENERATION, session, driver);
             return;
         }
 
@@ -614,15 +638,20 @@ impl Actor {
             reply.send(Ok(session.clone())).ok();
         }
 
-        self.spawn_driver(remote, session, driver);
+        self.spawn_driver(remote, self.generation, session, driver);
     }
 
     /// Runs a session's protocol driver until the session ends.
-    fn spawn_driver(&mut self, remote: EndpointId, session: MoqSession, driver: moq_net::Driver) {
+    fn spawn_driver(
+        &mut self,
+        remote: EndpointId,
+        generation: u64,
+        session: MoqSession,
+        driver: moq_net::Driver,
+    ) {
         // The driver runs the protocol; without it the session makes no
         // progress. Both handles are held here, so the session ends when this
         // task does: on shutdown, or when the peer closes.
-        let generation = self.generation;
         let shutdown = self.shutdown_token.child_token();
         self.session_tasks.spawn(async move {
             tokio::pin!(driver);

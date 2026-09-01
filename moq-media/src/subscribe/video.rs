@@ -14,7 +14,7 @@
 use std::{sync::Arc, time::Duration};
 
 use n0_error::{Result, e};
-use n0_future::task::{AbortOnDropHandle, JoinHandle, spawn};
+use n0_future::task::{AbortOnDropHandle, spawn};
 use n0_watcher::Watchable;
 use tokio::sync::{mpsc, watch};
 use tracing::{Instrument, debug, error_span, info, warn};
@@ -42,6 +42,10 @@ pub(super) async fn open(
     let (frames_tx, frames_rx) = frame_channel();
     let decoder = Watchable::new(reader.decoder.clone());
     let current = Watchable::new(rendition.to_string());
+    // Labelled here rather than in `spawn_reader`, so an open that is
+    // superseded before it plays never names itself in the overlay.
+    broadcast.stats().render.decoder.set(&reader.decoder);
+    broadcast.stats().render.rendition.set(rendition);
     let (requested_tx, requested_rx) = watch::channel(None);
 
     let task = spawn(
@@ -70,6 +74,12 @@ pub(super) async fn open(
     })
 }
 
+/// An open in flight: the rendition it is for, and the task doing it.
+struct Opening {
+    name: String,
+    task: AbortOnDropHandle<Result<Reader, SubscribeError>>,
+}
+
 /// One decoder plus the task reading it.
 struct Reader {
     /// The backend that opened, for a status line: which decoder is running is
@@ -78,6 +88,26 @@ struct Reader {
     frames: mpsc::Receiver<moq_video::Frame>,
     /// Dropping this aborts the read loop, which drops the decoder with it.
     _task: AbortOnDropHandle<()>,
+}
+
+impl Reader {
+    /// A reader with no decoder behind it, whose channel never yields.
+    ///
+    /// Stands in for an incumbent that ended while a replacement is still
+    /// opening, so the supervisor keeps waiting for the replacement instead of
+    /// spinning on a closed channel.
+    fn spent() -> Self {
+        let (tx, frames) = mpsc::channel(1);
+        Self {
+            decoder: String::new(),
+            frames,
+            // Holds the sender, so the channel stays open and its arm pends.
+            _task: AbortOnDropHandle::new(spawn(async move {
+                std::future::pending::<()>().await;
+                drop(tx);
+            })),
+        }
+    }
 }
 
 /// Subscribes to a rendition, opens its decoder, and starts reading it.
@@ -98,8 +128,6 @@ async fn spawn_reader(
     let mut consumer =
         moq_video::decode::Consumer::new(broadcast.consumer(), &config, rendition, decode).await?;
     let decoder = consumer.name().to_string();
-    broadcast.stats().render.decoder.set(&decoder);
-    broadcast.stats().render.rendition.set(rendition);
     info!(rendition, decoder = %decoder, "video decoding");
 
     let (tx, frames) = mpsc::channel(READ_AHEAD);
@@ -163,7 +191,7 @@ async fn supervise(
     // arm, because opening a decoder means a network round trip and a codec
     // open, and awaiting that in an arm body stops the incumbent from being
     // forwarded for exactly the window the overlap exists to hide.
-    let mut opening: Option<(String, JoinHandle<Result<Reader, SubscribeError>>)> = None;
+    let mut opening: Option<Opening> = None;
     // The last frame's arrival, for the frame rate the overlay draws.
     let mut previous: Option<std::time::Instant> = None;
 
@@ -181,28 +209,40 @@ async fn supervise(
                     return;
                 }
                 let Some(name) = requested.borrow_and_update().clone() else { continue };
+                // Re-requesting what is already playing cancels a swap that has
+                // not landed, which is what un-pinning a rendition means.
+                if name == current.get() {
+                    pending = None;
+                    opening = None;
+                    continue;
+                }
                 let already = pending.as_ref().is_some_and(|(open, _)| *open == name)
-                    || opening.as_ref().is_some_and(|(open, _)| *open == name);
-                if name == current.get() || already {
+                    || opening.as_ref().is_some_and(|open| open.name == name);
+                if already {
                     continue;
                 }
                 debug!(rendition = %name, "opening replacement decoder");
-                let opened = spawn({
+                let task = spawn({
                     let broadcast = broadcast.clone();
                     let name = name.clone();
                     async move { spawn_reader(&broadcast, &name).await }
                 });
-                // A switch requested while another was opening supersedes it;
-                // dropping the handle aborts the open we no longer want.
-                opening = Some((name, opened));
+                // Abort-on-drop, not a bare handle: dropping a `JoinHandle`
+                // detaches, so a superseded open would run to completion and
+                // keep a track subscription and a broadcast clone alive for as
+                // long as the peer took to answer.
+                opening = Some(Opening {
+                    name,
+                    task: AbortOnDropHandle::new(task),
+                });
             }
 
             // The replacement's decoder is open. Hold it until it produces a
             // frame, so the swap never shows an empty picture.
-            opened = async { (&mut opening.as_mut().expect("guarded").1).await },
+            opened = async { (&mut opening.as_mut().expect("guarded").task).await },
                 if opening.is_some() =>
             {
-                let (name, _) = opening.take().expect("guarded");
+                let Opening { name, .. } = opening.take().expect("guarded");
                 match opened {
                     Ok(Ok(replacement)) => pending = Some((name, replacement)),
                     Ok(Err(err)) => {
@@ -224,6 +264,8 @@ async fn supervise(
                 match frame {
                     Some(frame) => {
                         info!(rendition = %name, decoder = %replacement.decoder, "switched rendition");
+                        context.stats.render.decoder.set(&replacement.decoder);
+                        context.stats.render.rendition.set(&name);
                         decoder.set(replacement.decoder.clone()).ok();
                         reader = replacement;
                         current.set(name).ok();
@@ -239,8 +281,28 @@ async fn supervise(
             frame = reader.frames.recv() => match frame {
                 Some(frame) => deliver(&frames, frame, &context, synced, &mut previous).await,
                 None => {
-                    debug!("video decode ended");
-                    return;
+                    // A replacement already open takes over rather than being
+                    // discarded: the incumbent ending is exactly when a
+                    // downgrade is most likely to be in flight.
+                    match pending.take() {
+                        Some((name, replacement)) => {
+                            info!(rendition = %name, "incumbent ended, promoting the replacement");
+                            decoder.set(replacement.decoder.clone()).ok();
+                            reader = replacement;
+                            current.set(name).ok();
+                        }
+                        None if opening.is_some() => {
+                            debug!("incumbent ended while a replacement is opening");
+                            // Park on the remaining arms until it lands. The
+                            // reader's channel stays closed, so its arm resolves
+                            // immediately; swap in an empty one that never does.
+                            reader = Reader::spent();
+                        }
+                        None => {
+                            debug!("video decode ended");
+                            return;
+                        }
+                    }
                 }
             },
         }

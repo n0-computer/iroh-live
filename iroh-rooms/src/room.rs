@@ -100,6 +100,11 @@ impl RoomHandle {
     /// into it and end it with [`finish`](broadcast::Producer::finish); dropping
     /// it un-announces the name, and peers see the broadcast close.
     ///
+    /// Do not call this from the task that drains [`Room::recv`]. It waits on a
+    /// reply from the actor, and the actor can be parked writing an event into
+    /// a channel that only that task drains, which deadlocks the pair. Use
+    /// [`Room::split`], or drive events on their own task.
+    ///
     /// # Errors
     ///
     /// Fails if this peer already publishes a broadcast under `name`, or if the
@@ -294,7 +299,13 @@ pub enum RoomEvent {
         /// Display name from the peer's gossip state, if set.
         display_name: Option<String>,
     },
-    /// Every broadcast of a peer closed, so the peer is gone.
+    /// A peer's last broadcast closed.
+    ///
+    /// Derived from media liveness, not from membership: a peer that joined
+    /// and published nothing never produces this, and neither does one whose
+    /// subscription failed to open. The kv carries an expiry horizon that would
+    /// answer properly, and nothing acts on it yet. The announce redesign
+    /// (`plans/align-to-moq/room-layer.md`) is where that gets fixed.
     PeerLeft {
         /// The peer's endpoint ID.
         remote: EndpointId,

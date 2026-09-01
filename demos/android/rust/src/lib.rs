@@ -1068,13 +1068,22 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
         return;
     }
     let session = unsafe { take_handle(handle) };
-    if let Ok(guard) = session.lock() {
-        if let Some(remote) = guard.remote.as_ref() {
-            remote.shutdown();
+    // Take what shutdown needs and release the lock before blocking on it.
+    // Holding it across `block_on` would stall every other JNI entry point
+    // that touches this handle, including the status line the UI thread reads,
+    // for as long as the router and endpoint take to close.
+    let (remote, live) = match session.lock() {
+        Ok(mut guard) => (guard.remote.take(), guard.live.take()),
+        Err(_) => {
+            warn!("session handle was poisoned; skipping shutdown");
+            return;
         }
-        if let Some(live) = guard.live.as_ref() {
-            runtime().block_on(live.shutdown());
-        }
+    };
+    if let Some(remote) = remote {
+        remote.shutdown();
+    }
+    if let Some(live) = live {
+        runtime().block_on(live.shutdown());
     }
     info!("disconnected");
 }

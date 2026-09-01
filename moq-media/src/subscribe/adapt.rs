@@ -87,6 +87,16 @@ async fn run(
         let now = Instant::now();
 
         if let Some(active_probe) = &probe {
+            // The step up never landed: the replacement failed to open, or the
+            // supervisor withdrew it. Forget the probe rather than judging it,
+            // or the abort path steps down from a rung we never left.
+            if active_probe.rendition != active {
+                debug!(rendition = %active_probe.rendition, "probe never took effect");
+                probe = None;
+            }
+        }
+
+        if let Some(active_probe) = &probe {
             if should_abort_probe(&signals, active_probe.congestion_baseline, &config) {
                 // The step up did not hold. Go back down and start the probe
                 // cooldown, so the next attempt waits rather than oscillating.
@@ -117,6 +127,7 @@ async fn run(
             Decision::StartProbe(next) => {
                 timers.last_probe = Some(now);
                 probe = Some(Probe {
+                    rendition: ranked[next].name.clone(),
                     started: now,
                     congestion_baseline: signals.congestion_events,
                 });
@@ -143,6 +154,9 @@ async fn run(
 
 /// An upgrade in progress: a step up the ladder that has not yet proved itself.
 struct Probe {
+    /// The rendition stepped up to. A probe is only judged once this is the one
+    /// actually playing; a step that never landed is forgotten instead.
+    rendition: String,
     /// When the step up was requested, against `AdaptiveConfig::probe_duration`.
     started: Instant,
     /// The congestion counter at the moment of the step, so any new congestion

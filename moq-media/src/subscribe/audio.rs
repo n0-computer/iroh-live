@@ -78,6 +78,7 @@ pub(super) async fn open(
     );
 
     Ok(AudioTrack {
+        _broadcast: broadcast.clone(),
         rendition: rendition.to_string(),
         control,
         _task: AbortOnDropHandle::new(task),

@@ -79,9 +79,12 @@ async fn run(publish: Publish) -> Result<(), PublishError> {
         preview,
     } = publish;
 
-    // Wait for the previous publish, if any, to have dropped its track
-    // producers. The guard lives until this task ends, aborted or not.
-    let _slot = slot.lock().await;
+    // Wait for the previous publish to have dropped its track producers. The
+    // guard is shared with every encoder task, because that is where the
+    // producers actually live: releasing it when this function returns would
+    // let a replacement create a track whose name an aborted encoder still
+    // owns for a few more scheduler ticks.
+    let slot = Arc::new(slot.lock_owned().await);
 
     match source {
         VideoSource::AnnexB(bytes) => {
@@ -110,6 +113,7 @@ async fn run(publish: Publish) -> Result<(), PublishError> {
             );
             fan_out(
                 broadcast, catalog, stats, renditions, preview, frames, size, framerate, color,
+                slot,
             )
             .await
         }
@@ -134,6 +138,7 @@ async fn run(publish: Publish) -> Result<(), PublishError> {
                 size,
                 DEFAULT_FRAMERATE,
                 color,
+                slot,
             )
             .await
         }
@@ -155,6 +160,7 @@ async fn fan_out(
     size: Size,
     framerate: u32,
     color: Option<moq_video::Color>,
+    slot: Arc<tokio::sync::OwnedMutexGuard<()>>,
 ) -> Result<(), PublishError> {
     let mut senders = Vec::with_capacity(renditions.len());
     let mut encoders = JoinSet::new();
@@ -177,10 +183,19 @@ async fn fan_out(
 
         let (tx, rx) = frame_channel();
         senders.push(tx);
-        encoders.spawn(
-            encode_rendition(producer, config, rx, stats.clone())
-                .instrument(error_span!("rendition", name = %rendition.name)),
-        );
+        encoders.spawn({
+            let slot = slot.clone();
+            let encode = encode_rendition(producer, config, rx, stats.clone())
+                .instrument(error_span!("rendition", name = %rendition.name));
+            async move {
+                let result = encode.await;
+                // Explicit so the guard's lifetime is visible: it is what keeps
+                // a replacement publish from creating a track this encoder's
+                // producer still owns.
+                drop(slot);
+                result
+            }
+        });
     }
 
     while let Some(frame) = frames.next().await {

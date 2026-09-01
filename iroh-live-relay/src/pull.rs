@@ -22,6 +22,7 @@
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use iroh_live::ticket::LiveTicket;
@@ -147,12 +148,13 @@ impl PullState {
             .and_then(|origin| origin.scope(&[Path::new(&ticket.broadcast_name)]))
             .ok_or_else(|| anyhow::anyhow!("failed to scope pull origin for {local_name}"))?;
 
-        let connection = self
-            .endpoint
-            .connect(ticket.endpoint.clone(), iroh_moq::ALPN)
+        // Through `iroh_moq::dial` rather than a bare `connect`, so the pull
+        // negotiates every MoQ version this build speaks and handles whichever
+        // one the publisher chose. Dialing a single ALPN here would make a
+        // publisher on an older release unpullable.
+        let transport = iroh_moq::dial(&self.endpoint, ticket.endpoint.clone())
             .await
             .map_err(|e| anyhow::anyhow!("failed to connect to remote: {e}"))?;
-        let transport = web_transport_iroh::Session::raw(connection);
         let (session, driver) = moq_net::Client::new()
             .with_subscriber(subscriber)
             .connect(transport)
@@ -169,23 +171,51 @@ impl PullState {
             "remote broadcast available locally"
         );
 
-        // Keep the session alive until it closes. The cluster manages
-        // broadcast lifecycle via reference counting on the mirrored origin.
-        // When the remote disconnects or the session errors, this task
-        // ends and the session drops, which tears down the transport.
+        // This task holds the only `Session` clone, so the transport lives
+        // exactly as long as it does. Waiting on `closed()` alone would mean
+        // waiting on the remote publisher, which for a relay means one QUIC
+        // connection per ticket ever pulled, held for the process's lifetime.
+        // So it also gives up once the connection has carried nothing for a
+        // while: a pull nobody is watching stops moving bytes, and the
+        // cluster's own reference counting has already dropped the broadcast
+        // by then. A viewer that returns re-pulls, which costs one dial.
         let name_owned = local_name.to_owned();
         tokio::spawn(async move {
-            let err = session.closed().await;
-            tracing::info!(
-                local_name = %name_owned,
-                error = %err,
-                "pull session closed"
-            );
+            tokio::select! {
+                err = session.closed() => {
+                    tracing::info!(local_name = %name_owned, error = %err, "pull session closed");
+                }
+                () = idle(&session) => {
+                    tracing::info!(local_name = %name_owned, "pull session idle, closing");
+                    session.abort(moq_net::Error::Cancel);
+                }
+            }
         });
 
         Ok(())
     }
 }
+
+/// Resolves once the connection has carried no new bytes for [`IDLE_TIMEOUT`].
+///
+/// Byte counters rather than a subscriber count, because the relay's cluster
+/// owns the broadcast's lifecycle and does not report it here. A live pull
+/// moves bytes continuously, so a quiet connection is one nobody is reading.
+async fn idle(session: &moq_net::Session) {
+    let mut last = session.stats().bytes_received;
+    loop {
+        tokio::time::sleep(IDLE_CHECK).await;
+        let now = session.stats().bytes_received;
+        if now == last && now.is_some() {
+            return;
+        }
+        last = now;
+    }
+}
+
+/// How often the idle check samples the connection, and so also the coarseness
+/// of [`IDLE_TIMEOUT`].
+const IDLE_CHECK: Duration = Duration::from_secs(60);
 
 #[cfg(test)]
 mod tests {
