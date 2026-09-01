@@ -262,11 +262,8 @@ fn set_camera(broadcast: &LocalBroadcast, size: Size) -> Result<CameraSink> {
 ///
 /// Unlike the camera, this is a device the publish task opens itself: nothing
 /// in Kotlin touches the microphone.
-fn set_microphone(broadcast: &LocalBroadcast) -> Result<()> {
-    broadcast
-        .audio()
-        .set(moq_audio::capture::Config::default())?;
-    Ok(())
+fn set_microphone(broadcast: &LocalBroadcast) {
+    broadcast.audio().set(moq_audio::capture::Config::default());
 }
 
 /// Creates a broadcast with no transport behind it, for the offline pipelines.
@@ -359,7 +356,7 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
     // and subscribes to the other's.
     let broadcast = live.publish(Call::path(live.endpoint().id()))?;
     let camera = set_camera(&broadcast, size)?;
-    set_microphone(&broadcast)?;
+    set_microphone(&broadcast);
 
     let call = Call::dial(&live, ticket.endpoint, broadcast).await?;
     info!(remote = %call.remote_id().fmt_short(), "call connected");
@@ -414,7 +411,7 @@ async fn publish_impl(name: String, size: Size) -> Result<jlong> {
 
     let broadcast = live.publish(&name)?;
     let camera = set_camera(&broadcast, size)?;
-    set_microphone(&broadcast)?;
+    set_microphone(&broadcast);
 
     let ticket = LiveTicket::new(live.endpoint().id(), &name).to_string();
     info!(%ticket, "broadcast published");

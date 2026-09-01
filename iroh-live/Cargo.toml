@@ -63,3 +63,9 @@ render = ["moq-media/render"]
 vaapi = ["moq-media/vaapi"]
 # NVIDIA hardware encode and decode.
 nvidia = ["moq-media/nvidia"]
+
+# The example opens a camera and a microphone, so it needs the devices.
+[[example]]
+name = "publish"
+path = "examples/publish.rs"
+required-features = ["capture"]

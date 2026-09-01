@@ -14,6 +14,7 @@ use n0_future::{StreamExt, boxed::BoxStream};
 use crate::gles::GlesRenderer;
 
 /// Poll interval between frame checks (about 250 fps ceiling).
+#[cfg(feature = "windowed")]
 const POLL_INTERVAL: Duration = Duration::from_millis(4);
 
 /// Uploads the newest frame, if one arrived since the last call, and reports

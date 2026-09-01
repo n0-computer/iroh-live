@@ -85,10 +85,10 @@ carry. They sit behind `cfg(target_os = "android")` alongside the objc2 and
 Windows families, and are selected with `encode::Kind::Named("mediacodec")`.
 
 Until those are in a published release, the workspace carries a
-`[patch.crates-io]` block pointing the whole moq family at a local `../moq`
-checkout. Every pinned version matches what `moq-dev/moq@main` publishes, so
-deleting the patch block is the whole revert. It is also why CI cannot pass on
-this branch.
+`[patch.crates-io]` block pointing the whole moq family at
+`Frando/moq@iroh-live`, one commit per prospective PR. Every pinned version
+matches what `moq-dev/moq@main` publishes, so deleting the patch block is the
+whole revert.
 
 ## What we lost
 

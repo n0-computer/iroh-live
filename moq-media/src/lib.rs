@@ -34,12 +34,11 @@ pub mod sync;
 #[cfg(any(test, feature = "test-source"))]
 pub mod test_source;
 
+/// The upstream audio stack: capture, encode, decode, playback, and echo
+/// cancellation.
+pub use moq_audio as audio;
 /// The upstream video stack: capture, encode, decode, render, and the [`Frame`]
 /// vocabulary every one of them speaks.
 ///
 /// [`Frame`]: moq_video::Frame
 pub use moq_video as video;
-
-/// The upstream audio stack: capture, encode, decode, playback, and echo
-/// cancellation.
-pub use moq_audio as audio;

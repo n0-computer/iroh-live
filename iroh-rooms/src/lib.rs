@@ -24,7 +24,10 @@
 //! let mut broadcast = room.publish("cam").await?;
 //!
 //! while let Ok(event) = room.recv().await {
-//!     if let RoomEvent::BroadcastSubscribed { remote, broadcast, .. } = event {
+//!     if let RoomEvent::BroadcastSubscribed {
+//!         remote, broadcast, ..
+//!     } = event
+//!     {
 //!         println!("{remote} is publishing, and we can now read its tracks");
 //!     }
 //! }

@@ -90,6 +90,6 @@ cargo make test-full   # check-all, then both of the above
 The `frame_dump` example, which saved frames as PNGs and checked them against an
 SMPTE pattern by PSNR, was removed with the in-house decoder it drove. The
 patchbay network-simulation test was removed along with the pipeline it
-exercised, though `patchbay` is still a Linux dev-dependency and
-`cargo make test-patchbay` still exists as a task. The `pi-zero-demo codec-test`
-subcommand went with the V4L2 M2M codec it tested.
+exercised, and its dev-dependency, its cargo-make task, and its nextest test
+group went with it. The `pi-zero-demo codec-test` subcommand went with the V4L2
+M2M codec it tested.

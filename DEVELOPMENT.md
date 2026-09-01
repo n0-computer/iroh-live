@@ -25,10 +25,13 @@ Codecs, capture, decoding, and the wgpu renderer are upstream in `moq-video` and
 
 ## The patch block
 
-`Cargo.toml` carries a `[patch.crates-io]` block pointing the moq crates at a
-local `../moq` checkout, for five changes that have not reached a release. Every
-pinned version matches what `moq-dev/moq@main` publishes, so deleting the block
-is the whole revert once they land. CI cannot pass until then.
+`Cargo.toml` carries a `[patch.crates-io]` block pointing the moq crates at
+`Frando/moq@iroh-live`, a branch of five changes that have not reached a
+release. Every pinned version matches what `moq-dev/moq@main` publishes, so
+deleting the block is the whole revert once they land. `Cargo.lock` pins the
+revision, so a clean clone and CI build the same tree; to work against a local
+checkout instead, point the block at `../moq/rs/<crate>` and leave it
+uncommitted.
 
 ## Build and test
 

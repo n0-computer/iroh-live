@@ -78,11 +78,19 @@ mod_module_files = "deny"
 # upstreamed (Android MediaCodec, libcamera). Every version above matches what
 # `moq-dev/moq@main` publishes, so deleting this block is the whole revert once
 # those land in a release.
+# This branch depends on five unreleased moq changes: the public capture stream,
+# a catalog-extension-generic `publish_capture`, the two Android MediaCodec
+# commits, and the lenient avc1 decode. They live on `Frando/moq@iroh-live`, one
+# commit per prospective PR, and the branch is amended rather than added to as
+# review moves them along. `Cargo.lock` pins the exact revision, so a checkout
+# builds what CI built even after an amend.
+#
+# Deleting this block is the whole fix once the commits land in a moq release.
 [patch.crates-io]
-hang = { path = "../moq/rs/hang" }
-moq-audio = { path = "../moq/rs/moq-audio" }
-moq-mux = { path = "../moq/rs/moq-mux" }
-moq-native = { path = "../moq/rs/moq-native" }
-moq-net = { path = "../moq/rs/moq-net" }
-moq-relay = { path = "../moq/rs/moq-relay" }
-moq-video = { path = "../moq/rs/moq-video" }
+hang = { git = "https://github.com/Frando/moq", branch = "iroh-live" }
+moq-audio = { git = "https://github.com/Frando/moq", branch = "iroh-live" }
+moq-mux = { git = "https://github.com/Frando/moq", branch = "iroh-live" }
+moq-native = { git = "https://github.com/Frando/moq", branch = "iroh-live" }
+moq-net = { git = "https://github.com/Frando/moq", branch = "iroh-live" }
+moq-relay = { git = "https://github.com/Frando/moq", branch = "iroh-live" }
+moq-video = { git = "https://github.com/Frando/moq", branch = "iroh-live" }

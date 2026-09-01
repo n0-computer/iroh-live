@@ -42,9 +42,9 @@ Full flag reference: [docs/cli.md](docs/cli.md).
 
 ## Using iroh-live in Rust
 
-The workspace currently patches the moq crates to a local `../moq` checkout for
-five changes that have not reached a release yet. Until they land, a downstream
-user needs to copy the `[patch.crates-io]` block from [Cargo.toml](Cargo.toml).
+The workspace patches the moq crates to `Frando/moq@iroh-live` for five changes
+that have not reached a release yet. Until they land, a downstream user needs to
+copy the `[patch.crates-io]` block from [Cargo.toml](Cargo.toml).
 
 Publish a camera and a microphone:
 

@@ -1,9 +1,7 @@
-# CI cannot pass on this branch yet. The root `Cargo.toml` carries a
-# `[patch.crates-io]` block pointing at a local moq checkout, because the branch
-# depends on five moq changes that have not been released: the public capture
-# stream, a catalog-extension-generic `publish_capture`, and the three Android
-# MediaCodec commits. Once those land in a moq release, deleting the patch block
-# is the whole fix and every job below runs as written.
+# The root `Cargo.toml` patches the moq family to `Frando/moq@iroh-live`, a
+# branch of five commits this branch depends on that are not in a moq release
+# yet. `Cargo.lock` pins the revision, so these jobs build what a local checkout
+# builds. Deleting the patch block is the whole fix once the commits land.
 name: CI
 on:
   push:

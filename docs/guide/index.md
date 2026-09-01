@@ -33,10 +33,10 @@ cargo build --workspace                  # default features
 cargo build --workspace --all-features   # everything, including VAAPI and NVIDIA
 ```
 
-The workspace currently patches the moq crates to a local `../moq` checkout for
-five changes that have not reached a release yet. See [the media
-stack](../architecture/media-stack.md#what-we-contributed-upstream). Until they
-land, building from a clean clone needs that checkout beside this one.
+The workspace patches the moq crates to `Frando/moq@iroh-live` for five changes
+that have not reached a release yet. See [the media
+stack](../architecture/media-stack.md#what-we-contributed-upstream). A clean
+clone builds without further setup; `Cargo.lock` pins the revision.
 
 ## First stream
 

@@ -14,9 +14,9 @@ bytes = "1.11.0"
 clap = { version = "4.5", features = ["derive"] }
 eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
 iroh = { workspace = true }
-iroh-live = { workspace = true }
+iroh-live = { workspace = true, features = ["capture"] }
 moq-net = { workspace = true }
-moq-media = { workspace = true, features = ["test-source"] }
+moq-media = { workspace = true, features = ["test-source", "capture"] }
 moq-media-egui = { workspace = true, optional = true }
 moq-mux = { workspace = true }
 n0-error = { version = "1", features = ["anyhow"] }
@@ -30,11 +30,12 @@ tracing-subscriber = "0.3.20"
 eframe = { workspace = true, features = ["wayland", "x11"] }
 
 [features]
-default = ["capture", "playback", "render"]
-capture = ["iroh-live/capture", "moq-media/capture"]
+# Capture is not a feature here: `irl devices` and `irl publish` are most of the
+# CLI and neither compiles without it, so the dependencies ask for it directly.
+default = ["playback", "render"]
 playback = ["iroh-live/playback", "moq-media/playback"]
 aec = ["iroh-live/aec", "moq-media/aec"]
-pipewire = ["capture", "iroh-live/pipewire", "moq-media/pipewire"]
+pipewire = ["iroh-live/pipewire", "moq-media/pipewire"]
 render = ["iroh-live/render", "moq-media/render", "dep:moq-media-egui"]
 vaapi = ["iroh-live/vaapi", "moq-media/vaapi"]
 nvidia = ["iroh-live/nvidia", "moq-media/nvidia"]
