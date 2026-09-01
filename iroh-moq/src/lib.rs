@@ -500,10 +500,6 @@ enum ActorMessage {
     },
 }
 
-/// The generation given to a session that does not own its peer's slot, so its
-/// exit never evicts the one that does. Generations start at one.
-const NO_GENERATION: u64 = 0;
-
 type PendingConnects = HashMap<EndpointId, Vec<oneshot::Sender<Result<MoqSession, Arc<Error>>>>>;
 type ConnectResult = (EndpointId, Result<(MoqSession, moq_net::Driver), Error>);
 
@@ -512,10 +508,13 @@ struct Actor {
     shutdown_token: CancellationToken,
     incoming_session_tx: tokio_broadcast::Sender<MoqSession>,
     origin: origin::Producer,
-    sessions: HashMap<EndpointId, MoqSession>,
-    /// Which session generation currently owns each peer's slot, so a task
-    /// ending after its successor arrived does not evict the live one.
-    generations: HashMap<EndpointId, u64>,
+    /// Every live session per peer, oldest first. Normally one; a simultaneous
+    /// dial leaves two, and the first is the one `connect` hands out. Keeping
+    /// the second here rather than dropping it on the floor is what lets it be
+    /// promoted when the first ends, instead of being driven but unreachable.
+    sessions: HashMap<EndpointId, Vec<(u64, MoqSession)>>,
+    /// Counts sessions, so a task's exit names the session it drove rather than
+    /// whichever one holds the slot by the time it lands.
     generation: u64,
     session_tasks: JoinSet<(EndpointId, u64, Result<(), moq_net::Error>)>,
     pending_connects: PendingConnects,
@@ -534,7 +533,6 @@ impl Actor {
             incoming_session_tx,
             origin,
             sessions: Default::default(),
-            generations: Default::default(),
             generation: 0,
             session_tasks: Default::default(),
             pending_connects: Default::default(),
@@ -555,12 +553,7 @@ impl Actor {
                     match res {
                         Ok((endpoint_id, generation, res)) => {
                             info!(remote=%endpoint_id.fmt_short(), "session closed: {res:?}");
-                            // Only evict if this is still the session in the
-                            // slot; a replacement may already have taken it.
-                            if self.generations.get(&endpoint_id) == Some(&generation) {
-                                self.sessions.remove(&endpoint_id);
-                                self.generations.remove(&endpoint_id);
-                            }
+                            self.forget_session(endpoint_id, generation);
                         }
                         Err(err) => tracing::error!("session task panicked: {err}"),
                     }
@@ -600,45 +593,50 @@ impl Actor {
         let remote = session.remote_id();
 
         // Two peers that dial each other at the same time each end up with two
-        // connections: one they dialed and one they accepted. Keep the first to
-        // arrive as the one `connect` hands out, and leave the second running.
+        // connections: one they dialed and one they accepted. Both are kept and
+        // both are driven; the oldest is the one `connect` hands out, and the
+        // other is promoted if it ends.
         //
-        // Closing the second is tempting and wrong. The two sides do not see
-        // the collision at the same instant, so by the time one closes its
-        // loser the other may already have handed that same connection to a
-        // caller, whose subscribe then dies. A deterministic tie-break does not
-        // help, because the handles are given out before the collision is even
-        // visible. The second connection costs one idle QUIC connection until
-        // either peer goes away, which is the cheaper of the two failures.
-        if self.sessions.contains_key(&remote) {
+        // Closing the loser is tempting and wrong. The two sides do not see the
+        // collision at the same instant, so by the time one closes its loser
+        // the other may already have handed that same connection to a caller,
+        // whose subscribe then dies. A deterministic tie-break does not help,
+        // for the same reason: the handles are given out before the collision is
+        // visible. So the cost is one extra connection until a peer goes away.
+        self.generation += 1;
+        let generation = self.generation;
+        let peer = self.sessions.entry(remote).or_default();
+        let duplicate = !peer.is_empty();
+        peer.push((generation, session.clone()));
+        let serve = peer[0].1.clone();
+
+        if duplicate {
             debug!(
                 remote = %remote.fmt_short(),
-                "simultaneous connect; keeping the first session",
+                "simultaneous connect; serving the first session",
             );
-            let existing = self.sessions[&remote].clone();
-            for reply in self.pending_connects.remove(&remote).into_iter().flatten() {
-                reply.send(Ok(existing.clone())).ok();
-            }
-            // Still drive it: the peer may be using this one, and an undriven
-            // session stalls rather than closing. `NO_GENERATION` keeps its
-            // exit from evicting the session that does own the slot.
-            self.spawn_driver(remote, NO_GENERATION, session, driver);
-            return;
         }
-
-        // The generation tells a session task's exit apart from a later
-        // session's entry, so a task that ends after its successor took the
-        // slot does not evict the live one.
-        self.generation += 1;
-        self.generations.insert(remote, self.generation);
-        self.sessions.insert(remote, session.clone());
         // Notify incoming session subscribers (best-effort, ok if no receivers).
         self.incoming_session_tx.send(session.clone()).ok();
         for reply in self.pending_connects.remove(&remote).into_iter().flatten() {
-            reply.send(Ok(session.clone())).ok();
+            reply.send(Ok(serve.clone())).ok();
         }
 
-        self.spawn_driver(remote, self.generation, session, driver);
+        self.spawn_driver(remote, generation, session, driver);
+    }
+
+    /// Drops the session a finished task was driving.
+    ///
+    /// By generation rather than by peer, so a task landing after a newer
+    /// session arrived removes its own entry and leaves the newer one serving.
+    fn forget_session(&mut self, remote: EndpointId, generation: u64) {
+        let hash_map::Entry::Occupied(mut entry) = self.sessions.entry(remote) else {
+            return;
+        };
+        entry.get_mut().retain(|(id, _)| *id != generation);
+        if entry.get().is_empty() {
+            entry.remove();
+        }
     }
 
     /// Runs a session's protocol driver until the session ends.
@@ -679,7 +677,7 @@ impl Actor {
         reply: oneshot::Sender<Result<MoqSession, Arc<Error>>>,
     ) {
         let remote_id = remote.id;
-        if let Some(session) = self.sessions.get(&remote_id) {
+        if let Some((_, session)) = self.sessions.get(&remote_id).and_then(|peer| peer.first()) {
             reply.send(Ok(session.clone())).ok();
             return;
         }
