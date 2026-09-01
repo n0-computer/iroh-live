@@ -1,7 +1,7 @@
 //! Generated media sources, for tests and demos that need no hardware.
 //!
 //! `moq-video` and `moq-audio` ship no test sources: a caller that wants
-//! pixels without a camera builds a [`Surface`](moq_video::Surface) itself.
+//! pixels without a camera builds a [`Surface`] itself.
 //! These do that, so a test can publish something real over a real transport
 //! without a device, a driver, or a file.
 

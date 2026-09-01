@@ -34,7 +34,8 @@ names a backend. `moq_video::encode::Kind` lets a caller ask for `Hardware`,
 
 H.264 encodes and decodes everywhere, because openh264 is statically linked and
 always compiled in. H.265 is hardware-only: with no usable platform backend you
-get an error rather than a slow path. AV1 is decode-only, via NVDEC.
+get an error rather than a slow path. AV1 is decode-only, via NVDEC on Linux
+and MediaCodec on Android.
 
 Audio is Opus or PCM out, and Opus, PCM, or AAC-LC in. AAC decode stays enabled
 in our dependency because a broadcast that reached us through an RTMP or HLS

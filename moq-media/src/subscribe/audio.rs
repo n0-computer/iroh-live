@@ -45,6 +45,12 @@ pub(super) async fn open(
 
     let task = spawn(
         async move {
+            // `consumer.read()` sits in a `select!`, which the video side goes
+            // out of its way to avoid. It is safe here because the audio
+            // consumer reads through a poll function whose state lives in
+            // `&mut self`, with no `Sink` to poison, and because the only
+            // competing arm is terminal: a cancelled read is never re-polled.
+            // A third arm would break both halves of that argument.
             loop {
                 tokio::select! {
                     _ = context.shutdown.cancelled() => {

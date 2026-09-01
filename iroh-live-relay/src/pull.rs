@@ -14,15 +14,18 @@
 //! only that broadcast lands in the cluster and nothing else the remote node
 //! happens to publish leaks through.
 //!
-//! The cluster manages broadcast lifecycle: when all subscribers disconnect,
-//! the broadcast is removed. A background task drives the session's protocol
-//! loop and holds the session alive until it closes, then logs the teardown.
-//! No idle timer is needed.
+//! The cluster manages the broadcast's lifecycle: when the last subscriber
+//! disconnects, the broadcast is removed. The QUIC connection to the publisher
+//! is not covered by that, and outlives it: a background task drives the
+//! session and holds it until the publisher closes. So a relay accumulates one
+//! connection per ticket ever pulled. Closing them needs the cluster's
+//! subscriber count for the mirrored name, which `moq_relay::Cluster` does not
+//! expose; a transport-level idle timer does not work, because iroh keep-alives
+//! keep every byte counter moving on a connection nobody is reading.
 
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 use iroh_live::ticket::LiveTicket;
@@ -172,50 +175,25 @@ impl PullState {
         );
 
         // This task holds the only `Session` clone, so the transport lives
-        // exactly as long as it does. Waiting on `closed()` alone would mean
-        // waiting on the remote publisher, which for a relay means one QUIC
-        // connection per ticket ever pulled, held for the process's lifetime.
-        // So it also gives up once the connection has carried nothing for a
-        // while: a pull nobody is watching stops moving bytes, and the
-        // cluster's own reference counting has already dropped the broadcast
-        // by then. A viewer that returns re-pulls, which costs one dial.
+        // exactly as long as it does, and it waits on the remote publisher.
+        //
+        // That is a leak, and a known one: a relay holds one QUIC connection
+        // per ticket ever pulled until that publisher goes away, whether or not
+        // anyone is still watching. An idle timer looked like the fix and is
+        // not: every counter reachable from here is a transport counter, and
+        // iroh sends keep-alives every five seconds, so a quiet connection
+        // never looks quiet. The signal that would answer is the cluster's
+        // subscriber count for `local_name`, which `moq_relay::Cluster` does not
+        // expose.
         let name_owned = local_name.to_owned();
         tokio::spawn(async move {
-            tokio::select! {
-                err = session.closed() => {
-                    tracing::info!(local_name = %name_owned, error = %err, "pull session closed");
-                }
-                () = idle(&session) => {
-                    tracing::info!(local_name = %name_owned, "pull session idle, closing");
-                    session.abort(moq_net::Error::Cancel);
-                }
-            }
+            let err = session.closed().await;
+            tracing::info!(local_name = %name_owned, error = %err, "pull session closed");
         });
 
         Ok(())
     }
 }
-
-/// Resolves once the connection has carried no new bytes for [`IDLE_TIMEOUT`].
-///
-/// Byte counters rather than a subscriber count, because the relay's cluster
-/// owns the broadcast's lifecycle and does not report it here. A live pull
-/// moves bytes continuously, so a quiet connection is one nobody is reading.
-async fn idle(session: &moq_net::Session) {
-    let mut last = session.stats().bytes_received;
-    loop {
-        tokio::time::sleep(IDLE_CHECK).await;
-        let now = session.stats().bytes_received;
-        if now == last && now.is_some() {
-            return;
-        }
-        last = now;
-    }
-}
-
-/// How often the idle check samples the connection, and so also the coarseness
-/// of [`IDLE_TIMEOUT`].
-const IDLE_CHECK: Duration = Duration::from_secs(60);
 
 #[cfg(test)]
 mod tests {

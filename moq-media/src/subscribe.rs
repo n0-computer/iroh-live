@@ -82,9 +82,13 @@ pub enum SubscribeError {
 #[derive(Debug, Clone, Default)]
 pub struct CatalogSnapshot(Arc<Catalog>);
 
-// `Watchable` needs `Eq` to tell an update from a repeat. The catalog itself
-// carries floats and so is only `PartialEq`; identity is the right comparison
-// anyway, because every update allocates a fresh snapshot.
+/// Compares by identity, not content.
+///
+/// Two snapshots carrying the same catalog are not equal, and even
+/// `CatalogSnapshot::default()` differs from another `default()`, because each
+/// allocates. That is deliberate: `Watchable` needs `Eq` to tell an update from
+/// a repeat, hang's catalog carries floats and so is only `PartialEq`, and every
+/// update allocates a fresh snapshot, so identity never swallows one.
 impl PartialEq for CatalogSnapshot {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
@@ -208,6 +212,11 @@ impl RemoteBroadcast {
             .next()
             .await?
             .ok_or_else(|| e!(SubscribeError::NoCatalog))?;
+        if tracing::enabled!(tracing::Level::TRACE)
+            && let Ok(json) = serde_json::to_string(&first)
+        {
+            tracing::trace!(broadcast = %name, catalog = %json, "first catalog");
+        }
         let catalog = Watchable::new(CatalogSnapshot(Arc::new(first)));
 
         let task = {
@@ -218,6 +227,14 @@ impl RemoteBroadcast {
                     loop {
                         match consumer.next().await {
                             Ok(Some(next)) => {
+                                // At trace, because a catalog is the first thing
+                                // to look at when a publisher and a subscriber
+                                // disagree about what is on the wire.
+                                if tracing::enabled!(tracing::Level::TRACE)
+                                    && let Ok(json) = serde_json::to_string(&next)
+                                {
+                                    tracing::trace!(catalog = %json, "catalog updated");
+                                }
                                 catalog.set(CatalogSnapshot(Arc::new(next))).ok();
                             }
                             Ok(None) => {

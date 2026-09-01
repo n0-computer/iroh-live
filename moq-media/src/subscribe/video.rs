@@ -90,26 +90,6 @@ struct Reader {
     _task: AbortOnDropHandle<()>,
 }
 
-impl Reader {
-    /// A reader with no decoder behind it, whose channel never yields.
-    ///
-    /// Stands in for an incumbent that ended while a replacement is still
-    /// opening, so the supervisor keeps waiting for the replacement instead of
-    /// spinning on a closed channel.
-    fn spent() -> Self {
-        let (tx, frames) = mpsc::channel(1);
-        Self {
-            decoder: String::new(),
-            frames,
-            // Holds the sender, so the channel stays open and its arm pends.
-            _task: AbortOnDropHandle::new(spawn(async move {
-                std::future::pending::<()>().await;
-                drop(tx);
-            })),
-        }
-    }
-}
-
 /// Subscribes to a rendition, opens its decoder, and starts reading it.
 ///
 /// Returns once the decoder is open, so a caller can tell an unusable rendition
@@ -175,7 +155,7 @@ async fn spawn_reader(
 /// Forwards frames to the renderer and swaps decoders when a switch is asked for.
 async fn supervise(
     broadcast: RemoteBroadcast,
-    mut reader: Reader,
+    reader: Reader,
     frames: FrameSender<moq_video::Frame>,
     current: Watchable<String>,
     decoder: Watchable<String>,
@@ -186,6 +166,10 @@ async fn supervise(
     let synced = is_synced(&context.policy);
     // The replacement, from the moment its decoder opens until its first frame
     // arrives. Holding both is what keeps the picture up across the swap.
+    // `None` while the incumbent has ended and a replacement is still opening.
+    // Nothing is playing in that window, so every exit below has to check
+    // whether anything is left before parking on it.
+    let mut reader: Option<Reader> = Some(reader);
     let mut pending: Option<(String, Reader)> = None;
     // The open in flight. It runs as its own task rather than inside a `select!`
     // arm, because opening a decoder means a network round trip and a codec
@@ -214,6 +198,10 @@ async fn supervise(
                 if name == current.get() {
                     pending = None;
                     opening = None;
+                    if reader.is_none() {
+                        debug!("the only replacement was cancelled with nothing playing");
+                        return;
+                    }
                     continue;
                 }
                 let already = pending.as_ref().is_some_and(|(open, _)| *open == name)
@@ -254,6 +242,10 @@ async fn supervise(
                         clear_request(&withdraw, &name);
                     }
                 }
+                if reader.is_none() && pending.is_none() {
+                    debug!("nothing left to decode after the replacement failed");
+                    return;
+                }
             }
 
             // The replacement's first frame: hand over.
@@ -267,18 +259,24 @@ async fn supervise(
                         context.stats.render.decoder.set(&replacement.decoder);
                         context.stats.render.rendition.set(&name);
                         decoder.set(replacement.decoder.clone()).ok();
-                        reader = replacement;
+                        reader = Some(replacement);
                         current.set(name).ok();
                         deliver(&frames, frame, &context, synced, &mut previous).await;
                     }
                     None => {
                         debug!(rendition = %name, "replacement ended before its first frame");
                         clear_request(&withdraw, &name);
+                        if reader.is_none() && opening.is_none() {
+                            debug!("nothing left to decode after the replacement ended");
+                            return;
+                        }
                     }
                 }
             }
 
-            frame = reader.frames.recv() => match frame {
+            frame = async { reader.as_mut().expect("guarded").frames.recv().await },
+                if reader.is_some() =>
+            match frame {
                 Some(frame) => deliver(&frames, frame, &context, synced, &mut previous).await,
                 None => {
                     // A replacement already open takes over rather than being
@@ -287,16 +285,18 @@ async fn supervise(
                     match pending.take() {
                         Some((name, replacement)) => {
                             info!(rendition = %name, "incumbent ended, promoting the replacement");
+                            context.stats.render.decoder.set(&replacement.decoder);
+                            context.stats.render.rendition.set(&name);
                             decoder.set(replacement.decoder.clone()).ok();
-                            reader = replacement;
+                            reader = Some(replacement);
                             current.set(name).ok();
                         }
                         None if opening.is_some() => {
                             debug!("incumbent ended while a replacement is opening");
-                            // Park on the remaining arms until it lands. The
-                            // reader's channel stays closed, so its arm resolves
-                            // immediately; swap in an empty one that never does.
-                            reader = Reader::spent();
+                            // Nothing is playing until it lands. Its arm is
+                            // disabled meanwhile, and every path that gives up
+                            // on the open returns rather than parking here.
+                            reader = None;
                         }
                         None => {
                             debug!("video decode ended");

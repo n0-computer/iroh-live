@@ -43,7 +43,7 @@ test("Browser publish → CLI subscribe", async ({ page }) => {
     "--frames",
     "3",
   ], {
-    env: { ...process.env, RUST_LOG: "info" },
+    env: { ...process.env, RUST_LOG: process.env.RUST_LOG ?? "info" },
   });
 
   const result = await waitForExit(subscriber, 45_000);

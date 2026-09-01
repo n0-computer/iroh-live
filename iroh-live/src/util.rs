@@ -42,7 +42,7 @@ where
 ///
 /// The task runs until `shutdown` is cancelled or the connection closes.
 /// Returns a `watch::Receiver<NetworkSignals>` that the caller can pass
-/// to [`RemoteBroadcast::adaptive_video()`](moq_media::subscribe::RemoteBroadcast::adaptive_video).
+/// to [`VideoTrack::enable_adaptation`](moq_media::subscribe::VideoTrack::enable_adaptation).
 pub fn spawn_signal_producer(
     conn: &Connection,
     shutdown: CancellationToken,
@@ -105,7 +105,7 @@ pub fn spawn_signal_producer(
 }
 
 /// Spawns a background task that records connection stats into a
-/// [`NetStats`] for overlay display.
+/// [`NetStats`](moq_media::stats::NetStats) for a UI to draw.
 ///
 /// Records RTT, loss rate, and bandwidth estimates every 200ms.
 /// The task runs until `shutdown` is cancelled. Callers should pass

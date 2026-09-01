@@ -92,3 +92,46 @@ mod tests {
         assert_eq!(parsed.ext.user, catalog.ext.user);
     }
 }
+
+#[cfg(test)]
+mod interop_tests {
+    use super::*;
+
+    /// A catalog as `@moq/hang` publishes it from a browser: an `avc1` track,
+    /// whose codec configuration is out of band, so the `description` carrying
+    /// the avcC record is what makes it decodable at all.
+    ///
+    /// Our extension flattens into the same object, so a bug in how it is
+    /// deserialized shows up as a dropped media field rather than as an error.
+    const BROWSER_CATALOG: &str = r#"{
+        "video": {
+            "renditions": {
+                "360p": {
+                    "codec": "avc1.42e01e",
+                    "description": "0142e01effe1001a6742e01e",
+                    "codedWidth": 640,
+                    "codedHeight": 360,
+                    "bitrate": 1200000,
+                    "framerate": 30
+                }
+            }
+        },
+        "audio": { "renditions": {} }
+    }"#;
+
+    #[test]
+    fn browser_catalog_keeps_its_avcc_description() {
+        let catalog: Catalog =
+            serde_json::from_str(BROWSER_CATALOG).expect("a browser catalog should parse");
+        let video = catalog
+            .video
+            .renditions
+            .get("360p")
+            .expect("the 360p rendition");
+        assert!(
+            video.description.is_some(),
+            "an avc1 track without its description cannot be decoded",
+        );
+        assert_eq!(video.coded_width, Some(640));
+    }
+}

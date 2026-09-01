@@ -1,6 +1,6 @@
 //! EGL/GLES2 video viewer - windowed (winit) or direct-to-HDMI (DRM/KMS).
 //!
-//! Uses [`GlesRenderer`](crate::gles::GlesRenderer) for GLES2 rendering. The
+//! Uses [`GlesRenderer`] for GLES2 rendering. The
 //! DRM and windowed display backends handle EGL context + buffer swapping.
 
 use std::time::{Duration, Instant};

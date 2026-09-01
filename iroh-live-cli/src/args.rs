@@ -35,14 +35,14 @@ pub struct TransportArgs {
 /// What to capture and how to encode it.
 #[derive(Args, Debug)]
 pub struct CaptureArgs {
-    /// Video source: cam, cam:<id>, screen, screen:<id>, window:<id>,
-    /// app:<id>, file:<path>, test, or none.
+    /// Video source: `cam`, `cam:<id>`, `screen`, `screen:<id>`, `window:<id>`,
+    /// `app:<id>`, `file:<path>`, `test`, or `none`.
     ///
     /// Run `irl devices` for the identifiers this machine accepts.
     #[arg(long, default_value = "cam", verbatim_doc_comment)]
     pub video: String,
 
-    /// Audio source: mic, mic:<id>, system, file:<path>[:loop], test, or none.
+    /// Audio source: `mic`, `mic:<id>`, `system`, `file:<path>[:loop]`, `test`, or `none`.
     ///
     /// Anything else is taken as a device name, so `hw:0,1` works as written.
     #[arg(long, default_value = "mic", verbatim_doc_comment)]

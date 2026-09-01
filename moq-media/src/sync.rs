@@ -173,7 +173,7 @@ impl Sync {
 
     /// Waits until it is time to render the frame with the given PTS.
     ///
-    /// The async counterpart of [`wait_async`](Self::wait_async), for a decode loop that
+    /// For a decode loop that
     /// runs on the executor rather than an OS thread. Recomputes the delay once
     /// after sleeping, so a reference that moved earlier while we slept still
     /// holds the frame back.
@@ -206,9 +206,8 @@ impl Sync {
 
     /// How long the frame with the given PTS still has to wait.
     ///
-    /// The arithmetic behind both [`wait_async`](Self::wait_async) and
-    /// [`wait_async`](Self::wait_async), exposed so a caller can drive its own
-    /// timer.
+    /// The arithmetic behind [`wait_async`](Self::wait_async), exposed so a caller
+    /// can drive its own timer.
     pub fn delay(&self, timestamp: Duration) -> Delay {
         let timestamp_ms = timestamp.as_millis() as i64;
         let state = self.inner.state.lock().unwrap();
@@ -267,9 +266,8 @@ impl Sync {
         self.inner.changed.notify_waiters();
     }
 
-    /// Wakes all threads blocked in [`wait_async`](Self::wait_async) and causes
-    /// future `wait` calls to return `false` immediately. No JS
-    /// equivalent — Rust needs explicit cleanup since OS threads are
+    /// Wakes every [`wait_async`](Self::wait_async) and makes later ones return
+    /// `false` at once. No JS equivalent: Rust needs explicit cleanup where JS
     /// not cancelled automatically.
     pub fn close(&self) {
         let mut state = self.inner.state.lock().unwrap();

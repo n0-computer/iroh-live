@@ -26,7 +26,7 @@ use tracing::{Instrument, debug, error_span, field, info, instrument};
 
 /// The ALPN this node prefers, the newest MoQ version it speaks.
 ///
-/// A peer that only speaks an older one still connects: [`ALPNS`] carries the
+/// A peer that only speaks an older one still connects: [`alpns`] carries the
 /// whole list and both the dial and the router registration offer all of it.
 pub const ALPN: &[u8] = moq_net::ALPNS[0].as_bytes();
 
@@ -361,7 +361,7 @@ impl IncomingSessionStream {
 ///
 /// Reaches the broadcasts that peer announces. Everything this node publishes
 /// travels over it without further wiring, because every session shares the
-/// node origin. Created via [`Moq::connect`] or from an [`IncomingSession`].
+/// node origin. Created via [`Moq::connect`] or from an an accepted session.
 #[derive(Clone)]
 pub struct MoqSession {
     connection: Connection,

@@ -120,6 +120,22 @@ impl<T> FrameReceiver<T> {
         self.inner.produced.load(Ordering::Relaxed)
     }
 
+    /// Waits until every sender has been dropped.
+    ///
+    /// For a reader that has to notice the source ending while it is waiting on
+    /// something else, rather than while it is waiting for a frame.
+    pub async fn closed(&self) {
+        loop {
+            let notified = self.inner.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.is_closed() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
     /// Waits for the next value. Returns `None` when the sender is
     /// dropped and no value remains.
     ///

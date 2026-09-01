@@ -32,7 +32,7 @@ test("CLI publish → browser watch", async ({ page }) => {
     "--video", "test",
     "--audio", "none",
     "--codec", "h264",
-    "--video-presets", "360p",
+    "--renditions", "360p",
   ]);
 
   // Wait for publisher to announce

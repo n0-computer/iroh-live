@@ -220,7 +220,8 @@ impl Live {
     /// Connects to a remote peer and subscribes to a named broadcast.
     ///
     /// Returns a [`Subscription`](crate::Subscription) that owns the
-    /// [`MoqSession`], [`RemoteBroadcast`], and a network signals receiver.
+    /// [`MoqSession`](iroh_moq::MoqSession), [`RemoteBroadcast`], and the
+    /// transport signals that drive rendition adaptation.
     /// Stats recording and signal production are wired up automatically.
     #[instrument("Subscribe", skip_all, fields(remote=tracing::field::Empty))]
     pub async fn subscribe(

@@ -9,7 +9,7 @@
 //!
 //! Shelling out to a camera app is an application concern rather than a
 //! `moq-video` one, which is why this lives here. It produces a
-//! [`VideoSource::AnnexB`](crate::publish::VideoSource::AnnexB); `moq_mux`
+//! [`VideoSource::AnnexB`]; `moq_mux`
 //! splits the stream and derives the catalog rendition from its first SPS.
 
 use std::process::Stdio;

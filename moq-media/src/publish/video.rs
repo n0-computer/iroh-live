@@ -235,12 +235,23 @@ async fn encode_rendition(
     let target = config.size();
 
     loop {
-        // Idle until someone subscribes. The track and its catalog entry are
-        // already advertised, so a subscriber gets here without a frame ever
-        // having been encoded.
-        if let Err(err) = demand.used().await {
-            debug!(error = %err, "rendition no longer watched");
-            break;
+        // Idle until someone subscribes, or until the source ends. Waiting on
+        // demand alone would park here forever on a rendition nobody watched:
+        // the source's end closes the frame channel, which `demand` cannot see.
+        // The track and its catalog entry are already advertised, so a
+        // subscriber gets here without a frame ever having been encoded.
+        tokio::select! {
+            used = demand.used() => {
+                if let Err(err) = used {
+                    debug!(error = %err, "rendition no longer watched");
+                    break;
+                }
+            }
+            () = frames.closed() => {
+                debug!("source ended with nobody watching this rendition");
+                producer.finish()?;
+                return Ok(());
+            }
         }
 
         let mut encoder = encode::Sink::open(&config).await?;
