@@ -5,17 +5,10 @@ use iroh::{
     protocol::{Router, RouterBuilder},
 };
 use iroh_gossip::Gossip;
-use iroh_moq::{Moq, MoqProtocolHandler, MoqSession};
-use moq_media::{
-    format::PlaybackConfig,
-    publish::LocalBroadcast,
-    subscribe::{MediaTracks, RemoteBroadcast},
-    traits::AudioStreamFactory,
-};
+use iroh_moq::{Moq, MoqProtocolHandler};
+use moq_media::{publish::LocalBroadcast, subscribe::RemoteBroadcast};
 use n0_error::Result;
 use tracing::{error, info, instrument};
-
-use crate::rooms::{Room, RoomTicket};
 
 /// Entry point for iroh-live. Manages the iroh [`Endpoint`], MoQ transport,
 /// and optionally [`Gossip`] for room membership.
@@ -165,7 +158,13 @@ impl Live {
     /// Use this when you manage your own [`Router`] instead of calling
     /// [`LiveBuilder::with_router`].
     pub fn register_protocols(&self, router: RouterBuilder) -> RouterBuilder {
-        let router = router.accept(iroh_moq::ALPN, self.moq.protocol_handler());
+        // Every MoQ version this build speaks, not only the newest, so a peer
+        // built against a different moq release still finds one in common.
+        let handler = self.moq.protocol_handler();
+        let mut router = router;
+        for alpn in iroh_moq::alpns() {
+            router = router.accept(alpn, handler.clone());
+        }
         if let Some(ref gossip) = self.gossip {
             return router.accept(iroh_gossip::ALPN, gossip.clone());
         }
@@ -192,32 +191,30 @@ impl Live {
         self.moq.protocol_handler()
     }
 
-    /// Registers a broadcast so that every connected peer can subscribe to it.
+    /// Creates a media broadcast at `path`, announced to every peer.
     ///
-    /// The broadcast is published on all existing MoQ sessions immediately and
-    /// on every new session that is established afterwards, whether incoming
-    /// (accepted by the [`Router`]) or outbound (created via [`subscribe`](Self::subscribe)
-    /// or [`Moq::connect`](iroh_moq::Moq::connect)).
+    /// Configure it through [`LocalBroadcast::video`] and
+    /// [`LocalBroadcast::audio`]; peers reach it with [`subscribe`](Self::subscribe)
+    /// under the same path.
     ///
-    /// To publish on a single session instead, use
-    /// [`MoqSession::publish`](iroh_moq::MoqSession::publish) directly.
-    pub async fn publish(&self, name: impl ToString, broadcast: &LocalBroadcast) -> Result<()> {
-        self.moq.publish(name, broadcast.producer()).await
+    /// # Errors
+    ///
+    /// Fails if a broadcast already exists at `path`, or the catalog track
+    /// cannot be created.
+    pub fn publish(&self, path: impl moq_net::AsPath) -> Result<LocalBroadcast> {
+        Ok(LocalBroadcast::new(self.moq.publish(path)?)?)
     }
 
-    /// Registers a raw [`BroadcastProducer`](moq_lite::BroadcastProducer).
+    /// Creates a raw broadcast at `path`, without the media catalog.
     ///
-    /// Prefer [`publish`](Self::publish) with a [`LocalBroadcast`] for the
-    /// common case. This method exists for situations where you construct the
-    /// producer yourself, for instance when importing a media file.
+    /// For a caller writing its own tracks, such as an importer replaying a
+    /// file it already muxed.
     ///
-    /// The same session-scoping rules as [`publish`](Self::publish) apply.
-    pub async fn publish_broadcast_producer(
-        &self,
-        name: impl ToString,
-        producer: moq_lite::BroadcastProducer,
-    ) -> Result<()> {
-        self.moq.publish(name, producer).await
+    /// # Errors
+    ///
+    /// Fails if a broadcast already exists at `path`.
+    pub fn publish_raw(&self, path: impl moq_net::AsPath) -> Result<moq_net::broadcast::Producer> {
+        Ok(self.moq.publish(path)?)
     }
 
     /// Connects to a remote peer and subscribes to a named broadcast.
@@ -229,58 +226,15 @@ impl Live {
     pub async fn subscribe(
         &self,
         remote: impl Into<EndpointAddr>,
-        broadcast_name: &str,
+        path: &str,
     ) -> Result<crate::Subscription> {
         let remote = remote.into();
         tracing::Span::current().record("remote", tracing::field::display(remote.id.fmt_short()));
-        let mut session = self.moq.connect(remote).await?;
+        let session = self.moq.connect(remote).await?;
         info!(id=%session.conn().remote_id(), "connected");
-        let consumer = session.subscribe(broadcast_name).await?;
-        let broadcast = RemoteBroadcast::new(broadcast_name, consumer).await?;
+        let consumer = session.subscribe(path).await?;
+        let broadcast = RemoteBroadcast::new(path, consumer).await?;
         Ok(crate::Subscription::new(session, broadcast))
-    }
-
-    /// Connects, subscribes, and decodes video and audio in one call.
-    ///
-    /// Uses dynamic decoder dispatch based on the codec in the catalog.
-    /// For explicit decoder selection, use
-    /// [`subscribe_media_with_decoders`](Self::subscribe_media_with_decoders).
-    pub async fn subscribe_media(
-        &self,
-        remote: impl Into<EndpointAddr>,
-        broadcast_name: &str,
-        audio_backend: &dyn AudioStreamFactory,
-        config: PlaybackConfig,
-    ) -> Result<(MoqSession, MediaTracks)> {
-        self.subscribe_media_with_decoders::<moq_media::codec::DefaultDecoders>(
-            remote,
-            broadcast_name,
-            audio_backend,
-            config,
-        )
-        .await
-    }
-
-    /// Connects, subscribes, and decodes with a specific decoder type.
-    pub async fn subscribe_media_with_decoders<D: moq_media::traits::Decoders>(
-        &self,
-        remote: impl Into<EndpointAddr>,
-        broadcast_name: &str,
-        audio_backend: &dyn AudioStreamFactory,
-        config: PlaybackConfig,
-    ) -> Result<(MoqSession, MediaTracks)> {
-        let sub = self.subscribe(remote, broadcast_name).await?;
-        let track = sub
-            .broadcast()
-            .media_with_decoders::<D>(audio_backend, config)
-            .await?;
-        let (session, _, _) = sub.into_parts();
-        Ok((session, track))
-    }
-
-    /// Joins a room using the given ticket.
-    pub async fn join_room(&self, ticket: RoomTicket) -> Result<Room> {
-        Room::new(self, ticket).await
     }
 
     /// Shuts down the [`Live`] instance.

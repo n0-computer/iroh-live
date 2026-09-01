@@ -2,12 +2,21 @@
 //!
 //! When a browser subscribes to a broadcast whose name is a valid
 //! `LiveTicket`, the relay connects to the remote publisher via iroh,
-//! subscribes to the broadcast, and forwards it locally so the browser
-//! can consume it transparently.
+//! subscribes to its broadcast, and mirrors it locally so the browser can
+//! consume it transparently.
 //!
-//! The cluster manages broadcast lifecycle: when all subscribers
-//! disconnect, the broadcast is removed. A background task holds the
-//! `MoqSession` alive until the session closes, then logs the teardown.
+//! Mirroring goes through the same mechanism a cluster peer connection uses:
+//! a MoQ session handed a subscriber [`moq_net::origin::Producer`]
+//! auto-ingests whatever the remote side announces into that origin. The
+//! subscriber producer here is scoped down to the one broadcast the ticket
+//! names (via [`moq_net::origin::Producer::scope`]) and re-rooted to the
+//! ticket's local name (via [`moq_net::origin::Producer::with_root`]), so
+//! only that broadcast lands in the cluster and nothing else the remote node
+//! happens to publish leaks through.
+//!
+//! The cluster manages broadcast lifecycle: when all subscribers disconnect,
+//! the broadcast is removed. A background task drives the session's protocol
+//! loop and holds the session alive until it closes, then logs the teardown.
 //! No idle timer is needed.
 
 use std::{
@@ -16,13 +25,14 @@ use std::{
 };
 
 use iroh_live::ticket::LiveTicket;
+use moq_net::Path;
 use moq_relay::Cluster;
 use tokio::sync::Notify;
 
 /// Shared state for pull operations.
 #[derive(Clone)]
 pub(crate) struct PullState {
-    live: iroh_live::Live,
+    endpoint: iroh::Endpoint,
     cluster: Cluster,
     /// In-flight connection attempts keyed by ticket string. Prevents
     /// duplicate concurrent connections to the same remote (TOCTOU guard).
@@ -31,9 +41,9 @@ pub(crate) struct PullState {
 }
 
 impl PullState {
-    pub(crate) fn new(live: iroh_live::Live, cluster: Cluster) -> Self {
+    pub(crate) fn new(endpoint: iroh::Endpoint, cluster: Cluster) -> Self {
         Self {
-            live,
+            endpoint,
             cluster,
             connecting: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -48,13 +58,18 @@ impl PullState {
     pub(crate) async fn pull(&self, ticket: &LiveTicket) -> anyhow::Result<String> {
         let local_name = ticket.to_string();
 
-        // Fast path: broadcast already exists in the cluster.
+        // Fast path: broadcast already exists in the cluster. `request_broadcast`
+        // resolves synchronously either way here, since the cluster's origin never
+        // registers a `Dynamic` handler: a hit returns the live broadcast, a miss
+        // fails immediately with `Unroutable` rather than waiting on a handler that
+        // will never show up.
         if self
             .cluster
             .origin
             .consume()
-            .get_broadcast(&local_name)
-            .is_some()
+            .request_broadcast(&local_name)
+            .await
+            .is_ok()
         {
             tracing::debug!(
                 local_name = %local_name,
@@ -88,8 +103,9 @@ impl PullState {
                     .cluster
                     .origin
                     .consume()
-                    .get_broadcast(&local_name)
-                    .is_some()
+                    .request_broadcast(&local_name)
+                    .await
+                    .is_ok()
                 {
                     Ok(local_name)
                 } else {
@@ -109,8 +125,8 @@ impl PullState {
         }
     }
 
-    /// Connects to the remote, subscribes, publishes into the cluster, and
-    /// spawns a keepalive task that holds the session until it closes.
+    /// Connects to the remote, subscribes to exactly the ticket's broadcast, and
+    /// spawns tasks that drive the session and hold it alive until it closes.
     async fn do_connect(&self, ticket: &LiveTicket, local_name: &str) -> anyhow::Result<()> {
         tracing::info!(
             remote = %ticket.endpoint.id.fmt_short(),
@@ -118,19 +134,34 @@ impl PullState {
             "pulling remote broadcast"
         );
 
-        let mut session = self
-            .live
-            .transport()
-            .connect(ticket.endpoint.clone())
+        // `local_name` is always `<prefix>/<broadcast_name>` (see
+        // `LiveTicket::to_string`), and `broadcast_name` may itself contain
+        // slashes, so split on the *first* one to recover the prefix.
+        let prefix = local_name
+            .split_once('/')
+            .map_or(local_name, |(prefix, _)| prefix);
+        let subscriber = self
+            .cluster
+            .origin
+            .with_root(prefix)
+            .and_then(|origin| origin.scope(&[Path::new(&ticket.broadcast_name)]))
+            .ok_or_else(|| anyhow::anyhow!("failed to scope pull origin for {local_name}"))?;
+
+        let connection = self
+            .endpoint
+            .connect(ticket.endpoint.clone(), iroh_moq::ALPN)
             .await
             .map_err(|e| anyhow::anyhow!("failed to connect to remote: {e}"))?;
-
-        let consumer = session
-            .subscribe(&ticket.broadcast_name)
+        let transport = web_transport_iroh::Session::raw(connection);
+        let (session, driver) = moq_net::Client::new()
+            .with_subscriber(subscriber)
+            .connect(transport)
             .await
-            .map_err(|e| anyhow::anyhow!("failed to subscribe to broadcast: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("failed to open MoQ session to remote: {e}"))?;
 
-        self.cluster.origin.publish_broadcast(local_name, consumer);
+        // Drives the session's protocol loop; the session makes no progress
+        // without it, mirroring `moq_native::spawn_session`.
+        tokio::spawn(driver);
 
         tracing::info!(
             local_name = %local_name,
@@ -139,7 +170,7 @@ impl PullState {
         );
 
         // Keep the session alive until it closes. The cluster manages
-        // broadcast lifecycle via reference counting on the consumer side.
+        // broadcast lifecycle via reference counting on the mirrored origin.
         // When the remote disconnects or the session errors, this task
         // ends and the session drops, which tears down the transport.
         let name_owned = local_name.to_owned();

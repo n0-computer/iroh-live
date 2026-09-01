@@ -40,19 +40,19 @@ async fn main() -> anyhow::Result<()> {
     };
 
     tracing::info!("subscribed, waiting for video");
-    let mut track = _sub.broadcast().video_ready().await?;
+    let track = _sub
+        .broadcast()
+        .video()
+        .await
+        .map_err(|err| anyhow::anyhow!("{err:#}"))?;
 
     let mut received = 0u32;
     while received < cli.frames {
-        match tokio::time::timeout(std::time::Duration::from_secs(10), track.next_frame()).await {
+        match tokio::time::timeout(std::time::Duration::from_secs(10), track.recv()).await {
             Ok(Some(frame)) => {
                 received += 1;
-                tracing::info!(
-                    received,
-                    width = frame.width(),
-                    height = frame.height(),
-                    "got frame"
-                );
+                let size = frame.size();
+                tracing::info!(received, %size, "got frame");
             }
             Ok(None) => {
                 anyhow::bail!(

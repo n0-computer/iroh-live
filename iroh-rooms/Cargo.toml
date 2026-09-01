@@ -1,0 +1,33 @@
+[package]
+name = "iroh-rooms"
+version = "0.1.0"
+edition = "2024"
+description = "multi-party rooms over iroh gossip and MoQ"
+authors = ["Franz Heinzmann <frando@n0.computer>"]
+repository = "https://github.com/n0-computer/iroh-live"
+license = "MIT OR Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+bytes = "1.11.0"
+data-encoding = "2.9.0"
+derive_more = { version = "2.0.1", features = ["display", "debug"] }
+iroh = { workspace = true }
+iroh-gossip = { workspace = true }
+iroh-moq = { workspace = true }
+iroh-smol-kv = { workspace = true }
+iroh-tickets = { workspace = true }
+moq-net = { workspace = true }
+n0-error = { version = "1", features = ["anyhow"] }
+n0-future = "0.3.1"
+postcard = "1.1.3"
+rand = "0.10"
+serde = { version = "1.0.228", features = ["derive"] }
+tokio = { version = "1.48.0", features = ["macros", "rt", "sync"] }
+tracing = "0.1.41"
+
+[dev-dependencies]
+n0-tracing-test = "0.3.0"
+tokio = { version = "1.48.0", features = ["full"] }

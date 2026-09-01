@@ -46,6 +46,19 @@ use std::{
 
 // ── Public API ──────────────────────────────────────────────────────────
 
+/// How long a frame still has to wait before it is due.
+///
+/// Returned by [`Sync::delay`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delay {
+    /// The frame is due now.
+    Now,
+    /// The frame is due after this long.
+    After(Duration),
+    /// The clock was closed; tear the pipeline down.
+    Closed,
+}
+
 /// Shared playout clock for A/V synchronization.
 ///
 /// Cheaply cloneable (wraps an `Arc`). Create one per
@@ -220,6 +233,49 @@ impl Sync {
             if timeout_result.timed_out() {
                 return true;
             }
+        }
+    }
+
+    /// Waits until it is time to render the frame with the given PTS.
+    ///
+    /// The async counterpart of [`wait`](Self::wait), for a decode loop that
+    /// runs on the executor rather than an OS thread. Recomputes the delay once
+    /// after sleeping, so a reference that moved earlier while we slept still
+    /// holds the frame back.
+    ///
+    /// Returns `true` when the frame should be rendered, `false` if the clock
+    /// was closed.
+    pub async fn wait_async(&self, timestamp: Duration) -> bool {
+        loop {
+            match self.delay(timestamp) {
+                Delay::Closed => return false,
+                Delay::Now => return true,
+                Delay::After(sleep) => tokio::time::sleep(sleep).await,
+            }
+        }
+    }
+
+    /// How long the frame with the given PTS still has to wait.
+    ///
+    /// The arithmetic behind both [`wait`](Self::wait) and
+    /// [`wait_async`](Self::wait_async), exposed so a caller can drive its own
+    /// timer.
+    pub fn delay(&self, timestamp: Duration) -> Delay {
+        let timestamp_ms = timestamp.as_millis() as i64;
+        let state = self.inner.state.lock().unwrap();
+
+        if state.closed {
+            return Delay::Closed;
+        }
+        // No reference yet: render immediately rather than stalling.
+        let Some(current_ref) = state.reference else {
+            return Delay::Now;
+        };
+
+        let sleep_ms = (current_ref - (self.now_ms() - timestamp_ms)) + state.latency_ms;
+        match sleep_ms > 0 {
+            true => Delay::After(Duration::from_millis(sleep_ms as u64)),
+            false => Delay::Now,
         }
     }
 

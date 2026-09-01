@@ -1,26 +1,37 @@
-//! Egui integration for moq-media video rendering.
+//! Egui integration for `moq-video` rendering.
 //!
-//! Provides [`FrameView`] for rendering raw [`VideoFrame`]s into egui, and
-//! [`VideoTrackView`] which wraps a [`VideoTrack`] with viewport management.
-//! Both support optional wgpu-accelerated rendering via [`EguiVideoRenderer`]
-//! (requires `wgpu-render` feature).
+//! Provides `VideoTrackView`, which wraps a `VideoTrack` with frame polling
+//! and drawing, and the lower-level `FrameView` it is built on, for callers
+//! that only have a raw frame stream (a publisher's local preview, for
+//! instance) rather than a full `VideoTrack`. Both live behind the
+//! `wgpu-render` feature (on by default) and need it to actually draw a
+//! picture: upstream `moq_video` draws decoded frames through a `wgpu`
+//! pipeline (`moq_media::video::render::Renderer`) and offers no other way to
+//! read a frame's pixels, so a view built without a real `wgpu` device only
+//! ever shows a placeholder.
 //!
-//! Also provides [`create_egui_wgpu_config`] which creates an optimized wgpu
-//! device configuration for video rendering with DMA-BUF import support.
+//! Also provides `create_egui_wgpu_config` (also behind `wgpu-render`), which
+//! builds an `egui_wgpu::WgpuConfiguration` that requests zero-copy DMA-BUF
+//! import on Linux where the adapter supports it.
+//!
+//! These names are not doc-linked above: they only exist under
+//! `wgpu-render`, and a plain `cargo doc --no-default-features` build fails
+//! on a link to an item that feature compiles out.
 //!
 //! # Example
 //!
 //! ```ignore
 //! use moq_media_egui::VideoTrackView;
 //!
-//! let mut view = VideoTrackView::new(&ctx, "video", track);
-//! // in update loop:
+//! let mut view = VideoTrackView::new_wgpu(&ctx, "video", track, render_state);
+//! // in the update loop:
 //! let (image, frame_ts) = view.render(&ctx, available_size);
 //! ui.add(image);
 //! ```
 
 pub mod overlay;
 
+#[cfg(feature = "wgpu-render")]
 use std::{fmt, time::Duration};
 
 #[cfg(feature = "wgpu-render")]
@@ -28,7 +39,8 @@ pub use egui_wgpu;
 #[cfg(feature = "wgpu-render")]
 pub use epaint;
 pub use moq_media;
-use moq_media::{format::VideoFrame, subscribe::VideoTrack};
+#[cfg(feature = "wgpu-render")]
+use moq_media::subscribe::VideoTrack;
 
 /// Formats a bitrate in bits per second as a human-readable string.
 ///
@@ -44,171 +56,245 @@ pub fn format_bitrate(bits_per_second: f64) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// FrameView — renders VideoFrames to an egui texture (CPU or wgpu)
+// EguiVideoRenderer — draws a moq_video::Frame into an egui-registered texture
 // ---------------------------------------------------------------------------
 
-/// Renders [`VideoFrame`]s into an egui texture.
+/// The `wgpu` this crate draws through, re-exported from
+/// [`moq_media::video::render`] so a caller never has to name a `wgpu`
+/// version independently and risk it drifting from the one the renderer
+/// actually links.
+#[cfg(feature = "wgpu-render")]
+pub use moq_media::video::render::wgpu;
+
+/// Draws decoded [`moq_media::video::Frame`]s into a texture registered with
+/// egui, on top of [`moq_media::video::render::Renderer`].
 ///
-/// Supports both CPU (egui texture upload) and wgpu-accelerated rendering.
-/// The wgpu path requires the `wgpu-render` feature and is selected at
-/// construction time via [`FrameView::new_wgpu`].
-///
-/// Low-level building block. For [`VideoTrack`]-based rendering with
-/// automatic viewport management, use [`VideoTrackView`] instead.
-pub struct FrameView {
-    texture: egui::TextureHandle,
-    #[cfg(feature = "wgpu-render")]
-    egui_renderer: Option<EguiVideoRenderer>,
+/// Bound to one `wgpu` device and queue for its lifetime; keep it alive
+/// across frames rather than rebuilding it. [`FrameView`] and
+/// [`VideoTrackView`] are the usual entry points — reach for this directly
+/// only when neither fits (drawing into a texture id you manage yourself).
+#[cfg(feature = "wgpu-render")]
+pub struct EguiVideoRenderer {
+    renderer: moq_media::video::render::Renderer,
+    render_state: egui_wgpu::RenderState,
+    texture_id: Option<epaint::TextureId>,
+    last_size: Option<(u32, u32)>,
 }
 
+#[cfg(feature = "wgpu-render")]
+impl fmt::Debug for EguiVideoRenderer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EguiVideoRenderer")
+            .field("texture_id", &self.texture_id)
+            .field("last_size", &self.last_size)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "wgpu-render")]
+impl EguiVideoRenderer {
+    /// Builds a renderer bound to `render_state`'s device and queue.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the underlying `wgpu` pipeline cannot be built (a shader
+    /// compile failure, or a resource creation error on the device).
+    pub fn new(render_state: &egui_wgpu::RenderState) -> Result<Self, moq_media::video::Error> {
+        let renderer = moq_media::video::render::Renderer::new(
+            &render_state.device,
+            &render_state.queue,
+            moq_media::video::render::Config::new(),
+        )?;
+        Ok(Self {
+            renderer,
+            render_state: render_state.clone(),
+            texture_id: None,
+            last_size: None,
+        })
+    }
+
+    /// Draws `frame` and registers (or updates) its egui texture.
+    ///
+    /// Takes a plain reference so a caller holding an owned
+    /// [`moq_media::video::Frame`] or an `Arc<moq_media::video::Frame>` (as
+    /// the publisher's preview does) can pass either: `&Arc<Frame>` derefs to
+    /// `&Frame` at the call site.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the frame's surface cannot be drawn (an unsupported GPU
+    /// format, or a device error).
+    pub fn render(
+        &mut self,
+        frame: &moq_media::video::Frame,
+    ) -> Result<(epaint::TextureId, (u32, u32)), moq_media::video::Error> {
+        let texture = self.renderer.render(frame)?;
+        let view = texture.create_view(&Default::default());
+        let dims = (texture.width(), texture.height());
+
+        let device = &self.render_state.device;
+        let mut egui_renderer = self.render_state.renderer.write();
+        let id = match self.texture_id {
+            Some(id) => {
+                egui_renderer.update_egui_texture_from_wgpu_texture(
+                    device,
+                    &view,
+                    wgpu::FilterMode::Linear,
+                    id,
+                );
+                id
+            }
+            None => {
+                let id =
+                    egui_renderer.register_native_texture(device, &view, wgpu::FilterMode::Linear);
+                self.texture_id = Some(id);
+                id
+            }
+        };
+
+        self.last_size = Some(dims);
+        Ok((id, dims))
+    }
+
+    /// Returns the last rendered texture id and its pixel size, if a frame
+    /// has been drawn yet.
+    pub fn last_texture(&self) -> Option<(epaint::TextureId, (u32, u32))> {
+        self.texture_id.zip(self.last_size)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FrameView — a placeholder-or-drawn texture for one raw frame stream
+// ---------------------------------------------------------------------------
+
+/// Shows one video stream as an egui texture: either the most recently drawn
+/// frame, or a black placeholder before the first one arrives.
+///
+/// The low-level building block: it knows nothing about where frames come
+/// from, only how to draw the ones it is handed. [`VideoTrackView`] adds the
+/// polling loop over a [`VideoTrack`]; a publisher's local preview (an
+/// `Arc<FrameReceiver<Arc<Frame>>>`, not a [`VideoTrack`]) polls its own
+/// receiver and feeds this directly.
+#[cfg(feature = "wgpu-render")]
+pub struct FrameView {
+    renderer: Option<EguiVideoRenderer>,
+    placeholder: egui::TextureHandle,
+}
+
+#[cfg(feature = "wgpu-render")]
 impl fmt::Debug for FrameView {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FrameView").finish_non_exhaustive()
+        f.debug_struct("FrameView")
+            .field("is_wgpu", &self.is_wgpu())
+            .finish_non_exhaustive()
     }
 }
 
+#[cfg(feature = "wgpu-render")]
 impl FrameView {
-    /// Creates a new CPU-only frame view.
+    /// Creates a view with no renderer. [`render_frame`](Self::render_frame)
+    /// only ever shows the placeholder: without a `wgpu` device there is no
+    /// way to read a frame's pixels, since
+    /// [`Surface`](moq_media::video::Surface)'s conversions consume it and
+    /// [`Frame`](moq_media::video::Frame) is not `Clone`.
     pub fn new(ctx: &egui::Context, name: &str) -> Self {
-        let placeholder = egui::ColorImage::filled([1, 1], egui::Color32::BLACK);
-        let texture = ctx.load_texture(name, placeholder, Default::default());
-        Self {
-            texture,
-            #[cfg(feature = "wgpu-render")]
-            egui_renderer: None,
-        }
+        Self::new_wgpu(ctx, name, None)
     }
 
-    /// Creates a new frame view with wgpu-accelerated rendering.
-    #[cfg(feature = "wgpu-render")]
+    /// Creates a view that draws through `render_state`, if given.
     pub fn new_wgpu(
         ctx: &egui::Context,
         name: &str,
         render_state: Option<&egui_wgpu::RenderState>,
     ) -> Self {
-        let placeholder = egui::ColorImage::filled([1, 1], egui::Color32::BLACK);
-        let texture = ctx.load_texture(name, placeholder, Default::default());
-        let egui_renderer = render_state.map(EguiVideoRenderer::new);
-        Self {
-            texture,
-            egui_renderer,
-        }
-    }
-
-    /// Returns whether this view uses wgpu rendering.
-    pub fn is_wgpu(&self) -> bool {
-        #[cfg(feature = "wgpu-render")]
-        {
-            self.egui_renderer.is_some()
-        }
-        #[cfg(not(feature = "wgpu-render"))]
-        {
-            false
-        }
-    }
-
-    /// Returns which render path was used for the last frame.
-    pub fn render_path_name(&self) -> &'static str {
-        #[cfg(feature = "wgpu-render")]
-        if let Some(ref r) = self.egui_renderer {
-            return match r.last_render_path() {
-                moq_media::render::RenderPath::None => "wgpu",
-                moq_media::render::RenderPath::CpuRgba => "wgpu/cpu-rgba",
-                moq_media::render::RenderPath::CpuNv12 => "wgpu/cpu-nv12",
-                moq_media::render::RenderPath::DmaBuf => "wgpu/dmabuf",
-                moq_media::render::RenderPath::MetalZeroCopy => "wgpu/metal",
-                moq_media::render::RenderPath::GpuDownload => "wgpu/gpu-dl",
-            };
-        }
-        "cpu"
-    }
-
-    /// Uploads a video frame to the texture (CPU or wgpu).
-    pub fn render_frame(&mut self, frame: &VideoFrame) {
-        #[cfg(feature = "wgpu-render")]
-        if let Some(ref mut r) = self.egui_renderer {
-            if let Err(e) = r.render(frame) {
-                tracing::warn!("wgpu render failed: {e:#}");
-            }
-            return;
-        }
-
-        let (w, h) = (frame.width(), frame.height());
-        let image = egui::ColorImage::from_rgba_unmultiplied(
-            [w as usize, h as usize],
-            frame.rgba_image().as_raw(),
+        let renderer = render_state.and_then(|rs| {
+            EguiVideoRenderer::new(rs)
+                .inspect_err(|err| tracing::warn!(error = %err, "wgpu video renderer init failed"))
+                .ok()
+        });
+        let placeholder = ctx.load_texture(
+            name,
+            egui::ColorImage::filled([1, 1], egui::Color32::BLACK),
+            Default::default(),
         );
-        self.texture.set(image, Default::default());
+        Self {
+            renderer,
+            placeholder,
+        }
     }
 
-    /// Returns the texture ID and pixel dimensions, if any frame has been rendered.
-    pub fn texture_info(&self) -> Option<(egui::TextureId, egui::Vec2)> {
-        #[cfg(feature = "wgpu-render")]
-        if let Some(ref r) = self.egui_renderer
-            && let Some((id, (w, h))) = r.last_texture()
-        {
-            return Some((id, egui::vec2(w as f32, h as f32)));
-        }
+    /// Returns whether this view draws through `wgpu` (as opposed to only
+    /// ever showing the placeholder).
+    pub fn is_wgpu(&self) -> bool {
+        self.renderer.is_some()
+    }
 
-        let size = self.texture.size_vec2();
-        if size.x > 0.0 && size.y > 0.0 {
-            Some((self.texture.id(), size))
-        } else {
-            None
+    /// Draws `frame`, replacing whatever this view previously showed.
+    ///
+    /// A no-op (besides a warning) if this view has no renderer.
+    pub fn render_frame(&mut self, frame: &moq_media::video::Frame) {
+        let Some(renderer) = &mut self.renderer else {
+            tracing::warn!("frame dropped: view has no wgpu renderer to draw it with");
+            return;
+        };
+        if let Err(err) = renderer.render(frame) {
+            tracing::warn!(error = %err, "video render failed");
         }
+    }
+
+    /// Returns the current texture id and its pixel size.
+    pub fn texture_info(&self) -> Option<(egui::TextureId, egui::Vec2)> {
+        self.renderer
+            .as_ref()
+            .and_then(EguiVideoRenderer::last_texture)
+            .map(|(id, (w, h))| (id, egui::vec2(w as f32, h as f32)))
     }
 
     /// Returns an [`egui::Image`] for the current texture, suitable for `ui.add()`.
     pub fn image(&self) -> egui::Image<'_> {
-        #[cfg(feature = "wgpu-render")]
-        if let Some(ref r) = self.egui_renderer
-            && let Some((id, (w, h))) = r.last_texture()
-        {
-            return egui::Image::from_texture(egui::load::SizedTexture::new(
-                id,
-                [w as f32, h as f32],
-            ))
-            .shrink_to_fit();
+        match self.texture_info() {
+            Some((id, size)) => {
+                egui::Image::from_texture(egui::load::SizedTexture::new(id, size)).shrink_to_fit()
+            }
+            None => egui::Image::from_texture(&self.placeholder).shrink_to_fit(),
         }
-
-        egui::Image::from_texture(&self.texture).shrink_to_fit()
     }
 }
 
 // ---------------------------------------------------------------------------
-// VideoTrackView — FrameView + VideoTrack with viewport management
+// VideoTrackView — FrameView + VideoTrack polling
 // ---------------------------------------------------------------------------
 
 /// Renders a [`VideoTrack`] into an egui UI.
 ///
-/// Wraps a [`FrameView`] with automatic viewport scaling and frame polling.
-/// Supports both CPU and wgpu-accelerated rendering.
+/// Polls the track for the newest decoded frame on every
+/// [`render`](Self::render) call and draws it through a [`FrameView`].
+#[cfg(feature = "wgpu-render")]
 pub struct VideoTrackView {
     track: VideoTrack,
     frame_view: FrameView,
-    size: egui::Vec2,
 }
 
+#[cfg(feature = "wgpu-render")]
 impl fmt::Debug for VideoTrackView {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VideoTrackView")
-            .field("size", &self.size)
+            .field("frame_view", &self.frame_view)
             .finish_non_exhaustive()
     }
 }
 
+#[cfg(feature = "wgpu-render")]
 impl VideoTrackView {
-    /// Creates a new CPU-only view.
+    /// Creates a view with no renderer; see [`FrameView::new`].
     pub fn new(ctx: &egui::Context, name: &str, track: VideoTrack) -> Self {
         Self {
             track,
             frame_view: FrameView::new(ctx, name),
-            size: egui::vec2(100.0, 100.0),
         }
     }
 
-    /// Creates a new view with wgpu-accelerated rendering.
-    #[cfg(feature = "wgpu-render")]
+    /// Creates a view that draws through `render_state`, if given.
     pub fn new_wgpu(
         ctx: &egui::Context,
         name: &str,
@@ -218,7 +304,6 @@ impl VideoTrackView {
         Self {
             track,
             frame_view: FrameView::new_wgpu(ctx, name, render_state),
-            size: egui::vec2(100.0, 100.0),
         }
     }
 
@@ -237,164 +322,100 @@ impl VideoTrackView {
         self.track = track;
     }
 
-    /// Returns whether this view uses wgpu rendering.
+    /// Returns whether this view draws through `wgpu`.
     pub fn is_wgpu(&self) -> bool {
         self.frame_view.is_wgpu()
     }
 
-    /// Returns the name of the render path used for the last frame.
-    pub fn render_path_name(&self) -> &'static str {
-        self.frame_view.render_path_name()
-    }
-
-    /// Renders the current frame and returns `(image, frame_timestamp)`.
+    /// Draws the newest available frame and returns `(image, frame_timestamp)`.
     ///
-    /// Updates the viewport when `available_size` changes. The returned
-    /// timestamp is from the most recent decoded frame, or `None` if no
-    /// new frame arrived this call.
+    /// The returned timestamp is the decoded frame's presentation time, or
+    /// `None` if no new frame arrived since the last call. Requests a
+    /// repaint on `ctx` when a new frame lands, so the picture advances
+    /// without waiting for the next input event.
     pub fn render(
         &mut self,
         ctx: &egui::Context,
-        available_size: egui::Vec2,
+        _available_size: egui::Vec2,
     ) -> (egui::Image<'_>, Option<Duration>) {
-        if available_size != self.size {
-            self.size = available_size;
-            let ppp = ctx.pixels_per_point();
-            let w = (available_size.x * ppp) as u32;
-            let h = (available_size.y * ppp) as u32;
-            self.track.set_viewport(w, h);
-        }
-
-        let mut frame_ts = None;
-        if let Some(frame) = self.track.try_recv() {
-            frame_ts = Some(frame.timestamp);
+        let frame_ts = self.track.take().map(|frame| {
+            let ts = Duration::from_micros(frame.timestamp.as_micros() as u64);
             self.frame_view.render_frame(&frame);
+            ts
+        });
+        if frame_ts.is_some() {
+            ctx.request_repaint();
         }
-
         (self.frame_view.image(), frame_ts)
     }
 }
 
 // ---------------------------------------------------------------------------
-// EguiVideoRenderer — wgpu rendering for raw VideoFrame
+// create_egui_wgpu_config — a wgpu device tuned for video rendering
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "wgpu-render")]
-use moq_media::render::WgpuVideoRenderer;
-
-/// Convenience renderer that integrates [`WgpuVideoRenderer`] with egui.
+/// Creates an [`egui_wgpu::WgpuConfiguration`] tuned for video rendering.
 ///
-/// Handles egui texture registration and updates automatically, eliminating
-/// the boilerplate of managing render state, texture IDs, and frame size
-/// tracking in application code.
-#[cfg(feature = "wgpu-render")]
-pub struct EguiVideoRenderer {
-    renderer: WgpuVideoRenderer,
-    render_state: egui_wgpu::RenderState,
-    texture_id: Option<epaint::TextureId>,
-    last_frame_size: Option<(u32, u32)>,
-}
-
-#[cfg(feature = "wgpu-render")]
-impl fmt::Debug for EguiVideoRenderer {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EguiVideoRenderer")
-            .field("renderer", &self.renderer)
-            .field("texture_id", &self.texture_id)
-            .field("last_frame_size", &self.last_frame_size)
-            .finish()
-    }
-}
-
-#[cfg(feature = "wgpu-render")]
-impl EguiVideoRenderer {
-    /// Creates a new renderer from an egui wgpu render state.
-    pub fn new(render_state: &egui_wgpu::RenderState) -> Self {
-        let renderer =
-            WgpuVideoRenderer::new(render_state.device.clone(), render_state.queue.clone());
-        Self {
-            renderer,
-            render_state: render_state.clone(),
-            texture_id: None,
-            last_frame_size: None,
-        }
-    }
-
-    /// Renders a decoded video frame and returns the egui texture ID and dimensions.
-    pub fn render(
-        &mut self,
-        frame: &VideoFrame,
-    ) -> anyhow::Result<(epaint::TextureId, (u32, u32))> {
-        let view = self.renderer.render(frame)?;
-        let device = &self.render_state.device;
-        let mut egui_renderer = self.render_state.renderer.write();
-
-        let id = if let Some(id) = self.texture_id {
-            egui_renderer.update_egui_texture_from_wgpu_texture(
-                device,
-                view,
-                wgpu::FilterMode::Linear,
-                id,
-            );
-            id
-        } else {
-            let id = egui_renderer.register_native_texture(device, view, wgpu::FilterMode::Linear);
-            self.texture_id = Some(id);
-            id
-        };
-
-        let dims = (frame.width(), frame.height());
-        self.last_frame_size = Some(dims);
-        Ok((id, dims))
-    }
-
-    /// Returns the last rendered texture ID and dimensions, if any frame has been rendered.
-    pub fn last_texture(&self) -> Option<(epaint::TextureId, (u32, u32))> {
-        self.texture_id.zip(self.last_frame_size)
-    }
-
-    /// Returns which render path was used for the last frame.
-    pub fn last_render_path(&self) -> moq_media::render::RenderPath {
-        self.renderer.last_render_path()
-    }
-}
-
-/// Creates an [`egui_wgpu::WgpuConfiguration`] optimized for video rendering.
-///
-/// On Linux with the `dmabuf-import` feature, creates a Vulkan device with
-/// DMA-BUF extensions for zero-copy hardware decoder import. On all other
-/// platforms (including macOS with Metal), returns the default configuration.
+/// On Linux, builds a Vulkan device and requests
+/// [`wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF`] when the adapter
+/// supports it, which lets [`moq_media::video::render::Renderer`] import
+/// PipeWire DMA-BUFs without a CPU round trip. Every other platform, and any
+/// Linux adapter that lacks the feature, gets egui's default configuration:
+/// the renderer still draws every frame correctly through its CPU-upload
+/// fallback, just without the zero-copy path.
 #[cfg(feature = "wgpu-render")]
 pub fn create_egui_wgpu_config() -> egui_wgpu::WgpuConfiguration {
-    #[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
+    #[cfg(target_os = "linux")]
     {
         create_egui_wgpu_config_dmabuf()
     }
-    #[cfg(not(all(target_os = "linux", feature = "dmabuf-import")))]
+    #[cfg(not(target_os = "linux"))]
     {
         egui_wgpu::WgpuConfiguration::default()
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "dmabuf-import"))]
+#[cfg(all(target_os = "linux", feature = "wgpu-render"))]
 fn create_egui_wgpu_config_dmabuf() -> egui_wgpu::WgpuConfiguration {
-    use moq_media::render::create_device_with_dmabuf_extensions;
-
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::VULKAN,
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+
+    let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         ..Default::default()
-    }))
-    .expect("no suitable wgpu adapter");
+    })) {
+        Ok(adapter) => adapter,
+        Err(err) => {
+            tracing::warn!(error = %err, "no Vulkan adapter available, using egui's default wgpu setup");
+            return egui_wgpu::WgpuConfiguration::default();
+        }
+    };
 
-    let (device, queue) = create_device_with_dmabuf_extensions(&adapter).unwrap_or_else(|e| {
-        tracing::warn!("DMA-BUF device creation failed ({e}), using default");
-        pollster::block_on(adapter.request_device(&Default::default()))
-            .expect("wgpu device creation failed")
-    });
+    let dma_buf = wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF;
+    let required_features = if adapter.features().contains(dma_buf) {
+        dma_buf
+    } else {
+        tracing::debug!(
+            "adapter has no DMA-BUF external memory support; \
+             video rendering will use the CPU-upload fallback"
+        );
+        wgpu::Features::empty()
+    };
+
+    let (device, queue) = match pollster::block_on(adapter.request_device(
+        &wgpu::DeviceDescriptor {
+            required_features,
+            ..Default::default()
+        },
+    )) {
+        Ok(pair) => pair,
+        Err(err) => {
+            tracing::warn!(error = %err, "wgpu device request failed, using egui's default wgpu setup");
+            return egui_wgpu::WgpuConfiguration::default();
+        }
+    };
 
     egui_wgpu::WgpuConfiguration {
         wgpu_setup: egui_wgpu::WgpuSetup::Existing(egui_wgpu::WgpuSetupExisting {

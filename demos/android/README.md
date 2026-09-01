@@ -89,12 +89,15 @@ Key log tags:
 
 ## Feature configuration
 
-The Rust crate builds with H.264 + Opus only (no AV1, no desktop capture).
-This is controlled by `demos/android/rust/Cargo.toml`:
+Codecs come from `moq-video` and `moq-audio`, which compile every backend they
+have on the target and choose one at runtime. On Android that means MediaCodec
+for H.264 encode and decode, with openh264 behind it in software.
 
-- `moq-media`: `default-features = false, features = ["h264", "opus", "android"]`
-- `rusty-codecs`: `default-features = false, features = ["h264", "opus", "hang", "android"]`
-- `iroh-live`: `default-features = false` (no AV1, no capture backends)
+What the crate does select, in `demos/android/rust/Cargo.toml`:
+
+- `moq-media`: `capture` for the microphone, `playback` for the speaker. Video
+  capture is not among them: camera frames come from Kotlin's Camera2 through
+  `pushCameraNv12`, not from a device this crate opens.
 
 ## Architecture
 

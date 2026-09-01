@@ -7,11 +7,11 @@
 compile_error!("pi-zero-demo only supports Linux");
 
 #[cfg(target_os = "linux")]
-mod codec_test;
-#[cfg(target_os = "linux")]
 mod epaper;
 #[cfg(target_os = "linux")]
 mod epd_v4;
+#[cfg(target_os = "linux")]
+mod gles;
 #[cfg(target_os = "linux")]
 mod publish;
 #[cfg(target_os = "linux")]
@@ -21,13 +21,9 @@ mod watch;
 mod app {
     use clap::{Parser, Subcommand};
     use iroh::{Endpoint, EndpointId};
-    use iroh_live::{
-        Live,
-        media::format::{DecoderBackend, PlaybackConfig},
-        ticket::LiveTicket,
-    };
+    use iroh_live::{Live, ticket::LiveTicket};
 
-    use crate::{codec_test, epaper, publish, watch};
+    use crate::{epaper, publish, watch};
 
     #[derive(Parser)]
     #[command(about = "Pi Zero 2 demo: camera streaming + e-paper QR ticket")]
@@ -44,10 +40,10 @@ mod app {
         Publish(publish::PublishOpts),
         /// Watch a remote stream, rendering with EGL/GLES2.
         Watch(WatchOpts),
-        /// Render a test pattern directly to HDMI (no network, no window system).
+        /// Render a generated test pattern directly to HDMI (no network, no
+        /// window system, no camera) - a hardware sanity check for the
+        /// DRM/KMS + GLES2 display path.
         FbDemo,
-        /// Run V4L2 codec tests (encoder, decoder, roundtrip) on-device.
-        CodecTest(codec_test::CodecTestOpts),
     }
 
     #[derive(Parser, Debug)]
@@ -67,9 +63,6 @@ mod app {
         /// Start in fullscreen mode (windowed mode only, ignored with --fb).
         #[clap(long)]
         fullscreen: bool,
-        /// Decoder: "auto" (try HW then SW), "software", or "ffmpeg".
-        #[clap(long, default_value = "auto")]
-        decoder: String,
     }
 
     pub(crate) async fn run(cli: Cli) -> n0_error::Result {
@@ -77,8 +70,7 @@ mod app {
             Command::EpaperDemo => cmd_epaper_demo(),
             Command::Publish(opts) => publish::cmd_publish(opts).await,
             Command::Watch(opts) => cmd_watch(opts).await,
-            Command::FbDemo => cmd_fb_demo(),
-            Command::CodecTest(opts) => Ok(codec_test::run(opts)?),
+            Command::FbDemo => cmd_fb_demo().await,
         }
     }
 
@@ -86,17 +78,17 @@ mod app {
     fn cmd_epaper_demo() -> n0_error::Result {
         println!("step 1/3: checkerboard test pattern");
         epaper::display_test_pattern()?;
-        println!("  displayed — you should see a checkerboard now");
+        println!("  displayed - you should see a checkerboard now");
         wait_for_enter();
 
         println!("step 2/3: QR code with dummy data");
         epaper::display_qr("https://iroh.computer/hello-from-pi-zero")?;
-        println!("  displayed — you should see a QR code now");
+        println!("  displayed - you should see a QR code now");
         wait_for_enter();
 
         println!("step 3/3: clearing display");
         epaper::clear_display()?;
-        println!("  done — display should be white");
+        println!("  done - display should be white");
 
         Ok(())
     }
@@ -107,16 +99,17 @@ mod app {
         std::io::stdin().read_line(&mut buf).ok();
     }
 
-    /// Renders a test pattern directly to HDMI — no network, no window system.
-    fn cmd_fb_demo() -> n0_error::Result {
-        use moq_media::{subscribe::VideoTrack, test_util::TestVideoSource};
-        use tokio_util::sync::CancellationToken;
+    /// Renders a generated test pattern directly to HDMI - no network, no
+    /// window system, no camera needed.
+    async fn cmd_fb_demo() -> n0_error::Result {
+        use moq_media::{publish::VideoSource, test_source};
+        use moq_video::Size;
 
-        let source = TestVideoSource::new(640, 480).with_fps(30.0);
-        let shutdown = CancellationToken::new();
-        let video_track = VideoTrack::from_video_source("test".into(), shutdown, source);
+        let VideoSource::Frames(frames) = test_source::video(Size::new(640, 480), 30) else {
+            unreachable!("test_source::video always returns VideoSource::Frames")
+        };
 
-        watch::run_fb_demo(video_track)?;
+        watch::run_fb_demo(frames).await?;
         Ok(())
     }
 
@@ -130,39 +123,19 @@ mod app {
                 std::process::exit(1);
             }
         };
-        let backend = match opts.decoder.as_str() {
-            "auto" | "hardware" | "hw" => DecoderBackend::Auto,
-            "software" | "sw" => DecoderBackend::Software,
-            "ffmpeg" => {
-                eprintln!("ffmpeg decoder has been removed from rusty-codecs");
-                std::process::exit(1);
-            }
-            other => {
-                eprintln!("Unknown decoder: {other}. Use 'auto', 'software', or 'ffmpeg'");
-                std::process::exit(1);
-            }
-        };
-
-        let audio_ctx = moq_media::test_util::NullAudioBackend;
 
         println!("connecting to {ticket} ...");
         let endpoint = Endpoint::bind(iroh::endpoint::presets::N0).await?;
         let live = Live::new(endpoint);
-        let playback_config = PlaybackConfig {
-            backend,
-            ..Default::default()
-        };
-        let (session, track) = live
-            .subscribe_media(
-                ticket.endpoint,
-                &ticket.broadcast_name,
-                &audio_ctx,
-                playback_config,
-            )
+        let sub = live
+            .subscribe(ticket.endpoint, &ticket.broadcast_name)
             .await?;
         println!("connected!");
 
-        let video_track = track.video.expect("no video track in broadcast");
+        let tracks = sub.media().await;
+        let video_track = tracks.video.expect("no video track in broadcast");
+        video_track.enable_adaptation(sub.signals().clone());
+        let session = sub.session().clone();
 
         if opts.fb {
             watch::run_drm(video_track, session).await?;
@@ -172,7 +145,7 @@ mod app {
             #[cfg(not(feature = "windowed"))]
             {
                 eprintln!(
-                    "windowed mode not compiled in — use --fb or build with --features windowed"
+                    "windowed mode not compiled in - use --fb or build with --features windowed"
                 );
                 std::process::exit(1);
             }

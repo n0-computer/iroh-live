@@ -1,38 +1,16 @@
 [workspace]
 members = [
     "iroh-live",
+    "iroh-live-cli",
     "iroh-live-relay",
     "iroh-moq",
+    "iroh-rooms",
     "moq-media",
     "moq-media-android",
-    "moq-media-dioxus",
     "moq-media-egui",
-    "rusty-capture",
-    "rusty-codecs",
     "demos/android/rust",
     "demos/pi-zero",
     "demos/pi-zero-minimal",
-    "demos/headless",
-    "demos/opengl",
-    "iroh-live-cli",
-]
-# moq-media-dioxus is a workspace member but excluded from default builds.
-# It pulls ~224 additional deps (blitz-dom, vello, etc.) and is prototype-quality.
-# Build it explicitly with: cargo build -p moq-media-dioxus
-default-members = [
-    "iroh-live",
-    "iroh-live-relay",
-    "iroh-moq",
-    "moq-media",
-    "moq-media-android",
-    "moq-media-egui",
-    "rusty-capture",
-    "rusty-codecs",
-    "demos/headless",
-    "demos/pi-zero",
-    "demos/pi-zero-minimal",
-    "demos/opengl",
-    "iroh-live-cli",
 ]
 resolver = "2"
 
@@ -47,29 +25,40 @@ lto = "thin"
 
 [workspace.dependencies]
 # External
-iroh = { version = "1.0.0", default-features = false, features = ["metrics", "portmapper", "fast-apple-datapath", "tls-aws-lc-rs"] }
+iroh = { version = "1.1.0", default-features = false, features = ["metrics", "portmapper", "fast-apple-datapath", "tls-aws-lc-rs"] }
 iroh-gossip = "0.101.0"
 iroh-tickets = "1.0.0"
 iroh-smol-kv = { version = "0.4.0", default-features = false }
-hang = "0.19.1"
-moq-lite = { package = "moq-net", version = "0.1.11" }
-moq-mux = "0.5.5"
-moq-relay = { version = "0.12.2", default-features = false }
-moq-native = { version = "0.17.1", default-features = false }
-web-transport-iroh = "0.6.0"
+hang = "0.20.7"
+moq-net = "0.2.15"
+moq-mux = "0.9.10"
+# `aac` stays on: a broadcast that reached us through an RTMP or HLS gateway
+# carries AAC, and dropping its audio track is a silent failure.
+moq-audio = { version = "0.0.20", default-features = false, features = ["aac"] }
+moq-video = { version = "0.0.20", default-features = false }
+moq-relay = { version = "0.14.13", default-features = false }
+moq-native = { version = "0.19.14", default-features = false }
+web-transport-iroh = "0.7.0"
+
+# UI. egui pins the wgpu major it links, and `moq_video::render` hands back a
+# `wgpu::Texture` from its own build of wgpu 30. A texture from a different wgpu
+# major is a different type, so these two versions have to move together.
+eframe = { version = "0.36.1", default-features = false }
+egui = "0.36.1"
+egui-wgpu = "0.36.1"
+wgpu = "30"
 
 # In-repo crates
 iroh-live = { path = "iroh-live", default-features = false }
 iroh-live-relay = { path = "iroh-live-relay" }
 iroh-moq = { path = "iroh-moq" }
+iroh-rooms = { path = "iroh-rooms" }
 moq-media = { path = "moq-media", default-features = false }
 moq-media-android = { path = "moq-media-android" }
 moq-media-egui = { path = "moq-media-egui" }
-rusty-codecs = { path = "rusty-codecs", default-features = false }
-rusty-capture = { path = "rusty-capture", default-features = false }
 
 [workspace.lints.rust]
-unexpected_cfgs = { level = "deny", check-cfg = ["cfg(docsrs)", "cfg(any_audio_codec)", "cfg(any_video_codec)", "cfg(any_codec)"] }
+unexpected_cfgs = { level = "deny", check-cfg = ["cfg(docsrs)"] }
 elided_lifetimes_in_paths = "warn"
 unnameable_types = "warn"
 unreachable_pub = "warn"
@@ -84,3 +73,16 @@ manual_let_else = "warn"
 allow_attributes_without_reason = "warn"
 mod_module_files = "deny"
 
+
+# The moq media stack, from a local checkout while the gaps we still carry are
+# upstreamed (Android MediaCodec, libcamera). Every version above matches what
+# `moq-dev/moq@main` publishes, so deleting this block is the whole revert once
+# those land in a release.
+[patch.crates-io]
+hang = { path = "../moq/rs/hang" }
+moq-audio = { path = "../moq/rs/moq-audio" }
+moq-mux = { path = "../moq/rs/moq-mux" }
+moq-native = { path = "../moq/rs/moq-native" }
+moq-net = { path = "../moq/rs/moq-net" }
+moq-relay = { path = "../moq/rs/moq-relay" }
+moq-video = { path = "../moq/rs/moq-video" }

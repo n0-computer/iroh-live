@@ -1,85 +1,60 @@
+//! `irl`: publish and watch live media over iroh.
+
+// A binary crate has no external API, so the visibility lints that keep a
+// library's surface honest only produce noise here.
 #![allow(
     unreachable_pub,
+    unnameable_types,
     reason = "binary crate, internal modules use pub for convenience"
 )]
 
 use clap::{Parser, Subcommand};
 
 mod args;
-#[cfg(feature = "wgpu")]
-mod call;
 mod devices;
 mod import;
-#[cfg(feature = "wgpu")]
-mod play;
 mod publish;
-mod record;
-mod relay;
-#[cfg(feature = "wgpu")]
-mod room;
-mod run;
 mod source;
+mod source_spec;
 mod transport;
-#[cfg(feature = "wgpu")]
+#[cfg(feature = "render")]
 mod ui;
+mod watch;
 
-#[derive(Parser)]
-#[command(name = "irl", about = "iroh-live CLI — publish, play, call, and room")]
+/// Publish and watch live audio and video over iroh.
+#[derive(Parser, Debug)]
+#[command(name = "irl", about, version)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 enum Command {
-    /// List available cameras, screens, audio devices, and codecs.
+    /// List the cameras, displays, and audio devices this machine offers.
     Devices,
-    /// Publish capture or file sources over iroh.
-    ///
-    /// Sources are specified via --video and --audio flags: cam, screen,
-    /// file:<path>, test, none. Serves locally by default; use --relay/--room
-    /// to push elsewhere.
+    /// Publish a capture device or a media file.
     Publish(Box<args::PublishArgs>),
-    /// Subscribe and play a remote broadcast.
-    #[cfg(feature = "wgpu")]
-    Play(args::PlayArgs),
-    /// Record a remote broadcast to file (no GUI needed).
-    Record(args::RecordArgs),
-    /// 1:1 bidirectional video call.
-    #[cfg(feature = "wgpu")]
-    Call(args::CallArgs),
-    /// Multi-party room (publish + play grid).
-    #[cfg(feature = "wgpu")]
-    Room(args::RoomArgs),
-    /// Start a local relay server for browser WebTransport bridging.
-    Relay(relay::RelayConfig),
-    /// Run a multi-stream session from a TOML config file.
-    Run(args::RunArgs),
+    /// Subscribe to a remote broadcast and play it.
+    #[command(visible_alias = "play")]
+    Watch(args::WatchArgs),
 }
 
 fn main() -> n0_error::Result {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
 
-    // All commands share a single tokio runtime. GUI commands do async setup
-    // inside block_on(), then run eframe *outside* block_on() so that
-    // Handle::current().block_on() inside egui callbacks doesn't panic.
+    // One runtime for every command. The windowed commands do their async
+    // setup inside `block_on` and then hand the main thread to eframe, keeping
+    // the runtime alive through an enter guard, because `block_on` inside an
+    // egui callback would panic.
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .build()
-        .unwrap();
+        .build()?;
 
     match cli.command {
-        Command::Devices => devices::run(),
+        Command::Devices => devices::run(&rt),
         Command::Publish(args) => publish::run(*args, &rt),
-        #[cfg(feature = "wgpu")]
-        Command::Play(args) => play::run(args, &rt),
-        Command::Record(args) => record::run(args, &rt),
-        #[cfg(feature = "wgpu")]
-        Command::Call(args) => call::run(args, &rt),
-        #[cfg(feature = "wgpu")]
-        Command::Room(args) => room::run(args, &rt),
-        Command::Relay(args) => relay::run(args, &rt),
-        Command::Run(args) => run::run(args, &rt),
+        Command::Watch(args) => watch::run(args, &rt),
     }
 }

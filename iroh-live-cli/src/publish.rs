@@ -1,348 +1,324 @@
-//! `irl publish` — publish capture or file sources over iroh.
+//! `irl publish` — publish a capture device or a media file over iroh.
 //!
-//! Sources are specified via `--video` and `--audio` flags. Capture sources
-//! (cam, screen, test) go through the encode pipeline; file sources
-//! (`file:<path>`) go through the fmp4/avc3 import pipeline.
-//!
-//! Transport: serve by default, `--relay` pushes to relay, `--room` publishes
-//! into a room, `--no-serve` disables incoming connections.
+//! Capture sources go through `moq-media`'s encode path, which fans one device
+//! out to the simulcast ladder `--renditions` describes. A `file:` source takes
+//! the import path instead: its tracks are republished as they already are.
 
-use iroh_live::media::publish::LocalBroadcast;
-use moq_lite::{Broadcast, BroadcastProducer};
+use iroh_live::{Live, media::publish::LocalBroadcast};
+use n0_error::Result;
 
 use crate::{
     args::PublishArgs,
-    import::{init_import, open_input, run_import},
-    transport::{publish_producer, setup_live},
+    import::FileImport,
+    source,
+    source_spec::VideoSourceSpec,
+    transport::{self, setup_live},
 };
 
-pub fn run(args: PublishArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
-    let file_path = args
-        .capture
-        .file_video_source()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    if let Some(path) = file_path {
-        run_file(path, &args, rt)
-    } else {
-        run_capture(&args, rt)
+/// Runs the `publish` command.
+pub fn run(args: PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
+    match args.capture.video_source()? {
+        VideoSourceSpec::File(path) => publish_file(&path, &args, rt),
+        _ => publish_capture(&args, rt),
     }
 }
 
-fn run_capture(args: &PublishArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
-    let (live, broadcast, audio_ctx, _room) = rt.block_on(async {
-        let live = setup_live(!args.transport.no_serve).await?;
-        let broadcast = LocalBroadcast::new();
-        let audio_ctx = iroh_live::media::AudioBackend::default();
+/// Opens the devices, publishes them, and prints the ticket.
+async fn setup_capture(args: &PublishArgs) -> Result<(Live, LocalBroadcast, String)> {
+    let live = setup_live(!args.transport.no_serve).await?;
+    let broadcast = live.publish(&args.transport.name)?;
+    source::configure(&broadcast, &args.capture)?;
+    transport::advertise(&live, &args.transport).await?;
+    let ticket = transport::ticket(&live, &args.transport.name);
+    Ok((live, broadcast, ticket))
+}
 
-        args.capture.setup_broadcast(&broadcast, &audio_ctx).await?;
-        let room = crate::transport::publish_broadcast(&live, &broadcast, &args.transport).await?;
+/// Publishes capture devices, optionally alongside a preview window.
+fn publish_capture(args: &PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
+    let (live, broadcast, ticket) = rt.block_on(setup_capture(args))?;
 
-        anyhow::Ok((live, broadcast, audio_ctx, room))
-    })?;
+    if !args.preview {
+        return wait_for_ctrl_c(rt, live, broadcast);
+    }
 
-    if args.preview {
-        #[cfg(feature = "wgpu")]
-        {
-            let ticket =
-                iroh_live::ticket::LiveTicket::new(live.endpoint().addr(), &args.transport.name);
-            let _guard = rt.enter();
-            run_capture_preview(live, broadcast, audio_ctx, _room, ticket.to_string())
-        }
-        #[cfg(not(feature = "wgpu"))]
-        {
-            let _ = (live, broadcast, audio_ctx, _room);
-            n0_error::bail_any!("--preview requires the 'wgpu' feature");
-        }
-    } else {
-        println!("press Ctrl+C to stop");
-        rt.block_on(async {
-            // Keep room alive until shutdown so the room actor keeps running.
-            let _room = _room;
-            tokio::signal::ctrl_c().await?;
-            live.shutdown().await;
-            n0_error::Ok(())
-        })
+    #[cfg(feature = "render")]
+    {
+        // eframe owns the main thread, so the runtime stays alive only for as
+        // long as this guard does.
+        let _guard = rt.enter();
+        preview::run(live, broadcast, ticket, &args.capture.video)
+    }
+    #[cfg(not(feature = "render"))]
+    {
+        let _ = ticket;
+        drop(broadcast);
+        drop(live);
+        Err(n0_error::anyerr!("--preview needs the 'render' feature"))
     }
 }
 
-fn run_file(
-    path: std::path::PathBuf,
+/// Publishes a media file, republishing its tracks without decoding them.
+fn publish_file(
+    path: &std::path::Path,
     args: &PublishArgs,
     rt: &tokio::runtime::Runtime,
-) -> n0_error::Result {
-    let (live, decoder, input, preview_consumer, _room) = rt.block_on(async {
-        let mut input = open_input(&Some(path), args.transcode, args.format).await?;
-        let live = setup_live(!args.transport.no_serve).await?;
-        let mut broadcast = BroadcastProducer::new(Broadcast::default());
-        let preview_consumer = broadcast.consume();
-        let decoder = init_import(&mut broadcast, args.format, &mut input).await?;
-        let room = publish_producer(&live, broadcast, &args.transport).await?;
-        anyhow::Ok((live, decoder, input, preview_consumer, room))
-    })?;
-
+) -> Result {
     if args.preview {
-        #[cfg(feature = "wgpu")]
-        {
-            let (tracks, import_task, ticket_str) = rt.block_on(async {
-                let audio_ctx = iroh_live::media::AudioBackend::default();
-                let tracks = iroh_live::media::subscribe::subscribe_preview(
-                    preview_consumer,
-                    &audio_ctx,
-                    iroh_live::media::format::PlaybackConfig::default(),
-                )
-                .await?;
-                let import_task = tokio::spawn(run_import(decoder, input));
-                let ticket = iroh_live::ticket::LiveTicket::new(
-                    live.endpoint().addr(),
-                    &args.transport.name,
-                );
-                anyhow::Ok((tracks, import_task, ticket.to_string()))
-            })?;
-
-            let _guard = rt.enter();
-            run_file_preview(live, _room, tracks, import_task, ticket_str)
-        }
-        #[cfg(not(feature = "wgpu"))]
-        {
-            let _ = (live, decoder, input, preview_consumer, _room);
-            n0_error::bail_any!("--preview requires the 'wgpu' feature");
-        }
-    } else {
-        println!("press Ctrl+C to stop");
-        rt.block_on(async move {
-            // Keep room alive until shutdown so the room actor keeps running.
-            let _room = _room;
-            tokio::select! {
-                res = run_import(decoder, input) => res?,
-                _ = tokio::signal::ctrl_c() => {}
-            }
-            live.shutdown().await;
-            n0_error::Ok(())
-        })
+        return Err(n0_error::anyerr!(
+            "--preview is not available for a file source: its tracks are \
+             republished as they are, so there are no raw frames to draw"
+        ));
     }
+
+    rt.block_on(run_file(path, args))
 }
 
-// ---------------------------------------------------------------------------
-// Preview windows (wgpu only)
-// ---------------------------------------------------------------------------
+/// Publishes the file and holds it open until end of input or an interrupt.
+async fn run_file(path: &std::path::Path, args: &PublishArgs) -> Result {
+    let live = setup_live(!args.transport.no_serve).await?;
+    let producer = live.publish_raw(&args.transport.name)?;
+    let import = FileImport::open(producer, path, args.format, args.transcode).await?;
+    transport::advertise(&live, &args.transport).await?;
 
-#[cfg(feature = "wgpu")]
+    println!("press Ctrl+C to stop");
+    tokio::select! {
+        result = import.run() => result?,
+        _ = tokio::signal::ctrl_c() => {}
+    }
+    live.shutdown().await;
+    Ok(())
+}
+
+/// Holds the broadcast open until the user interrupts.
+fn wait_for_ctrl_c(rt: &tokio::runtime::Runtime, live: Live, broadcast: LocalBroadcast) -> Result {
+    println!("press Ctrl+C to stop");
+    rt.block_on(async move {
+        tokio::signal::ctrl_c().await?;
+        broadcast.finish();
+        live.shutdown().await;
+        Ok(())
+    })
+}
+
+#[cfg(feature = "render")]
 mod preview {
+    //! The preview window: the frames on their way to the encoders, plus a
+    //! source picker that swaps the capture device without restarting the
+    //! broadcast.
+
     use std::time::Duration;
 
     use eframe::egui;
     use iroh_live::{
         Live,
-        media::{AudioBackend, publish::LocalBroadcast, subscribe::MediaTracks},
-        rooms::Room,
+        media::{
+            publish::{LocalBroadcast, VideoRendition, VideoSource},
+            video,
+        },
     };
     use moq_media_egui::{
-        VideoTrackView,
+        FrameView,
         overlay::{DebugOverlay, StatCategory, fit_to_aspect},
     };
-    use n0_error::anyerr;
-    use tracing::info;
+    use n0_error::{Result, anyerr};
+    use tracing::{info, warn};
 
-    // -- File preview --
+    use crate::source_spec::VideoSourceSpec;
 
-    pub(super) fn run_file_preview(
-        live: Live,
-        room: Option<Room>,
-        tracks: MediaTracks,
-        import_task: tokio::task::JoinHandle<anyhow::Result<()>>,
-        ticket_str: String,
-    ) -> n0_error::Result {
-        let rt = tokio::runtime::Handle::current();
+    /// Opens the preview window and runs it until it closes.
+    ///
+    /// `flag` is the `--video` specifier the broadcast started with, so the
+    /// picker can show what is already publishing instead of guessing.
+    pub(super) fn run(live: Live, broadcast: LocalBroadcast, ticket: String, flag: &str) -> Result {
+        let options = eframe::NativeOptions {
+            renderer: eframe::Renderer::Wgpu,
+            wgpu_options: moq_media_egui::create_egui_wgpu_config(),
+            ..Default::default()
+        };
 
         eframe::run_native(
-            "irl — file preview",
-            eframe::NativeOptions::default(),
-            Box::new(move |cc| {
-                let egui_ctx = cc.egui_ctx.clone();
-                let task = import_task;
-                rt.spawn(async move {
-                    tokio::select! {
-                        _ = tokio::signal::ctrl_c() => {}
-                        res = task => {
-                            if let Ok(Err(e)) = res {
-                                tracing::warn!("import error: {e:#}");
-                            }
-                        }
-                    }
-                    egui_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                });
-
-                let audio_ctx = AudioBackend::default();
-                let remote = crate::ui::RemoteControls::new(
-                    tracks.broadcast,
-                    tracks.video,
-                    tracks.audio,
-                    audio_ctx,
-                    None,
-                    &cc.egui_ctx,
-                    "file-preview",
-                    &[StatCategory::Render, StatCategory::Time],
-                    cc.wgpu_render_state.clone(),
-                );
-
-                Ok(Box::new(FilePreviewApp {
-                    live,
-                    _room: room,
-                    remote,
-                    ticket_str,
-                }))
-            }),
-        )
-        .map_err(|err| anyerr!("eframe failed: {err:#}"))
-    }
-
-    struct FilePreviewApp {
-        live: Live,
-        #[allow(dead_code, reason = "kept alive so the room actor keeps running")]
-        _room: Option<Room>,
-        remote: crate::ui::RemoteControls,
-        ticket_str: String,
-    }
-
-    impl eframe::App for FilePreviewApp {
-        fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-            ctx.request_repaint_after(Duration::from_millis(16));
-
-            egui::CentralPanel::default()
-                .frame(egui::Frame::new().inner_margin(0.0).outer_margin(0.0))
-                .show(ctx, |ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-
-                    crate::ui::top_bar(ui, ctx, &self.ticket_str);
-
-                    let avail = ui.available_size();
-                    let video_rect = egui::Rect::from_min_size(ui.cursor().min, avail);
-                    if let Some(video) = self.remote.video.as_mut() {
-                        let (img, _) = video.render(ctx, avail);
-                        ui.add_sized(avail, img);
-                    }
-
-                    self.remote.update_overlay();
-                    self.remote
-                        .overlay
-                        .show(ui, video_rect, self.remote.broadcast.stats());
-                });
-        }
-
-        fn on_exit(&mut self) {
-            info!("exit");
-            self.remote.broadcast.shutdown();
-            crate::ui::shutdown_live_blocking(&self.live);
-        }
-    }
-
-    // -- Capture preview --
-
-    pub(super) fn run_capture_preview(
-        live: Live,
-        broadcast: LocalBroadcast,
-        audio_ctx: AudioBackend,
-        room: Option<Room>,
-        ticket_str: String,
-    ) -> n0_error::Result {
-        eframe::run_native(
-            "irl — publish preview",
-            eframe::NativeOptions::default(),
+            "irl publish",
+            options,
             Box::new(move |cc| {
                 crate::ui::spawn_ctrl_c_handler(&cc.egui_ctx);
-
-                let preview = broadcast
-                    .preview()
-                    .map(|track| VideoTrackView::new(&cc.egui_ctx, "preview", track));
-
-                Ok(Box::new(CapturePreviewApp {
+                let view =
+                    FrameView::new_wgpu(&cc.egui_ctx, "preview", cc.wgpu_render_state.as_ref());
+                Ok(Box::new(PreviewApp {
                     live,
-                    _room: room,
                     broadcast,
-                    audio_ctx,
-                    preview,
-                    devices: crate::ui::DeviceSelectors::new(),
+                    ticket,
+                    view,
+                    picker: SourcePicker::new(flag),
                     overlay: DebugOverlay::new(&[StatCategory::Capture, StatCategory::Net]),
-                    ticket_str,
                 }))
             }),
         )
         .map_err(|err| anyerr!("eframe failed: {err:#}"))
     }
 
-    struct CapturePreviewApp {
+    struct PreviewApp {
         live: Live,
-        #[allow(dead_code, reason = "kept alive so the room actor keeps running")]
-        _room: Option<Room>,
         broadcast: LocalBroadcast,
-        audio_ctx: AudioBackend,
-        preview: Option<VideoTrackView>,
-        devices: crate::ui::DeviceSelectors,
+        ticket: String,
+        view: FrameView,
+        picker: SourcePicker,
         overlay: DebugOverlay,
-        ticket_str: String,
     }
 
-    impl eframe::App for CapturePreviewApp {
-        fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    impl eframe::App for PreviewApp {
+        fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+            let ctx = ui.ctx().clone();
             ctx.request_repaint_after(Duration::from_millis(16));
 
-            if self.devices.is_dirty() {
-                self.devices.apply(&self.broadcast, &self.audio_ctx);
-                self.preview = None;
-            }
-
-            if self.preview.is_none()
-                && let Some(track) = self.broadcast.preview()
+            // The preview tap is replaced whenever the source is, so read it
+            // fresh each frame rather than caching a receiver that a switch
+            // would silently orphan.
+            if let Some(frames) = self.broadcast.preview()
+                && let Some(frame) = frames.take()
             {
-                self.preview = Some(VideoTrackView::new(ctx, "preview", track));
+                self.view.render_frame(&frame);
+                ctx.request_repaint();
             }
 
-            egui::CentralPanel::default()
-                .frame(egui::Frame::new().inner_margin(0.0).outer_margin(0.0))
-                .show(ctx, |ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+            crate::ui::top_bar(ui, &ctx, &self.ticket);
 
-                    crate::ui::top_bar(ui, ctx, &self.ticket_str);
+            let available = ui.available_size();
+            let video_rect = egui::Rect::from_min_size(ui.cursor().min, available);
+            let size = fit_to_aspect(available, 16.0 / 9.0);
+            let image = self.view.image();
+            ui.centered_and_justified(|ui| ui.add_sized(size, image));
 
-                    let avail = ui.available_size();
-                    let video_rect = egui::Rect::from_min_size(ui.cursor().min, avail);
+            self.overlay
+                .show_publish(ui, video_rect, self.broadcast.stats());
 
-                    if let Some(view) = self.preview.as_mut() {
-                        let video_size = fit_to_aspect(avail, 16.0 / 9.0);
-                        let (img, _) = view.render(ctx, video_size);
-                        ui.centered_and_justified(|ui| ui.add_sized(video_size, img));
-                    } else {
-                        ui.allocate_space(avail);
-                    }
-
-                    self.overlay
-                        .show_publish(ui, video_rect, self.broadcast.stats());
-
-                    egui::Area::new(egui::Id::new("publish-controls"))
-                        .anchor(egui::Align2::LEFT_TOP, [8.0, 28.0])
-                        .order(egui::Order::Foreground)
-                        .show(ctx, |ui| {
-                            egui::Frame::new()
-                                .fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180))
-                                .corner_radius(3.0)
-                                .inner_margin(6.0)
-                                .show(ui, |ui| {
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 4.0;
-                                        self.devices.ui(ui, "preview");
-                                    });
-                                });
-                        });
-                });
+            crate::ui::control_panel(&ctx, "publish-controls", |ui| {
+                self.picker.ui(ui, &self.broadcast);
+            });
         }
 
         fn on_exit(&mut self) {
             info!("exit");
             crate::ui::shutdown_live_blocking(&self.live);
+        }
+    }
+
+    /// A source the picker can switch to.
+    ///
+    /// Deliberately coarse: the combo offers the default camera, the default
+    /// display, the test pattern, and nothing. Choosing a specific device is
+    /// what `--video` and `irl devices` are for.
+    #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+    enum PickedSource {
+        Camera,
+        Screen,
+        Test,
+        None,
+    }
+
+    impl PickedSource {
+        const ALL: [Self; 4] = [Self::Camera, Self::Screen, Self::Test, Self::None];
+
+        fn label(self) -> &'static str {
+            match self {
+                Self::Camera => "Camera",
+                Self::Screen => "Screen",
+                Self::Test => "Test pattern",
+                Self::None => "No video",
+            }
+        }
+
+        /// The entry matching a `--video` specifier, if the combo has one.
+        ///
+        /// A window or an application source names a device the combo cannot
+        /// express, so those start unmatched and the picker shows the flag
+        /// text until the user chooses something else.
+        fn from_spec(spec: &VideoSourceSpec) -> Option<Self> {
+            match spec {
+                VideoSourceSpec::Camera(None) => Some(Self::Camera),
+                VideoSourceSpec::Display(None) => Some(Self::Screen),
+                VideoSourceSpec::Test => Some(Self::Test),
+                VideoSourceSpec::None => Some(Self::None),
+                _ => None,
+            }
+        }
+    }
+
+    /// The source combo.
+    ///
+    /// Switching is just `set_renditions` again: it replaces whatever was
+    /// publishing, so there is no separate teardown step and the catalog keeps
+    /// the same rendition name across the swap.
+    #[derive(Debug)]
+    struct SourcePicker {
+        selected: Option<PickedSource>,
+        /// What `--video` said, shown while nothing in the combo matches it.
+        flag: String,
+        error: Option<String>,
+    }
+
+    impl SourcePicker {
+        fn new(flag: &str) -> Self {
+            let selected = VideoSourceSpec::parse(flag)
+                .ok()
+                .as_ref()
+                .and_then(PickedSource::from_spec);
+            Self {
+                selected,
+                flag: flag.to_string(),
+                error: None,
+            }
+        }
+
+        fn ui(&mut self, ui: &mut egui::Ui, broadcast: &LocalBroadcast) {
+            ui.label("Video");
+            let label = match self.selected {
+                Some(source) => source.label(),
+                None => self.flag.as_str(),
+            };
+            let mut changed = false;
+            egui::ComboBox::from_id_salt("preview-source")
+                .selected_text(label)
+                .show_ui(ui, |ui| {
+                    for source in PickedSource::ALL {
+                        changed |= ui
+                            .selectable_value(&mut self.selected, Some(source), source.label())
+                            .changed();
+                    }
+                });
+
+            if changed {
+                self.error = self.apply(broadcast).err().map(|err| format!("{err:#}"));
+                if let Some(err) = &self.error {
+                    warn!(error = %err, "source switch failed");
+                }
+            }
+            if let Some(err) = &self.error {
+                ui.colored_label(egui::Color32::RED, err);
+            }
+        }
+
+        /// Publishes the selected source at the source's own resolution.
+        fn apply(&self, broadcast: &LocalBroadcast) -> Result<()> {
+            let source = match self.selected {
+                None | Some(PickedSource::None) => {
+                    broadcast.video().clear();
+                    return Ok(());
+                }
+                Some(PickedSource::Camera) => {
+                    VideoSource::Capture(video::capture::Config::default())
+                }
+                Some(PickedSource::Screen) => {
+                    let mut config = video::capture::Config::default();
+                    config.source = video::capture::Source::Display(None);
+                    VideoSource::Capture(config)
+                }
+                Some(PickedSource::Test) => crate::source::default_test_pattern(),
+            };
+            broadcast
+                .video()
+                .set_renditions(source, vec![VideoRendition::new("video")])?;
+            Ok(())
         }
     }
 }
-
-#[cfg(feature = "wgpu")]
-use preview::{run_capture_preview, run_file_preview};

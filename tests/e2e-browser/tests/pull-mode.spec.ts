@@ -41,7 +41,7 @@ test("pull mode: standalone publisher → relay → browser watch", async ({
     "--video", "test",
     "--audio", "none",
     "--codec", "h264",
-    "--video-presets", "360p",
+    "--renditions", "360p",
   ]);
 
   // Wait for publisher to print its ticket.

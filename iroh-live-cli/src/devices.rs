@@ -1,102 +1,78 @@
-use iroh_live::media::{
-    AudioBackend,
-    capture::{CameraCapturer, CaptureBackend, ScreenCapturer},
-    codec::{AudioCodec, VideoCodec},
-};
+//! `irl devices` — list the capture and playback devices this machine offers.
+//!
+//! Every identifier printed here is one the `--video` and `--audio` specifiers
+//! accept, so the output doubles as the argument reference for `irl publish`.
 
-pub fn run() -> n0_error::Result {
-    // Video codecs
-    let codecs = VideoCodec::available();
-    if codecs.is_empty() {
-        println!("video codecs: (none compiled in)");
-    } else {
-        println!("video codecs:");
-        for codec in &codecs {
-            let hw = if codec.is_hardware() { " [hw]" } else { "" };
-            println!("  {}{hw}", codec.display_name());
-        }
-    }
+use iroh_live::media::{audio, video};
 
-    // Audio codecs
-    let audio_codecs = AudioCodec::available();
-    if audio_codecs.is_empty() {
-        println!("\naudio codecs: (none compiled in)");
-    } else {
-        println!("\naudio codecs:");
-        for codec in &audio_codecs {
-            println!("  {}", codec.display_name());
-        }
-    }
-
-    // Cameras (grouped by backend, per-backend indexes)
-    match CameraCapturer::list_all() {
-        Ok(cameras) if !cameras.is_empty() => {
-            println!("\ncameras:");
-            let mut by_backend: Vec<(CaptureBackend, Vec<_>)> = Vec::new();
-            for cam in &cameras {
-                if let Some(entry) = by_backend.iter_mut().find(|(b, _)| *b == cam.backend) {
-                    entry.1.push(cam);
-                } else {
-                    by_backend.push((cam.backend, vec![cam]));
-                }
-            }
-            for (backend, cams) in &by_backend {
-                let bn = backend.cli_name();
-                for (i, cam) in cams.iter().enumerate() {
-                    println!("  cam:{bn}:{i}  {}", cam.summary());
-                }
-            }
-        }
-        Ok(_) => println!("\ncameras: (none found)"),
-        Err(e) => println!("\ncameras: error listing — {e:#}"),
-    }
-
-    // Screens (grouped by backend, per-backend indexes)
-    match ScreenCapturer::list_all() {
-        Ok(screens) if !screens.is_empty() => {
-            println!("\nscreens:");
-            let mut by_backend: Vec<(CaptureBackend, Vec<_>)> = Vec::new();
-            for mon in &screens {
-                if let Some(entry) = by_backend.iter_mut().find(|(b, _)| *b == mon.backend) {
-                    entry.1.push(mon);
-                } else {
-                    by_backend.push((mon.backend, vec![mon]));
-                }
-            }
-            for (backend, mons) in &by_backend {
-                let bn = backend.cli_name();
-                for (i, mon) in mons.iter().enumerate() {
-                    println!("  screen:{bn}:{i}  {}", mon.summary());
-                }
-            }
-        }
-        Ok(_) => println!("\nscreens: (none found)"),
-        Err(e) => println!("\nscreens: error listing — {e:#}"),
-    }
-
-    // Audio inputs
-    let inputs = AudioBackend::list_inputs();
-    if inputs.is_empty() {
-        println!("\naudio inputs: (none found)");
-    } else {
-        println!("\naudio inputs:");
-        for (i, dev) in inputs.iter().enumerate() {
-            let dflt = if dev.is_default { " (default)" } else { "" };
-            println!("  {i}: {}{dflt}", dev.name);
-        }
-    }
-
-    // Audio outputs
-    let outputs = AudioBackend::list_outputs();
-    if outputs.is_empty() {
-        println!("\naudio outputs: (none found)");
-    } else {
-        println!("\naudio outputs:");
-        for (i, dev) in outputs.iter().enumerate() {
-            let dflt = if dev.is_default { " (default)" } else { "" };
-            println!("  {i}: {}{dflt}", dev.name);
-        }
-    }
-
+/// Runs the `devices` command.
+pub fn run(rt: &tokio::runtime::Runtime) -> n0_error::Result {
+    rt.block_on(list());
     Ok(())
+}
+
+/// Prints every section, in the order a publisher reaches for them.
+async fn list() {
+    section("cameras", video::capture::cameras().await, |camera| {
+        format!("cam:{}  {}", camera.id, camera.name)
+    });
+
+    section("displays", video::capture::displays().await, |display| {
+        format!(
+            "screen:{}  {} ({}x{})",
+            display.id, display.name, display.width, display.height
+        )
+    });
+
+    // Windows and applications are ScreenCaptureKit concepts. Everywhere else
+    // the enumeration returns `Unsupported`, so printing an empty section would
+    // only be noise.
+    #[cfg(target_os = "macos")]
+    {
+        section("windows", video::capture::windows().await, |window| {
+            format!(
+                "window:{}  {} - {} ({}x{})",
+                window.id, window.app, window.title, window.width, window.height
+            )
+        });
+        section("applications", video::capture::apps().await, |app| {
+            format!("app:{}  {}", app.id, app.name)
+        });
+    }
+
+    section("audio inputs", audio::capture::devices().await, |device| {
+        let default = if device.default { " (default)" } else { "" };
+        format!("mic:{}  {}{default}", device.id, device.name)
+    });
+
+    #[cfg(feature = "playback")]
+    section(
+        "audio outputs",
+        audio::playback::devices().await,
+        |device| {
+            let default = if device.default { " (default)" } else { "" };
+            format!("{}{default}", device.name)
+        },
+    );
+}
+
+/// Prints one section, turning a failed enumeration into a note rather than
+/// aborting the whole listing: a machine with no camera driver should still get
+/// to see its microphones.
+fn section<T, E: std::fmt::Display>(
+    title: &str,
+    devices: Result<Vec<T>, E>,
+    line: impl Fn(&T) -> String,
+) {
+    println!("{title}:");
+    match devices {
+        Ok(devices) if devices.is_empty() => println!("  (none found)"),
+        Ok(devices) => {
+            for device in &devices {
+                println!("  {}", line(device));
+            }
+        }
+        Err(err) => println!("  (unavailable: {err})"),
+    }
+    println!();
 }

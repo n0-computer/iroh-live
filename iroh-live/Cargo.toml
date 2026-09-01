@@ -13,10 +13,12 @@ data-encoding = "2.9.0"
 derive_more = { version = "2.0.1", features = ["display", "debug", "eq"] }
 hang = { workspace = true }
 iroh = { workspace = true }
+# Rooms live in `iroh-rooms`, but `Live` still mounts the gossip protocol and
+# hands the instance out, since that is what a room needs from this crate.
 iroh-gossip = { workspace = true }
 iroh-moq = { workspace = true }
 iroh-tickets = { workspace = true }
-moq-lite = { workspace = true }
+moq-net = { workspace = true }
 moq-media = { workspace = true }
 n0-error = { version = "1", features = ["anyhow"] }
 n0-future = "0.3.1"
@@ -29,17 +31,16 @@ tokio = { version = "1.48.0", features = ["sync"] }
 tokio-util = "0.7.17"
 tracing = "0.1.41"
 bytes = "1.11.0"
-iroh-smol-kv = { workspace = true }
 throttled-tracing = "0.1.0"
 
 
 [dev-dependencies]
 clap = { version = "4.5", features = ["derive"] }
-eframe = { version = "0.33.0", default-features = false, features = ["default_fonts", "wgpu"] }
-egui-wgpu = "0.33.0"
+eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
+egui-wgpu = { workspace = true }
+moq-media = { workspace = true, features = ["test-source"] }
 moq-media-egui = { workspace = true }
-moq-media = { workspace = true, features = ["test-util"] }
-wgpu = "27"
+wgpu = { workspace = true }
 winit = "0.30"
 pollster = "0.4"
 moq-mux = { workspace = true }
@@ -52,25 +53,25 @@ image = { version = "0.25", features = ["png"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 ctor = "0.4"
-eframe = { version = "0.33.0", default-features = false, features = ["wayland", "x11"] }
+eframe = { workspace = true, features = ["wayland", "x11"] }
 patchbay = "0.1.0"
 
 [lints]
 workspace = true
 
 [features]
-default = ["h264", "opus", "capture", "wgpu", "vaapi", "videotoolbox", "dmabuf-import", "metal-import"]
-h264 = ["moq-media/h264"]
-opus = ["moq-media/opus"]
-pcm = ["moq-media/pcm"]
-av1 = ["moq-media/av1"]
+default = ["capture", "render"]
+# Camera, screen, and microphone capture.
 capture = ["moq-media/capture"]
-capture-camera = ["moq-media/capture-camera"]
-capture-screen = ["moq-media/capture-screen"]
-videotoolbox = ["moq-media/videotoolbox"]
+# Speaker output.
+playback = ["moq-media/playback"]
+# Acoustic echo cancellation, for a call on a handset or a laptop speaker.
+aec = ["moq-media/aec"]
+# Linux screen capture through xdg-desktop-portal and PipeWire.
+pipewire = ["moq-media/pipewire"]
+# GPU rendering of decoded frames.
+render = ["moq-media/render"]
+# Intel and AMD hardware H.264 encoding.
 vaapi = ["moq-media/vaapi"]
-wgpu = ["moq-media/wgpu"]
-dmabuf-import = ["wgpu", "moq-media/dmabuf-import", "moq-media-egui/dmabuf-import"]
-metal-import = ["wgpu", "moq-media/metal-import", "moq-media-egui/metal-import"]
-android = ["moq-media/android"]
-jack = ["moq-media/jack"]
+# NVIDIA hardware encode and decode.
+nvidia = ["moq-media/nvidia"]

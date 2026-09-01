@@ -2,8 +2,8 @@
 //!
 //! Provides reusable building blocks for Android apps that use moq-media:
 //!
-//! - [`camera`] — push-based [`VideoSource`](moq_media::traits::VideoSource) for
-//!   Android camera frames (NV12 or RGBA)
+//! - [`camera`] bridges Android's push-model camera callbacks to the pull-model
+//!   [`VideoSource`](moq_media::publish::VideoSource) a publish task reads
 //! - [`egl`] — safe wrappers around EGL/GLES extension functions for
 //!   HardwareBuffer → EGLImage → GL texture rendering
 //! - [`handle`] — `Arc<Mutex<T>>` ↔ `i64` conversion for JNI handles

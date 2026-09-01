@@ -5,9 +5,9 @@ edition = "2024"
 publish = false
 
 [dependencies]
-iroh-live = { path = "../../iroh-live", default-features = false, features = ["h264", "opus"] }
-rusty-capture = { path = "../../rusty-capture", default-features = false, features = ["libcamera"] }
+anyhow = "1"
+iroh-live = { path = "../../iroh-live", default-features = false }
+moq-media = { path = "../../moq-media", default-features = false, features = ["rpicam"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
-anyhow = "1"

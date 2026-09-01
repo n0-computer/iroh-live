@@ -28,13 +28,12 @@ pub enum CallError {
 /// 3. Subscribes to the remote's broadcast -> [`RemoteBroadcast`]
 /// 4. Wraps both in a handle with state tracking
 ///
-/// The caller provides a [`LocalBroadcast`] with video/audio already
-/// configured. Call publishes it on the session — do **not** also call
-/// [`Live::publish`] with the same name, as that would cause a
-/// double-publish conflict.
+/// The caller creates `local` with `live.publish(Call::path(own_id))` and
+/// configures its video and audio; the call subscribes to the peer's side at
+/// `Call::path(remote_id)`.
 ///
-/// Everything Call does can be done directly with
-/// [`Live::transport()`] + [`LocalBroadcast`] + [`RemoteBroadcast`].
+/// Everything this does can be done directly with [`Live::publish`],
+/// [`Live::transport`], and [`RemoteBroadcast`]; it is 1:1 sugar, not a layer.
 #[derive(Debug)]
 pub struct Call {
     session: MoqSession,
@@ -43,7 +42,19 @@ pub struct Call {
     signals: watch::Receiver<NetworkSignals>,
 }
 
-const CALL_BROADCAST_NAME: &str = "call";
+/// The path prefix a call publishes under.
+///
+/// The full path is `calls/<publisher endpoint id>`, so two peers in a call
+/// each publish under their own id and subscribe to the other's. The old scheme
+/// used the bare name "call" on a per-session origin; publishing is node-wide
+/// now, and a per-peer path keeps two concurrent calls from colliding on one
+/// name.
+const CALL_PREFIX: &str = "calls";
+
+/// The path a peer publishes its side of a call on.
+fn call_path(publisher: EndpointId) -> String {
+    format!("{CALL_PREFIX}/{publisher}")
+}
 
 impl Call {
     /// Dials a remote peer. Connects, publishes the local broadcast, subscribes to remote.
@@ -64,6 +75,14 @@ impl Call {
         Self::setup(session, local).await
     }
 
+    /// The path this node publishes its side of a call on.
+    ///
+    /// Build the broadcast with `live.publish(Call::path(live.endpoint().id()))`
+    /// before dialing or accepting.
+    pub fn path(publisher: EndpointId) -> String {
+        call_path(publisher)
+    }
+
     /// Accepts an incoming session as a call.
     ///
     /// The `local` broadcast should have video/audio already configured.
@@ -79,16 +98,15 @@ impl Call {
     ///
     /// Auto-wires stats recording and network signal production on the
     /// connection, so callers do not need to do this manually.
-    async fn setup(mut session: MoqSession, local: LocalBroadcast) -> Result<Self, CallError> {
-        session.publish(CALL_BROADCAST_NAME, local.consume());
-
+    async fn setup(session: MoqSession, local: LocalBroadcast) -> Result<Self, CallError> {
+        let path = call_path(session.remote_id());
         let consumer = session
-            .subscribe(CALL_BROADCAST_NAME)
+            .subscribe(&path)
             .await
             .map_err(|err| CallError::Rejected(err.into()))?;
-        let remote = RemoteBroadcast::new(CALL_BROADCAST_NAME, consumer)
+        let remote = RemoteBroadcast::new(&path, consumer)
             .await
-            .map_err(CallError::Rejected)?;
+            .map_err(|err| CallError::Rejected(err.into()))?;
 
         crate::util::spawn_stats_recorder(
             session.conn(),
@@ -135,7 +153,7 @@ impl Call {
 
     /// Closes the call, ending the session.
     pub fn close(&self) {
-        self.session.close(0u32, b"call ended");
+        self.session.close(moq_net::Error::Cancel);
     }
 
     /// Waits until the call ends and returns the disconnect reason.

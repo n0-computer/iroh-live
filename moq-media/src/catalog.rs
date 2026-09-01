@@ -26,12 +26,31 @@ pub struct IrohLiveExt {
 
 impl CatalogExt for IrohLiveExt {}
 
+/// A reference to a track on the broadcast, as it appears in the catalog.
+///
+/// hang's own catalog entries carry a codec configuration alongside the name;
+/// the iroh-live sections only need to say which track to subscribe to and how
+/// urgently.
+#[serde_with::skip_serializing_none]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TrackRef {
+    /// The track name on the broadcast.
+    pub name: String,
+    /// The publisher's priority for the track, breaking ties between
+    /// subscriptions of equal subscriber priority.
+    pub priority: u8,
+}
+
+/// The chat section: which tracks carry messages and typing indicators.
 #[serde_with::skip_serializing_none]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Chat {
-    pub message: Option<moq_lite::Track>,
-    pub typing: Option<moq_lite::Track>,
+    /// The track carrying chat messages.
+    pub message: Option<TrackRef>,
+    /// The track carrying typing indicators, if the publisher sends any.
+    pub typing: Option<TrackRef>,
 }
 
 #[serde_with::skip_serializing_none]
@@ -52,7 +71,7 @@ mod tests {
     fn ext_flattens_into_catalog() {
         let mut catalog = Catalog::default();
         catalog.ext.chat = Some(Chat {
-            message: Some(moq_lite::Track {
+            message: Some(TrackRef {
                 name: "chat".to_string(),
                 priority: 10,
             }),

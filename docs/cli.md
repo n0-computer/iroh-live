@@ -1,132 +1,145 @@
 # CLI reference (`irl`)
 
-The `irl` binary lives in the `iroh-live-cli` crate. It provides five
-commands: `devices`, `publish`, `play`, `call`, and `room`. The `play`,
-`call`, and `room` commands require the `wgpu` feature (enabled by
-default).
+The `irl` binary lives in the `iroh-live-cli` crate. It has three commands:
+`devices`, `publish`, and `watch`. Watching in a window needs the `render`
+feature, which is on by default; `--no-video` plays audio without it.
 
 ## Commands
 
 ### `irl devices`
 
-Lists available cameras, screens, audio devices, and codecs on the
-current system.
+Lists the cameras, displays, and audio devices this machine offers. Every
+identifier it prints is one the `--video` and `--audio` specifiers accept, so
+the output doubles as the argument reference for `irl publish`.
 
-### `irl publish [capture|file]`
+Windows and applications appear on macOS only: they are ScreenCaptureKit
+concepts. Displays are not listed on Linux either, where the xdg-desktop-portal
+picker owns the choice.
 
-Publishes media over iroh. Two input modes:
+### `irl publish`
 
-- **`capture`** (default when subcommand is omitted) — captures from
-  camera, screen, or microphone and encodes live.
-- **`file`** — reads from a media file (or stdin) in fMP4 or AVC3
-  format, optionally re-encoding with ffmpeg via `--transcode`.
+Publishes a capture device or a media file. Prints a ticket, and a QR code of
+it, that `irl watch` takes.
 
-Transport flags (shared by both modes):
+Source specifiers name a kind of source and optionally which device of that
+kind. There is no backend segment: `moq_video::capture::Source` names a device
+and lets the platform pick the backend that reaches it, so the old
+`cam:v4l2:1` form described a choice the caller no longer makes.
 
-| Flag | Description |
-|------|-------------|
-| `--name <NAME>` | Broadcast name (default: `hello`) |
-| `--relay <ID>` | Push to a relay endpoint |
-| `--room <TICKET>` | Publish into a room |
-| `--no-serve` | Don't accept incoming subscribers (push-only) |
-| `--no-qr` | Suppress terminal QR code |
-| `--preview` | Open an egui preview window (capture only) |
+| `--video` | Meaning |
+|---|---|
+| `cam` | The default camera |
+| `cam:<id>` | A camera by the id `irl devices` reports |
+| `screen`, `screen:<id>` | A whole display |
+| `window:<id>` | One window (macOS) |
+| `app:<id>` | Every window of one application (macOS) |
+| `file:<path>` | A media file, republished rather than encoded |
+| `test` | A synthetic moving pattern |
+| `none` | Publish no video |
 
-Capture flags:
+| `--audio` | Meaning |
+|---|---|
+| `mic`, `mic:<id>` | A microphone |
+| `system` | Everything the machine is playing (macOS) |
+| `file:<path>[:loop]` | An audio file, decoded and encoded |
+| `test` | A synthetic tone |
+| `none` | Publish no audio |
 
-| Flag | Description |
-|------|-------------|
-| `--video <SPEC>` | Video source: `cam`, `cam:<id>`, `screen`, `screen:<backend>:<id>`, `test`, `none`. Repeatable for multiple sources. Default: first camera. |
-| `--audio <SPEC>` | Audio source: device name, `test`, `none`. Default: system mic. |
-| `--test-source` | Synthetic SMPTE test pattern and tone (shorthand for `--video test --audio test`) |
-| `--codec <CODEC>` | Video codec: `h264`, `av1`, `h264-vaapi`, etc. |
-| `--video-presets <LIST>` | Comma-separated simulcast presets: `180p,360p,720p,1080p`. Default: all. |
-| `--audio-preset <PRESET>` | Audio quality preset (default: `hq`) |
+Anything `--audio` does not recognise is taken as a device name, so an
+ALSA-style `hw:0,1` works as written.
 
-File flags:
-
-| Flag | Description |
-|------|-------------|
-| `<FILE>` | Input file path (reads stdin if omitted) |
-| `--format <FMT>` | Input format: `fmp4` (default), `avc3` |
-| `--transcode` | Re-encode with ffmpeg |
-
-### `irl play`
-
-Subscribes to and plays a remote broadcast in an egui/wgpu window.
+Encoding flags:
 
 | Flag | Description |
-|------|-------------|
-| `<TICKET>` | Connection ticket (conflicts with `--endpoint-id`) |
-| `--endpoint-id <ID>` | Remote endpoint ID (requires `--name`) |
-| `--name <NAME>` | Broadcast name (with `--endpoint-id`) |
-| `--no-video` | Audio-only, no window |
-| `--decoder <BACKEND>` | Decoder backend: `auto` (default), `sw` |
-| `--audio-device <ID>` | Audio output device |
+|---|---|
+| `--test-source` | The same as `--video test --audio test` |
+| `--codec <CODEC>` | `h264` (default) or `h265`, which needs hardware |
+| `--encoder <KIND>` | `auto` (default), `hardware`, `software`, or a backend name such as `vaapi`, `nvenc`, `videotoolbox`, `openh264` |
+| `--renditions <LIST>` | The simulcast ladder, comma-separated. Each rung is `<height>p`, `<width>x<height>`, or `<name>:<width>x<height>`; a bare name encodes at the source's own resolution. Default: one rendition, unscaled |
+| `--bitrate <BPS>` | Target video bitrate. Omit to derive one from the resolution |
+| `--width`, `--height`, `--fps` | Capture hints; the device snaps to its nearest supported mode |
+| `--no-cursor` | Hide the pointer in screen, window, and application capture |
+| `--audio-codec <CODEC>` | `opus` (default) or `pcm` |
+| `--audio-bitrate <BPS>` | Opus only; PCM's bitrate follows from its layout |
+
+Transport flags:
+
+| Flag | Description |
+|---|---|
+| `--name <NAME>` | Broadcast path, as it appears in the ticket (default: `hello`) |
+| `--relay <ENDPOINT_ID>` | Also connect to a relay, which then carries the broadcast on |
+| `--no-serve` | Do not accept incoming subscribers |
+| `--no-qr` | Suppress the terminal QR code |
+| `--preview` | Open a window showing what is being published |
+
+File flags, for a `file:` video source:
+
+| Flag | Description |
+|---|---|
+| `--format <FMT>` | `fmp4` (default) or `avc3` |
+| `--transcode` | Re-mux (or re-encode) through ffmpeg first, which a plain MP4 needs |
+
+Publishing to a relay is now just a connection. Every broadcast this node
+publishes is announced on every MoQ session it has, so `--relay` connects and
+the announce follows.
+
+`--preview` draws the frames already on their way to the encoders, so it costs
+no extra decode. It is not available for a file source, whose tracks are
+republished as they are.
+
+### `irl watch`
+
+Subscribes to a broadcast and plays it. `irl play` is an alias.
+
+| Flag | Description |
+|---|---|
+| `<TICKET>` | Connection ticket, as `irl publish` printed it |
+| `--endpoint-id <ID>` | Remote endpoint id, instead of a ticket. Needs `--name` |
+| `--name <NAME>` | Broadcast path, alongside `--endpoint-id` |
+| `--no-video` | Play audio only; no window opens |
+| `--rendition <NAME>` | Hold one rendition instead of following the downlink |
 | `--fullscreen` | Start in fullscreen |
 
-### `irl call`
-
-Bidirectional 1:1 video call. Pass a ticket to dial, or omit it to
-wait for an incoming connection. Accepts all capture flags plus:
-
-| Flag | Description |
-|------|-------------|
-| `<TICKET>` | Remote ticket to auto-dial |
-| `--decoder <BACKEND>` | Decoder backend: `auto`, `sw` |
-| `--audio-device <ID>` | Audio output device |
-
-### `irl room`
-
-Multi-party room with a video grid. Pass a room ticket to join, or
-omit it to create a new room. Accepts all capture flags plus:
-
-| Flag | Description |
-|------|-------------|
-| `<TICKET>` | Room ticket to join |
-| `--decoder <BACKEND>` | Decoder backend: `auto`, `sw` |
-| `--audio-device <ID>` | Audio output device |
+Without `--rendition` the video track adapts: the subscription's transport
+signals drive rendition selection, and a switch opens the replacement decoder
+alongside the incumbent so the picture does not go blank. The window's
+rendition combo switches between the two modes at any time.
 
 ## Examples
 
-Publish from camera with default settings, print a ticket:
+Publish the default camera and microphone, and print a ticket:
 
 ```sh
 irl publish
 ```
 
-Publish a test pattern at 720p using H.264:
+Publish a synthetic pattern and tone, no hardware needed:
 
 ```sh
-irl publish capture --test-source --codec h264 --video-presets 720p
+irl publish --test-source
 ```
 
-Publish an fMP4 file:
+Publish a camera as a two-rung simulcast ladder:
 
 ```sh
-irl publish file recording.mp4
+irl publish --video cam:/dev/video0 --renditions low:320x180,720p
 ```
 
-Play a remote broadcast:
+Publish a fragmented MP4, re-muxing a plain one on the way:
 
 ```sh
-irl play <TICKET>
+irl publish --video file:recording.mp4 --transcode
 ```
 
-Start a 1:1 call, dialing a remote peer:
+Watch it:
 
 ```sh
-irl call <TICKET> --test-source
+irl watch <TICKET>
 ```
 
-Create a room and publish into it:
+## What is not here
 
-```sh
-irl room
-```
-
-## Remaining work
-
-See [plans/cli.md](../plans/cli.md) for the open items: `--preview`
-window, room grid layout options, auto-hide UI bars, and shared
-control widgets.
+`call`, `room`, `record`, `run`, and `relay` were dropped in the move to the
+upstream media stack. Rooms have left `iroh-live` for the `iroh-rooms` crate
+and are being redesigned onto moq's announce bus; the relay server has not been
+ported to moq-native 0.19. All five are recoverable from the `main` branch.

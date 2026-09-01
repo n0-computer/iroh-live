@@ -1,17 +1,11 @@
-/// Publish command: capture camera, encode, and stream over iroh.
+/// Publish command: run the camera's hardware H.264 encoder through
+/// `rpicam-vid` and stream the result over iroh.
 use std::time::Duration;
 
 use clap::Parser;
 use iroh::{Endpoint, EndpointId};
-use iroh_live::{
-    Live,
-    media::{
-        codec::VideoCodec,
-        format::VideoPreset,
-        publish::{LocalBroadcast, VideoInput},
-    },
-    ticket::LiveTicket,
-};
+use iroh_live::{Live, ticket::LiveTicket};
+use moq_media::rpicam;
 
 use crate::epaper;
 
@@ -26,25 +20,10 @@ pub(crate) struct PublishOpts {
     #[clap(long)]
     epaper: bool,
 
-    /// Encoder backend.
-    ///
-    /// - "libcamera" (default): rpicam-vid's internal H.264 HW encoder
-    ///   (pre-encoded path, lowest CPU, ~300 KB/s at 360p)
-    /// - "software": raw YUV capture + openh264 software encoder
-    /// - "v4l2": raw YUV capture + V4L2 M2M hardware encoder
-    /// - "test": SMPTE test pattern (no camera needed, for e2e verification)
-    #[clap(long, default_value = "libcamera")]
-    pub encoder: String,
-
-    /// Video rendition presets (comma-separated).
-    ///
-    /// Only used with software/v4l2 encoders (not libcamera, which
-    /// produces a single pre-encoded stream at the configured resolution).
-    #[clap(long, value_delimiter = ',', default_values_t = [VideoPreset::P360])]
-    pub video_presets: Vec<VideoPreset>,
-
-    /// Relay's iroh endpoint ID — additionally publishes to the relay so
-    /// browser and non-P2P clients can subscribe.
+    /// Relay's iroh endpoint ID - additionally connects to the relay so
+    /// browser and non-P2P clients can subscribe there. Publishing is
+    /// node-wide, so nothing further has to be done once connected: the relay
+    /// sees the same announced broadcasts as every other peer.
     #[clap(long)]
     pub relay: Option<EndpointId>,
 
@@ -52,7 +31,15 @@ pub(crate) struct PublishOpts {
     #[clap(long, default_value = "pi-zero")]
     pub name: String,
 
-    /// Target bitrate for libcamera encoder (bits/s).
+    /// Capture width in pixels.
+    #[clap(long, default_value = "640")]
+    pub width: u32,
+
+    /// Capture height in pixels.
+    #[clap(long, default_value = "360")]
+    pub height: u32,
+
+    /// Target bitrate (bits/s).
     #[clap(long, default_value = "500000")]
     pub bitrate: u32,
 
@@ -72,27 +59,22 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     let live = Live::builder(endpoint).with_router().spawn();
 
     // --- media broadcast ---
-    let broadcast = LocalBroadcast::new();
+    let broadcast = live.publish(opts.name.as_str())?;
 
-    // Resolve the capture resolution from the highest requested preset.
-    let max_preset = opts
-        .video_presets
-        .iter()
-        .copied()
-        .max()
-        .unwrap_or(VideoPreset::P360);
-    let (capture_w, capture_h) = preset_resolution(max_preset);
-
-    setup_encoder(&opts, &broadcast, capture_w, capture_h)?;
-
-    // Publish under the chosen name.
-    live.publish(&opts.name, &broadcast).await?;
+    let config = rpicam::Config::new(opts.width, opts.height, opts.fps).with_bitrate(opts.bitrate);
+    tracing::info!(
+        width = opts.width,
+        height = opts.height,
+        fps = opts.fps,
+        bitrate = opts.bitrate,
+        "using pre-encoded H.264 from rpicam-vid"
+    );
+    broadcast.video().set(rpicam::open(config)?)?;
 
     // --- relay (optional) ---
     if let Some(relay_id) = opts.relay {
-        let session = live.transport().connect(relay_id).await?;
-        session.publish(&opts.name, broadcast.producer().consume());
-        tracing::info!(%relay_id, "published to relay");
+        live.transport().connect(relay_id).await?;
+        tracing::info!(%relay_id, "connected to relay");
     }
 
     // --- ticket (always printed, regardless of e-paper) ---
@@ -110,7 +92,7 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
             Err(e) => {
                 tracing::warn!(
                     error = format!("{e:#}"),
-                    "could not display QR on e-paper — is the HAT attached and SPI enabled? \
+                    "could not display QR on e-paper - is the HAT attached and SPI enabled? \
                      (the stream is publishing normally, use the ticket above to connect)"
                 );
                 false
@@ -157,105 +139,4 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     live.shutdown().await;
 
     Ok(())
-}
-
-/// Configures the video encoder on `broadcast` based on CLI options.
-fn setup_encoder(
-    opts: &PublishOpts,
-    broadcast: &LocalBroadcast,
-    capture_w: u32,
-    capture_h: u32,
-) -> n0_error::Result {
-    match opts.encoder.as_str() {
-        "libcamera" | "hw" | "hardware" => {
-            use rusty_capture::{LibcameraH264Config, LibcameraH264Source};
-
-            let config =
-                LibcameraH264Config::new(capture_w, capture_h, opts.fps).with_bitrate(opts.bitrate);
-            let track_name = config.track_name();
-            let video_config = config.video_config();
-            tracing::info!(
-                width = capture_w,
-                height = capture_h,
-                fps = opts.fps,
-                bitrate = opts.bitrate,
-                "using pre-encoded H.264 from rpicam-vid"
-            );
-            broadcast.video().set(VideoInput::pre_encoded(
-                track_name,
-                video_config,
-                move || Ok(Box::new(LibcameraH264Source::new(config.clone()))),
-            ))?;
-        }
-        "software" | "sw" => {
-            use rusty_capture::{LibcameraCapturer, LibcameraConfig};
-
-            let camera = LibcameraCapturer::new(LibcameraConfig {
-                width: capture_w,
-                height: capture_h,
-                framerate: opts.fps,
-            });
-            let codec = VideoCodec::H264;
-            tracing::info!(%codec, presets = ?opts.video_presets, "software encoder + raw YUV capture");
-            broadcast
-                .video()
-                .set(VideoInput::new(camera, codec, opts.video_presets.clone()))?;
-        }
-        "v4l2" => {
-            use rusty_capture::{LibcameraCapturer, LibcameraConfig};
-
-            let camera = LibcameraCapturer::new(LibcameraConfig {
-                width: capture_w,
-                height: capture_h,
-                framerate: opts.fps,
-            });
-            let codec = VideoCodec::V4l2H264;
-            tracing::info!(%codec, presets = ?opts.video_presets, "V4L2 M2M encoder + raw YUV capture");
-            broadcast
-                .video()
-                .set(VideoInput::new(camera, codec, opts.video_presets.clone()))?;
-        }
-        "ffmpeg" => {
-            eprintln!("ffmpeg encoder has been removed from rusty-codecs");
-            std::process::exit(1);
-        }
-        "test" | "test-pattern" => {
-            use moq_media::test_util::TestVideoSource;
-
-            let source = TestVideoSource::new(capture_w, capture_h).with_fps(opts.fps as f64);
-            let codec = VideoCodec::H264;
-            tracing::info!(%codec, presets = ?opts.video_presets, "test pattern + software encoder");
-            broadcast
-                .video()
-                .set(VideoInput::new(source, codec, opts.video_presets.clone()))?;
-        }
-        "test-v4l2" => {
-            use moq_media::test_util::TestVideoSource;
-
-            let source = TestVideoSource::new(capture_w, capture_h).with_fps(opts.fps as f64);
-            let codec = VideoCodec::V4l2H264;
-            tracing::info!(%codec, presets = ?opts.video_presets, "test pattern + V4L2 HW encoder");
-            broadcast
-                .video()
-                .set(VideoInput::new(source, codec, opts.video_presets.clone()))?;
-        }
-        other => {
-            eprintln!(
-                "Unknown encoder: {other}. \
-                 Use 'libcamera' (default), 'software', 'v4l2', 'test', 'test-v4l2', or 'ffmpeg'"
-            );
-            std::process::exit(1);
-        }
-    }
-    Ok(())
-}
-
-/// Returns (width, height) for a given `VideoPreset`.
-fn preset_resolution(preset: VideoPreset) -> (u32, u32) {
-    match preset {
-        VideoPreset::P180 => (320, 180),
-        VideoPreset::P360 => (640, 360),
-        VideoPreset::P720 => (1280, 720),
-        VideoPreset::P1080 => (1920, 1080),
-    }
 }

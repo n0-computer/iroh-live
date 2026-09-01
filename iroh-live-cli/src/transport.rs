@@ -1,19 +1,25 @@
-//! Shared transport: create Live, publish via serve/relay/room combinations.
+//! Shared transport setup: binding an endpoint and advertising what it serves.
+//!
+//! Publishing is node-wide now. A broadcast created through
+//! [`Live::publish`](iroh_live::Live::publish) is announced on every session
+//! this node has, so pushing to a relay is nothing more than connecting to it.
 
-use iroh_live::{
-    Live,
-    media::publish::LocalBroadcast,
-    rooms::{Room, RoomTicket},
-    ticket::LiveTicket,
-};
-use moq_lite::BroadcastProducer;
+use iroh_live::{Live, ticket::LiveTicket};
+use n0_error::Result;
 use tracing::info;
 
 use crate::args::TransportArgs;
 
-/// Creates a [`Live`] instance. When `serve` is true, spawns with router so
-/// incoming subscribers are accepted. When false, only outbound connections work.
-pub async fn setup_live(serve: bool) -> anyhow::Result<Live> {
+/// Binds an endpoint and starts the MoQ transport on it.
+///
+/// With `serve` set, a router accepts incoming subscribers. Without it only
+/// outbound connections work, which is what `--no-serve` wants: the broadcast
+/// still reaches a relay, but nobody dials this node directly.
+///
+/// # Errors
+///
+/// Fails if the endpoint cannot bind.
+pub async fn setup_live(serve: bool) -> Result<Live> {
     let mut builder = Live::from_env().await?;
     if serve {
         builder = builder.with_router();
@@ -21,96 +27,38 @@ pub async fn setup_live(serve: bool) -> anyhow::Result<Live> {
     Ok(builder.spawn())
 }
 
-/// Publishes a [`LocalBroadcast`] according to transport flags: serve locally,
-/// push to relay, and/or publish into a room. Prints ticket when serving.
+/// Advertises the broadcast: prints its ticket and connects to a relay if one
+/// was named.
 ///
-/// Returns the [`Room`] handle when `--room` is used, so the caller can keep
-/// it alive for the session's duration instead of leaking memory.
-pub async fn publish_broadcast(
-    live: &Live,
-    broadcast: &LocalBroadcast,
-    args: &TransportArgs,
-) -> anyhow::Result<Option<Room>> {
-    let serve = !args.no_serve;
-    if serve {
-        live.publish(&args.name, broadcast).await?;
+/// # Errors
+///
+/// Fails if the relay cannot be reached.
+pub async fn advertise(live: &Live, args: &TransportArgs) -> Result<()> {
+    if !args.no_serve {
         print_ticket(live, &args.name, args.no_qr);
     }
 
-    if let Some(ref relay_addr) = args.relay {
-        push_to_relay(live, &args.name, broadcast.producer().consume(), relay_addr).await?;
+    if let Some(relay) = args.relay {
+        // The session carries the node origin, so every broadcast this node
+        // publishes is announced to the relay as soon as the session is up.
+        live.transport().connect(relay).await?;
+        info!(relay = %relay.fmt_short(), "pushing to relay");
+        println!("pushing to relay {relay}");
     }
-
-    let room = if let Some(ref room_ticket) = args.room {
-        Some(push_to_room(live, &args.name, broadcast.producer(), room_ticket).await?)
-    } else {
-        None
-    };
-
-    Ok(room)
-}
-
-/// Publishes a raw [`BroadcastProducer`] according to transport flags.
-///
-/// Returns the [`Room`] handle when `--room` is used.
-pub async fn publish_producer(
-    live: &Live,
-    producer: BroadcastProducer,
-    args: &TransportArgs,
-) -> anyhow::Result<Option<Room>> {
-    let serve = !args.no_serve;
-    if serve {
-        live.publish_broadcast_producer(&args.name, producer.clone())
-            .await?;
-        print_ticket(live, &args.name, args.no_qr);
-    }
-
-    if let Some(ref relay_addr) = args.relay {
-        push_to_relay(live, &args.name, producer.consume(), relay_addr).await?;
-    }
-
-    let room = if let Some(ref room_ticket) = args.room {
-        Some(push_to_room(live, &args.name, producer, room_ticket).await?)
-    } else {
-        None
-    };
-
-    Ok(room)
-}
-
-async fn push_to_relay(
-    live: &Live,
-    name: &str,
-    consumer: moq_lite::BroadcastConsumer,
-    relay_addr: &str,
-) -> anyhow::Result<()> {
-    let id: iroh::EndpointId = relay_addr
-        .parse()
-        .map_err(|e| anyhow::anyhow!("invalid relay address: {e}"))?;
-    let session = live.transport().connect(id).await?;
-    session.publish(name, consumer);
-    info!(%relay_addr, "published to relay");
     Ok(())
 }
 
-async fn push_to_room(
-    live: &Live,
-    name: &str,
-    producer: BroadcastProducer,
-    room_ticket: &RoomTicket,
-) -> anyhow::Result<Room> {
-    let room = live.join_room(room_ticket.clone()).await?;
-    room.publish_producer(name, producer).await?;
-    println!("room ticket: {}", room.ticket());
-    Ok(room)
+/// Prints the ticket a subscriber needs, and a QR code of it unless suppressed.
+pub fn print_ticket(live: &Live, name: &str, no_qr: bool) -> String {
+    let ticket = ticket(live, name);
+    println!("publishing at {ticket}");
+    if !no_qr && let Err(err) = qr2term::print_qr(&ticket) {
+        tracing::warn!(error = %err, "could not print the QR code");
+    }
+    ticket
 }
 
-fn print_ticket(live: &Live, name: &str, no_qr: bool) {
-    let ticket = LiveTicket::new(live.endpoint().addr(), name);
-    let ticket_str = ticket.to_string();
-    println!("publishing at {ticket_str}");
-
-    if !no_qr && let Err(e) = qr2term::print_qr(&ticket_str) {
-        tracing::warn!("could not print QR code: {e}");
-    }
+/// The ticket for a broadcast this node publishes.
+pub fn ticket(live: &Live, name: &str) -> String {
+    LiveTicket::new(live.endpoint().addr(), name).to_string()
 }

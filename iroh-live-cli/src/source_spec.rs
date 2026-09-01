@@ -1,0 +1,218 @@
+//! Parsing for the `--video` and `--audio` source specifiers.
+//!
+//! A specifier names a kind of source and, optionally, which device of that
+//! kind: `cam`, `cam:2`, `screen`, `window:1042`, `file:clip.mp4`. The
+//! identifiers are the ones `irl devices` prints.
+//!
+//! There is no backend segment. `moq_video::capture::Source` and
+//! `moq_audio::capture::Source` name a device and let the platform pick the
+//! backend that reaches it, so a grammar that let you write `cam:v4l2:1` would
+//! be describing a choice the caller no longer makes.
+
+use std::path::PathBuf;
+
+/// A parsed `--video` specifier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VideoSourceSpec {
+    /// A camera, by the id `irl devices` reports. `None` opens the default.
+    Camera(Option<String>),
+    /// A whole display. `None` opens the main one; on Linux the desktop portal
+    /// owns the choice and the id is ignored.
+    Display(Option<String>),
+    /// A single window, by id. macOS only.
+    Window(String),
+    /// Every window of one application, by bundle id. macOS only.
+    App(String),
+    /// A synthetic colour-bar pattern, for publishing without a camera.
+    Test,
+    /// A media file, imported rather than encoded.
+    File(PathBuf),
+    /// Publish no video.
+    None,
+}
+
+impl VideoSourceSpec {
+    /// Parses a `--video` specifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the accepted forms if `spec` is not one of
+    /// them, or if a form that needs an identifier was given without one.
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        let (kind, rest) = split_once(spec);
+        match kind.to_lowercase().as_str() {
+            "cam" | "camera" => Ok(Self::Camera(rest.map(str::to_string))),
+            "screen" | "display" => Ok(Self::Display(rest.map(str::to_string))),
+            "window" => rest
+                .map(|id| Self::Window(id.to_string()))
+                .ok_or_else(|| "window: needs an id (e.g. window:1042)".to_string()),
+            "app" => rest
+                .map(|id| Self::App(id.to_string()))
+                .ok_or_else(|| "app: needs a bundle id (e.g. app:com.apple.Safari)".to_string()),
+            "test" => Ok(Self::Test),
+            "file" => rest
+                .map(|path| Self::File(PathBuf::from(path)))
+                .ok_or_else(|| "file: needs a path (e.g. file:clip.mp4)".to_string()),
+            "none" => Ok(Self::None),
+            other => Err(format!(
+                "unknown video source '{other}': expected cam, screen, window, app, \
+                 file, test, or none"
+            )),
+        }
+    }
+}
+
+/// A parsed `--audio` specifier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AudioSourceSpec {
+    /// An input device, by the id `irl devices` reports. `None` opens the
+    /// default microphone.
+    Microphone(Option<String>),
+    /// Everything the machine is playing. macOS only.
+    System,
+    /// A synthetic tone, for publishing without a microphone.
+    Test,
+    /// An audio file, decoded and encoded like any other PCM source.
+    File {
+        /// Path to the file.
+        path: PathBuf,
+        /// Restart at the beginning on end of file.
+        looping: bool,
+    },
+    /// Publish no audio.
+    None,
+}
+
+impl AudioSourceSpec {
+    /// Parses an `--audio` specifier.
+    ///
+    /// An unrecognised specifier is taken as a device name, so an ALSA-style
+    /// `hw:0,1` reaches the right device without quoting rules.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if `file:` was given without a path.
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        let (kind, rest) = split_once(spec);
+        match kind.to_lowercase().as_str() {
+            "mic" | "microphone" | "default" => Ok(Self::Microphone(rest.map(str::to_string))),
+            "system" | "system-audio" => Ok(Self::System),
+            "test" => Ok(Self::Test),
+            "none" => Ok(Self::None),
+            "file" => {
+                let rest = rest.ok_or("file: needs a path (e.g. file:music.mp3)")?;
+                let (path, looping) = match rest.to_lowercase().strip_suffix(":loop") {
+                    Some(_) => (&rest[..rest.len() - ":loop".len()], true),
+                    None => (rest, false),
+                };
+                Ok(Self::File {
+                    path: PathBuf::from(path),
+                    looping,
+                })
+            }
+            _ => Ok(Self::Microphone(Some(spec.to_string()))),
+        }
+    }
+}
+
+/// Splits a specifier into its kind and the identifier that follows.
+///
+/// Only the first colon separates: device ids and file paths carry their own
+/// (`hw:0,1`, `C:\clips\demo.mp4`), so everything after it stays intact.
+fn split_once(spec: &str) -> (&str, Option<&str>) {
+    match spec.split_once(':') {
+        Some((kind, rest)) => (kind, Some(rest)),
+        None => (spec, None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn video_kinds() {
+        assert_eq!(
+            VideoSourceSpec::parse("cam").unwrap(),
+            VideoSourceSpec::Camera(None)
+        );
+        assert_eq!(
+            VideoSourceSpec::parse("screen").unwrap(),
+            VideoSourceSpec::Display(None)
+        );
+        assert_eq!(
+            VideoSourceSpec::parse("test").unwrap(),
+            VideoSourceSpec::Test
+        );
+        assert_eq!(
+            VideoSourceSpec::parse("none").unwrap(),
+            VideoSourceSpec::None
+        );
+    }
+
+    #[test]
+    fn video_device_ids_survive_colons() {
+        assert_eq!(
+            VideoSourceSpec::parse("cam:/dev/video2").unwrap(),
+            VideoSourceSpec::Camera(Some("/dev/video2".into()))
+        );
+        assert_eq!(
+            VideoSourceSpec::parse("file:C:/clips/demo.mp4").unwrap(),
+            VideoSourceSpec::File("C:/clips/demo.mp4".into())
+        );
+    }
+
+    #[test]
+    fn video_forms_that_need_an_id() {
+        assert!(VideoSourceSpec::parse("window").is_err());
+        assert!(VideoSourceSpec::parse("app").is_err());
+        assert!(VideoSourceSpec::parse("file").is_err());
+        assert!(VideoSourceSpec::parse("webcam").is_err());
+    }
+
+    #[test]
+    fn audio_kinds() {
+        assert_eq!(
+            AudioSourceSpec::parse("mic").unwrap(),
+            AudioSourceSpec::Microphone(None)
+        );
+        assert_eq!(
+            AudioSourceSpec::parse("test").unwrap(),
+            AudioSourceSpec::Test
+        );
+        assert_eq!(
+            AudioSourceSpec::parse("none").unwrap(),
+            AudioSourceSpec::None
+        );
+        assert_eq!(
+            AudioSourceSpec::parse("system").unwrap(),
+            AudioSourceSpec::System
+        );
+    }
+
+    #[test]
+    fn audio_unknown_is_a_device_name() {
+        assert_eq!(
+            AudioSourceSpec::parse("hw:0,1").unwrap(),
+            AudioSourceSpec::Microphone(Some("hw:0,1".into()))
+        );
+    }
+
+    #[test]
+    fn audio_file_loop_suffix() {
+        assert_eq!(
+            AudioSourceSpec::parse("file:/tmp/song.flac:loop").unwrap(),
+            AudioSourceSpec::File {
+                path: "/tmp/song.flac".into(),
+                looping: true,
+            }
+        );
+        assert_eq!(
+            AudioSourceSpec::parse("file:music.mp3").unwrap(),
+            AudioSourceSpec::File {
+                path: "music.mp3".into(),
+                looping: false,
+            }
+        );
+    }
+}

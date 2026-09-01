@@ -114,10 +114,13 @@ impl DebugOverlay {
 
     /// Updates labels from a [`VideoTrack`] into the stats.
     ///
-    /// Call this each frame before [`show`](Self::show) to keep decoder
-    /// name, rendition, and resolution in sync with the current track state.
+    /// Call this each frame before [`show`](Self::show) to keep the
+    /// rendition label in sync with the current track state. `VideoTrack`
+    /// exposes no decoder name upstream, so `stats.render.decoder` is not
+    /// touched here; a caller that logs the decoder at
+    /// [`RemoteBroadcast::video`](moq_media::subscribe::RemoteBroadcast::video)
+    /// time can set it itself.
     pub fn update_from_track(&self, stats: &SubscribeStats, track: &VideoTrack) {
-        stats.render.decoder.set(track.decoder_name());
         stats.render.rendition.set(track.rendition());
     }
 
@@ -1067,7 +1070,7 @@ fn paint_timeline_panel(
     let id = egui::Id::new("timeline_scroll");
     let response = ui.interact(rect, id, egui::Sense::click().union(egui::Sense::hover()));
     if response.hovered() {
-        let scroll_delta = ui.input(|i| i.raw_scroll_delta.y);
+        let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
         if scroll_delta.abs() > 0.1 {
             *live = false;
             *scroll = (*scroll + scroll_delta * 0.5).max(0.0);

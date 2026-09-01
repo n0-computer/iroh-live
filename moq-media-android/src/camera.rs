@@ -1,114 +1,87 @@
 //! Push-based video source for Android camera frames.
 //!
-//! Android cameras deliver frames via callbacks (CameraX ImageAnalysis or
-//! Camera2 ImageReader). This module bridges that push model to moq-media's
-//! pull-based [`VideoSource`] trait by buffering the latest frame and
-//! returning it on the next `pop_frame()` call.
+//! Android delivers camera frames through callbacks (CameraX `ImageAnalysis` or
+//! Camera2 `ImageReader`), while `moq_media::publish` reads a stream. This
+//! bridges the two: the app pushes a frame from whichever thread the callback
+//! runs on, and the publish task pulls the newest one.
+//!
+//! Newer frames replace unconsumed older ones. That is the right policy for a
+//! camera, where a frame the encoder never got to is stale rather than owed.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use anyhow::Result;
 use moq_media::{
-    format::{PixelFormat, VideoFormat, VideoFrame},
-    traits::VideoSource,
+    frame_channel::{FrameReceiver, FrameSender, frame_channel},
+    publish::VideoSource,
 };
+use moq_video::{Frame, Size, Surface};
+use n0_error::{Result, stack_error};
 
-/// A [`VideoSource`] that receives camera frames pushed from the app side.
-///
-/// Holds at most one frame — newer frames replace older ones that haven't
-/// been consumed yet. This matches the real-time nature of camera capture
-/// where only the latest frame matters.
-#[derive(Debug)]
-pub struct CameraFrameSource {
-    pending_frame: Option<VideoFrame>,
-    format: VideoFormat,
-    /// Whether the encode pipeline has called `start()`.
-    pub started: bool,
+/// Errors raised while pushing a camera frame.
+#[stack_error(derive, add_meta, from_sources)]
+#[non_exhaustive]
+pub enum CameraError {
+    /// The pixel buffer did not match the declared size and format.
+    #[error("invalid camera frame")]
+    Frame {
+        /// What the surface rejected.
+        #[error(source, std_err)]
+        source: moq_video::Error,
+    },
 }
 
-impl CameraFrameSource {
-    /// Creates a camera source for the given dimensions.
+/// The app side of the bridge: push frames here from the camera callback.
+///
+/// Cheap to clone, and safe to hold across threads, so the JNI layer can keep
+/// one alive for the lifetime of the camera session.
+#[derive(Debug, Clone)]
+pub struct CameraSink {
+    frames: FrameSender<Frame>,
+    size: Size,
+}
+
+impl CameraSink {
+    /// Pushes one RGBA frame, replacing any frame not yet consumed.
     ///
-    /// The `pixel_format` in the returned [`VideoFormat`] is set to RGBA
-    /// as a default. Encoders that receive `FrameData::Nv12` frames bypass
-    /// the pixel format field entirely — it only matters for packed formats.
-    pub fn new(width: u32, height: u32) -> Self {
-        Self {
-            pending_frame: None,
-            format: VideoFormat {
-                pixel_format: PixelFormat::Rgba,
-                dimensions: [width, height],
-            },
-            started: false,
-        }
-    }
-
-    /// Pushes a camera frame, replacing any unconsumed previous frame.
-    pub fn push_frame(&mut self, frame: VideoFrame) {
-        self.pending_frame = Some(frame);
-    }
-
-    /// Takes the pending frame without requiring the [`VideoSource`] trait.
-    pub fn take_frame(&mut self) -> Option<VideoFrame> {
-        self.pending_frame.take()
-    }
-}
-
-impl VideoSource for CameraFrameSource {
-    fn name(&self) -> &str {
-        "android-camera"
-    }
-
-    fn format(&self) -> VideoFormat {
-        self.format.clone()
-    }
-
-    fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {
-        Ok(self.pending_frame.take())
-    }
-
-    fn start(&mut self) -> Result<()> {
-        self.started = true;
+    /// `rgba` is tightly packed, `width * height * 4` bytes.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `rgba` does not match the size this sink was created with.
+    pub fn push_rgba(&self, rgba: &[u8], timestamp: moq_net::Timestamp) -> Result<(), CameraError> {
+        let surface = Surface::rgba(rgba, self.size)
+            .map_err(|source| n0_error::e!(CameraError::Frame { source }))?;
+        self.frames.send(Frame::new(surface, timestamp));
         Ok(())
     }
 
-    fn stop(&mut self) -> Result<()> {
-        self.started = false;
-        Ok(())
+    /// Pushes a frame the caller already built, for a source that can hand over
+    /// something better than packed RGBA.
+    pub fn push(&self, frame: Frame) {
+        self.frames.send(frame);
+    }
+
+    /// The size every pushed frame must have.
+    pub fn size(&self) -> Size {
+        self.size
     }
 }
 
-/// [`VideoSource`] wrapper around `Arc<Mutex<CameraFrameSource>>`.
+/// Creates a camera bridge for a fixed capture size.
 ///
-/// The publish pipeline takes ownership of the source, but the JNI camera
-/// callback needs a shared handle to push frames. This wrapper bridges the
-/// two by delegating all trait methods through the mutex.
-#[derive(Debug)]
-pub struct SharedCameraSource {
-    /// Shared reference to the underlying camera source.
-    pub inner: Arc<Mutex<CameraFrameSource>>,
-}
-
-impl VideoSource for SharedCameraSource {
-    fn name(&self) -> &str {
-        "android-camera"
-    }
-
-    fn format(&self) -> VideoFormat {
-        self.inner.lock().expect("poisoned").format.clone()
-    }
-
-    fn pop_frame(&mut self) -> Result<Option<VideoFrame>> {
-        Ok(self.inner.lock().expect("poisoned").pending_frame.take())
-    }
-
-    fn start(&mut self) -> Result<()> {
-        self.inner.lock().expect("poisoned").started = true;
-        Ok(())
-    }
-
-    fn stop(&mut self) -> Result<()> {
-        self.inner.lock().expect("poisoned").started = false;
-        Ok(())
-    }
+/// The returned [`VideoSource`] goes to
+/// [`VideoPublisher::set`](moq_media::publish::VideoPublisher::set); the
+/// [`CameraSink`] goes to whatever drives the camera.
+pub fn camera(size: Size) -> (CameraSink, VideoSource) {
+    let (tx, rx) = frame_channel();
+    let sink = CameraSink { frames: tx, size };
+    let receiver = Arc::new(rx);
+    let source = VideoSource::Frames(Box::pin(n0_future::stream::unfold(
+        receiver,
+        |receiver: Arc<FrameReceiver<Frame>>| async move {
+            let frame = receiver.recv().await?;
+            Some((frame, receiver))
+        },
+    )));
+    (sink, source)
 }

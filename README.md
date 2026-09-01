@@ -26,39 +26,20 @@ cargo install --path iroh-live-cli --all-features
 irl publish
 
 # Terminal 2: watch the stream
-irl play <TICKET>
+irl watch <TICKET>
 ```
 
-For a 1:1 call:
+No camera on the machine? Publish a synthetic pattern and tone instead:
 
 ```sh
-# Side A: wait for incoming call
-irl call
-
-# Side B: dial with the ticket from side A
-irl call <TICKET>
+irl publish --test-source
 ```
 
-To watch a stream in a browser, start a relay and open the URL it prints:
+To reach subscribers that cannot dial this node directly, connect to a relay.
+Everything this node publishes is announced over that session:
 
 ```sh
-# Terminal 1: start a local relay (self-signed TLS, dev mode)
-irl relay
-
-# Terminal 2: publish to the relay
-irl publish --relay <RELAY_ADDR>
-
-# Open http://localhost:4443/?name=hello in a browser to watch
-```
-
-For a multi-party room (early stage, limited testing):
-
-```sh
-# First participant creates the room
-irl room
-
-# Others join with the printed ticket
-irl room <TICKET>
+irl publish --relay <RELAY_ENDPOINT_ID>
 ```
 
 ## Using iroh-live in Rust
@@ -127,25 +108,22 @@ Details: [docs/platforms.md](docs/platforms.md)
 ## CLI tool (`irl`)
 
 The `irl` binary is in the `iroh-live-cli` crate. It is a demo application
-that showcases iroh-live's capabilities, using egui for its GUI. It covers
-the full workflow from device discovery through publishing, playback, calls,
-rooms, and running a relay server.
+that showcases iroh-live's capabilities, using egui for its GUI: device
+discovery, publishing a camera or a file, and watching a remote broadcast.
 
 | Command | Description |
 |---------|-------------|
-| `irl devices` | List cameras, screens, audio devices, and codecs |
-| `irl publish` | Broadcast camera and microphone (default) |
-| `irl publish --video file:<FILE>` | Stream a media file |
-| `irl play <TICKET>` | Subscribe and render a remote broadcast |
-| `irl call [TICKET]` | 1:1 bidirectional video call |
-| `irl room [TICKET]` | Multi-party room with participant grid |
-| `irl record <TICKET>` | Record a remote broadcast to raw files |
-| `irl run <CONFIG.toml>` | Multi-stream session from TOML config |
-| `irl relay` | Start a local relay server for browser access |
+| `irl devices` | List cameras, displays, and audio devices |
+| `irl publish` | Broadcast camera and microphone (the default) |
+| `irl publish --video file:<FILE>` | Republish a media file |
+| `irl watch <TICKET>` | Subscribe to a remote broadcast and play it |
 
 Common flags for `publish`: `--video cam`, `--video screen`, `--video test`,
 `--video file:path.fmp4`, `--audio none`, `--codec h264`, `--audio-codec opus`,
-`--video-presets 360p,720p`, `--relay <endpoint>`, `--room <ticket>`.
+`--renditions 360p,720p`, `--relay <endpoint-id>`, `--preview`.
+
+`irl call`, `irl room`, `irl record`, `irl run`, and `irl relay` were dropped
+in the move to the upstream media stack; they are recoverable from `main`.
 
 Details: [docs/cli.md](docs/cli.md)
 
