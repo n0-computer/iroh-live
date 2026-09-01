@@ -59,9 +59,8 @@ fn call_path(publisher: EndpointId) -> String {
 impl Call {
     /// Dials a remote peer. Connects, publishes the local broadcast, subscribes to remote.
     ///
-    /// The `local` broadcast should have video/audio already configured.
-    /// It is published on the session as "call" — do **not** also publish
-    /// it via [`Live::publish`].
+    /// Build `local` with `live.publish(Call::path(live.endpoint().id()))` and
+    /// configure its video and audio before dialing.
     pub async fn dial(
         live: &Live,
         remote: impl Into<EndpointAddr>,
@@ -85,16 +84,16 @@ impl Call {
 
     /// Accepts an incoming session as a call.
     ///
-    /// The `local` broadcast should have video/audio already configured.
-    /// It is published on the session as "call" — do **not** also publish
-    /// it via [`Live::publish`].
+    /// Build `local` the same way [`dial`](Self::dial) describes.
     pub async fn accept(session: MoqSession, local: LocalBroadcast) -> Result<Self, CallError> {
         Self::setup(session, local).await
     }
 
-    /// Publishes the local broadcast and subscribes to the remote's "call"
-    /// broadcast. Shared setup for both [`dial`](Self::dial) and
-    /// [`accept`](Self::accept).
+    /// Subscribes to the peer's side of the call. Shared by
+    /// [`dial`](Self::dial) and [`accept`](Self::accept).
+    ///
+    /// Nothing is published here: the local broadcast was created on the node
+    /// origin before the call started, so it is already announced.
     ///
     /// Auto-wires stats recording and network signal production on the
     /// connection, so callers do not need to do this manually.

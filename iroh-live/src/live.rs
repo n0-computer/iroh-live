@@ -246,9 +246,10 @@ impl Live {
         if let Some(router) = self.router.as_ref()
             && let Err(err) = router.shutdown().await
         {
-            error!("Error while shutting down the iroh router: {err:#}");
-        } else {
-            self.endpoint.close().await
+            // Report it and close anyway: leaving the endpoint open because its
+            // router complained strands the socket.
+            error!(error = %err, "failed to shut down the iroh router");
         }
+        self.endpoint.close().await;
     }
 }

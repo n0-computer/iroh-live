@@ -56,7 +56,7 @@ pub(super) async fn open(
                             // The video clock steers off how much audio is
                             // still buffered ahead of the speaker, which is the
                             // only latency either side can actually measure.
-                            context.sync.set_audio_latency(Some(sink.buffered()));
+                            context.sync.set_audio_buffered(Some(sink.buffered()));
                             if let Err(err) = sink.write(&frame.data) {
                                 warn!(error = %err, "audio sink write failed");
                                 return;

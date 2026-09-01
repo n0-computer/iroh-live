@@ -23,8 +23,6 @@ pub fn video(size: Size, framerate: u32) -> VideoSource {
     let mut rgba = vec![0u8; (size.width * size.height * 4) as usize];
 
     let frames: BoxStream<Frame> = Box::pin(n0_future::stream::unfold(0u32, move |tick| {
-        let clock = clock;
-        let size = size;
         // Paint into the same buffer every frame; `Surface::rgba` copies.
         paint(&mut rgba, size, tick);
         let surface = Surface::rgba(&rgba, size).expect("generated pattern is well formed");

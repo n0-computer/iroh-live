@@ -15,7 +15,9 @@ use tracing::{Instrument, debug, error_span, info};
 
 use super::RemoteBroadcast;
 use crate::{
-    adaptive::{AdaptationTimers, AdaptiveConfig, Decision, evaluate, rank_renditions},
+    adaptive::{
+        AdaptationTimers, AdaptiveConfig, Decision, evaluate, rank_renditions, should_abort_probe,
+    },
     net::NetworkSignals,
 };
 
@@ -46,6 +48,10 @@ async fn run(
     let mut timers = AdaptationTimers::default();
     let mut ticker = tokio::time::interval(config.check_interval);
     let shutdown = broadcast.shutdown_token();
+    // The rendition a probe stepped up to, and when. An upgrade is a bet that
+    // the link can carry more, so it is watched and taken back if the link says
+    // otherwise rather than left to the next downgrade timer.
+    let mut probe: Option<Probe> = None;
 
     loop {
         tokio::select! {
@@ -78,18 +84,48 @@ async fn run(
         };
 
         let signals = *signals.borrow();
-        let decision = evaluate(
-            index,
-            &ranked,
-            &signals,
-            &mut timers,
-            &config,
-            Instant::now(),
-        );
+        let now = Instant::now();
+
+        if let Some(active_probe) = &probe {
+            if should_abort_probe(&signals, active_probe.congestion_baseline, &config) {
+                // The step up did not hold. Go back down and start the probe
+                // cooldown, so the next attempt waits rather than oscillating.
+                let back = (index + 1).min(ranked.len() - 1);
+                info!(
+                    from = %active,
+                    to = %ranked[back].name,
+                    loss = signals.loss_rate,
+                    "probe aborted, stepping back down",
+                );
+                timers.last_probe = Some(now);
+                probe = None;
+                requested.send_replace(Some(ranked[back].name.clone()));
+                continue;
+            }
+            if now.duration_since(active_probe.started) >= config.probe_duration {
+                debug!(rendition = %active, "probe held");
+                probe = None;
+            }
+        }
+        let decision = evaluate(index, &ranked, &signals, &mut timers, &config, now);
         let target = match decision {
             Decision::Hold => continue,
-            Decision::Downgrade(next) | Decision::StartProbe(next) => next,
-            Decision::Emergency => ranked.len() - 1,
+            Decision::Downgrade(next) => {
+                probe = None;
+                next
+            }
+            Decision::StartProbe(next) => {
+                timers.last_probe = Some(now);
+                probe = Some(Probe {
+                    started: now,
+                    congestion_baseline: signals.congestion_events,
+                });
+                next
+            }
+            Decision::Emergency => {
+                probe = None;
+                ranked.len() - 1
+            }
         };
 
         info!(
@@ -103,4 +139,13 @@ async fn run(
         );
         requested.send_replace(Some(ranked[target].name.clone()));
     }
+}
+
+/// An upgrade in progress: a step up the ladder that has not yet proved itself.
+struct Probe {
+    /// When the step up was requested, against `AdaptiveConfig::probe_duration`.
+    started: Instant,
+    /// The congestion counter at the moment of the step, so any new congestion
+    /// event during the probe is attributable to it.
+    congestion_baseline: u64,
 }

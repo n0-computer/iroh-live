@@ -1,76 +1,68 @@
 # Tickets
 
-| Field | Value |
-|-------|-------|
-| Status | stable |
-| Applies to | iroh-live |
-| Platforms | all |
+A ticket is everything a viewer needs to reach a broadcast, in one string. There
+are two kinds, in two crates.
 
 ## LiveTicket
 
-`LiveTicket` is the primary way to share connection information for a broadcast. It bundles the publisher's iroh endpoint address, the broadcast name, and optional relay URLs into a single string that a viewer can use to connect.
-
-### Format
-
-A ticket serializes to a URI:
-
-```
-iroh-live:<BASE64URL(postcard(EndpointAddr))>/<broadcast-name>
-```
-
-The endpoint address is postcard-encoded, then base64url-encoded (no padding). The broadcast name follows a `/` separator. A legacy format (`name@BASE32(addr)`) is still accepted for parsing but no longer produced.
-
-### Creating and parsing
+`iroh_live::ticket::LiveTicket` names a publisher's endpoint address and the path
+its broadcast is on.
 
 ```rust
 use iroh_live::ticket::LiveTicket;
 
-// Create a ticket
-let ticket = LiveTicket::new(endpoint_addr, "my-stream");
-
-// Print it (Display trait produces the URI string)
+let ticket = LiveTicket::new(live.endpoint().addr(), "hello");
 println!("{ticket}");
 
-// Parse from a string (FromStr trait)
-let parsed: LiveTicket = ticket_string.parse()?;
-
-// Add relay URLs for indirect connectivity
-let ticket = LiveTicket::new(endpoint_addr, "my-stream")
-    .with_relay_urls(["https://relay.example.com".to_string()]);
+let parsed: LiveTicket = string.parse()?;
 ```
 
-### Sharing
+`Display` produces a URI:
 
-There are several ways to share a ticket with viewers:
+```
+iroh-live:<BASE64URL_NOPAD(postcard(EndpointAddr))>/<broadcast-name>
+```
 
-- **Copy the string**: the `irl publish` command prints the ticket to the terminal. Copy and paste it to another machine.
-- **QR code**: the Pi Zero demo renders the ticket as a QR code on an e-paper display. Any QR scanner can read it. The ticket string is short enough to fit comfortably in a QR code (well under 2000 characters).
-- **Browser URL**: pass the ticket as a query parameter to the relay web viewer: `https://relay.example.com/?name=<TICKET>`. See [browser-relay.md](browser-relay.md).
+`FromStr` accepts that form, the same thing without the `iroh-live:` prefix, and
+the legacy `name@BASE32(addr)` shape that older builds produced. Nothing produces
+the legacy form any more.
+
+`to_bytes` and `from_bytes` are the postcard encoding of the whole ticket. Use
+them when the ticket travels inside another wire format rather than as text.
+
+`with_relay_urls` sets a list of MoQ relay URLs for a viewer that cannot reach the
+publisher directly. Those survive `to_bytes` but not the URI, which carries only
+the endpoint address and the name.
+
+The URI stays under 2000 characters, which is short enough for a QR code. The Pi
+demo renders one on an e-paper display, and `irl publish` prints one in the
+terminal unless you pass `--no-qr`.
 
 ## Call tickets
 
-For 1:1 calls, use a `LiveTicket` with broadcast name `"call"`. The `Call`
-type uses this convention internally.
-
-```rust
-use iroh_live::ticket::LiveTicket;
-
-let ticket = LiveTicket::new(my_endpoint_addr, "call");
-println!("Call me: {ticket}");
-```
+A call needs no ticket type of its own. Each side publishes under
+`calls/<its own endpoint id>` and subscribes to the other's, so a `LiveTicket`
+built with `Call::path(my_endpoint_id)` as its name is what you hand the person
+you want to call. The per-peer path replaced a fixed `call` name that two
+concurrent calls used to collide on.
 
 ## RoomTicket
 
-`RoomTicket` identifies a multi-party room. It contains a gossip topic ID and optional bootstrap peer IDs. Unlike `LiveTicket`, it does not contain a broadcast name, because each room participant publishes their own broadcast and discovers others via gossip.
+`iroh_rooms::RoomTicket` identifies a room rather than a broadcast. It carries a
+gossip topic id and a list of bootstrap endpoints, and it uses the
+`iroh_tickets` envelope with kind `room`, so its string form starts with `room`
+rather than a URI scheme.
 
 ```rust
-use iroh_live::rooms::RoomTicket;
+use iroh_rooms::RoomTicket;
 
-// Generate a new room
-let ticket = RoomTicket::generate();
-
-// Join an existing room
-let parsed: RoomTicket = ticket_string.parse()?;
+let ticket = RoomTicket::generate();          // fresh topic, no bootstrap
+let parsed: RoomTicket = string.parse()?;
 ```
 
-See [rooms.md](rooms.md) for details on the room API.
+`RoomTicket::new_from_env` reads `IROH_LIVE_ROOM` for a full ticket, falls back
+to `IROH_LIVE_TOPIC` for a hex topic id, and otherwise generates one and logs the
+value to reuse.
+
+`Room::ticket()` returns a ticket that includes the calling peer as a bootstrap
+endpoint, which is what you pass to someone joining. See [rooms](rooms.md).

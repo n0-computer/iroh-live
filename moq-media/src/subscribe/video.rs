@@ -14,7 +14,7 @@
 use std::{sync::Arc, time::Duration};
 
 use n0_error::{Result, e};
-use n0_future::task::{AbortOnDropHandle, spawn};
+use n0_future::task::{AbortOnDropHandle, JoinHandle, spawn};
 use n0_watcher::Watchable;
 use tokio::sync::{mpsc, watch};
 use tracing::{Instrument, debug, error_span, info, warn};
@@ -51,6 +51,7 @@ pub(super) async fn open(
             frames_tx,
             current.clone(),
             decoder.clone(),
+            requested_tx.clone(),
             requested_rx,
         )
         .instrument(error_span!("video", broadcast = %broadcast.name())),
@@ -97,15 +98,26 @@ async fn spawn_reader(
     let mut consumer =
         moq_video::decode::Consumer::new(broadcast.consumer(), &config, rendition, decode).await?;
     let decoder = consumer.name().to_string();
+    broadcast.stats().render.decoder.set(&decoder);
+    broadcast.stats().render.rendition.set(rendition);
     info!(rendition, decoder = %decoder, "video decoding");
 
     let (tx, frames) = mpsc::channel(READ_AHEAD);
     let name = rendition.to_string();
+    let stats = broadcast.stats().clone();
     let task = spawn(
         async move {
             loop {
+                let started = std::time::Instant::now();
                 match consumer.read().await {
                     Ok(Some(frame)) => {
+                        // Covers the transport read as well as the decode: the
+                        // two happen inside one `read`, with no earlier point
+                        // to attribute arrival to.
+                        stats
+                            .render
+                            .decode_ms
+                            .record(started.elapsed().as_secs_f64() * 1000.0);
                         if tx.send(frame).await.is_err() {
                             debug!("nobody is reading this rendition any more");
                             return;
@@ -139,6 +151,7 @@ async fn supervise(
     frames: FrameSender<moq_video::Frame>,
     current: Watchable<String>,
     decoder: Watchable<String>,
+    withdraw: watch::Sender<Option<String>>,
     mut requested: watch::Receiver<Option<String>>,
 ) {
     let context = broadcast.decode_context();
@@ -146,6 +159,13 @@ async fn supervise(
     // The replacement, from the moment its decoder opens until its first frame
     // arrives. Holding both is what keeps the picture up across the swap.
     let mut pending: Option<(String, Reader)> = None;
+    // The open in flight. It runs as its own task rather than inside a `select!`
+    // arm, because opening a decoder means a network round trip and a codec
+    // open, and awaiting that in an arm body stops the incumbent from being
+    // forwarded for exactly the window the overlap exists to hide.
+    let mut opening: Option<(String, JoinHandle<Result<Reader, SubscribeError>>)> = None;
+    // The last frame's arrival, for the frame rate the overlay draws.
+    let mut previous: Option<std::time::Instant> = None;
 
     loop {
         tokio::select! {
@@ -161,13 +181,38 @@ async fn supervise(
                     return;
                 }
                 let Some(name) = requested.borrow_and_update().clone() else { continue };
-                if name == current.get() || pending.as_ref().is_some_and(|(open, _)| *open == name) {
+                let already = pending.as_ref().is_some_and(|(open, _)| *open == name)
+                    || opening.as_ref().is_some_and(|(open, _)| *open == name);
+                if name == current.get() || already {
                     continue;
                 }
                 debug!(rendition = %name, "opening replacement decoder");
-                match spawn_reader(&broadcast, &name).await {
-                    Ok(replacement) => pending = Some((name, replacement)),
-                    Err(err) => warn!(error = %err, rendition = %name, "replacement failed to open"),
+                let opened = spawn({
+                    let broadcast = broadcast.clone();
+                    let name = name.clone();
+                    async move { spawn_reader(&broadcast, &name).await }
+                });
+                // A switch requested while another was opening supersedes it;
+                // dropping the handle aborts the open we no longer want.
+                opening = Some((name, opened));
+            }
+
+            // The replacement's decoder is open. Hold it until it produces a
+            // frame, so the swap never shows an empty picture.
+            opened = async { (&mut opening.as_mut().expect("guarded").1).await },
+                if opening.is_some() =>
+            {
+                let (name, _) = opening.take().expect("guarded");
+                match opened {
+                    Ok(Ok(replacement)) => pending = Some((name, replacement)),
+                    Ok(Err(err)) => {
+                        warn!(error = %err, rendition = %name, "replacement failed to open");
+                        clear_request(&withdraw, &name);
+                    }
+                    Err(err) => {
+                        warn!(error = %err, rendition = %name, "replacement open task failed");
+                        clear_request(&withdraw, &name);
+                    }
                 }
             }
 
@@ -182,14 +227,17 @@ async fn supervise(
                         decoder.set(replacement.decoder.clone()).ok();
                         reader = replacement;
                         current.set(name).ok();
-                        deliver(&frames, frame, &context, synced).await;
+                        deliver(&frames, frame, &context, synced, &mut previous).await;
                     }
-                    None => debug!(rendition = %name, "replacement ended before its first frame"),
+                    None => {
+                        debug!(rendition = %name, "replacement ended before its first frame");
+                        clear_request(&withdraw, &name);
+                    }
                 }
             }
 
             frame = reader.frames.recv() => match frame {
-                Some(frame) => deliver(&frames, frame, &context, synced).await,
+                Some(frame) => deliver(&frames, frame, &context, synced, &mut previous).await,
                 None => {
                     debug!("video decode ended");
                     return;
@@ -199,15 +247,44 @@ async fn supervise(
     }
 }
 
+/// Withdraws a switch request that did not land.
+///
+/// The adaptation loop holds off while a request is outstanding, so leaving a
+/// failed one set would turn adaptation off for the rest of the session, and it
+/// would happen on the first downgrade under congestion, which is exactly when
+/// it is needed. Only withdraws the request we tried, so a newer one placed
+/// meanwhile survives.
+fn clear_request(requested: &watch::Sender<Option<String>>, tried: &str) {
+    // `false` from the closure suppresses the change notification: withdrawing
+    // a request is not itself a request, and waking the supervisor for it would
+    // only make it re-read a value it just wrote.
+    requested.send_if_modified(|current| {
+        if current.as_deref() == Some(tried) {
+            *current = None;
+        }
+        false
+    });
+}
+
 /// Paces one frame against the playout clock and hands it to the renderer.
 async fn deliver(
     frames: &FrameSender<moq_video::Frame>,
     frame: moq_video::Frame,
     context: &DecodeContext,
     synced: bool,
+    previous: &mut Option<std::time::Instant>,
 ) {
     let pts = Duration::from_micros(frame.timestamp.as_micros() as u64);
-    context.stats.render.fps.record(1.0);
+    // The metric smooths whatever value it is handed, so it wants the
+    // instantaneous rate, not a tick. Timed at arrival rather than from the
+    // presentation timestamps, because a stall shows up here and not there.
+    let now = std::time::Instant::now();
+    if let Some(previous) = previous.replace(now) {
+        let gap = now.duration_since(previous).as_secs_f64();
+        if gap > 0.0 {
+            context.stats.render.fps.record(1.0 / gap);
+        }
+    }
     if synced {
         context.sync.received(pts);
         if !context.sync.wait_async(pts).await {

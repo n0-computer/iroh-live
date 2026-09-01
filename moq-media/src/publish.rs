@@ -202,6 +202,12 @@ pub struct LocalBroadcast {
     broadcast: moq_net::broadcast::Producer,
     #[debug(skip)]
     catalog: CatalogProducer,
+    /// Held for a publish task's whole life, so a replacement waits for its
+    /// predecessor's track producers to drop before creating its own. Without
+    /// it, swapping a source races the old track name and `create_track`
+    /// returns `Error::Duplicate` on a name that is about to be free.
+    #[debug(skip)]
+    video_slot: Arc<tokio::sync::Mutex<()>>,
     clock: moq_mux::Clock,
     stats: PublishStats,
     video: Mutex<Option<VideoTrack>>,
@@ -236,6 +242,7 @@ impl LocalBroadcast {
             catalog,
             clock: moq_mux::Clock::new(),
             stats: PublishStats::default(),
+            video_slot: Arc::new(tokio::sync::Mutex::new(())),
             video: Mutex::new(None),
             audio: Mutex::new(None),
             preview: Mutex::new(None),
@@ -296,6 +303,9 @@ impl LocalBroadcast {
     ) -> Result<moq_net::track::Producer, PublishError> {
         let mut info = moq_net::track::Info::default();
         info.priority = track.priority;
+        // Chat only makes sense read oldest first, where the moq-net default
+        // favours the newest group.
+        info.ordered = true;
         let producer = self
             .broadcast
             .create_track(track.name.as_str(), Some(info))?;
@@ -366,8 +376,10 @@ impl VideoPublisher<'_> {
     ///
     /// # Errors
     ///
-    /// Fails if `renditions` is empty or has duplicate names, or if the tracks
-    /// cannot be created on the broadcast.
+    /// Fails if `renditions` is empty or has duplicate names. Everything after
+    /// that happens inside the publish task, so a device that will not open or
+    /// an encoder that fails surfaces in the log and ends the track rather than
+    /// here.
     pub fn set_renditions(
         &self,
         source: impl Into<VideoSource>,
@@ -385,11 +397,16 @@ impl VideoPublisher<'_> {
         // that never fills.
         let previewable = !matches!(source, VideoSource::AnnexB(_));
         let (preview_tx, preview_rx) = frame_channel::<Arc<moq_video::Frame>>();
+        // Drop the previous publish before spawning the replacement, so its
+        // abort is already in flight while the new task waits on the slot.
+        self.0.video.lock().expect("poisoned").take();
+
         let task = video::spawn_publish(video::Publish {
             broadcast: self.0.broadcast.clone(),
             catalog: self.0.catalog.clone(),
             clock: self.0.clock,
             stats: self.0.stats.clone(),
+            slot: self.0.video_slot.clone(),
             source,
             renditions,
             preview: preview_tx,
@@ -427,12 +444,8 @@ pub struct AudioPublisher<'a>(&'a LocalBroadcast);
 
 impl AudioPublisher<'_> {
     /// Publishes `source` with the default encoder options.
-    ///
-    /// # Errors
-    ///
-    /// See [`set_with`](Self::set_with).
-    pub fn set(&self, source: impl Into<AudioSource>) -> Result<(), PublishError> {
-        self.set_with(source, moq_audio::encode::Options::default())
+    pub fn set(&self, source: impl Into<AudioSource>) {
+        self.set_with(source, moq_audio::encode::Options::default());
     }
 
     /// Publishes `source` with explicit encoder options.
@@ -440,14 +453,11 @@ impl AudioPublisher<'_> {
     /// Replaces whatever was publishing before. Unlike video there is no
     /// ladder: a subscriber adapts by dropping video renditions, never audio.
     ///
-    /// # Errors
-    ///
-    /// Fails if the track cannot be created on the broadcast.
-    pub fn set_with(
-        &self,
-        source: impl Into<AudioSource>,
-        options: moq_audio::encode::Options,
-    ) -> Result<(), PublishError> {
+    /// Returns nothing because nothing can fail here: the device opens, the
+    /// track is created, and the encoder starts inside the publish task, and a
+    /// failure there is logged and ends the track. A caller that has to know
+    /// watches the track rather than this call.
+    pub fn set_with(&self, source: impl Into<AudioSource>, options: moq_audio::encode::Options) {
         let source = source.into();
         let rendition = options
             .track
@@ -464,7 +474,6 @@ impl AudioPublisher<'_> {
             rendition,
             _task: task,
         });
-        Ok(())
     }
 
     /// Stops publishing audio.

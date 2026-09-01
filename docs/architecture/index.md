@@ -1,66 +1,92 @@
 # Architecture
 
-| Field | Value |
-|-------|-------|
-| Status | stable |
-| Applies to | iroh-live, moq-media, iroh-moq, rusty-codecs, rusty-capture |
+iroh-live is an application layer over two things it does not own: iroh for
+connectivity and identity, and [moq-video and
+moq-audio](https://doc.moq.dev/lib/rs/) for media. What this repository adds is
+the layer between them, plus the pieces neither side has a home for.
 
-This section documents how iroh-live works internally: the crate boundaries and their responsibilities, the pipeline from capture to rendering, the design principles behind the public API, and platform-specific codec and GPU details.
+## Crates
 
-## Crate layers
+| Crate | What it is |
+|---|---|
+| `iroh-moq` | MoQ transport over iroh: the node origin, sessions, and ALPN negotiation |
+| `iroh-rooms` | Gossip rooms. Media-free: it moves broadcast names and hands back consumers |
+| `iroh-live` | `Live`, `Call`, `Subscription`, and tickets |
+| `moq-media` | Publish and subscribe plumbing over moq-video and moq-audio |
+| `moq-media-egui` | An egui widget over the texture `moq_video::render` returns, and the debug overlay |
+| `moq-media-android` | The Camera2 push bridge and the EGL renderer for Android |
+| `iroh-live-cli` | The `irl` binary |
+| `iroh-live-relay` | The browser bridge |
 
-The workspace is organized into three layers. Each layer depends only on the layers below it, and each can be used independently.
+`moq-media` has no iroh dependency: a broadcast arrives as a
+`moq_net::broadcast::Producer` or `Consumer`, whatever carried it. `iroh-rooms`
+has no media dependency. `iroh-live` depends on both and is the only crate that
+joins them.
 
-**iroh-live** is the entry point for applications that want video calls, rooms, or live streaming with peer-to-peer connectivity. It provides `Live` (session manager), `Call` (1:1 sessions), and `Room` (multi-party via gossip). It re-exports moq-media and adds signaling, identity, and connection management over iroh's QUIC transport. See [iroh-live API design](iroh-live/api.md).
+## What moq-media adds
 
-**moq-media** owns the media pipeline: broadcast management (`LocalBroadcast`, `RemoteBroadcast`), codec orchestration, playout timing, adaptive bitrate, and the audio backend. It has no dependency on iroh, so non-RTC use cases (recording pipelines, studio links, camera dashboards) can use it directly. See [moq-media API design](moq-media/api.md).
+Upstream covers a single publisher with a single rendition and a single
+subscriber taking whatever it is given. Four things sit above that.
 
-**iroh-moq** connects iroh's QUIC endpoint to moq-lite broadcast primitives. It manages sessions and provides the publish/subscribe interface. See [transport](transport.md).
+[Publishing](publish.md) fans one source out to a simulcast ladder, because an
+upstream producer publishes one rendition and owns the device it captures from.
+[Subscribing](subscribe.md) chooses among those renditions as the downlink moves
+and swaps decoders without a blank frame. The [playout clock](playout.md) keeps
+audio and video aligned across two independent decode paths. The catalog carries
+an [extension](publish.md#catalog) for chat and publisher identity alongside
+hang's media sections.
 
-Below these sit **rusty-codecs** (codec implementations, hardware acceleration, GPU rendering) and **rusty-capture** (platform-specific screen and camera capture). These define the `VideoEncoder`, `VideoDecoder`, and `VideoSource` traits that moq-media builds on.
+Everything else is upstream. See [the media stack](media-stack.md) for what we
+use, what we contributed back, and what was lost when the in-house stack was
+deleted.
 
-## Design principles
+## iroh-live
 
-**`&self` everywhere.** All public types use interior mutability, making them safe to share across async tasks and threads without wrapper gymnastics.
+`Live` binds an iroh `Endpoint` to a MoQ transport. It is built through a
+builder, because whether it owns a router and whether it runs gossip are separate
+decisions:
 
-**Drop-based cleanup.** Dropping a `Call` closes it. Dropping a `LocalBroadcast` tears down encoder pipelines. Dropping a `VideoTrack` stops its decoder thread.
-
-**Watcher for continuous state, stream for discrete events.** Connection quality, active rendition, and catalog contents are continuous values exposed via `n0_watcher::Direct<T>`. Participant joins and session arrivals are discrete events exposed as `impl Stream`.
-
-**Declarative intent, not mechanism.** `VideoTarget::default().max_pixels(1280*720)` tells the system what quality the subscriber needs. The catalog selects the best matching rendition automatically.
-
-**moq-media is standalone.** A recording pipeline can use `LocalBroadcast` and `RemoteBroadcast` directly, without importing iroh-live. The transport boundary is the `PacketSink`/`PacketSource` trait pair.
-
-## Data flow
-
-A capture-to-render pipeline crosses all three layers:
-
-```
-capture source (rusty-capture, VideoSource trait)
-    |
-    v
-encoder pipeline (moq-media, dedicated OS thread)
-    |
-    v  EncodedFrame
-PacketSink (MoqPacketSink starts new MoQ group on each keyframe)
-    |
-    v  MoQ transport (iroh-moq, QUIC streams)
-PacketSource (MoqPacketSource reads ordered frames)
-    |
-    v  MediaPacket
-decoder pipeline (moq-media, dedicated OS thread)
-    |
-    v  VideoFrame
-FramePacer (PTS-based sleep between frames)
-    |
-    v
-renderer (wgpu texture upload or egui widget)
+```rust
+let live = Live::from_env().await?.with_router().with_gossip().spawn();
 ```
 
-Encoder and decoder pipelines run on dedicated OS threads, not tokio tasks, so slow codec operations never block the async runtime. The `forward_packets` async task bridges the network-side `PacketSource` into an mpsc channel that the decoder thread reads synchronously.
+`from_env()` reads `IROH_SECRET` and binds an endpoint with the N0 preset, then
+hands back the builder. `with_router()` spawns a `Router` and mounts every ALPN
+this build speaks; an application that already has a router calls
+`Live::register_protocols` on its own `RouterBuilder` instead. `with_gossip()`
+creates a `Gossip` instance, which is the one thing `iroh-rooms` needs from here.
 
-## Platform coverage
+`Live::publish(path)` creates a broadcast on the node origin and returns a
+`moq_media::publish::LocalBroadcast`. It is announced to every peer with a
+session, so publishing is a property of the node rather than of a connection.
+`Live::publish_raw` gives the bare producer for a caller writing its own tracks.
 
-Linux (Intel Meteor Lake) is the primary development and test platform, with full hardware acceleration (VAAPI encode/decode, DMA-BUF zero-copy rendering) and PipeWire capture. macOS has VideoToolbox codec support and ScreenCaptureKit/AVFoundation capture with some manual testing. Android has been tested end-to-end with bidirectional video calls (MediaCodec HW, CameraX, EGL rendering). Raspberry Pi has V4L2 hardware codecs tested up to 1080p. Windows support (Media Foundation codecs, DXGI capture) is planned but not yet implemented.
+`Live::subscribe(remote, path)` dials, subscribes, and returns a `Subscription`
+bundling the `MoqSession`, the `RemoteBroadcast`, and a
+`watch::Receiver<NetworkSignals>` with the stats recorder and signal producer
+already wired up. `Subscription::media()` opens whichever tracks the broadcast
+carries.
 
-See [platforms.md](../../plans/platforms.md) for the full support matrix.
+`Call` is 1:1 sugar over the two. Each side publishes under
+`calls/<its own endpoint id>` and subscribes to the other's, which is what
+`Call::path(endpoint_id)` computes. The per-peer path replaced a fixed name that
+two concurrent calls used to collide on.
+
+## Conventions
+
+`&self` everywhere. Public types use interior mutability, so they are safe to
+share across tasks and threads without wrapper types.
+
+Cleanup is drop-based. Dropping a `LocalBroadcast` ends its publish tasks;
+dropping a `VideoTrack` drops its supervisor, which drops the reader task, which
+drops the decoder. `CancellationToken` coordinates a broadcast-wide shutdown and
+`AbortOnDropHandle` ties a task's life to a handle.
+
+Continuous state is `n0_watcher::Watchable` and `Direct<T>`, which always has a
+current value and can be awaited for changes. The catalog, the active rendition,
+and the decoder backend all work this way. Discrete events are streams and
+channels: room events, incoming sessions.
+
+Bounded channels only. Frames between the decoder and the renderer go through a
+single-slot latest-wins channel rather than a queue, so a renderer that falls
+behind skips to the newest picture instead of draining a backlog.

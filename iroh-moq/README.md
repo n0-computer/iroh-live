@@ -1,39 +1,45 @@
 # iroh-moq
 
-[Media over QUIC](https://moq.dev/) transport layer built on [iroh](https://github.com/n0-computer/iroh).
+[Media over QUIC](https://moq.dev/) transport over
+[iroh](https://github.com/n0-computer/iroh).
 
-This crate connects iroh's QUIC endpoint to the [moq-lite](https://github.com/kixelated/moq) broadcast primitives. It manages sessions, routes incoming connections via iroh's `Router`, and provides the publish/subscribe interface that `iroh-live` builds on.
-
-## High-level concepts
-
-The **MoQ transport** (`Moq`) owns the iroh endpoint integration. It publishes local broadcasts, subscribes to remote ones, and accepts incoming sessions through a `MoqProtocolHandler` registered with iroh's router.
-
-A **session** (`MoqSession`) represents a connection to a single remote peer, created either by calling `Moq::connect()` for outgoing connections or by accepting an `IncomingSession`. Each session can publish and subscribe to multiple named broadcasts independently.
-
-Before accepting an incoming connection, you can inspect the remote peer's identity through the **incoming session** handle (`IncomingSession`) and decide whether to `accept()` or `reject()` it.
-
-## Usage
+`Moq` binds an iroh `Endpoint` to a MoQ origin. Broadcasts created with
+`Moq::publish` are announced to every peer, and `MoqSession` reaches the ones a
+peer announces back. An internal actor owns session lifetime, so a second
+`Moq::connect` to a peer we already have a session with returns that session
+rather than opening a second connection.
 
 ```rust
-use iroh::Endpoint;
 use iroh_moq::Moq;
 
-let endpoint = Endpoint::builder().discovery_n0().bind().await?;
 let moq = Moq::new(endpoint.clone());
 
-// Register as a protocol handler on the router
-let handler = moq.protocol_handler();
-let router = iroh::protocol::Router::builder(endpoint)
-    .accept(iroh_moq::ALPN, handler)
-    .spawn()
-    .await?;
+// Accept incoming sessions on every MoQ version this build speaks.
+let mut router = iroh::protocol::Router::builder(endpoint);
+for alpn in iroh_moq::alpns() {
+    router = router.accept(alpn, moq.protocol_handler());
+}
+let router = router.spawn();
 
-// Publish a local broadcast
-moq.publish("my-stream", producer).await?;
+// Publish, announced to every peer with a session.
+let producer = moq.publish("my-stream")?;
 
-// Connect to a remote peer and subscribe
-let mut session = moq.connect(remote_addr).await?;
+// Or reach a peer's.
+let session = moq.connect(remote_addr).await?;
 let consumer = session.subscribe("my-stream").await?;
 ```
 
-The ALPN is `moq-lite-03`, matching the moq-lite protocol version.
+Publishing is a property of the node rather than of a connection: a moq-net
+session takes exactly one publisher origin and the node origin is it. There is no
+per-session publish.
+
+## ALPN
+
+`iroh_moq::ALPN` is `moq_net::ALPNS[0]`, the newest MoQ version this build
+speaks, so it tracks the dependency rather than a string someone has to remember
+to bump. `iroh_moq::alpns()` returns the whole list newest first, with HTTP/3
+last. Register all of them, or a peer built against a different moq release will
+not find a version in common.
+
+Both halves of the handshake branch on what was negotiated: raw QUIC carries the
+MoQ stream directly, and H3 answers a CONNECT first.

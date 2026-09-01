@@ -1,6 +1,6 @@
 # iroh-live Android Demo
 
-Bidirectional video and audio calling on Android. Captures from the device camera with CameraX, encodes with MediaCodec hardware H.264, sends and receives through iroh-live sessions, and renders incoming video with zero-copy EGL `AHardwareBuffer` import.
+Two-way video and audio calling on Android. Captures from the device camera with Camera2, encodes with MediaCodec hardware H.264, sends and receives through iroh-live sessions, and renders incoming video with zero-copy EGL `AHardwareBuffer` import.
 
 ## Prerequisites
 
@@ -95,9 +95,13 @@ for H.264 encode and decode, with openh264 behind it in software.
 
 What the crate does select, in `demos/android/rust/Cargo.toml`:
 
-- `moq-media`: `capture` for the microphone, `playback` for the speaker. Video
-  capture is not among them: camera frames come from Kotlin's Camera2 through
-  `pushCameraNv12`, not from a device this crate opens.
+- `moq-media`: `aec`, which implies `capture` for the microphone and `playback`
+  for the speaker. Echo cancellation is not optional on a handset: without it, a
+  device on speakerphone publishes its own output back to the peer.
+
+Camera frames come from Kotlin's Camera2 through `pushCameraNv12`, not from a
+device `moq_video::capture` opens, so the `capture` feature is here for the
+microphone alone.
 
 ## Architecture
 
@@ -123,4 +127,4 @@ The Kotlin side captures camera frames via Camera2 and pushes them into the Rust
 
 ## Status
 
-Tested end-to-end on a real Android device with bidirectional video and audio between Android and Linux desktop. See [`plans/platforms.md`](../../plans/platforms.md) for the full platform support matrix.
+Tested end to end on a real Android device, with two-way video and audio between Android and a Linux desktop. See [`docs/platforms.md`](../../docs/platforms.md) for the full support matrix and [`docs/guide/android.md`](../../docs/guide/android.md) for how the pieces fit together.

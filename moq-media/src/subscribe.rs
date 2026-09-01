@@ -161,6 +161,18 @@ struct Inner {
     _catalog_task: AbortOnDropHandle<()>,
 }
 
+impl Drop for Inner {
+    fn drop(&mut self) {
+        // Everything this broadcast started watches one of these two: the decode
+        // tasks and the adaptation loop watch the token, and a `wait_async` in
+        // flight watches the clock. Without this, a caller that simply drops a
+        // subscription leaves them running, and the stats recorder in
+        // `iroh-live` holds a live `Connection` while it does.
+        self.shutdown.cancel();
+        self.sync.close();
+    }
+}
+
 impl RemoteBroadcast {
     /// Subscribes to `broadcast` and waits for its first catalog.
     ///

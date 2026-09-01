@@ -1,101 +1,102 @@
-# Getting Started
+# Getting started
 
-iroh-live is a Rust library for real-time video and audio over [iroh](https://github.com/n0-computer/iroh), using Media over QUIC for transport. It handles the full pipeline from camera and screen capture through encoding, QUIC transport, decoding, and rendering. Connections are peer-to-peer by default, with an optional relay server for browser bridging. No media servers are required.
-
-This page walks through building the workspace, running your first publish and subscribe, and finding the right example for your use case.
+iroh-live is real-time audio and video over [iroh](https://github.com/n0-computer/iroh),
+using [Media over QUIC](https://moq.dev/) as the wire protocol. Connections are
+peer-to-peer by default and no media server is involved. A relay is optional, and
+only browsers need one.
 
 ## System dependencies
 
-The default build compiles all codecs (H.264 via openh264, AV1 via rav1e/rav1d, Opus) from bundled source. No system libraries are needed for a basic build.
-
-For hardware-accelerated codecs and native capture on Linux, install the development headers:
+Codecs need nothing: openh264 is vendored and statically linked, and the audio
+codecs and DSP are Rust. What needs system libraries is device access and
+graphics.
 
 ```sh
-# Debian/Ubuntu
-sudo apt install libpipewire-0.3-dev libspa-0.2-dev libclang-dev libva-dev
+# Debian and Ubuntu
+sudo apt install libasound2-dev libpipewire-0.3-dev libclang-dev \
+                 libegl-dev libgbm-dev libdrm-dev libfontconfig-dev libva-dev nasm
 
 # Arch
-sudo pacman -S pipewire libclang libva
+sudo pacman -S alsa-lib pipewire clang mesa fontconfig libva nasm
 ```
+
+macOS needs `libtool` and `automake` from Homebrew and nothing else: CoreAudio,
+AVFoundation, ScreenCaptureKit, and VideoToolbox ship with the OS.
+
+A build with `--no-default-features` needs none of this. It still encodes and
+decodes, it just cannot open a device or draw.
 
 ## Building
 
-Build the entire workspace with default features (software codecs only):
-
 ```sh
-cargo build --workspace
+cargo build --workspace                  # default features
+cargo build --workspace --all-features   # everything, including VAAPI and NVIDIA
 ```
 
-To include hardware acceleration and all capture backends:
+The workspace currently patches the moq crates to a local `../moq` checkout for
+five changes that have not reached a release yet. See [the media
+stack](../architecture/media-stack.md#what-we-contributed-upstream). Until they
+land, building from a clean clone needs that checkout beside this one.
+
+## First stream
+
+Install the CLI and publish your camera and microphone:
 
 ```sh
-cargo build --workspace --all-features
+cargo install --path iroh-live-cli
+
+irl publish              # prints a ticket and a QR code
+irl watch <TICKET>       # in another terminal, on another machine
 ```
 
-Run the test suite:
+No camera on the machine? `irl publish --test-source` publishes a generated
+pattern and a tone instead, which is also the fastest way to check that the
+transport works.
 
-```sh
-cargo test --workspace
+The full flag reference is in [the CLI page](../cli.md).
+
+## Using the library
+
+A publisher binds an endpoint, creates a broadcast, and points it at a device:
+
+```rust
+use iroh_live::{
+    Live,
+    media::{audio, video},
+    ticket::LiveTicket,
+};
+
+let live = Live::from_env().await?.with_router().spawn();
+let broadcast = live.publish("hello")?;
+
+broadcast.video().set(video::capture::Config::default())?;
+broadcast.audio().set(audio::capture::Config::default());
+
+println!("{}", LiveTicket::new(live.endpoint().addr(), "hello"));
 ```
 
-## The CLI tool
+A subscriber connects with the ticket and reads decoded frames:
 
-The `iroh-live-cli` crate (binary name `irl`) provides publish, play, call, and room commands:
+```rust
+let live = Live::from_env().await?.spawn();
+let sub = live.subscribe(ticket.endpoint, &ticket.broadcast_name).await?;
+let tracks = sub.media().await;
 
-```sh
-cargo build --release -p iroh-live-cli
+if let Some(video) = tracks.video {
+    while let Some(frame) = video.recv().await {
+        // hand `frame` to a renderer
+    }
+}
 ```
 
-### Publishing a stream
+`iroh-live/examples/publish.rs` is the compilable version of the first snippet,
+including a two-rung simulcast ladder behind `--simulcast`.
 
-Capture your camera and microphone, encode, and print a ticket:
+## Where to go next
 
-```sh
-cargo run --release -p iroh-live-cli -- publish
-```
-
-The output includes a line like `iroh-live:ABC.../my-stream`. Copy the full ticket string.
-
-### Playing a stream
-
-In a second terminal, pass the ticket to the play command:
-
-```sh
-cargo run --release -p iroh-live-cli -- play <TICKET>
-```
-
-The viewer connects directly to the publisher over QUIC, with no intermediary.
-
-### Multi-user rooms
-
-Rooms use iroh-gossip for peer discovery. The first participant creates the room, and others join with the printed ticket:
-
-```sh
-# First participant creates the room
-cargo run --release -p iroh-live-cli -- room
-
-# Others join with the ticket
-cargo run --release -p iroh-live-cli -- room <TICKET>
-```
-
-Each participant publishes their own broadcast and automatically subscribes to every other participant. See [rooms.md](rooms.md) for details on the room API.
-
-## Examples
-
-A few standalone examples remain in the workspace:
-
-| Example | Crate | Description |
-|---------|-------|-------------|
-| `split` | iroh-live | Local split-screen encode/decode loop on localhost |
-| `watch-wgpu` | iroh-live | Minimal fullscreen wgpu viewer without egui |
-| `frame_dump` | iroh-live | Capture frames from a broadcast, save as PNGs |
-| `viewer` | moq-media | Standalone media viewer |
-
-The `demos/opengl` crate is a standalone GLES2 viewer using glutin and winit, without any egui or wgpu dependency.
-
-## Next steps
-
-- [Desktop rendering](desktop.md) covers the three rendering paths (wgpu, OpenGL ES, CPU fallback) and GUI framework integration.
-- [Tickets](tickets.md) explains how connection tickets work and how to share them.
-- [MoQ protocol overview](moq.md) describes the wire protocol and broadcast structure.
-- [Raspberry Pi](raspberry-pi.md), [Android](android.md), and [Browser relay](browser-relay.md) cover platform-specific deployment.
+- [The CLI](../cli.md) for `irl publish` and `irl watch` in full.
+- [Desktop rendering](desktop.md) for drawing frames in your own application.
+- [Tickets](tickets.md) for how connection information is shared.
+- [Architecture](../architecture/index.md) for how the crates fit together.
+- [Raspberry Pi](raspberry-pi.md), [Android](android.md), and [the browser
+  relay](browser-relay.md) for the platform-specific paths.

@@ -107,10 +107,7 @@ async fn publish_subscribe_audio() {
         .video()
         .set(test_source::video(Size::new(320, 240), 30))
         .expect("failed to set video");
-    broadcast
-        .audio()
-        .set(test_source::audio(440.0, 48_000, 1))
-        .expect("failed to set audio");
+    broadcast.audio().set(test_source::audio(440.0, 48_000, 1));
 
     let subscriber = Live::builder(endpoint().await).spawn();
     let sub = subscriber

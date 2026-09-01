@@ -13,8 +13,9 @@ identifier it prints is one the `--video` and `--audio` specifiers accept, so
 the output doubles as the argument reference for `irl publish`.
 
 Windows and applications appear on macOS only: they are ScreenCaptureKit
-concepts. Displays are not listed on Linux either, where the xdg-desktop-portal
-picker owns the choice.
+concepts. On Linux the displays section reports that listing is unavailable,
+because the xdg-desktop-portal picker owns that choice. The audio outputs section
+needs the `playback` feature.
 
 ### `irl publish`
 
@@ -28,21 +29,21 @@ and lets the platform pick the backend that reaches it, so the old
 
 | `--video` | Meaning |
 |---|---|
-| `cam` | The default camera |
+| `cam` | The default camera. This is the default for `--video` |
 | `cam:<id>` | A camera by the id `irl devices` reports |
 | `screen`, `screen:<id>` | A whole display |
 | `window:<id>` | One window (macOS) |
 | `app:<id>` | Every window of one application (macOS) |
 | `file:<path>` | A media file, republished rather than encoded |
-| `test` | A synthetic moving pattern |
+| `test` | A generated colour-bar pattern |
 | `none` | Publish no video |
 
 | `--audio` | Meaning |
 |---|---|
-| `mic`, `mic:<id>` | A microphone |
+| `mic`, `mic:<id>` | A microphone. This is the default for `--audio` |
 | `system` | Everything the machine is playing (macOS) |
 | `file:<path>[:loop]` | An audio file, decoded and encoded |
-| `test` | A synthetic tone |
+| `test` | A generated tone |
 | `none` | Publish no audio |
 
 Anything `--audio` does not recognise is taken as a device name, so an
@@ -52,10 +53,10 @@ Encoding flags:
 
 | Flag | Description |
 |---|---|
-| `--test-source` | The same as `--video test --audio test` |
+| `--test-source` | Force `--video test --audio test`, overriding both if they were given |
 | `--codec <CODEC>` | `h264` (default) or `h265`, which needs hardware |
 | `--encoder <KIND>` | `auto` (default), `hardware`, `software`, or a backend name such as `vaapi`, `nvenc`, `videotoolbox`, `openh264` |
-| `--renditions <LIST>` | The simulcast ladder, comma-separated. Each rung is `<height>p`, `<width>x<height>`, or `<name>:<width>x<height>`; a bare name encodes at the source's own resolution. Default: one rendition, unscaled |
+| `--renditions <LIST>` | The simulcast ladder, comma-separated. Each rung is `<height>p`, `<width>x<height>`, or `<name>:<width>x<height>`; a bare name encodes at the source's own resolution. Default: one rendition named `video`, unscaled |
 | `--bitrate <BPS>` | Target video bitrate. Omit to derive one from the resolution |
 | `--width`, `--height`, `--fps` | Capture hints; the device snaps to its nearest supported mode |
 | `--no-cursor` | Hide the pointer in screen, window, and application capture |
@@ -68,9 +69,8 @@ Transport flags:
 |---|---|
 | `--name <NAME>` | Broadcast path, as it appears in the ticket (default: `hello`) |
 | `--relay <ENDPOINT_ID>` | Also connect to a relay, which then carries the broadcast on |
-| `--no-serve` | Do not accept incoming subscribers |
+| `--no-serve` | Do not accept incoming subscribers, and print no ticket. Useful only with `--relay` |
 | `--no-qr` | Suppress the terminal QR code |
-| `--preview` | Open a window showing what is being published |
 
 File flags, for a `file:` video source:
 
@@ -83,9 +83,10 @@ Publishing to a relay is now just a connection. Every broadcast this node
 publishes is announced on every MoQ session it has, so `--relay` connects and
 the announce follows.
 
-`--preview` draws the frames already on their way to the encoders, so it costs
-no extra decode. It is not available for a file source, whose tracks are
-republished as they are.
+`--preview` opens a window showing what is being published. It draws the frames
+already on their way to the encoders, so it costs no extra decode. It needs the
+`render` feature, on by default, and it is not available for a file source, whose
+tracks are republished as they are.
 
 ### `irl watch`
 
@@ -113,7 +114,7 @@ Publish the default camera and microphone, and print a ticket:
 irl publish
 ```
 
-Publish a synthetic pattern and tone, no hardware needed:
+Publish a generated pattern and tone, no hardware needed:
 
 ```sh
 irl publish --test-source
@@ -140,6 +141,10 @@ irl watch <TICKET>
 ## What is not here
 
 `call`, `room`, `record`, `run`, and `relay` were dropped in the move to the
-upstream media stack. Rooms have left `iroh-live` for the `iroh-rooms` crate
-and are being redesigned onto moq's announce bus; the relay server has not been
-ported to moq-native 0.19. All five are recoverable from the `main` branch.
+upstream media stack, and all five are recoverable from the `main` branch. Rooms
+have left `iroh-live` for the `iroh-rooms` crate and are being redesigned onto
+moq's announce bus.
+
+The relay itself is not gone, only the subcommand that embedded it. Run it as its
+own binary with `cargo run -p iroh-live-relay`, and see
+[the browser relay guide](guide/browser-relay.md).

@@ -41,6 +41,9 @@ pub(super) struct Publish {
     pub catalog: CatalogProducer,
     pub clock: moq_mux::Clock,
     pub stats: PublishStats,
+    /// Held for this task's whole life so a replacement cannot create a track
+    /// whose name this task still owns.
+    pub slot: std::sync::Arc<tokio::sync::Mutex<()>>,
     pub source: VideoSource,
     pub renditions: Vec<VideoRendition>,
     pub preview: FrameSender<Arc<Frame>>,
@@ -70,10 +73,15 @@ async fn run(publish: Publish) -> Result<(), PublishError> {
         )]
         clock,
         stats,
+        slot,
         source,
         renditions,
         preview,
     } = publish;
+
+    // Wait for the previous publish, if any, to have dropped its track
+    // producers. The guard lives until this task ends, aborted or not.
+    let _slot = slot.lock().await;
 
     match source {
         VideoSource::AnnexB(bytes) => {
@@ -164,7 +172,7 @@ async fn fan_out(
             "publishing video rendition",
         );
 
-        let track = broadcast.create_track(rendition.name.as_str(), None)?;
+        let track = broadcast.create_track(rendition.name.as_str(), Some(catalog.track_info()))?;
         let producer = encode::Producer::with_track(track, catalog.clone(), published)?;
 
         let (tx, rx) = frame_channel();
@@ -235,10 +243,13 @@ async fn encode_rendition(
                 }
                 frame = frames.recv() => match frame {
                     Some(frame) => frame,
-                    // The source ended.
+                    // The source ended: drain the encoder, publish the tail,
+                    // and close the track so subscribers see a clean end
+                    // rather than `Error::Dropped`.
                     None => {
                         let tail = encoder.finish().await?;
                         producer.publish(&tail)?;
+                        producer.finish()?;
                         return Ok(());
                     }
                 },
@@ -250,7 +261,15 @@ async fn encode_rendition(
             };
 
             let started = Instant::now();
-            let encoded = encoder.encode(frame).await?;
+            // Abort rather than drop on failure, again so the subscriber sees
+            // the real cause instead of `Error::Dropped`.
+            let encoded = match encoder.encode(frame).await {
+                Ok(encoded) => encoded,
+                Err(err) => {
+                    producer.abort(moq_net::Error::Transport(err.to_string()));
+                    return Err(err.into());
+                }
+            };
             record(&stats, started, &encoded);
             producer.publish(&encoded)?;
         }

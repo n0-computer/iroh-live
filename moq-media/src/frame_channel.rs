@@ -140,13 +140,21 @@ impl<T> FrameReceiver<T> {
     /// lost — only the latest is returned.
     pub async fn recv(&self) -> Option<T> {
         loop {
+            // Register for the wakeup before checking, not after. `notified()`
+            // only covers notifications from the moment it is enabled, so a
+            // sender dropping between a check and the registration would be
+            // missed and this would park with nothing left to wake it.
+            let notified = self.inner.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
             if let Some(v) = self.take() {
                 return Some(v);
             }
             if self.is_closed() {
                 return None;
             }
-            self.inner.notify.notified().await;
+            notified.await;
         }
     }
 }

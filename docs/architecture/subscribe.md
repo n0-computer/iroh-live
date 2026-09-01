@@ -1,125 +1,109 @@
-# Subscribe Pipeline
+# Subscribing
 
-| Field | Value |
-|-------|-------|
-| Status | stable |
-| Applies to | moq-media |
+`moq_media::subscribe::RemoteBroadcast` wraps a `moq_net::broadcast::Consumer`,
+reads the catalog, and hands out a `VideoTrack` and an `AudioTrack`. Decoding is
+upstream: `moq_video::decode::Consumer` and `moq_audio::decode::Consumer` pick a
+backend from the catalog entry and hand back frames. Three things have no
+upstream counterpart and live here.
 
-`RemoteBroadcast` wraps a `BroadcastConsumer` and watches its catalog for
-available video and audio renditions. It provides handles to start
-decoding individual tracks. The subscribe pipeline mirrors the publish
-pipeline: where publishers encode on OS threads and write to
-`PacketSink`, subscribers read from `PacketSource` and decode on OS
-threads.
+Rendition selection is the first. `moq_mux::select` is fixed at construction, so
+a subscriber that wants to follow its downlink has to choose for itself. The
+second is the playout clock, which keeps audio and video aligned across two
+independent decode paths. The third is the catalog extension, where chat and
+publisher identity ride alongside the media sections.
 
-## RemoteBroadcast
+## Opening a broadcast
 
-Created with a `BroadcastConsumer` (from moq-lite), a `PlaybackPolicy`,
-and a `CancellationToken`. On construction, it spawns a catalog-watching task
-that monitors the broadcast's catalog track for changes and publishes
-snapshots via a `Watchable<CatalogSnapshot>`.
+`RemoteBroadcast::new(name, consumer)` subscribes and waits for the first
+catalog before returning. Waiting is deliberate: a handle returned before the
+first catalog would answer "not yet" to every question a caller could ask. A
+background task then follows the catalog track and republishes each update
+through a `Watchable<CatalogSnapshot>`, reachable with `catalog()` for the
+current value and `catalog_watcher()` for the stream of changes.
 
-`RemoteBroadcast` is `Clone` (Arc-based) and all methods take `&self`.
-Multiple parts of an application can hold references to the same broadcast
-and independently create tracks from it.
+`CatalogSnapshot` is an `Arc<Catalog>` compared by pointer identity. hang's
+catalog carries floats, so it is only `PartialEq`, and `Watchable` needs `Eq`.
+Every update allocates a fresh snapshot, which makes pointer equality the honest
+comparison.
 
-## CatalogSnapshot
+`RemoteBroadcast::media()` opens whichever of video and audio the broadcast
+turned out to carry and returns them in a `MediaTracks`. `video()` picks the
+best video rendition, `video_rendition(name)` picks one by name, and `audio()`
+opens the first audio track. In iroh-live, `Live::subscribe` wraps all of this
+in a `Subscription` that also wires up the transport signal producer.
 
-A point-in-time view of the broadcast's catalog. It derefs to hang's
-`Catalog` for direct access to video and audio rendition maps. Each
-snapshot carries a sequence number for change detection.
+## Video decoding
 
-`CatalogSnapshot` provides selection helpers:
-`select_video_rendition(quality)` picks the best video rendition for a
-`Quality` level (Highest, High, Mid, Low), and `video_renditions()`
-iterates rendition names sorted by width ascending.
+Each rendition is decoded by its own task, reading `decode::Consumer::read()` in
+a plain loop and forwarding frames over a bounded channel two frames deep. A
+supervisor task selects over that channel and the control signals.
 
-## VideoTarget
+The split is structural rather than stylistic. `moq_video::decode::Consumer`
+reads through a `Sink`, which upstream documents as not cancel-safe: dropping a
+`read` future poisons the decoder and every later call fails. A `select!` cancels
+every arm it does not pick, so a supervisor that selected directly on `read()`
+would kill its own decoder on any control signal. The read has to live somewhere
+nothing cancels it, and reach the supervisor over a channel.
 
-Subscribers describe what they need declaratively:
+The channel holds two frames because the supervisor only paces and forwards. A
+deeper backlog there would be latency rather than throughput.
 
-```rust
-VideoTarget::default()
-    .max_pixels(1280 * 720)
-    .max_bitrate_kbps(2000)
-```
+## Switching renditions
 
-The catalog selects the best matching rendition. If `rendition` is set
-explicitly, it takes priority over pixel and bitrate constraints.
-`VideoTarget` converts from `Quality` for convenience.
+`VideoTrack::set_rendition(name)` requests a switch and returns immediately. The
+supervisor opens the replacement decoder alongside the incumbent, keeps
+forwarding the incumbent's frames, and hands over on the replacement's first
+frame. The picture does not go blank across the change. `switched_to(name)`
+waits for the handover when a caller needs to know it happened; a switch that
+never lands, because the rendition left the catalog or its decoder failed to
+open, leaves that future pending.
 
-## VideoOptions and AudioOptions
+`enable_adaptation(signals)` hands the same request channel to the adaptation
+task, which decides for itself. See [adaptive bitrate](adaptive.md).
 
-`VideoOptions` bundles a `VideoTarget`, an optional `DecodeConfig` for
-decoder backend selection, and optional viewport dimensions.
-`AudioOptions` optionally pins a specific audio rendition by name.
+`rendition_watcher()` and `decoder_watcher()` report which rendition is playing
+and which decoder backend opened. Which backend opened is the first thing worth
+knowing when playback looks wrong on a particular device, and it can change
+across a switch.
 
-## VideoTrack
+## Frame delivery
 
-Represents a decoded video stream from a remote broadcast. The decoder
-runs on a dedicated OS thread, producing `VideoFrame` values into an
-`mpsc` channel.
+Decoded frames land in a latest-wins slot rather than a queue. A renderer that
+falls behind skips to the newest picture instead of draining a backlog.
+`VideoTrack::take()` polls it without blocking, which is what a render loop
+wants, and `recv()` awaits the next frame.
 
-Construction follows this path:
+## Audio playback
 
-1. The caller picks a rendition (via `VideoTarget` or explicit name).
-2. A `TrackConsumer` is created from the `BroadcastConsumer` for that
-   rendition's track, wrapped in an `OrderedConsumer` with
-   `PlaybackPolicy::max_latency`.
-3. An `MoqPacketSource` wraps the `OrderedConsumer`.
-4. A `forward_packets` async task reads from the `MoqPacketSource` and
-   sends `MediaPacket` values into an `mpsc` channel.
-5. A decoder thread reads from that channel, pushes packets to the
-   decoder, and sends decoded frames through the shared `Sync` playout
-   clock (or `FramePacer` when `SyncMode::Unmanaged`) into the output
-   channel.
+`moq_audio::playback::Engine` owns the output device and mixes every sink into
+it, so a process watching several broadcasts opens one engine and one sink per
+broadcast. `moq_media::playback` owns that one engine, opening it lazily on
+first use. `playback::devices()` lists outputs, `playback::open(config)` chooses
+one before the first subscription, and `playback::switch(config)` moves every
+playing track to another device without interrupting it.
 
-The output channel is stable across the lifetime of the `VideoTrack`.
-Callers receive frames via `try_recv()` (drain-to-latest, for
-rendering) or the underlying receiver.
+The audio decode task writes frames straight to its sink and reports
+`sink.buffered()` to the playout clock on every frame. That figure, how much
+audio is still queued ahead of the speaker, is the only latency either side can
+actually measure.
 
-## AudioTrack
+`AudioTrack` exposes `set_volume`, `volume`, and `peak`, all of which delegate
+to the sink's `moq_audio::playback::Control`. There is no audio ladder, so there
+is nothing to switch between.
 
-Follows the same pattern as `VideoTrack` but sends decoded audio samples
-to an `AudioSink` (typically backed by cpal and sonora). The
-audio decoder thread runs a 10ms tick loop, draining packets from the
-transport and pushing decoded samples to the sink.
+## Playback policy
 
-## MediaTracks
+`PlaybackPolicy` carries a `SyncMode` and a `max_latency`. `max_latency` becomes
+`latency_max` on both `moq_video::decode::Config` and
+`moq_audio::decode::Config`, which is where upstream drops stale groups. The
+default is 150 ms. `set_playback_policy` affects tracks opened afterwards;
+tracks already running keep the policy they were created with.
 
-A convenience struct combining a `RemoteBroadcast` with an optional
-`VideoTrack` and optional `AudioTrack`. Provides a single entry point
-for the common case of subscribing to both audio and video from one
-broadcast.
+See [playout and sync](playout.md) for what `SyncMode` does.
 
-## Decoder thread architecture
+## Shutdown
 
-Decoder threads are OS threads, not tokio tasks, for the same reason as
-encoder threads: codec operations are CPU-bound and sometimes block on
-hardware. The async-to-sync bridge works through two channels:
-
-- `forward_packets` (async task) reads from the MoQ transport and sends
-  `MediaPacket` values into a bounded `mpsc` channel.
-- The decoder thread reads from the `mpsc` receiver synchronously,
-  pushes packets to the decoder, and writes decoded frames to the
-  output channel.
-
-When `SyncMode::Synced` (the default), the shared `Sync` playout clock
-gates each decoded frame until its wall-clock playout time arrives. When
-`SyncMode::Unmanaged`, a `FramePacer` sleeps between frames based on
-PTS deltas instead. See [playout.md](playout.md).
-
-## Lifecycle
-
-`VideoTrack` and `AudioTrack` use drop-based cleanup. Dropping the track
-cancels the decoder thread (via `CancellationToken`) and the
-`forward_packets` task (via `AbortOnDropHandle`). The `OrderedConsumer`
-is dropped, which signals the transport that we no longer need this
-track's data.
-
-## Error handling
-
-`SubscribeError` covers broadcast-not-found, no catalog, rendition not
-found, decoder failure, and broadcast ended. These are structured variants
-rather than opaque `anyhow::Error`, so callers can match on specific
-failure modes.
+`RemoteBroadcast::shutdown()` cancels the token every decode task watches and
+closes the playout clock, which wakes anything blocked waiting for a frame's
+playout time. Dropping a `VideoTrack` aborts its supervisor, which drops the
+reader task, which drops the decoder.

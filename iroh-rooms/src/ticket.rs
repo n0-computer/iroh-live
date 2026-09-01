@@ -6,6 +6,7 @@ use iroh::EndpointId;
 use iroh_gossip::TopicId;
 use n0_error::{Result, StdResultExt};
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
 /// Ticket for joining a room.
 ///
@@ -59,9 +60,11 @@ impl RoomTicket {
                 ),
                 Err(_) => {
                     let topic = TopicId::from_bytes(rand::random());
-                    println!(
-                        "Created new topic. Reuse with IROH_LIVE_TOPIC={}",
-                        data_encoding::HEXLOWER.encode(topic.as_bytes())
+                    // A library has no business writing to stdout; a CLI that
+                    // wants to show this reads the ticket back and prints it.
+                    info!(
+                        topic = %data_encoding::HEXLOWER.encode(topic.as_bytes()),
+                        "generated a room topic; reuse it with IROH_LIVE_TOPIC",
                     );
                     topic
                 }

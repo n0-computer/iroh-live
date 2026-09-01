@@ -57,11 +57,9 @@ async fn main() -> n0_error::Result {
         )?,
     }
 
-    // Best effort: a machine with no microphone still publishes video.
-    match broadcast.audio().set(audio::capture::Config::default()) {
-        Ok(()) => info!("publishing audio"),
-        Err(err) => info!(error = %err, "no microphone, publishing video only"),
-    }
+    // A machine with no microphone still publishes video: the device opens
+    // inside the publish task, which logs and ends the audio track on failure.
+    broadcast.audio().set(audio::capture::Config::default());
 
     let ticket = LiveTicket::new(live.endpoint().addr(), &args.name);
     println!("{ticket}");

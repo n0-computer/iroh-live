@@ -1,34 +1,33 @@
 //! Playback policy for subscribed broadcasts.
 //!
-//! [`SyncMode`] controls how audio and video are aligned at playout time.
-//! [`PlaybackPolicy::max_latency`] controls how much buffered media we
-//! tolerate before skipping forward — this drives Hang's ordered
-//! consumer.
+//! [`SyncMode`] decides whether the playout clock gates video against audio.
+//! [`PlaybackPolicy::max_latency`] decides how much buffered media a subscriber
+//! tolerates before skipping to the live edge, and is passed straight through
+//! to `moq_video::decode::Config::latency_max`.
 
 use std::time::Duration;
 
-/// A/V synchronization behavior at playout time.
+/// Whether the playout clock gates video at all.
 ///
-/// [`Synced`](Self::Synced) enables the shared playout clock (ported
-/// from `moq/js` commit `53fe78d8`, `js/watch/src/sync.ts`).
-/// [`Unmanaged`](Self::Unmanaged) uses PTS-cadence pacing with no
-/// cross-track synchronization.
+/// [`Synced`](Self::Synced) runs the shared clock, ported from `moq/js` commit
+/// `53fe78d8`. [`Unmanaged`](Self::Unmanaged) does nothing: a decoded frame
+/// goes straight to the renderer.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, derive_more::Display, strum::VariantArray)]
 pub enum SyncMode {
-    /// Shared playout clock — the default for live playback.
+    /// The shared playout clock, and the default for live playback.
     ///
-    /// Video frames are gated by [`crate::sync::Sync::wait`], which
-    /// accounts for network jitter and codec latency to keep audio and
-    /// video aligned.
+    /// Video frames are held by [`crate::sync::Sync::wait_async`] until they
+    /// are due, which accounts for network jitter and for how much audio is
+    /// still queued at the speaker.
     #[default]
     #[display("Synced")]
     Synced,
 
-    /// No synchronization — frames are rendered as decoded.
+    /// No synchronization: a frame goes to the renderer as soon as it decodes.
     ///
-    /// Uses PTS-cadence pacing in the video decode loop. Suitable for
-    /// tests, file playback, and single-track scenarios.
+    /// Right for a video-only broadcast, where there is nothing to align
+    /// against and the clock would only add latency.
     #[display("Off")]
     Unmanaged,
 }
@@ -44,12 +43,11 @@ pub struct PlaybackPolicy {
     /// Cross-track synchronization policy.
     pub sync: SyncMode,
 
-    /// Maximum span of buffered media before skipping forward to the
-    /// live edge. Passed to Hang's ordered consumer as `max_latency`.
+    /// The most buffered media a subscriber tolerates before skipping to the
+    /// live edge, passed to the decoder as `latency_max`.
     ///
-    /// Increase for more continuity through congestion. Decrease for
-    /// faster recovery after a stall. The JS equivalent is the
-    /// `latency` parameter on the container consumer.
+    /// Raise it for continuity through congestion, lower it for faster
+    /// recovery after a stall.
     pub max_latency: Duration,
 }
 

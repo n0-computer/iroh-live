@@ -1,81 +1,82 @@
 # moq-media
 
-Media capture, encoding, decoding, and playout pipelines for real-time streaming. Works with any transport that implements the `PacketSource` and `PacketSink` traits, and has no dependency on iroh or any particular networking stack.
+Publish and subscribe plumbing over
+[moq-video](https://doc.moq.dev/lib/rs/crate/moq-video) and
+[moq-audio](https://doc.moq.dev/lib/rs/crate/moq-audio). No iroh dependency: a
+broadcast arrives as a `moq_net::broadcast::Producer` or `Consumer`, whatever
+carried it.
 
-## What it handles
+The media itself is upstream. `moq_video` captures, encodes, decodes, and
+renders; `moq_audio` does the same for sound and owns the speaker. Both are
+re-exported as `moq_media::video` and `moq_media::audio`, so a dependent names
+the exact build this crate links. What lives here is the layer above, which moq
+has no counterpart for.
 
-- **Capture** -- camera and screen input via [`rusty-capture`](../rusty-capture) (PipeWire, V4L2, AVFoundation, CameraX)
-- **Encoding** -- video and audio encoder pipelines running on dedicated OS threads
-- **Decoding** -- decoder pipelines with frame output channels
-- **Playout** -- `PlayoutClock` maps presentation timestamps to wall-clock time, measures jitter, and supports frame skipping for live streams
-- **Adaptive bitrate** -- `VideoTrack::enable_adaptation()` switches between renditions based on network conditions (bandwidth, loss rate, RTT)
-- **Audio** -- microphone input and speaker output via cpal/firewheel, with acoustic echo cancellation
+## Publishing
 
-## Publish side
-
-`LocalBroadcast` manages the full encode-and-publish pipeline. You create video and audio publishers, set capture sources, and the broadcast handles encoding and packetization.
-
-```rust
-use moq_media::publish::LocalBroadcast;
-
-let broadcast = LocalBroadcast::new();
-let video = broadcast.video_publisher();
-video.set(camera_source);
-// broadcast.producer() feeds into the transport layer
-```
-
-`VideoRenditions` and `AudioRenditions` support simulcast, encoding multiple quality layers from a single source.
-
-## Subscribe side
-
-`RemoteBroadcast` wraps a transport consumer, watches the catalog for available tracks, and spawns decoder pipelines.
+`LocalBroadcast` owns a broadcast producer and the catalog that describes it.
+`VideoPublisher` and `AudioPublisher` take a source and a set of renditions.
 
 ```rust
-use moq_media::subscribe::RemoteBroadcast;
+use moq_media::{publish::LocalBroadcast, video};
 
-let remote = RemoteBroadcast::new("my-stream", consumer).await?;
-let video = remote.video()?;
-// video.try_recv() returns the latest decoded VideoFrame
+let broadcast = LocalBroadcast::new(producer)?;
+broadcast.video().set(video::capture::Config::default())?;
 ```
 
-`VideoTrack::enable_adaptation()` activates automatic rendition switching based on `NetworkSignals` (bandwidth, loss, RTT). The switching uses WebRTC-aligned thresholds: below 2% loss is good, above 10% triggers a downgrade, and above 20% drops to the lowest rendition.
+The one thing this adds over `moq_video::encode::publish_capture` is simulcast.
+Upstream, one producer publishes one rendition and owns the device it captures
+from, so a subscriber that adapts to its downlink cannot be served. Here the
+source is opened once and its frames fan out to an encoder per rendition, each
+encoding only while someone is watching it.
 
-## Capture architecture
+`VideoSource` is a capture device, a stream of frames the application produced,
+or an Annex-B H.264 byte stream a source already encoded. The last is the
+Raspberry Pi path.
 
-Capture is handled by [`rusty-capture`](../rusty-capture), which provides platform-specific backends behind a common `VideoSource` trait. Each backend runs its capture loop on a dedicated OS thread and delivers frames through a channel. The `pop_frame()` interface always drains to the latest frame, so the encoder never falls behind.
+## Subscribing
 
-On Linux, PipeWire captures deliver DMA-BUF handles that can be passed directly to a hardware encoder without any CPU-side copy. V4L2 camera capture uses kernel MMAP buffers. On macOS, ScreenCaptureKit and AVFoundation provide native capture with IOSurface backing. On Android, CameraX delivers NV12 frames through JNI.
+`RemoteBroadcast` watches a broadcast's catalog and hands out a `VideoTrack` and
+an `AudioTrack`. Decoding is `moq_video::decode::Consumer` and
+`moq_audio::decode::Consumer`; three things around it are ours.
 
-## Rendering architecture
+`VideoTrack::enable_adaptation` follows transport signals and switches
+renditions, opening the replacement decoder alongside the incumbent and swapping
+on its first frame, so the picture never goes blank. `sync::Sync` is a shared
+playout clock that keeps audio and video aligned across two independent decode
+paths. And `catalog::IrohLiveExt` extends hang's catalog with chat and publisher
+identity, flattened alongside the media sections so a base consumer ignores them.
 
-Rendering is handled by [`rusty-codecs`](../rusty-codecs), which provides GPU-accelerated and software rendering paths. The `WgpuVideoRenderer` converts decoded frames to display-ready textures via wgpu, which runs on Vulkan (Linux), Metal (macOS), or DX12 (Windows). A `GlesRenderer` is also available for OpenGL ES 2.0 contexts, and CPU-based RGBA conversion serves as a software fallback on all platforms.
+## Modules
 
-Zero-copy rendering is available on most platforms. On Linux, decoded frames from VA-API can be imported as DMA-BUF textures without touching the CPU. On Android, `AHardwareBuffer` frames from MediaCodec are imported via EGL. On macOS, Metal texture import from VideoToolbox is supported.
-
-## Playout
-
-A shared playout clock (`sync::Sync`, ported from the moq/js player) coordinates video frame timing. The clock tracks the earliest wall-clock-to-PTS offset across received packets and gates each decoded frame until its target playout time arrives.
-
-- **`SyncMode::Synced`** (default) — video frames are released by the shared clock, keeping audio and video aligned through a common latency target.
-- **`SyncMode::Unmanaged`** — PTS-cadence pacing with no cross-track alignment. Suitable for tests, file playback, and single-track scenarios.
-
-`PlaybackPolicy` bundles the sync mode with `max_latency`, the maximum span of buffered media before Hang's ordered consumer skips forward.
+| Module | What it is |
+|---|---|
+| `publish` | `LocalBroadcast` and the simulcast ladder |
+| `subscribe` | `RemoteBroadcast`, the decode supervisor, and the rendition swap |
+| `adaptive` | The rendition selection algorithm and its thresholds |
+| `sync`, `playout` | The playout clock and the policy that drives it |
+| `catalog` | The iroh-live catalog extension |
+| `playback` | The process-wide audio output engine |
+| `stats` | Metrics for a debug overlay |
+| `frame_channel` | A single-slot latest-wins channel for frames |
+| `audio_file` | An audio file demuxed with symphonia and published as if it were a microphone |
+| `rpicam` | `rpicam-vid` as a pre-encoded video source |
+| `test_source` | Generated video and audio, for tests |
+| `net` | `NetworkSignals`, the input to adaptation |
 
 ## Feature flags
 
-| Feature | Default | Description |
-|---------|---------|-------------|
-| `h264` | yes | H.264 via openh264 |
-| `opus` | yes | Opus audio |
-| `av1` | yes | AV1 via rav1e/rav1d |
-| `capture` | yes | Camera + screen capture |
-| `videotoolbox` | yes | macOS VideoToolbox hardware codecs |
-| `metal-import` | yes | Metal texture import on macOS |
-| `vaapi` | | Linux VA-API hardware codecs |
-| `v4l2` | | V4L2 hardware codecs |
-| `wgpu` | | GPU rendering |
-| `dmabuf-import` | | Zero-copy DMA-BUF import (Linux/Vulkan) |
-| `pcm` | | Raw PCM audio (no encoding) |
-| `jack` | | JACK audio backend via cpal |
-| `android` | | Android MediaCodec + CameraX |
-| `test-util` | | Deterministic test sources for integration tests |
+Every codec compiles unconditionally upstream, so there are no per-codec flags.
+What is left gates a build dependency or a graphics stack.
+
+| Feature | Default | What it adds |
+|---|---|---|
+| `capture` | yes | Camera, screen, and microphone devices |
+| `playback` | no | Speaker output |
+| `aec` | no | Echo cancellation. Implies `capture` and `playback` |
+| `pipewire` | no | Linux screen capture. Links `libpipewire-0.3` |
+| `render` | no | The wgpu renderer |
+| `vaapi` | no | Intel and AMD hardware H.264 encode |
+| `nvidia` | no | NVIDIA hardware encode and decode |
+| `rpicam` | no | The `rpicam-vid` source. Linux only |
+| `test-source` | no | Generated video and audio sources |

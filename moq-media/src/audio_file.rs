@@ -11,7 +11,7 @@
 
 use std::{path::Path, time::Duration};
 
-use n0_error::{Result, StdResultExt, stack_error};
+use n0_error::{Result, stack_error};
 use n0_future::{boxed::BoxStream, stream::StreamExt};
 use symphonia::core::{
     audio::SampleBuffer,
@@ -64,9 +64,9 @@ pub enum AudioFileError {
 #[derive(Debug)]
 pub struct AudioFile {
     input: moq_audio::encode::Input,
+    /// Dropping this is what stops the decode thread: its next
+    /// `blocking_send` fails and the loop returns.
     frames: mpsc::Receiver<moq_audio::Frame>,
-    /// Joined on drop so the decode thread stops with the source.
-    _decoder: std::thread::JoinHandle<()>,
 }
 
 impl AudioFile {
@@ -90,26 +90,21 @@ impl AudioFile {
         };
 
         let (tx, frames) = mpsc::channel(QUEUE_DEPTH);
-        let decoder = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("audio-file".into())
             .spawn(move || {
                 if let Err(err) = decode_loop(&path, looping, &tx) {
                     warn!(path = %path.display(), error = %err, "audio file decode stopped");
                 }
             })
-            .std_context("failed to spawn the audio file decode thread")
-            .map_err(|err| {
+            .map_err(|source| {
                 n0_error::e!(AudioFileError::Io {
                     path: display.clone(),
-                    source: std::io::Error::other(err.to_string()),
+                    source,
                 })
             })?;
 
-        Ok(Self {
-            input,
-            frames,
-            _decoder: decoder,
-        })
+        Ok(Self { input, frames })
     }
 
     /// The PCM layout the file decodes to, for the encoder's `Input`.
@@ -118,16 +113,14 @@ impl AudioFile {
     }
 
     /// Consumes the file and returns its frames as a stream.
+    ///
+    /// The decode thread stops when the returned stream is dropped, because the
+    /// receiver goes with it and the thread's next send fails.
     pub fn into_stream(self) -> BoxStream<moq_audio::Frame> {
-        let Self {
-            frames, _decoder, ..
-        } = self;
-        // The join handle rides along in the stream so the decode thread lives
-        // exactly as long as the reader does.
         Box::pin(
-            n0_future::stream::unfold((frames, _decoder), |(mut frames, decoder)| async move {
+            n0_future::stream::unfold(self.frames, |mut frames| async move {
                 let frame = frames.recv().await?;
-                Some((frame, (frames, decoder)))
+                Some((frame, frames))
             })
             .fuse(),
         )

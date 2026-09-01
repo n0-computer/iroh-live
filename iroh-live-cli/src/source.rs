@@ -47,8 +47,8 @@ const TEST_TONE_CHANNELS: u32 = 2;
 /// # Errors
 ///
 /// Fails if a specifier is unusable here (a `file:` video source belongs to the
-/// import path), if the rendition ladder does not parse, or if a track cannot
-/// be created on the broadcast.
+/// import path), or if the rendition ladder does not parse. A device that will
+/// not open surfaces in the log and ends its track, not here.
 pub fn configure(broadcast: &LocalBroadcast, args: &CaptureArgs) -> Result<()> {
     if let Some(source) = video_source(&args.video_source()?, args)? {
         broadcast
@@ -56,7 +56,7 @@ pub fn configure(broadcast: &LocalBroadcast, args: &CaptureArgs) -> Result<()> {
             .set_renditions(source, renditions(args)?)?;
     }
     if let Some(source) = audio_source(&args.audio_source()?)? {
-        broadcast.audio().set_with(source, audio_options(args))?;
+        broadcast.audio().set_with(source, audio_options(args));
     }
     Ok(())
 }

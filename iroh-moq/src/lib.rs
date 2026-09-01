@@ -283,6 +283,13 @@ async fn accept_transport(
         }
         return Ok(request.respond(response).await?);
     }
+    // The handler is public and mountable on any ALPN, so an unknown one is a
+    // named error rather than a raw session that will fail to parse a setup.
+    if !moq_net::ALPNS.contains(&alpn) {
+        return Err(e!(Error::UnsupportedAlpn {
+            alpn: alpn.to_string(),
+        }));
+    }
     Ok(web_transport_iroh::Session::raw(connection))
 }
 
@@ -344,6 +351,8 @@ pub struct MoqSession {
     connection: Connection,
     session: moq_net::Session,
     subscribe: origin::Consumer,
+    /// Whether this node dialed, as opposed to accepted.
+    dialed: bool,
 }
 
 impl fmt::Debug for MoqSession {
@@ -382,7 +391,7 @@ impl MoqSession {
             .with_subscriber(subscribe.clone())
             .connect(transport)
             .await?;
-        Ok((Self::new(connection, session, &subscribe), driver))
+        Ok((Self::new(connection, session, &subscribe, true), driver))
     }
 
     /// Completes the MoQ handshake as the server over an accepted connection.
@@ -399,18 +408,20 @@ impl MoqSession {
             .with_subscriber(subscribe.clone())
             .accept(transport)
             .await?;
-        Ok((Self::new(connection, session, &subscribe), driver))
+        Ok((Self::new(connection, session, &subscribe, false), driver))
     }
 
     fn new(
         connection: Connection,
         session: moq_net::Session,
         subscribe: &origin::Producer,
+        dialed: bool,
     ) -> Self {
         Self {
             connection,
             session,
             subscribe: subscribe.consume(),
+            dialed,
         }
     }
 
@@ -427,6 +438,15 @@ impl MoqSession {
     /// Returns the MoQ session, for its stats and bandwidth estimates.
     pub fn session(&self) -> &moq_net::Session {
         &self.session
+    }
+
+    /// Reports whether this node dialed the connection, rather than accepting
+    /// it.
+    ///
+    /// Two peers that dial at once end up with one of each, so this is what
+    /// tells two sessions to the same peer apart.
+    pub fn dialed(&self) -> bool {
+        self.dialed
     }
 
     /// Subscribes to a broadcast the remote peer announces at `path`.
@@ -480,7 +500,11 @@ struct Actor {
     incoming_session_tx: tokio_broadcast::Sender<MoqSession>,
     origin: origin::Producer,
     sessions: HashMap<EndpointId, MoqSession>,
-    session_tasks: JoinSet<(EndpointId, Result<(), moq_net::Error>)>,
+    /// Which session generation currently owns each peer's slot, so a task
+    /// ending after its successor arrived does not evict the live one.
+    generations: HashMap<EndpointId, u64>,
+    generation: u64,
+    session_tasks: JoinSet<(EndpointId, u64, Result<(), moq_net::Error>)>,
     pending_connects: PendingConnects,
     pending_connect_tasks: JoinSet<ConnectResult>,
 }
@@ -497,6 +521,8 @@ impl Actor {
             incoming_session_tx,
             origin,
             sessions: Default::default(),
+            generations: Default::default(),
+            generation: 0,
             session_tasks: Default::default(),
             pending_connects: Default::default(),
             pending_connect_tasks: Default::default(),
@@ -514,9 +540,14 @@ impl Actor {
                 }
                 Some(res) = self.session_tasks.join_next(), if !self.session_tasks.is_empty() => {
                     match res {
-                        Ok((endpoint_id, res)) => {
+                        Ok((endpoint_id, generation, res)) => {
                             info!(remote=%endpoint_id.fmt_short(), "session closed: {res:?}");
-                            self.sessions.remove(&endpoint_id);
+                            // Only evict if this is still the session in the
+                            // slot; a replacement may already have taken it.
+                            if self.generations.get(&endpoint_id) == Some(&generation) {
+                                self.sessions.remove(&endpoint_id);
+                                self.generations.remove(&endpoint_id);
+                            }
                         }
                         Err(err) => tracing::error!("session task panicked: {err}"),
                     }
@@ -554,6 +585,38 @@ impl Actor {
 
     fn handle_session(&mut self, session: MoqSession, driver: moq_net::Driver) {
         let remote = session.remote_id();
+
+        // Two peers that dial each other at the same time each end up with two
+        // connections: one they dialed and one they accepted. Keep the first to
+        // arrive as the one `connect` hands out, and leave the second running.
+        //
+        // Closing the second is tempting and wrong. The two sides do not see
+        // the collision at the same instant, so by the time one closes its
+        // loser the other may already have handed that same connection to a
+        // caller, whose subscribe then dies. A deterministic tie-break does not
+        // help, because the handles are given out before the collision is even
+        // visible. The second connection costs one idle QUIC connection until
+        // either peer goes away, which is the cheaper of the two failures.
+        if self.sessions.contains_key(&remote) {
+            debug!(
+                remote = %remote.fmt_short(),
+                "simultaneous connect; keeping the first session",
+            );
+            let existing = self.sessions[&remote].clone();
+            for reply in self.pending_connects.remove(&remote).into_iter().flatten() {
+                reply.send(Ok(existing.clone())).ok();
+            }
+            // Still drive it: the peer may be using this one, and an undriven
+            // session stalls rather than closing.
+            self.spawn_driver(remote, session, driver);
+            return;
+        }
+
+        // The generation tells a session task's exit apart from a later
+        // session's entry, so a task that ends after its successor took the
+        // slot does not evict the live one.
+        self.generation += 1;
+        self.generations.insert(remote, self.generation);
         self.sessions.insert(remote, session.clone());
         // Notify incoming session subscribers (best-effort, ok if no receivers).
         self.incoming_session_tx.send(session.clone()).ok();
@@ -561,9 +624,15 @@ impl Actor {
             reply.send(Ok(session.clone())).ok();
         }
 
+        self.spawn_driver(remote, session, driver);
+    }
+
+    /// Runs a session's protocol driver until the session ends.
+    fn spawn_driver(&mut self, remote: EndpointId, session: MoqSession, driver: moq_net::Driver) {
         // The driver runs the protocol; without it the session makes no
-        // progress. It finishes on its own once the last session clone drops,
-        // so holding `session` in this task is what keeps it alive until then.
+        // progress. Both handles are held here, so the session ends when this
+        // task does: on shutdown, or when the peer closes.
+        let generation = self.generation;
         let shutdown = self.shutdown_token.child_token();
         self.session_tasks.spawn(async move {
             tokio::pin!(driver);
@@ -581,7 +650,7 @@ impl Actor {
                 other => other,
             };
             debug!(remote=%remote.fmt_short(), "session ended: {res:?}");
-            (remote, res)
+            (remote, generation, res)
         });
     }
 
