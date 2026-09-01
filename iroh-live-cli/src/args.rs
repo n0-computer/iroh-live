@@ -4,6 +4,8 @@
 //! into a capture config, or a `--renditions` list into a simulcast ladder, is
 //! [`crate::source`]'s job.
 
+use std::path::PathBuf;
+
 use clap::{Args, ValueEnum};
 use iroh::EndpointId;
 use iroh_live::ticket::LiveTicket;
@@ -238,12 +240,91 @@ impl WatchArgs {
     /// Fails if neither a positional ticket nor the
     /// `--endpoint-id` / `--name` pair was given.
     pub fn ticket(&self) -> Result<LiveTicket> {
-        match (&self.ticket, self.endpoint_id, &self.broadcast_name) {
-            (Some(ticket), None, None) => Ok(ticket.clone()),
-            (None, Some(id), Some(name)) => Ok(LiveTicket::new(id, name.clone())),
-            _ => Err(anyerr!(
-                "provide either <TICKET> or --endpoint-id and --name"
-            )),
-        }
+        resolve_ticket(&self.ticket, self.endpoint_id, &self.broadcast_name)
+    }
+}
+
+/// Arguments for `irl record`.
+#[derive(Args, Debug)]
+pub struct RecordArgs {
+    /// Connection ticket, as `irl publish` printed it.
+    #[arg(conflicts_with = "endpoint_id")]
+    pub ticket: Option<LiveTicket>,
+
+    /// Remote endpoint id. Needs `--name`.
+    #[arg(long, conflicts_with = "ticket", requires = "record_name")]
+    pub endpoint_id: Option<EndpointId>,
+
+    /// Broadcast path, alongside `--endpoint-id`.
+    #[arg(
+        long = "name",
+        id = "record_name",
+        conflicts_with = "ticket",
+        requires = "endpoint_id"
+    )]
+    pub broadcast_name: Option<String>,
+
+    /// Output file. Its extension picks the container unless `--format` names
+    /// one.
+    #[arg(short, long, default_value = "recording.mp4")]
+    pub output: PathBuf,
+
+    /// Container to write, overriding whatever `--output`'s extension implies.
+    #[arg(long, value_enum)]
+    pub format: Option<RecordFormat>,
+
+    /// Record one video rendition by name, instead of every rung the catalog
+    /// offers.
+    #[arg(long)]
+    pub rendition: Option<String>,
+
+    /// Stop after this many seconds. Omit to record until interrupted.
+    #[arg(long)]
+    pub duration: Option<u64>,
+
+    /// How long a stalled group is waited for before it is skipped, in
+    /// milliseconds.
+    #[arg(long, default_value_t = 2_000)]
+    pub latency: u64,
+}
+
+impl RecordArgs {
+    /// The ticket to subscribe to, from either form the flags allow.
+    ///
+    /// # Errors
+    ///
+    /// Fails if neither a positional ticket nor the
+    /// `--endpoint-id` / `--name` pair was given.
+    pub fn ticket(&self) -> Result<LiveTicket> {
+        resolve_ticket(&self.ticket, self.endpoint_id, &self.broadcast_name)
+    }
+}
+
+/// The container `irl record` writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum RecordFormat {
+    /// Fragmented MP4 / CMAF, the shape `.mp4` names here.
+    Fmp4,
+    /// Matroska, the shape `.mkv` and `.webm` name.
+    Mkv,
+}
+
+/// The ticket named by either the positional form or the
+/// `--endpoint-id` / `--name` pair.
+///
+/// # Errors
+///
+/// Fails if neither form was given. clap already rejects both at once.
+fn resolve_ticket(
+    ticket: &Option<LiveTicket>,
+    endpoint_id: Option<EndpointId>,
+    broadcast_name: &Option<String>,
+) -> Result<LiveTicket> {
+    match (ticket, endpoint_id, broadcast_name) {
+        (Some(ticket), None, None) => Ok(ticket.clone()),
+        (None, Some(id), Some(name)) => Ok(LiveTicket::new(id, name.clone())),
+        _ => Err(anyerr!(
+            "provide either <TICKET> or --endpoint-id and --name"
+        )),
     }
 }

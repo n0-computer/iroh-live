@@ -14,6 +14,7 @@ mod args;
 mod devices;
 mod import;
 mod publish;
+mod record;
 mod source;
 mod source_spec;
 mod transport;
@@ -35,6 +36,8 @@ enum Command {
     Devices,
     /// Publish a capture device or a media file.
     Publish(Box<args::PublishArgs>),
+    /// Subscribe to a remote broadcast and write it to a file, headless.
+    Record(Box<args::RecordArgs>),
     /// Subscribe to a remote broadcast and play it.
     #[command(visible_alias = "play")]
     Watch(args::WatchArgs),
@@ -55,6 +58,7 @@ fn main() -> n0_error::Result {
     match cli.command {
         Command::Devices => devices::run(&rt),
         Command::Publish(args) => publish::run(*args, &rt),
+        Command::Record(args) => record::run(*args, &rt),
         Command::Watch(args) => watch::run(args, &rt),
     }
 }

@@ -1,8 +1,9 @@
 # CLI reference (`irl`)
 
-The `irl` binary lives in the `iroh-live-cli` crate. It has three commands:
-`devices`, `publish`, and `watch`. Watching in a window needs the `render`
-feature, which is on by default; `--no-video` plays audio without it.
+The `irl` binary lives in the `iroh-live-cli` crate. It has four commands:
+`devices`, `publish`, `watch`, and `record`. Watching in a window needs the
+`render` feature, which is on by default; `--no-video` plays audio without it,
+and `record` is headless whatever the build.
 
 ## Commands
 
@@ -106,6 +107,34 @@ signals drive rendition selection, and a switch opens the replacement decoder
 alongside the incumbent so the picture does not go blank. The window's
 rendition combo switches between the two modes at any time.
 
+### `irl record`
+
+Subscribes to a broadcast and writes it to a file. No window, no decoder: the
+encoded frames come off the wire and go straight into the container, so a
+recording costs about what a subscription costs.
+
+| Flag | Description |
+|---|---|
+| `<TICKET>` | Connection ticket, as `irl publish` printed it |
+| `--endpoint-id <ID>` | Remote endpoint id, instead of a ticket. Needs `--name` |
+| `--name <NAME>` | Broadcast path, alongside `--endpoint-id` |
+| `-o`, `--output <PATH>` | The file to write (default: `recording.mp4`) |
+| `--format <FMT>` | `fmp4` or `mkv`, overriding what `--output`'s extension implies |
+| `--rendition <NAME>` | Keep one video rendition instead of every rung the catalog offers |
+| `--duration <SECS>` | Stop after this many seconds, instead of on Ctrl+C |
+| `--latency <MILLIS>` | How long a stalled group is waited for before it is skipped (default: 2000) |
+
+The container follows `--output`'s extension: `.mp4`, `.m4v`, and `.m4s` are
+written as fragmented MP4, `.mkv` and `.webm` as Matroska. Anything else needs
+`--format`.
+
+Both containers are fragmented, so the file on disk is complete at every chunk
+boundary: a recording stopped with Ctrl+C, or one whose process was killed, is
+still playable up to the last fragment written.
+
+Without `--rendition`, a simulcast broadcast is recorded whole and the file
+carries one video track per rung. Players pick the largest.
+
 ## Examples
 
 Publish the default camera and microphone, and print a ticket:
@@ -138,12 +167,18 @@ Watch it:
 irl watch <TICKET>
 ```
 
+Record ten seconds of it to a fragmented MP4:
+
+```sh
+irl record <TICKET> -o clip.mp4 --duration 10
+```
+
 ## What is not here
 
-`call`, `room`, `record`, `run`, and `relay` were dropped in the move to the
-upstream media stack, and all five are recoverable from the `main` branch. Rooms
-have left `iroh-live` for the `iroh-rooms` crate and are being redesigned onto
-moq's announce bus.
+`call`, `room`, `run`, and `relay` were dropped in the move to the upstream
+media stack, and all four are recoverable from the `main` branch. Rooms have left
+`iroh-live` for the `iroh-rooms` crate and are being redesigned onto moq's
+announce bus.
 
 The relay itself is not gone, only the subcommand that embedded it. Run it as its
 own binary with `cargo run -p iroh-live-relay`, and see
