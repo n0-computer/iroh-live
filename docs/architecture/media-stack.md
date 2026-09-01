@@ -92,12 +92,9 @@ whole revert.
 
 ## What we lost
 
-Three capabilities went away with the in-house stack and have no replacement.
-
-**VAAPI decode.** moq-video has a VAAPI encoder and no VAAPI decoder, so H.264
-decode on Intel and AMD Linux runs in software through openh264. That is a
-performance regression, not a correctness one, and it is the one most likely to
-be noticed: a 1080p stream that used to decode on the GPU now costs CPU.
+Two capabilities went away with the in-house stack and have no replacement. A
+third, VAAPI decode, was gone for a while and has been put back upstream: see
+below.
 
 **V4L2 stateful M2M encode and decode.** This is what drove the Raspberry Pi's
 VideoCore hardware codec. It is not on any path we still ship, because the Pi
@@ -111,6 +108,20 @@ exist yet.
 
 Two smaller things also went: AV1 encode and software AV1 decode, which came from
 rav1e and rav1d, and the dioxus integration crate, which had no users.
+
+**VAAPI decode came back.** It was the loss most likely to be noticed, since a
+1080p stream that used to decode on the GPU cost CPU instead. It now lives
+upstream, split the way the encoder is: `moq_vaapi::decode` drives libva, and
+`moq-video`'s `decode/backend/vaapi.rs` is a thin adapter to the `Backend` trait.
+It is verified byte-for-byte against ffmpeg's software decoder on constrained
+baseline, main with B-frames and reordering, high 720p, a cropped
+non-macroblock-aligned size, and a mid-stream resolution change. Interlaced
+content is rejected at the first SPS rather than half-supported. Turn it on with
+`--features vaapi`.
+
+More than half of it was already in the moq-vaapi crate: `src/codec/h264/dpb.rs`
+carries cros-codecs' DPB bumping and reference marking, used until now only by
+the encode path.
 
 ## Feature flags
 

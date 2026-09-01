@@ -88,6 +88,11 @@ mod_module_files = "deny"
 # Deleting this block is the whole fix once the commits land in a moq release.
 [patch.crates-io]
 hang = { git = "https://github.com/Frando/moq", branch = "iroh-live" }
+# moq-video's VAAPI decoder and re-tile need `moq_vaapi::{decode, vpp}`, neither
+# of which is in the released 0.0.3. A `[patch]` block only takes effect in the
+# top-level workspace, so moq patching this for its own builds does nothing here
+# and the entry has to be repeated.
+moq-vaapi = { git = "https://github.com/Frando/vaapi", branch = "iroh-live" }
 moq-audio = { git = "https://github.com/Frando/moq", branch = "iroh-live" }
 moq-mux = { git = "https://github.com/Frando/moq", branch = "iroh-live" }
 moq-native = { git = "https://github.com/Frando/moq", branch = "iroh-live" }
