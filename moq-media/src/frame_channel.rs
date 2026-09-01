@@ -120,19 +120,6 @@ impl<T> FrameReceiver<T> {
         self.inner.produced.load(Ordering::Relaxed)
     }
 
-    /// Creates a new [`FrameSender`] that writes to the same slot.
-    ///
-    /// Used by the adaptation layer to redirect a new decoder pipeline's
-    /// output to the same receiver the consumer already holds. The
-    /// previous sender (from the old pipeline) can be dropped without
-    /// closing the channel as long as this new sender is alive.
-    pub fn new_sender(&self) -> FrameSender<T> {
-        self.inner.sender_count.fetch_add(1, Ordering::Relaxed);
-        FrameSender {
-            inner: self.inner.clone(),
-        }
-    }
-
     /// Waits for the next value. Returns `None` when the sender is
     /// dropped and no value remains.
     ///
@@ -254,54 +241,21 @@ mod tests {
         assert!(rx.is_closed());
     }
 
-    #[test]
-    fn new_sender_writes_to_same_slot() {
-        let (tx, rx) = frame_channel::<u32>();
-        tx.send(1);
-        assert_eq!(rx.take(), Some(1));
-
-        // Create a new sender from the receiver (simulating a pipeline swap).
-        let tx2 = rx.new_sender();
-        drop(tx); // old sender gone
-        assert!(!rx.is_closed(), "new_sender keeps channel open");
-
-        tx2.send(42);
-        assert_eq!(rx.take(), Some(42));
-        assert_eq!(rx.produced(), 2);
-    }
-
     #[tokio::test]
-    async fn new_sender_wakes_recv() {
-        let (tx, rx) = frame_channel::<u32>();
-        let tx2 = rx.new_sender();
-        drop(tx);
-
-        let handle = tokio::spawn(async move { rx.recv().await });
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        tx2.send(7);
-        assert_eq!(handle.await.unwrap(), Some(7));
-    }
-
-    #[test]
-    fn sender_swap_no_frame_loss() {
-        // Simulates what adaptation does: old sender produces frames,
-        // then a new sender takes over via new_sender(). The consumer
-        // should see frames from both without gaps.
-        let (tx_old, rx) = frame_channel::<u32>();
-        tx_old.send(1);
-        assert_eq!(rx.take(), Some(1));
-
-        let tx_new = rx.new_sender();
-        // Both senders alive briefly (overlap during switch).
-        tx_new.send(2);
-        drop(tx_old);
-        assert_eq!(rx.take(), Some(2));
-        assert!(!rx.is_closed());
-
-        tx_new.send(3);
-        assert_eq!(rx.take(), Some(3));
-        drop(tx_new);
-        assert!(rx.is_closed());
-        assert_eq!(rx.produced(), 3);
+    async fn recv_sees_a_close_that_races_the_check() {
+        // `recv` has to register for its wakeup before checking, or a sender
+        // dropping between the check and the registration leaves it parked with
+        // nothing left to wake it.
+        for _ in 0..64 {
+            let (tx, rx) = frame_channel::<u32>();
+            let closer = std::thread::spawn(move || drop(tx));
+            assert_eq!(
+                tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                    .await
+                    .expect("recv should observe the close"),
+                None,
+            );
+            closer.join().unwrap();
+        }
     }
 }

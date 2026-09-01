@@ -176,6 +176,18 @@ pub fn renditions(args: &CaptureArgs) -> Result<Vec<VideoRendition>> {
             .collect::<Result<_>>()?,
     };
 
+    // `--bitrate` names the top rung, so the ladder is scaled against whichever
+    // rung is largest. A rung with no explicit size encodes at the source's
+    // resolution, which is at least as large as any of the others, so an
+    // unsized rung means there is nothing to scale against.
+    let largest = match rungs.iter().any(|(_, size)| size.is_none()) {
+        true => None,
+        false => rungs
+            .iter()
+            .filter_map(|(_, size)| *size)
+            .max_by_key(Size::pixels),
+    };
+
     Ok(rungs
         .into_iter()
         .map(|(name, size)| {
@@ -186,7 +198,12 @@ pub fn renditions(args: &CaptureArgs) -> Result<Vec<VideoRendition>> {
                 rendition = rendition.with_size(size);
             }
             if let Some(bitrate) = args.bitrate {
-                rendition = rendition.with_bitrate(bitrate);
+                // Scale by pixel count against the largest rung, so a ladder
+                // does not advertise the same bitrate at every size. A
+                // subscriber compares its estimate against the rendition's
+                // bitrate, and identical figures make the rungs
+                // indistinguishable to it.
+                rendition = rendition.with_bitrate(scaled_bitrate(bitrate, size, largest));
             }
             rendition
         })
@@ -216,19 +233,43 @@ fn parse_rendition(spec: &str) -> Result<(String, Option<Size>)> {
     Ok((spec.to_string(), parse_size(spec)))
 }
 
+/// Shares `bitrate` across a ladder in proportion to pixel count.
+///
+/// `bitrate` is the figure for the largest rung. A rung at a quarter of the
+/// pixels gets a quarter of it, floored so a very small rung is still given
+/// something an encoder can work with.
+fn scaled_bitrate(bitrate: u64, size: Option<Size>, largest: Option<Size>) -> u64 {
+    /// Below this a rung is unusable however small it is.
+    const FLOOR: u64 = 64_000;
+
+    let (Some(size), Some(largest)) = (size, largest) else {
+        return bitrate;
+    };
+    match largest.pixels() {
+        0 => bitrate,
+        total => (bitrate * size.pixels() / total).max(FLOOR),
+    }
+}
+
 /// Parses `<height>p` or `<width>x<height>`.
 ///
-/// The `<height>p` shorthand assumes 16:9 and rounds the width up to the next
-/// even number: I420 chroma is subsampled 2x2, so every stage of the pipeline
-/// rejects an odd dimension.
+/// Both dimensions are rounded up to the next even number: I420 chroma is
+/// subsampled 2x2, so every stage of the pipeline rejects an odd one. The
+/// `<height>p` shorthand assumes 16:9.
 fn parse_size(spec: &str) -> Option<Size> {
     if let Some((width, height)) = spec.split_once(['x', 'X']) {
-        return Some(Size::new(width.parse().ok()?, height.parse().ok()?));
+        let width: u32 = width.parse().ok()?;
+        let height: u32 = height.parse().ok()?;
+        return Some(Size::new(even(width), even(height)));
     }
     let height: u32 = spec.strip_suffix(['p', 'P'])?.parse().ok()?;
-    let width = (u64::from(height) * 16 + 4) / 9;
-    let width = u32::try_from(width + width % 2).ok()?;
-    Some(Size::new(width, height))
+    let width = u32::try_from((u64::from(height) * 16 + 4) / 9).ok()?;
+    Some(Size::new(even(width), even(height)))
+}
+
+/// Rounds up to the next even number.
+fn even(value: u32) -> u32 {
+    value + (value % 2)
 }
 
 #[cfg(test)]
@@ -241,7 +282,39 @@ mod tests {
         assert_eq!(parse_size("1080p"), Some(Size::new(1920, 1080)));
         assert_eq!(parse_size("480p"), Some(Size::new(854, 480)));
         assert_eq!(parse_size("640x360"), Some(Size::new(640, 360)));
+        // I420 chroma is subsampled 2x2, so an odd dimension is rounded up
+        // rather than passed to an encoder that will reject it.
+        assert_eq!(parse_size("641x361"), Some(Size::new(642, 362)));
         assert_eq!(parse_size("source"), None);
+    }
+
+    #[test]
+    fn ladder_bitrates_scale_by_pixel_count() {
+        let quarter = scaled_bitrate(
+            4_000_000,
+            Some(Size::new(640, 360)),
+            Some(Size::new(1280, 720)),
+        );
+        assert_eq!(quarter, 1_000_000);
+
+        // The top rung keeps the figure it was given.
+        let top = scaled_bitrate(
+            4_000_000,
+            Some(Size::new(1280, 720)),
+            Some(Size::new(1280, 720)),
+        );
+        assert_eq!(top, 4_000_000);
+
+        // A tiny rung still gets something an encoder can work with.
+        let tiny = scaled_bitrate(
+            4_000_000,
+            Some(Size::new(16, 16)),
+            Some(Size::new(1920, 1080)),
+        );
+        assert_eq!(tiny, 64_000);
+
+        // Nothing to scale against: the figure passes through.
+        assert_eq!(scaled_bitrate(4_000_000, None, None), 4_000_000);
     }
 
     #[test]

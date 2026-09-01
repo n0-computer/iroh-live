@@ -201,7 +201,7 @@ pub struct LocalBroadcast {
     #[debug(skip)]
     broadcast: moq_net::broadcast::Producer,
     #[debug(skip)]
-    catalog: CatalogProducer,
+    catalog: Mutex<CatalogProducer>,
     /// Held for a publish task's whole life, so a replacement waits for its
     /// predecessor's track producers to drop before creating its own. Without
     /// it, swapping a source races the old track name and `create_track`
@@ -237,9 +237,11 @@ impl LocalBroadcast {
     /// Fails if the catalog track cannot be created on the broadcast.
     pub fn new(mut broadcast: moq_net::broadcast::Producer) -> Result<Self, PublishError> {
         let catalog = CatalogProducer::with_catalog(&mut broadcast, Catalog::default())?;
+        // Behind a lock so every mutator takes `&self`, which is what a UI loop
+        // holding the broadcast needs. The publish tasks clone it out.
         Ok(Self {
             broadcast,
-            catalog,
+            catalog: Mutex::new(catalog),
             clock: moq_mux::Clock::new(),
             stats: PublishStats::default(),
             video_slot: Arc::new(tokio::sync::Mutex::new(())),
@@ -298,7 +300,7 @@ impl LocalBroadcast {
     ///
     /// Fails if the track already exists or the catalog cannot be updated.
     pub fn enable_chat(
-        &mut self,
+        &self,
         track: crate::catalog::TrackRef,
     ) -> Result<moq_net::track::Producer, PublishError> {
         let mut info = moq_net::track::Info::default();
@@ -306,10 +308,14 @@ impl LocalBroadcast {
         // Chat only makes sense read oldest first, where the moq-net default
         // favours the newest group.
         info.ordered = true;
+        // A cloned producer shares the broadcast's track table, so this creates
+        // the track on the same broadcast without needing `&mut self`.
         let producer = self
             .broadcast
+            .clone()
             .create_track(track.name.as_str(), Some(info))?;
-        let mut guard = self.catalog.lock();
+        let mut catalog = self.catalog.lock().expect("poisoned");
+        let mut guard = catalog.lock();
         guard.ext.chat = Some(Chat {
             message: Some(track),
             typing: None,
@@ -323,8 +329,9 @@ impl LocalBroadcast {
     /// # Errors
     ///
     /// Fails if the catalog cannot be updated.
-    pub fn set_user(&mut self, user: User) -> Result<(), PublishError> {
-        let mut guard = self.catalog.lock();
+    pub fn set_user(&self, user: User) -> Result<(), PublishError> {
+        let mut catalog = self.catalog.lock().expect("poisoned");
+        let mut guard = catalog.lock();
         guard.ext.user = Some(user);
         guard.commit()?;
         Ok(())
@@ -403,7 +410,7 @@ impl VideoPublisher<'_> {
 
         let task = video::spawn_publish(video::Publish {
             broadcast: self.0.broadcast.clone(),
-            catalog: self.0.catalog.clone(),
+            catalog: self.0.catalog.lock().expect("poisoned").clone(),
             clock: self.0.clock,
             stats: self.0.stats.clone(),
             slot: self.0.video_slot.clone(),
@@ -465,7 +472,7 @@ impl AudioPublisher<'_> {
             .unwrap_or_else(|| options.codec.to_string());
         let task = spawn_audio(
             self.0.broadcast.clone(),
-            self.0.catalog.clone(),
+            self.0.catalog.lock().expect("poisoned").clone(),
             self.0.clock,
             source,
             options,

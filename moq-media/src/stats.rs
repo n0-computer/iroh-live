@@ -168,42 +168,6 @@ impl Metric {
     }
 }
 
-/// Tracks wall-clock drift from PTS cadence to produce a lag metric.
-///
-/// On first call, records the base wall+PTS. On subsequent calls, returns
-/// `wall_elapsed - pts_elapsed` in milliseconds (positive = behind live).
-#[derive(Debug, Default)]
-pub struct LagTracker {
-    base_wall: Option<Instant>,
-    base_pts: Option<Duration>,
-}
-
-impl LagTracker {
-    pub fn new() -> Self {
-        Self {
-            base_wall: None,
-            base_pts: None,
-        }
-    }
-
-    /// Records one observation and returns the signed lag in milliseconds.
-    ///
-    /// Positive values mean wall clock is behind PTS (rendering late).
-    /// Negative values mean wall clock is ahead of PTS (rendering early).
-    pub fn record(&mut self, wall: Instant, pts: Duration) -> f64 {
-        let base_w = *self.base_wall.get_or_insert(wall);
-        let base_p = *self.base_pts.get_or_insert(pts);
-        let wall_elapsed = wall.duration_since(base_w);
-        let pts_elapsed = pts.saturating_sub(base_p);
-        wall_elapsed.as_secs_f64() * 1000.0 - pts_elapsed.as_secs_f64() * 1000.0
-    }
-
-    /// Alias for [`record`](Self::record).
-    pub fn record_ms(&mut self, wall: Instant, pts: Duration) -> f64 {
-        self.record(wall, pts)
-    }
-}
-
 // ── Label ───────────────────────────────────────────────────────────
 
 /// An observable string label (e.g. codec name, path type).
@@ -416,22 +380,6 @@ impl Default for Timeline {
 
 // ── Composite stats ─────────────────────────────────────────────────
 
-/// Stats passed to the decode pipeline. Groups render, timing, and
-/// timeline into a single value to avoid threading a 3-element tuple.
-#[derive(Clone, Debug, Default)]
-pub struct DecodeStats {
-    pub render: RenderStats,
-    pub timing: TimingStats,
-    pub timeline: Timeline,
-}
-
-/// Optional parameters for encoder pipelines.
-#[derive(Debug, Clone, Default)]
-pub struct EncodeOpts {
-    /// Stats collectors for publish-side encode metrics.
-    pub stats: Option<EncodeStats>,
-}
-
 /// All stats for a subscribe-side broadcast. Owned by `RemoteBroadcast`.
 #[derive(Clone, Debug, Default)]
 pub struct SubscribeStats {
@@ -439,17 +387,6 @@ pub struct SubscribeStats {
     pub render: RenderStats,
     pub timing: TimingStats,
     pub timeline: Timeline,
-}
-
-impl SubscribeStats {
-    /// Returns a [`DecodeStats`] clone for passing to decode pipelines.
-    pub fn decode_stats(&self) -> DecodeStats {
-        DecodeStats {
-            render: self.render.clone(),
-            timing: self.timing.clone(),
-            timeline: self.timeline.clone(),
-        }
-    }
 }
 
 /// All stats for a publish-side broadcast. Owned by `LocalBroadcast`.

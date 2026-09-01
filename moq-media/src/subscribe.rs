@@ -409,7 +409,12 @@ pub struct MediaTracks {
 ///
 /// Frames land in a latest-wins slot: a renderer that falls behind skips
 /// straight to the newest picture instead of draining a backlog.
-#[derive(Debug, Clone)]
+///
+/// Deliberately not `Clone`. Taking a frame removes it from the slot, so two
+/// holders would split the stream between them and neither would see a coherent
+/// picture. Share the handle, or hand out [`frames`](Self::frames) by reference
+/// to something that only reads.
+#[derive(Debug)]
 pub struct VideoTrack {
     frames: Arc<FrameReceiver<moq_video::Frame>>,
     rendition: Watchable<String>,

@@ -15,16 +15,6 @@ use crate::net::NetworkSignals;
 
 // ── Configuration ───────────────────────────────────────────────────────
 
-/// Controls which rendition an adaptive track subscribes to.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum RenditionMode {
-    /// Automatically select based on network signals.
-    #[default]
-    Auto,
-    /// Pin to a specific rendition by catalog key.
-    Fixed(String),
-}
-
 /// Thresholds and timers for the adaptation algorithm.
 #[derive(Debug, Clone)]
 pub struct AdaptiveConfig {
