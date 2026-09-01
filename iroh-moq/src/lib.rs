@@ -18,7 +18,7 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler},
 };
 use moq_net::{AsPath, Origin, broadcast, origin};
-use n0_error::{AnyError, Result, anyerr, e, stack_error};
+use n0_error::{AnyError, Result, e, stack_error};
 use n0_future::task::{AbortOnDropHandle, JoinSet, spawn};
 use tokio::sync::{broadcast as tokio_broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -74,6 +74,13 @@ pub enum Error {
     UnsupportedAlpn {
         /// What the peer chose.
         alpn: String,
+    },
+    #[error("failed to dial the peer")]
+    Dial {
+        /// Why the dial failed. Shared because several callers can coalesce
+        /// onto one dial, and each of them wants the reason.
+        #[error(source, std_err)]
+        source: Arc<Self>,
     },
     #[error("internal consistency error")]
     InternalConsistencyError(#[error(source)] LiveActorDiedError),
@@ -171,7 +178,7 @@ impl Moq {
     ///
     /// Connections are deduplicated: two calls for the same peer share one
     /// session, and concurrent calls coalesce onto a single dial.
-    pub async fn connect(&self, remote: impl Into<EndpointAddr>) -> Result<MoqSession, AnyError> {
+    pub async fn connect(&self, remote: impl Into<EndpointAddr>) -> Result<MoqSession, Error> {
         let (reply, reply_rx) = oneshot::channel();
         self.tx
             .send(ActorMessage::Connect {
@@ -180,10 +187,12 @@ impl Moq {
             })
             .await
             .map_err(|_| LiveActorDiedError)?;
+        // The error is shared because several callers can coalesce onto one
+        // dial, and each of them wants the reason it failed.
         reply_rx
             .await
             .map_err(|_| LiveActorDiedError)?
-            .map_err(|err| anyerr!(err))
+            .map_err(|source| e!(Error::Dial { source }))
     }
 
     /// Returns a stream of incoming MoQ sessions from remote peers.
@@ -293,18 +302,25 @@ async fn accept_transport(
     Ok(web_transport_iroh::Session::raw(connection))
 }
 
-/// Stream of incoming MoQ sessions.
+/// Sessions accepted from remote peers, in arrival order.
+///
+/// A session is already established and already usable by the peer by the time
+/// it appears here: the MoQ handshake completes in the protocol handler, before
+/// the application sees anything. This reports what happened, it does not gate
+/// it. An application that needs to refuse a peer does so at the iroh layer,
+/// before the ALPN is accepted.
 #[derive(Debug)]
 pub struct IncomingSessionStream {
     rx: tokio_broadcast::Receiver<MoqSession>,
 }
 
 impl IncomingSessionStream {
-    /// Returns the next incoming session, or `None` if the transport is shut down.
-    pub async fn next(&mut self) -> Option<IncomingSession> {
+    /// Returns the next accepted session, or `None` once the transport shuts
+    /// down.
+    pub async fn next(&mut self) -> Option<MoqSession> {
         loop {
             match self.rx.recv().await {
-                Ok(session) => return Some(IncomingSession { session }),
+                Ok(session) => return Some(session),
                 Err(tokio_broadcast::error::RecvError::Lagged(n)) => {
                     info!("incoming session stream lagged, skipped {n} sessions");
                     continue;
@@ -312,32 +328,6 @@ impl IncomingSessionStream {
                 Err(tokio_broadcast::error::RecvError::Closed) => return None,
             }
         }
-    }
-}
-
-/// Incoming MoQ session, not yet fully accepted by the application.
-///
-/// The MoQ handshake has already completed. The application can inspect
-/// the remote peer's identity before deciding to accept or reject.
-#[derive(Debug)]
-pub struct IncomingSession {
-    session: MoqSession,
-}
-
-impl IncomingSession {
-    /// Returns the remote peer's endpoint ID.
-    pub fn remote_id(&self) -> EndpointId {
-        self.session.remote_id()
-    }
-
-    /// Accepts the session, returning the [`MoqSession`] for publish/subscribe.
-    pub fn accept(self) -> MoqSession {
-        self.session
-    }
-
-    /// Rejects the session, closing the connection.
-    pub fn reject(self) {
-        self.session.close(moq_net::Error::Cancel);
     }
 }
 
@@ -487,12 +477,12 @@ enum ActorMessage {
     },
     Connect {
         remote: EndpointAddr,
-        reply: oneshot::Sender<Result<MoqSession, Arc<AnyError>>>,
+        reply: oneshot::Sender<Result<MoqSession, Arc<Error>>>,
     },
 }
 
-type PendingConnects = HashMap<EndpointId, Vec<oneshot::Sender<Result<MoqSession, Arc<AnyError>>>>>;
-type ConnectResult = (EndpointId, Result<(MoqSession, moq_net::Driver), AnyError>);
+type PendingConnects = HashMap<EndpointId, Vec<oneshot::Sender<Result<MoqSession, Arc<Error>>>>>;
+type ConnectResult = (EndpointId, Result<(MoqSession, moq_net::Driver), Error>);
 
 struct Actor {
     endpoint: Endpoint,
@@ -657,7 +647,7 @@ impl Actor {
     fn handle_connect(
         &mut self,
         remote: EndpointAddr,
-        reply: oneshot::Sender<Result<MoqSession, Arc<AnyError>>>,
+        reply: oneshot::Sender<Result<MoqSession, Arc<Error>>>,
     ) {
         let remote_id = remote.id;
         if let Some(session) = self.sessions.get(&remote_id) {
@@ -672,9 +662,7 @@ impl Actor {
                 let endpoint = self.endpoint.clone();
                 let origin = self.origin.clone();
                 self.pending_connect_tasks.spawn(async move {
-                    let res = MoqSession::connect(&endpoint, remote, &origin)
-                        .await
-                        .map_err(Into::into);
+                    let res = MoqSession::connect(&endpoint, remote, &origin).await;
                     (remote_id, res)
                 });
                 entry.insert(Default::default()).push(reply);

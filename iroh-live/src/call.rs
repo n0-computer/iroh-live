@@ -11,7 +11,7 @@ use crate::{Live, types::DisconnectReason};
 pub enum CallError {
     #[error("failed to connect")]
     /// Failed to connect to the remote peer.
-    ConnectionFailed(#[error(source)] AnyError),
+    ConnectionFailed(#[error(source, std_err)] iroh_moq::Error),
     /// Remote peer rejected the call or closed before subscribing.
     #[error("call rejected")]
     Rejected(#[error(source)] AnyError),

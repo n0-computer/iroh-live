@@ -9,7 +9,7 @@ use std::{
 
 use bytes::Bytes;
 use iroh::{Endpoint, EndpointId, SecretKey};
-use iroh_gossip::Gossip;
+use iroh_gossip::{Gossip, TopicId};
 use iroh_moq::{Moq, MoqSession};
 use iroh_smol_kv::{ExpiryConfig, Filter, SignedValue, Subscribe, SubscribeMode, WriteScope};
 use moq_net::broadcast;
@@ -331,6 +331,9 @@ struct BroadcastId(EndpointId, String);
 
 struct Actor {
     me: EndpointId,
+    /// Scopes every broadcast this room publishes, so two rooms can each carry
+    /// a broadcast called "cam" on one node.
+    topic_id: TopicId,
     _gossip: Gossip,
     moq: Moq,
     active_subscribe: HashSet<BroadcastId>,
@@ -372,6 +375,7 @@ impl Actor {
         let kv_writer = kv.write(me.clone());
         Ok(Self {
             me: me.public(),
+            topic_id: ticket.topic_id,
             moq,
             _gossip: gossip,
             active_subscribe: Default::default(),
@@ -549,8 +553,9 @@ impl Actor {
     }
 
     async fn publish(&mut self, name: String) -> Result<broadcast::Producer, Error> {
-        info!(%name, "publishing broadcast to room");
-        let producer = self.moq.publish(&name)?;
+        let path = room_path(self.topic_id, &name);
+        info!(%name, %path, "publishing broadcast to room");
+        let producer = self.moq.publish(&path)?;
         let consumer = producer.consume();
         self.active_publish.insert(name.clone());
         self.publish_closed.push(Box::pin(async move {
@@ -618,8 +623,9 @@ impl Actor {
             }
             info!(broadcast=%id, "initiating MoQ subscription to remote broadcast");
             let moq = self.moq.clone();
+            let topic = self.topic_id;
             self.connecting.push(Box::pin(async move {
-                let res = subscribe(moq, remote, &name).await;
+                let res = subscribe(moq, remote, topic, &name).await;
                 match &res {
                     Ok(_) => info!(broadcast=%id, "MoQ subscription established"),
                     Err(err) => warn!(broadcast=%id, "MoQ subscription failed: {err:#}"),
@@ -673,8 +679,18 @@ async fn put_peer_state(kv_writer: WriteScope, state: PeerState) {
 }
 
 /// Connects to `remote` and subscribes to the broadcast it announced at `name`.
-async fn subscribe(moq: Moq, remote: EndpointId, name: &str) -> SubscribeResult {
+async fn subscribe(moq: Moq, remote: EndpointId, topic: TopicId, name: &str) -> SubscribeResult {
     let session = moq.connect(remote).await?;
-    let broadcast = session.subscribe(name).await?;
+    let broadcast = session.subscribe(room_path(topic, name)).await?;
     Ok((session, broadcast))
+}
+
+/// The origin path a room's broadcast lives at.
+///
+/// Publishing is node-wide, so a bare name would collide across rooms: a peer
+/// in two rooms that publishes "cam" in each would find the second rejected as
+/// a duplicate. The topic scopes it, and both sides derive the same path from
+/// the ticket they already share.
+fn room_path(topic: TopicId, name: &str) -> String {
+    format!("rooms/{topic}/{name}")
 }

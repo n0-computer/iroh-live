@@ -35,26 +35,14 @@ throttled-tracing = "0.1.0"
 
 
 [dev-dependencies]
+# The `subscribe_test` example, which the browser end-to-end suite drives, and
+# the `publish` example.
+anyhow = "1.0.100"
 clap = { version = "4.5", features = ["derive"] }
-eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
-egui-wgpu = { workspace = true }
 moq-media = { workspace = true, features = ["test-source"] }
-moq-media-egui = { workspace = true }
-wgpu = { workspace = true }
-winit = "0.30"
-pollster = "0.4"
-moq-mux = { workspace = true }
-postcard = "1.1.3"
-qr2term = "0.3"
+n0-tracing-test = "0.3.0"
 tokio = { version = "1.48.0", features = ["full"] }
 tracing-subscriber = "0.3.20"
-n0-tracing-test = "0.3.0"
-image = { version = "0.25", features = ["png"] }
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-ctor = "0.4"
-eframe = { workspace = true, features = ["wayland", "x11"] }
-patchbay = "0.1.0"
 
 [lints]
 workspace = true
