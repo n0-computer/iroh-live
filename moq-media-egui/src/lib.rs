@@ -417,6 +417,22 @@ fn adapter_limits_config() -> egui_wgpu::WgpuConfiguration {
 
 #[cfg(all(target_os = "linux", feature = "wgpu-render"))]
 fn create_egui_wgpu_config_dmabuf() -> egui_wgpu::WgpuConfiguration {
+    // `WGPU_BACKEND` is how one machine gets compared against itself, and a
+    // board with both a Vulkan and a GL adapter is exactly where that
+    // comparison is worth making. This path asks for Vulkan by name, because
+    // DMA-BUF import is a Vulkan extension, so it has to stand aside when
+    // somebody has asked for anything else: egui's own setup reads the same
+    // variable, and `adapter_limits_config` keeps it.
+    if let Some(requested) = wgpu::Backends::from_env()
+        && !requested.contains(wgpu::Backends::VULKAN)
+    {
+        tracing::info!(
+            ?requested,
+            "WGPU_BACKEND excludes Vulkan, so the DMA-BUF import path is not used",
+        );
+        return adapter_limits_config();
+    }
+
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::VULKAN,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
