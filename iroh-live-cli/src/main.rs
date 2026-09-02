@@ -80,3 +80,64 @@ fn main() -> n0_error::Result {
         Command::Watch(args) => watch::run(args, &rt),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::{CommandFactory, Parser};
+
+    use super::{Cli, Command};
+
+    /// The endpoint id and broadcast path a subscriber can be pointed at
+    /// instead of a ticket.
+    fn endpoint_and_name() -> (String, String) {
+        let id = iroh::SecretKey::generate().public();
+        (id.to_string(), "hello".to_string())
+    }
+
+    #[test]
+    fn the_command_tree_is_valid() {
+        // clap checks ids, defaults, and the relationships between arguments
+        // only when the command is built, so a mistake in an `#[arg]`
+        // attribute would otherwise reach a user as a panic.
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn watch_and_record_name_a_broadcast_the_same_way() {
+        let (id, name) = endpoint_and_name();
+
+        let cli = Cli::try_parse_from(["irl", "watch", "--endpoint-id", &id, "--name", &name])
+            .expect("the pair is one of the two accepted forms");
+        let Command::Watch(args) = cli.command else {
+            panic!("expected watch");
+        };
+        assert_eq!(args.remote.ticket().expect("resolves").broadcast_name, name);
+
+        let cli = Cli::try_parse_from(["irl", "record", "--endpoint-id", &id, "--name", &name])
+            .expect("record accepts exactly what watch does");
+        let Command::Record(args) = cli.command else {
+            panic!("expected record");
+        };
+        assert_eq!(args.remote.ticket().expect("resolves").broadcast_name, name);
+    }
+
+    #[test]
+    fn a_broadcast_named_no_way_at_all_is_rejected() {
+        let cli = Cli::try_parse_from(["irl", "watch"]).expect("clap accepts no arguments");
+        let Command::Watch(args) = cli.command else {
+            panic!("expected watch");
+        };
+        let err = args.remote.ticket().expect_err("nothing names a broadcast");
+        assert!(
+            err.to_string().contains("--endpoint-id"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn the_endpoint_id_needs_a_name() {
+        let (id, _) = endpoint_and_name();
+        Cli::try_parse_from(["irl", "watch", "--endpoint-id", &id])
+            .expect_err("--endpoint-id alone does not name a broadcast");
+    }
+}
