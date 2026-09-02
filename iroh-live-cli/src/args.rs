@@ -10,6 +10,7 @@ use clap::{Args, ValueEnum};
 use iroh::EndpointId;
 use iroh_live::ticket::LiveTicket;
 use n0_error::{Result, anyerr};
+use serde::Deserialize;
 
 use crate::source_spec::{AudioSourceSpec, VideoSourceSpec};
 
@@ -34,6 +35,15 @@ pub struct TransportArgs {
     pub no_qr: bool,
 }
 
+/// The `--video` specifier when none is given.
+pub const DEFAULT_VIDEO: &str = "cam";
+
+/// The `--audio` specifier when none is given.
+pub const DEFAULT_AUDIO: &str = "mic";
+
+/// The `--encoder` selection when none is given.
+pub const DEFAULT_ENCODER: &str = "auto";
+
 /// What to capture and how to encode it.
 #[derive(Args, Debug)]
 pub struct CaptureArgs {
@@ -41,13 +51,13 @@ pub struct CaptureArgs {
     /// `app:<id>`, `file:<path>`, `test`, or `none`.
     ///
     /// Run `irl devices` for the identifiers this machine accepts.
-    #[arg(long, default_value = "cam", verbatim_doc_comment)]
+    #[arg(long, default_value = DEFAULT_VIDEO, verbatim_doc_comment)]
     pub video: String,
 
     /// Audio source: `mic`, `mic:<id>`, `system`, `file:<path>[:loop]`, `test`, or `none`.
     ///
     /// Anything else is taken as a device name, so `hw:0,1` works as written.
-    #[arg(long, default_value = "mic", verbatim_doc_comment)]
+    #[arg(long, default_value = DEFAULT_AUDIO, verbatim_doc_comment)]
     pub audio: String,
 
     /// Publish a synthetic pattern and tone, the same as
@@ -61,7 +71,7 @@ pub struct CaptureArgs {
 
     /// Encoder to use: auto, hardware, software, or a backend name such as
     /// vaapi, nvenc, videotoolbox, or openh264.
-    #[arg(long, default_value = "auto")]
+    #[arg(long, default_value = DEFAULT_ENCODER)]
     pub encoder: String,
 
     /// Simulcast ladder, comma-separated. Each rung is `<height>p`,
@@ -100,6 +110,28 @@ pub struct CaptureArgs {
     pub audio_bitrate: Option<u32>,
 }
 
+impl Default for CaptureArgs {
+    /// The same defaults clap applies, so a caller building these by hand
+    /// (`irl run` reading a session file) starts where the flags do.
+    fn default() -> Self {
+        Self {
+            video: DEFAULT_VIDEO.to_string(),
+            audio: DEFAULT_AUDIO.to_string(),
+            test_source: false,
+            codec: VideoCodecArg::default(),
+            encoder: DEFAULT_ENCODER.to_string(),
+            renditions: Vec::new(),
+            bitrate: None,
+            width: None,
+            height: None,
+            fps: None,
+            no_cursor: false,
+            audio_codec: AudioCodecArg::default(),
+            audio_bitrate: None,
+        }
+    }
+}
+
 impl CaptureArgs {
     /// The parsed video source.
     ///
@@ -127,7 +159,8 @@ impl CaptureArgs {
 }
 
 /// The video codec `--codec` selects.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum VideoCodecArg {
     /// H.264 / AVC. The widest support, and the default.
     #[default]
@@ -146,7 +179,8 @@ impl From<VideoCodecArg> for iroh_live::media::video::encode::Codec {
 }
 
 /// The audio codec `--audio-codec` selects.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AudioCodecArg {
     /// Opus. The default.
     #[default]
@@ -242,6 +276,13 @@ impl WatchArgs {
     pub fn ticket(&self) -> Result<LiveTicket> {
         resolve_ticket(&self.ticket, self.endpoint_id, &self.broadcast_name)
     }
+}
+
+/// Arguments for `irl run`.
+#[derive(Args, Debug)]
+pub struct RunArgs {
+    /// The TOML session file to run.
+    pub config: PathBuf,
 }
 
 /// Arguments for `irl record`.

@@ -1,9 +1,9 @@
 # CLI reference (`irl`)
 
-The `irl` binary lives in the `iroh-live-cli` crate. It has four commands:
-`devices`, `publish`, `watch`, and `record`. Watching in a window needs the
-`render` feature, which is on by default; `--no-video` plays audio without it,
-and `record` is headless whatever the build.
+The `irl` binary lives in the `iroh-live-cli` crate. It has five commands:
+`devices`, `publish`, `watch`, `record`, and `run`. Watching in a window needs
+the `render` feature, which is on by default; `--no-video` plays audio without
+it, and `record` and `run` are headless whatever the build.
 
 ## Commands
 
@@ -135,6 +135,63 @@ still playable up to the last fragment written.
 Without `--rendition`, a simulcast broadcast is recorded whole and the file
 carries one video track per rung. Players pick the largest.
 
+### `irl run`
+
+Runs a whole session from a TOML file: one endpoint publishing several
+broadcasts, subscribing to several others, and recording any of them. That is
+what a pile of `irl publish` and `irl watch` processes cannot do between them,
+because each of those binds an endpoint of its own.
+
+```sh
+irl run session.toml
+```
+
+The session is headless. A `[[recv]]` block plays audio and can record to a
+file, but no window opens: a window owns the main thread and there is only one
+of those.
+
+```toml
+# Optional. Names a stored endpoint identity under
+# <config dir>/iroh-live/secret_keys/<name>.key, generated on first use, so the
+# tickets this session prints are the same on every run.
+secret_key_name = "studio"
+
+[[send]]
+name = "camera"              # broadcast path, and the label in the output
+video = "cam"                # every other key is an `irl publish` capture flag,
+audio = "mic"                # under the flag's own name and with its default
+codec = "h264"
+encoder = "auto"
+renditions = ["low:320x180", "720p"]
+bitrate = 3_000_000
+width = 1280
+height = 720
+fps = 30
+no_cursor = false
+audio_codec = "opus"
+audio_bitrate = 96_000
+
+[[send]]
+name = "screen"
+video = "screen"
+audio = "none"
+
+[[recv]]
+name = "friend"
+ticket = "iroh-live:..."     # as `irl publish` or another `irl run` printed it
+audio_output = "default"     # or "none" to leave the speakers alone
+record = "friend.mp4"        # optional; the container follows the extension
+rendition = "low"            # optional; which video rendition to record
+```
+
+`name` is the only required key in a `[[send]]` block, and `name` and `ticket`
+the only ones in a `[[recv]]`. An unrecognised key is an error rather than a
+value silently dropped, so a typo is reported with the key that caused it.
+
+A block that fails to start is reported and the rest of the session runs
+without it. The session ends on Ctrl+C, which flushes every recording before
+the endpoint closes.
+
 ## Examples
 
 Publish the default camera and microphone, and print a ticket:
@@ -173,10 +230,16 @@ Record ten seconds of it to a fragmented MP4:
 irl record <TICKET> -o clip.mp4 --duration 10
 ```
 
+Publish two broadcasts and record a third, all from one endpoint:
+
+```sh
+irl run session.toml
+```
+
 ## What is not here
 
-`call`, `room`, `run`, and `relay` were dropped in the move to the upstream
-media stack, and all four are recoverable from the `main` branch. Rooms have left
+`call`, `room`, and `relay` were dropped in the move to the upstream media
+stack, and all three are recoverable from the `main` branch. Rooms have left
 `iroh-live` for the `iroh-rooms` crate and are being redesigned onto moq's
 announce bus.
 

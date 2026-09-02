@@ -4,6 +4,7 @@
 //! [`Live::publish`](iroh_live::Live::publish) is announced on every session
 //! this node has, so pushing to a relay is nothing more than connecting to it.
 
+use iroh::{Endpoint, SecretKey, endpoint::presets};
 use iroh_live::{Live, ticket::LiveTicket};
 use n0_error::Result;
 use tracing::info;
@@ -20,7 +21,26 @@ use crate::args::TransportArgs;
 ///
 /// Fails if the endpoint cannot bind.
 pub async fn setup_live(serve: bool) -> Result<Live> {
-    let mut builder = Live::from_env().await?;
+    setup_live_with_key(iroh_live::util::secret_key_from_env()?, serve).await
+}
+
+/// Binds an endpoint under `secret_key` and starts the MoQ transport on it.
+///
+/// The identity is what a ticket names, so a caller holding a stored key
+/// (`irl run` with a `secret_key_name`) hands back the same tickets on every
+/// run. Otherwise as [`setup_live`].
+///
+/// # Errors
+///
+/// Fails if the endpoint cannot bind.
+pub async fn setup_live_with_key(secret_key: SecretKey, serve: bool) -> Result<Live> {
+    let endpoint = Endpoint::builder(presets::N0)
+        .secret_key(secret_key)
+        .bind()
+        .await?;
+    info!(endpoint_id = %endpoint.id(), "endpoint bound");
+
+    let mut builder = Live::builder(endpoint);
     if serve {
         builder = builder.with_router();
     }

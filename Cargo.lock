@@ -3684,6 +3684,8 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "clap",
+ "data-encoding",
+ "dirs",
  "eframe",
  "iroh",
  "iroh-live",
@@ -3694,7 +3696,10 @@ dependencies = [
  "n0-error",
  "n0-future",
  "qr2term",
+ "serde",
+ "tempfile",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]
