@@ -21,6 +21,7 @@ use tokio_util::sync::CancellationToken;
 /// The mirror of `AbortOnDropHandle` for a task that owns a thread: a tokio
 /// task can be aborted where it stands, but a thread has to be asked, so this
 /// cancels a token the task selects on and lets it unwind.
+#[derive(Debug)]
 pub struct LocalTask {
     shutdown: CancellationToken,
     joined: Option<oneshot::Receiver<()>>,

@@ -535,8 +535,8 @@ fn spawn_audio(
         )),
         // Application-produced PCM crosses threads by definition, so it stays on
         // the runtime the caller is already using.
-        AudioSource::Frames { input, frames } => AudioTask::Shared(AbortOnDropHandle::new(
-            n0_future::task::spawn(
+        AudioSource::Frames { input, frames } => {
+            AudioTask::Shared(AbortOnDropHandle::new(n0_future::task::spawn(
                 async move {
                     if let Err(err) =
                         publish_audio_frames(broadcast, catalog, input, frames, options).await
@@ -545,15 +545,21 @@ fn spawn_audio(
                     }
                 }
                 .instrument(error_span!("audio-publish")),
-            ),
-        )),
+            )))
+        }
     }
 }
 
 /// Whichever executor an audio publication ended up on.
 ///
-/// Dropping either stops the publication; they differ only in how.
+/// Dropping either stops the publication; they differ only in how. Neither is
+/// ever read, which is the point: the handle exists so the publication lives
+/// exactly as long as the track that owns it.
 #[derive(derive_more::Debug)]
+#[expect(
+    dead_code,
+    reason = "each variant is held for its Drop, which is what stops the publication"
+)]
 pub(crate) enum AudioTask {
     /// A device publication, on its own thread.
     #[debug("Local")]
