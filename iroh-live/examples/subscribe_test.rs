@@ -19,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(%cli.relay, %cli.name, frames = cli.frames, "subscribing");
 
-    // Retry subscribe — the publisher may not have announced the catalog yet.
+    // Retry subscribe: the publisher may not have announced the catalog yet.
     let _sub = {
         let mut last_err = String::new();
         let mut result = None;

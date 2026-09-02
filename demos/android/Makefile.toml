@@ -7,7 +7,7 @@
 #
 # Usage:
 #   cd demos/android
-#   cargo make apk                  # full build → debug APK
+#   cargo make apk                  # full build -> debug APK
 #   cargo make install               # build + install on connected device
 #   cargo make run-on-device         # build, install, launch, stream logs
 #   cargo make run-on-device-release # same but with release Gradle build
@@ -58,7 +58,7 @@ command = "./gradlew"
 args = ["assembleDebug"]
 
 [tasks.apk]
-description = "Full pipeline: cargo-ndk build → clean → strip → Gradle APK."
+description = "Full pipeline: cargo-ndk build -> clean -> strip -> Gradle APK."
 dependencies = ["ndk-build", "gradle-apk"]
 script_runner = "@shell"
 script = ["echo \"APK ready: ${APK_PATH}\""]
@@ -80,7 +80,7 @@ script = [
     "${ADB} logcat -c",
     # Launch the main activity.
     "${ADB} shell am start -n ${APP_ID}/.MainActivity",
-    # Stream filtered logs — Ctrl-C to stop.
+    # Stream filtered logs: Ctrl-C to stop.
     "${ADB} logcat 'iroh_live:V' 'IrohBridge:V' 'IrohLiveDemo:V' 'AndroidRuntime:E' 'System.err:W' '*:S'",
 ]
 
@@ -91,7 +91,7 @@ command = "./gradlew"
 args = ["assembleRelease"]
 
 [tasks.apk-release]
-description = "Full pipeline: cargo-ndk build → clean → strip → Gradle release APK."
+description = "Full pipeline: cargo-ndk build -> clean -> strip -> Gradle release APK."
 dependencies = ["ndk-build", "gradle-release-apk"]
 script_runner = "@shell"
 script = ["echo \"Release APK ready: ${RELEASE_APK_PATH}\""]

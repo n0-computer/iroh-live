@@ -1,4 +1,4 @@
-//! JNI handle helpers for `Arc<Mutex<T>>` ↔ `i64` conversion.
+//! JNI handle helpers for `Arc<Mutex<T>>` <-> `i64` conversion.
 //!
 //! Android JNI bridges commonly store Rust session state as an opaque `jlong`
 //! (i64) pointer on the Java/Kotlin side. These helpers centralize the

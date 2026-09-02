@@ -1,4 +1,4 @@
-# Pi Zero 2 demo — cargo-make tasks.
+# Pi Zero 2 demo: cargo-make tasks.
 #
 # Usage:
 #   cargo make build              # cross-compile for aarch64 (legacy GCC linker)
@@ -10,7 +10,7 @@
 #   cargo make cross-build-aarch64 -- -p pi-zero-demo --release
 #
 # Environment:
-#   PI_HOST  — SSH hostname (default: livepizero)
+#   PI_HOST : SSH hostname (default: livepizero)
 
 [env]
 PI_HOST = { value = "livepizero", condition = { env_not_set = ["PI_HOST"] } }

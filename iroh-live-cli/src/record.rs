@@ -1,4 +1,4 @@
-//! `irl record` — subscribe to a remote broadcast and write it to a file.
+//! `irl record`: subscribe to a remote broadcast and write it to a file.
 //!
 //! Recording is a remux rather than a transcode: `moq_mux`'s container
 //! exporter reads encoded frames off the wire and writes them into fragmented

@@ -1,7 +1,7 @@
 # pi-zero-minimal
 
 Minimal Raspberry Pi camera publisher. Publishes pre-encoded H.264 from
-libcamera directly to the MoQ transport — no software encoding, minimal
+libcamera directly to the MoQ transport: no software encoding, minimal
 CPU usage on the Pi Zero 2 W.
 
 ## Build
@@ -34,7 +34,7 @@ scp target/aarch64-unknown-linux-gnu/release/pi-zero-minimal pi@raspberrypi:~/
 # On the Pi
 ./pi-zero-minimal
 
-# Prints a ticket — watch from any other machine:
+# Prints a ticket: watch from any other machine:
 irl play <TICKET>
 ```
 

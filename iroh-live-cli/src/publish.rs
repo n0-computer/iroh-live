@@ -1,4 +1,4 @@
-//! `irl publish` — publish a capture device or a media file over iroh.
+//! `irl publish`: publish a capture device or a media file over iroh.
 //!
 //! Capture sources go through `moq-media`'s encode path, which fans one device
 //! out to the simulcast ladder `--renditions` describes. A `file:` source takes

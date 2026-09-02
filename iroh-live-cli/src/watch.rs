@@ -1,4 +1,4 @@
-//! `irl watch` — subscribe to a remote broadcast and play it.
+//! `irl watch`: subscribe to a remote broadcast and play it.
 //!
 //! The window draws the decoded video and the playback engine takes the audio.
 //! Unless `--rendition` pins one, the video track follows the downlink: the

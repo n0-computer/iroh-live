@@ -130,7 +130,7 @@ impl TestRelay {
     }
 }
 
-/// Baseline: noq publish → relay → noq subscribe.
+/// Baseline: noq publish -> relay -> noq subscribe.
 #[tokio::test]
 #[serial]
 async fn noq_publish_noq_subscribe() {
@@ -204,7 +204,7 @@ async fn noq_publish_noq_subscribe() {
     relay.server_handle.abort();
 }
 
-/// iroh publish → relay → iroh subscribe (using iroh-live Live API).
+/// iroh publish -> relay -> iroh subscribe (using iroh-live Live API).
 #[tokio::test]
 #[serial]
 async fn iroh_publish_iroh_subscribe() {
@@ -274,8 +274,8 @@ async fn iroh_publish_iroh_subscribe() {
     relay.server_handle.abort();
 }
 
-/// noq publish → relay → iroh subscribe (via Live::subscribe).
-/// This is the browser→CLI path that fails in the e2e Playwright test.
+/// noq publish -> relay -> iroh subscribe (via Live::subscribe).
+/// This is the browser->CLI path that fails in the e2e Playwright test.
 ///
 /// Uses `Live::subscribe` which wraps the full catalog + video track pipeline,
 /// so this exercises the exact same code path as the real `subscribe_test` binary.
@@ -337,7 +337,7 @@ async fn noq_publish_iroh_subscribe() {
     shared_lookup().add_endpoint_info(sub_ep.addr());
     let subscriber = iroh_live::Live::builder(sub_ep.clone()).spawn();
 
-    // Retry subscribe a few times — the relay may need time to propagate
+    // Retry subscribe a few times: the relay may need time to propagate
     // the noq publisher's announcement to the iroh side.
     let mut last_err = None;
     for attempt in 0..3 {
@@ -355,7 +355,7 @@ async fn noq_publish_iroh_subscribe() {
                     has_audio = sub.broadcast().has_audio(),
                     "subscribed to browser-stream via iroh"
                 );
-                // Success — clean up and return.
+                // Success: clean up and return.
                 drop(sub);
                 drop(_pub_session);
                 sub_ep.close().await;
@@ -376,12 +376,12 @@ async fn noq_publish_iroh_subscribe() {
     }
 
     panic!(
-        "noq→iroh subscribe failed after 3 attempts. Last error: {}",
+        "noq->iroh subscribe failed after 3 attempts. Last error: {}",
         last_err.unwrap_or_default()
     );
 }
 
-/// Pull mode: remote iroh publisher → relay pulls via ticket → noq subscriber.
+/// Pull mode: remote iroh publisher -> relay pulls via ticket -> noq subscriber.
 ///
 /// This tests the relay's pull mode: a publisher is running independently
 /// (not connected to the relay). The relay connects to it via an iroh-live
@@ -484,7 +484,7 @@ async fn pull_remote_broadcast_via_ticket() {
     // Should see the pulled broadcast announced.
     let update = tokio::time::timeout(TIMEOUT, announcements.next())
         .await
-        .expect("announce timeout — pull mode may not work")
+        .expect("announce timeout: pull mode may not work")
         .expect("closed");
     // The pulled broadcast is published under the full ticket string.
     assert!(
@@ -521,8 +521,8 @@ async fn pull_remote_broadcast_via_ticket() {
     relay.server_handle.abort();
 }
 
-/// iroh publish → relay → noq subscribe.
-/// This is the CLI→browser path (works in Playwright).
+/// iroh publish -> relay -> noq subscribe.
+/// This is the CLI->browser path (works in Playwright).
 #[tokio::test]
 #[serial]
 async fn iroh_publish_noq_subscribe() {
@@ -574,7 +574,7 @@ async fn iroh_publish_noq_subscribe() {
 
     let update = tokio::time::timeout(TIMEOUT, announcements.next())
         .await
-        .expect("announce timeout — iroh→noq bridging may not work")
+        .expect("announce timeout: iroh->noq bridging may not work")
         .expect("closed");
     assert_eq!(update.path.as_str(), "cli-stream");
 

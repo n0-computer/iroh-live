@@ -6,7 +6,7 @@
 //! last take, [`FrameReceiver::take`] returns `None`.
 //!
 //! This replaces a bounded `mpsc::channel(32)` that was drained to
-//! the latest frame on every consume — wasting decode effort and
+//! the latest frame on every consume, wasting decode effort and
 //! holding up to 32 GPU surfaces in flight. With a single slot, at
 //! most one frame is buffered, and overwritten frames are dropped
 //! immediately at the producer (before the consumer ever sees them).
@@ -43,7 +43,7 @@ pub struct FrameSender<T> {
 ///
 /// [`take`](Self::take) returns the latest value if one has arrived
 /// since the last take. [`recv`](Self::recv) waits asynchronously
-/// for the next value — primarily useful in tests.
+/// for the next value: primarily useful in tests.
 pub struct FrameReceiver<T> {
     inner: Arc<SlotInner<T>>,
 }
@@ -90,7 +90,7 @@ impl<T> Clone for FrameSender<T> {
 impl<T> Drop for FrameSender<T> {
     fn drop(&mut self) {
         if self.inner.sender_count.fetch_sub(1, Ordering::Release) == 1 {
-            // Last sender dropped — wake waiters so they see closure.
+            // Last sender dropped: wake waiters so they see closure.
             self.inner.notify.notify_waiters();
         }
     }
@@ -140,7 +140,7 @@ impl<T> FrameReceiver<T> {
     /// dropped and no value remains.
     ///
     /// If multiple values arrive between calls, intermediate ones are
-    /// lost — only the latest is returned.
+    /// lost: only the latest is returned.
     pub async fn recv(&self) -> Option<T> {
         loop {
             // Register for the wakeup before checking, not after. `notified()`
@@ -162,7 +162,7 @@ impl<T> FrameReceiver<T> {
     }
 }
 
-// Convenience Debug impls — don't expose the value.
+// Convenience Debug impls: don't expose the value.
 impl<T> std::fmt::Debug for FrameSender<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FrameSender")

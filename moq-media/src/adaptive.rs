@@ -654,7 +654,11 @@ mod tests {
         let now = Instant::now();
 
         let d = evaluate(0, &ranked, &signals, &mut timers, &config, now);
-        assert_eq!(d, Decision::Hold, "highest rendition + good signals → hold");
+        assert_eq!(
+            d,
+            Decision::Hold,
+            "highest rendition + good signals -> hold"
+        );
     }
 
     #[test]
@@ -669,7 +673,7 @@ mod tests {
         let now = Instant::now();
 
         let d = evaluate(0, &ranked, &signals, &mut timers, &config, now);
-        assert_eq!(d, Decision::Emergency, "25% loss → emergency");
+        assert_eq!(d, Decision::Emergency, "25% loss -> emergency");
     }
 
     #[test]
@@ -684,7 +688,7 @@ mod tests {
         let now = Instant::now();
 
         let d = evaluate(2, &ranked, &signals, &mut timers, &config, now);
-        assert_eq!(d, Decision::Hold, "already at lowest → hold");
+        assert_eq!(d, Decision::Hold, "already at lowest -> hold");
     }
 
     #[test]
@@ -699,7 +703,7 @@ mod tests {
         let start = Instant::now();
 
         let d = evaluate(0, &ranked, &signals, &mut timers, &config, start);
-        assert_eq!(d, Decision::Hold, "first tick → hold (timer just started)");
+        assert_eq!(d, Decision::Hold, "first tick -> hold (timer just started)");
         assert!(timers.bad_since.is_some());
 
         // No fresh round trip reading anywhere in this, on purpose: loss is
@@ -957,7 +961,7 @@ mod tests {
         let start = Instant::now();
 
         let d = evaluate(1, &ranked, &signals, &mut timers, &config, start);
-        assert_eq!(d, Decision::Hold, "first tick → hold");
+        assert_eq!(d, Decision::Hold, "first tick -> hold");
         assert!(timers.good_since.is_some());
 
         let d = evaluate(
@@ -982,7 +986,7 @@ mod tests {
         timers.last_downgrade = Some(now);
 
         let d = evaluate(1, &ranked, &signals, &mut timers, &config, now);
-        assert_eq!(d, Decision::Hold, "within cooldown → hold");
+        assert_eq!(d, Decision::Hold, "within cooldown -> hold");
 
         let later = now + config.post_downgrade_cooldown + Duration::from_millis(1);
         let d = evaluate(1, &ranked, &signals, &mut timers, &config, later);
@@ -1001,7 +1005,7 @@ mod tests {
         timers.last_probe = Some(now);
 
         let d = evaluate(1, &ranked, &signals, &mut timers, &config, now);
-        assert_eq!(d, Decision::Hold, "within probe cooldown → hold");
+        assert_eq!(d, Decision::Hold, "within probe cooldown -> hold");
     }
 
     #[test]
@@ -1020,7 +1024,7 @@ mod tests {
             &config,
             start + config.upgrade_hold,
         );
-        assert_eq!(d, Decision::Hold, "already at highest → no upgrade");
+        assert_eq!(d, Decision::Hold, "already at highest -> no upgrade");
     }
 
     #[test]

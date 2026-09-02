@@ -1,4 +1,4 @@
-//! `irl run` — a multi-stream session described by a TOML file.
+//! `irl run`: a multi-stream session described by a TOML file.
 //!
 //! One endpoint publishes every `[[send]]` block and subscribes to every
 //! `[[recv]]` block, which is what `irl publish` and `irl watch` cannot do

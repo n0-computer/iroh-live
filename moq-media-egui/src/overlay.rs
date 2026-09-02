@@ -1,6 +1,6 @@
 //! Translucent overlay bars for painting stats on top of video.
 //!
-//! Provides [`DebugOverlay`] — a set of collapsible stat bars (NET,
+//! Provides [`DebugOverlay`]: a set of collapsible stat bars (NET,
 //! CAPTURE, RENDER, TIME) driven by typed stat structs. Also provides the
 //! low-level [`overlay_bar`] helper for custom overlays.
 
@@ -20,7 +20,7 @@ pub const OVERLAY_BAR_H: f32 = 15.0;
 
 /// Paints a translucent overlay bar with monospace text at the given rect.
 ///
-/// Does **not** allocate egui layout space — the bar is painted over existing
+/// Does **not** allocate egui layout space: the bar is painted over existing
 /// content (typically video). Use [`OVERLAY_BAR_H`] for positioning.
 pub fn overlay_bar(painter: &egui::Painter, rect: egui::Rect, text: &str) {
     let font = egui::FontId::monospace(11.0);

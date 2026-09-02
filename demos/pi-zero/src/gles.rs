@@ -73,7 +73,7 @@ enum ActiveMode {
 
 /// GLES2 renderer with RGBA, NV12, and zero-copy DMA-BUF upload paths.
 ///
-/// Platform-agnostic — works with any `glow::Context`. The caller is
+/// Platform-agnostic: works with any `glow::Context`. The caller is
 /// responsible for creating the GL context and swapping buffers.
 #[derive(Debug)]
 pub(crate) struct GlesRenderer {

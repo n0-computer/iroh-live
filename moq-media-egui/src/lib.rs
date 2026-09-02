@@ -56,7 +56,7 @@ pub fn format_bitrate(bits_per_second: f64) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// EguiVideoRenderer — draws a moq_video::Frame into an egui-registered texture
+// EguiVideoRenderer: draws a moq_video::Frame into an egui-registered texture
 // ---------------------------------------------------------------------------
 
 /// The `wgpu` this crate draws through, re-exported from
@@ -71,7 +71,7 @@ pub use moq_media::video::render::wgpu;
 ///
 /// Bound to one `wgpu` device and queue for its lifetime; keep it alive
 /// across frames rather than rebuilding it. [`FrameView`] and
-/// [`VideoTrackView`] are the usual entry points — reach for this directly
+/// [`VideoTrackView`] are the usual entry points: reach for this directly
 /// only when neither fits (drawing into a texture id you manage yourself).
 #[cfg(feature = "wgpu-render")]
 pub struct EguiVideoRenderer {
@@ -164,7 +164,7 @@ impl EguiVideoRenderer {
 }
 
 // ---------------------------------------------------------------------------
-// FrameView — a placeholder-or-drawn texture for one raw frame stream
+// FrameView: a placeholder-or-drawn texture for one raw frame stream
 // ---------------------------------------------------------------------------
 
 /// Shows one video stream as an egui texture: either the most recently drawn
@@ -262,7 +262,7 @@ impl FrameView {
 }
 
 // ---------------------------------------------------------------------------
-// VideoTrackView — FrameView + VideoTrack polling
+// VideoTrackView: FrameView + VideoTrack polling
 // ---------------------------------------------------------------------------
 
 /// Renders a [`VideoTrack`] into an egui UI.
@@ -351,7 +351,7 @@ impl VideoTrackView {
 }
 
 // ---------------------------------------------------------------------------
-// create_egui_wgpu_config — a wgpu device tuned for video rendering
+// create_egui_wgpu_config: a wgpu device tuned for video rendering
 // ---------------------------------------------------------------------------
 
 /// Creates an [`egui_wgpu::WgpuConfiguration`] tuned for video rendering.

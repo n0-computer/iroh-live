@@ -1,4 +1,4 @@
-# Pi Zero 2 Demo — Quick Start
+# Pi Zero 2 Demo: Quick Start
 
 Run the `pi-zero-demo` binary on a Raspberry Pi Zero 2 W to publish a
 camera stream over iroh. Watch the stream from any machine on the same
@@ -10,8 +10,8 @@ network (or through a relay) using the `watch` example.
 |------|-----------|
 | OS | Raspberry Pi OS Bookworm (64-bit, aarch64) |
 | Camera | CSI camera (OV5647 / IMX219) connected to the flat ribbon cable |
-| Enable camera | `sudo raspi-config` → Interface Options → Camera → Enable |
-| Enable SPI (for e-paper) | `sudo raspi-config` → Interface Options → SPI → Enable |
+| Enable camera | `sudo raspi-config` -> Interface Options -> Camera -> Enable |
+| Enable SPI (for e-paper) | `sudo raspi-config` -> Interface Options -> SPI -> Enable |
 | Dev packages | `sudo apt install libasound2-dev libgbm-dev libdrm-dev libegl-dev` |
 | Test camera | `rpicam-still --output test.jpg` (should produce a JPEG) |
 
@@ -50,10 +50,10 @@ PI_HOST=livepizero cargo make deploy
 ```
 
 Flags:
-- `--epaper` — show the connection ticket as a QR code on the e-paper HAT
-- `--encoder hardware` (default) — use rpicam-vid's internal H.264 HW encoder
-- `--encoder software` — raw YUV capture + openh264 software encoder
-- `--relay <ENDPOINT_ID>` — also publish to a relay for browser clients
+- `--epaper`: show the connection ticket as a QR code on the e-paper HAT
+- `--encoder hardware` (default): use rpicam-vid's internal H.264 HW encoder
+- `--encoder software`: raw YUV capture + openh264 software encoder
+- `--relay <ENDPOINT_ID>`: also publish to a relay for browser clients
 
 The ticket is always printed to the terminal regardless of `--epaper`.
 
@@ -73,7 +73,7 @@ cargo run --release --example watch -- --ticket "iroh-live:..."
 ./pi-zero-demo epaper-demo
 ```
 
-Runs a three-step test: checkerboard pattern → QR code → clear to white.
+Runs a three-step test: checkerboard pattern -> QR code -> clear to white.
 Press Enter between steps. If nothing appears, check:
 
 1. Is SPI enabled? (`ls /dev/spidev0.0`)
@@ -83,8 +83,8 @@ Press Enter between steps. If nothing appears, check:
 ## Troubleshooting
 
 ### Camera not working
-- `rpicam-still --output test.jpg` — if this fails, the camera isn't connected or enabled
-- Check `v4l2-ctl --list-devices` — you should see `unicam` and `bcm2835-codec`
+- `rpicam-still --output test.jpg`: if this fails, the camera isn't connected or enabled
+- Check `v4l2-ctl --list-devices`: you should see `unicam` and `bcm2835-codec`
 
 ### SSH is slow
 - Add `UseDNS no` to `/etc/ssh/sshd_config` on the Pi, restart sshd
@@ -93,9 +93,9 @@ Press Enter between steps. If nothing appears, check:
 
 ### Stream stutters or disconnects
 - Pin the relay: `IROH_RELAY=https://euc1-1.relay.n0.iroh-canary.iroh.link./ ./pi-zero-demo publish`
-- The Pi's WiFi triggers GSO errors (`sendmsg: Input/output error`) — iroh recovers automatically
+- The Pi's WiFi triggers GSO errors (`sendmsg: Input/output error`), and iroh recovers automatically
 
 ### Build fails with cross-compilation errors
 - Check the sysroot has libasound, libgbm, libdrm, libegl dev files
-- The ffmpeg feature cannot be cross-compiled — use V4L2 HW encoder instead
+- The ffmpeg feature cannot be cross-compiled: use V4L2 HW encoder instead
 - See `build.sh` header comments for detailed prerequisites

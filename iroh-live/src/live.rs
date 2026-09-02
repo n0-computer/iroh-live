@@ -41,29 +41,46 @@ pub struct Live {
 pub struct LiveBuilder {
     #[debug(skip)]
     endpoint: Endpoint,
-    #[debug(skip)]
-    gossip: Option<Gossip>,
-    with_gossip: bool,
+    gossip: GossipChoice,
     with_router: bool,
+}
+
+/// Where the [`Gossip`] instance comes from, if there is one.
+///
+/// One choice rather than an `Option` beside a flag, so the last call wins and
+/// no combination of [`LiveBuilder::with_gossip`] and [`LiveBuilder::gossip`]
+/// can mean two things at once.
+#[derive(Debug, Default)]
+enum GossipChoice {
+    /// Rooms are not in use, so nothing is spawned or mounted.
+    #[default]
+    Disabled,
+    /// Spawn one on the endpoint when the builder does.
+    Internal,
+    /// Use the caller's, which they already spawned.
+    External(#[debug(skip)] Gossip),
 }
 
 impl LiveBuilder {
     /// Enables gossip, which is required for room membership.
     ///
-    /// Creates a [`Gossip`] instance internally and mounts it on the
-    /// [`Router`] if [`with_router`](Self::with_router) is also set.
+    /// Spawns a [`Gossip`] instance on the endpoint and mounts it on the
+    /// [`Router`] if [`with_router`](Self::with_router) is also set. Overrides
+    /// an earlier [`gossip`](Self::gossip).
     pub fn with_gossip(mut self) -> Self {
-        self.with_gossip = true;
+        self.gossip = GossipChoice::Internal;
         self
     }
 
-    /// Sets an externally-managed [`Gossip`] instance.
+    /// Uses a [`Gossip`] instance the caller already spawned.
     ///
-    /// Use this instead of [`with_gossip`](Self::with_gossip) when you manage
-    /// gossip yourself. You are responsible for mounting it on your own router.
+    /// The alternative to [`with_gossip`](Self::with_gossip), and it overrides
+    /// an earlier call to it. Mounting still follows
+    /// [`with_router`](Self::with_router): the builder's own router mounts
+    /// whichever instance it ends up with, and a caller running its own router
+    /// mounts it there through [`Live::register_protocols`].
     pub fn gossip(mut self, gossip: Gossip) -> Self {
-        self.gossip = Some(gossip);
-        self.with_gossip = false;
+        self.gossip = GossipChoice::External(gossip);
         self
     }
 
@@ -84,13 +101,11 @@ impl LiveBuilder {
 
     /// Consumes the builder and creates a [`Live`] instance.
     pub fn spawn(self) -> Live {
-        let gossip = self.gossip.or_else(|| {
-            if self.with_gossip {
-                Some(Gossip::builder().spawn(self.endpoint.clone()))
-            } else {
-                None
-            }
-        });
+        let gossip = match self.gossip {
+            GossipChoice::Disabled => None,
+            GossipChoice::Internal => Some(Gossip::builder().spawn(self.endpoint.clone())),
+            GossipChoice::External(gossip) => Some(gossip),
+        };
 
         let moq = Moq::new(self.endpoint.clone());
         let mut live = Live {
@@ -114,8 +129,7 @@ impl Live {
     pub fn builder(endpoint: Endpoint) -> LiveBuilder {
         LiveBuilder {
             endpoint,
-            gossip: None,
-            with_gossip: false,
+            gossip: GossipChoice::default(),
             with_router: false,
         }
     }
@@ -157,11 +171,10 @@ impl Live {
     ///
     /// Use this when you manage your own [`Router`] instead of calling
     /// [`LiveBuilder::with_router`].
-    pub fn register_protocols(&self, router: RouterBuilder) -> RouterBuilder {
+    pub fn register_protocols(&self, mut router: RouterBuilder) -> RouterBuilder {
         // Every MoQ version this build speaks, not only the newest, so a peer
         // built against a different moq release still finds one in common.
         let handler = self.moq.protocol_handler();
-        let mut router = router;
         for alpn in iroh_moq::alpns() {
             router = router.accept(alpn, handler.clone());
         }
@@ -241,7 +254,8 @@ impl Live {
     /// Shuts down the [`Live`] instance.
     ///
     /// Closes all MoQ sessions, stops the [`Router`] if one was spawned, and
-    /// closes the iroh [`Endpoint`] unconditionally.
+    /// closes the iroh [`Endpoint`] unconditionally. [`Live`] is [`Clone`] and
+    /// every clone shares one endpoint, so this shuts down all of them.
     pub async fn shutdown(&self) {
         self.moq.shutdown();
         if let Some(router) = self.router.as_ref()

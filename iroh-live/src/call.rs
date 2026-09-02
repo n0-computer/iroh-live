@@ -160,7 +160,7 @@ impl Call {
             }
             Some(ConnectionError::Reset) => DisconnectReason::RemoteClose,
             Some(_) => DisconnectReason::TransportError,
-            // Session closed but no close reason yet — likely remote.
+            // Session closed but no close reason yet: likely remote.
             None => DisconnectReason::RemoteClose,
         }
     }

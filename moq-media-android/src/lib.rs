@@ -6,7 +6,7 @@
 //!   [`VideoSource`](moq_media::publish::VideoSource) a publish task reads
 //! - `egl` provides safe wrappers around the EGL and GLES extension functions for
 //!   the HardwareBuffer to EGLImage to GL texture path
-//! - [`handle`] — `Arc<Mutex<T>>` ↔ `i64` conversion for JNI handles
+//! - [`handle`]: `Arc<Mutex<T>>` <-> `i64` conversion for JNI handles
 
 pub mod camera;
 #[cfg(target_os = "android")]

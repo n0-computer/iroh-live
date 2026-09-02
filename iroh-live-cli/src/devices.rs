@@ -1,4 +1,4 @@
-//! `irl devices` — list the capture and playback devices this machine offers.
+//! `irl devices`: list the capture and playback devices this machine offers.
 //!
 //! Every identifier printed here is one the `--video` and `--audio` specifiers
 //! accept, so the output doubles as the argument reference for `irl publish`.
