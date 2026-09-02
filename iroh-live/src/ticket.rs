@@ -1,3 +1,10 @@
+//! Tickets that carry everything a subscriber needs to reach a broadcast.
+//!
+//! A [`LiveTicket`] is a publisher's [`EndpointAddr`] and the name of one of
+//! its broadcasts, in a form that survives a chat message or a QR code. The
+//! subscriber gets both halves of what [`Live::subscribe`](crate::Live::subscribe)
+//! asks for out of one string.
+
 use std::str::FromStr;
 
 use iroh::EndpointAddr;

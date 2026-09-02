@@ -12,10 +12,8 @@
 mod call;
 mod live;
 mod subscription;
-/// Ticket types for sharing connection info.
 pub mod ticket;
 mod types;
-/// Utility helpers: network signal production and connection stats.
 pub mod util;
 
 pub use hang::catalog;

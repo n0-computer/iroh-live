@@ -1,6 +1,15 @@
+//! Pieces an application needs around the transport, rather than in it.
+//!
+//! The endpoint identity to bind with, and the two background samplers that
+//! turn a QUIC connection's path statistics into something a caller can act on:
+//! [`NetworkSignals`] for the adaptation loop, and
+//! [`NetStats`](moq_media::stats::NetStats) for a user interface to draw.
+//! [`Live::subscribe`](crate::Live::subscribe) and [`Call`](crate::Call) wire
+//! both up already; reach for them directly only when the session and the
+//! broadcast came from somewhere else.
+
 use std::{
     collections::VecDeque,
-    thread,
     time::{Duration, Instant},
 };
 
@@ -11,37 +20,31 @@ use iroh::{
 use moq_media::net::NetworkSignals;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+use tracing::{info, trace};
 
-/// Loads the iroh secret key from the `IROH_SECRET` environment variable,
-/// or generates a new one and prints reuse instructions.
+/// Loads the iroh secret key from the `IROH_SECRET` environment variable, or
+/// generates one and logs how to keep it.
 ///
-/// This pattern is shared across examples and applications that need a
-/// stable endpoint identity across restarts.
+/// An endpoint's identity is its secret key, so a node that generates a fresh
+/// one on every start is a different node to its peers every time, and every
+/// ticket it ever handed out is stale. Applications that want a stable identity
+/// across restarts read it from the environment through here.
+///
+/// # Errors
+///
+/// Fails if `IROH_SECRET` is set to something that is not a secret key.
 pub fn secret_key_from_env() -> n0_error::Result<SecretKey> {
     Ok(match std::env::var("IROH_SECRET") {
         Ok(key) => key.parse()?,
         Err(_) => {
             let key = SecretKey::generate();
-            tracing::info!(
-                "Generated new secret key. Reuse with IROH_SECRET={}",
-                data_encoding::HEXLOWER.encode(&key.to_bytes())
+            info!(
+                secret = %data_encoding::HEXLOWER.encode(&key.to_bytes()),
+                "generated a secret key; reuse this identity with IROH_SECRET",
             );
             key
         }
     })
-}
-
-/// Spawn a named OS thread and panic if spawning fails.
-pub fn spawn_thread<F, T>(name: impl ToString, f: F) -> thread::JoinHandle<T>
-where
-    F: FnOnce() -> T + Send + 'static,
-    T: Send + 'static,
-{
-    let name_str = name.to_string();
-    thread::Builder::new()
-        .name(name_str.clone())
-        .spawn(f)
-        .unwrap_or_else(|_| panic!("failed to spawn thread: {}", name_str))
 }
 
 /// The span the downlink goodput estimate is taken across.
@@ -123,9 +126,10 @@ impl WindowedMin {
 /// Spawns a background task that polls connection stats and produces
 /// [`NetworkSignals`] for adaptive rendition selection.
 ///
-/// The task runs until `shutdown` is cancelled or the connection closes.
-/// Returns a `watch::Receiver<NetworkSignals>` that the caller can pass
-/// to [`VideoTrack::enable_adaptation`](moq_media::subscribe::VideoTrack::enable_adaptation).
+/// The task runs until `shutdown` is cancelled, the connection closes, or
+/// every receiver is dropped. Returns a `watch::Receiver<NetworkSignals>` that
+/// the caller can pass to
+/// [`VideoTrack::enable_adaptation`](moq_media::subscribe::VideoTrack::enable_adaptation).
 pub fn spawn_signal_producer(
     conn: &Connection,
     shutdown: CancellationToken,
@@ -154,6 +158,12 @@ pub fn spawn_signal_producer(
             tokio::select! {
                 _ = interval.tick() => {}
                 _ = shutdown.cancelled() => break,
+                // A connection that has gone has no more stats to give, and a
+                // subscription outlives it often enough to matter: the peer
+                // vanishing does not drop the broadcast this token belongs to,
+                // so without this the task samples a dead path five times a
+                // second for as long as the application keeps the subscription.
+                _ = conn.closed() => break,
             }
 
             let paths = conn.paths();
@@ -231,7 +241,7 @@ pub fn spawn_signal_producer(
             // Five a second is too much for anything but a trace, and it is
             // exactly what is wanted when an adaptation decision has to be
             // explained after the fact.
-            tracing::trace!(
+            trace!(
                 rtt_ms = rtt.as_millis() as u64,
                 rtt_samples,
                 min_rtt_ms = min_rtt.as_millis() as u64,
@@ -269,10 +279,10 @@ fn goodput(samples: &VecDeque<(Instant, u64)>) -> Option<u64> {
 /// Spawns a background task that records connection stats into a
 /// [`NetStats`](moq_media::stats::NetStats) for a UI to draw.
 ///
-/// Records RTT, loss rate, and bandwidth estimates every 200ms.
-/// The task runs until `shutdown` is cancelled. Callers should pass
-/// the broadcast's shutdown token so the task stops when the
-/// broadcast is dropped.
+/// Records RTT, loss rate, and bandwidth estimates every 200ms. The task runs
+/// until `shutdown` is cancelled or the connection closes. Callers should pass
+/// the broadcast's shutdown token so the task stops when the broadcast is
+/// dropped.
 pub fn spawn_stats_recorder(
     conn: &Connection,
     net: moq_media::stats::NetStats,
@@ -291,6 +301,7 @@ pub fn spawn_stats_recorder(
             tokio::select! {
                 _ = interval.tick() => {}
                 _ = shutdown.cancelled() => break,
+                _ = conn.closed() => break,
             }
 
             let paths = conn.paths();
