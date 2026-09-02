@@ -353,3 +353,32 @@ async fn deliver(
     }
     frames.send(frame);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn withdrawing_a_request_leaves_a_newer_one_alone() {
+        let (requested, _rx) = watch::channel(Some("video-720p".to_string()));
+        clear_request(&requested, "video-1080p");
+        assert_eq!(
+            requested.borrow().as_deref(),
+            Some("video-720p"),
+            "a request placed after the failed one has to survive",
+        );
+
+        clear_request(&requested, "video-720p");
+        assert_eq!(requested.borrow().as_deref(), None);
+    }
+
+    #[test]
+    fn withdrawing_a_request_does_not_wake_the_supervisor() {
+        // The withdrawal is not itself a request, and waking the supervisor for
+        // it would only make it re-read a value it had just written.
+        let (requested, mut watcher) = watch::channel(Some("video-720p".to_string()));
+        watcher.borrow_and_update();
+        clear_request(&requested, "video-720p");
+        assert!(!watcher.has_changed().expect("the sender is still alive"));
+    }
+}
