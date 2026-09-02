@@ -36,10 +36,19 @@ pub struct AdaptiveConfig {
     pub loss_good: f64,
     /// Loss rate above which an active probe is aborted.
     pub loss_probe_abort: f64,
-    /// Bandwidth utilization ceiling before downgrade (e.g. 0.85 = 85%).
+    /// Fraction of the current rendition's bitrate that must still be arriving
+    /// for the link to count as keeping up (e.g. 0.85 = 85%).
     pub bw_downgrade_ratio: f64,
-    /// Bandwidth headroom factor required before probing (e.g. 1.2 = 20% excess).
-    pub bw_probe_headroom: f64,
+    /// Multiple of the path's minimum round trip above which the path counts as
+    /// queueing (e.g. 2.0 = twice the idle round trip).
+    pub rtt_queueing_ratio: f64,
+    /// Round trip in excess of the path's minimum below which the path is never
+    /// called queueing, whatever [`AdaptiveConfig::rtt_queueing_ratio`] says.
+    ///
+    /// A link with a sub-millisecond idle round trip doubles it on the ordinary
+    /// business of carrying a video frame, so the ratio on its own would call
+    /// every healthy local path congested.
+    pub rtt_queueing_floor: Duration,
     /// How often the adaptation task checks signals.
     pub check_interval: Duration,
 }
@@ -57,7 +66,8 @@ impl Default for AdaptiveConfig {
             loss_good: 0.02,
             loss_probe_abort: 0.05,
             bw_downgrade_ratio: 0.85,
-            bw_probe_headroom: 1.2,
+            rtt_queueing_ratio: 2.0,
+            rtt_queueing_floor: Duration::from_millis(25),
             check_interval: Duration::from_millis(200),
         }
     }
@@ -158,11 +168,20 @@ pub fn evaluate(
     }
 
     // ── Downgrade check ─────────────────────────────────────────────
-    let bandwidth_stressed = current.bitrate_bps > 0
-        && signals.available_bps < (current.bitrate_bps as f64 * config.bw_downgrade_ratio) as u64;
+    // Goodput short of the rung being played says the rung is not arriving in
+    // full. On its own that is not the link's fault: a catalog bitrate is a
+    // ceiling the encoder is free to undershoot, and an easy scene undershoots
+    // it by a lot, which would read as a link that had collapsed and pin the
+    // ladder to its bottom rung. So the shortfall counts only when the path is
+    // also queueing, which is what a bottleneck does to it and what easy
+    // content does not. An unmeasured goodput is no evidence either way and
+    // holds: a publisher that went quiet is not a link that failed.
+    let starved =
+        goodput_ratio(current, signals).is_some_and(|ratio| ratio < config.bw_downgrade_ratio);
+    let queueing = queueing(signals, config);
     let loss_high = signals.loss_rate >= config.loss_downgrade;
 
-    if (bandwidth_stressed || loss_high) && !is_lowest {
+    if ((starved && queueing) || loss_high) && !is_lowest {
         let bad_since = *timers.bad_since.get_or_insert(now);
         if now.duration_since(bad_since) >= config.downgrade_hold {
             timers.bad_since = None;
@@ -193,13 +212,21 @@ pub fn evaluate(
         return Decision::Hold;
     }
 
-    let next_higher = &ranked[current_idx - 1];
-    let has_headroom = next_higher.bitrate_bps == 0
-        || signals.available_bps
-            >= (next_higher.bitrate_bps as f64 * config.bw_probe_headroom) as u64;
+    // No bandwidth precondition, on purpose. A receiver sees only what was sent,
+    // so goodput at the rung being played says the link carries at least that
+    // much and nothing at all about what it would carry if asked for more, and
+    // `starved` is no help either: it is measured against a ceiling the encoder
+    // is free to undershoot, so an efficient one would hold the ladder down
+    // forever. Discovering headroom is what `Decision::StartProbe` is for, and
+    // the gate is the absence of trouble rather than proof of room.
+    //
+    // Not gated on `queueing` either: the round trip is sampled so rarely on a
+    // subscriber that a reading taken while the link was still bad outlives the
+    // impairment by tens of seconds, and would hold the ladder down long after
+    // there was anything holding it down.
     let loss_good = signals.loss_rate <= config.loss_good;
 
-    if has_headroom && loss_good {
+    if loss_good {
         let good_since = *timers.good_since.get_or_insert(now);
         if now.duration_since(good_since) >= config.upgrade_hold {
             timers.good_since = None;
@@ -210,6 +237,28 @@ pub fn evaluate(
     }
 
     Decision::Hold
+}
+
+/// Returns the goodput arriving for `rendition` as a fraction of the bitrate it
+/// advertises, or `None` if either figure is missing.
+fn goodput_ratio(rendition: &RankedRendition, signals: &NetworkSignals) -> Option<f64> {
+    let bitrate = (rendition.bitrate_bps > 0).then_some(rendition.bitrate_bps)?;
+    Some(signals.goodput_bps? as f64 / bitrate as f64)
+}
+
+/// Checks whether the round trip has grown enough over the path's minimum to
+/// say a queue has built up in front of the bottleneck.
+///
+/// This is the one thing a subscriber sees about a downlink that has run out of
+/// room. Loss and congestion events both describe the direction it sends in,
+/// where it sends almost nothing and so runs out of nothing, while the queue
+/// holding up the media holds up the acknowledgements behind it too.
+fn queueing(signals: &NetworkSignals, config: &AdaptiveConfig) -> bool {
+    let Some(excess) = signals.rtt.checked_sub(signals.min_rtt) else {
+        return false;
+    };
+    excess >= config.rtt_queueing_floor
+        && signals.rtt.as_secs_f64() >= signals.min_rtt.as_secs_f64() * config.rtt_queueing_ratio
 }
 
 /// Checks whether an active probe should be aborted.
@@ -270,10 +319,22 @@ mod tests {
 
     fn good_signals() -> NetworkSignals {
         NetworkSignals {
+            // At the path minimum, so nothing is queued.
             rtt: Duration::from_millis(20),
+            min_rtt: Duration::from_millis(20),
             loss_rate: 0.0,
-            available_bps: 10_000_000, // 10 Mbps
+            // Well above the top rung, so the ladder rather than the link is
+            // what limits every case that does not say otherwise.
+            goodput_bps: Some(10_000_000),
             congestion_events: 0,
+        }
+    }
+
+    /// Signals for a path with a queue built up in front of the bottleneck.
+    fn queued_signals() -> NetworkSignals {
+        NetworkSignals {
+            rtt: Duration::from_millis(300),
+            ..good_signals()
         }
     }
 
@@ -340,11 +401,11 @@ mod tests {
     }
 
     #[test]
-    fn downgrade_on_bandwidth_stress() {
+    fn downgrade_when_a_queueing_path_starves_the_rendition() {
         let ranked = test_ranked();
         let signals = NetworkSignals {
-            available_bps: 3_000_000,
-            ..good_signals()
+            goodput_bps: Some(3_000_000),
+            ..queued_signals()
         };
         let config = AdaptiveConfig::default();
         let mut timers = AdaptationTimers::default();
@@ -360,6 +421,79 @@ mod tests {
             start + config.downgrade_hold,
         );
         assert_eq!(d, Decision::Downgrade(1));
+    }
+
+    #[test]
+    fn no_downgrade_when_the_encoder_undershoots_a_healthy_path() {
+        // Three quarters of the advertised bitrate arriving over a path with
+        // nothing queued on it is an easy scene, not a small link. Downgrading
+        // here would walk the ladder to the bottom and leave it there.
+        let ranked = test_ranked();
+        let signals = NetworkSignals {
+            goodput_bps: Some(3_000_000),
+            ..good_signals()
+        };
+        let config = AdaptiveConfig::default();
+        let mut timers = AdaptationTimers::default();
+        let start = Instant::now();
+
+        evaluate(0, &ranked, &signals, &mut timers, &config, start);
+        let d = evaluate(
+            0,
+            &ranked,
+            &signals,
+            &mut timers,
+            &config,
+            start + config.downgrade_hold,
+        );
+        assert_eq!(d, Decision::Hold);
+    }
+
+    #[test]
+    fn no_downgrade_when_a_queueing_path_still_delivers() {
+        // A round trip that has grown without the rendition falling behind is
+        // someone else's queue, or a path that simply got longer.
+        let ranked = test_ranked();
+        let config = AdaptiveConfig::default();
+        let mut timers = AdaptationTimers::default();
+        let start = Instant::now();
+
+        evaluate(0, &ranked, &queued_signals(), &mut timers, &config, start);
+        let d = evaluate(
+            0,
+            &ranked,
+            &queued_signals(),
+            &mut timers,
+            &config,
+            start + config.downgrade_hold,
+        );
+        assert_eq!(d, Decision::Hold);
+    }
+
+    #[test]
+    fn a_short_round_trip_rise_is_not_queueing() {
+        // Twice a one-millisecond idle round trip is two milliseconds, which is
+        // what sending a frame costs rather than what congestion costs.
+        let config = AdaptiveConfig::default();
+        let signals = NetworkSignals {
+            rtt: Duration::from_millis(2),
+            min_rtt: Duration::from_millis(1),
+            ..good_signals()
+        };
+        assert!(!queueing(&signals, &config));
+    }
+
+    #[test]
+    fn a_long_idle_path_is_not_queueing() {
+        // A satellite hop sits at 300ms with nothing wrong with it, so the
+        // floor alone would condemn it and the ratio is what saves it.
+        let config = AdaptiveConfig::default();
+        let signals = NetworkSignals {
+            rtt: Duration::from_millis(340),
+            min_rtt: Duration::from_millis(300),
+            ..good_signals()
+        };
+        assert!(!queueing(&signals, &config));
     }
 
     #[test]
@@ -465,16 +599,21 @@ mod tests {
     }
 
     #[test]
-    fn no_upgrade_without_headroom() {
+    fn upgrade_probes_below_the_advertised_bitrate() {
+        // Half the advertised bitrate arriving is what an efficient encoder on
+        // a healthy path looks like, and holding the ladder down for it would
+        // strand every publisher that undershoots its own ceiling. Probing is
+        // how the room above the current rate gets found.
         let ranked = test_ranked();
         let signals = NetworkSignals {
-            available_bps: 4_500_000,
+            goodput_bps: Some(1_000_000),
             ..good_signals()
         };
         let config = AdaptiveConfig::default();
         let mut timers = AdaptationTimers::default();
         let start = Instant::now();
 
+        evaluate(1, &ranked, &signals, &mut timers, &config, start);
         let d = evaluate(
             1,
             &ranked,
@@ -483,7 +622,58 @@ mod tests {
             &config,
             start + config.upgrade_hold,
         );
-        assert_eq!(d, Decision::Hold, "not enough headroom → no probe");
+        assert_eq!(d, Decision::StartProbe(0));
+    }
+
+    #[test]
+    fn upgrade_probes_without_a_goodput_reading() {
+        // Nothing measurable arriving is not evidence of a small link, and a
+        // probe is how headroom gets found, so an unmeasured goodput must not
+        // stand in the way of one.
+        let ranked = test_ranked();
+        let signals = NetworkSignals {
+            goodput_bps: None,
+            ..good_signals()
+        };
+        let config = AdaptiveConfig::default();
+        let mut timers = AdaptationTimers::default();
+        let start = Instant::now();
+
+        evaluate(1, &ranked, &signals, &mut timers, &config, start);
+        let d = evaluate(
+            1,
+            &ranked,
+            &signals,
+            &mut timers,
+            &config,
+            start + config.upgrade_hold,
+        );
+        assert_eq!(d, Decision::StartProbe(0));
+    }
+
+    #[test]
+    fn no_downgrade_without_a_goodput_reading() {
+        // The publisher going quiet leaves nothing to measure. Reading that as
+        // a link carrying nothing would step the ladder down over a pause.
+        let ranked = test_ranked();
+        let signals = NetworkSignals {
+            goodput_bps: None,
+            ..queued_signals()
+        };
+        let config = AdaptiveConfig::default();
+        let mut timers = AdaptationTimers::default();
+        let start = Instant::now();
+
+        evaluate(0, &ranked, &signals, &mut timers, &config, start);
+        let d = evaluate(
+            0,
+            &ranked,
+            &signals,
+            &mut timers,
+            &config,
+            start + config.downgrade_hold,
+        );
+        assert_eq!(d, Decision::Hold);
     }
 
     #[test]

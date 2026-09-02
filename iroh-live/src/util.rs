@@ -1,4 +1,8 @@
-use std::{thread, time::Duration};
+use std::{
+    collections::VecDeque,
+    thread,
+    time::{Duration, Instant},
+};
 
 use iroh::{SecretKey, endpoint::Connection};
 use moq_media::net::NetworkSignals;
@@ -37,6 +41,23 @@ where
         .unwrap_or_else(|_| panic!("failed to spawn thread: {}", name_str))
 }
 
+/// The span the downlink goodput estimate is taken across.
+///
+/// A second, because one 200ms sample at video frame rates holds only a handful
+/// of frames, and a keyframe landing in one of them doubles the reading.
+const GOODPUT_WINDOW: Duration = Duration::from_secs(1);
+
+/// The rate below which what arrives is taken for control traffic rather than
+/// media, and goodput is reported as unmeasured.
+///
+/// A subscriber receiving nothing still receives something: acknowledgements of
+/// its own acknowledgements, keep-alives and path probes, which measured on an
+/// idle connection come to single-digit kbit/s. A ratio against a rendition's
+/// bitrate would read that as a link that had all but failed, and a publisher
+/// going quiet is not that. Kept low all the same, because the smallest rung on
+/// a ladder is small: 320x240 video comes in under 100 kbit/s.
+const GOODPUT_FLOOR_BPS: u64 = 16_000;
+
 /// Spawns a background task that polls connection stats and produces
 /// [`NetworkSignals`] for adaptive rendition selection.
 ///
@@ -54,6 +75,15 @@ pub fn spawn_signal_producer(
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut prev_lost: u64 = 0;
         let mut prev_sent: u64 = 0;
+        // The path's round trip with nothing queued in front of it. Tracked
+        // here rather than read from the transport because QUIC keeps no such
+        // figure, and taken as a running minimum because that is what an
+        // unqueued sample looks like.
+        let mut min_rtt: Option<Duration> = None;
+        // Timestamped `udp_rx.bytes` readings, oldest first, spanning
+        // `GOODPUT_WINDOW`. Goodput is the difference across the whole span
+        // rather than between the last two, so one bursty tick does not move it.
+        let mut received: VecDeque<(Instant, u64)> = VecDeque::new();
         loop {
             tokio::select! {
                 _ = interval.tick() => {}
@@ -67,8 +97,13 @@ pub fn spawn_signal_producer(
 
             let stats = selected.stats();
             let rtt = selected.rtt();
+            let baseline = min_rtt.map_or(rtt, |seen| seen.min(rtt));
+            min_rtt = Some(baseline);
 
-            // Delta-based loss rate.
+            // Delta-based loss rate. This counts what this endpoint sent and
+            // failed to get acknowledged, so on a subscriber it is loss among
+            // acknowledgements; see `NetworkSignals::loss_rate` for what that
+            // is and is not worth.
             let total_lost = stats.lost_packets;
             let total_sent = stats.udp_tx.datagrams;
             let delta_lost = total_lost.saturating_sub(prev_lost);
@@ -82,19 +117,38 @@ pub fn spawn_signal_producer(
                 0.0
             };
 
-            // Available bandwidth estimate from congestion window.
-            let available_bps = if rtt.as_nanos() > 0 {
-                (stats.cwnd as u128 * 8 * 1_000_000_000 / rtt.as_nanos()) as u64
-            } else {
-                0
-            };
+            // Downlink goodput from received bytes. The congestion window this
+            // would otherwise be derived from belongs to the sending direction,
+            // and a subscriber that sends only acknowledgements keeps a window
+            // that measures how little it sends; bytes arriving are the one
+            // thing a receiver can measure about the direction it cares about.
+            let now = Instant::now();
+            received.push_back((now, stats.udp_rx.bytes));
+            // Keep the newest sample from before the window opens, so the
+            // difference spans the whole window rather than stopping short of it.
+            while received.len() > 2 && now.duration_since(received[1].0) >= GOODPUT_WINDOW {
+                received.pop_front();
+            }
+            let goodput_bps = goodput(&received);
 
             let signals = NetworkSignals {
                 rtt,
+                min_rtt: baseline,
                 loss_rate,
-                available_bps,
+                goodput_bps,
                 congestion_events: stats.congestion_events,
             };
+            // Five a second is too much for anything but a trace, and it is
+            // exactly what is wanted when an adaptation decision has to be
+            // explained after the fact.
+            tracing::trace!(
+                rtt_ms = rtt.as_millis() as u64,
+                min_rtt_ms = baseline.as_millis() as u64,
+                loss_rate,
+                goodput_kbps = ?goodput_bps.map(|bps| bps / 1000),
+                congestion_events = stats.congestion_events,
+                "network signals",
+            );
 
             if tx.send(signals).is_err() {
                 break; // all receivers dropped
@@ -102,6 +156,23 @@ pub fn spawn_signal_producer(
         }
     });
     rx
+}
+
+/// Returns the goodput across `samples` of received byte counts.
+///
+/// `None` until they span [`GOODPUT_WINDOW`], and `None` again once the rate
+/// falls to [`GOODPUT_FLOOR_BPS`] or below, which means nothing that could be
+/// media is arriving.
+fn goodput(samples: &VecDeque<(Instant, u64)>) -> Option<u64> {
+    let (oldest_at, oldest_bytes) = *samples.front()?;
+    let (newest_at, newest_bytes) = *samples.back()?;
+    let span = newest_at.duration_since(oldest_at);
+    if span < GOODPUT_WINDOW {
+        return None;
+    }
+    let bytes = newest_bytes.saturating_sub(oldest_bytes) as f64;
+    let bps = (bytes * 8.0 / span.as_secs_f64()) as u64;
+    (bps > GOODPUT_FLOOR_BPS).then_some(bps)
 }
 
 /// Spawns a background task that records connection stats into a
@@ -124,7 +195,7 @@ pub fn spawn_stats_recorder(
         let mut prev_tx_bytes: u64 = 0;
         let mut prev_lost: u64 = 0;
         let mut prev_sent: u64 = 0;
-        let mut prev_time = std::time::Instant::now();
+        let mut prev_time = Instant::now();
         loop {
             tokio::select! {
                 _ = interval.tick() => {}
@@ -167,7 +238,7 @@ pub fn spawn_stats_recorder(
             }
 
             // Bandwidth from byte deltas.
-            let now = std::time::Instant::now();
+            let now = Instant::now();
             let dt = now.duration_since(prev_time).as_secs_f64();
             if dt > 0.0 {
                 let rx = stats.udp_rx.bytes;

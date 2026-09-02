@@ -151,12 +151,13 @@ async fn run(
             }
         };
 
+        let goodput_kbps = signals.goodput_bps.map(|bps| bps / 1000);
         info!(
             from = %active,
             to = %ranked[target].name,
             rtt_ms = signals.rtt.as_millis() as u64,
             loss = signals.loss_rate,
-            available_kbps = signals.available_bps / 1000,
+            ?goodput_kbps,
             ?decision,
             "adapting rendition",
         );

@@ -206,8 +206,9 @@ async fn adaptive_rendition_switching() {
     };
     let (signals, receiver) = watch::channel(NetworkSignals {
         rtt: Duration::from_millis(20),
+        min_rtt: Duration::from_millis(20),
         loss_rate: 0.0,
-        available_bps: 10_000_000,
+        goodput_bps: Some(10_000_000),
         congestion_events: 0,
     });
     track.enable_adaptation_with(receiver, config);
@@ -220,8 +221,9 @@ async fn adaptive_rendition_switching() {
     // A quarter of the packets lost is an emergency drop, not a gradual one.
     signals.send_replace(NetworkSignals {
         rtt: Duration::from_millis(200),
+        min_rtt: Duration::from_millis(20),
         loss_rate: 0.25,
-        available_bps: 100_000,
+        goodput_bps: Some(100_000),
         congestion_events: 1,
     });
 

@@ -5,25 +5,64 @@ use std::time::Duration;
 /// Produced by polling QUIC connection stats. Consumed by
 /// [`VideoTrack::enable_adaptation`](crate::subscribe::VideoTrack::enable_adaptation)
 /// to decide when to switch renditions.
-#[derive(Debug, Clone, Copy)]
+///
+/// Every figure here is measured by one endpoint about one path, which on a
+/// subscriber means most of them describe the wrong direction: QUIC reports a
+/// congestion window, a loss count and a congestion event count for what this
+/// endpoint sends, and a subscriber sends little but acknowledgements. The one
+/// figure that is genuinely about the downlink is
+/// [`NetworkSignals::goodput_bps`], and it says what arrived rather than what
+/// could have.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct NetworkSignals {
     /// Round-trip time to the remote peer.
+    ///
+    /// The only signal here that covers both directions, since the reply has to
+    /// come back through whatever is delaying the downlink. That makes it the
+    /// one way a receiver sees a bottleneck that is only saturated the other
+    /// way: the queue in front of it holds up the acknowledgements too.
+    ///
+    /// Sampled sparsely on a subscriber, because QUIC takes a round-trip sample
+    /// only from a packet that asks to be acknowledged and a subscriber mostly
+    /// sends acknowledgements, which do not. Expect a reading that is minutes
+    /// old to still be the current one, and read it against
+    /// [`NetworkSignals::min_rtt`] rather than in absolute terms.
     pub rtt: Duration,
-    /// Recent packet loss rate in `0.0..=1.0`, computed over a 200ms delta window.
+    /// The smallest [`NetworkSignals::rtt`] seen on this path so far.
+    ///
+    /// The path's propagation delay with no queue in front of it, which is what
+    /// makes the current round trip mean anything: 40ms is an idle
+    /// intercontinental path or a badly congested local one, and only the
+    /// difference between the two tells them apart.
+    pub min_rtt: Duration,
+    /// Recent packet loss rate in `0.0..=1.0`, computed over a 200ms delta
+    /// window.
+    ///
+    /// Loss among the packets this endpoint sent, which on a subscriber are its
+    /// acknowledgements. It stands in for loss on the downlink only as far as
+    /// the two directions are impaired alike, which holds for a lossy radio or a
+    /// saturated hop and not for much else. Read it as a symmetric-path proxy
+    /// rather than as a count of what the subscriber failed to receive: QUIC
+    /// offers a receiver no such count.
     pub loss_rate: f64,
-    /// Estimated available bandwidth in bits per second (`cwnd * 8 / rtt`).
-    pub available_bps: u64,
+    /// Recently observed downlink goodput in bits per second, or `None` while
+    /// too little is arriving to measure one.
+    ///
+    /// Goodput, not capacity: it is the rate at which bytes turned up, so it is
+    /// bounded by what the publisher chose to send and only becomes a reading of
+    /// the link once the link is the thing holding it back. That makes it a
+    /// lower bound on what the path can carry, which is enough to show a
+    /// rendition failing to arrive in full but never enough to show room above
+    /// the rate already flowing. Finding that room is what
+    /// [`Decision::StartProbe`](crate::adaptive::Decision::StartProbe) is for.
+    ///
+    /// `None` while the arriving traffic is too thin to be media, so that a
+    /// publisher going quiet reads as an absence of evidence rather than as a
+    /// link that collapsed.
+    pub goodput_bps: Option<u64>,
     /// Monotonically increasing congestion event counter.
+    ///
+    /// Congestion this endpoint's own sending ran into, so it carries the same
+    /// caveat as [`NetworkSignals::loss_rate`].
     pub congestion_events: u64,
-}
-
-impl Default for NetworkSignals {
-    fn default() -> Self {
-        Self {
-            rtt: Duration::ZERO,
-            loss_rate: 0.0,
-            available_bps: 0,
-            congestion_events: 0,
-        }
-    }
 }

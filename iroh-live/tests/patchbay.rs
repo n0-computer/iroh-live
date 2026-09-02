@@ -252,12 +252,12 @@ fn report(phase: &str, arrivals: &[Instant], window: Duration) {
 
 /// A ladder wide enough for the adaptation loop to have somewhere to go.
 ///
-/// The advertised bitrates are what [`moq_media::adaptive::evaluate`] weighs the
-/// measured bandwidth against. They are kept modest on purpose: the bandwidth
-/// estimate is taken from the subscriber's own congestion window, and a
-/// subscriber that sends little but acknowledgements keeps a small one, so a
-/// ladder advertising megabits would never clear the headroom an upgrade wants
-/// however good the link got.
+/// A rendition's bitrate is a ceiling handed to the encoder, not a promise, and
+/// openh264 spends nothing it does not need: measured over a clear link, this
+/// pattern arrives at about 316 kbit/s on `high` and 84 on `low`, some 40% of
+/// what each declares. That gap is why nothing here turns on the arriving
+/// goodput reaching the declared figure. It is also why an impairment has to be
+/// tighter than the ladder suggests before it binds on anything.
 fn ladder() -> Vec<VideoRendition> {
     vec![
         VideoRendition::new("high").with_bitrate(800_000),
@@ -452,13 +452,11 @@ async fn adaptation_follows_a_real_link() {
 
     track.enable_adaptation_with(fixture.subscription.signals().clone(), quick_adaptation());
 
-    // Loss rather than a rate limit, because loss is what the subscriber can
-    // actually measure. Both signals are read off the path it sends on, and the
-    // only thing it sends is acknowledgements: those are lost in proportion to
-    // the impairment, while its congestion window says more about how little it
-    // sends than about what the downlink could carry. A rate limit on the
-    // downlink shows up in neither, and waiting for an application-limited
-    // congestion window to recover afterwards takes about a minute.
+    // Loss on both legs, so it reaches the subscriber's own transmissions:
+    // acknowledgements are dropped in proportion to the impairment like
+    // anything else, and `NetworkSignals::loss_rate` counts what this endpoint
+    // sent. `adaptation_follows_a_rate_limit` covers the case this cannot,
+    // where the downlink runs out of room without dropping anything.
     //
     // 12% on each of the two links the media crosses is measured as far more
     // than 12%, because the loss rate is a ratio over a 200ms window and the
@@ -484,6 +482,123 @@ async fn adaptation_follows_a_real_link() {
     );
 
     fixture.clear().await;
+
+    let upgraded = Instant::now();
+    tokio::time::timeout(TIMEOUT, track.switched_to("high"))
+        .await
+        .expect("timed out waiting for an upgrade back to `high`");
+    info!(after_ms = upgraded.elapsed().as_millis() as u64, "upgraded");
+
+    fixture.shutdown().await;
+}
+
+/// The same loop again, driven by an impairment that drops nothing.
+///
+/// A rate limit is the shape of downlink trouble a subscriber is worst placed
+/// to see. Nothing is lost, so `loss_rate` stays at zero, and the congestion
+/// window and congestion counter both describe the direction the subscriber
+/// sends in, where a handful of acknowledgements never runs out of room. What
+/// is left is the pair this asserts on: the bytes arriving pin to the cap, and
+/// the round trip inflates because the queue holding up the media holds up the
+/// acknowledgements behind it. Measured here, 200 kbit/s against a 316 kbit/s
+/// stream takes goodput to about 195 and the round trip from 1ms to 330 while
+/// loss stays at exactly zero throughout.
+///
+/// This is the test the previous, congestion-window-derived bandwidth estimate
+/// could not pass: an application-limited window stays wide whatever the far
+/// end is doing, so it read a capped link as an idle one.
+#[tokio::test]
+#[traced_test]
+async fn adaptation_follows_a_rate_limit() {
+    let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
+    let track = fixture.video(2).await;
+    let signals = fixture.subscription.signals().clone();
+
+    assert_eq!(
+        track.rendition(),
+        "high",
+        "a fresh subscription should start at the top of the ladder",
+    );
+
+    // Frames first, so the cap lands on a link that was carrying video and the
+    // producer has a round trip and a goodput window off a healthy path to
+    // compare against.
+    tokio::time::timeout(TIMEOUT, track.recv())
+        .await
+        .expect("timed out waiting for the first frame")
+        .expect("the video track closed before its first frame");
+    let _settle = drain(&track, Duration::from_secs(2)).await;
+
+    let config = quick_adaptation();
+    track.enable_adaptation_with(signals.clone(), config.clone());
+
+    // Two thirds of the 316 kbit/s `high` actually sends, and two and a half
+    // times the 84 `low` does, so the top rung cannot fit and the bottom one
+    // comfortably can.
+    fixture
+        .impair(LinkLimits {
+            rate_kbit: 200,
+            ..Default::default()
+        })
+        .await;
+
+    // Held for three times the downgrade hold, so the loop has had the reading
+    // in front of it for longer than it needs to act on it.
+    let held = config.downgrade_hold * 3;
+    let mut worst_loss: f64 = 0.0;
+    let saw_the_cap = tokio::time::timeout(TIMEOUT, async {
+        let mut since = None;
+        loop {
+            let signals = *signals.borrow();
+            worst_loss = worst_loss.max(signals.loss_rate);
+            let pinned = signals.goodput_bps.is_some_and(|bps| bps < 250_000);
+            let queued = signals.rtt > signals.min_rtt * 10;
+            match (pinned && queued, since) {
+                (true, Some(start)) if Instant::now().duration_since(start) >= held => {
+                    return signals;
+                }
+                (true, Some(_)) => {}
+                (true, None) => since = Some(Instant::now()),
+                (false, _) => since = None,
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the signals never showed the rate limit");
+    info!(
+        goodput_kbps = saw_the_cap.goodput_bps.unwrap_or(0) / 1000,
+        rtt_ms = saw_the_cap.rtt.as_millis() as u64,
+        min_rtt_ms = saw_the_cap.min_rtt.as_millis() as u64,
+        worst_loss,
+        "the rate limit reached the signals",
+    );
+
+    // The point of the whole test: nothing was dropped, so nothing the loop
+    // knew about loss could have moved it. Checked against the threshold the
+    // loop actually uses rather than against zero, since a retransmission for
+    // some other reason is always possible.
+    assert!(
+        worst_loss < config.loss_downgrade,
+        "loss reached {worst_loss}, so the downgrade cannot be credited to the bandwidth signal",
+    );
+
+    // Lifted before the switch is asked to complete. A cap that starves the top
+    // rung is by construction too small for both rungs at once, and the two
+    // overlap by design while the replacement decoder waits for its first
+    // frame: the subscriber holds the incumbent so the picture does not blank.
+    // Under that overlap the replacement's subscription does not get set up at
+    // all, which is worth knowing and is not what this test is about.
+    fixture.clear().await;
+
+    let downgraded = Instant::now();
+    tokio::time::timeout(TIMEOUT, track.switched_to("low"))
+        .await
+        .expect("timed out waiting for a downgrade to `low`");
+    info!(
+        after_ms = downgraded.elapsed().as_millis() as u64,
+        "downgraded"
+    );
 
     let upgraded = Instant::now();
     tokio::time::timeout(TIMEOUT, track.switched_to("high"))
