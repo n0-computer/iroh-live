@@ -17,7 +17,7 @@ iroh-live = { workspace = true, features = ["h264", "opus"] }
 moq-media = { workspace = true, features = ["h264", "opus"] }
 rusty-codecs = { workspace = true, features = ["gles", "gles-dmabuf"] }
 
-glow = "0.16"
+glow = "0.17"
 winit = "0.30"
 glutin = "0.32"
 glutin-winit = "0.5"

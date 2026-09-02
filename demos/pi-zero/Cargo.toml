@@ -38,7 +38,7 @@ linux-embedded-hal = "0.4"
 gpio-cdev = "0.6"
 
 # EGL/GLES2 rendering (watch command)
-glow = "0.16"
+glow = "0.17"
 khronos-egl = { version = "6", features = ["dynamic"] }
 libc = "0.2"
 drm = "0.14"

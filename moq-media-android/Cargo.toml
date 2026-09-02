@@ -14,7 +14,7 @@ anyhow = "1.0"
 tracing = "0.1"
 
 [target.'cfg(target_os = "android")'.dependencies]
-glow = "0.16"
+glow = "0.17"
 khronos-egl = { version = "6", features = ["dynamic"] }
 libc = "0.2"
 

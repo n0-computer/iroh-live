@@ -31,7 +31,7 @@ rubato = { version = "1.0", optional = true }
 audioadapter-buffers = { version = "2.0", optional = true }
 rav1e = { version = "0.8", optional = true }
 rav1d = { git = "https://github.com/memorysafety/rav1d", default-features = false, features = ["bitdepth_8", "bitdepth_16", "asm"], optional = true }
-glow = { version = "0.16", optional = true }
+glow = { version = "0.17", optional = true }
 wgpu = { version = "27", optional = true, default-features = false, features = ["wgsl"] }
 wgpu-hal = { version = "27", optional = true, default-features = false }
 

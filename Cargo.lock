@@ -2584,7 +2584,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ab67060fc6b8ef687992d439ca0fa36e7ed17e9a0b16b25b601e8757df720de"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -4363,6 +4363,18 @@ name = "glow"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c5e5ea60d70410161c8bf5da3fdfeaa1c72ed2c15f8bbb9d19fe3a4fad085f08"
+dependencies = [
+ "js-sys",
+ "slotmap",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "glow"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29038e1c483364cc6bb3cf78feee1816002e127c331a1eec55a4d202b9e1adb5"
 dependencies = [
  "js-sys",
  "slotmap",
@@ -6840,7 +6852,7 @@ name = "moq-media-android"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "glow 0.16.0",
+ "glow 0.17.0",
  "khronos-egl",
  "libc",
  "moq-media",
@@ -8507,7 +8519,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "glow 0.16.0",
+ "glow 0.17.0",
  "glutin",
  "glutin-winit",
  "iroh",
@@ -8865,7 +8877,7 @@ dependencies = [
  "embedded-graphics",
  "embedded-hal",
  "gbm 0.18.0",
- "glow 0.16.0",
+ "glow 0.17.0",
  "glutin",
  "glutin-winit",
  "gpio-cdev",
@@ -10314,7 +10326,7 @@ dependencies = [
  "bytes",
  "cros-codecs",
  "derive_more",
- "glow 0.16.0",
+ "glow 0.17.0",
  "hang",
  "image",
  "libc",
