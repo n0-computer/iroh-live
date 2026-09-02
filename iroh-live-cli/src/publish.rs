@@ -116,33 +116,24 @@ mod preview {
             video,
         },
     };
-    use moq_media_egui::{
-        FrameView,
-        overlay::{DebugOverlay, StatCategory, fit_to_aspect},
-    };
+    use moq_media_egui::overlay::{DebugOverlay, StatCategory, fit_to_aspect};
     use n0_error::{Result, anyerr};
     use tracing::{info, warn};
 
-    use crate::source_spec::VideoSourceSpec;
+    use crate::{source_spec::VideoSourceSpec, ui::LocalPreview};
 
     /// Opens the preview window and runs it until it closes.
     ///
     /// `flag` is the `--video` specifier the broadcast started with, so the
     /// picker can show what is already publishing instead of guessing.
     pub(super) fn run(live: Live, broadcast: LocalBroadcast, ticket: String, flag: &str) -> Result {
-        let options = eframe::NativeOptions {
-            renderer: eframe::Renderer::Wgpu,
-            wgpu_options: moq_media_egui::create_egui_wgpu_config(),
-            ..Default::default()
-        };
-
         eframe::run_native(
             "irl publish",
-            options,
+            crate::ui::native_options(false),
             Box::new(move |cc| {
                 crate::ui::spawn_ctrl_c_handler(&cc.egui_ctx);
                 let view =
-                    FrameView::new_wgpu(&cc.egui_ctx, "preview", cc.wgpu_render_state.as_ref());
+                    LocalPreview::new(&cc.egui_ctx, "preview", cc.wgpu_render_state.as_ref());
                 Ok(Box::new(PreviewApp {
                     live,
                     broadcast,
@@ -160,7 +151,7 @@ mod preview {
         live: Live,
         broadcast: LocalBroadcast,
         ticket: String,
-        view: FrameView,
+        view: LocalPreview,
         picker: SourcePicker,
         overlay: DebugOverlay,
     }
@@ -170,15 +161,7 @@ mod preview {
             let ctx = ui.ctx().clone();
             ctx.request_repaint_after(Duration::from_millis(16));
 
-            // The preview tap is replaced whenever the source is, so read it
-            // fresh each frame rather than caching a receiver that a switch
-            // would silently orphan.
-            if let Some(frames) = self.broadcast.preview()
-                && let Some(frame) = frames.take()
-            {
-                self.view.render_frame(&frame);
-                ctx.request_repaint();
-            }
+            self.view.update(&ctx, &self.broadcast);
 
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
             crate::ui::top_bar(ui, &ctx, &self.ticket);

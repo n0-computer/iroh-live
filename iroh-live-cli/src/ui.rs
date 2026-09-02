@@ -1,10 +1,24 @@
-//! Shared pieces of the two egui windows: a top bar, a floating control panel,
-//! cursor auto-hide, and the lifecycle helpers both windows need.
+//! Shared pieces of the egui windows: a top bar, a floating control panel,
+//! cursor auto-hide, the local preview and remote-broadcast widgets, and the
+//! lifecycle helpers every window needs.
 
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use iroh_live::Live;
+use iroh_live::{
+    Live,
+    media::{
+        net::NetworkSignals,
+        publish::LocalBroadcast,
+        subscribe::{AudioTrack, MediaTracks, RemoteBroadcast},
+    },
+};
+use moq_media_egui::{
+    FrameView, VideoTrackView,
+    overlay::{DebugOverlay, StatCategory},
+};
+use tokio::sync::watch;
+use tracing::info;
 
 /// Height of the top bar, in points.
 const TOP_BAR_HEIGHT: f32 = 24.0;
@@ -134,4 +148,247 @@ pub fn shutdown_live_blocking(live: &Live) {
     tokio::runtime::Handle::current().block_on(async move {
         live.shutdown().await;
     });
+}
+
+/// The window options every media window here wants.
+///
+/// eframe's wgpu renderer, configured the way `moq-media-egui`'s video
+/// renderer needs it: a video frame arrives as a `wgpu::Texture` and there is
+/// no path that draws one through the glow backend.
+pub fn native_options(fullscreen: bool) -> eframe::NativeOptions {
+    eframe::NativeOptions {
+        renderer: eframe::Renderer::Wgpu,
+        wgpu_options: moq_media_egui::create_egui_wgpu_config(),
+        viewport: egui::ViewportBuilder::default().with_fullscreen(fullscreen),
+        ..Default::default()
+    }
+}
+
+/// The publisher's own picture, drawn from the frames already on their way to
+/// the encoders.
+///
+/// Costs no extra decode: [`LocalBroadcast::preview`] taps the capture output
+/// before the encoder sees it. The tap is replaced whenever the source is, so
+/// [`update`](Self::update) reads it fresh every frame rather than holding a
+/// receiver that a source switch would silently orphan.
+#[derive(Debug)]
+pub struct LocalPreview {
+    view: FrameView,
+}
+
+impl LocalPreview {
+    /// Creates a preview that draws through `render_state`, if one is
+    /// available.
+    pub fn new(
+        ctx: &egui::Context,
+        name: &str,
+        render_state: Option<&moq_media_egui::egui_wgpu::RenderState>,
+    ) -> Self {
+        Self {
+            view: FrameView::new_wgpu(ctx, name, render_state),
+        }
+    }
+
+    /// Draws the newest captured frame, if one arrived since the last call.
+    ///
+    /// Requests a repaint when it did, so the picture advances without waiting
+    /// for the next input event.
+    pub fn update(&mut self, ctx: &egui::Context, broadcast: &LocalBroadcast) {
+        if let Some(frames) = broadcast.preview()
+            && let Some(frame) = frames.take()
+        {
+            self.view.render_frame(&frame);
+            ctx.request_repaint();
+        }
+    }
+
+    /// Returns the image for whatever frame was drawn last.
+    pub fn image(&self) -> egui::Image<'_> {
+        self.view.image()
+    }
+}
+
+/// The rendition a viewer asked for, as distinct from the one decoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenditionChoice {
+    /// Follow the downlink: the transport signals drive `moq-media`'s
+    /// adaptation, which swaps renditions without the picture going blank.
+    Auto,
+    /// Hold one rendition whatever the downlink does.
+    Pinned(String),
+}
+
+/// One remote broadcast on screen.
+///
+/// Owns the decoded picture, the audio track that keeps playing while the
+/// window draws, and the stats overlay drawn over the frame. Both the single
+/// remote of a call and every tile of a room grid are one of these.
+///
+/// Dropping it stops the decoders; [`shutdown`](Self::shutdown) also ends the
+/// subscription, which is what a window closing wants.
+#[derive(Debug)]
+pub struct RemoteView {
+    broadcast: RemoteBroadcast,
+    video: Option<VideoTrackView>,
+    audio: Option<AudioTrack>,
+    overlay: DebugOverlay,
+    signals: watch::Receiver<NetworkSignals>,
+    choice: RenditionChoice,
+    /// The output gain the slider last set. Only a build with `playback` has a
+    /// sink to apply it to.
+    #[cfg(feature = "playback")]
+    volume: f32,
+}
+
+impl RemoteView {
+    /// Opens a view onto `broadcast`, drawing `tracks` through `render_state`.
+    ///
+    /// `name` salts the texture and the widget ids, so a grid of these needs a
+    /// distinct one per tile. The video track starts on
+    /// [`RenditionChoice::Auto`]; [`set_rendition`](Self::set_rendition) pins
+    /// one instead.
+    pub fn new(
+        ctx: &egui::Context,
+        name: &str,
+        broadcast: RemoteBroadcast,
+        tracks: MediaTracks,
+        signals: watch::Receiver<NetworkSignals>,
+        render_state: Option<&moq_media_egui::egui_wgpu::RenderState>,
+    ) -> Self {
+        let MediaTracks { video, audio } = tracks;
+        let video = video.map(|track| VideoTrackView::new_wgpu(ctx, name, track, render_state));
+        let view = Self {
+            broadcast,
+            video,
+            audio,
+            overlay: DebugOverlay::new(&[
+                StatCategory::Net,
+                StatCategory::Render,
+                StatCategory::Time,
+            ]),
+            signals,
+            choice: RenditionChoice::Auto,
+            #[cfg(feature = "playback")]
+            volume: 1.0,
+        };
+        view.apply_rendition();
+        view
+    }
+
+    /// Reports whether the stats overlay is expanded, which keeps the
+    /// controls up while it is being read.
+    pub fn overlay_expanded(&self) -> bool {
+        self.overlay.any_expanded()
+    }
+
+    /// Points the video track at `choice`.
+    pub fn set_rendition(&mut self, choice: RenditionChoice) {
+        self.choice = choice;
+        self.apply_rendition();
+    }
+
+    /// Tells the video track to follow the downlink or hold one rendition,
+    /// whichever [`RenditionChoice`] is currently selected.
+    fn apply_rendition(&self) {
+        let Some(view) = self.video.as_ref() else {
+            return;
+        };
+        let track = view.track();
+        match &self.choice {
+            RenditionChoice::Auto => {
+                track.enable_adaptation(self.signals.clone());
+                info!(rendition = track.rendition(), "following the downlink");
+            }
+            RenditionChoice::Pinned(name) => {
+                track.disable_adaptation();
+                track.set_rendition(name.clone());
+                info!(rendition = %name, "rendition pinned");
+            }
+        }
+    }
+
+    /// Draws the picture at `size`, or a placeholder while the peer sends no
+    /// video.
+    ///
+    /// Returns the response of whatever was drawn, whose rect is what
+    /// [`draw_overlay`](Self::draw_overlay) wants.
+    pub fn draw(&mut self, ui: &mut egui::Ui, size: egui::Vec2) -> egui::Response {
+        let ctx = ui.ctx().clone();
+        match self.video.as_mut() {
+            Some(view) => {
+                let (image, _) = view.render(&ctx, size);
+                ui.add_sized(size, image)
+            }
+            None => ui.add_sized(size, egui::Label::new("no video")),
+        }
+    }
+
+    /// Draws the stats overlay over `rect`.
+    pub fn draw_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        if let Some(view) = self.video.as_ref() {
+            self.overlay
+                .update_from_track(self.broadcast.stats(), view.track());
+        }
+        self.overlay.show(ui, rect, self.broadcast.stats());
+    }
+
+    /// Draws the rendition picker and the volume slider.
+    ///
+    /// `id` salts the widget ids, so a grid of these needs a distinct one per
+    /// tile.
+    pub fn controls(&mut self, ui: &mut egui::Ui, id: &str) {
+        let Some(view) = self.video.as_ref() else {
+            ui.label("no video");
+            return;
+        };
+        let rendition = view.track().rendition();
+
+        ui.label("Rendition");
+        let label = match &self.choice {
+            RenditionChoice::Auto => format!("Auto ({rendition})"),
+            RenditionChoice::Pinned(name) => name.clone(),
+        };
+        let mut chosen = None;
+        egui::ComboBox::from_id_salt(format!("{id}-rendition"))
+            .selected_text(label)
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(self.choice == RenditionChoice::Auto, "Auto")
+                    .clicked()
+                {
+                    chosen = Some(RenditionChoice::Auto);
+                }
+                for name in self.broadcast.catalog().video().keys() {
+                    let pinned = self.choice == RenditionChoice::Pinned(name.clone());
+                    if ui.selectable_label(pinned, name).clicked() {
+                        chosen = Some(RenditionChoice::Pinned(name.clone()));
+                    }
+                }
+            });
+        if let Some(choice) = chosen {
+            self.set_rendition(choice);
+        }
+
+        #[cfg(feature = "playback")]
+        if let Some(audio) = self.audio.as_ref() {
+            ui.label("Volume");
+            if ui
+                .add(egui::Slider::new(&mut self.volume, 0.0..=2.0).show_value(false))
+                .changed()
+            {
+                audio.set_volume(self.volume);
+            }
+        }
+    }
+
+    /// Drops the decoders and ends the subscription.
+    ///
+    /// The session itself belongs to whoever opened it, so this leaves it
+    /// alone: a room keeps one session per peer and several views can ride on
+    /// it.
+    pub fn shutdown(&mut self) {
+        self.video = None;
+        self.audio = None;
+        self.broadcast.shutdown();
+    }
 }

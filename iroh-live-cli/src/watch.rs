@@ -26,7 +26,7 @@ pub fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
         // eframe takes the main thread from here on, so the runtime keeps its
         // workers only for as long as this guard lives.
         let _guard = rt.enter();
-        window::run(live, sub, tracks, args.fullscreen)
+        window::run(live, sub, tracks, &args)
     }
     #[cfg(not(feature = "render"))]
     {
@@ -36,8 +36,7 @@ pub fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
     }
 }
 
-/// Connects, opens the tracks this run will actually play, and decides how the
-/// video track picks its rendition.
+/// Connects and opens the tracks this run will actually play.
 async fn subscribe(
     ticket: &iroh_live::ticket::LiveTicket,
     args: &WatchArgs,
@@ -55,22 +54,6 @@ async fn subscribe(
         true => audio_only(&sub).await,
         false => sub.media().await,
     };
-
-    if let Some(video) = &tracks.video {
-        match &args.rendition {
-            Some(name) => {
-                video.set_rendition(name.clone());
-                info!(rendition = %name, "video pinned");
-            }
-            None => {
-                video.enable_adaptation(sub.signals().clone());
-                info!(
-                    rendition = video.rendition(),
-                    "video following the downlink"
-                );
-            }
-        }
-    }
     Ok((live, sub, tracks))
 }
 
@@ -127,74 +110,47 @@ mod window {
     use std::time::Duration;
 
     use eframe::egui;
-    use iroh_live::{
-        Live, Subscription,
-        media::subscribe::{AudioTrack, MediaTracks, RemoteBroadcast},
-    };
-    use moq_media_egui::{
-        VideoTrackView,
-        overlay::{DebugOverlay, StatCategory},
-    };
+    use iroh_live::{Live, Subscription, media::subscribe::MediaTracks};
     use n0_error::{Result, anyerr};
     use tracing::info;
 
-    use crate::ui::CursorIdle;
-
-    /// The rendition the user asked for, as distinct from the one currently
-    /// decoding.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    enum RenditionChoice {
-        /// Follow the downlink.
-        Auto,
-        /// Hold one rendition whatever the downlink does.
-        Pinned(String),
-    }
+    use crate::{
+        args::WatchArgs,
+        ui::{CursorIdle, RemoteView, RenditionChoice},
+    };
 
     /// Opens the player window and runs it until it closes.
     pub(super) fn run(
         live: Live,
         sub: Subscription,
         tracks: MediaTracks,
-        fullscreen: bool,
+        args: &WatchArgs,
     ) -> Result {
-        let options = eframe::NativeOptions {
-            renderer: eframe::Renderer::Wgpu,
-            wgpu_options: moq_media_egui::create_egui_wgpu_config(),
-            viewport: egui::ViewportBuilder::default().with_fullscreen(fullscreen),
-            ..Default::default()
-        };
-
+        let rendition = args.rendition.clone();
         eframe::run_native(
             "irl watch",
-            options,
+            crate::ui::native_options(args.fullscreen),
             Box::new(move |cc| {
                 crate::ui::spawn_ctrl_c_handler(&cc.egui_ctx);
                 let broadcast = sub.broadcast().clone();
-                let MediaTracks { video, audio } = tracks;
-                let view = video.map(|track| {
-                    VideoTrackView::new_wgpu(
-                        &cc.egui_ctx,
-                        "video",
-                        track,
-                        cc.wgpu_render_state.as_ref(),
-                    )
-                });
+                let title = broadcast.name().to_string();
+                let mut remote = RemoteView::new(
+                    &cc.egui_ctx,
+                    "video",
+                    broadcast,
+                    tracks,
+                    sub.signals().clone(),
+                    cc.wgpu_render_state.as_ref(),
+                );
+                if let Some(name) = rendition {
+                    remote.set_rendition(RenditionChoice::Pinned(name));
+                }
                 Ok(Box::new(WatchApp {
-                    title: broadcast.name().to_string(),
+                    title,
                     live,
                     sub,
-                    broadcast,
-                    view,
-                    audio,
-                    overlay: DebugOverlay::new(&[
-                        StatCategory::Net,
-                        StatCategory::Render,
-                        StatCategory::Time,
-                    ]),
+                    remote,
                     cursor: CursorIdle::default(),
-                    choice: RenditionChoice::Auto,
-                    #[cfg(feature = "playback")]
-                    volume: 1.0,
                 }))
             }),
         )
@@ -205,100 +161,36 @@ mod window {
         title: String,
         live: Live,
         sub: Subscription,
-        broadcast: RemoteBroadcast,
-        view: Option<VideoTrackView>,
-        audio: Option<AudioTrack>,
-        overlay: DebugOverlay,
+        remote: RemoteView,
         cursor: CursorIdle,
-        choice: RenditionChoice,
-        /// The output gain the slider last set. Only the playback build has a
-        /// sink to apply it to.
-        #[cfg(feature = "playback")]
-        volume: f32,
     }
 
     impl eframe::App for WatchApp {
         fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
             let ctx = ui.ctx().clone();
             ctx.request_repaint_after(Duration::from_millis(16));
-            let show_overlay = self.cursor.update(&ctx, self.overlay.any_expanded());
+            let show_overlay = self.cursor.update(&ctx, self.remote.overlay_expanded());
 
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
             let available = ui.available_size();
             let video_rect = egui::Rect::from_min_size(ui.cursor().min, available);
-            if let Some(view) = self.view.as_mut() {
-                let (image, _) = view.render(&ctx, available);
-                ui.add_sized(available, image);
-            }
+            self.remote.draw(ui, available);
 
             if !show_overlay {
                 return;
             }
             crate::ui::top_bar(ui, &ctx, &self.title);
-            if let Some(view) = self.view.as_ref() {
-                self.overlay
-                    .update_from_track(self.broadcast.stats(), view.track());
-            }
-            self.overlay.show(ui, video_rect, self.broadcast.stats());
-            crate::ui::control_panel(&ctx, "watch-controls", |ui| self.controls(ui));
+            self.remote.draw_overlay(ui, video_rect);
+            crate::ui::control_panel(&ctx, "watch-controls", |ui| {
+                self.remote.controls(ui, "watch");
+            });
         }
 
         fn on_exit(&mut self) {
             info!("exit");
-            self.view = None;
-            self.audio = None;
-            self.broadcast.shutdown();
+            self.remote.shutdown();
             self.sub.session().close(moq_net::Error::Cancel);
             crate::ui::shutdown_live_blocking(&self.live);
-        }
-    }
-
-    impl WatchApp {
-        /// Draws the rendition picker and the volume slider.
-        fn controls(&mut self, ui: &mut egui::Ui) {
-            let Some(view) = self.view.as_ref() else {
-                ui.label("no video");
-                return;
-            };
-            let track = view.track();
-
-            ui.label("Rendition");
-            let label = match &self.choice {
-                RenditionChoice::Auto => format!("Auto ({})", track.rendition()),
-                RenditionChoice::Pinned(name) => name.clone(),
-            };
-            egui::ComboBox::from_id_salt("watch-rendition")
-                .selected_text(label)
-                .show_ui(ui, |ui| {
-                    if ui
-                        .selectable_label(self.choice == RenditionChoice::Auto, "Auto")
-                        .clicked()
-                    {
-                        self.choice = RenditionChoice::Auto;
-                        track.enable_adaptation(self.sub.signals().clone());
-                        info!("following the downlink");
-                    }
-                    for name in self.broadcast.catalog().video().keys() {
-                        let pinned = self.choice == RenditionChoice::Pinned(name.clone());
-                        if ui.selectable_label(pinned, name).clicked() {
-                            self.choice = RenditionChoice::Pinned(name.clone());
-                            track.disable_adaptation();
-                            track.set_rendition(name.clone());
-                            info!(rendition = %name, "rendition pinned");
-                        }
-                    }
-                });
-
-            #[cfg(feature = "playback")]
-            if let Some(audio) = self.audio.as_ref() {
-                ui.label("Volume");
-                if ui
-                    .add(egui::Slider::new(&mut self.volume, 0.0..=2.0).show_value(false))
-                    .changed()
-                {
-                    audio.set_volume(self.volume);
-                }
-            }
         }
     }
 }
