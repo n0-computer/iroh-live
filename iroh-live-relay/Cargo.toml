@@ -17,6 +17,7 @@ iroh-moq = { workspace = true }
 web-transport-iroh = { workspace = true }
 axum = { version = "0.8", features = ["tokio"] }
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
