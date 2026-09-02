@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use clap::{Args, ValueEnum};
 use iroh::EndpointId;
 use iroh_live::ticket::LiveTicket;
+#[cfg(feature = "render")]
+use iroh_rooms::RoomTicket;
 use n0_error::{Result, anyerr};
 use serde::Deserialize;
 
@@ -243,6 +245,31 @@ pub struct CallArgs {
 
     #[command(flatten)]
     pub capture: CaptureArgs,
+
+    /// Suppress the terminal QR code.
+    #[arg(long)]
+    pub no_qr: bool,
+
+    /// Start in fullscreen.
+    #[arg(long)]
+    pub fullscreen: bool,
+}
+
+/// Arguments for `irl room`.
+#[cfg(feature = "render")]
+#[derive(Args, Debug)]
+pub struct RoomArgs {
+    /// Ticket of the room to join, as another participant's `irl room` printed
+    /// it. Omit to open a new room.
+    pub ticket: Option<RoomTicket>,
+
+    #[command(flatten)]
+    pub capture: CaptureArgs,
+
+    /// Name the other participants see. Defaults to this node's short endpoint
+    /// id.
+    #[arg(long)]
+    pub display_name: Option<String>,
 
     /// Suppress the terminal QR code.
     #[arg(long)]

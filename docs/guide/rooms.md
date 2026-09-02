@@ -89,5 +89,6 @@ forwarding and no topology optimisation, so this is a small-group design.
 If every bootstrap endpoint in a ticket is offline, joining waits until some peer
 turns up. Including several bootstrap endpoints helps.
 
-There is no `irl room` command. It was dropped in the v2 rewrite along with the
-rest of the room UI and is recoverable from the `main` branch.
+`irl room` shows a room as a grid of pictures with a chat panel, and is the
+quickest way to see all of this working. See [the CLI reference](../cli.md) for
+its flags.

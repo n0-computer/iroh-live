@@ -5,7 +5,7 @@
 //! this node has, so pushing to a relay is nothing more than connecting to it.
 
 use iroh::{Endpoint, SecretKey, endpoint::presets};
-use iroh_live::{Live, ticket::LiveTicket};
+use iroh_live::{Live, LiveBuilder, ticket::LiveTicket};
 use n0_error::Result;
 use tracing::info;
 
@@ -34,6 +34,26 @@ pub async fn setup_live(serve: bool) -> Result<Live> {
 ///
 /// Fails if the endpoint cannot bind.
 pub async fn setup_live_with_key(secret_key: SecretKey, serve: bool) -> Result<Live> {
+    Ok(bind(secret_key, serve).await?.spawn())
+}
+
+/// Binds an endpoint that also runs gossip, and starts the MoQ transport on it.
+///
+/// Rooms discover each other over gossip, so `irl room` needs it where nothing
+/// else here does. Always serves: a participant nobody can dial has nothing to
+/// contribute.
+///
+/// # Errors
+///
+/// Fails if the endpoint cannot bind.
+#[cfg(feature = "render")]
+pub async fn setup_live_with_gossip() -> Result<Live> {
+    let secret_key = iroh_live::util::secret_key_from_env()?;
+    Ok(bind(secret_key, true).await?.with_gossip().spawn())
+}
+
+/// Binds the endpoint every `setup_live` variant starts from.
+async fn bind(secret_key: SecretKey, serve: bool) -> Result<LiveBuilder> {
     let endpoint = Endpoint::builder(presets::N0)
         .secret_key(secret_key)
         .bind()
@@ -44,7 +64,7 @@ pub async fn setup_live_with_key(secret_key: SecretKey, serve: bool) -> Result<L
     if serve {
         builder = builder.with_router();
     }
-    Ok(builder.spawn())
+    Ok(builder)
 }
 
 /// Advertises the broadcast: prints its ticket and connects to a relay if one

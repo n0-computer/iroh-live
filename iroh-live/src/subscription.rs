@@ -19,8 +19,13 @@ pub struct Subscription {
 }
 
 impl Subscription {
-    /// Wires the stats recorder and signal producer onto a fresh subscription.
-    pub(crate) fn new(session: MoqSession, broadcast: RemoteBroadcast) -> Self {
+    /// Wires the stats recorder and the signal producer onto a session and a
+    /// broadcast the caller assembled itself.
+    ///
+    /// [`Live::subscribe`](crate::Live::subscribe) is the usual way in, and it
+    /// calls this. Reach for it directly when the two halves came from
+    /// somewhere else, as an `iroh-rooms` event hands them back separately.
+    pub fn new(session: MoqSession, broadcast: RemoteBroadcast) -> Self {
         crate::util::spawn_stats_recorder(
             session.conn(),
             broadcast.stats().net.clone(),

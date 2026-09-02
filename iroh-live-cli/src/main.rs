@@ -17,6 +17,8 @@ mod devices;
 mod import;
 mod publish;
 mod record;
+#[cfg(feature = "render")]
+mod room;
 mod run;
 mod source;
 mod source_spec;
@@ -44,6 +46,9 @@ enum Command {
     Publish(Box<args::PublishArgs>),
     /// Subscribe to a remote broadcast and write it to a file, headless.
     Record(Box<args::RecordArgs>),
+    /// Join a multi-party room: publish, and watch everybody else.
+    #[cfg(feature = "render")]
+    Room(Box<args::RoomArgs>),
     /// Run a multi-stream session described by a TOML file.
     Run(args::RunArgs),
     /// Subscribe to a remote broadcast and play it.
@@ -69,6 +74,8 @@ fn main() -> n0_error::Result {
         Command::Devices => devices::run(&rt),
         Command::Publish(args) => publish::run(*args, &rt),
         Command::Record(args) => record::run(*args, &rt),
+        #[cfg(feature = "render")]
+        Command::Room(args) => room::run(*args, &rt),
         Command::Run(args) => run::run(args, &rt),
         Command::Watch(args) => watch::run(args, &rt),
     }

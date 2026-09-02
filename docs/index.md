@@ -5,7 +5,7 @@
 | Page | Summary |
 |---|---|
 | [Getting started](guide/index.md) | System dependencies, building, and a first stream in the CLI and the library |
-| [CLI reference](cli.md) | Every flag of `irl devices`, `irl publish`, `irl watch`, `irl call`, `irl record`, and `irl run` |
+| [CLI reference](cli.md) | Every flag of `irl devices`, `irl publish`, `irl watch`, `irl call`, `irl room`, `irl record`, and `irl run` |
 | [Desktop rendering](guide/desktop.md) | Drawing decoded frames with wgpu and egui |
 | [Tickets](guide/tickets.md) | How connection information is encoded and shared |
 | [Rooms](guide/rooms.md) | Multi-party rooms over gossip, and why the crate is a holding pattern |

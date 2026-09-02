@@ -3722,6 +3722,7 @@ dependencies = [
  "eframe",
  "iroh",
  "iroh-live",
+ "iroh-rooms",
  "moq-media",
  "moq-media-egui",
  "moq-mux",

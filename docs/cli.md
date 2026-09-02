@@ -1,10 +1,11 @@
 # CLI reference (`irl`)
 
-The `irl` binary lives in the `iroh-live-cli` crate. It has six commands:
-`devices`, `publish`, `watch`, `call`, `record`, and `run`. Watching in a window
-needs the `render` feature, which is on by default; `--no-video` plays audio
-without it, and `record` and `run` are headless whatever the build. `call` is a
-window and nothing else, so a build without `render` does not offer it at all.
+The `irl` binary lives in the `iroh-live-cli` crate. It has seven commands:
+`devices`, `publish`, `watch`, `call`, `room`, `record`, and `run`. Watching in a
+window needs the `render` feature, which is on by default; `--no-video` plays
+audio without it, and `record` and `run` are headless whatever the build. `call`
+and `room` are windows and nothing else, so a build without `render` does not
+offer them at all.
 
 ## Commands
 
@@ -136,6 +137,36 @@ the next call. The path a peer publishes on is `calls/<its endpoint id>`, which
 `irl watch` can subscribe to like any other broadcast if all that is wanted is
 one direction.
 
+### `irl room`
+
+Joins a multi-party room: publishes this node's camera into it and draws
+everybody else's in a grid, with a chat panel underneath.
+
+| Flag | Description |
+|---|---|
+| `<TICKET>` | Ticket of the room to join. Omit to open a new one |
+| `--display-name <NAME>` | Name the other participants see (default: this node's short endpoint id) |
+| `--no-qr` | Suppress the terminal QR code |
+| `--fullscreen` | Start in fullscreen |
+
+Every `irl publish` capture flag applies here too and describes what this node
+sends.
+
+Rooms are a gossip topic plus the MoQ subscriptions that follow from it. Every
+participant announces the names of its broadcasts on the topic and subscribes to
+every name it sees, so this is a full mesh and a small-group design: there is no
+selective forwarding. The ticket a window prints includes itself as a bootstrap
+peer, so it is the one to pass on to the next participant.
+
+Chat rides on the same broadcast as the video, on a track named `chat`, so a
+peer subscribed for the picture gets the messages without a second
+subscription. Joining and leaving appear in the panel as they happen.
+
+Leaving is derived from media, not from membership: a participant's tile
+disappears when its broadcast closes or its session drops. A peer that joined
+the topic and published nothing is not shown at all. See
+[the rooms guide](guide/rooms.md) for why, and what replaces it.
+
 ### `irl record`
 
 Subscribes to a broadcast and writes it to a file. No window, no decoder: the
@@ -260,6 +291,14 @@ irl call
 irl call <TICKET>
 ```
 
+Open a room, and join it from two more machines:
+
+```sh
+irl room --display-name alice
+irl room --display-name bob <TICKET>
+irl room --display-name carol <TICKET>
+```
+
 Record ten seconds of it to a fragmented MP4:
 
 ```sh
@@ -274,9 +313,8 @@ irl run session.toml
 
 ## What is not here
 
-`room` and `relay` were dropped in the move to the upstream media stack, and both
-are recoverable from the `main` branch. Rooms have left `iroh-live` for the
-`iroh-rooms` crate and are being redesigned onto moq's announce bus.
+`relay` was dropped in the move to the upstream media stack, and is recoverable
+from the `main` branch.
 
 The relay itself is not gone, only the subcommand that embedded it. Run it as its
 own binary with `cargo run -p iroh-live-relay`, and see

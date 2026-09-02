@@ -17,6 +17,7 @@ dirs = "6"
 eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
 iroh = { workspace = true }
 iroh-live = { workspace = true, features = ["capture"] }
+iroh-rooms = { workspace = true }
 moq-net = { workspace = true }
 moq-media = { workspace = true, features = ["test-source", "capture"] }
 moq-media-egui = { workspace = true, optional = true }
