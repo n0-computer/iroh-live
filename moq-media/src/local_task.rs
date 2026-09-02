@@ -29,20 +29,19 @@ pub struct LocalTask {
 
 impl Drop for LocalTask {
     fn drop(&mut self) {
+        // Cancelled but deliberately not joined: a capture backend can take a
+        // moment to release a device, and blocking a runtime worker on that is
+        // worse than letting the thread finish on its own. The token is what
+        // guarantees it stops, and [`LocalTask::joined`] is what a caller
+        // awaits when it needs the device back before carrying on.
         self.shutdown.cancel();
-        // Deliberately not joined: a capture backend can take a moment to
-        // release a device, and blocking a runtime worker on that is worse than
-        // letting the thread finish on its own. The token is what guarantees it
-        // stops, and the channel is what a caller can await if it cares.
-        let _ = self.joined.take();
     }
 }
 
 impl LocalTask {
     /// Waits until the task has finished and released its device.
     ///
-    /// Returns immediately if it already has, or if the handle was cloned from
-    /// one that already awaited it.
+    /// Returns immediately once it has, and on every later call.
     pub async fn joined(&mut self) {
         if let Some(rx) = self.joined.take() {
             let _ = rx.await;

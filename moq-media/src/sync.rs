@@ -65,13 +65,12 @@ pub struct Sync {
     inner: Arc<SyncInner>,
 }
 
-/// Closes the sync clock when the last `Sync` handle is dropped, waking
-/// any decode threads still blocked in `wait()`. Without this, threads
-/// would block until their condvar timeout expires after all
-/// `RemoteBroadcast` clones are gone.
+/// Closes the clock when the last [`Sync`] handle goes, so a
+/// [`Sync::wait_async`] holding one of those handles cannot outlive the
+/// pipeline it was pacing.
 impl Drop for SyncInner {
     fn drop(&mut self) {
-        self.state.get_mut().unwrap().closed = true;
+        self.state.get_mut().expect("poisoned").closed = true;
         self.changed.notify_waiters();
     }
 }
@@ -108,8 +107,8 @@ struct SyncState {
     /// together.
     audio_ms: Option<i64>,
 
-    /// The video path's own decode latency, if a caller measured one. Unset in
-    /// practice today.
+    /// The video path's own decode latency, if a caller measured one. Nothing
+    /// in this crate does, so it is unset in practice.
     video_ms: Option<i64>,
 
     /// Total latency: `max(audio, video) + jitter`. Recomputed eagerly
@@ -117,8 +116,7 @@ struct SyncState {
     /// we compute inline since setters are infrequent).
     latency_ms: i64,
 
-    /// Set by [`Sync::close`], which makes every wait return immediately. No
-    /// JS equivalent: JS leans on effect cleanup and garbage collection.
+    /// Set by [`Sync::close`], which makes every wait return immediately.
     closed: bool,
 }
 
@@ -159,7 +157,7 @@ impl Sync {
         let timestamp_ms = timestamp.as_millis() as i64;
         let ref_val = now_ms - timestamp_ms;
 
-        let mut state = self.inner.state.lock().unwrap();
+        let mut state = self.inner.state.lock().expect("poisoned");
 
         if state.reference.is_some_and(|current| ref_val >= current) {
             return;
@@ -173,13 +171,11 @@ impl Sync {
 
     /// Waits until it is time to render the frame with the given PTS.
     ///
-    /// For a decode loop that
-    /// runs on the executor rather than an OS thread. Recomputes the delay once
-    /// after sleeping, so a reference that moved earlier while we slept still
-    /// holds the frame back.
+    /// Recomputes the delay whenever the clock moves under the wait, so a
+    /// reference that tightened while we slept still holds the frame back.
     ///
-    /// Returns `true` when the frame should be rendered, `false` if the clock
-    /// was closed.
+    /// Returns `true` when the frame should be rendered, and `false` if the
+    /// clock was closed.
     pub async fn wait_async(&self, timestamp: Duration) -> bool {
         loop {
             // Register before reading the delay, so a `close` or a reference
@@ -210,7 +206,7 @@ impl Sync {
     /// can drive its own timer.
     pub fn delay(&self, timestamp: Duration) -> Delay {
         let timestamp_ms = timestamp.as_millis() as i64;
-        let state = self.inner.state.lock().unwrap();
+        let state = self.inner.state.lock().expect("poisoned");
 
         if state.closed {
             return Delay::Closed;
@@ -231,46 +227,51 @@ impl Sync {
 
     /// Returns the current total latency: `max(audio, video) + jitter`.
     pub fn latency(&self) -> Duration {
-        let state = self.inner.state.lock().unwrap();
+        let state = self.inner.state.lock().expect("poisoned");
         Duration::from_millis(state.latency_ms.max(0) as u64)
     }
 
     /// Sets the network jitter buffer. Wakes any blocked `wait()` call
     /// so it can recalculate with the new latency.
     pub fn set_jitter(&self, jitter: Duration) {
-        let mut state = self.inner.state.lock().unwrap();
+        let mut state = self.inner.state.lock().expect("poisoned");
         state.jitter_ms = jitter.as_millis() as i64;
         Self::recompute_latency(&mut state);
         self.inner.changed.notify_waiters();
     }
 
-    /// Sets the audio codec latency (from the catalog `jitter` field).
+    /// Sets how much audio is queued ahead of the speaker.
     ///
-    /// Our Rust catalog does not yet carry per-codec jitter values, so
-    /// this setter is unused in practice. Provided for forward
-    /// compatibility with the JS catalog schema.
+    /// Called by the audio decode path on every frame it writes to its sink.
+    /// This is the only latency either side can actually measure, and video is
+    /// held back by it so the two land together.
     pub fn set_audio_buffered(&self, latency: Option<Duration>) {
-        let mut state = self.inner.state.lock().unwrap();
+        let mut state = self.inner.state.lock().expect("poisoned");
         state.audio_ms = latency.map(|d| d.as_millis() as i64);
         Self::recompute_latency(&mut state);
         self.inner.changed.notify_waiters();
     }
 
-    /// Sets the video codec latency (from the catalog `jitter` field).
+    /// Sets the video path's own decode latency.
     ///
-    /// Same forward-compatibility note as [`set_audio_buffered`](Self::set_audio_buffered).
+    /// The counterpart of [`set_audio_buffered`](Self::set_audio_buffered) for
+    /// a caller that can measure how long its decoder holds a frame. Nothing
+    /// in this crate measures one, so the video term stays zero unless a caller
+    /// supplies it.
     pub fn set_video_latency(&self, latency: Option<Duration>) {
-        let mut state = self.inner.state.lock().unwrap();
+        let mut state = self.inner.state.lock().expect("poisoned");
         state.video_ms = latency.map(|d| d.as_millis() as i64);
         Self::recompute_latency(&mut state);
         self.inner.changed.notify_waiters();
     }
 
-    /// Wakes every [`wait_async`](Self::wait_async) and makes later ones return
-    /// `false` at once. No JS equivalent: Rust needs explicit cleanup where JS
-    /// not cancelled automatically.
+    /// Closes the clock, so every wait returns at once and later ones return
+    /// immediately.
+    ///
+    /// The JS source has no counterpart: it leans on effect cleanup, where a
+    /// Rust pipeline has to be told to stop.
     pub fn close(&self) {
-        let mut state = self.inner.state.lock().unwrap();
+        let mut state = self.inner.state.lock().expect("poisoned");
         state.closed = true;
         self.inner.changed.notify_waiters();
     }
@@ -313,7 +314,7 @@ mod tests {
         // First frame: reference is set.
         sync.received(Duration::from_millis(0));
         {
-            let state = sync.inner.state.lock().unwrap();
+            let state = sync.inner.state.lock().expect("poisoned");
             assert!(state.reference.is_some());
             let first_ref = state.reference.unwrap();
             assert!(first_ref > 0, "reference should be positive for pts=0");
@@ -323,9 +324,9 @@ mod tests {
         // A later frame arriving at a worse offset should not update
         // the reference (it stays at the earlier/smaller value).
         thread::sleep(Duration::from_millis(10));
-        let ref_before = sync.inner.state.lock().unwrap().reference;
+        let ref_before = sync.inner.state.lock().expect("poisoned").reference;
         sync.received(Duration::from_millis(0));
-        let ref_after = sync.inner.state.lock().unwrap().reference;
+        let ref_after = sync.inner.state.lock().expect("poisoned").reference;
         assert_eq!(ref_before, ref_after, "reference should not increase");
     }
 

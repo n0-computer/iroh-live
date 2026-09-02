@@ -120,7 +120,7 @@ impl Metric {
             .current
             .store(smoothed.to_bits(), Ordering::Relaxed);
 
-        let mut hist = self.inner.history.lock().expect("metric history lock");
+        let mut hist = self.inner.history.lock().expect("poisoned");
         if hist.len() >= self.inner.meta.history_cap {
             hist.pop_front();
         }
@@ -135,7 +135,7 @@ impl Metric {
     /// Copies history into `out`, clearing it first. Reuses the Vec allocation.
     pub fn history_into(&self, out: &mut Vec<(Instant, f64)>) {
         out.clear();
-        let hist = self.inner.history.lock().expect("history lock");
+        let hist = self.inner.history.lock().expect("poisoned");
         out.extend(hist.iter().copied());
     }
 
@@ -184,11 +184,11 @@ impl Label {
     }
 
     pub fn set(&self, value: impl Into<String>) {
-        *self.inner.lock().expect("label lock") = value.into();
+        *self.inner.lock().expect("poisoned") = value.into();
     }
 
     pub fn get(&self) -> String {
-        self.inner.lock().expect("label lock").clone()
+        self.inner.lock().expect("poisoned").clone()
     }
 }
 
@@ -355,7 +355,7 @@ impl Timeline {
     }
 
     pub fn push(&self, entry: FrameMeta) {
-        let mut frames = self.frames.lock().expect("timeline lock");
+        let mut frames = self.frames.lock().expect("poisoned");
         if frames.len() >= self.cap {
             frames.pop_front();
         }
@@ -365,7 +365,7 @@ impl Timeline {
     pub fn snapshot(&self) -> Vec<FrameMeta> {
         self.frames
             .lock()
-            .expect("timeline lock")
+            .expect("poisoned")
             .iter()
             .cloned()
             .collect()
