@@ -56,7 +56,7 @@ moq-lite = { package = "moq-net", version = "0.1.11" }
 moq-mux = "0.5.5"
 moq-relay = { version = "0.12.2", default-features = false }
 moq-native = { version = "0.17.1", default-features = false }
-web-transport-iroh = "0.6.0"
+web-transport-iroh = "0.7.0"
 
 # In-repo crates
 iroh-live = { path = "iroh-live", default-features = false }
