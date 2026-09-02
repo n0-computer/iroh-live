@@ -96,26 +96,38 @@ async fn run(publish: Publish) -> Result<(), PublishError> {
         }
         #[cfg(feature = "capture")]
         VideoSource::Capture(config) => {
-            let stream = moq_video::capture::open(&config).await?;
-            let size = Size::new(stream.width(), stream.height());
-            let framerate = config
-                .framerate
-                .or_else(|| stream.framerate())
-                .unwrap_or(DEFAULT_FRAMERATE);
-            let color = stream.color();
-            // The capture stream reads on a thread of its own, and only the
-            // surfaces cross. moq's native backends are not all `Send`: an Apple
-            // camera or screen stream holds AVFoundation objects, so a future
-            // holding one cannot go to a work-stealing executor. Surfaces can.
-            //
-            // `read` reports a failed capture as well as its end. Either way the
-            // stream stops here, and the encoder tasks downstream see the source
-            // close; the error is logged rather than propagated, since a stream
-            // has nowhere to return one.
+            // The device is opened on a thread of its own and never leaves it;
+            // only its geometry and its surfaces cross. moq's native backends
+            // are not all `Send`: an Apple camera or screen stream holds
+            // AVFoundation objects, so neither the stream nor a future holding
+            // one can go to a work-stealing executor. Surfaces can.
             let (surface_tx, surface_rx) = tokio::sync::mpsc::channel(1);
+            let (opened_tx, opened) = tokio::sync::oneshot::channel();
+            let open_config = config.clone();
             let reader = crate::local_task::spawn("video-capture", move |shutdown| async move {
-                let mut stream = stream;
+                let mut stream = match moq_video::capture::open(&open_config).await {
+                    Ok(stream) => stream,
+                    Err(err) => {
+                        let _ = opened_tx.send(Err(err));
+                        return;
+                    }
+                };
+                // The geometry is read here because the caller needs it to
+                // register the catalog, and the stream itself cannot travel.
+                let geometry = (
+                    Size::new(stream.width(), stream.height()),
+                    stream.framerate(),
+                    stream.color(),
+                );
+                if opened_tx.send(Ok(geometry)).is_err() {
+                    return;
+                }
+
                 loop {
+                    // `read` reports a failed capture as well as its end. Either
+                    // way the stream stops here and the encoders downstream see
+                    // the source close; the error is logged rather than
+                    // propagated, since by now there is nobody to return it to.
                     let surface = tokio::select! {
                         read = stream.read() => read,
                         _ = shutdown.cancelled() => break,
@@ -136,6 +148,25 @@ async fn run(publish: Publish) -> Result<(), PublishError> {
                     }
                 }
             });
+
+            let (size, device_framerate, color) = match opened.await {
+                Ok(Ok(geometry)) => geometry,
+                Ok(Err(err)) => return Err(err.into()),
+                // The thread died before it reported, which it only does when it
+                // could not start at all.
+                Err(_) => {
+                    return Err(moq_video::Error::Unsupported(
+                        "the video capture thread stopped before opening the device".into(),
+                    )
+                    .into());
+                }
+            };
+            let framerate = config
+                .framerate
+                .or(device_framerate)
+                .unwrap_or(DEFAULT_FRAMERATE);
+            // The reader handle rides along in the stream's state so the thread
+            // lives exactly as long as anything is still reading from it.
             let frames = Box::pin(n0_future::stream::unfold(
                 (surface_rx, reader),
                 |(mut rx, reader)| async move { rx.recv().await.map(|surface| (surface, (rx, reader))) },

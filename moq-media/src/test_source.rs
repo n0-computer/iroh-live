@@ -162,8 +162,10 @@ mod tests {
         let frame = frames.next().await.expect("the tone yields a first frame");
         let peak = frame
             .data
-            .chunks_exact(4)
-            .map(|s| f32::from_le_bytes(s.try_into().expect("four bytes")).abs())
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|s| f32::from_le_bytes(*s).abs())
             .fold(0.0f32, f32::max);
 
         assert!(peak > 0.1, "the tone is silent: peak {peak}");
