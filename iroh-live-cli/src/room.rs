@@ -493,6 +493,7 @@ mod window {
         // the wiring `Live::subscribe` does for a subscription of its own is
         // done here instead.
         let sub = Subscription::new(session, broadcast);
+        crate::ui::draw_without_downloading(sub.broadcast());
         let tracks = sub.broadcast().media().await;
         Some(Opened {
             remote,

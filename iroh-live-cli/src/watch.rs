@@ -4,12 +4,6 @@
 //! Unless `--rendition` pins one, the video track follows the downlink: the
 //! subscription's transport signals drive `moq-media`'s adaptation, which swaps
 //! renditions without the picture going blank.
-//!
-//! Everything decoded here is drawn and nothing here reads a pixel, so the
-//! subscription asks for GPU-resident frames: a hardware decoder that can share
-//! its decode surface hands one over and the renderer imports it, which is a
-//! full-frame copy per frame that never happens. `irl record` is the other side
-//! of that choice and does not ask, since it never decodes at all.
 
 use iroh_live::{Live, Subscription, media::subscribe::MediaTracks};
 use n0_error::Result;
@@ -67,12 +61,9 @@ async fn subscribe(
         .await?;
     info!("session established");
 
-    // Before the video track opens, since the policy is read when a decoder is
-    // built rather than watched afterwards.
-    if !args.no_video {
-        let broadcast = sub.broadcast();
-        broadcast.set_playback_policy(broadcast.playback_policy().with_gpu_frames(true));
-    }
+    // Without a renderer nothing draws, so downloading is what a frame is for.
+    #[cfg(feature = "render")]
+    crate::ui::draw_without_downloading(sub.broadcast());
 
     // `--no-video` opens audio alone rather than opening video and discarding
     // it: a decoder nobody draws from still costs a core.

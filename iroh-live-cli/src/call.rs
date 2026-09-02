@@ -500,6 +500,7 @@ mod window {
                 ));
             }
         };
+        crate::ui::draw_without_downloading(call.remote());
         let tracks = call.remote().media().await;
         Answer::Connected(Box::new(Connected { call, tracks }))
     }

@@ -21,6 +21,21 @@ use n0_future::task::{AbortOnDropHandle, spawn};
 use tokio::sync::watch;
 use tracing::info;
 
+/// Asks `broadcast` for GPU-resident frames, which is right for every window in
+/// this CLI: they all draw what they decode and none of them reads a pixel.
+///
+/// Call it before opening the video track. A decoder reads the policy when it is
+/// built rather than watching it afterwards, so setting it later has no effect
+/// until a rendition switch rebuilds the decoder.
+///
+/// What it buys is the download: a hardware decoder that can share its decode
+/// surface hands one over and the renderer imports it, so a full frame is not
+/// copied out of the GPU and straight back in. `irl record` is the other side of
+/// the choice and does not ask, since it never decodes at all.
+pub fn draw_without_downloading(broadcast: &RemoteBroadcast) {
+    broadcast.set_playback_policy(broadcast.playback_policy().with_gpu_frames(true));
+}
+
 /// Height of the top bar, in points.
 const TOP_BAR_HEIGHT: f32 = 24.0;
 
