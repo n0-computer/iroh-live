@@ -10,6 +10,7 @@ use std::{
     collections::{HashMap, hash_map},
     fmt,
     sync::Arc,
+    time::Duration,
 };
 
 use iroh::{
@@ -22,7 +23,7 @@ use n0_error::{AnyError, Result, e, stack_error};
 use n0_future::task::{AbortOnDropHandle, JoinSet, spawn};
 use tokio::sync::{broadcast as tokio_broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, error_span, field, info, instrument};
+use tracing::{Instrument, debug, error, error_span, field, info, instrument, warn};
 
 /// The ALPN this node prefers, the newest MoQ version it speaks.
 ///
@@ -46,6 +47,14 @@ pub fn alpns() -> Vec<&'static [u8]> {
         .chain(std::iter::once(web_transport_iroh::ALPN_H3.as_bytes()))
         .collect()
 }
+
+/// How long [`Moq::shutdown`] gives a session to tell its peer it is closing.
+///
+/// A close is one packet and needs no answer, so this is a round trip's grace
+/// and not a negotiation. A peer that cannot take it inside the window is one
+/// that has already gone away, and waiting longer only delays the process
+/// exiting behind it.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
 /// The route every locally published broadcast is created with: announced, so
 /// peers discover it without asking for the path by name.
@@ -84,6 +93,8 @@ pub enum Error {
     },
     #[error("internal consistency error")]
     InternalConsistencyError(#[error(source)] LiveActorDiedError),
+    #[error("the transport has shut down")]
+    ShutDown,
 }
 
 #[stack_error(derive, add_meta, from_sources)]
@@ -179,6 +190,12 @@ impl Moq {
     /// Connections are deduplicated: two calls for the same peer share one
     /// session, and concurrent calls coalesce onto a single dial.
     pub async fn connect(&self, remote: impl Into<EndpointAddr>) -> Result<MoqSession, Error> {
+        // Checked here as well as in the actor: once shut down the actor is
+        // gone, and a caller deserves the reason rather than the silence of a
+        // channel nobody is reading.
+        if self.shutdown_token.is_cancelled() {
+            return Err(e!(Error::ShutDown));
+        }
         let (reply, reply_rx) = oneshot::channel();
         self.tx
             .send(ActorMessage::Connect {
@@ -202,7 +219,13 @@ impl Moq {
         }
     }
 
-    /// Shuts down the transport, closing all sessions.
+    /// Shuts down the transport.
+    ///
+    /// Every session closes, the actor stops, and [`connect`](Self::connect)
+    /// fails from here on. Returns as soon as the shutdown is asked for: the
+    /// closes are flushed to peers in the background, under a few seconds'
+    /// grace, so a caller that needs the sockets gone waits on
+    /// [`Endpoint::close`](iroh::Endpoint::close) rather than on this.
     pub fn shutdown(&self) {
         self.shutdown_token.cancel();
     }
@@ -348,7 +371,7 @@ impl IncomingSessionStream {
             match self.rx.recv().await {
                 Ok(session) => return Some(session),
                 Err(tokio_broadcast::error::RecvError::Lagged(n)) => {
-                    info!("incoming session stream lagged, skipped {n} sessions");
+                    warn!(skipped = n, "incoming session stream lagged");
                     continue;
                 }
                 Err(tokio_broadcast::error::RecvError::Closed) => return None,
@@ -543,6 +566,10 @@ impl Actor {
     async fn run(mut self, mut inbox: mpsc::Receiver<ActorMessage>) {
         loop {
             tokio::select! {
+                () = self.shutdown_token.cancelled() => {
+                    info!(sessions = self.sessions.len(), "shutting down");
+                    break;
+                }
                 msg = inbox.recv() => {
                     match msg {
                         None => break,
@@ -555,12 +582,12 @@ impl Actor {
                             info!(remote=%endpoint_id.fmt_short(), "session closed: {res:?}");
                             self.forget_session(endpoint_id, generation);
                         }
-                        Err(err) => tracing::error!("session task panicked: {err}"),
+                        Err(err) => error!("session task panicked: {err}"),
                     }
                 }
                 Some(res) = self.pending_connect_tasks.join_next(), if !self.pending_connect_tasks.is_empty() => {
                     match res {
-                        Err(err) => tracing::error!("connect task panicked: {err}"),
+                        Err(err) => error!("connect task panicked: {err}"),
                         Ok((endpoint_id, Ok((session, driver)))) => {
                             info!(remote=%endpoint_id.fmt_short(), "connected");
                             self.handle_session(session, driver);
@@ -576,6 +603,31 @@ impl Actor {
                     }
                 }
             }
+        }
+        self.drain_sessions().await;
+    }
+
+    /// Waits for every session driver to finish after cancellation.
+    ///
+    /// Each driver closes its session and then flushes that close to the peer,
+    /// so dropping the [`JoinSet`] instead would abort them mid-flush and leave
+    /// peers to notice the connection by timing out. Sessions that outlive the
+    /// wait are aborted with it, because a peer that has stopped reading must
+    /// not hold the shutdown open.
+    async fn drain_sessions(&mut self) {
+        if self.session_tasks.is_empty() {
+            return;
+        }
+        let drained = tokio::time::timeout(SHUTDOWN_GRACE, async {
+            while self.session_tasks.join_next().await.is_some() {}
+        })
+        .await;
+        if drained.is_err() {
+            warn!(
+                remaining = self.session_tasks.len(),
+                grace = ?SHUTDOWN_GRACE,
+                "sessions did not close in time, aborting them",
+            );
         }
     }
 
@@ -677,7 +729,20 @@ impl Actor {
         reply: oneshot::Sender<Result<MoqSession, Arc<Error>>>,
     ) {
         let remote_id = remote.id;
-        if let Some((_, session)) = self.sessions.get(&remote_id).and_then(|peer| peer.first()) {
+        if self.shutdown_token.is_cancelled() {
+            reply.send(Err(Arc::new(e!(Error::ShutDown)))).ok();
+            return;
+        }
+        // The oldest session whose connection is still open. A session stays in
+        // the map until its driver task lands, which is a scheduling hop after
+        // the connection went, so the front of the list can be one that is on
+        // its way out; handing that back would give the caller a subscribe that
+        // fails on its first read.
+        let live = self
+            .sessions
+            .get(&remote_id)
+            .and_then(|peer| peer.iter().find(|(_, s)| s.conn().close_reason().is_none()));
+        if let Some((_, session)) = live {
             reply.send(Ok(session.clone())).ok();
             return;
         }
