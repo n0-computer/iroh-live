@@ -65,16 +65,6 @@ pub struct Sync {
     inner: Arc<SyncInner>,
 }
 
-/// Closes the clock when the last [`Sync`] handle goes, so a
-/// [`Sync::wait_async`] holding one of those handles cannot outlive the
-/// pipeline it was pacing.
-impl Drop for SyncInner {
-    fn drop(&mut self) {
-        self.state.get_mut().expect("poisoned").closed = true;
-        self.changed.notify_waiters();
-    }
-}
-
 #[derive(Debug)]
 struct SyncInner {
     /// Wall-clock epoch set at construction. `base.elapsed()` gives us

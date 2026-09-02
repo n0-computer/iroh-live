@@ -79,12 +79,12 @@ impl Default for PlaybackPolicy {
 }
 
 impl PlaybackPolicy {
-    /// Synced playout with the default 150 ms latency budget.
+    /// Synced playout with the default 150 ms latency ceiling.
     pub fn synced() -> Self {
         Self::default()
     }
 
-    /// Unmanaged playout with the default 150 ms latency budget.
+    /// Unmanaged playout with the default 150 ms latency ceiling.
     pub fn unmanaged() -> Self {
         Self {
             sync: SyncMode::Unmanaged,

@@ -1,15 +1,15 @@
-//! Single-slot "latest value" channel for decoded video frames.
+//! A single-slot channel holding the latest decoded frame.
 //!
-//! The producer overwrites the current value on each send, dropping
-//! whatever was there. The consumer takes the value out, getting
-//! ownership without cloning. If no new value has arrived since the
-//! last take, [`FrameReceiver::take`] returns `None`.
+//! The producer overwrites the slot on every send, dropping whatever was
+//! there. The consumer takes the value out and owns it, without cloning.
+//! [`FrameReceiver::take`] returns `None` when nothing has arrived since the
+//! last one.
 //!
-//! This replaces a bounded `mpsc::channel(32)` that was drained to
-//! the latest frame on every consume, wasting decode effort and
-//! holding up to 32 GPU surfaces in flight. With a single slot, at
-//! most one frame is buffered, and overwritten frames are dropped
-//! immediately at the producer (before the consumer ever sees them).
+//! A queue would be wrong for this. A renderer that falls behind wants the
+//! newest picture, not the oldest, and a backlog of frames is a backlog of GPU
+//! surfaces held out of the decoder's pool. One slot bounds that at a single
+//! frame, and drops the ones nobody will draw at the producer rather than
+//! carrying them to a consumer that will discard them.
 
 use std::sync::{
     Arc, Mutex,
@@ -247,13 +247,12 @@ mod tests {
     #[test]
     fn clone_sender_keeps_channel_open() {
         let (tx, rx) = frame_channel::<u32>();
-        let tx2 = tx.clone();
+        let second = tx.clone();
         drop(tx);
-        // Channel stays open because tx2 is still alive.
-        assert!(!rx.is_closed());
-        tx2.send(99);
+        assert!(!rx.is_closed(), "one sender is still alive");
+        second.send(99);
         assert_eq!(rx.take(), Some(99));
-        drop(tx2);
+        drop(second);
         assert!(rx.is_closed());
     }
 

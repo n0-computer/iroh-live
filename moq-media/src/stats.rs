@@ -1,10 +1,16 @@
-//! Typed metrics infrastructure for debug overlays.
+//! The counters a debug overlay draws.
 //!
-//! Each observable value is a [`Metric`] (EMA-smoothed current value +
-//! ring buffer history for sparklines) or a [`Label`] (atomic string).
-//! These are grouped into typed structs ([`NetStats`], [`EncodeStats`],
-//! [`RenderStats`], [`TimingStats`]) that the pipelines write to and
-//! the overlay reads from. No string keys, no registration.
+//! An observable value is either a [`Metric`], which keeps a smoothed current
+//! reading alongside a ring buffer of samples for a sparkline, or a [`Label`],
+//! which is a string. Both are cheap to clone and safe to write from any
+//! thread, so a pipeline holds its own handle rather than reaching for a
+//! registry.
+//!
+//! They are grouped by where they come from: [`NetStats`] from the transport,
+//! [`EncodeStats`] from the publish path, [`RenderStats`] and [`TimingStats`]
+//! from the subscribe path. No string keys and no registration, so a metric
+//! that nothing writes is visible as an unused field rather than as an empty
+//! row at runtime.
 
 use std::{
     collections::VecDeque,
