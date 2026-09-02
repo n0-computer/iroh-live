@@ -13,6 +13,7 @@ use std::{sync::OnceLock, time::Duration};
 use iroh::address_lookup::MemoryLookup;
 use moq_net::{Origin, Path, Timestamp, broadcast};
 use moq_relay::{PublicConfig, PublicDetailed};
+use n0_future::task::AbortOnDropHandle;
 use serial_test::serial;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -25,11 +26,16 @@ fn shared_lookup() -> MemoryLookup {
 }
 
 /// Starts a relay (noq server + iroh endpoint + cluster) and returns handles.
+///
+/// Both tasks are held rather than detached, so a test that ends early, or
+/// panics, takes its relay with it instead of leaving it accepting connections
+/// for the rest of the run.
 struct TestRelay {
-    server_handle: tokio::task::JoinHandle<()>,
+    _server_task: AbortOnDropHandle<()>,
+    _cluster_task: AbortOnDropHandle<()>,
     cluster: moq_relay::Cluster,
     noq_addr: std::net::SocketAddr,
-    iroh_id: Option<String>,
+    iroh_id: iroh::EndpointId,
 }
 
 impl TestRelay {
@@ -75,7 +81,7 @@ impl TestRelay {
             .expect("bind relay iroh");
 
         shared_lookup().add_endpoint_info(iroh.addr());
-        let iroh_id = Some(iroh.id().to_string());
+        let iroh_id = iroh.id();
 
         let server = server_config.init().expect("init server");
         let client = client_config.init().expect("init client");
@@ -97,13 +103,13 @@ impl TestRelay {
             .expect("init cluster")
             .with_client(client);
         let cluster_handle = cluster.clone();
-        tokio::spawn(async move {
+        let cluster_task = AbortOnDropHandle::new(tokio::spawn(async move {
             cluster_handle.run().await.expect("cluster failed");
-        });
+        }));
 
         let auth_clone = auth;
         let cluster_clone = cluster.clone();
-        let server_handle = tokio::spawn(async move {
+        let server_task = AbortOnDropHandle::new(tokio::spawn(async move {
             let mut conn_id = 0u64;
             while let Some(request) = server.accept().await {
                 let conn = moq_relay::Connection {
@@ -119,10 +125,11 @@ impl TestRelay {
                     }
                 });
             }
-        });
+        }));
 
         Self {
-            server_handle,
+            _server_task: server_task,
+            _cluster_task: cluster_task,
             cluster,
             noq_addr,
             iroh_id,
@@ -200,8 +207,6 @@ async fn noq_publish_noq_subscribe() {
         .expect("err")
         .expect("closed");
     assert_eq!(&frame.payload[..], b"hello-noq");
-
-    relay.server_handle.abort();
 }
 
 /// iroh publish -> relay -> iroh subscribe (using iroh-live Live API).
@@ -210,7 +215,7 @@ async fn noq_publish_noq_subscribe() {
 async fn iroh_publish_iroh_subscribe() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
-    let relay_id: iroh::EndpointId = relay.iroh_id.as_ref().expect("no iroh").parse().unwrap();
+    let relay_id = relay.iroh_id;
 
     // Publisher
     let pub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -271,7 +276,6 @@ async fn iroh_publish_iroh_subscribe() {
     publisher.shutdown().await;
     pub_ep.close().await;
     sub_ep.close().await;
-    relay.server_handle.abort();
 }
 
 /// noq publish -> relay -> iroh subscribe (via Live::subscribe).
@@ -284,7 +288,7 @@ async fn iroh_publish_iroh_subscribe() {
 async fn noq_publish_iroh_subscribe() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
-    let relay_id: iroh::EndpointId = relay.iroh_id.as_ref().expect("no iroh").parse().unwrap();
+    let relay_id = relay.iroh_id;
 
     // ── Publisher (noq, simulating browser) ──
     // Publish a broadcast with a hang-compatible catalog and video track.
@@ -359,7 +363,6 @@ async fn noq_publish_iroh_subscribe() {
                 drop(sub);
                 drop(_pub_session);
                 sub_ep.close().await;
-                relay.server_handle.abort();
                 return;
             }
             Ok(Err(e)) => {
@@ -388,10 +391,11 @@ async fn noq_publish_iroh_subscribe() {
 /// ticket, subscribes to its broadcast, and makes it available to noq
 /// (browser) subscribers.
 ///
-/// Mirrors what `iroh_live_relay::pull::PullState` does internally (that
-/// module is crate-private, so this test drives the same moq-net APIs
-/// directly): a MoQ session dialed with a subscriber origin scoped to the
-/// ticket's one broadcast and re-rooted to its local name.
+/// Drives the same moq-net APIs `iroh_live_relay::pull::PullState` uses rather
+/// than the pull itself, so a failure here says whether the mechanism works at
+/// all before the two lifecycle tests below ask when it stops: a MoQ session
+/// dialled with a subscriber origin scoped to the ticket's one broadcast and
+/// re-rooted to its local name.
 #[tokio::test]
 #[serial]
 async fn pull_remote_broadcast_via_ticket() {
@@ -518,7 +522,6 @@ async fn pull_remote_broadcast_via_ticket() {
     drop(broadcast);
     publisher.shutdown().await;
     pub_ep.close().await;
-    relay.server_handle.abort();
 }
 
 /// iroh publish -> relay -> noq subscribe.
@@ -528,7 +531,7 @@ async fn pull_remote_broadcast_via_ticket() {
 async fn iroh_publish_noq_subscribe() {
     let _ = tracing_subscriber::fmt::try_init();
     let relay = TestRelay::start().await;
-    let relay_id: iroh::EndpointId = relay.iroh_id.as_ref().expect("no iroh").parse().unwrap();
+    let relay_id = relay.iroh_id;
 
     // Publisher (iroh via iroh-live)
     let pub_ep = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -585,7 +588,6 @@ async fn iroh_publish_noq_subscribe() {
     drop(broadcast);
     publisher.shutdown().await;
     pub_ep.close().await;
-    relay.server_handle.abort();
 }
 
 /// How long a pull may linger unwatched in the pull-lifecycle tests. Short
@@ -715,7 +717,6 @@ async fn pull_retires_an_unwatched_session() {
     drop(broadcast);
     publisher.shutdown().await;
     pub_ep.close().await;
-    relay.server_handle.abort();
 }
 
 /// A subscriber that reached the mirrored broadcast over some other session
@@ -771,5 +772,4 @@ async fn pull_survives_a_reader_holding_no_guard() {
     drop(broadcast);
     publisher.shutdown().await;
     pub_ep.close().await;
-    relay.server_handle.abort();
 }
