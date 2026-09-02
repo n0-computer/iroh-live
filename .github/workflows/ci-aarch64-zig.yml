@@ -12,9 +12,15 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Default to read-only; jobs that need more grant it explicitly.
+permissions:
+  contents: read
+
 jobs:
   zigbuild:
     name: aarch64 zigbuild
+    permissions:
+      contents: write        # uploads the irl binary to the rolling release
     runs-on: ubuntu-latest
 
     steps:

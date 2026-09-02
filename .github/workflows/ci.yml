@@ -12,6 +12,10 @@ env:
   RUST_BACKTRACE: 1
   CARGO_INCREMENTAL: 0
 
+# Default to read-only; jobs that need more grant it explicitly.
+permissions:
+  contents: read
+
 jobs:
   check-linux:
     name: Linux
