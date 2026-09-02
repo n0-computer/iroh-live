@@ -130,6 +130,9 @@ jobs:
       # Pre-build so compilation doesn't eat into test timeouts.
       - name: Build relay + CLI + examples
         run: cargo make e2e-prebuild
+      - name: Lockfile must not have moved
+        # cargo make / zigbuild take no --locked; assert the lockfile instead.
+        run: git diff --exit-code Cargo.lock
 
       - name: Build relay web assets
         working-directory: iroh-live-relay/web

@@ -64,6 +64,9 @@ jobs:
 
       - name: Build irl CLI (release-dist)
         run: cargo make cross-build-aarch64 -- -p iroh-live-cli --profile release-dist
+      - name: Lockfile must not have moved
+        # cargo make / zigbuild take no --locked; assert the lockfile instead.
+        run: git diff --exit-code Cargo.lock
 
       - name: Upload irl binary to rolling release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
