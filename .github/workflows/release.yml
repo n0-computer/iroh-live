@@ -129,7 +129,7 @@ jobs:
             --notes "$(cat <<NOTES
           Rolling development build from \`main\` branch.
 
-          **Commit:** ${{ github.sha }}
+          **Commit:** $GITHUB_SHA
           **Built:** ${BUILD_DATE}
 
           ### Platforms
