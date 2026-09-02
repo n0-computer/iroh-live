@@ -40,6 +40,7 @@ use iroh_live::ticket::LiveTicket;
 use moq_net::{Path, broadcast};
 use moq_relay::Cluster;
 use tokio::sync::watch;
+use tracing::{debug, info, warn};
 
 /// Default for [`PullState::with_linger`].
 ///
@@ -85,13 +86,23 @@ impl fmt::Debug for PullState {
     }
 }
 
+/// How far a pull's dial has got.
+#[derive(Debug, Clone)]
+enum Dial {
+    /// Still in flight. Every caller for this ticket waits on it.
+    Pending,
+    /// The session is up and the broadcast is mirroring into the cluster.
+    Connected,
+    /// The dial failed, and this is why. Carried as a string because every
+    /// waiter gets a copy of it.
+    Failed(String),
+}
+
 /// One pulled ticket: the state [`PullState::pull`] and the task holding the
 /// session agree on.
 #[derive(Debug)]
 struct Pull {
-    /// How the dial ended, or `None` while it is still in flight. The error is
-    /// carried as a string because every waiter gets a copy of it.
-    connected: watch::Sender<Option<Result<(), String>>>,
+    dial: watch::Sender<Dial>,
     /// Local sessions that named this ticket and have not disconnected yet.
     claims: watch::Sender<usize>,
 }
@@ -99,7 +110,7 @@ struct Pull {
 impl Pull {
     fn new() -> Self {
         Self {
-            connected: watch::Sender::new(None),
+            dial: watch::Sender::new(Dial::Pending),
             claims: watch::Sender::new(0),
         }
     }
@@ -144,6 +155,7 @@ impl PullState {
     ///
     /// Defaults to ten seconds. Tests shorten it to keep the retirement path
     /// fast; a relay has no reason to change it.
+    #[must_use]
     pub fn with_linger(mut self, linger: Duration) -> Self {
         self.linger = linger;
         self
@@ -189,30 +201,37 @@ impl PullState {
             let name = local_name.clone();
             let pull = Arc::clone(&guard.pull);
             tokio::spawn(async move {
-                let result = state.do_connect(&ticket, &name, &pull).await;
-                if let Err(err) = &result {
-                    // Retire the failed entry so the next pull for this ticket
-                    // dials again rather than joining a session that never
-                    // came up.
-                    tracing::warn!(local_name = %name, %err, "pull dial failed");
-                    state.retire(&name, &pull);
-                }
-                pull.connected
-                    .send_replace(Some(result.map_err(|err| format!("{err:#}"))));
+                let outcome = match state.do_connect(&ticket, &name, &pull).await {
+                    Ok(()) => Dial::Connected,
+                    Err(err) => {
+                        // Retire the failed entry so the next pull for this
+                        // ticket dials again rather than joining a session that
+                        // never came up.
+                        warn!(local_name = %name, %err, "pull dial failed");
+                        state.retire(&name, &pull);
+                        Dial::Failed(format!("{err:#}"))
+                    }
+                };
+                pull.dial.send_replace(outcome);
             });
         } else {
-            tracing::debug!(local_name = %local_name, "pull: joining an existing pull");
+            debug!(local_name = %local_name, "joining an existing pull");
         }
 
         // Dialling or joining, every caller waits on the one dial's outcome.
-        let mut connected = guard.pull.connected.subscribe();
-        connected
-            .wait_for(|connected| connected.is_some())
+        let mut dial = guard.pull.dial.subscribe();
+        let outcome = dial
+            .wait_for(|dial| !matches!(dial, Dial::Pending))
             .await
-            .ok()
-            .and_then(|connected| (*connected).clone())
-            .unwrap_or_else(|| Err("the pull was dropped before it connected".to_owned()))
-            .map_err(|err| anyhow::anyhow!("failed to pull {local_name}: {err}"))?;
+            .map_or_else(
+                // Needs every sender gone, and the dialling task holds one until
+                // it reports, so this is the pull being dropped underneath us.
+                |_| Dial::Failed("the pull was dropped before it connected".to_owned()),
+                |dial| dial.clone(),
+            );
+        if let Dial::Failed(err) = outcome {
+            anyhow::bail!("failed to pull {local_name}: {err}");
+        }
 
         Ok(guard)
     }
@@ -225,7 +244,7 @@ impl PullState {
         local_name: &str,
         pull: &Arc<Pull>,
     ) -> anyhow::Result<()> {
-        tracing::info!(
+        info!(
             remote = %ticket.endpoint.id.fmt_short(),
             broadcast = %ticket.broadcast_name,
             "pulling remote broadcast"
@@ -261,7 +280,7 @@ impl PullState {
         // without it, mirroring `moq_native::spawn_session`.
         tokio::spawn(driver);
 
-        tracing::info!(
+        info!(
             local_name = %local_name,
             remote = %ticket.endpoint.id.fmt_short(),
             "remote broadcast available locally"
@@ -281,11 +300,11 @@ impl PullState {
     async fn hold(self, local_name: String, pull: Arc<Pull>, session: moq_net::Session) {
         tokio::select! {
             err = session.closed() => {
-                tracing::info!(local_name = %local_name, %err, "pull session closed by the publisher");
+                info!(local_name = %local_name, %err, "pull session closed by the publisher");
                 self.retire(&local_name, &pull);
             }
             () = self.wait_idle(&local_name, &pull) => {
-                tracing::info!(local_name = %local_name, "pull went idle, closing the session");
+                info!(local_name = %local_name, "pull went idle, closing the session");
             }
         }
 
@@ -323,7 +342,7 @@ impl PullState {
         .flatten()
         .map(|broadcast| broadcast.demand());
         if demand.is_none() {
-            tracing::warn!(
+            warn!(
                 local_name = %local_name,
                 "pulled broadcast was never announced; falling back to the guard count alone"
             );
