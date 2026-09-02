@@ -1,6 +1,6 @@
 use iroh::{EndpointAddr, EndpointId, endpoint::ConnectionError};
 use iroh_moq::MoqSession;
-use moq_media::{net::NetworkSignals, publish::LocalBroadcast, subscribe::RemoteBroadcast};
+use moq_media::{net::NetworkSignals, subscribe::RemoteBroadcast};
 use n0_error::{AnyError, Result, stack_error};
 use tokio::sync::watch;
 
@@ -23,21 +23,21 @@ pub enum CallError {
 /// Standalone 1:1 call helper. Pure sugar over MoQ primitives.
 ///
 /// What it does internally:
-/// 1. Connects to remote peer (or accepts incoming session)
-/// 2. Publishes the caller's [`LocalBroadcast`] named "call" on the session
-/// 3. Subscribes to the remote's broadcast -> [`RemoteBroadcast`]
-/// 4. Wraps both in a handle with state tracking
+/// 1. Connects to the remote peer, or accepts an incoming session
+/// 2. Subscribes to the peer's broadcast -> [`RemoteBroadcast`]
+/// 3. Wires the stats recorder and the signal producer onto the connection
 ///
-/// The caller creates `local` with `live.publish(Call::path(own_id))` and
-/// configures its video and audio; the call subscribes to the peer's side at
-/// `Call::path(remote_id)`.
+/// The local side is not part of this. Publishing is node-wide, so a broadcast
+/// created with `live.publish(Call::path(own_id))` is announced on every
+/// session this node has, including the call's own, and it outlives any number
+/// of calls. Keep it wherever the application keeps its capture; the call only
+/// reads the peer's side, at `Call::path(remote_id)`.
 ///
 /// Everything this does can be done directly with [`Live::publish`],
 /// [`Live::transport`], and [`RemoteBroadcast`]; it is 1:1 sugar, not a layer.
 #[derive(Debug)]
 pub struct Call {
     session: MoqSession,
-    local: LocalBroadcast,
     remote: RemoteBroadcast,
     signals: watch::Receiver<NetworkSignals>,
 }
@@ -57,21 +57,18 @@ fn call_path(publisher: EndpointId) -> String {
 }
 
 impl Call {
-    /// Dials a remote peer. Connects, publishes the local broadcast, subscribes to remote.
+    /// Dials a remote peer and subscribes to its side of the call.
     ///
-    /// Build `local` with `live.publish(Call::path(live.endpoint().id()))` and
-    /// configure its video and audio before dialing.
-    pub async fn dial(
-        live: &Live,
-        remote: impl Into<EndpointAddr>,
-        local: LocalBroadcast,
-    ) -> Result<Self, CallError> {
+    /// Publish this node's own side with
+    /// `live.publish(Call::path(live.endpoint().id()))` first, so the peer has
+    /// something to subscribe to when it answers.
+    pub async fn dial(live: &Live, remote: impl Into<EndpointAddr>) -> Result<Self, CallError> {
         let session = live
             .transport()
             .connect(remote)
             .await
             .map_err(CallError::ConnectionFailed)?;
-        Self::setup(session, local).await
+        Self::setup(session).await
     }
 
     /// The path this node publishes its side of a call on.
@@ -84,20 +81,21 @@ impl Call {
 
     /// Accepts an incoming session as a call.
     ///
-    /// Build `local` the same way [`dial`](Self::dial) describes.
-    pub async fn accept(session: MoqSession, local: LocalBroadcast) -> Result<Self, CallError> {
-        Self::setup(session, local).await
+    /// Wants the local side published the same way [`dial`](Self::dial)
+    /// describes.
+    pub async fn accept(session: MoqSession) -> Result<Self, CallError> {
+        Self::setup(session).await
     }
 
     /// Subscribes to the peer's side of the call. Shared by
     /// [`dial`](Self::dial) and [`accept`](Self::accept).
     ///
-    /// Nothing is published here: the local broadcast was created on the node
-    /// origin before the call started, so it is already announced.
+    /// Nothing is published here: the local broadcast lives on the node origin
+    /// and is already announced on this session.
     ///
     /// Auto-wires stats recording and network signal production on the
     /// connection, so callers do not need to do this manually.
-    async fn setup(session: MoqSession, local: LocalBroadcast) -> Result<Self, CallError> {
+    async fn setup(session: MoqSession) -> Result<Self, CallError> {
         let path = call_path(session.remote_id());
         let consumer = session
             .subscribe(&path)
@@ -116,15 +114,9 @@ impl Call {
 
         Ok(Self {
             session,
-            local,
             remote,
             signals,
         })
-    }
-
-    /// Returns the local broadcast (configure video/audio here).
-    pub fn local(&self) -> &LocalBroadcast {
-        &self.local
     }
 
     /// Returns the remote broadcast (subscribe to video/audio here).
@@ -144,8 +136,8 @@ impl Call {
 
     /// Returns the network signals receiver for adaptive rendition selection.
     ///
-    /// Signals are produced automatically when the call is established —
-    /// callers do not need to call `spawn_signal_producer` manually.
+    /// Signals are produced automatically when the call is established, so
+    /// callers do not need to call `spawn_signal_producer` themselves.
     pub fn signals(&self) -> &watch::Receiver<NetworkSignals> {
         &self.signals
     }

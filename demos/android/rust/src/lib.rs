@@ -136,15 +136,15 @@ struct SessionHandle {
     /// A subscribe-only session, from `connect`. Held so the transport and the
     /// signal producer behind it stay alive.
     subscription: Option<Subscription>,
-    /// A two-way call, from `dial`. Owns its session and the local broadcast.
+    /// A two-way call, from `dial`. Owns its session and the peer's broadcast.
     call: Option<Call>,
     /// The broadcast being watched, from whichever path opened it.
     remote: Option<RemoteBroadcast>,
     /// The playing audio track. Held so playback keeps running.
     #[allow(dead_code, reason = "dropping it stops playback")]
     audio: Option<AudioTrack>,
-    /// The broadcast this node publishes, when it owns one outright. A call
-    /// keeps its own, reachable through [`Call::local`].
+    /// The broadcast this node publishes, whether it is being watched by a
+    /// subscriber or carried by a call.
     broadcast: Option<LocalBroadcast>,
     /// Where the camera frames Kotlin pushes go.
     camera: Option<CameraSink>,
@@ -190,11 +190,9 @@ impl SessionHandle {
         Arc::new(Mutex::new(self))
     }
 
-    /// The broadcast this node publishes, wherever it is held.
+    /// The broadcast this node publishes, if it has one.
     fn local(&self) -> Option<&LocalBroadcast> {
-        self.broadcast
-            .as_ref()
-            .or_else(|| self.call.as_ref().map(Call::local))
+        self.broadcast.as_ref()
     }
 
     /// The round-trip time on the selected path, if this session has a
@@ -358,7 +356,7 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
     let camera = set_camera(&broadcast, size)?;
     set_microphone(&broadcast);
 
-    let call = Call::dial(&live, ticket.endpoint, broadcast).await?;
+    let call = Call::dial(&live, ticket.endpoint).await?;
     info!(remote = %call.remote_id().fmt_short(), "call connected");
 
     let tracks = call.remote().media().await;
@@ -373,6 +371,7 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
     session.frames = tracks.video.map_or(FrameSource::Empty, FrameSource::Track);
     session.audio = tracks.audio;
     session.camera = Some(camera);
+    session.broadcast = Some(broadcast);
     session.call = Some(call);
     session.live = Some(live);
     Ok(handle::to_i64(session.into_shared()))
