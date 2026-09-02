@@ -267,6 +267,16 @@ fn ladder() -> Vec<VideoRendition> {
     ]
 }
 
+/// The longest a change on the link may take to reach the signals.
+///
+/// Part of the claim rather than a convenience. A bandwidth figure that arrives
+/// at the right answer a minute later has not measured the link, it has been
+/// dragged along by it, and a loop that acts on it is acting on the link the
+/// subscriber had rather than the one it has. Measured through this lab the
+/// goodput window follows a cap in two to three seconds, so this leaves room
+/// for a loaded machine without leaving room for a signal that lags.
+const SIGNAL_LAG: Duration = Duration::from_secs(15);
+
 /// Timers short enough for a switch to happen inside the test's own budget.
 ///
 /// Only the timers are shortened. The thresholds are left at their defaults,
@@ -546,7 +556,8 @@ async fn adaptation_follows_a_rate_limit() {
     // in front of it for longer than it needs to act on it.
     let held = config.downgrade_hold * 3;
     let mut worst_loss: f64 = 0.0;
-    let saw_the_cap = tokio::time::timeout(TIMEOUT, async {
+    let impaired = Instant::now();
+    let saw_the_cap = tokio::time::timeout(SIGNAL_LAG, async {
         let mut since = None;
         loop {
             let signals = *signals.borrow();
@@ -565,8 +576,9 @@ async fn adaptation_follows_a_rate_limit() {
         }
     })
     .await
-    .expect("the signals never showed the rate limit");
+    .unwrap_or_else(|_| panic!("the signals did not show the rate limit inside {SIGNAL_LAG:?}"));
     info!(
+        after_ms = impaired.elapsed().as_millis() as u64,
         goodput_kbps = saw_the_cap.goodput_bps.unwrap_or(0) / 1000,
         rtt_ms = saw_the_cap.rtt.as_millis() as u64,
         min_rtt_ms = saw_the_cap.min_rtt.as_millis() as u64,
