@@ -1,7 +1,7 @@
 //! The room itself: its handle, its event stream, and the actor behind both.
 
 use std::{
-    collections::{HashMap, HashSet, hash_map},
+    collections::{BTreeSet, HashMap, HashSet, hash_map},
     pin::Pin,
     sync::Arc,
     time::Duration,
@@ -11,7 +11,9 @@ use bytes::Bytes;
 use iroh::{Endpoint, EndpointId, SecretKey};
 use iroh_gossip::{Gossip, TopicId};
 use iroh_moq::{Moq, MoqSession};
-use iroh_smol_kv::{ExpiryConfig, Filter, SignedValue, Subscribe, SubscribeMode, WriteScope};
+use iroh_smol_kv::{
+    ExpiryConfig, Filter, SignedValue, Subscribe, SubscribeItem, SubscribeMode, WriteScope,
+};
 use moq_net::broadcast;
 use n0_error::{AnyError, Result, e, stack_error};
 use n0_future::{
@@ -292,20 +294,29 @@ pub enum RoomEvent {
         #[debug(skip)]
         broadcast: broadcast::Consumer,
     },
-    /// A peer appeared in the room for the first time.
+    /// A peer appeared in the room.
+    ///
+    /// Fires on the peer's first announcement, which every member writes when
+    /// it joins whether or not it publishes anything. A peer that was reported
+    /// as having left and then comes back produces a second one.
     PeerJoined {
         /// The peer's endpoint ID.
         remote: EndpointId,
         /// Display name from the peer's gossip state, if set.
         display_name: Option<String>,
     },
-    /// A peer's last broadcast closed.
+    /// A peer is no longer reachable in the room.
     ///
-    /// Derived from media liveness, not from membership: a peer that joined
-    /// and published nothing never produces this, and neither does one whose
-    /// subscription failed to open. The kv carries an expiry horizon that would
-    /// answer properly, and nothing acts on it yet. The announce redesign
-    /// (`plans/align-to-moq/room-layer.md`) is where that gets fixed.
+    /// Two things produce this. A peer's announcement falling below the gossip
+    /// map's expiry horizon is the membership answer: it covers a peer that
+    /// vanished without saying so, including one that never published. The last
+    /// broadcast this node had subscribed to closing is the faster one, and it
+    /// is what a peer that disconnects mid-stream looks like.
+    ///
+    /// The second signal cannot tell a peer that went away from one that only
+    /// stopped publishing, so a peer that ends its last broadcast and stays in
+    /// the room is reported as having left and then joined again once its next
+    /// announcement arrives.
     PeerLeft {
         /// The peer's endpoint ID.
         remote: EndpointId,
@@ -320,6 +331,28 @@ pub enum RoomEvent {
 }
 
 const PEER_STATE_KEY: &[u8] = b"s";
+
+/// How long a peer's announcement survives in the gossip map without being
+/// rewritten.
+///
+/// The map is the room's membership roll, so this is how long a peer that
+/// vanished without saying so stays on it. Long enough to ride out a peer that
+/// is briefly unreachable, short enough that a room does not accumulate members
+/// who left minutes ago.
+const STATE_HORIZON: Duration = Duration::from_secs(2 * 60);
+
+/// How often a peer rewrites its announcement.
+///
+/// An expiry cannot be undone from the outside: nothing re-adds an entry that
+/// fell below the horizon except its author writing it again. So this leaves
+/// room for several refreshes to go missing before a peer that is still here is
+/// declared gone.
+const STATE_REFRESH: Duration = Duration::from_secs(30);
+
+/// How often the gossip map looks for entries that fell below the horizon.
+///
+/// Bounds how late a [`RoomEvent::PeerLeft`] derived from an expiry can be.
+const EXPIRY_CHECK_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PeerState {
@@ -348,7 +381,9 @@ struct Actor {
     _gossip: Gossip,
     moq: Moq,
     active_subscribe: HashSet<BroadcastId>,
-    active_publish: HashSet<String>,
+    /// Ordered, so a refresh that changed nothing serializes to the same bytes
+    /// it did last time.
+    active_publish: BTreeSet<String>,
     known_peers: HashMap<EndpointId, Option<String>>,
     connecting: ConnectingFutures,
     subscribe_closed: FuturesUnordered<BoxFuture<BroadcastId>>,
@@ -378,8 +413,8 @@ impl Actor {
                 anti_entropy_interval: Duration::from_secs(60),
                 fast_anti_entropy_interval: Duration::from_secs(1),
                 expiry: Some(ExpiryConfig {
-                    check_interval: Duration::from_secs(10),
-                    horizon: Duration::from_secs(60 * 2),
+                    check_interval: EXPIRY_CHECK_INTERVAL,
+                    horizon: STATE_HORIZON,
                 }),
             },
         );
@@ -405,14 +440,22 @@ impl Actor {
     }
 
     async fn run(mut self, mut inbox: mpsc::Receiver<ApiMessage>) {
+        // The raw stream rather than `stream()`, which drops the expiry items
+        // this reads membership out of.
         let updates = self
             .kv
             .subscribe_with_opts(Subscribe {
                 mode: SubscribeMode::Both,
                 filter: Filter::ALL,
             })
-            .stream();
+            .stream_raw();
         tokio::pin!(updates);
+
+        // The first tick lands immediately, which is what puts this peer on the
+        // membership roll: a peer that publishes nothing announces all the same,
+        // so the room knows it is here.
+        let mut refresh = tokio::time::interval(STATE_REFRESH);
+        refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         debug!("room actor started, waiting for gossip updates");
 
@@ -425,8 +468,16 @@ impl Actor {
                             break;
                         }
                         Some(Err(err)) => warn!("gossip kv update failed: {err:#}"),
-                        Some(Ok(update)) => if !self.handle_gossip_update(update).await { break },
+                        Some(Ok(item)) => if !self.handle_kv_item(item).await { break },
                     }
+                }
+                _ = refresh.tick() => {
+                    // Rewriting the same value carries a fresh timestamp, which
+                    // is what keeps it above the horizon. It also re-delivers
+                    // the announcement to every peer, so a subscription that
+                    // ended when a session dropped is opened again here.
+                    trace!("refreshing this peer's announcement");
+                    self.update_kv().await;
                 }
                 msg = inbox.recv() => {
                     match msg {
@@ -454,6 +505,56 @@ impl Actor {
         }
     }
 
+    /// Dispatches one item from the gossip map. Returns `false` if the actor
+    /// should stop.
+    async fn handle_kv_item(&mut self, item: SubscribeItem) -> bool {
+        match item {
+            SubscribeItem::Entry(entry) => self.handle_gossip_update(entry).await,
+            SubscribeItem::Expired((remote, key, _timestamp)) => {
+                self.handle_peer_expired(remote, &key).await
+            }
+            // The boundary between the entries that were already there when the
+            // subscription opened and the ones that arrive from here on. Both
+            // are handled the same way.
+            SubscribeItem::CurrentDone => true,
+        }
+    }
+
+    /// Handles a peer's announcement falling below the expiry horizon, which is
+    /// how a peer that left without saying so is noticed. Returns `false` if the
+    /// actor should stop.
+    async fn handle_peer_expired(&mut self, remote: EndpointId, key: &Bytes) -> bool {
+        if remote == self.me || key != PEER_STATE_KEY {
+            return true;
+        }
+        // Drop what we were subscribed to, so a peer that comes back is
+        // subscribed to afresh rather than taken for one already followed.
+        self.active_subscribe.retain(|id| id.0 != remote);
+        if self.known_peers.remove(&remote).is_none() {
+            return true;
+        }
+        info!(
+            remote=%remote.fmt_short(),
+            horizon=?STATE_HORIZON,
+            "peer stopped announcing, treating it as gone",
+        );
+        self.send_event(RoomEvent::PeerLeft { remote }).await
+    }
+
+    /// Sends `event` to the application. Returns `false` if the actor should
+    /// stop, which is what a dropped receiver means.
+    ///
+    /// Takes `&mut self` rather than `&self` for the reason spelled out above
+    /// [`update_kv`](Self::update_kv): a shared borrow held across an await
+    /// would need `Actor: Sync`, which it is not.
+    async fn send_event(&mut self, event: RoomEvent) -> bool {
+        if self.event_tx.send(event).await.is_err() {
+            debug!("room event receiver dropped, stopping actor");
+            return false;
+        }
+        true
+    }
+
     /// Handles the outcome of a MoQ subscribe. Returns `false` if the actor should stop.
     async fn handle_subscribed(&mut self, id: BroadcastId, res: SubscribeResult) -> bool {
         let BroadcastId(remote, ref name) = id;
@@ -475,8 +576,7 @@ impl Actor {
             session: Box::new(session),
             broadcast: consumer.clone(),
         };
-        if self.event_tx.send(event).await.is_err() {
-            debug!("room event receiver dropped, stopping actor");
+        if !self.send_event(event).await {
             return false;
         }
 
@@ -490,6 +590,12 @@ impl Actor {
     }
 
     /// Handles a remote broadcast closing. Returns `false` if the actor should stop.
+    ///
+    /// Losing the last broadcast a peer had is the fast half of departure
+    /// detection: a peer that disconnects mid-stream shows up here in a round
+    /// trip, where the expiry horizon would take minutes. The cost is that a
+    /// peer which only stopped publishing looks the same, and is reported as
+    /// having left until its next announcement brings it back.
     async fn handle_broadcast_closed(&mut self, id: BroadcastId) -> bool {
         debug!(broadcast=%id, "remote broadcast closed");
         let remote = id.0;
@@ -499,17 +605,8 @@ impl Actor {
         if still_active || self.known_peers.remove(&remote).is_none() {
             return true;
         }
-        info!(remote=%remote.fmt_short(), "peer left the room");
-        if self
-            .event_tx
-            .send(RoomEvent::PeerLeft { remote })
-            .await
-            .is_err()
-        {
-            debug!("room event receiver dropped, stopping actor");
-            return false;
-        }
-        true
+        info!(remote=%remote.fmt_short(), "peer's last broadcast closed, treating it as gone");
+        self.send_event(RoomEvent::PeerLeft { remote }).await
     }
 
     /// Spawns a task that forwards chat messages from a remote broadcast.
@@ -602,7 +699,10 @@ impl Actor {
             display_name,
         } = value;
 
-        info!(
+        // Every peer rewrites this every `STATE_REFRESH`, so most of what
+        // arrives here says nothing new; only a peer that is new to us is a
+        // lifecycle event.
+        debug!(
             remote=%remote.fmt_short(),
             ?broadcasts,
             ?display_name,
@@ -611,30 +711,26 @@ impl Actor {
 
         if let hash_map::Entry::Vacant(entry) = self.known_peers.entry(remote) {
             entry.insert(display_name.clone());
-            info!(remote=%remote.fmt_short(), "new peer joined room");
-            if self
-                .event_tx
-                .send(RoomEvent::PeerJoined {
-                    remote,
-                    display_name,
-                })
-                .await
-                .is_err()
-            {
-                debug!("room event receiver dropped, stopping actor");
+            info!(remote=%remote.fmt_short(), ?display_name, "peer joined the room");
+            let event = RoomEvent::PeerJoined {
+                remote,
+                display_name,
+            };
+            if !self.send_event(event).await {
                 return false;
             }
         }
 
-        for name in broadcasts.clone() {
+        for name in &broadcasts {
             let id = BroadcastId(remote, name.clone());
             if !self.active_subscribe.insert(id.clone()) {
-                debug!(broadcast=%id, "already subscribing to broadcast, skipping");
+                trace!(broadcast=%id, "already subscribed to broadcast, skipping");
                 continue;
             }
             info!(broadcast=%id, "initiating MoQ subscription to remote broadcast");
             let moq = self.moq.clone();
             let topic = self.topic_id;
+            let name = name.clone();
             self.connecting.push(Box::pin(async move {
                 let res = subscribe(moq, remote, topic, &name).await;
                 match &res {
@@ -644,16 +740,8 @@ impl Actor {
                 (id, res)
             }));
         }
-        if self
-            .event_tx
-            .send(RoomEvent::RemoteAnnounced { remote, broadcasts })
+        self.send_event(RoomEvent::RemoteAnnounced { remote, broadcasts })
             .await
-            .is_err()
-        {
-            debug!("room event receiver dropped, stopping actor");
-            return false;
-        }
-        true
     }
 
     // A plain (non-`async`) method that returns an owned, `'static` future,
@@ -704,4 +792,37 @@ async fn subscribe(moq: Moq, remote: EndpointId, topic: TopicId, name: &str) -> 
 /// the ticket they already share.
 fn room_path(topic: TopicId, name: &str) -> String {
     format!("rooms/{topic}/{name}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The refresh interval and the expiry horizon are one mechanism split
+    /// across two constants, and the failure when they drift apart is not
+    /// local: a peer that is still in the room falls off every other peer's
+    /// membership roll, and only its next announcement puts it back.
+    #[test]
+    fn several_refreshes_fit_inside_the_expiry_horizon() {
+        assert!(
+            STATE_REFRESH * 3 <= STATE_HORIZON,
+            "a peer has to be able to miss two refreshes in a row and still be \
+             above the horizon: refresh {STATE_REFRESH:?}, horizon {STATE_HORIZON:?}",
+        );
+        assert!(
+            EXPIRY_CHECK_INTERVAL < STATE_REFRESH,
+            "an expiry noticed later than the next refresh would report a peer \
+             as gone that had already announced itself again",
+        );
+    }
+
+    #[test]
+    fn a_room_path_is_scoped_by_topic() {
+        let topic = TopicId::from_bytes([7; 32]);
+        assert_eq!(
+            room_path(topic, "cam"),
+            format!("rooms/{topic}/cam"),
+            "both sides derive this from the ticket, so its shape is a wire format",
+        );
+    }
 }
