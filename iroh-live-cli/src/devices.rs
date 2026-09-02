@@ -50,8 +50,11 @@ async fn list() {
         "audio outputs",
         audio::playback::devices().await,
         |device| {
+            // The id is what `irl watch --audio-output` takes, so it leads: a
+            // user copies the first token of a line rather than the prose after
+            // it. The names alone do not distinguish a card's six subdevices.
             let default = if device.default { " (default)" } else { "" };
-            format!("{}{default}", device.name)
+            format!("{}  {}{default}", device.id, device.name)
         },
     );
 }

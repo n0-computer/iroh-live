@@ -60,6 +60,11 @@ pub fn audio(hz: f64, sample_rate: u32, channels: u32) -> AudioSource {
     /// consumes each buffer whole.
     const FRAME: Duration = Duration::from_millis(20);
 
+    /// Peak amplitude. Not full scale on purpose: Opus overshoots a little on
+    /// decode, and a tone at 1.0 clips against the mixer's clamp, which is
+    /// audible as distortion on a signal chosen for being unmistakable.
+    const AMPLITUDE: f32 = 0.5;
+
     let per_frame = (sample_rate as f64 * FRAME.as_secs_f64()) as usize;
     let step = hz * std::f64::consts::TAU / sample_rate as f64;
     let input = moq_audio::encode::Input {
@@ -68,13 +73,22 @@ pub fn audio(hz: f64, sample_rate: u32, channels: u32) -> AudioSource {
         channels,
     };
 
+    // Pace against an absolute schedule, not `sleep(FRAME)` per iteration.
+    // A sleep always overshoots, and these timestamps advance by exactly one
+    // frame whatever the clock did, so sleeping relatively makes the media
+    // timeline run slower than real time: a live subscriber consuming at the
+    // rate the timestamps promise starves, which is heard as glitching rather
+    // than as the stream being late.
+    let started = tokio::time::Instant::now();
+
     let frames: BoxStream<moq_audio::Frame> = Box::pin(n0_future::stream::unfold(
         (0usize, 0u64),
         move |(sample, elapsed_us)| async move {
-            tokio::time::sleep(FRAME).await;
+            let next = started + FRAME * (elapsed_us / FRAME.as_micros() as u64 + 1) as u32;
+            tokio::time::sleep_until(next).await;
             let mut data = Vec::with_capacity(per_frame * channels as usize * 4);
             for index in 0..per_frame {
-                let value = ((sample + index) as f64 * step).sin() as f32;
+                let value = ((sample + index) as f64 * step).sin() as f32 * AMPLITUDE;
                 for _ in 0..channels {
                     data.extend_from_slice(&value.to_le_bytes());
                 }
@@ -91,4 +105,74 @@ pub fn audio(hz: f64, sample_rate: u32, channels: u32) -> AudioSource {
     ));
 
     AudioSource::Frames { input, frames }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use n0_future::StreamExt;
+
+    use super::*;
+    use crate::publish::AudioSource;
+
+    /// The tone has to arrive as fast as its own timestamps claim.
+    ///
+    /// A generator that sleeps for a frame's length each iteration overshoots
+    /// every time, while its timestamps advance by exactly one frame, so the
+    /// media timeline falls behind the clock. A subscriber consuming at the
+    /// promised rate then starves, which is heard as glitching rather than as
+    /// the stream being late.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_tone_keeps_up_with_the_clock() {
+        const RATE: u32 = 48_000;
+        const RUN: Duration = Duration::from_millis(600);
+
+        let AudioSource::Frames { mut frames, .. } = audio(440.0, RATE, 2) else {
+            panic!("the generated tone is a frame source");
+        };
+
+        let started = Instant::now();
+        let mut media = Duration::ZERO;
+        while started.elapsed() < RUN {
+            let Some(frame) = frames.next().await else {
+                break;
+            };
+            // Every frame is one buffer's worth, so the media timeline is the
+            // last timestamp plus the frame it stands for.
+            media = Duration::from(frame.timestamp) + Duration::from_millis(20);
+        }
+        let real = started.elapsed();
+
+        // Generous, because a loaded machine can lose a scheduling slice: this
+        // catches a timeline running slow by design, not by a few milliseconds.
+        let ratio = media.as_secs_f64() / real.as_secs_f64();
+        assert!(
+            ratio > 0.95,
+            "the tone produced {media:?} of audio in {real:?} ({:.1}% of real time); \
+             a live subscriber starves at that rate",
+            ratio * 100.0,
+        );
+    }
+
+    /// Keeps the tone below full scale, so Opus overshoot does not clip.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_tone_leaves_headroom() {
+        let AudioSource::Frames { mut frames, .. } = audio(440.0, 48_000, 1) else {
+            panic!("the generated tone is a frame source");
+        };
+
+        let frame = frames.next().await.expect("the tone yields a first frame");
+        let peak = frame
+            .data
+            .chunks_exact(4)
+            .map(|s| f32::from_le_bytes(s.try_into().expect("four bytes")).abs())
+            .fold(0.0f32, f32::max);
+
+        assert!(peak > 0.1, "the tone is silent: peak {peak}");
+        assert!(
+            peak < 0.95,
+            "the tone reaches {peak}, close enough to full scale to clip"
+        );
+    }
 }

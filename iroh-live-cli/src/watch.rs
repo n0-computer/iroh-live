@@ -41,6 +41,19 @@ async fn subscribe(
     ticket: &iroh_live::ticket::LiveTicket,
     args: &WatchArgs,
 ) -> Result<(Live, Subscription, MediaTracks)> {
+    // Opening the engine before the first sink is what makes `--audio-output`
+    // take effect: a sink built against the default device would already be
+    // playing there by the time a switch could move it.
+    #[cfg(feature = "playback")]
+    if let Some(device) = args.audio_output.clone() {
+        let mut config = iroh_live::media::audio::playback::Config::default();
+        config.device = Some(device.clone());
+        iroh_live::media::playback::open(config)
+            .await
+            .map_err(|err| n0_error::anyerr!("audio output {device:?}: {err}"))?;
+        info!(device = %device, "audio output selected");
+    }
+
     println!("connecting to {ticket} ...");
     let live = setup_live(false).await?;
     let sub = live

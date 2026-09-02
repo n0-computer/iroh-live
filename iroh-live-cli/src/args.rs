@@ -311,6 +311,15 @@ pub struct WatchArgs {
     /// Start in fullscreen.
     #[arg(long)]
     pub fullscreen: bool,
+
+    /// Play through this output device, as `irl devices` lists it.
+    ///
+    /// Takes the id in the first column, for example `alsa:default`. Without
+    /// it, playback follows whatever the system calls its default, which on a
+    /// machine with several sinks is not always the one the speakers are on.
+    #[cfg(feature = "playback")]
+    #[arg(long, value_name = "ID")]
+    pub audio_output: Option<String>,
 }
 
 impl WatchArgs {
