@@ -5,7 +5,8 @@
 //! on the way through. That is also why there is no preview for this path.
 //!
 //! `--transcode` puts ffmpeg in front, which is what a plain (non-fragmented)
-//! MP4 needs before it can be read as a stream.
+//! MP4 needs before it can be read as a stream, and what repeats the input for
+//! a `file:<path>:loop` source.
 
 use std::{
     path::{Path, PathBuf},
@@ -18,7 +19,49 @@ use n0_error::{Result, StdResultExt, anyerr};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tracing::{info, warn};
 
-use crate::args::ImportFormat;
+use crate::args::{ImportFormat, PublishArgs};
+
+/// A `file:` video source, and the flags that say how to read it.
+#[derive(Debug, Clone)]
+pub struct FileSource {
+    path: PathBuf,
+    format: ImportFormat,
+    transcode: bool,
+    looping: bool,
+}
+
+impl FileSource {
+    /// Describes the file `--video file:<path>` named, as the other publish
+    /// flags qualify it.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `path` is not a readable file, or if `:loop` was asked for
+    /// without `--transcode`, which is the only thing here that can repeat an
+    /// input.
+    pub fn new(path: PathBuf, looping: bool, args: &PublishArgs) -> Result<Self> {
+        if !path.is_file() {
+            return Err(anyerr!(
+                "no readable file at {}; --video takes a path, as in \
+                 --video file:clip.mp4",
+                path.display()
+            ));
+        }
+        if looping && !args.transcode {
+            return Err(anyerr!(
+                "file:{}:loop needs --transcode: ffmpeg is what repeats the \
+                 input, and without it the file is published once and ends",
+                path.display()
+            ));
+        }
+        Ok(Self {
+            path,
+            format: args.format,
+            transcode: args.transcode,
+            looping,
+        })
+    }
+}
 
 /// A byte stream feeding an importer.
 type Input = Pin<Box<dyn AsyncRead + Send + 'static>>;
@@ -97,17 +140,15 @@ impl FileImport {
     /// # Errors
     ///
     /// Fails if the file cannot be opened, if ffmpeg is asked for and missing,
-    /// or if the header is not the format `format` names.
+    /// or if the header is not the format `--format` names.
     pub async fn open(
         mut broadcast: moq_net::broadcast::Producer,
-        path: &Path,
-        format: ImportFormat,
-        transcode: bool,
+        source: FileSource,
     ) -> Result<Self> {
-        let mut input = open_input(path, format, transcode).await?;
+        let mut input = open_input(&source).await?;
         let catalog = moq_mux::catalog::Producer::new(&mut broadcast).anyerr()?;
 
-        let mut importer = match format {
+        let mut importer = match source.format {
             ImportFormat::Avc3 => {
                 let track = broadcast
                     .unique_track(".avc3", catalog.track_info())
@@ -126,23 +167,15 @@ impl FileImport {
             )),
         };
 
-        // Enough of the header to publish a catalog. fMP4 needs the moov box;
-        // Annex-B needs a keyframe carrying SPS/PPS.
-        let mut buffer = BytesMut::new();
-        let mut read = 0usize;
-        while catalog_is_empty(&catalog) {
-            buffer.clear();
-            let chunk = input.read_buf(&mut buffer).await?;
-            if chunk == 0 {
-                return Err(anyerr!(
-                    "reached the end of {} after {read} bytes without finding a {format:?} \
-                     header; if this is a plain MP4, re-run with --transcode",
-                    path.display()
-                ));
+        let read = match read_header(&mut importer, &mut input, &catalog, &source).await {
+            Ok(read) => read,
+            Err(err) => {
+                // The tracks are already advertised, so a subscriber that
+                // arrived in the meantime is told why they end.
+                importer.abort(moq_net::Error::Transport(err.to_string()));
+                return Err(err);
             }
-            read += chunk;
-            importer.decode(&buffer)?;
-        }
+        };
         info!(bytes = read, "file header parsed, catalog published");
 
         Ok(Self { importer, input })
@@ -180,6 +213,43 @@ impl FileImport {
     }
 }
 
+/// Feeds the importer until it publishes a catalog, and returns how much of
+/// the file that took.
+///
+/// fMP4 needs the moov box; Annex-B needs a keyframe carrying SPS and PPS.
+///
+/// # Errors
+///
+/// Fails if the file ends first, which is what a container the importer does
+/// not understand looks like from here.
+async fn read_header(
+    importer: &mut Importer,
+    input: &mut Input,
+    catalog: &moq_mux::catalog::Producer,
+    source: &FileSource,
+) -> Result<usize> {
+    let mut buffer = BytesMut::new();
+    let mut read = 0usize;
+    while catalog_is_empty(catalog) {
+        buffer.clear();
+        let chunk = input.read_buf(&mut buffer).await?;
+        if chunk == 0 {
+            return Err(anyerr!(
+                "reached the end of {} after {read} bytes without finding a {:?} header{}",
+                source.path.display(),
+                source.format,
+                match source.transcode {
+                    true => "",
+                    false => "; if this is a plain MP4, re-run with --transcode",
+                }
+            ));
+        }
+        read += chunk;
+        importer.decode(&buffer)?;
+    }
+    Ok(read)
+}
+
 /// Reports whether the importer has published any rendition yet.
 fn catalog_is_empty(catalog: &moq_mux::catalog::Producer) -> bool {
     let catalog = catalog.snapshot();
@@ -187,33 +257,32 @@ fn catalog_is_empty(catalog: &moq_mux::catalog::Producer) -> bool {
 }
 
 /// Opens the file, optionally behind an ffmpeg transcode.
-async fn open_input(path: &Path, format: ImportFormat, transcode: bool) -> Result<Input> {
-    if transcode {
-        return Ok(Box::pin(transcode_file(path.to_path_buf(), format).await?));
+async fn open_input(source: &FileSource) -> Result<Input> {
+    if source.transcode {
+        return Ok(Box::pin(transcode_file(source).await?));
     }
-    let file = tokio::fs::File::open(path)
+    let file = tokio::fs::File::open(&source.path)
         .await
-        .map_err(|err| anyerr!("failed to open {}: {err}", path.display()))?;
+        .map_err(|err| anyerr!("failed to open {}: {err}", source.path.display()))?;
     Ok(Box::pin(file))
 }
 
-/// Spawns ffmpeg to re-mux (or re-encode) `input` into `format` on its stdout.
+/// Spawns ffmpeg to re-mux (or re-encode) the source into its format on stdout.
 ///
-/// The child is reaped by a background task: once our end of the pipe closes,
-/// ffmpeg exits on SIGPIPE and would otherwise linger as a zombie.
-async fn transcode_file(input: PathBuf, format: ImportFormat) -> Result<impl AsyncRead> {
+/// A background task awaits the child: once our end of the pipe closes, ffmpeg
+/// exits on SIGPIPE and would otherwise linger as a zombie.
+async fn transcode_file(source: &FileSource) -> Result<impl AsyncRead + use<>> {
+    let input = source.path.clone();
     let copy_video = is_h264(&input).await?;
 
     let mut command = tokio::process::Command::new("ffmpeg");
-    command.args([
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-stream_loop",
-        "-1",
-        "-re",
-        "-i",
-    ]);
+    command.args(["-hide_banner", "-loglevel", "error"]);
+    if source.looping {
+        command.args(["-stream_loop", "-1"]);
+    }
+    // Paced against the wall clock, so a file publishes at the rate a live
+    // subscriber can follow rather than as fast as the disk reads.
+    command.args(["-re", "-i"]);
     command.arg(input.as_os_str());
 
     if copy_video {
@@ -224,7 +293,7 @@ async fn transcode_file(input: PathBuf, format: ImportFormat) -> Result<impl Asy
         command.args(["-c:v", "libx264", "-pix_fmt", "yuv420p"]);
     }
 
-    match format {
+    match source.format {
         ImportFormat::Fmp4 => {
             command.args(["-c:a", "libopus", "-b:a", "128k"]);
             command.args([

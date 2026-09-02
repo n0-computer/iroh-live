@@ -20,6 +20,7 @@ use iroh_rooms::{
     chat::{CHAT_PRIORITY, CHAT_TRACK_NAME, ChatPublisher},
 };
 use n0_error::{Result, anyerr};
+use tracing::info;
 
 use crate::{args::RoomArgs, source, transport};
 
@@ -43,6 +44,18 @@ pub fn run(args: RoomArgs, rt: &tokio::runtime::Runtime) -> Result {
 /// the next participant needs.
 async fn setup(args: &RoomArgs) -> Result<(Live, LocalBroadcast, Room, String, String)> {
     let live = transport::setup_live_with_gossip().await?;
+    let (live, (broadcast, room, ticket, display_name)) =
+        transport::with_live(live, async |live| join(live, args).await).await?;
+    Ok((live, broadcast, room, ticket, display_name))
+}
+
+/// Joins the room over `live`, which the caller closes if this fails.
+///
+/// # Errors
+///
+/// Fails if gossip is not running, if the room cannot be joined, or if the
+/// capture sources do not parse.
+async fn join(live: &Live, args: &RoomArgs) -> Result<(LocalBroadcast, Room, String, String)> {
     let gossip = live
         .gossip()
         .ok_or_else(|| anyerr!("gossip is not running, which a room cannot do without"))?;
@@ -72,8 +85,9 @@ async fn setup(args: &RoomArgs) -> Result<(Live, LocalBroadcast, Room, String, S
     let ticket = room.ticket().to_string();
     println!("room ticket: {ticket}");
     transport::print_qr(&ticket, args.no_qr);
+    info!(ticket, display_name, "joined the room");
 
-    Ok((live, broadcast, room, ticket, display_name))
+    Ok((broadcast, room, ticket, display_name))
 }
 
 mod window {
@@ -101,7 +115,10 @@ mod window {
     use tokio::task::JoinSet;
     use tracing::{info, warn};
 
-    use crate::ui::{LocalPreview, RemoteView};
+    use crate::{
+        transport::PEER_TIMEOUT,
+        ui::{LocalPreview, RemoteView},
+    };
 
     /// How often the window is woken while nothing is drawing it.
     ///
@@ -109,12 +126,6 @@ mod window {
     /// window drains, so a window that stops running stops the room. A window
     /// nobody is looking at still has to keep the room's gossip moving.
     const HEARTBEAT: Duration = Duration::from_millis(100);
-
-    /// How long a peer's broadcast is given to produce a catalog.
-    ///
-    /// A peer that announced a name it never published leaves a task waiting
-    /// forever otherwise.
-    const OPEN_TIMEOUT: Duration = Duration::from_secs(20);
 
     /// How many chat lines are kept in the scrollback.
     const MAX_CHAT_LINES: usize = 200;
@@ -270,7 +281,7 @@ mod window {
                         let name = self.label(remote);
                         self.chat.push_system(format!("{name} left"));
                         self.names.remove(&remote);
-                        self.peers.retain(|peer| peer.remote != remote);
+                        self.close_tiles("the peer left", |peer| peer.remote == remote);
                     }
                     RoomEvent::BroadcastSubscribed {
                         remote,
@@ -334,13 +345,33 @@ mod window {
         /// connection simply failed leaves the tile behind, so the session is
         /// checked too.
         fn drop_closed(&mut self) {
-            self.peers.retain(|peer| {
-                let closed = peer.sub.session().conn().close_reason().is_some();
-                if closed {
-                    info!(remote = %short(peer.remote), name = %peer.name, "peer session closed");
-                }
-                !closed
+            self.close_tiles("the session closed", |peer| {
+                peer.sub.session().conn().close_reason().is_some()
             });
+        }
+
+        /// Removes the tiles `drop_it` picks out, shutting each one down first.
+        ///
+        /// Dropping a tile alone would stop its decoders but leave the
+        /// subscription running, so a peer that went away would keep being
+        /// downloaded. The session is left alone: a peer may hold several
+        /// broadcasts on one, and closing it would take the siblings with it.
+        fn close_tiles(&mut self, reason: &str, drop_it: impl Fn(&PeerTile) -> bool) {
+            let mut index = 0;
+            while index < self.peers.len() {
+                if !drop_it(&self.peers[index]) {
+                    index += 1;
+                    continue;
+                }
+                let mut peer = self.peers.remove(index);
+                info!(
+                    remote = %short(peer.remote),
+                    name = %peer.name,
+                    reason,
+                    "dropping a peer tile"
+                );
+                peer.view.shutdown();
+            }
         }
 
         /// The name to show for `remote`, falling back to its short endpoint
@@ -477,7 +508,9 @@ mod window {
         session: MoqSession,
         broadcast: moq_net::broadcast::Consumer,
     ) -> Option<Opened> {
-        let opened = tokio::time::timeout(OPEN_TIMEOUT, RemoteBroadcast::new(&name, broadcast));
+        // A peer that announced a name it never published would otherwise
+        // leave this task waiting forever.
+        let opened = tokio::time::timeout(PEER_TIMEOUT, RemoteBroadcast::new(&name, broadcast));
         let broadcast = match opened.await {
             Ok(Ok(broadcast)) => broadcast,
             Ok(Err(err)) => {

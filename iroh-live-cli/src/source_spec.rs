@@ -23,10 +23,15 @@ pub enum VideoSourceSpec {
     Window(String),
     /// Every window of one application, by bundle id. macOS only.
     App(String),
-    /// A synthetic colour-bar pattern, for publishing without a camera.
+    /// A colour-bar test pattern, for publishing without a camera.
     Test,
     /// A media file, imported rather than encoded.
-    File(PathBuf),
+    File {
+        /// Path to the file.
+        path: PathBuf,
+        /// Restart at the beginning on end of file.
+        looping: bool,
+    },
     /// Publish no video.
     None,
 }
@@ -50,9 +55,14 @@ impl VideoSourceSpec {
                 .map(|id| Self::App(id.to_string()))
                 .ok_or_else(|| "app: needs a bundle id (e.g. app:com.apple.Safari)".to_string()),
             "test" => Ok(Self::Test),
-            "file" => rest
-                .map(|path| Self::File(PathBuf::from(path)))
-                .ok_or_else(|| "file: needs a path (e.g. file:clip.mp4)".to_string()),
+            "file" => {
+                let rest = rest.ok_or("file: needs a path (e.g. file:clip.mp4)")?;
+                let (path, looping) = split_loop(rest);
+                Ok(Self::File {
+                    path: PathBuf::from(path),
+                    looping,
+                })
+            }
             "none" => Ok(Self::None),
             other => Err(format!(
                 "unknown video source '{other}': expected cam, screen, window, app, \
@@ -70,7 +80,7 @@ pub enum AudioSourceSpec {
     Microphone(Option<String>),
     /// Everything the machine is playing. macOS only.
     System,
-    /// A synthetic tone, for publishing without a microphone.
+    /// A steady tone, for publishing without a microphone.
     Test,
     /// An audio file, decoded and encoded like any other PCM source.
     File {
@@ -101,10 +111,7 @@ impl AudioSourceSpec {
             "none" => Ok(Self::None),
             "file" => {
                 let rest = rest.ok_or("file: needs a path (e.g. file:music.mp3)")?;
-                let (path, looping) = match rest.to_lowercase().strip_suffix(":loop") {
-                    Some(_) => (&rest[..rest.len() - ":loop".len()], true),
-                    None => (rest, false),
-                };
+                let (path, looping) = split_loop(rest);
                 Ok(Self::File {
                     path: PathBuf::from(path),
                     looping,
@@ -112,6 +119,16 @@ impl AudioSourceSpec {
             }
             _ => Ok(Self::Microphone(Some(spec.to_string()))),
         }
+    }
+}
+
+/// Splits the `:loop` suffix off a file path, if it carries one.
+///
+/// Both `--video` and `--audio` spell looping this way, so both parse it here.
+fn split_loop(rest: &str) -> (&str, bool) {
+    match rest.to_lowercase().ends_with(":loop") {
+        true => (&rest[..rest.len() - ":loop".len()], true),
+        false => (rest, false),
     }
 }
 
@@ -158,7 +175,10 @@ mod tests {
         );
         assert_eq!(
             VideoSourceSpec::parse("file:C:/clips/demo.mp4").unwrap(),
-            VideoSourceSpec::File("C:/clips/demo.mp4".into())
+            VideoSourceSpec::File {
+                path: "C:/clips/demo.mp4".into(),
+                looping: false,
+            }
         );
     }
 
@@ -168,6 +188,17 @@ mod tests {
         assert!(VideoSourceSpec::parse("app").is_err());
         assert!(VideoSourceSpec::parse("file").is_err());
         assert!(VideoSourceSpec::parse("webcam").is_err());
+    }
+
+    #[test]
+    fn video_file_loop_suffix() {
+        assert_eq!(
+            VideoSourceSpec::parse("file:/tmp/clip.mp4:loop").unwrap(),
+            VideoSourceSpec::File {
+                path: "/tmp/clip.mp4".into(),
+                looping: true,
+            }
+        );
     }
 
     #[test]

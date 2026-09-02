@@ -27,8 +27,7 @@ use crate::{
         VideoCodecArg,
     },
     record::{RecordOptions, Recorder},
-    source,
-    transport::setup_live_with_key,
+    source, transport,
 };
 
 /// Runs the `run` command.
@@ -140,6 +139,17 @@ impl SendConfig {
     }
 }
 
+/// What a `[[recv]]` block does with the audio it receives.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AudioOutput {
+    /// Play it through whatever the system calls its default output.
+    #[default]
+    Default,
+    /// Leave the speakers alone.
+    None,
+}
+
 /// One broadcast to subscribe to.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -150,11 +160,13 @@ pub struct RecvConfig {
     /// The ticket to subscribe to, as `irl publish` printed it.
     pub ticket: String,
 
-    /// `default` plays the broadcast's audio, `none` leaves the speakers
-    /// alone. A build without the `playback` feature has no speakers either
-    /// way.
-    #[serde(default = "default_audio_output")]
-    pub audio_output: String,
+    /// Whether this subscription's audio is played.
+    ///
+    /// Unlike `irl watch --audio-output`, this does not name a device: the
+    /// playback engine is process-wide and a session has many subscriptions,
+    /// so there is no per-block device to choose.
+    #[serde(default)]
+    pub audio_output: AudioOutput,
 
     /// A file to record the broadcast to, in the container its extension
     /// names. Omit to only receive.
@@ -178,11 +190,6 @@ fn default_audio() -> String {
 /// The `encoder` default, which is `--encoder`'s.
 fn default_encoder() -> String {
     DEFAULT_ENCODER.to_string()
-}
-
-/// The `audio_output` default: play what a subscription carries.
-fn default_audio_output() -> String {
-    "default".to_string()
 }
 
 /// Reads and validates the session file at `path`.
@@ -216,17 +223,30 @@ async fn run_session(config: RunConfig) -> Result {
         Some(name) => load_or_create_secret_key(name)?,
         None => iroh_live::util::secret_key_from_env()?,
     };
-    let live = setup_live_with_key(secret_key, serve).await?;
+    let live = transport::setup_live_with_key(secret_key, serve).await?;
+    let result = run_streams(&live, &config).await;
+    live.shutdown().await;
+    println!("done");
+    result
+}
 
+/// Sets up every block over `live` and holds the session open until the user
+/// interrupts. The caller closes the endpoint either way.
+///
+/// # Errors
+///
+/// Fails if no block could be set up at all. A block that fails on its own is
+/// reported and the rest of the session runs without it.
+async fn run_streams(live: &Live, config: &RunConfig) -> Result {
     // Every handle is kept until shutdown, because dropping one is what stops
     // it: a broadcast stops publishing when its handle goes, and a
     // subscription cancels every task it started.
     let mut broadcasts: Vec<LocalBroadcast> = Vec::new();
     let mut receivers: Vec<Receiver> = Vec::new();
-    let mut recordings = JoinSet::new();
+    let mut recordings: JoinSet<Result<()>> = JoinSet::new();
 
     for send in &config.send {
-        match setup_send(&live, send) {
+        match setup_send(live, send) {
             Ok(broadcast) => {
                 let ticket = LiveTicket::new(live.endpoint().addr(), &send.name);
                 println!("[send] {}: {ticket}", send.name);
@@ -239,12 +259,27 @@ async fn run_session(config: RunConfig) -> Result {
         }
     }
 
-    for recv in &config.recv {
-        match setup_recv(&live, recv, &mut recordings).await {
-            Ok(receiver) => {
+    // Concurrently, because a subscription waits for the peer's first catalog
+    // and a peer that has not started publishing yet would otherwise hold up
+    // every block behind it.
+    let setups = config
+        .recv
+        .iter()
+        .map(|recv| async move { (recv, setup_recv(live, recv).await) });
+    for (recv, result) in n0_future::join_all(setups).await {
+        match result {
+            Ok((receiver, recorder)) => {
                 println!("[recv] {}: subscribed to {}", recv.name, recv.ticket);
-                if let Some(path) = &recv.record {
+                if let Some(recorder) = recorder {
+                    let path = recorder.path().display().to_string();
                     println!("[recv] {}: recording to {path}", recv.name);
+                    let stop = receiver.sub.broadcast().shutdown_token().cancelled_owned();
+                    let name = recv.name.clone();
+                    recordings.spawn(async move {
+                        let written = recorder.run(stop).await?;
+                        info!(name, bytes = written, path, "recording finished");
+                        Ok(())
+                    });
                 }
                 receivers.push(receiver);
             }
@@ -289,8 +324,6 @@ async fn run_session(config: RunConfig) -> Result {
     for receiver in &receivers {
         receiver.sub.session().close(moq_net::Error::Cancel);
     }
-    live.shutdown().await;
-    println!("done");
     Ok(())
 }
 
@@ -316,45 +349,41 @@ fn setup_send(live: &Live, config: &SendConfig) -> Result<LocalBroadcast> {
     Ok(broadcast)
 }
 
-/// Subscribes to one `[[recv]]` block, opening its audio and spawning its
-/// recording if it asked for either.
+/// Subscribes to one `[[recv]]` block, opening its audio and its recording if
+/// it asked for either.
+///
+/// The recorder comes back rather than running here: the caller owns the tasks,
+/// and starting one before every block has been set up would record a stretch
+/// of nothing while the rest are still connecting.
 ///
 /// # Errors
 ///
 /// Fails if the ticket does not parse, the peer cannot be reached, or the
 /// recording file cannot be created. Audio that will not open is reported and
 /// the subscription continues without it.
-async fn setup_recv(
-    live: &Live,
-    config: &RecvConfig,
-    recordings: &mut JoinSet<Result<()>>,
-) -> Result<Receiver> {
-    let ticket: LiveTicket = config
-        .ticket
-        .parse()
-        .map_err(|err| anyerr!("[recv] {}: invalid ticket: {err}", config.name))?;
-    let sub = live
-        .subscribe(ticket.endpoint.clone(), &ticket.broadcast_name)
-        .await?;
+async fn setup_recv(live: &Live, config: &RecvConfig) -> Result<(Receiver, Option<Recorder>)> {
+    let ticket: LiveTicket = config.ticket.parse().map_err(|err| {
+        anyerr!(
+            "invalid ticket: {err}; it should be the string `irl publish` \
+             printed, starting with `iroh-live:`"
+        )
+    })?;
+    let sub = transport::subscribe(live, &ticket).await?;
 
-    if let Some(path) = &config.record {
-        let mut options = RecordOptions::new(path.clone(), None)?;
-        options.rendition = config.rendition.clone();
-        let recorder = Recorder::open(sub.session(), sub.broadcast(), &options).await?;
-        let stop = sub.broadcast().shutdown_token().cancelled_owned();
-        let name = config.name.clone();
-        recordings.spawn(async move {
-            let written = recorder.run(stop).await?;
-            info!(name, bytes = written, "recording finished");
-            Ok(())
-        });
-    }
-
-    let audio = match config.audio_output.as_str() {
-        "none" => None,
-        _ => play_audio(&sub, &config.name).await,
+    let recorder = match &config.record {
+        None => None,
+        Some(path) => {
+            let mut options = RecordOptions::new(path.clone(), None)?;
+            options.rendition = config.rendition.clone();
+            Some(Recorder::open(sub.session(), sub.broadcast(), &options).await?)
+        }
     };
-    Ok(Receiver { sub, _audio: audio })
+
+    let audio = match config.audio_output {
+        AudioOutput::None => None,
+        AudioOutput::Default => play_audio(&sub, &config.name).await,
+    };
+    Ok((Receiver { sub, _audio: audio }, recorder))
 }
 
 /// Opens the broadcast's audio track, which starts playing it.
@@ -483,7 +512,7 @@ mod tests {
             "#,
         )
         .expect("only `name` and `ticket` are required");
-        assert_eq!(config.recv[0].audio_output, "default");
+        assert_eq!(config.recv[0].audio_output, AudioOutput::Default);
         assert!(config.recv[0].record.is_none());
     }
 

@@ -3,9 +3,9 @@
 //! A capture source is a `moq_video::capture::Config` or a
 //! `moq_audio::capture::Config` and nothing more: the device is opened inside
 //! the publish task, which is what lets it be released again when publishing
-//! stops. The synthetic sources come from [`moq_media::test_source`], so
-//! `irl publish --test-source` works on a machine with neither camera nor
-//! microphone.
+//! stops. The test pattern and the test tone come from
+//! [`moq_media::test_source`], so `irl publish --test-source` works on a
+//! machine with neither camera nor microphone.
 
 use iroh_live::media::{
     audio,
@@ -21,34 +21,33 @@ use crate::{
     source_spec::{AudioSourceSpec, VideoSourceSpec},
 };
 
-/// Frame rate of the synthetic pattern when `--fps` is not given.
+/// Frame rate of the test pattern when `--fps` is not given.
 const TEST_FRAMERATE: u32 = 30;
 
-/// Resolution of the synthetic pattern when `--width` / `--height` are not
-/// given.
+/// Resolution of the test pattern when `--width` / `--height` are not given.
 const TEST_SIZE: Size = Size {
     width: 1280,
     height: 720,
 };
 
-/// Frequency of the synthetic tone, in hertz. Concert A: unmistakable, and low
+/// Frequency of the test tone, in hertz. Concert A: unmistakable, and low
 /// enough that no resampler on the way out can alias it.
 const TEST_TONE_HZ: f64 = 440.0;
 
-/// Sample rate of the synthetic tone. Opus's native rate, so it is encoded
+/// Sample rate of the test tone. Opus's native rate, so it is encoded
 /// without a resampling step.
 const TEST_TONE_RATE: u32 = 48_000;
 
-/// Channel count of the synthetic tone.
+/// Channel count of the test tone.
 const TEST_TONE_CHANNELS: u32 = 2;
 
 /// Sets up whichever of video and audio `args` asked for.
 ///
 /// # Errors
 ///
-/// Fails if a specifier is unusable here (a `file:` video source belongs to the
-/// import path), or if the rendition ladder does not parse. A device that will
-/// not open surfaces in the log and ends its track, not here.
+/// Fails if a specifier is unusable here (a `file:` video source belongs to
+/// `irl publish`), or if the rendition ladder does not parse. A device that
+/// will not open surfaces in the log and ends its track, not here.
 pub fn configure(broadcast: &LocalBroadcast, args: &CaptureArgs) -> Result<()> {
     if let Some(source) = video_source(&args.video_source()?, args)? {
         broadcast
@@ -65,16 +64,20 @@ pub fn configure(broadcast: &LocalBroadcast, args: &CaptureArgs) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Fails for a `file:` source, which the import path handles instead.
+/// Fails for a `file:` source, which only `irl publish` can take.
 fn video_source(spec: &VideoSourceSpec, args: &CaptureArgs) -> Result<Option<VideoSource>> {
     use video::capture::Source;
 
     let source = match spec {
         VideoSourceSpec::None => return Ok(None),
         VideoSourceSpec::Test => test_pattern(args),
-        VideoSourceSpec::File(path) => {
+        VideoSourceSpec::File { path, .. } => {
+            // Only `irl publish` has the import path; every other command that
+            // captures reaches this with whatever the user typed.
             return Err(anyerr!(
-                "the file source {} is imported, not encoded; this is a bug in the caller",
+                "a file: video source is published by `irl publish --video \
+                 file:{}`, which republishes the file without re-encoding it; \
+                 here the source has to be a capture device, `test`, or `none`",
                 path.display()
             ));
         }
@@ -97,14 +100,14 @@ fn capture(source: video::capture::Source, args: &CaptureArgs) -> VideoSource {
     VideoSource::Capture(config)
 }
 
-/// The synthetic pattern at its default geometry, for a caller with no flags
-/// to consult.
+/// The test pattern at its default geometry, for a caller with no flags to
+/// consult.
 #[cfg(feature = "render")]
 pub fn default_test_pattern() -> VideoSource {
     test_source::video(TEST_SIZE, TEST_FRAMERATE)
 }
 
-/// The synthetic pattern, at whatever geometry the flags asked for.
+/// The test pattern, at whatever geometry the flags asked for.
 fn test_pattern(args: &CaptureArgs) -> VideoSource {
     let size = Size::new(
         args.width.unwrap_or(TEST_SIZE.width),

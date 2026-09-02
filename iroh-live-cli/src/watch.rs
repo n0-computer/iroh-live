@@ -6,14 +6,26 @@
 //! renditions without the picture going blank.
 
 use iroh_live::{Live, Subscription, media::subscribe::MediaTracks};
-use n0_error::Result;
+use n0_error::{Result, anyerr};
+#[cfg(feature = "playback")]
 use tracing::info;
+use tracing::warn;
 
-use crate::{args::WatchArgs, transport::setup_live};
+use crate::{args::WatchArgs, transport};
 
 /// Runs the `watch` command.
 pub fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
-    let ticket = args.ticket()?;
+    let ticket = args.remote.ticket()?;
+
+    // Checked before dialing: a build that cannot draw should say so rather
+    // than connect first and fail once the tracks are open.
+    #[cfg(not(feature = "render"))]
+    if !args.no_video {
+        return Err(anyerr!(
+            "watching video needs the 'render' feature, which this build was \
+             compiled without; pass --no-video to play the audio alone"
+        ));
+    }
 
     let (live, sub, tracks) = rt.block_on(subscribe(&ticket, &args))?;
 
@@ -29,11 +41,7 @@ pub fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
         window::run(live, sub, tracks, &args)
     }
     #[cfg(not(feature = "render"))]
-    {
-        Err(n0_error::anyerr!(
-            "watching video needs the 'render' feature; use --no-video for audio only"
-        ))
-    }
+    unreachable!("video was rejected above in a build without the render feature")
 }
 
 /// Connects and opens the tracks this run will actually play.
@@ -50,28 +58,61 @@ async fn subscribe(
         config.device = Some(device.clone());
         iroh_live::media::playback::open(config)
             .await
-            .map_err(|err| n0_error::anyerr!("audio output {device:?}: {err}"))?;
+            .map_err(|err| {
+                anyerr!(
+                    "cannot open audio output '{device}': {err}. \
+                     Run `irl devices` for the ids this machine accepts"
+                )
+            })?;
         info!(device = %device, "audio output selected");
     }
 
-    println!("connecting to {ticket} ...");
-    let live = setup_live(false).await?;
-    let sub = live
-        .subscribe(ticket.endpoint.clone(), &ticket.broadcast_name)
-        .await?;
-    info!("session established");
+    let live = transport::setup_live(false).await?;
+    let (live, (sub, tracks)) = transport::with_live(live, async |live| {
+        let sub = transport::subscribe(live, ticket).await?;
+        if let Some(name) = &args.rendition {
+            check_rendition(&sub, name)?;
+        }
 
-    // Without a renderer nothing draws, so downloading is what a frame is for.
-    #[cfg(feature = "render")]
-    crate::ui::draw_without_downloading(sub.broadcast());
+        // Without a renderer nothing draws, so downloading is what a frame is
+        // for.
+        #[cfg(feature = "render")]
+        crate::ui::draw_without_downloading(sub.broadcast());
 
-    // `--no-video` opens audio alone rather than opening video and discarding
-    // it: a decoder nobody draws from still costs a core.
-    let tracks = match args.no_video {
-        true => audio_only(&sub).await,
-        false => sub.media().await,
-    };
+        // `--no-video` opens audio alone rather than opening video and
+        // discarding it: a decoder nobody draws from still costs a core.
+        let tracks = match args.no_video {
+            true => audio_only(&sub).await,
+            false => sub.media().await,
+        };
+        Ok((sub, tracks))
+    })
+    .await?;
     Ok((live, sub, tracks))
+}
+
+/// Checks `--rendition` against what the broadcast actually offers.
+///
+/// A name nothing matches would otherwise pin the video track to a rendition
+/// that never arrives, which looks exactly like a stalled link.
+///
+/// # Errors
+///
+/// Fails if the catalog has no video rendition of that name, listing the ones
+/// it does have.
+fn check_rendition(sub: &Subscription, name: &str) -> Result<()> {
+    let catalog = sub.broadcast().catalog();
+    if catalog.video().contains_key(name) {
+        return Ok(());
+    }
+    let offered: Vec<&str> = catalog.video().keys().map(String::as_str).collect();
+    Err(anyerr!(
+        "the broadcast has no video rendition named '{name}'; it offers {}",
+        match offered.is_empty() {
+            true => "no video at all".to_string(),
+            false => offered.join(", "),
+        }
+    ))
 }
 
 /// Opens the audio track alone, for `--no-video`.
@@ -85,18 +126,20 @@ async fn audio_only(sub: &Subscription) -> MediaTracks {
     {
         let broadcast = sub.broadcast();
         if !broadcast.has_audio() {
+            warn!("the broadcast carries no audio, so --no-video plays nothing");
             return MediaTracks::default();
         }
         let audio = broadcast
             .audio()
             .await
-            .inspect_err(|err| tracing::warn!(error = %err, "audio track failed to open"))
+            .inspect_err(|err| warn!(error = %err, "audio track failed to open"))
             .ok();
         MediaTracks { video: None, audio }
     }
     #[cfg(not(feature = "playback"))]
     {
         let _ = sub;
+        warn!("this build has no playback support, so --no-video plays nothing");
         MediaTracks::default()
     }
 }

@@ -4,12 +4,32 @@
 //! [`Live::publish`](iroh_live::Live::publish) is announced on every session
 //! this node has, so pushing to a relay is nothing more than connecting to it.
 
+use std::time::Duration;
+
 use iroh::{Endpoint, SecretKey, endpoint::presets};
-use iroh_live::{Live, LiveBuilder, ticket::LiveTicket};
+use iroh_live::{Live, LiveBuilder, Subscription, ticket::LiveTicket};
 use n0_error::Result;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::args::TransportArgs;
+
+/// How long a peer is given before a window stops waiting for it.
+///
+/// Covers a dial that never completes and a broadcast that never publishes a
+/// catalog, which look the same from here: something was announced and nothing
+/// arrived. `irl call` and `irl room` both give up after this, because a window
+/// that waits forever shows a spinner nobody can cancel.
+#[cfg(feature = "render")]
+pub const PEER_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How long a headless subscription waits before it says out loud that nothing
+/// has arrived yet.
+///
+/// `irl watch`, `irl record`, and `irl run` keep waiting afterwards: a
+/// subscriber started before its publisher is a normal way to use them, and
+/// the terminal can be interrupted. Saying nothing at all is what leaves a user
+/// guessing whether the ticket was wrong.
+const QUIET_SUBSCRIBE: Duration = Duration::from_secs(10);
 
 /// Binds an endpoint and starts the MoQ transport on it.
 ///
@@ -67,15 +87,89 @@ async fn bind(secret_key: SecretKey, serve: bool) -> Result<LiveBuilder> {
     Ok(builder)
 }
 
-/// Advertises the broadcast: prints its ticket and connects to a relay if one
-/// was named.
+/// Runs `setup` against a bound endpoint, closing it if the setup fails.
+///
+/// An endpoint dropped without [`Live::shutdown`] logs an error and leaves its
+/// peers to time the connection out, so a command that gives up between binding
+/// and running goes through here rather than returning the error directly.
+///
+/// # Errors
+///
+/// Returns whatever `setup` returned, having shut the endpoint down first.
+pub async fn with_live<T>(
+    live: Live,
+    setup: impl AsyncFnOnce(&Live) -> Result<T>,
+) -> Result<(Live, T)> {
+    match setup(&live).await {
+        Ok(value) => Ok((live, value)),
+        Err(err) => {
+            live.shutdown().await;
+            Err(err)
+        }
+    }
+}
+
+/// Subscribes to `ticket`, saying so on the way in and out.
+///
+/// The catalog is what a subscription waits for, and a publisher that has not
+/// started yet never sends one, so a subscription that is taking a long time
+/// says which broadcast it is still waiting for.
+///
+/// # Errors
+///
+/// Fails if the peer cannot be reached, or if it closes the broadcast without
+/// ever publishing a catalog.
+pub async fn subscribe(live: &Live, ticket: &LiveTicket) -> Result<Subscription> {
+    println!("connecting to {ticket} ...");
+    let mut subscribing =
+        std::pin::pin!(live.subscribe(ticket.endpoint.clone(), &ticket.broadcast_name));
+
+    let sub = match tokio::time::timeout(QUIET_SUBSCRIBE, subscribing.as_mut()).await {
+        Ok(result) => result?,
+        Err(_) => {
+            warn!(
+                remote = %ticket.endpoint.id.fmt_short(),
+                broadcast = %ticket.broadcast_name,
+                seconds = QUIET_SUBSCRIBE.as_secs(),
+                "still waiting for the broadcast"
+            );
+            println!(
+                "still waiting for '{}' on {}: is the publisher running? \
+                 press Ctrl+C to give up",
+                ticket.broadcast_name,
+                ticket.endpoint.id.fmt_short()
+            );
+            subscribing.await?
+        }
+    };
+    info!(
+        remote = %ticket.endpoint.id.fmt_short(),
+        broadcast = %ticket.broadcast_name,
+        "session established"
+    );
+    Ok(sub)
+}
+
+/// Advertises the broadcast: prints its ticket, connects to a relay if one was
+/// named, and returns the ticket either way.
 ///
 /// # Errors
 ///
 /// Fails if the relay cannot be reached.
-pub async fn advertise(live: &Live, args: &TransportArgs) -> Result<()> {
-    if !args.no_serve {
-        print_ticket(live, &args.name, args.no_qr);
+pub async fn advertise(live: &Live, args: &TransportArgs) -> Result<String> {
+    let ticket = ticket(live, &args.name);
+    match (args.no_serve, args.relay) {
+        // Nobody can dial this node, so the ticket names an address that does
+        // not answer and the relay is the only way out.
+        (true, Some(_)) => println!("not serving: subscribers reach this broadcast by relay"),
+        (true, None) => warn!(
+            "--no-serve without --relay: nothing can reach this broadcast, since \
+             this node neither accepts subscribers nor pushes to a relay"
+        ),
+        (false, _) => {
+            println!("publishing at {ticket}");
+            print_qr(&ticket, args.no_qr);
+        }
     }
 
     if let Some(relay) = args.relay {
@@ -85,15 +179,7 @@ pub async fn advertise(live: &Live, args: &TransportArgs) -> Result<()> {
         info!(relay = %relay.fmt_short(), "pushing to relay");
         println!("pushing to relay {relay}");
     }
-    Ok(())
-}
-
-/// Prints the ticket a subscriber needs, and a QR code of it unless suppressed.
-pub fn print_ticket(live: &Live, name: &str, no_qr: bool) -> String {
-    let ticket = ticket(live, name);
-    println!("publishing at {ticket}");
-    print_qr(&ticket, no_qr);
-    ticket
+    Ok(ticket)
 }
 
 /// Prints a QR code of `ticket`, unless `no_qr` suppresses it.
@@ -102,7 +188,7 @@ pub fn print_ticket(live: &Live, name: &str, no_qr: bool) -> String {
 /// logged and nothing else.
 pub fn print_qr(ticket: &str, no_qr: bool) {
     if !no_qr && let Err(err) = qr2term::print_qr(ticket) {
-        tracing::warn!(error = %err, "could not print the QR code");
+        warn!(error = %err, "could not print the QR code");
     }
 }
 

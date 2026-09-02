@@ -50,7 +50,7 @@ pub const DEFAULT_ENCODER: &str = "auto";
 #[derive(Args, Debug)]
 pub struct CaptureArgs {
     /// Video source: `cam`, `cam:<id>`, `screen`, `screen:<id>`, `window:<id>`,
-    /// `app:<id>`, `file:<path>`, `test`, or `none`.
+    /// `app:<id>`, `file:<path>[:loop]`, `test`, or `none`.
     ///
     /// Run `irl devices` for the identifiers this machine accepts.
     #[arg(long, default_value = DEFAULT_VIDEO, verbatim_doc_comment)]
@@ -62,7 +62,7 @@ pub struct CaptureArgs {
     #[arg(long, default_value = DEFAULT_AUDIO, verbatim_doc_comment)]
     pub audio: String,
 
-    /// Publish a synthetic pattern and tone, the same as
+    /// Publish a test pattern and a test tone, the same as
     /// `--video test --audio test`.
     #[arg(long)]
     pub test_source: bool,
@@ -84,7 +84,7 @@ pub struct CaptureArgs {
 
     /// Target video bitrate in bits per second. Omit to derive one from the
     /// resolution. Applies to every rung of the ladder.
-    #[arg(long)]
+    #[arg(long, value_name = "BITS_PER_SECOND")]
     pub bitrate: Option<u64>,
 
     /// Requested capture width. The device snaps to its nearest supported mode.
@@ -108,7 +108,7 @@ pub struct CaptureArgs {
     pub audio_codec: AudioCodecArg,
 
     /// Target audio bitrate in bits per second. Opus only.
-    #[arg(long)]
+    #[arg(long, value_name = "BITS_PER_SECOND")]
     pub audio_bitrate: Option<u32>,
 }
 
@@ -216,11 +216,19 @@ pub struct PublishArgs {
     #[arg(long)]
     pub preview: bool,
 
+    /// Start the preview window in fullscreen.
+    #[arg(long)]
+    pub fullscreen: bool,
+
     /// Container of a `file:` video source.
     #[arg(long, value_enum, default_value_t = ImportFormat::Fmp4)]
     pub format: ImportFormat,
 
     /// Re-mux (or re-encode) a `file:` video source through ffmpeg first.
+    ///
+    /// A plain (non-fragmented) MP4 has to go through this before it can be
+    /// read as a stream. Also what `file:<path>:loop` needs, since ffmpeg is
+    /// what repeats the input.
     #[arg(long)]
     pub transcode: bool,
 }
@@ -280,25 +288,55 @@ pub struct RoomArgs {
     pub fullscreen: bool,
 }
 
-/// Arguments for `irl watch`.
+/// The remote broadcast a subscriber connects to.
+///
+/// Two spellings for one thing: the ticket a publisher printed, or the
+/// endpoint id and broadcast path it is made of. `irl watch` and `irl record`
+/// both take it, so both accept exactly the same forms.
 #[derive(Args, Debug)]
-pub struct WatchArgs {
+pub struct RemoteArgs {
     /// Connection ticket, as `irl publish` printed it.
-    #[arg(conflicts_with = "endpoint_id")]
+    #[arg(conflicts_with_all = ["endpoint_id", "broadcast_name"])]
     pub ticket: Option<LiveTicket>,
 
     /// Remote endpoint id. Needs `--name`.
-    #[arg(long, conflicts_with = "ticket", requires = "watch_name")]
+    #[arg(long, conflicts_with = "ticket", requires = "broadcast_name")]
     pub endpoint_id: Option<EndpointId>,
 
     /// Broadcast path, alongside `--endpoint-id`.
     #[arg(
         long = "name",
-        id = "watch_name",
+        value_name = "NAME",
         conflicts_with = "ticket",
         requires = "endpoint_id"
     )]
     pub broadcast_name: Option<String>,
+}
+
+impl RemoteArgs {
+    /// The ticket to subscribe to, from either form the flags allow.
+    ///
+    /// # Errors
+    ///
+    /// Fails if neither a positional ticket nor the
+    /// `--endpoint-id` / `--name` pair was given. clap already rejects both at
+    /// once.
+    pub fn ticket(&self) -> Result<LiveTicket> {
+        match (&self.ticket, self.endpoint_id, &self.broadcast_name) {
+            (Some(ticket), None, None) => Ok(ticket.clone()),
+            (None, Some(id), Some(name)) => Ok(LiveTicket::new(id, name.clone())),
+            _ => Err(anyerr!(
+                "provide either <TICKET> or --endpoint-id and --name"
+            )),
+        }
+    }
+}
+
+/// Arguments for `irl watch`.
+#[derive(Args, Debug)]
+pub struct WatchArgs {
+    #[command(flatten)]
+    pub remote: RemoteArgs,
 
     /// Play audio only. No window opens.
     #[arg(long)]
@@ -322,18 +360,6 @@ pub struct WatchArgs {
     pub audio_output: Option<String>,
 }
 
-impl WatchArgs {
-    /// The ticket to subscribe to, from either form the flags allow.
-    ///
-    /// # Errors
-    ///
-    /// Fails if neither a positional ticket nor the
-    /// `--endpoint-id` / `--name` pair was given.
-    pub fn ticket(&self) -> Result<LiveTicket> {
-        resolve_ticket(&self.ticket, self.endpoint_id, &self.broadcast_name)
-    }
-}
-
 /// Arguments for `irl run`.
 #[derive(Args, Debug)]
 pub struct RunArgs {
@@ -344,22 +370,8 @@ pub struct RunArgs {
 /// Arguments for `irl record`.
 #[derive(Args, Debug)]
 pub struct RecordArgs {
-    /// Connection ticket, as `irl publish` printed it.
-    #[arg(conflicts_with = "endpoint_id")]
-    pub ticket: Option<LiveTicket>,
-
-    /// Remote endpoint id. Needs `--name`.
-    #[arg(long, conflicts_with = "ticket", requires = "record_name")]
-    pub endpoint_id: Option<EndpointId>,
-
-    /// Broadcast path, alongside `--endpoint-id`.
-    #[arg(
-        long = "name",
-        id = "record_name",
-        conflicts_with = "ticket",
-        requires = "endpoint_id"
-    )]
-    pub broadcast_name: Option<String>,
+    #[command(flatten)]
+    pub remote: RemoteArgs,
 
     /// Output file. Its extension picks the container unless `--format` names
     /// one.
@@ -375,26 +387,13 @@ pub struct RecordArgs {
     #[arg(long)]
     pub rendition: Option<String>,
 
-    /// Stop after this many seconds. Omit to record until interrupted.
-    #[arg(long)]
+    /// Stop after this long. Omit to record until interrupted.
+    #[arg(long, value_name = "SECONDS")]
     pub duration: Option<u64>,
 
-    /// How long a stalled group is waited for before it is skipped, in
-    /// milliseconds.
-    #[arg(long, default_value_t = 2_000)]
+    /// How long a stalled group is waited for before it is skipped.
+    #[arg(long, value_name = "MILLISECONDS", default_value_t = 2_000)]
     pub latency: u64,
-}
-
-impl RecordArgs {
-    /// The ticket to subscribe to, from either form the flags allow.
-    ///
-    /// # Errors
-    ///
-    /// Fails if neither a positional ticket nor the
-    /// `--endpoint-id` / `--name` pair was given.
-    pub fn ticket(&self) -> Result<LiveTicket> {
-        resolve_ticket(&self.ticket, self.endpoint_id, &self.broadcast_name)
-    }
 }
 
 /// The container `irl record` writes.
@@ -404,24 +403,4 @@ pub enum RecordFormat {
     Fmp4,
     /// Matroska, the shape `.mkv` and `.webm` name.
     Mkv,
-}
-
-/// The ticket named by either the positional form or the
-/// `--endpoint-id` / `--name` pair.
-///
-/// # Errors
-///
-/// Fails if neither form was given. clap already rejects both at once.
-fn resolve_ticket(
-    ticket: &Option<LiveTicket>,
-    endpoint_id: Option<EndpointId>,
-    broadcast_name: &Option<String>,
-) -> Result<LiveTicket> {
-    match (ticket, endpoint_id, broadcast_name) {
-        (Some(ticket), None, None) => Ok(ticket.clone()),
-        (None, Some(id), Some(name)) => Ok(LiveTicket::new(id, name.clone())),
-        _ => Err(anyerr!(
-            "provide either <TICKET> or --endpoint-id and --name"
-        )),
-    }
 }

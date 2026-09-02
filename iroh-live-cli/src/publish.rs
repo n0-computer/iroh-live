@@ -5,11 +5,12 @@
 //! the import path instead: its tracks are republished as they already are.
 
 use iroh_live::{Live, media::publish::LocalBroadcast};
-use n0_error::Result;
+use n0_error::{Result, anyerr};
+use tracing::{info, warn};
 
 use crate::{
     args::PublishArgs,
-    import::FileImport,
+    import::{FileImport, FileSource},
     source,
     source_spec::VideoSourceSpec,
     transport::{self, setup_live},
@@ -18,23 +19,49 @@ use crate::{
 /// Runs the `publish` command.
 pub fn run(args: PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
     match args.capture.video_source()? {
-        VideoSourceSpec::File(path) => publish_file(&path, &args, rt),
-        _ => publish_capture(&args, rt),
+        VideoSourceSpec::File { path, looping } => {
+            publish_file(FileSource::new(path, looping, &args)?, &args, rt)
+        }
+        _ => {
+            if args.transcode {
+                warn!("ignoring --transcode: it only applies to a file: video source");
+            }
+            publish_capture(&args, rt)
+        }
     }
 }
 
 /// Opens the devices, publishes them, and prints the ticket.
 async fn setup_capture(args: &PublishArgs) -> Result<(Live, LocalBroadcast, String)> {
     let live = setup_live(!args.transport.no_serve).await?;
-    let broadcast = live.publish(&args.transport.name)?;
-    source::configure(&broadcast, &args.capture)?;
-    transport::advertise(&live, &args.transport).await?;
-    let ticket = transport::ticket(&live, &args.transport.name);
+    let (live, (broadcast, ticket)) = transport::with_live(live, async |live| {
+        let broadcast = live.publish(&args.transport.name)?;
+        source::configure(&broadcast, &args.capture)?;
+        let ticket = transport::advertise(live, &args.transport).await?;
+        info!(
+            name = %args.transport.name,
+            video = %args.capture.video,
+            audio = %args.capture.audio,
+            "publishing"
+        );
+        Ok((broadcast, ticket))
+    })
+    .await?;
     Ok((live, broadcast, ticket))
 }
 
 /// Publishes capture devices, optionally alongside a preview window.
 fn publish_capture(args: &PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
+    // Checked before anything is opened: a build that cannot draw should say so
+    // rather than open the camera first and fail afterwards.
+    #[cfg(not(feature = "render"))]
+    if args.preview {
+        return Err(anyerr!(
+            "--preview needs the 'render' feature, which this build was \
+             compiled without; publish without it, or install a build that has it"
+        ));
+    }
+
     let (live, broadcast, ticket) = rt.block_on(setup_capture(args))?;
 
     if !args.preview {
@@ -46,46 +73,47 @@ fn publish_capture(args: &PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
         // eframe owns the main thread, so the runtime stays alive only for as
         // long as this guard does.
         let _guard = rt.enter();
-        preview::run(live, broadcast, ticket, &args.capture.video)
+        preview::run(live, broadcast, ticket, args)
     }
     #[cfg(not(feature = "render"))]
     {
         let _ = ticket;
-        drop(broadcast);
-        drop(live);
-        Err(n0_error::anyerr!("--preview needs the 'render' feature"))
+        unreachable!("--preview is rejected above in a build without the render feature")
     }
 }
 
 /// Publishes a media file, republishing its tracks without decoding them.
-fn publish_file(
-    path: &std::path::Path,
-    args: &PublishArgs,
-    rt: &tokio::runtime::Runtime,
-) -> Result {
+fn publish_file(source: FileSource, args: &PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
     if args.preview {
-        return Err(n0_error::anyerr!(
+        return Err(anyerr!(
             "--preview is not available for a file source: its tracks are \
              republished as they are, so there are no raw frames to draw"
         ));
     }
 
-    rt.block_on(run_file(path, args))
+    rt.block_on(run_file(source, args))
 }
 
 /// Publishes the file and holds it open until end of input or an interrupt.
-async fn run_file(path: &std::path::Path, args: &PublishArgs) -> Result {
+async fn run_file(source: FileSource, args: &PublishArgs) -> Result {
     let live = setup_live(!args.transport.no_serve).await?;
+    let result = publish_import(&live, source, args).await;
+    live.shutdown().await;
+    result
+}
+
+/// Publishes the file onto `live`, which the caller closes either way.
+async fn publish_import(live: &Live, source: FileSource, args: &PublishArgs) -> Result {
     let producer = live.publish_raw(&args.transport.name)?;
-    let import = FileImport::open(producer, path, args.format, args.transcode).await?;
-    transport::advertise(&live, &args.transport).await?;
+    let import = FileImport::open(producer, source).await?;
+    transport::advertise(live, &args.transport).await?;
+    info!(name = %args.transport.name, "publishing a file");
 
     println!("press Ctrl+C to stop");
     tokio::select! {
         result = import.run() => result?,
         _ = tokio::signal::ctrl_c() => {}
     }
-    live.shutdown().await;
     Ok(())
 }
 
@@ -120,16 +148,22 @@ mod preview {
     use n0_error::{Result, anyerr};
     use tracing::{info, warn};
 
-    use crate::{source_spec::VideoSourceSpec, ui::LocalPreview};
+    use crate::{args::PublishArgs, source_spec::VideoSourceSpec, ui::LocalPreview};
 
     /// Opens the preview window and runs it until it closes.
     ///
-    /// `flag` is the `--video` specifier the broadcast started with, so the
-    /// picker can show what is already publishing instead of guessing.
-    pub(super) fn run(live: Live, broadcast: LocalBroadcast, ticket: String, flag: &str) -> Result {
+    /// The picker starts on the `--video` specifier the broadcast was started
+    /// with, so it shows what is already publishing instead of guessing.
+    pub(super) fn run(
+        live: Live,
+        broadcast: LocalBroadcast,
+        ticket: String,
+        args: &PublishArgs,
+    ) -> Result {
+        let flag = args.capture.video.clone();
         eframe::run_native(
             "irl publish",
-            crate::ui::native_options(false),
+            crate::ui::native_options(args.fullscreen),
             Box::new(move |cc| {
                 crate::ui::spawn_ctrl_c_handler(&cc.egui_ctx);
                 let view =
@@ -139,7 +173,7 @@ mod preview {
                     broadcast,
                     ticket,
                     view,
-                    picker: SourcePicker::new(flag),
+                    picker: SourcePicker::new(&flag),
                     overlay: DebugOverlay::new(&[StatCategory::Capture, StatCategory::Net]),
                 }))
             }),

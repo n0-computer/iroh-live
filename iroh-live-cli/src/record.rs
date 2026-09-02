@@ -14,7 +14,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use iroh_live::{media::subscribe::RemoteBroadcast, moq::MoqSession};
+use iroh_live::{Live, media::subscribe::RemoteBroadcast, moq::MoqSession, ticket::LiveTicket};
 use moq_mux::{
     catalog::{CatalogFormat, Stream as _},
     container::{fmp4, mkv},
@@ -26,7 +26,7 @@ use tracing::{info, warn};
 
 use crate::{
     args::{RecordArgs, RecordFormat},
-    transport::setup_live,
+    transport,
 };
 
 /// How often the progress line is printed while a recording runs.
@@ -40,15 +40,23 @@ pub fn run(args: RecordArgs, rt: &tokio::runtime::Runtime) -> Result {
 /// Connects, records until the broadcast ends or the user interrupts, and
 /// closes the session.
 async fn record(args: RecordArgs) -> Result {
-    let ticket = args.ticket()?;
+    let ticket = args.remote.ticket()?;
     let options = options(&args)?;
 
-    println!("connecting to {ticket} ...");
-    let live = setup_live(false).await?;
-    let sub = live
-        .subscribe(ticket.endpoint.clone(), &ticket.broadcast_name)
-        .await?;
-    info!("session established");
+    let live = transport::setup_live(false).await?;
+    let result = record_on(&live, &ticket, &options).await;
+    live.shutdown().await;
+    result
+}
+
+/// Records one broadcast over `live`, which the caller closes either way.
+///
+/// # Errors
+///
+/// Fails if the broadcast cannot be subscribed to, carries nothing to record,
+/// or the file cannot be written.
+async fn record_on(live: &Live, ticket: &LiveTicket, options: &RecordOptions) -> Result {
+    let sub = transport::subscribe(live, ticket).await?;
 
     let catalog = sub.broadcast().catalog();
     println!(
@@ -57,10 +65,13 @@ async fn record(args: RecordArgs) -> Result {
         catalog.audio().len()
     );
     if catalog.video().is_empty() && catalog.audio().is_empty() {
-        return Err(anyerr!("the broadcast carries no video and no audio"));
+        return Err(anyerr!(
+            "the broadcast carries no video and no audio, so there is nothing \
+             to record"
+        ));
     }
 
-    let recorder = Recorder::open(sub.session(), sub.broadcast(), &options).await?;
+    let recorder = Recorder::open(sub.session(), sub.broadcast(), options).await?;
     match options.duration {
         Some(duration) => println!("recording for {}s ...", duration.as_secs()),
         None => println!("recording, press Ctrl+C to stop"),
@@ -74,7 +85,6 @@ async fn record(args: RecordArgs) -> Result {
 
     sub.broadcast().shutdown();
     sub.session().close(moq_net::Error::Cancel);
-    live.shutdown().await;
     Ok(())
 }
 
@@ -94,7 +104,7 @@ pub struct RecordOptions {
 }
 
 /// How long a stalled group is waited for before the exporter skips it, when
-/// no caller says otherwise. Generous next to a player's budget: a recording
+/// no caller says otherwise. Generous next to what a player allows: a recording
 /// would rather buffer a late group than drop it.
 const DEFAULT_LATENCY: Duration = Duration::from_secs(2);
 
@@ -168,13 +178,16 @@ impl Recorder {
     ///
     /// # Errors
     ///
-    /// Fails if the catalog track cannot be subscribed to, or if the output
-    /// file cannot be created.
+    /// Fails if the requested rendition is not in the catalog, if the catalog
+    /// track cannot be subscribed to, or if the output file cannot be created.
     pub async fn open(
         session: &MoqSession,
         broadcast: &RemoteBroadcast,
         options: &RecordOptions,
     ) -> Result<Self> {
+        if let Some(name) = &options.rendition {
+            check_rendition(broadcast, name)?;
+        }
         let source = moq_mux::Source::new(session.announced().clone(), broadcast.name());
         // A second subscription to the catalog track: `moq_mux` drives its
         // exporters from a `catalog::Stream`, and `RemoteBroadcast` publishes
@@ -204,6 +217,11 @@ impl Recorder {
             file: BufWriter::new(file),
             path: options.path.clone(),
         })
+    }
+
+    /// The file this recording writes.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     /// Writes container chunks until the broadcast ends or `stop` resolves,
@@ -280,6 +298,30 @@ fn unknown_extension(path: &Path) -> n0_error::AnyError {
     )
 }
 
+/// Checks a requested rendition against what the broadcast offers.
+///
+/// The exporter would otherwise select nothing and write a file with no video
+/// in it, which only shows up when the recording is played back.
+///
+/// # Errors
+///
+/// Fails if the catalog has no video rendition of that name, listing the ones
+/// it does have.
+fn check_rendition(broadcast: &RemoteBroadcast, name: &str) -> Result<()> {
+    let catalog = broadcast.catalog();
+    if catalog.video().contains_key(name) {
+        return Ok(());
+    }
+    let offered: Vec<&str> = catalog.video().keys().map(String::as_str).collect();
+    Err(anyerr!(
+        "the broadcast has no video rendition named '{name}'; it offers {}",
+        match offered.is_empty() {
+            true => "no video at all".to_string(),
+            false => offered.join(", "),
+        }
+    ))
+}
+
 /// Keeps every audio rendition, and either every video rendition or only the
 /// one `rendition` names.
 fn selection(rendition: Option<&str>) -> select::Broadcast {
@@ -331,6 +373,16 @@ fn format_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args::RemoteArgs;
+
+    /// A remote nothing in these tests dials.
+    fn remote_args() -> RemoteArgs {
+        RemoteArgs {
+            ticket: None,
+            endpoint_id: None,
+            broadcast_name: None,
+        }
+    }
 
     #[test]
     fn extensions_name_containers() {
@@ -350,9 +402,7 @@ mod tests {
     #[test]
     fn options_prefer_the_flag_over_the_extension() {
         let args = RecordArgs {
-            ticket: None,
-            endpoint_id: None,
-            broadcast_name: None,
+            remote: remote_args(),
             output: PathBuf::from("out.avi"),
             format: Some(RecordFormat::Mkv),
             rendition: None,
@@ -367,9 +417,7 @@ mod tests {
     #[test]
     fn an_unknown_extension_without_a_flag_is_rejected() {
         let args = RecordArgs {
-            ticket: None,
-            endpoint_id: None,
-            broadcast_name: None,
+            remote: remote_args(),
             output: PathBuf::from("out.avi"),
             format: None,
             rendition: None,

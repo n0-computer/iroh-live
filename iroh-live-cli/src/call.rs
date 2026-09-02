@@ -8,6 +8,7 @@
 
 use iroh_live::{Call, Live, media::publish::LocalBroadcast};
 use n0_error::Result;
+use tracing::info;
 
 use crate::{
     args::{CallArgs, CaptureArgs},
@@ -16,6 +17,9 @@ use crate::{
 
 /// Runs the `call` command.
 pub fn run(args: CallArgs, rt: &tokio::runtime::Runtime) -> Result {
+    if let Some(ticket) = &args.ticket {
+        println!("calling {} ...", ticket.endpoint.id.fmt_short());
+    }
     let (live, broadcast, ticket) = rt.block_on(setup(&args))?;
 
     // eframe takes the main thread from here on, so the runtime keeps its
@@ -28,10 +32,15 @@ pub fn run(args: CallArgs, rt: &tokio::runtime::Runtime) -> Result {
 /// peer needs.
 async fn setup(args: &CallArgs) -> Result<(Live, LocalBroadcast, String)> {
     let live = transport::setup_live(true).await?;
-    let broadcast = publish_local(&live, &args.capture)?;
-    let ticket = transport::ticket(&live, &Call::path(live.endpoint().id()));
-    println!("your call ticket: {ticket}");
-    transport::print_qr(&ticket, args.no_qr);
+    let (live, (broadcast, ticket)) = transport::with_live(live, async |live| {
+        let broadcast = publish_local(live, &args.capture)?;
+        let ticket = transport::ticket(live, &Call::path(live.endpoint().id()));
+        println!("your call ticket: {ticket}");
+        transport::print_qr(&ticket, args.no_qr);
+        info!(ticket, "waiting for a call");
+        Ok((broadcast, ticket))
+    })
+    .await?;
     Ok((live, broadcast, ticket))
 }
 
@@ -67,15 +76,9 @@ mod window {
 
     use crate::{
         args::CallArgs,
+        transport::PEER_TIMEOUT,
         ui::{CursorIdle, LocalPreview, RemoteView},
     };
-
-    /// How long a dial or an answer is given before it is abandoned.
-    ///
-    /// An incoming session is not necessarily a caller: everything that speaks
-    /// MoQ to this node arrives on the same stream, and a plain subscriber
-    /// never publishes the call path an answer waits for.
-    const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
     /// How many unanswered incoming sessions are held before the oldest one
     /// waits its turn. Callers are rare; this only has to cover a burst.
@@ -489,14 +492,19 @@ mod window {
 
     /// Waits for a call to establish, then opens whichever tracks the peer
     /// carries.
+    ///
+    /// Both directions are given [`PEER_TIMEOUT`], answering included: an
+    /// incoming session is not necessarily a caller, since everything that
+    /// speaks MoQ to this node arrives the same way and a plain subscriber
+    /// never publishes the call path an answer waits for.
     async fn settle(setup: impl Future<Output = Result<Call, CallError>>) -> Answer {
-        let call = match tokio::time::timeout(CONNECT_TIMEOUT, setup).await {
+        let call = match tokio::time::timeout(PEER_TIMEOUT, setup).await {
             Ok(Ok(call)) => call,
             Ok(Err(err)) => return Answer::Failed(format!("{err:#}")),
             Err(_) => {
                 return Answer::Failed(format!(
                     "gave up after {}s: the peer never published its side",
-                    CONNECT_TIMEOUT.as_secs()
+                    PEER_TIMEOUT.as_secs()
                 ));
             }
         };
@@ -507,12 +515,12 @@ mod window {
 
     /// Trims a ticket to something that fits on one line.
     fn shorten(ticket: &str) -> String {
-        /// How much of a ticket is shown before it is elided.
+        /// How many characters of a ticket are shown before it is elided.
         const KEEP: usize = 60;
 
-        match ticket.len() > KEEP {
-            true => format!("{}...", &ticket[..KEEP]),
-            false => ticket.to_string(),
+        match ticket.char_indices().nth(KEEP) {
+            Some((end, _)) => format!("{}...", &ticket[..end]),
+            None => ticket.to_string(),
         }
     }
 }
