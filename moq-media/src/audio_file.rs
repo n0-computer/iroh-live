@@ -289,11 +289,13 @@ fn decode_once(
                 .flat_map(|sample| sample.to_le_bytes())
                 .collect::<Vec<u8>>(),
         );
-        let frame = moq_audio::Frame {
-            timestamp: moq_net::Timestamp::from_micros(published.as_micros() as u64)
-                .expect("published duration out of Timestamp range"),
+        // `Frame::new` classifies the samples as active, which is right for a
+        // file: the encoder decides what is silence, not the source.
+        let frame = moq_audio::Frame::new(
             data,
-        };
+            moq_net::Timestamp::from_micros(published.as_micros() as u64)
+                .expect("published duration out of Timestamp range"),
+        );
         if tx.blocking_send(frame).is_err() {
             // The publisher went away.
             return Ok(());

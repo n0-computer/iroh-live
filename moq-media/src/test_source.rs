@@ -95,10 +95,7 @@ pub fn audio(hz: f64, sample_rate: u32, channels: u32) -> AudioSource {
             }
             let timestamp = moq_net::Timestamp::from_micros(elapsed_us)
                 .expect("elapsed micros out of Timestamp range");
-            let frame = moq_audio::Frame {
-                timestamp,
-                data: data.into(),
-            };
+            let frame = moq_audio::Frame::new(data.into(), timestamp);
             let next_us = elapsed_us + FRAME.as_micros() as u64;
             Some((frame, (sample + per_frame, next_us)))
         },

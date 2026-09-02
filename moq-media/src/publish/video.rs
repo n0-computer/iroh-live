@@ -103,9 +103,19 @@ async fn run(publish: Publish) -> Result<(), PublishError> {
                 .or_else(|| stream.framerate())
                 .unwrap_or(DEFAULT_FRAMERATE);
             let color = stream.color();
+            // `read` reports a failed capture as well as its end. Either way the
+            // stream stops here, and the encoder tasks downstream see the source
+            // close; the error is logged rather than propagated, since a stream
+            // has nowhere to return one.
             let frames = Box::pin(n0_future::stream::unfold(stream, |mut stream| async move {
-                let surface = stream.read().await?;
-                Some((surface, stream))
+                match stream.read().await {
+                    Ok(Some(surface)) => Some((surface, stream)),
+                    Ok(None) => None,
+                    Err(err) => {
+                        warn!(error = %err, "video capture failed");
+                        None
+                    }
+                }
             }));
             let clock_for_stamp = clock;
             let frames: BoxStream<Frame> = Box::pin(

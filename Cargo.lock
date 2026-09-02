@@ -235,7 +235,7 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "windows-sys 0.60.2",
- "x11rb",
+ "x11rb 0.13.2",
 ]
 
 [[package]]
@@ -1497,7 +1497,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ab67060fc6b8ef687992d439ca0fa36e7ed17e9a0b16b25b601e8757df720de"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -2854,8 +2854,8 @@ dependencies = [
 
 [[package]]
 name = "hang"
-version = "0.20.7"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#b95a4505da4350e3a354292ea827426f6a0d815a"
+version = "0.20.9"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#979b5ce867fd3739f3ab789c97a0963f1fe2924e"
 dependencies = [
  "bytes",
  "derive_more",
@@ -4159,8 +4159,8 @@ dependencies = [
 
 [[package]]
 name = "kio"
-version = "0.5.6"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#b95a4505da4350e3a354292ea827426f6a0d815a"
+version = "0.5.7"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#979b5ce867fd3739f3ab789c97a0963f1fe2924e"
 dependencies = [
  "loom",
  "smallvec",
@@ -4529,8 +4529,8 @@ dependencies = [
 
 [[package]]
 name = "moq-audio"
-version = "0.0.20"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#b95a4505da4350e3a354292ea827426f6a0d815a"
+version = "0.0.21"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#979b5ce867fd3739f3ab789c97a0963f1fe2924e"
 dependencies = [
  "block2 0.6.2",
  "bytes",
@@ -4538,7 +4538,7 @@ dependencies = [
  "dispatch2",
  "fixed-resample",
  "hang",
- "kio 0.5.6 (git+https://github.com/Frando/moq?branch=iroh-live)",
+ "kio 0.5.7",
  "moq-mux",
  "moq-net",
  "objc2 0.6.4",
@@ -4561,8 +4561,8 @@ dependencies = [
 
 [[package]]
 name = "moq-flate"
-version = "0.1.1"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#b95a4505da4350e3a354292ea827426f6a0d815a"
+version = "0.1.2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#979b5ce867fd3739f3ab789c97a0963f1fe2924e"
 dependencies = [
  "bytes",
  "flate2",
@@ -4571,12 +4571,12 @@ dependencies = [
 
 [[package]]
 name = "moq-json"
-version = "0.3.6"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#b95a4505da4350e3a354292ea827426f6a0d815a"
+version = "0.3.8"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#979b5ce867fd3739f3ab789c97a0963f1fe2924e"
 dependencies = [
  "bytes",
  "json-patch",
- "kio 0.5.6 (git+https://github.com/Frando/moq?branch=iroh-live)",
+ "kio 0.5.7",
  "moq-flate",
  "moq-net",
  "serde",
@@ -4588,8 +4588,8 @@ dependencies = [
 
 [[package]]
 name = "moq-loc"
-version = "0.2.2"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#b95a4505da4350e3a354292ea827426f6a0d815a"
+version = "0.2.4"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#979b5ce867fd3739f3ab789c97a0963f1fe2924e"
 dependencies = [
  "bytes",
  "moq-net",
@@ -4652,8 +4652,8 @@ dependencies = [
 
 [[package]]
 name = "moq-msf"
-version = "0.4.1"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#b95a4505da4350e3a354292ea827426f6a0d815a"
+version = "0.4.2"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#979b5ce867fd3739f3ab789c97a0963f1fe2924e"
 dependencies = [
  "serde",
  "serde_json",
@@ -4662,15 +4662,15 @@ dependencies = [
 
 [[package]]
 name = "moq-mux"
-version = "0.9.10"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#b95a4505da4350e3a354292ea827426f6a0d815a"
+version = "0.9.12"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#979b5ce867fd3739f3ab789c97a0963f1fe2924e"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
  "bytes",
  "h264-parser",
  "hang",
- "kio 0.5.6 (git+https://github.com/Frando/moq?branch=iroh-live)",
+ "kio 0.5.7",
  "memchr",
  "moq-json",
  "moq-loc",
@@ -4694,8 +4694,8 @@ dependencies = [
 
 [[package]]
 name = "moq-native"
-version = "0.19.14"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#b95a4505da4350e3a354292ea827426f6a0d815a"
+version = "0.19.15"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#979b5ce867fd3739f3ab789c97a0963f1fe2924e"
 dependencies = [
  "clap",
  "dns-lookup",
@@ -4735,13 +4735,13 @@ dependencies = [
 
 [[package]]
 name = "moq-net"
-version = "0.2.15"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#b95a4505da4350e3a354292ea827426f6a0d815a"
+version = "0.2.17"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#979b5ce867fd3739f3ab789c97a0963f1fe2924e"
 dependencies = [
  "arrayvec",
  "bytes",
  "futures",
- "kio 0.5.6 (git+https://github.com/Frando/moq?branch=iroh-live)",
+ "kio 0.5.7",
  "num_enum",
  "rand 0.10.1",
  "serde",
@@ -4754,8 +4754,8 @@ dependencies = [
 
 [[package]]
 name = "moq-nvenc"
-version = "0.0.3"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#b95a4505da4350e3a354292ea827426f6a0d815a"
+version = "0.0.4"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#979b5ce867fd3739f3ab789c97a0963f1fe2924e"
 dependencies = [
  "cudarc",
  "lazy_static",
@@ -4764,8 +4764,8 @@ dependencies = [
 
 [[package]]
 name = "moq-relay"
-version = "0.14.13"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#b95a4505da4350e3a354292ea827426f6a0d815a"
+version = "0.14.14"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#979b5ce867fd3739f3ab789c97a0963f1fe2924e"
 dependencies = [
  "anyhow",
  "axum",
@@ -4805,8 +4805,8 @@ dependencies = [
 
 [[package]]
 name = "moq-stats"
-version = "0.1.6"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#b95a4505da4350e3a354292ea827426f6a0d815a"
+version = "0.1.7"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#979b5ce867fd3739f3ab789c97a0963f1fe2924e"
 dependencies = [
  "moq-json",
  "moq-net",
@@ -4819,8 +4819,8 @@ dependencies = [
 
 [[package]]
 name = "moq-token"
-version = "0.7.2"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#b95a4505da4350e3a354292ea827426f6a0d815a"
+version = "0.7.3"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#979b5ce867fd3739f3ab789c97a0963f1fe2924e"
 dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
@@ -4851,8 +4851,8 @@ dependencies = [
 
 [[package]]
 name = "moq-video"
-version = "0.0.20"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#b95a4505da4350e3a354292ea827426f6a0d815a"
+version = "0.0.21"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#979b5ce867fd3739f3ab789c97a0963f1fe2924e"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -4890,6 +4890,7 @@ dependencies = [
  "v4l",
  "wgpu",
  "windows",
+ "x11rb 0.14.0",
  "yuv",
  "zune-jpeg",
 ]
@@ -9644,7 +9645,7 @@ dependencies = [
  "bytes",
  "http",
  "iroh",
- "kio 0.5.6 (registry+https://github.com/rust-lang/crates.io-index)",
+ "kio 0.5.6",
  "n0-error",
  "n0-future",
  "tokio",
@@ -9663,7 +9664,7 @@ dependencies = [
  "bytes",
  "futures",
  "http",
- "kio 0.5.6 (registry+https://github.com/rust-lang/crates.io-index)",
+ "kio 0.5.6",
  "noq",
  "rustls",
  "rustls-native-certs",
@@ -10382,7 +10383,7 @@ dependencies = [
  "web-time",
  "windows-sys 0.52.0",
  "x11-dl",
- "x11rb",
+ "x11rb 0.13.2",
  "xkbcommon-dl",
 ]
 
@@ -10572,7 +10573,18 @@ dependencies = [
  "libloading 0.8.9",
  "once_cell",
  "rustix 1.1.4",
- "x11rb-protocol",
+ "x11rb-protocol 0.13.2",
+]
+
+[[package]]
+name = "x11rb"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a8885a854a8bfdf87a301e53e41b17c5f8f33639903131338b997b1eb614f44"
+dependencies = [
+ "gethostname",
+ "rustix 1.1.4",
+ "x11rb-protocol 0.14.0",
 ]
 
 [[package]]
@@ -10580,6 +10592,12 @@ name = "x11rb-protocol"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
+
+[[package]]
+name = "x11rb-protocol"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acf4d1bc32aa46eec18caa634ec3cf4c05bfa151f12b93b510b15190f69a1ca8"
 
 [[package]]
 name = "x509-parser"
