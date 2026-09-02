@@ -1,6 +1,8 @@
 # systemd user unit for the pi-zero publisher.
 #
-# Install:
+# `install-service.sh` puts this in place, generates the secret key and enables
+# lingering. To install it by hand instead:
+#
 #   install -m 700 -d ~/.config/pi-zero-demo
 #   umask 077 && printf 'IROH_SECRET=%s\n' "$(openssl rand -hex 32)" \
 #       > ~/.config/pi-zero-demo/env
@@ -22,7 +24,9 @@ Type=exec
 WorkingDirectory=%h
 EnvironmentFile=%h/.config/pi-zero-demo/env
 Environment=RUST_LOG=info
-ExecStart=%h/pi-zero-demo publish --name pi-zero
+# PI_ZERO_DEMO_ARGS comes from the environment file, so options such as
+# --epaper can be added without editing this unit.
+ExecStart=%h/pi-zero-demo publish --name pi-zero $PI_ZERO_DEMO_ARGS
 Restart=always
 # With --epaper, raise this to 180 or more: the panel is refreshed once at
 # startup, and its datasheet asks for 180 s between refreshes.

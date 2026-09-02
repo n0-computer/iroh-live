@@ -105,12 +105,13 @@ A fresh Raspberry Pi OS Bookworm, 64-bit, with SSH enabled.
 
 ### WiFi, before the first boot
 
-`setup-network.sh` writes a NetworkManager profile onto a Bookworm rootfs while
-the SD card is still mounted on the host, which brings the Pi up on the network
-without a keyboard or a monitor:
+`scripts/setup-network.sh` writes a NetworkManager profile onto a Bookworm
+rootfs while the SD card is still mounted on the host, which brings the Pi up on
+the network without a keyboard or a monitor. It is the one script here that runs
+on the development machine rather than on the Pi:
 
 ```sh
-./setup-network.sh <SSID> <PSK> [ROOTFS_PATH]
+./scripts/setup-network.sh <SSID> <PSK> [ROOTFS_PATH]
 ```
 
 `ROOTFS_PATH` defaults to `/var/run/media/$USER/rootfs`.
@@ -185,23 +186,28 @@ run with `openssl rand -hex 32`.
 
 ### Starting on boot
 
-[`pi-zero-demo.service`](pi-zero-demo.service) is a systemd user unit that runs
-the publisher with a pinned secret, keeping the key in a file of its own rather
-than in the world-readable unit:
+[`scripts/pi-zero-demo.service`](scripts/pi-zero-demo.service) is a systemd user
+unit that runs the publisher with a pinned secret, keeping the key in a file of
+its own rather than in the world-readable unit.
+[`scripts/install-service.sh`](scripts/install-service.sh) puts it in place,
+from the Pi:
 
 ```sh
-install -m 700 -d ~/.config/pi-zero-demo
-umask 077 && printf 'IROH_SECRET=%s\n' "$(openssl rand -hex 32)" \
-    > ~/.config/pi-zero-demo/env
-install -Dm644 pi-zero-demo.service ~/.config/systemd/user/pi-zero-demo.service
-systemctl --user daemon-reload
-systemctl --user enable --now pi-zero-demo
-sudo loginctl enable-linger "$USER"
+scp target/aarch64-unknown-linux-gnu/release/pi-zero-demo pi@<PI_HOST>:~/
+scp -r demos/pi-zero/scripts pi@<PI_HOST>:~/
+ssh pi@<PI_HOST> ./scripts/install-service.sh
 ```
 
-Lingering is what makes it a boot unit: without it the user manager, and so the
-publisher, only starts when someone logs in. The ticket goes to the journal,
-where `journalctl --user -u pi-zero-demo -f` will show it.
+It refuses to install a binary that is not there or does not run, generates the
+secret on first install and keeps it on every one after, enables lingering, and
+prints the ticket once the publisher has started. Running it again after
+copying a new binary is how the service is updated.
+
+Lingering is the part that is easy to miss: without it the user manager, and so
+the publisher, starts at login rather than at boot. Options such as `--epaper`
+go in `PI_ZERO_DEMO_ARGS` in `~/.config/pi-zero-demo/env`, which saves editing
+the unit. The ticket goes to the journal, where
+`journalctl --user -u pi-zero-demo -f` will show it.
 
 ## Watching from a desktop
 
