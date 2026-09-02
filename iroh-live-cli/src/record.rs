@@ -32,17 +32,6 @@ use crate::{
 /// How often the progress line is printed while a recording runs.
 const REPORT_INTERVAL: Duration = Duration::from_secs(2);
 
-/// The fragment cap handed to the fMP4 exporter.
-///
-/// Not a preference: left unset, that exporter rolls a fragment only on a video
-/// keyframe, so on a broadcast carrying both media the audio track accumulates
-/// in memory and never reaches the file. The recording then has an audio track
-/// declared in its `moov` and no samples behind it. A cap rolls both tracks on
-/// elapsed media time instead, which is what makes the audio land. Half a
-/// second is the usual CMAF chunk, and it costs one extra `moof` per fragment
-/// against a GOP that would otherwise have been written whole.
-const FRAGMENT_DURATION: Duration = Duration::from_millis(500);
-
 /// Runs the `record` command.
 pub fn run(args: RecordArgs, rt: &tokio::runtime::Runtime) -> Result {
     rt.block_on(record(args))
@@ -199,9 +188,7 @@ impl Recorder {
 
         let export = match options.format {
             RecordFormat::Fmp4 => Export::Fmp4(Box::new(
-                fmp4::Export::new(source, catalog)
-                    .with_latency(options.latency)
-                    .with_fragment_duration(FRAGMENT_DURATION),
+                fmp4::Export::new(source, catalog).with_latency(options.latency),
             )),
             RecordFormat::Mkv => Export::Mkv(Box::new(
                 mkv::Export::new(source, catalog).with_latency(options.latency),
