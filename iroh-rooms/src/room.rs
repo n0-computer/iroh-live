@@ -47,6 +47,9 @@ pub enum Error {
     /// The room actor stopped, which happens once the [`Room`] is dropped.
     #[error("the room actor stopped")]
     ActorStopped,
+    /// The room had no event ready, from [`RoomEvents::try_recv`].
+    #[error("no room event is ready")]
+    NoEventReady,
 }
 
 impl<T> From<mpsc::error::SendError<T>> for Error {
@@ -69,13 +72,43 @@ impl<T> From<mpsc::error::SendError<T>> for Error {
 #[derive(Debug)]
 pub struct Room {
     handle: RoomHandle,
-    events: mpsc::Receiver<RoomEvent>,
+    events: RoomEvents,
 }
 
 /// Receiver half of a room's event stream.
 ///
-/// Obtained from [`Room::split`].
-pub type RoomEvents = mpsc::Receiver<RoomEvent>;
+/// Obtained from [`Room::split`]. Holds the actor alive on its own, so an
+/// application that keeps the events and drops every [`RoomHandle`] still has a
+/// room.
+#[derive(Debug)]
+pub struct RoomEvents {
+    rx: mpsc::Receiver<RoomEvent>,
+    _actor_handle: Arc<AbortOnDropHandle<()>>,
+}
+
+impl RoomEvents {
+    /// Waits for the next room event.
+    ///
+    /// # Errors
+    ///
+    /// Fails once the room actor has stopped and no events remain.
+    pub async fn recv(&mut self) -> Result<RoomEvent, Error> {
+        self.rx.recv().await.ok_or_else(|| e!(Error::ActorStopped))
+    }
+
+    /// Returns the next room event, or an error if none is ready yet.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::NoEventReady`] when the room is running and has
+    /// nothing to report, and with [`Error::ActorStopped`] once it has stopped.
+    pub fn try_recv(&mut self) -> Result<RoomEvent, Error> {
+        self.rx.try_recv().map_err(|err| match err {
+            TryRecvError::Empty => e!(Error::NoEventReady),
+            TryRecvError::Disconnected => e!(Error::ActorStopped),
+        })
+    }
+}
 
 /// Cloneable handle for publishing into a [`Room`].
 ///
@@ -189,31 +222,38 @@ impl Room {
                 .instrument(error_span!("RoomActor", id = ticket.topic_id.fmt_short())),
         );
 
+        let actor_handle = Arc::new(AbortOnDropHandle::new(actor_task));
         Ok(Self {
             handle: RoomHandle {
                 ticket,
                 me: endpoint_id,
                 tx: actor_tx,
-                _actor_handle: Arc::new(AbortOnDropHandle::new(actor_task)),
+                _actor_handle: Arc::clone(&actor_handle),
             },
-            events: event_rx,
+            events: RoomEvents {
+                rx: event_rx,
+                _actor_handle: actor_handle,
+            },
         })
     }
 
-    /// Waits for the next room event.
+    /// Waits for the next room event. See [`RoomEvents::recv`].
     ///
     /// # Errors
     ///
     /// Fails once the room actor has stopped and no events remain.
     pub async fn recv(&mut self) -> Result<RoomEvent, Error> {
-        self.events
-            .recv()
-            .await
-            .ok_or_else(|| e!(Error::ActorStopped))
+        self.events.recv().await
     }
 
-    /// Returns the next room event without waiting, or an error if none is ready.
-    pub fn try_recv(&mut self) -> Result<RoomEvent, TryRecvError> {
+    /// Returns the next room event, or an error if none is ready yet. See
+    /// [`RoomEvents::try_recv`].
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::NoEventReady`] when the room is running and has
+    /// nothing to report, and with [`Error::ActorStopped`] once it has stopped.
+    pub fn try_recv(&mut self) -> Result<RoomEvent, Error> {
         self.events.try_recv()
     }
 
@@ -230,6 +270,8 @@ impl Room {
     /// Splits the room into its event stream and publish handle.
     ///
     /// Useful when the event loop and the publisher live in different tasks.
+    /// Either half keeps the room's actor running, so dropping one does not
+    /// silently stop the other.
     pub fn split(self) -> (RoomEvents, RoomHandle) {
         (self.events, self.handle)
     }

@@ -107,7 +107,14 @@ async fn run(
                     ?reason,
                     "probe aborted, stepping back down",
                 );
+                // Clear both holds along with the probe. The good run that
+                // let this probe start has just been disproved, and the bad
+                // run that the abort observed belongs to the rung being left,
+                // so carrying either into the rung below would let the very
+                // next tick step down again.
                 timers.last_probe = Some(now);
+                timers.good_since = None;
+                timers.bad_since = None;
                 probe = None;
                 requested.send_replace(Some(ranked[back].name.clone()));
                 continue;

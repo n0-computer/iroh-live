@@ -1,3 +1,9 @@
+//! What the transport tells a subscriber about its downlink.
+//!
+//! [`NetworkSignals`] is the whole interface between whatever carries a
+//! broadcast and [`crate::adaptive`]. Nothing here depends on iroh or on QUIC:
+//! a caller polls its own connection and fills the struct in.
+
 use std::time::Duration;
 
 /// Transport-level network quality signals for adaptive rendition selection.
@@ -52,6 +58,10 @@ pub struct NetworkSignals {
     /// ever took reads a fallback from a direct path to a relay as a queue that
     /// will never drain, and one that remembers every moment reads a link whose
     /// baseline moved for any other reason the same way.
+    ///
+    /// Zero means unmeasured. No real path reports one, and
+    /// [`crate::adaptive`] reads it that way: without a baseline there is
+    /// nothing to call a queue against, so it calls none.
     pub min_rtt: Duration,
     /// Recent packet loss rate in `0.0..=1.0`, computed over a 200ms delta
     /// window.

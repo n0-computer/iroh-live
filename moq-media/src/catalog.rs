@@ -1,3 +1,10 @@
+//! The broadcast catalog, and the sections iroh-live adds to it.
+//!
+//! hang's catalog describes the media tracks. iroh-live publishes two more
+//! things alongside them, chat and the publisher's identity, and
+//! [`IrohLiveExt`] is how they ride in the same document. A consumer that only
+//! knows hang's schema ignores them.
+
 use moq_mux::catalog::hang::CatalogExt;
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +27,9 @@ pub type CatalogConsumer = moq_mux::catalog::hang::Consumer<IrohLiveExt>;
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct IrohLiveExt {
+    /// The tracks carrying chat, if the publisher opened any.
     pub chat: Option<Chat>,
+    /// Who is publishing, if they said.
     pub user: Option<User>,
 }
 
@@ -53,13 +62,23 @@ pub struct Chat {
     pub typing: Option<TrackRef>,
 }
 
+/// Who is publishing a broadcast, as they chose to describe themselves.
+///
+/// Every field is optional and none of it is verified: this is what a
+/// subscriber draws next to the picture, not an identity the transport
+/// established. The node id the broadcast arrived on is the authenticated
+/// half, and it lives outside the catalog.
 #[serde_with::skip_serializing_none]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct User {
+    /// An application-defined identifier, stable across sessions.
     pub id: Option<String>,
+    /// The display name.
     pub name: Option<String>,
+    /// A URL for an avatar image.
     pub avatar: Option<String>,
+    /// An accent color, as a CSS color string.
     pub color: Option<String>,
 }
 

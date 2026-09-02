@@ -134,8 +134,9 @@ pub struct RankedRendition {
     pub pixels: u64,
     /// Advertised bitrate in bits per second.
     pub bitrate_bps: u64,
-    /// Coded dimensions from the catalog.
+    /// Coded width from the catalog, or 0 if it declared none.
     pub width: u32,
+    /// Coded height from the catalog, or 0 if it declared none.
     pub height: u32,
 }
 
@@ -271,8 +272,15 @@ impl AdaptationTimers {
 
 /// Evaluates network signals and decides whether to switch renditions.
 ///
-/// `current_idx` is the index into `ranked` for the currently active rendition.
-/// Returns a [`Decision`].
+/// `current_idx` is the index into `ranked` of the rendition now playing.
+/// `timers` carries the state the rules need across ticks and is updated in
+/// place, so the same one has to be handed back on every call.
+///
+/// # Panics
+///
+/// Panics if `ranked` is empty, or if `current_idx` is out of range for it.
+/// Callers rank the current catalog and locate the playing rendition in it on
+/// every tick, which is what keeps the two in step.
 pub fn evaluate(
     current_idx: usize,
     ranked: &[RankedRendition],
@@ -419,6 +427,13 @@ pub fn evaluate(
 /// where it sends almost nothing and so runs out of nothing, while the queue
 /// holding up the media holds up the acknowledgements behind it too.
 fn queueing(signals: &NetworkSignals, config: &AdaptiveConfig) -> bool {
+    // A zero minimum is an unmeasured one rather than an instant path: no real
+    // link reports one, and taking it at face value collapses the ratio test
+    // into "the round trip is above the floor", which condemns every path with
+    // an ordinary intercontinental hop.
+    if signals.min_rtt.is_zero() {
+        return false;
+    }
     let Some(excess) = signals.rtt.checked_sub(signals.min_rtt) else {
         return false;
     };
@@ -864,6 +879,20 @@ mod tests {
         let signals = NetworkSignals {
             rtt: Duration::from_millis(2),
             min_rtt: Duration::from_millis(1),
+            ..good_signals()
+        };
+        assert!(!queueing(&signals, &config));
+    }
+
+    #[test]
+    fn an_unmeasured_baseline_is_not_queueing() {
+        // A signals producer that fills in the round trip but not the minimum
+        // leaves the ratio test with nothing to compare against, and every
+        // reading above the floor would read as a queue.
+        let config = AdaptiveConfig::default();
+        let signals = NetworkSignals {
+            rtt: Duration::from_millis(120),
+            min_rtt: Duration::ZERO,
             ..good_signals()
         };
         assert!(!queueing(&signals, &config));

@@ -20,11 +20,16 @@ use std::{
 /// Static metadata for display and thresholds.
 #[derive(Debug, Clone, Copy)]
 pub struct MetricMeta {
+    /// The name the overlay draws.
     pub label: &'static str,
+    /// The unit suffix, or the empty string for a bare count.
     pub unit: &'static str,
+    /// Weight given to each new sample by the exponential moving average, in
+    /// `0.0..=1.0`. Lower is smoother and slower to move.
     pub alpha: f64,
+    /// How many samples the history ring buffer keeps for a sparkline.
     pub history_cap: usize,
-    /// Color thresholds. `None` = always white.
+    /// Color thresholds, or `None` to draw the value unconditionally.
     pub thresholds: Option<Thresholds>,
 }
 
@@ -40,6 +45,9 @@ pub struct Thresholds {
 }
 
 impl MetricMeta {
+    /// Metadata for a value worth reading as a trend rather than a reading,
+    /// such as a bitrate.
+    #[must_use]
     pub const fn smooth(label: &'static str, unit: &'static str) -> Self {
         Self {
             label,
@@ -49,6 +57,9 @@ impl MetricMeta {
             thresholds: None,
         }
     }
+    /// Metadata for a value that should follow what just happened, such as a
+    /// frame rate.
+    #[must_use]
     pub const fn responsive(label: &'static str, unit: &'static str) -> Self {
         Self {
             label,
@@ -58,6 +69,11 @@ impl MetricMeta {
             thresholds: None,
         }
     }
+    /// Returns the metadata with color thresholds attached.
+    ///
+    /// Set `inverted` for a metric where a higher value is the better one, such
+    /// as a frame rate.
+    #[must_use]
     pub const fn with_thresholds(mut self, good: f64, warn: f64, inverted: bool) -> Self {
         self.thresholds = Some(Thresholds {
             good,
@@ -91,6 +107,7 @@ impl std::fmt::Debug for Metric {
 }
 
 impl Metric {
+    /// Creates a metric with no samples yet.
     pub fn new(meta: MetricMeta) -> Self {
         Self {
             inner: Arc::new(MetricInner {
@@ -102,11 +119,12 @@ impl Metric {
         }
     }
 
-    /// Records a sample. Briefly locks history ring buffer.
+    /// Records a sample.
     ///
-    /// The current-value EMA update is not fully atomic across concurrent
-    /// writers. In practice each Metric has a single writer (one pipeline
-    /// thread), so this is benign.
+    /// The smoothed value is read and written separately rather than under one
+    /// lock, so two concurrent writers can lose an update between them. Every
+    /// metric here has one writer, and a debug overlay is not worth a lock on
+    /// the encode path.
     pub fn record(&self, value: f64) {
         let count = self.inner.sample_count.fetch_add(1, Ordering::Relaxed);
         let smoothed = if count == 0 {
@@ -146,10 +164,13 @@ impl Metric {
         v
     }
 
+    /// Returns how this metric should be labelled and colored.
     pub fn meta(&self) -> &MetricMeta {
         &self.inner.meta
     }
 
+    /// Reports whether anything has been recorded, so a caller can draw a
+    /// placeholder rather than a confident zero.
     pub fn has_samples(&self) -> bool {
         self.inner.sample_count.load(Ordering::Relaxed) > 0
     }
@@ -177,16 +198,19 @@ pub struct Label {
 }
 
 impl Label {
+    /// Creates a label reading `initial`.
     pub fn new(initial: impl Into<String>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(initial.into())),
         }
     }
 
+    /// Replaces the label.
     pub fn set(&self, value: impl Into<String>) {
         *self.inner.lock().expect("poisoned") = value.into();
     }
 
+    /// Returns a copy of the label.
     pub fn get(&self) -> String {
         self.inner.lock().expect("poisoned").clone()
     }
@@ -204,13 +228,21 @@ impl Default for Label {
 /// web_transport_trait), read by the overlay.
 #[derive(Clone, Debug)]
 pub struct NetStats {
+    /// Round trip to the peer.
     pub rtt_ms: Metric,
+    /// Loss rate as a percentage, over whatever window the bridge computes.
     pub loss_pct: Metric,
+    /// Throughput towards this endpoint.
     pub bw_down_mbps: Metric,
+    /// Throughput away from this endpoint.
     pub bw_up_mbps: Metric,
+    /// How many network paths the connection currently has.
     pub paths_active: Metric,
+    /// How the connection reaches the peer, such as `direct` or `relay`.
     pub path_type: Label,
+    /// The remote address in use.
     pub path_addr: Label,
+    /// Who is on the other end.
     pub peer: Label,
 }
 
@@ -236,11 +268,20 @@ impl Default for NetStats {
 /// Publish-side encode stats. Written by the encode pipeline.
 #[derive(Clone, Debug)]
 pub struct EncodeStats {
+    /// Frames per second arriving from the source, which every rung of a
+    /// simulcast ladder shares.
     pub fps: Metric,
+    /// How long one encode call took.
     pub encode_ms: Metric,
+    /// Published bits per second, over the gap between one encode and the next.
+    /// With a simulcast ladder every rung writes here, so the smoothed value
+    /// sits somewhere among them rather than summing them.
     pub bitrate_kbps: Metric,
+    /// The codec being encoded, such as `H264`.
     pub codec: Label,
+    /// The encoder backend that opened, such as `openh264` or `vaapi`.
     pub encoder: Label,
+    /// The encoded resolution.
     pub resolution: Label,
     /// Capture-to-encode path, e.g. "pw-screen/dmabuf" or "pw-screen/shm".
     pub capture_path: Label,
@@ -263,10 +304,18 @@ impl Default for EncodeStats {
 /// Render/decode stats. Written by the decode pipeline.
 #[derive(Clone, Debug)]
 pub struct RenderStats {
+    /// Frames per second reaching the renderer.
     pub fps: Metric,
+    /// How long one transport read and decode took together, which is where
+    /// `moq_video::decode::Consumer` does both.
     pub decode_ms: Metric,
+    /// The decoder backend that opened, which can change across a rendition
+    /// switch.
     pub decoder: Label,
+    /// The renderer drawing the frames. Written by whatever draws them, since
+    /// this crate does not.
     pub renderer: Label,
+    /// The rendition currently decoding.
     pub rendition: Label,
 }
 
@@ -322,8 +371,11 @@ impl Default for TimingStats {
 /// Per-frame timing snapshot for the timeline visualization.
 #[derive(Debug, Clone)]
 pub struct FrameMeta {
+    /// Which medium the frame belongs to.
     pub kind: FrameKind,
+    /// The frame's presentation timestamp.
     pub pts: Duration,
+    /// Whether the frame can be decoded without a predecessor.
     pub is_keyframe: bool,
     /// Wall-clock time when the frame was received from the transport.
     pub received: Instant,
@@ -333,9 +385,12 @@ pub struct FrameMeta {
     pub rendered: Instant,
 }
 
+/// Which medium a [`FrameMeta`] describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameKind {
+    /// A decoded picture.
     Video,
+    /// A decoded block of samples.
     Audio,
 }
 
@@ -347,6 +402,7 @@ pub struct Timeline {
 }
 
 impl Timeline {
+    /// Creates a timeline keeping the last `cap` frames.
     pub fn new(cap: usize) -> Self {
         Self {
             frames: Arc::new(Mutex::new(VecDeque::with_capacity(cap))),
@@ -354,6 +410,7 @@ impl Timeline {
         }
     }
 
+    /// Records one frame, discarding the oldest once the buffer is full.
     pub fn push(&self, entry: FrameMeta) {
         let mut frames = self.frames.lock().expect("poisoned");
         if frames.len() >= self.cap {
@@ -362,6 +419,7 @@ impl Timeline {
         frames.push_back(entry);
     }
 
+    /// Returns a copy of every frame still in the buffer, oldest first.
     pub fn snapshot(&self) -> Vec<FrameMeta> {
         self.frames
             .lock()
@@ -383,16 +441,23 @@ impl Default for Timeline {
 /// All stats for a subscribe-side broadcast. Owned by `RemoteBroadcast`.
 #[derive(Clone, Debug, Default)]
 pub struct SubscribeStats {
+    /// Written by the transport bridge outside this crate.
     pub net: NetStats,
+    /// Written by the video decode path.
     pub render: RenderStats,
+    /// Written by whatever paces playout. Nothing in this crate does yet, so
+    /// these read empty on a plain subscription.
     pub timing: TimingStats,
+    /// Written by whatever paces playout, alongside [`SubscribeStats::timing`].
     pub timeline: Timeline,
 }
 
 /// All stats for a publish-side broadcast. Owned by `LocalBroadcast`.
 #[derive(Clone, Debug, Default)]
 pub struct PublishStats {
+    /// Written by the transport bridge outside this crate.
     pub net: NetStats,
+    /// Written by the video publish path.
     pub encode: EncodeStats,
 }
 

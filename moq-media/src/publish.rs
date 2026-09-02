@@ -48,7 +48,10 @@ pub enum PublishError {
     Audio(#[error(source, std_err)] moq_audio::Error),
     /// Two renditions were given the same name.
     #[error("duplicate rendition name: {name}")]
-    DuplicateRendition { name: String },
+    DuplicateRendition {
+        /// The name that appeared twice.
+        name: String,
+    },
     /// A rendition set was empty.
     #[error("no renditions given")]
     NoRenditions,
@@ -210,21 +213,21 @@ pub struct LocalBroadcast {
     video_slot: Arc<tokio::sync::Mutex<()>>,
     clock: moq_mux::Clock,
     stats: PublishStats,
-    video: Mutex<Option<VideoTrack>>,
-    audio: Mutex<Option<AudioTrack>>,
+    video: Mutex<Option<VideoPublish>>,
+    audio: Mutex<Option<AudioPublish>>,
     preview: Mutex<Option<Arc<FrameReceiver<Arc<moq_video::Frame>>>>>,
 }
 
 /// A running video publish: the tasks driving it, plus the preview tap.
 #[derive(Debug)]
-struct VideoTrack {
+struct VideoPublish {
     renditions: Vec<String>,
     _task: AbortOnDropHandle<()>,
 }
 
 /// A running audio publish.
 #[derive(Debug)]
-struct AudioTrack {
+struct AudioPublish {
     rendition: String,
     _task: AudioTask,
 }
@@ -420,7 +423,7 @@ impl VideoPublisher<'_> {
         });
 
         *self.0.preview.lock().expect("poisoned") = previewable.then(|| Arc::new(preview_rx));
-        *self.0.video.lock().expect("poisoned") = Some(VideoTrack {
+        *self.0.video.lock().expect("poisoned") = Some(VideoPublish {
             renditions: names,
             _task: task,
         });
@@ -477,7 +480,7 @@ impl AudioPublisher<'_> {
             source,
             options,
         );
-        *self.0.audio.lock().expect("poisoned") = Some(AudioTrack {
+        *self.0.audio.lock().expect("poisoned") = Some(AudioPublish {
             rendition,
             _task: task,
         });
@@ -560,7 +563,7 @@ fn spawn_audio(
     dead_code,
     reason = "each variant is held for its Drop, which is what stops the publication"
 )]
-pub(crate) enum AudioTask {
+enum AudioTask {
     /// A device publication, on its own thread.
     #[debug("Local")]
     Local(crate::local_task::LocalTask),
