@@ -16,7 +16,7 @@ use n0_future::{boxed::BoxStream, stream::StreamExt};
 use symphonia::core::{
     audio::SampleBuffer,
     codecs::{CODEC_TYPE_NULL, DecoderOptions},
-    formats::FormatOptions,
+    formats::{FormatOptions, FormatReader, Track},
     io::MediaSourceStream,
     meta::MetadataOptions,
     probe::Hint,
@@ -133,7 +133,28 @@ struct Probe {
     channels: u32,
 }
 
-fn probe(path: &Path) -> Result<Probe, AudioFileError> {
+impl Probe {
+    /// Reads the layout off a track, falling back to CD-adjacent defaults for a
+    /// container that declares neither.
+    fn of(track: &Track) -> Self {
+        Self {
+            sample_rate: track.codec_params.sample_rate.unwrap_or(48_000),
+            channels: track
+                .codec_params
+                .channels
+                .map(|channels| channels.count() as u32)
+                .unwrap_or(2),
+        }
+    }
+}
+
+/// Opens `path` and returns its container reader alongside the first track that
+/// carries audio.
+///
+/// Shared by the probe and by each decode pass, which both need exactly this
+/// and nothing else: looping reopens the file rather than seeking, so the pass
+/// starts from the same place the probe did.
+fn open_track(path: &Path) -> Result<(Box<dyn FormatReader>, Track), AudioFileError> {
     let display = path.display().to_string();
     let file = std::fs::File::open(path).map_err(|source| {
         n0_error::e!(AudioFileError::Io {
@@ -165,20 +186,14 @@ fn probe(path: &Path) -> Result<Probe, AudioFileError> {
         .tracks()
         .iter()
         .find(|track| track.codec_params.codec != CODEC_TYPE_NULL)
-        .ok_or_else(|| {
-            n0_error::e!(AudioFileError::NoTrack {
-                path: display.clone(),
-            })
-        })?;
+        .cloned()
+        .ok_or_else(|| n0_error::e!(AudioFileError::NoTrack { path: display }))?;
+    Ok((probed.format, track))
+}
 
-    Ok(Probe {
-        sample_rate: track.codec_params.sample_rate.unwrap_or(48_000),
-        channels: track
-            .codec_params
-            .channels
-            .map(|channels| channels.count() as u32)
-            .unwrap_or(2),
-    })
+fn probe(path: &Path) -> Result<Probe, AudioFileError> {
+    let (_, track) = open_track(path)?;
+    Ok(Probe::of(&track))
 }
 
 /// Decodes `path` into `tx`, restarting at the beginning when `looping`.
@@ -195,33 +210,31 @@ fn decode_loop(
     let mut published = Duration::ZERO;
 
     loop {
-        decode_once(path, tx, &started, &mut published)?;
+        let frames = decode_once(path, tx, &started, &mut published)?;
         if !looping {
             debug!(path = %path.display(), "audio file ended");
             return Ok(());
         }
-        debug!(path = %path.display(), "audio file looping");
+        // A pass that decoded nothing would loop again immediately, and every
+        // pass after it too: the pacing sleep is driven by decoded audio, so
+        // there is nothing to slow the retry down. A file truncated to less
+        // than one packet does exactly that.
+        if frames == 0 {
+            warn!(path = %path.display(), "audio file decoded to nothing, not looping");
+            return Ok(());
+        }
+        debug!(path = %path.display(), frames, "audio file looping");
     }
 }
 
+/// Runs one pass over the file, returning how many frames it published.
 fn decode_once(
     path: &Path,
     tx: &mpsc::Sender<moq_audio::Frame>,
     started: &std::time::Instant,
     published: &mut Duration,
-) -> Result<(), AudioFileError> {
+) -> Result<usize, AudioFileError> {
     let display = path.display().to_string();
-    let file = std::fs::File::open(path).map_err(|source| {
-        n0_error::e!(AudioFileError::Io {
-            path: display.clone(),
-            source,
-        })
-    })?;
-    let stream = MediaSourceStream::new(Box::new(file), Default::default());
-    let mut hint = Hint::new();
-    if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {
-        hint.with_extension(ext);
-    }
     let decode_err = |source| {
         n0_error::e!(AudioFileError::Decode {
             path: display.clone(),
@@ -229,36 +242,18 @@ fn decode_once(
         })
     };
 
-    let probed = symphonia::default::get_probe()
-        .format(
-            &hint,
-            stream,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-        )
-        .map_err(decode_err)?;
-    let mut format = probed.format;
-    let track = format
-        .tracks()
-        .iter()
-        .find(|track| track.codec_params.codec != CODEC_TYPE_NULL)
-        .ok_or_else(|| {
-            n0_error::e!(AudioFileError::NoTrack {
-                path: display.clone(),
-            })
-        })?;
+    let (mut format, track) = open_track(path)?;
     let track_id = track.id;
-    let sample_rate = track.codec_params.sample_rate.unwrap_or(48_000);
-    let channels = track
-        .codec_params
-        .channels
-        .map(|channels| channels.count())
-        .unwrap_or(2);
+    let Probe {
+        sample_rate,
+        channels,
+    } = Probe::of(&track);
 
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
         .map_err(decode_err)?;
     let mut buffer: Option<SampleBuffer<f32>> = None;
+    let mut sent = 0;
 
     while let Ok(packet) = format.next_packet() {
         if packet.track_id() != track_id {
@@ -298,10 +293,11 @@ fn decode_once(
         );
         if tx.blocking_send(frame).is_err() {
             // The publisher went away.
-            return Ok(());
+            return Ok(sent);
         }
+        sent += 1;
 
-        let frames = interleaved.len() / channels.max(1);
+        let frames = interleaved.len() / channels.max(1) as usize;
         *published += Duration::from_secs_f64(frames as f64 / sample_rate as f64);
         // Stay roughly in step with wall clock; a small lead is fine and is
         // what the queue absorbs.
@@ -309,5 +305,59 @@ fn decode_once(
             std::thread::sleep(ahead);
         }
     }
-    Ok(())
+    Ok(sent)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use super::*;
+
+    /// A valid PCM WAV header describing zero samples of audio.
+    fn empty_wav() -> Vec<u8> {
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&36u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+        wav.extend_from_slice(&48_000u32.to_le_bytes());
+        wav.extend_from_slice(&96_000u32.to_le_bytes()); // bytes per second
+        wav.extend_from_slice(&2u16.to_le_bytes()); // block align
+        wav.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&0u32.to_le_bytes());
+        wav
+    }
+
+    /// A pass that decodes nothing must not be retried, or the pacing sleep has
+    /// nothing to slow it down and the thread spins on the file forever.
+    #[test]
+    fn a_file_with_no_samples_stops_instead_of_looping() {
+        let path = std::env::temp_dir().join(format!("moq-media-empty-{}.wav", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut file| file.write_all(&empty_wav()))
+            .expect("write the test file");
+
+        // On its own thread with a deadline, because the failure this guards
+        // against is a loop that never returns rather than one that returns the
+        // wrong thing.
+        let (done, finished) = std::sync::mpsc::channel();
+        let looping = path.clone();
+        std::thread::spawn(move || {
+            let (tx, rx) = mpsc::channel(QUEUE_DEPTH);
+            let result = decode_loop(&looping, true, &tx);
+            let _ = done.send((result.is_ok(), rx.is_empty()));
+        });
+
+        let outcome = finished.recv_timeout(Duration::from_secs(5));
+        std::fs::remove_file(&path).ok();
+        assert_eq!(
+            outcome.ok(),
+            Some((true, true)),
+            "an empty file should end the loop without publishing anything",
+        );
+    }
 }
