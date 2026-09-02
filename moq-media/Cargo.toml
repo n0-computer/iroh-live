@@ -76,3 +76,9 @@ vaapi = ["moq-video/vaapi"]
 # NVIDIA hardware encode and decode. On by default upstream; off here so a
 # default build stays free of the CUDA graph.
 nvidia = ["moq-video/nvidia"]
+# The V4L2 stateful memory-to-memory H.264 encoder and decoder that most ARM
+# SoCs expose, a Raspberry Pi's VideoCore among them. Off by default because
+# upstream has never validated either backend on real hardware, and because a
+# host with no M2M codec node fails at open, which is what makes automatic
+# backend selection fall through to the next candidate.
+v4l2 = ["moq-video/v4l2"]

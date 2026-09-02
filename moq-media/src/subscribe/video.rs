@@ -47,6 +47,7 @@ pub(super) async fn open(
     broadcast.stats().render.decoder.set(&reader.decoder);
     broadcast.stats().render.rendition.set(rendition);
     let (requested_tx, requested_rx) = watch::channel(None);
+    let (reopen_tx, reopen_rx) = watch::channel(0);
 
     let task = spawn(
         supervise(
@@ -57,6 +58,7 @@ pub(super) async fn open(
             decoder.clone(),
             requested_tx.clone(),
             requested_rx,
+            reopen_rx,
         )
         .instrument(error_span!("video", broadcast = %broadcast.name())),
     );
@@ -68,6 +70,7 @@ pub(super) async fn open(
         control: Arc::new(VideoControl {
             broadcast: broadcast.clone(),
             requested: requested_tx,
+            reopen: reopen_tx,
             _task: AbortOnDropHandle::new(task),
             adaptation: Default::default(),
         }),
@@ -150,6 +153,10 @@ async fn spawn_reader(
 }
 
 /// Forwards frames to the renderer and swaps decoders when a switch is asked for.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one handle per thing the supervisor drives, all owned by the track"
+)]
 async fn supervise(
     broadcast: RemoteBroadcast,
     reader: Reader,
@@ -158,6 +165,7 @@ async fn supervise(
     decoder: Watchable<String>,
     withdraw: watch::Sender<Option<String>>,
     mut requested: watch::Receiver<Option<String>>,
+    mut reopen: watch::Receiver<u64>,
 ) {
     let context = broadcast.decode_context();
     let synced = is_synced(&context.policy);
@@ -216,6 +224,33 @@ async fn supervise(
                 // detaches, so a superseded open would run to completion and
                 // keep a track subscription and a broadcast clone alive for as
                 // long as the peer took to answer.
+                opening = Some(Opening {
+                    name,
+                    task: AbortOnDropHandle::new(task),
+                });
+            }
+
+            // The policy changed under a track already playing: open the
+            // rendition again so the decoder is built from it.
+            changed = reopen.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+                // A switch already in flight names the rendition to open, so a
+                // decoder change during one does not undo it. Whatever that
+                // switch had opened is dropped either way: it was built from the
+                // policy this rebuild supersedes.
+                let name = match (opening.take(), pending.take()) {
+                    (Some(superseded), _) => superseded.name,
+                    (None, Some((superseded, _))) => superseded,
+                    (None, None) => current.get(),
+                };
+                debug!(rendition = %name, "rebuilding the decoder");
+                let task = spawn({
+                    let broadcast = broadcast.clone();
+                    let name = name.clone();
+                    async move { spawn_reader(&broadcast, &name).await }
+                });
                 opening = Some(Opening {
                     name,
                     task: AbortOnDropHandle::new(task),

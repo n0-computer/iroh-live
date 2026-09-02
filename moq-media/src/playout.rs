@@ -6,8 +6,12 @@
 //! to `moq_video::decode::Config::latency_max`.
 //! [`PlaybackPolicy::gpu_frames`] says what the subscriber will do with the
 //! decoded frames, which decides where the decoder leaves them.
+//! [`PlaybackPolicy::decoder`] picks the backend that decodes the video, the
+//! counterpart of the encoder selection a publisher makes per rendition.
 
 use std::time::Duration;
+
+use moq_video::decode;
 
 /// Whether the playout clock gates video at all.
 ///
@@ -40,7 +44,7 @@ pub enum SyncMode {
 /// [`RemoteBroadcast::with_playback_policy`](crate::subscribe::RemoteBroadcast::with_playback_policy),
 /// or update before resubscribing via
 /// [`RemoteBroadcast::set_playback_policy`](crate::subscribe::RemoteBroadcast::set_playback_policy).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaybackPolicy {
     /// Cross-track synchronization policy.
     pub sync: SyncMode,
@@ -66,6 +70,15 @@ pub struct PlaybackPolicy {
     /// does come back on the GPU still converts to I420 on demand, so nothing
     /// downstream has to know which happened.
     pub gpu_frames: bool,
+
+    /// Which decoder backend opens for video, passed to the decoder as `kind`.
+    ///
+    /// [`Auto`](decode::Kind::Auto) tries the platform's hardware decoders in
+    /// turn and falls back to software, which is what a viewer wants.
+    /// [`Named`](decode::Kind::Named) pins one backend and fails rather than
+    /// falling back, so a broken driver shows up as a decoder that will not open
+    /// instead of a silent switch to software.
+    pub decoder: decode::Kind,
 }
 
 impl Default for PlaybackPolicy {
@@ -74,6 +87,7 @@ impl Default for PlaybackPolicy {
             sync: SyncMode::default(),
             max_latency: Duration::from_millis(150),
             gpu_frames: false,
+            decoder: decode::Kind::Auto,
         }
     }
 }
@@ -113,6 +127,18 @@ impl PlaybackPolicy {
     #[must_use]
     pub fn with_gpu_frames(mut self, gpu_frames: bool) -> Self {
         self.gpu_frames = gpu_frames;
+        self
+    }
+
+    /// Returns a copy that opens a different decoder backend.
+    ///
+    /// Takes effect on the next decoder built: on the next track opened, or on
+    /// the next rendition switch of a track already running. A viewer changing
+    /// it mid-playback asks for that rebuild with
+    /// [`VideoTrack::reopen_decoder`](crate::subscribe::VideoTrack::reopen_decoder).
+    #[must_use]
+    pub fn with_decoder(mut self, decoder: decode::Kind) -> Self {
+        self.decoder = decoder;
         self
     }
 }

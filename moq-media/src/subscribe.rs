@@ -322,7 +322,7 @@ impl RemoteBroadcast {
 
     /// Returns the current playout policy.
     pub fn playback_policy(&self) -> PlaybackPolicy {
-        *self.inner.policy.lock().expect("poisoned")
+        self.inner.policy.lock().expect("poisoned").clone()
     }
 
     /// Replaces the playout policy. Takes effect on the next track opened.
@@ -445,6 +445,9 @@ struct VideoControl {
     broadcast: RemoteBroadcast,
     /// Set to request a switch; the decode supervisor picks it up.
     requested: watch::Sender<Option<String>>,
+    /// Bumped to ask the supervisor to build the decoder again. A counter
+    /// rather than a flag, so two changes in a row are two rebuilds.
+    reopen: watch::Sender<u64>,
     _task: AbortOnDropHandle<()>,
     adaptation: Mutex<Option<AbortOnDropHandle<()>>>,
 }
@@ -497,6 +500,24 @@ impl VideoTrack {
     /// waits for that handover if the caller needs to know it happened.
     pub fn set_rendition(&self, name: impl Into<String>) {
         self.control.requested.send_replace(Some(name.into()));
+    }
+
+    /// Builds the decoder again, from the broadcast's current playback policy.
+    ///
+    /// A decoder reads
+    /// [`PlaybackPolicy`](crate::playout::PlaybackPolicy) when it is built and
+    /// never looks at it again, so this is what carries a policy change, a
+    /// different backend above all, to a track already playing. The replacement
+    /// opens alongside the incumbent and takes over on its first frame, the same
+    /// handover a rendition switch makes, so the picture does not go blank.
+    ///
+    /// Returns as soon as the rebuild is requested. A replacement that fails to
+    /// open is logged and the incumbent keeps playing, which is what a backend
+    /// that is not present on this machine looks like.
+    pub fn reopen_decoder(&self) {
+        self.control
+            .reopen
+            .send_modify(|generation| *generation += 1);
     }
 
     /// Waits until `name` is the rendition actually producing frames.
@@ -611,6 +632,7 @@ impl RemoteBroadcast {
 /// The decode config a policy implies.
 fn video_decode_config(policy: &PlaybackPolicy) -> moq_video::decode::Config {
     let mut config = moq_video::decode::Config::new();
+    config.kind = policy.decoder.clone();
     config.latency_max = Some(policy.max_latency);
     config.gpu_frames = policy.gpu_frames;
     config
