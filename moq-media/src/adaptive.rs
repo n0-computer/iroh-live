@@ -140,7 +140,11 @@ pub struct RankedRendition {
     pub height: u32,
 }
 
-/// Ranks video renditions by pixel count descending (highest quality first).
+/// Ranks video renditions highest quality first.
+///
+/// By pixel count, and between two renditions of the same size by the higher
+/// advertised bitrate: a ladder that offers one resolution at two rates is
+/// offering a choice, and the ranking has to see it as one.
 pub fn rank_renditions(renditions: &BTreeMap<String, VideoConfig>) -> Vec<RankedRendition> {
     let mut ranked: Vec<_> = renditions
         .iter()
@@ -156,7 +160,12 @@ pub fn rank_renditions(renditions: &BTreeMap<String, VideoConfig>) -> Vec<Ranked
             }
         })
         .collect();
-    ranked.sort_by_key(|b| std::cmp::Reverse(b.pixels));
+    ranked.sort_by(|left, right| {
+        right
+            .pixels
+            .cmp(&left.pixels)
+            .then(right.bitrate_bps.cmp(&left.bitrate_bps))
+    });
     ranked
 }
 
@@ -1247,6 +1256,20 @@ mod tests {
         };
         assert_eq!(probe.abort(&awful, &config, now), None);
         assert!(!probe.held(&config, now + config.probe_duration));
+    }
+
+    #[test]
+    fn rank_renditions_breaks_a_size_tie_on_bitrate() {
+        // One resolution offered at two rates is a choice, and a ranking that
+        // fell back to catalog order would hand adaptation the names in
+        // alphabetical order instead.
+        let mut renditions = BTreeMap::new();
+        renditions.insert("720p-high".into(), test_config(1280, 720, 3_000_000));
+        renditions.insert("720p-low".into(), test_config(1280, 720, 800_000));
+
+        let ranked = rank_renditions(&renditions);
+        assert_eq!(ranked[0].name, "720p-high");
+        assert_eq!(ranked[1].name, "720p-low");
     }
 
     #[test]

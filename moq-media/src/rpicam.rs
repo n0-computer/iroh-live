@@ -157,7 +157,8 @@ pub fn open(config: Config) -> Result<VideoSource, RpicamError> {
     };
     let stream: BoxStream<Bytes> =
         Box::pin(n0_future::stream::unfold(state, |mut state| async move {
-            state.buffer.clear();
+            // No clear first: `split` below hands the whole buffer on and
+            // leaves this one empty, so every read starts from zero length.
             match state.stdout.read_buf(&mut state.buffer).await {
                 Ok(0) => {
                     debug!("{RPICAM_VID} closed its output");

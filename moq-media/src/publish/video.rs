@@ -88,6 +88,14 @@ async fn run(publish: Publish) -> Result<(), PublishError> {
 
     match source {
         VideoSource::AnnexB(bytes) => {
+            // A pre-encoded stream is one rendition by definition: we did not
+            // perform the encode and cannot repeat it at another size.
+            if renditions.len() > 1 {
+                warn!(
+                    given = renditions.len(),
+                    "a pre-encoded source publishes one rendition, ignoring the rest",
+                );
+            }
             let name = renditions
                 .first()
                 .map(|rendition| rendition.name.clone())
