@@ -122,10 +122,7 @@ async fn spawn_reader(
                         // Covers the transport read as well as the decode: the
                         // two happen inside one `read`, with no earlier point
                         // to attribute arrival to.
-                        stats
-                            .render
-                            .decode_ms
-                            .record(started.elapsed().as_secs_f64() * 1000.0);
+                        stats.render.decode_ms.record_ms(started.elapsed());
                         if tx.send(frame).await.is_err() {
                             debug!("nobody is reading this rendition any more");
                             return;
@@ -342,10 +339,11 @@ async fn deliver(
     // presentation timestamps, because a stall shows up here and not there.
     let now = std::time::Instant::now();
     if let Some(previous) = previous.replace(now) {
-        let gap = now.duration_since(previous).as_secs_f64();
-        if gap > 0.0 {
-            context.stats.render.fps.record(1.0 / gap);
-        }
+        context
+            .stats
+            .render
+            .fps
+            .record_fps_gap(now.duration_since(previous));
     }
     if synced {
         context.sync.received(pts);

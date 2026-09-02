@@ -262,7 +262,19 @@ async fn fan_out(
         });
     }
 
+    // The gap between source frames, which is the one frame rate a ladder has:
+    // every rung sees the same pictures, so recording it per encoder would
+    // write the same figure to one metric several times over.
+    let mut previous: Option<Instant> = None;
+
     while let Some(frame) = frames.next().await {
+        let now = Instant::now();
+        if let Some(previous) = previous.replace(now) {
+            stats
+                .encode
+                .fps
+                .record_fps_gap(now.duration_since(previous));
+        }
         // One allocation per frame, shared by the preview and every encoder.
         // `encode::Sink::encode` takes an `Arc<Frame>` for exactly this reason:
         // a ladder hands the same picture to several encoders.
@@ -271,6 +283,13 @@ async fn fan_out(
         for sender in &senders {
             sender.send(frame.clone());
         }
+        // A rung that gave up is reported here rather than after the source
+        // ends, which on a live capture is never. Reading the source on is
+        // still right: the local preview draws these same frames, and a
+        // publisher expects to see itself whatever the encoders are doing.
+        while let Some(joined) = encoders.try_join_next() {
+            report_encoder(joined);
+        }
     }
 
     // The source ended: drop the senders so every encoder sees the close and
@@ -278,13 +297,18 @@ async fn fan_out(
     drop(senders);
     drop(preview);
     while let Some(joined) = encoders.join_next().await {
-        match joined {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => warn!(error = %err, "rendition encoder failed"),
-            Err(err) => warn!(error = %err, "rendition encoder panicked"),
-        }
+        report_encoder(joined);
     }
     Ok(())
+}
+
+/// Logs how one rendition's encoder ended.
+fn report_encoder(joined: Result<Result<(), PublishError>, n0_future::task::JoinError>) {
+    match joined {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => warn!(error = %err, "rendition encoder failed"),
+        Err(err) => warn!(error = %err, "rendition encoder panicked"),
+    }
 }
 
 /// Encodes one rendition for as long as someone is watching it.
@@ -297,6 +321,9 @@ async fn encode_rendition(
 ) -> Result<(), PublishError> {
     let demand = producer.demand();
     let target = config.size();
+    // When this rendition last published, so a bitrate can be read off the
+    // bytes since then.
+    let mut published: Option<Instant> = None;
 
     loop {
         // Idle until someone subscribes, or until the source ends. Waiting on
@@ -320,6 +347,9 @@ async fn encode_rendition(
 
         let mut encoder = encode::Sink::open(&config).await?;
         stats.encode.encoder.set(encoder.name());
+        // `Codec` has no `Display`, and its `Debug` is already the name a
+        // reader wants: `H264`, `H265`.
+        stats.encode.codec.set(format!("{:?}", config.codec));
         stats.encode.resolution.set(target.to_string());
         debug!(encoder = encoder.name(), %target, "rendition encoding");
 
@@ -360,7 +390,7 @@ async fn encode_rendition(
                     return Err(err.into());
                 }
             };
-            record(&stats, started, &encoded);
+            record(&stats, started, &mut published, &encoded);
             producer.publish(&encoded)?;
         }
     }
@@ -427,16 +457,90 @@ fn timestamp(clock: &moq_mux::Clock) -> moq_net::Timestamp {
 }
 
 /// Records what one encode call cost and produced.
-fn record(stats: &PublishStats, started: Instant, encoded: &[Encoded]) {
+///
+/// The rate is taken over the gap since this rendition last published. The
+/// bits of one picture are not a bitrate: at 30 fps they are a thirtieth of
+/// one, which is what the metric used to carry under a `kbps` label.
+fn record(
+    stats: &PublishStats,
+    started: Instant,
+    published: &mut Option<Instant>,
+    encoded: &[Encoded],
+) {
+    let finished = Instant::now();
     stats
         .encode
         .encode_ms
-        .record(started.elapsed().as_secs_f64() * 1000.0);
+        .record_ms(finished.duration_since(started));
+
     let bytes: usize = encoded.iter().map(|packet| packet.payload.len()).sum();
-    if bytes > 0 {
+    let gap = published
+        .replace(finished)
+        .map(|previous| finished.duration_since(previous));
+    // Nothing to divide by on the first call, and an encoder that buffered a
+    // picture rather than emitting one has no bytes to attribute yet.
+    if let Some(gap) = gap
+        && bytes > 0
+        && !gap.is_zero()
+    {
         stats
             .encode
             .bitrate_kbps
-            .record(bytes as f64 * 8.0 / 1000.0);
+            .record(bytes as f64 * 8.0 / 1000.0 / gap.as_secs_f64());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    fn encoded(bytes: usize) -> Vec<Encoded> {
+        vec![Encoded::new(
+            bytes::Bytes::from(vec![0u8; bytes]),
+            moq_net::Timestamp::from_secs(0).expect("zero is in range"),
+        )]
+    }
+
+    #[test]
+    fn the_bitrate_metric_is_per_second_not_per_picture() {
+        // 2500 bytes every 33ms is 20000 bits thirty times a second, which is
+        // 600 kbit/s. Recording the bits of one picture would read as 20.
+        let stats = PublishStats::default();
+        let mut published = None;
+        let started = Instant::now();
+        let step = Duration::from_millis(33);
+
+        record(&stats, started, &mut published, &encoded(2500));
+        assert!(
+            !stats.encode.bitrate_kbps.has_samples(),
+            "the first call has no gap to divide by",
+        );
+
+        // The gap is measured against the wall clock inside `record`, so the
+        // test paces itself rather than handing one in.
+        for _ in 0..4 {
+            std::thread::sleep(step);
+            record(&stats, Instant::now(), &mut published, &encoded(2500));
+        }
+        let kbps = stats.encode.bitrate_kbps.current();
+        assert!(
+            (300.0..=1200.0).contains(&kbps),
+            "expected something near 600 kbit/s, got {kbps}",
+        );
+    }
+
+    #[test]
+    fn an_encoder_that_emitted_nothing_records_no_rate() {
+        let stats = PublishStats::default();
+        let mut published = None;
+        record(&stats, Instant::now(), &mut published, &encoded(1000));
+        std::thread::sleep(Duration::from_millis(10));
+        record(&stats, Instant::now(), &mut published, &[]);
+        assert!(
+            !stats.encode.bitrate_kbps.has_samples(),
+            "a call that buffered rather than emitted has no bytes to attribute",
+        );
     }
 }
