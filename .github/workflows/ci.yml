@@ -1,7 +1,9 @@
-# The root `Cargo.toml` patches the moq family to `Frando/moq@iroh-live`, a
-# branch of five commits this branch depends on that are not in a moq release
-# yet. `Cargo.lock` pins the revision, so these jobs build what a local checkout
-# builds. Deleting the patch block is the whole fix once the commits land.
+# The root `Cargo.toml` patches the moq family to `Frando/moq@iroh-live` and
+# moq-vaapi to `Frando/vaapi@iroh-live`, for changes that are not in a release
+# yet. `Cargo.lock` pins both revisions, so these jobs build what a local
+# checkout builds and `--locked` has something exact to hold to. Deleting the two
+# patch blocks is the whole revert once the changes land; the upstreaming
+# progress is tracked in plans/v2/moq-upstream.md.
 name: CI
 on:
   push:
