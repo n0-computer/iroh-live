@@ -226,7 +226,7 @@ struct VideoTrack {
 #[derive(Debug)]
 struct AudioTrack {
     rendition: String,
-    _task: AbortOnDropHandle<()>,
+    _task: AudioTask,
 }
 
 impl LocalBroadcast {
@@ -513,26 +513,54 @@ fn spawn_audio(
     clock: moq_mux::Clock,
     source: AudioSource,
     options: moq_audio::encode::Options,
-) -> AbortOnDropHandle<()> {
-    let task = n0_future::task::spawn(
-        async move {
-            let result = match source {
-                #[cfg(feature = "capture")]
-                AudioSource::Device(config) => {
-                    moq_audio::encode::publish_capture(broadcast, catalog, config, options, clock)
-                        .await
+) -> AudioTask {
+    match source {
+        // A device publication owns its capture stream, and moq's native
+        // backends are not all `Send`, so it gets a thread rather than a slot on
+        // the shared executor. See `crate::local_task`.
+        #[cfg(feature = "capture")]
+        AudioSource::Device(config) => AudioTask::Local(crate::local_task::spawn(
+            "audio-publish",
+            move |shutdown| async move {
+                let publish =
+                    moq_audio::encode::publish_capture(broadcast, catalog, config, options, clock);
+                let result = tokio::select! {
+                    result = publish => result,
+                    _ = shutdown.cancelled() => return,
+                };
+                if let Err(err) = result {
+                    warn!(error = %err, "audio publish stopped");
                 }
-                AudioSource::Frames { input, frames } => {
-                    publish_audio_frames(broadcast, catalog, input, frames, options).await
+            },
+        )),
+        // Application-produced PCM crosses threads by definition, so it stays on
+        // the runtime the caller is already using.
+        AudioSource::Frames { input, frames } => AudioTask::Shared(AbortOnDropHandle::new(
+            n0_future::task::spawn(
+                async move {
+                    if let Err(err) =
+                        publish_audio_frames(broadcast, catalog, input, frames, options).await
+                    {
+                        warn!(error = %err, "audio publish stopped");
+                    }
                 }
-            };
-            if let Err(err) = result {
-                warn!(error = %err, "audio publish stopped");
-            }
-        }
-        .instrument(error_span!("audio-publish")),
-    );
-    AbortOnDropHandle::new(task)
+                .instrument(error_span!("audio-publish")),
+            ),
+        )),
+    }
+}
+
+/// Whichever executor an audio publication ended up on.
+///
+/// Dropping either stops the publication; they differ only in how.
+#[derive(derive_more::Debug)]
+pub(crate) enum AudioTask {
+    /// A device publication, on its own thread.
+    #[debug("Local")]
+    Local(crate::local_task::LocalTask),
+    /// A frame publication, on the caller's runtime.
+    #[debug("Shared")]
+    Shared(AbortOnDropHandle<()>),
 }
 
 /// Publishes PCM the application produced, rather than a device's.

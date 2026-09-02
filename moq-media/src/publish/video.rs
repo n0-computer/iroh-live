@@ -103,20 +103,43 @@ async fn run(publish: Publish) -> Result<(), PublishError> {
                 .or_else(|| stream.framerate())
                 .unwrap_or(DEFAULT_FRAMERATE);
             let color = stream.color();
+            // The capture stream reads on a thread of its own, and only the
+            // surfaces cross. moq's native backends are not all `Send`: an Apple
+            // camera or screen stream holds AVFoundation objects, so a future
+            // holding one cannot go to a work-stealing executor. Surfaces can.
+            //
             // `read` reports a failed capture as well as its end. Either way the
             // stream stops here, and the encoder tasks downstream see the source
             // close; the error is logged rather than propagated, since a stream
             // has nowhere to return one.
-            let frames = Box::pin(n0_future::stream::unfold(stream, |mut stream| async move {
-                match stream.read().await {
-                    Ok(Some(surface)) => Some((surface, stream)),
-                    Ok(None) => None,
-                    Err(err) => {
-                        warn!(error = %err, "video capture failed");
-                        None
+            let (surface_tx, surface_rx) = tokio::sync::mpsc::channel(1);
+            let reader = crate::local_task::spawn("video-capture", move |shutdown| async move {
+                let mut stream = stream;
+                loop {
+                    let surface = tokio::select! {
+                        read = stream.read() => read,
+                        _ = shutdown.cancelled() => break,
+                    };
+                    let surface = match surface {
+                        Ok(Some(surface)) => surface,
+                        Ok(None) => break,
+                        Err(err) => {
+                            warn!(error = %err, "video capture failed");
+                            break;
+                        }
+                    };
+                    // A full channel means the encoders are behind. Waiting is
+                    // right: the capture backend paces itself against the
+                    // device, so dropping here would only hide that.
+                    if surface_tx.send(surface).await.is_err() {
+                        break;
                     }
                 }
-            }));
+            });
+            let frames = Box::pin(n0_future::stream::unfold(
+                (surface_rx, reader),
+                |(mut rx, reader)| async move { rx.recv().await.map(|surface| (surface, (rx, reader))) },
+            ));
             let clock_for_stamp = clock;
             let frames: BoxStream<Frame> = Box::pin(
                 frames.map(move |surface| Frame::new(surface, timestamp(&clock_for_stamp))),

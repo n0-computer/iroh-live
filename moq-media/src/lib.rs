@@ -21,6 +21,7 @@ pub mod adaptive;
 pub mod audio_file;
 pub mod catalog;
 pub mod frame_channel;
+pub mod local_task;
 pub mod net;
 #[cfg(feature = "playback")]
 pub mod playback;
