@@ -1,9 +1,10 @@
 # CLI reference (`irl`)
 
-The `irl` binary lives in the `iroh-live-cli` crate. It has five commands:
-`devices`, `publish`, `watch`, `record`, and `run`. Watching in a window needs
-the `render` feature, which is on by default; `--no-video` plays audio without
-it, and `record` and `run` are headless whatever the build.
+The `irl` binary lives in the `iroh-live-cli` crate. It has six commands:
+`devices`, `publish`, `watch`, `call`, `record`, and `run`. Watching in a window
+needs the `render` feature, which is on by default; `--no-video` plays audio
+without it, and `record` and `run` are headless whatever the build. `call` is a
+window and nothing else, so a build without `render` does not offer it at all.
 
 ## Commands
 
@@ -106,6 +107,34 @@ Without `--rendition` the video track adapts: the subscription's transport
 signals drive rendition selection, and a switch opens the replacement decoder
 alongside the incumbent so the picture does not go blank. The window's
 rendition combo switches between the two modes at any time.
+
+### `irl call`
+
+Opens a 1:1 video call. Both peers publish their own camera and microphone and
+subscribe to the other's, so there is no caller and no callee once the session
+is up: the difference is only who dialed.
+
+| Flag | Description |
+|---|---|
+| `<TICKET>` | Ticket of the peer to call. Omit to wait for somebody to call this node |
+| `--no-qr` | Suppress the terminal QR code |
+| `--fullscreen` | Start in fullscreen |
+
+Every `--video`, `--audio`, `--codec`, `--renditions`, and geometry flag
+`irl publish` takes applies here too, and describes what this node sends.
+
+The window starts on a waiting screen showing this node's ticket, a box to paste
+the peer's into, and the local camera. A ticket given on the command line is
+dialed straight away, so the two halves of a call are `irl call` on one machine
+and `irl call <TICKET>` on the other. Once connected, the peer fills the window
+and the local camera moves to a corner. Moving the pointer brings up the ticket
+bar, the stats overlay, and the rendition and volume controls; leaving it still
+hides them again.
+
+Hanging up on either side returns both windows to the waiting screen, ready for
+the next call. The path a peer publishes on is `calls/<its endpoint id>`, which
+`irl watch` can subscribe to like any other broadcast if all that is wanted is
+one direction.
 
 ### `irl record`
 
@@ -224,6 +253,13 @@ Watch it:
 irl watch <TICKET>
 ```
 
+Wait for a call, and call somebody from another machine:
+
+```sh
+irl call
+irl call <TICKET>
+```
+
 Record ten seconds of it to a fragmented MP4:
 
 ```sh
@@ -238,10 +274,9 @@ irl run session.toml
 
 ## What is not here
 
-`call`, `room`, and `relay` were dropped in the move to the upstream media
-stack, and all three are recoverable from the `main` branch. Rooms have left
-`iroh-live` for the `iroh-rooms` crate and are being redesigned onto moq's
-announce bus.
+`room` and `relay` were dropped in the move to the upstream media stack, and both
+are recoverable from the `main` branch. Rooms have left `iroh-live` for the
+`iroh-rooms` crate and are being redesigned onto moq's announce bus.
 
 The relay itself is not gone, only the subcommand that embedded it. Run it as its
 own binary with `cargo run -p iroh-live-relay`, and see

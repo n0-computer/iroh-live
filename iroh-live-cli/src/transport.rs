@@ -72,10 +72,18 @@ pub async fn advertise(live: &Live, args: &TransportArgs) -> Result<()> {
 pub fn print_ticket(live: &Live, name: &str, no_qr: bool) -> String {
     let ticket = ticket(live, name);
     println!("publishing at {ticket}");
-    if !no_qr && let Err(err) = qr2term::print_qr(&ticket) {
+    print_qr(&ticket, no_qr);
+    ticket
+}
+
+/// Prints a QR code of `ticket`, unless `no_qr` suppresses it.
+///
+/// A terminal that cannot draw one is not a reason to stop, so a failure is
+/// logged and nothing else.
+pub fn print_qr(ticket: &str, no_qr: bool) {
+    if !no_qr && let Err(err) = qr2term::print_qr(ticket) {
         tracing::warn!(error = %err, "could not print the QR code");
     }
-    ticket
 }
 
 /// The ticket for a broadcast this node publishes.

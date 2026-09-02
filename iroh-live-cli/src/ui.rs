@@ -17,6 +17,7 @@ use moq_media_egui::{
     FrameView, VideoTrackView,
     overlay::{DebugOverlay, StatCategory},
 };
+use n0_future::task::{AbortOnDropHandle, spawn};
 use tokio::sync::watch;
 use tracing::info;
 
@@ -139,6 +140,28 @@ pub fn spawn_ctrl_c_handler(ctx: &egui::Context) {
         let _ = tokio::signal::ctrl_c().await;
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     });
+}
+
+/// Wakes the window on a fixed interval for as long as the returned handle is
+/// held.
+///
+/// eframe runs a pass only when something asks it to, and a window that is
+/// unfocused, occluded, or minimized stops asking: a repaint requested from
+/// inside a pass never comes back around, so the pass that would have asked
+/// again never happens. A window whose work continues off screen, such as a
+/// call waiting to be answered, needs the loop to keep turning regardless of
+/// what the compositor thinks.
+#[must_use = "the heartbeat stops when the handle is dropped"]
+pub fn spawn_heartbeat(ctx: &egui::Context, period: Duration) -> AbortOnDropHandle<()> {
+    let ctx = ctx.clone();
+    AbortOnDropHandle::new(spawn(async move {
+        let mut interval = tokio::time::interval(period);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            ctx.request_repaint();
+        }
+    }))
 }
 
 /// Shuts the endpoint down from `on_exit`, which eframe calls on the main

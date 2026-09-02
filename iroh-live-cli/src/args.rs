@@ -233,6 +233,26 @@ pub enum ImportFormat {
     Avc3,
 }
 
+/// Arguments for `irl call`.
+#[cfg(feature = "render")]
+#[derive(Args, Debug)]
+pub struct CallArgs {
+    /// Ticket of the peer to call, as its `irl call` printed it. Omit to wait
+    /// for somebody to call this node.
+    pub ticket: Option<LiveTicket>,
+
+    #[command(flatten)]
+    pub capture: CaptureArgs,
+
+    /// Suppress the terminal QR code.
+    #[arg(long)]
+    pub no_qr: bool,
+
+    /// Start in fullscreen.
+    #[arg(long)]
+    pub fullscreen: bool,
+}
+
 /// Arguments for `irl watch`.
 #[derive(Args, Debug)]
 pub struct WatchArgs {

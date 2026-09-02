@@ -11,6 +11,8 @@
 use clap::{Parser, Subcommand};
 
 mod args;
+#[cfg(feature = "render")]
+mod call;
 mod devices;
 mod import;
 mod publish;
@@ -33,6 +35,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Place or answer a 1:1 video call.
+    #[cfg(feature = "render")]
+    Call(Box<args::CallArgs>),
     /// List the cameras, displays, and audio devices this machine offers.
     Devices,
     /// Publish a capture device or a media file.
@@ -59,6 +64,8 @@ fn main() -> n0_error::Result {
         .build()?;
 
     match cli.command {
+        #[cfg(feature = "render")]
+        Command::Call(args) => call::run(*args, &rt),
         Command::Devices => devices::run(&rt),
         Command::Publish(args) => publish::run(*args, &rt),
         Command::Record(args) => record::run(*args, &rt),
