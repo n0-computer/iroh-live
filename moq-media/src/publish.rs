@@ -55,6 +55,9 @@ pub enum PublishError {
     /// A rendition set was empty.
     #[error("no renditions given")]
     NoRenditions,
+    /// A pre-encoded source ended without producing an access unit.
+    #[error("the pre-encoded source produced no frames")]
+    EmptySource,
 }
 
 /// Where a video track's pictures come from.

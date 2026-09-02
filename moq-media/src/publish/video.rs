@@ -428,15 +428,27 @@ async fn publish_annexb(
     stats.encode.encoder.set("pre-encoded");
     info!(rendition = %name, "publishing pre-encoded video");
 
+    let mut units = 0usize;
     while let Some(chunk) = bytes.next().await {
         let frames = split.decode(&chunk, None)?;
+        units += frames.len();
         import.decode(frames)?;
     }
     // The splitter holds the final access unit until the next start code, so
     // end of stream has to flush it explicitly.
     let tail = split.flush(None)?;
+    units += tail.len();
     import.decode(tail)?;
     import.finish()?;
+
+    // A source that ends without a single access unit never described itself:
+    // the catalog rendition comes from the first SPS, so there is nothing for a
+    // subscriber to read and nothing that says why. That is a failed camera
+    // rather than a stream that ran its course, and it is reported as one.
+    if units == 0 {
+        return Err(n0_error::e!(PublishError::EmptySource));
+    }
+    debug!(rendition = %name, units, "pre-encoded source ended");
     Ok(())
 }
 
