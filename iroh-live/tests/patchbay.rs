@@ -683,3 +683,76 @@ async fn a_switch_does_not_blank_the_picture() {
 
     fixture.shutdown().await;
 }
+
+/// A switch asked for while the link is saturated must still land.
+///
+/// The reproduction for the stall `adaptation_follows_a_rate_limit` documents
+/// and works around by lifting the cap first. The cap is held across the whole
+/// switch here, which is the shape the real case has: the link is saturated,
+/// that is why a lower rendition is wanted, and lifting the cap is not
+/// something a subscriber can do.
+///
+/// Driven by an explicit `set_rendition` rather than by adaptation, so a
+/// failure is about the switch and not about the decision to make one.
+///
+/// Ignored because it fails, and the cause is upstream. `moq_net` gives every
+/// group stream a QUIC send order of `u8::MAX - rank` and leaves every control
+/// stream at quinn's default of zero, and quinn schedules strictly by priority.
+/// A publisher whose media backlog never drains therefore never transmits the
+/// TRACK_INFO answering the replacement's request, and the subscriber's
+/// `track::Consumer::subscribe` waits on it forever. Un-ignore once control
+/// streams outrank media.
+#[tokio::test]
+#[traced_test]
+async fn a_switch_lands_while_the_link_stays_capped() {
+    let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
+    let track = fixture.video(2).await;
+    let signals = fixture.subscription.signals().clone();
+
+    tokio::time::timeout(TIMEOUT, track.recv())
+        .await
+        .expect("timed out waiting for the first frame")
+        .expect("the video track closed before its first frame");
+    let _settle = drain(&track, Duration::from_secs(2)).await;
+
+    // Two thirds of what `high` actually sends, so the top rung cannot fit and
+    // the send queue never drains.
+    fixture
+        .impair(LinkLimits {
+            rate_kbit: 200,
+            ..Default::default()
+        })
+        .await;
+
+    // Wait until the cap is visible in the signals, so the switch is asked for
+    // on a link that is demonstrably saturated rather than one still filling.
+    tokio::time::timeout(SIGNAL_LAG, async {
+        loop {
+            let signals = *signals.borrow();
+            if signals.goodput_bps.is_some_and(|bps| bps < 250_000)
+                && signals.rtt > signals.min_rtt * 10
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the signals did not show the rate limit inside {SIGNAL_LAG:?}"));
+    info!("the link is saturated");
+
+    let asked = Instant::now();
+    track.set_rendition("low");
+    tokio::time::timeout(TIMEOUT, track.switched_to("low"))
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "the switch to `low` did not land inside {TIMEOUT:?} while the cap was held, \
+                 still on `{}`",
+                track.rendition(),
+            )
+        });
+    info!(after_ms = asked.elapsed().as_millis() as u64, "switched");
+
+    fixture.shutdown().await;
+}
