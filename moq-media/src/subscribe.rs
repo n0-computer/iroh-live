@@ -612,6 +612,7 @@ impl RemoteBroadcast {
 fn video_decode_config(policy: &PlaybackPolicy) -> moq_video::decode::Config {
     let mut config = moq_video::decode::Config::new();
     config.latency_max = Some(policy.max_latency);
+    config.gpu_frames = policy.gpu_frames;
     config
 }
 

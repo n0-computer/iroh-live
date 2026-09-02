@@ -2855,7 +2855,7 @@ dependencies = [
 [[package]]
 name = "hang"
 version = "0.20.9"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#db351ab6d7bbe267f0d8ffe36678ac2dce3e3fcb"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#009dc4b11c7f0a6f6e40bd9c011cd12b230d140f"
 dependencies = [
  "bytes",
  "derive_more",
@@ -4160,7 +4160,7 @@ dependencies = [
 [[package]]
 name = "kio"
 version = "0.5.7"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#db351ab6d7bbe267f0d8ffe36678ac2dce3e3fcb"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#009dc4b11c7f0a6f6e40bd9c011cd12b230d140f"
 dependencies = [
  "loom",
  "smallvec",
@@ -4530,7 +4530,7 @@ dependencies = [
 [[package]]
 name = "moq-audio"
 version = "0.0.21"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#db351ab6d7bbe267f0d8ffe36678ac2dce3e3fcb"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#009dc4b11c7f0a6f6e40bd9c011cd12b230d140f"
 dependencies = [
  "block2 0.6.2",
  "bytes",
@@ -4562,7 +4562,7 @@ dependencies = [
 [[package]]
 name = "moq-flate"
 version = "0.1.2"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#db351ab6d7bbe267f0d8ffe36678ac2dce3e3fcb"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#009dc4b11c7f0a6f6e40bd9c011cd12b230d140f"
 dependencies = [
  "bytes",
  "flate2",
@@ -4572,7 +4572,7 @@ dependencies = [
 [[package]]
 name = "moq-json"
 version = "0.3.8"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#db351ab6d7bbe267f0d8ffe36678ac2dce3e3fcb"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#009dc4b11c7f0a6f6e40bd9c011cd12b230d140f"
 dependencies = [
  "bytes",
  "json-patch",
@@ -4589,7 +4589,7 @@ dependencies = [
 [[package]]
 name = "moq-loc"
 version = "0.2.4"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#db351ab6d7bbe267f0d8ffe36678ac2dce3e3fcb"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#009dc4b11c7f0a6f6e40bd9c011cd12b230d140f"
 dependencies = [
  "bytes",
  "moq-net",
@@ -4653,7 +4653,7 @@ dependencies = [
 [[package]]
 name = "moq-msf"
 version = "0.4.2"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#db351ab6d7bbe267f0d8ffe36678ac2dce3e3fcb"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#009dc4b11c7f0a6f6e40bd9c011cd12b230d140f"
 dependencies = [
  "serde",
  "serde_json",
@@ -4663,7 +4663,7 @@ dependencies = [
 [[package]]
 name = "moq-mux"
 version = "0.9.12"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#db351ab6d7bbe267f0d8ffe36678ac2dce3e3fcb"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#009dc4b11c7f0a6f6e40bd9c011cd12b230d140f"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -4695,7 +4695,7 @@ dependencies = [
 [[package]]
 name = "moq-native"
 version = "0.19.15"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#db351ab6d7bbe267f0d8ffe36678ac2dce3e3fcb"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#009dc4b11c7f0a6f6e40bd9c011cd12b230d140f"
 dependencies = [
  "clap",
  "dns-lookup",
@@ -4736,7 +4736,7 @@ dependencies = [
 [[package]]
 name = "moq-net"
 version = "0.2.17"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#db351ab6d7bbe267f0d8ffe36678ac2dce3e3fcb"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#009dc4b11c7f0a6f6e40bd9c011cd12b230d140f"
 dependencies = [
  "arrayvec",
  "bytes",
@@ -4755,7 +4755,7 @@ dependencies = [
 [[package]]
 name = "moq-nvenc"
 version = "0.0.4"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#db351ab6d7bbe267f0d8ffe36678ac2dce3e3fcb"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#009dc4b11c7f0a6f6e40bd9c011cd12b230d140f"
 dependencies = [
  "cudarc",
  "lazy_static",
@@ -4765,7 +4765,7 @@ dependencies = [
 [[package]]
 name = "moq-relay"
 version = "0.14.14"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#db351ab6d7bbe267f0d8ffe36678ac2dce3e3fcb"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#009dc4b11c7f0a6f6e40bd9c011cd12b230d140f"
 dependencies = [
  "anyhow",
  "axum",
@@ -4806,7 +4806,7 @@ dependencies = [
 [[package]]
 name = "moq-stats"
 version = "0.1.7"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#db351ab6d7bbe267f0d8ffe36678ac2dce3e3fcb"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#009dc4b11c7f0a6f6e40bd9c011cd12b230d140f"
 dependencies = [
  "moq-json",
  "moq-net",
@@ -4820,7 +4820,7 @@ dependencies = [
 [[package]]
 name = "moq-token"
 version = "0.7.3"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#db351ab6d7bbe267f0d8ffe36678ac2dce3e3fcb"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#009dc4b11c7f0a6f6e40bd9c011cd12b230d140f"
 dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
@@ -4838,7 +4838,7 @@ dependencies = [
 [[package]]
 name = "moq-vaapi"
 version = "0.0.3"
-source = "git+https://github.com/Frando/vaapi?branch=iroh-live#5008e5460df745f446545b9219a5d89edeafbe6c"
+source = "git+https://github.com/Frando/vaapi?branch=iroh-live#094f8ef2cc06f4e814ac12f56ce0f50e9d339c5f"
 dependencies = [
  "anyhow",
  "bindgen 0.70.1",
@@ -4852,7 +4852,7 @@ dependencies = [
 [[package]]
 name = "moq-video"
 version = "0.0.21"
-source = "git+https://github.com/Frando/moq?branch=iroh-live#db351ab6d7bbe267f0d8ffe36678ac2dce3e3fcb"
+source = "git+https://github.com/Frando/moq?branch=iroh-live#009dc4b11c7f0a6f6e40bd9c011cd12b230d140f"
 dependencies = [
  "anyhow",
  "ashpd",

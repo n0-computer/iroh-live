@@ -4,6 +4,8 @@
 //! [`PlaybackPolicy::max_latency`] decides how much buffered media a subscriber
 //! tolerates before skipping to the live edge, and is passed straight through
 //! to `moq_video::decode::Config::latency_max`.
+//! [`PlaybackPolicy::gpu_frames`] says what the subscriber will do with the
+//! decoded frames, which decides where the decoder leaves them.
 
 use std::time::Duration;
 
@@ -49,6 +51,21 @@ pub struct PlaybackPolicy {
     /// Raise it for continuity through congestion, lower it for faster
     /// recovery after a stall.
     pub max_latency: Duration,
+
+    /// Whether decoded frames should be left on the GPU rather than downloaded
+    /// to CPU memory, passed to the decoder as `gpu_frames`.
+    ///
+    /// Set it when the frames go to a renderer: a hardware decoder that can
+    /// share its decode surface then hands one over, and the picture reaches a
+    /// texture without a round trip through system memory. Leave it clear for a
+    /// subscriber that reads the pixels, such as one writing them to a file,
+    /// since sharing a surface costs the decoder an allocation per picture and
+    /// buys such a consumer nothing.
+    ///
+    /// Best effort: only backends that can do it honor it, and a frame that
+    /// does come back on the GPU still converts to I420 on demand, so nothing
+    /// downstream has to know which happened.
+    pub gpu_frames: bool,
 }
 
 impl Default for PlaybackPolicy {
@@ -56,6 +73,7 @@ impl Default for PlaybackPolicy {
         Self {
             sync: SyncMode::default(),
             max_latency: Duration::from_millis(150),
+            gpu_frames: false,
         }
     }
 }
@@ -85,6 +103,16 @@ impl PlaybackPolicy {
     #[must_use]
     pub fn with_sync(mut self, sync: SyncMode) -> Self {
         self.sync = sync;
+        self
+    }
+
+    /// Returns a copy that asks the decoder to leave frames on the GPU.
+    ///
+    /// See [`gpu_frames`](Self::gpu_frames) for what that costs a subscriber
+    /// that does not draw them.
+    #[must_use]
+    pub fn with_gpu_frames(mut self, gpu_frames: bool) -> Self {
+        self.gpu_frames = gpu_frames;
         self
     }
 }
