@@ -40,7 +40,7 @@ tokio = { version = "1.48.0", features = ["full"] }
 tracing-subscriber = "0.3.20"
 
 [features]
-default = ["capture"]
+default = ["capture", "sound-server"]
 # Camera, screen, and microphone capture. Off for a build that only publishes
 # frames it produces itself (a file source, an Android app pushing camera
 # buffers), since the device stack adds V4L2 and ALSA build dependencies on
@@ -48,6 +48,14 @@ default = ["capture"]
 capture = ["moq-video/capture", "moq-audio/capture"]
 # Speaker output, for anything that plays audio rather than only publishing it.
 playback = ["moq-audio/playback"]
+# Reach devices through the Linux sound server rather than through its ALSA
+# compatibility plugin. cpal prefers PipeWire, then PulseAudio, then ALSA, and
+# each check happens at runtime, so a build with this on still runs where
+# neither is present. On by default because a desktop has one of them and the
+# ALSA view of the same hardware is barely usable: a card's subdevices are
+# listed many times over under one description, and streams appear under the
+# plugin's name instead of ours.
+sound-server = ["moq-audio/pipewire", "moq-audio/pulseaudio"]
 # Acoustic echo cancellation: subtracts the output mix from the microphone, so a
 # handset on speakerphone stops publishing its own audio back.
 aec = ["capture", "playback", "moq-audio/aec"]

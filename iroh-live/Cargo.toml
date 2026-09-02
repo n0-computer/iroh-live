@@ -55,11 +55,14 @@ patchbay = "0.1.0"
 workspace = true
 
 [features]
-default = ["capture", "render"]
+default = ["capture", "render", "sound-server"]
 # Camera, screen, and microphone capture.
 capture = ["moq-media/capture"]
 # Speaker output.
 playback = ["moq-media/playback"]
+# Reach audio devices through PipeWire or PulseAudio rather than through their
+# ALSA compatibility plugin.
+sound-server = ["moq-media/sound-server"]
 # Acoustic echo cancellation, for a call on a handset or a laptop speaker.
 aec = ["moq-media/aec"]
 # Linux screen capture through xdg-desktop-portal and PipeWire.

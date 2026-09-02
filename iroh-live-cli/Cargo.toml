@@ -40,8 +40,9 @@ eframe = { workspace = true, features = ["wayland", "x11"] }
 [features]
 # Capture is not a feature here: `irl devices` and `irl publish` are most of the
 # CLI and neither compiles without it, so the dependencies ask for it directly.
-default = ["playback", "render"]
+default = ["playback", "render", "sound-server"]
 playback = ["iroh-live/playback", "moq-media/playback"]
+sound-server = ["iroh-live/sound-server", "moq-media/sound-server"]
 aec = ["iroh-live/aec", "moq-media/aec"]
 pipewire = ["iroh-live/pipewire", "moq-media/pipewire"]
 render = ["iroh-live/render", "moq-media/render", "dep:moq-media-egui"]

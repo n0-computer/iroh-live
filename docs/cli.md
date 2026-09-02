@@ -102,6 +102,7 @@ Subscribes to a broadcast and plays it. `irl play` is an alias.
 | `--name <NAME>` | Broadcast path, alongside `--endpoint-id` |
 | `--no-video` | Play audio only; no window opens |
 | `--rendition <NAME>` | Hold one rendition instead of following the downlink |
+| `--audio-output <ID>` | Play through this device, as the first column of `irl devices` lists it |
 | `--fullscreen` | Start in fullscreen |
 
 Without `--rendition` the video track adapts: the subscription's transport
