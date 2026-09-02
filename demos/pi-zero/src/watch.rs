@@ -544,8 +544,10 @@ pub(crate) fn run_windowed(
 
             let size = window.inner_size();
             let (w, h) = (
-                NonZeroU32::new(size.width.max(1)).unwrap(),
-                NonZeroU32::new(size.height.max(1)).unwrap(),
+                // `max(1)` is what makes these non-zero, so the surface still
+                // resizes to something legal when the window reports 0x0.
+                NonZeroU32::new(size.width.max(1)).expect("max(1) is non-zero"),
+                NonZeroU32::new(size.height.max(1)).expect("max(1) is non-zero"),
             );
             let surface_attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(raw, w, h);
             let surface = unsafe {
@@ -594,8 +596,8 @@ pub(crate) fn run_windowed(
                     if let (Some(surface), Some(context)) = (&self.surface, &self.context) {
                         surface.resize(
                             context,
-                            NonZeroU32::new(size.width.max(1)).unwrap(),
-                            NonZeroU32::new(size.height.max(1)).unwrap(),
+                            NonZeroU32::new(size.width.max(1)).expect("max(1) is non-zero"),
+                            NonZeroU32::new(size.height.max(1)).expect("max(1) is non-zero"),
                         );
                     }
                 }
@@ -609,7 +611,13 @@ pub(crate) fn run_windowed(
 
                     try_upload_frame(renderer, &self.video_track, &mut self.frame_count);
 
-                    let window = self.window.as_ref().unwrap();
+                    // The renderer, surface and context above are only ever set
+                    // alongside the window, so reaching here without one is a
+                    // bug in this setup rather than a state to handle.
+                    let window = self
+                        .window
+                        .as_ref()
+                        .expect("a window, since the GL context exists");
                     let size = window.inner_size();
                     unsafe {
                         renderer.draw(size.width as i32, size.height as i32);
