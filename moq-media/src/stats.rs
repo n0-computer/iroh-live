@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-// ── Metric ──────────────────────────────────────────────────────────
+// --- Metric ----------------------------------------------------------
 
 /// Static metadata for display and thresholds.
 #[derive(Debug, Clone, Copy)]
@@ -168,7 +168,7 @@ impl Metric {
     }
 }
 
-// ── Label ───────────────────────────────────────────────────────────
+// --- Label -----------------------------------------------------------
 
 /// An observable string label (e.g. codec name, path type).
 #[derive(Clone, Debug)]
@@ -198,7 +198,7 @@ impl Default for Label {
     }
 }
 
-// ── Stat category structs ───────────────────────────────────────────
+// --- Stat category structs -------------------------------------------
 
 /// Network stats. Written by the transport bridge (iroh-live or
 /// web_transport_trait), read by the overlay.
@@ -310,14 +310,14 @@ impl Default for TimingStats {
                 MetricMeta::responsive("AudioLag", "ms").with_thresholds(50.0, 150.0, false),
             ),
             av_delta_ms: Metric::new(
-                MetricMeta::responsive("A/V Δ", "ms").with_thresholds(20.0, 50.0, false),
+                MetricMeta::responsive("A/V delta", "ms").with_thresholds(20.0, 50.0, false),
             ),
             video_buf: Metric::new(MetricMeta::responsive("VideoBuf", "")),
         }
     }
 }
 
-// ── Timeline ────────────────────────────────────────────────────────
+// --- Timeline --------------------------------------------------------
 
 /// Per-frame timing snapshot for the timeline visualization.
 #[derive(Debug, Clone)]
@@ -378,7 +378,7 @@ impl Default for Timeline {
     }
 }
 
-// ── Composite stats ─────────────────────────────────────────────────
+// --- Composite stats -------------------------------------------------
 
 /// All stats for a subscribe-side broadcast. Owned by `RemoteBroadcast`.
 #[derive(Clone, Debug, Default)]
@@ -396,7 +396,7 @@ pub struct PublishStats {
     pub encode: EncodeStats,
 }
 
-// ── Tests ───────────────────────────────────────────────────────────
+// --- Tests -----------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

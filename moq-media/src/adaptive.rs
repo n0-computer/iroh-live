@@ -29,7 +29,7 @@ use hang::catalog::VideoConfig;
 
 use crate::net::NetworkSignals;
 
-// ── Configuration ───────────────────────────────────────────────────────
+// --- Configuration ---------------------------------------------------
 
 /// Thresholds and timers for the adaptation algorithm.
 #[derive(Debug, Clone)]
@@ -123,7 +123,7 @@ impl Default for AdaptiveConfig {
     }
 }
 
-// ── Rendition ranking ───────────────────────────────────────────────────
+// --- Rendition ranking -----------------------------------------------
 
 /// Rendition ranked by quality. Index 0 = highest quality.
 #[derive(Debug, Clone)]
@@ -159,7 +159,7 @@ pub fn rank_renditions(renditions: &BTreeMap<String, VideoConfig>) -> Vec<Ranked
     ranked
 }
 
-// ── Selection logic ─────────────────────────────────────────────────────
+// --- Selection logic -------------------------------------------------
 
 /// Decision produced by the adaptation algorithm.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -285,7 +285,7 @@ pub fn evaluate(
     let is_lowest = current_idx == ranked.len() - 1;
     let is_highest = current_idx == 0;
 
-    // ── Emergency: immediate drop to lowest ─────────────────────────
+    // --- Emergency: immediate drop to lowest -------------------------
     if signals.loss_rate >= config.loss_emergency && !is_lowest {
         timers.bad_since = None;
         timers.good_since = None;
@@ -308,7 +308,7 @@ pub fn evaluate(
         timers.record_healthy_goodput(&current.name, bps, config.goodput_baseline_halflife, now);
     }
 
-    // ── Downgrade check ─────────────────────────────────────────────
+    // --- Downgrade check ---------------------------------------------
     // Two things have to hold at once, and neither is worth much alone.
     //
     // The rendition has stopped arriving at the rate it was arriving at a moment
@@ -365,7 +365,7 @@ pub fn evaluate(
         timers.bad_since = None;
     }
 
-    // ── Upgrade check (probe gating) ────────────────────────────────
+    // --- Upgrade check (probe gating) --------------------------------
     if is_highest {
         timers.good_since = None;
         return Decision::Hold;
@@ -546,7 +546,7 @@ impl Probe {
     }
 }
 
-// ── Tests ───────────────────────────────────────────────────────────────
+// --- Tests -----------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

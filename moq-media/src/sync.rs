@@ -38,7 +38,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-// ── Public API ──────────────────────────────────────────────────────────
+// --- Public API ------------------------------------------------------
 
 /// How long a frame still has to wait before it is due.
 ///
@@ -147,7 +147,7 @@ impl Sync {
         }
     }
 
-    // ── Reference updates (video receive path) ─────────────────────
+    // --- Reference updates (video receive path) ----------------------
 
     /// Records the arrival of a frame with the given PTS timestamp.
     ///
@@ -169,7 +169,7 @@ impl Sync {
         self.inner.changed.notify_waiters();
     }
 
-    // ── Playout gating (video render path) ─────────────────────────
+    // --- Playout gating (video render path) --------------------------
 
     /// Waits until it is time to render the frame with the given PTS.
     ///
@@ -227,7 +227,7 @@ impl Sync {
         }
     }
 
-    // ── Latency configuration ──────────────────────────────────────
+    // --- Latency configuration ---------------------------------------
 
     /// Returns the current total latency: `max(audio, video) + jitter`.
     pub fn latency(&self) -> Duration {
@@ -275,7 +275,7 @@ impl Sync {
         self.inner.changed.notify_waiters();
     }
 
-    // ── Internal helpers ───────────────────────────────────────────
+    // --- Internal helpers --------------------------------------------
 
     /// Milliseconds elapsed since construction, equivalent to the JS
     /// `performance.now()` call.
