@@ -180,6 +180,29 @@ export IROH_SECRET=abcdef...
 ./pi-zero-demo publish
 ```
 
+Any 64 hex characters will do, so a key can also be chosen before the first
+run with `openssl rand -hex 32`.
+
+### Starting on boot
+
+[`pi-zero-demo.service`](pi-zero-demo.service) is a systemd user unit that runs
+the publisher with a pinned secret, keeping the key in a file of its own rather
+than in the world-readable unit:
+
+```sh
+install -m 700 -d ~/.config/pi-zero-demo
+umask 077 && printf 'IROH_SECRET=%s\n' "$(openssl rand -hex 32)" \
+    > ~/.config/pi-zero-demo/env
+install -Dm644 pi-zero-demo.service ~/.config/systemd/user/pi-zero-demo.service
+systemctl --user daemon-reload
+systemctl --user enable --now pi-zero-demo
+sudo loginctl enable-linger "$USER"
+```
+
+Lingering is what makes it a boot unit: without it the user manager, and so the
+publisher, only starts when someone logs in. The ticket goes to the journal,
+where `journalctl --user -u pi-zero-demo -f` will show it.
+
 ## Watching from a desktop
 
 ```sh
