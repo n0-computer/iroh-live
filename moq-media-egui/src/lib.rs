@@ -360,8 +360,8 @@ impl VideoTrackView {
 /// [`wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF`] when the adapter
 /// supports it, which lets [`moq_media::video::render::Renderer`] import
 /// PipeWire DMA-BUFs without a CPU round trip. Every other platform, and any
-/// Linux adapter that lacks the feature, gets egui's default configuration:
-/// the renderer still draws every frame correctly through its CPU-upload
+/// Linux adapter that lacks the feature, gets [`adapter_limits_config`]: the
+/// renderer still draws every frame correctly through its CPU-upload
 /// fallback, just without the zero-copy path.
 #[cfg(feature = "wgpu-render")]
 pub fn create_egui_wgpu_config() -> egui_wgpu::WgpuConfiguration {
@@ -371,7 +371,47 @@ pub fn create_egui_wgpu_config() -> egui_wgpu::WgpuConfiguration {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        egui_wgpu::WgpuConfiguration::default()
+        adapter_limits_config()
+    }
+}
+
+/// Returns a device descriptor that asks for exactly what `adapter` reports.
+///
+/// egui asks for [`wgpu::Limits::default()`] on anything that is not the GL
+/// backend, and those are desktop limits: eight colour attachments, for one.
+/// A Raspberry Pi 4 has a conformant Vulkan driver that allows four, so the
+/// device request fails and eframe exits before a window ever opens. An
+/// adapter's own limits are the ones it is guaranteed to grant, and video
+/// playback wants nothing beyond them: [`moq_media::video::render::Renderer`]
+/// draws one triangle with three sampled textures.
+#[cfg(feature = "wgpu-render")]
+fn device_descriptor(
+    adapter: &wgpu::Adapter,
+    required_features: wgpu::Features,
+) -> wgpu::DeviceDescriptor<'static> {
+    wgpu::DeviceDescriptor {
+        label: Some("moq-media-egui video device"),
+        required_features,
+        required_limits: adapter.limits(),
+        ..Default::default()
+    }
+}
+
+/// Returns egui's configuration with the device limits taken from the adapter.
+///
+/// This is the fallback for every path that does not build a device itself,
+/// and it exists for the same reason [`device_descriptor`] does: egui's
+/// default limits are not a subset of what every conformant driver grants.
+#[cfg(feature = "wgpu-render")]
+fn adapter_limits_config() -> egui_wgpu::WgpuConfiguration {
+    egui_wgpu::WgpuConfiguration {
+        wgpu_setup: egui_wgpu::WgpuSetup::CreateNew(egui_wgpu::WgpuSetupCreateNew {
+            device_descriptor: std::sync::Arc::new(|adapter| {
+                device_descriptor(adapter, wgpu::Features::empty())
+            }),
+            ..egui_wgpu::WgpuSetupCreateNew::without_display_handle()
+        }),
+        ..Default::default()
     }
 }
 
@@ -388,8 +428,8 @@ fn create_egui_wgpu_config_dmabuf() -> egui_wgpu::WgpuConfiguration {
     })) {
         Ok(adapter) => adapter,
         Err(err) => {
-            tracing::warn!(error = %err, "no Vulkan adapter available, using egui's default wgpu setup");
-            return egui_wgpu::WgpuConfiguration::default();
+            tracing::warn!(error = %err, "no Vulkan adapter available, letting egui pick one");
+            return adapter_limits_config();
         }
     };
 
@@ -404,16 +444,13 @@ fn create_egui_wgpu_config_dmabuf() -> egui_wgpu::WgpuConfiguration {
         wgpu::Features::empty()
     };
 
-    let (device, queue) = match pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            required_features,
-            ..Default::default()
-        },
-    )) {
+    let (device, queue) = match pollster::block_on(
+        adapter.request_device(&device_descriptor(&adapter, required_features)),
+    ) {
         Ok(pair) => pair,
         Err(err) => {
-            tracing::warn!(error = %err, "wgpu device request failed, using egui's default wgpu setup");
-            return egui_wgpu::WgpuConfiguration::default();
+            tracing::warn!(error = %err, "wgpu device request failed, letting egui build one");
+            return adapter_limits_config();
         }
     };
 
