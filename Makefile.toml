@@ -90,6 +90,13 @@ workspace = false
 command = "cargo"
 args = ["nextest", "run", "--locked", "--workspace"]
 
+[tasks.test-patchbay]
+description = "Run the patchbay network simulation tests, including ignored ones"
+workspace = false
+command = "cargo"
+args = ["nextest", "run", "--locked", "-p", "iroh-live",
+        "-E", "binary(patchbay)", "--run-ignored", "all"]
+
 # ── E2E browser tests ────────────────────────────────────────────────
 
 [tasks.e2e-prebuild]

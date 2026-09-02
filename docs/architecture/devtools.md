@@ -79,17 +79,35 @@ and iroh sides of the relay. `tests/e2e-browser/` is a Playwright suite that
 builds the relay and the CLI, serves the embedded web client, and watches a
 stream in Chromium.
 
+`iroh-live/tests/patchbay.rs` is the only place anything impairs a link. It puts
+the publisher and the subscriber in separate network namespaces with a router
+between them and applies netem latency, jitter and loss, so the impairment
+reaches QUIC rather than being described to the pipeline after the fact. Two
+tests hold the delivery cadence to account across a latency ramp and a loss
+spike; `adaptation_follows_a_real_link` runs the whole adaptive chain, from
+dropped packets through QUIC's loss detection and the path stats the signal
+producer samples to a rendition downgrade, and back up once the loss clears;
+`a_switch_does_not_blank_the_picture` holds the decode supervisor to its overlap,
+that a replacement decoder takes over on its own first frame rather than after
+the incumbent is gone. It is Linux-only and needs unprivileged user namespaces,
+set up from an ELF initialiser before the harness has a second thread. nextest
+gives the binary a single-threaded group of its own, because the timing
+assertions do not survive sharing a machine with the rest of the suite.
+
 ```sh
-cargo make test        # cargo nextest run --locked --workspace
-cargo make test-e2e    # builds the relay and CLI, then runs Playwright
-cargo make test-full   # check-all, then both of the above
+cargo make test           # cargo nextest run --locked --workspace
+cargo make test-patchbay  # the network simulation suite, including ignored tests
+cargo make test-e2e       # builds the relay and CLI, then runs Playwright
+cargo make test-full      # check-all, then both of the above
 ```
 
 ## What is gone
 
 The `frame_dump` example, which saved frames as PNGs and checked them against an
 SMPTE pattern by PSNR, was removed with the in-house decoder it drove. The
-patchbay network-simulation test was removed along with the pipeline it
-exercised, and its dev-dependency, its cargo-make task, and its nextest test
-group went with it. The `pi-zero-demo codec-test` subcommand went with the V4L2
-M2M codec it tested.
+`pi-zero-demo codec-test` subcommand went with the V4L2 M2M codec it tested.
+
+The patchbay suite went the same way when the pipeline it drove was replaced, but
+it is back, rewritten against the new one; the A/V sync measurements it also
+carried are not, because the timestamping audio backend they sampled has no
+counterpart yet.
