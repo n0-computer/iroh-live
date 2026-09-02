@@ -4,7 +4,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use iroh::{SecretKey, endpoint::Connection};
+use iroh::{
+    SecretKey,
+    endpoint::{Connection, PathId},
+};
 use moq_media::net::NetworkSignals;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -58,6 +61,65 @@ const GOODPUT_WINDOW: Duration = Duration::from_secs(1);
 /// a ladder is small: 320x240 video comes in under 100 kbit/s.
 const GOODPUT_FLOOR_BPS: u64 = 16_000;
 
+/// The span the round trip minimum is taken across.
+///
+/// The minimum is what makes the current round trip mean anything, and a running
+/// minimum over the whole connection stops meaning anything as soon as the path
+/// underneath it moves. A fallback from a direct path to a relay takes an iroh
+/// connection from a couple of milliseconds to tens of them, and every later
+/// reading then looks like a queue that will never drain. Long enough to outlast
+/// a real queue, which drains in round trips rather than in minutes, and short
+/// enough that a baseline which moved is forgotten inside a minute.
+const MIN_RTT_WINDOW: Duration = Duration::from_secs(15);
+
+/// The path a round trip minimum was measured on, and the minimum itself.
+///
+/// The two travel together because neither survives the other: a minimum from
+/// the path before this one describes a different link.
+struct PathBaseline {
+    path: PathId,
+    min_rtt: WindowedMin,
+}
+
+/// A minimum over a sliding span, kept as two tumbling halves.
+///
+/// Holds the minimum of everything recorded in the current half and of
+/// everything in the half before it, retiring the older one wholesale when the
+/// span elapses. That covers between one and two spans rather than exactly one,
+/// which is what not keeping every sample costs, and it errs on the right side:
+/// a minimum that expired early would read the path's own delay as a queue.
+struct WindowedMin {
+    span: Duration,
+    current: Duration,
+    previous: Option<Duration>,
+    since: Instant,
+}
+
+impl WindowedMin {
+    /// Starts a minimum over `span` at `first`.
+    fn new(span: Duration, first: Duration, now: Instant) -> Self {
+        Self {
+            span,
+            current: first,
+            previous: None,
+            since: now,
+        }
+    }
+
+    /// Records `sample` and returns the minimum over the span.
+    fn record(&mut self, sample: Duration, now: Instant) -> Duration {
+        if now.duration_since(self.since) >= self.span {
+            self.previous = Some(self.current);
+            self.current = sample;
+            self.since = now;
+        } else {
+            self.current = self.current.min(sample);
+        }
+        self.previous
+            .map_or(self.current, |previous| previous.min(self.current))
+    }
+}
+
 /// Spawns a background task that polls connection stats and produces
 /// [`NetworkSignals`] for adaptive rendition selection.
 ///
@@ -75,11 +137,15 @@ pub fn spawn_signal_producer(
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut prev_lost: u64 = 0;
         let mut prev_sent: u64 = 0;
-        // The path's round trip with nothing queued in front of it. Tracked
-        // here rather than read from the transport because QUIC keeps no such
-        // figure, and taken as a running minimum because that is what an
-        // unqueued sample looks like.
-        let mut min_rtt: Option<Duration> = None;
+        // The path's round trip with nothing queued in front of it. Tracked here
+        // rather than read from the transport because QUIC keeps no such figure,
+        // and taken as a minimum because that is what an unqueued sample looks
+        // like.
+        let mut baseline: Option<PathBaseline> = None;
+        // The last round trip read out, so that repeats of it can be told from
+        // fresh samples.
+        let mut prev_rtt: Option<Duration> = None;
+        let mut rtt_samples: u64 = 0;
         // Timestamped `udp_rx.bytes` readings, oldest first, spanning
         // `GOODPUT_WINDOW`. Goodput is the difference across the whole span
         // rather than between the last two, so one bursty tick does not move it.
@@ -96,9 +162,33 @@ pub fn spawn_signal_producer(
             };
 
             let stats = selected.stats();
-            let rtt = selected.rtt();
-            let baseline = min_rtt.map_or(rtt, |seen| seen.min(rtt));
-            min_rtt = Some(baseline);
+            let rtt = stats.rtt;
+            let now = Instant::now();
+
+            // A minimum measured on one path says nothing about the next: a
+            // connection that fell back to a relay is on a longer link, not on a
+            // queue in front of the one it had.
+            let path = selected.id();
+            let min_rtt = match &mut baseline {
+                Some(known) if known.path == path => known.min_rtt.record(rtt, now),
+                _ => {
+                    baseline = Some(PathBaseline {
+                        path,
+                        min_rtt: WindowedMin::new(MIN_RTT_WINDOW, rtt, now),
+                    });
+                    rtt
+                }
+            };
+
+            // QUIC updates its round trip estimate only when an acknowledgement
+            // brings it a new sample, and a subscriber sends few packets that
+            // ask to be acknowledged, so the same figure is read out over and
+            // over. Counting the changes lets a consumer weigh a fresh reading
+            // differently from a repeat of the last one.
+            if prev_rtt != Some(rtt) {
+                prev_rtt = Some(rtt);
+                rtt_samples += 1;
+            }
 
             // Delta-based loss rate. This counts what this endpoint sent and
             // failed to get acknowledged, so on a subscriber it is loss among
@@ -122,7 +212,6 @@ pub fn spawn_signal_producer(
             // and a subscriber that sends only acknowledgements keeps a window
             // that measures how little it sends; bytes arriving are the one
             // thing a receiver can measure about the direction it cares about.
-            let now = Instant::now();
             received.push_back((now, stats.udp_rx.bytes));
             // Keep the newest sample from before the window opens, so the
             // difference spans the whole window rather than stopping short of it.
@@ -133,7 +222,8 @@ pub fn spawn_signal_producer(
 
             let signals = NetworkSignals {
                 rtt,
-                min_rtt: baseline,
+                rtt_samples,
+                min_rtt,
                 loss_rate,
                 goodput_bps,
                 congestion_events: stats.congestion_events,
@@ -143,7 +233,8 @@ pub fn spawn_signal_producer(
             // explained after the fact.
             tracing::trace!(
                 rtt_ms = rtt.as_millis() as u64,
-                min_rtt_ms = baseline.as_millis() as u64,
+                rtt_samples,
+                min_rtt_ms = min_rtt.as_millis() as u64,
                 loss_rate,
                 goodput_kbps = ?goodput_bps.map(|bps| bps / 1000),
                 congestion_events = stats.congestion_events,
@@ -253,4 +344,62 @@ pub fn spawn_stats_recorder(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_windowed_minimum_forgets_the_path_it_came_from() {
+        // The failure this covers: an iroh connection that falls back from a
+        // direct path to a relay goes from a couple of milliseconds to tens of
+        // them and stays there. A minimum that never forgets the first figure
+        // makes every later round trip read as a queue that will never drain.
+        let span = Duration::from_secs(15);
+        let start = Instant::now();
+        let mut min = WindowedMin::new(span, Duration::from_millis(2), start);
+
+        assert_eq!(
+            min.record(Duration::from_millis(60), start),
+            Duration::from_millis(2)
+        );
+
+        // Still inside the first half, so the direct path's figure stands.
+        let same_half = start + span / 2;
+        assert_eq!(
+            min.record(Duration::from_millis(60), same_half),
+            Duration::from_millis(2),
+        );
+
+        // One half retired, and the figure it held is now the older of the two
+        // the minimum covers.
+        let next_half = start + span;
+        assert_eq!(
+            min.record(Duration::from_millis(60), next_half),
+            Duration::from_millis(2),
+        );
+
+        // Both halves now come from the relay, so the direct path is gone.
+        let after = start + span * 2;
+        assert_eq!(
+            min.record(Duration::from_millis(60), after),
+            Duration::from_millis(60),
+        );
+    }
+
+    #[test]
+    fn a_windowed_minimum_takes_a_dip_immediately() {
+        // The other direction has to be instant: a round trip lower than
+        // anything seen is the path telling us the queue drained, and waiting a
+        // window to believe it would call a clear path congested for that long.
+        let span = Duration::from_secs(15);
+        let start = Instant::now();
+        let mut min = WindowedMin::new(span, Duration::from_millis(60), start);
+
+        assert_eq!(
+            min.record(Duration::from_millis(3), start + span / 4),
+            Duration::from_millis(3),
+        );
+    }
 }

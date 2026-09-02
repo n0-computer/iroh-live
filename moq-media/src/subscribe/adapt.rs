@@ -15,9 +15,7 @@ use tracing::{Instrument, debug, error_span, info};
 
 use super::RemoteBroadcast;
 use crate::{
-    adaptive::{
-        AdaptationTimers, AdaptiveConfig, Decision, evaluate, rank_renditions, should_abort_probe,
-    },
+    adaptive::{AdaptationTimers, AdaptiveConfig, Decision, Probe, evaluate, rank_renditions},
     net::NetworkSignals,
 };
 
@@ -87,35 +85,26 @@ async fn run(
         let now = Instant::now();
 
         if let Some(active_probe) = &mut probe {
-            match active_probe.rendition == active {
-                // Playing. Anchor the window and the congestion baseline here
-                // rather than at the request, so congestion on the rung it had
-                // not left yet is not charged to the probe.
-                true if active_probe.landed.is_none() => {
-                    active_probe.landed = Some(now);
-                    active_probe.congestion_baseline = signals.congestion_events;
-                }
-                true => {}
+            if active_probe.rendition() == active {
+                active_probe.land(&signals, now);
+            } else if requested.borrow().is_none() {
                 // The step up never landed: the replacement failed to open, or
                 // the supervisor withdrew it. Forget it rather than judging it,
                 // or the abort path steps down from a rung we never left.
-                false if requested.borrow().is_none() => {
-                    debug!(rendition = %active_probe.rendition, "probe never took effect");
-                    probe = None;
-                }
-                false => {}
+                debug!(rendition = %active_probe.rendition(), "probe never took effect");
+                probe = None;
             }
         }
 
-        if let Some(active_probe) = probe.as_ref().filter(|probe| probe.landed.is_some()) {
-            if should_abort_probe(&signals, active_probe.congestion_baseline, &config) {
+        if let Some(active_probe) = probe.as_ref() {
+            if let Some(reason) = active_probe.abort(&signals, &config, now) {
                 // The step up did not hold. Go back down and start the probe
                 // cooldown, so the next attempt waits rather than oscillating.
                 let back = (index + 1).min(ranked.len() - 1);
                 info!(
                     from = %active,
                     to = %ranked[back].name,
-                    loss = signals.loss_rate,
+                    ?reason,
                     "probe aborted, stepping back down",
                 );
                 timers.last_probe = Some(now);
@@ -123,8 +112,7 @@ async fn run(
                 requested.send_replace(Some(ranked[back].name.clone()));
                 continue;
             }
-            let landed = active_probe.landed.expect("filtered above");
-            if now.duration_since(landed) >= config.probe_duration {
+            if active_probe.held(&config, now) {
                 debug!(rendition = %active, "probe held");
                 probe = None;
             }
@@ -138,11 +126,13 @@ async fn run(
             }
             Decision::StartProbe(next) => {
                 timers.last_probe = Some(now);
-                probe = Some(Probe {
-                    rendition: ranked[next].name.clone(),
-                    landed: None,
-                    congestion_baseline: signals.congestion_events,
-                });
+                // The rung being left is what the step up has to beat: a higher
+                // rendition delivering less than the one below it did is a link
+                // refusing the difference.
+                probe = Some(Probe::new(
+                    ranked[next].name.clone(),
+                    timers.healthy_goodput(),
+                ));
                 next
             }
             Decision::Emergency => {
@@ -163,17 +153,4 @@ async fn run(
         );
         requested.send_replace(Some(ranked[target].name.clone()));
     }
-}
-
-/// An upgrade in progress: a step up the ladder that has not yet proved itself.
-struct Probe {
-    /// The rendition stepped up to. A probe is only judged once this is the one
-    /// actually playing; a step that never landed is forgotten instead.
-    rendition: String,
-    /// When the step up started playing, against `AdaptiveConfig::probe_duration`.
-    /// `None` until the switch lands, which is also what marks it unjudged.
-    landed: Option<Instant>,
-    /// The congestion counter at the moment of the step, so any new congestion
-    /// event during the probe is attributable to it.
-    congestion_baseline: u64,
 }

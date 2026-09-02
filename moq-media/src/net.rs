@@ -25,15 +25,33 @@ pub struct NetworkSignals {
     /// Sampled sparsely on a subscriber, because QUIC takes a round-trip sample
     /// only from a packet that asks to be acknowledged and a subscriber mostly
     /// sends acknowledgements, which do not. Expect a reading that is minutes
-    /// old to still be the current one, and read it against
-    /// [`NetworkSignals::min_rtt`] rather than in absolute terms.
+    /// old to still be the current one, read it against
+    /// [`NetworkSignals::min_rtt`] rather than in absolute terms, and use
+    /// [`NetworkSignals::rtt_samples`] to tell a fresh reading from a repeat.
     pub rtt: Duration,
-    /// The smallest [`NetworkSignals::rtt`] seen on this path so far.
+    /// The number of distinct [`NetworkSignals::rtt`] readings taken since the
+    /// connection opened.
+    ///
+    /// A latched round trip and a freshly measured one are the same number read
+    /// twice, and a consumer that cannot tell them apart counts elapsed time as
+    /// though it were evidence: one bad sample then satisfies any hold shorter
+    /// than the gap to the next reading, which on a subscriber is most of them.
+    /// Comparing this counter across two readings says whether the round trip in
+    /// the later one is new.
+    pub rtt_samples: u64,
+    /// The smallest [`NetworkSignals::rtt`] seen recently on the path now
+    /// selected.
     ///
     /// The path's propagation delay with no queue in front of it, which is what
     /// makes the current round trip mean anything: 40ms is an idle
     /// intercontinental path or a badly congested local one, and only the
     /// difference between the two tells them apart.
+    ///
+    /// Recently, and on the path now selected, because both qualifications are
+    /// what keep it honest. A minimum that remembers every path a connection
+    /// ever took reads a fallback from a direct path to a relay as a queue that
+    /// will never drain, and one that remembers every moment reads a link whose
+    /// baseline moved for any other reason the same way.
     pub min_rtt: Duration,
     /// Recent packet loss rate in `0.0..=1.0`, computed over a 200ms delta
     /// window.

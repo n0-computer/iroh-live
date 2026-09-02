@@ -756,3 +756,106 @@ async fn a_switch_lands_while_the_link_stays_capped() {
 
     fixture.shutdown().await;
 }
+
+/// A round trip whose baseline rises and stays risen must leave the ladder
+/// alone.
+///
+/// An iroh connection that loses its direct path and falls back to a relay goes
+/// from a couple of milliseconds to tens of them and stays there, and a Wi-Fi to
+/// cellular handoff does the same. Nothing about the new path is congested: it
+/// carries every bit the publisher sends, at the rate it sent them before. Two
+/// things can make the loop read that as a bottleneck anyway. A round trip
+/// minimum that never forgets the path it was measured on calls the new one
+/// permanently queueing, and a shortfall measured against a bitrate the encoder
+/// undershoots by design is true whatever the link is doing. Together they step
+/// the ladder down, probe back up on a loss counter that never saw anything, and
+/// step down again for as long as the path stays where it moved to.
+///
+/// Watched for longer than the minimum's window, so a ladder that holds through
+/// the first stale minutes and then gives way is still caught, and the minimum
+/// itself is asserted at the end: one that never re-baselines is the half of the
+/// failure a rendition assertion cannot see.
+#[tokio::test]
+#[traced_test]
+async fn a_risen_baseline_round_trip_does_not_downgrade() {
+    let fixture = Fixture::start(Size::new(640, 480), ladder()).await;
+    let track = fixture.video(2).await;
+    let signals = fixture.subscription.signals().clone();
+
+    assert_eq!(
+        track.rendition(),
+        "high",
+        "a fresh subscription should start at the top of the ladder",
+    );
+
+    tokio::time::timeout(TIMEOUT, track.recv())
+        .await
+        .expect("timed out waiting for the first frame")
+        .expect("the video track closed before its first frame");
+    // Frames over a clear link first. Both baselines the risen round trip is
+    // judged against are established here: the path's minimum, and the goodput
+    // this rendition delivers when there is nothing in its way.
+    let _settle = drain(&track, Duration::from_secs(3)).await;
+
+    track.enable_adaptation_with(signals.clone(), quick_adaptation());
+    let before = *signals.borrow();
+    info!(
+        rtt_ms = before.rtt.as_millis() as u64,
+        min_rtt_ms = before.min_rtt.as_millis() as u64,
+        goodput_kbps = ?before.goodput_bps.map(|bps| bps / 1000),
+        "clear link",
+    );
+
+    // 30ms on each device's own egress, so the round trip gains 60ms: the step
+    // a direct path takes when it becomes a relayed one. Nothing is dropped and
+    // nothing is capped, so the top rung arrives exactly as it did before.
+    fixture
+        .impair(LinkLimits {
+            latency_ms: 30,
+            ..Default::default()
+        })
+        .await;
+
+    let watched = Duration::from_secs(40);
+    let until = Instant::now() + watched;
+    let mut last = track.rendition();
+    let mut switches = 0;
+    while Instant::now() < until {
+        let current = track.rendition();
+        if current != last {
+            info!(from = %last, to = %current, "rendition changed");
+            switches += 1;
+            last = current;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let after = *signals.borrow();
+    info!(
+        rtt_ms = after.rtt.as_millis() as u64,
+        min_rtt_ms = after.min_rtt.as_millis() as u64,
+        goodput_kbps = ?after.goodput_bps.map(|bps| bps / 1000),
+        switches,
+        "risen baseline watched",
+    );
+
+    assert_eq!(
+        switches, 0,
+        "the ladder moved {switches} time(s) over {watched:?} on a path that only got longer, \
+         ending on `{last}`",
+    );
+
+    // A minimum still sitting on the old path's couple of milliseconds means
+    // every later round trip reads as a queue. Well clear of both sides of the
+    // question: the clear link above measures one to three milliseconds, and the
+    // impaired one settles at 37 to 40 across the runs behind this figure.
+    assert!(
+        after.min_rtt >= Duration::from_millis(25),
+        "the round trip minimum went from {}ms to {}ms across {watched:?} of an impairment that \
+         added 60ms of round trip, so it never re-baselined onto the longer path",
+        before.min_rtt.as_millis(),
+        after.min_rtt.as_millis(),
+    );
+
+    fixture.shutdown().await;
+}
