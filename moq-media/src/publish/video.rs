@@ -12,7 +12,10 @@
 //! the local preview draws the same frames the encoders receive and a publisher
 //! expects to see itself before anyone has tuned in.
 
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use moq_video::{
     Frame, Size,
@@ -34,6 +37,13 @@ use crate::{
 
 /// Used when neither the source nor the caller reports a frame rate.
 const DEFAULT_FRAMERATE: u32 = 30;
+
+/// How long a source may take over its first frame before it is worth a word
+/// in the log.
+///
+/// Long enough that a camera warming up, or a screen capture waiting on a
+/// portal dialog the user has not answered yet, says nothing.
+const FIRST_FRAME_GRACE: Duration = Duration::from_secs(5);
 
 /// Everything the publish task needs, moved into it whole.
 pub(super) struct Publish {
@@ -275,7 +285,40 @@ async fn fan_out(
     // write the same figure to one metric several times over.
     let mut previous: Option<Instant> = None;
 
-    while let Some(frame) = frames.next().await {
+    // A device that opens and then delivers nothing is the quietest failure in
+    // the stack. It happens: `/dev/video0` on a Raspberry Pi is the Unicam
+    // node, which accepts a format and hands back raw Bayer that only
+    // libcamera can drive, so the open succeeds, the encoder opens, the
+    // catalog is written from the probe, and a subscriber waits on a track
+    // whose first frame is never coming. Nothing above reports it, because
+    // nothing above has failed. So the wait for the first frame is bounded by
+    // a warning rather than by an error: the source may legitimately be slow
+    // to start, and a publisher that gave up on a slow camera would be worse.
+    let first_frame_grace = tokio::time::sleep(FIRST_FRAME_GRACE);
+    tokio::pin!(first_frame_grace);
+    let mut warned_no_frames = false;
+
+    loop {
+        // Both futures are pinned across iterations, so neither is dropped
+        // when the other completes: the frame stream is never polled from a
+        // fresh future and cannot lose a frame to the warning firing.
+        let frame = tokio::select! {
+            frame = frames.next() => frame,
+            () = &mut first_frame_grace, if !warned_no_frames => {
+                warned_no_frames = true;
+                warn!(
+                    after = ?FIRST_FRAME_GRACE,
+                    %size,
+                    "the video source opened but has not produced a frame; \
+                     subscribers will see the track announced and nothing on it",
+                );
+                continue;
+            }
+        };
+        let Some(frame) = frame else { break };
+        // Reaching a frame at all means the source works; the warning has
+        // nothing left to say.
+        warned_no_frames = true;
         let now = Instant::now();
         if let Some(previous) = previous.replace(now) {
             stats
