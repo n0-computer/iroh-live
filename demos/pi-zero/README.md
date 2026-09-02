@@ -87,6 +87,9 @@ sudo apt install build-essential libasound2-dev libpipewire-0.3-dev pkg-config
 cargo build -p pi-zero-demo --release
 ```
 
+The sysroot under `cross/` is assembled from Debian packages, so nothing has to
+be copied off a running Pi to build for one.
+
 ## Deploying
 
 ```sh
@@ -99,6 +102,18 @@ copies to `$PI_HOST` (default `livepizero`).
 ## Pi setup
 
 A fresh Raspberry Pi OS Bookworm, 64-bit, with SSH enabled.
+
+### WiFi, before the first boot
+
+`setup-network.sh` writes a NetworkManager profile onto a Bookworm rootfs while
+the SD card is still mounted on the host, which brings the Pi up on the network
+without a keyboard or a monitor:
+
+```sh
+./setup-network.sh <SSID> <PSK> [ROOTFS_PATH]
+```
+
+`ROOTFS_PATH` defaults to `/var/run/media/$USER/rootfs`.
 
 ### Camera
 
@@ -176,7 +191,10 @@ Or scan the QR code off the e-paper display.
 ## Troubleshooting
 
 **No camera.** Check the ribbon cable, run `rpicam-hello`, and confirm the camera
-is enabled in `raspi-config`. `rpicam-vid` must be on `PATH`.
+is enabled in `raspi-config`. `rpicam-vid` must be on `PATH`. Running
+`v4l2-ctl --list-devices` should list both `unicam` and `bcm2835-codec`; if it
+does not, the sensor is not being detected at all and no amount of userspace
+configuration will help.
 
 **"could not display QR on e-paper".** SPI is off, the HAT is not connected, or
 permissions on `/dev/spidev0.0` or `/dev/gpiochip0` are wrong. The stream keeps
@@ -184,6 +202,22 @@ publishing regardless.
 
 **Nothing on HDMI with `--fb`.** Try `fb-demo` first: it removes the network and
 the camera from the picture and leaves only DRM/KMS and GLES2.
+
+**The stream stutters or drops.** The Pi Zero's WiFi produces GSO errors
+(`sendmsg: Input/output error`) that iroh recovers from on its own, so those log
+lines by themselves are not the cause. Pinning a nearby relay usually helps more
+than anything else:
+
+```sh
+IROH_RELAY=https://euc1-1.relay.n0.iroh-canary.iroh.link./ ./pi-zero-demo publish
+```
+
+Turning off WiFi power saving with `sudo iw wlan0 set power_save off` removes
+another source of latency spikes.
+
+**SSH is slow to connect.** Set `UseDNS no` in `/etc/ssh/sshd_config` on the Pi
+and restart sshd, and set `GSSAPIAuthentication no` for the host in your
+`~/.ssh/config`.
 
 ## E-paper precautions
 

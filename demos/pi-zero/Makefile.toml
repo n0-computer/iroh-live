@@ -1,10 +1,7 @@
 # Pi Zero 2 demo: cargo-make tasks.
 #
 # Usage:
-#   cargo make build              # cross-compile for aarch64 (legacy GCC linker)
-#   cargo make deploy             # build + deploy to PI_HOST
 #   cargo make cross-deploy       # zigbuild cross-compile + deploy to PI_HOST
-#   cargo make pi-test            # run #[ignore] tests on Pi via SSH
 #
 # For cross-compilation without deploy, use the workspace-level tasks:
 #   cargo make cross-build-aarch64 -- -p pi-zero-demo --release
@@ -14,20 +11,10 @@
 
 [env]
 PI_HOST = { value = "livepizero", condition = { env_not_set = ["PI_HOST"] } }
-SCRIPT_DIR = "${CARGO_MAKE_WORKING_DIRECTORY}"
 
-[tasks.build]
-description = "Cross-compile pi-zero-demo for aarch64"
-script = ["${SCRIPT_DIR}/build.sh"]
-
-[tasks.deploy]
-description = "Cross-compile and deploy to Pi"
-script = ["${SCRIPT_DIR}/build.sh --deploy ${PI_HOST}"]
-
-# The hardware-gated codec tests this task used to cross-build and run on the Pi
+# The hardware-gated codec tests this file used to cross-build and run on the Pi
 # went upstream with the codecs themselves. moq-video ships them `#[ignore]`d for
 # the same reason, so running them on real hardware is a moq-side job now.
-
 
 [tasks.cross-deploy]
 description = "Cross-compile and deploy pi-zero demo via zigbuild"
