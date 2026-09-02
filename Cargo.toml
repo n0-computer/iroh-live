@@ -78,12 +78,14 @@ mod_module_files = "deny"
 # upstreamed (Android MediaCodec, libcamera). Every version above matches what
 # `moq-dev/moq@main` publishes, so deleting this block is the whole revert once
 # those land in a release.
-# This branch depends on five unreleased moq changes: the public capture stream,
+# This branch depends on six unreleased moq changes: the public capture stream,
 # a catalog-extension-generic `publish_capture`, the two Android MediaCodec
-# commits, and the lenient avc1 decode. They live on `Frando/moq@iroh-live`, one
-# commit per prospective PR, and the branch is amended rather than added to as
-# review moves them along. `Cargo.lock` pins the exact revision, so a checkout
-# builds what CI built even after an amend.
+# commits, the lenient avc1 decode, and a public `broadcast::Consumer::demand`
+# (which `iroh-live-relay`'s pull mode reads to tell an unwatched pull from a
+# watched one). They live on `Frando/moq@iroh-live`, one commit per prospective
+# PR, and the branch is amended rather than added to as review moves them along.
+# `Cargo.lock` pins the exact revision, so a checkout builds what CI built even
+# after an amend.
 #
 # Deleting this block is the whole fix once the commits land in a moq release.
 [patch.crates-io]

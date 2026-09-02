@@ -14,7 +14,7 @@ use moq_relay::{AuthConfig, Cluster, ClusterConfig, Connection, PublicConfig, Pu
 use tower_http::cors::{Any, CorsLayer};
 use tracing::debug;
 
-mod pull;
+pub mod pull;
 
 static WEB_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/web/dist");
 
@@ -171,11 +171,19 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
         };
         conn_id += 1;
         tokio::spawn(async move {
-            if let (Some(ticket), Some(pull)) = (ticket, pull_clone)
-                && let Err(err) = pull.pull(&ticket).await
-            {
-                tracing::warn!(%err, "pull failed for ticket in URL");
-            }
+            // Held for this connection's lifetime: the guard is what tells the
+            // pull that a local session still wants the ticket's broadcast, and
+            // dropping it is what eventually retires the pulled connection.
+            let _pull = match (ticket, pull_clone) {
+                (Some(ticket), Some(pull)) => match pull.pull(&ticket).await {
+                    Ok(guard) => Some(guard),
+                    Err(err) => {
+                        tracing::warn!(%err, "pull failed for ticket in URL");
+                        None
+                    }
+                },
+                _ => None,
+            };
             if let Err(err) = conn.run().await {
                 tracing::warn!(%err, "connection closed");
             }

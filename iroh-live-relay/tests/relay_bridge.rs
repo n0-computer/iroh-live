@@ -34,6 +34,19 @@ struct TestRelay {
 
 impl TestRelay {
     async fn start() -> Self {
+        Self::start_with(moq_relay::ClusterConfig::default()).await
+    }
+
+    /// Starts a relay whose cluster unannounces a broadcast the moment it loses
+    /// its last source, so a test can observe that loss without waiting out the
+    /// default five second linger.
+    async fn start_prompt() -> Self {
+        let mut config = moq_relay::ClusterConfig::default();
+        config.linger = Some(Duration::ZERO);
+        Self::start_with(config).await
+    }
+
+    async fn start_with(cluster_config: moq_relay::ClusterConfig) -> Self {
         let mut server_config = moq_native::ServerConfig::default();
         server_config.bind = Some("[::]:0".parse().unwrap());
         server_config.backend = Some(moq_native::QuicBackend::Noq);
@@ -80,7 +93,7 @@ impl TestRelay {
         }));
         let auth = auth_config.init(&client_tls).await.expect("init auth");
 
-        let cluster = moq_relay::Cluster::new(moq_relay::ClusterConfig::default())
+        let cluster = moq_relay::Cluster::new(cluster_config)
             .expect("init cluster")
             .with_client(client);
         let cluster_handle = cluster.clone();
@@ -569,6 +582,192 @@ async fn iroh_publish_noq_subscribe() {
 
     drop(_pub_session);
     drop(_sub_session);
+    drop(broadcast);
+    publisher.shutdown().await;
+    pub_ep.close().await;
+    relay.server_handle.abort();
+}
+
+/// How long a pull may linger unwatched in the pull-lifecycle tests. Short
+/// enough to keep them quick, long enough to survive a slow CI scheduler.
+const PULL_LINGER: Duration = Duration::from_millis(200);
+
+/// Starts a standalone iroh publisher (not connected to the relay) with a video
+/// track, and returns it with a ticket naming its broadcast.
+async fn start_publisher(
+    name: &str,
+) -> (
+    iroh::Endpoint,
+    iroh_live::Live,
+    moq_media::publish::LocalBroadcast,
+    iroh_live::ticket::LiveTicket,
+) {
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .address_lookup(shared_lookup())
+        .secret_key(iroh::SecretKey::generate())
+        .bind()
+        .await
+        .expect("bind pub");
+    shared_lookup().add_endpoint_info(endpoint.addr());
+
+    let live = iroh_live::Live::builder(endpoint.clone())
+        .with_router()
+        .spawn();
+    let broadcast = live.publish(name).expect("publish");
+    broadcast
+        .video()
+        .set(moq_media::test_source::video(
+            moq_media::video::Size::new(320, 240),
+            30,
+        ))
+        .expect("set video");
+
+    let ticket = iroh_live::ticket::LiveTicket::new(endpoint.addr(), name);
+    (endpoint, live, broadcast, ticket)
+}
+
+/// Binds the iroh endpoint a relay dials tickets over.
+async fn pull_endpoint() -> iroh::Endpoint {
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .address_lookup(shared_lookup())
+        .secret_key(iroh::SecretKey::generate())
+        .bind()
+        .await
+        .expect("bind pull");
+    shared_lookup().add_endpoint_info(endpoint.addr());
+    endpoint
+}
+
+/// Polls the cluster until `name` is routable (or no longer is), returning
+/// whether it got there before [`TIMEOUT`].
+///
+/// The mirrored broadcast is announced for exactly as long as the pulled session
+/// that feeds it is alive, so this is how a test observes that session being
+/// dropped without reaching into the relay's internals.
+async fn wait_for_broadcast(cluster: &moq_relay::Cluster, name: &str, present: bool) -> bool {
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    loop {
+        let found = cluster
+            .origin
+            .consume()
+            .request_broadcast(name)
+            .await
+            .is_ok();
+        if found == present {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// A pulled session is owned by nothing in the cluster, so it has to be retired
+/// deliberately: once the local session that named the ticket disconnects and
+/// nothing is reading the mirrored broadcast, the connection to the publisher is
+/// dropped, and pulling the same ticket again dials a fresh one.
+///
+/// Without that, a relay accumulates one QUIC connection per ticket ever pulled,
+/// for as long as each publisher stays up.
+#[tokio::test]
+#[serial]
+async fn pull_retires_an_unwatched_session() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start_prompt().await;
+    let (pub_ep, publisher, broadcast, ticket) = start_publisher("retired-stream").await;
+    let local_name = ticket.to_string();
+
+    let pull_state =
+        iroh_live_relay::pull::PullState::new(pull_endpoint().await, relay.cluster.clone())
+            .with_linger(PULL_LINGER);
+
+    let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&ticket))
+        .await
+        .expect("pull timeout")
+        .expect("pull");
+    assert!(
+        wait_for_broadcast(&relay.cluster, &local_name, true).await,
+        "the pulled broadcast should be announced in the cluster"
+    );
+
+    // The only session that named the ticket is gone and nothing is reading the
+    // mirrored broadcast, so the pull has nothing left to serve. Dropping its
+    // session takes the mirrored broadcast down with it.
+    drop(guard);
+    assert!(
+        wait_for_broadcast(&relay.cluster, &local_name, false).await,
+        "an unwatched pull should be retired, closing the connection to the publisher"
+    );
+
+    // The retired entry must not be handed out again: the same ticket dials a
+    // new session rather than joining one that is already closed.
+    let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&ticket))
+        .await
+        .expect("re-pull timeout")
+        .expect("re-pull");
+    assert!(
+        wait_for_broadcast(&relay.cluster, &local_name, true).await,
+        "pulling a retired ticket should dial the publisher again"
+    );
+
+    drop(guard);
+    drop(broadcast);
+    publisher.shutdown().await;
+    pub_ep.close().await;
+    relay.server_handle.abort();
+}
+
+/// A subscriber that reached the mirrored broadcast over some other session
+/// holds no pull guard, so the guard count on its own would retire a pull
+/// somebody is watching. Demand on the mirrored broadcast is the second signal
+/// that keeps it alive, and its ending is what finally retires the pull.
+#[tokio::test]
+#[serial]
+async fn pull_survives_a_reader_holding_no_guard() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start_prompt().await;
+    let (pub_ep, publisher, broadcast, ticket) = start_publisher("watched-stream").await;
+    let local_name = ticket.to_string();
+
+    let pull_state =
+        iroh_live_relay::pull::PullState::new(pull_endpoint().await, relay.cluster.clone())
+            .with_linger(PULL_LINGER);
+
+    let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&ticket))
+        .await
+        .expect("pull timeout")
+        .expect("pull");
+    assert!(
+        wait_for_broadcast(&relay.cluster, &local_name, true).await,
+        "the pulled broadcast should be announced in the cluster"
+    );
+
+    // Read the mirrored broadcast the way a subscriber session does, without
+    // going anywhere near the pull state.
+    let mirrored = relay
+        .cluster
+        .origin
+        .consume()
+        .request_broadcast(&local_name)
+        .await
+        .expect("mirrored broadcast");
+    let reader = mirrored.track("catalog.json").expect("track");
+
+    drop(guard);
+    tokio::time::sleep(PULL_LINGER * 5).await;
+    assert!(
+        wait_for_broadcast(&relay.cluster, &local_name, true).await,
+        "a pull with a reader must outlive the last guard"
+    );
+
+    drop(reader);
+    assert!(
+        wait_for_broadcast(&relay.cluster, &local_name, false).await,
+        "the last reader leaving should retire the pull"
+    );
+
+    drop(mirrored);
     drop(broadcast);
     publisher.shutdown().await;
     pub_ep.close().await;
