@@ -203,9 +203,15 @@ async fn run(publish: Publish) -> Result<(), PublishError> {
             // The first frame is what tells us the geometry, and the catalog
             // has to be exact before an encoder opens, so wait for it here and
             // put it back at the head of the stream.
+            // The same failure the Annex-B path reports as `EmptySource`, and
+            // reported the same way. A source that ends before its first frame
+            // never described itself, so the catalog has no rendition and a
+            // subscriber waits on a track that cannot carry anything. Returning
+            // `Ok` here left `--video rpicam:raw` silent about a camera that
+            // would not open while `--video rpicam` said so, which is the same
+            // camera and the same cause.
             let Some(first) = frames.next().await else {
-                debug!("video source ended before its first frame");
-                return Ok(());
+                return Err(n0_error::e!(PublishError::EmptySource));
             };
             let size = first.size();
             let color = first.surface.color();

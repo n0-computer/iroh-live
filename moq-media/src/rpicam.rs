@@ -25,7 +25,7 @@ use std::{
     collections::VecDeque,
     process::Stdio,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bytes::{Bytes, BytesMut};
@@ -62,6 +62,20 @@ const STDERR_TAIL_LINES: usize = 10;
 /// A camera app that has stopped writing is on its way out, so this only
 /// exists so that one which is not cannot hang the publish task.
 const EXIT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long the raw reader watches before judging the picture rate.
+///
+/// Long enough that a camera still starting up, which delivers its first
+/// pictures in a burst, does not read as a fault.
+const RATE_CHECK_AFTER: Duration = Duration::from_secs(3);
+
+/// How far over the requested rate the observed one may go before the picture
+/// size is the only explanation.
+///
+/// A camera undershoots its rate all the time and overshoots it never. The
+/// smallest padding libcamera applies at these widths is 64 pixels against 640,
+/// which is ten percent, so this sits well inside the gap between the two.
+const RATE_TOLERANCE: f64 = 1.2;
 
 /// Pixel alignment libcamera gives each row of a raw picture.
 ///
@@ -105,6 +119,23 @@ pub enum RpicamError {
         /// The requested width.
         width: u32,
         /// The requested height.
+        height: u32,
+    },
+    /// Pictures are coming out faster than the camera was asked to produce
+    /// them, so the size they are being split at is too small.
+    #[error(
+        "{RPICAM_VID} is producing {observed:.1} pictures a second against the {requested} \
+         requested, so {width}x{height} is not the size it is writing: its rows are longer \
+         than this geometry implies"
+    )]
+    PictureRate {
+        /// Pictures a second actually split off the stream.
+        observed: f64,
+        /// The rate the camera was asked for.
+        requested: u32,
+        /// The width the pictures were split at.
+        width: u32,
+        /// The height the pictures were split at.
         height: u32,
     },
     /// The raw stream ended part way through a picture.
@@ -306,7 +337,7 @@ pub fn open(config: Config) -> Result<VideoSource, RpicamError> {
 /// Fails if `rpicam-vid` is not installed or cannot open the camera, or if the
 /// geometry is odd or zero in either dimension.
 pub fn frames(config: Config, clock: moq_mux::Clock) -> Result<BoxStream<Frame>, RpicamError> {
-    let pictures = Pictures::new(config.width, config.height)?;
+    let pictures = Pictures::new(config.width, config.height, config.framerate)?;
     let mut config = config;
     config.output = Output::I420;
     let process = Process::spawn(&config)?;
@@ -321,6 +352,14 @@ pub fn frames(config: Config, clock: moq_mux::Clock) -> Result<BoxStream<Frame>,
         |mut state| async move {
             loop {
                 if let Some(picture) = state.pictures.take() {
+                    // Checked here rather than at end of stream: `--timeout 0`
+                    // means a working camera never closes its output, so the
+                    // leftover-bytes check below only ever runs on a stream
+                    // that has already stopped.
+                    if let Err(err) = state.pictures.check_rate() {
+                        warn!(error = %err, "stopping the raw camera stream");
+                        return None;
+                    }
                     let frame = Frame::new(Surface::I420(picture), timestamp(&state.clock));
                     return Some((frame, state));
                 }
@@ -414,6 +453,12 @@ struct Pictures {
     /// Bytes of one picture: Y, then U, then V, with no row padding.
     frame: usize,
     buffer: BytesMut,
+    /// The rate the camera was asked for, and what has been split off so far,
+    /// so a picture size that is wrong can be caught while the camera runs.
+    framerate: u32,
+    started: Instant,
+    taken: u64,
+    reported: bool,
 }
 
 impl Pictures {
@@ -423,7 +468,7 @@ impl Pictures {
     ///
     /// Fails if either dimension is odd or zero, which 4:2:0 chroma cannot
     /// describe.
-    fn new(width: u32, height: u32) -> Result<Self, RpicamError> {
+    fn new(width: u32, height: u32, framerate: u32) -> Result<Self, RpicamError> {
         if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
             return Err(n0_error::e!(RpicamError::Geometry { width, height }));
         }
@@ -433,7 +478,47 @@ impl Pictures {
             height,
             frame,
             buffer: BytesMut::with_capacity(frame),
+            framerate,
+            started: Instant::now(),
+            taken: 0,
+            reported: false,
         })
+    }
+
+    /// Reports whether pictures are coming out faster than the camera can be
+    /// producing them, which is what a picture size that is too small looks
+    /// like from here.
+    ///
+    /// [`finish`](Self::finish) cannot catch that case. `--timeout 0` means a
+    /// working camera never closes its output, so the leftover-bytes check runs
+    /// only when the stream has already ended, and by then a whole session has
+    /// been handed on sheared. Splitting a padded stream at the unpadded size
+    /// does not fail, it drifts: each picture starts a little further into the
+    /// one the camera actually wrote, and more of them come out than went in.
+    /// So the tell is the rate, and it is a large one. A 640-wide request that
+    /// libcamera pads to a 704 stride yields about ten percent more pictures a
+    /// second, and nothing else makes a camera exceed the rate it was asked
+    /// for.
+    fn check_rate(&mut self) -> Result<(), RpicamError> {
+        if self.reported || self.framerate == 0 {
+            return Ok(());
+        }
+        let elapsed = self.started.elapsed();
+        if elapsed < RATE_CHECK_AFTER {
+            return Ok(());
+        }
+        self.reported = true;
+        let observed = self.taken as f64 / elapsed.as_secs_f64();
+        let allowed = f64::from(self.framerate) * RATE_TOLERANCE;
+        if observed <= allowed {
+            return Ok(());
+        }
+        Err(n0_error::e!(RpicamError::PictureRate {
+            observed,
+            requested: self.framerate,
+            width: self.width,
+            height: self.height,
+        }))
     }
 
     /// The buffer to read into, with room for at least one more chunk.
@@ -453,6 +538,7 @@ impl Pictures {
         // of it, so this split is exactly the length it wants.
         let picture = I420::new(self.width, self.height, data)
             .expect("the geometry and the length were both checked");
+        self.taken += 1;
         Some(picture)
     }
 
@@ -654,7 +740,7 @@ mod tests {
 
     #[test]
     fn a_whole_number_of_pictures_splits_into_that_many() {
-        let mut pictures = Pictures::new(WIDTH, HEIGHT).expect("640x360 is even");
+        let mut pictures = Pictures::new(WIDTH, HEIGHT, 30).expect("640x360 is even");
         assert_eq!(pictures.frame, FRAME);
 
         let stream = vec![0u8; FRAME * 3];
@@ -674,7 +760,7 @@ mod tests {
     /// the reads that carried it.
     #[test]
     fn a_picture_is_not_sheared_by_the_reads_that_carried_it() {
-        let mut pictures = Pictures::new(WIDTH, HEIGHT).expect("640x360 is even");
+        let mut pictures = Pictures::new(WIDTH, HEIGHT, 30).expect("640x360 is even");
         let mut stream = Vec::with_capacity(FRAME * 4);
         for index in 0..4u8 {
             stream.extend(std::iter::repeat_n(index, FRAME));
@@ -698,7 +784,7 @@ mod tests {
     /// the leftover count is what says by how much.
     #[test]
     fn a_stream_that_does_not_divide_is_reported() {
-        let mut pictures = Pictures::new(WIDTH, HEIGHT).expect("640x360 is even");
+        let mut pictures = Pictures::new(WIDTH, HEIGHT, 30).expect("640x360 is even");
 
         // What a 704-byte row stride at a 640 pixel width would write: two
         // pictures' worth of padded rows, which is more than two of ours.
@@ -718,9 +804,9 @@ mod tests {
 
     #[test]
     fn an_odd_geometry_is_refused() {
-        assert!(Pictures::new(641, 360).is_err());
-        assert!(Pictures::new(640, 361).is_err());
-        assert!(Pictures::new(0, 360).is_err());
+        assert!(Pictures::new(641, 360, 30).is_err());
+        assert!(Pictures::new(640, 361, 30).is_err());
+        assert!(Pictures::new(0, 360, 30).is_err());
     }
 
     /// The raw geometry is rounded up to rows libcamera does not pad, so the
@@ -767,5 +853,46 @@ mod tests {
             Config::raw(640, 360, 30).with_bitrate(2_000_000).output,
             Output::I420
         );
+    }
+}
+
+#[cfg(test)]
+mod rate_check_tests {
+    use super::{Pictures, RATE_CHECK_AFTER};
+
+    /// A stream split at the right size stays under the rate limit, so the
+    /// check does not fire on a camera that is working.
+    #[test]
+    fn a_correct_split_passes() {
+        let mut pictures = Pictures::new(64, 64, 30).expect("64x64 is even");
+        pictures.started = std::time::Instant::now() - RATE_CHECK_AFTER;
+        pictures.taken = 30 * RATE_CHECK_AFTER.as_secs();
+        assert!(pictures.check_rate().is_ok());
+    }
+
+    /// Splitting a padded stream at the unpadded size yields more pictures
+    /// than the camera wrote, which is the only way to notice while it runs.
+    #[test]
+    fn too_many_pictures_a_second_is_reported() {
+        let mut pictures = Pictures::new(64, 64, 30).expect("64x64 is even");
+        pictures.started = std::time::Instant::now() - RATE_CHECK_AFTER;
+        // A 704 stride against a 640 request is ten percent more pictures;
+        // this is that, with room to spare.
+        pictures.taken = 45 * RATE_CHECK_AFTER.as_secs();
+        let err = pictures
+            .check_rate()
+            .expect_err("45fps against 30 requested");
+        assert!(format!("{err}").contains("pictures a second"), "{err}");
+    }
+
+    /// Reported once. A stream that trips the check and is somehow kept
+    /// running should not log on every picture.
+    #[test]
+    fn the_rate_is_reported_once() {
+        let mut pictures = Pictures::new(64, 64, 30).expect("64x64 is even");
+        pictures.started = std::time::Instant::now() - RATE_CHECK_AFTER;
+        pictures.taken = 45 * RATE_CHECK_AFTER.as_secs();
+        assert!(pictures.check_rate().is_err());
+        assert!(pictures.check_rate().is_ok());
     }
 }
