@@ -5,6 +5,13 @@
 //! subscription pointed at each other. Everything here is the window over that,
 //! plus the small state machine that decides whether this node is dialing,
 //! answering, or already talking.
+//!
+//! A call is symmetric and so is the way the two sides find each other. Every
+//! window shows its own ticket as a QR code while nobody is on the line, and
+//! every window has a scan screen that reads one off the camera, so it does not
+//! matter which side holds its screen up: whoever scans the other places the
+//! call. That is the whole exchange on a machine with no keyboard to paste a
+//! ticket into. See [`crate::scan`] for the reader.
 
 use iroh_live::{Call, Live, media::publish::LocalBroadcast};
 use n0_error::Result;
@@ -12,14 +19,11 @@ use tracing::info;
 
 use crate::{
     args::{CallArgs, CaptureArgs},
-    source, transport,
+    source, source_spec, transport,
 };
 
 /// Runs the `call` command.
 pub fn run(args: CallArgs, rt: &tokio::runtime::Runtime) -> Result {
-    if let Some(ticket) = &args.ticket {
-        println!("calling {} ...", ticket.endpoint.id.fmt_short());
-    }
     let (live, broadcast, ticket) = rt.block_on(setup(&args))?;
 
     // eframe takes the main thread from here on, so the runtime keeps its
@@ -55,11 +59,51 @@ fn publish_local(live: &Live, args: &CaptureArgs) -> Result<LocalBroadcast> {
     Ok(broadcast)
 }
 
+/// Who holds the camera while nothing is being scanned.
+///
+/// The scan screen opens the default camera, and a capture device does not open
+/// twice, so a window whose publisher already has one has to hand it over and
+/// take it back. A window publishing anything else keeps publishing throughout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Camera {
+    /// The publisher opened it, so the scan screen is handed the device.
+    Publisher,
+    /// Nothing here has it: the local video is a display, a test pattern, or
+    /// nothing at all, and the scan screen opens the camera on its own.
+    Free,
+}
+
+impl Camera {
+    /// Works out who holds the camera from what `--video` asked for.
+    ///
+    /// A specifier that does not parse never opened anything, and whoever set
+    /// the publish up has already reported it, so it counts as free.
+    fn of(args: &CaptureArgs) -> Self {
+        use source_spec::VideoSourceSpec as Spec;
+
+        match args.video_source() {
+            Ok(Spec::Camera(_)) => Self::Publisher,
+            // `rpicam-vid` drives the Pi camera through libcamera rather than
+            // V4L2, and the two still cannot hold one sensor at once.
+            #[cfg(all(target_os = "linux", feature = "rpicam"))]
+            Ok(Spec::Rpicam(_)) => Self::Publisher,
+            Ok(_) | Err(_) => Self::Free,
+        }
+    }
+}
+
 mod window {
     //! The call window: the peer's picture, this node's own in a corner, and
     //! the ticket exchange that gets the two connected.
+    //!
+    //! Four screens. The waiting screen shows this node's ticket as a QR code
+    //! over the local picture, the scan screen reads the peer's off the camera,
+    //! the calling screen is what a dial can be given up from, and the call
+    //! itself draws the peer full width. The chrome is `irl watch`'s, down to
+    //! the top bar, the control panel, and the way both fade out with the
+    //! pointer, so the two commands do not feel like different programs.
 
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use eframe::egui;
     use iroh_live::{
@@ -74,10 +118,13 @@ mod window {
     use tokio::sync::{mpsc, oneshot};
     use tracing::{debug, info, warn};
 
+    use super::Camera;
     use crate::{
-        args::{CallArgs, PlaybackArgs},
+        args::{CallArgs, CaptureArgs, PlaybackArgs},
+        scan::ScanView,
+        source,
         transport::PEER_TIMEOUT,
-        ui::{CursorIdle, LocalPreview, RemoteView},
+        ui::{CursorIdle, LocalPreview, RemoteView, TicketQr},
     };
 
     /// How many unanswered incoming sessions are held before the oldest one
@@ -90,12 +137,50 @@ mod window {
     /// machine pass ten times a second when the window is off screen.
     const HEARTBEAT: Duration = Duration::from_millis(100);
 
+    /// How long the publisher waits before taking the camera back from the scan
+    /// screen.
+    ///
+    /// The scan camera runs on a thread that is asked to stop rather than
+    /// aborted where it stands, so it releases the device a moment after the
+    /// scan screen closes. A publish that finds the camera still busy stays
+    /// silent rather than retrying, which is a call with no outgoing picture
+    /// and nothing on screen to say why. Long enough to cover the handover,
+    /// short enough that the waiting screen is only briefly without a picture.
+    const CAMERA_HANDOVER: Duration = Duration::from_millis(750);
+
     /// Width of the local picture-in-picture, in points.
     const PIP_WIDTH: f32 = 240.0;
 
     /// Aspect ratio both the local preview and the picture-in-picture are drawn
     /// at, whatever the camera's own is.
     const ASPECT: f32 = 16.0 / 9.0;
+
+    /// Size of the buttons on the screens with no call on them.
+    ///
+    /// Larger than an egui default because the machine this was built for is a
+    /// small touchscreen with no pointer to aim precisely with, and those
+    /// buttons are the only way off those screens.
+    const BUTTON: egui::Vec2 = egui::vec2(160.0, 36.0);
+
+    /// Width of the column a screen with no ticket QR code on it draws in,
+    /// in points.
+    const DIALOG_WIDTH: f32 = 280.0;
+
+    /// Fraction of the window's shorter side the ticket QR code takes.
+    const QR_FRACTION: f32 = 0.5;
+
+    /// Smallest the ticket QR code is drawn, in points.
+    ///
+    /// A button's width, because the buttons under the code are what set the
+    /// width of the column both are drawn in, and a code narrower than them
+    /// would sit in a panel with space either side of it.
+    const QR_MIN: f32 = BUTTON.x;
+
+    /// Largest the ticket QR code is drawn, in points.
+    ///
+    /// A camera only has to resolve the modules, and past this the code is
+    /// merely taking up window.
+    const QR_MAX: f32 = 280.0;
 
     /// Opens the call window and runs it until it closes.
     pub(super) fn run(
@@ -108,30 +193,30 @@ mod window {
             "irl call",
             crate::ui::native_options(args.fullscreen),
             Box::new(move |cc| {
-                crate::ui::spawn_ctrl_c_handler(&cc.egui_ctx);
+                let ctx = &cc.egui_ctx;
+                crate::ui::spawn_ctrl_c_handler(ctx);
                 let (tx, incoming) = mpsc::channel(INCOMING_QUEUE);
-                let heartbeat = crate::ui::spawn_heartbeat(&cc.egui_ctx, HEARTBEAT);
                 let forwarder = spawn(forward_incoming(live.clone(), tx));
                 let mut app = CallApp {
-                    live,
+                    qr: TicketQr::new(ctx, "call-ticket", &ticket),
                     ticket,
+                    camera: Camera::of(&args.capture),
+                    capture: args.capture,
+                    playback: args.playback,
+                    preview: LocalPreview::new(ctx, "call-preview", cc.wgpu_render_state.as_ref()),
+                    render_state: cc.wgpu_render_state.clone(),
+                    _heartbeat: crate::ui::spawn_heartbeat(ctx, HEARTBEAT),
+                    _forwarder: AbortOnDropHandle::new(forwarder),
+                    live,
                     broadcast,
                     incoming,
-                    _forwarder: AbortOnDropHandle::new(forwarder),
-                    _heartbeat: heartbeat,
                     pending: None,
-                    state: State::waiting(),
-                    preview: LocalPreview::new(
-                        &cc.egui_ctx,
-                        "call-preview",
-                        cc.wgpu_render_state.as_ref(),
-                    ),
-                    render_state: cc.wgpu_render_state.clone(),
+                    screen: Screen::waiting(),
+                    restore_at: None,
                     cursor: CursorIdle::default(),
-                    playback: args.playback,
                 };
                 if let Some(ticket) = args.ticket {
-                    app.dial(ticket);
+                    app.dial(ctx, ticket);
                 }
                 Ok(Box::new(app))
             }),
@@ -142,16 +227,27 @@ mod window {
     /// The call window.
     struct CallApp {
         live: Live,
-        /// This node's ticket, shown in the top bar and on the waiting screen.
+        /// This node's ticket, shown in the top bar and as a QR code.
         ticket: String,
+        /// The ticket as a code the peer's camera can read, or `None` on the
+        /// machines where it would not render.
+        qr: Option<TicketQr>,
         /// The local side, which every peer reads and no call owns.
         broadcast: LocalBroadcast,
+        /// What the local side captures, kept so the video can be restarted
+        /// after the scan screen has borrowed the camera.
+        capture: CaptureArgs,
+        camera: Camera,
+        /// When the publisher takes the camera back, once the scan screen has
+        /// had [`CAMERA_HANDOVER`] to release it.
+        restore_at: Option<Instant>,
         incoming: mpsc::Receiver<MoqSession>,
         _forwarder: AbortOnDropHandle<()>,
         /// Keeps the state machine ticking while nothing draws the window.
         _heartbeat: AbortOnDropHandle<()>,
+        /// The attempt in flight, of which there is at most one.
         pending: Option<Pending>,
-        state: State,
+        screen: Screen,
         preview: LocalPreview,
         render_state: Option<RenderState>,
         cursor: CursorIdle,
@@ -159,28 +255,49 @@ mod window {
         playback: PlaybackArgs,
     }
 
-    /// What the window is doing.
-    enum State {
-        /// Nobody on the line. The window shows this node's ticket and a box to
-        /// paste the peer's into.
-        Waiting {
-            /// The ticket the user is typing.
-            input: String,
-            /// What became of the last attempt, if there was one.
-            message: Option<String>,
-        },
+    /// What the window is showing.
+    enum Screen {
+        /// Nobody on the line: this node's ticket as a QR code for the peer to
+        /// read, a box to paste theirs into, and the local picture behind both.
+        Waiting(Waiting),
+        /// The camera, looking for the peer's ticket in a QR code.
+        Scanning(Box<ScanView>),
+        /// A dial this window started, with nothing to draw until it answers.
+        Calling(Calling),
         /// A call in progress.
         InCall(Box<InCall>),
     }
 
-    impl State {
-        /// The waiting state with nothing typed and nothing to report.
+    impl Screen {
+        /// The waiting screen with nothing typed and nothing to report.
         fn waiting() -> Self {
-            Self::Waiting {
-                input: String::new(),
-                message: None,
-            }
+            Self::Waiting(Waiting::default())
         }
+
+        /// The waiting screen, reporting what became of the last attempt.
+        fn reporting(message: String) -> Self {
+            Self::Waiting(Waiting {
+                input: String::new(),
+                message: Some(message),
+            })
+        }
+    }
+
+    /// The waiting screen's state.
+    #[derive(Debug, Default)]
+    struct Waiting {
+        /// The ticket the user is typing.
+        input: String,
+        /// What became of the last attempt, if there was one.
+        message: Option<String>,
+    }
+
+    /// A dial in flight, as the screen waiting on it sees it.
+    #[derive(Debug)]
+    struct Calling {
+        /// Who is being called, named on the screen and in the note a cancel
+        /// leaves behind. The attempt itself is in [`CallApp::pending`].
+        peer: String,
     }
 
     /// A connected call: the session and the peer's picture and sound.
@@ -190,10 +307,53 @@ mod window {
         remote: RemoteView,
     }
 
+    impl InCall {
+        /// Ends the call and the decoders drawing it.
+        fn shutdown(&mut self) {
+            self.remote.shutdown();
+            self.call.close();
+        }
+    }
+
     /// A dial or an answer in flight.
     struct Pending {
+        /// Which way it goes, which is what decides how the window waits on it.
+        direction: Direction,
         rx: oneshot::Receiver<Answer>,
-        _task: AbortOnDropHandle<()>,
+        /// Aborting this is what abandons the attempt.
+        task: AbortOnDropHandle<()>,
+    }
+
+    impl Pending {
+        /// Gives up on the attempt, closing a call that landed as it was
+        /// abandoned.
+        ///
+        /// Closing the channel before draining it means an attempt that has not
+        /// answered yet fails its send and closes what it built, and one that
+        /// has answered is closed here. The abort then stops whatever is still
+        /// dialing.
+        fn discard(mut self) {
+            self.rx.close();
+            if let Ok(Answer::Connected(connected)) = self.rx.try_recv() {
+                connected.discard();
+            }
+            self.task.abort();
+        }
+    }
+
+    /// Which side started an attempt.
+    #[derive(Debug, Clone)]
+    enum Direction {
+        /// This node dialed, so the calling screen waits on it and the user can
+        /// give up.
+        Outgoing { peer: String },
+        /// A peer opened a session and this node is answering it.
+        ///
+        /// Speculative: everything that speaks MoQ to this node arrives the
+        /// same way, and a plain subscriber never publishes the call path an
+        /// answer waits for. So this one runs behind whatever is on screen, and
+        /// its failure goes to the log rather than to the user.
+        Incoming { peer: String },
     }
 
     /// What a dial or an answer came back with.
@@ -210,6 +370,29 @@ mod window {
         tracks: MediaTracks,
     }
 
+    impl Connected {
+        /// Ends a call that nothing is going to draw.
+        ///
+        /// An attempt that landed just as the user gave up on it owns a session
+        /// and a set of decoders that no screen will ever hold, and dropping
+        /// those leaves the peer to time the session out instead of being told.
+        fn discard(self) {
+            let Self { call, tracks } = self;
+            drop(tracks);
+            call.remote().shutdown();
+            call.close();
+        }
+    }
+
+    /// What the waiting screen was asked to do, applied once its panel has
+    /// closed and given the borrow of the screen's own state back.
+    enum Action {
+        /// Open the camera and look for a ticket.
+        Scan,
+        /// Call whatever was typed or pasted.
+        Dial(String),
+    }
+
     impl eframe::App for CallApp {
         /// Drives the state machine.
         ///
@@ -218,34 +401,54 @@ mod window {
         /// is looking at still has to answer the phone.
         fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
             ctx.request_repaint_after(Duration::from_millis(16));
+            self.poll_scan(ctx);
             self.poll_pending(ctx);
             self.poll_hangup();
-            self.answer_next();
+            self.poll_capture();
+            self.answer_next(ctx);
         }
 
         fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
             let ctx = ui.ctx().clone();
+            // Before the screen switch, so Escape leaves full screen from the
+            // scan and calling screens too, not only during a call.
             crate::ui::escape_leaves_fullscreen(&ctx);
-            self.update_preview(&ctx);
+            self.preview.update(&ctx, &self.broadcast);
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
-            match self.state {
-                State::Waiting { .. } => self.waiting_ui(ui, &ctx),
-                State::InCall(_) => self.in_call_ui(ui, &ctx),
+            match self.screen {
+                Screen::Waiting(_) => self.waiting_ui(ui, &ctx),
+                Screen::Scanning(_) => self.scan_ui(ui, &ctx),
+                Screen::Calling(_) => self.calling_ui(ui, &ctx),
+                Screen::InCall(_) => self.in_call_ui(ui, &ctx),
             }
         }
 
         fn on_exit(&mut self) {
             info!("exit");
-            if let State::InCall(session) = &mut self.state {
-                session.remote.shutdown();
-                session.call.close();
+            if let Screen::InCall(session) = &mut self.screen {
+                session.shutdown();
+            }
+            if let Some(pending) = self.pending.take() {
+                pending.discard();
             }
             crate::ui::shutdown_live_blocking(&self.live);
         }
     }
 
     impl CallApp {
-        /// Takes the outcome of an attempt that finished since the last frame.
+        /// Calls whichever ticket the camera has read, if it has read one.
+        fn poll_scan(&mut self, ctx: &egui::Context) {
+            let Screen::Scanning(view) = &self.screen else {
+                return;
+            };
+            let Some(ticket) = view.ticket() else {
+                return;
+            };
+            self.dial(ctx, ticket);
+        }
+
+        /// Takes the outcome of an attempt that finished since the last pass.
         fn poll_pending(&mut self, ctx: &egui::Context) {
             let Some(pending) = self.pending.as_mut() else {
                 return;
@@ -256,16 +459,28 @@ mod window {
                 // The task went away without answering, which happens only as
                 // the runtime shuts down.
                 Err(oneshot::error::TryRecvError::Closed) => {
-                    self.pending = None;
-                    return;
+                    Answer::Failed("the call attempt stopped".to_string())
                 }
             };
-            self.pending = None;
-            match answer {
-                Answer::Connected(connected) => self.enter_call(ctx, *connected),
-                Answer::Failed(message) => {
-                    warn!(%message, "call attempt failed");
-                    self.report(message);
+            let direction = self
+                .pending
+                .take()
+                .expect("the attempt was borrowed a moment ago")
+                .direction;
+
+            let message = match answer {
+                Answer::Connected(connected) => return self.enter_call(ctx, *connected),
+                Answer::Failed(message) => message,
+            };
+            match direction {
+                Direction::Outgoing { peer } => {
+                    warn!(%peer, %message, "the call failed");
+                    self.screen = Screen::reporting(message);
+                }
+                // Not news: the session was most likely a subscriber that never
+                // meant to place a call at all.
+                Direction::Incoming { peer } => {
+                    debug!(%peer, %message, "the session turned out not to be a caller");
                 }
             }
         }
@@ -282,29 +497,47 @@ mod window {
                 call.signals().clone(),
                 self.render_state.as_ref(),
             );
-            self.state = State::InCall(Box::new(InCall { call, remote }));
+            self.screen = Screen::InCall(Box::new(InCall { call, remote }));
         }
 
         /// Returns to the waiting screen once the session closes, whichever
         /// side ended it.
         fn poll_hangup(&mut self) {
-            let State::InCall(session) = &self.state else {
+            let Screen::InCall(session) = &self.screen else {
                 return;
             };
             if session.call.session().conn().close_reason().is_none() {
                 return;
             }
             info!("call ended");
-            if let State::InCall(mut session) = std::mem::replace(&mut self.state, State::waiting())
-            {
+            let ended = std::mem::replace(
+                &mut self.screen,
+                Screen::reporting("the call ended".to_string()),
+            );
+            if let Screen::InCall(mut session) = ended {
                 session.remote.shutdown();
             }
-            self.report("the call ended".to_string());
+        }
+
+        /// Takes the camera back once the scan screen has had time to release
+        /// it.
+        fn poll_capture(&mut self) {
+            let Some(at) = self.restore_at else {
+                return;
+            };
+            if Instant::now() < at {
+                return;
+            }
+            self.restore_at = None;
+            info!("taking the camera back from the scan screen");
+            if let Err(err) = source::configure_video(&self.broadcast, &self.capture) {
+                warn!(error = %err, "could not restart the local video after scanning");
+            }
         }
 
         /// Answers the next caller waiting in the queue, if this node is idle.
-        fn answer_next(&mut self) {
-            if self.pending.is_some() || matches!(self.state, State::InCall(_)) {
+        fn answer_next(&mut self, ctx: &egui::Context) {
+            if self.pending.is_some() || matches!(self.screen, Screen::InCall(_)) {
                 return;
             }
             // Skip sessions that closed while they waited: something that came
@@ -316,126 +549,236 @@ mod window {
                     Err(_) => return,
                 }
             };
-            self.start(answer_call(session, self.playback));
+            let peer = session.remote_id().fmt_short().to_string();
+            let attempt = answer_call(session, self.playback);
+            self.start(ctx, Direction::Incoming { peer }, attempt);
         }
 
-        /// Dials `ticket`.
-        fn dial(&mut self, ticket: LiveTicket) {
-            self.report(format!("calling {} ...", ticket.endpoint.id.fmt_short()));
-            self.start(dial_call(self.live.clone(), ticket, self.playback));
+        /// Calls `ticket`, replacing whatever the window was doing.
+        ///
+        /// Leaves the scan screen first, so a ticket read off the camera hands
+        /// the device back to the publisher while the dial is in flight.
+        fn dial(&mut self, ctx: &egui::Context, ticket: LiveTicket) {
+            let peer = ticket.endpoint.id.fmt_short().to_string();
+            self.leave_scan();
+            if let Some(pending) = self.pending.take() {
+                pending.discard();
+            }
+            self.screen = Screen::Calling(Calling { peer: peer.clone() });
+            let attempt = dial_call(self.live.clone(), ticket, self.playback);
+            self.start(ctx, Direction::Outgoing { peer }, attempt);
         }
 
         /// Runs `attempt` and remembers it as the pending one.
-        fn start(&mut self, attempt: impl Future<Output = Answer> + Send + 'static) {
+        ///
+        /// The task holds the only handle to what it builds until it answers,
+        /// so discarding the returned [`Pending`] both aborts the attempt and
+        /// takes the call with it. An attempt that answers into a channel
+        /// nobody is holding any more closes what it built rather than dropping
+        /// it.
+        fn start(
+            &mut self,
+            ctx: &egui::Context,
+            direction: Direction,
+            attempt: impl Future<Output = Answer> + Send + 'static,
+        ) {
             let (tx, rx) = oneshot::channel();
+            let ctx = ctx.clone();
             let task = spawn(async move {
-                let _ = tx.send(attempt.await);
+                if let Err(Answer::Connected(connected)) = tx.send(attempt.await) {
+                    info!("the call landed after it was given up on, closing it");
+                    connected.discard();
+                }
+                ctx.request_repaint();
             });
             self.pending = Some(Pending {
+                direction,
                 rx,
-                _task: AbortOnDropHandle::new(task),
+                task: AbortOnDropHandle::new(task),
             });
+        }
+
+        /// Gives up on the dial in flight and returns to the waiting screen.
+        ///
+        /// What is abandoned is our half: the task is aborted, so nothing here
+        /// is still waiting for a catalog, and a call it established in the
+        /// meantime is closed rather than dropped. The session underneath is
+        /// the transport's, which coalesces one per peer, so a dial the actor
+        /// completed after we stopped listening stays cached there until the
+        /// window closes, and calling the same peer again picks it up.
+        fn cancel(&mut self, peer: &str) {
+            info!(%peer, "the call was cancelled");
+            if let Some(pending) = self.pending.take() {
+                pending.discard();
+            }
+            self.screen = Screen::reporting(format!("stopped calling {peer}"));
+        }
+
+        /// Leaves the waiting screen and opens the camera.
+        ///
+        /// A publisher holding the camera gives it up here, because a capture
+        /// device does not open twice. The scan screen is only reachable while
+        /// no call is up, so what stops is a track no call is drawing; anything
+        /// else subscribed to this node sees the video pause and come back.
+        fn enter_scan(&mut self, ctx: &egui::Context) {
+            info!("scanning for a ticket");
+            if self.camera == Camera::Publisher {
+                self.broadcast.video().clear();
+            }
+            self.restore_at = None;
+            self.screen =
+                Screen::Scanning(Box::new(ScanView::new(ctx, self.render_state.as_ref())));
+        }
+
+        /// Closes the scan screen and asks for the camera back.
+        ///
+        /// Leaves the waiting screen behind; a caller that wants a different
+        /// one sets it afterwards. Dropping the view is what asks the scan
+        /// camera's thread to stop, and it releases the device a moment later,
+        /// which is what [`CAMERA_HANDOVER`] waits out.
+        fn leave_scan(&mut self) {
+            if !matches!(self.screen, Screen::Scanning(_)) {
+                return;
+            }
+            self.screen = Screen::waiting();
+            if self.camera == Camera::Publisher {
+                self.restore_at = Some(Instant::now() + CAMERA_HANDOVER);
+            }
         }
 
         /// Shows `message` on the waiting screen, if that is where the window
         /// is.
         fn report(&mut self, message: String) {
-            if let State::Waiting { message: slot, .. } = &mut self.state {
-                *slot = Some(message);
+            if let Screen::Waiting(waiting) = &mut self.screen {
+                waiting.message = Some(message);
             }
         }
 
-        /// Draws the newest captured frame.
-        fn update_preview(&mut self, ctx: &egui::Context) {
-            self.preview.update(ctx, &self.broadcast);
+        /// Draws the local picture filling the window, which is what sits
+        /// behind every screen with no remote video on it.
+        fn draw_backdrop(&self, ui: &mut egui::Ui) {
+            let available = ui.available_size();
+            let size = fit_to_aspect(available, ASPECT);
+            let image = self.preview.image();
+            ui.centered_and_justified(|ui| ui.add_sized(size, image));
         }
 
-        /// Draws the waiting screen: the ticket to share, the box to paste one
-        /// into, and this node's own picture underneath.
+        /// Draws the waiting screen: this node's ticket as a QR code for the
+        /// peer to read, the two ways of taking one the other way, and the
+        /// local picture behind them.
         fn waiting_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-            let connecting = self.pending.is_some();
-            let mut dial = None;
+            self.draw_backdrop(ui);
+            crate::ui::top_bar(ui, ctx, &self.ticket);
+
+            let answering = self.pending.is_some();
+            let side = qr_side(ctx.content_rect().size());
             let Self {
-                state,
-                preview,
-                ticket,
-                ..
+                screen, qr, ticket, ..
             } = self;
-            let State::Waiting { input, message } = state else {
+            let Screen::Waiting(waiting) = screen else {
                 return;
             };
 
-            egui::CentralPanel::default().show(ui, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(20.0);
-                    ui.heading("irl call");
-                    ui.add_space(10.0);
-
-                    ui.label("Your ticket, for the person you want to talk to:");
-                    ui.horizontal(|ui| {
-                        ui.monospace(shorten(ticket));
-                        if ui.button("Copy").clicked() {
-                            ctx.copy_text(ticket.clone());
-                        }
-                    });
-
-                    ui.add_space(10.0);
-                    ui.label("Or paste theirs and call:");
-                    ui.horizontal(|ui| {
-                        let response = ui.text_edit_singleline(input);
-                        let ready = !input.trim().is_empty() && !connecting;
-                        let clicked = ui.add_enabled(ready, egui::Button::new("Call")).clicked();
-                        let entered = ready
-                            && response.lost_focus()
-                            && ui.input(|state| state.key_pressed(egui::Key::Enter));
-                        if clicked || entered {
-                            dial = Some(input.trim().to_string());
-                        }
-                    });
-
-                    if connecting {
-                        ui.spinner();
-                    }
-                    if let Some(message) = message {
-                        ui.label(message.as_str());
-                    }
-                    ui.add_space(10.0);
-                });
-
-                let available = ui.available_size();
-                let size = fit_to_aspect(available, ASPECT);
-                ui.centered_and_justified(|ui| ui.add_sized(size, preview.image()));
+            let mut action = None;
+            crate::ui::dialog(ctx, "call-waiting", side, |ui| {
+                ui.label("Have them scan this, or send them the ticket:");
+                if let Some(qr) = qr {
+                    ui.add_sized(egui::Vec2::splat(side), qr.image());
+                }
+                if ui
+                    .add_sized(BUTTON, egui::Button::new("Scan theirs"))
+                    .clicked()
+                {
+                    action = Some(Action::Scan);
+                }
+                if ui
+                    .add_sized(BUTTON, egui::Button::new("Copy ticket"))
+                    .clicked()
+                {
+                    ctx.copy_text(ticket.clone());
+                }
+                if let Some(text) = paste_row(ui, side, waiting) {
+                    action = Some(Action::Dial(text));
+                }
+                // An incoming attempt keeps the ticket on screen rather than
+                // taking it over, because it is not yet known to be a caller.
+                if answering {
+                    ui.spinner();
+                }
+                if let Some(message) = &waiting.message {
+                    ui.colored_label(egui::Color32::LIGHT_YELLOW, message);
+                }
             });
 
-            let Some(input) = dial else {
+            match action {
+                Some(Action::Scan) => self.enter_scan(ctx),
+                Some(Action::Dial(text)) => match text.parse::<LiveTicket>() {
+                    Ok(ticket) => self.dial(ctx, ticket),
+                    Err(err) => self.report(format!("that is not a ticket: {err}")),
+                },
+                None => {}
+            }
+        }
+
+        /// Draws the scan screen: the camera picture, and the way back to the
+        /// ticket.
+        fn scan_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+            if let Screen::Scanning(view) = &mut self.screen {
+                view.draw(ui);
+            }
+            crate::ui::top_bar(ui, ctx, &self.ticket);
+
+            let mut cancel = false;
+            crate::ui::control_panel(ctx, "call-scan-controls", |ui| {
+                cancel = ui.add_sized(BUTTON, egui::Button::new("Cancel")).clicked();
+            });
+            if cancel {
+                info!("the scan was cancelled");
+                self.leave_scan();
+            }
+        }
+
+        /// Draws the screen shown while a dial is in flight, with the button
+        /// that gives up on it.
+        fn calling_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+            self.draw_backdrop(ui);
+            crate::ui::top_bar(ui, ctx, &self.ticket);
+
+            let Screen::Calling(calling) = &self.screen else {
                 return;
             };
-            match input.parse::<LiveTicket>() {
-                Ok(ticket) => self.dial(ticket),
-                Err(err) => self.report(format!("that is not a ticket: {err}")),
+            let peer = calling.peer.clone();
+
+            let mut cancel = false;
+            crate::ui::dialog(ctx, "call-calling", DIALOG_WIDTH, |ui| {
+                ui.heading(format!("calling {peer} ..."));
+                ui.spinner();
+                cancel = ui.add_sized(BUTTON, egui::Button::new("Cancel")).clicked();
+            });
+            if cancel {
+                self.cancel(&peer);
             }
         }
 
         /// Draws the in-call screen: the peer full width, this node in the
         /// corner, and the overlay while the pointer is moving.
         fn in_call_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-            let expanded = match &self.state {
-                State::InCall(session) => session.remote.overlay_expanded(),
-                State::Waiting { .. } => false,
+            let expanded = match &self.screen {
+                Screen::InCall(session) => session.remote.overlay_expanded(),
+                Screen::Waiting(_) | Screen::Scanning(_) | Screen::Calling(_) => false,
             };
             let show_overlay = self.cursor.update(ctx, expanded);
 
             let Self {
-                state,
+                screen,
                 preview,
                 ticket,
                 ..
             } = self;
-            let State::InCall(session) = state else {
+            let Screen::InCall(session) = screen else {
                 return;
             };
 
-            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
             let available = ui.available_size();
             let video_rect = egui::Rect::from_min_size(ui.cursor().min, available);
             session.remote.draw(ui, available);
@@ -457,10 +800,51 @@ mod window {
             }
             crate::ui::top_bar(ui, ctx, ticket);
             session.remote.draw_overlay(ui, video_rect);
+
+            let mut hang_up = false;
             crate::ui::control_panel(ctx, "call-controls", |ui| {
                 session.remote.controls(ui, "call");
+                hang_up = ui
+                    .button("Hang up")
+                    .on_hover_text("End the call and go back to the ticket")
+                    .clicked();
             });
+            if hang_up {
+                info!("hanging up");
+                if let Screen::InCall(session) = &mut self.screen {
+                    session.shutdown();
+                }
+                self.screen = Screen::reporting("you hung up".to_string());
+            }
         }
+    }
+
+    /// Draws the box a ticket is pasted into and the button that calls it, and
+    /// returns whatever was entered.
+    fn paste_row(ui: &mut egui::Ui, width: f32, waiting: &mut Waiting) -> Option<String> {
+        let text = egui::TextEdit::singleline(&mut waiting.input).hint_text("Their ticket");
+        let response = ui.add_sized(egui::vec2(width, BUTTON.y), text);
+        let ready = !waiting.input.trim().is_empty();
+        let clicked = ui
+            .add_enabled(ready, egui::Button::new("Call").min_size(BUTTON))
+            .clicked();
+        let submitted =
+            ready && response.lost_focus() && ui.input(|state| state.key_pressed(egui::Key::Enter));
+        match clicked || submitted {
+            true => Some(waiting.input.trim().to_string()),
+            false => None,
+        }
+    }
+
+    /// The side of the ticket QR code, in points, for a window of `content`
+    /// size.
+    ///
+    /// A proportion of the shorter side rather than a fixed size: a code that
+    /// took a fixed [`QR_MAX`] of a small touchscreen would leave no room for
+    /// the buttons under it, and one that took half of a desktop window would
+    /// be larger than any camera needs.
+    fn qr_side(content: egui::Vec2) -> f32 {
+        (content.x.min(content.y) * QR_FRACTION).clamp(QR_MIN, QR_MAX)
     }
 
     /// Forwards the sessions peers open to this node.
@@ -520,14 +904,68 @@ mod window {
         Answer::Connected(Box::new(Connected { call, tracks }))
     }
 
-    /// Trims a ticket to something that fits on one line.
-    fn shorten(ticket: &str) -> String {
-        /// How many characters of a ticket are shown before it is elided.
-        const KEEP: usize = 60;
+    #[cfg(test)]
+    mod tests {
+        use super::{QR_MAX, QR_MIN, egui, qr_side};
 
-        match ticket.char_indices().nth(KEEP) {
-            Some((end, _)) => format!("{}...", &ticket[..end]),
-            None => ticket.to_string(),
+        /// The window this was built for is a small touchscreen, where a code
+        /// at [`QR_MAX`] would cover the buttons under it.
+        #[test]
+        fn a_small_window_draws_the_code_smaller() {
+            let side = qr_side(egui::vec2(480.0, 320.0));
+            assert!(side < QR_MAX, "unexpected: {side}");
+            assert!(side >= QR_MIN, "unexpected: {side}");
         }
+
+        /// Past a point the code is only taking up window: a camera resolves
+        /// the modules long before then.
+        #[test]
+        fn a_large_window_stops_growing_the_code() {
+            assert_eq!(qr_side(egui::vec2(2560.0, 1440.0)), QR_MAX);
+        }
+
+        /// A window dragged down to nothing would otherwise render a code of no
+        /// pixels at all.
+        #[test]
+        fn a_window_with_no_room_still_draws_a_whole_code() {
+            assert_eq!(qr_side(egui::vec2(40.0, 20.0)), QR_MIN);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Camera, CaptureArgs};
+
+    /// A `--video` specifier, as `irl call` would have parsed one.
+    fn capture(video: &str) -> CaptureArgs {
+        CaptureArgs {
+            video: video.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// The default, and the one case where the scan screen has to be handed the
+    /// device.
+    #[test]
+    fn a_camera_publisher_hands_the_scan_screen_its_device() {
+        assert_eq!(Camera::of(&capture("cam")), Camera::Publisher);
+        assert_eq!(Camera::of(&capture("cam:0")), Camera::Publisher);
+    }
+
+    /// Neither of these is what the scan screen opens, so both keep publishing
+    /// while a ticket is read.
+    #[test]
+    fn a_publisher_of_anything_else_keeps_its_source() {
+        assert_eq!(Camera::of(&capture("screen")), Camera::Free);
+        assert_eq!(Camera::of(&capture("test")), Camera::Free);
+        assert_eq!(Camera::of(&capture("none")), Camera::Free);
+    }
+
+    /// The publish already failed and said so; the scan screen is not the place
+    /// to report it a second time.
+    #[test]
+    fn a_specifier_that_never_opened_anything_holds_nothing() {
+        assert_eq!(Camera::of(&capture("nonsense:")), Camera::Free);
     }
 }

@@ -72,13 +72,26 @@ const TEST_TONE_CHANNELS: u32 = 2;
 /// `irl publish`), or if the rendition ladder does not parse. A device that
 /// will not open surfaces in the log and ends its track, not here.
 pub fn configure(broadcast: &LocalBroadcast, args: &CaptureArgs) -> Result<()> {
+    configure_video(broadcast, args)?;
+    if let Some(source) = audio_source(&args.audio_source()?)? {
+        broadcast.audio().set_with(source, audio_options(args));
+    }
+    Ok(())
+}
+
+/// Sets up the video half alone, leaving whatever audio is publishing in place.
+///
+/// `irl call` hands its camera to the scan screen and takes it back afterwards,
+/// which is a video source to reopen and a microphone that never stopped.
+///
+/// # Errors
+///
+/// As [`configure`], for the video half.
+pub fn configure_video(broadcast: &LocalBroadcast, args: &CaptureArgs) -> Result<()> {
     if let Some(source) = video_source(&args.video_source()?, args, broadcast)? {
         broadcast
             .video()
             .set_renditions(source, renditions(args)?)?;
-    }
-    if let Some(source) = audio_source(&args.audio_source()?)? {
-        broadcast.audio().set_with(source, audio_options(args));
     }
     Ok(())
 }

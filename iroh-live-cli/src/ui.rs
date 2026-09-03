@@ -20,7 +20,7 @@ use moq_media_egui::{
 };
 use n0_future::task::{AbortOnDropHandle, spawn};
 use tokio::sync::watch;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{args::PlaybackArgs, backend::DecoderArg};
 
@@ -119,6 +119,36 @@ pub fn control_panel(ctx: &egui::Context, id: &str, contents: impl FnOnce(&mut e
                         ui.spacing_mut().item_spacing.x = 4.0;
                         contents(ui);
                     });
+                });
+        });
+}
+
+/// Spacing between the items of a [`dialog`], in points.
+const DIALOG_SPACING: f32 = 8.0;
+
+/// Draws `contents` in a column `width` points wide, in a translucent panel in
+/// the middle of the window.
+///
+/// The counterpart of [`control_panel`] for a screen with nothing yet to
+/// control: what a window says while it waits for a connection, drawn over
+/// whatever picture is behind it rather than in place of one.
+///
+/// The width is the caller's because an [`egui::Area`] is bounded by the window
+/// rather than by its own contents, and a column centred inside that would be
+/// one the panel stretched across the screen to hold.
+pub fn dialog(ctx: &egui::Context, id: &str, width: f32, contents: impl FnOnce(&mut egui::Ui)) {
+    egui::Area::new(egui::Id::new(id))
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200))
+                .corner_radius(6.0)
+                .inner_margin(12.0)
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = egui::Vec2::splat(DIALOG_SPACING);
+                    ui.set_max_width(width);
+                    ui.vertical_centered(contents);
                 });
         });
 }
@@ -518,5 +548,173 @@ impl RemoteView {
         self.video = None;
         self.audio = None;
         self.broadcast.shutdown();
+    }
+}
+
+/// Quiet zone around a rendered QR code, in modules.
+///
+/// Four is what the QR standard asks for, and a decoder is entitled to rely on
+/// it. A code drawn flush against whatever is behind it is one a camera finds
+/// the grid of and then cannot read.
+const QR_QUIET: usize = 4;
+
+/// A ticket drawn as a QR code, for a peer to read off this screen.
+///
+/// The texture holds one pixel per module and is magnified nearest-neighbour,
+/// so the code has hard edges at whatever size it is drawn and resizing the
+/// window costs no re-render. Its pixels are opaque black and white rather than
+/// themed: a QR code reads dark on light and nothing else.
+pub struct TicketQr {
+    texture: egui::TextureHandle,
+}
+
+impl std::fmt::Debug for TicketQr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TicketQr")
+            .field("modules", &self.texture.size())
+            .finish()
+    }
+}
+
+impl TicketQr {
+    /// Renders `ticket` as a QR code.
+    ///
+    /// `id` names the texture, so two of these in one window need distinct
+    /// ones.
+    ///
+    /// Returns `None` if the text does not fit in a QR code, which for a ticket
+    /// means something has gone wrong upstream: the largest version holds
+    /// nearly three kilobytes and a ticket is around a hundred bytes. A window
+    /// without a code to show is still a window, so this is reported in the log
+    /// rather than to the caller.
+    pub fn new(ctx: &egui::Context, id: &str, ticket: &str) -> Option<Self> {
+        let pixels = QrPixels::render(ticket)
+            .inspect_err(|err| warn!(error = %err, "could not render the ticket QR code"))
+            .ok()?;
+        let image = egui::ColorImage::from_gray([pixels.side, pixels.side], &pixels.gray);
+        Some(Self {
+            texture: ctx.load_texture(id, image, egui::TextureOptions::NEAREST),
+        })
+    }
+
+    /// Returns the image for the code, which the caller draws at whatever
+    /// square size it has room for.
+    pub fn image(&self) -> egui::Image<'_> {
+        egui::Image::from_texture(&self.texture).shrink_to_fit()
+    }
+}
+
+/// A QR code as grayscale pixels: `side` by `side`, one byte per pixel, rows
+/// tightly packed.
+///
+/// One pixel per module, because that is all the information there is. What
+/// scales it up to something a camera can read is the texture sampler, which
+/// magnifies nearest-neighbour and so draws every module as a hard-edged
+/// square.
+#[derive(Debug)]
+struct QrPixels {
+    side: usize,
+    gray: Vec<u8>,
+}
+
+impl QrPixels {
+    /// Renders `text` as a QR code with the standard quiet zone around it.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `text` is longer than the largest QR version holds.
+    fn render(text: &str) -> Result<Self, qrcode::types::QrError> {
+        let code = qrcode::QrCode::new(text)?;
+        let modules = code.width();
+        let side = modules + 2 * QR_QUIET;
+        let colors = code.to_colors();
+
+        let mut gray = vec![u8::MAX; side * side];
+        for row in 0..modules {
+            for column in 0..modules {
+                if colors[row * modules + column] == qrcode::Color::Dark {
+                    gray[(row + QR_QUIET) * side + column + QR_QUIET] = 0;
+                }
+            }
+        }
+        Ok(Self { side, gray })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use iroh_live::{Call, ticket::LiveTicket};
+
+    use super::{QR_QUIET, QrPixels};
+
+    /// Pixels per module in the upscaled test image.
+    ///
+    /// Roughly what a camera sees of a code filling a third of a 720p frame,
+    /// and enough that `rqrr`'s binarization has clean edges to lock onto.
+    const MODULE_PIXELS: usize = 8;
+
+    /// Repeats every pixel of `pixels` [`MODULE_PIXELS`] times in both
+    /// directions, which is what the texture sampler does to the code on its
+    /// way to the screen.
+    fn upscale(pixels: &QrPixels) -> QrPixels {
+        let side = pixels.side * MODULE_PIXELS;
+        let mut gray = vec![u8::MAX; side * side];
+        for (index, value) in pixels.gray.iter().enumerate() {
+            let top = index / pixels.side * MODULE_PIXELS;
+            let left = index % pixels.side * MODULE_PIXELS;
+            for y in top..top + MODULE_PIXELS {
+                gray[y * side + left..y * side + left + MODULE_PIXELS].fill(*value);
+            }
+        }
+        QrPixels { side, gray }
+    }
+
+    /// Reads the first QR code in `pixels`, the way the scan camera does.
+    fn decode(pixels: &QrPixels) -> Option<String> {
+        let side = pixels.side;
+        let mut prepared = rqrr::PreparedImage::prepare_from_greyscale(side, side, |x, y| {
+            pixels.gray[y * side + x]
+        });
+        prepared
+            .detect_grids()
+            .into_iter()
+            .find_map(|grid| grid.decode().ok())
+            .map(|(_meta, text)| text)
+    }
+
+    /// The whole point of drawing the code: the peer's `irl call --scan`
+    /// equivalent reads it back off a camera. A call ticket is the longest one
+    /// this CLI shows, because its broadcast name is an endpoint id.
+    #[test]
+    fn a_call_ticket_survives_the_round_trip_through_the_rendered_code() {
+        let id = iroh::SecretKey::generate().public();
+        let ticket = LiveTicket::new(id, Call::path(id));
+        let pixels = QrPixels::render(&ticket.to_string()).expect("a ticket fits in a QR code");
+        let text = decode(&upscale(&pixels)).expect("the code is there to be found");
+        assert_eq!(
+            text.parse::<LiveTicket>().expect("it decoded as rendered"),
+            ticket
+        );
+    }
+
+    /// A code whose quiet zone is drawn over is one a camera locates and then
+    /// fails to read, which looks exactly like pointing it at nothing.
+    #[test]
+    fn a_rendered_code_keeps_the_quiet_zone_a_decoder_relies_on() {
+        let pixels = QrPixels::render("iroh-live:hello").expect("the text fits");
+        for row in 0..pixels.side {
+            for column in 0..pixels.side {
+                let inside = (QR_QUIET..pixels.side - QR_QUIET).contains(&row)
+                    && (QR_QUIET..pixels.side - QR_QUIET).contains(&column);
+                if inside {
+                    continue;
+                }
+                assert_eq!(
+                    pixels.gray[row * pixels.side + column],
+                    u8::MAX,
+                    "row {row}, column {column} is inside the quiet zone"
+                );
+            }
+        }
     }
 }
