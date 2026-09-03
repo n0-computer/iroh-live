@@ -468,6 +468,15 @@ impl VideoTrack {
         &self.frames
     }
 
+    /// Returns a handle to the frame slot that outlives a borrow of the track.
+    ///
+    /// For a renderer that wants to be woken when a picture arrives rather than
+    /// looking for one on a timer: the waiting happens in a task, and a task
+    /// cannot hold a reference to this.
+    pub fn frame_slot(&self) -> Arc<FrameReceiver<moq_video::Frame>> {
+        Arc::clone(&self.frames)
+    }
+
     /// Returns the rendition currently decoding.
     pub fn rendition(&self) -> String {
         self.rendition.get()

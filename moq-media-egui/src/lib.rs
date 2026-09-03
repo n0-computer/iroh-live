@@ -273,6 +273,8 @@ impl FrameView {
 pub struct VideoTrackView {
     track: VideoTrack,
     frame_view: FrameView,
+    /// Wakes the window when a picture lands. Dropping it stops the waking.
+    _wake: n0_future::task::AbortOnDropHandle<()>,
 }
 
 #[cfg(feature = "wgpu-render")]
@@ -284,11 +286,42 @@ impl fmt::Debug for VideoTrackView {
     }
 }
 
+/// Asks the window to draw whenever a picture arrives.
+///
+/// The decoder does not hand a picture over until the playout clock says it is
+/// due, so by the time one reaches the slot it should be on screen. What put it
+/// off was the drawing loop: a window that repaints on a timer presents each
+/// picture at the next tick of its own clock rather than when the picture was
+/// due, which on a 30fps stream sampled every 16ms is up to half a frame of
+/// added latency and a spacing that wobbles between one tick and two. That is
+/// what a viewer sees as judder on an otherwise well paced stream.
+///
+/// Waiting here rather than taking: the task only wakes the window, and the
+/// drawing pass is what takes the picture.
+#[cfg(feature = "wgpu-render")]
+fn wake_on_frame(
+    ctx: &egui::Context,
+    track: &VideoTrack,
+) -> n0_future::task::AbortOnDropHandle<()> {
+    let ctx = ctx.clone();
+    let slot = track.frame_slot();
+    n0_future::task::AbortOnDropHandle::new(n0_future::task::spawn(async move {
+        loop {
+            slot.arrived().await;
+            if slot.is_closed() && !slot.has_value() {
+                return;
+            }
+            ctx.request_repaint();
+        }
+    }))
+}
+
 #[cfg(feature = "wgpu-render")]
 impl VideoTrackView {
     /// Creates a view with no renderer; see [`FrameView::new`].
     pub fn new(ctx: &egui::Context, name: &str, track: VideoTrack) -> Self {
         Self {
+            _wake: wake_on_frame(ctx, &track),
             track,
             frame_view: FrameView::new(ctx, name),
         }
@@ -302,6 +335,7 @@ impl VideoTrackView {
         render_state: Option<&egui_wgpu::RenderState>,
     ) -> Self {
         Self {
+            _wake: wake_on_frame(ctx, &track),
             track,
             frame_view: FrameView::new_wgpu(ctx, name, render_state),
         }

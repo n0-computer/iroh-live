@@ -136,6 +136,31 @@ impl<T> FrameReceiver<T> {
         }
     }
 
+    /// Waits until a value is there to take, or the sender is gone.
+    ///
+    /// The difference from [`recv`](Self::recv) is that this leaves the value
+    /// in the slot. That is what a drawing loop wants: something has to be woken
+    /// when a picture arrives, and it is not the thing that takes it.
+    ///
+    /// Without this a renderer has to poll, and polling a slot fed by a playout
+    /// clock adds its own interval to every frame's latency and quantises the
+    /// spacing between them. A 30fps stream sampled every 16ms is presented on
+    /// the sampler's grid rather than the stream's, which looks like judder
+    /// because it is.
+    pub async fn arrived(&self) {
+        loop {
+            // Registered before the check, for the reason `recv` gives.
+            let notified = self.inner.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            if self.has_value() || self.is_closed() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
     /// Waits for the next value. Returns `None` when the sender is
     /// dropped and no value remains.
     ///
@@ -272,5 +297,26 @@ mod tests {
             );
             closer.join().unwrap();
         }
+    }
+
+    /// `arrived` leaves the value where it is: the drawing pass is what takes
+    /// it, and a waker that consumed the picture would draw nothing.
+    #[tokio::test]
+    async fn arrived_waits_without_taking() {
+        let (tx, rx) = frame_channel::<u32>();
+        tx.send(7);
+        rx.arrived().await;
+        assert!(rx.has_value(), "arrived took the value");
+        assert_eq!(rx.take(), Some(7));
+    }
+
+    /// It returns when the last sender goes, so a waker parked on a track that
+    /// ended is not parked forever.
+    #[tokio::test]
+    async fn arrived_returns_when_the_sender_goes() {
+        let (tx, rx) = frame_channel::<u32>();
+        drop(tx);
+        rx.arrived().await;
+        assert!(rx.is_closed());
     }
 }
