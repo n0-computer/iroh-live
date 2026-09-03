@@ -4,15 +4,16 @@
 #   - ANDROID_HOME (e.g. ~/Android/Sdk)
 #   - cargo-ndk:  cargo install cargo-ndk
 #   - Rust target: rustup target add aarch64-linux-android
+#     (and x86_64-linux-android for the emulator)
 #
 # Usage:
 #   cd demos/android
-#   cargo make apk                  # full build -> debug APK
-#   cargo make install               # build + install on connected device
+#   cargo make apk                   # full build -> debug APK, arm64 handset
+#   ABI=x86_64 cargo make install    # same for the emulator
 #   cargo make run-on-device         # build, install, launch, stream logs
 #   cargo make run-on-device-release # same but with release Gradle build
 #   cargo make logcat                # stream filtered app logs
-#   cargo make clean-jni             # remove built native libs
+#   cargo make clean-jni             # remove the .so files cargo-ndk copied in
 
 [env]
 # Auto-detect NDK: pick the highest version directory under $ANDROID_HOME/ndk.
@@ -24,14 +25,21 @@ API_LEVEL = "26"
 APK_PATH = "app/build/outputs/apk/debug/app-debug.apk"
 RELEASE_APK_PATH = "app/build/outputs/apk/release/app-release.apk"
 APP_ID = "com.n0.irohlive.demo"
+# Which ABI the native library is built for. `arm64-v8a` is a handset, `x86_64`
+# is the standard Android emulator image. Both can sit in `jniLibs` at once;
+# Gradle packages whichever are present and the device loads the one it can run.
+ABI = { value = "arm64-v8a", condition = { env_not_set = ["ABI"] } }
+# `strip` discards debug symbols anyway, so generating them costs a few
+# gigabytes of build directory and several minutes for nothing.
+CARGO_PROFILE_RELEASE_DEBUG = "false"
 
 # ---------- tasks ----------
 
 [tasks.ndk-build]
-description = "Build the Rust cdylib for arm64-v8a via cargo-ndk."
+description = "Build the Rust cdylib for $ABI via cargo-ndk."
 command = "cargo"
 args = [
-    "ndk", "-t", "arm64-v8a",
+    "ndk", "-t", "${ABI}",
     "-P", "${API_LEVEL}",
     "--link-libcxx-shared",
     "-o", "${JNILIBS}",
@@ -49,7 +57,7 @@ script = [
 description = "Strip debug symbols from the native library."
 dependencies = ["clean-jni"]
 command = "${NDK_STRIP}"
-args = ["${JNILIBS}/arm64-v8a/libiroh_live_android.so"]
+args = ["${JNILIBS}/${ABI}/libiroh_live_android.so"]
 
 [tasks.gradle-apk]
 description = "Build the debug APK with Gradle."

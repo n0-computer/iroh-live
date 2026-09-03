@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.compose)
 }
 
 android {
@@ -15,9 +16,16 @@ android {
         versionName = "0.1.0"
 
         ndk {
-            // Build the Rust cdylib for these ABIs.
-            abiFilters += listOf("arm64-v8a")
+            // Package the Rust cdylib for these ABIs. arm64-v8a is a handset,
+            // x86_64 is the emulator. Whichever `.so` files are present under
+            // `src/main/jniLibs` get packaged; a missing ABI is not an error, so
+            // building one of the two is enough for a local run.
+            abiFilters += listOf("arm64-v8a", "x86_64")
         }
+    }
+
+    buildFeatures {
+        compose = true
     }
 
     buildTypes {
@@ -41,21 +49,22 @@ android {
 
 dependencies {
     implementation(libs.core.ktx)
-    implementation(libs.appcompat)
-    implementation(libs.activity.ktx)
     implementation(libs.lifecycle.runtime)
     implementation(libs.coroutines.android)
+
+    implementation(libs.activity.compose)
+    implementation(platform(libs.compose.bom))
+    implementation(libs.compose.ui)
+    implementation(libs.compose.ui.graphics)
+    implementation(libs.compose.material3)
+
     implementation(libs.camerax.core)
     implementation(libs.camerax.camera2)
     implementation(libs.camerax.lifecycle)
     implementation(libs.camerax.view)
+
+    // Generating the publish ticket QR code.
+    implementation(libs.zxing.core)
+    // Scanning a ticket QR code in watch mode.
     implementation(libs.zxing.embedded)
 }
-
-// cargo-ndk integration: builds the Rust cdylib before assembling the APK.
-// Install with: cargo install cargo-ndk
-// Then run: ./gradlew assembleDebug
-//
-// The task below is a placeholder. For a real build, use the
-// org.niclas-van-eyk.cargo-ndk Gradle plugin or wire up a custom Exec task
-// that calls: cargo ndk -t arm64-v8a -t x86_64 -o app/src/main/jniLibs build -p iroh-live-android
