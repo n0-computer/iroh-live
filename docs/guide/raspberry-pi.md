@@ -5,6 +5,9 @@ nothing else. `demos/pi-zero` adds an e-paper QR display and a watch mode that
 renders with GLES2, either to a window or straight to HDMI. Both are tested on a
 Pi Zero 2 W and should work on a Pi 4 or 5.
 
+The `irl` CLI reaches the same camera, so publishing from a Pi no longer needs a
+demo binary.
+
 ## Capture is rpicam-vid
 
 On Raspberry Pi OS the CSI camera is only reachable through the libcamera stack.
@@ -23,13 +26,50 @@ second encode. The Pi never software-encodes.
 The feature is `rpicam`, Linux only, and `rpicam-vid` has to be on `PATH` at
 runtime. It ships with Raspberry Pi OS.
 
-Two capabilities the Pi used to have are gone. The V4L2 stateful M2M path that
-drove the VideoCore encoder and decoder directly was deleted with the in-house
-codec stack and has no upstream replacement, and neither does the `codec-test`
-subcommand that exercised it on device. Raw libcamera capture, which opened the
-camera as a frame source rather than a subprocess, is gone with it. Publishing
-does not need either, because `rpicam-vid` covers it; watching on the Pi now
-decodes H.264 in software through openh264.
+From the CLI that is `--video rpicam`, which gets the ticket, the QR code, and
+the relay flag every other source gets:
+
+```sh
+cargo build -p iroh-live-cli --features rpicam
+irl publish --video rpicam --width 640 --height 360 --fps 30
+```
+
+`irl devices` lists the sensors `rpicam-vid` reports, and says so when the
+binary is not installed.
+
+Because the bytes arrive encoded, `--codec` and `--encoder` have nothing to act
+on, and `irl publish` refuses them rather than ignoring them. `--renditions`
+takes at most one rung, since a stream we did not encode cannot be produced
+again at a second size. `--width`, `--height`, `--fps`, and `--bitrate` do reach
+the camera: they become `rpicam-vid` arguments. `--preview` is refused for the
+reason a file source is, that no raw picture ever reaches us.
+
+Raw libcamera capture, which opened the camera as a frame source rather than a
+subprocess, went with the in-house codec stack and has no upstream replacement.
+Publishing does not need it, because `rpicam-vid` covers it.
+
+## The V4L2 hardware codecs
+
+The Pi's other codec path is the VideoCore stateful memory-to-memory block,
+which the kernel exposes as a device node and which most ARM SoCs have an
+equivalent of. Upstream carries an encoder and a decoder for it again, and the
+`v4l2` feature reaches them:
+
+```sh
+cargo build -p iroh-live-cli --features v4l2
+irl publish --video cam --encoder v4l2
+```
+
+The decoder needs no flag: it joins automatic backend selection, and a host with
+no M2M node fails at open so selection falls through to openh264.
+
+**Neither backend has been run on real hardware**, upstream or here. Making them
+reachable is not a claim that they work, and a Pi that publishes through
+`rpicam-vid` never opens either one. If probing picks the wrong node,
+`MOQ_V4L2_ENCODER` and `MOQ_V4L2_DECODER` name one directly.
+
+The `codec-test` subcommand that used to exercise this path on device is still
+gone.
 
 ## Pi setup
 
@@ -51,8 +91,9 @@ sudo usermod -aG video,spi,gpio $USER
 
 Log out and back in for that to take effect.
 
-`gpu_mem` no longer matters. It sized the VideoCore memory the M2M codec used,
-and nothing here opens that codec.
+`gpu_mem` sized the VideoCore memory the M2M codec uses. It does not matter for
+a publisher, which goes through `rpicam-vid`, and it is worth knowing about only
+if you try the `v4l2` backends.
 
 ## Cross-compiling
 

@@ -37,7 +37,15 @@ pub fn run(args: RoomArgs, rt: &tokio::runtime::Runtime) -> Result {
     // eframe takes the main thread from here on, so the runtime keeps its
     // workers only for as long as this guard lives.
     let _guard = rt.enter();
-    window::run(live, broadcast, room, ticket, display_name, args.fullscreen)
+    window::run(
+        live,
+        broadcast,
+        room,
+        ticket,
+        display_name,
+        args.playback,
+        args.fullscreen,
+    )
 }
 
 /// Joins the room, publishes this node's camera into it, and prints the ticket
@@ -116,6 +124,7 @@ mod window {
     use tracing::{info, warn};
 
     use crate::{
+        args::PlaybackArgs,
         transport::PEER_TIMEOUT,
         ui::{LocalPreview, RemoteView},
     };
@@ -147,6 +156,7 @@ mod window {
         room: Room,
         ticket: String,
         display_name: String,
+        playback: PlaybackArgs,
         fullscreen: bool,
     ) -> Result {
         // Split so chat sends do not wait on the same task that drains the
@@ -177,6 +187,7 @@ mod window {
                     ),
                     render_state: cc.wgpu_render_state.clone(),
                     _heartbeat: crate::ui::spawn_heartbeat(&cc.egui_ctx, HEARTBEAT),
+                    playback,
                     broadcast,
                 }))
             }),
@@ -207,6 +218,8 @@ mod window {
         preview: LocalPreview,
         render_state: Option<RenderState>,
         _heartbeat: AbortOnDropHandle<()>,
+        /// The playback flags every peer's broadcast is opened under.
+        playback: PlaybackArgs,
     }
 
     /// One participant's broadcast in the grid.
@@ -290,7 +303,8 @@ mod window {
                         broadcast,
                     } => {
                         info!(remote = %short(remote), %name, "subscribing to a peer");
-                        self.opening.spawn(open(remote, name, *session, broadcast));
+                        self.opening
+                            .spawn(open(remote, name, *session, broadcast, self.playback));
                     }
                     RoomEvent::ChatReceived { remote, message } => {
                         self.chat.push(self.label(remote), message.text);
@@ -507,6 +521,7 @@ mod window {
         name: String,
         session: MoqSession,
         broadcast: moq_net::broadcast::Consumer,
+        playback: PlaybackArgs,
     ) -> Option<Opened> {
         // A peer that announced a name it never published would otherwise
         // leave this task waiting forever.
@@ -526,7 +541,7 @@ mod window {
         // the wiring `Live::subscribe` does for a subscription of its own is
         // done here instead.
         let sub = Subscription::new(session, broadcast);
-        crate::ui::draw_without_downloading(sub.broadcast());
+        crate::ui::prepare_playback(sub.broadcast(), &playback);
         let tracks = sub.broadcast().media().await;
         Some(Opened {
             remote,

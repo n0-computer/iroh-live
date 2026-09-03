@@ -6,7 +6,15 @@
 //! stops. The test pattern and the test tone come from
 //! [`moq_media::test_source`], so `irl publish --test-source` works on a
 //! machine with neither camera nor microphone.
+//!
+//! The Raspberry Pi camera is the exception: `rpicam-vid` is started here
+//! rather than in the publish task. Under `rpicam` what it hands back is
+//! already-encoded H.264 and no stage of ours sees a picture; under
+//! `rpicam:raw` it hands back I420 and the rest of the pipeline behaves as it
+//! would for any other camera.
 
+#[cfg(all(target_os = "linux", feature = "rpicam"))]
+use iroh_live::media::rpicam;
 use iroh_live::media::{
     audio,
     audio_file::AudioFile,
@@ -20,6 +28,8 @@ use crate::{
     args::CaptureArgs,
     source_spec::{AudioSourceSpec, VideoSourceSpec},
 };
+#[cfg(all(target_os = "linux", feature = "rpicam"))]
+use crate::{args::VideoCodecArg, backend::EncoderArg, source_spec::RpicamMode};
 
 /// Frame rate of the test pattern when `--fps` is not given.
 const TEST_FRAMERATE: u32 = 30;
@@ -28,6 +38,19 @@ const TEST_FRAMERATE: u32 = 30;
 const TEST_SIZE: Size = Size {
     width: 1280,
     height: 720,
+};
+
+/// Frame rate of the Raspberry Pi camera when `--fps` is not given.
+#[cfg(all(target_os = "linux", feature = "rpicam"))]
+const RPICAM_FRAMERATE: u32 = 30;
+
+/// Capture mode of the Raspberry Pi camera when `--width` / `--height` are not
+/// given. A Pi Zero 2 W streams this comfortably, and a larger mode is one flag
+/// away.
+#[cfg(all(target_os = "linux", feature = "rpicam"))]
+const RPICAM_SIZE: Size = Size {
+    width: 640,
+    height: 360,
 };
 
 /// Frequency of the test tone, in hertz. Concert A: unmistakable, and low
@@ -49,7 +72,7 @@ const TEST_TONE_CHANNELS: u32 = 2;
 /// `irl publish`), or if the rendition ladder does not parse. A device that
 /// will not open surfaces in the log and ends its track, not here.
 pub fn configure(broadcast: &LocalBroadcast, args: &CaptureArgs) -> Result<()> {
-    if let Some(source) = video_source(&args.video_source()?, args)? {
+    if let Some(source) = video_source(&args.video_source()?, args, broadcast)? {
         broadcast
             .video()
             .set_renditions(source, renditions(args)?)?;
@@ -65,7 +88,18 @@ pub fn configure(broadcast: &LocalBroadcast, args: &CaptureArgs) -> Result<()> {
 /// # Errors
 ///
 /// Fails for a `file:` source, which only `irl publish` can take.
-fn video_source(spec: &VideoSourceSpec, args: &CaptureArgs) -> Result<Option<VideoSource>> {
+fn video_source(
+    spec: &VideoSourceSpec,
+    args: &CaptureArgs,
+    #[cfg_attr(
+        not(all(target_os = "linux", feature = "rpicam")),
+        allow(
+            unused_variables,
+            reason = "only the raw Pi camera stamps its own frames"
+        )
+    )]
+    broadcast: &LocalBroadcast,
+) -> Result<Option<VideoSource>> {
     use video::capture::Source;
 
     let source = match spec {
@@ -81,6 +115,8 @@ fn video_source(spec: &VideoSourceSpec, args: &CaptureArgs) -> Result<Option<Vid
                 path.display()
             ));
         }
+        #[cfg(all(target_os = "linux", feature = "rpicam"))]
+        VideoSourceSpec::Rpicam(mode) => rpicam_source(args, *mode, *broadcast.clock())?,
         VideoSourceSpec::Camera(id) => capture(Source::Camera(id.clone()), args),
         VideoSourceSpec::Display(id) => capture(Source::Display(id.clone()), args),
         VideoSourceSpec::Window(id) => capture(Source::Window(id.clone()), args),
@@ -98,6 +134,86 @@ fn capture(source: video::capture::Source, args: &CaptureArgs) -> VideoSource {
     config.framerate = args.fps;
     config.cursor = !args.no_cursor;
     VideoSource::Capture(config)
+}
+
+/// Starts `rpicam-vid` and returns whichever of H.264 and raw pictures `mode`
+/// asked for.
+///
+/// `--width`, `--height`, and `--fps` describe the capture either way. Under
+/// [`RpicamMode::Encoded`] `--bitrate` goes to the subprocess, which is the
+/// only thing that can act on it, and the flags that describe an encode of ours
+/// are refused. Under [`RpicamMode::Raw`] none of that applies: the picture
+/// reaches our encoders like any other camera's, so `--bitrate` belongs to the
+/// rendition ladder and the subprocess is told nothing about it.
+///
+/// Raw frames are stamped on `clock`, the one the broadcast's audio is stamped
+/// from, so the two tracks land on a single timeline.
+///
+/// # Errors
+///
+/// Fails if `rpicam-vid` cannot be started, or if a flag asks the pre-encoded
+/// source for an encode it cannot perform.
+#[cfg(all(target_os = "linux", feature = "rpicam"))]
+fn rpicam_source(
+    args: &CaptureArgs,
+    mode: RpicamMode,
+    clock: moq_mux::Clock,
+) -> Result<VideoSource> {
+    let width = args.width.unwrap_or(RPICAM_SIZE.width);
+    let height = args.height.unwrap_or(RPICAM_SIZE.height);
+    let framerate = args.fps.unwrap_or(RPICAM_FRAMERATE);
+    match mode {
+        RpicamMode::Raw => {
+            let config = rpicam::Config::raw(width, height, framerate);
+            Ok(VideoSource::Frames(rpicam::frames(config, clock)?))
+        }
+        RpicamMode::Encoded => {
+            check_rpicam_flags(args)?;
+            let mut config = rpicam::Config::new(width, height, framerate);
+            if let Some(bitrate) = args.bitrate {
+                config = config.with_bitrate(u32::try_from(bitrate).unwrap_or(u32::MAX));
+            }
+            Ok(rpicam::open(config)?)
+        }
+    }
+}
+
+/// Refuses the encoding flags a pre-encoded source cannot act on.
+///
+/// None of this applies to `rpicam:raw`, which hands over pictures nothing has
+/// encoded yet.
+///
+/// The picture is already H.264 by the time we see it, so `--codec` and
+/// `--encoder` describe an encode that does not happen and a ladder has
+/// nothing to scale. Saying so beats starting the camera and publishing
+/// something other than what was asked for.
+#[cfg(all(target_os = "linux", feature = "rpicam"))]
+fn check_rpicam_flags(args: &CaptureArgs) -> Result<()> {
+    if args.codec != VideoCodecArg::H264 {
+        return Err(anyerr!(
+            "--video rpicam publishes the H.264 that rpicam-vid encoded in \
+             hardware, so --codec cannot select another codec; --video \
+             rpicam:raw takes the pictures instead and encodes them here"
+        ));
+    }
+    if args.encoder != EncoderArg::Auto {
+        return Err(anyerr!(
+            "--encoder {} has nothing to do under --video rpicam: rpicam-vid \
+             has already encoded the picture, and no encoder of ours runs. \
+             --video rpicam:raw takes the pictures instead, which is what \
+             comparing an encoder against the hardware one needs",
+            args.encoder
+        ));
+    }
+    if args.renditions.len() > 1 {
+        return Err(anyerr!(
+            "--video rpicam publishes one rendition: the stream arrives \
+             encoded and cannot be produced again at a second size. Give at \
+             most one rung, which names the catalog entry, or use --video \
+             rpicam:raw to encode a ladder from the pictures"
+        ));
+    }
+    Ok(())
 }
 
 /// The test pattern at its default geometry, for a caller with no flags to
@@ -168,7 +284,7 @@ fn audio_options(args: &CaptureArgs) -> audio::encode::Options {
 /// Fails if a rung is not `<height>p`, `<width>x<height>`, or `<name>:<size>`.
 pub fn renditions(args: &CaptureArgs) -> Result<Vec<VideoRendition>> {
     let codec = args.codec.into();
-    let kind = encoder_kind(&args.encoder);
+    let kind = video::encode::Kind::from(args.encoder);
 
     let rungs: Vec<(String, Option<Size>)> = match args.renditions.is_empty() {
         true => vec![("video".to_string(), None)],
@@ -211,16 +327,6 @@ pub fn renditions(args: &CaptureArgs) -> Result<Vec<VideoRendition>> {
             rendition
         })
         .collect())
-}
-
-/// Maps `--encoder` onto a backend selection.
-fn encoder_kind(name: &str) -> video::encode::Kind {
-    match name.to_lowercase().as_str() {
-        "auto" => video::encode::Kind::Auto,
-        "hardware" | "hw" => video::encode::Kind::Hardware,
-        "software" | "sw" => video::encode::Kind::Software,
-        other => video::encode::Kind::Named(other.to_string()),
-    }
 }
 
 /// Parses one rung of `--renditions` into its catalog name and encoded size.

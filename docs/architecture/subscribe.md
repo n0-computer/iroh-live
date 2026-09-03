@@ -93,11 +93,15 @@ is nothing to switch between.
 
 ## Playback policy
 
-`PlaybackPolicy` carries a `SyncMode` and a `max_latency`. `max_latency` becomes
-`latency_max` on both `moq_video::decode::Config` and
-`moq_audio::decode::Config`, which is where upstream drops stale groups. The
-default is 150 ms. `set_playback_policy` affects tracks opened afterwards;
-tracks already running keep the policy they were created with.
+`PlaybackPolicy` carries a `SyncMode`, a `max_latency`, a decoder selection, and
+the GPU-frames request. `max_latency` becomes `latency_max` on both
+`moq_video::decode::Config` and `moq_audio::decode::Config`, which is where
+upstream drops stale groups. The default is 150 ms. The decoder selection
+becomes that config's `kind`, choosing the video backend.
+
+`set_playback_policy` affects tracks opened afterwards; tracks already running
+keep the policy they were created with until `VideoTrack::reopen_decoder` builds
+the decoder again from the current one.
 
 See [playout and sync](playout.md) for what `SyncMode` does.
 

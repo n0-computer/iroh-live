@@ -4,6 +4,7 @@
 
 use std::time::{Duration, Instant};
 
+use clap::ValueEnum;
 use eframe::egui;
 use iroh_live::{
     Live,
@@ -21,19 +22,29 @@ use n0_future::task::{AbortOnDropHandle, spawn};
 use tokio::sync::watch;
 use tracing::info;
 
-/// Asks `broadcast` for GPU-resident frames, which is right for every window in
-/// this CLI: they all draw what they decode and none of them reads a pixel.
+use crate::{args::PlaybackArgs, backend::DecoderArg};
+
+/// Sets the playback policy a window wants on `broadcast`: the decoder
+/// `--decoder` asked for, and GPU-resident frames.
 ///
 /// Call it before opening the video track. A decoder reads the policy when it is
-/// built rather than watching it afterwards, so setting it later has no effect
-/// until a rendition switch rebuilds the decoder.
+/// built rather than watching it afterwards, so setting it later reaches a track
+/// already playing only through
+/// [`VideoTrack::reopen_decoder`](iroh_live::media::subscribe::VideoTrack::reopen_decoder).
 ///
-/// What it buys is the download: a hardware decoder that can share its decode
-/// surface hands one over and the renderer imports it, so a full frame is not
-/// copied out of the GPU and straight back in. `irl record` is the other side of
-/// the choice and does not ask, since it never decodes at all.
-pub fn draw_without_downloading(broadcast: &RemoteBroadcast) {
-    broadcast.set_playback_policy(broadcast.playback_policy().with_gpu_frames(true));
+/// GPU-resident frames are right for every window in this CLI: they all draw
+/// what they decode and none of them reads a pixel. What that buys is the
+/// download: a hardware decoder that can share its decode surface hands one over
+/// and the renderer imports it, so a full frame is not copied out of the GPU and
+/// straight back in. `irl record` is the other side of the choice and does not
+/// ask, since it never decodes at all.
+pub fn prepare_playback(broadcast: &RemoteBroadcast, args: &PlaybackArgs) {
+    broadcast.set_playback_policy(
+        broadcast
+            .playback_policy()
+            .with_gpu_frames(true)
+            .with_decoder(args.decoder.into()),
+    );
 }
 
 /// Height of the top bar, in points.
@@ -272,6 +283,10 @@ pub struct RemoteView {
     overlay: DebugOverlay,
     signals: watch::Receiver<NetworkSignals>,
     choice: RenditionChoice,
+    /// The decoder the picker last asked for, which is not necessarily the one
+    /// running: `Auto` names a strategy, and a backend that fails to open leaves
+    /// the incumbent playing.
+    decoder: DecoderArg,
     /// The output gain the slider last set. Only a build with `playback` has a
     /// sink to apply it to.
     #[cfg(feature = "playback")]
@@ -284,7 +299,9 @@ impl RemoteView {
     /// `name` salts the texture and the widget ids, so a grid of these needs a
     /// distinct one per tile. The video track starts on
     /// [`RenditionChoice::Auto`]; [`set_rendition`](Self::set_rendition) pins
-    /// one instead.
+    /// one instead. The decoder picker starts on whatever
+    /// [`prepare_playback`] left in the broadcast's policy, which is what the
+    /// track was just opened with.
     pub fn new(
         ctx: &egui::Context,
         name: &str,
@@ -295,6 +312,7 @@ impl RemoteView {
     ) -> Self {
         let MediaTracks { video, audio } = tracks;
         let video = video.map(|track| VideoTrackView::new_wgpu(ctx, name, track, render_state));
+        let decoder = DecoderArg::from_kind(&broadcast.playback_policy().decoder);
         let view = Self {
             broadcast,
             video,
@@ -306,6 +324,7 @@ impl RemoteView {
             ]),
             signals,
             choice: RenditionChoice::Auto,
+            decoder,
             #[cfg(feature = "playback")]
             volume: 1.0,
         };
@@ -345,6 +364,23 @@ impl RemoteView {
         }
     }
 
+    /// Points the video decoder at `choice` and rebuilds it.
+    ///
+    /// The policy is where the choice lives, so a track opened later, after a
+    /// republish or a resubscribe, decodes the same way. The track already
+    /// running reads it only when it builds a decoder, so it is asked for a
+    /// rebuild: the replacement opens alongside the incumbent and takes over on
+    /// its first frame, leaving the picture up across the change.
+    pub fn set_decoder(&mut self, choice: DecoderArg) {
+        self.decoder = choice;
+        self.broadcast
+            .set_playback_policy(self.broadcast.playback_policy().with_decoder(choice.into()));
+        info!(decoder = %choice, "decoder selected");
+        if let Some(view) = self.video.as_ref() {
+            view.track().reopen_decoder();
+        }
+    }
+
     /// Draws the picture at `size`, or a placeholder while the peer sends no
     /// video.
     ///
@@ -370,7 +406,7 @@ impl RemoteView {
         self.overlay.show(ui, rect, self.broadcast.stats());
     }
 
-    /// Draws the rendition picker and the volume slider.
+    /// Draws the rendition and decoder pickers and the volume slider.
     ///
     /// `id` salts the widget ids, so a grid of these needs a distinct one per
     /// tile.
@@ -380,6 +416,7 @@ impl RemoteView {
             return;
         };
         let rendition = view.track().rendition();
+        let running = view.track().decoder();
 
         ui.label("Rendition");
         let label = match &self.choice {
@@ -405,6 +442,32 @@ impl RemoteView {
             });
         if let Some(choice) = chosen {
             self.set_rendition(choice);
+        }
+
+        ui.label("Decoder");
+        // The backend that opened, next to the choice that asked for it: `Auto`
+        // never names one, and a named backend that would not open leaves a
+        // different one running, which is the case worth seeing.
+        let label = match self.decoder.to_string() == running {
+            true => running,
+            false => format!("{} ({running})", self.decoder),
+        };
+        let mut chosen = None;
+        egui::ComboBox::from_id_salt(format!("{id}-decoder"))
+            .selected_text(label)
+            .show_ui(ui, |ui| {
+                for candidate in DecoderArg::value_variants() {
+                    let selected = self.decoder == *candidate;
+                    if ui
+                        .selectable_label(selected, candidate.to_string())
+                        .clicked()
+                    {
+                        chosen = Some(*candidate);
+                    }
+                }
+            });
+        if let Some(choice) = chosen {
+            self.set_decoder(choice);
         }
 
         #[cfg(feature = "playback")]

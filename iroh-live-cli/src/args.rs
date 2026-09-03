@@ -14,7 +14,12 @@ use iroh_rooms::RoomTicket;
 use n0_error::{Result, anyerr};
 use serde::Deserialize;
 
-use crate::source_spec::{AudioSourceSpec, VideoSourceSpec};
+#[cfg(feature = "render")]
+use crate::backend::DecoderArg;
+use crate::{
+    backend::EncoderArg,
+    source_spec::{AudioSourceSpec, VideoSourceSpec},
+};
 
 /// Where a broadcast is served and how its address is shared.
 #[derive(Args, Debug)]
@@ -43,9 +48,6 @@ pub const DEFAULT_VIDEO: &str = "cam";
 /// The `--audio` specifier when none is given.
 pub const DEFAULT_AUDIO: &str = "mic";
 
-/// The `--encoder` selection when none is given.
-pub const DEFAULT_ENCODER: &str = "auto";
-
 /// What to capture and how to encode it.
 #[derive(Args, Debug)]
 pub struct CaptureArgs {
@@ -71,10 +73,10 @@ pub struct CaptureArgs {
     #[arg(long, value_enum, default_value_t = VideoCodecArg::H264)]
     pub codec: VideoCodecArg,
 
-    /// Encoder to use: auto, hardware, software, or a backend name such as
-    /// vaapi, nvenc, videotoolbox, or openh264.
-    #[arg(long, default_value = DEFAULT_ENCODER)]
-    pub encoder: String,
+    /// Encoder to use. A backend named here is the only one tried, so a
+    /// machine without it fails rather than quietly encoding on the CPU.
+    #[arg(long, value_enum, default_value_t = EncoderArg::Auto)]
+    pub encoder: EncoderArg,
 
     /// Simulcast ladder, comma-separated. Each rung is `<height>p`,
     /// `<width>x<height>`, or `<name>:<width>x<height>`; a bare name encodes at
@@ -121,7 +123,7 @@ impl Default for CaptureArgs {
             audio: DEFAULT_AUDIO.to_string(),
             test_source: false,
             codec: VideoCodecArg::default(),
-            encoder: DEFAULT_ENCODER.to_string(),
+            encoder: EncoderArg::default(),
             renditions: Vec::new(),
             bitrate: None,
             width: None,
@@ -243,6 +245,20 @@ pub enum ImportFormat {
     Avc3,
 }
 
+/// How a subscriber decodes the video it receives.
+///
+/// The counterpart of the encoder half of [`CaptureArgs`], and only meaningful
+/// where a window draws the picture: `irl record` remuxes what arrives without
+/// decoding it, and `irl watch --no-video` opens no video track at all.
+#[cfg(feature = "render")]
+#[derive(Args, Debug, Clone, Copy, Default)]
+pub struct PlaybackArgs {
+    /// Decoder to use. A backend named here is the only one tried, so a
+    /// machine without it fails rather than quietly falling back to software.
+    #[arg(long, value_enum, default_value_t = DecoderArg::Auto)]
+    pub decoder: DecoderArg,
+}
+
 /// Arguments for `irl call`.
 #[cfg(feature = "render")]
 #[derive(Args, Debug)]
@@ -253,6 +269,9 @@ pub struct CallArgs {
 
     #[command(flatten)]
     pub capture: CaptureArgs,
+
+    #[command(flatten)]
+    pub playback: PlaybackArgs,
 
     /// Suppress the terminal QR code.
     #[arg(long)]
@@ -273,6 +292,9 @@ pub struct RoomArgs {
 
     #[command(flatten)]
     pub capture: CaptureArgs,
+
+    #[command(flatten)]
+    pub playback: PlaybackArgs,
 
     /// Name the other participants see. Defaults to this node's short endpoint
     /// id.
@@ -338,9 +360,24 @@ pub struct WatchArgs {
     #[command(flatten)]
     pub remote: RemoteArgs,
 
+    /// How the video is decoded. Nothing here applies under `--no-video`,
+    /// which opens no video track.
+    #[cfg(feature = "render")]
+    #[command(flatten)]
+    pub playback: PlaybackArgs,
+
     /// Play audio only. No window opens.
     #[arg(long)]
     pub no_video: bool,
+
+    /// Read the ticket from a QR code held up to the camera.
+    ///
+    /// Supplies <TICKET>, so the window opens on the camera picture and
+    /// connects as soon as a ticket decodes. Given alongside a ticket it
+    /// starts on that one instead, and the scan screen stays a button away.
+    #[cfg(feature = "render")]
+    #[arg(long, conflicts_with = "no_video")]
+    pub scan: bool,
 
     /// Pin a rendition by name instead of following the downlink.
     #[arg(long)]

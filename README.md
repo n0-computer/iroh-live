@@ -107,7 +107,7 @@ a simulcast ladder. More in [docs/guide/index.md](docs/guide/index.md).
 | Linux, NVIDIA | NVENC and NVDEC behind the `nvidia` feature. Untested here |
 | macOS | Builds in CI. VideoToolbox and ScreenCaptureKit from upstream. Lightly tested |
 | Android | Tested on device, two-way audio and video |
-| Raspberry Pi | Tested on a Pi Zero 2 W. Publishes pre-encoded H.264 through `rpicam-vid` |
+| Raspberry Pi | Tested on a Pi Zero 2 W. Publishes pre-encoded H.264 through `rpicam-vid`. Its V4L2 hardware codecs are reachable behind `v4l2` and unproven |
 | Windows | Upstream has the backends. Never built here |
 | iOS | Upstream has the backends. Never built here |
 
@@ -148,10 +148,11 @@ them and the other crates pass them through.
 | `pipewire` | no | Linux screen capture. Links `libpipewire-0.3` |
 | `vaapi` | no | Intel and AMD hardware H.264 encode |
 | `nvidia` | no | NVIDIA hardware encode and decode |
+| `v4l2` | no | The V4L2 hardware H.264 codecs on ARM SoCs. Never run on real hardware |
+| `rpicam` | no | The Raspberry Pi camera, through `rpicam-vid`. Linux only |
 
-`moq-media` adds two of its own: `rpicam` for the Raspberry Pi source and
-`test-source` for generated video and audio. `iroh-live-cli` turns on `playback`
-as well.
+`moq-media` adds one of its own, `test-source`, for generated video and audio.
+`iroh-live-cli` turns on `playback` as well.
 
 ### Cross-compiling for aarch64
 

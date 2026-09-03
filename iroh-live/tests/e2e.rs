@@ -9,8 +9,11 @@ use std::{sync::OnceLock, time::Duration};
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets};
 use iroh_live::Live;
 use moq_media::{
-    adaptive::AdaptiveConfig, net::NetworkSignals, publish::VideoRendition, test_source,
-    video::Size,
+    adaptive::AdaptiveConfig,
+    net::NetworkSignals,
+    publish::VideoRendition,
+    test_source,
+    video::{Size, decode},
 };
 use n0_tracing_test::traced_test;
 use tokio::sync::watch;
@@ -245,6 +248,66 @@ async fn adaptive_rendition_switching() {
     .expect("timed out waiting for a rendition downgrade");
 
     assert_eq!(switched, "low", "expected the downgrade to land on `low`");
+
+    publisher.shutdown().await;
+    subscriber.shutdown().await;
+}
+
+/// Changes the decoder backend under a track that is already playing.
+///
+/// The decoder reads the playback policy when it is built, so the change only
+/// lands if the track rebuilds it. What the test pins is software, the one
+/// backend every host in CI has, and it asserts the rebuilt decoder is the one
+/// producing frames rather than merely the one that was asked for.
+#[tokio::test]
+#[traced_test]
+async fn changing_the_decoder_backend_rebuilds_it() {
+    let publisher = Live::builder(endpoint().await).with_router().spawn();
+    let broadcast = publisher
+        .publish("decoder-stream")
+        .expect("failed to publish");
+    broadcast
+        .video()
+        .set(test_source::video(Size::new(320, 240), 30))
+        .expect("failed to set video");
+
+    let subscriber = Live::builder(endpoint().await).spawn();
+    let sub = subscriber
+        .subscribe(publisher.endpoint().addr(), "decoder-stream")
+        .await
+        .expect("failed to subscribe");
+    let remote = sub.broadcast();
+
+    let track = tokio::time::timeout(TIMEOUT, remote.video())
+        .await
+        .expect("timed out waiting for the video catalog")
+        .expect("failed to open the video track");
+    tokio::time::timeout(TIMEOUT, track.recv())
+        .await
+        .expect("timed out waiting for the first frame")
+        .expect("video track closed");
+
+    remote.set_playback_policy(
+        remote
+            .playback_policy()
+            .with_decoder(decode::Kind::Software),
+    );
+    track.reopen_decoder();
+
+    // The replacement takes over on its first frame, so a backend that reports
+    // itself here has already decoded one.
+    tokio::time::timeout(TIMEOUT, async {
+        while track.decoder() != "openh264" {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for the software decoder to take over");
+
+    tokio::time::timeout(TIMEOUT, track.recv())
+        .await
+        .expect("timed out waiting for a frame from the rebuilt decoder")
+        .expect("video track closed after the rebuild");
 
     publisher.shutdown().await;
     subscriber.shutdown().await;

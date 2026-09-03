@@ -22,10 +22,8 @@ use tokio::task::JoinSet;
 use tracing::{info, warn};
 
 use crate::{
-    args::{
-        AudioCodecArg, CaptureArgs, DEFAULT_AUDIO, DEFAULT_ENCODER, DEFAULT_VIDEO, RunArgs,
-        VideoCodecArg,
-    },
+    args::{AudioCodecArg, CaptureArgs, DEFAULT_AUDIO, DEFAULT_VIDEO, RunArgs, VideoCodecArg},
+    backend::EncoderArg,
     record::{RecordOptions, Recorder},
     source, transport,
 };
@@ -85,9 +83,10 @@ pub struct SendConfig {
     #[serde(default)]
     pub codec: VideoCodecArg,
 
-    /// Encoder backend: `auto`, `hardware`, `software`, or a backend name.
-    #[serde(default = "default_encoder")]
-    pub encoder: String,
+    /// Encoder backend: `auto`, `hardware`, `software`, or the name of one
+    /// backend, such as `vaapi`.
+    #[serde(default)]
+    pub encoder: EncoderArg,
 
     /// The simulcast ladder, one entry per rung, in `--renditions`' grammar.
     /// Empty publishes a single unscaled rendition named `video`.
@@ -125,7 +124,7 @@ impl SendConfig {
             video: self.video.clone(),
             audio: self.audio.clone(),
             codec: self.codec,
-            encoder: self.encoder.clone(),
+            encoder: self.encoder,
             renditions: self.renditions.clone(),
             bitrate: self.bitrate,
             width: self.width,
@@ -185,11 +184,6 @@ fn default_video() -> String {
 /// The `audio` default, which is `--audio`'s.
 fn default_audio() -> String {
     DEFAULT_AUDIO.to_string()
-}
-
-/// The `encoder` default, which is `--encoder`'s.
-fn default_encoder() -> String {
-    DEFAULT_ENCODER.to_string()
 }
 
 /// Reads and validates the session file at `path`.
@@ -465,7 +459,7 @@ mod tests {
         let send = &config.send[0];
         assert_eq!(send.video, DEFAULT_VIDEO);
         assert_eq!(send.audio, DEFAULT_AUDIO);
-        assert_eq!(send.encoder, DEFAULT_ENCODER);
+        assert_eq!(send.encoder, EncoderArg::Auto);
         assert_eq!(send.codec, VideoCodecArg::H264);
         assert_eq!(send.audio_codec, AudioCodecArg::Opus);
         assert!(send.renditions.is_empty());
@@ -492,7 +486,7 @@ mod tests {
         let capture = config.send[0].capture();
         assert_eq!(capture.video, "screen");
         assert_eq!(capture.codec, VideoCodecArg::H265);
-        assert_eq!(capture.encoder, "vaapi");
+        assert_eq!(capture.encoder, EncoderArg::Vaapi);
         assert_eq!(capture.renditions, ["low:320x180", "720p"]);
         assert_eq!(capture.bitrate, Some(3_000_000));
         assert!(capture.no_cursor);

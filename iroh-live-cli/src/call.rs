@@ -75,7 +75,7 @@ mod window {
     use tracing::{debug, info, warn};
 
     use crate::{
-        args::CallArgs,
+        args::{CallArgs, PlaybackArgs},
         transport::PEER_TIMEOUT,
         ui::{CursorIdle, LocalPreview, RemoteView},
     };
@@ -128,6 +128,7 @@ mod window {
                     ),
                     render_state: cc.wgpu_render_state.clone(),
                     cursor: CursorIdle::default(),
+                    playback: args.playback,
                 };
                 if let Some(ticket) = args.ticket {
                     app.dial(ticket);
@@ -154,6 +155,8 @@ mod window {
         preview: LocalPreview,
         render_state: Option<RenderState>,
         cursor: CursorIdle,
+        /// The playback flags the peer's broadcast is opened under.
+        playback: PlaybackArgs,
     }
 
     /// What the window is doing.
@@ -312,13 +315,13 @@ mod window {
                     Err(_) => return,
                 }
             };
-            self.start(answer_call(session));
+            self.start(answer_call(session, self.playback));
         }
 
         /// Dials `ticket`.
         fn dial(&mut self, ticket: LiveTicket) {
             self.report(format!("calling {} ...", ticket.endpoint.id.fmt_short()));
-            self.start(dial_call(self.live.clone(), ticket));
+            self.start(dial_call(self.live.clone(), ticket, self.playback));
         }
 
         /// Runs `attempt` and remembers it as the pending one.
@@ -479,15 +482,15 @@ mod window {
     }
 
     /// Dials the peer named by `ticket` and opens its tracks.
-    async fn dial_call(live: Live, ticket: LiveTicket) -> Answer {
+    async fn dial_call(live: Live, ticket: LiveTicket, playback: PlaybackArgs) -> Answer {
         info!(remote = %ticket.endpoint.id.fmt_short(), "dialing");
-        settle(Call::dial(&live, ticket.endpoint)).await
+        settle(Call::dial(&live, ticket.endpoint), playback).await
     }
 
     /// Answers `session` and opens the caller's tracks.
-    async fn answer_call(session: MoqSession) -> Answer {
+    async fn answer_call(session: MoqSession, playback: PlaybackArgs) -> Answer {
         info!(remote = %session.remote_id().fmt_short(), "answering");
-        settle(Call::accept(session)).await
+        settle(Call::accept(session), playback).await
     }
 
     /// Waits for a call to establish, then opens whichever tracks the peer
@@ -497,7 +500,10 @@ mod window {
     /// incoming session is not necessarily a caller, since everything that
     /// speaks MoQ to this node arrives the same way and a plain subscriber
     /// never publishes the call path an answer waits for.
-    async fn settle(setup: impl Future<Output = Result<Call, CallError>>) -> Answer {
+    async fn settle(
+        setup: impl Future<Output = Result<Call, CallError>>,
+        playback: PlaybackArgs,
+    ) -> Answer {
         let call = match tokio::time::timeout(PEER_TIMEOUT, setup).await {
             Ok(Ok(call)) => call,
             Ok(Err(err)) => return Answer::Failed(format!("{err:#}")),
@@ -508,7 +514,7 @@ mod window {
                 ));
             }
         };
-        crate::ui::draw_without_downloading(call.remote());
+        crate::ui::prepare_playback(call.remote(), &playback);
         let tracks = call.remote().media().await;
         Answer::Connected(Box::new(Connected { call, tracks }))
     }

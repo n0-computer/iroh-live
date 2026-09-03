@@ -92,14 +92,9 @@ whole revert.
 
 ## What we lost
 
-Two capabilities went away with the in-house stack and have no replacement. A
-third, VAAPI decode, was gone for a while and has been put back upstream: see
-below.
-
-**V4L2 stateful M2M encode and decode.** This is what drove the Raspberry Pi's
-VideoCore hardware codec. It is not on any path we still ship, because the Pi
-demos publish pre-encoded H.264 through `rpicam-vid` and never open an encoder,
-but the on-device codec test and the software-encode fallback both went with it.
+One capability went away with the in-house stack and has no replacement. Two
+others, VAAPI decode and the V4L2 codecs, were gone for a while and are back
+upstream: see below.
 
 **Raw libcamera capture.** The YUV capture path that opened the Pi camera as a
 device is gone; `rpicam-vid` is the only Pi camera source. A libcamera capture
@@ -123,6 +118,19 @@ More than half of it was already in the moq-vaapi crate: `src/codec/h264/dpb.rs`
 carries cros-codecs' DPB bumping and reference marking, used until now only by
 the encode path.
 
+**The V4L2 codecs came back too, unproven.** The stateful memory-to-memory H.264
+encoder and decoder that drive a Raspberry Pi's VideoCore block, and the
+equivalent on Rockchip, Amlogic, Allwinner, and Exynos, are upstream again as
+`encode/backend/v4l2.rs` and `decode/backend/v4l2.rs`. Both drive one device
+layer, `moq-video`'s `src/v4l2.rs`, which is why they are one feature. The
+`v4l2` feature here forwards it, so `--encoder v4l2` selects the encoder and the
+decoder joins automatic backend selection.
+
+Neither backend has been run on real hardware, upstream or here. They are
+reachable and that is the whole claim; the on-device codec test that would settle
+it is still gone. `MOQ_V4L2_ENCODER` and `MOQ_V4L2_DECODER` override the device
+probe when it picks the wrong node.
+
 ## Feature flags
 
 Every codec compiles unconditionally upstream, so the old per-codec flags are
@@ -138,6 +146,7 @@ defines them and `iroh-live` and `iroh-live-cli` pass them through.
 | `render` | no | The wgpu renderer and its graphics stack |
 | `vaapi` | no | Intel and AMD hardware H.264 encode |
 | `nvidia` | no | NVIDIA hardware encode and decode. On upstream by default, off here so a default build stays free of the CUDA graph |
+| `v4l2` | no | The V4L2 stateful M2M H.264 encoder and decoder on ARM SoCs. Never validated on real hardware |
 | `rpicam` | no | The `rpicam-vid` source. Linux only, and needs the binary on PATH |
 | `test-source` | no | The generated video and audio sources |
 

@@ -15,7 +15,7 @@ devices. This page says what that means for this repository.
 | Linux, NVIDIA | NVENC and NVDEC behind the `nvidia` feature. Not tested here |
 | macOS | Builds in CI. VideoToolbox and ScreenCaptureKit come from upstream. Lightly tested |
 | Android | Tested on device, two-way audio and video against a Linux desktop |
-| Raspberry Pi | Tested on a Pi Zero 2 W: publish through `rpicam-vid`, watch with software decode |
+| Raspberry Pi | Tested on a Pi Zero 2 W: publish through `rpicam-vid`, watch with software decode. The V4L2 hardware codecs are reachable but unproven |
 | Windows | Upstream has Media Foundation and DXGI. Never built or tested here |
 | iOS | Upstream has AVFoundation and VideoToolbox. Never built or tested here |
 
@@ -29,7 +29,9 @@ xdg-desktop-portal, behind the `pipewire` feature because it links
 
 Encoding runs on openh264 by default. The `vaapi` feature adds Intel and AMD
 hardware H.264 encode; upstream flags that backend as never validated on real
-hardware, and it is off by default for that reason.
+hardware, and it is off by default for that reason. The `v4l2` feature adds the
+stateful memory-to-memory codecs an ARM SoC exposes as a device node, which is a
+Raspberry Pi and Rockchip path rather than a desktop one: see below.
 
 **Decoding is software only.** moq-video has no VAAPI decoder, so an H.264 stream
 on Intel or AMD Linux decodes on the CPU. That is a regression from the in-house
@@ -65,12 +67,21 @@ the decoder to the screen. See [the Android guide](guide/android.md).
 
 Publishing goes through `rpicam-vid`, which drives the libcamera ISP and the Pi's
 hardware encoder; the Pi never software-encodes and never sees a raw picture.
-Watching decodes H.264 in software and draws through a GLES2 renderer that lives
-in the demo, since the Pi Zero has no Vulkan.
+`irl publish --video rpicam` is that path from the CLI, behind the `rpicam`
+feature, and it needs the binary on `PATH`. Watching decodes H.264 in software
+and draws through a GLES2 renderer that lives in the demo, since the Pi Zero has
+no Vulkan.
 
-The V4L2 stateful M2M path that used to drive the VideoCore codec directly is
-gone, and so is raw libcamera capture. See [the Raspberry Pi
-guide](guide/raspberry-pi.md).
+The other Pi codec path is the V4L2 stateful memory-to-memory encoder and
+decoder, the VideoCore block as a device node. Upstream has both again and the
+`v4l2` feature reaches them, so `irl publish --encoder v4l2` selects the encoder
+and the decoder joins automatic backend selection. Neither has been run on real
+hardware, upstream or here: they compile and they are reachable, and that is the
+whole claim. `MOQ_V4L2_ENCODER` and `MOQ_V4L2_DECODER` name a device node
+directly when probing picks the wrong one.
+
+Raw libcamera capture is still gone, so `rpicam-vid` is the only Pi camera
+source. See [the Raspberry Pi guide](guide/raspberry-pi.md).
 
 ## What no longer exists anywhere
 

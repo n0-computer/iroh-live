@@ -22,6 +22,17 @@ pub fn run(args: PublishArgs, rt: &tokio::runtime::Runtime) -> Result {
         VideoSourceSpec::File { path, looping } => {
             publish_file(FileSource::new(path, looping, &args)?, &args, rt)
         }
+        // Same reason as a file source: nothing on this path ever holds a
+        // picture. `rpicam:raw` is the other half of the choice and does, so
+        // it falls through to the ordinary capture path with its preview.
+        #[cfg(all(target_os = "linux", feature = "rpicam"))]
+        VideoSourceSpec::Rpicam(crate::source_spec::RpicamMode::Encoded) if args.preview => {
+            Err(anyerr!(
+                "--preview is not available for --video rpicam: rpicam-vid hands \
+                 over H.264 it has already encoded, so there are no raw frames to \
+                 draw. --video rpicam:raw captures pictures and can be previewed"
+            ))
+        }
         _ => {
             if args.transcode {
                 warn!("ignoring --transcode: it only applies to a file: video source");

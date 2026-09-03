@@ -46,7 +46,7 @@ retuning the jitter figure at runtime. Dropping the last handle, or calling
 
 ## Playback policy
 
-`PlaybackPolicy` carries the two knobs a caller turns.
+`PlaybackPolicy` carries the knobs a caller turns.
 
 `sync: SyncMode` chooses between `Synced` and `Unmanaged`. `Synced` is the
 default and runs the clock as described. `Unmanaged` skips it entirely: frames go
@@ -61,14 +61,27 @@ media to tolerate before skipping forward to the live edge. The default is
 to the live edge quickly; lower it when a stall should be skipped over rather
 than played out.
 
+`decoder: decode::Kind` becomes `kind` on `moq_video::decode::Config`, which is
+where upstream chooses a backend. `Auto` tries the platform's hardware decoders
+in turn and falls back to software. A named backend is the only one tried, so a
+machine without it fails to open rather than falling back, which is what makes
+the choice useful for telling a driver problem from a stream problem.
+`gpu_frames` is the last of them: it asks the decoder to leave each picture on
+the GPU, which is worth doing for a renderer and not for a consumer that reads
+the pixels.
+
 ```rust
-PlaybackPolicy::default()                              // Synced, 150 ms
+PlaybackPolicy::default()                              // Synced, 150 ms, Auto
     .with_max_latency(Duration::from_millis(500))
+    .with_decoder(decode::Kind::Software)
 ```
 
-`RemoteBroadcast::set_playback_policy` affects tracks opened afterwards. A track
-already decoding keeps the policy it was created with, so a UI that changes the
-policy has to reopen the track for it to take effect.
+`RemoteBroadcast::set_playback_policy` affects tracks opened afterwards. A
+decoder reads the policy when it is built and never looks at it again, so a
+track already decoding keeps what it started with. `VideoTrack::reopen_decoder`
+is how a UI applies a change to a running track: the supervisor opens the
+current rendition again, and the replacement takes over on its first frame the
+same way a rendition switch does, so the picture stays up across it.
 
 ## Reading the timing metrics
 

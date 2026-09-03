@@ -25,6 +25,12 @@ moq-mux = { workspace = true }
 n0-error = { version = "1", features = ["anyhow"] }
 n0-future = "0.3.1"
 qr2term = "0.3"
+# QR decoding for `irl watch --scan`. rqrr is a pure-Rust port of quirc that
+# reads through a grayscale callback, so a captured frame's Y plane goes
+# straight in with no pixel format conversion and no `image` dependency. The
+# alternative, bardecoder, decodes an `image::DynamicImage` and would pull that
+# crate in for a buffer we already hold as bytes.
+rqrr = { version = "0.11", default-features = false }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1.48.0", features = ["full"] }
 toml = "1"
@@ -32,6 +38,8 @@ tracing = "0.1.41"
 tracing-subscriber = "0.3.20"
 
 [dev-dependencies]
+# Generates the QR codes the scan tests decode, so no camera is involved.
+qrcode = { version = "0.14", default-features = false }
 tempfile = "3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -46,8 +54,12 @@ sound-server = ["iroh-live/sound-server", "moq-media/sound-server"]
 aec = ["iroh-live/aec", "moq-media/aec"]
 pipewire = ["iroh-live/pipewire", "moq-media/pipewire"]
 render = ["iroh-live/render", "moq-media/render", "dep:moq-media-egui"]
+# `--video rpicam`, which publishes the H.264 `rpicam-vid` already encoded.
+rpicam = ["iroh-live/rpicam", "moq-media/rpicam"]
 vaapi = ["iroh-live/vaapi", "moq-media/vaapi"]
 nvidia = ["iroh-live/nvidia", "moq-media/nvidia"]
+# `--encoder v4l2` and the matching decoder, for an ARM SoC's M2M codec node.
+v4l2 = ["iroh-live/v4l2", "moq-media/v4l2"]
 qlog = ["iroh/qlog"]
 
 [lints]

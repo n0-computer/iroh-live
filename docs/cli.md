@@ -20,6 +20,10 @@ concepts. On Linux the displays section reports that listing is unavailable,
 because the xdg-desktop-portal picker owns that choice. The audio outputs section
 needs the `playback` feature.
 
+A build with the `rpicam` feature also prints a Raspberry Pi camera section, from
+`rpicam-vid --list-cameras`. It names the reason instead of a camera when the
+binary is not installed. Nothing there opens a camera.
+
 ### `irl publish`
 
 Publishes a capture device or a media file. Prints a ticket, and a QR code of
@@ -37,6 +41,7 @@ and lets the platform pick the backend that reaches it, so the old
 | `screen`, `screen:<id>` | A whole display |
 | `window:<id>` | One window (macOS) |
 | `app:<id>` | Every window of one application (macOS) |
+| `rpicam` | The Raspberry Pi camera through `rpicam-vid`, already encoded. Needs the `rpicam` feature |
 | `file:<path>` | A media file, republished rather than encoded |
 | `test` | A generated colour-bar pattern |
 | `none` | Publish no video |
@@ -58,7 +63,7 @@ Encoding flags:
 |---|---|
 | `--test-source` | Force `--video test --audio test`, overriding both if they were given |
 | `--codec <CODEC>` | `h264` (default) or `h265`, which needs hardware |
-| `--encoder <KIND>` | `auto` (default), `hardware`, `software`, or a backend name such as `vaapi`, `nvenc`, `videotoolbox`, `openh264` |
+| `--encoder <KIND>` | `auto` (default), `hardware`, `software`, or a backend name such as `vaapi`, `nvenc`, `v4l2`, `videotoolbox`, `openh264` |
 | `--renditions <LIST>` | The simulcast ladder, comma-separated. Each rung is `<height>p`, `<width>x<height>`, or `<name>:<width>x<height>`; a bare name encodes at the source's own resolution. Default: one rendition named `video`, unscaled |
 | `--bitrate <BPS>` | Target video bitrate. Omit to derive one from the resolution |
 | `--width`, `--height`, `--fps` | Capture hints; the device snaps to its nearest supported mode |
@@ -91,6 +96,18 @@ already on their way to the encoders, so it costs no extra decode. It needs the
 `render` feature, on by default, and it is not available for a file source, whose
 tracks are republished as they are.
 
+`--video rpicam` publishes what the Pi's hardware encoder produced, so there is
+no encode of ours to steer. `--codec` and `--encoder` are refused rather than
+ignored, and `--renditions` takes at most one rung. `--preview` is refused for
+the reason a file source is: no raw picture ever reaches us. `--width`,
+`--height`, `--fps`, and `--bitrate` do apply, because they become `rpicam-vid`
+arguments.
+
+Some backend names need a feature flag: `vaapi`, `nvenc`, and `v4l2` are absent
+from a default build, and naming one a build was compiled without fails at
+encoder selection rather than at the flag. [docs/platforms.md](platforms.md) says
+which platform has which.
+
 ### `irl watch`
 
 Subscribes to a broadcast and plays it. `irl play` is an alias.
@@ -101,14 +118,33 @@ Subscribes to a broadcast and plays it. `irl play` is an alias.
 | `--endpoint-id <ID>` | Remote endpoint id, instead of a ticket. Needs `--name` |
 | `--name <NAME>` | Broadcast path, alongside `--endpoint-id` |
 | `--no-video` | Play audio only; no window opens |
+| `--scan` | Read the ticket off a QR code held up to the camera |
 | `--rendition <NAME>` | Hold one rendition instead of following the downlink |
+| `--decoder <KIND>` | `auto` (default), `hardware`, `software`, or a backend name such as `vaapi`, `nvdec`, `v4l2`, `videotoolbox`, `openh264` |
 | `--audio-output <ID>` | Play through this device, as the first column of `irl devices` lists it |
 | `--fullscreen` | Start in fullscreen |
+
+`--scan` supplies the ticket from the camera instead of the command line, which
+is what a machine with a touchscreen and no keyboard needs. The window opens on
+the camera picture, and as soon as a frame carries a QR code that parses as a
+ticket it connects to that broadcast. The player keeps a Scan button, so a run
+started with a ticket can still be pointed somewhere else. On Linux the camera
+is opened through V4L2 whichever features the build has, because `moq-video`'s
+PipeWire backend serves screen capture rather than cameras; a Raspberry Pi
+camera therefore has to be reachable as a V4L2 node.
 
 Without `--rendition` the video track adapts: the subscription's transport
 signals drive rendition selection, and a switch opens the replacement decoder
 alongside the incumbent so the picture does not go blank. The window's
 rendition combo switches between the two modes at any time.
+
+`--decoder` picks which backend decodes the video, the viewing side of
+`--encoder`. A backend named here is the only one tried, so a machine without it
+fails rather than quietly falling back to software, which is what makes the flag
+worth having when a driver is the thing under suspicion. The window's decoder
+combo changes it mid-playback: the replacement opens alongside the incumbent
+exactly as a rendition switch does, and the combo shows the backend actually
+running next to the choice that asked for it.
 
 ### `irl call`
 
@@ -119,11 +155,13 @@ is up: the difference is only who dialed.
 | Flag | Description |
 |---|---|
 | `<TICKET>` | Ticket of the peer to call. Omit to wait for somebody to call this node |
+| `--decoder <KIND>` | `auto` (default), `hardware`, `software`, or a backend name such as `vaapi`, `nvdec`, `v4l2`, `videotoolbox`, `openh264` |
 | `--no-qr` | Suppress the terminal QR code |
 | `--fullscreen` | Start in fullscreen |
 
 Every `--video`, `--audio`, `--codec`, `--renditions`, and geometry flag
 `irl publish` takes applies here too, and describes what this node sends.
+`--decoder` describes the other direction: how the peer's picture is decoded.
 
 The window starts on a waiting screen showing this node's ticket, a box to paste
 the peer's into, and the local camera. A ticket given on the command line is
@@ -147,11 +185,13 @@ everybody else's in a grid, with a chat panel underneath.
 |---|---|
 | `<TICKET>` | Ticket of the room to join. Omit to open a new one |
 | `--display-name <NAME>` | Name the other participants see (default: this node's short endpoint id) |
+| `--decoder <KIND>` | `auto` (default), `hardware`, `software`, or a backend name such as `vaapi`, `nvdec`, `v4l2`, `videotoolbox`, `openh264` |
 | `--no-qr` | Suppress the terminal QR code |
 | `--fullscreen` | Start in fullscreen |
 
 Every `irl publish` capture flag applies here too and describes what this node
-sends.
+sends, and `--decoder` describes how every other participant's picture is
+decoded.
 
 Rooms are a gossip topic plus the MoQ subscriptions that follow from it. Every
 participant announces the names of its broadcasts on the topic and subscribes to

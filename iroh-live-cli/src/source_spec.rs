@@ -23,6 +23,13 @@ pub enum VideoSourceSpec {
     Window(String),
     /// Every window of one application, by bundle id. macOS only.
     App(String),
+    /// The Raspberry Pi camera, driven through `rpicam-vid`.
+    ///
+    /// Its own kind rather than a camera id, because it is not a capture
+    /// device: `/dev/video0` on a Pi is the Unicam node and hands back raw
+    /// Bayer that only libcamera can drive.
+    #[cfg(all(target_os = "linux", feature = "rpicam"))]
+    Rpicam(RpicamMode),
     /// A colour-bar test pattern, for publishing without a camera.
     Test,
     /// A media file, imported rather than encoded.
@@ -54,6 +61,17 @@ impl VideoSourceSpec {
             "app" => rest
                 .map(|id| Self::App(id.to_string()))
                 .ok_or_else(|| "app: needs a bundle id (e.g. app:com.apple.Safari)".to_string()),
+            // No id: `rpicam-vid` picks the camera, so one given here would be
+            // dropped rather than honoured. The one suffix it takes names what
+            // the camera app hands over.
+            "rpicam" | "picam" => match rest.map(str::to_lowercase).as_deref() {
+                None => rpicam(RpicamMode::Encoded),
+                Some("raw") => rpicam(RpicamMode::Raw),
+                Some(other) => Err(format!(
+                    "rpicam: takes no camera id, and the only suffix is \
+                     ':raw' for uncompressed pictures; got '{other}'"
+                )),
+            },
             "test" => Ok(Self::Test),
             "file" => {
                 let rest = rest.ok_or("file: needs a path (e.g. file:clip.mp4)")?;
@@ -66,10 +84,46 @@ impl VideoSourceSpec {
             "none" => Ok(Self::None),
             other => Err(format!(
                 "unknown video source '{other}': expected cam, screen, window, app, \
-                 file, test, or none"
+                 rpicam, rpicam:raw, file, test, or none"
             )),
         }
     }
+}
+
+/// What `rpicam-vid` hands over, which `rpicam` and `rpicam:raw` pick between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RpicamMode {
+    /// The H.264 the Pi's hardware encoder produced, published unchanged.
+    ///
+    /// The cheapest thing a Pi can stream, and the only thing a Pi Zero should
+    /// be asked to. Nothing downstream sees a picture, so a preview, a software
+    /// encode, and a simulcast ladder are all out of reach.
+    Encoded,
+    /// Raw pictures, which we encode ourselves.
+    ///
+    /// Costs the pipe (about 10 MB/s at 640x360) and an encode, and buys
+    /// everything that needs pixels: `--preview`, `--encoder`, `--codec`, and a
+    /// ladder with more than one rung.
+    Raw,
+}
+
+/// The `rpicam` specifier, for a build that has the source.
+#[cfg(all(target_os = "linux", feature = "rpicam"))]
+fn rpicam(mode: RpicamMode) -> Result<VideoSourceSpec, String> {
+    Ok(VideoSourceSpec::Rpicam(mode))
+}
+
+/// The `rpicam` specifier, for a build that does not have the source.
+///
+/// Answering with the "unknown video source" message would be misleading: the
+/// specifier is spelled correctly and this build simply cannot serve it.
+#[cfg(not(all(target_os = "linux", feature = "rpicam")))]
+fn rpicam(_mode: RpicamMode) -> Result<VideoSourceSpec, String> {
+    Err(
+        "rpicam: this build has no Raspberry Pi camera source; it needs Linux \
+         and the 'rpicam' feature"
+            .to_string(),
+    )
 }
 
 /// A parsed `--audio` specifier.
@@ -180,6 +234,45 @@ mod tests {
                 looping: false,
             }
         );
+    }
+
+    #[test]
+    #[cfg(all(target_os = "linux", feature = "rpicam"))]
+    fn video_rpicam() {
+        assert_eq!(
+            VideoSourceSpec::parse("rpicam").unwrap(),
+            VideoSourceSpec::Rpicam(RpicamMode::Encoded)
+        );
+        assert_eq!(
+            VideoSourceSpec::parse("picam").unwrap(),
+            VideoSourceSpec::Rpicam(RpicamMode::Encoded)
+        );
+        assert!(VideoSourceSpec::parse("rpicam:0").is_err());
+    }
+
+    /// `:raw` asks for pictures instead of the hardware encoder's H.264.
+    #[test]
+    #[cfg(all(target_os = "linux", feature = "rpicam"))]
+    fn video_rpicam_raw() {
+        assert_eq!(
+            VideoSourceSpec::parse("rpicam:raw").unwrap(),
+            VideoSourceSpec::Rpicam(RpicamMode::Raw)
+        );
+        assert_eq!(
+            VideoSourceSpec::parse("picam:RAW").unwrap(),
+            VideoSourceSpec::Rpicam(RpicamMode::Raw)
+        );
+        let err = VideoSourceSpec::parse("rpicam:yuv").unwrap_err();
+        assert!(err.contains(":raw"), "{err}");
+    }
+
+    /// A build without the source names the reason rather than pretending the
+    /// specifier was a typo.
+    #[test]
+    #[cfg(not(all(target_os = "linux", feature = "rpicam")))]
+    fn video_rpicam_needs_the_feature() {
+        let err = VideoSourceSpec::parse("rpicam").unwrap_err();
+        assert!(err.contains("'rpicam' feature"), "{err}");
     }
 
     #[test]

@@ -11,6 +11,7 @@
 use clap::{Parser, Subcommand};
 
 mod args;
+mod backend;
 #[cfg(feature = "render")]
 mod call;
 mod devices;
@@ -20,6 +21,8 @@ mod record;
 #[cfg(feature = "render")]
 mod room;
 mod run;
+#[cfg(feature = "render")]
+mod scan;
 mod source;
 mod source_spec;
 mod transport;
@@ -139,5 +142,26 @@ mod tests {
         let (id, _) = endpoint_and_name();
         Cli::try_parse_from(["irl", "watch", "--endpoint-id", &id])
             .expect_err("--endpoint-id alone does not name a broadcast");
+    }
+
+    /// `--scan` is what names the broadcast, so nothing else has to.
+    #[test]
+    #[cfg(feature = "render")]
+    fn scanning_stands_in_for_a_ticket() {
+        let cli = Cli::try_parse_from(["irl", "watch", "--scan"])
+            .expect("--scan supplies the ticket the camera is about to read");
+        let Command::Watch(args) = cli.command else {
+            panic!("expected watch");
+        };
+        assert!(args.scan);
+        assert!(args.remote.ticket().is_err(), "nothing named a broadcast");
+    }
+
+    /// The scan screen is a window, and `--no-video` opens none.
+    #[test]
+    #[cfg(feature = "render")]
+    fn scanning_and_no_video_are_rejected_together() {
+        Cli::try_parse_from(["irl", "watch", "--scan", "--no-video"])
+            .expect_err("a scan needs a window to draw the camera in");
     }
 }

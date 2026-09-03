@@ -69,10 +69,14 @@ aec = ["moq-media/aec"]
 pipewire = ["moq-media/pipewire"]
 # GPU rendering of decoded frames.
 render = ["moq-media/render"]
+# Raspberry Pi camera capture through `rpicam-vid`.
+rpicam = ["moq-media/rpicam"]
 # Intel and AMD hardware H.264 encoding.
 vaapi = ["moq-media/vaapi"]
 # NVIDIA hardware encode and decode.
 nvidia = ["moq-media/nvidia"]
+# The V4L2 stateful memory-to-memory H.264 encoder and decoder on ARM SoCs.
+v4l2 = ["moq-media/v4l2"]
 
 # The example opens a camera and a microphone, so it needs the devices.
 [[example]]
