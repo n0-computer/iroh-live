@@ -78,6 +78,23 @@ pub struct AdaptiveConfig {
     /// wall-clock hold by itself. Counting readings instead is what
     /// [`AdaptiveConfig::downgrade_hold`] cannot do here.
     pub queueing_samples: u32,
+    /// Fraction of a rendition's **advertised** bitrate below which it counts
+    /// as starved, used only while nothing has been measured.
+    ///
+    /// [`AdaptiveConfig::goodput_downgrade_ratio`] compares against what this
+    /// rung was seen delivering on a clear path, which is the better reference
+    /// and is not always available: a subscriber that joins a link already
+    /// congested, or whose link goes bad before the first goodput window fills,
+    /// never records one, and without a fallback it holds the top rung for the
+    /// rest of the broadcast however little arrives. The catalog's bitrate is
+    /// what is left to compare against.
+    ///
+    /// The margin is wider than the measured one because the number is the
+    /// publisher's claim rather than something observed here, and an encoder
+    /// given a ceiling it does not need sends well under it. A downgrade still
+    /// needs the path to be queueing as well, so a healthy path that simply
+    /// undershoots its advertised rate does not trigger one.
+    pub advertised_downgrade_ratio: f64,
     /// How long a probe's rendition must have been playing before its goodput
     /// is judged.
     ///
@@ -115,6 +132,7 @@ impl Default for AdaptiveConfig {
             goodput_downgrade_ratio: 0.75,
             goodput_baseline_halflife: Duration::from_secs(30),
             queueing_samples: 2,
+            advertised_downgrade_ratio: 0.5,
             probe_settle: Duration::from_millis(1500),
             rtt_queueing_ratio: 2.0,
             rtt_queueing_floor: Duration::from_millis(25),
@@ -342,10 +360,17 @@ pub fn evaluate(
         (Some(bps), Some(healthy)) => {
             (bps as f64) < healthy as f64 * config.goodput_downgrade_ratio
         }
-        // Nothing arriving, or nothing to compare it against. Absence of
-        // evidence: a publisher that went quiet is not a link that failed, and a
-        // rung that has never been seen arriving cleanly has no rate to fall
-        // short of.
+        // Nothing measured to compare against, so fall back to what the catalog
+        // claims this rung costs. Without this the loop is not conservative, it
+        // is inert: a subscriber whose link was already bad when it joined never
+        // records a clear-path reading, and never can, because the fallback that
+        // would rescue it is the downgrade it is not making. See
+        // [`AdaptiveConfig::advertised_downgrade_ratio`].
+        (Some(bps), None) if current.bitrate_bps > 0 => {
+            (bps as f64) < current.bitrate_bps as f64 * config.advertised_downgrade_ratio
+        }
+        // Nothing arriving, or a rung the catalog puts no rate on. Absence of
+        // evidence: a publisher that went quiet is not a link that failed.
         _ => false,
     };
 
@@ -667,6 +692,116 @@ mod tests {
         let mut probe = Probe::new("video-1080p".into(), below_bps);
         probe.land(signals, now);
         probe
+    }
+
+    /// Drives `signals` through the loop for `ticks` and returns the first
+    /// decision that is not [`Decision::Hold`], if one came.
+    fn settle(
+        idx: usize,
+        ranked: &[RankedRendition],
+        signals: &NetworkSignals,
+        timers: &mut AdaptationTimers,
+        config: &AdaptiveConfig,
+        ticks: u32,
+    ) -> Option<Decision> {
+        let mut now = Instant::now();
+        for tick in 0..ticks {
+            now += config.check_interval;
+            // A fresh round trip reading every other tick, which is what
+            // corroborates a queue: one reading held across many ticks counts
+            // once, by design.
+            let signals = NetworkSignals {
+                rtt_samples: signals.rtt_samples + u64::from(tick) / 2,
+                ..*signals
+            };
+            match evaluate(idx, ranked, &signals, timers, config, now) {
+                Decision::Hold => {}
+                other => return Some(other),
+            }
+        }
+        None
+    }
+
+    /// A subscriber whose link was already bad when it joined has no clear-path
+    /// reading to fall short of, and used to hold the top rung for the whole
+    /// broadcast however little arrived.
+    #[test]
+    fn a_rung_that_was_never_seen_arriving_cleanly_still_downgrades() {
+        let ranked = test_ranked();
+        let config = AdaptiveConfig::default();
+        let mut timers = AdaptationTimers::default();
+        // A quarter of what the top rung advertises, on a path with a queue in
+        // front of it. Nothing was measured first, on purpose.
+        let signals = NetworkSignals {
+            goodput_bps: Some(1_000_000),
+            ..queued_signals()
+        };
+        assert_eq!(timers.healthy_goodput(), None);
+        assert_eq!(
+            settle(0, &ranked, &signals, &mut timers, &config, 100),
+            Some(Decision::Downgrade(1)),
+        );
+    }
+
+    /// The fallback is a claim rather than a measurement, so it takes a wide
+    /// shortfall. An encoder handed a ceiling it does not need sends under it
+    /// all the time, and that is not a link in trouble.
+    #[test]
+    fn a_rung_arriving_near_its_advertised_rate_is_not_starved() {
+        let ranked = test_ranked();
+        let config = AdaptiveConfig::default();
+        let mut timers = AdaptationTimers::default();
+        // Three quarters of the advertised 4 Mbps, which is ordinary.
+        let signals = NetworkSignals {
+            goodput_bps: Some(3_000_000),
+            ..queued_signals()
+        };
+        assert_eq!(
+            settle(0, &ranked, &signals, &mut timers, &config, 100),
+            None
+        );
+    }
+
+    /// A queue on its own is not starvation, whichever reference is in use.
+    #[test]
+    fn the_advertised_fallback_still_needs_a_queue() {
+        let ranked = test_ranked();
+        let config = AdaptiveConfig::default();
+        let mut timers = AdaptationTimers::default();
+        let signals = NetworkSignals {
+            goodput_bps: Some(1_000_000),
+            ..good_signals()
+        };
+        assert_eq!(
+            settle(0, &ranked, &signals, &mut timers, &config, 100),
+            None
+        );
+    }
+
+    /// What was measured beats what was advertised: a rung whose clear-path rate
+    /// is well under its catalog bitrate must not read as starved for that
+    /// reason alone.
+    #[test]
+    fn a_measured_reference_takes_precedence_over_the_advertised_one() {
+        let ranked = test_ranked();
+        let config = AdaptiveConfig::default();
+        let mut timers = AdaptationTimers::default();
+        let now = Instant::now();
+        // Half the advertised 4 Mbps, on a clear path, so this is what the rung
+        // actually delivers rather than a shortfall.
+        establish(0, &ranked, 2_000_000, &mut timers, &config, now);
+        assert_eq!(timers.healthy_goodput(), Some(2_000_000));
+
+        // Under the advertised fallback's threshold, but not under three
+        // quarters of what was measured.
+        let signals = NetworkSignals {
+            goodput_bps: Some(1_900_000),
+            ..queued_signals()
+        };
+        assert_eq!(
+            settle(0, &ranked, &signals, &mut timers, &config, 100),
+            None
+        );
     }
 
     #[test]
