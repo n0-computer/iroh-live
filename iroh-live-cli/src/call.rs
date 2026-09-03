@@ -225,6 +225,7 @@ mod window {
 
         fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
             let ctx = ui.ctx().clone();
+            crate::ui::escape_leaves_fullscreen(&ctx);
             self.update_preview(&ctx);
 
             match self.state {

@@ -432,6 +432,9 @@ mod window {
 
         fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
             let ctx = ui.ctx().clone();
+            // Before the mode switch, so Escape leaves full screen from the
+            // scan and connecting screens too, not only while watching.
+            crate::ui::escape_leaves_fullscreen(&ctx);
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
             match self.mode {
                 Mode::Scanning(_) => self.scan_ui(ui, &ctx),

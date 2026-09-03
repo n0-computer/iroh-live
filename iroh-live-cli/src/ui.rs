@@ -123,7 +123,12 @@ pub fn control_panel(ctx: &egui::Context, id: &str, contents: impl FnOnce(&mut e
         });
 }
 
-/// Hides the overlay once the pointer has been still for a while.
+/// Hides the overlay, and the pointer with it, once the pointer has been still
+/// for a while.
+///
+/// The pointer goes too because a still mouse arrow sitting over a picture is
+/// the thing every video player learned to hide, and leaving it there while the
+/// controls fade out looks like the controls broke rather than withdrew.
 #[derive(Debug)]
 pub struct CursorIdle {
     visible: bool,
@@ -151,7 +156,29 @@ impl CursorIdle {
         } else if self.since.elapsed() > CURSOR_IDLE {
             self.visible = false;
         }
+        if !self.visible {
+            // Set every pass rather than once on the way out: egui resolves the
+            // cursor from what this frame asked for, so a single call would be
+            // undone by the next frame that asked for nothing.
+            ctx.set_cursor_icon(egui::CursorIcon::None);
+        }
         self.visible
+    }
+}
+
+/// Leaves full screen when Escape is pressed, and does nothing otherwise.
+///
+/// Only leaves. Escape is what a full-screen picture trains people to press,
+/// but a window is not something to close on it: a player that quit on Escape
+/// would throw away a stream that took a ticket to reach, and the key is easy
+/// to hit by accident.
+///
+/// The command goes out without asking whether the window is full screen
+/// already. Leaving a window that is not full screen does nothing, and reading
+/// the state first would only add a way to be wrong about it.
+pub fn escape_leaves_fullscreen(ctx: &egui::Context) {
+    if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
     }
 }
 

@@ -575,6 +575,18 @@ impl Process {
             debug!(%status, "{RPICAM_VID} exited");
             return;
         }
+        // Wait for the forwarding task before reading what it collected. The
+        // child has exited, so its stderr is at end of file and the task is
+        // about to finish, but "about to" is not "has": a camera app that fails
+        // on startup writes its reason and exits within a millisecond or two,
+        // and reading the ring first reports `reason=` empty on exactly the
+        // failure the reason was wanted for. Seen doing it, on a second
+        // publisher finding the camera busy.
+        if let Some(task) = self.stderr_reader.take()
+            && tokio::time::timeout(EXIT_TIMEOUT, task).await.is_err()
+        {
+            debug!("{RPICAM_VID}'s stderr did not end with it");
+        }
         let reason = self
             .stderr_tail
             .lock()

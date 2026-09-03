@@ -204,6 +204,7 @@ mod preview {
     impl eframe::App for PreviewApp {
         fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
             let ctx = ui.ctx().clone();
+            crate::ui::escape_leaves_fullscreen(&ctx);
             ctx.request_repaint_after(Duration::from_millis(16));
 
             self.view.update(&ctx, &self.broadcast);
