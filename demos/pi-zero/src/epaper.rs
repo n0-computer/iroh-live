@@ -355,6 +355,42 @@ mod tests {
         assert_eq!(layout.size_px, 99);
     }
 
+    /// The white border around the code is not spare room, it is the quiet zone
+    /// a decoder needs to find the code at all, and the standard asks for four
+    /// modules of it.
+    ///
+    /// This is the binding constraint on how big the modules can be, and it is
+    /// easy to lose without noticing: a payload one QR version longer keeps the
+    /// same three pixels per module, grows the code, and eats the border
+    /// instead. The panel stays legible to the eye and stops scanning.
+    #[test]
+    fn a_ticket_qr_keeps_most_of_a_quiet_zone() {
+        let code = QrCode::new(TICKET.as_bytes()).expect("a ticket fits in a QR code");
+        let layout = QrLayout::centred(code.width());
+        let quiet_modules = layout.x_offset as f64 / layout.scale as f64;
+        assert!(
+            quiet_modules >= 3.5,
+            "only {quiet_modules:.1} modules of quiet zone around the code",
+        );
+    }
+
+    /// Three pixels per module is the ceiling on this panel, not a compromise
+    /// anyone can lift by tightening the margins.
+    ///
+    /// The narrow axis is 122 px and a ticket carrying a 32 byte endpoint id
+    /// needs 33 modules, so a fourth pixel each would want 132 px and does not
+    /// fit even with no border at all. Reaching four would mean 26 modules or
+    /// fewer, which is a QR version holding 32 bytes, and the id alone is 43
+    /// characters of base64.
+    #[test]
+    fn a_fourth_pixel_per_module_does_not_fit_the_panel() {
+        let code = QrCode::new(TICKET.as_bytes()).expect("a ticket fits in a QR code");
+        assert!(
+            code.width() * 4 > epd_v4::WIDTH as usize,
+            "four pixels per module would fit, so the layout is leaving some behind",
+        );
+    }
+
     #[test]
     fn a_qr_code_stays_on_the_panel() {
         for modules in [21, 25, 29, 33, 41, 53, 77] {
