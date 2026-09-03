@@ -74,7 +74,7 @@ pipewire = ["moq-media/pipewire"]
 render = ["moq-media/render"]
 # Raspberry Pi camera capture through `rpicam-vid`.
 rpicam = ["moq-media/rpicam"]
-# Intel and AMD hardware H.264 encoding.
+# Intel and AMD hardware H.264 encoding and decoding.
 vaapi = ["moq-media/vaapi"]
 # NVIDIA hardware encode and decode.
 nvidia = ["moq-media/nvidia"]

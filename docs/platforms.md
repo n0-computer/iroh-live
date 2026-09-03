@@ -15,11 +15,15 @@ devices. This page says what that means for this repository.
 | Linux, NVIDIA | NVENC and NVDEC behind the `nvidia` feature. Not tested here |
 | macOS | Builds in CI. VideoToolbox and ScreenCaptureKit come from upstream. Lightly tested |
 | Android | Tested on device, two-way audio and video against a Linux desktop |
-| Raspberry Pi | Tested on a Pi Zero 2 W: publish through `rpicam-vid`, watch with software decode. The V4L2 hardware codecs are reachable but unproven |
+| Raspberry Pi | Tested on a Pi Zero 2 W and a Pi 4: publish through `rpicam-vid`, watch with the V4L2 hardware decoder or in software. Both V4L2 halves run on a Pi 4 |
 | Windows | Upstream has Media Foundation and DXGI. Never built or tested here |
 | iOS | Upstream has AVFoundation and VideoToolbox. Never built or tested here |
 
-CI builds and tests Linux and macOS, and cross-builds the CLI for aarch64 Linux.
+CI builds and tests Linux and macOS, cross-builds the CLI for aarch64 Linux, and
+produces release binaries for Linux x86-64 and aarch64, macOS x86-64 and
+aarch64, Windows x86-64, and an arm64 Android APK. The Linux binaries carry
+every accelerator this workspace supports: `nvidia`, `vaapi`, `v4l2`, `rpicam`,
+`pipewire`, `sound-server` and `playback`.
 
 ## Linux
 
@@ -34,15 +38,17 @@ stateful memory-to-memory codecs an ARM SoC exposes as a device node, which is a
 Raspberry Pi and Rockchip path rather than a desktop one: both halves of it now
 run on a Pi 4, see below.
 
-**Decoding is software only.** moq-video has no VAAPI decoder, so an H.264 stream
-on Intel or AMD Linux decodes on the CPU. That is a regression from the in-house
-stack this repository used to carry, and it is the one most likely to be felt: a
-1080p stream that used to decode on the GPU now costs CPU.
+**Decoding has a hardware path again.** The `vaapi` feature carries a VA-API
+H.264 decoder, written here and now upstream as the `moq-vaapi` crate with a
+moq-video backend over it. Its output is checked pixel-exact against a software
+decoder, and it hands each decoded picture to the renderer as a DRM PRIME
+descriptor, so the decode-to-screen path stays on the GPU. Without the feature,
+H.264 decodes on the CPU as it did before.
 
-Rendering is wgpu on Vulkan. Zero-copy DMA-BUF import works for packed RGB frames
-from PipeWire screen capture when the device is created with
-`wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF`; multi-plane NV12 import is
-tracked upstream and not done. Decoded frames take the CPU upload path.
+Rendering is wgpu on Vulkan. `irl watch`, `irl call` and `irl room` all draw
+VA-API pictures without a download when the feature is on. Zero-copy DMA-BUF
+import also works for packed RGB frames from PipeWire screen capture when the
+device is created with `wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF`.
 
 ## macOS
 
