@@ -28,7 +28,7 @@ use n0_error::{Result, anyerr};
 
 use crate::{
     args::CaptureArgs,
-    rendition::{self, CaptureFramerate, DEFAULT_FRAMERATE},
+    rendition::{self, CaptureFramerate},
     source_spec::{AudioSourceSpec, TestPattern, TestTone, VideoSourceSpec},
 };
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
@@ -242,7 +242,7 @@ fn check_rpicam_flags(args: &CaptureArgs) -> Result<()> {
 /// consult.
 #[cfg(feature = "render")]
 pub fn default_test_pattern(clock: moq_mux::Clock) -> VideoSource {
-    test_source::timing::video(TEST_SIZE, DEFAULT_FRAMERATE, clock)
+    test_source::timing::video(TEST_SIZE, rendition::DEFAULT_FRAMERATE, clock)
 }
 
 /// The test pattern, at whatever geometry the flags asked for.

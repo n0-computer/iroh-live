@@ -88,6 +88,16 @@ pub fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
     let options = Options::from(&args);
     let live = rt.block_on(setup(&args))?;
 
+    // Two of the three arms are gated on `render`, so a build without it leaves
+    // one and the lint reads the match as pointless. It is not; it is the shape
+    // that carries the other two.
+    #[cfg_attr(
+        not(feature = "render"),
+        allow(
+            clippy::infallible_destructuring_match,
+            reason = "the other two arms are compiled out, not absent"
+        )
+    )]
     let ticket = match start {
         // Nothing to dial yet, so the window opens straight onto the camera.
         // eframe takes the main thread from here on, so the runtime keeps its
