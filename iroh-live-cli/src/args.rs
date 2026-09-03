@@ -45,20 +45,20 @@ pub struct TransportArgs {
 
 /// The keyframe interval this CLI publishes at, in seconds.
 ///
-/// Upstream's encoder defaults to two, which is a broadcast figure: a viewer
-/// arriving mid-stream cannot draw anything until the next keyframe, so it is
-/// the wait after scanning a code, the wait for a rendition switch to land, and
-/// the media a skipped group throws away. This tool is for pointing a camera at
-/// something and having somebody else see it, so halving that wait is worth
-/// what it costs.
+/// Two seconds, which is upstream's default and the broadcast figure: this is
+/// a broadcast tool, and the interval trades the wait a viewer has for a first
+/// picture against how much of the bitrate goes on keyframes. A viewer arriving
+/// mid-stream draws nothing until the next keyframe, so joining costs up to
+/// this long and a rendition switch waits the same. Lower it with
+/// `--keyframe-interval` for a call or a demo where somebody is scanning a
+/// code and waiting; leave it for a stream people watch for an hour.
 ///
-/// What it costs is picture quality rather than bitrate. The encoder is given a
-/// target rate and keeps to it, so more keyframes means fewer bits for
-/// everything between them. Measured here against the two second default the
+/// What a shorter interval costs is picture quality rather than bitrate. The
+/// encoder is given a target rate and keeps to it, so more keyframes means
+/// fewer bits for everything between them. Measured against one second the
 /// difference in bytes on the wire was inside the run-to-run variation, which
-/// is what a rate-controlled encoder should do and is why there is no figure
-/// quoted for it.
-pub const DEFAULT_KEYFRAME_SECONDS: f64 = 1.0;
+/// is what a rate-controlled encoder should do and is why no figure is quoted.
+pub const DEFAULT_KEYFRAME_SECONDS: f64 = 2.0;
 
 /// The `--video` specifier when none is given.
 pub const DEFAULT_VIDEO: &str = "cam";
@@ -112,7 +112,8 @@ pub struct CaptureArgs {
 
     /// How often the encoder inserts a keyframe, in seconds. A subscriber
     /// cannot draw anything until the next one, so this is how long joining
-    /// takes and how long a rendition switch waits.
+    /// takes and how long a rendition switch waits. Two is the broadcast
+    /// default; one suits a call or a demo where somebody is waiting.
     #[arg(long, default_value_t = DEFAULT_KEYFRAME_SECONDS, value_name = "SECONDS")]
     pub keyframe_interval: f64,
 

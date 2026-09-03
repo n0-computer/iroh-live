@@ -69,7 +69,7 @@ Encoding flags:
 | `--renditions <LIST>` | The simulcast ladder, comma-separated. Each rung is `<height>p`, `<width>x<height>`, or `<name>:<width>x<height>`, with an optional `@<fps>`; a bare name encodes at the source's own resolution. Default: one rendition named `video`, unscaled |
 | `--bitrate <BPS>` | Target video bitrate. Omit to derive one from the resolution |
 | `--width`, `--height`, `--fps` | Capture hints; the device snaps to its nearest supported mode |
-| `--keyframe-interval <SECONDS>` | How often a keyframe is inserted. Default 1 |
+| `--keyframe-interval <SECONDS>` | How often a keyframe is inserted. Default 2, the broadcast figure; 1 for a call or a demo where somebody is waiting for a first picture |
 | `--no-cursor` | Hide the pointer in screen, window, and application capture |
 | `--audio-codec <CODEC>` | `opus` (default) or `pcm` |
 | `--audio-bitrate <BPS>` | Opus only; PCM's bitrate follows from its layout |
