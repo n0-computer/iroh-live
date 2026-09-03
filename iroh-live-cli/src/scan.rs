@@ -273,18 +273,19 @@ async fn look(
         // up ownership and reading the pixels needs it.
         let (surface, luma) = match Instant::now() >= next_look {
             false => (surface, None),
-            true => {
-                next_look = Instant::now() + DECODE_INTERVAL;
-                match split_luma(surface) {
-                    Ok((surface, luma)) => (surface, Some(luma)),
-                    Err(err) => {
-                        // The download consumed the surface, so there is
-                        // nothing left to draw for this frame either.
-                        warn!(error = %err, "could not read the frame's luma plane");
-                        continue;
-                    }
+            true => match split_luma(surface) {
+                Ok((surface, luma)) => (surface, Some(luma)),
+                Err(err) => {
+                    // The download consumed the surface, so there is nothing
+                    // left to draw for this frame either. The interval restarts
+                    // here as well: a download that fails once will fail again,
+                    // and retrying it on every frame costs what decoding on
+                    // every frame costs.
+                    next_look = Instant::now() + DECODE_INTERVAL;
+                    warn!(error = %err, "could not read the frame's luma plane");
+                    continue;
                 }
-            }
+            },
         };
 
         // Drawn before the decode runs. Both share this thread, and locating a
@@ -298,7 +299,17 @@ async fn look(
         ctx.request_repaint();
 
         let Some(luma) = luma else { continue };
-        let Some(text) = decode(&luma) else { continue };
+        let found = decode(&luma);
+
+        // Measured from here rather than from before the decode, so the
+        // interval is a gap between decodes rather than a period each one has
+        // to fit inside. A decode slower than the interval would otherwise
+        // leave the next frame already past the deadline, and the duty cycle
+        // would reach 100% on exactly the hardware slow enough to need the
+        // throttle.
+        next_look = Instant::now() + DECODE_INTERVAL;
+
+        let Some(text) = found else { continue };
         match text.parse::<LiveTicket>() {
             // Returning here drops the stream, so the camera is released while
             // the window dials rather than held open behind it.
