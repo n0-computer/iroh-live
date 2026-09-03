@@ -39,6 +39,14 @@ use crate::frame_channel::{FrameSender, frame_channel};
 /// hiccup without letting the decoder race ahead of the clock.
 const READ_AHEAD: usize = 2;
 
+/// How long a replacement decoder may take over its first picture.
+///
+/// It has to cover a real handover: the replacement subscribes to another
+/// rendition and waits for that track's next keyframe, which on a two second
+/// GOP over an impaired link is already seconds. Beyond that it is not slow,
+/// it is not coming, and the incumbent keeps playing either way.
+const FIRST_FRAME_DEADLINE: Duration = Duration::from_secs(15);
+
 /// How many access units in a row may fail to decode before the reader stops.
 ///
 /// One failure is not a broken stream. A group skipped under congestion, a
@@ -282,7 +290,11 @@ async fn supervise(
     // Nothing is playing in that window, so every exit below has to check
     // whether anything is left before parking on it.
     let mut reader: Option<Reader> = Some(reader);
-    let mut pending: Option<(String, Reader)> = None;
+    // The replacement, and the moment it stops being worth waiting for. A
+    // decoder that opens and never produces a picture would otherwise be waited
+    // on for the rest of the session: its reader stays blocked on the track, so
+    // the channel never closes and the arm below never fires.
+    let mut pending: Option<(String, Reader, tokio::time::Instant)> = None;
     // The open in flight. It runs as its own task rather than inside a `select!`
     // arm, because opening a decoder means a network round trip and a codec
     // open, and awaiting that in an arm body stops the incumbent from being
@@ -294,6 +306,9 @@ async fn supervise(
     let rate = crate::stats::Rate::default();
 
     loop {
+        // Read out before the select, because another arm borrows `pending`
+        // mutably and the two cannot overlap.
+        let stalled = pending.as_ref().map(|(_, _, deadline)| *deadline);
         tokio::select! {
             biased;
 
@@ -318,7 +333,7 @@ async fn supervise(
                     }
                     continue;
                 }
-                let already = pending.as_ref().is_some_and(|(open, _)| *open == name)
+                let already = pending.as_ref().is_some_and(|(open, _, _)| *open == name)
                     || opening.as_ref().is_some_and(|open| open.name == name);
                 if already {
                     continue;
@@ -351,7 +366,7 @@ async fn supervise(
                 // policy this rebuild supersedes.
                 let name = match (opening.take(), pending.take()) {
                     (Some(superseded), _) => superseded.name,
-                    (None, Some((superseded, _))) => superseded,
+                    (None, Some((superseded, _, _))) => superseded,
                     (None, None) => current.get(),
                 };
                 debug!(rendition = %name, "rebuilding the decoder");
@@ -373,7 +388,10 @@ async fn supervise(
             {
                 let Opening { name, .. } = opening.take().expect("guarded");
                 match opened {
-                    Ok(Ok(replacement)) => pending = Some((name, replacement)),
+                    Ok(Ok(replacement)) => {
+                        let deadline = tokio::time::Instant::now() + FIRST_FRAME_DEADLINE;
+                        pending = Some((name, replacement, deadline));
+                    }
                     Ok(Err(err)) => {
                         warn!(error = %err, rendition = %name, "replacement failed to open");
                         clear_request(&withdraw, &name);
@@ -393,7 +411,7 @@ async fn supervise(
             frame = async { pending.as_mut().expect("guarded").1.frames.recv().await },
                 if pending.is_some() =>
             {
-                let (name, replacement) = pending.take().expect("guarded");
+                let (name, replacement, _) = pending.take().expect("guarded");
                 match frame {
                     Some(frame) => {
                         info!(rendition = %name, decoder = %replacement.decoder, "switched rendition");
@@ -415,6 +433,31 @@ async fn supervise(
                 }
             }
 
+            // The replacement took too long over its first picture. Waiting on
+            // it forever is the worse failure: a rendition request that never
+            // lands leaves the adaptation loop with nothing to do for the rest
+            // of the session, and both tracks subscribed, so a downgrade under
+            // loss ends up carrying more than before it.
+            // Inside an `async` block like its neighbours: `select!` evaluates
+            // every branch's expression before it polls anything, so a bare
+            // `expect` here would fire on the passes where the branch is
+            // disabled.
+            () = async { tokio::time::sleep_until(stalled.expect("guarded")).await },
+                if stalled.is_some() =>
+            {
+                let (name, _, _) = pending.take().expect("guarded");
+                warn!(
+                    rendition = %name,
+                    after = ?FIRST_FRAME_DEADLINE,
+                    "the replacement decoder opened but produced no picture, giving it up",
+                );
+                clear_request(&withdraw, &name);
+                if reader.is_none() && opening.is_none() {
+                    debug!("nothing left to decode after the replacement stalled");
+                    return;
+                }
+            }
+
             frame = async { reader.as_mut().expect("guarded").frames.recv().await },
                 if reader.is_some() =>
             match frame {
@@ -424,7 +467,7 @@ async fn supervise(
                     // discarded: the incumbent ending is exactly when a
                     // downgrade is most likely to be in flight.
                     match pending.take() {
-                        Some((name, replacement)) => {
+                        Some((name, replacement, _)) => {
                             info!(rendition = %name, "incumbent ended, promoting the replacement");
                             context.stats.render.decoder.set(&replacement.decoder);
                             context.stats.render.rendition.set(&name);
