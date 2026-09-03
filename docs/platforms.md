@@ -31,7 +31,8 @@ Encoding runs on openh264 by default. The `vaapi` feature adds Intel and AMD
 hardware H.264 encode; upstream flags that backend as never validated on real
 hardware, and it is off by default for that reason. The `v4l2` feature adds the
 stateful memory-to-memory codecs an ARM SoC exposes as a device node, which is a
-Raspberry Pi and Rockchip path rather than a desktop one: see below.
+Raspberry Pi and Rockchip path rather than a desktop one: both halves of it now
+run on a Pi 4, see below.
 
 **Decoding is software only.** moq-video has no VAAPI decoder, so an H.264 stream
 on Intel or AMD Linux decodes on the CPU. That is a regression from the in-house

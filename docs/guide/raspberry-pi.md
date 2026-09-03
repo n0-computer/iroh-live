@@ -57,16 +57,26 @@ equivalent of. Upstream carries an encoder and a decoder for it again, and the
 
 ```sh
 cargo build -p iroh-live-cli --features v4l2
-irl publish --video cam --encoder v4l2
+irl publish --video rpicam:raw --encoder v4l2
 ```
 
 The decoder needs no flag: it joins automatic backend selection, and a host with
 no M2M node fails at open so selection falls through to openh264.
 
-**Neither backend has been run on real hardware**, upstream or here. Making them
-reachable is not a claim that they work, and a Pi that publishes through
-`rpicam-vid` never opens either one. If probing picks the wrong node,
-`MOQ_V4L2_ENCODER` and `MOQ_V4L2_DECODER` name one directly.
+**Both backends now run on a Pi 4** (bcm2835-codec, Raspberry Pi OS Bookworm),
+which is the first hardware either has been tried on. The encoder opens
+`/dev/video11`, negotiates NV12, and publishes Constrained Baseline that decodes
+back to a correct picture. The decoder is what `--decoder auto` picks on that
+board over openh264, and it played a 640x360 stream for a minute with no decode
+failures.
+
+Note the source in that example. `--video cam` cannot feed the encoder on a Pi:
+`/dev/video0` is the Unicam node and serves raw Bayer, so it opens and never
+delivers a frame. `rpicam:raw` is the raw-picture source, and plain `rpicam` is
+already encoded and never opens an encoder at all.
+
+If probing picks the wrong node, `MOQ_V4L2_ENCODER` and `MOQ_V4L2_DECODER` name
+one directly.
 
 The `codec-test` subcommand that used to exercise this path on device is still
 gone.

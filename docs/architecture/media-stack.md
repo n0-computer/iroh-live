@@ -146,7 +146,7 @@ defines them and `iroh-live` and `iroh-live-cli` pass them through.
 | `render` | no | The wgpu renderer and its graphics stack |
 | `vaapi` | no | Intel and AMD hardware H.264 encode |
 | `nvidia` | no | NVIDIA hardware encode and decode. On upstream by default, off here so a default build stays free of the CUDA graph |
-| `v4l2` | no | The V4L2 stateful M2M H.264 encoder and decoder on ARM SoCs. Never validated on real hardware |
+| `v4l2` | no | The V4L2 stateful M2M H.264 encoder and decoder on ARM SoCs. Both run on a Pi 4; one SoC of the several it targets |
 | `rpicam` | no | The `rpicam-vid` source. Linux only, and needs the binary on PATH |
 | `test-source` | no | The generated video and audio sources |
 
