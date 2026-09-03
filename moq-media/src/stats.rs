@@ -188,10 +188,84 @@ impl Metric {
 
     /// Records an FPS sample from the gap since the previous event. Ignores
     /// gaps shorter than 5ms to avoid division noise.
+    ///
+    /// Prefer [`Rate`] for anything a person reads. One gap is not a frame
+    /// rate, and the reciprocal of one is a bad estimate of it: see [`Rate`]
+    /// for why the average of those reciprocals reads high.
     pub fn record_fps_gap(&self, gap: Duration) {
         if gap >= Duration::from_millis(5) {
             self.record(1.0 / gap.as_secs_f64());
         }
+    }
+}
+
+/// How long a [`Rate`] counts events for before it has a figure to report.
+///
+/// A second is what a frame rate is quoted in, and it is short enough that a
+/// stream which stops is seen to stop.
+const RATE_WINDOW: Duration = Duration::from_secs(1);
+
+/// Counts events and reports how many happened per second.
+///
+/// This exists because dividing one into the gap since the last event does not
+/// measure a frame rate, and the reading it produced jumped around enough to be
+/// unreadable. Two things were wrong with it. A single late frame is a whole
+/// sample: one 20ms gap in a 30fps stream reads as 50, and the smoothing that
+/// followed was chasing that rather than removing it. And averaging reciprocals
+/// is biased upwards, because the short gaps contribute more than the long ones
+/// cancel: gaps alternating 20ms and 47ms average 33.5ms, which is 29.9fps, but
+/// their reciprocals average 35.6. So a stream delivering exactly 30 frames a
+/// second in bursts read as 35 and swung by twenty.
+///
+/// Counting over a window has neither problem. It is what the figure claims to
+/// be, and a burst inside the window moves it not at all.
+#[derive(Debug)]
+pub struct Rate {
+    inner: Arc<Mutex<RateWindow>>,
+}
+
+#[derive(Debug)]
+struct RateWindow {
+    started: Instant,
+    events: u32,
+}
+
+impl Clone for Rate {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl Default for Rate {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(RateWindow {
+                started: Instant::now(),
+                events: 0,
+            })),
+        }
+    }
+}
+
+impl Rate {
+    /// Counts one event, and returns the rate per second when the window has
+    /// closed.
+    ///
+    /// Returns `None` the rest of the time, so a caller records a figure only
+    /// when there is one to record.
+    pub fn tick(&self) -> Option<f64> {
+        let mut window = self.inner.lock().expect("poisoned");
+        window.events += 1;
+        let elapsed = window.started.elapsed();
+        if elapsed < RATE_WINDOW {
+            return None;
+        }
+        let rate = f64::from(window.events) / elapsed.as_secs_f64();
+        window.started = Instant::now();
+        window.events = 0;
+        Some(rate)
     }
 }
 
@@ -498,5 +572,48 @@ mod tests {
         assert_eq!(l.get(), "initial");
         l.set("changed");
         assert_eq!(l.get(), "changed");
+    }
+}
+
+#[cfg(test)]
+mod rate_tests {
+    use std::{thread::sleep, time::Duration};
+
+    use super::Rate;
+
+    /// Nothing is reported before the window closes, so a reader never sees a
+    /// figure derived from two frames.
+    #[test]
+    fn a_rate_reports_nothing_until_its_window_closes() {
+        let rate = Rate::default();
+        for _ in 0..10 {
+            assert!(rate.tick().is_none());
+        }
+    }
+
+    /// The figure is a count over the window, so delivery that arrives in
+    /// bursts reads the same as delivery that is evenly spaced. The old
+    /// reciprocal-of-one-gap measure read this stream at about 36fps while it
+    /// swung between 21 and 50.
+    #[test]
+    fn a_burst_reads_the_same_as_an_even_stream() {
+        let rate = Rate::default();
+        let mut reported = None;
+        // Bursts of ten, 350ms apart. The window closes during the fourth,
+        // which is the first tick that can report at all: three bursts span
+        // 700ms and the figure is only produced once a full second has passed.
+        for _ in 0..4 {
+            for _ in 0..10 {
+                if let Some(value) = rate.tick() {
+                    reported = Some(value);
+                }
+            }
+            sleep(Duration::from_millis(350));
+        }
+        let reported = reported.expect("a window of over a second has to report");
+        assert!(
+            (25.0..35.0).contains(&reported),
+            "thirty events in ~1.05s should read near 30fps, got {reported}",
+        );
     }
 }

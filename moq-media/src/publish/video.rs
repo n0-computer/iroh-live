@@ -283,7 +283,8 @@ async fn fan_out(
     // The gap between source frames, which is the one frame rate a ladder has:
     // every rung sees the same pictures, so recording it per encoder would
     // write the same figure to one metric several times over.
-    let mut previous: Option<Instant> = None;
+    // Frames per second out of the source, counted over a window.
+    let source_rate = crate::stats::Rate::default();
 
     // A device that opens and then delivers nothing is the quietest failure in
     // the stack. It happens: `/dev/video0` on a Raspberry Pi is the Unicam
@@ -319,12 +320,8 @@ async fn fan_out(
         // Reaching a frame at all means the source works; the warning has
         // nothing left to say.
         warned_no_frames = true;
-        let now = Instant::now();
-        if let Some(previous) = previous.replace(now) {
-            stats
-                .encode
-                .fps
-                .record_fps_gap(now.duration_since(previous));
+        if let Some(rate) = source_rate.tick() {
+            stats.encode.fps.record(rate);
         }
         // One allocation per frame, shared by the preview and every encoder.
         // `encode::Sink::encode` takes an `Arc<Frame>` for exactly this reason:

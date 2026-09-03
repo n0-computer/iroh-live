@@ -289,7 +289,9 @@ async fn supervise(
     // forwarded for exactly the window the overlap exists to hide.
     let mut opening: Option<Opening> = None;
     // The last frame's arrival, for the frame rate the overlay draws.
-    let mut previous: Option<std::time::Instant> = None;
+    // One rate for the whole reader: frames arriving per second, counted
+    // rather than derived from the gap between two of them.
+    let rate = crate::stats::Rate::default();
 
     loop {
         tokio::select! {
@@ -400,7 +402,7 @@ async fn supervise(
                         decoder.set(replacement.decoder.clone()).ok();
                         reader = Some(replacement);
                         current.set(name).ok();
-                        deliver(&frames, frame, &context, synced, &mut previous).await;
+                        deliver(&frames, frame, &context, synced, &rate).await;
                     }
                     None => {
                         debug!(rendition = %name, "replacement ended before its first frame");
@@ -416,7 +418,7 @@ async fn supervise(
             frame = async { reader.as_mut().expect("guarded").frames.recv().await },
                 if reader.is_some() =>
             match frame {
-                Some(frame) => deliver(&frames, frame, &context, synced, &mut previous).await,
+                Some(frame) => deliver(&frames, frame, &context, synced, &rate).await,
                 None => {
                     // A replacement already open takes over rather than being
                     // discarded: the incumbent ending is exactly when a
@@ -473,19 +475,14 @@ async fn deliver(
     frame: moq_video::Frame,
     context: &DecodeContext,
     synced: bool,
-    previous: &mut Option<std::time::Instant>,
+    rate: &crate::stats::Rate,
 ) {
     let pts = Duration::from_micros(frame.timestamp.as_micros() as u64);
     // The metric smooths whatever value it is handed, so it wants the
     // instantaneous rate, not a tick. Timed at arrival rather than from the
     // presentation timestamps, because a stall shows up here and not there.
-    let now = std::time::Instant::now();
-    if let Some(previous) = previous.replace(now) {
-        context
-            .stats
-            .render
-            .fps
-            .record_fps_gap(now.duration_since(previous));
+    if let Some(rate) = rate.tick() {
+        context.stats.render.fps.record(rate);
     }
     if synced {
         context.sync.received(pts);
