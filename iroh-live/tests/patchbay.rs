@@ -625,14 +625,47 @@ async fn adaptation_follows_a_rate_limit() {
     // reference, and a reference taken from one reading after the cap was
     // already on would be the capped rate itself.
     track.enable_adaptation_with(signals.clone(), config.clone());
-    let _settle = drain(&track, Duration::from_secs(2)).await;
 
-    // Two thirds of the 316 kbit/s `high` actually sends, and two and a half
-    // times the 84 `low` does, so the top rung cannot fit and the bottom one
-    // comfortably can.
+    // Waited for rather than timed. The loop judges starvation against the peak
+    // goodput it has seen this rung deliver on a clear path, and that peak takes
+    // a few seconds to find the encoder's real rate: a gradient at 640x480 sits
+    // near 200 kbit/s between keyframes and climbs to nearly 300 across one, so
+    // a fixed two-second settle latched whatever happened to be in the window
+    // and the cap below was a shortfall only when it latched high. That is what
+    // used to make this test flake, and a stopwatch cannot fix it because the
+    // number it is waiting for belongs to the encoder rather than to the clock.
+    //
+    // Ends when the link has been seen carrying comfortably more than the cap,
+    // which is the same fact the cap is about to contradict. If the fixture ever
+    // stops producing such a stream, this says so in those terms rather than
+    // leaving a downgrade to time out further down.
+    let cap_kbit = 100;
+    let clear_enough = u64::from(cap_kbit) * 1000 * 13 / 10;
+    tokio::time::timeout(SIGNAL_LAG, async {
+        loop {
+            if signals
+                .borrow()
+                .goodput_bps
+                .is_some_and(|bps| bps >= clear_enough)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "the clear link never carried {clear_enough} bps, so a {cap_kbit} kbit/s cap is not              a shortfall and this test has nothing to measure",
+        )
+    });
+
+    // Half of what `high` delivers at its quietest and above the 320x240 `low`
+    // at its loudest, so the top rung cannot fit whatever the encoder is doing
+    // this second and the bottom one comfortably can.
     fixture
         .impair(LinkLimits {
-            rate_kbit: 200,
+            rate_kbit: cap_kbit,
             ..Default::default()
         })
         .await;
@@ -709,16 +742,24 @@ async fn adaptation_follows_a_rate_limit() {
         "loss reached {worst_loss}, so the downgrade cannot be credited to the bandwidth signal",
     );
 
-    // Lifted before the switch is asked to complete. A cap that starves the top
-    // rung is by construction too small for both rungs at once, and the two
+    // The decision, waited for under the cap that caused it. Reconstructing the
+    // loop's state from the signals is what this used to do, and it cannot be
+    // made reliable: the loop samples the signals on its own interval where
+    // this polls them every 50ms, so on a loaded machine two round trip
+    // readings can land inside one of its ticks and it counts one where this
+    // counts two. Its evidence was then still short when the cap came off, its
+    // window reset, and the downgrade never happened.
+    tokio::time::timeout(TIMEOUT, track.requested("low"))
+        .await
+        .expect("timed out waiting for the loop to ask for `low`");
+
+    // Lifted before the switch is asked to complete, and only now that the
+    // decision above is a fact rather than an inference. A cap that starves the
+    // top rung is by construction too small for both rungs at once, and the two
     // overlap by design while the replacement decoder waits for its first
     // frame: the subscriber holds the incumbent so the picture does not blank.
     // Under that overlap the replacement's subscription does not get set up at
     // all, which is worth knowing and is not what this test is about.
-    //
-    // Safe to lift here only because the wait above ended on the loop's own
-    // precondition rather than on a stopwatch: the downgrade is decided by now,
-    // and a decision once taken survives the conditions turning good again.
     fixture.clear().await;
 
     let downgraded = Instant::now();
