@@ -92,14 +92,19 @@ updated only on ticks where the path is neither queueing nor losing, since a
 reading taken through a queue would teach it that the capped rate is the normal
 one. Goodput below `goodput_downgrade_ratio` (0.75) of that peak is a shortfall.
 
-Where nothing has been measured yet, the catalog's advertised bitrate is the
-fallback, at the wider `advertised_downgrade_ratio` (0.5). That case is a
-subscriber whose link was already bad when it joined: it never records a
-clear-path reading, and without a fallback it never can, because the reading
-only counts while the path is not queueing and the path does not stop queueing
-until something downgrades. The margin is wider because a catalog bitrate is a
-ceiling handed to the encoder rather than a promise, and an easy scene comes in
-well under it.
+**Where nothing has been measured, nothing is downgraded on bandwidth.** A
+subscriber whose link was already congested when it joined records no clear-path
+reading and never can, because the reading only counts while the path is not
+queueing and the path does not stop queueing until something downgrades. Loss
+still moves it, so what is stranded is specifically the lossless bottleneck.
+
+Measuring against the catalog's advertised bitrate instead was tried and
+reverted. A catalog bitrate is a ceiling handed to the encoder rather than a
+promise, and openh264 sends about a quarter to a half of what the rendition
+declares as a matter of course, so a shortfall against it is true of a healthy
+stream. Any path that looks queueing for an unrelated reason, a relay fallback
+or a Wi-Fi to cellular handoff, then steps the ladder down for no reason. See
+`plans/v2/260903-review.md` under D1.
 
 **Queueing** is `rtt` at `rtt_queueing_ratio` (2x) of `min_rtt` and at least
 `rtt_queueing_floor` (25 ms) above it, corroborated by `queueing_samples` (2)
@@ -164,7 +169,6 @@ the replacement failed to open, is forgotten rather than judged.
 | `loss_good` | 0.02 | Loss rate below which conditions count as good |
 | `goodput_downgrade_ratio` | 0.75 | Share of the measured clear-path peak that must still arrive |
 | `goodput_baseline_halflife` | 30 s | Half life of that peak |
-| `advertised_downgrade_ratio` | 0.5 | Share of the catalog bitrate, used only while nothing has been measured |
 | `queueing_samples` | 2 | Distinct round trip readings that corroborate a queue |
 | `rtt_queueing_ratio` | 2.0 | Multiple of `min_rtt` that counts as a queue |
 | `rtt_queueing_floor` | 25 ms | Excess over `min_rtt` below which nothing counts as a queue |
