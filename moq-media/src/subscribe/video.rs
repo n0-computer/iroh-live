@@ -10,6 +10,13 @@
 //! not cancel-safe: dropping a `read` future poisons the decoder for good. A
 //! `select!` cancels every arm it does not pick, so the read has to live
 //! somewhere nothing cancels it and reach the supervisor over a channel.
+//!
+//! An access unit the decoder refuses is skipped rather than fatal. A live
+//! stream loses pictures to a skipped group or a truncated access unit, and a
+//! decoder without its reference chain refuses every picture until the next
+//! keyframe, so a reader that stopped on the first of those would turn a
+//! recoverable break into a permanent freeze. The reader gives up only on a run
+//! long enough that no keyframe is coming, and says so.
 
 use std::{sync::Arc, time::Duration};
 
@@ -17,7 +24,7 @@ use n0_error::{Result, e};
 use n0_future::task::{AbortOnDropHandle, spawn};
 use n0_watcher::Watchable;
 use tokio::sync::{mpsc, watch};
-use tracing::{Instrument, debug, error_span, info, warn};
+use tracing::{Instrument, debug, error, error_span, info, warn};
 
 use super::{
     DecodeContext, RemoteBroadcast, SubscribeError, VideoControl, VideoTrack, is_synced,
@@ -31,6 +38,80 @@ use crate::frame_channel::{FrameSender, frame_channel};
 /// would be latency rather than throughput. Two slots absorb a scheduling
 /// hiccup without letting the decoder race ahead of the clock.
 const READ_AHEAD: usize = 2;
+
+/// How many access units in a row may fail to decode before the reader stops.
+///
+/// One failure is not a broken stream. A group skipped under congestion, a
+/// truncated access unit, or a decoder that ran out of picture buffers all cost
+/// the reference chain, and a decoder without it refuses every picture until the
+/// next keyframe. So the threshold has to span a keyframe interval, or a
+/// stream a keyframe was about to repair would be ended a frame into the
+/// break, which is the freeze this exists to prevent.
+///
+/// Publishers key every two seconds by default, which is 120 access units at
+/// 60fps and 60 at 30. Three hundred spans several of those at any rate we
+/// publish, and still reports a decoder that will never produce another picture
+/// within about ten seconds rather than reading a track forever.
+const MAX_CONSECUTIVE_DECODE_FAILURES: u32 = 300;
+
+/// What a failed read is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadFailure {
+    /// One access unit the decoder would not take, which the next keyframe
+    /// makes good.
+    Picture,
+    /// The track itself rather than anything in it: the transport dropped it,
+    /// or the container will not parse. Reading again fails the same way.
+    Track,
+}
+
+impl From<&moq_video::Error> for ReadFailure {
+    fn from(err: &moq_video::Error) -> Self {
+        // `Codec` is what a decode backend returns, and the only variant that
+        // is about the bytes of one picture. Transport and container errors
+        // describe the track, and retrying one of those is a spin.
+        match err {
+            moq_video::Error::Codec(_) => Self::Picture,
+            _ => Self::Track,
+        }
+    }
+}
+
+/// What to do about an access unit the decoder would not take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterFailure {
+    /// Skip it and keep reading. The next keyframe restores the picture.
+    Skip,
+    /// Stop reading: no keyframe is going to arrive that this decoder can use.
+    GiveUp,
+}
+
+/// The run of decode failures since the last picture.
+#[derive(Debug, Default)]
+struct DecodeFailures(u32);
+
+impl DecodeFailures {
+    /// Records a failure and says whether to carry on.
+    fn failed(&mut self) -> AfterFailure {
+        self.0 += 1;
+        match self.0 >= MAX_CONSECUTIVE_DECODE_FAILURES {
+            true => AfterFailure::GiveUp,
+            false => AfterFailure::Skip,
+        }
+    }
+
+    /// Records a picture, ending whatever run was going on.
+    ///
+    /// Returns how long the run was, so a recovery can report what it cost.
+    fn decoded(&mut self) -> u32 {
+        std::mem::take(&mut self.0)
+    }
+
+    /// The length of the run so far.
+    fn len(&self) -> u32 {
+        self.0
+    }
+}
 
 /// Opens `rendition` and starts decoding it.
 pub(super) async fn open(
@@ -118,10 +199,15 @@ async fn spawn_reader(
     let stats = broadcast.stats().clone();
     let task = spawn(
         async move {
+            let mut failures = DecodeFailures::default();
             loop {
                 let started = std::time::Instant::now();
                 match consumer.read().await {
                     Ok(Some(frame)) => {
+                        let skipped = failures.decoded();
+                        if skipped > 0 {
+                            info!(skipped, "video decoding recovered");
+                        }
                         // Covers the transport read as well as the decode: the
                         // two happen inside one `read`, with no earlier point
                         // to attribute arrival to.
@@ -135,10 +221,31 @@ async fn spawn_reader(
                         debug!("video track ended");
                         return;
                     }
-                    Err(err) => {
-                        warn!(error = %err, "video decode failed");
+                    Err(err) if ReadFailure::from(&err) == ReadFailure::Track => {
+                        warn!(error = %err, "video track failed");
                         return;
                     }
+                    Err(err) => match failures.failed() {
+                        AfterFailure::Skip => {
+                            // Once per run rather than once per access unit: a
+                            // lost reference chain fails every picture until
+                            // the next keyframe, and the first of those says
+                            // everything the rest would.
+                            if failures.len() == 1 {
+                                warn!(error = %err, "video decode failed, skipping the access unit");
+                            } else {
+                                debug!(error = %err, skipped = failures.len(), "video decode failed");
+                            }
+                        }
+                        AfterFailure::GiveUp => {
+                            error!(
+                                error = %err,
+                                failures = failures.len(),
+                                "giving up on this rendition: no access unit has decoded for a long time",
+                            );
+                            return;
+                        }
+                    },
                 }
             }
         }
@@ -391,7 +498,205 @@ async fn deliver(
 
 #[cfg(test)]
 mod tests {
+    use moq_video::{Size, Surface, encode};
+
     use super::*;
+    use crate::{catalog::Catalog, playout::PlaybackPolicy};
+
+    /// The test stream's geometry. Small, so encoding thirty pictures in a unit
+    /// test costs nothing.
+    const SIZE: Size = Size {
+        width: 320,
+        height: 240,
+    };
+
+    /// Pictures per test stream, and the keyframe interval within it. Three
+    /// groups, so a break in the first still leaves two keyframes to recover on.
+    const PICTURES: u64 = 30;
+    const GOP: u32 = 10;
+
+    /// The interval between pictures at the 30fps the stream is encoded for.
+    const FRAME_MICROS: u64 = 33_333;
+
+    /// Whatever a step of these tests can fail with, which is one error type
+    /// per crate in the media stack and not worth enumerating.
+    type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+    /// The producers a subscribed broadcast needs alive. Dropping any of them
+    /// closes the broadcast under the subscriber.
+    struct Published {
+        _broadcast: moq_net::broadcast::Producer,
+        _catalog: moq_mux::catalog::Producer<crate::catalog::IrohLiveExt>,
+        _import: moq_mux::codec::h264::Import<crate::catalog::IrohLiveExt>,
+    }
+
+    /// Encodes [`PICTURES`] pictures of a moving pattern as H.264 access units.
+    ///
+    /// Moving rather than flat so the inter-coded pictures carry residuals: a
+    /// static picture codes to almost nothing and a decoder can conceal its way
+    /// through a break in it without ever reporting one.
+    fn encoded_stream() -> Vec<encode::Encoded> {
+        let mut config = encode::Config::new(SIZE.width, SIZE.height, 30);
+        config.kind = encode::Kind::Software;
+        config.gop = GOP;
+        let mut encoder = encode::Encoder::new(&config).expect("the software encoder always opens");
+
+        let mut units = Vec::new();
+        for index in 0..PICTURES {
+            if index % u64::from(GOP) == 0 {
+                encoder.keyframe();
+            }
+            let mut rgba = vec![0u8; SIZE.pixels() as usize * 4];
+            for (offset, byte) in rgba.iter_mut().enumerate() {
+                *byte = (offset / 4 + index as usize * 37) as u8;
+            }
+            let surface = Surface::rgba(&rgba, SIZE).expect("the buffer matches the size");
+            let timestamp = moq_net::Timestamp::from_micros(index * FRAME_MICROS)
+                .expect("the stream is a second long");
+            units.extend(
+                encoder
+                    .encode(&moq_video::Frame::new(surface, timestamp))
+                    .expect("the software encoder takes every frame"),
+            );
+        }
+        units
+    }
+
+    /// Publishes the encoded stream as a broadcast, with the access unit at
+    /// `broken` truncated to a third of its bytes.
+    ///
+    /// A truncated access unit is what a decoder sees after a group is skipped
+    /// under congestion: the slice data stops mid-picture, the reference chain
+    /// breaks, and nothing decodes again until the next keyframe.
+    async fn publish(broken: usize) -> TestResult<(RemoteBroadcast, Published)> {
+        let mut broadcast = moq_net::broadcast::Info::new().produce();
+        let consumer = broadcast.consume();
+        let catalog = moq_mux::catalog::Producer::with_catalog(&mut broadcast, Catalog::default())?;
+        let track = broadcast.create_track("video", Some(catalog.track_info()))?;
+        let mut import =
+            moq_mux::codec::h264::Import::new(track, catalog.reserve(), Default::default())?;
+
+        let mut split = moq_mux::codec::h264::Split::new();
+        for (index, unit) in encoded_stream().into_iter().enumerate() {
+            let mut frames = split.decode(&unit.payload, unit.timestamp)?;
+            frames.extend(split.flush(unit.timestamp)?);
+            if index == broken {
+                for frame in &mut frames {
+                    frame.payload = frame.payload.slice(..frame.payload.len() / 3);
+                }
+            }
+            import.decode(frames)?;
+        }
+        import.finish()?;
+
+        // Everything is published before anyone subscribes, so a latency ceiling
+        // would have the container consumer skip straight to the last group and
+        // never reach the break this test is about.
+        let policy = PlaybackPolicy {
+            max_latency: Duration::from_secs(60),
+            decoder: moq_video::decode::Kind::Software,
+            ..PlaybackPolicy::unmanaged()
+        };
+        let remote = RemoteBroadcast::with_playback_policy("test", consumer, policy).await?;
+        Ok((
+            remote,
+            Published {
+                _broadcast: broadcast,
+                _catalog: catalog,
+                _import: import,
+            },
+        ))
+    }
+
+    /// The presentation times of every picture the track hands out, in order.
+    async fn play(track: &VideoTrack) -> Vec<u64> {
+        let mut seen = Vec::new();
+        while let Some(frame) = track.recv().await {
+            seen.push(frame.timestamp.as_micros() as u64);
+        }
+        seen
+    }
+
+    /// Regression: one access unit the decoder refuses used to end the reader,
+    /// which dropped the decoder and the subscription with it. A player showed
+    /// a picture for a fraction of a second and then froze for good, with one
+    /// warning in the log and nothing after it.
+    ///
+    /// A break costs pictures until the next keyframe, so this asserts that
+    /// pictures from after that keyframe arrive, not that none were lost.
+    #[tokio::test]
+    async fn a_broken_access_unit_does_not_end_playback() -> TestResult {
+        // Inside the first group, so two keyframes follow it.
+        let broken = 3;
+        let (broadcast, _published) = publish(broken).await?;
+        let track = open(&broadcast, "video").await?;
+
+        let seen = play(&track).await;
+        let recovered = u64::from(GOP) * FRAME_MICROS;
+        assert!(
+            seen.iter().any(|&pts| pts >= recovered),
+            "the reader stopped at the break: got {seen:?}",
+        );
+        Ok(())
+    }
+
+    /// The control for the test above: an intact stream plays to the end, so a
+    /// broken one that reaches the second keyframe really did recover rather
+    /// than the whole track having been short.
+    #[tokio::test]
+    async fn an_intact_stream_plays_to_the_end() -> TestResult {
+        let (broadcast, _published) = publish(usize::MAX).await?;
+        let track = open(&broadcast, "video").await?;
+
+        let seen = play(&track).await;
+        let last = (PICTURES - 1) * FRAME_MICROS;
+        assert!(
+            seen.iter().any(|&pts| pts >= last),
+            "the last picture never arrived: got {seen:?}",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn only_a_decode_failure_is_worth_reading_past() {
+        // A retry cannot fix a track the transport dropped, and the reader would
+        // spin through its whole allowance before saying so.
+        assert_eq!(
+            ReadFailure::from(&moq_video::Error::Net(moq_net::Error::Cancel)),
+            ReadFailure::Track,
+        );
+        assert_eq!(
+            ReadFailure::from(&moq_video::Error::Codec(
+                n0_error::anyerr!("bad picture").into()
+            )),
+            ReadFailure::Picture,
+        );
+    }
+
+    #[test]
+    fn a_run_of_failures_ends_the_reader_only_once_no_keyframe_can_help() {
+        let mut failures = DecodeFailures::default();
+        for _ in 1..MAX_CONSECUTIVE_DECODE_FAILURES {
+            assert_eq!(failures.failed(), AfterFailure::Skip);
+        }
+        assert_eq!(failures.failed(), AfterFailure::GiveUp);
+    }
+
+    #[test]
+    fn a_decoded_picture_ends_the_run() {
+        let mut failures = DecodeFailures::default();
+        for _ in 0..MAX_CONSECUTIVE_DECODE_FAILURES - 1 {
+            failures.failed();
+        }
+        assert_eq!(failures.decoded(), MAX_CONSECUTIVE_DECODE_FAILURES - 1);
+        assert_eq!(failures.len(), 0);
+        assert_eq!(
+            failures.failed(),
+            AfterFailure::Skip,
+            "the run has to start over, or a stream that recovers every keyframe \
+             still accumulates its way to a give-up",
+        );
+    }
 
     #[test]
     fn withdrawing_a_request_leaves_a_newer_one_alone() {
