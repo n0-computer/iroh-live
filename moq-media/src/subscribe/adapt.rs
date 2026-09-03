@@ -11,7 +11,7 @@ use std::time::Instant;
 use n0_future::task::{AbortOnDropHandle, spawn};
 use n0_watcher::Watchable;
 use tokio::sync::watch;
-use tracing::{Instrument, debug, error_span, info};
+use tracing::{Instrument, debug, error_span, info, trace};
 
 use super::RemoteBroadcast;
 use crate::{
@@ -125,6 +125,22 @@ async fn run(
             }
         }
         let decision = evaluate(index, &ranked, &signals, &mut timers, &config, now);
+        // Every tick, because the interesting case is the one where nothing
+        // happens: a downgrade needs a healthy goodput to fall short of, and a
+        // rung that has never been seen arriving cleanly has none, so a loop
+        // that holds forever looks identical to a link that is fine. These are
+        // the inputs that tell those two apart.
+        trace!(
+            rendition = %active,
+            rtt_ms = signals.rtt.as_millis() as u64,
+            min_rtt_ms = signals.min_rtt.as_millis() as u64,
+            rtt_samples = signals.rtt_samples,
+            loss = signals.loss_rate,
+            goodput_bps = ?signals.goodput_bps,
+            healthy_bps = ?timers.healthy_goodput(),
+            ?decision,
+            "adaptation tick",
+        );
         let target = match decision {
             Decision::Hold => continue,
             Decision::Downgrade(next) => {

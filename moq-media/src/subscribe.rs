@@ -529,6 +529,33 @@ impl VideoTrack {
             .send_modify(|generation| *generation += 1);
     }
 
+    /// Waits until `name` is the rendition that has been asked for.
+    ///
+    /// A switch is decided before it lands: the replacement decoder opens
+    /// alongside the incumbent and takes over only on its first frame, so this
+    /// returns at the decision where
+    /// [`switched_to`](Self::switched_to) returns at the handover. What that
+    /// separation is for is a caller which has to know that the adaptation loop
+    /// acted on the link it was shown, before changing the link again. The
+    /// handover needs the replacement's keyframe to arrive, and a link bad
+    /// enough to force a downgrade is by construction too narrow to carry it
+    /// alongside the rendition still playing.
+    ///
+    /// Returns immediately if `name` is already the request. A request the
+    /// supervisor cannot honour still shows here, so this says what was asked
+    /// for rather than what happened.
+    pub async fn requested(&self, name: &str) {
+        let mut watcher = self.control.requested.subscribe();
+        loop {
+            if watcher.borrow_and_update().as_deref() == Some(name) {
+                return;
+            }
+            if watcher.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
     /// Waits until `name` is the rendition actually producing frames.
     ///
     /// Returns immediately if it already is. A switch that never lands, because
