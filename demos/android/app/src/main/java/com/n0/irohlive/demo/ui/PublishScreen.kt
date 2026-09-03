@@ -155,51 +155,6 @@ fun PublishLiveScreen(
 }
 
 @Composable
-private fun TicketCard(ticket: String, onCopy: (String) -> Unit) {
-    val qr = remember(ticket) { qrBitmap(ticket) }
-    Card(
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(
-            modifier = Modifier.padding(20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            if (qr != null) {
-                Image(
-                    bitmap = qr,
-                    contentDescription = "Broadcast ticket",
-                    // Nearest-neighbour keeps the module edges square when the
-                    // bitmap is scaled up to the card width.
-                    filterQuality = FilterQuality.None,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxWidth().aspectRatio(1f),
-                )
-            } else {
-                Text(
-                    "This ticket is too long for a QR code.",
-                    color = Color.Black,
-                    textAlign = TextAlign.Center,
-                )
-            }
-            Spacer(Modifier.height(12.dp))
-            Text(
-                text = ticket,
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
-                color = Color(0xFF444444),
-                textAlign = TextAlign.Center,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(8.dp))
-            TextButton(onClick = { onCopy(ticket) }) { Text("Copy ticket") }
-        }
-    }
-}
-
-@Composable
 private fun CameraPreview(onPreviewView: (PreviewView?) -> Unit, modifier: Modifier = Modifier) {
     AndroidView(
         modifier = modifier,

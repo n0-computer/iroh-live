@@ -22,15 +22,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
 /**
- * The two modes, and a way into the offline diagnostics.
+ * The three modes, and a way into the offline diagnostics.
  *
- * Everything else in the app hangs off one of these three choices, so the
- * screen stays a single column with nothing to configure.
+ * Everything else in the app hangs off one of these choices, so the screen
+ * stays a single column with nothing to configure.
  */
 @Composable
 fun HomeScreen(
     onWatch: () -> Unit,
     onPublish: () -> Unit,
+    onCall: () -> Unit,
     onLoopback: (encoded: Boolean) -> Unit,
     onDenied: () -> Unit,
     modifier: Modifier = Modifier,
@@ -69,6 +70,17 @@ fun HomeScreen(
             container = MaterialTheme.colorScheme.surfaceVariant,
             onContainer = MaterialTheme.colorScheme.onSurface,
             onClick = onPublish,
+            modifier = Modifier.weight(1f),
+        )
+
+        Spacer(Modifier.height(16.dp))
+
+        ModeCard(
+            title = "Call",
+            detail = "Both ends send and receive. Show a code to be called, or scan one to call.",
+            container = MaterialTheme.colorScheme.secondaryContainer,
+            onContainer = MaterialTheme.colorScheme.onSecondaryContainer,
+            onClick = onCall,
             modifier = Modifier.weight(1f),
         )
 

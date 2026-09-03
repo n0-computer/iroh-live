@@ -47,6 +47,7 @@ fun DemoApp(controller: SessionController) {
                     Screen.Home -> HomeScreen(
                         onWatch = controller::openWatchSetup,
                         onPublish = controller::openPublishSetup,
+                        onCall = controller::openCallSetup,
                         onLoopback = controller::loopback,
                         onDenied = { controller.notice = "Camera access is needed for the loopback pipelines" },
                         modifier = Modifier.safeDrawingPadding(),
@@ -59,6 +60,19 @@ fun DemoApp(controller: SessionController) {
                         onWatch = controller::watch,
                         onBack = controller::openHome,
                         onDenied = { controller.notice = "Camera access is needed to scan" },
+                        modifier = Modifier.safeDrawingPadding(),
+                    )
+
+                    Screen.CallSetup -> CallSetupScreen(
+                        ticket = controller.ticketDraft,
+                        busy = controller.busy,
+                        onTicketChange = { controller.ticketDraft = it },
+                        onCall = controller::call,
+                        onWait = controller::waitForCall,
+                        onBack = controller::openHome,
+                        onDenied = {
+                            controller.notice = "Camera and microphone access are needed to call"
+                        },
                         modifier = Modifier.safeDrawingPadding(),
                     )
 
@@ -81,6 +95,14 @@ fun DemoApp(controller: SessionController) {
                         target = controller.renderTarget,
                         onSelectRendition = controller::selectRendition,
                         onExit = controller::stop,
+                    )
+
+                    is Screen.Call -> CallScreen(
+                        ticket = screen.ticket,
+                        status = controller.status,
+                        target = controller.renderTarget,
+                        onCopy = controller::copyTicket,
+                        onStop = controller::stop,
                     )
 
                     is Screen.Publish -> PublishLiveScreen(

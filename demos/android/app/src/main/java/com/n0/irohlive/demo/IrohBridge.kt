@@ -37,6 +37,20 @@ object IrohBridge {
     external fun dial(ticket: String, cameraWidth: Int, cameraHeight: Int): Long
 
     /**
+     * Publishes this node's side of a call and waits for a peer to dial it.
+     *
+     * Returns immediately with an opaque session handle (non-zero on success,
+     * 0 on failure), so [getTicket] can show a code before any peer exists.
+     * The peer's tracks arrive later; [callConnected] says when.
+     */
+    external fun answer(cameraWidth: Int, cameraHeight: Int): Long
+
+    /**
+     * Whether a call started by [answer] has a peer on it yet.
+     */
+    external fun callConnected(handle: Long): Boolean
+
+    /**
      * Pushes a camera frame (RGBA byte array) into the publish pipeline.
      *
      * [data] must contain width * height * 4 bytes of RGBA pixel data.

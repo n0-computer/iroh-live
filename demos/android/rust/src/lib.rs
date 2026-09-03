@@ -22,7 +22,7 @@ use iroh_live::{Call, Live, Subscription, ticket::LiveTicket};
 use jni::{
     JNIEnv, JavaVM,
     objects::{JByteArray, JClass, JObject, JString},
-    sys::{jint, jlong},
+    sys::{jboolean, jint, jlong},
 };
 use moq_media::{
     frame_channel::FrameReceiver,
@@ -375,6 +375,124 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
     session.call = Some(call);
     session.live = Some(live);
     Ok(handle::to_i64(session.into_shared()))
+}
+
+/// Publishes this node's side of a call and waits for a peer to dial it.
+///
+/// Returns a session handle at once, with the ticket already readable, so the
+/// screen can show the code before any peer exists. The peer's tracks arrive
+/// later, on a task this handle owns;
+/// [`Java_com_n0_irohlive_demo_IrohBridge_callConnected`] says when.
+///
+/// Returns 0 on failure.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_answer(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    camera_width: jint,
+    camera_height: jint,
+) -> jlong {
+    let size = Size::new(camera_width as u32, camera_height as u32);
+    match runtime().block_on(answer_impl(size)) {
+        Ok(handle) => handle,
+        Err(err) => {
+            error!("answer failed: {err:#}");
+            0
+        }
+    }
+}
+
+async fn answer_impl(size: Size) -> Result<jlong> {
+    info!(%size, "waiting for a call");
+    let live = Live::from_env().await?.with_router().spawn();
+    let id = live.endpoint().id();
+    info!(id = %id.fmt_short(), "endpoint ready");
+
+    // The same shape the dialing side uses: each peer publishes its own half of
+    // the call under its own endpoint id, and subscribes to the other's. The
+    // camera starts here rather than when a peer arrives, so the preview is
+    // live while the code is on screen and the first frame the peer sees does
+    // not wait for a device to open.
+    let path = Call::path(id);
+    let broadcast = live.publish(&path)?;
+    let camera = set_camera(&broadcast, size)?;
+    set_microphone(&broadcast);
+
+    let mut session = SessionHandle::new();
+    session.frames = broadcast
+        .preview()
+        .map_or(FrameSource::Empty, FrameSource::Preview);
+    session.camera = Some(camera);
+    session.ticket = Some(LiveTicket::new(id, &path).to_string());
+    session.broadcast = Some(broadcast);
+    session.live = Some(live.clone());
+    let shared = session.into_shared();
+
+    let waiting = Arc::clone(&shared);
+    runtime().spawn(async move {
+        if let Err(err) = accept_one(live, waiting).await {
+            error!("answering failed: {err:#}");
+        }
+    });
+
+    Ok(handle::to_i64(shared))
+}
+
+/// Accepts the first peer that calls, and installs its tracks on `session`.
+///
+/// Sessions this node dialed are skipped: everything that speaks MoQ arrives
+/// the same way, and only an inbound one can be a caller.
+async fn accept_one(live: Live, session: SharedHandle) -> Result<()> {
+    let mut incoming = live.transport().incoming_sessions();
+    while let Some(moq) = incoming.next().await {
+        if moq.dialed() {
+            continue;
+        }
+        let remote_id = moq.remote_id();
+        info!(remote = %remote_id.fmt_short(), "incoming session");
+        // A plain subscriber arrives here too and never publishes the call path
+        // this waits for, so a failure is an ordinary outcome rather than an
+        // error: keep listening for somebody who does.
+        let call = match Call::accept(moq).await {
+            Ok(call) => call,
+            Err(err) => {
+                info!(remote = %remote_id.fmt_short(), error = %err, "not a caller");
+                continue;
+            }
+        };
+        let tracks = call.remote().media().await;
+        info!(
+            remote = %call.remote_id().fmt_short(),
+            video = tracks.video.is_some(),
+            audio = tracks.audio.is_some(),
+            "call answered",
+        );
+
+        let mut held = session.lock().expect("poisoned");
+        held.remote = Some(call.remote().clone());
+        // Replaces the local preview, so the screen switches from this node's
+        // own camera to the peer's picture the moment there is one.
+        held.frames = tracks.video.map_or(FrameSource::Empty, FrameSource::Track);
+        held.audio = tracks.audio;
+        held.call = Some(call);
+        return Ok(());
+    }
+    Ok(())
+}
+
+/// Whether an answered call has a peer on it yet.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_callConnected(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+) -> jboolean {
+    if handle == 0 {
+        return 0;
+    }
+    let session = unsafe { borrow_handle(handle) };
+    let connected = session.lock().expect("poisoned").call.is_some();
+    jboolean::from(connected)
 }
 
 // ── JNI: publish ────────────────────────────────────────────────────

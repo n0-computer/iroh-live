@@ -52,21 +52,14 @@ jobs:
             features: nvidia,vaapi,v4l2,rpicam,pipewire,aec
             bin: irl
             asset: irl-linux-x86_64
-          # Both macOS binaries come off the arm64 runner: the Xcode toolchain
-          # ships the x86_64 SDK, so the second target is a cross build rather
-          # than a second machine.
+          # Apple silicon only. An Intel Mac is not a target we support, and a
+          # second build of it costs a runner on every release for nobody.
           - name: macos-aarch64
             os: macos-14
             target: aarch64-apple-darwin
             features: aec
             bin: irl
             asset: irl-macos-aarch64
-          - name: macos-x86_64
-            os: macos-14
-            target: x86_64-apple-darwin
-            features: aec
-            bin: irl
-            asset: irl-macos-x86_64
           - name: windows-x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -339,9 +332,9 @@ jobs:
           - irl-linux-aarch64: cross-compiled with cargo-zigbuild against a Debian
             Bookworm sysroot, glibc 2.36, so it runs on Raspberry Pi OS Bookworm.
             Same backends as the x86_64 build.
-          - irl-macos-aarch64 and irl-macos-x86_64: macOS 14 or newer.
-            VideoToolbox encode and decode, ScreenCaptureKit, CoreAudio, Metal
-            rendering, echo cancellation.
+          - irl-macos-aarch64: Apple silicon, macOS 14 or newer. VideoToolbox
+            encode and decode, ScreenCaptureKit, CoreAudio, Metal rendering,
+            echo cancellation.
           - irl-windows-x86_64.exe: Windows 10 or newer, x86_64. Media Foundation
             capture and encode, WASAPI, GPU rendering, echo cancellation.
           - iroh-live-demo-arm64-v8a.apk: the Android demo app, arm64-v8a, signed

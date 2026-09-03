@@ -41,6 +41,9 @@ sealed interface Screen {
     /** Ticket entry and the QR scanner, before watching. */
     data object WatchSetup : Screen
 
+    /** Ticket entry and the QR scanner, before calling, or a way to be called. */
+    data object CallSetup : Screen
+
     /** Broadcast name entry, before going live. */
     data object PublishSetup : Screen
 
@@ -59,6 +62,15 @@ sealed interface Screen {
      * [ticket] is null until the native side has an endpoint to put in it.
      */
     data class Publish(val name: String, val ticket: String?) : Screen
+
+    /**
+     * A two-way call.
+     *
+     * [ticket] is set only while waiting to be called, and is the code the
+     * other end scans. It clears when a peer arrives, which is also when the
+     * picture stops being this node's own camera and becomes the peer's.
+     */
+    data class Call(val ticket: String?) : Screen
 }
 
 /**
@@ -98,6 +110,9 @@ class SessionController(
 
         /** How long to wait for the camera preview view before publishing anyway. */
         private const val PREVIEW_WAIT_MILLIS = 1500L
+
+        /** How often to ask the native side whether a caller has arrived. */
+        private const val PEER_POLL_MS = 500L
     }
 
     var screen by mutableStateOf<Screen>(Screen.Home)
@@ -155,14 +170,18 @@ class SessionController(
         screen = Screen.PublishSetup
     }
 
+    fun openCallSetup() {
+        screen = Screen.CallSetup
+    }
+
     /** Handles the system back gesture. Returns false when there is nothing to go back to. */
     fun back(): Boolean = when (screen) {
         Screen.Home -> false
-        Screen.WatchSetup, Screen.PublishSetup -> {
+        Screen.WatchSetup, Screen.PublishSetup, Screen.CallSetup -> {
             openHome()
             true
         }
-        is Screen.Watch, is Screen.Publish -> {
+        is Screen.Watch, is Screen.Publish, is Screen.Call -> {
             stop()
             true
         }
@@ -216,6 +235,96 @@ class SessionController(
             val ticket = withContext(Dispatchers.IO) { IrohBridge.getTicket(handle) }
             screen = Screen.Publish(broadcastName, ticket.ifEmpty { null })
             awaitCameraAndPush()
+        }
+    }
+
+    /** Dials a peer, sending this camera and microphone and playing theirs. */
+    fun call(ticket: String) {
+        val trimmed = ticket.trim()
+        if (trimmed.isEmpty()) {
+            notice = "Enter or scan a ticket first"
+            return
+        }
+        ticketDraft = trimmed
+        busy = true
+        screen = Screen.Call(ticket = null)
+        scope.launch {
+            // No `awaitPreviewView` here, unlike publishing: the call screens
+            // draw through the native renderer, so CameraX has no preview use
+            // case to bind and the analysis path that feeds the encoder does
+            // not need one.
+            startCamera()
+            val handle = withContext(Dispatchers.IO) {
+                IrohBridge.dial(trimmed, CAMERA_WIDTH, CAMERA_HEIGHT)
+            }
+            busy = false
+            if (handle == 0L) {
+                stopCamera()
+                screen = Screen.CallSetup
+                notice = "Could not reach that peer"
+                return@launch
+            }
+            sessionHandle = handle
+            status = "In a call"
+            awaitCameraAndPush()
+            startRenderLoop(rotateWithSensor = false)
+        }
+    }
+
+    /**
+     * Publishes this node's side of a call and shows the code to be dialed.
+     *
+     * The camera starts here rather than when a peer arrives, so the preview is
+     * live behind the code and the first frame the caller sees does not wait
+     * for a device to open. That preview is what the render loop draws until
+     * the native side reports a peer, at which point the same loop starts
+     * drawing the peer's pictures instead: the frame source is swapped under
+     * it rather than the loop being restarted.
+     */
+    fun waitForCall() {
+        busy = true
+        screen = Screen.Call(ticket = null)
+        scope.launch {
+            startCamera()
+            val handle = withContext(Dispatchers.IO) {
+                IrohBridge.answer(CAMERA_WIDTH, CAMERA_HEIGHT)
+            }
+            busy = false
+            if (handle == 0L) {
+                stopCamera()
+                screen = Screen.CallSetup
+                notice = "Could not open an endpoint to be called on"
+                return@launch
+            }
+            sessionHandle = handle
+            val ticket = withContext(Dispatchers.IO) { IrohBridge.getTicket(handle) }
+            screen = Screen.Call(ticket = ticket.ifEmpty { null })
+            status = "Waiting for a call"
+            awaitCameraAndPush()
+            startRenderLoop(rotateWithSensor = true)
+            awaitPeer(handle)
+        }
+    }
+
+    /**
+     * Polls the native side until a caller arrives, then takes the code down.
+     *
+     * Polled rather than pushed because everything else Kotlin asks the bridge
+     * is a blocking call it makes itself; a callback would be the only inbound
+     * edge in the whole interface, and a second of latency on a screen somebody
+     * is holding up to a camera costs nothing.
+     */
+    private suspend fun awaitPeer(handle: Long) {
+        while (sessionHandle == handle) {
+            if (withContext(Dispatchers.IO) { IrohBridge.callConnected(handle) }) {
+                screen = Screen.Call(ticket = null)
+                status = "In a call"
+                // The peer's pictures arrive the right way up; only this node's
+                // own camera needs the sensor rotation applied.
+                restartRenderLoop(rotateWithSensor = false)
+                return
+            }
+            delay(PEER_POLL_MS)
         }
     }
 
@@ -315,6 +424,21 @@ class SessionController(
      * dispatcher could resume the coroutine somewhere else; on the emulator's
      * EGL that ends in a segfault inside `eglSwapBuffers`.
      */
+    /**
+     * Stops the render loop and starts it again with a different rotation.
+     *
+     * Answering a call is the one transition where what is being drawn changes
+     * under a loop that is already running: this node's own camera up to the
+     * moment a peer arrives, and the peer's pictures after it. The rotation the
+     * loop applies is fixed when it starts, so the loop restarts rather than
+     * being taught to re-read it every frame.
+     */
+    private suspend fun restartRenderLoop(rotateWithSensor: Boolean) {
+        renderJob?.cancelAndJoin()
+        renderJob = null
+        startRenderLoop(rotateWithSensor)
+    }
+
     private fun startRenderLoop(rotateWithSensor: Boolean) {
         val dispatcher = Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "iroh-live-render")
