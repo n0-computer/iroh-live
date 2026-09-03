@@ -244,6 +244,13 @@ pub(super) async fn open(
 struct Opening {
     name: String,
     task: AbortOnDropHandle<Result<Reader, SubscribeError>>,
+    /// Whether this open is a decoder rebuild rather than a rendition switch.
+    ///
+    /// The two share one slot and are cancelled by different things. Asking for
+    /// the rendition already playing cancels a switch, because that is what
+    /// un-pinning means, and it must not cancel a rebuild: the rebuild is for
+    /// that same rendition, so the name it carries is the one being asked for.
+    rebuild: bool,
 }
 
 /// One decoder plus the task reading it.
@@ -408,8 +415,15 @@ async fn supervise(
                 // not landed, which is what un-pinning a rendition means.
                 if name == current.get() {
                     pending = None;
-                    opening = None;
-                    if reader.is_none() {
+                    // A rebuild survives: it is an open for this same rendition
+                    // with a new decoder, so cancelling it here would throw away
+                    // a decoder change because the user afterwards pinned the
+                    // rendition it was already playing, with nothing left to
+                    // retry it.
+                    if opening.as_ref().is_some_and(|open| !open.rebuild) {
+                        opening = None;
+                    }
+                    if reader.is_none() && opening.is_none() {
                         debug!("the only replacement was cancelled with nothing playing");
                         return;
                     }
@@ -433,6 +447,7 @@ async fn supervise(
                 opening = Some(Opening {
                     name,
                     task: AbortOnDropHandle::new(task),
+                    rebuild: false,
                 });
             }
 
@@ -460,6 +475,7 @@ async fn supervise(
                 opening = Some(Opening {
                     name,
                     task: AbortOnDropHandle::new(task),
+                    rebuild: false,
                 });
             }
 
