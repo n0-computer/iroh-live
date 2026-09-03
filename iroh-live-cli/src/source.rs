@@ -154,6 +154,29 @@ fn capture(
     VideoSource::Capture(config)
 }
 
+/// Returns the bitrate to hand `rpicam-vid`, or the default when none was
+/// given.
+///
+/// # Errors
+///
+/// Fails if the number does not fit the subprocess's flag. Rejected here rather
+/// than clamped, because clamping turns a typo into a 4 Gbps request that
+/// `rpicam-vid` refuses in its own words, about a process the user does not
+/// know they are running.
+#[cfg(all(target_os = "linux", feature = "rpicam"))]
+fn rpicam_bitrate(bitrate: Option<u64>) -> Result<u32> {
+    let Some(bitrate) = bitrate else {
+        return Ok(rpicam::DEFAULT_BITRATE);
+    };
+    u32::try_from(bitrate).map_err(|_| {
+        anyerr!(
+            "--bitrate {bitrate} is out of range for --video rpicam, which can \
+             ask its encoder for at most {} bits per second",
+            u32::MAX
+        )
+    })
+}
+
 /// Starts `rpicam-vid` and returns whichever of H.264 and raw pictures `mode`
 /// asked for.
 ///
@@ -186,16 +209,20 @@ fn rpicam_source(
     let framerate = framerate.generated();
     match mode {
         RpicamMode::Raw => {
-            let config = rpicam::Config::raw(width, height, framerate);
+            let config = rpicam::RawConfig::new(width, height, framerate);
             Ok(VideoSource::Frames(rpicam::frames(config, clock)?))
         }
         RpicamMode::Encoded => {
             check_rpicam_flags(args)?;
-            let mut config = rpicam::Config::new(width, height, framerate);
-            if let Some(bitrate) = args.bitrate {
-                config = config.with_bitrate(u32::try_from(bitrate).unwrap_or(u32::MAX));
-            }
-            Ok(rpicam::open(config)?)
+            let output = rpicam::Output::H264 {
+                bitrate: rpicam_bitrate(args.bitrate)?,
+                // A keyframe a second. The subprocess owns the encode, so this
+                // is the only place the join latency can be set.
+                keyframe_interval: framerate,
+            };
+            Ok(rpicam::open(rpicam::Config::new(
+                width, height, framerate, output,
+            ))?)
         }
     }
 }

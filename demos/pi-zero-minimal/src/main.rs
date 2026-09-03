@@ -21,9 +21,15 @@ async fn main() -> anyhow::Result<()> {
 
     let live = Live::from_env().await?.with_router().spawn();
     let broadcast = live.publish(BROADCAST)?;
-    broadcast
-        .video()
-        .set(rpicam::open(rpicam::Config::new(640, 360, 30))?)?;
+    broadcast.video().set(rpicam::open(rpicam::Config::new(
+        640,
+        360,
+        30,
+        rpicam::Output::H264 {
+            bitrate: rpicam::DEFAULT_BITRATE,
+            keyframe_interval: 30,
+        },
+    ))?)?;
 
     let ticket = LiveTicket::new(live.endpoint().id(), BROADCAST);
     println!("{ticket}");

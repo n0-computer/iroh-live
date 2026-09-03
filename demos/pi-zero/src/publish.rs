@@ -60,7 +60,13 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     // --- media broadcast ---
     let broadcast = live.publish(opts.name.as_str())?;
 
-    let config = rpicam::Config::new(opts.width, opts.height, opts.fps).with_bitrate(opts.bitrate);
+    let output = rpicam::Output::H264 {
+        bitrate: opts.bitrate,
+        // A keyframe a second, which is how long a subscriber waits before the
+        // picture starts.
+        keyframe_interval: opts.fps,
+    };
+    let config = rpicam::Config::new(opts.width, opts.height, opts.fps, output);
     tracing::info!(
         width = opts.width,
         height = opts.height,
