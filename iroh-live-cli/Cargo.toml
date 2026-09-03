@@ -29,7 +29,7 @@ moq-mux = { workspace = true }
 n0-error = { version = "1", features = ["anyhow"] }
 qr2term = "0.3"
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+toml = "1.1"
 rand = "0.9"
 strum = { version = "0.28", features = ["derive"] }
 tokio = { version = "1.48.0", features = ["full"] }
