@@ -25,9 +25,14 @@ else.
 
 `demos/android/rust` is the JNI bridge on top: one tokio runtime, one
 `SessionHandle` per session passed to Kotlin as a `jlong`, and a logcat layer for
-`tracing`. Its entry points cover connecting, dialling, publishing, pushing
-camera frames, driving the surface, listing and switching renditions, and
+`tracing`. Its entry points cover connecting, dialling, answering, publishing,
+pushing camera frames, driving the surface, listing and switching renditions, and
 reading a status line. `IrohBridge.kt` declares the matching `external fun`s.
+
+The app has three modes. **Watch** scans or pastes a ticket and plays it.
+**Publish** sends this camera and microphone and shows a ticket as a QR code.
+**Call** does both at once against one peer, and is the mode with two ways in:
+scan the other device's code to dial it, or show a code of your own and wait.
 
 Two of them are offline: `startDirect` runs camera to preview with no encode and
 no network, and `startH264` runs camera to MediaCodec to a local loopback
@@ -36,7 +41,17 @@ peer. Both exist because "is it the codec or is it the network" is the first
 question when a device misbehaves.
 
 A call uses `iroh_live::Call`, so each peer publishes under `calls/<its own
-endpoint id>` and subscribes to the other's.
+endpoint id>` and subscribes to the other's. Which side dialed stops mattering
+once the session is up.
+
+`dial` blocks until the call is established, because the caller already has
+somewhere to connect to. `answer` cannot: the code has to be on screen before
+any peer exists, so it returns as soon as this node's own side is published and
+leaves a task on the handle waiting for the first inbound session that turns out
+to be a caller. `callConnected` is what the screen polls to know it happened.
+Every other session arrives the same way and an ordinary subscriber never
+publishes the call path, so one that does not is skipped rather than treated as
+a failure.
 
 ## Prerequisites
 
