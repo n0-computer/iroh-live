@@ -14,7 +14,7 @@ mod logcat;
 
 use std::{
     ffi::c_void,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, Weak},
     time::Instant,
 };
 
@@ -158,12 +158,29 @@ struct SessionHandle {
     /// The dimensions of the last frame drawn, which the decoder knows more
     /// precisely than the catalog does.
     frame_dims: Option<Size>,
+    /// The task waiting for somebody to call, for a handle from `answer`.
+    /// Aborted when this handle drops, which is what stops an unanswered wait
+    /// outliving the screen that started it.
+    waiting: Option<AbortOnDrop>,
     cam_frames_pushed: u64,
     dec_frames_rendered: u64,
     created_at: Instant,
 }
 
 type SharedHandle = Arc<Mutex<SessionHandle>>;
+
+/// A spawned task that is cancelled when this is dropped.
+///
+/// `tokio::task::JoinHandle` detaches on drop, which for the answering task
+/// would mean an endpoint and a camera held open by a wait nobody is watching.
+#[derive(Debug)]
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 
 impl SessionHandle {
     /// An empty handle: no session, nothing to draw, counters at zero.
@@ -180,6 +197,7 @@ impl SessionHandle {
             ticket: None,
             renderer: Arc::new(Mutex::new(None)),
             frame_dims: None,
+            waiting: None,
             cam_frames_pushed: 0,
             dec_frames_rendered: 0,
             created_at: Instant::now(),
@@ -428,12 +446,20 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     session.live = Some(live.clone());
     let shared = session.into_shared();
 
-    let waiting = Arc::clone(&shared);
-    runtime().spawn(async move {
+    // The task gets a `Weak`, not an `Arc`. Holding a strong reference to the
+    // handle it is going to write into would keep that handle alive for as long
+    // as the task runs, and the task runs until somebody calls, so a screen
+    // backed out of before any peer arrived would hold its endpoint, its camera
+    // and its broadcast open for the rest of the process. Instead the task is
+    // owned by the handle through `waiting`, so `disconnect` dropping the last
+    // `Arc` aborts it.
+    let waiting = Arc::downgrade(&shared);
+    let task = runtime().spawn(async move {
         if let Err(err) = accept_one(live, waiting).await {
             error!("answering failed: {err:#}");
         }
     });
+    shared.lock().expect("poisoned").waiting = Some(AbortOnDrop(task));
 
     Ok(handle::to_i64(shared))
 }
@@ -442,7 +468,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
 ///
 /// Sessions this node dialed are skipped: everything that speaks MoQ arrives
 /// the same way, and only an inbound one can be a caller.
-async fn accept_one(live: Live, session: SharedHandle) -> Result<()> {
+async fn accept_one(live: Live, session: Weak<Mutex<SessionHandle>>) -> Result<()> {
     let mut incoming = live.transport().incoming_sessions();
     while let Some(moq) = incoming.next().await {
         if moq.dialed() {
@@ -468,6 +494,13 @@ async fn accept_one(live: Live, session: SharedHandle) -> Result<()> {
             "call answered",
         );
 
+        let Some(session) = session.upgrade() else {
+            // The screen was left while this was settling, so there is nothing
+            // to install it on. Closing the call tells the peer, where dropping
+            // it would leave them waiting out a timeout.
+            call.close();
+            return Ok(());
+        };
         let mut held = session.lock().expect("poisoned");
         held.remote = Some(call.remote().clone());
         // Replaces the local preview, so the screen switches from this node's
