@@ -123,12 +123,11 @@ async fn run(publish: Publish) -> Result<(), PublishError> {
             let (opened_tx, opened) = tokio::sync::oneshot::channel();
             let open_config = config.clone();
             let reader = crate::local_task::spawn("video-capture", move |shutdown| async move {
-                let mut stream = match moq_video::capture::open(&open_config).await {
-                    Ok(stream) => stream,
-                    Err(err) => {
-                        let _ = opened_tx.send(Err(err));
-                        return;
-                    }
+                let Some(mut stream) = open_capture(&open_config, &shutdown).await else {
+                    // Cancelled while retrying. Dropping the sender is what
+                    // tells the caller, which already reads a dropped channel
+                    // as a reader that could not start.
+                    return;
                 };
                 // The geometry is read here because the caller needs it to
                 // register the catalog, and the stream itself cannot travel.
@@ -137,7 +136,7 @@ async fn run(publish: Publish) -> Result<(), PublishError> {
                     stream.framerate(),
                     stream.color(),
                 );
-                if opened_tx.send(Ok(geometry)).is_err() {
+                if opened_tx.send(geometry).is_err() {
                     return;
                 }
 
@@ -167,17 +166,14 @@ async fn run(publish: Publish) -> Result<(), PublishError> {
                 }
             });
 
-            let (size, device_framerate, color) = match opened.await {
-                Ok(Ok(geometry)) => geometry,
-                Ok(Err(err)) => return Err(err.into()),
-                // The thread died before it reported, which it only does when it
-                // could not start at all.
-                Err(_) => {
-                    return Err(moq_video::Error::Unsupported(
-                        "the video capture thread stopped before opening the device".into(),
-                    )
-                    .into());
-                }
+            // The reader stopping before it opened anything now means only that
+            // the source was replaced or dropped while it was still waiting for
+            // the device: an open that fails is retried rather than reported.
+            let Ok((size, device_framerate, color)) = opened.await else {
+                return Err(moq_video::Error::Unsupported(
+                    "the video capture source was dropped before its device opened".into(),
+                )
+                .into());
             };
             let framerate = config
                 .framerate
@@ -496,6 +492,71 @@ async fn publish_annexb(
     }
     debug!(rendition = %name, units, "pre-encoded source ended");
     Ok(())
+}
+
+/// The first and the longest a capture open waits before trying again.
+///
+/// A device is busy for as long as whatever holds it takes to let go, which is
+/// a person closing something or another part of this program handing it over.
+/// The first retry is quick because the common case is a handover measured in
+/// milliseconds, and the ceiling is low because a camera that frees up should
+/// be picked up while somebody is still looking at the screen.
+#[cfg(feature = "capture")]
+const OPEN_RETRY_FIRST: Duration = Duration::from_millis(200);
+#[cfg(feature = "capture")]
+const OPEN_RETRY_MAX: Duration = Duration::from_secs(2);
+
+/// Opens the capture device, retrying until it opens or the source is dropped.
+///
+/// Returns `None` only for the drop: there is no attempt count to run out,
+/// because a device that is busy now is the same device that will be free in a
+/// moment, and the caller has no better answer to a failure than to ask again.
+///
+/// A capture device is busy far more often than it is broken, and the two look
+/// the same from here: `EBUSY` from a camera another program has, from another
+/// window of this one, or from the scanner in `irl call` that borrowed it for a
+/// QR code. Failing once and stopping meant a publisher that lost that race
+/// stayed dark for the rest of the session, with one warning to say so and
+/// nothing to change it.
+///
+/// Every error is retried, not just the busy ones. Which errno means "try
+/// again" is not portable, and a device that will never appear costs a log line
+/// every two seconds, which is cheap next to a publisher that gives up on one
+/// that would have.
+#[cfg(feature = "capture")]
+async fn open_capture(
+    config: &moq_video::capture::Config,
+    shutdown: &tokio_util::sync::CancellationToken,
+) -> Option<moq_video::capture::Stream> {
+    let mut backoff = OPEN_RETRY_FIRST;
+    let mut attempt = 1u32;
+    loop {
+        let result = tokio::select! {
+            opened = moq_video::capture::open(config) => opened,
+            () = shutdown.cancelled() => return None,
+        };
+        let err = match result {
+            Ok(stream) => {
+                if attempt > 1 {
+                    info!(attempt, "the capture device opened");
+                }
+                return Some(stream);
+            }
+            Err(err) => err,
+        };
+        warn!(
+            error = %err,
+            attempt,
+            retry_in = ?backoff,
+            "the capture device would not open, trying again",
+        );
+        tokio::select! {
+            () = tokio::time::sleep(backoff) => {}
+            () = shutdown.cancelled() => return None,
+        }
+        backoff = (backoff * 2).min(OPEN_RETRY_MAX);
+        attempt += 1;
+    }
 }
 
 /// Builds the encoder config for one rendition of a source.
