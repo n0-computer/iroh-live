@@ -4,6 +4,14 @@
 //! pixels without a camera builds a [`Surface`] itself.
 //! These do that, so a test can publish something real over a real transport
 //! without a device, a driver, or a file.
+//!
+//! [`video`] and [`audio`] are the cheap pair: a moving gradient and a steady
+//! tone, which prove that bytes are moving and answer nothing else. When the
+//! question is how the playback behaves rather than whether it happens at all,
+//! reach for [`timing`], whose picture and tone are built to be measured
+//! against each other.
+
+pub mod timing;
 
 use std::time::Duration;
 
@@ -56,6 +64,64 @@ fn paint(rgba: &mut [u8], size: Size, tick: u32) {
 
 /// A sine tone at `hz`, in the layout the encoder is told to expect.
 pub fn audio(hz: f64, sample_rate: u32, channels: u32) -> AudioSource {
+    tone(hz, sample_rate, channels, Duration::ZERO, Gate::Continuous)
+}
+
+/// When a generated tone sounds.
+#[derive(Debug, Clone, Copy)]
+enum Gate {
+    /// It never stops.
+    Continuous,
+    /// It sounds for `length` at the start of every `period` of media time.
+    Pulse {
+        /// How often a pulse begins.
+        period: Duration,
+        /// How long one lasts.
+        length: Duration,
+    },
+}
+
+/// How long a pulse takes to reach full amplitude, and to fall from it.
+///
+/// A hard edge on a sine is a click, which wears on anyone listening to a
+/// beeping stream for an hour. Two milliseconds is a fifteenth of a frame at
+/// 30 fps, far too short to move a reading of when the beep began.
+const RAMP: Duration = Duration::from_millis(2);
+
+impl Gate {
+    /// Whether the tone sounds at `media`.
+    fn open(self, media: Duration) -> bool {
+        match self {
+            Self::Continuous => true,
+            Self::Pulse { period, length } => {
+                media.as_micros() % period.as_micros() < length.as_micros()
+            }
+        }
+    }
+
+    /// The amplitude multiplier at `media`, tapered over [`RAMP`] at each end
+    /// of a pulse.
+    fn envelope(self, media: Duration) -> f32 {
+        let Self::Pulse { period, length } = self else {
+            return 1.0;
+        };
+        let phase = media.as_micros() % period.as_micros();
+        let length = length.as_micros();
+        if phase >= length {
+            return 0.0;
+        }
+        let edge = phase.min(length - phase) as f32;
+        (edge / RAMP.as_micros() as f32).min(1.0)
+    }
+}
+
+/// A sine tone at `hz`, gated by `gate` and stamped from `origin` on.
+///
+/// `origin` is where the track starts on the media timeline. A source that has
+/// to line up with a picture takes it from the shared clock, so that both
+/// tracks describe the same instant with the same number; a source that stands
+/// alone starts at zero.
+fn tone(hz: f64, sample_rate: u32, channels: u32, origin: Duration, gate: Gate) -> AudioSource {
     /// One buffer per 20 ms, matching the Opus frame duration so the encoder
     /// consumes each buffer whole.
     const FRAME: Duration = Duration::from_millis(20);
@@ -65,6 +131,8 @@ pub fn audio(hz: f64, sample_rate: u32, channels: u32) -> AudioSource {
     /// audible as distortion on a signal chosen for being unmistakable.
     const AMPLITUDE: f32 = 0.5;
 
+    let origin_us = origin.as_micros() as u64;
+    let sample_ns = 1_000_000_000 / u64::from(sample_rate.max(1));
     let per_frame = (sample_rate as f64 * FRAME.as_secs_f64()) as usize;
     let step = hz * std::f64::consts::TAU / sample_rate as f64;
     let input = moq_audio::encode::Input {
@@ -87,13 +155,19 @@ pub fn audio(hz: f64, sample_rate: u32, channels: u32) -> AudioSource {
             let next = started + FRAME * (elapsed_us / FRAME.as_micros() as u64 + 1) as u32;
             tokio::time::sleep_until(next).await;
             let mut data = Vec::with_capacity(per_frame * channels as usize * 4);
+            let start = Duration::from_micros(origin_us + elapsed_us);
             for index in 0..per_frame {
-                let value = ((sample + index) as f64 * step).sin() as f32 * AMPLITUDE;
+                // Each sample carries its own media time, so a pulse begins and
+                // ends where the gate says rather than at a buffer boundary.
+                let media = start + Duration::from_nanos(index as u64 * sample_ns);
+                let value = ((sample + index) as f64 * step).sin() as f32
+                    * AMPLITUDE
+                    * gate.envelope(media);
                 for _ in 0..channels {
                     data.extend_from_slice(&value.to_le_bytes());
                 }
             }
-            let timestamp = moq_net::Timestamp::from_micros(elapsed_us)
+            let timestamp = moq_net::Timestamp::from_micros(origin_us + elapsed_us)
                 .expect("elapsed micros out of Timestamp range");
             let frame = moq_audio::Frame::new(data.into(), timestamp);
             let next_us = elapsed_us + FRAME.as_micros() as u64;

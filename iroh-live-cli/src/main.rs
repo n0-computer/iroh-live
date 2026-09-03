@@ -18,6 +18,7 @@ mod devices;
 mod import;
 mod publish;
 mod record;
+mod rendition;
 #[cfg(feature = "render")]
 mod room;
 mod run;

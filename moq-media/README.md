@@ -61,7 +61,7 @@ identity, flattened alongside the media sections so a base consumer ignores them
 | `frame_channel` | A single-slot latest-wins channel for frames |
 | `audio_file` | An audio file demuxed with symphonia and published as if it were a microphone |
 | `rpicam` | `rpicam-vid` as a pre-encoded video source |
-| `test_source` | Generated video and audio, for tests |
+| `test_source` | Generated video and audio, for tests, and a `timing` pattern built to diagnose playback |
 | `net` | `NetworkSignals`, the input to adaptation |
 
 ## Feature flags

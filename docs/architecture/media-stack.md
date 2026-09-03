@@ -56,6 +56,9 @@ AAC-LC frames off the wire, so it has no container reader we could use instead.
 publish over a real transport with no camera and no microphone. The pattern
 changes every frame on purpose: a static image compresses to almost nothing after
 the first keyframe, so a test watching for bytes would pass on a stalled pipeline.
+Its `timing` submodule is the pair a person watches instead: a sweeping bar, a
+frame counter, a UTC clock, and a marker that flashes with the tone's beep, which
+between them measure smoothness, dropped frames, latency, and A/V sync.
 
 `moq-media-egui` draws the texture `moq_video::render` returns inside an egui
 panel, and carries the debug overlay. `moq-media-android` provides the Camera2

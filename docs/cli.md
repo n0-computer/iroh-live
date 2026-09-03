@@ -43,7 +43,8 @@ and lets the platform pick the backend that reaches it, so the old
 | `app:<id>` | Every window of one application (macOS) |
 | `rpicam` | The Raspberry Pi camera through `rpicam-vid`, already encoded. Needs the `rpicam` feature |
 | `file:<path>` | A media file, republished rather than encoded |
-| `test` | A generated colour-bar pattern |
+| `test`, `test:timing` | The timing pattern: a sweeping bar, stripes, a frame counter, a clock, and a marker that flashes with the tone's beep |
+| `test:gradient` | A moving gradient, which proves only that frames are arriving |
 | `none` | Publish no video |
 
 | `--audio` | Meaning |
@@ -51,7 +52,8 @@ and lets the platform pick the backend that reaches it, so the old
 | `mic`, `mic:<id>` | A microphone. This is the default for `--audio` |
 | `system` | Everything the machine is playing (macOS) |
 | `file:<path>[:loop]` | An audio file, decoded and encoded |
-| `test` | A generated tone |
+| `test`, `test:beeps` | A beep every second, on the media time the timing pattern's marker flashes on |
+| `test:tone` | An unbroken sine tone |
 | `none` | Publish no audio |
 
 Anything `--audio` does not recognise is taken as a device name, so an
@@ -64,7 +66,7 @@ Encoding flags:
 | `--test-source` | Force `--video test --audio test`, overriding both if they were given |
 | `--codec <CODEC>` | `h264` (default) or `h265`, which needs hardware |
 | `--encoder <KIND>` | `auto` (default), `hardware`, `software`, or a backend name such as `vaapi`, `nvenc`, `v4l2`, `videotoolbox`, `openh264` |
-| `--renditions <LIST>` | The simulcast ladder, comma-separated. Each rung is `<height>p`, `<width>x<height>`, or `<name>:<width>x<height>`; a bare name encodes at the source's own resolution. Default: one rendition named `video`, unscaled |
+| `--renditions <LIST>` | The simulcast ladder, comma-separated. Each rung is `<height>p`, `<width>x<height>`, or `<name>:<width>x<height>`, with an optional `@<fps>`; a bare name encodes at the source's own resolution. Default: one rendition named `video`, unscaled |
 | `--bitrate <BPS>` | Target video bitrate. Omit to derive one from the resolution |
 | `--width`, `--height`, `--fps` | Capture hints; the device snaps to its nearest supported mode |
 | `--no-cursor` | Hide the pointer in screen, window, and application capture |
@@ -107,6 +109,39 @@ Some backend names need a feature flag: `vaapi`, `nvenc`, and `v4l2` are absent
 from a default build, and naming one a build was compiled without fails at
 encoder selection rather than at the flag. [docs/platforms.md](platforms.md) says
 which platform has which.
+
+#### Frame rate
+
+Two flags can name one, and `--fps` wins where they disagree.
+
+`--fps` is the capture rate for the whole publish, and it caps the ladder. A
+rung asking for more than it allows gets what the capture actually runs at.
+
+An `@<fps>` suffix on a rendition asks for the same thing from one rung:
+`irl publish --renditions 720p@60`. It is a capture rate rather than a per-rung
+encode rate, because a ladder is captured once and `fan_out` hands every frame
+to every encoder, so there is a single frame rate for the whole ladder. Where
+rungs disagree, the highest wins: `--renditions high:1280x720@60,low:640x360@30`
+captures at 60 and encodes both rungs from those pictures. The `low` rung says
+so in the log rather than silently getting something other than what it asked
+for.
+
+With neither, the capture asks for 30. A device that cannot reach 30 substitutes
+the nearest rate it has, which is what makes the default the lower of 30 and the
+fastest mode the device offers. macOS camera capture is the exception: the
+AVFoundation backend ignores a requested rate, so the default is withheld there
+and the device's own rate stands.
+
+Every publish logs the rate it settled on and where the number came from:
+
+```
+INFO capture frame rate requested; the device runs at the nearest rate it
+     supports fps=60 origin="--renditions"
+```
+
+`origin` is one of `--fps`, `--renditions`, `--fps, capping the ladder`,
+`default`, or `device`. The rate a device actually negotiated appears
+separately, on the `publishing video rendition` line each rung logs.
 
 ### `irl watch`
 
@@ -307,10 +342,24 @@ Publish a generated pattern and tone, no hardware needed:
 irl publish --test-source
 ```
 
+That pair is built to be measured rather than looked at: the bar sweeps the
+width every two seconds, the counter numbers each frame, the clock is UTC to
+the millisecond, and the marker at the bottom is lit for exactly as long as
+each beep sounds. Photograph the publisher and the player together and the
+difference between the two clocks is the latency; watch the marker while the
+beeps play and A/V sync is something you see rather than estimate.
+
 Publish a camera as a two-rung simulcast ladder:
 
 ```sh
 irl publish --video cam:/dev/video0 --renditions low:320x180,720p
+```
+
+Ask a camera or a PipeWire screen share for 60 frames per second, which it gives
+if it has a mode that fast:
+
+```sh
+irl publish --video cam:/dev/video0 --renditions 720p@60
 ```
 
 Publish a fragmented MP4, re-muxing a plain one on the way:

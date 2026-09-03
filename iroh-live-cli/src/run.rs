@@ -88,8 +88,9 @@ pub struct SendConfig {
     #[serde(default)]
     pub encoder: EncoderArg,
 
-    /// The simulcast ladder, one entry per rung, in `--renditions`' grammar.
-    /// Empty publishes a single unscaled rendition named `video`.
+    /// The simulcast ladder, one entry per rung, in `--renditions`' grammar,
+    /// including its `@<fps>` suffix. Empty publishes a single unscaled
+    /// rendition named `video`.
     #[serde(default)]
     pub renditions: Vec<String>,
 
@@ -102,7 +103,9 @@ pub struct SendConfig {
     /// Requested capture height.
     pub height: Option<u32>,
 
-    /// Requested capture framerate.
+    /// Requested capture framerate, and the ceiling on the ladder's `@<fps>`
+    /// rungs. Left out, the capture runs at 30 or at the highest rate a rung
+    /// asks for.
     pub fps: Option<u32>,
 
     /// Hide the mouse cursor in screen, window, and application capture.

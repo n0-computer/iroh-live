@@ -30,8 +30,8 @@ pub enum VideoSourceSpec {
     /// Bayer that only libcamera can drive.
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
     Rpicam(RpicamMode),
-    /// A colour-bar test pattern, for publishing without a camera.
-    Test,
+    /// A generated picture, for publishing without a camera.
+    Test(TestPattern),
     /// A media file, imported rather than encoded.
     File {
         /// Path to the file.
@@ -72,7 +72,14 @@ impl VideoSourceSpec {
                      ':raw' for uncompressed pictures; got '{other}'"
                 )),
             },
-            "test" => Ok(Self::Test),
+            "test" => match rest.map(str::to_lowercase).as_deref() {
+                None | Some("timing") => Ok(Self::Test(TestPattern::Timing)),
+                Some("gradient") => Ok(Self::Test(TestPattern::Gradient)),
+                Some(other) => Err(format!(
+                    "test: the patterns are 'timing' (the default) and \
+                     'gradient'; got '{other}'"
+                )),
+            },
             "file" => {
                 let rest = rest.ok_or("file: needs a path (e.g. file:clip.mp4)")?;
                 let (path, looping) = split_loop(rest);
@@ -88,6 +95,26 @@ impl VideoSourceSpec {
             )),
         }
     }
+}
+
+/// Which generated picture `test` and `test:<name>` publish.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TestPattern {
+    /// A sweeping bar, vertical stripes, a frame counter, a clock, and a marker
+    /// that flashes with the test tone's beep.
+    ///
+    /// The default, because someone publishing without a camera is looking at
+    /// the stream to judge it, and this is the pattern those judgements can be
+    /// read off: smoothness from the bar, dropped frames from the counter,
+    /// latency from the clock, and A/V sync from the flash against the beep.
+    /// See `moq_media::test_source::timing`.
+    #[default]
+    Timing,
+    /// A moving gradient.
+    ///
+    /// Cheap, and different in every frame so a stalled pipeline cannot pass
+    /// for a working one, but it answers no question about the playback.
+    Gradient,
 }
 
 /// What `rpicam-vid` hands over, which `rpicam` and `rpicam:raw` pick between.
@@ -134,8 +161,8 @@ pub enum AudioSourceSpec {
     Microphone(Option<String>),
     /// Everything the machine is playing. macOS only.
     System,
-    /// A steady tone, for publishing without a microphone.
-    Test,
+    /// A generated tone, for publishing without a microphone.
+    Test(TestTone),
     /// An audio file, decoded and encoded like any other PCM source.
     File {
         /// Path to the file.
@@ -145,6 +172,21 @@ pub enum AudioSourceSpec {
     },
     /// Publish no audio.
     None,
+}
+
+/// Which generated tone `test` and `test:<name>` publish.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TestTone {
+    /// A beep on every second, silent in between.
+    ///
+    /// The default, and the half of `--video test` that makes A/V sync
+    /// measurable: each beep sounds while the picture's marker is lit, so the
+    /// two either arrive together or they do not.
+    #[default]
+    Beeps,
+    /// An unbroken sine tone. Nothing to line a picture up against, but a
+    /// dropout in it is audible the moment it happens.
+    Tone,
 }
 
 impl AudioSourceSpec {
@@ -161,7 +203,14 @@ impl AudioSourceSpec {
         match kind.to_lowercase().as_str() {
             "mic" | "microphone" | "default" => Ok(Self::Microphone(rest.map(str::to_string))),
             "system" | "system-audio" => Ok(Self::System),
-            "test" => Ok(Self::Test),
+            "test" => match rest.map(str::to_lowercase).as_deref() {
+                None | Some("beeps") => Ok(Self::Test(TestTone::Beeps)),
+                Some("tone") => Ok(Self::Test(TestTone::Tone)),
+                Some(other) => Err(format!(
+                    "test: the tones are 'beeps' (the default) and 'tone'; \
+                     got '{other}'"
+                )),
+            },
             "none" => Ok(Self::None),
             "file" => {
                 let rest = rest.ok_or("file: needs a path (e.g. file:music.mp3)")?;
@@ -213,12 +262,42 @@ mod tests {
         );
         assert_eq!(
             VideoSourceSpec::parse("test").unwrap(),
-            VideoSourceSpec::Test
+            VideoSourceSpec::Test(TestPattern::Timing)
         );
         assert_eq!(
             VideoSourceSpec::parse("none").unwrap(),
             VideoSourceSpec::None
         );
+    }
+
+    /// The bare specifier is the diagnostic pattern, and the old gradient is
+    /// still reachable by name.
+    #[test]
+    fn test_patterns_by_name() {
+        assert_eq!(
+            VideoSourceSpec::parse("test:timing").unwrap(),
+            VideoSourceSpec::Test(TestPattern::Timing)
+        );
+        assert_eq!(
+            VideoSourceSpec::parse("test:GRADIENT").unwrap(),
+            VideoSourceSpec::Test(TestPattern::Gradient)
+        );
+        let err = VideoSourceSpec::parse("test:bars").unwrap_err();
+        assert!(err.contains("timing"), "{err}");
+    }
+
+    #[test]
+    fn test_tones_by_name() {
+        assert_eq!(
+            AudioSourceSpec::parse("test:beeps").unwrap(),
+            AudioSourceSpec::Test(TestTone::Beeps)
+        );
+        assert_eq!(
+            AudioSourceSpec::parse("test:tone").unwrap(),
+            AudioSourceSpec::Test(TestTone::Tone)
+        );
+        let err = AudioSourceSpec::parse("test:sine").unwrap_err();
+        assert!(err.contains("beeps"), "{err}");
     }
 
     #[test]
@@ -302,7 +381,7 @@ mod tests {
         );
         assert_eq!(
             AudioSourceSpec::parse("test").unwrap(),
-            AudioSourceSpec::Test
+            AudioSourceSpec::Test(TestTone::Beeps)
         );
         assert_eq!(
             AudioSourceSpec::parse("none").unwrap(),

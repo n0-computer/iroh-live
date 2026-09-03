@@ -49,10 +49,16 @@ async fn setup_capture(args: &PublishArgs) -> Result<(Live, LocalBroadcast, Stri
         let broadcast = live.publish(&args.transport.name)?;
         source::configure(&broadcast, &args.capture)?;
         let ticket = transport::advertise(live, &args.transport).await?;
+        // `--test-source` overrides both flags, so logging what was typed would
+        // name a camera that was never opened.
+        let (video, audio) = match args.capture.test_source {
+            true => ("test", "test"),
+            false => (args.capture.video.as_str(), args.capture.audio.as_str()),
+        };
         info!(
             name = %args.transport.name,
-            video = %args.capture.video,
-            audio = %args.capture.audio,
+            video,
+            audio,
             "publishing"
         );
         Ok((broadcast, ticket))
@@ -266,7 +272,7 @@ mod preview {
             match spec {
                 VideoSourceSpec::Camera(None) => Some(Self::Camera),
                 VideoSourceSpec::Display(None) => Some(Self::Screen),
-                VideoSourceSpec::Test => Some(Self::Test),
+                VideoSourceSpec::Test(_) => Some(Self::Test),
                 VideoSourceSpec::None => Some(Self::None),
                 _ => None,
             }
@@ -342,7 +348,7 @@ mod preview {
                     config.source = video::capture::Source::Display(None);
                     VideoSource::Capture(config)
                 }
-                Some(PickedSource::Test) => crate::source::default_test_pattern(),
+                Some(PickedSource::Test) => crate::source::default_test_pattern(*broadcast.clock()),
             };
             broadcast
                 .video()

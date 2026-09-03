@@ -1,8 +1,9 @@
 //! Command-line arguments.
 //!
 //! The structs here only carry what clap parsed. Turning a `--video` string
-//! into a capture config, or a `--renditions` list into a simulcast ladder, is
-//! [`crate::source`]'s job.
+//! into a capture config is [`crate::source`]'s job, and turning a
+//! `--renditions` list into a simulcast ladder and a capture frame rate is
+//! [`crate::rendition`]'s.
 
 use std::path::PathBuf;
 
@@ -18,7 +19,7 @@ use serde::Deserialize;
 use crate::backend::DecoderArg;
 use crate::{
     backend::EncoderArg,
-    source_spec::{AudioSourceSpec, VideoSourceSpec},
+    source_spec::{AudioSourceSpec, TestPattern, TestTone, VideoSourceSpec},
 };
 
 /// Where a broadcast is served and how its address is shared.
@@ -52,20 +53,22 @@ pub const DEFAULT_AUDIO: &str = "mic";
 #[derive(Args, Debug)]
 pub struct CaptureArgs {
     /// Video source: `cam`, `cam:<id>`, `screen`, `screen:<id>`, `window:<id>`,
-    /// `app:<id>`, `file:<path>[:loop]`, `test`, or `none`.
+    /// `app:<id>`, `file:<path>[:loop]`, `test[:timing|:gradient]`, or `none`.
     ///
     /// Run `irl devices` for the identifiers this machine accepts.
     #[arg(long, default_value = DEFAULT_VIDEO, verbatim_doc_comment)]
     pub video: String,
 
-    /// Audio source: `mic`, `mic:<id>`, `system`, `file:<path>[:loop]`, `test`, or `none`.
+    /// Audio source: `mic`, `mic:<id>`, `system`, `file:<path>[:loop]`,
+    /// `test[:beeps|:tone]`, or `none`.
     ///
     /// Anything else is taken as a device name, so `hw:0,1` works as written.
     #[arg(long, default_value = DEFAULT_AUDIO, verbatim_doc_comment)]
     pub audio: String,
 
-    /// Publish a test pattern and a test tone, the same as
-    /// `--video test --audio test`.
+    /// Publish the timing pattern and its beeping tone, the same as
+    /// `--video test --audio test`. The two are one diagnostic: the marker in
+    /// the picture is lit for exactly as long as each beep sounds.
     #[arg(long)]
     pub test_source: bool,
 
@@ -81,6 +84,12 @@ pub struct CaptureArgs {
     /// Simulcast ladder, comma-separated. Each rung is `<height>p`,
     /// `<width>x<height>`, or `<name>:<width>x<height>`; a bare name encodes at
     /// the source's own resolution. Default: one rendition, unscaled.
+    ///
+    /// An `@<fps>` suffix asks for a capture frame rate: `720p@60`, or
+    /// `high:1280x720@60,low:640x360@30`. A ladder is captured once and every
+    /// rung is fed the same pictures, so the highest rate any rung names is the
+    /// rate all of them run at, and a rung that asked for less says so in the
+    /// log. `--fps` outranks the ladder where the two disagree.
     #[arg(long, value_delimiter = ',', verbatim_doc_comment)]
     pub renditions: Vec<String>,
 
@@ -97,8 +106,11 @@ pub struct CaptureArgs {
     #[arg(long)]
     pub height: Option<u32>,
 
-    /// Requested capture framerate.
-    #[arg(long)]
+    /// Requested capture framerate. It sets the rate outright and caps the
+    /// ladder's `@<fps>` rungs. Omit it to capture at 30, or at the highest
+    /// rate a rung asks for. The device snaps to the nearest rate it supports
+    /// either way.
+    #[arg(long, verbatim_doc_comment)]
     pub fps: Option<u32>,
 
     /// Hide the mouse cursor. Screen, window, and application capture only.
@@ -144,7 +156,7 @@ impl CaptureArgs {
     /// Fails if `--video` is not a recognised specifier.
     pub fn video_source(&self) -> Result<VideoSourceSpec> {
         if self.test_source {
-            return Ok(VideoSourceSpec::Test);
+            return Ok(VideoSourceSpec::Test(TestPattern::default()));
         }
         VideoSourceSpec::parse(&self.video).map_err(|err| anyerr!("--video: {err}"))
     }
@@ -156,7 +168,7 @@ impl CaptureArgs {
     /// Fails if `--audio` is not a recognised specifier.
     pub fn audio_source(&self) -> Result<AudioSourceSpec> {
         if self.test_source {
-            return Ok(AudioSourceSpec::Test);
+            return Ok(AudioSourceSpec::Test(TestTone::default()));
         }
         AudioSourceSpec::parse(&self.audio).map_err(|err| anyerr!("--audio: {err}"))
     }
