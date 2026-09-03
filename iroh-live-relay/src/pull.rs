@@ -405,8 +405,7 @@ mod tests {
     #[test]
     fn ticket_round_trip() {
         let key = iroh::SecretKey::from_bytes(&[23u8; 32]);
-        let addr = iroh::EndpointAddr::from(key.public());
-        let ticket = LiveTicket::new(addr, "test-stream");
+        let ticket = LiveTicket::new(key.public(), "test-stream");
         let ticket_str = ticket.to_string();
 
         let parsed: LiveTicket = ticket_str.parse().expect("parse ticket");

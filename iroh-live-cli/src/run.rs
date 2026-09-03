@@ -242,7 +242,7 @@ async fn run_streams(live: &Live, config: &RunConfig) -> Result {
     for send in &config.send {
         match setup_send(live, send) {
             Ok(broadcast) => {
-                let ticket = LiveTicket::new(live.endpoint().addr(), &send.name);
+                let ticket = LiveTicket::new(live.endpoint().id(), &send.name);
                 println!("[send] {}: {ticket}", send.name);
                 broadcasts.push(broadcast);
             }

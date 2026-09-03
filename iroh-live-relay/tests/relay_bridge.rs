@@ -426,7 +426,7 @@ async fn pull_remote_broadcast_via_ticket() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Create a ticket for this publisher.
-    let ticket = iroh_live::ticket::LiveTicket::new(pub_ep.addr(), "remote-stream");
+    let ticket = iroh_live::ticket::LiveTicket::new(pub_ep.id(), "remote-stream");
 
     // -- Pull: relay connects to publisher and mirrors the broadcast --
     let pull_ep = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -624,7 +624,7 @@ async fn start_publisher(
         ))
         .expect("set video");
 
-    let ticket = iroh_live::ticket::LiveTicket::new(endpoint.addr(), name);
+    let ticket = iroh_live::ticket::LiveTicket::new(endpoint.id(), name);
     (endpoint, live, broadcast, ticket)
 }
 

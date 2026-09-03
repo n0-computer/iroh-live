@@ -7,7 +7,11 @@
 use std::time::Duration;
 
 use iroh::{Endpoint, SecretKey, endpoint::presets};
-use iroh_live::{Live, LiveBuilder, Subscription, ticket::LiveTicket};
+use iroh_live::{
+    Live, LiveBuilder, Subscription,
+    ticket::LiveTicket,
+    util::{LanPresence, with_mdns},
+};
 use n0_error::Result;
 use tracing::{info, warn};
 
@@ -73,9 +77,17 @@ pub async fn setup_live_with_gossip() -> Result<Live> {
 }
 
 /// Binds the endpoint every `setup_live` variant starts from.
+///
+/// A ticket names an endpoint id and no addresses, so the endpoint carries
+/// every way of turning an id back into an address that we have. `presets::N0`
+/// brings pkarr publishing and pkarr and DNS resolution, which want internet at
+/// both ends; mDNS brings the local network, which wants none. `irl` takes both
+/// unconditionally rather than behind a flag, because the one thing a person
+/// scanning a QR code cannot be asked is which of the two their network is.
 async fn bind(secret_key: SecretKey, serve: bool) -> Result<LiveBuilder> {
-    let endpoint = Endpoint::builder(presets::N0)
-        .secret_key(secret_key)
+    let builder = Endpoint::builder(presets::N0).secret_key(secret_key);
+    let endpoint = with_mdns(builder, LanPresence::serving(serve))
+        .await
         .bind()
         .await?;
     info!(endpoint_id = %endpoint.id(), "endpoint bound");
@@ -159,8 +171,8 @@ pub async fn subscribe(live: &Live, ticket: &LiveTicket) -> Result<Subscription>
 pub async fn advertise(live: &Live, args: &TransportArgs) -> Result<String> {
     let ticket = ticket(live, &args.name);
     match (args.no_serve, args.relay) {
-        // Nobody can dial this node, so the ticket names an address that does
-        // not answer and the relay is the only way out.
+        // Nobody can dial this node, so the ticket names an endpoint that
+        // refuses every session and the relay is the only way out.
         (true, Some(_)) => println!("not serving: subscribers reach this broadcast by relay"),
         (true, None) => warn!(
             "--no-serve without --relay: nothing can reach this broadcast, since \
@@ -194,5 +206,5 @@ pub fn print_qr(ticket: &str, no_qr: bool) {
 
 /// The ticket for a broadcast this node publishes.
 pub fn ticket(live: &Live, name: &str) -> String {
-    LiveTicket::new(live.endpoint().addr(), name).to_string()
+    LiveTicket::new(live.endpoint().id(), name).to_string()
 }

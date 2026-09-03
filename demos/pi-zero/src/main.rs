@@ -20,7 +20,7 @@ mod watch;
 #[cfg(target_os = "linux")]
 mod app {
     use clap::{Parser, Subcommand};
-    use iroh::{Endpoint, EndpointId};
+    use iroh::EndpointId;
     use iroh_live::{Live, ticket::LiveTicket};
 
     use crate::{epaper, publish, watch};
@@ -125,8 +125,11 @@ mod app {
         };
 
         println!("connecting to {ticket} ...");
-        let endpoint = Endpoint::bind(iroh::endpoint::presets::N0).await?;
-        let live = Live::new(endpoint);
+        // A ticket names an endpoint id and no addresses, so the viewer needs
+        // the same lookup services the publisher announces to: `from_env` adds
+        // mDNS to the n0 preset, which is what resolves the id on a network
+        // with no route to the internet.
+        let live = Live::from_env().await?.spawn();
         let sub = live
             .subscribe(ticket.endpoint, &ticket.broadcast_name)
             .await?;

@@ -16,6 +16,9 @@ iroh = { workspace = true }
 # Rooms live in `iroh-rooms`, but `Live` still mounts the gossip protocol and
 # hands the instance out, since that is what a room needs from this crate.
 iroh-gossip = { workspace = true }
+# mDNS address lookup, so a ticket that names an endpoint id and no
+# addresses still resolves on a network with no route to the internet.
+iroh-mdns-peer-lookup = "0.1.2"
 iroh-moq = { workspace = true }
 iroh-tickets = { workspace = true }
 moq-net = { workspace = true }

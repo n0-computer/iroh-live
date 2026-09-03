@@ -61,7 +61,7 @@ async fn main() -> n0_error::Result {
     // inside the publish task, which logs and ends the audio track on failure.
     broadcast.audio().set(audio::capture::Config::default());
 
-    let ticket = LiveTicket::new(live.endpoint().addr(), &args.name);
+    let ticket = LiveTicket::new(live.endpoint().id(), &args.name);
     println!("{ticket}");
     info!(name = %args.name, "publishing");
 

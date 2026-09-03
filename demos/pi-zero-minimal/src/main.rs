@@ -25,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
         .video()
         .set(rpicam::open(rpicam::Config::new(640, 360, 30))?)?;
 
-    let ticket = LiveTicket::new(live.endpoint().addr(), BROADCAST);
+    let ticket = LiveTicket::new(live.endpoint().id(), BROADCAST);
     println!("{ticket}");
 
     tracing::info!("publishing, press Ctrl-C to stop");

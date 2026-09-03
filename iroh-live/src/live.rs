@@ -10,6 +10,8 @@ use moq_media::{publish::LocalBroadcast, subscribe::RemoteBroadcast};
 use n0_error::Result;
 use tracing::{error, info, instrument};
 
+use crate::util::LanPresence;
+
 /// Entry point for iroh-live. Manages the iroh [`Endpoint`], MoQ transport,
 /// and optionally [`Gossip`] for room membership.
 #[derive(Clone, Debug)]
@@ -146,7 +148,9 @@ impl Live {
     ///
     /// Reads `IROH_SECRET` for the secret key and generates a new one if
     /// the variable is not set. The endpoint uses the [`N0`](presets::N0)
-    /// preset for relay and DNS discovery.
+    /// preset, which publishes this endpoint's addresses to pkarr and resolves
+    /// other endpoints through pkarr and DNS, plus mDNS on top of it so that a
+    /// ticket also resolves on a local network with no route to the internet.
     ///
     /// ```rust,no_run
     /// # async fn example() -> n0_error::Result<()> {
@@ -159,8 +163,10 @@ impl Live {
     /// # }
     /// ```
     pub async fn from_env() -> Result<LiveBuilder> {
-        let endpoint = Endpoint::builder(presets::N0)
-            .secret_key(crate::util::secret_key_from_env()?)
+        let builder =
+            Endpoint::builder(presets::N0).secret_key(crate::util::secret_key_from_env()?);
+        let endpoint = crate::util::with_mdns(builder, LanPresence::Announce)
+            .await
             .bind()
             .await?;
         info!(endpoint_id=%endpoint.id(), "endpoint bound");

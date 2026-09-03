@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use clap::Parser;
-use iroh::{Endpoint, EndpointId};
+use iroh::EndpointId;
 use iroh_live::{Live, ticket::LiveTicket};
 use moq_media::rpicam;
 
@@ -51,12 +51,11 @@ pub(crate) struct PublishOpts {
 /// Publishes the camera stream and shows the ticket QR on e-paper.
 pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     // --- iroh endpoint ---
-    let secret_key = iroh_live::util::secret_key_from_env()?;
-    let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
-        .secret_key(secret_key)
-        .bind()
-        .await?;
-    let live = Live::builder(endpoint).with_router().spawn();
+    // `from_env` binds under `IROH_SECRET` with the n0 preset and mDNS on top
+    // of it. The Pi's ticket carries an endpoint id and nothing else, so a
+    // viewer on the same network resolves it over mDNS with no internet at all,
+    // and a viewer elsewhere resolves it over pkarr and DNS.
+    let live = Live::from_env().await?.with_router().spawn();
 
     // --- media broadcast ---
     let broadcast = live.publish(opts.name.as_str())?;
@@ -78,7 +77,7 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     }
 
     // --- ticket (always printed, regardless of e-paper) ---
-    let ticket = LiveTicket::new(live.endpoint().addr(), &opts.name);
+    let ticket = LiveTicket::new(live.endpoint().id(), &opts.name);
     let ticket_str = ticket.to_string();
     println!("publishing at {ticket_str}");
 
