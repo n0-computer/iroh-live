@@ -558,18 +558,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-compression"
-version = "0.4.41"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0f9ee0f6e02ffd7ad5816e9464499fba7b3effd01123b515c41d1697c43dad1"
-dependencies = [
- "compression-codecs",
- "compression-core",
- "pin-project-lite",
- "tokio",
-]
-
-[[package]]
 name = "async-executor"
 version = "1.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1834,23 +1822,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "compression-codecs"
-version = "0.4.37"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb7b51a7d9c967fc26773061ba86150f19c50c0d65c887cb1fbe295fd16619b7"
-dependencies = [
- "compression-core",
- "flate2",
- "memchr",
-]
-
-[[package]]
-name = "compression-core"
-version = "0.4.31"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75984efb6ed102a0d42db99afb6c1948f0380d1d91808d5529916e6c08b49d8d"
-
-[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2584,7 +2555,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ab67060fc6b8ef687992d439ca0fa36e7ed17e9a0b16b25b601e8757df720de"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -6470,16 +6441,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
-name = "m3u8-rs"
-version = "6.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f03cd3335fb5f2447755d45cda9c70f76013626a9db44374973791b0926a86c3"
-dependencies = [
- "chrono",
- "nom 7.1.3",
-]
-
-[[package]]
 name = "mac-addr"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6768,14 +6729,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "moq-json"
-version = "0.0.3"
+name = "moq-flate"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1de30545123e2391b890c01f82650a868f8b4e87bc57579627c32d1a0ece51b1"
+checksum = "f368711e97bee76e2276de4ba9e9a21bbd65353db9eb60988ef84e3902a1b3c3"
+dependencies = [
+ "bytes",
+ "flate2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "moq-json"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a381f6b20e29e3f9c4c3feda43f0b152bd32de7ad8778eae29ef0664d7d88a71"
 dependencies = [
  "bytes",
  "json-patch",
  "kio",
+ "moq-flate",
  "moq-net",
  "serde",
  "serde_json",
@@ -6878,9 +6851,9 @@ dependencies = [
 
 [[package]]
 name = "moq-msf"
-version = "0.2.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ccfbfb04d4fc9f7f3f31662bf12c590dbfcd79ecc4113496c07bdf497a2636d"
+checksum = "eacf4080dafb3ca46c9b1538d71f1d3c09742443f586e02f7554048cdca4d9cb"
 dependencies = [
  "serde",
  "serde_json",
@@ -6889,9 +6862,9 @@ dependencies = [
 
 [[package]]
 name = "moq-mux"
-version = "0.5.5"
+version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6e36e4c772895d07efda440bd0edf10d2423f9f791f59b857d9700beeb72516"
+checksum = "f736ed8ba411d311b43827473be4d8ebe4d4041f374fac2c162cfeb251d79e99"
 dependencies = [
  "anyhow",
  "base64",
@@ -6899,7 +6872,6 @@ dependencies = [
  "h264-parser",
  "hang",
  "kio",
- "m3u8-rs",
  "memchr",
  "moq-json",
  "moq-loc",
@@ -6908,10 +6880,11 @@ dependencies = [
  "mp4-atom",
  "mpeg2ts",
  "num_enum",
- "reqwest 0.12.28",
  "scuffle-av1",
  "scuffle-h265",
  "serde",
+ "serde_json",
+ "serde_with",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -7058,9 +7031,9 @@ dependencies = [
 
 [[package]]
 name = "mp4-atom"
-version = "0.11.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c6b338be0a8d66954dfb183f8469913c9c435d48885e801debde0953de74563"
+checksum = "3144b10c48a9707a4e8526a0371eebf4a46e2cb703748b0d83bbdc77421bc16f"
 dependencies = [
  "bytes",
  "derive_more",
@@ -12221,18 +12194,13 @@ version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4e6559d53cc268e5031cd8429d05415bc4cb4aefc4aa5d6cc35fbf5b924a1f8"
 dependencies = [
- "async-compression",
  "bitflags 2.11.1",
  "bytes",
- "futures-core",
  "futures-util",
  "http",
  "http-body",
- "http-body-util",
  "iri-string",
  "pin-project-lite",
- "tokio",
- "tokio-util",
  "tower",
  "tower-layer",
  "tower-service",
