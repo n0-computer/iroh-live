@@ -17,7 +17,8 @@ guides.
 | `iroh-live-cli` | The `irl` binary |
 | `iroh-live-relay` | The browser bridge |
 
-Demos live in `demos/`: `android`, `pi-zero`, `pi-zero-minimal`.
+Demos live in `demos/`: `android` and `pi-zero`. The shortest Pi publisher is
+an example instead, `iroh-live/examples/publish-pi.rs`.
 
 Codecs, capture, decoding, and the wgpu renderer are upstream in `moq-video` and
 `moq-audio`. Nothing here implements one. See

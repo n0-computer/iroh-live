@@ -96,8 +96,8 @@ a simulcast ladder. More in [docs/guide/index.md](docs/guide/index.md).
   calling, hardware H.264, and zero-copy EGL rendering.
 - [`demos/pi-zero`](demos/pi-zero): a Raspberry Pi camera stream with an e-paper
   QR display and a GLES2 watch mode.
-- [`demos/pi-zero-minimal`](demos/pi-zero-minimal): the same publisher in 35
-  lines, with no flags.
+- [`iroh-live/examples/publish-pi.rs`](iroh-live/examples/publish-pi.rs): the
+  same publisher in 35 lines, with no flags.
 
 ## Platform support
 

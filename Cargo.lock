@@ -7361,18 +7361,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pi-zero-minimal"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "iroh-live",
- "moq-media",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "pin-project"
 version = "1.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"

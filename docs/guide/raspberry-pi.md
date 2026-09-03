@@ -1,9 +1,10 @@
 # Raspberry Pi
 
-Two demos target the Pi. `demos/pi-zero-minimal` is a 35-line publisher and
-nothing else. `demos/pi-zero` adds an e-paper QR display and a watch mode that
+One demo and one example target the Pi. `iroh-live/examples/publish-pi.rs` is
+a 35-line publisher and nothing else, the shortest program that puts a Pi camera
+on the network. `demos/pi-zero` adds an e-paper QR display and a watch mode that
 renders with GLES2, either to a window or straight to HDMI. Both are tested on a
-Pi Zero 2 W and should work on a Pi 4 or 5.
+Pi Zero 2 W and a Pi 4.
 
 The `irl` CLI reaches the same camera, so publishing from a Pi no longer needs a
 demo binary.
@@ -113,26 +114,29 @@ with `dpkg-deb` alone: no sudo, no chroot, one or two minutes.
 
 ```sh
 cargo make cross-sysroot-aarch64                              # once
-cargo make cross-build-aarch64 -- -p pi-zero-minimal --release
+cargo make cross-build-aarch64 -- -p iroh-live --example publish-pi --features rpicam --release
 cargo make cross-build-aarch64 -- -p pi-zero-demo --release
 ```
 
 Everything after `--` goes to `cargo zigbuild`. Binaries land in
-`target/aarch64-unknown-linux-gnu/release/`. `cross/README.md` covers the
+`target/aarch64-unknown-linux-gnu/release/`, examples one level down in
+`examples/`. `cross/README.md` covers the
 prerequisites and a Docker path for hosts that cannot install zig.
 
 Deploy with `scp`, or `cargo make cross-deploy` from `demos/pi-zero`, which
 builds, strips, and copies to `$PI_HOST` (default `livepizero`).
 
-## pi-zero-minimal
+## publish-pi
 
 ```sh
-./pi-zero-minimal
+./publish-pi
 ```
 
 No flags. It publishes 640x360 at 30 fps under the path `pi-cam` and prints a
 ticket. Pin `IROH_SECRET` if you want the ticket to survive a restart; the first
-run logs the value to reuse.
+run logs the value to reuse. It is an example rather than a demo because that
+is what it is: the shortest program that does the job, kept next to the API it
+demonstrates.
 
 ## pi-zero-demo
 

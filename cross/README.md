@@ -37,7 +37,7 @@ cargo make cross-build-aarch64 -- -p iroh-live-cli --release
 
 # Pi Zero demos
 cargo make cross-build-aarch64 -- -p pi-zero-demo --release
-cargo make cross-build-aarch64 -- -p pi-zero-minimal --release
+cargo make cross-build-aarch64 -- -p iroh-live --example publish-pi --features rpicam --release
 
 # Check the whole workspace
 cargo make cross-build-aarch64 -- --workspace

@@ -10,7 +10,6 @@ members = [
     "moq-media-egui",
     "demos/android/rust",
     "demos/pi-zero",
-    "demos/pi-zero-minimal",
 ]
 resolver = "2"
 

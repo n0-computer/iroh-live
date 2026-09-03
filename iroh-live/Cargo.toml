@@ -86,3 +86,10 @@ v4l2 = ["moq-media/v4l2"]
 name = "publish"
 path = "examples/publish.rs"
 required-features = ["capture"]
+
+# The Raspberry Pi publisher: no flags, the camera's own hardware H.264. Gated
+# on `rpicam` so a checkout without a Pi still builds every other example.
+[[example]]
+name = "publish-pi"
+path = "examples/publish-pi.rs"
+required-features = ["rpicam"]
