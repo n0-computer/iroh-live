@@ -8,7 +8,8 @@
 //! `--scan` starts that window on the camera rather than on a ticket, and
 //! connects to whichever broadcast a QR code held up to the lens names. The
 //! player keeps a button back to that screen, so a run started with a ticket
-//! can still be pointed somewhere else. See [`crate::scan`].
+//! can still be pointed somewhere else, and every screen without a picture
+//! keeps a button back to whatever was playing before it. See [`crate::scan`].
 
 use iroh_live::{Live, Subscription, media::subscribe::MediaTracks, ticket::LiveTicket};
 use n0_error::{Result, anyerr};
@@ -18,11 +19,16 @@ use tracing::warn;
 
 use crate::{args::WatchArgs, transport};
 
-/// Where this run's first ticket comes from.
+/// Where this run's first ticket comes from, and who dials it.
 #[derive(Debug)]
 enum Start {
-    /// The command line named one.
+    /// The command line named one and the terminal dials it, before any window
+    /// opens.
     Ticket(LiveTicket),
+    /// The command line named one and the window dials it, because `--scan`
+    /// leaves a camera screen to cancel into.
+    #[cfg(feature = "render")]
+    TicketInWindow(LiveTicket),
     /// The camera will read one, because `--scan` was given without a ticket.
     #[cfg(feature = "render")]
     Scan,
@@ -91,6 +97,14 @@ pub fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
             let _guard = rt.enter();
             return window::run(live, window::Opening::Scanning, options, args.fullscreen);
         }
+        // Dialed from inside the window, so the wait shows a Cancel button
+        // rather than a terminal line about Ctrl+C.
+        #[cfg(feature = "render")]
+        Start::TicketInWindow(ticket) => {
+            let _guard = rt.enter();
+            let opening = window::Opening::Connecting(Box::new(ticket));
+            return window::run(live, opening, options, args.fullscreen);
+        }
         Start::Ticket(ticket) => ticket,
     };
 
@@ -105,27 +119,40 @@ pub fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
     #[cfg(feature = "render")]
     {
         let _guard = rt.enter();
-        let opening = window::Opening::Watching(Box::new(window::Connected { sub, tracks }));
+        let connected = window::Connected {
+            ticket,
+            sub,
+            tracks,
+        };
+        let opening = window::Opening::Watching(Box::new(connected));
         window::run(live, opening, options, args.fullscreen)
     }
     #[cfg(not(feature = "render"))]
     unreachable!("video was rejected above in a build without the render feature")
 }
 
-/// Decides where the first ticket comes from.
+/// Decides where the first ticket comes from and who dials it.
 ///
 /// `--scan` alongside a ticket starts the window on that broadcast rather than
 /// on the camera: the scan screen is one button away from the player, so
 /// opening the camera first would only delay what the user already asked for.
+/// The dial moves into the window along with it, because a publisher that is
+/// not running yet leaves the terminal waiting on a keyboard the machine
+/// `--scan` was built for does not have.
 ///
 /// # Errors
 ///
 /// Fails if nothing names a broadcast: no ticket, no `--endpoint-id` and
 /// `--name` pair, and no `--scan` to read one off a QR code.
 fn start(args: &WatchArgs) -> Result<Start> {
+    // clap rejects `--scan` alongside `--no-video`, so a window opens on both
+    // of these paths and the dial has somewhere to be cancelled to.
     #[cfg(feature = "render")]
     if args.scan {
-        return Ok(args.remote.ticket().map_or(Start::Scan, Start::Ticket));
+        return Ok(args
+            .remote
+            .ticket()
+            .map_or(Start::Scan, Start::TicketInWindow));
     }
 
     let ticket = args
@@ -270,8 +297,9 @@ fn wait_for_ctrl_c(
 #[cfg(feature = "render")]
 mod window {
     //! The player window: the picture, the stats overlay, the controls that
-    //! choose a rendition and set the volume, and the scan screen that points
-    //! the window at a different broadcast.
+    //! choose a rendition and set the volume, the scan screen that points the
+    //! window at a different broadcast, and the way back from every screen
+    //! that has no picture on it.
 
     use std::time::Duration;
 
@@ -289,8 +317,8 @@ mod window {
         ui::{CursorIdle, RemoteView, RenditionChoice},
     };
 
-    /// What the top bar says while no broadcast is playing.
-    const SCAN_TITLE: &str = "irl watch: scan";
+    /// What the top bar says on the screens where nothing is playing.
+    const IDLE_TITLE: &str = "irl watch";
 
     /// How often the window is woken while nothing is drawing it.
     ///
@@ -300,10 +328,26 @@ mod window {
     /// immediate and costs little enough to hold for the window's whole life.
     const HEARTBEAT: Duration = Duration::from_millis(100);
 
+    /// Size of the buttons on the screens with no picture behind them.
+    ///
+    /// Larger than an egui default because those buttons are the only way off
+    /// those screens, and the machine this was built for is a small touchscreen
+    /// with no pointer to aim precisely with.
+    const BUTTON: egui::Vec2 = egui::vec2(200.0, 40.0);
+
+    /// How much of a broadcast name a button label carries before it is cut.
+    ///
+    /// A name is whatever the publisher chose, and a long one would otherwise
+    /// stretch its button across the screen.
+    const LABEL_CHARS: usize = 24;
+
     /// What the window shows when it opens.
     pub(super) enum Opening {
         /// A subscription the command line's ticket already established.
         Watching(Box<Connected>),
+        /// A dial of the command line's ticket, run from inside the window so
+        /// that it can be given up on without a keyboard.
+        Connecting(Box<LiveTicket>),
         /// The scan screen, because `--scan` was given without a ticket.
         Scanning,
     }
@@ -314,13 +358,17 @@ mod window {
             "irl watch",
             crate::ui::native_options(fullscreen),
             Box::new(move |cc| {
-                crate::ui::spawn_ctrl_c_handler(&cc.egui_ctx);
+                let ctx = &cc.egui_ctx;
+                crate::ui::spawn_ctrl_c_handler(ctx);
                 let render_state = cc.wgpu_render_state.clone();
                 let mode = match opening {
                     Opening::Watching(connected) => {
-                        watching(&cc.egui_ctx, *connected, &options, render_state.as_ref())
+                        watching(ctx, *connected, &options, render_state.as_ref())
                     }
-                    Opening::Scanning => scanning(&cc.egui_ctx, render_state.as_ref()),
+                    Opening::Connecting(ticket) => {
+                        Mode::Connecting(Box::new(connecting(ctx, &live, &options, *ticket, None)))
+                    }
+                    Opening::Scanning => scanning(ctx, render_state.as_ref(), None),
                 };
                 Ok(Box::new(WatchApp {
                     live,
@@ -329,7 +377,7 @@ mod window {
                     mode,
                     message: None,
                     cursor: CursorIdle::default(),
-                    _heartbeat: crate::ui::spawn_heartbeat(&cc.egui_ctx, HEARTBEAT),
+                    _heartbeat: crate::ui::spawn_heartbeat(ctx, HEARTBEAT),
                 }))
             }),
         )
@@ -338,20 +386,54 @@ mod window {
 
     /// What the window is doing.
     enum Mode {
+        /// Nothing on screen and nothing being attempted, which is where a
+        /// cancelled dial lands.
+        Stopped(Option<Previous>),
         /// Looking for a ticket in the camera picture.
-        Scanning(Box<ScanView>),
+        Scanning(Box<Scanning>),
         /// Dialing a ticket, with nothing to draw until it answers.
         Connecting(Box<Connecting>),
         /// Playing a broadcast.
         Watching(Box<Watching>),
     }
 
+    /// The broadcast a screen with no picture on it can go back to.
+    ///
+    /// Carried out of the player and through the screens that replace it, so
+    /// that a trip to the camera is not a one-way door. Going back means
+    /// dialing the ticket again: see [`WatchApp::enter_scan`] for why the
+    /// subscription does not stay open instead.
+    #[derive(Debug, Clone)]
+    struct Previous {
+        ticket: LiveTicket,
+        /// The broadcast's name as its catalog gave it, for the button label.
+        name: String,
+    }
+
+    /// Returns the label for a button that goes back to the broadcast `name`.
+    fn back_label(name: &str) -> String {
+        match name.char_indices().nth(LABEL_CHARS) {
+            Some((end, _)) => format!("Back to {}...", &name[..end]),
+            None => format!("Back to {name}"),
+        }
+    }
+
+    /// The scan screen, and whatever it can return to.
+    struct Scanning {
+        view: ScanView,
+        previous: Option<Previous>,
+    }
+
     /// A subscription attempt in flight.
     struct Connecting {
         /// What is being dialed, named on the connecting screen.
         ticket: LiveTicket,
+        /// Carried through the attempt so that cancelling it still leads back
+        /// to whatever was playing before.
+        previous: Option<Previous>,
         rx: oneshot::Receiver<Attempt>,
-        _task: AbortOnDropHandle<()>,
+        /// Aborting this is what abandons the dial.
+        task: AbortOnDropHandle<()>,
     }
 
     /// What an attempt came back with.
@@ -364,21 +446,104 @@ mod window {
 
     /// A subscription whose tracks are already open.
     pub(super) struct Connected {
+        /// What was dialed to reach it, kept so that the window can dial it
+        /// again after a trip to the scan screen.
+        pub(super) ticket: LiveTicket,
         pub(super) sub: Subscription,
         pub(super) tracks: MediaTracks,
+    }
+
+    impl Connected {
+        /// Ends a subscription that nothing is going to draw.
+        ///
+        /// A dial that landed just as the user cancelled it owns a session and
+        /// a set of decoders that no screen will ever hold, and dropping those
+        /// leaves the peer to time the session out instead of being told.
+        fn discard(self) {
+            let Self { sub, tracks, .. } = self;
+            drop(tracks);
+            sub.broadcast().shutdown();
+            sub.session().close(moq_net::Error::Cancel);
+        }
     }
 
     /// A broadcast on screen.
     struct Watching {
         /// The broadcast path, shown in the top bar.
         title: String,
+        /// What was dialed to reach it, for the way back from the screens that
+        /// replace this one.
+        ticket: LiveTicket,
         sub: Subscription,
         remote: RemoteView,
     }
 
+    impl Watching {
+        /// Returns what a screen replacing this one can go back to.
+        fn previous(&self) -> Previous {
+            Previous {
+                ticket: self.ticket.clone(),
+                name: self.title.clone(),
+            }
+        }
+    }
+
     /// The scan mode, with the camera freshly opened.
-    fn scanning(ctx: &egui::Context, render_state: Option<&RenderState>) -> Mode {
-        Mode::Scanning(Box::new(ScanView::new(ctx, render_state)))
+    fn scanning(
+        ctx: &egui::Context,
+        render_state: Option<&RenderState>,
+        previous: Option<Previous>,
+    ) -> Mode {
+        Mode::Scanning(Box::new(Scanning {
+            view: ScanView::new(ctx, render_state),
+            previous,
+        }))
+    }
+
+    /// Starts a dial for `ticket` and returns the state that waits on it.
+    ///
+    /// The task holds the only handle to what it builds until it answers, so
+    /// dropping the returned [`Connecting`] both aborts the dial and takes the
+    /// subscription with it. A dial that answers into a channel nobody is
+    /// holding any more closes what it built rather than dropping it.
+    fn connecting(
+        ctx: &egui::Context,
+        live: &Live,
+        options: &Options,
+        ticket: LiveTicket,
+        previous: Option<Previous>,
+    ) -> Connecting {
+        info!(
+            remote = %ticket.endpoint.id.fmt_short(),
+            broadcast = %ticket.broadcast_name,
+            "dialing"
+        );
+        let (tx, rx) = oneshot::channel();
+        let live = live.clone();
+        let options = options.clone();
+        let dialing = ticket.clone();
+        let ctx = ctx.clone();
+        let task = spawn(async move {
+            let attempt = match connect(&live, &dialing, &options).await {
+                Ok((sub, tracks)) => Attempt::Connected(Box::new(Connected {
+                    ticket: dialing,
+                    sub,
+                    tracks,
+                })),
+                Err(err) => Attempt::Failed(format!("{err:#}")),
+            };
+            if let Err(Attempt::Connected(connected)) = tx.send(attempt) {
+                info!("the connection landed after it was cancelled, closing it");
+                connected.discard();
+            }
+            ctx.request_repaint();
+        });
+        Connecting {
+            ticket,
+            previous,
+            rx,
+            task: AbortOnDropHandle::new(task),
+        }
     }
 
     /// The playing mode for `connected`, honouring a pinned rendition.
@@ -388,7 +553,11 @@ mod window {
         options: &Options,
         render_state: Option<&RenderState>,
     ) -> Mode {
-        let Connected { sub, tracks } = connected;
+        let Connected {
+            ticket,
+            sub,
+            tracks,
+        } = connected;
         let broadcast = sub.broadcast().clone();
         let title = broadcast.name().to_string();
         let mut remote = RemoteView::new(
@@ -403,7 +572,12 @@ mod window {
             remote.set_rendition(RenditionChoice::Pinned(name));
         }
         info!(broadcast = %title, "playing");
-        Mode::Watching(Box::new(Watching { title, sub, remote }))
+        Mode::Watching(Box::new(Watching {
+            title,
+            ticket,
+            sub,
+            remote,
+        }))
     }
 
     struct WatchApp {
@@ -411,7 +585,8 @@ mod window {
         options: Options,
         render_state: Option<RenderState>,
         mode: Mode,
-        /// What became of the last attempt, shown on the scan screen.
+        /// What became of the last attempt, shown on whichever screen with no
+        /// picture on it follows.
         message: Option<String>,
         cursor: CursorIdle,
         /// Keeps the state machine ticking while nothing draws the window.
@@ -437,6 +612,7 @@ mod window {
             crate::ui::escape_leaves_fullscreen(&ctx);
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
             match self.mode {
+                Mode::Stopped(_) => self.stopped_ui(ui, &ctx),
                 Mode::Scanning(_) => self.scan_ui(ui, &ctx),
                 Mode::Connecting(_) => self.connecting_ui(ui, &ctx),
                 Mode::Watching(_) => self.watch_ui(ui, &ctx),
@@ -453,13 +629,14 @@ mod window {
     impl WatchApp {
         /// Takes the ticket the camera read, if it has read one.
         fn poll_scan(&mut self, ctx: &egui::Context) {
-            let Mode::Scanning(view) = &self.mode else {
+            let Mode::Scanning(screen) = &self.mode else {
                 return;
             };
-            let Some(ticket) = view.ticket() else {
+            let Some(ticket) = screen.view.ticket() else {
                 return;
             };
-            self.dial(ctx, ticket);
+            let previous = screen.previous.clone();
+            self.dial(ctx, ticket, previous);
         }
 
         /// Takes the outcome of a dial that finished since the last pass.
@@ -476,6 +653,7 @@ mod window {
                     Attempt::Failed("the connection attempt stopped".to_string())
                 }
             };
+            let previous = pending.previous.clone();
             match attempt {
                 Attempt::Connected(connected) => {
                     self.message = None;
@@ -485,51 +663,60 @@ mod window {
                 Attempt::Failed(message) => {
                     warn!(%message, "the subscription failed");
                     self.message = Some(message);
-                    self.enter_scan(ctx);
+                    self.enter_scan(ctx, previous);
                 }
             }
         }
 
         /// Subscribes to `ticket`, replacing whatever is on screen.
-        fn dial(&mut self, ctx: &egui::Context, ticket: LiveTicket) {
-            info!(
-                remote = %ticket.endpoint.id.fmt_short(),
-                broadcast = %ticket.broadcast_name,
-                "dialing a scanned ticket"
-            );
+        ///
+        /// `previous` is what the connecting screen offers as a way back, which
+        /// is the broadcast that was playing before this dial rather than the
+        /// one being dialed.
+        fn dial(&mut self, ctx: &egui::Context, ticket: LiveTicket, previous: Option<Previous>) {
             self.close_mode();
-
-            let (tx, rx) = oneshot::channel();
-            let live = self.live.clone();
-            let options = self.options.clone();
-            let dialing = ticket.clone();
-            let ctx = ctx.clone();
-            let task = spawn(async move {
-                let attempt = match connect(&live, &dialing, &options).await {
-                    Ok((sub, tracks)) => Attempt::Connected(Box::new(Connected { sub, tracks })),
-                    Err(err) => Attempt::Failed(format!("{err:#}")),
-                };
-                let _ = tx.send(attempt);
-                ctx.request_repaint();
-            });
-            self.mode = Mode::Connecting(Box::new(Connecting {
+            // The message belongs to the attempt that just ended, and this one
+            // has its own screen to report on.
+            self.message = None;
+            self.mode = Mode::Connecting(Box::new(connecting(
+                ctx,
+                &self.live,
+                &self.options,
                 ticket,
-                rx,
-                _task: AbortOnDropHandle::new(task),
-            }));
+                previous,
+            )));
         }
 
-        /// Leaves whatever is playing and opens the camera.
+        /// Gives up on the dial in flight and leaves the window on the stopped
+        /// screen.
         ///
-        /// The subscription ends rather than staying warm in the background: a
+        /// What is abandoned is our half: the task is aborted, so nothing here
+        /// is still waiting for a catalog, and a subscription it managed to
+        /// open in the meantime is closed rather than dropped. The session
+        /// underneath is the transport's, which coalesces one per peer, so a
+        /// dial the actor completed after we stopped listening stays cached
+        /// there until the window closes, and a second attempt at the same peer
+        /// picks it up rather than dialing again.
+        fn cancel_dial(&mut self, name: &str, previous: Option<Previous>) {
+            info!(broadcast = %name, "the connection attempt was cancelled");
+            self.close_mode();
+            self.message = Some(format!("stopped connecting to {name}"));
+            self.mode = Mode::Stopped(previous);
+        }
+
+        /// Leaves whatever is on screen and opens the camera.
+        ///
+        /// The subscription ends rather than staying warm behind the camera: a
         /// machine small enough to want a QR code instead of a keyboard has
-        /// nothing left over for a video decoder while it searches frames, and
-        /// coming back means dialing a ticket the camera is about to hand over
-        /// anyway.
-        fn enter_scan(&mut self, ctx: &egui::Context) {
+        /// nothing left over for a video decoder while it searches frames for a
+        /// grid, and the picture it kept would be a scan's worth of minutes
+        /// stale by the time anyone saw it again. Coming back therefore means
+        /// dialing `previous` afresh, which is the spinner the connecting
+        /// screen is for.
+        fn enter_scan(&mut self, ctx: &egui::Context, previous: Option<Previous>) {
             info!("scanning for a ticket");
             self.close_mode();
-            self.mode = scanning(ctx, self.render_state.as_ref());
+            self.mode = scanning(ctx, self.render_state.as_ref(), previous);
         }
 
         /// Ends whatever the current mode holds open.
@@ -537,9 +724,23 @@ mod window {
         /// The caller either replaces the mode straight afterwards or is
         /// closing the window, so this leaves the old one in place.
         fn close_mode(&mut self) {
-            if let Mode::Watching(watching) = &mut self.mode {
-                watching.remote.shutdown();
-                watching.sub.session().close(moq_net::Error::Cancel);
+            match &mut self.mode {
+                Mode::Watching(watching) => {
+                    watching.remote.shutdown();
+                    watching.sub.session().close(moq_net::Error::Cancel);
+                }
+                Mode::Connecting(pending) => {
+                    // Closing the channel before draining it means an attempt
+                    // that has not answered yet fails its send and closes what
+                    // it built, and one that has answered is closed here. The
+                    // abort then stops whatever is still dialing.
+                    pending.rx.close();
+                    if let Ok(Attempt::Connected(connected)) = pending.rx.try_recv() {
+                        connected.discard();
+                    }
+                    pending.task.abort();
+                }
+                Mode::Stopped(_) | Mode::Scanning(_) => {}
             }
         }
 
@@ -548,38 +749,105 @@ mod window {
         fn overlay_expanded(&self) -> bool {
             match &self.mode {
                 Mode::Watching(watching) => watching.remote.overlay_expanded(),
-                Mode::Scanning(_) | Mode::Connecting(_) => false,
+                Mode::Stopped(_) | Mode::Scanning(_) | Mode::Connecting(_) => false,
             }
         }
 
-        /// Draws the scan screen: the camera picture, and whatever the last
-        /// attempt had to say for itself.
+        /// Draws the screen a cancelled dial leaves behind: what stopped, and
+        /// the ways on from it.
+        ///
+        /// The camera does not reopen on its own here. The QR code that started
+        /// the cancelled dial is usually still in front of the lens, and a scan
+        /// screen would read it again within a third of a second and dial
+        /// straight back into what the user just stopped.
+        fn stopped_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+            let Mode::Stopped(previous) = &self.mode else {
+                return;
+            };
+            let previous = previous.clone();
+            let message = self.message.clone();
+
+            let mut back = false;
+            let mut rescan = false;
+            let space = ui.available_height() / 3.0;
+            ui.vertical_centered(|ui| {
+                ui.add_space(space);
+                if let Some(message) = &message {
+                    ui.heading(message);
+                }
+                ui.add_space(16.0);
+                if let Some(previous) = &previous {
+                    back = ui
+                        .add_sized(BUTTON, egui::Button::new(back_label(&previous.name)))
+                        .clicked();
+                    ui.add_space(8.0);
+                }
+                rescan = ui.add_sized(BUTTON, egui::Button::new("Scan")).clicked();
+            });
+            crate::ui::top_bar(ui, ctx, IDLE_TITLE);
+
+            match (back, rescan, previous) {
+                (true, _, Some(previous)) => {
+                    self.dial(ctx, previous.ticket.clone(), Some(previous));
+                }
+                (_, true, previous) => self.enter_scan(ctx, previous),
+                _ => {}
+            }
+        }
+
+        /// Draws the scan screen: the camera picture, whatever the last attempt
+        /// had to say for itself, and the way back to what was playing.
         fn scan_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-            if let Mode::Scanning(view) = &mut self.mode {
-                view.draw(ui);
+            let mut previous = None;
+            if let Mode::Scanning(screen) = &mut self.mode {
+                screen.view.draw(ui);
+                previous = screen.previous.clone();
             }
-            crate::ui::top_bar(ui, ctx, SCAN_TITLE);
-            if let Some(message) = &self.message {
-                crate::ui::control_panel(ctx, "scan-message", |ui| {
+            crate::ui::top_bar(ui, ctx, IDLE_TITLE);
+
+            let message = self.message.clone();
+            if message.is_none() && previous.is_none() {
+                return;
+            }
+            let mut back = false;
+            crate::ui::control_panel(ctx, "scan-controls", |ui| {
+                if let Some(previous) = &previous {
+                    back = ui
+                        .add_sized(BUTTON, egui::Button::new(back_label(&previous.name)))
+                        .clicked();
+                }
+                if let Some(message) = &message {
                     ui.colored_label(egui::Color32::LIGHT_RED, message);
-                });
+                }
+            });
+            if back && let Some(previous) = previous {
+                self.dial(ctx, previous.ticket.clone(), Some(previous));
             }
         }
 
-        /// Draws the waiting screen shown while a ticket is being dialed.
+        /// Draws the waiting screen shown while a ticket is being dialed, with
+        /// the button that gives up on it.
         fn connecting_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
             let Mode::Connecting(pending) = &self.mode else {
                 return;
             };
-            let title = format!("connecting to {} ...", pending.ticket.broadcast_name);
+            let name = pending.ticket.broadcast_name.clone();
+            let previous = pending.previous.clone();
+
+            let mut cancel = false;
             let space = ui.available_height() / 3.0;
             ui.vertical_centered(|ui| {
                 ui.add_space(space);
-                ui.heading(title);
+                ui.heading(format!("connecting to {name} ..."));
                 ui.add_space(8.0);
                 ui.spinner();
+                ui.add_space(16.0);
+                cancel = ui.add_sized(BUTTON, egui::Button::new("Cancel")).clicked();
             });
-            crate::ui::top_bar(ui, ctx, SCAN_TITLE);
+            crate::ui::top_bar(ui, ctx, IDLE_TITLE);
+            if cancel {
+                self.cancel_dial(&name, previous);
+            }
         }
 
         /// Draws the player: the picture, and the overlay while the pointer is
@@ -609,9 +877,102 @@ mod window {
                     .on_hover_text("Read a new ticket off a QR code")
                     .clicked();
             });
-            if rescan {
-                self.enter_scan(ctx);
+            let previous = rescan.then(|| watching.previous());
+            if let Some(previous) = previous {
+                self.enter_scan(ctx, Some(previous));
             }
         }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::back_label;
+
+        #[test]
+        fn a_short_broadcast_name_is_on_the_button_whole() {
+            assert_eq!(back_label("camera"), "Back to camera");
+        }
+
+        /// The name comes from the publisher, and the button it labels sits in
+        /// a panel over the picture.
+        #[test]
+        fn a_long_broadcast_name_is_cut_short() {
+            let label = back_label("a-broadcast-with-a-name-nobody-should-have-chosen");
+            assert_eq!(label, "Back to a-broadcast-with-a-name-...");
+        }
+
+        /// Cutting by byte would panic here rather than shorten anything.
+        #[test]
+        fn a_name_of_multi_byte_characters_is_cut_on_a_character() {
+            let label = back_label(&"e\u{301}".repeat(40));
+            assert!(label.starts_with("Back to "), "unexpected: {label}");
+            assert!(label.ends_with("..."), "unexpected: {label}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::{Start, start};
+
+    /// Parses a `watch` command line, as `irl` itself would.
+    fn watch_args(args: &[&str]) -> crate::args::WatchArgs {
+        let line = ["irl", "watch"].into_iter().chain(args.iter().copied());
+        let cli = crate::Cli::try_parse_from(line).expect("the flags are accepted");
+        match cli.command {
+            crate::Command::Watch(args) => args,
+            other => panic!("expected watch, got {other:?}"),
+        }
+    }
+
+    /// An endpoint id and broadcast name, which name a broadcast without a
+    /// ticket to paste.
+    fn endpoint_and_name() -> (String, String) {
+        (
+            iroh::SecretKey::generate().public().to_string(),
+            "hello".to_string(),
+        )
+    }
+
+    /// Nothing is on screen to cancel it, and the terminal it was typed into
+    /// still has a Ctrl+C.
+    #[test]
+    fn a_ticket_on_its_own_is_dialed_before_the_window_opens() {
+        let (id, name) = endpoint_and_name();
+        let start = start(&watch_args(&["--endpoint-id", &id, "--name", &name]));
+        assert!(matches!(start, Ok(Start::Ticket(_))));
+    }
+
+    /// The window dials this one itself, because its connecting screen has a
+    /// camera to cancel back to.
+    #[test]
+    #[cfg(feature = "render")]
+    fn a_ticket_alongside_scan_is_dialed_from_inside_the_window() {
+        let (id, name) = endpoint_and_name();
+        let start = start(&watch_args(&[
+            "--scan",
+            "--endpoint-id",
+            &id,
+            "--name",
+            &name,
+        ]));
+        assert!(matches!(start, Ok(Start::TicketInWindow(_))));
+    }
+
+    #[test]
+    #[cfg(feature = "render")]
+    fn scan_without_a_ticket_opens_the_camera() {
+        assert!(matches!(start(&watch_args(&["--scan"])), Ok(Start::Scan)));
+    }
+
+    #[test]
+    fn a_run_that_names_no_broadcast_is_rejected() {
+        let err = start(&watch_args(&[])).expect_err("nothing names a broadcast");
+        assert!(
+            err.to_string().contains("--endpoint-id"),
+            "unexpected: {err}"
+        );
     }
 }
