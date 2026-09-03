@@ -103,7 +103,7 @@ mod window {
     //! the top bar, the control panel, and the way both fade out with the
     //! pointer, so the two commands do not feel like different programs.
 
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use eframe::egui;
     use iroh_live::{
@@ -140,14 +140,6 @@ mod window {
     /// How long the publisher waits before taking the camera back from the scan
     /// screen.
     ///
-    /// The scan camera runs on a thread that is asked to stop rather than
-    /// aborted where it stands, so it releases the device a moment after the
-    /// scan screen closes. A publish that finds the camera still busy stays
-    /// silent rather than retrying, which is a call with no outgoing picture
-    /// and nothing on screen to say why. Long enough to cover the handover,
-    /// short enough that the waiting screen is only briefly without a picture.
-    const CAMERA_HANDOVER: Duration = Duration::from_millis(750);
-
     /// Width of the local picture-in-picture, in points.
     const PIP_WIDTH: f32 = 240.0;
 
@@ -212,7 +204,7 @@ mod window {
                     incoming,
                     pending: None,
                     screen: Screen::waiting(),
-                    restore_at: None,
+                    restore: false,
                     cursor: CursorIdle::default(),
                 };
                 if let Some(ticket) = args.ticket {
@@ -238,9 +230,9 @@ mod window {
         /// after the scan screen has borrowed the camera.
         capture: CaptureArgs,
         camera: Camera,
-        /// When the publisher takes the camera back, once the scan screen has
-        /// had [`CAMERA_HANDOVER`] to release it.
-        restore_at: Option<Instant>,
+        /// Whether the publisher owes itself a camera, because the scan screen
+        /// borrowed it.
+        restore: bool,
         incoming: mpsc::Receiver<MoqSession>,
         _forwarder: AbortOnDropHandle<()>,
         /// Keeps the state machine ticking while nothing draws the window.
@@ -519,16 +511,20 @@ mod window {
             }
         }
 
-        /// Takes the camera back once the scan screen has had time to release
-        /// it.
+        /// Takes the camera back after the scan screen has had it.
+        ///
+        /// No wait for the scan camera's thread to let go. The publish path
+        /// retries a device that will not open yet, from 200ms up to a
+        /// ceiling, so asking immediately costs at most one refused attempt
+        /// and a line in the log. Waiting a fixed interval instead was a guess
+        /// at how long a thread takes to stop, and it was wrong in both
+        /// directions: too long for a device already free, too short for one
+        /// that is not.
         fn poll_capture(&mut self) {
-            let Some(at) = self.restore_at else {
-                return;
-            };
-            if Instant::now() < at {
+            if !self.restore {
                 return;
             }
-            self.restore_at = None;
+            self.restore = false;
             info!("taking the camera back from the scan screen");
             if let Err(err) = source::configure_video(&self.broadcast, &self.capture) {
                 warn!(error = %err, "could not restart the local video after scanning");
@@ -625,7 +621,7 @@ mod window {
             if self.camera == Camera::Publisher {
                 self.broadcast.video().clear();
             }
-            self.restore_at = None;
+            self.restore = false;
             self.screen =
                 Screen::Scanning(Box::new(ScanView::new(ctx, self.render_state.as_ref())));
         }
@@ -634,15 +630,15 @@ mod window {
         ///
         /// Leaves the waiting screen behind; a caller that wants a different
         /// one sets it afterwards. Dropping the view is what asks the scan
-        /// camera's thread to stop, and it releases the device a moment later,
-        /// which is what [`CAMERA_HANDOVER`] waits out.
+        /// camera's thread to stop, and the publisher asks for the device
+        /// straight away: the open retries until the thread has let go.
         fn leave_scan(&mut self) {
             if !matches!(self.screen, Screen::Scanning(_)) {
                 return;
             }
             self.screen = Screen::waiting();
             if self.camera == Camera::Publisher {
-                self.restore_at = Some(Instant::now() + CAMERA_HANDOVER);
+                self.restore = true;
             }
         }
 

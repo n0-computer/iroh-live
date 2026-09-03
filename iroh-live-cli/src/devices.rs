@@ -11,11 +11,71 @@ pub fn run(rt: &tokio::runtime::Runtime) -> n0_error::Result {
     Ok(())
 }
 
+/// How many sizes a camera lists before the rest are summarised.
+///
+/// A UVC camera commonly offers a dozen, most of them steps nobody asks for
+/// between the two anyone does. Enough to see the range and the shape of it
+/// without a page of output per device.
+const MODES_SHOWN: usize = 6;
+
+/// Prints the cameras, with the sizes and frame rates each one reports.
+///
+/// The modes are what `--renditions 720p@60` is checked against by hand: a rate
+/// the device does not have is not refused anywhere, it is quietly replaced by
+/// the nearest one, so the only way to know what to ask for is to be told what
+/// is there.
+///
+/// Only Linux answers. The other platforms' camera APIs report the mode they
+/// picked rather than the modes they have, so those cameras print their
+/// identifier alone and the rate is whatever opening the device gives.
+async fn cameras() {
+    let cameras = video::capture::cameras().await;
+    println!("cameras:");
+    let cameras = match cameras {
+        Ok(cameras) if cameras.is_empty() => {
+            println!("  (none found)\n");
+            return;
+        }
+        Ok(cameras) => cameras,
+        Err(err) => {
+            println!("  (unavailable: {err})\n");
+            return;
+        }
+    };
+
+    for camera in &cameras {
+        println!("  cam:{}  {}", camera.id, camera.name);
+        // Enumerating opens nothing, so a camera another program is using still
+        // answers. A camera that will not answer is not an error worth a line:
+        // the identifier above it is still the thing a publisher needs.
+        let Ok(modes) = video::capture::camera_modes(Some(&camera.id)).await else {
+            continue;
+        };
+        for mode in modes.iter().take(MODES_SHOWN) {
+            println!("      {}", describe(mode));
+        }
+        if modes.len() > MODES_SHOWN {
+            println!("      ... and {} more", modes.len() - MODES_SHOWN);
+        }
+    }
+    println!();
+}
+
+/// One size and the rates it offers, as a line under its camera.
+fn describe(mode: &video::capture::Mode) -> String {
+    let size = format!("{}x{}", mode.width, mode.height);
+    if mode.framerates.is_empty() {
+        // The driver described a continuous range rather than listing rates, so
+        // the size is real and nothing here can say at which rates.
+        return format!("{size}  (rates not listed)");
+    }
+    let rates: Vec<String> = mode.framerates.iter().map(u32::to_string).collect();
+    format!("{size}  {} fps", rates.join(", "))
+}
+
 /// Prints every section, in the order a publisher reaches for them.
 async fn list() {
-    section("cameras", video::capture::cameras().await, |camera| {
-        format!("cam:{}  {}", camera.id, camera.name)
-    });
+    cameras().await;
 
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
     section(
