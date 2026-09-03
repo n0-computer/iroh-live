@@ -155,6 +155,7 @@ Subscribes to a broadcast and plays it. `irl play` is an alias.
 | `--name <NAME>` | Broadcast path, alongside `--endpoint-id` |
 | `--no-video` | Play audio only; no window opens |
 | `--scan` | Read the ticket off a QR code held up to the camera |
+| `--scan-camera <SPEC>` | Which camera `--scan` reads: `cam`, `cam:<id>`, or `rpicam`. Omit to let it choose |
 | `--rendition <NAME>` | Hold one rendition instead of following the downlink |
 | `--decoder <KIND>` | `auto` (default), `hardware`, `software`, or a backend name such as `vaapi`, `nvdec`, `v4l2`, `videotoolbox`, `openh264` |
 | `--latency <MODE>` | `realtime`, `balanced` (default), or `smooth` |
@@ -165,10 +166,18 @@ Subscribes to a broadcast and plays it. `irl play` is an alias.
 is what a machine with a touchscreen and no keyboard needs. The window opens on
 the camera picture, and as soon as a frame carries a QR code that parses as a
 ticket it connects to that broadcast. The player keeps a Scan button, so a run
-started with a ticket can still be pointed somewhere else. On Linux the camera
-is opened through V4L2 whichever features the build has, because `moq-video`'s
-PipeWire backend serves screen capture rather than cameras; a Raspberry Pi
-camera therefore has to be reachable as a V4L2 node.
+started with a ticket can still be pointed somewhere else.
+
+`--scan-camera` takes the grammar `--video` takes, restricted to sources that
+hand over pixels: `cam` for the default camera, `cam:<id>` for one `irl devices`
+lists, or `rpicam` for the Raspberry Pi camera, which here always means its raw
+pictures. Omitted, the scanner takes the Pi camera where the build can reach one
+and the default camera otherwise. That guess exists because a Pi's `/dev/video0`
+is the raw sensor: it opens at any geometry you ask for and then never delivers
+a frame, which leaves a black preview and no error. A Pi with a USB webcam is
+the case the guess gets wrong, and `--scan-camera cam` is the answer to it. If
+a camera opens and sends nothing for five seconds, the screen says so and names
+the flag.
 
 Without `--rendition` the video track adapts: the subscription's transport
 signals drive rendition selection, and a switch opens the replacement decoder
@@ -214,6 +223,7 @@ is up: the difference is only who dialed.
 | `<TICKET>` | Ticket of the peer to call. Omit to wait for somebody to call this node |
 | `--decoder <KIND>` | `auto` (default), `hardware`, `software`, or a backend name such as `vaapi`, `nvdec`, `v4l2`, `videotoolbox`, `openh264` |
 | `--latency <MODE>` | `realtime`, `balanced` (default), or `smooth`, as `irl watch` takes it |
+| `--scan-camera <SPEC>` | Which camera the scan screen reads, as `irl watch` takes it |
 | `--no-qr` | Suppress the terminal QR code |
 | `--fullscreen` | Start in fullscreen |
 

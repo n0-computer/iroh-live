@@ -31,6 +31,8 @@ use moq_net::Timestamp;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
+use crate::source_spec::VideoSourceSpec;
+
 /// How long the scanner waits between two looks for a QR code.
 ///
 /// Finding a grid costs a full-frame binarization pass followed by a corner
@@ -62,6 +64,15 @@ const SCAN_FRAMERATE: u32 = 15;
 /// How long the scanner waits before reopening a camera that failed.
 const REOPEN_DELAY: Duration = Duration::from_secs(2);
 
+/// How long a camera has to produce its first picture before it counts as the
+/// wrong camera.
+///
+/// Generous, because a webcam that has to power up and settle its exposure can
+/// take a second or two, and reporting a working camera as broken is worse than
+/// waiting. Short enough that somebody holding a code up to a Pi finds out what
+/// is wrong rather than concluding the feature does not work.
+const FIRST_FRAME_GRACE: Duration = Duration::from_secs(5);
+
 /// A ticket the scanner keeps looking past, and until when.
 ///
 /// A dial that fails sends the window back to the camera with the same code
@@ -77,6 +88,183 @@ pub struct Skip {
     pub ticket: LiveTicket,
     /// When it may be reported again.
     pub until: Instant,
+}
+
+/// The camera the scanner reads, once a specifier has been resolved.
+enum ScanCamera {
+    Capture(capture::Stream),
+    #[cfg(all(target_os = "linux", feature = "rpicam"))]
+    Rpicam {
+        frames: n0_future::boxed::BoxStream<Frame>,
+        size: Size,
+    },
+}
+
+impl ScanCamera {
+    /// Opens whichever camera `choice` names, or the best guess when it names
+    /// none.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message for the screen if the camera will not open.
+    async fn open(choice: Option<&VideoSourceSpec>) -> Result<Self, String> {
+        match resolve(choice) {
+            #[cfg(all(target_os = "linux", feature = "rpicam"))]
+            VideoSourceSpec::Rpicam(_) => Self::open_rpicam(),
+            VideoSourceSpec::Camera(id) => Self::open_capture(id).await,
+            // `camera_spec` rejects everything else at the flag, so this is
+            // unreachable rather than a case with a sensible answer.
+            other => Err(format!("{other:?} is not a camera")),
+        }
+    }
+
+    async fn open_capture(id: Option<String>) -> Result<Self, String> {
+        let mut config = capture::Config::default();
+        config.source = capture::Source::Camera(id);
+        config.width = Some(SCAN_SIZE.width);
+        config.height = Some(SCAN_SIZE.height);
+        config.framerate = Some(SCAN_FRAMERATE);
+        capture::open(&config)
+            .await
+            .map(Self::Capture)
+            .map_err(|err| format!("the camera would not open: {err}"))
+    }
+
+    #[cfg(all(target_os = "linux", feature = "rpicam"))]
+    fn open_rpicam() -> Result<Self, String> {
+        use iroh_live::media::rpicam;
+
+        // The geometry is rounded to one libcamera leaves unpadded, and the
+        // rounded figure is what the pictures arrive at, so it is what the QR
+        // decoder has to be told about.
+        let config = rpicam::RawConfig::new(SCAN_SIZE.width, SCAN_SIZE.height, SCAN_FRAMERATE);
+        let size = Size {
+            width: config.width(),
+            height: config.height(),
+        };
+        // A clock of its own: nothing here lines the pictures up against audio,
+        // and the timestamps are discarded where the frames are read.
+        let frames = rpicam::frames(config, moq_mux::Clock::new())
+            .map_err(|err| format!("the Raspberry Pi camera would not open: {err}"))?;
+        Ok(Self::Rpicam { frames, size })
+    }
+
+    /// What to call this camera in a log line or an error.
+    fn label(&self) -> String {
+        match self {
+            Self::Capture(stream) => stream.label().to_string(),
+            #[cfg(all(target_os = "linux", feature = "rpicam"))]
+            Self::Rpicam { .. } => "rpicam-vid".to_string(),
+        }
+    }
+
+    fn size(&self) -> Size {
+        match self {
+            Self::Capture(stream) => Size {
+                width: stream.width(),
+                height: stream.height(),
+            },
+            #[cfg(all(target_os = "linux", feature = "rpicam"))]
+            Self::Rpicam { size, .. } => *size,
+        }
+    }
+
+    /// Whether this is the Raspberry Pi camera, which changes what a camera
+    /// that sends nothing is likely to mean.
+    fn is_rpicam(&self) -> bool {
+        match self {
+            Self::Capture(_) => false,
+            #[cfg(all(target_os = "linux", feature = "rpicam"))]
+            Self::Rpicam { .. } => true,
+        }
+    }
+
+    /// The next picture, or `None` once the camera has stopped.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message for the screen if the camera fails mid-stream.
+    async fn read(&mut self) -> Result<Option<Surface>, String> {
+        match self {
+            Self::Capture(stream) => stream
+                .read()
+                .await
+                .map_err(|err| format!("the camera failed: {err}")),
+            #[cfg(all(target_os = "linux", feature = "rpicam"))]
+            Self::Rpicam { frames, .. } => {
+                use n0_future::StreamExt as _;
+                // The timestamp goes: the preview draws whichever picture is in
+                // the slot when the window next paints, with no presentation
+                // clock in between.
+                Ok(frames.next().await.map(|frame| frame.surface))
+            }
+        }
+    }
+}
+
+/// Reads `--scan-camera`, which takes the grammar `--video` takes.
+///
+/// Restricted to the sources that can hand over pixels, which is what a QR
+/// decoder needs: a camera by the id `irl devices` prints, or the Raspberry Pi
+/// camera. `rpicam` means its raw pictures whether or not `:raw` is spelled
+/// out, because the H.264 the camera app can produce instead is not something
+/// this can read. A display, a file or a test pattern parse and are refused
+/// here rather than opened and stared at.
+///
+/// `None` leaves the choice to [`resolve`].
+///
+/// # Errors
+///
+/// Returns a message naming the accepted forms.
+pub fn camera_spec(spec: Option<&str>) -> Result<Option<VideoSourceSpec>, String> {
+    let Some(spec) = spec else {
+        return Ok(None);
+    };
+    let parsed = VideoSourceSpec::parse(spec)?;
+    match parsed {
+        VideoSourceSpec::Camera(id) => Ok(Some(VideoSourceSpec::Camera(id))),
+        #[cfg(all(target_os = "linux", feature = "rpicam"))]
+        VideoSourceSpec::Rpicam(_) => Ok(Some(VideoSourceSpec::Rpicam(
+            crate::source_spec::RpicamMode::Raw,
+        ))),
+        _ => Err(format!(
+            "--scan-camera reads a camera: 'cam' for the default one, 'cam:<id>' for one              `irl devices` lists, or 'rpicam' for the Raspberry Pi camera; got '{spec}'"
+        )),
+    }
+}
+
+/// The camera to open when `--scan-camera` named none.
+///
+/// A Raspberry Pi's `/dev/video0` is the Unicam node and hands back raw Bayer,
+/// which is not a picture anything here can read. It does not fail honestly
+/// either: the device accepts the requested geometry and then never delivers a
+/// frame, so taking the default camera leaves a black preview and no error.
+/// Where this build can drive `rpicam-vid`, that is the better guess.
+///
+/// A Pi with a USB webcam is the case this gets wrong, and `--scan-camera cam`
+/// is the answer to it.
+fn resolve(choice: Option<&VideoSourceSpec>) -> VideoSourceSpec {
+    if let Some(spec) = choice {
+        return spec.clone();
+    }
+    #[cfg(all(target_os = "linux", feature = "rpicam"))]
+    if rpicam_on_path() {
+        return VideoSourceSpec::Rpicam(crate::source_spec::RpicamMode::Raw);
+    }
+    VideoSourceSpec::Camera(None)
+}
+
+/// Whether `rpicam-vid` is installed.
+///
+/// Checked by looking for the binary rather than by enumerating:
+/// `--list-cameras` probes the I2C buses the CSI connector sits on and takes
+/// seconds, which is a long time to hold a screen somebody is pointing at a QR
+/// code.
+#[cfg(all(target_os = "linux", feature = "rpicam"))]
+fn rpicam_on_path() -> bool {
+    std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|dir| dir.join("rpicam-vid").is_file())
+    })
 }
 
 /// What the scan screen tells the user to do.
@@ -131,6 +319,7 @@ impl ScanView {
         ctx: &egui::Context,
         render_state: Option<&moq_media_egui::egui_wgpu::RenderState>,
         skip: Option<Skip>,
+        camera: Option<VideoSourceSpec>,
     ) -> Self {
         let (frame_tx, frames) = frame_channel::<Frame>();
         let (state_tx, state) = watch::channel(ScanState::Looking);
@@ -138,7 +327,7 @@ impl ScanView {
         let view = FrameView::new_wgpu(&ctx, "scan", render_state);
         let capture = local_task::spawn("qr-scan", move |shutdown| async move {
             tokio::select! {
-                () = scan(&frame_tx, &state_tx, &ctx, skip.as_ref()) => {}
+                () = scan(&frame_tx, &state_tx, &ctx, skip.as_ref(), camera.as_ref()) => {}
                 () = shutdown.cancelled() => info!("scan cancelled"),
             }
         });
@@ -212,23 +401,6 @@ impl ScanView {
     }
 }
 
-/// The capture configuration the scan camera opens with.
-///
-/// Always the default camera. `moq_video::capture` routes
-/// [`capture::Source::Camera`] through V4L2 on Linux whichever features are
-/// compiled in: its PipeWire backend serves the xdg-desktop-portal ScreenCast
-/// interface, which only ever hands back a display, so the `pipewire` feature
-/// changes nothing on this path. A Raspberry Pi camera has to reach V4L2 to be
-/// scannable, which is what the `bcm2835-v4l2` shim and `libcamerify` are for.
-fn camera_config() -> capture::Config {
-    let mut config = capture::Config::default();
-    config.source = capture::Source::Camera(None);
-    config.width = Some(SCAN_SIZE.width);
-    config.height = Some(SCAN_SIZE.height);
-    config.framerate = Some(SCAN_FRAMERATE);
-    config
-}
-
 /// Reads the camera until it yields a ticket, reopening it whenever it fails.
 ///
 /// The scan screen has no way forward other than a working camera, so a device
@@ -240,10 +412,11 @@ async fn scan(
     state: &watch::Sender<ScanState>,
     ctx: &egui::Context,
     skip: Option<&Skip>,
+    camera: Option<&VideoSourceSpec>,
 ) {
     let mut said_so = false;
     loop {
-        let problem = match look(frames, state, ctx, skip).await {
+        let problem = match look(frames, state, ctx, skip, camera).await {
             Ok(ticket) => {
                 info!(
                     remote = %ticket.endpoint.id.fmt_short(),
@@ -281,26 +454,42 @@ async fn look(
     state: &watch::Sender<ScanState>,
     ctx: &egui::Context,
     skip: Option<&Skip>,
+    camera: Option<&VideoSourceSpec>,
 ) -> Result<LiveTicket, String> {
-    let config = camera_config();
-    let mut stream = capture::open(&config)
-        .await
-        .map_err(|err| format!("the camera would not open: {err}"))?;
+    let mut stream = ScanCamera::open(camera).await?;
+    let size = stream.size();
     info!(
         device = stream.label(),
-        width = stream.width(),
-        height = stream.height(),
+        width = size.width,
+        height = size.height,
         "scanning for a ticket QR code"
     );
     report(state, ctx, ScanState::Looking);
 
+    let opened = Instant::now();
+    let mut seen_a_frame = false;
     let mut next_look = Instant::now();
     loop {
-        let surface = match stream.read().await {
-            Ok(Some(surface)) => surface,
-            Ok(None) => return Err("the camera stopped".to_string()),
-            Err(err) => return Err(format!("the camera failed: {err}")),
+        // A camera that opens and then says nothing is the failure a Raspberry
+        // Pi produces when pointed at `/dev/video0`, and it is silent: the
+        // device accepts the geometry and never delivers. Without this the
+        // screen is black with no explanation, which is indistinguishable from
+        // a lens cap.
+        let surface = match tokio::time::timeout(FIRST_FRAME_GRACE, stream.read()).await {
+            Ok(Ok(Some(surface))) => surface,
+            Ok(Ok(None)) => return Err("the camera stopped".to_string()),
+            Ok(Err(err)) => return Err(err),
+            Err(_) if !seen_a_frame => return Err(no_frames(&stream)),
+            // Already delivering, so a gap is the camera stalling rather than
+            // the wrong device: say so and let the reopen loop have it.
+            Err(_) => {
+                return Err(format!(
+                    "the camera stopped delivering after {}s",
+                    opened.elapsed().as_secs()
+                ));
+            }
         };
+        seen_a_frame = true;
 
         // Taken before the frame is handed over, because handing it over gives
         // up ownership and reading the pixels needs it.
@@ -369,6 +558,26 @@ fn still_skipped(skip: Option<&Skip>, ticket: &LiveTicket) -> Option<Duration> {
         return None;
     }
     skip.until.checked_duration_since(Instant::now())
+}
+
+/// What to say about a camera that opened and then produced nothing.
+///
+/// Names the flag, because the fix is a flag and the reader is looking at a
+/// black rectangle.
+fn no_frames(stream: &ScanCamera) -> String {
+    let device = stream.label();
+    match stream.is_rpicam() {
+        // Already on the Pi camera, so the next question is the hardware.
+        true => format!(
+            "{device} opened but sent no pictures within {}s; check the ribbon cable",
+            FIRST_FRAME_GRACE.as_secs()
+        ),
+        false => format!(
+            "{device} opened but sent no pictures within {}s. A Raspberry Pi camera is not \
+             reachable this way: pass --scan-camera rpicam",
+            FIRST_FRAME_GRACE.as_secs()
+        ),
+    }
 }
 
 /// Publishes `next` and wakes the window so it is drawn.
@@ -510,6 +719,47 @@ mod tests {
         let text = decode(&render("https://example.com")).expect("the code is still a QR code");
         assert_eq!(text, "https://example.com");
         assert!(text.parse::<LiveTicket>().is_err());
+    }
+
+    /// The flag takes the grammar `--video` takes, so a device id that works
+    /// for publishing works for scanning, on every platform the same way.
+    #[test]
+    fn the_scan_camera_takes_a_camera_by_id() {
+        assert_eq!(
+            camera_spec(Some("cam")).expect("a camera"),
+            Some(VideoSourceSpec::Camera(None))
+        );
+        assert_eq!(
+            camera_spec(Some("cam:/dev/video2")).expect("a camera"),
+            Some(VideoSourceSpec::Camera(Some("/dev/video2".into())))
+        );
+        assert_eq!(camera_spec(None).expect("no flag is fine"), None);
+    }
+
+    /// A scanner needs pixels, so a source that is not a camera is refused at
+    /// the flag rather than opened and stared at.
+    #[test]
+    fn the_scan_camera_refuses_what_is_not_a_camera() {
+        for spec in ["screen", "test", "file:clip.mp4", "none"] {
+            let err = camera_spec(Some(spec)).expect_err(spec);
+            assert!(err.contains("--scan-camera"), "{spec}: {err}");
+            assert!(err.contains(spec), "{spec}: {err}");
+        }
+    }
+
+    /// The Pi camera can only mean its raw pictures here: the H.264 it can
+    /// produce instead is not something a QR decoder can read.
+    #[cfg(all(target_os = "linux", feature = "rpicam"))]
+    #[test]
+    fn the_pi_camera_is_always_raw_for_scanning() {
+        use crate::source_spec::RpicamMode;
+        for spec in ["rpicam", "rpicam:raw", "picam"] {
+            assert_eq!(
+                camera_spec(Some(spec)).expect(spec),
+                Some(VideoSourceSpec::Rpicam(RpicamMode::Raw)),
+                "{spec}"
+            );
+        }
     }
 
     #[test]

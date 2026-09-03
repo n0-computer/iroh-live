@@ -364,6 +364,11 @@ pub struct CallArgs {
     #[command(flatten)]
     pub playback: PlaybackArgs,
 
+    /// Which camera the QR scanner reads, as `irl watch --scan-camera` takes
+    /// it.
+    #[arg(long, value_name = "SPEC")]
+    pub scan_camera: Option<String>,
+
     /// Suppress the terminal QR code.
     #[arg(long)]
     pub no_qr: bool,
@@ -469,6 +474,17 @@ pub struct WatchArgs {
     #[cfg(feature = "render")]
     #[arg(long, conflicts_with = "no_video")]
     pub scan: bool,
+
+    /// Which camera the QR scanner reads, in the grammar `--video` takes:
+    /// `cam`, `cam:<id>` for one `irl devices` lists, or `rpicam`.
+    ///
+    /// Omitted, the scanner takes the Raspberry Pi camera where this build can
+    /// reach one and the default camera otherwise. A Pi's `/dev/video0` is the
+    /// raw sensor and cannot produce a picture, which is why the guess is not
+    /// simply the default camera; pass `cam` on a Pi with a USB webcam.
+    #[cfg(feature = "render")]
+    #[arg(long, value_name = "SPEC")]
+    pub scan_camera: Option<String>,
 
     /// Pin a rendition by name instead of following the downlink.
     #[arg(long)]

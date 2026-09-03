@@ -181,6 +181,10 @@ mod window {
         ticket: String,
         args: CallArgs,
     ) -> Result {
+        // Parsed before the window opens, so a bad specifier is a line in the
+        // terminal rather than a message on a screen nobody asked for yet.
+        let scan_camera = crate::scan::camera_spec(args.scan_camera.as_deref())
+            .map_err(|err| anyerr!("{err}"))?;
         eframe::run_native(
             "irl call",
             crate::ui::native_options(args.fullscreen),
@@ -194,6 +198,7 @@ mod window {
                     ticket,
                     camera: Camera::of(&args.capture),
                     capture: args.capture,
+                    scan_camera,
                     playback: args.playback,
                     preview: LocalPreview::new(ctx, "call-preview", cc.wgpu_render_state.as_ref()),
                     render_state: cc.wgpu_render_state.clone(),
@@ -245,6 +250,8 @@ mod window {
         cursor: CursorIdle,
         /// The playback flags the peer's broadcast is opened under.
         playback: PlaybackArgs,
+        /// Which camera the scan screen opens.
+        scan_camera: Option<crate::source_spec::VideoSourceSpec>,
     }
 
     /// What the window is showing.
@@ -629,6 +636,7 @@ mod window {
                 ctx,
                 self.render_state.as_ref(),
                 None,
+                self.scan_camera.clone(),
             )));
         }
 

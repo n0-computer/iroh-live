@@ -51,6 +51,9 @@ enum TrackSelection {
 struct Options {
     /// The rendition `--rendition` pinned, if any.
     rendition: Option<String>,
+    /// Which camera the scan screen opens.
+    #[cfg(feature = "render")]
+    scan_camera: Option<crate::source_spec::VideoSourceSpec>,
     tracks: TrackSelection,
     /// How the video is decoded.
     #[cfg(feature = "render")]
@@ -61,6 +64,10 @@ impl From<&WatchArgs> for Options {
     fn from(args: &WatchArgs) -> Self {
         Self {
             rendition: args.rendition.clone(),
+            // Parsed by the caller, which can report a bad specifier; a
+            // conversion that cannot fail has nowhere to put the message.
+            #[cfg(feature = "render")]
+            scan_camera: None,
             tracks: match args.no_video {
                 true => TrackSelection::AudioOnly,
                 false => TrackSelection::Both,
@@ -85,7 +92,16 @@ pub fn run(args: WatchArgs, rt: &tokio::runtime::Runtime) -> Result {
         ));
     }
 
-    let options = Options::from(&args);
+    #[cfg_attr(
+        not(feature = "render"),
+        expect(unused_mut, reason = "the scanner is gated")
+    )]
+    let mut options = Options::from(&args);
+    #[cfg(feature = "render")]
+    {
+        options.scan_camera = crate::scan::camera_spec(args.scan_camera.as_deref())
+            .map_err(|err| anyerr!("{err}"))?;
+    }
     let live = rt.block_on(setup(&args))?;
 
     // Two of the three arms are gated on `render`, so a build without it leaves
@@ -378,7 +394,13 @@ mod window {
                     Opening::Connecting(ticket) => {
                         Mode::Connecting(Box::new(connecting(ctx, &live, &options, *ticket, None)))
                     }
-                    Opening::Scanning => scanning(ctx, render_state.as_ref(), None, None),
+                    Opening::Scanning => scanning(
+                        ctx,
+                        render_state.as_ref(),
+                        None,
+                        None,
+                        options.scan_camera.clone(),
+                    ),
                 };
                 Ok(Box::new(WatchApp {
                     live,
@@ -543,9 +565,10 @@ mod window {
         render_state: Option<&RenderState>,
         previous: Option<Previous>,
         skip: Option<Skip>,
+        camera: Option<crate::source_spec::VideoSourceSpec>,
     ) -> Mode {
         Mode::Scanning(Box::new(Scanning {
-            view: ScanView::new(ctx, render_state, skip),
+            view: ScanView::new(ctx, render_state, skip, camera),
             previous,
         }))
     }
@@ -786,7 +809,8 @@ mod window {
                 info!("scanning for a ticket");
             }
             self.close_mode();
-            self.mode = scanning(ctx, self.render_state.as_ref(), previous, skip);
+            let camera = self.options.scan_camera.clone();
+            self.mode = scanning(ctx, self.render_state.as_ref(), previous, skip, camera);
         }
 
         /// Ends whatever the current mode holds open.
