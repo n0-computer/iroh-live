@@ -18,7 +18,10 @@
 //! recoverable break into a permanent freeze. The reader gives up only on a run
 //! long enough that no keyframe is coming, and says so.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use n0_error::{Result, e};
 use n0_future::task::{AbortOnDropHandle, spawn};
@@ -38,6 +41,16 @@ use crate::frame_channel::{FrameSender, frame_channel};
 /// would be latency rather than throughput. Two slots absorb a scheduling
 /// hiccup without letting the decoder race ahead of the clock.
 const READ_AHEAD: usize = 2;
+
+/// How long failures are counted over before the share that decoded is judged.
+const FAILURE_WINDOW: Duration = Duration::from_secs(10);
+
+/// The share of access units that must decode for a track to count as playing.
+///
+/// A decoder taking only keyframes off a two second GOP lands near a fiftieth,
+/// and an ordinary stream recovering from one skipped group is far above this
+/// within a window.
+const MIN_DECODED_SHARE: f64 = 0.5;
 
 /// How long a replacement decoder may take over its first picture.
 ///
@@ -95,14 +108,45 @@ enum AfterFailure {
 }
 
 /// The run of decode failures since the last picture.
-#[derive(Debug, Default)]
-struct DecodeFailures(u32);
+#[derive(Debug)]
+struct DecodeFailures {
+    /// The run since the last picture, which is what the give-up threshold
+    /// counts.
+    run: u32,
+    /// Failures and pictures over the window below, which is what catches a
+    /// decoder that keeps producing just enough to reset the run.
+    window: Window,
+}
+
+/// Failures and pictures since the window opened.
+#[derive(Debug)]
+struct Window {
+    started: Instant,
+    failed: u32,
+    decoded: u32,
+    reported: bool,
+}
+
+impl Default for DecodeFailures {
+    fn default() -> Self {
+        Self {
+            run: 0,
+            window: Window {
+                started: Instant::now(),
+                failed: 0,
+                decoded: 0,
+                reported: false,
+            },
+        }
+    }
+}
 
 impl DecodeFailures {
     /// Records a failure and says whether to carry on.
     fn failed(&mut self) -> AfterFailure {
-        self.0 += 1;
-        match self.0 >= MAX_CONSECUTIVE_DECODE_FAILURES {
+        self.run += 1;
+        self.window.failed += 1;
+        match self.run >= MAX_CONSECUTIVE_DECODE_FAILURES {
             true => AfterFailure::GiveUp,
             false => AfterFailure::Skip,
         }
@@ -112,12 +156,42 @@ impl DecodeFailures {
     ///
     /// Returns how long the run was, so a recovery can report what it cost.
     fn decoded(&mut self) -> u32 {
-        std::mem::take(&mut self.0)
+        self.window.decoded += 1;
+        std::mem::take(&mut self.run)
     }
 
     /// The length of the run so far.
     fn len(&self) -> u32 {
-        self.0
+        self.run
+    }
+
+    /// Returns the share of access units that decoded, once a window has
+    /// closed on a track that is mostly failing.
+    ///
+    /// The run counter alone cannot see this. A decoder that takes a keyframe
+    /// and refuses everything after it resets the run at every group, so on a
+    /// two second GOP the longest run is sixty and the threshold of three
+    /// hundred is never approached, while what reaches the screen is one
+    /// picture every two seconds. That is a broken decoder, and it is worth
+    /// one line saying so rather than a slideshow nobody can explain.
+    ///
+    /// Reports rather than gives up: half a frame a second is a poor picture
+    /// and no picture is a worse one, and the reader has no better decoder to
+    /// switch to on its own.
+    fn mostly_failing(&mut self) -> Option<f64> {
+        if self.window.reported || self.window.started.elapsed() < FAILURE_WINDOW {
+            return None;
+        }
+        let total = self.window.failed + self.window.decoded;
+        let share = f64::from(self.window.decoded) / f64::from(total.max(1));
+        self.window.started = Instant::now();
+        self.window.failed = 0;
+        self.window.decoded = 0;
+        if share >= MIN_DECODED_SHARE {
+            return None;
+        }
+        self.window.reported = true;
+        Some(share)
     }
 }
 
@@ -215,6 +289,14 @@ async fn spawn_reader(
                         let skipped = failures.decoded();
                         if skipped > 0 {
                             info!(skipped, "video decoding recovered");
+                        }
+                        if let Some(share) = failures.mostly_failing() {
+                            error!(
+                                decoded = format_args!("{:.0}%", share * 100.0),
+                                over = ?FAILURE_WINDOW,
+                                "this decoder is refusing most of the stream, so the picture \
+                                 is a fraction of the frame rate it should be",
+                            );
                         }
                         // Covers the transport read as well as the decode: the
                         // two happen inside one `read`, with no earlier point
@@ -760,5 +842,60 @@ mod tests {
         watcher.borrow_and_update();
         clear_request(&requested, "video-720p");
         assert!(!watcher.has_changed().expect("the sender is still alive"));
+    }
+}
+
+#[cfg(test)]
+mod failure_share_tests {
+    use super::{DecodeFailures, FAILURE_WINDOW};
+
+    /// A decoder taking one picture per group never builds a run long enough
+    /// to give up on, so the run counter alone cannot see it. The share can.
+    #[test]
+    fn one_picture_a_group_is_reported() {
+        let mut failures = DecodeFailures::default();
+        failures.window.started = std::time::Instant::now() - FAILURE_WINDOW;
+        // Sixty access units a group, one of which decodes.
+        for _ in 0..59 {
+            failures.failed();
+        }
+        failures.decoded();
+        let share = failures
+            .mostly_failing()
+            .expect("one in sixty is well under the threshold");
+        assert!(share < 0.05, "share was {share}");
+    }
+
+    /// A stream that recovers from one skipped group is far above the
+    /// threshold inside a window, so it says nothing.
+    #[test]
+    fn an_ordinary_recovery_says_nothing() {
+        let mut failures = DecodeFailures::default();
+        failures.window.started = std::time::Instant::now() - FAILURE_WINDOW;
+        for _ in 0..5 {
+            failures.failed();
+        }
+        for _ in 0..295 {
+            failures.decoded();
+        }
+        assert!(failures.mostly_failing().is_none());
+    }
+
+    /// Reported once, so a track that stays broken does not log every window.
+    #[test]
+    fn the_share_is_reported_once() {
+        let mut failures = DecodeFailures::default();
+        failures.window.started = std::time::Instant::now() - FAILURE_WINDOW;
+        for _ in 0..59 {
+            failures.failed();
+        }
+        failures.decoded();
+        assert!(failures.mostly_failing().is_some());
+        failures.window.started = std::time::Instant::now() - FAILURE_WINDOW;
+        for _ in 0..59 {
+            failures.failed();
+        }
+        failures.decoded();
+        assert!(failures.mostly_failing().is_none());
     }
 }
