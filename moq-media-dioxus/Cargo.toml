@@ -16,7 +16,7 @@ dioxus-native = { git = "https://github.com/DioxusLabs/blitz", features = ["vell
 moq-media = { workspace = true, features = ["wgpu"] }
 tracing = "0.1"
 wgpu = { version = "27", default-features = false }
-wgpu_context = "0.3"
+wgpu_context = "0.9"
 
 [dev-dependencies]
 moq-media = { workspace = true, features = ["h264", "av1", "capture"] }
