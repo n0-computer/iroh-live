@@ -214,6 +214,64 @@ async fn drain(track: &VideoTrack, duration: Duration) -> Vec<Instant> {
     arrivals
 }
 
+/// What arrived while a rendition handover was in progress, and what arrived
+/// once it had finished.
+///
+/// The two are kept apart because only the first says anything about the
+/// handover. A gap during it is the cost of the switch; a gap after it is
+/// ordinary delivery jitter on the new rendition, which `frames_survive_a_*`
+/// already covers and which reaching a switch's tolerance would only make the
+/// switch look expensive.
+struct Handover {
+    /// Arrivals from the moment the switch was asked for through to the
+    /// replacement's first frame.
+    across: Vec<Instant>,
+    /// Arrivals in the settling window that followed.
+    after: Vec<Instant>,
+    /// How long the replacement took to open, subscribe, and produce a frame.
+    took: Duration,
+}
+
+/// Reads frames across a switch to `rendition`, and for `settle` after it lands.
+///
+/// A fixed window would have to be long enough for the slowest handover the
+/// machine can produce and short enough for the gaps inside it to still mean
+/// something, and there is no width that is both. Following the switch itself
+/// removes the choice: the window ends when the thing being measured has
+/// happened.
+async fn drain_across_switch(track: &VideoTrack, rendition: &str, settle: Duration) -> Handover {
+    let asked = Instant::now();
+    let mut across = Vec::new();
+    {
+        let switched = track.switched_to(rendition);
+        tokio::pin!(switched);
+        loop {
+            tokio::select! {
+                frame = track.recv() => match frame {
+                    Some(_frame) => across.push(Instant::now()),
+                    // The track ended, so there is nothing left to measure.
+                    None => return Handover { across, after: Vec::new(), took: asked.elapsed() },
+                },
+                () = &mut switched => break,
+            }
+        }
+    }
+    let took = asked.elapsed();
+    let mut after = drain(track, settle).await;
+    // The replacement's first frame is what flips the rendition, so it is read
+    // out just after the switch has landed rather than before. It closes the one
+    // gap the whole test is about, the one between the incumbent's last frame
+    // and the replacement's first, so it belongs on the near side of the line.
+    if !after.is_empty() {
+        across.push(after.remove(0));
+    }
+    Handover {
+        across,
+        after,
+        took,
+    }
+}
+
 /// Returns the interval between consecutive arrivals.
 fn gaps(arrivals: &[Instant]) -> Vec<Duration> {
     arrivals
@@ -276,6 +334,16 @@ fn ladder() -> Vec<VideoRendition> {
 /// goodput window follows a cap in two to three seconds, so this leaves room
 /// for a loaded machine without leaving room for a signal that lags.
 const SIGNAL_LAG: Duration = Duration::from_secs(15);
+
+/// The longest the round trip readings that corroborate a queue may take to
+/// arrive, on top of [`SIGNAL_LAG`].
+///
+/// Not a claim about the link, which is why it is separate. QUIC takes a round
+/// trip sample only from a packet that asks to be acknowledged, and a subscriber
+/// mostly sends acknowledgements, so fresh readings arrive seconds apart on a
+/// path that is otherwise busy. The adaptation loop counts those readings rather
+/// than elapsed time, and this is the room it needs to collect them.
+const RTT_CORROBORATION: Duration = Duration::from_secs(30);
 
 /// Timers short enough for a switch to happen inside the test's own budget.
 ///
@@ -517,6 +585,12 @@ async fn adaptation_follows_a_real_link() {
 /// This is the test the previous, congestion-window-derived bandwidth estimate
 /// could not pass: an application-limited window stays wide whatever the far
 /// end is doing, so it read a capped link as an idle one.
+///
+/// The cap has to come off before the switch is waited for, so this test cannot
+/// wait for the downgrade and then check the signals; it has to establish that
+/// the downgrade is due first. What that takes is the loop's own precondition,
+/// distinct round trip readings and not elapsed time, which is why the wait
+/// below counts them.
 #[tokio::test]
 #[traced_test]
 async fn adaptation_follows_a_rate_limit() {
@@ -537,10 +611,21 @@ async fn adaptation_follows_a_rate_limit() {
         .await
         .expect("timed out waiting for the first frame")
         .expect("the video track closed before its first frame");
-    let _settle = drain(&track, Duration::from_secs(2)).await;
 
-    let config = quick_adaptation();
+    let config = AdaptiveConfig {
+        // The cap is lifted the moment the downgrade is due, so conditions turn
+        // good while the replacement decoder is still opening. The default
+        // cooldown would let the loop decide to come back up inside that gap,
+        // and `low` would never reach the screen for the assertion below to see.
+        post_downgrade_cooldown: Duration::from_secs(10),
+        ..quick_adaptation()
+    };
+    // Enabled before the settling drain rather than after it, so the loop has
+    // seconds of clear-link goodput behind it. Starvation is judged against that
+    // reference, and a reference taken from one reading after the cap was
+    // already on would be the capped rate itself.
     track.enable_adaptation_with(signals.clone(), config.clone());
+    let _settle = drain(&track, Duration::from_secs(2)).await;
 
     // Two thirds of the 316 kbit/s `high` actually sends, and two and a half
     // times the 84 `low` does, so the top rung cannot fit and the bottom one
@@ -557,31 +642,60 @@ async fn adaptation_follows_a_rate_limit() {
     let held = config.downgrade_hold * 3;
     let mut worst_loss: f64 = 0.0;
     let impaired = Instant::now();
-    let saw_the_cap = tokio::time::timeout(SIGNAL_LAG, async {
+    let (saw_the_cap, readings) = tokio::time::timeout(SIGNAL_LAG + RTT_CORROBORATION, async {
         let mut since = None;
+        // Distinct values of `rtt_samples` seen while the cap has been visible
+        // without a break. The loop below lifts the cap once its evidence is in,
+        // and the loop's evidence is not elapsed time: a queueing round trip
+        // only counts towards a downgrade when QUIC measures it again (see
+        // `moq_media::adaptive`, `queueing_samples`). Waiting out `held` on a
+        // path that handed out one reading throughout satisfies this test and
+        // nothing in the adaptation loop, which is what used to make it flake.
+        let mut readings = 0u32;
+        let mut last_sample = None;
         loop {
             let signals = *signals.borrow();
             worst_loss = worst_loss.max(signals.loss_rate);
             let pinned = signals.goodput_bps.is_some_and(|bps| bps < 250_000);
             let queued = signals.rtt > signals.min_rtt * 10;
-            match (pinned && queued, since) {
-                (true, Some(start)) if Instant::now().duration_since(start) >= held => {
-                    return signals;
+            if pinned && queued {
+                let start = *since.get_or_insert_with(Instant::now);
+                if last_sample != Some(signals.rtt_samples) {
+                    last_sample = Some(signals.rtt_samples);
+                    readings += 1;
                 }
-                (true, Some(_)) => {}
-                (true, None) => since = Some(Instant::now()),
-                (false, _) => since = None,
+                // One more reading than the loop counts. The loop's window opens
+                // a tick after this one does and latches whatever reading is
+                // current then, so the first of these may be the one it started
+                // from rather than one it counted.
+                if Instant::now().duration_since(start) >= held
+                    && readings > config.queueing_samples
+                {
+                    return (signals, readings);
+                }
+            } else {
+                since = None;
+                readings = 0;
+                last_sample = None;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("the signals did not show the rate limit inside {SIGNAL_LAG:?}"));
+    .unwrap_or_else(|_| {
+        panic!(
+            "the signals did not show the rate limit, corroborated by {} distinct round trip \
+             readings, inside {:?}",
+            config.queueing_samples + 1,
+            SIGNAL_LAG + RTT_CORROBORATION,
+        )
+    });
     info!(
         after_ms = impaired.elapsed().as_millis() as u64,
         goodput_kbps = saw_the_cap.goodput_bps.unwrap_or(0) / 1000,
         rtt_ms = saw_the_cap.rtt.as_millis() as u64,
         min_rtt_ms = saw_the_cap.min_rtt.as_millis() as u64,
+        rtt_readings = readings,
         worst_loss,
         "the rate limit reached the signals",
     );
@@ -601,6 +715,10 @@ async fn adaptation_follows_a_rate_limit() {
     // frame: the subscriber holds the incumbent so the picture does not blank.
     // Under that overlap the replacement's subscription does not get set up at
     // all, which is worth knowing and is not what this test is about.
+    //
+    // Safe to lift here only because the wait above ended on the loop's own
+    // precondition rather than on a stopwatch: the downgrade is decided by now,
+    // and a decision once taken survives the conditions turning good again.
     fixture.clear().await;
 
     let downgraded = Instant::now();
@@ -659,26 +777,67 @@ async fn a_switch_does_not_blank_the_picture() {
     );
 
     track.set_rendition("low");
-    let window = Duration::from_secs(5);
-    let across = drain(&track, window).await;
-    report("across the switch", &across, window);
 
-    assert_eq!(
-        track.rendition(),
-        "low",
-        "the switch did not land inside {window:?}",
+    // Measured across the handover itself rather than across a fixed window:
+    // the replacement decoder has to open and wait for a keyframe over the
+    // impaired link, and how long that takes is the machine's business, not the
+    // claim's. The claim is about what delivery does while it happens.
+    let settle = Duration::from_secs(2);
+    let handover = tokio::time::timeout(TIMEOUT, drain_across_switch(&track, "low", settle))
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "the switch to `low` did not land inside {TIMEOUT:?}, still on `{}`",
+                track.rendition(),
+            )
+        });
+    report("across the switch", &handover.across, handover.took);
+    report("after the switch", &handover.after, settle);
+
+    // The incumbent carries the picture for as long as the replacement takes to
+    // open, so the handover window delivers frames at the cadence the baseline
+    // just measured. A handover that tore the incumbent down first delivers none
+    // at all, whatever that window turns out to be worth on the day, which is
+    // why this is stated against the baseline's own rate rather than against a
+    // fixed count. Half of it, because both renditions are subscribed at once
+    // while the switch is in flight and the incumbent gives up part of the link
+    // to the replacement's keyframe.
+    let kept_running =
+        baseline.len() as u32 * handover.took.as_millis() as u32 / (2 * window.as_millis() as u32);
+    assert!(
+        handover.across.len() as u32 >= kept_running,
+        "only {} frames arrived in the {}ms the switch took, against the {kept_running} that half \
+         the baseline's {} frames per {window:?} comes to, so the incumbent stopped delivering \
+         while the replacement opened",
+        handover.across.len(),
+        handover.took.as_millis(),
+        baseline.len(),
     );
 
     // Ten frame intervals. A handover that kept the incumbent running costs
     // nothing beyond normal pacing; one that tore it down first costs a decoder
     // open and a keyframe, which at this frame rate is far more than ten.
+    //
+    // Applied to the handover window alone. The same threshold over the settling
+    // window that follows would be measuring ordinary jitter on the new
+    // rendition against a switch's tolerance, and on a loaded machine this
+    // pipeline delivers 600ms gaps with nothing switching at all.
     let blank = FRAME_INTERVAL * 10;
-    let across_gaps = gaps(&across);
+    let across_gaps = gaps(&handover.across);
     assert!(
         longest(&across_gaps) <= blank,
         "the picture went blank for {}ms across the switch, more than the {}ms a handover should cost",
         longest(&across_gaps).as_millis(),
         blank.as_millis(),
+    );
+
+    // And the new rendition keeps delivering once it has taken over, to the same
+    // bar the baseline had to clear. A switch that landed and then stalled is
+    // not a switch that worked.
+    assert!(
+        handover.after.len() >= 8,
+        "expected at least 8 frames in the {settle:?} after the switch landed, got {}",
+        handover.after.len(),
     );
 
     fixture.shutdown().await;
