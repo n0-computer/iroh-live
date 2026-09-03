@@ -311,7 +311,7 @@ mod window {
     //! window at a different broadcast, and the way back from every screen
     //! that has no picture on it.
 
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use eframe::egui;
     use iroh_live::{Live, Subscription, media::subscribe::MediaTracks, ticket::LiveTicket};
@@ -323,7 +323,7 @@ mod window {
 
     use super::{Options, connect};
     use crate::{
-        scan::ScanView,
+        scan::{ScanView, Skip},
         ui::{CursorIdle, RemoteView, RenditionChoice},
     };
 
@@ -378,7 +378,7 @@ mod window {
                     Opening::Connecting(ticket) => {
                         Mode::Connecting(Box::new(connecting(ctx, &live, &options, *ticket, None)))
                     }
-                    Opening::Scanning => scanning(ctx, render_state.as_ref(), None),
+                    Opening::Scanning => scanning(ctx, render_state.as_ref(), None, None),
                 };
                 Ok(Box::new(WatchApp {
                     live,
@@ -387,6 +387,7 @@ mod window {
                     mode,
                     message: None,
                     cursor: CursorIdle::default(),
+                    refused: None,
                     _heartbeat: crate::ui::spawn_heartbeat(ctx, HEARTBEAT),
                 }))
             }),
@@ -425,6 +426,44 @@ mod window {
         match name.char_indices().nth(LABEL_CHARS) {
             Some((end, _)) => format!("Back to {}...", &name[..end]),
             None => format!("Back to {name}"),
+        }
+    }
+
+    /// How long the scan screen keeps looking past a ticket whose dial just
+    /// failed.
+    ///
+    /// Long enough that a peer which is simply not there costs one camera open
+    /// rather than three a second, short enough that somebody still holding the
+    /// code up while the other end finishes starting does not think the scanner
+    /// has stopped looking.
+    const REDIAL_WAIT: Duration = Duration::from_secs(3);
+
+    /// The ceiling [`REDIAL_WAIT`] doubles up to.
+    ///
+    /// A ticket that has failed five times in a row is a peer that is not
+    /// coming back, and by then the useful thing to do is stop burning the
+    /// camera and let the user point it somewhere else.
+    const REDIAL_WAIT_MAX: Duration = Duration::from_secs(30);
+
+    /// A ticket whose dial failed, and how many times in a row.
+    ///
+    /// Held across the trip back to the camera, because the code is still in
+    /// front of the lens: without this the scan reports it again within a frame
+    /// or two and the window re-dials a peer that has just refused. Cleared by
+    /// a dial that connects, so an outage that ends costs nothing afterwards.
+    struct Refused {
+        ticket: LiveTicket,
+        /// Consecutive failures, counting from zero for the first.
+        strikes: u32,
+    }
+
+    impl Refused {
+        /// Returns how long the scan screen should keep looking past this
+        /// ticket, doubling with each consecutive failure.
+        fn wait(&self) -> Duration {
+            REDIAL_WAIT
+                .saturating_mul(1u32 << self.strikes.min(16))
+                .min(REDIAL_WAIT_MAX)
         }
     }
 
@@ -503,9 +542,10 @@ mod window {
         ctx: &egui::Context,
         render_state: Option<&RenderState>,
         previous: Option<Previous>,
+        skip: Option<Skip>,
     ) -> Mode {
         Mode::Scanning(Box::new(Scanning {
-            view: ScanView::new(ctx, render_state),
+            view: ScanView::new(ctx, render_state, skip),
             previous,
         }))
     }
@@ -599,6 +639,9 @@ mod window {
         /// picture on it follows.
         message: Option<String>,
         cursor: CursorIdle,
+        /// The ticket the last dial failed on, if the one before it did not
+        /// connect.
+        refused: Option<Refused>,
         /// Keeps the state machine ticking while nothing draws the window.
         _heartbeat: AbortOnDropHandle<()>,
     }
@@ -664,15 +707,22 @@ mod window {
                 }
             };
             let previous = pending.previous.clone();
+            let ticket = pending.ticket.clone();
             match attempt {
                 Attempt::Connected(connected) => {
                     self.message = None;
+                    self.refused = None;
                     self.mode =
                         watching(ctx, *connected, &self.options, self.render_state.as_ref());
                 }
                 Attempt::Failed(message) => {
-                    warn!(%message, "the subscription failed");
+                    let strikes = match self.refused.take() {
+                        Some(refused) if refused.ticket == ticket => refused.strikes + 1,
+                        _ => 0,
+                    };
+                    warn!(%message, strikes, "the subscription failed");
                     self.message = Some(message);
+                    self.refused = Some(Refused { ticket, strikes });
                     self.enter_scan(ctx, previous);
                 }
             }
@@ -724,9 +774,19 @@ mod window {
         /// dialing `previous` afresh, which is the spinner the connecting
         /// screen is for.
         fn enter_scan(&mut self, ctx: &egui::Context, previous: Option<Previous>) {
-            info!("scanning for a ticket");
+            let skip = self.refused.as_ref().map(|refused| {
+                let wait = refused.wait();
+                info!(?wait, "scanning, holding off the ticket that just failed");
+                Skip {
+                    ticket: refused.ticket.clone(),
+                    until: Instant::now() + wait,
+                }
+            });
+            if skip.is_none() {
+                info!("scanning for a ticket");
+            }
             self.close_mode();
-            self.mode = scanning(ctx, self.render_state.as_ref(), previous);
+            self.mode = scanning(ctx, self.render_state.as_ref(), previous, skip);
         }
 
         /// Ends whatever the current mode holds open.
@@ -896,7 +956,35 @@ mod window {
 
     #[cfg(test)]
     mod tests {
-        use super::back_label;
+        use iroh_live::ticket::LiveTicket;
+
+        use super::{REDIAL_WAIT, REDIAL_WAIT_MAX, Refused, back_label};
+
+        fn refused(strikes: u32) -> Refused {
+            Refused {
+                ticket: LiveTicket::new(iroh::SecretKey::generate().public(), "hello"),
+                strikes,
+            }
+        }
+
+        #[test]
+        fn the_first_failure_waits_the_base_interval() {
+            assert_eq!(refused(0).wait(), REDIAL_WAIT);
+        }
+
+        #[test]
+        fn each_repeat_doubles_the_wait_up_to_the_ceiling() {
+            assert_eq!(refused(1).wait(), REDIAL_WAIT * 2);
+            assert_eq!(refused(2).wait(), REDIAL_WAIT * 4);
+            assert_eq!(refused(4).wait(), REDIAL_WAIT_MAX);
+        }
+
+        /// A peer that has been away all afternoon must not overflow the shift
+        /// that computes its wait.
+        #[test]
+        fn a_ticket_that_never_connects_stays_at_the_ceiling() {
+            assert_eq!(refused(u32::MAX).wait(), REDIAL_WAIT_MAX);
+        }
 
         #[test]
         fn a_short_broadcast_name_is_on_the_button_whole() {

@@ -622,8 +622,14 @@ mod window {
                 self.broadcast.video().clear();
             }
             self.restore = false;
-            self.screen =
-                Screen::Scanning(Box::new(ScanView::new(ctx, self.render_state.as_ref())));
+            // No ticket is held off here: a call that fails to connect lands on
+            // the waiting screen with a button rather than reopening the
+            // camera, so there is no loop for a hold-off to break.
+            self.screen = Screen::Scanning(Box::new(ScanView::new(
+                ctx,
+                self.render_state.as_ref(),
+                None,
+            )));
         }
 
         /// Closes the scan screen and asks for the camera back.

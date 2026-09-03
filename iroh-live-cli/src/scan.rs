@@ -62,6 +62,23 @@ const SCAN_FRAMERATE: u32 = 15;
 /// How long the scanner waits before reopening a camera that failed.
 const REOPEN_DELAY: Duration = Duration::from_secs(2);
 
+/// A ticket the scanner keeps looking past, and until when.
+///
+/// A dial that fails sends the window back to the camera with the same code
+/// still held up to it, which is the premise of the screen rather than an
+/// accident. Reporting that code again straight away re-dials a peer that just
+/// refused, and the caller can only answer by opening the camera again, so the
+/// two of them spin: open, decode, dial, fail, close. Carrying the refusal into
+/// the scan makes the wait happen behind a live preview instead, and a
+/// different code held up during it still connects immediately.
+#[derive(Debug, Clone)]
+pub struct Skip {
+    /// The ticket not to report.
+    pub ticket: LiveTicket,
+    /// When it may be reported again.
+    pub until: Instant,
+}
+
 /// What the scan screen tells the user to do.
 const PROMPT: &str = "Hold a ticket QR code up to the camera";
 
@@ -76,6 +93,10 @@ enum ScanState {
     NotATicket,
     /// A ticket decoded. The camera has been released.
     Found(Box<LiveTicket>),
+    /// The code in front of the camera is the one whose dial just failed, and
+    /// the wait before offering it again has not run out. Carries what is left
+    /// of that wait, so the screen can count it down.
+    Waiting(Duration),
     /// The camera could not be opened, or it stopped.
     Failed(String),
 }
@@ -109,6 +130,7 @@ impl ScanView {
     pub fn new(
         ctx: &egui::Context,
         render_state: Option<&moq_media_egui::egui_wgpu::RenderState>,
+        skip: Option<Skip>,
     ) -> Self {
         let (frame_tx, frames) = frame_channel::<Frame>();
         let (state_tx, state) = watch::channel(ScanState::Looking);
@@ -116,7 +138,7 @@ impl ScanView {
         let view = FrameView::new_wgpu(&ctx, "scan", render_state);
         let capture = local_task::spawn("qr-scan", move |shutdown| async move {
             tokio::select! {
-                () = scan(&frame_tx, &state_tx, &ctx) => {}
+                () = scan(&frame_tx, &state_tx, &ctx, skip.as_ref()) => {}
                 () = shutdown.cancelled() => info!("scan cancelled"),
             }
         });
@@ -128,7 +150,8 @@ impl ScanView {
         }
     }
 
-    /// Returns the ticket, once the camera has read one.
+    /// Returns the ticket, once the camera has read one it is willing to
+    /// report.
     pub fn ticket(&self) -> Option<LiveTicket> {
         match &*self.state.borrow() {
             ScanState::Found(ticket) => Some((**ticket).clone()),
@@ -156,6 +179,10 @@ impl ScanView {
             ScanState::Looking => None,
             ScanState::NotATicket => Some("that QR code is not an iroh-live ticket".to_string()),
             ScanState::Found(ticket) => Some(format!("connecting to {}", ticket.broadcast_name)),
+            ScanState::Waiting(left) => Some(format!(
+                "that ticket did not connect, trying it again in {}s",
+                left.as_secs() + 1
+            )),
             ScanState::Failed(err) => Some(err.clone()),
         };
 
@@ -208,10 +235,15 @@ fn camera_config() -> capture::Config {
 /// that is momentarily busy (another process letting go of it, a USB camera
 /// settling after a replug) is worth waiting for rather than reporting once and
 /// giving up.
-async fn scan(frames: &FrameSender<Frame>, state: &watch::Sender<ScanState>, ctx: &egui::Context) {
+async fn scan(
+    frames: &FrameSender<Frame>,
+    state: &watch::Sender<ScanState>,
+    ctx: &egui::Context,
+    skip: Option<&Skip>,
+) {
     let mut said_so = false;
     loop {
-        let problem = match look(frames, state, ctx).await {
+        let problem = match look(frames, state, ctx, skip).await {
             Ok(ticket) => {
                 info!(
                     remote = %ticket.endpoint.id.fmt_short(),
@@ -248,6 +280,7 @@ async fn look(
     frames: &FrameSender<Frame>,
     state: &watch::Sender<ScanState>,
     ctx: &egui::Context,
+    skip: Option<&Skip>,
 ) -> Result<LiveTicket, String> {
     let config = camera_config();
     let mut stream = capture::open(&config)
@@ -311,15 +344,31 @@ async fn look(
 
         let Some(text) = found else { continue };
         match text.parse::<LiveTicket>() {
-            // Returning here drops the stream, so the camera is released while
-            // the window dials rather than held open behind it.
-            Ok(ticket) => return Ok(ticket),
+            Ok(ticket) => {
+                if let Some(left) = still_skipped(skip, &ticket) {
+                    report(state, ctx, ScanState::Waiting(left));
+                    continue;
+                }
+                // Returning here drops the stream, so the camera is released
+                // while the window dials rather than held open behind it.
+                return Ok(ticket);
+            }
             Err(err) => {
                 debug!(error = %err, bytes = text.len(), "the QR code is not a ticket");
                 report(state, ctx, ScanState::NotATicket);
             }
         }
     }
+}
+
+/// Returns how much of `skip`'s wait is left, if `ticket` is the one it names
+/// and the wait has not run out.
+fn still_skipped(skip: Option<&Skip>, ticket: &LiveTicket) -> Option<Duration> {
+    let skip = skip?;
+    if skip.ticket != *ticket {
+        return None;
+    }
+    skip.until.checked_duration_since(Instant::now())
 }
 
 /// Publishes `next` and wakes the window so it is drawn.
@@ -461,6 +510,35 @@ mod tests {
         let text = decode(&render("https://example.com")).expect("the code is still a QR code");
         assert_eq!(text, "https://example.com");
         assert!(text.parse::<LiveTicket>().is_err());
+    }
+
+    #[test]
+    fn a_held_off_ticket_is_skipped_until_its_wait_runs_out() {
+        let ticket = LiveTicket::new(iroh::SecretKey::generate().public(), "hello");
+        let skip = Skip {
+            ticket: ticket.clone(),
+            until: Instant::now() + Duration::from_secs(60),
+        };
+        let left = still_skipped(Some(&skip), &ticket).expect("the wait has not run out");
+        assert!(left <= Duration::from_secs(60));
+
+        let expired = Skip {
+            ticket: ticket.clone(),
+            until: Instant::now() - Duration::from_secs(1),
+        };
+        assert!(still_skipped(Some(&expired), &ticket).is_none());
+    }
+
+    #[test]
+    fn a_different_ticket_is_never_held_off() {
+        let refused = LiveTicket::new(iroh::SecretKey::generate().public(), "hello");
+        let other = LiveTicket::new(iroh::SecretKey::generate().public(), "hello");
+        let skip = Skip {
+            ticket: refused,
+            until: Instant::now() + Duration::from_secs(60),
+        };
+        assert!(still_skipped(Some(&skip), &other).is_none());
+        assert!(still_skipped(None, &other).is_none());
     }
 
     #[test]
