@@ -12,7 +12,10 @@
 //! source once and fans its frames out to an encoder per rendition, each
 //! encoding only while someone is watching it.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use moq_video::Size;
 use n0_error::{Result, stack_error};
@@ -122,6 +125,14 @@ pub struct VideoRendition {
     pub codec: moq_video::encode::Codec,
     /// Which backend to encode with.
     pub kind: moq_video::encode::Kind,
+    /// How often the encoder inserts a keyframe, or `None` for the encoder's
+    /// own default of two seconds.
+    ///
+    /// A subscriber cannot draw anything until the next keyframe, so this is
+    /// join latency far more than it is bitrate: it sets how long somebody who
+    /// just scanned a code waits for a picture, how long a rendition switch
+    /// takes to land, and how much media a skipped group throws away.
+    pub keyframe_interval: Option<Duration>,
 }
 
 impl VideoRendition {
@@ -133,6 +144,7 @@ impl VideoRendition {
             bitrate: None,
             codec: Default::default(),
             kind: Default::default(),
+            keyframe_interval: None,
         }
     }
 
@@ -147,6 +159,17 @@ impl VideoRendition {
     #[must_use]
     pub fn with_bitrate(mut self, bitrate: u64) -> Self {
         self.bitrate = Some(bitrate);
+        self
+    }
+
+    /// Returns the rendition with a different keyframe interval.
+    ///
+    /// Rounded to whole frames at the publication's frame rate, and never below
+    /// one, so an interval shorter than a frame keys every frame rather than
+    /// none.
+    #[must_use]
+    pub fn with_keyframe_interval(mut self, interval: Duration) -> Self {
+        self.keyframe_interval = Some(interval);
         self
     }
 

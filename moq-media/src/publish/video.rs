@@ -572,7 +572,28 @@ fn encode_config(
     config.codec = rendition.codec;
     config.kind = rendition.kind.clone();
     config.color = color;
+    if let Some(interval) = rendition.keyframe_interval {
+        config.gop = gop_frames(interval, framerate);
+    }
     config
+}
+
+/// The keyframe interval in frames, for an interval given in time.
+///
+/// Never zero: an interval shorter than a frame means every frame is a
+/// keyframe, and a `gop` of zero would mean none of them are.
+fn gop_frames(interval: Duration, framerate: u32) -> u32 {
+    let frames = interval.as_secs_f64() * f64::from(framerate);
+    // Saturating rather than wrapping: an interval of a year is a caller who
+    // wants one keyframe at the start, and the encoder's own ceiling can have
+    // that argument rather than an overflow here.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to u32's range before the cast"
+    )]
+    let frames = frames.round().clamp(1.0, f64::from(u32::MAX)) as u32;
+    frames
 }
 
 /// Stamps a frame on the broadcast clock, which audio shares.
@@ -668,6 +689,53 @@ mod tests {
         assert!(
             (599.0..=607.0).contains(&kbps),
             "expected 606 kbit/s, which is 2500 bytes every 33ms, got {kbps}",
+        );
+    }
+
+    /// The whole path from what a caller asks for to what the encoder is told.
+    #[test]
+    fn a_rendition_keyframe_interval_reaches_the_encoder_config() {
+        let source = Size::new(1280, 720);
+        let plain = VideoRendition::new("video");
+        assert_eq!(
+            encode_config(&plain, source, 30, None).gop,
+            encode::Config::new(1280, 720, 30).gop,
+            "a rendition that names no interval leaves the encoder's own default",
+        );
+
+        let keyed = VideoRendition::new("video").with_keyframe_interval(Duration::from_secs(1));
+        assert_eq!(encode_config(&keyed, source, 30, None).gop, 30);
+        assert_eq!(encode_config(&keyed, source, 15, None).gop, 15);
+    }
+
+    /// A keyframe interval is given in time and the encoder wants frames, so
+    /// the conversion is where a caller's seconds meet the capture rate.
+    #[test]
+    fn a_keyframe_interval_becomes_whole_frames() {
+        assert_eq!(gop_frames(Duration::from_secs(1), 30), 30);
+        assert_eq!(gop_frames(Duration::from_secs(2), 30), 60);
+        assert_eq!(gop_frames(Duration::from_millis(500), 30), 15);
+        // Rounded rather than truncated: 0.7s at 30fps is 21 frames, and
+        // truncating would make every fractional interval slightly shorter than
+        // asked for.
+        assert_eq!(gop_frames(Duration::from_millis(700), 30), 21);
+    }
+
+    /// An interval shorter than a frame means every frame is a keyframe. A
+    /// `gop` of zero would mean none of them are, which is the opposite.
+    #[test]
+    fn an_interval_shorter_than_a_frame_keys_every_frame() {
+        assert_eq!(gop_frames(Duration::from_millis(1), 30), 1);
+        assert_eq!(gop_frames(Duration::ZERO, 30), 1);
+        assert_eq!(gop_frames(Duration::from_secs(1), 0), 1);
+    }
+
+    /// An interval nobody sensible asks for still has to produce a number.
+    #[test]
+    fn an_absurd_interval_saturates_rather_than_wrapping() {
+        assert_eq!(
+            gop_frames(Duration::from_secs(u32::MAX.into()), 60),
+            u32::MAX
         );
     }
 

@@ -16,6 +16,8 @@
 //! disagree: it is the capture rate, and a rung asking for more than it allows
 //! gets what the capture actually runs at.
 
+use std::time::Duration;
+
 use iroh_live::media::{
     publish::VideoRendition,
     video::{self, Size},
@@ -347,6 +349,10 @@ fn renditions(args: &CaptureArgs, rungs: &[Rung]) -> Vec<VideoRendition> {
                 .with_kind(kind.clone());
             if let Some(size) = rung.size {
                 rendition = rendition.with_size(size);
+            }
+            if args.keyframe_interval > 0.0 {
+                rendition = rendition
+                    .with_keyframe_interval(Duration::from_secs_f64(args.keyframe_interval));
             }
             if let Some(bitrate) = args.bitrate {
                 // Scale by pixel count against the largest rung, so a ladder

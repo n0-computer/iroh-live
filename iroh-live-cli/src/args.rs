@@ -43,6 +43,23 @@ pub struct TransportArgs {
     pub no_qr: bool,
 }
 
+/// The keyframe interval this CLI publishes at, in seconds.
+///
+/// Upstream's encoder defaults to two, which is a broadcast figure: a viewer
+/// arriving mid-stream cannot draw anything until the next keyframe, so it is
+/// the wait after scanning a code, the wait for a rendition switch to land, and
+/// the media a skipped group throws away. This tool is for pointing a camera at
+/// something and having somebody else see it, so halving that wait is worth
+/// what it costs.
+///
+/// What it costs is picture quality rather than bitrate. The encoder is given a
+/// target rate and keeps to it, so more keyframes means fewer bits for
+/// everything between them. Measured here against the two second default the
+/// difference in bytes on the wire was inside the run-to-run variation, which
+/// is what a rate-controlled encoder should do and is why there is no figure
+/// quoted for it.
+pub const DEFAULT_KEYFRAME_SECONDS: f64 = 1.0;
+
 /// The `--video` specifier when none is given.
 pub const DEFAULT_VIDEO: &str = "cam";
 
@@ -93,6 +110,12 @@ pub struct CaptureArgs {
     #[arg(long, value_delimiter = ',', verbatim_doc_comment)]
     pub renditions: Vec<String>,
 
+    /// How often the encoder inserts a keyframe, in seconds. A subscriber
+    /// cannot draw anything until the next one, so this is how long joining
+    /// takes and how long a rendition switch waits.
+    #[arg(long, default_value_t = DEFAULT_KEYFRAME_SECONDS, value_name = "SECONDS")]
+    pub keyframe_interval: f64,
+
     /// Target video bitrate in bits per second. Omit to derive one from the
     /// resolution. Applies to every rung of the ladder.
     #[arg(long, value_name = "BITS_PER_SECOND")]
@@ -137,6 +160,7 @@ impl Default for CaptureArgs {
             codec: VideoCodecArg::default(),
             encoder: EncoderArg::default(),
             renditions: Vec::new(),
+            keyframe_interval: DEFAULT_KEYFRAME_SECONDS,
             bitrate: None,
             width: None,
             height: None,
