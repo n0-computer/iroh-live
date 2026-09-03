@@ -249,6 +249,10 @@ jobs:
           # asked to copy. Configuring it needs the SDK and the plugin, neither
           # of which this step has any business depending on.
           scratch="$(mktemp -d)"
+          # An empty settings file is what makes the scratch directory a Gradle
+          # build with no projects in it. Gradle refuses to run any task,
+          # including this one, in a directory that has none.
+          : > "$scratch/settings.gradle.kts"
           ( cd "$scratch" && gradle --quiet wrapper --gradle-version "$version" )
           cp "$scratch/gradle/wrapper/gradle-wrapper.jar" gradle/wrapper/gradle-wrapper.jar
           test -f gradle/wrapper/gradle-wrapper.jar
