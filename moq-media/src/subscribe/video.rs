@@ -250,7 +250,43 @@ struct Opening {
     /// the rendition already playing cancels a switch, because that is what
     /// un-pinning means, and it must not cancel a rebuild: the rebuild is for
     /// that same rendition, so the name it carries is the one being asked for.
+    ///
+    /// Set through [`Opening::switch`] and [`Opening::rebuild`] rather than a
+    /// literal, so the arm that spawns a rebuild cannot tag it as a switch. It
+    /// did once, and the guard below never fired.
     rebuild: bool,
+}
+
+impl Opening {
+    /// A rendition switch: an open for a rendition other than the one playing.
+    fn switch(name: String, task: AbortOnDropHandle<Result<Reader, SubscribeError>>) -> Self {
+        Self {
+            name,
+            task,
+            rebuild: false,
+        }
+    }
+
+    /// A decoder rebuild: an open for the rendition already playing, under a
+    /// changed policy.
+    fn rebuild(name: String, task: AbortOnDropHandle<Result<Reader, SubscribeError>>) -> Self {
+        Self {
+            name,
+            task,
+            rebuild: true,
+        }
+    }
+
+    /// Whether a request for the rendition already playing leaves this open
+    /// alone.
+    ///
+    /// A switch is what such a request cancels, since un-pinning a rendition
+    /// means "stop the swap". A rebuild is for that same rendition and is the
+    /// only record left of a decoder change, so cancelling it would drop the
+    /// change with nothing to retry it.
+    fn survives_repin(&self) -> bool {
+        self.rebuild
+    }
 }
 
 /// One decoder plus the task reading it.
@@ -420,7 +456,7 @@ async fn supervise(
                     // a decoder change because the user afterwards pinned the
                     // rendition it was already playing, with nothing left to
                     // retry it.
-                    if opening.as_ref().is_some_and(|open| !open.rebuild) {
+                    if opening.as_ref().is_some_and(|open| !open.survives_repin()) {
                         opening = None;
                     }
                     if reader.is_none() && opening.is_none() {
@@ -444,11 +480,7 @@ async fn supervise(
                 // detaches, so a superseded open would run to completion and
                 // keep a track subscription and a broadcast clone alive for as
                 // long as the peer took to answer.
-                opening = Some(Opening {
-                    name,
-                    task: AbortOnDropHandle::new(task),
-                    rebuild: false,
-                });
+                opening = Some(Opening::switch(name, AbortOnDropHandle::new(task)));
             }
 
             // The policy changed under a track already playing: open the
@@ -472,11 +504,7 @@ async fn supervise(
                     let name = name.clone();
                     async move { spawn_reader(&broadcast, &name).await }
                 });
-                opening = Some(Opening {
-                    name,
-                    task: AbortOnDropHandle::new(task),
-                    rebuild: false,
-                });
+                opening = Some(Opening::rebuild(name, AbortOnDropHandle::new(task)));
             }
 
             // The replacement's decoder is open. Hold it until it produces a
@@ -744,6 +772,31 @@ mod tests {
                 _import: import,
             },
         ))
+    }
+
+    /// A task standing in for a decoder open that never finishes, which is the
+    /// state an open is in when a repin can race it.
+    fn open_in_flight() -> AbortOnDropHandle<Result<Reader, SubscribeError>> {
+        AbortOnDropHandle::new(spawn(std::future::pending()))
+    }
+
+    /// Regression: the reopen arm built its `Opening` with `rebuild: false`,
+    /// so the guard written to keep a decoder change alive across a repin
+    /// never fired. Pick Decoder = vaapi, then pin the rendition already
+    /// playing while the new decoder was coming up, and the vaapi rebuild was
+    /// gone with nothing left to retry it.
+    #[tokio::test]
+    async fn a_rebuild_survives_repinning_the_current_rendition() {
+        let rebuild = Opening::rebuild("video".into(), open_in_flight());
+        assert!(rebuild.survives_repin());
+    }
+
+    /// The other half: un-pinning is what a repin means for a switch, so a
+    /// switch does not survive it.
+    #[tokio::test]
+    async fn a_switch_is_cancelled_by_repinning_the_current_rendition() {
+        let switch = Opening::switch("video-360p".into(), open_in_flight());
+        assert!(!switch.survives_repin());
     }
 
     /// The presentation times of every picture the track hands out, in order.
