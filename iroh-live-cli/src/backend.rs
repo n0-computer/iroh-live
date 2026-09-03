@@ -242,4 +242,38 @@ mod tests {
         let kind = decode::Kind::Named("something-upstream-added".to_string());
         assert_eq!(DecoderArg::from_kind(&kind), DecoderArg::Auto);
     }
+
+    /// The strategy names are ours; every other value has to be a name
+    /// `moq-video` answers to, and upstream now publishes that vocabulary.
+    ///
+    /// The test beside this one compares the enum against string literals in
+    /// this same file, which proves only that the file agrees with itself. A
+    /// backend renamed upstream would pass it and then fail at the moment
+    /// somebody selected the name, as `NoEncoder`. This compares against the
+    /// list upstream keeps, and upstream asserts that list covers every backend
+    /// it compiled, so a rename fails here and an addition fails there.
+    #[test]
+    fn every_backend_upstream_names_is_offered() {
+        let ours: Vec<String> = EncoderArg::value_variants()
+            .iter()
+            .map(ToString::to_string)
+            .filter(|name| !matches!(name.as_str(), "auto" | "hardware" | "software"))
+            .collect();
+        let mut theirs: Vec<&str> = moq_media::video::encode::NAMES.to_vec();
+        theirs.sort_unstable();
+        let mut ours: Vec<&str> = ours.iter().map(String::as_str).collect();
+        ours.sort_unstable();
+        assert_eq!(ours, theirs, "the encoder list has drifted from moq-video");
+
+        let ours: Vec<String> = DecoderArg::value_variants()
+            .iter()
+            .map(ToString::to_string)
+            .filter(|name| !matches!(name.as_str(), "auto" | "hardware" | "software"))
+            .collect();
+        let mut theirs: Vec<&str> = moq_media::video::decode::NAMES.to_vec();
+        theirs.sort_unstable();
+        let mut ours: Vec<&str> = ours.iter().map(String::as_str).collect();
+        ours.sort_unstable();
+        assert_eq!(ours, theirs, "the decoder list has drifted from moq-video");
+    }
 }
