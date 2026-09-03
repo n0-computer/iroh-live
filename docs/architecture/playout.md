@@ -13,9 +13,10 @@ The clock keeps one number, the *reference*: the earliest
 that arrives faster than any previous one tightens it, and nothing loosens it.
 
 A frame with timestamp `T` is due at wall time `reference + T + latency`, where
-`latency` is `max(audio, video) + jitter`. `jitter` is the network allowance and
-defaults to 100 ms, `audio` is how much sound is queued at the speaker, and
-`video` is a decode latency a caller may set.
+`latency` is `max(audio, video) + jitter`. `jitter` is the network allowance,
+comes from `PlaybackPolicy::jitter` and defaults to 100 ms, `audio` is how much
+sound is queued at the speaker, and `video` is a decode latency a caller may
+set.
 
 `Sync::received(pts)` updates the reference, and `Sync::wait_async(pts)` sleeps
 until the frame is due, returning `false` if the clock closed underneath it.
@@ -41,8 +42,10 @@ JS design worth porting after three earlier attempts at cross-path gating did
 worse than no synchronization at all.
 
 `Sync` is per-`RemoteBroadcast`, reachable through `RemoteBroadcast::sync()` for
-retuning the jitter figure at runtime. Dropping the last handle, or calling
-`shutdown()` on the broadcast, closes it and wakes everything waiting.
+retuning the jitter figure at runtime, and set from `PlaybackPolicy::jitter`
+both when the broadcast is subscribed and on every later
+`set_playback_policy`. Dropping the last handle, or calling `shutdown()` on the
+broadcast, closes it and wakes everything waiting.
 
 ## Playback policy
 
@@ -53,6 +56,13 @@ default and runs the clock as described. `Unmanaged` skips it entirely: frames g
 to the renderer as they decode, with no pacing at all. That suits a test or a
 single-track playback where the renderer sets the cadence, and it is not what you
 want for live playback with audio.
+
+`jitter: Duration` is the network allowance in the arithmetic above, and is the
+largest delay a subscriber adds on its own. It is also the one field of this
+policy that takes effect immediately rather than on the next decoder built,
+because the clock it configures belongs to the broadcast and outlives any one
+track. `irl watch --latency` is the CLI over it; `plans/v2/latency.md` measures
+where the rest of the pipeline's delay goes.
 
 `max_latency: Duration` becomes `latency_max` on `moq_video::decode::Config` and
 `moq_audio::decode::Config`, which is where upstream decides how much buffered
@@ -71,12 +81,14 @@ the GPU, which is worth doing for a renderer and not for a consumer that reads
 the pixels.
 
 ```rust
-PlaybackPolicy::default()                              // Synced, 150 ms, Auto
-    .with_max_latency(Duration::from_millis(500))
+PlaybackPolicy::default()                     // Synced, 100 ms jitter, 150 ms, Auto
+    .with_jitter(Duration::from_millis(400))
+    .with_max_latency(Duration::from_millis(600))
     .with_decoder(decode::Kind::Software)
 ```
 
-`RemoteBroadcast::set_playback_policy` affects tracks opened afterwards. A
+`RemoteBroadcast::set_playback_policy` applies `jitter` at once and affects
+tracks opened afterwards for everything else. A
 decoder reads the policy when it is built and never looks at it again, so a
 track already decoding keeps what it started with. `VideoTrack::reopen_decoder`
 is how a UI applies a change to a running track: the supervisor opens the

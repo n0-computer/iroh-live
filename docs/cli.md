@@ -156,6 +156,7 @@ Subscribes to a broadcast and plays it. `irl play` is an alias.
 | `--scan` | Read the ticket off a QR code held up to the camera |
 | `--rendition <NAME>` | Hold one rendition instead of following the downlink |
 | `--decoder <KIND>` | `auto` (default), `hardware`, `software`, or a backend name such as `vaapi`, `nvdec`, `v4l2`, `videotoolbox`, `openh264` |
+| `--latency <MODE>` | `realtime`, `balanced` (default), or `smooth` |
 | `--audio-output <ID>` | Play through this device, as the first column of `irl devices` lists it |
 | `--fullscreen` | Start in fullscreen |
 
@@ -181,6 +182,26 @@ combo changes it mid-playback: the replacement opens alongside the incumbent
 exactly as a rendition switch does, and the combo shows the backend actually
 running next to the choice that asked for it.
 
+`--latency` chooses how much slack the player keeps against a link that
+delivers unevenly. Every frame is held back a little so that one arriving late
+still has somewhere to land, and that hold is the largest delay the player adds
+on its own; the rest of the pipeline's delay belongs to the encoder, the link
+and the display.
+
+| Mode | Holds | Skips at | For |
+|---|---|---|---|
+| `realtime` | 60ms | 100ms | A conversation, where being behind is worse than an occasional jump |
+| `balanced` | 100ms | 150ms | The default, and what the player did before this flag existed |
+| `smooth` | 400ms | 600ms | Watching rather than talking, over Wi-Fi or a mobile link |
+
+The two columns move together on purpose: the skip threshold is what the
+decoder is told to treat as too much buffered media, and setting it below the
+slack the clock is deliberately holding would throw away the very frames that
+slack exists to wait for. Measured end to end from a dev machine to a
+Raspberry Pi 4 the whole pipeline runs at about 900ms, so this flag moves a
+useful part of the delay but not most of it; `plans/v2/latency.md` accounts for
+the rest.
+
 ### `irl call`
 
 Opens a 1:1 video call. Both peers publish their own camera and microphone and
@@ -191,6 +212,7 @@ is up: the difference is only who dialed.
 |---|---|
 | `<TICKET>` | Ticket of the peer to call. Omit to wait for somebody to call this node |
 | `--decoder <KIND>` | `auto` (default), `hardware`, `software`, or a backend name such as `vaapi`, `nvdec`, `v4l2`, `videotoolbox`, `openh264` |
+| `--latency <MODE>` | `realtime`, `balanced` (default), or `smooth`, as `irl watch` takes it |
 | `--no-qr` | Suppress the terminal QR code |
 | `--fullscreen` | Start in fullscreen |
 

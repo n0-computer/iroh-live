@@ -17,7 +17,7 @@ itself. That gap is why this module exists.
 ```rust
 pub struct NetworkSignals {
     pub rtt: Duration,
-    pub min_rtt: Duration,        // smallest rtt seen on this path
+    pub min_rtt: Duration,        // smallest rtt over a recent window on this path
     pub loss_rate: f64,           // 0.0..=1.0
     pub goodput_bps: Option<u64>, // received bytes over the last second
     pub congestion_events: u64,   // monotonic counter
@@ -38,6 +38,23 @@ useful as a proxy for path loss only as far as both directions are impaired
 alike. `goodput_bps` comes from `udp_rx.bytes` over a one-second window and is
 the honest receiver-side reading, and the round trip covers both directions
 because the queue holding up the media holds up the replies behind it.
+
+`min_rtt` is a windowed minimum, not the smallest reading ever taken. The
+producer keeps two 15-second buckets and reports the smaller, so a baseline is
+forgotten between 15 and 30 seconds after the path stops producing it. That is
+deliberate, and it is what keeps a connection that fell back to a relay from
+reading as a queue that will never drain, since the new path is longer rather
+than congested.
+
+It has a consequence worth knowing when reading a trace. A bottleneck that
+persists past the window becomes the new minimum, so `rtt` stops standing
+clear of `min_rtt`, the path stops counting as queueing, and the goodput
+arriving through the bottleneck starts being recorded as this rung's healthy
+rate. Watched in the patchbay lab, a link capped for a minute took `min_rtt`
+from 1 ms to 417 ms and the healthy reference down to the capped rate. Nothing
+downgrades after that, which is correct in the relay case the window exists for
+and wrong in the bottleneck case, and telling those two apart from a subscriber
+needs something the transport does not currently report.
 
 `goodput_bps` is goodput, not capacity. It is bounded by what the publisher
 chose to send, so it is a lower bound on what the path could carry: enough to
@@ -65,20 +82,36 @@ the track is not already on the lowest rendition. There is no hold timer: the
 task jumps straight to the lowest rendition.
 
 A **downgrade** fires one rung at a time when `loss_rate` reaches
-`loss_downgrade` (0.10), or when the rendition is starved on a queueing path:
-`goodput_bps` below `bw_downgrade_ratio` (0.85) of the rendition's advertised
-bitrate, while `rtt` stands at `rtt_queueing_ratio` (2x) of `min_rtt` and at
-least `rtt_queueing_floor` (25 ms) above it. Either has to persist for
-`downgrade_hold` (500 ms).
+`loss_downgrade` (0.10), or when the rendition is starved on a queueing path.
+Either has to persist for `downgrade_hold` (500 ms).
 
-The two halves of that second condition need each other. A catalog bitrate is a
+**Starved** is measured against what this rung was seen delivering on a clear
+path, not against what the catalog advertises. The loop keeps a peak goodput per
+rendition, decaying with a `goodput_baseline_halflife` (30 s) half life and
+updated only on ticks where the path is neither queueing nor losing, since a
+reading taken through a queue would teach it that the capped rate is the normal
+one. Goodput below `goodput_downgrade_ratio` (0.75) of that peak is a shortfall.
+
+Where nothing has been measured yet, the catalog's advertised bitrate is the
+fallback, at the wider `advertised_downgrade_ratio` (0.5). That case is a
+subscriber whose link was already bad when it joined: it never records a
+clear-path reading, and without a fallback it never can, because the reading
+only counts while the path is not queueing and the path does not stop queueing
+until something downgrades. The margin is wider because a catalog bitrate is a
 ceiling handed to the encoder rather than a promise, and an easy scene comes in
-well under it: measured through the patchbay lab, openh264 sends about 40% of
-what the rendition declares. Taken on its own, a goodput shortfall would
-therefore read as a collapsed link on every efficient publisher and pin the
-ladder to its bottom rung. A queue in front of the bottleneck is what
-distinguishes the two, and it is the only thing a subscriber sees when a
-downlink runs out of room without dropping anything.
+well under it.
+
+**Queueing** is `rtt` at `rtt_queueing_ratio` (2x) of `min_rtt` and at least
+`rtt_queueing_floor` (25 ms) above it, corroborated by `queueing_samples` (2)
+*distinct* round trip readings. Elapsed time is no evidence for a queue: QUIC
+hands out the same reading until it takes another sample, so a hold shorter than
+the gap between samples is satisfied by a single scheduler hiccup on a path with
+a one-millisecond baseline.
+
+The two halves need each other. Taken on its own a goodput shortfall is as
+easily a scene that got easier to encode, and a queue on its own is as easily a
+path that simply got longer. High loss stands alone, because it is recounted
+from fresh packet totals on every tick.
 
 An **upgrade** needs `loss_rate` at or below `loss_good` (0.02), sustained for
 `upgrade_hold` (4 s), and is blocked for `post_downgrade_cooldown` (4 s) after
@@ -129,17 +162,27 @@ the replacement failed to open, is forgotten rather than judged.
 | `loss_downgrade` | 0.10 | Loss rate that triggers a sustained downgrade |
 | `loss_emergency` | 0.20 | Loss rate that triggers an immediate drop to lowest |
 | `loss_good` | 0.02 | Loss rate below which conditions count as good |
-| `bw_downgrade_ratio` | 0.85 | Share of a rendition's bitrate that must still arrive |
+| `goodput_downgrade_ratio` | 0.75 | Share of the measured clear-path peak that must still arrive |
+| `goodput_baseline_halflife` | 30 s | Half life of that peak |
+| `advertised_downgrade_ratio` | 0.5 | Share of the catalog bitrate, used only while nothing has been measured |
+| `queueing_samples` | 2 | Distinct round trip readings that corroborate a queue |
 | `rtt_queueing_ratio` | 2.0 | Multiple of `min_rtt` that counts as a queue |
 | `rtt_queueing_floor` | 25 ms | Excess over `min_rtt` below which nothing counts as a queue |
 | `check_interval` | 200 ms | How often signals are evaluated |
 | `probe_duration` | 3 s | How long an upgrade runs before it is kept |
+| `probe_settle` | 1500 ms | How long a probe's rendition plays before its goodput is judged |
 | `probe_cooldown` | 8 s | Quiet period after a probe |
 | `loss_probe_abort` | 0.05 | Loss rate that abandons a probe |
 
 The defaults are tuned for a real link. `enable_adaptation_with` takes an
 explicit config, which is how the end-to-end test sees a switch inside its own
 timeout instead of waiting out a four-second upgrade hold.
+
+Every tick logs at TRACE under the `adapt` span: the round trip and its minimum,
+the goodput, the reference it is compared against and the decision. The
+interesting case is the one where nothing happens, because a loop that holds
+because the link is fine and a loop that holds because it has no reference to
+judge against look identical from outside and need different fixes.
 
 ## Requesting a switch by hand
 

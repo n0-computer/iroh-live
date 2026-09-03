@@ -250,20 +250,40 @@ impl Default for Rate {
 }
 
 impl Rate {
+    /// A rate whose window opened at `started`.
+    #[cfg(test)]
+    fn from_start(started: Instant) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(RateWindow { started, events: 0 })),
+        }
+    }
+
     /// Counts one event, and returns the rate per second when the window has
     /// closed.
     ///
     /// Returns `None` the rest of the time, so a caller records a figure only
     /// when there is one to record.
     pub fn tick(&self) -> Option<f64> {
+        self.tick_at(Instant::now())
+    }
+
+    /// [`tick`](Self::tick), against a clock the caller supplies.
+    ///
+    /// The window closes on elapsed time, so every assertion about a rate is an
+    /// assertion about elapsed time, and a loaded CI machine does not sleep for
+    /// as long as it is asked to. Driving the timeline instead makes those
+    /// assertions exact rather than approximately true on a quiet machine.
+    fn tick_at(&self, now: Instant) -> Option<f64> {
         let mut window = self.inner.lock().expect("poisoned");
         window.events += 1;
-        let elapsed = window.started.elapsed();
+        let elapsed = now.duration_since(window.started);
         if elapsed < RATE_WINDOW {
             return None;
         }
         let rate = f64::from(window.events) / elapsed.as_secs_f64();
-        window.started = Instant::now();
+        // The window restarts at the reading rather than at the wall clock, so
+        // the time spent computing does not accumulate across windows.
+        window.started = now;
         window.events = 0;
         Some(rate)
     }
@@ -577,9 +597,29 @@ mod tests {
 
 #[cfg(test)]
 mod rate_tests {
-    use std::{thread::sleep, time::Duration};
+    use std::time::{Duration, Instant};
 
     use super::Rate;
+
+    /// Runs forty events at offsets given by `offset`, and returns the first
+    /// rate reported.
+    ///
+    /// # Panics
+    ///
+    /// Panics if nothing reported, which means the offsets never spanned the
+    /// window.
+    fn drive(offset: impl Fn(u32) -> Duration) -> f64 {
+        let start = Instant::now();
+        let rate = Rate::from_start(start);
+        let mut reported = None;
+        for event in 0..40 {
+            if let Some(value) = rate.tick_at(start + offset(event)) {
+                reported = Some(value);
+                break;
+            }
+        }
+        reported.expect("the offsets have to span the window")
+    }
 
     /// Nothing is reported before the window closes, so a reader never sees a
     /// figure derived from two frames.
@@ -597,23 +637,37 @@ mod rate_tests {
     /// swung between 21 and 50.
     #[test]
     fn a_burst_reads_the_same_as_an_even_stream() {
-        let rate = Rate::default();
-        let mut reported = None;
-        // Bursts of ten, 350ms apart. The window closes during the fourth,
-        // which is the first tick that can report at all: three bursts span
-        // 700ms and the figure is only produced once a full second has passed.
-        for _ in 0..4 {
-            for _ in 0..10 {
-                if let Some(value) = rate.tick() {
-                    reported = Some(value);
-                }
-            }
-            sleep(Duration::from_millis(350));
-        }
-        let reported = reported.expect("a window of over a second has to report");
+        // Ten events at once, every 350ms. The window closes on the first event
+        // of the fourth burst, at 1.05s.
+        let bursty = drive(|event| Duration::from_millis(350) * (event / 10));
+        // The same events spread evenly across the same span, one every 35ms.
+        let even = drive(|event| Duration::from_millis(35) * event);
+
         assert!(
-            (25.0..35.0).contains(&reported),
-            "thirty events in ~1.05s should read near 30fps, got {reported}",
+            (bursty - even).abs() < 0.5,
+            "the same delivery read {bursty} in bursts and {even} evenly",
         );
+        assert!(
+            (28.0..32.0).contains(&bursty),
+            "about thirty events a second should read near 30, got {bursty}",
+        );
+    }
+
+    /// A slower stream reads slower, which is the whole point of dividing by
+    /// elapsed time rather than counting to a fixed number.
+    ///
+    /// One event every 100ms reads 11 rather than 10 on the first window, and
+    /// 10 on every window after it. The window spans from its first event to
+    /// the one that closes it and counts both, so the first window holds eleven
+    /// events across ten gaps. Every later window starts at the event that
+    /// closed the last one, so the double-counted endpoint does not repeat.
+    #[test]
+    fn a_stream_that_slows_reads_slower() {
+        let slow = drive(|event| Duration::from_millis(100) * event);
+        assert!(
+            (10.0..=11.0).contains(&slow),
+            "one event every 100ms should read near 10, got {slow}",
+        );
+        assert!(slow < 15.0, "a slower stream must read below a faster one");
     }
 }

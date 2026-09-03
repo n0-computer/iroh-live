@@ -230,6 +230,29 @@ jobs:
           key: gradle-${{ hashFiles('demos/android/gradle/wrapper/gradle-wrapper.properties', 'demos/android/**/*.gradle.kts', 'demos/android/gradle/libs.versions.toml') }}
           restore-keys: gradle-
 
+      # `gradle-wrapper.jar` is not in the repository, so the checked-in
+      # `gradlew` has no launcher to run. Regenerating it from the runner's own
+      # Gradle keeps the pinned distribution in `gradle-wrapper.properties` as
+      # the single source of truth, where committing the jar would add a second
+      # copy of that decision in a form nobody can read.
+      - name: Restore the Gradle wrapper
+        working-directory: demos/android
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's|.*/gradle-\(.*\)-bin\.zip|\1|p' gradle/wrapper/gradle-wrapper.properties)"
+          if [ -z "$version" ]; then
+            echo "could not read the pinned Gradle version from gradle-wrapper.properties" >&2
+            exit 1
+          fi
+          # Generated in an empty directory rather than here, so Gradle does not
+          # configure the Android project to produce a file it is only being
+          # asked to copy. Configuring it needs the SDK and the plugin, neither
+          # of which this step has any business depending on.
+          scratch="$(mktemp -d)"
+          ( cd "$scratch" && gradle --quiet wrapper --gradle-version "$version" )
+          cp "$scratch/gradle/wrapper/gradle-wrapper.jar" gradle/wrapper/gradle-wrapper.jar
+          test -f gradle/wrapper/gradle-wrapper.jar
+
       # The Makefile picks the highest NDK under $ANDROID_HOME/ndk, which the
       # runner image already provides, and signs the release build with the
       # debug key so no keystore secret is involved.
