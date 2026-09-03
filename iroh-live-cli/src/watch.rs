@@ -451,6 +451,15 @@ mod window {
         }
     }
 
+    /// How long a dial started from the window may take before it counts as
+    /// unanswered.
+    ///
+    /// A publisher that is up answers in well under a second on a LAN and in a
+    /// few over a relay; twenty covers a hole-punch that has to fall back and
+    /// still ends inside the time somebody will hold a code up to a camera. The
+    /// terminal path deliberately has no such bound.
+    const DIAL_DEADLINE: Duration = Duration::from_secs(20);
+
     /// How long the scan screen keeps looking past a ticket whose dial just
     /// failed.
     ///
@@ -597,13 +606,26 @@ mod window {
         let dialing = ticket.clone();
         let ctx = ctx.clone();
         let task = spawn(async move {
-            let attempt = match connect(&live, &dialing, &options).await {
-                Ok((sub, tracks)) => Attempt::Connected(Box::new(Connected {
+            // Bounded here rather than in `transport::subscribe`, whose
+            // terminal path is right to wait: it has a keyboard, prints advice
+            // and can be interrupted. This window may be on a touchscreen with
+            // neither, and a dial that never answers would otherwise hold the
+            // spinner until somebody finds the Cancel button. Failing sends the
+            // window back to the scan screen, where the ticket that just
+            // failed is held off and a different code connects at once.
+            let dial = tokio::time::timeout(DIAL_DEADLINE, connect(&live, &dialing, &options));
+            let attempt = match dial.await {
+                Ok(Ok((sub, tracks))) => Attempt::Connected(Box::new(Connected {
                     ticket: dialing,
                     sub,
                     tracks,
                 })),
-                Err(err) => Attempt::Failed(format!("{err:#}")),
+                Ok(Err(err)) => Attempt::Failed(format!("{err:#}")),
+                Err(_) => Attempt::Failed(format!(
+                    "no answer from {} within {}s: is the publisher running?",
+                    dialing.endpoint.id.fmt_short(),
+                    DIAL_DEADLINE.as_secs()
+                )),
             };
             if let Err(Attempt::Connected(connected)) = tx.send(attempt) {
                 info!("the connection landed after it was cancelled, closing it");
