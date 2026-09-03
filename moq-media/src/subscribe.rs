@@ -257,9 +257,9 @@ impl RemoteBroadcast {
                 name,
                 broadcast,
                 catalog,
-                policy: Mutex::new(policy),
                 stats: SubscribeStats::default(),
-                sync: Sync::new(),
+                sync: Sync::with_jitter(policy.jitter),
+                policy: Mutex::new(policy),
                 shutdown: CancellationToken::new(),
                 _catalog_task: AbortOnDropHandle::new(task),
             }),
@@ -325,8 +325,16 @@ impl RemoteBroadcast {
         self.inner.policy.lock().expect("poisoned").clone()
     }
 
-    /// Replaces the playout policy. Takes effect on the next track opened.
+    /// Replaces the playout policy.
+    ///
+    /// [`jitter`](PlaybackPolicy::jitter) takes effect at once, because the
+    /// playout clock it configures is the broadcast's and outlives any one
+    /// track. Everything else is read when a decoder is built, so it reaches a
+    /// track already playing only through
+    /// [`VideoTrack::reopen_decoder`](VideoTrack::reopen_decoder) or the next
+    /// rendition switch.
     pub fn set_playback_policy(&self, policy: PlaybackPolicy) {
+        self.inner.sync.set_jitter(policy.jitter);
         *self.inner.policy.lock().expect("poisoned") = policy;
     }
 

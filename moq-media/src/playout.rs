@@ -49,6 +49,21 @@ pub struct PlaybackPolicy {
     /// Cross-track synchronization policy.
     pub sync: SyncMode,
 
+    /// How far ahead of its due time the playout clock holds a frame, to ride
+    /// out the difference between when frames were sent and when they arrived.
+    ///
+    /// This is the largest fixed delay a subscriber adds, and the one worth
+    /// moving: everything else in the chain is either the encoder's or the
+    /// link's. Lower it and a frame that arrives late has no slack left and is
+    /// shown late or not at all; raise it and jitter is absorbed at the cost of
+    /// being that much further behind.
+    ///
+    /// Applies only when [`sync`](Self::sync) is [`SyncMode::Synced`]; nothing
+    /// holds a frame under [`SyncMode::Unmanaged`]. Unlike the rest of this
+    /// policy it takes effect the moment it is set, because the clock it
+    /// configures belongs to the broadcast rather than to a decoder.
+    pub jitter: Duration,
+
     /// The most buffered media a subscriber tolerates before skipping to the
     /// live edge, passed to the decoder as `latency_max`.
     ///
@@ -85,6 +100,7 @@ impl Default for PlaybackPolicy {
     fn default() -> Self {
         Self {
             sync: SyncMode::default(),
+            jitter: Duration::from_millis(100),
             max_latency: Duration::from_millis(150),
             gpu_frames: false,
             decoder: decode::Kind::Auto,
@@ -104,6 +120,13 @@ impl PlaybackPolicy {
             sync: SyncMode::Unmanaged,
             ..Self::default()
         }
+    }
+
+    /// Returns a copy with a different playout jitter buffer.
+    #[must_use]
+    pub fn with_jitter(mut self, jitter: Duration) -> Self {
+        self.jitter = jitter;
+        self
     }
 
     /// Returns a copy with a different maximum latency.

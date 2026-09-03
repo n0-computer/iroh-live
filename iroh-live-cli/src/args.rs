@@ -269,6 +269,61 @@ pub struct PlaybackArgs {
     /// machine without it fails rather than quietly falling back to software.
     #[arg(long, value_enum, default_value_t = DecoderArg::Auto)]
     pub decoder: DecoderArg,
+
+    /// How much slack the player keeps against a link that delivers unevenly.
+    #[arg(long, value_enum, default_value_t = LatencyArg::default())]
+    pub latency: LatencyArg,
+}
+
+/// What the player trades between delay and smoothness.
+///
+/// The player holds each frame back a little so that one arriving late still
+/// has somewhere to land. That hold is the largest delay it adds on its own,
+/// and the only one worth choosing: the rest belongs to the encoder, the link
+/// and the display. Pick by what the stream is for, not by the numbers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum LatencyArg {
+    /// The least delay this player can run at. For a conversation, or anything
+    /// where being half a second behind is worse than an occasional jump.
+    Realtime,
+    /// The default: enough slack for an ordinary network without a delay
+    /// anyone would notice.
+    #[default]
+    Balanced,
+    /// Rides out a link that stutters, at the cost of running further behind.
+    /// For watching rather than talking, over Wi-Fi or a mobile connection.
+    Smooth,
+}
+
+#[cfg(feature = "render")]
+impl LatencyArg {
+    /// The playout jitter buffer this mode asks for.
+    ///
+    /// Balanced is what the player has always used. Realtime is two frames at
+    /// 30fps, which is about as little as a link with any variance at all can
+    /// be given. Smooth is chosen to cover a Wi-Fi retransmission burst, which
+    /// is a few hundred milliseconds.
+    pub fn jitter(self) -> std::time::Duration {
+        match self {
+            Self::Realtime => std::time::Duration::from_millis(60),
+            Self::Balanced => std::time::Duration::from_millis(100),
+            Self::Smooth => std::time::Duration::from_millis(400),
+        }
+    }
+
+    /// The buffered media the decoder tolerates before skipping to the live
+    /// edge.
+    ///
+    /// Kept above the jitter buffer in every mode: a skip threshold below the
+    /// slack the clock is deliberately holding would throw away the very frames
+    /// that slack exists to wait for.
+    pub fn max_latency(self) -> std::time::Duration {
+        match self {
+            Self::Realtime => std::time::Duration::from_millis(100),
+            Self::Balanced => std::time::Duration::from_millis(150),
+            Self::Smooth => std::time::Duration::from_millis(600),
+        }
+    }
 }
 
 /// Arguments for `irl call`.
@@ -452,4 +507,46 @@ pub enum RecordFormat {
     Fmp4,
     /// Matroska, the shape `.mkv` and `.webm` name.
     Mkv,
+}
+
+#[cfg(all(test, feature = "render"))]
+mod tests {
+    use clap::ValueEnum as _;
+
+    use super::LatencyArg;
+
+    /// A skip threshold below the slack the playout clock is deliberately
+    /// holding would throw away the frames that slack exists to wait for, so
+    /// the two have to move together.
+    #[test]
+    fn every_mode_tolerates_more_buffering_than_it_holds() {
+        for mode in LatencyArg::value_variants() {
+            assert!(
+                mode.max_latency() > mode.jitter(),
+                "{mode:?} skips at {:?} while holding {:?}",
+                mode.max_latency(),
+                mode.jitter(),
+            );
+        }
+    }
+
+    /// The three modes are a scale, and a flag whose middle setting was not in
+    /// the middle would be a trap.
+    #[test]
+    fn the_modes_are_ordered_from_least_delay_to_most() {
+        assert!(LatencyArg::Realtime.jitter() < LatencyArg::Balanced.jitter());
+        assert!(LatencyArg::Balanced.jitter() < LatencyArg::Smooth.jitter());
+        assert!(LatencyArg::Realtime.max_latency() < LatencyArg::Balanced.max_latency());
+        assert!(LatencyArg::Balanced.max_latency() < LatencyArg::Smooth.max_latency());
+    }
+
+    /// The default has to stay what the player shipped with, so upgrading does
+    /// not silently retune somebody's stream.
+    #[test]
+    fn the_default_mode_is_what_the_player_used_before_the_flag_existed() {
+        let default = LatencyArg::default();
+        assert_eq!(default, LatencyArg::Balanced);
+        assert_eq!(default.jitter(), std::time::Duration::from_millis(100));
+        assert_eq!(default.max_latency(), std::time::Duration::from_millis(150));
+    }
 }

@@ -43,7 +43,9 @@ pub fn prepare_playback(broadcast: &RemoteBroadcast, args: &PlaybackArgs) {
         broadcast
             .playback_policy()
             .with_gpu_frames(true)
-            .with_decoder(args.decoder.into()),
+            .with_decoder(args.decoder.into())
+            .with_jitter(args.latency.jitter())
+            .with_max_latency(args.latency.max_latency()),
     );
 }
 
