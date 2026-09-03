@@ -594,7 +594,22 @@ fn record(
     published: &mut Option<Instant>,
     encoded: &[Encoded],
 ) {
-    let finished = Instant::now();
+    record_at(stats, started, Instant::now(), published, encoded);
+}
+
+/// [`record`], against a clock the caller supplies.
+///
+/// The bitrate is bytes divided by the gap between publications, so every
+/// assertion about it is an assertion about elapsed time. A test that sleeps
+/// and hopes is asserting that the machine slept for as long as it was asked
+/// to, which a loaded CI runner does not.
+fn record_at(
+    stats: &PublishStats,
+    started: Instant,
+    finished: Instant,
+    published: &mut Option<Instant>,
+    encoded: &[Encoded],
+) {
     stats
         .encode
         .encode_ms
@@ -636,25 +651,23 @@ mod tests {
         // 600 kbit/s. Recording the bits of one picture would read as 20.
         let stats = PublishStats::default();
         let mut published = None;
-        let started = Instant::now();
+        let start = Instant::now();
         let step = Duration::from_millis(33);
 
-        record(&stats, started, &mut published, &encoded(2500));
+        record_at(&stats, start, start, &mut published, &encoded(2500));
         assert!(
             !stats.encode.bitrate_kbps.has_samples(),
             "the first call has no gap to divide by",
         );
 
-        // The gap is measured against the wall clock inside `record`, so the
-        // test paces itself rather than handing one in.
-        for _ in 0..4 {
-            std::thread::sleep(step);
-            record(&stats, Instant::now(), &mut published, &encoded(2500));
+        for tick in 1..=4u32 {
+            let at = start + step * tick;
+            record_at(&stats, at, at, &mut published, &encoded(2500));
         }
         let kbps = stats.encode.bitrate_kbps.current();
         assert!(
-            (300.0..=1200.0).contains(&kbps),
-            "expected something near 600 kbit/s, got {kbps}",
+            (599.0..=607.0).contains(&kbps),
+            "expected 606 kbit/s, which is 2500 bytes every 33ms, got {kbps}",
         );
     }
 
