@@ -441,7 +441,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
         .preview()
         .map_or(FrameSource::Empty, FrameSource::Preview);
     session.camera = Some(camera);
-    session.ticket = Some(LiveTicket::new(id, &path).to_string());
+    session.ticket = Some(LiveTicket::new(id, path.as_str()).to_string());
     session.broadcast = Some(broadcast);
     session.live = Some(live.clone());
     let shared = session.into_shared();
@@ -563,7 +563,7 @@ async fn publish_impl(name: String, size: Size) -> Result<jlong> {
     let camera = set_camera(&broadcast, size)?;
     set_microphone(&broadcast);
 
-    let ticket = LiveTicket::new(live.endpoint().id(), &name).to_string();
+    let ticket = LiveTicket::new(live.endpoint().id(), name.as_str()).to_string();
     info!(%ticket, "broadcast published");
 
     let mut session = SessionHandle::new();

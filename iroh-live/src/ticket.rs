@@ -51,29 +51,16 @@ pub struct LiveTicket {
 
 impl LiveTicket {
     /// Creates a new ticket for `broadcast_name` on the endpoint `endpoint_id`.
-    pub fn new(endpoint_id: impl Into<EndpointId>, broadcast_name: impl ToString) -> Self {
+    pub fn new(endpoint_id: impl Into<EndpointId>, broadcast_name: impl Into<String>) -> Self {
         Self {
             endpoint: EndpointAddr::from(endpoint_id.into()),
-            broadcast_name: broadcast_name.to_string(),
+            broadcast_name: broadcast_name.into(),
         }
     }
 
     /// Returns the publisher's endpoint id.
     pub fn endpoint_id(&self) -> EndpointId {
         self.endpoint.id
-    }
-
-    /// Serializes to raw postcard bytes.
-    ///
-    /// For a human-readable URI, use [`serialize`](Self::serialize) or [`Display`](std::fmt::Display).
-    pub fn to_bytes(&self) -> Vec<u8> {
-        postcard::to_stdvec(self).expect("LiveTicket serialization is infallible")
-    }
-
-    /// Deserializes from raw postcard bytes.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let ticket = postcard::from_bytes(bytes).std_context("failed to deserialize")?;
-        Ok(ticket)
     }
 
     /// Serializes to a URI string: `iroh-live:<endpoint id>/<name>`
