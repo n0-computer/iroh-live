@@ -689,8 +689,10 @@ fn decode(image: &Luma) -> Option<String> {
 /// The zxing port, told it is looking for a QR code and asked to try harder,
 /// which turns on the slower finder-pattern search that copes with soft edges.
 fn decode_rxing(image: &Luma) -> Option<String> {
-    let mut hints = rxing::DecodeHints::default();
-    hints.TryHarder = Some(true);
+    let mut hints = rxing::DecodeHints {
+        TryHarder: Some(true),
+        ..Default::default()
+    };
     rxing::helpers::detect_in_luma_with_hints(
         image.data.clone(),
         image.width,
@@ -839,6 +841,9 @@ mod tests {
         }
     }
 
+    /// A candidate decoder, as the harness compares them.
+    type Decoder = fn(&Luma) -> Option<String>;
+
     /// The defocus a lens that is not on the code applies to it.
     fn blur(image: &Luma, sigma: f64) -> Luma {
         gaussian_blur(image, sigma)
@@ -904,7 +909,7 @@ mod tests {
     /// in blur for that to hold: a picture the decoder reads at one sigma it
     /// reads at every smaller sigma, up to the pixel-phase noise a tenth of a
     /// module absorbs.
-    fn blur_ceiling_with(module_pixels: u32, decoder: fn(&Luma) -> Option<String>) -> f64 {
+    fn blur_ceiling_with(module_pixels: u32, decoder: Decoder) -> f64 {
         let (ticket, sharp) = ticket_code(module_pixels);
         let reads = |tenths: u32| {
             let sigma = f64::from(tenths) / 10.0 * f64::from(module_pixels);
@@ -927,11 +932,6 @@ mod tests {
             }
         }
         f64::from(low) / 10.0
-    }
-
-    /// [`blur_ceiling_with`] for the decoder the scanner ships with.
-    fn blur_ceiling(module_pixels: u32) -> f64 {
-        blur_ceiling_with(module_pixels, decode)
     }
 
     /// What Franz saw: a laptop webcam has to get close to the Pi Zero's panel,
@@ -974,7 +974,7 @@ mod tests {
     #[test]
     #[ignore = "a measurement, not a check; run by hand to see the ceiling"]
     fn blur_ceiling_report() {
-        let candidates: [(&str, fn(&Luma) -> Option<String>); 3] = [
+        let candidates: [(&str, Decoder); 3] = [
             ("rqrr raw", decode_rqrr),
             ("rxing raw", decode_rxing),
             ("shipped", decode),
