@@ -82,6 +82,7 @@ Transport flags:
 | `--relay <ENDPOINT_ID>` | Also connect to a relay, which then carries the broadcast on |
 | `--no-serve` | Do not accept incoming subscribers, and print no ticket. Useful only with `--relay` |
 | `--no-qr` | Suppress the terminal QR code |
+| `--fullscreen` | Start the preview window in fullscreen |
 
 File flags, for a `file:` video source:
 
@@ -239,8 +240,9 @@ is up: the difference is only who dialed.
 | `--no-qr` | Suppress the terminal QR code |
 | `--fullscreen` | Start in fullscreen |
 
-Every `--video`, `--audio`, `--codec`, `--renditions`, and geometry flag
-`irl publish` takes applies here too, and describes what this node sends.
+Every capture flag `irl publish` takes applies here too and describes what this
+node sends: `--video`, `--audio`, the codec and bitrate flags, `--renditions`,
+the geometry and `--fps`, `--keyframe-interval`, and `--test-source`.
 `--decoder` describes the other direction: how the peer's picture is decoded.
 
 The window starts on a waiting screen showing this node's ticket, a box to paste
