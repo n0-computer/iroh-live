@@ -14,10 +14,16 @@
 
 use std::{
     fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
 use eframe::egui;
+#[cfg(all(target_os = "linux", feature = "rpicam"))]
+use iroh_live::media::rpicam;
 use iroh_live::{
     media::{
         frame_channel::{FrameReceiver, FrameSender, frame_channel},
@@ -63,6 +69,10 @@ const SCAN_FRAMERATE: u32 = 15;
 
 /// How long the scanner waits before reopening a camera that failed.
 const REOPEN_DELAY: Duration = Duration::from_secs(2);
+
+/// How many camera frames between one log line about the preview rate and the
+/// next. A hundred is every seven seconds at the scan frame rate.
+const PREVIEW_REPORT_EVERY: u64 = 100;
 
 /// How long a camera has to produce its first picture before it counts as the
 /// wrong camera.
@@ -132,8 +142,6 @@ impl ScanCamera {
 
     #[cfg(all(target_os = "linux", feature = "rpicam"))]
     fn open_rpicam() -> Result<Self, String> {
-        use iroh_live::media::rpicam;
-
         // The geometry is rounded to one libcamera leaves unpadded, and the
         // rounded figure is what the pictures arrive at, so it is what the QR
         // decoder has to be told about.
@@ -468,14 +476,24 @@ async fn look(
 
     let opened = Instant::now();
     let mut seen_a_frame = false;
+    let mut delivered = 0u64;
     let mut next_look = Instant::now();
+    let mut decoder = Decoder::spawn(state.clone(), ctx.clone(), skip.cloned());
     loop {
         // A camera that opens and then says nothing is the failure a Raspberry
         // Pi produces when pointed at `/dev/video0`, and it is silent: the
         // device accepts the geometry and never delivers. Without this the
         // screen is black with no explanation, which is indistinguishable from
         // a lens cap.
-        let surface = match tokio::time::timeout(FIRST_FRAME_GRACE, stream.read()).await {
+        let read = tokio::select! {
+            read = tokio::time::timeout(FIRST_FRAME_GRACE, stream.read()) => read,
+            found = decoder.found() => {
+                // Returning here drops the stream, so the camera is released
+                // while the window dials rather than held open behind it.
+                return Ok(found);
+            }
+        };
+        let surface = match read {
             Ok(Ok(Some(surface))) => surface,
             Ok(Ok(None)) => return Err("the camera stopped".to_string()),
             Ok(Err(err)) => return Err(err),
@@ -490,10 +508,24 @@ async fn look(
             }
         };
         seen_a_frame = true;
+        delivered += 1;
+        if delivered.is_multiple_of(PREVIEW_REPORT_EVERY) {
+            // A rate for the preview, read off the log rather than the eye.
+            // The decode used to run on this thread and froze the picture for
+            // its duration; this is what says whether that is still so.
+            debug!(
+                frames = delivered,
+                fps = format_args!("{:.1}", delivered as f64 / opened.elapsed().as_secs_f64()),
+                "scan camera delivering"
+            );
+        }
 
         // Taken before the frame is handed over, because handing it over gives
-        // up ownership and reading the pixels needs it.
-        let (surface, luma) = match Instant::now() >= next_look {
+        // up ownership and reading the pixels needs it. Only when the decoder
+        // is free: a look it cannot take yet is a look at a frame it will never
+        // see anyway, so the interval restarts from the hand-over rather than
+        // from a wish.
+        let (surface, luma) = match Instant::now() >= next_look && decoder.is_idle() {
             false => (surface, None),
             true => match split_luma(surface) {
                 Ok((surface, luma)) => (surface, Some(luma)),
@@ -510,52 +542,124 @@ async fn look(
             },
         };
 
-        // Drawn before the decode runs. Both share this thread, and locating a
-        // grid takes long enough on a small ARM core that holding the picture
-        // back for it would show as a stutter.
-        //
-        // The timestamp is zero because nothing reads it: the preview draws
+        // Drawn regardless of whether this frame is being decoded: the decode
+        // runs on its own thread now, so the preview never waits on it. The
+        // timestamp is zero because nothing reads it: the preview draws
         // whichever frame is in the slot when the window next paints, with no
         // presentation clock in between.
         frames.send(Frame::new(surface, Timestamp::ZERO));
         ctx.request_repaint();
 
-        let Some(luma) = luma else { continue };
-        let decoding = Instant::now();
-        let found = decode(&luma);
-        // Every look, at debug: the decode is the one expensive thing on the
-        // capture thread, and on a small ARM core its cost is what decides
-        // whether the preview stays smooth. A number in the log is what turns
-        // "the preview stutters on the Pi" into a figure to act on.
-        debug!(
-            took_ms = decoding.elapsed().as_millis() as u64,
-            found = found.is_some(),
-            "looked for a QR code"
-        );
+        if let Some(luma) = luma {
+            decoder.look_at(luma);
+            // Measured from the hand-over. The decoder reports when it is idle
+            // again, so a decode slower than the interval simply means the next
+            // look waits for it rather than piling up behind it.
+            next_look = Instant::now() + DECODE_INTERVAL;
+        }
+    }
+}
 
-        // Measured from here rather than from before the decode, so the
-        // interval is a gap between decodes rather than a period each one has
-        // to fit inside. A decode slower than the interval would otherwise
-        // leave the next frame already past the deadline, and the duty cycle
-        // would reach 100% on exactly the hardware slow enough to need the
-        // throttle.
-        next_look = Instant::now() + DECODE_INTERVAL;
+/// The QR decoder, on a thread of its own.
+///
+/// Decoding a 720p frame costs about 175ms on a Raspberry Pi 4, and the
+/// capture loop that would otherwise run it is also the loop that feeds the
+/// preview. On the capture thread every look froze the picture for that long,
+/// which at three looks a second is a preview that stutters for a third of the
+/// time. Here the capture loop hands a plane over and carries on reading; the
+/// decoder takes it, and says when it has finished.
+///
+/// One plane in flight at a time. A second look before the first has finished
+/// is a look at a frame the decoder would reach late and read the same code out
+/// of, so the capture loop skips it rather than queueing it: [`is_idle`] is
+/// what it asks.
+///
+/// [`is_idle`]: Self::is_idle
+struct Decoder {
+    /// Planes go this way, at most one queued.
+    planes: std::sync::mpsc::SyncSender<Luma>,
+    /// The ticket comes back this way, once.
+    found: tokio::sync::mpsc::Receiver<LiveTicket>,
+    /// Whether the worker has taken and finished the last plane.
+    idle: Arc<AtomicBool>,
+}
 
-        let Some(text) = found else { continue };
-        match text.parse::<LiveTicket>() {
-            Ok(ticket) => {
-                if let Some(left) = still_skipped(skip, &ticket) {
-                    report(state, ctx, ScanState::Waiting(left));
-                    continue;
+impl Decoder {
+    /// Starts the worker. It runs until the sender it is handed is dropped,
+    /// which happens when the [`Decoder`] is.
+    fn spawn(state: watch::Sender<ScanState>, ctx: egui::Context, skip: Option<Skip>) -> Self {
+        let (planes, incoming) = std::sync::mpsc::sync_channel::<Luma>(1);
+        let (report_found, found) = tokio::sync::mpsc::channel::<LiveTicket>(1);
+        let idle = Arc::new(AtomicBool::new(true));
+        let worker_idle = Arc::clone(&idle);
+        std::thread::Builder::new()
+            .name("qr-decode".into())
+            .spawn(move || {
+                while let Ok(luma) = incoming.recv() {
+                    let decoding = Instant::now();
+                    let found = decode(&luma);
+                    // Every look, at debug: the decode is the one expensive
+                    // thing here, and on a small ARM core its cost is what
+                    // decides how often the scanner can look at all. A number
+                    // in the log turns "scanning is slow on the Pi" into a
+                    // figure to act on.
+                    debug!(
+                        took_ms = decoding.elapsed().as_millis() as u64,
+                        found = found.is_some(),
+                        "looked for a QR code"
+                    );
+                    if let Some(text) = found {
+                        match text.parse::<LiveTicket>() {
+                            Ok(ticket) => {
+                                if let Some(left) = still_skipped(skip.as_ref(), &ticket) {
+                                    report(&state, &ctx, ScanState::Waiting(left));
+                                } else if report_found.blocking_send(ticket).is_ok() {
+                                    // Found and delivered: nothing more to look for.
+                                    return;
+                                }
+                            }
+                            Err(err) => {
+                                debug!(error = %err, bytes = text.len(), "the QR code is not a ticket");
+                                report(&state, &ctx, ScanState::NotATicket);
+                            }
+                        }
+                    }
+                    worker_idle.store(true, Ordering::Release);
                 }
-                // Returning here drops the stream, so the camera is released
-                // while the window dials rather than held open behind it.
-                return Ok(ticket);
-            }
-            Err(err) => {
-                debug!(error = %err, bytes = text.len(), "the QR code is not a ticket");
-                report(state, ctx, ScanState::NotATicket);
-            }
+            })
+            .expect("a thread can be spawned");
+        Self {
+            planes,
+            found,
+            idle,
+        }
+    }
+
+    /// Whether the worker is free to take a plane.
+    fn is_idle(&self) -> bool {
+        self.idle.load(Ordering::Acquire)
+    }
+
+    /// Hands a plane to the worker.
+    ///
+    /// Only meaningful right after [`is_idle`](Self::is_idle) said so; a plane
+    /// handed over while the worker is busy is dropped, since the one it is on
+    /// will be read the same.
+    fn look_at(&self, luma: Luma) {
+        self.idle.store(false, Ordering::Release);
+        if self.planes.try_send(luma).is_err() {
+            self.idle.store(true, Ordering::Release);
+        }
+    }
+
+    /// Waits for the ticket the worker reads, if it ever reads one.
+    ///
+    /// Pending forever once the worker has gone, which only happens after it
+    /// delivered a ticket or this [`Decoder`] was dropped.
+    async fn found(&mut self) -> LiveTicket {
+        match self.found.recv().await {
+            Some(ticket) => ticket,
+            None => std::future::pending().await,
         }
     }
 }
