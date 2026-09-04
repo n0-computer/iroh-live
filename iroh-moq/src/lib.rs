@@ -134,6 +134,32 @@ impl fmt::Debug for Moq {
 
 impl Moq {
     /// Creates a new MoQ transport bound to the given endpoint.
+    ///
+    /// # Examples
+    ///
+    /// Publish a broadcast and serve it to whoever connects:
+    ///
+    /// ```no_run
+    /// use iroh::{Endpoint, endpoint::presets, protocol::Router};
+    /// use iroh_moq::Moq;
+    ///
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// let endpoint = Endpoint::bind(presets::Minimal).await?;
+    /// let moq = Moq::new(endpoint.clone());
+    /// // Every ALPN the transport speaks, so a peer on any of them gets in.
+    /// let mut router = Router::builder(endpoint);
+    /// for alpn in iroh_moq::alpns() {
+    ///     router = router.accept(alpn, moq.protocol_handler());
+    /// }
+    /// let router = router.spawn();
+    ///
+    /// let mut broadcast = moq.publish("camera")?;
+    /// // write tracks into `broadcast`, then:
+    /// broadcast.finish();
+    /// # drop(router);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn new(endpoint: Endpoint) -> Self {
         let (tx, rx) = mpsc::channel(16);
         let (incoming_session_tx, _) = tokio_broadcast::channel(16);
@@ -189,6 +215,24 @@ impl Moq {
     ///
     /// Connections are deduplicated: two calls for the same peer share one
     /// session, and concurrent calls coalesce onto a single dial.
+    ///
+    /// # Examples
+    ///
+    /// Reach a peer's broadcast by its endpoint id:
+    ///
+    /// ```no_run
+    /// use iroh::{Endpoint, EndpointId, endpoint::presets};
+    /// use iroh_moq::Moq;
+    ///
+    /// # async fn run(remote: EndpointId) -> Result<(), Box<dyn std::error::Error>> {
+    /// let moq = Moq::new(Endpoint::bind(presets::Minimal).await?);
+    /// let session = moq.connect(remote).await?;
+    /// let broadcast = session.subscribe("camera").await?;
+    /// // read tracks from `broadcast`
+    /// # drop(broadcast);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn connect(&self, remote: impl Into<EndpointAddr>) -> Result<MoqSession, Error> {
         // Checked here as well as in the actor: once shut down the actor is
         // gone, and a caller deserves the reason rather than the silence of a

@@ -20,13 +20,21 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```no_run
 //! use moq_media_egui::VideoTrackView;
 //!
-//! let mut view = VideoTrackView::new_wgpu(&ctx, "video", track, render_state);
+//! # fn draw(
+//! #     ctx: &egui::Context,
+//! #     ui: &mut egui::Ui,
+//! #     track: moq_media::subscribe::VideoTrack,
+//! #     render_state: Option<&moq_media_egui::egui_wgpu::RenderState>,
+//! # ) {
+//! let mut view = VideoTrackView::new_wgpu(ctx, "video", track, render_state);
 //! // in the update loop:
-//! let (image, frame_ts) = view.render(&ctx, available_size);
+//! let (image, frame_ts) = view.render(ctx, ui.available_size());
 //! ui.add(image);
+//! # let _ = frame_ts;
+//! # }
 //! ```
 
 pub mod overlay;
