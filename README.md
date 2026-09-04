@@ -1,9 +1,10 @@
 # iroh-live
 
-> **Early tech preview.** Several parts are unfinished. Windows is untested,
-> on-device testing has been limited, hardware-accelerated decode on Linux is
-> currently missing, rooms are being redesigned, and the relay has no
-> authentication. Expect frequent API changes.
+> **Early tech preview.** Several parts are unfinished. Windows builds in CI
+> but has never been run, on-device testing has been limited, rooms are being
+> redesigned, and the relay has no authentication. Expect frequent API changes.
+
+> This repo currently depends on a [branch of upstream moq](https://github.com/Frando/moq/tree/iroh-live). We are in the process of upstreaming everything in here, but it might take a while.
 
 Real-time audio and video over [iroh](https://github.com/n0-computer/iroh),
 written in Rust. Connections are peer-to-peer by default, with no media server
@@ -42,9 +43,10 @@ Full flag reference: [docs/cli.md](docs/cli.md).
 
 ## Using iroh-live in Rust
 
-The workspace patches the moq crates to `Frando/moq@iroh-live` for five changes
-that have not reached a release yet. Until they land, a downstream user needs to
-copy the `[patch.crates-io]` block from [Cargo.toml](Cargo.toml).
+The workspace patches the moq crates to `Frando/moq@iroh-live`, which carries
+the changes behind eleven open pull requests to moq and one to moq-vaapi. Until
+they land in releases, a downstream user needs to copy the `[patch.crates-io]`
+block from [Cargo.toml](Cargo.toml).
 
 Publish a camera and a microphone:
 
@@ -57,7 +59,7 @@ let broadcast = live.publish("hello")?;
 broadcast.video().set(video::capture::Config::default())?;
 broadcast.audio().set(audio::capture::Config::default());
 
-println!("{}", LiveTicket::new(live.endpoint().addr(), "hello"));
+println!("{}", LiveTicket::new(live.endpoint().id(), "hello"));
 ```
 
 Subscribe and read decoded frames:
@@ -108,7 +110,7 @@ a simulcast ladder. More in [docs/guide/index.md](docs/guide/index.md).
 | macOS | Builds in CI. VideoToolbox and ScreenCaptureKit from upstream. Lightly tested |
 | Android | Tested on device, two-way audio and video |
 | Raspberry Pi | Tested on a Pi Zero 2 W and a Pi 4. Publishes pre-encoded H.264 through `rpicam-vid`, or raw pictures with `--video rpicam:raw`. The V4L2 hardware encoder and decoder behind `v4l2` both run on a Pi 4 |
-| Windows | Upstream has the backends. Never built here |
+| Windows | Builds in CI, and the release workflow ships an x86-64 binary. Never run here |
 | iOS | Upstream has the backends. Never built here |
 
 Details, including what was lost when the in-house media stack was replaced:
