@@ -521,7 +521,17 @@ async fn look(
         ctx.request_repaint();
 
         let Some(luma) = luma else { continue };
+        let decoding = Instant::now();
         let found = decode(&luma);
+        // Every look, at debug: the decode is the one expensive thing on the
+        // capture thread, and on a small ARM core its cost is what decides
+        // whether the preview stays smooth. A number in the log is what turns
+        // "the preview stutters on the Pi" into a figure to act on.
+        debug!(
+            took_ms = decoding.elapsed().as_millis() as u64,
+            found = found.is_some(),
+            "looked for a QR code"
+        );
 
         // Measured from here rather than from before the decode, so the
         // interval is a gap between decodes rather than a period each one has
@@ -639,25 +649,150 @@ fn split_luma(surface: Surface) -> Result<(Surface, Luma), video::Error> {
 
 /// Reads the first QR code in `image`, if it holds one.
 ///
-/// `rqrr` is the decoder: a pure-Rust port of quirc that takes a grayscale
-/// callback, so the Y plane goes straight in with no format conversion and no
-/// `image` dependency. The alternative, `bardecoder`, decodes an
-/// `image::DynamicImage` and would pull that crate in for pixels we already
-/// hold as bytes.
+/// How much of a blur the sharpening pass tries to undo, as a fraction of the
+/// picture's shorter side.
+///
+/// The unsharp mask needs a radius, and the right one is about a module, which
+/// depends on how big the code is in the frame. A code somebody is holding up
+/// fills a fifth to a half of a 720p frame at 33 modules, so a module is four
+/// to ten pixels; a 300th of the short side is 2.4 px at 720p, in the middle of
+/// that. Measured: at this radius the mask lifts the blur a decoder reads
+/// through from a third of a module to over half, on both decoders.
+const SHARPEN_RADIUS_FRACTION: f64 = 1.0 / 300.0;
+
+/// How much of the recovered detail the sharpening pass adds back.
+///
+/// Above about two the mask amplifies sensor noise into false modules faster
+/// than it recovers real ones. One and a half is where the harness peaks.
+const SHARPEN_AMOUNT: f64 = 1.5;
+
+/// Reads the QR code out of a picture, if there is one it can read.
+///
+/// Two decoders, tried in the order that reads through the most blur. A
+/// laptop webcam has to get close to a small panel to resolve its modules,
+/// and close is out of focus; a scanner that only reads sharp pictures is a
+/// scanner that does not read the Pi Zero's e-paper from a laptop, which is
+/// what this was built for.
+///
+/// The picture is sharpened once with an unsharp mask, which partially undoes
+/// a defocus at the cost of noise. `rxing`, the zxing port, is asked first: on
+/// the blur harness it reads through about twice the defocus `rqrr` does.
+/// `rqrr` runs on the same sharpened picture when `rxing` finds nothing,
+/// because the two fail on different pictures and it is cheap. Measured
+/// ceilings are in `blur_ceiling_report`.
 fn decode(image: &Luma) -> Option<String> {
+    let radius = f64::from(image.width.min(image.height)) * SHARPEN_RADIUS_FRACTION;
+    let sharpened = sharpen(image, radius, SHARPEN_AMOUNT);
+    decode_rxing(&sharpened).or_else(|| decode_rqrr(&sharpened))
+}
+
+/// The zxing port, told it is looking for a QR code and asked to try harder,
+/// which turns on the slower finder-pattern search that copes with soft edges.
+fn decode_rxing(image: &Luma) -> Option<String> {
+    let mut hints = rxing::DecodeHints::default();
+    hints.TryHarder = Some(true);
+    rxing::helpers::detect_in_luma_with_hints(
+        image.data.clone(),
+        image.width,
+        image.height,
+        Some(rxing::BarcodeFormat::QR_CODE),
+        &mut hints,
+    )
+    .ok()
+    .map(|result| result.getText().to_string())
+}
+
+/// `rqrr`, a pure-Rust port of quirc that takes a grayscale callback, so the
+/// plane goes straight in with no format conversion.
+fn decode_rqrr(image: &Luma) -> Option<String> {
     let width = image.width as usize;
     let mut prepared =
         rqrr::PreparedImage::prepare_from_greyscale(width, image.height as usize, |x, y| {
             image.data[y * width + x]
         });
     // A picture can hold several codes, and a partly obscured one detects as a
-    // grid that will not decode, so this takes the first that reads rather than
-    // the first that was found.
+    // grid and fails to decode; the first that decodes is the answer.
     prepared
         .detect_grids()
         .into_iter()
         .find_map(|grid| grid.decode().ok())
         .map(|(_meta, text)| text)
+}
+
+/// Unsharp mask: the picture plus `amount` times what a Gaussian blur of
+/// `sigma` pixels took away from it.
+///
+/// Partially undoes a defocus. What it cannot undo is detail the blur removed
+/// entirely, so it lifts the readable blur by a fraction rather than removing
+/// the ceiling; and it amplifies noise, which is why `amount` is bounded.
+fn sharpen(image: &Luma, sigma: f64, amount: f64) -> Luma {
+    let soft = gaussian_blur(image, sigma);
+    let data = image
+        .data
+        .iter()
+        .zip(&soft.data)
+        .map(|(&sharp, &soft)| {
+            let value = f64::from(sharp) + amount * (f64::from(sharp) - f64::from(soft));
+            value.round().clamp(0.0, 255.0) as u8
+        })
+        .collect();
+    Luma {
+        width: image.width,
+        height: image.height,
+        data,
+    }
+}
+
+/// A separable Gaussian blur of `sigma` pixels, three sigma each side, with
+/// the border pixel repeated past the edge.
+///
+/// Used by the sharpening pass, and by the tests to manufacture the defocus
+/// the pass exists to undo.
+fn gaussian_blur(image: &Luma, sigma: f64) -> Luma {
+    if sigma <= 0.0 {
+        return Luma {
+            width: image.width,
+            height: image.height,
+            data: image.data.clone(),
+        };
+    }
+    let radius = (sigma * 3.0).ceil() as i64;
+    let kernel: Vec<f64> = (-radius..=radius)
+        .map(|offset| (-(offset * offset) as f64 / (2.0 * sigma * sigma)).exp())
+        .collect();
+    let total: f64 = kernel.iter().sum();
+    let (width, height) = (i64::from(image.width), i64::from(image.height));
+    let at = |data: &[u8], x: i64, y: i64| -> f64 {
+        let x = x.clamp(0, width - 1);
+        let y = y.clamp(0, height - 1);
+        f64::from(data[(y * width + x) as usize])
+    };
+    let pass = |source: &[u8], horizontal: bool| -> Vec<u8> {
+        let mut out = vec![0u8; source.len()];
+        for y in 0..height {
+            for x in 0..width {
+                let sum: f64 = kernel
+                    .iter()
+                    .enumerate()
+                    .map(|(index, weight)| {
+                        let offset = index as i64 - radius;
+                        match horizontal {
+                            true => weight * at(source, x + offset, y),
+                            false => weight * at(source, x, y + offset),
+                        }
+                    })
+                    .sum();
+                out[(y * width + x) as usize] = (sum / total).round() as u8;
+            }
+        }
+        out
+    };
+    let rows = pass(&image.data, true);
+    Luma {
+        width: image.width,
+        height: image.height,
+        data: pass(&rows, false),
+    }
 }
 
 #[cfg(test)]
@@ -702,6 +837,168 @@ mod tests {
             height: side,
             data,
         }
+    }
+
+    /// The defocus a lens that is not on the code applies to it.
+    fn blur(image: &Luma, sigma: f64) -> Luma {
+        gaussian_blur(image, sigma)
+    }
+
+    /// The frame the scanner reads, which is the geometry the sharpen radius
+    /// is scaled to. A harness on a code-sized image would under-sharpen and
+    /// report a worse pipeline than the one that ships.
+    const FRAME: Size = SCAN_SIZE;
+
+    /// One ticket, the same every run. The QR bit pattern follows the text, so
+    /// a random key would make the blur ceiling a lottery and the floor test
+    /// below flaky on the boundary.
+    fn fixed_ticket() -> LiveTicket {
+        let secret = iroh::SecretKey::from_bytes(&[7u8; 32]);
+        LiveTicket::new(secret.public(), "pi-zero")
+    }
+
+    /// A ticket as a webcam sees the Pi Zero's e-paper: the code drawn at
+    /// `module_pixels` per module in the middle of a scan-sized frame, white
+    /// around it. Three pixels per module is the panel itself; a webcam at arm's
+    /// length sees each module across a handful of its own pixels.
+    fn ticket_code(module_pixels: u32) -> (LiveTicket, Luma) {
+        let ticket = fixed_ticket();
+        let code = qrcode::QrCode::new(ticket.to_string()).expect("a ticket fits in a QR code");
+        let modules = u32::try_from(code.width()).expect("at most 177 modules");
+        let colors = code.to_colors();
+        let side = modules * module_pixels;
+        assert!(
+            side + 2 * QUIET_MODULES * module_pixels <= FRAME.height,
+            "{module_pixels} px per module does not fit the frame"
+        );
+        let left0 = (FRAME.width - side) / 2;
+        let top0 = (FRAME.height - side) / 2;
+        let mut data = vec![u8::MAX; (FRAME.width * FRAME.height) as usize];
+        for row in 0..modules {
+            for column in 0..modules {
+                if colors[(row * modules + column) as usize] != qrcode::Color::Dark {
+                    continue;
+                }
+                let top = top0 + row * module_pixels;
+                let left = left0 + column * module_pixels;
+                for y in top..top + module_pixels {
+                    let start = (y * FRAME.width + left) as usize;
+                    data[start..start + module_pixels as usize].fill(0);
+                }
+            }
+        }
+        (
+            ticket,
+            Luma {
+                width: FRAME.width,
+                height: FRAME.height,
+                data,
+            },
+        )
+    }
+
+    /// The largest blur, in units of one module's width, at which `decoder`
+    /// still reads a ticket rendered at `module_pixels` per module.
+    ///
+    /// Found by bisection to a tenth of a module. Decoding is monotonic enough
+    /// in blur for that to hold: a picture the decoder reads at one sigma it
+    /// reads at every smaller sigma, up to the pixel-phase noise a tenth of a
+    /// module absorbs.
+    fn blur_ceiling_with(module_pixels: u32, decoder: fn(&Luma) -> Option<String>) -> f64 {
+        let (ticket, sharp) = ticket_code(module_pixels);
+        let reads = |tenths: u32| {
+            let sigma = f64::from(tenths) / 10.0 * f64::from(module_pixels);
+            let image = blur(&sharp, sigma);
+            decoder(&image).and_then(|text| text.parse::<LiveTicket>().ok()) == Some(ticket.clone())
+        };
+        if !reads(0) {
+            return 0.0;
+        }
+        // Invariant: `reads(low)` and `!reads(high)`.
+        let (mut low, mut high) = (0u32, 30u32);
+        if reads(high) {
+            return f64::from(high) / 10.0;
+        }
+        while high - low > 1 {
+            let mid = (low + high) / 2;
+            match reads(mid) {
+                true => low = mid,
+                false => high = mid,
+            }
+        }
+        f64::from(low) / 10.0
+    }
+
+    /// [`blur_ceiling_with`] for the decoder the scanner ships with.
+    fn blur_ceiling(module_pixels: u32) -> f64 {
+        blur_ceiling_with(module_pixels, decode)
+    }
+
+    /// What Franz saw: a laptop webcam has to get close to the Pi Zero's panel,
+    /// and close means out of focus. A blur whose sigma is half a module is
+    /// what that looks like at the module sizes a webcam delivers, and the
+    /// decoder has to read through it.
+    ///
+    /// One point per module size rather than a search: the floor is a check,
+    /// and the search that finds the ceiling is `blur_ceiling_report`. Half a
+    /// module is one bisection step under the 0.6 the shipped pipeline measures
+    /// at every size in a release build; plain `rqrr` on the raw plane gave up
+    /// at 0.2 to 0.3.
+    #[test]
+    fn a_ticket_decodes_through_the_blur_a_close_webcam_produces() {
+        const FLOOR_MODULES: f64 = 0.5;
+        for module_pixels in [4, 6, 8, 10] {
+            let (ticket, sharp) = ticket_code(module_pixels);
+            let image = blur(&sharp, FLOOR_MODULES * f64::from(module_pixels));
+            let read = decode(&image).and_then(|text| text.parse::<LiveTicket>().ok());
+            assert_eq!(
+                read.as_ref(),
+                Some(&ticket),
+                "at {module_pixels} px per module the scanner does not read through a blur \
+                 of {FLOOR_MODULES} modules, which a close webcam produces",
+            );
+        }
+    }
+
+    /// What one decode of a scan-sized frame costs, which is what the
+    /// scanner pays every `DECODE_INTERVAL`. Meaningful in a release build:
+    /// `cargo test --release -p iroh-live-cli blur_ceiling_report -- --ignored --nocapture`.
+    fn decode_cost(image: &Luma) -> Duration {
+        let started = Instant::now();
+        let _ = decode(image);
+        started.elapsed()
+    }
+
+    /// Prints the blur ceiling per module size and the cost of one decode, for
+    /// tuning rather than for passing. Run with `--ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement, not a check; run by hand to see the ceiling"]
+    fn blur_ceiling_report() {
+        let candidates: [(&str, fn(&Luma) -> Option<String>); 3] = [
+            ("rqrr raw", decode_rqrr),
+            ("rxing raw", decode_rxing),
+            ("shipped", decode),
+        ];
+        println!("blur ceiling in modules, per decoder and module size:");
+        print!("{:>14}", "px/module");
+        for module_pixels in [3, 4, 5, 6, 8, 10] {
+            print!("{module_pixels:>6}");
+        }
+        println!();
+        for (name, decoder) in candidates {
+            print!("{name:>14}");
+            for module_pixels in [3, 4, 5, 6, 8, 10] {
+                print!("{:>6.1}", blur_ceiling_with(module_pixels, decoder));
+            }
+            println!();
+        }
+        let (_, frame) = ticket_code(6);
+        println!(
+            "one decode of a {}x{} frame: {:?} (release build numbers are the real ones)",
+            frame.width,
+            frame.height,
+            decode_cost(&frame)
+        );
     }
 
     #[test]
