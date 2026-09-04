@@ -19,7 +19,9 @@ use tracing::info;
 
 use crate::{
     args::{CallArgs, CaptureArgs},
-    source, source_spec, transport,
+    source,
+    source_spec::VideoSourceSpec as Spec,
+    transport,
 };
 
 /// Runs the `call` command.
@@ -79,8 +81,6 @@ impl Camera {
     /// A specifier that does not parse never opened anything, and whoever set
     /// the publish up has already reported it, so it counts as free.
     fn of(args: &CaptureArgs) -> Self {
-        use source_spec::VideoSourceSpec as Spec;
-
         match args.video_source() {
             Ok(Spec::Camera(_)) => Self::Publisher,
             // `rpicam-vid` drives the Pi camera through libcamera rather than

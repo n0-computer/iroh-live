@@ -27,7 +27,7 @@ use n0_future::task::{AbortOnDropHandle, spawn};
 use n0_watcher::{Watchable, Watcher as _};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, error_span, warn};
+use tracing::{Instrument, debug, error_span, trace, warn};
 
 use crate::{
     catalog::{Catalog, IrohLiveExt, TrackRef, User},
@@ -215,7 +215,7 @@ impl RemoteBroadcast {
         if tracing::enabled!(tracing::Level::TRACE)
             && let Ok(json) = serde_json::to_string(&first)
         {
-            tracing::trace!(broadcast = %name, catalog = %json, "first catalog");
+            trace!(broadcast = %name, catalog = %json, "first catalog");
         }
         let catalog = Watchable::new(CatalogSnapshot(Arc::new(first)));
 
@@ -233,7 +233,7 @@ impl RemoteBroadcast {
                                 if tracing::enabled!(tracing::Level::TRACE)
                                     && let Ok(json) = serde_json::to_string(&next)
                                 {
-                                    tracing::trace!(catalog = %json, "catalog updated");
+                                    trace!(catalog = %json, "catalog updated");
                                 }
                                 catalog.set(CatalogSnapshot(Arc::new(next))).ok();
                             }

@@ -15,6 +15,7 @@ use std::future::Future;
 
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
+use tracing::error;
 
 /// A handle that stops its task when dropped.
 ///
@@ -72,7 +73,7 @@ where
             {
                 Ok(runtime) => runtime,
                 Err(err) => {
-                    tracing::error!(error = %err, "could not start the publish runtime");
+                    error!(error = %err, "could not start the publish runtime");
                     return;
                 }
             };
@@ -84,7 +85,7 @@ where
         // A thread that will not start is not something a publish can recover
         // from, but it is not worth a panic either: the track simply never
         // produces, which is what the caller sees when a device fails to open.
-        tracing::error!(error = %err, "could not start the publish thread");
+        error!(error = %err, "could not start the publish thread");
     }
 
     LocalTask {

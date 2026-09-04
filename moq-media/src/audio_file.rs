@@ -344,7 +344,7 @@ mod tests {
         // On its own thread with a deadline, because the failure this guards
         // against is a loop that never returns rather than one that returns the
         // wrong thing.
-        let (done, finished) = std::sync::mpsc::channel();
+        let (done, finished) = std::sync::mpsc::sync_channel(1);
         let looping = path.clone();
         std::thread::spawn(move || {
             let (tx, rx) = mpsc::channel(QUEUE_DEPTH);
