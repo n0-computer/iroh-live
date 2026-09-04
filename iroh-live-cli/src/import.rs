@@ -7,9 +7,8 @@ use std::{
     process::Stdio,
 };
 
-use bytes::BytesMut;
-use moq_lite::BroadcastProducer;
-use moq_mux::import::StreamFormat;
+use bytes::{Bytes, BytesMut};
+use moq_lite::broadcast::Producer as BroadcastProducer;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tracing::{info, warn};
 
@@ -44,63 +43,95 @@ pub async fn open_input(
     }
 }
 
-/// Reads the file header and publishes the initial catalog to the producer.
+/// A byte-stream importer for one of the supported input formats.
 ///
-/// For fmp4 input this parses the moov box; for avc3 it reads until SPS/PPS
-/// are found. After this returns, consumers can subscribe to the catalog.
+/// moq-mux 0.9 split importers by multiplicity: a container that may publish
+/// several tracks (`fmp4`) versus a single codec on one track (`avc3`). They no
+/// longer share a type, so this enum keeps one `decode`/`finish` surface for the
+/// CLI, which only cares about feeding bytes.
+pub enum Importer {
+    /// A container that demuxes its own tracks (fMP4).
+    Container(moq_mux::import::ContainerStream),
+    /// A single codec on one reserved track (raw Annex-B H.264).
+    ///
+    /// Boxed: it is two orders of magnitude larger than the container variant.
+    Track(Box<moq_mux::import::TrackStream>),
+}
+
+impl Importer {
+    fn decode(&mut self, data: &[u8]) -> Result<(), moq_mux::Error> {
+        match self {
+            Self::Container(inner) => inner.decode(data),
+            Self::Track(inner) => inner.decode(data),
+        }
+    }
+
+    fn finish(&mut self) -> Result<(), moq_mux::Error> {
+        match self {
+            Self::Container(inner) => inner.finish(),
+            Self::Track(inner) => inner.finish(),
+        }
+    }
+}
+
+/// Builds the importer and consumes enough input to surface an unusable stream.
+///
+/// The catalog is no longer published synchronously here: 0.9 resolves it inside
+/// the importer, as the container's header or the codec's first keyframe arrives.
+/// We still read one chunk so an empty or obviously wrong input fails before the
+/// broadcast is announced, which is what the old header loop was really for.
 pub async fn init_import(
     broadcast: &mut BroadcastProducer,
     format: ImportFormat,
     input: &mut Pin<Box<dyn AsyncRead + Send + 'static>>,
-) -> anyhow::Result<moq_mux::import::Stream> {
+) -> anyhow::Result<Importer> {
     let catalog = moq_mux::catalog::Producer::new(broadcast).unwrap();
-    let stream_format = match format {
-        ImportFormat::Fmp4 => StreamFormat::Fmp4,
-        ImportFormat::Avc3 => StreamFormat::Avc3,
+
+    let mut importer = match format {
+        ImportFormat::Fmp4 => Importer::Container(moq_mux::import::ContainerStream::new(
+            broadcast.clone(),
+            catalog.reserve(),
+            "fmp4",
+        )?),
+        ImportFormat::Avc3 => {
+            let request = broadcast.reserve_track("video")?;
+            Importer::Track(Box::new(moq_mux::import::TrackStream::new(
+                request,
+                catalog.reserve(),
+                moq_mux::import::Init::new("avc3", Bytes::new()),
+            )?))
+        }
     };
-    let mut decoder = moq_mux::import::Stream::new(broadcast.clone(), catalog, stream_format)?;
 
     let mut buffer = BytesMut::new();
-    let mut total_read = 0usize;
-    while !decoder.is_initialized() {
-        let n = input.read_buf(&mut buffer).await?;
-        if n == 0 {
-            if total_read == 0 {
-                anyhow::bail!("input is empty — expected {format:?} data on stdin or from file");
-            }
-            anyhow::bail!(
-                "reached end of input ({total_read} bytes) before finding a valid \
-                 {format:?} header. The file may not be fragmented MP4 — use \
-                 `--transcode` to re-mux with ffmpeg."
-            );
-        }
-        total_read += n;
-        decoder.decode_stream(&mut buffer).map_err(|e| {
-            anyhow::anyhow!(
-                "failed to parse {format:?} header after {total_read} bytes: {e:#}. \
-                 If the file is a regular (non-fragmented) MP4, use `--transcode` \
-                 to re-mux it."
-            )
-        })?;
+    let n = input.read_buf(&mut buffer).await?;
+    if n == 0 {
+        anyhow::bail!("input is empty — expected {format:?} data on stdin or from file");
     }
+    importer.decode(&buffer).map_err(|e| {
+        anyhow::anyhow!(
+            "failed to parse {format:?} input after {n} bytes: {e:#}. \
+             If the file is a regular (non-fragmented) MP4, use `--transcode` \
+             to re-mux it."
+        )
+    })?;
 
-    info!(
-        bytes_read = total_read,
-        "file header parsed, catalog published"
-    );
-    Ok(decoder)
+    info!(bytes_read = n, "input opened, importing");
+    Ok(importer)
 }
 
 /// Continues reading media data from `input` until EOF.
 pub async fn run_import(
-    mut decoder: moq_mux::import::Stream,
+    mut importer: Importer,
     mut input: Pin<Box<dyn AsyncRead + Send + 'static>>,
 ) -> anyhow::Result<()> {
     let mut buffer = BytesMut::new();
     while input.read_buf(&mut buffer).await? > 0 {
-        decoder.decode_stream(&mut buffer)?;
+        importer.decode(&buffer)?;
+        buffer.clear();
     }
-    decoder.finish()
+    importer.finish()?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

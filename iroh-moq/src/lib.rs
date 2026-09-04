@@ -15,7 +15,11 @@ use iroh::{
     endpoint::{ConnectError, Connection, ConnectionError, WriteError},
     protocol::{AcceptError, ProtocolHandler},
 };
-use moq_lite::{BroadcastConsumer, BroadcastProducer, Origin, OriginConsumer, OriginProducer};
+use moq_lite::{
+    Origin,
+    broadcast::{Consumer as BroadcastConsumer, Producer as BroadcastProducer},
+    origin::{Consumer as OriginConsumer, Producer as OriginProducer},
+};
 use n0_error::{AnyError, Result, StdResultExt, anyerr, e, stack_error};
 use n0_future::{
     FuturesUnordered, StreamExt,
@@ -24,7 +28,7 @@ use n0_future::{
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, error_span, field, info, instrument};
+use tracing::{Instrument, debug, error_span, field, info, instrument, warn};
 use web_transport_iroh::SessionError;
 
 /// The ALPN protocol identifier for MoQ-lite connections.
@@ -259,8 +263,151 @@ impl IncomingSession {
 pub struct MoqSession {
     wt_session: web_transport_iroh::Session,
     _moq_session: Arc<moq_lite::Session>,
+    _driver: Arc<AbortOnDropHandle<moq_lite::Result<()>>>,
+    forwards: Forwards,
     publish: OriginProducer,
     subscribe: OriginConsumer,
+}
+
+/// Live announcements for the broadcasts this session serves, keyed by name.
+type Forwards = Arc<std::sync::Mutex<HashMap<String, BroadcastAnnouncement>>>;
+
+/// An announced broadcast, served for as long as this value is held.
+///
+/// Dropping it stops serving and finishes the broadcast, so subscribers see a clean
+/// end rather than a dropped producer.
+#[derive(Debug)]
+#[must_use = "dropping this stops serving the announced broadcast"]
+pub struct BroadcastAnnouncement {
+    _task: AbortOnDropHandle<()>,
+}
+
+/// Announces `upstream` on `origin` under `name` and serves it in the background.
+///
+/// This replaces moq-lite 0.1's `origin::Producer::publish_broadcast(name, consumer)`.
+/// See [`forward_broadcast`] for why the work is needed at all.
+pub fn announce_broadcast(
+    origin: &OriginProducer,
+    name: &str,
+    upstream: BroadcastConsumer,
+) -> Result<BroadcastAnnouncement, moq_lite::Error> {
+    let announced = origin.create_broadcast(name, moq_lite::broadcast::Route::announced())?;
+    Ok(BroadcastAnnouncement {
+        _task: AbortOnDropHandle::new(spawn(forward_broadcast(announced, upstream))),
+    })
+}
+
+/// Announces `upstream` to the remote peer under `name` and serves it.
+///
+/// moq-lite 0.1 had `origin::Producer::publish_broadcast(name, consumer)`, which
+/// installed an existing consumer under a name and announced it in one step. 0.2
+/// inverted the ownership: `create_broadcast` mints a producer the origin owns, and
+/// there is no public way to hand an existing consumer to an announced path. So we
+/// create the announced broadcast and forward into it ourselves — the same shape
+/// moq-net's own subscriber uses when it re-serves a remote broadcast locally.
+///
+/// The announcement is the part that matters. A peer's subscriber only builds its
+/// local source when an announcement arrives, so a dynamically served (unannounced)
+/// broadcast is never reachable across a session, however correct it looks locally.
+pub(crate) async fn forward_broadcast(
+    // Held for the task's lifetime: dropping the producer finishes the broadcast.
+    announced: moq_lite::broadcast::Producer,
+    upstream: BroadcastConsumer,
+) {
+    let mut dynamic = announced.dynamic();
+    let mut tracks = JoinSet::new();
+    while let Ok(request) = dynamic.requested_track().await {
+        // Reap finished track forwarders; a long-lived broadcast can serve many.
+        while tracks.try_join_next().is_some() {}
+
+        let name = request.name().to_string();
+        match upstream.track(&name) {
+            Ok(track) => {
+                tracks.spawn(forward_track(track, request));
+            }
+            Err(err) => {
+                debug!(%name, "rejecting unknown track: {err:#}");
+                request.reject(err);
+            }
+        }
+    }
+}
+
+/// Copies one track's groups and frames from `upstream` into the requested track.
+///
+/// The downstream request's own preferences are carried upstream, and the request is
+/// only accepted once upstream resolves, so the accepted track reports the metadata
+/// the source actually has rather than a default. A failure to subscribe upstream
+/// rejects the request instead of accepting a track that can never produce.
+///
+/// Upstream group sequences are preserved rather than re-numbered, so a subscriber
+/// still sees the publisher's ordering and any gaps it needs for skip decisions.
+async fn forward_track(upstream: moq_lite::track::Consumer, request: moq_lite::track::Request) {
+    let mut subscriber = match upstream.subscribe(request.subscription()).await {
+        Ok(subscriber) => subscriber,
+        Err(err) => {
+            request.reject(err);
+            return;
+        }
+    };
+    let mut downstream = request.accept(subscriber.info().clone());
+    let mut groups = JoinSet::new();
+    let outcome = loop {
+        // Reap finished copies so the set does not grow for the life of the track.
+        while groups.try_join_next().is_some() {}
+
+        match subscriber.next_group().await {
+            Ok(Some(group)) => {
+                let sequence = group.sequence;
+                match downstream.create_group(moq_lite::group::Info { sequence }) {
+                    Ok(out) => {
+                        groups.spawn(forward_group(group, out));
+                    }
+                    Err(err) => break Err(err),
+                }
+            }
+            Ok(None) => break Ok(()),
+            Err(err) => break Err(err),
+        }
+    };
+
+    // Let the frames already in flight land before closing the track: dropping the
+    // JoinSet aborts its tasks, which would truncate the groups still being copied.
+    while groups.join_next().await.is_some() {}
+
+    match outcome {
+        Ok(()) => {
+            let _ = downstream.finish();
+        }
+        Err(err) => {
+            let _ = downstream.abort(err);
+        }
+    }
+}
+
+/// Copies one group's frames, preserving each frame's timestamp.
+async fn forward_group(
+    mut upstream: moq_lite::group::Consumer,
+    mut downstream: moq_lite::group::Producer,
+) {
+    loop {
+        match upstream.read_frame().await {
+            Ok(Some(frame)) => {
+                if let Err(err) = downstream.write_frame(frame.timestamp, frame.payload) {
+                    let _ = downstream.abort(err);
+                    return;
+                }
+            }
+            Ok(None) => {
+                let _ = downstream.finish();
+                return;
+            }
+            Err(err) => {
+                let _ = downstream.abort(err);
+                return;
+            }
+        }
+    }
 }
 
 impl fmt::Debug for MoqSession {
@@ -295,18 +442,21 @@ impl MoqSession {
         wt_session: web_transport_iroh::Session,
         origin: Origin,
     ) -> Result<Self, Error> {
-        let publish_prod = OriginProducer::new(origin);
-        let subscribe_prod = OriginProducer::new(origin);
+        let publish_prod = origin.produce();
+        let subscribe_prod = origin.produce();
         let subscribe = subscribe_prod.consume();
         let client = moq_lite::Client::new()
-            .with_publish(publish_prod.consume())
-            .with_consume(subscribe_prod);
-        let moq_session = client.connect(wt_session.clone()).await?;
+            .with_publisher(publish_prod.consume())
+            .with_subscriber(subscribe_prod);
+        let (moq_session, driver) = client.connect(wt_session.clone()).await?;
+        let driver = AbortOnDropHandle::new(spawn(driver));
         Ok(Self {
             publish: publish_prod,
             subscribe,
             wt_session,
             _moq_session: Arc::new(moq_session),
+            _driver: Arc::new(driver),
+            forwards: Forwards::default(),
         })
     }
 
@@ -317,18 +467,21 @@ impl MoqSession {
         wt_session: web_transport_iroh::Session,
         origin: Origin,
     ) -> Result<Self, Error> {
-        let publish_prod = OriginProducer::new(origin);
-        let subscribe_prod = OriginProducer::new(origin);
+        let publish_prod = origin.produce();
+        let subscribe_prod = origin.produce();
         let subscribe = subscribe_prod.consume();
         let server = moq_lite::Server::new()
-            .with_publish(publish_prod.consume())
-            .with_consume(subscribe_prod);
-        let moq_session = server.accept(wt_session.clone()).await?;
+            .with_publisher(publish_prod.consume())
+            .with_subscriber(subscribe_prod);
+        let (moq_session, driver) = server.accept(wt_session.clone()).await?;
+        let driver = AbortOnDropHandle::new(spawn(driver));
         Ok(Self {
             publish: publish_prod,
             subscribe,
             wt_session,
             _moq_session: Arc::new(moq_session),
+            _driver: Arc::new(driver),
+            forwards: Forwards::default(),
         })
     }
 
@@ -358,8 +511,18 @@ impl MoqSession {
     }
 
     /// Publishes a broadcast on this session, making it available to the remote peer.
-    pub fn publish(&self, name: impl ToString, broadcast: BroadcastConsumer) {
-        self.publish.publish_broadcast(name.to_string(), broadcast);
+    pub fn publish(
+        &self,
+        name: impl ToString,
+        broadcast: BroadcastConsumer,
+    ) -> Result<(), moq_lite::Error> {
+        let name = name.to_string();
+        let announcement = announce_broadcast(&self.publish, &name, broadcast)?;
+        self.forwards
+            .lock()
+            .expect("forwards poisoned")
+            .insert(name, announcement);
+        Ok(())
     }
 
     /// Returns the origin producer for advanced publish operations.
@@ -499,7 +662,9 @@ impl Actor {
     fn handle_session(&mut self, session: MoqSession) {
         let remote = session.remote_id();
         for (name, producer) in self.publishing.iter() {
-            session.publish(name.as_str(), producer.consume());
+            if let Err(err) = session.publish(name.as_str(), producer.consume()) {
+                warn!(%name, "failed to announce broadcast to new session: {err:#}");
+            }
         }
         self.sessions.insert(remote, session.clone());
         // Notify incoming session subscribers (best-effort, ok if no receivers).
@@ -528,9 +693,9 @@ impl Actor {
 
     fn handle_publish_broadcast(&mut self, name: BroadcastName, producer: BroadcastProducer) {
         for session in self.sessions.values_mut() {
-            session
-                .publish
-                .publish_broadcast(name.clone(), producer.consume());
+            if let Err(err) = session.publish(name.clone(), producer.consume()) {
+                warn!(%name, "failed to announce broadcast to session: {err:#}");
+            }
         }
         let consume = producer.consume();
         let closed_name = name.clone();

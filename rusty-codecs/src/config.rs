@@ -167,8 +167,8 @@ mod hang_interop {
                 description: h.description,
                 coded_width: h.coded_width,
                 coded_height: h.coded_height,
-                display_ratio_width: h.display_ratio_width,
-                display_ratio_height: h.display_ratio_height,
+                display_ratio_width: h.display_aspect_width,
+                display_ratio_height: h.display_aspect_height,
                 bitrate: h.bitrate,
                 framerate: h.framerate,
                 optimize_for_latency: h.optimize_for_latency,
@@ -182,13 +182,12 @@ mod hang_interop {
             config.description = c.description;
             config.coded_width = c.coded_width;
             config.coded_height = c.coded_height;
-            config.display_ratio_width = c.display_ratio_width;
-            config.display_ratio_height = c.display_ratio_height;
+            config.display_aspect_width = c.display_ratio_width;
+            config.display_aspect_height = c.display_ratio_height;
             config.bitrate = c.bitrate;
             config.framerate = c.framerate;
             config.optimize_for_latency = c.optimize_for_latency;
             config.container = Default::default();
-            config.jitter = None;
             config
         }
     }

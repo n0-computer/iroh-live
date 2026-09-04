@@ -68,7 +68,7 @@ pub fn run(args: RecordArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
 
         // Spawn video recording task.
         let video_task = if let Some(ref name) = video_name {
-            let (source, config) = broadcast.raw_video_track(name)?;
+            let (source, config) = broadcast.raw_video_track(name).await?;
             let ext = video_codec_extension(&config.codec);
             let path = output.with_extension(ext);
             println!("video: {name} ({}) -> {}", config.codec, path.display());
@@ -86,7 +86,7 @@ pub fn run(args: RecordArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
 
         // Spawn audio recording task.
         let audio_task = if let Some(ref name) = audio_name {
-            let (source, config) = broadcast.raw_audio_track(name)?;
+            let (source, config) = broadcast.raw_audio_track(name).await?;
             let ext = audio_codec_extension(&config.codec);
             let path = output.with_extension(ext);
             println!("audio: {name} ({}) -> {}", config.codec, path.display());

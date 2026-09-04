@@ -998,7 +998,7 @@ fn audio_pipeline_mono_encode_stereo_decode() {
 
         assert_eq!(decoded.len(), 96000);
 
-        for (i, pair) in decoded.chunks_exact(2).enumerate() {
+        for (i, pair) in decoded.as_chunks::<2>().0.iter().enumerate() {
             assert_eq!(
                 pair[0], pair[1],
                 "stereo pair at frame {i} should be equal: L={}, R={}",

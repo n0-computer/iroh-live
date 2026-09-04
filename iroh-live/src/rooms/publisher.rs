@@ -1,4 +1,4 @@
-use moq_lite::BroadcastProducer;
+use moq_lite::broadcast::Producer as BroadcastProducer;
 use moq_media::{
     audio_backend::AudioBackend,
     publish::{PublishCaptureController, PublishOpts, PublishUpdateError},

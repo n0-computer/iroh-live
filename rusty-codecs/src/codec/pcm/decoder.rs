@@ -61,8 +61,10 @@ impl AudioDecoder for PcmAudioDecoder {
 
         // Deserialize little-endian f32 samples.
         let pcm: Vec<f32> = payload
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect();
 
         // Resample if needed.
@@ -121,7 +123,7 @@ fn convert_channels_into(samples: &[f32], from_ch: u32, to_ch: u32, out: &mut Ve
             }
         }
         (2, 1) => {
-            for pair in samples.chunks_exact(2) {
+            for pair in samples.as_chunks::<2>().0 {
                 out.push((pair[0] + pair[1]) * 0.5);
             }
         }
@@ -246,7 +248,7 @@ mod tests {
             .unwrap();
         let samples = dec.pop_samples().unwrap().unwrap();
         assert_eq!(samples.len(), 960 * 2);
-        for pair in samples.chunks_exact(2) {
+        for pair in samples.as_chunks::<2>().0 {
             assert_eq!(
                 pair[0], pair[1],
                 "stereo pair should be equal for mono upmix"

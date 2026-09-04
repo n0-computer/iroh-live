@@ -566,7 +566,7 @@ fn buffer_to_frame(
     if spa_format == SpaVideoFormat::BGRx.as_raw() {
         // BGRx → BGRA with A=255.
         let mut buf = copy_rows(data, w, h, s, 4);
-        for pixel in buf.chunks_exact_mut(4) {
+        for pixel in buf.as_chunks_mut::<4>().0 {
             pixel[3] = 255;
         }
         return Some(VideoFrame::new_packed(
@@ -590,7 +590,7 @@ fn buffer_to_frame(
 
     if spa_format == SpaVideoFormat::RGBx.as_raw() {
         let mut packed = copy_rows(data, w, h, s, 4);
-        for pixel in packed.chunks_exact_mut(4) {
+        for pixel in packed.as_chunks_mut::<4>().0 {
             pixel[3] = 255;
         }
         return Some(VideoFrame::new_rgba(

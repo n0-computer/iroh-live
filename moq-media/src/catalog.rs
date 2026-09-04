@@ -26,12 +26,28 @@ pub struct IrohLiveExt {
 
 impl CatalogExt for IrohLiveExt {}
 
+/// Catalog reference to a chat track: the name to subscribe to, and the
+/// priority to subscribe at.
+///
+/// moq-lite 0.1's `Track` filled this role, carrying `{ name, priority }` and
+/// deriving serde. 0.2 splits the two apart — the name is an argument to
+/// `create_track`, and `track::Info` holds the rest with no name and no serde —
+/// so the serialized shape lives here now. The JSON is unchanged, which matters:
+/// `IrohLiveExt` is flattened into the root catalog, and the browser client
+/// validates this section against an object schema whether or not it subscribes.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatTrack {
+    pub name: String,
+    pub priority: u8,
+}
+
 #[serde_with::skip_serializing_none]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Chat {
-    pub message: Option<moq_lite::Track>,
-    pub typing: Option<moq_lite::Track>,
+    pub message: Option<ChatTrack>,
+    pub typing: Option<ChatTrack>,
 }
 
 #[serde_with::skip_serializing_none]
@@ -52,7 +68,7 @@ mod tests {
     fn ext_flattens_into_catalog() {
         let mut catalog = Catalog::default();
         catalog.ext.chat = Some(Chat {
-            message: Some(moq_lite::Track {
+            message: Some(ChatTrack {
                 name: "chat".to_string(),
                 priority: 10,
             }),

@@ -8,7 +8,7 @@
 
 ## Transport layer
 
-iroh-live uses [moq-lite](https://github.com/kixelated/moq), a Rust implementation of Media over QUIC, for its wire protocol. moq-lite carries media as named broadcasts, each containing one or more tracks. The connection is established over iroh's QUIC transport with the ALPN `moq-lite-03`.
+iroh-live uses [moq-lite](https://github.com/kixelated/moq), a Rust implementation of Media over QUIC, for its wire protocol. moq-lite carries media as named broadcasts, each containing one or more tracks. The connection is established over iroh's QUIC transport with the ALPN `moq-lite-04`.
 
 The `iroh-moq` crate wraps moq-lite with iroh endpoint management: it handles connection setup, protocol negotiation, and session lifecycle. Application code interacts with `MoqSession`, which exposes publish and subscribe operations on named broadcasts.
 
@@ -49,7 +49,7 @@ The `PacketSource` and `PacketSink` traits abstract over the transport, allowing
 
 A typical publish-subscribe flow:
 
-1. The publisher creates an iroh endpoint and starts accepting connections with the `moq-lite-03` ALPN.
+1. The publisher creates an iroh endpoint and starts accepting connections with the `moq-lite-04` ALPN.
 2. The publisher creates a `LocalBroadcast`, which produces a moq-lite `BroadcastProducer` with a catalog and media tracks.
 3. A subscriber connects to the publisher's endpoint address, negotiates a `MoqSession`, and subscribes to the broadcast by name.
 4. The subscriber receives the catalog, selects tracks, and begins consuming groups from each track.

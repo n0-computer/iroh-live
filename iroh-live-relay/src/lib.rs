@@ -4,11 +4,7 @@
 //! connections. Adding auth is straightforward since MoQ supports token-based
 //! authentication.
 
-use std::{
-    net::SocketAddr,
-    path::PathBuf,
-    sync::{Arc, RwLock},
-};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use axum::{extract::State, response::IntoResponse, routing::get};
 use clap::Args;
@@ -46,13 +42,13 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     let mut server_config = moq_native::ServerConfig::default();
     server_config.bind = Some(config.bind.to_string());
     server_config.backend = Some(moq_native::QuicBackend::Noq);
-    server_config.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
+    server_config.quic.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
     // Self-signed TLS for dev mode. ACME/Let's Encrypt support is planned
     // but not yet implemented (see plans/relay-browser.md).
     server_config.tls.generate = vec!["localhost".to_string()];
 
     let mut client_config = moq_native::ClientConfig::default();
-    client_config.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
+    client_config.quic.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
 
     let iroh_secret = relay.iroh_secret_key()?;
     // Register the MoQ ALPNs so the endpoint accepts iroh-native MoQ clients
@@ -75,17 +71,21 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
         .bind()
         .await?;
 
+    // Cloned before `init` consumes the config: the auth client reuses the
+    // cluster client's TLS for outbound HTTP.
+    let client_tls = client_config.tls.clone();
     let server = server_config.init()?;
     let client = client_config.init()?;
     let (mut server, client) = (
-        server.with_iroh(Some(iroh_endpoint.clone())),
-        client.with_iroh(Some(iroh_endpoint.clone())),
+        server.with_iroh(iroh_endpoint.clone()),
+        client.with_iroh(iroh_endpoint.clone()),
     );
 
     tracing::info!(endpoint_id = %iroh_endpoint.id(), "iroh endpoint bound");
     println!("iroh endpoint: {}", iroh_endpoint.id());
 
-    let tls_info = server.tls_info();
+    // Hold the handle rather than the values: it tracks certificate hot reloads.
+    let certificates = server.certificates();
 
     // TODO: Implement auth (free for all atm)
     let mut auth_config = AuthConfig::default();
@@ -95,9 +95,9 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
         publish: prefixes,
         api: None,
     }));
-    let auth = auth_config.init().await?;
+    let auth = auth_config.init(&client_tls).await?;
 
-    let cluster = Cluster::new(ClusterConfig::default()).with_client(client);
+    let cluster = Cluster::new(ClusterConfig::default())?.with_client(client);
     let cluster_handle = cluster.clone();
     tokio::spawn(async move {
         cluster_handle.run().await.expect("cluster failed");
@@ -109,9 +109,7 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
         Some(Arc::new(pull::PullState::new(pull_live, cluster.clone())))
     };
 
-    let http_state = Arc::new(HttpState {
-        tls_info: tls_info.clone(),
-    });
+    let http_state = Arc::new(HttpState { certificates });
 
     let quic_addr = server.local_addr()?;
     let quic_port = quic_addr.port();
@@ -154,7 +152,7 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     let mut conn_id = 0u64;
     while let Some(request) = server.accept().await {
         let transport = request.transport();
-        debug!(conn_id, transport, "accepted connection");
+        debug!(conn_id, ?transport, "accepted connection");
 
         let ticket = pull_state.as_ref().and_then(|_| {
             let name = extract_name_from_url(&request)?;
@@ -163,7 +161,7 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
             debug!("parsed: {parsed:?}");
             parsed.ok()
         });
-        debug!(conn_id, transport, ?ticket, "parsed ticket");
+        debug!(conn_id, ?transport, ?ticket, "parsed ticket");
 
         let pull_clone = pull_state.clone();
         let conn = Connection {
@@ -230,7 +228,7 @@ impl RelayServer {
 }
 
 struct HttpState {
-    tls_info: Arc<RwLock<moq_native::tls::Info>>,
+    certificates: moq_native::tls::Certificates,
 }
 
 fn extract_name_from_url(request: &moq_native::Request) -> Option<String> {
@@ -244,8 +242,12 @@ fn extract_name_from_url(request: &moq_native::Request) -> Option<String> {
 }
 
 async fn serve_fingerprint(State(state): State<Arc<HttpState>>) -> impl IntoResponse {
-    let info = state.tls_info.read().expect("tls_info lock poisoned");
-    info.fingerprints.first().cloned().unwrap_or_default()
+    state
+        .certificates
+        .fingerprints()
+        .first()
+        .cloned()
+        .unwrap_or_default()
 }
 
 async fn serve_index() -> impl IntoResponse {

@@ -91,7 +91,9 @@ pub(crate) async fn cmd_publish(opts: PublishOpts) -> n0_error::Result {
     // --- relay (optional) ---
     if let Some(relay_id) = opts.relay {
         let session = live.transport().connect(relay_id).await?;
-        session.publish(&opts.name, broadcast.producer().consume());
+        session
+            .publish(&opts.name, broadcast.producer().consume())
+            .map_err(|err| n0_error::anyerr!("failed to publish to relay: {err:#}"))?;
         tracing::info!(%relay_id, "published to relay");
     }
 

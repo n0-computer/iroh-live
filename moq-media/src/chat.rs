@@ -11,7 +11,9 @@
 use std::time::Instant;
 
 use bytes::Bytes;
-use moq_lite::{Track, TrackConsumer, TrackProducer};
+use moq_lite::track::{Producer as TrackProducer, Subscriber};
+
+use crate::catalog::ChatTrack;
 use tracing::{debug, warn};
 
 /// Default track name for chat messages in the hang catalog.
@@ -21,9 +23,9 @@ pub const CHAT_TRACK_NAME: &str = "chat";
 /// but higher than catalog (100).
 pub const CHAT_PRIORITY: u8 = 10;
 
-/// Returns the [`Track`] descriptor for the chat message track.
-pub fn chat_track() -> Track {
-    Track {
+/// Returns the catalog descriptor for the chat message track.
+pub fn chat_track() -> ChatTrack {
+    ChatTrack {
         name: CHAT_TRACK_NAME.to_string(),
         priority: CHAT_PRIORITY,
     }
@@ -63,8 +65,9 @@ impl ChatPublisher {
         if text.is_empty() {
             return Ok(());
         }
+        // Chat has no media timeline; every message is its own group.
         self.track
-            .write_frame(Bytes::from(text))
+            .write_frame(moq_lite::Timestamp::ZERO, Bytes::from(text))
             .map_err(|e| anyhow::anyhow!("chat send failed: {e}"))?;
         Ok(())
     }
@@ -77,13 +80,13 @@ impl ChatPublisher {
 #[derive(derive_more::Debug)]
 pub struct ChatSubscriber {
     #[debug(skip)]
-    track: TrackConsumer,
+    subscriber: Subscriber,
 }
 
 impl ChatSubscriber {
-    /// Creates a new chat subscriber from a track consumer.
-    pub fn new(track: TrackConsumer) -> Self {
-        Self { track }
+    /// Creates a new chat subscriber from an established track subscription.
+    pub fn new(subscriber: Subscriber) -> Self {
+        Self { subscriber }
     }
 
     /// Waits for the next chat message.
@@ -91,7 +94,7 @@ impl ChatSubscriber {
     /// Returns `None` when the track ends (peer left or broadcast closed).
     pub async fn recv(&mut self) -> Option<ChatMessage> {
         loop {
-            let group = match self.track.next_group().await {
+            let group = match self.subscriber.next_group().await {
                 Ok(Some(g)) => g,
                 Ok(None) => {
                     debug!("chat track ended");
@@ -105,7 +108,7 @@ impl ChatSubscriber {
 
             let mut consumer = group;
             match consumer.read_frame().await {
-                Ok(Some(data)) => match String::from_utf8(data.to_vec()) {
+                Ok(Some(data)) => match String::from_utf8(data.payload.to_vec()) {
                     Ok(text) if !text.is_empty() => {
                         return Some(ChatMessage {
                             text,
@@ -135,11 +138,17 @@ mod tests {
     #[tokio::test]
     async fn roundtrip() {
         let track_info = chat_track();
-        let producer = TrackProducer::new(track_info.clone());
-        let consumer = producer.consume();
+        let mut broadcast = moq_lite::broadcast::Info::default().produce();
+        let producer = broadcast
+            .create_track(
+                track_info.name.clone(),
+                moq_lite::track::Info::default().with_priority(track_info.priority),
+            )
+            .unwrap();
+        let subscription = producer.subscribe(None);
 
         let mut publisher = ChatPublisher::new(producer);
-        let mut subscriber = ChatSubscriber::new(consumer);
+        let mut subscriber = ChatSubscriber::new(subscription);
 
         publisher.send("hello").unwrap();
         publisher.send("world").unwrap();
@@ -154,11 +163,17 @@ mod tests {
     #[tokio::test]
     async fn empty_messages_skipped() {
         let track_info = chat_track();
-        let producer = TrackProducer::new(track_info.clone());
-        let consumer = producer.consume();
+        let mut broadcast = moq_lite::broadcast::Info::default().produce();
+        let producer = broadcast
+            .create_track(
+                track_info.name.clone(),
+                moq_lite::track::Info::default().with_priority(track_info.priority),
+            )
+            .unwrap();
+        let subscription = producer.subscribe(None);
 
         let mut publisher = ChatPublisher::new(producer);
-        let mut subscriber = ChatSubscriber::new(consumer);
+        let mut subscriber = ChatSubscriber::new(subscription);
 
         publisher.send("").unwrap();
         publisher.send("after empty").unwrap();
@@ -170,10 +185,16 @@ mod tests {
     #[tokio::test]
     async fn closed_track_returns_none() {
         let track_info = chat_track();
-        let mut producer = TrackProducer::new(track_info.clone());
-        let consumer = producer.consume();
+        let mut broadcast = moq_lite::broadcast::Info::default().produce();
+        let mut producer = broadcast
+            .create_track(
+                track_info.name.clone(),
+                moq_lite::track::Info::default().with_priority(track_info.priority),
+            )
+            .unwrap();
+        let subscription = producer.subscribe(None);
 
-        let mut subscriber = ChatSubscriber::new(consumer);
+        let mut subscriber = ChatSubscriber::new(subscription);
         producer.finish().unwrap();
 
         let result = subscriber.recv().await;

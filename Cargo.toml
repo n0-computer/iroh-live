@@ -16,9 +16,11 @@ members = [
     "demos/opengl",
     "iroh-live-cli",
 ]
-# moq-media-dioxus is a workspace member but excluded from default builds.
-# It pulls ~224 additional deps (blitz-dom, vello, etc.) and is prototype-quality.
-# Build it explicitly with: cargo build -p moq-media-dioxus
+# moq-media-dioxus pulls ~224 additional deps (blitz-dom, vello, etc.) and is
+# prototype-quality, so it is left out of default-members: a bare `cargo build`
+# at the workspace root skips it. Note that `--workspace` overrides this and does
+# build it — CI passes `--workspace`, so it is compiled on every run.
+# Build it on its own with: cargo build -p moq-media-dioxus
 default-members = [
     "iroh-live",
     "iroh-live-relay",
@@ -47,16 +49,16 @@ lto = "thin"
 
 [workspace.dependencies]
 # External
-iroh = { version = "1.0.0", default-features = false, features = ["metrics", "portmapper", "fast-apple-datapath", "tls-aws-lc-rs"] }
+iroh = { version = "1.1.0", default-features = false, features = ["metrics", "portmapper", "fast-apple-datapath", "tls-aws-lc-rs"] }
 iroh-gossip = "0.101.0"
 iroh-tickets = "1.0.0"
 iroh-smol-kv = { version = "0.4.0", default-features = false }
-hang = "0.19.1"
-moq-lite = { package = "moq-net", version = "0.1.11" }
-moq-mux = "0.5.5"
-moq-relay = { version = "0.12.2", default-features = false }
-moq-native = { version = "0.17.1", default-features = false }
-web-transport-iroh = "0.6.0"
+hang = "0.20.6"
+moq-lite = { package = "moq-net", version = "0.2.14" }
+moq-mux = "0.9.9"
+moq-relay = { version = "0.14.12", default-features = false }
+moq-native = { version = "0.19.13", default-features = false }
+web-transport-iroh = "0.7.0"
 
 # In-repo crates
 iroh-live = { path = "iroh-live", default-features = false }

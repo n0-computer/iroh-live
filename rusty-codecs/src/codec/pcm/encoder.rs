@@ -220,8 +220,10 @@ mod tests {
         // Deserialize and compare to original.
         let decoded: Vec<f32> = pkt
             .payload
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect();
         assert_eq!(decoded.len(), sine.len());
         for (i, (&orig, &dec)) in sine.iter().zip(decoded.iter()).enumerate() {

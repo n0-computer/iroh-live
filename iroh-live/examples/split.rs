@@ -554,7 +554,8 @@ impl SubscribeView {
             ..Default::default()
         };
         let opts = moq_media::subscribe::VideoOptions::default().playback(decode_config);
-        match self.broadcast.video_with(opts) {
+        let handle = tokio::runtime::Handle::current();
+        match handle.block_on(self.broadcast.video_with(opts)) {
             Ok(track) => {
                 info!(
                     rendition = track.rendition(),
@@ -571,7 +572,6 @@ impl SubscribeView {
 
         // Resubscribe audio. The old AudioTrack is dropped, stopping its
         // decoder thread, before starting a fresh one from the new catalog.
-        let handle = tokio::runtime::Handle::current();
         match handle.block_on(self.broadcast.audio(&self.audio_ctx)) {
             Ok(track) => {
                 info!("subscriber: resubscribed to audio");
@@ -643,10 +643,11 @@ impl SubscribeView {
                                 backend: self.backend,
                                 ..Default::default()
                             };
-                            match self
-                                .broadcast
-                                .video_rendition::<DynamicVideoDecoder>(&decode_config, name)
-                            {
+                            let handle = tokio::runtime::Handle::current();
+                            match handle.block_on(
+                                self.broadcast
+                                    .video_rendition::<DynamicVideoDecoder>(&decode_config, name),
+                            ) {
                                 Ok(track) => {
                                     self.video = Some(self.make_video_view(ctx, track));
                                 }
