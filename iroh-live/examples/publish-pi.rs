@@ -15,11 +15,25 @@
 //! `IROH_SECRET` to keep the same endpoint id, and so the same ticket, across
 //! restarts; the first run logs a value to reuse.
 
+/// The Raspberry Pi camera is reached through `rpicam-vid`, which exists on
+/// Linux and nowhere else, so on any other platform this example is a message
+/// rather than a program. The feature alone is not enough to gate on: a
+/// `--all-features` check on macOS turns `rpicam` on and the module it names
+/// still does not exist there.
+#[cfg(not(all(target_os = "linux", feature = "rpicam")))]
+fn main() {
+    eprintln!("publish-pi runs on Linux with the `rpicam` feature: it drives rpicam-vid");
+    std::process::exit(2);
+}
+
+#[cfg(all(target_os = "linux", feature = "rpicam"))]
 use iroh_live::{Live, media::rpicam, ticket::LiveTicket};
 
 /// The path the camera publishes on. Viewers subscribe to the same one.
+#[cfg(all(target_os = "linux", feature = "rpicam"))]
 const BROADCAST: &str = "pi-cam";
 
+#[cfg(all(target_os = "linux", feature = "rpicam"))]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
