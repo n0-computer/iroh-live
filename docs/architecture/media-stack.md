@@ -121,17 +121,22 @@ More than half of it was already in the moq-vaapi crate: `src/codec/h264/dpb.rs`
 carries cros-codecs' DPB bumping and reference marking, used until now only by
 the encode path.
 
-**The V4L2 codecs came back too, unproven.** The stateful memory-to-memory H.264
-encoder and decoder that drive a Raspberry Pi's VideoCore block, and the
-equivalent on Rockchip, Amlogic, Allwinner, and Exynos, are upstream again as
-`encode/backend/v4l2.rs` and `decode/backend/v4l2.rs`. Both drive one device
-layer, `moq-video`'s `src/v4l2.rs`, which is why they are one feature. The
-`v4l2` feature here forwards it, so `--encoder v4l2` selects the encoder and the
-decoder joins automatic backend selection.
+**The V4L2 codecs came back too, and now run on hardware.** The stateful
+memory-to-memory H.264 encoder and decoder that drive a Raspberry Pi's VideoCore
+block, and the equivalent on Rockchip, Amlogic, Allwinner, and Exynos, are
+upstream again as `encode/backend/v4l2.rs` and `decode/backend/v4l2.rs`. Both
+drive one device layer, `moq-video`'s `src/v4l2.rs`, which is why they are one
+feature. The `v4l2` feature here forwards it, so `--encoder v4l2` selects the
+encoder and the decoder joins automatic backend selection.
 
-Neither backend has been run on real hardware, upstream or here. They are
-reachable and that is the whole claim; the on-device codec test that would settle
-it is still gone. `MOQ_V4L2_ENCODER` and `MOQ_V4L2_DECODER` override the device
+Both halves have been exercised on a Raspberry Pi 4: the encoder at 640x360
+Constrained Baseline with a correct picture, and the decoder as what `--decoder
+auto` picks there. The decoder holds about 690ms of pictures in its own queue,
+measured against a clock drawn into the picture, against 360ms for openh264 on
+the same Pi at a steady 30fps; the hardware path is for sparing the CPU, which a
+Pi Zero needs and a Pi 4 at these sizes does not, so `--decoder openh264` is the
+choice on a Pi 4 when delay matters. `plans/v2/latency.md` has the numbers.
+`MOQ_V4L2_ENCODER` and `MOQ_V4L2_DECODER` override the device
 probe when it picks the wrong node.
 
 ## Feature flags

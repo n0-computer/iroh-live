@@ -126,6 +126,21 @@ prerequisites and a Docker path for hosts that cannot install zig.
 Deploy with `scp`, or `cargo make cross-deploy` from `demos/pi-zero`, which
 builds, strips, and copies to `$PI_HOST` (default `livepizero`).
 
+## Watching on a Pi 4: name the decoder
+
+`irl watch` on a Pi 4 picks the V4L2 hardware decoder by default, and that
+costs about 700ms of latency: measured with a clock drawn into the picture,
+the hardware decoder showed a frame around a second after it was drawn and
+openh264 around 360ms, both holding 30fps. The hardware path is for sparing the
+CPU, which a Pi 4 does not need at these sizes. When the delay matters:
+
+```sh
+irl watch <ticket> --fullscreen --decoder openh264
+```
+
+The Pi Zero 2 W is the other way round: it cannot software-decode 720p at
+30fps, so there the hardware decoder is the one that works at all.
+
 ## publish-pi
 
 ```sh

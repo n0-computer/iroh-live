@@ -177,6 +177,12 @@ is the raw sensor: it opens at any geometry you ask for and then never delivers
 a frame, which leaves a black preview and no error. A Pi with a USB webcam is
 the case the guess gets wrong, and `--scan-camera cam` is the answer to it. If
 a camera opens and sends nothing for five seconds, the screen says so and names
+
+The decoder reads through a soft picture. A laptop webcam has to get close to a
+small panel such as the Pi Zero's e-paper to resolve its modules, and close is
+out of focus; the scanner sharpens each frame and asks two decoders in turn,
+which reads through about twice the blur a plain decoder does. Decoding runs on
+its own thread, so the preview keeps moving while it works.
 the flag.
 
 Without `--rendition` the video track adapts: the subscription's transport
@@ -185,7 +191,13 @@ alongside the incumbent so the picture does not go blank. The window's
 rendition combo switches between the two modes at any time.
 
 `--decoder` picks which backend decodes the video, the viewing side of
-`--encoder`. A backend named here is the only one tried, so a machine without it
+`--encoder`. The choice is also a latency choice on a Raspberry Pi 4: measured
+against a clock drawn into the picture, `--decoder v4l2`, which `auto` picks
+there, showed a frame about a second after it was drawn, and `--decoder
+openh264` about 360ms, both at a steady 30fps. The hardware decoder holds
+roughly 700ms of pictures in its own queue. It exists to spare the CPU, which a
+Pi Zero needs and a Pi 4 at 720p does not, so on a Pi 4 name `openh264` when
+the delay matters. A backend named here is the only one tried, so a machine without it
 fails rather than quietly falling back to software, which is what makes the flag
 worth having when a driver is the thing under suspicion. The window's decoder
 combo changes it mid-playback: the replacement opens alongside the incumbent
