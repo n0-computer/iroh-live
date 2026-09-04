@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Kept in step with `Surface` in `ui/Theme.kt`. -->
+    <color name="surface">#FF101014</color>
+</resources>

@@ -1,39 +1,45 @@
-//! Media pipelines for capture, encode, decode, publish, and subscribe.
+//! Publish and subscribe plumbing over `moq-video` and `moq-audio`.
 //!
-//! This crate has no iroh dependency — it works with any transport that
-//! implements [`transport::PacketSource`] and [`transport::PacketSink`].
-//! The [`publish`] module handles encoding and writing, the [`subscribe`]
-//! module handles reading and decoding, and [`pipeline`] orchestrates
-//! encoder/decoder threads.
+//! The media itself is upstream: `moq_video` captures, encodes, decodes, and
+//! renders; `moq_audio` does the same for sound and owns the speaker. What
+//! lives here is the layer iroh-live needs on top and moq has no counterpart
+//! for:
+//!
+//! - [`publish`] fans one camera out to a simulcast ladder, because an upstream
+//!   producer publishes one rendition and owns its device.
+//! - [`subscribe`] chooses among those renditions as the downlink moves
+//!   ([`adaptive`]), and keeps audio and video aligned across two independent
+//!   decode paths ([`sync`], [`playout`]).
+//! - [`catalog`] extends hang's catalog with the chat and identity sections
+//!   iroh-live publishes.
+//! - [`stats`] is the client-side instrumentation a UI draws.
+//!
+//! Nothing here depends on iroh: a broadcast arrives as a
+//! [`moq_net::broadcast::Producer`] or `Consumer`, whatever carried it.
 
-#[cfg(any_video_codec)]
 pub mod adaptive;
-pub mod audio_backend;
-pub mod audio_file_source;
-mod audio_file_symphonia;
+pub mod audio_file;
 pub mod catalog;
-pub mod chat;
 pub mod frame_channel;
+pub mod local_task;
 pub mod net;
-pub mod pipeline;
+#[cfg(feature = "playback")]
+pub mod playback;
 pub mod playout;
-mod processing;
 pub mod publish;
-pub mod source_spec;
+#[cfg(all(target_os = "linux", feature = "rpicam"))]
+pub mod rpicam;
 pub mod stats;
 pub mod subscribe;
 pub mod sync;
-#[cfg(any(test, feature = "test-util"))]
-pub mod test_util;
-pub mod transport;
-mod util;
+#[cfg(any(test, feature = "test-source"))]
+pub mod test_source;
 
-pub(crate) type OrderedConsumer = moq_mux::container::Consumer<moq_mux::catalog::hang::Container>;
-
-pub use audio_backend::{AudioBackend, AudioBackendOpts, AudioDevice};
-// Re-export from rusty-capture
-#[cfg(any(feature = "capture-camera", feature = "capture-screen"))]
-pub use rusty_capture as capture;
-#[cfg(feature = "wgpu")]
-pub use rusty_codecs::render;
-pub use rusty_codecs::{codec, config, format, test_sources, traits};
+/// The upstream audio stack: capture, encode, decode, playback, and echo
+/// cancellation.
+pub use moq_audio as audio;
+/// The upstream video stack: capture, encode, decode, render, and the [`Frame`]
+/// vocabulary every one of them speaks.
+///
+/// [`Frame`]: moq_video::Frame
+pub use moq_video as video;

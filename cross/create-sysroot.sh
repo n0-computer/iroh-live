@@ -212,5 +212,5 @@ fi
 
 echo ""
 echo "Next steps:"
-echo "  cargo make cross-build -- -p iroh-live-cli --release"
-echo "  cargo make cross-build -- -p pi-zero-demo --release --features raspberry-pi"
+echo "  cargo make cross-build-aarch64 -- -p iroh-live-cli --release"
+echo "  cargo make cross-build-aarch64 -- -p pi-zero-demo --release"

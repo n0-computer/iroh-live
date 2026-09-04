@@ -1,487 +1,430 @@
-//! `irl record` — subscribe to a remote broadcast and write encoded packets to file.
+//! `irl record`: subscribe to a remote broadcast and write it to a file.
 //!
-//! Unlike `play`, this command runs headless (no GUI, no decoding). It captures
-//! raw encoded packets from the transport layer and writes them directly to disk,
-//! avoiding the decode-then-re-encode overhead.
-//!
-//! Current format: `raw` — writes separate files per track. Video gets an
-//! extension matching the codec (.h264, .av1), audio gets .opus. The H.264
-//! output uses Annex B framing (start codes), so it is directly playable with
-//! ffplay/mpv. Audio packets are written with a 4-byte big-endian length
-//! prefix so individual Opus frames can be recovered on playback.
+//! Recording is a remux rather than a transcode: `moq_mux`'s container
+//! exporter reads encoded frames off the wire and writes them into fragmented
+//! MP4 or Matroska with no decoder anywhere in the path. The exporter also
+//! builds the container's decoder configuration from the catalog, turning an
+//! `avc3` track with inline parameter sets into the `avc1` shape a player
+//! expects, so nothing here has to understand H.264 framing.
 
 use std::{
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    future::Future,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
-use bytes::Buf;
-use hang::catalog::{AudioCodec, VideoCodec, VideoConfig};
-use moq_media::{codec::h264::annexb, format::Quality, transport::PacketSource};
-use tokio::io::AsyncWriteExt;
-use tracing::{debug, info, warn};
+use bytes::Bytes;
+use iroh_live::{Live, media::subscribe::RemoteBroadcast, moq::MoqSession, ticket::LiveTicket};
+use moq_mux::{
+    catalog::{CatalogFormat, Stream as _},
+    container::{fmp4, mkv},
+    select,
+};
+use n0_error::{Result, StdResultExt, anyerr};
+use tokio::io::{AsyncWriteExt, BufWriter};
+use tracing::{info, warn};
 
-use crate::{args::RecordArgs, transport::setup_live};
+use crate::{
+    args::{RecordArgs, RecordFormat},
+    transport,
+};
 
-/// Entry point for the `irl record` command.
-pub fn run(args: RecordArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
-    let ticket = args.ticket()?;
-    let output = args.output.clone();
+/// How often the progress line is printed while a recording runs.
+const REPORT_INTERVAL: Duration = Duration::from_secs(2);
 
-    rt.block_on(async {
-        println!("connecting to {ticket} ...");
-        let live = setup_live(false).await?;
-        let sub = live
-            .subscribe(ticket.endpoint, &ticket.broadcast_name)
-            .await?;
-        info!("session established");
-
-        let broadcast = sub.broadcast().clone();
-        let catalog = broadcast.catalog();
-        println!(
-            "catalog: {} video renditions, {} audio renditions",
-            catalog.video.renditions.len(),
-            catalog.audio.renditions.len()
-        );
-
-        // Pick best-quality video and audio renditions.
-        let video_name = catalog.select_video_rendition(Quality::Highest).ok();
-        let audio_name = catalog.select_audio_rendition(Quality::Highest).ok();
-
-        if video_name.is_none() && audio_name.is_none() {
-            anyhow::bail!("broadcast has no video or audio renditions to record");
-        }
-
-        // Shared progress counters.
-        let video_bytes = Arc::new(AtomicU64::new(0));
-        let audio_bytes = Arc::new(AtomicU64::new(0));
-        let video_frames = Arc::new(AtomicU64::new(0));
-        let audio_frames = Arc::new(AtomicU64::new(0));
-
-        // Track output paths for the post-recording hint.
-        let mut video_path: Option<PathBuf> = None;
-        let mut audio_path: Option<PathBuf> = None;
-
-        // Spawn video recording task.
-        let video_task = if let Some(ref name) = video_name {
-            let (source, config) = broadcast.raw_video_track(name)?;
-            let ext = video_codec_extension(&config.codec);
-            let path = output.with_extension(ext);
-            println!("video: {name} ({}) -> {}", config.codec, path.display());
-            video_path = Some(path.clone());
-            let vb = video_bytes.clone();
-            let vf = video_frames.clone();
-            let h264_state = H264AnnexBState::from_config(&config);
-            Some(tokio::spawn(async move {
-                record_video_track(source, &path, vb, vf, h264_state).await
-            }))
-        } else {
-            println!("no video renditions, skipping video");
-            None
-        };
-
-        // Spawn audio recording task.
-        let audio_task = if let Some(ref name) = audio_name {
-            let (source, config) = broadcast.raw_audio_track(name)?;
-            let ext = audio_codec_extension(&config.codec);
-            let path = output.with_extension(ext);
-            println!("audio: {name} ({}) -> {}", config.codec, path.display());
-            audio_path = Some(path.clone());
-            let ab = audio_bytes.clone();
-            let af = audio_frames.clone();
-            Some(tokio::spawn(async move {
-                record_raw_track(source, &path, ab, af).await
-            }))
-        } else {
-            println!("no audio renditions, skipping audio");
-            None
-        };
-
-        // Progress reporting + Ctrl-C handling.
-        let shutdown = broadcast.shutdown_token();
-        let progress_shutdown = shutdown.clone();
-        let pvb = video_bytes.clone();
-        let pab = audio_bytes.clone();
-        let pvf = video_frames.clone();
-        let paf = audio_frames.clone();
-
-        let progress_task = tokio::spawn(async move {
-            let start = Instant::now();
-            let mut interval = tokio::time::interval(Duration::from_secs(2));
-            interval.tick().await; // skip immediate tick
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        let elapsed = start.elapsed();
-                        let vb = pvb.load(Ordering::Relaxed);
-                        let ab = pab.load(Ordering::Relaxed);
-                        let vf = pvf.load(Ordering::Relaxed);
-                        let af = paf.load(Ordering::Relaxed);
-                        println!(
-                            "[{:.1}s] video: {} frames ({}) | audio: {} frames ({})",
-                            elapsed.as_secs_f64(),
-                            vf,
-                            format_bytes(vb),
-                            af,
-                            format_bytes(ab),
-                        );
-                    }
-                    _ = progress_shutdown.cancelled() => break,
-                }
-            }
-        });
-
-        // Wait for Ctrl-C to stop recording.
-        println!("recording... press Ctrl+C to stop");
-        tokio::signal::ctrl_c().await?;
-        println!("\nstopping...");
-
-        // Shut down the broadcast (closes packet sources).
-        broadcast.shutdown();
-
-        // Wait for recording tasks to finish.
-        if let Some(task) = video_task
-            && let Err(e) = task.await?
-        {
-            warn!("video recording ended with error: {e:#}");
-        }
-        if let Some(task) = audio_task
-            && let Err(e) = task.await?
-        {
-            warn!("audio recording ended with error: {e:#}");
-        }
-
-        progress_task.abort();
-
-        // Final summary.
-        let vb = video_bytes.load(Ordering::Relaxed);
-        let ab = audio_bytes.load(Ordering::Relaxed);
-        let vf = video_frames.load(Ordering::Relaxed);
-        let af = audio_frames.load(Ordering::Relaxed);
-        println!(
-            "done: video {} frames ({}), audio {} frames ({})",
-            vf,
-            format_bytes(vb),
-            af,
-            format_bytes(ab),
-        );
-
-        print_remux_hint(&video_path, &audio_path, &output);
-
-        sub.session().close(0, b"bye");
-        live.shutdown().await;
-        anyhow::Ok(())
-    })?;
-    Ok(())
+/// Runs the `record` command.
+pub fn run(args: RecordArgs, rt: &tokio::runtime::Runtime) -> Result {
+    rt.block_on(record(args))
 }
 
-// ---------------------------------------------------------------------------
-// H.264 AVCC-to-Annex-B conversion
-// ---------------------------------------------------------------------------
+/// Connects, records until the broadcast ends or the user interrupts, and
+/// closes the session.
+async fn record(args: RecordArgs) -> Result {
+    let ticket = args.remote.ticket()?;
+    let options = options(&args)?;
 
-/// Holds Annex B SPS/PPS extracted from the avcC description, if the source
-/// uses non-inline parameter sets (avc1). For inline sources (avc3) or
-/// non-H.264 codecs this is `None` and packets pass through unmodified.
-pub(crate) struct H264AnnexBState {
-    /// Annex B SPS/PPS to prepend before each keyframe. `None` for inline
-    /// (avc3) sources where SPS/PPS appear in the bitstream itself.
-    sps_pps_annex_b: Option<Vec<u8>>,
+    let live = transport::setup_live(false).await?;
+    let result = record_on(&live, &ticket, &options).await;
+    live.shutdown().await;
+    result
 }
 
-impl H264AnnexBState {
-    /// Builds the state from a catalog [`VideoConfig`]. Returns `None` when
-    /// the codec is not H.264 (meaning no conversion is needed).
-    pub(crate) fn from_config(config: &VideoConfig) -> Option<Self> {
-        let VideoCodec::H264(ref h264) = config.codec else {
-            return None;
-        };
-
-        // avc1: SPS/PPS live in the description (avcC record).
-        // avc3: SPS/PPS are inline in keyframes; we still need to convert
-        //       length-prefixed NALUs to Annex B start codes.
-        let sps_pps_annex_b = if !h264.inline {
-            config
-                .description
-                .as_ref()
-                .and_then(|desc| annexb::avcc_to_annex_b(desc))
-        } else {
-            None
-        };
-
-        if !h264.inline && sps_pps_annex_b.is_none() {
-            warn!(
-                "H.264 avc1 source has no description — SPS/PPS will be missing from output; \
-                 players may fail to decode"
-            );
-        }
-
-        Some(Self { sps_pps_annex_b })
-    }
-
-    /// Converts a packet payload from length-prefixed NALUs to Annex B.
-    /// For keyframes with avc1, prepends the SPS/PPS.
-    fn convert(&self, payload: &[u8], is_keyframe: bool) -> Vec<u8> {
-        let annex_b = annexb::length_prefixed_to_annex_b(payload);
-
-        if is_keyframe && let Some(ref sps_pps) = self.sps_pps_annex_b {
-            let mut out = Vec::with_capacity(sps_pps.len() + annex_b.len());
-            out.extend_from_slice(sps_pps);
-            out.extend_from_slice(&annex_b);
-            return out;
-        }
-
-        annex_b
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Track recording
-// ---------------------------------------------------------------------------
-
-/// Records a video track, converting H.264 AVCC payloads to Annex B when needed.
+/// Records one broadcast over `live`, which the caller closes either way.
 ///
-/// Non-H.264 codecs pass through without conversion.
-pub(crate) async fn record_video_track(
-    mut source: impl PacketSource,
-    path: &PathBuf,
-    bytes_written: Arc<AtomicU64>,
-    frames_written: Arc<AtomicU64>,
-    h264_state: Option<H264AnnexBState>,
-) -> anyhow::Result<()> {
-    let file = tokio::fs::File::create(path).await?;
-    let mut writer = tokio::io::BufWriter::new(file);
+/// # Errors
+///
+/// Fails if the broadcast cannot be subscribed to, carries nothing to record,
+/// or the file cannot be written.
+async fn record_on(live: &Live, ticket: &LiveTicket, options: &RecordOptions) -> Result {
+    let sub = transport::subscribe(live, ticket).await?;
 
-    if h264_state.is_some() {
-        debug!(path = %path.display(), "recording H.264 with AVCC-to-Annex-B conversion");
-    }
-
-    info!(path = %path.display(), "recording started");
-
-    loop {
-        match source.read().await {
-            Ok(Some(packet)) => {
-                let written = if let Some(ref state) = h264_state {
-                    // Collect the scatter-gather payload into contiguous bytes
-                    // so we can parse length-prefixed NALUs.
-                    let mut payload = packet.payload;
-                    let contiguous = payload.copy_to_bytes(payload.remaining());
-                    let converted = state.convert(&contiguous, packet.is_keyframe);
-                    let len = converted.len() as u64;
-                    writer.write_all(&converted).await?;
-                    len
-                } else {
-                    let mut written = 0u64;
-                    for chunk in &packet.payload {
-                        writer.write_all(chunk).await?;
-                        written += chunk.len() as u64;
-                    }
-                    written
-                };
-                bytes_written.fetch_add(written, Ordering::Relaxed);
-                frames_written.fetch_add(1, Ordering::Relaxed);
-            }
-            Ok(None) => {
-                info!(path = %path.display(), "track ended");
-                break;
-            }
-            Err(e) => {
-                warn!(path = %path.display(), err = %e, "read error, stopping track");
-                break;
-            }
-        }
-    }
-
-    writer.flush().await?;
-    info!(
-        path = %path.display(),
-        frames = frames_written.load(Ordering::Relaxed),
-        bytes = bytes_written.load(Ordering::Relaxed),
-        "recording finished"
+    let catalog = sub.broadcast().catalog();
+    println!(
+        "catalog: {} video, {} audio renditions",
+        catalog.video().len(),
+        catalog.audio().len()
     );
+    if catalog.video().is_empty() && catalog.audio().is_empty() {
+        return Err(anyerr!(
+            "the broadcast carries no video and no audio, so there is nothing \
+             to record"
+        ));
+    }
+
+    let recorder = Recorder::open(sub.session(), sub.broadcast(), options).await?;
+    match options.duration {
+        Some(duration) => println!("recording for {}s ...", duration.as_secs()),
+        None => println!("recording, press Ctrl+C to stop"),
+    }
+    let written = recorder.run(stop_after(options.duration)).await?;
+    println!(
+        "wrote {} to {}",
+        format_bytes(written),
+        options.path.display()
+    );
+
+    sub.broadcast().shutdown();
+    sub.session().close(moq_net::Error::Cancel);
     Ok(())
 }
 
-/// Records a non-video track by writing raw payloads directly.
-pub(crate) async fn record_raw_track(
-    mut source: impl PacketSource,
-    path: &PathBuf,
-    bytes_written: Arc<AtomicU64>,
-    frames_written: Arc<AtomicU64>,
-) -> anyhow::Result<()> {
-    let file = tokio::fs::File::create(path).await?;
-    let mut writer = tokio::io::BufWriter::new(file);
-    info!(path = %path.display(), "recording started");
+/// Where a recording goes, and which of the broadcast's tracks it keeps.
+#[derive(Debug, Clone)]
+pub struct RecordOptions {
+    /// The file to write.
+    pub path: PathBuf,
+    /// The container to write it in.
+    pub format: RecordFormat,
+    /// The one video rendition to keep, or every one the catalog offers.
+    pub rendition: Option<String>,
+    /// How long a stalled group is waited for before the exporter skips it.
+    pub latency: Duration,
+    /// How long to record for, or until interrupted.
+    pub duration: Option<Duration>,
+}
 
-    loop {
-        match source.read().await {
-            Ok(Some(packet)) => {
-                let mut written = 0u64;
-                for chunk in &packet.payload {
-                    writer.write_all(chunk).await?;
-                    written += chunk.len() as u64;
-                }
-                bytes_written.fetch_add(written, Ordering::Relaxed);
-                frames_written.fetch_add(1, Ordering::Relaxed);
+/// How long a stalled group is waited for before the exporter skips it, when
+/// no caller says otherwise. Generous next to what a player allows: a recording
+/// would rather buffer a late group than drop it.
+const DEFAULT_LATENCY: Duration = Duration::from_secs(2);
+
+impl RecordOptions {
+    /// Records `path` in `format`, or in the container `path`'s extension
+    /// names, keeping every rendition until the broadcast ends.
+    ///
+    /// # Errors
+    ///
+    /// Fails if neither `format` nor the extension names a container.
+    pub fn new(path: impl Into<PathBuf>, format: Option<RecordFormat>) -> Result<Self> {
+        let path = path.into();
+        let format = match format {
+            Some(format) => format,
+            None => format_from_extension(&path).ok_or_else(|| unknown_extension(&path))?,
+        };
+        Ok(Self {
+            path,
+            format,
+            rendition: None,
+            latency: DEFAULT_LATENCY,
+            duration: None,
+        })
+    }
+}
+
+/// The catalog stream that drives an exporter: the broadcast's own catalog,
+/// narrowed to the renditions this recording keeps.
+type CatalogStream = moq_mux::catalog::Select<moq_mux::catalog::Consumer>;
+
+/// The container exporter, one variant per [`RecordFormat`].
+///
+/// Both are large enough that clippy objects to an unboxed enum, and both are
+/// built once per recording, so the indirection costs nothing that matters.
+enum Export {
+    Fmp4(Box<fmp4::Export<CatalogStream>>),
+    Mkv(Box<mkv::Export<CatalogStream>>),
+}
+
+impl Export {
+    /// Returns the next container chunk, or `None` once every track has ended.
+    async fn next(&mut self) -> Result<Option<Bytes>> {
+        match self {
+            Self::Fmp4(export) => export.next().await.anyerr(),
+            Self::Mkv(export) => export.next().await.anyerr(),
+        }
+    }
+}
+
+/// A recording that has subscribed to its tracks and opened its output file.
+pub struct Recorder {
+    export: Export,
+    file: BufWriter<tokio::fs::File>,
+    path: PathBuf,
+}
+
+impl std::fmt::Debug for Recorder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Recorder")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Recorder {
+    /// Subscribes to the tracks `options` keeps and creates the output file.
+    ///
+    /// The exporter takes the session's origin rather than the broadcast we
+    /// already hold, because a catalog rendition may name a sibling broadcast
+    /// and only the origin can resolve that reference.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the requested rendition is not in the catalog, if the catalog
+    /// track cannot be subscribed to, or if the output file cannot be created.
+    pub async fn open(
+        session: &MoqSession,
+        broadcast: &RemoteBroadcast,
+        options: &RecordOptions,
+    ) -> Result<Self> {
+        if let Some(name) = &options.rendition {
+            check_rendition(broadcast, name)?;
+        }
+        let source = moq_mux::Source::new(session.announced().clone(), broadcast.name());
+        // A second subscription to the catalog track: `moq_mux` drives its
+        // exporters from a `catalog::Stream`, and `RemoteBroadcast` publishes
+        // its snapshots through an `n0_watcher` instead, which no adapter
+        // bridges. The track carries only the JSON manifest.
+        let catalog =
+            moq_mux::catalog::Consumer::<()>::new(broadcast.consumer(), CatalogFormat::default())
+                .await
+                .anyerr()?
+                .select(selection(options.rendition.as_deref()));
+
+        let export = match options.format {
+            RecordFormat::Fmp4 => Export::Fmp4(Box::new(
+                fmp4::Export::new(source, catalog).with_latency(options.latency),
+            )),
+            RecordFormat::Mkv => Export::Mkv(Box::new(
+                mkv::Export::new(source, catalog).with_latency(options.latency),
+            )),
+        };
+
+        let file = tokio::fs::File::create(&options.path)
+            .await
+            .map_err(|err| anyerr!("failed to create {}: {err}", options.path.display()))?;
+
+        Ok(Self {
+            export,
+            file: BufWriter::new(file),
+            path: options.path.clone(),
+        })
+    }
+
+    /// The file this recording writes.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Writes container chunks until the broadcast ends or `stop` resolves,
+    /// and returns the number of bytes written.
+    ///
+    /// The file is flushed either way, so an interrupted recording is still a
+    /// playable file: fragmented containers are complete at every chunk
+    /// boundary.
+    ///
+    /// # Errors
+    ///
+    /// Fails on an export or a write error, having flushed nothing further.
+    pub async fn run(mut self, stop: impl Future<Output = ()>) -> Result<u64> {
+        info!(path = %self.path.display(), "recording started");
+        let started = Instant::now();
+        let mut reported = started;
+        let mut written = 0u64;
+        let mut stop = std::pin::pin!(stop);
+
+        loop {
+            let chunk = tokio::select! {
+                chunk = self.export.next() => chunk?,
+                () = &mut stop => None,
+            };
+            let Some(chunk) = chunk else { break };
+
+            self.file.write_all(&chunk).await?;
+            written += chunk.len() as u64;
+
+            if reported.elapsed() >= REPORT_INTERVAL {
+                reported = Instant::now();
+                println!(
+                    "[{:.0}s] {}",
+                    started.elapsed().as_secs_f64(),
+                    format_bytes(written)
+                );
             }
-            Ok(None) => {
-                info!(path = %path.display(), "track ended");
-                break;
+        }
+
+        self.file.flush().await?;
+        info!(path = %self.path.display(), bytes = written, "recording finished");
+        Ok(written)
+    }
+}
+
+/// The options `args` describes.
+///
+/// # Errors
+///
+/// Fails if neither `--format` nor `--output`'s extension names a container.
+fn options(args: &RecordArgs) -> Result<RecordOptions> {
+    let mut options = RecordOptions::new(&args.output, args.format)?;
+    options.rendition = args.rendition.clone();
+    options.latency = Duration::from_millis(args.latency);
+    options.duration = args.duration.map(Duration::from_secs);
+    Ok(options)
+}
+
+/// The container `path`'s extension names, if it names one.
+fn format_from_extension(path: &Path) -> Option<RecordFormat> {
+    match path.extension()?.to_str()?.to_lowercase().as_str() {
+        "mp4" | "m4v" | "m4s" => Some(RecordFormat::Fmp4),
+        "mkv" | "webm" => Some(RecordFormat::Mkv),
+        _ => None,
+    }
+}
+
+/// The error for a path whose extension names no container.
+fn unknown_extension(path: &Path) -> n0_error::AnyError {
+    anyerr!(
+        "cannot tell which container {} should be, so pass --format fmp4 or --format mkv; \
+         the extensions recognised here are .mp4, .m4v, .m4s, .mkv, and .webm",
+        path.display()
+    )
+}
+
+/// Checks a requested rendition against what the broadcast offers.
+///
+/// The exporter would otherwise select nothing and write a file with no video
+/// in it, which only shows up when the recording is played back.
+///
+/// # Errors
+///
+/// Fails if the catalog has no video rendition of that name, listing the ones
+/// it does have.
+fn check_rendition(broadcast: &RemoteBroadcast, name: &str) -> Result<()> {
+    let catalog = broadcast.catalog();
+    if catalog.video().contains_key(name) {
+        return Ok(());
+    }
+    let offered: Vec<&str> = catalog.video().keys().map(String::as_str).collect();
+    Err(anyerr!(
+        "the broadcast has no video rendition named '{name}'; it offers {}",
+        match offered.is_empty() {
+            true => "no video at all".to_string(),
+            false => offered.join(", "),
+        }
+    ))
+}
+
+/// Keeps every audio rendition, and either every video rendition or only the
+/// one `rendition` names.
+fn selection(rendition: Option<&str>) -> select::Broadcast {
+    let mut video = select::Video::default();
+    if let Some(name) = rendition {
+        video = video.name(name);
+    }
+    select::Broadcast::default()
+        .video(video)
+        .audio(select::Audio::default())
+}
+
+/// Resolves when the user interrupts, or once `duration` has elapsed.
+async fn stop_after(duration: Option<Duration>) {
+    let deadline = async {
+        match duration {
+            Some(duration) => tokio::time::sleep(duration).await,
+            // Nothing else ends the recording, so wait for the interrupt alone.
+            None => std::future::pending().await,
+        }
+    };
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => {
+            if let Err(err) = result {
+                warn!(error = %err, "cannot listen for Ctrl+C, recording until the broadcast ends");
+                std::future::pending::<()>().await;
             }
-            Err(e) => {
-                warn!(path = %path.display(), err = %e, "read error, stopping track");
-                break;
-            }
         }
-    }
-
-    writer.flush().await?;
-    info!(
-        path = %path.display(),
-        frames = frames_written.load(Ordering::Relaxed),
-        bytes = bytes_written.load(Ordering::Relaxed),
-        "recording finished"
-    );
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Post-recording hints
-// ---------------------------------------------------------------------------
-
-/// Prints ffmpeg commands for remuxing raw recordings into a playable container.
-fn print_remux_hint(
-    video_path: &Option<PathBuf>,
-    audio_path: &Option<PathBuf>,
-    output_base: &std::path::Path,
-) {
-    let mp4_path = output_base.with_extension("mp4");
-    println!();
-
-    match (video_path, audio_path) {
-        (Some(v), Some(a)) => {
-            println!("to mux into a playable mp4:");
-            println!(
-                "  ffmpeg -i {} -i {} -c copy {}",
-                v.display(),
-                a.display(),
-                mp4_path.display()
-            );
-            println!();
-            println!(
-                "the .h264 file is playable directly (ffplay {}).",
-                v.display()
-            );
-            println!("the .opus file uses 4-byte big-endian length-delimited framing.");
-            println!("to extract packets and wrap in ogg, use a script or custom demuxer.");
-        }
-        (Some(v), None) => {
-            println!(
-                "the .h264 file is playable directly (ffplay {}).",
-                v.display()
-            );
-        }
-        (None, Some(_a)) => {
-            println!("the .opus file uses 4-byte big-endian length-delimited framing.");
-            println!("to extract packets and wrap in ogg, use a script or custom demuxer.");
-        }
-        (None, None) => {}
+        () = deadline => {}
     }
 }
 
-// ---------------------------------------------------------------------------
-// Codec → extension mappings
-// ---------------------------------------------------------------------------
-
-/// Maps a video codec to a file extension for raw bitstream output.
-pub(crate) fn video_codec_extension(codec: &VideoCodec) -> &'static str {
-    match codec {
-        VideoCodec::H264(_) => "h264",
-        VideoCodec::H265(_) => "h265",
-        VideoCodec::AV1(_) => "av1",
-        VideoCodec::VP9(_) => "ivf",
-        VideoCodec::VP8 => "ivf",
-        VideoCodec::Unknown(_) | _ => "bin",
-    }
-}
-
-/// Maps an audio codec to a file extension for raw output.
-pub(crate) fn audio_codec_extension(codec: &AudioCodec) -> &'static str {
-    match codec {
-        AudioCodec::Opus => "opus",
-        AudioCodec::AAC(_) => "aac",
-        AudioCodec::Unknown(_) | _ => "bin",
-    }
-}
-
-/// Formats a byte count as a human-readable string.
+/// Formats a byte count for the progress line.
 fn format_bytes(bytes: u64) -> String {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a byte count large enough to lose precision is not a figure anyone reads"
+    )]
+    let scaled = bytes as f64;
     if bytes < 1024 {
         format!("{bytes} B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else if bytes < 1_048_576 {
+        format!("{:.1} KiB", scaled / 1024.0)
     } else {
-        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+        format!("{:.1} MiB", scaled / 1_048_576.0)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args::RemoteArgs;
 
-    /// Builds a minimal avcC record from SPS and PPS for testing.
-    fn build_test_avcc(sps: &[u8], pps: &[u8]) -> Vec<u8> {
-        let mut avcc = vec![
-            1,    // configurationVersion
-            0x42, // profile
-            0xC0, // compat
-            0x1E, // level
-            0xFF, // lengthSizeMinusOne=3 | reserved
-            0xE1, // numSPS=1 | reserved
-        ];
-        avcc.extend_from_slice(&(sps.len() as u16).to_be_bytes());
-        avcc.extend_from_slice(sps);
-        avcc.push(1); // numPPS=1
-        avcc.extend_from_slice(&(pps.len() as u16).to_be_bytes());
-        avcc.extend_from_slice(pps);
-        avcc
+    /// A remote nothing in these tests dials.
+    fn remote_args() -> RemoteArgs {
+        RemoteArgs {
+            ticket: None,
+            endpoint_id: None,
+            broadcast_name: None,
+        }
     }
 
     #[test]
-    fn h264_state_prepends_sps_pps_on_keyframe() {
-        let sps = [0x67, 0x42, 0xC0, 0x1E];
-        let pps = [0x68, 0xCE, 0x38, 0x80];
-        let avcc = build_test_avcc(&sps, &pps);
+    fn extensions_name_containers() {
+        assert_eq!(
+            format_from_extension(Path::new("out.mp4")),
+            Some(RecordFormat::Fmp4)
+        );
+        // The case a shell completion or a Windows path might hand us.
+        assert_eq!(
+            format_from_extension(Path::new("out.MKV")),
+            Some(RecordFormat::Mkv)
+        );
+        assert_eq!(format_from_extension(Path::new("out.avi")), None);
+        assert_eq!(format_from_extension(Path::new("recording")), None);
+    }
 
-        let state = H264AnnexBState {
-            sps_pps_annex_b: annexb::avcc_to_annex_b(&avcc),
+    #[test]
+    fn options_prefer_the_flag_over_the_extension() {
+        let args = RecordArgs {
+            remote: remote_args(),
+            output: PathBuf::from("out.avi"),
+            format: Some(RecordFormat::Mkv),
+            rendition: None,
+            duration: None,
+            latency: 500,
         };
+        let options = options(&args).expect("--format names the container");
+        assert_eq!(options.format, RecordFormat::Mkv);
+        assert_eq!(options.latency, Duration::from_millis(500));
+    }
 
-        // A keyframe payload with one IDR NAL (length-prefixed).
-        let idr = [0x65, 0x88, 0x84];
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&(idr.len() as u32).to_be_bytes());
-        payload.extend_from_slice(&idr);
-
-        let result = state.convert(&payload, true);
-        // Expect: SPS + PPS + IDR, all with Annex B start codes.
-        let expected: Vec<u8> = [
-            &[0, 0, 0, 1][..],
-            &sps,
-            &[0, 0, 0, 1],
-            &pps,
-            &[0, 0, 0, 1],
-            &idr,
-        ]
-        .concat();
-        assert_eq!(result, expected);
-
-        // Non-keyframe should not include SPS/PPS.
-        let result_non_kf = state.convert(&payload, false);
-        let expected_non_kf: Vec<u8> = [&[0, 0, 0, 1][..], &idr].concat();
-        assert_eq!(result_non_kf, expected_non_kf);
+    #[test]
+    fn an_unknown_extension_without_a_flag_is_rejected() {
+        let args = RecordArgs {
+            remote: remote_args(),
+            output: PathBuf::from("out.avi"),
+            format: None,
+            rendition: None,
+            duration: None,
+            latency: 2_000,
+        };
+        let err = options(&args).expect_err("nothing names the container");
+        assert!(err.to_string().contains("--format"), "unexpected: {err}");
     }
 }

@@ -1,91 +1,92 @@
-# Browser Relay
+# Browser relay
 
-| Field | Value |
-|-------|-------|
-| Status | stable |
-| Applies to | iroh-live-relay |
-| Platforms | Linux, macOS (server side); any modern browser (client side) |
+A browser cannot dial an iroh endpoint. WebTransport gives a page a QUIC
+connection, not a QUIC endpoint, so there is no hole punching and no way to
+accept an inbound connection. `iroh-live-relay` sits between the two: it speaks
+WebTransport to browsers and iroh to native peers, and moves broadcasts either
+way.
 
-## Why browsers need a relay
+**It has no authentication.** Every connection is granted publish and subscribe
+on every path. Run it on a machine you control and do not expose it.
 
-Browsers cannot speak iroh's QUIC protocol directly. iroh uses custom ALPNs and endpoint addressing that the browser WebTransport API does not support. The relay server bridges this gap: it accepts WebTransport connections from browsers and connects to iroh publishers on demand, forwarding media streams between the two worlds.
-
-## How the relay works
-
-The `iroh-live-relay` binary runs both an iroh endpoint and a WebTransport/HTTP server. When a browser requests a broadcast by ticket, the relay follows a pull-on-demand model:
-
-1. The browser connects via WebTransport and requests a broadcast by ticket string.
-2. The relay checks whether it already has that broadcast locally (from a previous pull or a direct publisher).
-3. If not, the relay uses its own iroh endpoint to connect to the remote publisher, subscribes to the broadcast, and injects it into the local relay.
-4. The browser receives the stream through the relay's WebTransport frontend.
-
-Multiple browser clients watching the same ticket share a single upstream connection to the publisher. The relay only pulls what someone is watching.
-
-## Running the relay
-
-For local development with self-signed certificates:
+## Running it
 
 ```sh
-cargo run -p iroh-live-relay -- --dev
+cargo run -p iroh-live-relay
 ```
 
-This starts the relay on port 4443 (both QUIC and HTTP), generates a self-signed TLS certificate, and prints the certificate fingerprint for browser trust.
+It binds `[::]:4443` for QUIC and serves HTTP on the same port, generates a
+self-signed certificate at startup, and prints its iroh endpoint id and HTTP
+port. `--bind` and `--http-bind` change the addresses.
 
-To use a custom bind address:
+The iroh secret key is persisted under `IROH_LIVE_RELAY_DATA`, or the platform
+data directory, so the endpoint id survives a restart and a ticket keeps working.
+
+Because the certificate is self-signed, a browser needs to be told to trust it.
+`GET /certificate.sha256` returns the fingerprint for pinning. ACME provisioning
+is not implemented.
+
+## Watching a P2P stream in a browser
+
+Nothing has to be arranged in advance. Publish as usual:
 
 ```sh
-cargo run -p iroh-live-relay -- --dev --bind [::]:8443 --http-bind [::]:8443
+irl publish
 ```
 
-The relay persists its iroh secret key to disk (in `$IROH_LIVE_RELAY_DATA` or the platform data directory) so the endpoint ID stays stable across restarts.
-
-## Configuration
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--dev` | off | Use self-signed certificates, print TLS fingerprint |
-| `--bind` | `[::]:4443` | QUIC/WebTransport bind address |
-| `--http-bind` | `[::]:4443` | HTTP server bind address |
-
-## The built-in web viewer
-
-The relay serves a web viewer at its HTTP root. Open `https://localhost:4443` in a browser to see the landing page, then paste a ticket to watch a stream. You can also link directly:
+Then open the relay in a browser and paste the ticket, or link straight to it:
 
 ```
-https://localhost:4443?name=<TICKET>
+https://localhost:4443/?name=<TICKET>
 ```
 
-Any iroh-live ticket can be watched in the browser this way. The web viewer uses the `@moq/watch` web component with WebCodecs for decoding and rendering.
+The relay parses the name as a `LiveTicket`, dials the endpoint inside it over
+iroh, subscribes, and mirrors that one broadcast into its cluster. A second
+viewer of the same ticket shares the first one's upstream connection, and
+concurrent arrivals coalesce onto one connect rather than racing.
 
-The relay also serves a publish page where you can capture from the browser camera and microphone and publish into the relay. Other iroh-live clients (desktop or mobile) can then subscribe to that broadcast.
+A name that is not a ticket is looked up locally and fails immediately if the
+relay does not already have it.
 
-## HTTP endpoints
+## Publishing through the relay
 
-- `GET /` serves the web viewer landing page.
-- `GET /certificate.sha256` returns the TLS certificate fingerprint (dev mode only).
-- `GET /{path}` serves static files with CORS headers.
+A publisher that subscribers cannot dial directly connects to the relay instead:
 
-## Web client development
+```sh
+irl publish --relay <RELAY_ENDPOINT_ID>
+```
 
-The web assets live in `iroh-live-relay/web/` and are embedded into the relay binary at compile time via `include_dir`. The client is built with SolidJS, TypeScript, and Vite.
+Publishing is node-wide, so the announce follows the connection with nothing
+further to configure. The relay's endpoint id is on its startup line.
 
-To develop the web client with hot reload:
+The relay also serves a publish page, which captures the browser's camera and
+microphone and publishes into the relay. Native clients subscribe to that
+broadcast like any other.
+
+## The web client
+
+`iroh-live-relay/web/` is a solid-js and TypeScript application built with Vite,
+using the `@moq/watch` and `@moq/publish` web components. `include_dir` embeds
+`web/dist` into the binary at compile time, so the relay serves it with no files
+on disk.
 
 ```sh
 cd iroh-live-relay/web
-npm install
-npm run dev    # Vite dev server with hot reload
-npm run build  # bundle for embedding into the relay binary
+npm ci
+npm run dev      # Vite dev server with hot reload
+npm run build    # bundle for embedding
 ```
 
-The web client depends on `@moq/watch` and `@moq/publish` from the [moq](https://github.com/kixelated/moq) project.
+Rebuild the bundle before rebuilding the relay if you change the client.
 
-## End-to-end workflow
+## HTTP endpoints
 
-A typical workflow with the relay:
+`GET /` serves the landing page, `GET /certificate.sha256` the TLS fingerprint,
+and `GET /{path}` any other embedded file. All of them carry permissive CORS
+headers.
 
-1. Start the relay: `cargo run -p iroh-live-relay -- --dev`
-2. Publish from a desktop: `cargo run --release -p iroh-live-cli -- publish`
-3. Open the relay URL in a browser with `?name=<TICKET>` to watch the stream.
+## Tests
 
-The publisher does not need to know about the relay. The relay connects to the publisher on behalf of the browser viewer, using the iroh endpoint address embedded in the ticket.
+`tests/e2e-browser/` is a Playwright suite that builds the relay and the CLI,
+starts both, and watches a stream in Chromium. `cargo make test-e2e` runs it,
+building the prerequisites first.

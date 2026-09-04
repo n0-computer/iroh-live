@@ -13,20 +13,28 @@ crate-type = ["cdylib"]
 
 [target.'cfg(target_os = "android")'.dependencies]
 iroh-live = { workspace = true }
-moq-media = { workspace = true, features = ["h264", "opus", "android"] }
+# The microphone config handed to the audio publisher.
+moq-audio = { workspace = true }
+# `capture` for the microphone source, `playback` for the speaker. Video capture
+# comes from Kotlin's Camera2, not from a device this crate opens.
+# `aec` implies `capture` and `playback`: a handset on speakerphone has to
+# subtract its own output from the microphone or it publishes itself back.
+moq-media = { workspace = true, features = ["aec"] }
 moq-media-android = { workspace = true }
-n0-watcher = "0.6.1"
-rusty-codecs = { workspace = true, features = ["h264", "opus", "hang", "android"] }
+# The broadcast model behind the offline demo pipelines, and `Timestamp`.
+moq-net = { workspace = true }
+# `Frame` / `Surface` / `I420`, the vocabulary the camera and the renderer meet in.
+moq-video = { workspace = true }
 jni = "0.21"
+n0-error = "1"
+# `ANativeWindow_fromSurface`, for handing the Android surface to EGL. The
+# hardware-buffer types come from `moq_video::ndk` instead, so a version bump
+# upstream is a build error here rather than two incompatible `ndk` crates.
 ndk = { version = "0.9", features = ["api-level-26"] }
 ndk-context = "0.1"
 tokio = { version = "1.48.0", features = ["rt-multi-thread", "sync", "macros"] }
-tokio-util = "0.7.17"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
-anyhow = "1.0.100"
-bytes = "1.11.0"
-libc = "0.2"
 
 [lints]
 workspace = true

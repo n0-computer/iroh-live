@@ -1,3 +1,10 @@
+//! The broadcast catalog, and the sections iroh-live adds to it.
+//!
+//! hang's catalog describes the media tracks. iroh-live publishes two more
+//! things alongside them, chat and the publisher's identity, and
+//! [`IrohLiveExt`] is how they ride in the same document. A consumer that only
+//! knows hang's schema ignores them.
+
 use moq_mux::catalog::hang::CatalogExt;
 use serde::{Deserialize, Serialize};
 
@@ -20,27 +27,58 @@ pub type CatalogConsumer = moq_mux::catalog::hang::Consumer<IrohLiveExt>;
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct IrohLiveExt {
+    /// The tracks carrying chat, if the publisher opened any.
     pub chat: Option<Chat>,
+    /// Who is publishing, if they said.
     pub user: Option<User>,
 }
 
 impl CatalogExt for IrohLiveExt {}
 
+/// A reference to a track on the broadcast, as it appears in the catalog.
+///
+/// hang's own catalog entries carry a codec configuration alongside the name;
+/// the iroh-live sections only need to say which track to subscribe to and how
+/// urgently.
+#[serde_with::skip_serializing_none]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TrackRef {
+    /// The track name on the broadcast.
+    pub name: String,
+    /// The publisher's priority for the track, breaking ties between
+    /// subscriptions of equal subscriber priority.
+    pub priority: u8,
+}
+
+/// The chat section: which tracks carry messages and typing indicators.
 #[serde_with::skip_serializing_none]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Chat {
-    pub message: Option<moq_lite::Track>,
-    pub typing: Option<moq_lite::Track>,
+    /// The track carrying chat messages.
+    pub message: Option<TrackRef>,
+    /// The track carrying typing indicators, if the publisher sends any.
+    pub typing: Option<TrackRef>,
 }
 
+/// Who is publishing a broadcast, as they chose to describe themselves.
+///
+/// Every field is optional and none of it is verified: this is what a
+/// subscriber draws next to the picture, not an identity the transport
+/// established. The node id the broadcast arrived on is the authenticated
+/// half, and it lives outside the catalog.
 #[serde_with::skip_serializing_none]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct User {
+    /// An application-defined identifier, stable across sessions.
     pub id: Option<String>,
+    /// The display name.
     pub name: Option<String>,
+    /// A URL for an avatar image.
     pub avatar: Option<String>,
+    /// An accent color, as a CSS color string.
     pub color: Option<String>,
 }
 
@@ -52,7 +90,7 @@ mod tests {
     fn ext_flattens_into_catalog() {
         let mut catalog = Catalog::default();
         catalog.ext.chat = Some(Chat {
-            message: Some(moq_lite::Track {
+            message: Some(TrackRef {
                 name: "chat".to_string(),
                 priority: 10,
             }),
@@ -71,5 +109,48 @@ mod tests {
         let parsed: Catalog = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed.ext.chat, catalog.ext.chat);
         assert_eq!(parsed.ext.user, catalog.ext.user);
+    }
+}
+
+#[cfg(test)]
+mod interop_tests {
+    use super::*;
+
+    /// A catalog as `@moq/hang` publishes it from a browser: an `avc1` track,
+    /// whose codec configuration is out of band, so the `description` carrying
+    /// the avcC record is what makes it decodable at all.
+    ///
+    /// Our extension flattens into the same object, so a bug in how it is
+    /// deserialized shows up as a dropped media field rather than as an error.
+    const BROWSER_CATALOG: &str = r#"{
+        "video": {
+            "renditions": {
+                "360p": {
+                    "codec": "avc1.42e01e",
+                    "description": "0142e01effe1001a6742e01e",
+                    "codedWidth": 640,
+                    "codedHeight": 360,
+                    "bitrate": 1200000,
+                    "framerate": 30
+                }
+            }
+        },
+        "audio": { "renditions": {} }
+    }"#;
+
+    #[test]
+    fn browser_catalog_keeps_its_avcc_description() {
+        let catalog: Catalog =
+            serde_json::from_str(BROWSER_CATALOG).expect("a browser catalog should parse");
+        let video = catalog
+            .video
+            .renditions
+            .get("360p")
+            .expect("the 360p rendition");
+        assert!(
+            video.description.is_some(),
+            "an avc1 track without its description cannot be decoded",
+        );
+        assert_eq!(video.coded_width, Some(640));
     }
 }

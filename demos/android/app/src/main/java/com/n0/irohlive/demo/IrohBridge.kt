@@ -24,24 +24,6 @@ object IrohBridge {
     external fun getVideoDimensions(handle: Long): Long
 
     /**
-     * Returns a raw AHardwareBuffer pointer for the latest decoded frame.
-     *
-     * The buffer has an acquired reference and must be released via
-     * [releaseHardwareBuffer] when the caller is done (after GL import
-     * and rendering).
-     *
-     * Returns 0 if no GPU frame is available.
-     */
-    external fun nextHardwareBuffer(handle: Long): Long
-
-    /**
-     * Releases an AHardwareBuffer previously returned by [nextHardwareBuffer].
-     *
-     * Must be called exactly once per non-zero return from [nextHardwareBuffer].
-     */
-    external fun releaseHardwareBuffer(bufferPtr: Long)
-
-    /**
      * Dials a remote peer using a call ticket string.
      *
      * Sets up camera publishing (720p H.264 HW encoding) and microphone
@@ -53,6 +35,20 @@ object IrohBridge {
      * camera resolution that will be pushed via [pushCameraFrame].
      */
     external fun dial(ticket: String, cameraWidth: Int, cameraHeight: Int): Long
+
+    /**
+     * Publishes this node's side of a call and waits for a peer to dial it.
+     *
+     * Returns immediately with an opaque session handle (non-zero on success,
+     * 0 on failure), so [getTicket] can show a code before any peer exists.
+     * The peer's tracks arrive later; [callConnected] says when.
+     */
+    external fun answer(cameraWidth: Int, cameraHeight: Int): Long
+
+    /**
+     * Whether a call started by [answer] has a peer on it yet.
+     */
+    external fun callConnected(handle: Long): Boolean
 
     /**
      * Pushes a camera frame (RGBA byte array) into the publish pipeline.

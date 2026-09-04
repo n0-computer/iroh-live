@@ -1,0 +1,17 @@
+# Cargo settings for the Android demo. Read only when cargo runs from
+# `demos/android/` or below, so nothing here affects the rest of the workspace.
+
+[env]
+# The x86_64 NDK sysroot header `asm/swab.h` writes its byte swaps as
+# `asm("bswapl %0" ...)`, and plain `asm` is a GNU extension that clang only
+# accepts outside strict ISO mode. `aws-lc-sys` compiles with `-std=c11`, so
+# every C file that reaches `netinet/in.h` fails to parse. Appending `-std=gnu11`
+# to the target CFLAGS puts clang back in GNU mode; the last `-std` on the
+# command line wins. The arm64 header has no inline assembly and needs none of
+# this.
+#
+# `force = true` because cargo-ndk sets this variable itself, and cc-rs takes
+# the first match in its lookup order rather than merging. That means the API
+# level has to be repeated here; keep it in step with `API_LEVEL` in
+# `Makefile.toml`.
+CFLAGS_x86_64-linux-android = { value = "--target=x86_64-linux-android26 -std=gnu11", force = true }

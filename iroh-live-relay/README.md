@@ -7,11 +7,10 @@ Browsers cannot speak iroh's QUIC protocol directly. The relay bridges the gap b
 ## Running
 
 ```sh
-# Development mode (self-signed certs, prints TLS fingerprint)
-cargo run -p iroh-live-relay -- --dev
+cargo run -p iroh-live-relay
 
-# Custom bind address
-cargo run -p iroh-live-relay -- --dev --bind [::]:8443 --http-bind [::]:8443
+# Custom bind addresses
+cargo run -p iroh-live-relay -- --bind [::]:8443 --http-bind [::]:8443
 ```
 
 The relay serves a built-in web viewer at its HTTP root. Open `https://localhost:4443` in a browser to see the landing page, then paste a ticket to watch a stream.
@@ -40,7 +39,7 @@ To develop the web client separately:
 
 ```sh
 cd iroh-live-relay/web
-npm install
+npm ci
 npm run dev    # Vite dev server with hot reload
 npm run build  # bundle for embedding
 ```
@@ -49,14 +48,17 @@ npm run build  # bundle for embedding
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--dev` | off | Use self-signed certificates, print TLS fingerprint |
-| `--bind` | `[::]:4443` | QUIC/WebTransport bind address |
-| `--http-bind` | `[::]:4443` | HTTP server bind address |
+| `--bind` | `[::]:4443` | QUIC and WebTransport bind address |
+| `--http-bind` | `[::]:4443` | HTTP bind address |
+
+TLS certificates are self-signed and generated at startup. ACME provisioning is
+not implemented, and neither is authentication: the relay grants publish and
+subscribe on every path to every connection.
 
 The relay persists its iroh secret key to disk (in `$IROH_LIVE_RELAY_DATA` or the platform data directory) so the endpoint ID stays stable across restarts.
 
 ## HTTP endpoints
 
-- `GET /certificate.sha256` -- TLS certificate fingerprint (dev mode)
+- `GET /certificate.sha256` -- TLS certificate fingerprint, for pinning the self-signed cert
 - `GET /` -- web viewer landing page
 - `GET /{path}` -- static file serving (CORS enabled)

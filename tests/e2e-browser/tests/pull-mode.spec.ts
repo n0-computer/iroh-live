@@ -41,7 +41,7 @@ test("pull mode: standalone publisher → relay → browser watch", async ({
     "--video", "test",
     "--audio", "none",
     "--codec", "h264",
-    "--video-presets", "360p",
+    "--renditions", "360p",
   ]);
 
   // Wait for publisher to print its ticket.
@@ -59,22 +59,36 @@ test("pull mode: standalone publisher → relay → browser watch", async ({
   await expect(canvas).toBeVisible({ timeout: 15_000 });
 
   // Wait for video content to render (non-black pixels).
+  //
+  // Sampled over a grid rather than at the centre pixel. The test pattern's
+  // middle band is black except when the sweep bar crosses it, once every two
+  // seconds and only a few pixels wide, so a centre probe was really waiting
+  // for the bar to pass under one point and timed out when it did not.
   await expect(async () => {
     const hasContent = await canvas.evaluate((el: HTMLCanvasElement) => {
       if (el.width === 0 || el.height === 0) return false;
       const ctx = el.getContext("2d");
       if (!ctx) return false;
-      const cx = Math.floor(el.width / 2);
-      const cy = Math.floor(el.height / 2);
-      const pixel = ctx.getImageData(cx, cy, 1, 1).data;
-      return pixel[0] + pixel[1] + pixel[2] > 0;
+      const steps = 8;
+      for (let row = 1; row < steps; row++) {
+        for (let column = 1; column < steps; column++) {
+          const x = Math.floor((el.width * column) / steps);
+          const y = Math.floor((el.height * row) / steps);
+          const pixel = ctx.getImageData(x, y, 1, 1).data;
+          if (pixel[0] + pixel[1] + pixel[2] > 0) return true;
+        }
+      }
+      return false;
     });
     expect(hasContent).toBe(true);
   }).toPass({ timeout: 30_000, intervals: [500] });
 
-  // Verify live video by detecting the blinking yellow marker.
+  // Verify live video by detecting the blinking yellow marker. The marker is
+  // lit for 100ms once a second, so 60 samples 100ms apart span six flashes
+  // rather than the four the previous 40 covered, which leaves margin for the
+  // screenshot overhead stretching the interval.
   const screenshots: Buffer[] = [];
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 60; i++) {
     screenshots.push(await canvas.screenshot());
     await page.waitForTimeout(100);
   }
@@ -84,7 +98,7 @@ test("pull mode: standalone publisher → relay → browser watch", async ({
   const colors: string[] = [];
 
   for (const pngBuf of screenshots) {
-    const { isYellow, r, g, b } = analyzeCenter(pngBuf);
+    const { isYellow, r, g, b } = analyzeMarker(pngBuf);
     colors.push(`(${r},${g},${b})`);
     if (isYellow) sawYellow = true;
     else sawNonYellow = true;
@@ -92,7 +106,7 @@ test("pull mode: standalone publisher → relay → browser watch", async ({
 
   if (!sawYellow || !sawNonYellow) {
     console.log(
-      `Yellow detection failed. Center pixel colors: ${colors.join(" ")}`
+      `Yellow detection failed. Marker band colors: ${colors.join(" ")}`
     );
   }
   expect(sawYellow).toBe(true);
@@ -155,16 +169,38 @@ function waitForTicket(
   });
 }
 
-function analyzeCenter(
-  pngBuffer: Buffer
-): { isYellow: boolean; r: number; g: number; b: number } {
+/**
+ * Looks for the test pattern's flashing marker, which is yellow and is the only
+ * yellow thing in the frame.
+ *
+ * The marker is the bottom band rather than the centre, so this samples across
+ * that band rather than one pixel in the middle of it: the sweep bar crosses the
+ * band and would occlude a single fixed sample every time it passed. Any yellow
+ * sample counts, since the bar is a thin vertical slice and cannot cover them
+ * all at once.
+ *
+ * See `moq-media/src/test_source/timing.rs` for the layout. The band runs from
+ * thirteen sixteenths of the height to the bottom, so nine tenths is inside it
+ * with room either side for the scaling the browser applies.
+ */
+function analyzeMarker(pngBuffer: Buffer): { isYellow: boolean; r: number; g: number; b: number } {
   const png = PNG.sync.read(pngBuffer);
-  const cx = Math.floor(png.width / 2);
-  const cy = Math.floor(png.height / 2);
-  const idx = (cy * png.width + cx) * 4;
-  const r = png.data[idx];
-  const g = png.data[idx + 1];
-  const b = png.data[idx + 2];
-
-  return { isYellow: r > 180 && g > 180 && b < 100, r, g, b };
+  const y = Math.floor(png.height * 0.9);
+  let sample = { isYellow: false, r: 0, g: 0, b: 0 };
+  for (const fraction of [0.1, 0.3, 0.5, 0.7, 0.9]) {
+    const x = Math.floor(png.width * fraction);
+    const idx = (y * png.width + x) * 4;
+    const r = png.data[idx];
+    const g = png.data[idx + 1];
+    const b = png.data[idx + 2];
+    // High red, high green, low blue, with tolerance for codec artifacts and
+    // for the browser's scaling.
+    if (r > 180 && g > 180 && b < 100) {
+      return { isYellow: true, r, g, b };
+    }
+    if (fraction === 0.5) {
+      sample = { isYellow: false, r, g, b };
+    }
+  }
+  return sample;
 }

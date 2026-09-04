@@ -13,10 +13,16 @@ data-encoding = "2.9.0"
 derive_more = { version = "2.0.1", features = ["display", "debug", "eq"] }
 hang = { workspace = true }
 iroh = { workspace = true }
+# Rooms live in `iroh-rooms`, but `Live` still mounts the gossip protocol and
+# hands the instance out, since that is what a room needs from this crate.
 iroh-gossip = { workspace = true }
+# mDNS address lookup, so a ticket that names an endpoint id and no
+# addresses still resolves on a network with no route to the internet.
+iroh-mdns-peer-lookup = "0.1.2"
 iroh-moq = { workspace = true }
 iroh-tickets = { workspace = true }
-moq-lite = { workspace = true }
+moq-net = { workspace = true }
+noq-proto = { workspace = true }
 moq-media = { workspace = true }
 n0-error = { version = "1", features = ["anyhow"] }
 n0-future = "0.3.1"
@@ -29,48 +35,62 @@ tokio = { version = "1.48.0", features = ["sync"] }
 tokio-util = "0.7.17"
 tracing = "0.1.41"
 bytes = "1.11.0"
-iroh-smol-kv = { workspace = true }
 throttled-tracing = "0.1.0"
 
 
 [dev-dependencies]
+# The `subscribe_test` example, which the browser end-to-end suite drives, and
+# the `publish` example.
+anyhow = "1.0.100"
 clap = { version = "4.5", features = ["derive"] }
-eframe = { version = "0.33.0", default-features = false, features = ["default_fonts", "wgpu"] }
-egui-wgpu = "0.33.0"
-moq-media-egui = { workspace = true }
-moq-media = { workspace = true, features = ["test-util"] }
-wgpu = "27"
-winit = "0.30"
-pollster = "0.4"
-moq-mux = { workspace = true }
-postcard = "1.1.3"
-qr2term = "0.3"
+moq-media = { workspace = true, features = ["test-source"] }
+n0-tracing-test = "0.3.0"
 tokio = { version = "1.48.0", features = ["full"] }
 tracing-subscriber = "0.3.20"
-n0-tracing-test = "0.3.0"
-image = { version = "0.25", features = ["png"] }
 
+# The patchbay suite builds its simulated network out of network namespaces, so
+# it only compiles where those exist. `ctor` runs the namespace setup from an
+# ELF initialiser, before the test harness has spawned a thread.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 ctor = "0.4"
-eframe = { version = "0.33.0", default-features = false, features = ["wayland", "x11"] }
 patchbay = "0.1.0"
 
 [lints]
 workspace = true
 
 [features]
-default = ["h264", "opus", "capture", "wgpu", "vaapi", "videotoolbox", "dmabuf-import", "metal-import"]
-h264 = ["moq-media/h264"]
-opus = ["moq-media/opus"]
-pcm = ["moq-media/pcm"]
-av1 = ["moq-media/av1"]
+default = ["capture", "render", "sound-server"]
+# Camera, screen, and microphone capture.
 capture = ["moq-media/capture"]
-capture-camera = ["moq-media/capture-camera"]
-capture-screen = ["moq-media/capture-screen"]
-videotoolbox = ["moq-media/videotoolbox"]
+# Speaker output.
+playback = ["moq-media/playback"]
+# Reach audio devices through PipeWire or PulseAudio rather than through their
+# ALSA compatibility plugin.
+sound-server = ["moq-media/sound-server"]
+# Acoustic echo cancellation, for a call on a handset or a laptop speaker.
+aec = ["moq-media/aec"]
+# Linux screen capture through xdg-desktop-portal and PipeWire.
+pipewire = ["moq-media/pipewire"]
+# GPU rendering of decoded frames.
+render = ["moq-media/render"]
+# Raspberry Pi camera capture through `rpicam-vid`.
+rpicam = ["moq-media/rpicam"]
+# Intel and AMD hardware H.264 encoding and decoding.
 vaapi = ["moq-media/vaapi"]
-wgpu = ["moq-media/wgpu"]
-dmabuf-import = ["wgpu", "moq-media/dmabuf-import", "moq-media-egui/dmabuf-import"]
-metal-import = ["wgpu", "moq-media/metal-import", "moq-media-egui/metal-import"]
-android = ["moq-media/android"]
-jack = ["moq-media/jack"]
+# NVIDIA hardware encode and decode.
+nvidia = ["moq-media/nvidia"]
+# The V4L2 stateful memory-to-memory H.264 encoder and decoder on ARM SoCs.
+v4l2 = ["moq-media/v4l2"]
+
+# The example opens a camera and a microphone, so it needs the devices.
+[[example]]
+name = "publish"
+path = "examples/publish.rs"
+required-features = ["capture"]
+
+# The Raspberry Pi publisher: no flags, the camera's own hardware H.264. Gated
+# on `rpicam` so a checkout without a Pi still builds every other example.
+[[example]]
+name = "publish-pi"
+path = "examples/publish-pi.rs"
+required-features = ["rpicam"]

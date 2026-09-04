@@ -1,53 +1,68 @@
-# Desktop Rendering
+# Desktop rendering
 
-| Field | Value |
-|-------|-------|
-| Status | draft |
-| Applies to | rusty-codecs, moq-media-egui, moq-media-dioxus |
-| Platforms | Linux, macOS, Windows |
+The subscribe side hands you `moq_video::Frame` values and does not care what you
+do with them. There is one rendering path on the desktop, and it goes through
+wgpu.
 
-iroh-live is not coupled to any GUI framework. The subscribe side delivers decoded `VideoFrame` objects, and your application renders them however it wants. Three rendering paths are available, and two integration crates provide ready-made widgets for egui and dioxus.
+## The wgpu renderer
 
-## Rendering paths
+`moq_video::render::Renderer` takes a `wgpu::Device` and `Queue` and returns a
+`wgpu::Texture` per frame. That texture is the whole integration point: present
+it, hand it to a UI toolkit, or copy it back. The renderer carries no windowing
+dependency and picks no surface format.
 
-### wgpu via `WgpuVideoRenderer`
+Backend selection, colour handling, and the zero-copy import matrix are
+documented upstream in [the moq-video
+page](https://doc.moq.dev/lib/rs/crate/moq-video). Two points matter when you
+wire it up here.
 
-`WgpuVideoRenderer` in `rusty-codecs` uploads decoded frames to GPU textures and converts YUV to RGB in a shader. It uses wgpu, which maps to Vulkan on Linux, Metal on macOS, and DX12 on Windows. This is the recommended path for desktop applications.
+The wgpu version is fixed by the renderer. `moq_video::render` re-exports the
+exact build it links, reachable as `moq_media::video::render::wgpu`, and a
+texture from a different wgpu major is a different type. This is why the
+workspace pins egui and eframe to versions that sit on the same wgpu major.
 
-On Linux with VAAPI hardware decoding, the renderer can import DMA-BUF file descriptors directly into Vulkan textures without any CPU copy. This zero-copy path activates automatically when the `dmabuf-import` and `vaapi` features are both enabled and the GPU driver supports the frame's DRM modifier. On macOS, Metal texture import from VideoToolbox is available via the `metal-import` feature. See the [DMA-BUF architecture page](../architecture/linux/dmabuf.md) for details on the Linux zero-copy pipeline.
+On Linux, request `wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF` when you
+create the device, or every DMA-BUF frame from PipeWire screen capture takes the
+CPU upload path instead.
 
-The `watch-wgpu` example and the `irl play` CLI command use this path.
+Enable the `render` feature to get any of this. It is on by default in
+`iroh-live` and `iroh-live-cli`, and off in `moq-media`, since a build that never
+draws should not pull a graphics stack.
 
-### OpenGL ES 2.0 via `GlesRenderer`
+## egui
 
-`GlesRenderer` in `rusty-codecs` works anywhere EGL is available: desktop Linux, Raspberry Pi, and embedded ARM boards. It uploads RGBA to a GL texture and draws a fullscreen triangle. The `demos/opengl` crate demonstrates this with a minimal glutin/winit viewer that has no egui or wgpu dependency.
+`moq-media-egui` is the ready-made integration. Two types matter.
 
-This path is primarily useful on constrained hardware where Vulkan drivers are immature or unavailable (Pi Zero, older embedded boards). On desktop systems with modern GPUs, the wgpu path is faster.
+`VideoTrackView` wraps a `VideoTrack` and polls it. Call `render(ctx, size)` in
+your draw loop and it takes the newest frame, uploads it, requests a repaint if
+something arrived, and returns an `egui::Image` plus the frame's timestamp.
 
-### CPU fallback via `frame.rgba_image()`
+`FrameView` is the same upload machinery without the track, for an application
+that gets frames from somewhere else. `irl publish --preview` uses it to draw the
+local preview, which is raw camera frames rather than a decoded track.
 
-Every `VideoFrame` exposes an `rgba_image()` method that returns an `RgbaImage` (from the `image` crate). NV12 and I420 frames are converted to RGBA on the CPU. This is the slowest option but has no GPU dependencies. It serves as a fallback for headless pipelines, testing, or environments where neither wgpu nor OpenGL is practical.
+Both need a wgpu render state. Construct them with `new_wgpu(ctx, name,
+Some(render_state))`; a view built without one logs a warning and draws a
+placeholder, because upstream only exposes pixels through the wgpu pipeline.
 
-## Integration crates
+`create_egui_wgpu_config()` builds the `egui_wgpu::WgpuConfiguration` to hand
+eframe. On Linux it selects the Vulkan backend and enables
+`VULKAN_EXTERNAL_MEMORY_DMA_BUF` when the adapter advertises it, which eframe
+would not otherwise request. Elsewhere it returns the default.
 
-### moq-media-egui
+`overlay::DebugOverlay` draws the stats panel described in [instrumentation and
+tests](../architecture/devtools.md).
 
-`moq-media-egui` wraps `WgpuVideoRenderer` as an egui widget called `VideoTrackView`. It handles texture allocation, frame upload, and display within an egui panel. The `irl play` CLI command and the `split` example use this crate. It also provides a `DebugOverlay` for rendering network and codec stats.
+## Other toolkits
 
-### moq-media-dioxus
+Anything that can share a wgpu device can draw the renderer's texture directly.
+Anything that cannot needs pixels, and `moq_video::Surface::into_rgba()` is the
+exit: it downloads a native surface as needed, honours its colour metadata, and
+returns an owned RGBA8 image.
 
-`moq-media-dioxus` provides a dioxus-native video component with a hook-based API. The `moq-media-dioxus/examples/demo` directory contains a working demo.
+There is no GLES renderer in a library crate. `demos/pi-zero/src/gles.rs` is one,
+but it lives in the demo because it had exactly one caller and moq's `render`
+module is wgpu-only. See [Raspberry Pi](raspberry-pi.md).
 
-Both integration crates are prototype-quality. They work for demos and internal testing but have not been hardened for production use.
-
-## Standalone rendering
-
-For applications that use wgpu and winit directly, the `watch-wgpu` example demonstrates the full pattern: create a winit window, initialize a wgpu surface, construct a `WgpuVideoRenderer`, subscribe to a broadcast, and render frames in the event loop.
-
-For OpenGL, the `demos/opengl` crate is a minimal GLES2 viewer using glutin and winit. It creates an EGL context, constructs a `GlesRenderer`, and renders incoming frames.
-
-The `watch-wgpu` example works on Linux and macOS. Windows rendering via wgpu is expected to work but has not been tested.
-
-## Other frameworks
-
-The core API (`VideoFrame` with `rgba_image()` for CPU access, or `WgpuVideoRenderer` for GPU rendering) integrates with any framework that can display pixels or share a wgpu device. Frameworks like iced (which uses wgpu internally) could share the GPU device directly. Qt and GTK4 integrations are possible through their respective Rust bindings but do not exist today.
+The dioxus integration crate was removed. It had no users and it wrapped a
+renderer that no longer exists.

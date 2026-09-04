@@ -1,38 +1,66 @@
 //! MoQ transport layer over iroh.
 //!
-//! Provides [`Moq`] for managing sessions and [`MoqSession`] for
-//! publish/subscribe operations over QUIC connections. Uses an internal
-//! actor for connection deduplication and broadcast routing.
+//! [`Moq`] binds an iroh [`Endpoint`] to a MoQ origin: broadcasts created with
+//! [`Moq::publish`] are announced to every peer, and [`MoqSession`] reaches the
+//! ones a peer announces back. An internal actor owns session lifetime, so a
+//! second [`Moq::connect`] to a peer we already have a session with returns that
+//! session rather than opening a second connection.
 
 use std::{
     collections::{HashMap, hash_map},
     fmt,
     sync::Arc,
+    time::Duration,
 };
 
 use iroh::{
     Endpoint, EndpointAddr, EndpointId,
-    endpoint::{ConnectError, Connection, ConnectionError, WriteError},
+    endpoint::{AlpnError, ConnectError, ConnectWithOptsError, ConnectingError, Connection},
     protocol::{AcceptError, ProtocolHandler},
 };
-use moq_lite::{BroadcastConsumer, BroadcastProducer, Origin, OriginConsumer, OriginProducer};
-use n0_error::{AnyError, Result, StdResultExt, anyerr, e, stack_error};
-use n0_future::{
-    FuturesUnordered, StreamExt,
-    boxed::BoxFuture,
-    task::{AbortOnDropHandle, JoinSet, spawn},
-};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use moq_net::{AsPath, Origin, broadcast, origin};
+use n0_error::{AnyError, Result, e, stack_error};
+use n0_future::task::{AbortOnDropHandle, JoinSet, spawn};
+use tokio::sync::{broadcast as tokio_broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, error_span, field, info, instrument};
-use web_transport_iroh::SessionError;
+use tracing::{Instrument, debug, error, error_span, field, info, instrument, warn};
 
-/// The ALPN protocol identifier for MoQ-lite connections.
+/// The ALPN this node prefers, the newest MoQ version it speaks.
 ///
-/// `moq-lite-04` is the current wire version: it carries real origin ids in
-/// announce hop chains (lite-03 sent anonymous `UNKNOWN` placeholders) and
-/// supports `AnnounceInterest.exclude_hop` for sender-side loop suppression.
-pub const ALPN: &[u8] = b"moq-lite-04";
+/// A peer that only speaks an older one still connects: [`alpns`] carries the
+/// whole list and both the dial and the router registration offer all of it.
+pub const ALPN: &[u8] = moq_net::ALPNS[0].as_bytes();
+
+/// Every ALPN this node accepts, newest first, plus HTTP/3.
+///
+/// Register all of them on a [`Router`](iroh::protocol::Router) so a peer built
+/// against a different moq release still finds a version in common. A single
+/// hardcoded ALPN is an interop bug that only shows up once the two sides drift,
+/// which is exactly when it is hardest to diagnose.
+///
+/// HTTP/3 is last because WebTransport over H3 needs framing that not every H3
+/// endpoint supports, so it is the fallback rather than the preference.
+pub fn alpns() -> Vec<&'static [u8]> {
+    moq_net::ALPNS
+        .iter()
+        .map(|alpn| alpn.as_bytes())
+        .chain(std::iter::once(web_transport_iroh::ALPN_H3.as_bytes()))
+        .collect()
+}
+
+/// How long [`Moq::shutdown`] gives a session to tell its peer it is closing.
+///
+/// A close is one packet and needs no answer, so this is a round trip's grace
+/// and not a negotiation. A peer that cannot take it inside the window is one
+/// that has already gone away, and waiting longer only delays the process
+/// exiting behind it.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
+
+/// The route every locally published broadcast is created with: announced, so
+/// peers discover it without asking for the path by name.
+fn announced_route() -> broadcast::Route {
+    broadcast::Route::new().with_announce(true)
+}
 
 #[stack_error(derive, add_meta, from_sources)]
 #[allow(private_interfaces, reason = "trait impl uses private types")]
@@ -40,24 +68,39 @@ pub enum Error {
     #[error(transparent)]
     Connect(ConnectError),
     #[error(transparent)]
-    Moq(#[error(source, std_err)] moq_lite::Error),
+    Connecting(ConnectingError),
+    #[error(transparent)]
+    ConnectWithOpts(ConnectWithOptsError),
+    #[error(transparent)]
+    Alpn(AlpnError),
+    #[error(transparent)]
+    Moq(#[error(source, std_err)] moq_net::Error),
+    #[error(transparent)]
+    Client(#[error(source, std_err)] web_transport_iroh::ClientError),
     #[error(transparent)]
     Server(#[error(source, std_err)] web_transport_iroh::ServerError),
+    #[error("the peer negotiated an ALPN this build does not speak: {alpn}")]
+    UnsupportedAlpn {
+        /// What the peer chose.
+        alpn: String,
+    },
+    #[error("failed to dial the peer")]
+    Dial {
+        /// Why the dial failed. Shared because several callers can coalesce
+        /// onto one dial, and each of them wants the reason.
+        #[error(source, std_err)]
+        source: Arc<Self>,
+    },
     #[error("internal consistency error")]
     InternalConsistencyError(#[error(source)] LiveActorDiedError),
-    #[error("failed to perform request")]
-    Request(#[error(source, std_err)] WriteError),
+    #[error("the transport has shut down")]
+    ShutDown,
 }
 
 #[stack_error(derive, add_meta, from_sources)]
-#[allow(private_interfaces, reason = "trait impl uses private types")]
 pub enum SubscribeError {
-    #[error("track was not announced")]
+    #[error("broadcast was never announced")]
     NotAnnounced,
-    #[error("track was closed")]
-    Closed,
-    #[error("session was closed")]
-    SessionClosed(#[error(source, std_err)] SessionError),
 }
 
 #[stack_error(derive)]
@@ -70,30 +113,62 @@ impl From<mpsc::error::SendError<ActorMessage>> for LiveActorDiedError {
     }
 }
 
-/// MoQ transport layer managing sessions, broadcasts, and subscriptions.
+/// MoQ transport for one iroh endpoint.
 ///
-/// Runs an internal actor that handles connection lifecycle, broadcast
-/// announcements, and subscription routing.
-#[derive(Debug, Clone)]
+/// Owns the node's publish origin and an actor that handles connection
+/// lifecycle. Cheap to clone; every clone shares the same origin and actor.
+#[derive(Clone)]
 pub struct Moq {
     tx: mpsc::Sender<ActorMessage>,
-    incoming_session_tx: broadcast::Sender<MoqSession>,
+    incoming_session_tx: tokio_broadcast::Sender<MoqSession>,
     shutdown_token: CancellationToken,
-    origin: Origin,
+    origin: origin::Producer,
     _actor_handle: Arc<AbortOnDropHandle<()>>,
+}
+
+impl fmt::Debug for Moq {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Moq").finish_non_exhaustive()
+    }
 }
 
 impl Moq {
     /// Creates a new MoQ transport bound to the given endpoint.
+    ///
+    /// # Examples
+    ///
+    /// Publish a broadcast and serve it to whoever connects:
+    ///
+    /// ```no_run
+    /// use iroh::{Endpoint, endpoint::presets, protocol::Router};
+    /// use iroh_moq::Moq;
+    ///
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// let endpoint = Endpoint::bind(presets::Minimal).await?;
+    /// let moq = Moq::new(endpoint.clone());
+    /// // Every ALPN the transport speaks, so a peer on any of them gets in.
+    /// let mut router = Router::builder(endpoint);
+    /// for alpn in iroh_moq::alpns() {
+    ///     router = router.accept(alpn, moq.protocol_handler());
+    /// }
+    /// let router = router.spawn();
+    ///
+    /// let mut broadcast = moq.publish("camera")?;
+    /// // write tracks into `broadcast`, then:
+    /// broadcast.finish();
+    /// # drop(router);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn new(endpoint: Endpoint) -> Self {
         let (tx, rx) = mpsc::channel(16);
-        let (incoming_session_tx, _) = broadcast::channel(16);
+        let (incoming_session_tx, _) = tokio_broadcast::channel(16);
         // One non-zero origin id identifies this node in broadcast announce hop
         // chains. It is created once here and shared across every session this
         // node opens or accepts, matching the per-node identity that relays use
         // for loop detection and shortest-path routing.
-        let origin = Origin::random();
-        let actor = Actor::new(endpoint, incoming_session_tx.clone(), origin);
+        let origin = Origin::random().produce();
+        let actor = Actor::new(endpoint, incoming_session_tx.clone(), origin.clone());
         let shutdown_token = actor.shutdown_token.clone();
         let actor_task =
             spawn(async move { actor.run(rx).await }.instrument(error_span!("LiveActor")));
@@ -110,38 +185,61 @@ impl Moq {
     pub fn protocol_handler(&self) -> MoqProtocolHandler {
         MoqProtocolHandler {
             tx: self.tx.clone(),
-            origin: self.origin,
+            origin: self.origin.clone(),
         }
     }
 
-    /// Publishes a broadcast with the given name, making it available to all connected peers.
-    pub async fn publish(&self, name: impl ToString, producer: BroadcastProducer) -> Result<()> {
-        self.tx
-            .send(ActorMessage::LocalBroadcast {
-                broadcast_name: name.to_string(),
-                producer,
-            })
-            .await
-            .std_context("live actor died")?;
-        Ok(())
+    /// Creates a broadcast at `path`, announced to every peer.
+    ///
+    /// Write media through the returned producer, and end it with
+    /// [`finish`](broadcast::Producer::finish) so subscribers see a clean close
+    /// rather than a dropped broadcast. Peers reach it with
+    /// [`MoqSession::subscribe`] under the same path.
+    ///
+    /// # Errors
+    ///
+    /// Fails if a broadcast already exists at `path`.
+    pub fn publish(&self, path: impl AsPath) -> Result<broadcast::Producer, Error> {
+        Ok(self.origin.create_broadcast(path, announced_route())?)
     }
 
-    /// Returns the names of all currently published broadcasts.
-    pub async fn published_broadcasts(&self) -> Vec<String> {
-        let (reply, reply_rx) = oneshot::channel();
-        if self
-            .tx
-            .send(ActorMessage::GetPublished { reply })
-            .await
-            .is_err()
-        {
-            return vec![];
-        }
-        reply_rx.await.unwrap_or_default()
+    /// Returns the origin every published broadcast is created on.
+    ///
+    /// For callers that need more than [`publish`](Self::publish) offers, such
+    /// as an unannounced broadcast reachable only by exact path.
+    pub fn origin(&self) -> &origin::Producer {
+        &self.origin
     }
 
     /// Connects to a remote peer and returns a [`MoqSession`] for publish/subscribe.
-    pub async fn connect(&self, remote: impl Into<EndpointAddr>) -> Result<MoqSession, AnyError> {
+    ///
+    /// Connections are deduplicated: two calls for the same peer share one
+    /// session, and concurrent calls coalesce onto a single dial.
+    ///
+    /// # Examples
+    ///
+    /// Reach a peer's broadcast by its endpoint id:
+    ///
+    /// ```no_run
+    /// use iroh::{Endpoint, EndpointId, endpoint::presets};
+    /// use iroh_moq::Moq;
+    ///
+    /// # async fn run(remote: EndpointId) -> Result<(), Box<dyn std::error::Error>> {
+    /// let moq = Moq::new(Endpoint::bind(presets::Minimal).await?);
+    /// let session = moq.connect(remote).await?;
+    /// let broadcast = session.subscribe("camera").await?;
+    /// // read tracks from `broadcast`
+    /// # drop(broadcast);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn connect(&self, remote: impl Into<EndpointAddr>) -> Result<MoqSession, Error> {
+        // Checked here as well as in the actor: once shut down the actor is
+        // gone, and a caller deserves the reason rather than the silence of a
+        // channel nobody is reading.
+        if self.shutdown_token.is_cancelled() {
+            return Err(e!(Error::ShutDown));
+        }
         let (reply, reply_rx) = oneshot::channel();
         self.tx
             .send(ActorMessage::Connect {
@@ -150,10 +248,12 @@ impl Moq {
             })
             .await
             .map_err(|_| LiveActorDiedError)?;
+        // The error is shared because several callers can coalesce onto one
+        // dial, and each of them wants the reason it failed.
         reply_rx
             .await
             .map_err(|_| LiveActorDiedError)?
-            .map_err(|err| anyerr!(err))
+            .map_err(|source| e!(Error::Dial { source }))
     }
 
     /// Returns a stream of incoming MoQ sessions from remote peers.
@@ -163,7 +263,13 @@ impl Moq {
         }
     }
 
-    /// Shuts down the transport, closing all sessions.
+    /// Shuts down the transport.
+    ///
+    /// Every session closes, the actor stops, and [`connect`](Self::connect)
+    /// fails from here on. Returns as soon as the shutdown is asked for: the
+    /// closes are flushed to peers in the background, under a few seconds'
+    /// grace, so a caller that needs the sockets gone waits on
+    /// [`Endpoint::close`](iroh::Endpoint::close) rather than on this.
     pub fn shutdown(&self) {
         self.shutdown_token.cancel();
     }
@@ -173,20 +279,28 @@ impl Moq {
 ///
 /// Register with a [`Router`](iroh::protocol::Router) via
 /// `.accept(ALPN, handler)`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MoqProtocolHandler {
     tx: mpsc::Sender<ActorMessage>,
-    origin: Origin,
+    origin: origin::Producer,
+}
+
+impl fmt::Debug for MoqProtocolHandler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MoqProtocolHandler").finish_non_exhaustive()
+    }
 }
 
 impl MoqProtocolHandler {
     async fn handle_connection(&self, connection: Connection) -> Result<(), Error> {
-        info!(remote = %connection.remote_id().fmt_short(), "accepted");
-        let session = web_transport_iroh::Session::raw(connection);
-        let session = MoqSession::session_accept(session, self.origin).await?;
+        let alpn = String::from_utf8_lossy(connection.alpn()).into_owned();
+        info!(remote = %connection.remote_id().fmt_short(), %alpn, "accepted");
+        let transport = accept_transport(connection, &alpn).await?;
+        let (session, driver) = MoqSession::accept(transport, &self.origin).await?;
         self.tx
             .send(ActorMessage::HandleSession {
                 session: Box::new(session),
+                driver: Box::new(driver),
             })
             .await
             .map_err(LiveActorDiedError::from)?;
@@ -203,242 +317,303 @@ impl ProtocolHandler for MoqProtocolHandler {
     }
 }
 
-/// Stream of incoming MoQ sessions.
+/// Dials `remote` and completes the WebTransport handshake.
+///
+/// Offers every version this build speaks rather than only the newest, so a
+/// peer built against an older moq release still finds one in common, and
+/// branches on what was actually negotiated. Public because an application that
+/// drives `moq_net` itself, such as a relay pulling from a publisher, needs the
+/// same negotiation and should not hand-roll a second copy of it.
+///
+/// # Errors
+///
+/// Fails if the dial fails, or if the peer negotiates an ALPN this build does
+/// not speak.
+pub async fn dial(
+    endpoint: &Endpoint,
+    remote: impl Into<EndpointAddr>,
+) -> Result<web_transport_iroh::Session, Error> {
+    let others: Vec<Vec<u8>> = alpns()[1..].iter().map(|alpn| alpn.to_vec()).collect();
+    let options = iroh::endpoint::ConnectOptions::new().with_additional_alpns(others);
+    let mut connecting = endpoint.connect_with_opts(remote, ALPN, options).await?;
+    let alpn = String::from_utf8_lossy(&connecting.alpn().await?).into_owned();
+    let connection = connecting.await?;
+    debug!(%alpn, "negotiated");
+    connect_transport(connection, &alpn).await
+}
+
+/// Completes the client half of the WebTransport handshake the negotiated ALPN
+/// calls for.
+async fn connect_transport(
+    connection: Connection,
+    alpn: &str,
+) -> Result<web_transport_iroh::Session, Error> {
+    if alpn == web_transport_iroh::ALPN_H3 {
+        // The CONNECT target only has to identify the endpoint; iroh already
+        // dialed a specific peer, so the host is the one it dialed.
+        let url: url::Url = format!("https://{}/", connection.remote_id())
+            .parse()
+            .expect("an endpoint id is a valid host");
+        let mut request = web_transport_proto::ConnectRequest::new(url);
+        for alpn in moq_net::ALPNS {
+            request = request.with_protocol(alpn.to_string());
+        }
+        return Ok(web_transport_iroh::Session::connect_h3(connection, request).await?);
+    }
+    if !moq_net::ALPNS.contains(&alpn) {
+        return Err(e!(Error::UnsupportedAlpn {
+            alpn: alpn.to_string(),
+        }));
+    }
+    Ok(web_transport_iroh::Session::raw(connection))
+}
+
+/// Completes the server half of the WebTransport handshake the negotiated ALPN
+/// calls for.
+///
+/// Raw QUIC carries the MoQ stream directly; H3 has to answer a CONNECT first.
+async fn accept_transport(
+    connection: Connection,
+    alpn: &str,
+) -> Result<web_transport_iroh::Session, Error> {
+    if alpn == web_transport_iroh::ALPN_H3 {
+        let request = web_transport_iroh::H3Request::accept(connection).await?;
+        let mut response = web_transport_proto::ConnectResponse::OK;
+        if let Some(protocol) = request.protocols.first() {
+            response = response.with_protocol(protocol);
+        }
+        return Ok(request.respond(response).await?);
+    }
+    // The handler is public and mountable on any ALPN, so an unknown one is a
+    // named error rather than a raw session that will fail to parse a setup.
+    if !moq_net::ALPNS.contains(&alpn) {
+        return Err(e!(Error::UnsupportedAlpn {
+            alpn: alpn.to_string(),
+        }));
+    }
+    Ok(web_transport_iroh::Session::raw(connection))
+}
+
+/// Every session this node establishes, in arrival order, whether it dialed or
+/// accepted. [`MoqSession::dialed`] tells the two apart.
+///
+/// A session is already established and already usable by the peer by the time
+/// it appears here: the handshake completes in the protocol handler, before the
+/// application sees anything. This reports what happened, it does not gate it.
+/// An application that needs to refuse a peer does so at the iroh layer, before
+/// the ALPN is accepted.
 #[derive(Debug)]
 pub struct IncomingSessionStream {
-    rx: broadcast::Receiver<MoqSession>,
+    rx: tokio_broadcast::Receiver<MoqSession>,
 }
 
 impl IncomingSessionStream {
-    /// Returns the next incoming session, or `None` if the transport is shut down.
-    pub async fn next(&mut self) -> Option<IncomingSession> {
+    /// Returns the next accepted session, or `None` once the transport shuts
+    /// down.
+    pub async fn next(&mut self) -> Option<MoqSession> {
         loop {
             match self.rx.recv().await {
-                Ok(session) => return Some(IncomingSession { session }),
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    info!("incoming session stream lagged, skipped {n} sessions");
+                Ok(session) => return Some(session),
+                Err(tokio_broadcast::error::RecvError::Lagged(n)) => {
+                    warn!(skipped = n, "incoming session stream lagged");
                     continue;
                 }
-                Err(broadcast::error::RecvError::Closed) => return None,
+                Err(tokio_broadcast::error::RecvError::Closed) => return None,
             }
         }
     }
 }
 
-/// Incoming MoQ session, not yet fully accepted by the application.
-///
-/// The MoQ handshake has already completed. The application can inspect
-/// the remote peer's identity before deciding to accept or reject.
-#[derive(Debug)]
-pub struct IncomingSession {
-    session: MoqSession,
-}
-
-impl IncomingSession {
-    /// Returns the remote peer's endpoint ID.
-    pub fn remote_id(&self) -> EndpointId {
-        self.session.remote_id()
-    }
-
-    /// Accepts the session, returning the [`MoqSession`] for publish/subscribe.
-    pub fn accept(self) -> MoqSession {
-        self.session
-    }
-
-    /// Rejects the session, closing the connection.
-    pub fn reject(self) {
-        self.session.close(1u32, b"rejected");
-    }
-}
-
 /// MoQ session with a remote peer.
 ///
-/// Supports publishing local broadcasts and subscribing to remote ones.
-/// Created via [`Moq::connect`] or from an [`IncomingSession`].
+/// Reaches the broadcasts that peer announces. Everything this node publishes
+/// travels over it without further wiring, because every session shares the
+/// node origin. Created via [`Moq::connect`] or from an an accepted session.
 #[derive(Clone)]
 pub struct MoqSession {
-    wt_session: web_transport_iroh::Session,
-    _moq_session: Arc<moq_lite::Session>,
-    publish: OriginProducer,
-    subscribe: OriginConsumer,
+    connection: Connection,
+    session: moq_net::Session,
+    subscribe: origin::Consumer,
+    /// Whether this node dialed, as opposed to accepted.
+    dialed: bool,
 }
 
 impl fmt::Debug for MoqSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MoqSession")
-            .field("remote_id", &self.wt_session.remote_id())
+            .field("remote_id", &self.connection.remote_id())
             .finish_non_exhaustive()
     }
 }
 
 impl MoqSession {
+    /// Dials `remote_addr` and completes the MoQ handshake as the client.
+    ///
+    /// Returns the session together with its protocol driver, which the caller
+    /// must poll to completion or the session makes no progress.
     #[instrument(skip_all, fields(remote=field::Empty))]
     pub async fn connect(
         endpoint: &Endpoint,
         remote_addr: impl Into<EndpointAddr>,
-        origin: Origin,
-    ) -> Result<Self, Error> {
+        origin: &origin::Producer,
+    ) -> Result<(Self, moq_net::Driver), Error> {
         let addr = remote_addr.into();
         tracing::Span::current().record("remote", field::display(addr.id.fmt_short()));
-        let connection = endpoint.connect(addr, ALPN).await?;
-        let wt_session = web_transport_iroh::Session::raw(connection);
-        Self::session_connect(wt_session, origin).await
+        let transport = dial(endpoint, addr).await?;
+        let connection = transport.conn().clone();
+        let subscribe = origin.info().produce();
+        let (session, driver) = moq_net::Client::new()
+            .with_publisher(origin.consume())
+            .with_subscriber(subscribe.clone())
+            .connect(transport)
+            .await?;
+        Ok((Self::new(connection, session, &subscribe, true), driver))
     }
 
-    /// Establishes a MoQ session as the client (initiator) over an existing WebTransport session.
+    /// Completes the MoQ handshake as the server over an accepted connection.
     ///
-    /// `origin` is this node's identity, stamped onto the broadcasts it announces
-    /// to the peer. The same id is used for the publish and subscribe sides so
-    /// loop detection sees one consistent hop for this node. It must be non-zero:
-    /// zero is the reserved `UNKNOWN` placeholder and is never encoded on the wire.
-    pub async fn session_connect(
-        wt_session: web_transport_iroh::Session,
-        origin: Origin,
-    ) -> Result<Self, Error> {
-        let publish_prod = OriginProducer::new(origin);
-        let subscribe_prod = OriginProducer::new(origin);
-        let subscribe = subscribe_prod.consume();
-        let client = moq_lite::Client::new()
-            .with_publish(publish_prod.consume())
-            .with_consume(subscribe_prod);
-        let moq_session = client.connect(wt_session.clone()).await?;
-        Ok(Self {
-            publish: publish_prod,
-            subscribe,
-            wt_session,
-            _moq_session: Arc::new(moq_session),
-        })
+    /// See [`connect`](Self::connect) for the driver contract.
+    pub async fn accept(
+        transport: web_transport_iroh::Session,
+        origin: &origin::Producer,
+    ) -> Result<(Self, moq_net::Driver), Error> {
+        let connection = transport.conn().clone();
+        let subscribe = origin.info().produce();
+        let (session, driver) = moq_net::Server::new()
+            .with_publisher(origin.consume())
+            .with_subscriber(subscribe.clone())
+            .accept(transport)
+            .await?;
+        Ok((Self::new(connection, session, &subscribe, false), driver))
     }
 
-    /// Accepts a MoQ session as the server (responder) over an existing WebTransport session.
-    ///
-    /// See [`session_connect`](Self::session_connect) for the role of `origin`.
-    pub async fn session_accept(
-        wt_session: web_transport_iroh::Session,
-        origin: Origin,
-    ) -> Result<Self, Error> {
-        let publish_prod = OriginProducer::new(origin);
-        let subscribe_prod = OriginProducer::new(origin);
-        let subscribe = subscribe_prod.consume();
-        let server = moq_lite::Server::new()
-            .with_publish(publish_prod.consume())
-            .with_consume(subscribe_prod);
-        let moq_session = server.accept(wt_session.clone()).await?;
-        Ok(Self {
-            publish: publish_prod,
-            subscribe,
-            wt_session,
-            _moq_session: Arc::new(moq_session),
-        })
+    fn new(
+        connection: Connection,
+        session: moq_net::Session,
+        subscribe: &origin::Producer,
+        dialed: bool,
+    ) -> Self {
+        Self {
+            connection,
+            session,
+            subscribe: subscribe.consume(),
+            dialed,
+        }
     }
 
     /// Returns the remote peer's endpoint ID.
     pub fn remote_id(&self) -> EndpointId {
-        self.wt_session.remote_id()
+        self.connection.remote_id()
     }
 
     /// Returns a reference to the underlying QUIC connection.
     pub fn conn(&self) -> &Connection {
-        self.wt_session.conn()
+        &self.connection
     }
 
-    /// Subscribes to a named broadcast from the remote peer.
+    /// Returns the MoQ session, for its stats and bandwidth estimates.
+    pub fn session(&self) -> &moq_net::Session {
+        &self.session
+    }
+
+    /// Reports whether this node dialed the connection, rather than accepting
+    /// it.
     ///
-    /// Waits for the remote to announce the broadcast if not yet available.
-    /// Returns when the session closes if the name is never announced.
-    /// Callers that need a timeout should wrap this in `tokio::time::timeout`.
-    pub async fn subscribe(&mut self, name: &str) -> Result<BroadcastConsumer, SubscribeError> {
-        if let Some(reason) = self.conn().close_reason() {
-            return Err(SessionError::from(reason).into());
-        }
-        match self.subscribe.announced_broadcast(name).await {
-            None => Err(e!(SubscribeError::Closed)),
+    /// Two peers that dial at once end up with one of each, so this is what
+    /// tells two sessions to the same peer apart.
+    pub fn dialed(&self) -> bool {
+        self.dialed
+    }
+
+    /// Subscribes to a broadcast the remote peer announces at `path`.
+    ///
+    /// Waits for the announce if it has not arrived yet, and reports
+    /// [`SubscribeError::NotAnnounced`] when the session ends first. Callers
+    /// that need a deadline wrap this in `tokio::time::timeout`.
+    pub async fn subscribe(
+        &self,
+        path: impl AsPath,
+    ) -> Result<broadcast::Consumer, SubscribeError> {
+        match self.subscribe.announced_broadcast(path).await {
             Some(consumer) => Ok(consumer),
+            None => Err(e!(SubscribeError::NotAnnounced)),
         }
     }
 
-    /// Publishes a broadcast on this session, making it available to the remote peer.
-    pub fn publish(&self, name: impl ToString, broadcast: BroadcastConsumer) {
-        self.publish.publish_broadcast(name.to_string(), broadcast);
-    }
-
-    /// Returns the origin producer for advanced publish operations.
-    pub fn origin_producer(&self) -> &OriginProducer {
-        &self.publish
-    }
-
-    /// Returns the origin consumer for advanced subscribe operations.
-    pub fn origin_consumer(&self) -> &OriginConsumer {
+    /// Returns the origin carrying everything the remote peer announces.
+    pub fn announced(&self) -> &origin::Consumer {
         &self.subscribe
     }
 
-    /// Closes the session with an error code and reason.
-    pub fn close(&self, error_code: u32, reason: &[u8]) {
-        self.wt_session.close(error_code, reason);
+    /// Closes the session with the given reason.
+    pub fn close(&self, err: moq_net::Error) {
+        self.session.abort(err);
     }
 
     /// Waits until the session is closed by either side.
-    pub async fn closed(&self) -> web_transport_iroh::SessionError {
-        self.wt_session.closed().await
+    pub async fn closed(&self) -> moq_net::Error {
+        self.session.closed().await
     }
 }
 
 enum ActorMessage {
     HandleSession {
         session: Box<MoqSession>,
-    },
-    LocalBroadcast {
-        broadcast_name: BroadcastName,
-        producer: BroadcastProducer,
+        driver: Box<moq_net::Driver>,
     },
     Connect {
         remote: EndpointAddr,
-        reply: oneshot::Sender<Result<MoqSession, Arc<AnyError>>>,
-    },
-    GetPublished {
-        reply: oneshot::Sender<Vec<BroadcastName>>,
+        reply: oneshot::Sender<Result<MoqSession, Arc<Error>>>,
     },
 }
 
-type BroadcastName = String;
-type PendingConnects = HashMap<EndpointId, Vec<oneshot::Sender<Result<MoqSession, Arc<AnyError>>>>>;
+type PendingConnects = HashMap<EndpointId, Vec<oneshot::Sender<Result<MoqSession, Arc<Error>>>>>;
+type ConnectResult = (EndpointId, Result<(MoqSession, moq_net::Driver), Error>);
 
 struct Actor {
     endpoint: Endpoint,
     shutdown_token: CancellationToken,
-    incoming_session_tx: broadcast::Sender<MoqSession>,
-    origin: Origin,
-    publishing: HashMap<BroadcastName, BroadcastProducer>,
-    publishing_closed_futs: FuturesUnordered<BoxFuture<BroadcastName>>,
-    sessions: HashMap<EndpointId, MoqSession>,
-    session_tasks: JoinSet<(EndpointId, Result<(), web_transport_iroh::SessionError>)>,
+    incoming_session_tx: tokio_broadcast::Sender<MoqSession>,
+    origin: origin::Producer,
+    /// Every live session per peer, oldest first. Normally one; a simultaneous
+    /// dial leaves two, and the first is the one `connect` hands out. Keeping
+    /// the second here rather than dropping it on the floor is what lets it be
+    /// promoted when the first ends, instead of being driven but unreachable.
+    sessions: HashMap<EndpointId, Vec<(u64, MoqSession)>>,
+    /// Counts sessions, so a task's exit names the session it drove rather than
+    /// whichever one holds the slot by the time it lands.
+    generation: u64,
+    session_tasks: JoinSet<(EndpointId, u64, Result<(), moq_net::Error>)>,
     pending_connects: PendingConnects,
-    pending_connect_tasks: JoinSet<(EndpointId, Result<MoqSession, AnyError>)>,
+    pending_connect_tasks: JoinSet<ConnectResult>,
 }
 
 impl Actor {
-    pub(crate) fn new(
+    fn new(
         endpoint: Endpoint,
-        incoming_session_tx: broadcast::Sender<MoqSession>,
-        origin: Origin,
+        incoming_session_tx: tokio_broadcast::Sender<MoqSession>,
+        origin: origin::Producer,
     ) -> Self {
         Self {
             endpoint,
             shutdown_token: CancellationToken::new(),
             incoming_session_tx,
             origin,
-            publishing: Default::default(),
-            publishing_closed_futs: Default::default(),
             sessions: Default::default(),
+            generation: 0,
             session_tasks: Default::default(),
             pending_connects: Default::default(),
             pending_connect_tasks: Default::default(),
         }
     }
 
-    pub(crate) async fn run(mut self, mut inbox: mpsc::Receiver<ActorMessage>) {
+    async fn run(mut self, mut inbox: mpsc::Receiver<ActorMessage>) {
         loop {
             tokio::select! {
+                () = self.shutdown_token.cancelled() => {
+                    info!(sessions = self.sessions.len(), "shutting down");
+                    break;
+                }
                 msg = inbox.recv() => {
                     match msg {
                         None => break,
@@ -447,22 +622,19 @@ impl Actor {
                 }
                 Some(res) = self.session_tasks.join_next(), if !self.session_tasks.is_empty() => {
                     match res {
-                        Ok((endpoint_id, res)) => {
+                        Ok((endpoint_id, generation, res)) => {
                             info!(remote=%endpoint_id.fmt_short(), "session closed: {res:?}");
-                            self.sessions.remove(&endpoint_id);
+                            self.forget_session(endpoint_id, generation);
                         }
-                        Err(err) => tracing::error!("session task panicked: {err}"),
+                        Err(err) => error!("session task panicked: {err}"),
                     }
-                }
-                Some(name) = self.publishing_closed_futs.next(), if !self.publishing_closed_futs.is_empty() => {
-                    self.publishing.remove(&name);
                 }
                 Some(res) = self.pending_connect_tasks.join_next(), if !self.pending_connect_tasks.is_empty() => {
                     match res {
-                        Err(err) => tracing::error!("connect task panicked: {err}"),
-                        Ok((endpoint_id, Ok(session))) => {
+                        Err(err) => error!("connect task panicked: {err}"),
+                        Ok((endpoint_id, Ok((session, driver)))) => {
                             info!(remote=%endpoint_id.fmt_short(), "connected");
-                            self.handle_session(session);
+                            self.handle_session(session, driver);
                         }
                         Ok((endpoint_id, Err(err))) => {
                             info!(remote=%endpoint_id.fmt_short(), "connect failed: {err:#}");
@@ -476,79 +648,145 @@ impl Actor {
                 }
             }
         }
+        self.drain_sessions().await;
+    }
+
+    /// Waits for every session driver to finish after cancellation.
+    ///
+    /// Each driver closes its session and then flushes that close to the peer,
+    /// so dropping the [`JoinSet`] instead would abort them mid-flush and leave
+    /// peers to notice the connection by timing out. Sessions that outlive the
+    /// wait are aborted with it, because a peer that has stopped reading must
+    /// not hold the shutdown open.
+    async fn drain_sessions(&mut self) {
+        if self.session_tasks.is_empty() {
+            return;
+        }
+        let drained = tokio::time::timeout(SHUTDOWN_GRACE, async {
+            while self.session_tasks.join_next().await.is_some() {}
+        })
+        .await;
+        if drained.is_err() {
+            warn!(
+                remaining = self.session_tasks.len(),
+                grace = ?SHUTDOWN_GRACE,
+                "sessions did not close in time, aborting them",
+            );
+        }
     }
 
     fn handle_message(&mut self, msg: ActorMessage) {
         match msg {
-            ActorMessage::HandleSession { session } => {
+            ActorMessage::HandleSession { session, driver } => {
                 info!(remote=%session.remote_id().fmt_short(), "accepted incoming connection");
-                self.handle_session(*session);
+                self.handle_session(*session, *driver);
             }
-            ActorMessage::LocalBroadcast {
-                broadcast_name: name,
-                producer,
-            } => self.handle_publish_broadcast(name, producer),
             ActorMessage::Connect { remote, reply } => self.handle_connect(remote, reply),
-            ActorMessage::GetPublished { reply } => {
-                let names = self.publishing.keys().cloned().collect();
-                reply.send(names).ok();
-            }
         }
     }
 
-    fn handle_session(&mut self, session: MoqSession) {
+    fn handle_session(&mut self, session: MoqSession, driver: moq_net::Driver) {
         let remote = session.remote_id();
-        for (name, producer) in self.publishing.iter() {
-            session.publish(name.as_str(), producer.consume());
+
+        // Two peers that dial each other at the same time each end up with two
+        // connections: one they dialed and one they accepted. Both are kept and
+        // both are driven; the oldest is the one `connect` hands out, and the
+        // other is promoted if it ends.
+        //
+        // Closing the loser is tempting and wrong. The two sides do not see the
+        // collision at the same instant, so by the time one closes its loser
+        // the other may already have handed that same connection to a caller,
+        // whose subscribe then dies. A deterministic tie-break does not help,
+        // for the same reason: the handles are given out before the collision is
+        // visible. So the cost is one extra connection until a peer goes away.
+        self.generation += 1;
+        let generation = self.generation;
+        let peer = self.sessions.entry(remote).or_default();
+        let duplicate = !peer.is_empty();
+        peer.push((generation, session.clone()));
+        let serve = peer[0].1.clone();
+
+        if duplicate {
+            debug!(
+                remote = %remote.fmt_short(),
+                "simultaneous connect; serving the first session",
+            );
         }
-        self.sessions.insert(remote, session.clone());
         // Notify incoming session subscribers (best-effort, ok if no receivers).
         self.incoming_session_tx.send(session.clone()).ok();
         for reply in self.pending_connects.remove(&remote).into_iter().flatten() {
-            reply.send(Ok(session.clone())).ok();
+            reply.send(Ok(serve.clone())).ok();
         }
 
+        self.spawn_driver(remote, generation, session, driver);
+    }
+
+    /// Drops the session a finished task was driving.
+    ///
+    /// By generation rather than by peer, so a task landing after a newer
+    /// session arrived removes its own entry and leaves the newer one serving.
+    fn forget_session(&mut self, remote: EndpointId, generation: u64) {
+        let hash_map::Entry::Occupied(mut entry) = self.sessions.entry(remote) else {
+            return;
+        };
+        entry.get_mut().retain(|(id, _)| *id != generation);
+        if entry.get().is_empty() {
+            entry.remove();
+        }
+    }
+
+    /// Runs a session's protocol driver until the session ends.
+    fn spawn_driver(
+        &mut self,
+        remote: EndpointId,
+        generation: u64,
+        session: MoqSession,
+        driver: moq_net::Driver,
+    ) {
+        // The driver runs the protocol; without it the session makes no
+        // progress. Both handles are held here, so the session ends when this
+        // task does: on shutdown, or when the peer closes.
         let shutdown = self.shutdown_token.child_token();
         self.session_tasks.spawn(async move {
+            tokio::pin!(driver);
             let res = tokio::select! {
                 _ = shutdown.cancelled() => {
                     debug!(remote=%remote.fmt_short(), "closing session: cancelled");
-                    session.close(0u32, b"cancelled");
-                    Ok(())
+                    session.close(moq_net::Error::Cancel);
+                    (&mut driver).await
                 }
-                result = session.closed() => match result {
-                    SessionError::ConnectionError(ConnectionError::LocallyClosed) => Ok(()),
-                    err => Err(err)
-                },
+                result = &mut driver => result,
             };
-            debug!(remote=%remote.fmt_short(), "closing session: {res:?}");
-            (remote, res)
+            // A local close is how shutdown ends, not a failure to report.
+            let res = match res {
+                Err(moq_net::Error::Cancel) => Ok(()),
+                other => other,
+            };
+            debug!(remote=%remote.fmt_short(), "session ended: {res:?}");
+            (remote, generation, res)
         });
-    }
-
-    fn handle_publish_broadcast(&mut self, name: BroadcastName, producer: BroadcastProducer) {
-        for session in self.sessions.values_mut() {
-            session
-                .publish
-                .publish_broadcast(name.clone(), producer.consume());
-        }
-        let consume = producer.consume();
-        let closed_name = name.clone();
-        self.publishing.insert(name, producer);
-        self.publishing_closed_futs.push(Box::pin(async move {
-            let closed = consume.closed();
-            closed.await;
-            closed_name
-        }));
     }
 
     fn handle_connect(
         &mut self,
         remote: EndpointAddr,
-        reply: oneshot::Sender<Result<MoqSession, Arc<AnyError>>>,
+        reply: oneshot::Sender<Result<MoqSession, Arc<Error>>>,
     ) {
         let remote_id = remote.id;
-        if let Some(session) = self.sessions.get(&remote_id) {
+        if self.shutdown_token.is_cancelled() {
+            reply.send(Err(Arc::new(e!(Error::ShutDown)))).ok();
+            return;
+        }
+        // The oldest session whose connection is still open. A session stays in
+        // the map until its driver task lands, which is a scheduling hop after
+        // the connection went, so the front of the list can be one that is on
+        // its way out; handing that back would give the caller a subscribe that
+        // fails on its first read.
+        let live = self
+            .sessions
+            .get(&remote_id)
+            .and_then(|peer| peer.iter().find(|(_, s)| s.conn().close_reason().is_none()));
+        if let Some((_, session)) = live {
             reply.send(Ok(session.clone())).ok();
             return;
         }
@@ -558,11 +796,9 @@ impl Actor {
             }
             hash_map::Entry::Vacant(entry) => {
                 let endpoint = self.endpoint.clone();
-                let origin = self.origin;
+                let origin = self.origin.clone();
                 self.pending_connect_tasks.spawn(async move {
-                    let res = MoqSession::connect(&endpoint, remote, origin)
-                        .await
-                        .map_err(Into::into);
+                    let res = MoqSession::connect(&endpoint, remote, &origin).await;
                     (remote_id, res)
                 });
                 entry.insert(Default::default()).push(reply);

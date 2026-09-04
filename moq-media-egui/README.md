@@ -1,46 +1,52 @@
 # moq-media-egui
 
-[egui](https://github.com/emilk/egui) video rendering widget for moq-media.
+An [egui](https://github.com/emilk/egui) video widget over
+[`moq-media`](../moq-media), plus a debug overlay.
 
-Provides two levels of integration:
+`moq_video::render::Renderer` hands back a `wgpu::Texture` per frame. This crate
+registers that texture with egui and draws it.
 
-- **`FrameView`** is the low-level frame renderer. Call `render_frame(&video_frame)` to upload a frame, then call `image()` to get an `egui::Image` for your UI.
-- **`VideoTrackView`** is the high-level track renderer. It wraps a decoded `VideoTrack`, handles frame polling and viewport sizing, and returns an `egui::Image` ready to display.
+## Two levels
 
-Both support CPU-only texture upload and optional wgpu-accelerated rendering with zero-copy DMA-BUF import on Linux.
-
-## Usage
+`VideoTrackView` wraps a decoded `VideoTrack` and polls it. Call `render` in the
+draw loop and it takes the newest frame, uploads it, requests a repaint if one
+arrived, and returns an `egui::Image` plus the frame's timestamp.
 
 ```rust
 use moq_media_egui::VideoTrackView;
 
-// Create a view from a decoded video track
-let mut view = VideoTrackView::new(&ctx, "remote-video", track);
+let mut view = VideoTrackView::new_wgpu(&ctx, "remote", track, Some(render_state));
 
-// In your egui draw loop
 let (image, timestamp) = view.render(&ctx, available_size);
 ui.add(image);
 ```
 
-For wgpu acceleration (better performance, zero-copy on supported hardware):
+`FrameView` is the same upload machinery without a track, for frames that come
+from somewhere else. `irl publish --preview` uses it to draw raw camera frames.
 
-```rust
-let render_state = frame.wgpu_render_state().unwrap();
-let mut view = VideoTrackView::new_wgpu(&ctx, "remote-video", track, render_state);
-```
+Both need a wgpu render state. A view built without one logs a warning and draws
+a placeholder, because upstream exposes pixels only through the wgpu pipeline.
+
+## Handing eframe a device
+
+`create_egui_wgpu_config()` builds the `egui_wgpu::WgpuConfiguration` to pass
+eframe. On Linux it selects the Vulkan backend and requests
+`VULKAN_EXTERNAL_MEMORY_DMA_BUF` when the adapter advertises it, which turns on
+zero-copy DMA-BUF import for PipeWire screen capture. eframe would not otherwise
+ask for it. Elsewhere it returns the default.
 
 ## Debug overlay
 
-The `overlay` module provides `DebugOverlay`, a collapsible stats panel showing network, capture, render, and timing metrics as colored bars.
+`overlay::DebugOverlay` draws a translucent bar along the bottom of a video tile
+with one clickable section per `StatCategory`: `Net`, `Capture`, `Render`, and
+`Time`. Clicking opens a detail panel with values, threshold colours, and
+sparklines. The `Time` category also draws a ten-second timeline of frame
+arrivals, A/V offset, buffer depth, and round-trip time.
 
 ## Feature flags
 
-| Feature | Default | Description |
-|---------|---------|-------------|
-| `wgpu-render` | yes | GPU-accelerated rendering via wgpu |
-| `metal-import` | yes | Metal texture import on macOS |
-| `dmabuf-import` | | Zero-copy DMA-BUF texture import on Linux/Vulkan |
-
-## Helper
-
-`create_egui_wgpu_config()` returns a wgpu backend configuration optimized for video. On Linux with `dmabuf-import`, it requests the Vulkan instance extensions needed for DMA-BUF import.
+`wgpu-render` is the only one, and it is on by default. `wgpu` is deliberately
+not a direct dependency: every `wgpu` type this crate names comes from
+`moq_media::video::render::wgpu`, the exact build the renderer links, so a
+texture it hands back can never be a different `wgpu` major than the one this
+crate draws with.

@@ -1,23 +1,44 @@
 # moq-media-android
 
-Android-specific integration for moq-media: camera frame source, EGL/GLES rendering, and JNI helpers.
+Android integration for [`moq-media`](../moq-media): a camera bridge, an EGL
+renderer, and the JNI helpers around them.
 
-This crate provides the glue between Android's Java/Kotlin APIs and the Rust media pipeline. It is used by the [Android demo app](../demos/android/) but can be used independently in any Android Rust project.
+Hardware H.264 through MediaCodec is not here. It is upstream in `moq-video`,
+behind `cfg(target_os = "android")`, and backend selection finds it without being
+asked. What this crate carries is the two things that are not a moq-video
+concern.
 
-## Modules
+Used by the [Android demo](../demos/android/), and usable on its own in any
+Android Rust project.
 
-### `camera`
+## `camera`
 
-`CameraFrameSource` is a push-based `VideoSource`. Android camera callbacks (from CameraX or Camera2) push NV12 frames into the source via JNI, and the encoder thread pulls the latest frame when ready. `SharedCameraSource` wraps it in `Arc<Mutex<_>>` for safe cross-thread JNI access.
+`camera(size)` returns a `CameraSink` and a `moq_media::publish::VideoSource`.
+Kotlin pushes frames into the sink through JNI, and the publisher reads them out
+the other end. `CameraSink::push_rgba` takes tightly packed RGBA; `push` takes a
+`moq_video::Frame` for a caller that built one itself.
 
-### `egl`
+The slot is latest-wins: a newer frame replaces one the publisher has not read
+yet. That is the right policy for a camera, where a stale picture is worth less
+than the current one.
 
-Safe wrappers around EGL/GLES extension function pointers for zero-copy `AHardwareBuffer` rendering. The three functions involved are `eglGetNativeClientBufferANDROID` (get EGL client buffer from `AHardwareBuffer`), `eglCreateImageKHR` (create EGL image), and `glEGLImageTargetTexture2DOES` (bind to `GL_TEXTURE_EXTERNAL_OES`). Function pointers are resolved at runtime via `dlopen(libEGL.so)` and `eglGetProcAddress`.
+## `renderer`
 
-### `renderer`
+`AndroidRenderer` owns the whole EGL lifecycle. Kotlin hands over an
+`android.view.Surface` and nothing else. Two GLES2 programs draw:
+`render_hardware_buffer` imports an `AHardwareBuffer` as a
+`GL_TEXTURE_EXTERNAL_OES`, which is zero-copy out of MediaCodec's `ImageReader`,
+and `render_nv12` uploads two planes for a software-decoded or preview frame.
+Both apply sensor rotation in the shader.
 
-`AndroidRenderer` manages the full EGL lifecycle (display, context, surface) and renders frames with GLES2 shaders. Supports both `GL_TEXTURE_EXTERNAL_OES` (hardware buffer) and NV12 CPU paths, with sensor rotation handling.
+## `egl`
 
-### `handle`
+Safe wrappers over the EGL and GLES extension entry points the renderer needs:
+`eglGetNativeClientBufferANDROID`, `eglCreateImageKHR`, and
+`glEGLImageTargetTexture2DOES`. None is available at link time, so they are
+resolved at runtime through `dlopen` on `libEGL.so` and `eglGetProcAddress`.
 
-JNI pointer arithmetic helpers for passing `Arc<Mutex<T>>` across the JNI boundary as `jlong` values.
+## `handle`
+
+Passing an `Arc<Mutex<T>>` across the JNI boundary as a `jlong`: `to_i64` leaks a
+reference, `from_i64` borrows one, and `take_i64` consumes it.

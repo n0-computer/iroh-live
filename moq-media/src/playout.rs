@@ -1,34 +1,39 @@
 //! Playback policy for subscribed broadcasts.
 //!
-//! [`SyncMode`] controls how audio and video are aligned at playout time.
-//! [`PlaybackPolicy::max_latency`] controls how much buffered media we
-//! tolerate before skipping forward — this drives Hang's ordered
-//! consumer.
+//! [`SyncMode`] decides whether the playout clock gates video against audio.
+//! [`PlaybackPolicy::max_latency`] decides how much buffered media a subscriber
+//! tolerates before skipping to the live edge, and is passed straight through
+//! to `moq_video::decode::Config::latency_max`.
+//! [`PlaybackPolicy::gpu_frames`] says what the subscriber will do with the
+//! decoded frames, which decides where the decoder leaves them.
+//! [`PlaybackPolicy::decoder`] picks the backend that decodes the video, the
+//! counterpart of the encoder selection a publisher makes per rendition.
 
 use std::time::Duration;
 
-/// A/V synchronization behavior at playout time.
+use moq_video::decode;
+
+/// Whether the playout clock gates video at all.
 ///
-/// [`Synced`](Self::Synced) enables the shared playout clock (ported
-/// from `moq/js` commit `53fe78d8`, `js/watch/src/sync.ts`).
-/// [`Unmanaged`](Self::Unmanaged) uses PTS-cadence pacing with no
-/// cross-track synchronization.
+/// [`Synced`](Self::Synced) runs the shared clock, ported from `moq/js` commit
+/// `53fe78d8`. [`Unmanaged`](Self::Unmanaged) does nothing: a decoded frame
+/// goes straight to the renderer.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, derive_more::Display, strum::VariantArray)]
 pub enum SyncMode {
-    /// Shared playout clock — the default for live playback.
+    /// The shared playout clock, and the default for live playback.
     ///
-    /// Video frames are gated by [`crate::sync::Sync::wait`], which
-    /// accounts for network jitter and codec latency to keep audio and
-    /// video aligned.
+    /// Video frames are held by [`crate::sync::Sync::wait_async`] until they
+    /// are due, which accounts for network jitter and for how much audio is
+    /// still queued at the speaker.
     #[default]
     #[display("Synced")]
     Synced,
 
-    /// No synchronization — frames are rendered as decoded.
+    /// No synchronization: a frame goes to the renderer as soon as it decodes.
     ///
-    /// Uses PTS-cadence pacing in the video decode loop. Suitable for
-    /// tests, file playback, and single-track scenarios.
+    /// Right for a video-only broadcast, where there is nothing to align
+    /// against and the clock would only add latency.
     #[display("Off")]
     Unmanaged,
 }
@@ -39,41 +44,89 @@ pub enum SyncMode {
 /// [`RemoteBroadcast::with_playback_policy`](crate::subscribe::RemoteBroadcast::with_playback_policy),
 /// or update before resubscribing via
 /// [`RemoteBroadcast::set_playback_policy`](crate::subscribe::RemoteBroadcast::set_playback_policy).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaybackPolicy {
     /// Cross-track synchronization policy.
     pub sync: SyncMode,
 
-    /// Maximum span of buffered media before skipping forward to the
-    /// live edge. Passed to Hang's ordered consumer as `max_latency`.
+    /// How far ahead of its due time the playout clock holds a frame, to ride
+    /// out the difference between when frames were sent and when they arrived.
     ///
-    /// Increase for more continuity through congestion. Decrease for
-    /// faster recovery after a stall. The JS equivalent is the
-    /// `latency` parameter on the container consumer.
+    /// This is the largest fixed delay a subscriber adds, and the one worth
+    /// moving: everything else in the chain is either the encoder's or the
+    /// link's. Lower it and a frame that arrives late has no slack left and is
+    /// shown late or not at all; raise it and jitter is absorbed at the cost of
+    /// being that much further behind.
+    ///
+    /// Applies only when [`sync`](Self::sync) is [`SyncMode::Synced`]; nothing
+    /// holds a frame under [`SyncMode::Unmanaged`]. Unlike the rest of this
+    /// policy it takes effect the moment it is set, because the clock it
+    /// configures belongs to the broadcast rather than to a decoder.
+    pub jitter: Duration,
+
+    /// The most buffered media a subscriber tolerates before skipping to the
+    /// live edge, passed to the decoder as `latency_max`.
+    ///
+    /// Raise it for continuity through congestion, lower it for faster
+    /// recovery after a stall.
     pub max_latency: Duration,
+
+    /// Whether decoded frames should be left on the GPU rather than downloaded
+    /// to CPU memory, passed to the decoder as `gpu_frames`.
+    ///
+    /// Set it when the frames go to a renderer: a hardware decoder that can
+    /// share its decode surface then hands one over, and the picture reaches a
+    /// texture without a round trip through system memory. Leave it clear for a
+    /// subscriber that reads the pixels, such as one writing them to a file,
+    /// since sharing a surface costs the decoder an allocation per picture and
+    /// buys such a consumer nothing.
+    ///
+    /// Best effort: only backends that can do it honor it, and a frame that
+    /// does come back on the GPU still converts to I420 on demand, so nothing
+    /// downstream has to know which happened.
+    pub gpu_frames: bool,
+
+    /// Which decoder backend opens for video, passed to the decoder as `kind`.
+    ///
+    /// [`Auto`](decode::Kind::Auto) tries the platform's hardware decoders in
+    /// turn and falls back to software, which is what a viewer wants.
+    /// [`Named`](decode::Kind::Named) pins one backend and fails rather than
+    /// falling back, so a broken driver shows up as a decoder that will not open
+    /// instead of a silent switch to software.
+    pub decoder: decode::Kind,
 }
 
 impl Default for PlaybackPolicy {
     fn default() -> Self {
         Self {
             sync: SyncMode::default(),
+            jitter: Duration::from_millis(100),
             max_latency: Duration::from_millis(150),
+            gpu_frames: false,
+            decoder: decode::Kind::Auto,
         }
     }
 }
 
 impl PlaybackPolicy {
-    /// Synced playout with the default 150 ms latency budget.
+    /// Synced playout with the default 150 ms latency ceiling.
     pub fn synced() -> Self {
         Self::default()
     }
 
-    /// Unmanaged playout with the default 150 ms latency budget.
+    /// Unmanaged playout with the default 150 ms latency ceiling.
     pub fn unmanaged() -> Self {
         Self {
             sync: SyncMode::Unmanaged,
             ..Self::default()
         }
+    }
+
+    /// Returns a copy with a different playout jitter buffer.
+    #[must_use]
+    pub fn with_jitter(mut self, jitter: Duration) -> Self {
+        self.jitter = jitter;
+        self
     }
 
     /// Returns a copy with a different maximum latency.
@@ -87,6 +140,28 @@ impl PlaybackPolicy {
     #[must_use]
     pub fn with_sync(mut self, sync: SyncMode) -> Self {
         self.sync = sync;
+        self
+    }
+
+    /// Returns a copy that asks the decoder to leave frames on the GPU.
+    ///
+    /// See [`gpu_frames`](Self::gpu_frames) for what that costs a subscriber
+    /// that does not draw them.
+    #[must_use]
+    pub fn with_gpu_frames(mut self, gpu_frames: bool) -> Self {
+        self.gpu_frames = gpu_frames;
+        self
+    }
+
+    /// Returns a copy that opens a different decoder backend.
+    ///
+    /// Takes effect on the next decoder built: on the next track opened, or on
+    /// the next rendition switch of a track already running. A viewer changing
+    /// it mid-playback asks for that rebuild with
+    /// [`VideoTrack::reopen_decoder`](crate::subscribe::VideoTrack::reopen_decoder).
+    #[must_use]
+    pub fn with_decoder(mut self, decoder: decode::Kind) -> Self {
+        self.decoder = decoder;
         self
     }
 }

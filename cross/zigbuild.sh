@@ -49,11 +49,11 @@ if [ ! -d "$SYSROOT" ]; then
     echo "ERROR: sysroot not found at $SYSROOT" >&2
     echo "" >&2
     echo "Create it with:" >&2
-    echo "  cargo make cross-sysroot" >&2
+    echo "  cargo make cross-sysroot-aarch64" >&2
     echo "  # or: ./cross/create-sysroot.sh" >&2
     echo "" >&2
     echo "For Docker builds (no host setup needed):" >&2
-    echo "  cargo make cross-build-docker -- -p iroh-live-cli --release" >&2
+    echo "  cargo make cross-build-aarch64-docker -- -p iroh-live-cli --release" >&2
     exit 1
 fi
 

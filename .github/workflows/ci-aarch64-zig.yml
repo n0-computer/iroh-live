@@ -1,7 +1,13 @@
 name: CI (aarch64, zigbuild)
 
 # Docker-free aarch64 cross-compilation using cargo-zigbuild with a Debian
-# Bookworm sysroot. Builds the irl CLI binary for aarch64 in release mode.
+# Bookworm sysroot. Builds the irl CLI binary for aarch64 in release mode with
+# the same feature set the release pipeline ships, so a pull request that breaks
+# one of the Linux hardware backends fails here rather than after it merges.
+#
+# Publishing is not this workflow's job: release.yml builds the aarch64 binary
+# again on a push to main and attaches it to the rolling release along with
+# every other target.
 
 on:
   pull_request:
@@ -20,7 +26,7 @@ jobs:
   zigbuild:
     name: aarch64 zigbuild
     permissions:
-      contents: write        # uploads the irl binary to the rolling release
+      contents: read
     runs-on: ubuntu-latest
 
     steps:
@@ -63,16 +69,7 @@ jobs:
         run: cargo make cross-sysroot-aarch64
 
       - name: Build irl CLI (release-dist)
-        run: cargo make cross-build-aarch64 -- -p iroh-live-cli --profile release-dist
+        run: cargo make cross-build-aarch64 -- -p iroh-live-cli --profile release-dist --features nvidia,vaapi,v4l2,rpicam,pipewire,aec
       - name: Lockfile must not have moved
         # cargo make / zigbuild take no --locked; assert the lockfile instead.
         run: git diff --exit-code Cargo.lock
-
-      - name: Upload irl binary to rolling release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          cp target/aarch64-unknown-linux-gnu/release-dist/irl irl-linux-aarch64
-          chmod +x irl-linux-aarch64
-          gh release upload rolling-release irl-linux-aarch64 --clobber || true

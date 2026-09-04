@@ -2,16 +2,15 @@ use iroh_moq::MoqSession;
 use moq_media::{net::NetworkSignals, subscribe::RemoteBroadcast};
 use tokio::sync::watch;
 
-/// Wraps a MoQ session, its remote broadcast, and network signal production
-/// into a single handle.
+/// A subscription to one remote broadcast.
 ///
-/// Created by [`Live::subscribe`](crate::Live::subscribe).
-/// The constructor auto-wires stats recording and signal production, so
-/// callers no longer need to call `spawn_stats_recorder` and
-/// `spawn_signal_producer` manually.
+/// Bundles the MoQ session, the broadcast, and the transport signals that drive
+/// rendition adaptation. Created by [`Live::subscribe`](crate::Live::subscribe),
+/// which wires the stats recorder and signal producer so a caller does not have
+/// to.
 ///
-/// Dropping the `Subscription` does not require special cleanup — the
-/// session's own `Drop` handles connection teardown.
+/// Dropping it needs no special cleanup: the session tears its own connection
+/// down.
 #[derive(Debug)]
 pub struct Subscription {
     session: MoqSession,
@@ -20,19 +19,19 @@ pub struct Subscription {
 }
 
 impl Subscription {
-    /// Creates a new subscription with pre-wired stats and signals.
+    /// Wires the stats recorder and the signal producer onto a session and a
+    /// broadcast the caller assembled itself.
     ///
-    /// Called internally by [`Live::subscribe`](crate::Live::subscribe).
-    /// Spawns background tasks for connection stats recording and network
-    /// signal production.
-    pub(crate) fn new(session: MoqSession, broadcast: RemoteBroadcast) -> Self {
+    /// [`Live::subscribe`](crate::Live::subscribe) is the usual way in, and it
+    /// calls this. Reach for it directly when the two halves came from
+    /// somewhere else, as an `iroh-rooms` event hands them back separately.
+    pub fn new(session: MoqSession, broadcast: RemoteBroadcast) -> Self {
         crate::util::spawn_stats_recorder(
             session.conn(),
             broadcast.stats().net.clone(),
             broadcast.shutdown_token(),
         );
-        let signals =
-            crate::util::spawn_signal_producer(session.conn(), broadcast.shutdown_token());
+        let signals = crate::util::spawn_signal_producer(&session, broadcast.shutdown_token());
 
         Self {
             session,
@@ -46,41 +45,23 @@ impl Subscription {
         &self.session
     }
 
-    /// Returns the remote broadcast for subscribing to video/audio tracks.
+    /// Returns the broadcast, for opening its video and audio tracks.
     pub fn broadcast(&self) -> &RemoteBroadcast {
         &self.broadcast
     }
 
-    /// Returns the network signals receiver for adaptive rendition selection.
+    /// Returns the transport signals, for
+    /// [`VideoTrack::enable_adaptation`](moq_media::subscribe::VideoTrack::enable_adaptation).
     pub fn signals(&self) -> &watch::Receiver<NetworkSignals> {
         &self.signals
     }
 
-    /// Subscribes to video and audio using default decoders.
-    ///
-    /// Convenience wrapper around [`RemoteBroadcast::media`].
-    pub async fn media(
-        &self,
-        audio_backend: &dyn moq_media::traits::AudioStreamFactory,
-        config: moq_media::format::PlaybackConfig,
-    ) -> n0_error::Result<moq_media::subscribe::MediaTracks> {
-        self.broadcast.media(audio_backend, config).await
+    /// Opens whichever of video and audio the broadcast carries.
+    pub async fn media(&self) -> moq_media::subscribe::MediaTracks {
+        self.broadcast.media().await
     }
 
-    /// Subscribes to video and audio with custom decoder types.
-    ///
-    /// Convenience wrapper around [`RemoteBroadcast::media_with_decoders`].
-    pub async fn media_with_decoders<D: moq_media::traits::Decoders>(
-        &self,
-        audio_backend: &dyn moq_media::traits::AudioStreamFactory,
-        config: moq_media::format::PlaybackConfig,
-    ) -> n0_error::Result<moq_media::subscribe::MediaTracks> {
-        self.broadcast
-            .media_with_decoders::<D>(audio_backend, config)
-            .await
-    }
-
-    /// Destructures into individual components.
+    /// Splits into the session, the broadcast, and the signal receiver.
     pub fn into_parts(self) -> (MoqSession, RemoteBroadcast, watch::Receiver<NetworkSignals>) {
         (self.session, self.broadcast, self.signals)
     }

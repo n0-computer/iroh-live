@@ -1,61 +1,113 @@
-# Developer Tools
+# Instrumentation and tests
 
-| Field | Value |
-|-------|-------|
-| Status | draft |
-| Applies to | moq-media-egui, iroh-live, moq-media |
+Debugging a real-time pipeline means seeing frame timing, network conditions, and
+codec behaviour while the system runs at 30 frames a second. Two pieces cover
+that: a metrics vocabulary in `moq-media` and an overlay in `moq-media-egui` that
+draws it.
 
-Debugging a real-time media pipeline requires visibility into frame
-timing, network conditions, codec behavior, and A/V sync — all while
-the system runs at 30+ fps. iroh-live includes diagnostic tools that
-surface this information: a per-tile debug overlay for live sessions,
-a metrics collection infrastructure, a frame dump utility for offline
-analysis, and network simulation via patchbay for controlled testing.
+## Metrics
 
-## Debug overlay
+`moq_media::stats` defines two primitives and groups them into typed structs, so
+there are no string keys and no registration.
 
-The `split` example includes a collapsible debug overlay rendered per video tile. When enabled, it shows a stats bar with RTT, downstream/upstream bandwidth, and frame delay as large monospace numbers. A colored dot indicates connection quality: green when RTT is under 50 ms and loss under 1%, yellow under 150 ms/5%, red otherwise.
+A `Metric` holds an exponentially smoothed current value and a ring buffer of
+history for sparklines. `MetricMeta` carries the label, the unit, the smoothing
+factor, and optional `Thresholds` that colour the value green, yellow, or red.
+`Thresholds::inverted` flips the comparison for a metric where higher is better,
+such as frame rate. A `Label` is a string that changes rarely, such as the
+decoder backend that opened.
 
-The detail panel (toggled by a button) covers the tile with a semi-transparent background and displays per-session information: remote endpoint ID, per-path connection stats (RTT, congestion window, MTU, lost packets/bytes, bandwidth, congestion events), catalog contents with the currently selected rendition, and buffering state.
+The groups are `NetStats` (round-trip time, loss, bandwidth in both directions,
+path type and address), `EncodeStats` (frame rate, encode time, bitrate, and
+labels for codec, encoder, and resolution), `RenderStats` (frame rate, decode
+time, and labels for decoder, renderer, and rendition), and `TimingStats` (audio
+buffer depth, per-path lag, and the A/V delta). `PublishStats` and
+`SubscribeStats` bundle the ones each side needs, and `Timeline` records
+per-frame arrival, decode, and render instants for the timeline panel.
 
-Per-path stats are read from `MoqSession::conn().paths().get()`, which returns a `PathInfoList`. Each `PathInfo` exposes `rtt()`, `is_selected()`, `remote_addr()`, and `stats()` with the full `PathStats` struct.
+## What is filled in today
 
-## Metrics infrastructure
+The publish path records `encode.encoder`, `encode.resolution`, `encode.encode_ms`,
+and `encode.bitrate_kbps`. `iroh-live`'s `util::spawn_stats_recorder` fills
+`NetStats` from the iroh connection's selected path every 200 ms. The egui overlay
+sets `render.rendition` from the track.
 
-`Metric` provides EMA (exponential moving average) smoothing for noisy per-frame measurements. `Label` formats metrics for display with unit suffixes. Typed metric groups (`NetStats`, `PublishStats`, `SubscribeStats`) collect related measurements. These are defined in moq-media-egui and used by the debug overlay.
+Everything else is defined and unwritten. `TimingStats`, `Timeline`, and
+`LagTracker` have no producer in this repository, so the timing panel and the
+timeline read zero. `render.decode_ms` is never recorded, and `render.fps` is
+recorded as the constant `1.0` rather than a measured rate, so it reports 1.0
+rather than a frame rate. Wiring those back up is outstanding work, not a
+configuration step.
 
-## Network simulation
+## The debug overlay
 
-The [patchbay](https://crates.io/crates/patchbay) crate (by n0-computer) provides Linux user-namespace network labs with configurable NAT topologies, routing, and link impairment (latency, loss, bandwidth caps, jitter) via tc/netem. This is the planned approach for testing the media pipeline under realistic network conditions.
+`moq_media_egui::overlay::DebugOverlay` draws a translucent bar along the bottom
+of a video tile with one clickable section per `StatCategory`: `Net`, `Capture`,
+`Render`, and `Time`. Clicking a section opens a detail panel above the bar,
+stacking upward, with each metric shown as a value, a unit, a threshold colour,
+and a sparkline once it has at least two samples.
 
-The current e2e tests in `iroh-live/tests/e2e.rs` inject synthetic `NetworkSignals` to exercise the adaptive rendition switching algorithm without requiring network namespaces. The `adaptive_rendition_switching` test verifies that the adaptation logic correctly downgrades and upgrades renditions when signal values change.
+`irl publish --preview` enables the `Capture` and `Net` categories; `irl watch`
+enables `Net`, `Render`, and `Time`.
 
-patchbay integration would add kernel-level packet impairment that affects the actual QUIC congestion controller, NAT traversal testing across different topologies, and verification that sessions fall back to relay when direct connectivity fails.
+The `Time` category also draws a timeline panel over a ten-second window: a
+latency graph, one lane of video frame boxes coloured by inter-frame gap with a
+white edge on keyframes, an audio lane, an A/V offset lane around a zero line, and
+sparklines for audio buffer depth and round-trip time. The mouse wheel scrolls
+back in time and switches the indicator from `LIVE` to `PAUSED`; a double click
+returns to live. It reads `Timeline`, so it stays empty until something records
+into it.
 
-## frame_dump example
+## Tests
 
-The `frame_dump` example captures frames from a live broadcast and saves them as PNGs for visual inspection. It can also verify frames against the expected SMPTE test pattern by computing PSNR on the color bar region.
+`iroh-live/tests/e2e.rs` runs three tests over a real QUIC connection between two
+iroh endpoints. Every source is generated, so no camera, microphone, or speaker is
+needed, but the codecs are real: openh264 and Opus encode and decode, and the
+bytes cross an actual transport. `publish_subscribe_video` asserts five frames
+with non-zero size and non-decreasing timestamps. `publish_subscribe_audio`
+decodes through `moq_audio::decode::Consumer` rather than the playback engine, so
+it proves the transport and the codec without needing an output device.
+`adaptive_rendition_switching` drives the adaptation loop with made-up
+`NetworkSignals` and asserts the downgrade lands.
+
+`iroh-rooms/tests/room.rs` covers discovery, subscription, chat, and peer
+departure. Nothing there touches media: the broadcasts carry a plain data track
+with hand-written frames, since `iroh-rooms` has no media dependency.
+
+`iroh-live-relay/tests/relay_bridge.rs` covers bridging between the WebTransport
+and iroh sides of the relay. `tests/e2e-browser/` is a Playwright suite that
+builds the relay and the CLI, serves the embedded web client, and watches a
+stream in Chromium.
+
+`iroh-live/tests/patchbay.rs` is the only place anything impairs a link. It puts
+the publisher and the subscriber in separate network namespaces with a router
+between them and applies netem latency, jitter and loss, so the impairment
+reaches QUIC rather than being described to the pipeline after the fact. Two
+tests hold the delivery cadence to account across a latency ramp and a loss
+spike; `adaptation_follows_a_real_link` runs the whole adaptive chain, from
+dropped packets through QUIC's loss detection and the path stats the signal
+producer samples to a rendition downgrade, and back up once the loss clears;
+`a_switch_does_not_blank_the_picture` holds the decode supervisor to its overlap,
+that a replacement decoder takes over on its own first frame rather than after
+the incumbent is gone. It is Linux-only and needs unprivileged user namespaces,
+set up from an ELF initialiser before the harness has a second thread. nextest
+gives the binary a single-threaded group of its own, because the timing
+assertions do not survive sharing a machine with the rest of the suite.
 
 ```sh
-# Publish a test pattern
-cargo run -p iroh-live --example frame_dump -- publish
-
-# In another terminal, watch and verify
-cargo run -p iroh-live --example frame_dump -- watch <TICKET> --out /tmp/frames --verify
-
-# Generate reference PNGs without network
-cargo run -p iroh-live --example frame_dump -- reference --out /tmp/ref
+cargo make test           # cargo nextest run --locked --workspace
+cargo make test-patchbay  # the network simulation suite, including ignored tests
+cargo make test-e2e       # builds the relay and CLI, then runs Playwright
+cargo make test-full      # check-all, then both of the above
 ```
 
-The PSNR check compares each frame's color bar region against the known SMPTE bar colors, ignoring the animated bouncing line. Values above 30 dB indicate correct codec operation; below 20 dB suggests color space errors or decode failures.
+## What is gone
 
-## On-device codec testing
+The `frame_dump` example, which saved frames as PNGs and checked them against an
+SMPTE pattern by PSNR, was removed with the in-house decoder it drove. The
+`pi-zero-demo codec-test` subcommand went with the V4L2 M2M codec it tested.
 
-The `pi-zero-demo` includes a `codec-test` subcommand for testing V4L2 hardware codecs directly on the Raspberry Pi without any network involvement:
-
-```sh
-ssh pi@livepizero "./pi-zero-demo codec-test all --frames 60"
-ssh pi@livepizero "./pi-zero-demo codec-test roundtrip --frames 30 --width 1280 --height 720"
-```
-
-It exercises the encoder, decoder, and full roundtrip at configurable resolutions, reports frame rates, and can save decoded frames for visual inspection.
+The patchbay suite went the same way when the pipeline it drove was replaced, but
+it is back, rewritten against the new one; the A/V sync measurements it also
+carried are not, because the timestamping audio backend they sampled has no
+counterpart yet.

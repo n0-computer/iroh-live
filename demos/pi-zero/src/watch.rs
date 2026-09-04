@@ -1,47 +1,42 @@
-//! EGL/GLES2 video viewer — windowed (winit) or direct-to-HDMI (DRM/KMS).
+//! EGL/GLES2 video viewer - windowed (winit) or direct-to-HDMI (DRM/KMS).
 //!
-//! Uses [`GlesRenderer`] from `rusty-codecs` for GLES2 rendering. The DRM
-//! and windowed display backends handle EGL context + buffer swapping.
+//! Uses [`GlesRenderer`] for GLES2 rendering. The
+//! DRM and windowed display backends handle EGL context + buffer swapping.
 
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use glow::HasContext;
-use iroh_live::{
-    media::{format::VideoFrame, subscribe::VideoTrack},
-    moq::MoqSession,
-};
-use rusty_codecs::render::gles::GlesRenderer;
+use iroh_live::{media::subscribe::VideoTrack, moq::MoqSession};
+use moq_video::Frame;
+use n0_future::{StreamExt, boxed::BoxStream};
 
-/// Poll interval between frame checks (≈250 fps ceiling).
+use crate::gles::GlesRenderer;
+
+/// Poll interval between frame checks (about 250 fps ceiling).
+#[cfg(feature = "windowed")]
 const POLL_INTERVAL: Duration = Duration::from_millis(4);
 
-/// Uploads the current frame (if new) and returns whether a new frame was uploaded.
+/// Uploads the newest frame, if one arrived since the last call, and reports
+/// whether it did.
+///
+/// `VideoTrack::take` already implements "only if new", so there is no
+/// timestamp bookkeeping to do here.
+#[cfg(feature = "windowed")]
 fn try_upload_frame(
     renderer: &mut GlesRenderer,
-    track: &mut VideoTrack,
-    last_ts: &mut Option<Duration>,
+    track: &VideoTrack,
     frame_count: &mut u64,
 ) -> bool {
-    let frame = track.try_recv();
-    let is_new = frame
-        .as_ref()
-        .is_some_and(|f| last_ts.is_none_or(|prev| f.timestamp != prev));
-
-    if is_new && let Some(f) = &frame {
-        *last_ts = Some(f.timestamp);
-        *frame_count += 1;
-        if *frame_count <= 3 {
-            tracing::info!(
-                frame = *frame_count,
-                w = f.width(), h = f.height(),
-                format = ?std::mem::discriminant(&f.data),
-                "decoding frame"
-            );
-        }
-        unsafe { renderer.upload_frame(f) };
+    let Some(frame) = track.take() else {
+        return false;
+    };
+    *frame_count += 1;
+    if *frame_count <= 3 {
+        tracing::info!(frame = *frame_count, size = %frame.size(), "decoding frame");
     }
-    is_new
+    unsafe { renderer.upload_frame(frame) };
+    true
 }
 
 /// Prints FPS and RTT stats every second.
@@ -68,15 +63,15 @@ fn print_stats(
         .map(|p| p.rtt())
         .unwrap_or_default();
     println!(
-        "fps: {fps:.0}  rtt: {}ms  decoder: {}",
+        "fps: {fps:.0}  rtt: {}ms  rendition: {}",
         rtt.as_millis(),
-        track.decoder_name(),
+        track.rendition(),
     );
 }
 
-// ── DRM/KMS direct-to-HDMI ────────────────────────────────────────
+// --- DRM/KMS direct-to-HDMI ---
 
-// ── DRM display setup (shared by run_drm + run_fb_demo) ───────────
+// --- DRM display setup (shared by run_drm + run_fb_demo) ---
 
 use std::os::fd::AsFd;
 
@@ -116,7 +111,7 @@ impl VtGuard {
         // KD_GRAPHICS = 0x01, KDSETMODE = 0x4B3A
         let ret = unsafe { libc::ioctl(tty.as_raw_fd(), 0x4B3A, 0x01) };
         if ret != 0 {
-            tracing::warn!("KDSETMODE(KD_GRAPHICS) failed — console text may remain visible");
+            tracing::warn!("KDSETMODE(KD_GRAPHICS) failed - console text may remain visible");
         }
 
         Ok(Self(tty))
@@ -131,7 +126,7 @@ impl Drop for VtGuard {
     }
 }
 
-/// DRM/KMS + GBM + EGL display — owns all GPU resources for direct HDMI output.
+/// DRM/KMS + GBM + EGL display - owns all GPU resources for direct HDMI output.
 struct DrmDisplay {
     renderer: GlesRenderer,
     egl: khronos_egl::DynamicInstance<khronos_egl::EGL1_4>,
@@ -171,7 +166,7 @@ impl DrmDisplay {
         let vt = match VtGuard::activate() {
             Ok(vt) => Some(vt),
             Err(e) => {
-                tracing::warn!(%e, "VT switch failed — may need root or a linux console");
+                tracing::warn!(%e, "VT switch failed - may need root or a linux console");
                 None
             }
         };
@@ -302,7 +297,7 @@ impl DrmDisplay {
 
         let renderer = unsafe { GlesRenderer::new(gl)? };
 
-        // Initial black frame → set CRTC mode.
+        // Initial black frame, then set the CRTC mode.
         unsafe { renderer.draw(width as i32, height as i32) };
         egl.swap_buffers(egl_display, egl_surface)
             .context("initial swap")?;
@@ -317,7 +312,7 @@ impl DrmDisplay {
             .add_planar_framebuffer(&front_bo, drm::control::FbCmd2Flags::MODIFIERS)
             .context("addfb")?;
         // Get the CRTC's currently active mode (set by the kernel console).
-        // Using this exact mode avoids EINVAL from vc4's atomic check — the
+        // Using this exact mode avoids EINVAL from vc4's atomic check - the
         // mode was already validated when the console set it up.
         let crtc_info = gbm_device.get_crtc(crtc).context("get_crtc")?;
         let active_mode = crtc_info.mode().context("CRTC has no active mode")?;
@@ -386,19 +381,19 @@ impl DrmDisplay {
     }
 }
 
-// ── DRM render loops ───────────────────────────────────────────────
+// --- DRM render loops ---
 
 /// Renders a remote broadcast to HDMI via DRM/KMS + GBM + EGL + GLES2.
 ///
 /// Spawns a dedicated render thread so the tokio runtime stays free for
 /// packet ingestion and decode. Frames are forwarded via a bounded channel.
-pub(crate) async fn run_drm(mut video_track: VideoTrack, _session: MoqSession) -> Result<()> {
+pub(crate) async fn run_drm(video_track: VideoTrack, _session: MoqSession) -> Result<()> {
     use tokio::sync::mpsc as tokio_mpsc;
 
     // Channel from async world (frame producer) to render thread (consumer).
-    let (frame_tx, frame_rx) = tokio_mpsc::channel::<VideoFrame>(4);
+    let (frame_tx, frame_rx) = tokio_mpsc::channel::<Frame>(4);
 
-    // Render thread — owns DRM display, receives frames, renders.
+    // Render thread - owns DRM display, receives frames, renders.
     let render_handle = std::thread::Builder::new()
         .name("drm-render".into())
         .spawn(move || -> Result<()> {
@@ -409,20 +404,16 @@ pub(crate) async fn run_drm(mut video_track: VideoTrack, _session: MoqSession) -
 
             println!("ctrl-c to quit");
 
-            loop {
-                // Block until a frame arrives (or channel closes).
-                let Some(frame) = frame_rx.blocking_recv() else {
-                    break; // channel closed, exit
-                };
-
-                // Drain any newer frames — display the latest.
+            // Blocks until a frame arrives; ends when the channel closes.
+            while let Some(frame) = frame_rx.blocking_recv() {
+                // Drain any newer frames - display the latest.
                 let mut latest = frame;
                 while let Ok(newer) = frame_rx.try_recv() {
                     latest = newer;
                 }
 
                 frame_count += 1;
-                unsafe { disp.renderer.upload_frame(&latest) };
+                unsafe { disp.renderer.upload_frame(latest) };
                 disp.flip()?;
 
                 let elapsed = fps_last.elapsed();
@@ -438,8 +429,8 @@ pub(crate) async fn run_drm(mut video_track: VideoTrack, _session: MoqSession) -
         })
         .context("spawn render thread")?;
 
-    // Async frame pump — runs on tokio, feeds the render thread.
-    while let Some(frame) = video_track.next_frame().await {
+    // Async frame pump - runs on tokio, feeds the render thread.
+    while let Some(frame) = video_track.recv().await {
         if frame_tx.send(frame).await.is_err() {
             break; // render thread exited
         }
@@ -451,22 +442,18 @@ pub(crate) async fn run_drm(mut video_track: VideoTrack, _session: MoqSession) -
     Ok(())
 }
 
-/// Renders a local [`VideoTrack`] (e.g. TestVideoSource) to HDMI — no network needed.
-pub(crate) fn run_fb_demo(mut video_track: VideoTrack) -> Result<()> {
+/// Renders a generated frame stream (e.g. [`moq_media::test_source`]) to HDMI
+/// - no network needed.
+pub(crate) async fn run_fb_demo(mut frames: BoxStream<Frame>) -> Result<()> {
     let mut disp = DrmDisplay::init()?;
-    let mut last_ts: Option<Duration> = None;
     let mut frame_count = 0u64;
     let mut fps_last = Instant::now();
 
     println!("fb-demo running, ctrl-c to quit");
 
-    loop {
-        try_upload_frame(
-            &mut disp.renderer,
-            &mut video_track,
-            &mut last_ts,
-            &mut frame_count,
-        );
+    while let Some(frame) = frames.next().await {
+        frame_count += 1;
+        unsafe { disp.renderer.upload_frame(frame) };
         disp.flip()?;
 
         let elapsed = fps_last.elapsed();
@@ -476,12 +463,12 @@ pub(crate) fn run_fb_demo(mut video_track: VideoTrack) -> Result<()> {
             fps_last = Instant::now();
             println!("fps: {fps:.0}");
         }
-
-        std::thread::sleep(POLL_INTERVAL);
     }
+
+    Ok(())
 }
 
-// ── Windowed (glutin + winit) ──────────────────────────────────────
+// --- Windowed (glutin + winit) ---
 
 /// Renders video in a window using glutin + winit + GLES2.
 #[cfg(feature = "windowed")]
@@ -516,7 +503,6 @@ pub(crate) fn run_windowed(
         video_track: VideoTrack,
         session: MoqSession,
         fullscreen: bool,
-        last_ts: Option<Duration>,
         frame_count: u64,
         fps_last: Instant,
     }
@@ -558,8 +544,10 @@ pub(crate) fn run_windowed(
 
             let size = window.inner_size();
             let (w, h) = (
-                NonZeroU32::new(size.width.max(1)).unwrap(),
-                NonZeroU32::new(size.height.max(1)).unwrap(),
+                // `max(1)` is what makes these non-zero, so the surface still
+                // resizes to something legal when the window reports 0x0.
+                NonZeroU32::new(size.width.max(1)).expect("max(1) is non-zero"),
+                NonZeroU32::new(size.height.max(1)).expect("max(1) is non-zero"),
             );
             let surface_attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(raw, w, h);
             let surface = unsafe {
@@ -608,8 +596,8 @@ pub(crate) fn run_windowed(
                     if let (Some(surface), Some(context)) = (&self.surface, &self.context) {
                         surface.resize(
                             context,
-                            NonZeroU32::new(size.width.max(1)).unwrap(),
-                            NonZeroU32::new(size.height.max(1)).unwrap(),
+                            NonZeroU32::new(size.width.max(1)).expect("max(1) is non-zero"),
+                            NonZeroU32::new(size.height.max(1)).expect("max(1) is non-zero"),
                         );
                     }
                 }
@@ -621,14 +609,15 @@ pub(crate) fn run_windowed(
                     let Some(surface) = &self.surface else { return };
                     let Some(context) = &self.context else { return };
 
-                    try_upload_frame(
-                        renderer,
-                        &mut self.video_track,
-                        &mut self.last_ts,
-                        &mut self.frame_count,
-                    );
+                    try_upload_frame(renderer, &self.video_track, &mut self.frame_count);
 
-                    let window = self.window.as_ref().unwrap();
+                    // The renderer, surface and context above are only ever set
+                    // alongside the window, so reaching here without one is a
+                    // bug in this setup rather than a state to handle.
+                    let window = self
+                        .window
+                        .as_ref()
+                        .expect("a window, since the GL context exists");
                     let size = window.inner_size();
                     unsafe {
                         renderer.draw(size.width as i32, size.height as i32);
@@ -662,7 +651,6 @@ pub(crate) fn run_windowed(
         video_track,
         session,
         fullscreen,
-        last_ts: None,
         frame_count: 0,
         fps_last: Instant::now(),
     };

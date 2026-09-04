@@ -1,55 +1,54 @@
 # iroh-live
 
-High-level API for live audio/video sessions over [iroh](https://github.com/n0-computer/iroh).
+Live audio and video over [iroh](https://github.com/n0-computer/iroh).
 
-`iroh-live` ties together the MoQ transport, media pipelines, and connection management into three progressively higher-level abstractions:
+`Live` binds an iroh `Endpoint` to a MoQ transport. `Live::publish` hands back a
+broadcast every connected peer can subscribe to, `Live::subscribe` reaches one a
+peer publishes, and `Call` is 1:1 sugar over the two. The media comes from
+[`moq-media`](../moq-media), re-exported here as `iroh_live::media`.
 
-- **`Live`** is the entry point. It creates an iroh endpoint, manages sessions, and publishes and subscribes to broadcasts.
-- **`Call`** provides 1:1 call convenience, handling the handshake of publishing your own media and subscribing to the remote peer's.
-- **`rooms::Room`** coordinates multi-party rooms with gossip-based participant discovery. Each participant publishes into the room and subscribes to everyone else.
-
-## Usage
-
-Publish a camera broadcast:
+## Publishing
 
 ```rust
-use iroh::Endpoint;
-use iroh_live::Live;
-use iroh_live::media::publish::LocalBroadcast;
+use iroh_live::{Live, media::{audio, video}, ticket::LiveTicket};
 
-let endpoint = Endpoint::builder().discovery_n0().bind().await?;
-let live = Live::builder(endpoint).spawn_with_router();
+let live = Live::from_env().await?.with_router().spawn();
+let broadcast = live.publish("hello")?;
 
-let broadcast = LocalBroadcast::new();
-// configure video/audio sources on the broadcast...
-live.publish("my-stream", &broadcast).await?;
+broadcast.video().set(video::capture::Config::default())?;
+broadcast.audio().set(audio::capture::Config::default());
+
+println!("{}", LiveTicket::new(live.endpoint().addr(), "hello"));
 ```
 
-Subscribe to a remote broadcast:
+Publishing is node-wide. A broadcast is created on the endpoint's origin and
+announced to every peer with a session, so connecting to a relay later is enough
+to reach it there.
+
+## Subscribing
 
 ```rust
-let (_session, remote) = live.subscribe(remote_addr, "my-stream").await?;
-let video = remote.video()?;
-// video.try_recv() returns the latest decoded VideoFrame
+let sub = live.subscribe(ticket.endpoint, &ticket.broadcast_name).await?;
+let tracks = sub.media().await;
 ```
+
+`Subscription` bundles the MoQ session, the `RemoteBroadcast`, and a receiver of
+transport signals, with the stats recorder and the signal producer already wired
+up. Hand the signals to `VideoTrack::enable_adaptation` to follow the downlink.
+
+## Rooms
+
+Rooms live in [`iroh-rooms`](../iroh-rooms). What they need from here is the
+gossip instance, which `LiveBuilder::with_gossip()` creates and
+`Live::gossip()` returns.
 
 ## Feature flags
 
-| Feature | Default | Description |
-|---------|---------|-------------|
-| `h264` | yes | H.264 codec via openh264 |
-| `opus` | yes | Opus audio codec |
-| `av1` | yes | AV1 codec via rav1e/rav1d |
-| `capture` | yes | Camera and screen capture |
-| `vaapi` | | Linux VA-API hardware codecs |
-| `v4l2` | | V4L2 hardware codecs (Raspberry Pi) |
-| `videotoolbox` | | macOS VideoToolbox hardware codecs |
-| `wgpu` | | GPU-accelerated rendering |
-| `dmabuf-import` | | Zero-copy DMA-BUF texture import (Linux/Vulkan) |
-| `pcm` | | Raw PCM audio (no encoding) |
-| `jack` | | JACK audio backend via cpal |
-| `android` | | Android MediaCodec + CameraX support |
+All pass through to `moq-media`: `capture` and `render` by default, plus
+`playback`, `aec`, `pipewire`, `vaapi`, and `nvidia`.
 
 ## Examples
 
-See the [examples directory](examples/) and the [main README](../README.md) for a walkthrough.
+`examples/publish.rs` publishes a camera and a microphone, with a simulcast
+ladder behind `--simulcast`. `examples/subscribe_test.rs` is the test helper the
+browser end-to-end suite uses.

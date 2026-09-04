@@ -5,17 +5,12 @@ use iroh::{
     protocol::{Router, RouterBuilder},
 };
 use iroh_gossip::Gossip;
-use iroh_moq::{Moq, MoqProtocolHandler, MoqSession};
-use moq_media::{
-    format::PlaybackConfig,
-    publish::LocalBroadcast,
-    subscribe::{MediaTracks, RemoteBroadcast},
-    traits::AudioStreamFactory,
-};
+use iroh_moq::{Moq, MoqProtocolHandler};
+use moq_media::{publish::LocalBroadcast, subscribe::RemoteBroadcast};
 use n0_error::Result;
 use tracing::{error, info, instrument};
 
-use crate::rooms::{Room, RoomTicket};
+use crate::util::LanPresence;
 
 /// Entry point for iroh-live. Manages the iroh [`Endpoint`], MoQ transport,
 /// and optionally [`Gossip`] for room membership.
@@ -48,29 +43,46 @@ pub struct Live {
 pub struct LiveBuilder {
     #[debug(skip)]
     endpoint: Endpoint,
-    #[debug(skip)]
-    gossip: Option<Gossip>,
-    with_gossip: bool,
+    gossip: GossipChoice,
     with_router: bool,
+}
+
+/// Where the [`Gossip`] instance comes from, if there is one.
+///
+/// One choice rather than an `Option` beside a flag, so the last call wins and
+/// no combination of [`LiveBuilder::with_gossip`] and [`LiveBuilder::gossip`]
+/// can mean two things at once.
+#[derive(Debug, Default)]
+enum GossipChoice {
+    /// Rooms are not in use, so nothing is spawned or mounted.
+    #[default]
+    Disabled,
+    /// Spawn one on the endpoint when the builder does.
+    Internal,
+    /// Use the caller's, which they already spawned.
+    External(#[debug(skip)] Gossip),
 }
 
 impl LiveBuilder {
     /// Enables gossip, which is required for room membership.
     ///
-    /// Creates a [`Gossip`] instance internally and mounts it on the
-    /// [`Router`] if [`with_router`](Self::with_router) is also set.
+    /// Spawns a [`Gossip`] instance on the endpoint and mounts it on the
+    /// [`Router`] if [`with_router`](Self::with_router) is also set. Overrides
+    /// an earlier [`gossip`](Self::gossip).
     pub fn with_gossip(mut self) -> Self {
-        self.with_gossip = true;
+        self.gossip = GossipChoice::Internal;
         self
     }
 
-    /// Sets an externally-managed [`Gossip`] instance.
+    /// Uses a [`Gossip`] instance the caller already spawned.
     ///
-    /// Use this instead of [`with_gossip`](Self::with_gossip) when you manage
-    /// gossip yourself. You are responsible for mounting it on your own router.
+    /// The alternative to [`with_gossip`](Self::with_gossip), and it overrides
+    /// an earlier call to it. Mounting still follows
+    /// [`with_router`](Self::with_router): the builder's own router mounts
+    /// whichever instance it ends up with, and a caller running its own router
+    /// mounts it there through [`Live::register_protocols`].
     pub fn gossip(mut self, gossip: Gossip) -> Self {
-        self.gossip = Some(gossip);
-        self.with_gossip = false;
+        self.gossip = GossipChoice::External(gossip);
         self
     }
 
@@ -91,13 +103,11 @@ impl LiveBuilder {
 
     /// Consumes the builder and creates a [`Live`] instance.
     pub fn spawn(self) -> Live {
-        let gossip = self.gossip.or_else(|| {
-            if self.with_gossip {
-                Some(Gossip::builder().spawn(self.endpoint.clone()))
-            } else {
-                None
-            }
-        });
+        let gossip = match self.gossip {
+            GossipChoice::Disabled => None,
+            GossipChoice::Internal => Some(Gossip::builder().spawn(self.endpoint.clone())),
+            GossipChoice::External(gossip) => Some(gossip),
+        };
 
         let moq = Moq::new(self.endpoint.clone());
         let mut live = Live {
@@ -121,8 +131,7 @@ impl Live {
     pub fn builder(endpoint: Endpoint) -> LiveBuilder {
         LiveBuilder {
             endpoint,
-            gossip: None,
-            with_gossip: false,
+            gossip: GossipChoice::default(),
             with_router: false,
         }
     }
@@ -139,7 +148,9 @@ impl Live {
     ///
     /// Reads `IROH_SECRET` for the secret key and generates a new one if
     /// the variable is not set. The endpoint uses the [`N0`](presets::N0)
-    /// preset for relay and DNS discovery.
+    /// preset, which publishes this endpoint's addresses to pkarr and resolves
+    /// other endpoints through pkarr and DNS, plus mDNS on top of it so that a
+    /// ticket also resolves on a local network with no route to the internet.
     ///
     /// ```rust,no_run
     /// # async fn example() -> n0_error::Result<()> {
@@ -152,8 +163,11 @@ impl Live {
     /// # }
     /// ```
     pub async fn from_env() -> Result<LiveBuilder> {
-        let endpoint = Endpoint::builder(presets::N0)
-            .secret_key(crate::util::secret_key_from_env()?)
+        let builder = Endpoint::builder(presets::N0)
+            .transport_config(crate::util::transport_config())
+            .secret_key(crate::util::secret_key_from_env()?);
+        let endpoint = crate::util::with_mdns(builder, LanPresence::Announce)
+            .await
             .bind()
             .await?;
         info!(endpoint_id=%endpoint.id(), "endpoint bound");
@@ -164,8 +178,13 @@ impl Live {
     ///
     /// Use this when you manage your own [`Router`] instead of calling
     /// [`LiveBuilder::with_router`].
-    pub fn register_protocols(&self, router: RouterBuilder) -> RouterBuilder {
-        let router = router.accept(iroh_moq::ALPN, self.moq.protocol_handler());
+    pub fn register_protocols(&self, mut router: RouterBuilder) -> RouterBuilder {
+        // Every MoQ version this build speaks, not only the newest, so a peer
+        // built against a different moq release still finds one in common.
+        let handler = self.moq.protocol_handler();
+        for alpn in iroh_moq::alpns() {
+            router = router.accept(alpn, handler.clone());
+        }
         if let Some(ref gossip) = self.gossip {
             return router.accept(iroh_gossip::ALPN, gossip.clone());
         }
@@ -192,109 +211,67 @@ impl Live {
         self.moq.protocol_handler()
     }
 
-    /// Registers a broadcast so that every connected peer can subscribe to it.
+    /// Creates a media broadcast at `path`, announced to every peer.
     ///
-    /// The broadcast is published on all existing MoQ sessions immediately and
-    /// on every new session that is established afterwards, whether incoming
-    /// (accepted by the [`Router`]) or outbound (created via [`subscribe`](Self::subscribe)
-    /// or [`Moq::connect`](iroh_moq::Moq::connect)).
+    /// Configure it through [`LocalBroadcast::video`] and
+    /// [`LocalBroadcast::audio`]; peers reach it with [`subscribe`](Self::subscribe)
+    /// under the same path.
     ///
-    /// To publish on a single session instead, use
-    /// [`MoqSession::publish`](iroh_moq::MoqSession::publish) directly.
-    pub async fn publish(&self, name: impl ToString, broadcast: &LocalBroadcast) -> Result<()> {
-        self.moq.publish(name, broadcast.producer()).await
+    /// # Errors
+    ///
+    /// Fails if a broadcast already exists at `path`, or the catalog track
+    /// cannot be created.
+    pub fn publish(&self, path: impl moq_net::AsPath) -> Result<LocalBroadcast> {
+        Ok(LocalBroadcast::new(self.moq.publish(path)?)?)
     }
 
-    /// Registers a raw [`BroadcastProducer`](moq_lite::BroadcastProducer).
+    /// Creates a raw broadcast at `path`, without the media catalog.
     ///
-    /// Prefer [`publish`](Self::publish) with a [`LocalBroadcast`] for the
-    /// common case. This method exists for situations where you construct the
-    /// producer yourself, for instance when importing a media file.
+    /// For a caller writing its own tracks, such as an importer replaying a
+    /// file it already muxed.
     ///
-    /// The same session-scoping rules as [`publish`](Self::publish) apply.
-    pub async fn publish_broadcast_producer(
-        &self,
-        name: impl ToString,
-        producer: moq_lite::BroadcastProducer,
-    ) -> Result<()> {
-        self.moq.publish(name, producer).await
+    /// # Errors
+    ///
+    /// Fails if a broadcast already exists at `path`.
+    pub fn publish_raw(&self, path: impl moq_net::AsPath) -> Result<moq_net::broadcast::Producer> {
+        Ok(self.moq.publish(path)?)
     }
 
     /// Connects to a remote peer and subscribes to a named broadcast.
     ///
     /// Returns a [`Subscription`](crate::Subscription) that owns the
-    /// [`MoqSession`], [`RemoteBroadcast`], and a network signals receiver.
+    /// [`MoqSession`](iroh_moq::MoqSession), [`RemoteBroadcast`], and the
+    /// transport signals that drive rendition adaptation.
     /// Stats recording and signal production are wired up automatically.
     #[instrument("Subscribe", skip_all, fields(remote=tracing::field::Empty))]
     pub async fn subscribe(
         &self,
         remote: impl Into<EndpointAddr>,
-        broadcast_name: &str,
+        path: &str,
     ) -> Result<crate::Subscription> {
         let remote = remote.into();
         tracing::Span::current().record("remote", tracing::field::display(remote.id.fmt_short()));
-        let mut session = self.moq.connect(remote).await?;
+        let session = self.moq.connect(remote).await?;
         info!(id=%session.conn().remote_id(), "connected");
-        let consumer = session.subscribe(broadcast_name).await?;
-        let broadcast = RemoteBroadcast::new(broadcast_name, consumer).await?;
+        let consumer = session.subscribe(path).await?;
+        let broadcast = RemoteBroadcast::new(path, consumer).await?;
         Ok(crate::Subscription::new(session, broadcast))
-    }
-
-    /// Connects, subscribes, and decodes video and audio in one call.
-    ///
-    /// Uses dynamic decoder dispatch based on the codec in the catalog.
-    /// For explicit decoder selection, use
-    /// [`subscribe_media_with_decoders`](Self::subscribe_media_with_decoders).
-    pub async fn subscribe_media(
-        &self,
-        remote: impl Into<EndpointAddr>,
-        broadcast_name: &str,
-        audio_backend: &dyn AudioStreamFactory,
-        config: PlaybackConfig,
-    ) -> Result<(MoqSession, MediaTracks)> {
-        self.subscribe_media_with_decoders::<moq_media::codec::DefaultDecoders>(
-            remote,
-            broadcast_name,
-            audio_backend,
-            config,
-        )
-        .await
-    }
-
-    /// Connects, subscribes, and decodes with a specific decoder type.
-    pub async fn subscribe_media_with_decoders<D: moq_media::traits::Decoders>(
-        &self,
-        remote: impl Into<EndpointAddr>,
-        broadcast_name: &str,
-        audio_backend: &dyn AudioStreamFactory,
-        config: PlaybackConfig,
-    ) -> Result<(MoqSession, MediaTracks)> {
-        let sub = self.subscribe(remote, broadcast_name).await?;
-        let track = sub
-            .broadcast()
-            .media_with_decoders::<D>(audio_backend, config)
-            .await?;
-        let (session, _, _) = sub.into_parts();
-        Ok((session, track))
-    }
-
-    /// Joins a room using the given ticket.
-    pub async fn join_room(&self, ticket: RoomTicket) -> Result<Room> {
-        Room::new(self, ticket).await
     }
 
     /// Shuts down the [`Live`] instance.
     ///
     /// Closes all MoQ sessions, stops the [`Router`] if one was spawned, and
-    /// closes the iroh [`Endpoint`] unconditionally.
+    /// closes the iroh [`Endpoint`] unconditionally. [`Live`] is [`Clone`] and
+    /// every clone shares one endpoint, so this shuts down all of them.
     pub async fn shutdown(&self) {
         self.moq.shutdown();
         if let Some(router) = self.router.as_ref()
             && let Err(err) = router.shutdown().await
         {
-            error!("Error while shutting down the iroh router: {err:#}");
-        } else {
-            self.endpoint.close().await
+            // Report it and close anyway: leaving the endpoint open because its
+            // router complained strands the socket.
+            error!(error = %err, "failed to shut down the iroh router");
         }
+        self.endpoint.close().await;
     }
 }

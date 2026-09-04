@@ -10,10 +10,16 @@ publish = false
 
 [dependencies]
 moq-media = { workspace = true }
-anyhow = "1.0"
+moq-net = { workspace = true }
+moq-video = { workspace = true }
+n0-error = { version = "1", features = ["anyhow"] }
+n0-future = "0.3.1"
 tracing = "0.1"
 
 [target.'cfg(target_os = "android")'.dependencies]
+# The EGL and GL setup in `renderer`, which reports failures as plain messages
+# rather than a typed error the caller could act on.
+anyhow = "1"
 glow = "0.16"
 khronos-egl = { version = "6", features = ["dynamic"] }
 libc = "0.2"

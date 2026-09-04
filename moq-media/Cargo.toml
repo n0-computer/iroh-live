@@ -2,7 +2,7 @@
 name = "moq-media"
 version = "0.1.0"
 edition = "2024"
-description = "native audio and video capturing, playback, encoding, decoding"
+description = "publish and subscribe plumbing over moq-video and moq-audio"
 authors = ["Franz Heinzmann <frando@n0.computer>"]
 repository = "https://github.com/n0-computer/iroh-live"
 license = "MIT OR Apache-2.0"
@@ -11,82 +11,74 @@ license = "MIT OR Apache-2.0"
 workspace = true
 
 [dependencies]
-anyhow = "1.0.100"
+bytes = "1.11.0"
 derive_more = { version = "2.0.1", features = ["display", "debug", "eq", "deref"] }
-cpal = "0.18.1"
-fixed-resample = { version = "0.9", features = ["resampler"] }
-ringbuf = "0.4"
 hang = { workspace = true }
-image = { version = "0.25", default-features = false }
-moq-lite = { workspace = true }
+moq-audio = { workspace = true }
+moq-mux = { workspace = true }
+moq-net = { workspace = true }
+moq-video = { workspace = true }
 n0-error = { version = "1", features = ["anyhow"] }
 n0-future = "0.3.1"
 n0-watcher = "1"
-rusty-codecs = { workspace = true, features = ["hang"] }
-strum = { version = "0.28", features = ["derive"] }
-tokio = { version = "1.48.0", features = ["sync"] }
-tokio-util = "0.7.17"
-tracing = "0.1.41"
-rusty-capture = { workspace = true, optional = true }
-sonora = { version = "0.1" }
-symphonia = { version = "0.5", default-features = false, features = ["pcm", "mp3", "wav"] }
-rubato = "1.0"
-audioadapter-buffers = "2.0"
-bytes = "1.11.0"
-throttled-tracing = "0.1.0"
-serde_with = "3.21.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
-moq-mux.workspace = true
+serde_with = "3.21.0"
+strum = { version = "0.28", features = ["derive"] }
+throttled-tracing = "0.1.0"
+tokio = { version = "1.48.0", features = ["sync", "time"] }
+tokio-util = "0.7.17"
+tracing = "0.1.41"
 
-[target.'cfg(target_os = "linux")'.dependencies]
-cros-codecs = { version = "0.0.6", optional = true, features = ["vaapi"] }
-
-[target.'cfg(target_os = "macos")'.dependencies]
+# The audio file source. moq-audio pulls symphonia only for raw AAC-LC frames
+# off the wire, so it has no container reader we could use instead. No resampler
+# here: the encoder is told the file's own rate and converts once.
+symphonia = { version = "0.5", default-features = false, features = ["pcm", "mp3", "wav"] }
 
 [dev-dependencies]
-buf-list = "1.1"
-clap = { version = "4.5", features = ["derive"] }
-eframe = { version = "0.33.0", default-features = false, features = ["default_fonts", "wgpu"] }
-egui-wgpu = "0.33.0"
-moq-media-egui = { workspace = true }
-pollster = "0.4"
-image = { version = "0.25", features = ["jpeg"] }
-postcard = "1.1.3"
-rusty-capture = { workspace = true }
 tokio = { version = "1.48.0", features = ["full"] }
 tracing-subscriber = "0.3.20"
-wgpu = { version = "27", default-features = false, features = ["wgsl", "vulkan"] }
-
-# Enable test-util in rusty-codecs for unit tests that use codec::test_util.
-rusty-codecs = { workspace = true, features = ["test-util"] }
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-eframe = { version = "0.33.0", default-features = false, features = ["wayland", "x11"] }
 
 [features]
-default = ["h264", "opus", "capture"]
-android = ["rusty-codecs/android"]
-av1 = ["rusty-codecs/av1"]
-
-capture = ["capture-camera", "capture-screen", "pipewire"]
-capture-camera = ["dep:rusty-capture", "rusty-capture/v4l2", "rusty-capture/camera-apple"]
-capture-screen = ["dep:rusty-capture", "rusty-capture/screen-apple"]
-capture-all = ["dep:rusty-capture", "rusty-capture/all"]
-
-dmabuf-import = ["wgpu", "rusty-codecs/dmabuf-import"]
-gles = ["rusty-codecs/gles"]
-gles-dmabuf = ["gles", "rusty-codecs/gles-dmabuf"]
-h264 = ["rusty-codecs/h264"]
-metal-import = ["wgpu", "rusty-codecs/metal-import"]
-opus = ["rusty-codecs/opus"]
-pcm = ["rusty-codecs/pcm"]
-pipewire = ["dep:rusty-capture", "rusty-capture/pipewire"]
-nokhwa = ["dep:rusty-capture", "rusty-capture/nokhwa"]
-xcap = ["dep:rusty-capture", "rusty-capture/xcap"]
-test-util = ["rusty-codecs/test-util"]
-v4l2 = ["rusty-codecs/v4l2"]
-vaapi = ["rusty-codecs/vaapi", "dep:cros-codecs"]
-videotoolbox = ["rusty-codecs/videotoolbox"]
-jack = ["cpal/jack"]
-wgpu = ["rusty-codecs/wgpu"]
+default = ["capture", "sound-server"]
+# Camera, screen, and microphone capture. Off for a build that only publishes
+# frames it produces itself (a file source, an Android app pushing camera
+# buffers), since the device stack adds V4L2 and ALSA build dependencies on
+# Linux.
+capture = ["moq-video/capture", "moq-audio/capture"]
+# Speaker output, for anything that plays audio rather than only publishing it.
+playback = ["moq-audio/playback"]
+# Reach devices through the Linux sound server rather than through its ALSA
+# compatibility plugin. cpal prefers PipeWire, then PulseAudio, then ALSA, and
+# each check happens at runtime, so a build with this on still runs where
+# neither is present. On by default because a desktop has one of them and the
+# ALSA view of the same hardware is barely usable: a card's subdevices are
+# listed many times over under one description, and streams appear under the
+# plugin's name instead of ours.
+sound-server = ["moq-audio/pipewire", "moq-audio/pulseaudio"]
+# Acoustic echo cancellation: subtracts the output mix from the microphone, so a
+# handset on speakerphone stops publishing its own audio back.
+aec = ["capture", "playback", "moq-audio/aec"]
+# Linux screen capture through xdg-desktop-portal and PipeWire. Links
+# libpipewire-0.3 at build time, so it stays opt-in.
+pipewire = ["capture", "moq-video/pipewire"]
+# GPU rendering of decoded frames. Pulls a graphics stack, so only a build that
+# actually draws video turns it on.
+render = ["moq-video/render"]
+# Raspberry Pi camera capture by driving `rpicam-vid` and publishing the H.264
+# it already encoded. Linux only, and it needs `rpicam-vid` on PATH at runtime.
+rpicam = ["tokio/process", "tokio/io-util"]
+# Generated video and audio sources, so a test can publish over a real
+# transport without a camera or a microphone.
+test-source = ["tokio/time"]
+# Intel and AMD hardware H.264 encoding.
+vaapi = ["moq-video/vaapi"]
+# NVIDIA hardware encode and decode. On by default upstream; off here so a
+# default build stays free of the CUDA graph.
+nvidia = ["moq-video/nvidia"]
+# The V4L2 stateful memory-to-memory H.264 encoder and decoder that most ARM
+# SoCs expose, a Raspberry Pi's VideoCore among them. Off by default because
+# upstream has never validated either backend on real hardware, and because a
+# host with no M2M codec node fails at open, which is what makes automatic
+# backend selection fall through to the next candidate.
+v4l2 = ["moq-video/v4l2"]

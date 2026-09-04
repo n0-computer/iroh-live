@@ -1,0 +1,39 @@
+# systemd user unit for the pi-zero publisher.
+#
+# `install-service.sh` puts this in place, generates the secret key and enables
+# lingering. To install it by hand instead:
+#
+#   install -m 700 -d ~/.config/pi-zero-demo
+#   umask 077 && printf 'IROH_SECRET=%s\n' "$(openssl rand -hex 32)" \
+#       > ~/.config/pi-zero-demo/env
+#   install -Dm644 pi-zero-demo.service ~/.config/systemd/user/pi-zero-demo.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now pi-zero-demo
+#   sudo loginctl enable-linger "$USER"   # start at boot, not at login
+#
+# There is no `After=network-online.target`: that is a system unit, and a user
+# manager cannot order against it. The endpoint therefore binds before WiFi has
+# associated and picks up its addresses as the interface arrives.
+
+[Unit]
+Description=iroh-live pi-zero camera publisher
+Documentation=https://github.com/n0-computer/iroh-live
+
+[Service]
+Type=exec
+WorkingDirectory=%h
+EnvironmentFile=%h/.config/pi-zero-demo/env
+Environment=RUST_LOG=info
+# PI_ZERO_DEMO_ARGS comes from the environment file, so options such as
+# --epaper can be added without editing this unit.
+ExecStart=%h/pi-zero-demo publish --name pi-zero $PI_ZERO_DEMO_ARGS
+Restart=always
+# With --epaper, raise this to 180 or more: the panel is refreshed once at
+# startup, and its datasheet asks for 180 s between refreshes.
+RestartSec=10
+# A camera that is not ready yet, or WiFi that has not associated, should not
+# make the unit give up for good.
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=default.target

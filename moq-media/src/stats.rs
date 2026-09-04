@@ -1,10 +1,16 @@
-//! Typed metrics infrastructure for debug overlays.
+//! The counters a debug overlay draws.
 //!
-//! Each observable value is a [`Metric`] (EMA-smoothed current value +
-//! ring buffer history for sparklines) or a [`Label`] (atomic string).
-//! These are grouped into typed structs ([`NetStats`], [`EncodeStats`],
-//! [`RenderStats`], [`TimingStats`]) that the pipelines write to and
-//! the overlay reads from. No string keys, no registration.
+//! An observable value is either a [`Metric`], which keeps a smoothed current
+//! reading alongside a ring buffer of samples for a sparkline, or a [`Label`],
+//! which is a string. Both are cheap to clone and safe to write from any
+//! thread, so a pipeline holds its own handle rather than reaching for a
+//! registry.
+//!
+//! They are grouped by where they come from: [`NetStats`] from the transport,
+//! [`EncodeStats`] from the publish path, [`RenderStats`] and [`TimingStats`]
+//! from the subscribe path. No string keys and no registration, so a metric
+//! that nothing writes is visible as an unused field rather than as an empty
+//! row at runtime.
 
 use std::{
     collections::VecDeque,
@@ -15,16 +21,21 @@ use std::{
     time::{Duration, Instant},
 };
 
-// ── Metric ──────────────────────────────────────────────────────────
+// --- Metric ----------------------------------------------------------
 
 /// Static metadata for display and thresholds.
 #[derive(Debug, Clone, Copy)]
 pub struct MetricMeta {
+    /// The name the overlay draws.
     pub label: &'static str,
+    /// The unit suffix, or the empty string for a bare count.
     pub unit: &'static str,
+    /// Weight given to each new sample by the exponential moving average, in
+    /// `0.0..=1.0`. Lower is smoother and slower to move.
     pub alpha: f64,
+    /// How many samples the history ring buffer keeps for a sparkline.
     pub history_cap: usize,
-    /// Color thresholds. `None` = always white.
+    /// Color thresholds, or `None` to draw the value unconditionally.
     pub thresholds: Option<Thresholds>,
 }
 
@@ -40,6 +51,9 @@ pub struct Thresholds {
 }
 
 impl MetricMeta {
+    /// Metadata for a value worth reading as a trend rather than a reading,
+    /// such as a bitrate.
+    #[must_use]
     pub const fn smooth(label: &'static str, unit: &'static str) -> Self {
         Self {
             label,
@@ -49,6 +63,9 @@ impl MetricMeta {
             thresholds: None,
         }
     }
+    /// Metadata for a value that should follow what just happened, such as a
+    /// frame rate.
+    #[must_use]
     pub const fn responsive(label: &'static str, unit: &'static str) -> Self {
         Self {
             label,
@@ -58,6 +75,11 @@ impl MetricMeta {
             thresholds: None,
         }
     }
+    /// Returns the metadata with color thresholds attached.
+    ///
+    /// Set `inverted` for a metric where a higher value is the better one, such
+    /// as a frame rate.
+    #[must_use]
     pub const fn with_thresholds(mut self, good: f64, warn: f64, inverted: bool) -> Self {
         self.thresholds = Some(Thresholds {
             good,
@@ -91,6 +113,7 @@ impl std::fmt::Debug for Metric {
 }
 
 impl Metric {
+    /// Creates a metric with no samples yet.
     pub fn new(meta: MetricMeta) -> Self {
         Self {
             inner: Arc::new(MetricInner {
@@ -102,11 +125,12 @@ impl Metric {
         }
     }
 
-    /// Records a sample. Briefly locks history ring buffer.
+    /// Records a sample.
     ///
-    /// The current-value EMA update is not fully atomic across concurrent
-    /// writers. In practice each Metric has a single writer (one pipeline
-    /// thread), so this is benign.
+    /// The smoothed value is read and written separately rather than under one
+    /// lock, so two concurrent writers can lose an update between them. Every
+    /// metric here has one writer, and a debug overlay is not worth a lock on
+    /// the encode path.
     pub fn record(&self, value: f64) {
         let count = self.inner.sample_count.fetch_add(1, Ordering::Relaxed);
         let smoothed = if count == 0 {
@@ -120,7 +144,7 @@ impl Metric {
             .current
             .store(smoothed.to_bits(), Ordering::Relaxed);
 
-        let mut hist = self.inner.history.lock().expect("metric history lock");
+        let mut hist = self.inner.history.lock().expect("poisoned");
         if hist.len() >= self.inner.meta.history_cap {
             hist.pop_front();
         }
@@ -135,7 +159,7 @@ impl Metric {
     /// Copies history into `out`, clearing it first. Reuses the Vec allocation.
     pub fn history_into(&self, out: &mut Vec<(Instant, f64)>) {
         out.clear();
-        let hist = self.inner.history.lock().expect("history lock");
+        let hist = self.inner.history.lock().expect("poisoned");
         out.extend(hist.iter().copied());
     }
 
@@ -146,10 +170,13 @@ impl Metric {
         v
     }
 
+    /// Returns how this metric should be labelled and colored.
     pub fn meta(&self) -> &MetricMeta {
         &self.inner.meta
     }
 
+    /// Reports whether anything has been recorded, so a caller can draw a
+    /// placeholder rather than a confident zero.
     pub fn has_samples(&self) -> bool {
         self.inner.sample_count.load(Ordering::Relaxed) > 0
     }
@@ -161,6 +188,10 @@ impl Metric {
 
     /// Records an FPS sample from the gap since the previous event. Ignores
     /// gaps shorter than 5ms to avoid division noise.
+    ///
+    /// Prefer [`Rate`] for anything a person reads. One gap is not a frame
+    /// rate, and the reciprocal of one is a bad estimate of it: see [`Rate`]
+    /// for why the average of those reciprocals reads high.
     pub fn record_fps_gap(&self, gap: Duration) {
         if gap >= Duration::from_millis(5) {
             self.record(1.0 / gap.as_secs_f64());
@@ -168,43 +199,97 @@ impl Metric {
     }
 }
 
-/// Tracks wall-clock drift from PTS cadence to produce a lag metric.
+/// How long a [`Rate`] counts events for before it has a figure to report.
 ///
-/// On first call, records the base wall+PTS. On subsequent calls, returns
-/// `wall_elapsed - pts_elapsed` in milliseconds (positive = behind live).
-#[derive(Debug, Default)]
-pub struct LagTracker {
-    base_wall: Option<Instant>,
-    base_pts: Option<Duration>,
+/// A second is what a frame rate is quoted in, and it is short enough that a
+/// stream which stops is seen to stop.
+const RATE_WINDOW: Duration = Duration::from_secs(1);
+
+/// Counts events and reports how many happened per second.
+///
+/// This exists because dividing one into the gap since the last event does not
+/// measure a frame rate, and the reading it produced jumped around enough to be
+/// unreadable. Two things were wrong with it. A single late frame is a whole
+/// sample: one 20ms gap in a 30fps stream reads as 50, and the smoothing that
+/// followed was chasing that rather than removing it. And averaging reciprocals
+/// is biased upwards, because the short gaps contribute more than the long ones
+/// cancel: gaps alternating 20ms and 47ms average 33.5ms, which is 29.9fps, but
+/// their reciprocals average 35.6. So a stream delivering exactly 30 frames a
+/// second in bursts read as 35 and swung by twenty.
+///
+/// Counting over a window has neither problem. It is what the figure claims to
+/// be, and a burst inside the window moves it not at all.
+#[derive(Debug)]
+pub struct Rate {
+    inner: Arc<Mutex<RateWindow>>,
 }
 
-impl LagTracker {
-    pub fn new() -> Self {
+#[derive(Debug)]
+struct RateWindow {
+    started: Instant,
+    events: u32,
+}
+
+impl Clone for Rate {
+    fn clone(&self) -> Self {
         Self {
-            base_wall: None,
-            base_pts: None,
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl Default for Rate {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(RateWindow {
+                started: Instant::now(),
+                events: 0,
+            })),
+        }
+    }
+}
+
+impl Rate {
+    /// A rate whose window opened at `started`.
+    #[cfg(test)]
+    fn from_start(started: Instant) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(RateWindow { started, events: 0 })),
         }
     }
 
-    /// Records one observation and returns the signed lag in milliseconds.
+    /// Counts one event, and returns the rate per second when the window has
+    /// closed.
     ///
-    /// Positive values mean wall clock is behind PTS (rendering late).
-    /// Negative values mean wall clock is ahead of PTS (rendering early).
-    pub fn record(&mut self, wall: Instant, pts: Duration) -> f64 {
-        let base_w = *self.base_wall.get_or_insert(wall);
-        let base_p = *self.base_pts.get_or_insert(pts);
-        let wall_elapsed = wall.duration_since(base_w);
-        let pts_elapsed = pts.saturating_sub(base_p);
-        wall_elapsed.as_secs_f64() * 1000.0 - pts_elapsed.as_secs_f64() * 1000.0
+    /// Returns `None` the rest of the time, so a caller records a figure only
+    /// when there is one to record.
+    pub fn tick(&self) -> Option<f64> {
+        self.tick_at(Instant::now())
     }
 
-    /// Alias for [`record`](Self::record).
-    pub fn record_ms(&mut self, wall: Instant, pts: Duration) -> f64 {
-        self.record(wall, pts)
+    /// [`tick`](Self::tick), against a clock the caller supplies.
+    ///
+    /// The window closes on elapsed time, so every assertion about a rate is an
+    /// assertion about elapsed time, and a loaded CI machine does not sleep for
+    /// as long as it is asked to. Driving the timeline instead makes those
+    /// assertions exact rather than approximately true on a quiet machine.
+    fn tick_at(&self, now: Instant) -> Option<f64> {
+        let mut window = self.inner.lock().expect("poisoned");
+        window.events += 1;
+        let elapsed = now.duration_since(window.started);
+        if elapsed < RATE_WINDOW {
+            return None;
+        }
+        let rate = f64::from(window.events) / elapsed.as_secs_f64();
+        // The window restarts at the reading rather than at the wall clock, so
+        // the time spent computing does not accumulate across windows.
+        window.started = now;
+        window.events = 0;
+        Some(rate)
     }
 }
 
-// ── Label ───────────────────────────────────────────────────────────
+// --- Label -----------------------------------------------------------
 
 /// An observable string label (e.g. codec name, path type).
 #[derive(Clone, Debug)]
@@ -213,18 +298,21 @@ pub struct Label {
 }
 
 impl Label {
+    /// Creates a label reading `initial`.
     pub fn new(initial: impl Into<String>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(initial.into())),
         }
     }
 
+    /// Replaces the label.
     pub fn set(&self, value: impl Into<String>) {
-        *self.inner.lock().expect("label lock") = value.into();
+        *self.inner.lock().expect("poisoned") = value.into();
     }
 
+    /// Returns a copy of the label.
     pub fn get(&self) -> String {
-        self.inner.lock().expect("label lock").clone()
+        self.inner.lock().expect("poisoned").clone()
     }
 }
 
@@ -234,19 +322,27 @@ impl Default for Label {
     }
 }
 
-// ── Stat category structs ───────────────────────────────────────────
+// --- Stat category structs -------------------------------------------
 
 /// Network stats. Written by the transport bridge (iroh-live or
 /// web_transport_trait), read by the overlay.
 #[derive(Clone, Debug)]
 pub struct NetStats {
+    /// Round trip to the peer.
     pub rtt_ms: Metric,
+    /// Loss rate as a percentage, over whatever window the bridge computes.
     pub loss_pct: Metric,
+    /// Throughput towards this endpoint.
     pub bw_down_mbps: Metric,
+    /// Throughput away from this endpoint.
     pub bw_up_mbps: Metric,
+    /// How many network paths the connection currently has.
     pub paths_active: Metric,
+    /// How the connection reaches the peer, such as `direct` or `relay`.
     pub path_type: Label,
+    /// The remote address in use.
     pub path_addr: Label,
+    /// Who is on the other end.
     pub peer: Label,
 }
 
@@ -272,11 +368,20 @@ impl Default for NetStats {
 /// Publish-side encode stats. Written by the encode pipeline.
 #[derive(Clone, Debug)]
 pub struct EncodeStats {
+    /// Frames per second arriving from the source, which every rung of a
+    /// simulcast ladder shares.
     pub fps: Metric,
+    /// How long one encode call took.
     pub encode_ms: Metric,
+    /// Published bits per second, over the gap between one encode and the next.
+    /// With a simulcast ladder every rung writes here, so the smoothed value
+    /// sits somewhere among them rather than summing them.
     pub bitrate_kbps: Metric,
+    /// The codec being encoded, such as `H264`.
     pub codec: Label,
+    /// The encoder backend that opened, such as `openh264` or `vaapi`.
     pub encoder: Label,
+    /// The encoded resolution.
     pub resolution: Label,
     /// Capture-to-encode path, e.g. "pw-screen/dmabuf" or "pw-screen/shm".
     pub capture_path: Label,
@@ -299,10 +404,18 @@ impl Default for EncodeStats {
 /// Render/decode stats. Written by the decode pipeline.
 #[derive(Clone, Debug)]
 pub struct RenderStats {
+    /// Frames per second reaching the renderer.
     pub fps: Metric,
+    /// How long one transport read and decode took together, which is where
+    /// `moq_video::decode::Consumer` does both.
     pub decode_ms: Metric,
+    /// The decoder backend that opened, which can change across a rendition
+    /// switch.
     pub decoder: Label,
+    /// The renderer drawing the frames. Written by whatever draws them, since
+    /// this crate does not.
     pub renderer: Label,
+    /// The rendition currently decoding.
     pub rendition: Label,
 }
 
@@ -346,20 +459,23 @@ impl Default for TimingStats {
                 MetricMeta::responsive("AudioLag", "ms").with_thresholds(50.0, 150.0, false),
             ),
             av_delta_ms: Metric::new(
-                MetricMeta::responsive("A/V Δ", "ms").with_thresholds(20.0, 50.0, false),
+                MetricMeta::responsive("A/V delta", "ms").with_thresholds(20.0, 50.0, false),
             ),
             video_buf: Metric::new(MetricMeta::responsive("VideoBuf", "")),
         }
     }
 }
 
-// ── Timeline ────────────────────────────────────────────────────────
+// --- Timeline --------------------------------------------------------
 
 /// Per-frame timing snapshot for the timeline visualization.
 #[derive(Debug, Clone)]
 pub struct FrameMeta {
+    /// Which medium the frame belongs to.
     pub kind: FrameKind,
+    /// The frame's presentation timestamp.
     pub pts: Duration,
+    /// Whether the frame can be decoded without a predecessor.
     pub is_keyframe: bool,
     /// Wall-clock time when the frame was received from the transport.
     pub received: Instant,
@@ -369,9 +485,12 @@ pub struct FrameMeta {
     pub rendered: Instant,
 }
 
+/// Which medium a [`FrameMeta`] describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameKind {
+    /// A decoded picture.
     Video,
+    /// A decoded block of samples.
     Audio,
 }
 
@@ -383,6 +502,7 @@ pub struct Timeline {
 }
 
 impl Timeline {
+    /// Creates a timeline keeping the last `cap` frames.
     pub fn new(cap: usize) -> Self {
         Self {
             frames: Arc::new(Mutex::new(VecDeque::with_capacity(cap))),
@@ -390,18 +510,20 @@ impl Timeline {
         }
     }
 
+    /// Records one frame, discarding the oldest once the buffer is full.
     pub fn push(&self, entry: FrameMeta) {
-        let mut frames = self.frames.lock().expect("timeline lock");
+        let mut frames = self.frames.lock().expect("poisoned");
         if frames.len() >= self.cap {
             frames.pop_front();
         }
         frames.push_back(entry);
     }
 
+    /// Returns a copy of every frame still in the buffer, oldest first.
     pub fn snapshot(&self) -> Vec<FrameMeta> {
         self.frames
             .lock()
-            .expect("timeline lock")
+            .expect("poisoned")
             .iter()
             .cloned()
             .collect()
@@ -414,52 +536,32 @@ impl Default for Timeline {
     }
 }
 
-// ── Composite stats ─────────────────────────────────────────────────
-
-/// Stats passed to the decode pipeline. Groups render, timing, and
-/// timeline into a single value to avoid threading a 3-element tuple.
-#[derive(Clone, Debug, Default)]
-pub struct DecodeStats {
-    pub render: RenderStats,
-    pub timing: TimingStats,
-    pub timeline: Timeline,
-}
-
-/// Optional parameters for encoder pipelines.
-#[derive(Debug, Clone, Default)]
-pub struct EncodeOpts {
-    /// Stats collectors for publish-side encode metrics.
-    pub stats: Option<EncodeStats>,
-}
+// --- Composite stats -------------------------------------------------
 
 /// All stats for a subscribe-side broadcast. Owned by `RemoteBroadcast`.
 #[derive(Clone, Debug, Default)]
 pub struct SubscribeStats {
+    /// Written by the transport bridge outside this crate.
     pub net: NetStats,
+    /// Written by the video decode path.
     pub render: RenderStats,
+    /// Written by whatever paces playout. Nothing in this crate does yet, so
+    /// these read empty on a plain subscription.
     pub timing: TimingStats,
+    /// Written by whatever paces playout, alongside [`SubscribeStats::timing`].
     pub timeline: Timeline,
-}
-
-impl SubscribeStats {
-    /// Returns a [`DecodeStats`] clone for passing to decode pipelines.
-    pub fn decode_stats(&self) -> DecodeStats {
-        DecodeStats {
-            render: self.render.clone(),
-            timing: self.timing.clone(),
-            timeline: self.timeline.clone(),
-        }
-    }
 }
 
 /// All stats for a publish-side broadcast. Owned by `LocalBroadcast`.
 #[derive(Clone, Debug, Default)]
 pub struct PublishStats {
+    /// Written by the transport bridge outside this crate.
     pub net: NetStats,
+    /// Written by the video publish path.
     pub encode: EncodeStats,
 }
 
-// ── Tests ───────────────────────────────────────────────────────────
+// --- Tests -----------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -490,5 +592,82 @@ mod tests {
         assert_eq!(l.get(), "initial");
         l.set("changed");
         assert_eq!(l.get(), "changed");
+    }
+}
+
+#[cfg(test)]
+mod rate_tests {
+    use std::time::{Duration, Instant};
+
+    use super::Rate;
+
+    /// Runs forty events at offsets given by `offset`, and returns the first
+    /// rate reported.
+    ///
+    /// # Panics
+    ///
+    /// Panics if nothing reported, which means the offsets never spanned the
+    /// window.
+    fn drive(offset: impl Fn(u32) -> Duration) -> f64 {
+        let start = Instant::now();
+        let rate = Rate::from_start(start);
+        let mut reported = None;
+        for event in 0..40 {
+            if let Some(value) = rate.tick_at(start + offset(event)) {
+                reported = Some(value);
+                break;
+            }
+        }
+        reported.expect("the offsets have to span the window")
+    }
+
+    /// Nothing is reported before the window closes, so a reader never sees a
+    /// figure derived from two frames.
+    #[test]
+    fn a_rate_reports_nothing_until_its_window_closes() {
+        let rate = Rate::default();
+        for _ in 0..10 {
+            assert!(rate.tick().is_none());
+        }
+    }
+
+    /// The figure is a count over the window, so delivery that arrives in
+    /// bursts reads the same as delivery that is evenly spaced. The old
+    /// reciprocal-of-one-gap measure read this stream at about 36fps while it
+    /// swung between 21 and 50.
+    #[test]
+    fn a_burst_reads_the_same_as_an_even_stream() {
+        // Ten events at once, every 350ms. The window closes on the first event
+        // of the fourth burst, at 1.05s.
+        let bursty = drive(|event| Duration::from_millis(350) * (event / 10));
+        // The same events spread evenly across the same span, one every 35ms.
+        let even = drive(|event| Duration::from_millis(35) * event);
+
+        assert!(
+            (bursty - even).abs() < 0.5,
+            "the same delivery read {bursty} in bursts and {even} evenly",
+        );
+        assert!(
+            (28.0..32.0).contains(&bursty),
+            "about thirty events a second should read near 30, got {bursty}",
+        );
+    }
+
+    /// A slower stream reads slower, which is the whole point of dividing by
+    /// elapsed time rather than counting to a fixed number.
+    ///
+    /// One event every 100ms reads 11 rather than 10 on the first window, and
+    /// 10 on every window after it. The window spans from its first event to
+    /// the one that closes it and counts both, so the first window holds eleven
+    /// events across ten gaps. Every later window starts at the event that
+    /// closed the last one, so the double-counted endpoint does not repeat.
+    #[test]
+    fn a_stream_that_slows_reads_slower() {
+        let slow = drive(|event| Duration::from_millis(100) * event);
+        assert!(
+            (10.0..=11.0).contains(&slow),
+            "one event every 100ms should read near 10, got {slow}",
+        );
+        assert!(slow < 15.0, "a slower stream must read below a faster one");
     }
 }

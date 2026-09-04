@@ -1,133 +1,106 @@
-# Publish Pipeline
+# Publishing
 
-| Field | Value |
-|-------|-------|
-| Status | stable |
-| Applies to | moq-media |
+`moq_media::publish::LocalBroadcast` wraps a `moq_net::broadcast::Producer` and
+owns the catalog that describes it. Video goes through `LocalBroadcast::video()`
+and audio through `LocalBroadcast::audio()`, both of which hand back a borrowed
+publisher handle. In iroh-live the producer comes from `Live::publish(path)`,
+which creates the broadcast on the node's origin.
 
-`LocalBroadcast` manages encoder pipelines and publishes a catalog that
-subscribers use to discover available renditions. It owns a
-`BroadcastProducer` (from moq-lite) and coordinates video and audio
-track lifecycles.
+Encoding itself is upstream. `moq_video::encode` and `moq_audio::encode` own the
+codec, the thread it runs on, and the catalog entry it writes. What this crate
+adds is the layer above: one camera feeding a simulcast ladder, a pre-encoded
+byte stream published without re-encoding, and the iroh-live catalog extension.
 
-## Slot handles
+## Sources
 
-`LocalBroadcast` exposes video and audio configuration through slot
-handles:
+`VideoSource` names the three ways pictures reach a broadcast.
 
-- `broadcast.video()` returns a `VideoPublisher` (borrows the broadcast).
-- `broadcast.audio()` returns an `AudioPublisher` (borrows the broadcast).
+`Capture(moq_video::capture::Config)` opens a camera, a display, a window, or a
+macOS application through `moq_video::capture::open`. It needs the `capture`
+feature.
 
-Both use `&self` (interior mutability). `VideoPublisher::set(input)` tears
-down any existing video pipeline and installs the new one.
-`VideoPublisher::clear()` removes video entirely. The audio side follows
-the same pattern.
+`Frames(BoxStream<moq_video::Frame>)` takes frames the application produced. The
+Android demo uses it to hand over Camera2 buffers, and `moq_media::test_source`
+uses it for a generated pattern. The first frame determines the geometry the
+catalog advertises, so the publish task pulls it, reads its size and color, and
+puts it back at the head of the stream before any encoder opens.
 
-## VideoInput
+`AnnexB(BoxStream<bytes::Bytes>)` takes an H.264 byte stream the source already
+encoded. This is the Raspberry Pi path, where `rpicam-vid` encodes in hardware
+and no raw picture ever reaches us.
 
-`VideoInput` is an enum that unifies the two ways video enters the
-pipeline:
+`AudioSource` is the same shape with two variants: `Device` for a microphone or
+the macOS system mix, and `Frames { input, frames }` for PCM the application
+produced, such as a decoded file.
 
-**`VideoInput::Renditions(VideoRenditions)`** wraps a raw video source
-with one or more encoder presets. Each preset produces a separate
-rendition (simulcast layer) at a different quality level. The source
-captures frames; the encoders compress them in parallel.
+## Simulcast
 
-**`VideoInput::PreEncoded(Vec<PreEncodedTrack>)`** wraps one or more
-pre-encoded video tracks that pass through without re-encoding. This
-exists for hardware encoders that produce compressed output directly,
-such as rpicam-vid on the Raspberry Pi, which outputs H.264 from its ISP.
-Each `PreEncodedTrack` carries a name, a `VideoConfig` for the catalog,
-and a factory closure that creates a fresh source instance per subscriber.
+`VideoPublisher::set(source)` publishes one rendition named `video` at the
+source's own resolution. `VideoPublisher::set_renditions(source, renditions)`
+publishes a ladder, where each `VideoRendition` carries a name, an optional
+`Size`, an optional bitrate, a `moq_video::encode::Codec`, and a
+`moq_video::encode::Kind` naming the backend to prefer.
 
-A single `VideoPublisher::set(input)` call handles both cases. The
-internal `State` struct stores the `VideoInput` and branches at track
-start time.
+The ladder is the reason this code exists. Upstream, one
+`moq_video::encode::Producer` publishes one rendition and owns the device it
+captures from, so a second rendition would need a second camera. Here the source
+is opened once and every frame is wrapped in an `Arc` and sent to each
+rendition's encoder through a latest-wins slot. One allocation per frame is
+shared by the preview and every rung, which is what
+`moq_video::encode::Sink::encode` taking an `Arc<Frame>` is for. A rendition that
+falls behind drops frames rather than stalling the ones that have not.
 
-## VideoRenditions
+Before an encoder opens, `encode::Config::probe()` runs once per rendition. That
+costs one encoder open and buys a catalog entry describing exactly what the track
+will carry, so a subscriber can pick a rendition before a single frame has been
+encoded.
 
-`VideoRenditions` holds a `SharedVideoSource` and a map of rendition
-names to encoder factories. When a subscriber requests a rendition, the
-broadcast's run loop calls `start_encoder()`, which creates the encoder
-from the factory and spawns a `VideoEncoderPipeline` on a dedicated OS
-thread. The pipeline reads frames from the shared source and writes
-encoded packets to a `MoqPacketSink`.
+Audio has no ladder. A subscriber under pressure drops video renditions and never
+audio, so `AudioPublisher::set_with` publishes exactly one track.
 
-Multiple renditions share the same `SharedVideoSource` via
-`watch::Receiver<Option<VideoFrame>>`. Each encoder sees the latest
-frame; if an encoder is slower than the source, intermediate frames are
-silently skipped by the watch channel's last-writer-wins semantics.
+## Demand gating
 
-## SharedVideoSource
+Each rendition's encoder idles on `producer.demand().used()` and opens a
+`moq_video::encode::Sink` only once someone subscribes to that rendition. When
+the last viewer leaves, the encoder closes and the producer records a
+discontinuity so the next timestamp does not stretch a frame across the gap. The
+track and its catalog entry stay advertised throughout.
 
-`SharedVideoSource` runs the capture source on a dedicated OS thread. It
-parks (stops calling `pop_frame()`) when no subscribers are connected and
-unparks when the first subscriber arrives. This avoids wasting CPU and
-camera bandwidth when nobody is watching.
+The source is deliberately not gated, which is where we diverge from upstream.
+`moq_video::encode::publish_capture` releases the camera when nobody is watching.
+We cannot do that, because the publisher's own preview draws the frames on their
+way to the encoders and a publisher expects to see itself before anyone tunes in.
 
-The source thread writes frames into a `watch::Sender`, and each encoder
-thread holds a `watch::Receiver`. The watch channel always contains the
-latest frame, so slow encoders never cause backpressure on the source.
+## Preview
 
-## AudioRenditions
+`LocalBroadcast::preview()` returns a receiver for the raw frames the source
+produced, before encoding. It costs no extra decode: these are the same frames
+the encoders receive. It returns `None` when no video is publishing and when the
+source is `AnnexB`, since a pre-encoded stream has no raw picture to tap.
 
-`AudioRenditions` follows the same pattern as `VideoRenditions`: a shared
-audio source with per-rendition encoder factories. It supports two source
-modes: a single `AudioSource` that is leased to one encoder at a time
-(returned on drop), or a factory that creates independent sources per
-rendition for parallel multi-rendition encoding.
+## Pre-encoded video
 
-## Encoder pipelines on OS threads
+The `AnnexB` path never opens an encoder. `moq_mux::codec::h264::Split` cuts the
+byte stream into access units and `moq_mux::codec::h264::Import` publishes them,
+filling in the catalog rendition from the first SPS it sees. The stream describes
+itself, so nothing here has to state a profile and level it did not choose. The
+splitter holds the final access unit until the next start code, so end of stream
+flushes it explicitly.
 
-All encoder pipelines (`VideoEncoderPipeline`, `AudioEncoderPipeline`,
-`PreEncodedVideoPipeline`) run on dedicated OS threads spawned via
-`spawn_thread()`. This is a deliberate choice: codec operations are
-CPU-intensive and sometimes block on hardware (VAAPI, V4L2), so running
-them on tokio tasks would starve other async work. The threads
-communicate with the async runtime through `mpsc` and `watch` channels.
-
-## PacketSink and MoQ transport
-
-`MoqPacketSink` wraps a hang `OrderedProducer` and implements the
-`PacketSink` trait. When it receives an `EncodedFrame` with
-`is_keyframe = true`, it calls `keyframe()` on the producer to start a
-new MoQ group. Subsequent frames within the group are written
-sequentially. This keyframe-to-group mapping is how subscribers can join
-at any group boundary and decode from the keyframe forward.
+`moq_media::rpicam` produces such a stream by running `rpicam-vid` and reading
+Annex-B off its stdout. See [Raspberry Pi](../guide/raspberry-pi.md).
 
 ## Catalog
 
-`LocalBroadcast` maintains a catalog track (hang's built-in catalog
-mechanism) that lists all available video and audio renditions with their
-codec configuration, dimensions, and bitrate. The catalog is updated
-whenever video or audio is set or cleared. Subscribers watch the catalog
-to discover what renditions exist and select the best match.
+The catalog is `moq_mux::catalog::Producer<IrohLiveExt>`, which is hang's catalog
+with an extension flattened alongside the `video` and `audio` sections. The
+extension carries two things iroh-live publishes and hang has no place for:
+`enable_chat` creates a track and advertises it under `chat`, and `set_user`
+advertises the publisher's identity under `user`. A base hang consumer ignores
+both, so the broadcast stays wire-compatible with any hang player.
 
-## Demand-driven track startup
+## Clock
 
-The broadcast's run loop (`LocalBroadcast::run`) calls
-`producer.requested_track().await` to wait for subscriber demand. When a
-subscriber requests a specific rendition, the loop looks it up in the
-current `VideoInput` or `AudioRenditions` and starts the corresponding
-encoder pipeline. When all subscribers disconnect (tracked via
-`track.unused().await`), the pipeline is stopped. This means encoder
-threads only run when someone is actually consuming the output.
-
-## Open areas
-
-There is no backpressure from the transport to the encoder. If the
-network cannot keep up with the encoder's output rate, packets queue in
-the MoQ transport layer. The adaptive rendition switching on the subscribe
-side compensates by switching to lower renditions, but the publisher does
-not currently reduce its encoding rate in response to congestion.
-
-`VideoPublisher::set_enabled()` and `AudioPublisher::set_muted()` are
-not yet implemented (marked as TODOs in the source). They are intended
-to pause/resume the encoder pipeline and send silence, respectively.
-
-## Local preview
-
-`LocalBroadcast::preview()` creates a `VideoTrack` that decodes the
-local broadcast's own output, useful for showing the publisher what
-subscribers see. Returns `None` for pre-encoded sources or when no
-video is set.
+`LocalBroadcast::clock()` is the `moq_mux::Clock` both media tracks are stamped
+from. Audio and video share it so their timelines stay aligned even though the
+two devices open at different times.

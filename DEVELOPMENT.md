@@ -1,141 +1,137 @@
 # Development guide
 
-Working notes for contributors and AI agents. See [README.md](README.md)
-for the project overview and quick start.
+Working notes for contributors. [README.md](README.md) has the project overview
+and the quick start, and [docs/](docs/index.md) has the architecture and the
+guides.
 
-## Workspace structure
+## Workspace
 
 | Crate | Role |
-|-------|------|
-| `iroh-live` | High-level API: sessions, rooms, tickets. Depends on moq-media + iroh. |
-| `iroh-live-cli` | CLI tool (`irl`): publish, play, call, room, record, run. |
-| `iroh-live-relay` | Relay server for browser WebTransport bridging. |
-| `iroh-moq` | MoQ transport over iroh/quinn. |
-| `moq-media` | Media pipelines: capture, encode, decode, publish, subscribe, playout. No iroh dependency. |
-| `rusty-codecs` | Codec implementations + GPU rendering. H.264, AV1, Opus, PCM, VAAPI, V4L2, VTB. |
-| `rusty-capture` | Cross-platform capture: PipeWire, V4L2, X11, libcamera, nokhwa, xcap, Apple SCK. |
-| `moq-media-egui` | egui video widget (wgpu texture upload, DMA-BUF import). |
-| `moq-media-dioxus` | dioxus-native video component. |
+|---|---|
+| `iroh-live` | `Live`, `Call`, `Subscription`, tickets. Depends on `moq-media` and `iroh-moq` |
+| `iroh-moq` | MoQ transport over iroh: the node origin, sessions, ALPN negotiation |
+| `iroh-rooms` | Gossip rooms. No media dependency |
+| `moq-media` | Publish and subscribe plumbing over moq-video and moq-audio. No iroh dependency |
+| `moq-media-egui` | egui widget and debug overlay |
+| `moq-media-android` | Camera2 push bridge and EGL renderer |
+| `iroh-live-cli` | The `irl` binary |
+| `iroh-live-relay` | The browser bridge |
 
-Demos live in `demos/`: `pi-zero`, `pi-zero-minimal`, `headless`, `opengl`.
+Demos live in `demos/`: `android` and `pi-zero`. The shortest Pi publisher is
+an example instead, `iroh-live/examples/publish-pi.rs`.
+
+Codecs, capture, decoding, and the wgpu renderer are upstream in `moq-video` and
+`moq-audio`. Nothing here implements one. See
+[docs/architecture/media-stack.md](docs/architecture/media-stack.md).
+
+## The patch block
+
+`Cargo.toml` carries a `[patch.crates-io]` block pointing the moq crates at
+`Frando/moq@iroh-live`, a branch of five changes that have not reached a
+release. Every pinned version matches what `moq-dev/moq@main` publishes, so
+deleting the block is the whole revert once they land. `Cargo.lock` pins the
+revision, so a clean clone and CI build the same tree; to work against a local
+checkout instead, point the block at `../moq/rs/<crate>` and leave it
+uncommitted.
 
 ## Build and test
 
 ```sh
-cargo build --workspace                         # default features
-cargo build --workspace --all-features          # everything
-cargo make check-all                            # full check: all feature combos + clippy + fmt
-cargo test -p moq-media --features test-util    # codec pipeline tests
-cargo test -p iroh-live                         # e2e, room, patchbay tests
+cargo build --workspace                 # default features
+cargo build --workspace --all-features  # everything
+
+cargo make check-all   # check and clippy across three feature sets, then fmt
+cargo make test        # cargo nextest across the workspace
+cargo make test-e2e    # Playwright browser suite, building the relay and CLI first
+cargo make test-full   # all three
 ```
 
-Always run `cargo make check-all` before committing code changes.
-Markdown-only changes can skip it.
+Run `cargo make check-all` before committing code. It covers default features,
+`--all-features`, and `--no-default-features`, which is where feature-gated
+mistakes show up. Markdown-only changes can skip it.
+
+Cross-compiling for aarch64 is `cargo make cross-sysroot-aarch64` once, then
+`cargo make cross-build-aarch64 -- <cargo args>`. See
+[cross/README.md](cross/README.md).
 
 ## Commits
 
-- Conventional prefixes: `feat:`, `fix:`, `test:`, `refactor:`, `perf:`, `ci:`, `docs:`, `chore:`
-- Start with *why*, then decisions and reasoning, then *what*.
-- Small incremental commits, each leaving all crates compiling.
-- `cargo make check-all` must pass. New features need tests.
+Conventional prefixes: `feat:`, `fix:`, `test:`, `refactor:`, `perf:`, `ci:`,
+`docs:`, `chore:`. Lead with why, then the reasoning, then what changed. Keep
+commits small enough that each one leaves the workspace compiling. New behaviour
+needs a test.
 
 ## Key types
 
-### Publish side (moq-media)
+Publishing, in `moq_media::publish`:
 
-- `LocalBroadcast` — owns a BroadcastProducer, manages encoder pipelines
-- `VideoPublisher` / `AudioPublisher` — slot handles for set/replace/clear
-- `LocalBroadcast::preview()` — returns a VideoTrack with raw decoded frames (no encode-decode roundtrip)
+- `LocalBroadcast` owns a `moq_net::broadcast::Producer` and the catalog.
+- `VideoPublisher::set_renditions(source, renditions)` opens the source once and
+  fans frames out to one encoder per rendition.
+- `VideoSource` is `Capture`, `Frames`, or `AnnexB`; `AudioSource` is `Device` or
+  `Frames`.
+- `LocalBroadcast::preview()` taps the raw frames on their way to the encoders.
 
-### Subscribe side (moq-media)
+Subscribing, in `moq_media::subscribe`:
 
-- `RemoteBroadcast` — wraps BroadcastConsumer, watches catalog
-- `VideoTrack` / `AudioTrack` — decoded media tracks
-- `VideoTrack::try_recv()` — non-blocking frame poll for game loops and ECS
-- `VideoTrack::enable_adaptation()` — automatic rendition switching via channel-swap
-- `AudioTrack::set_volume(f32)` — per-stream volume control
+- `RemoteBroadcast` watches the catalog and hands out tracks.
+- `VideoTrack::take()` polls the latest-wins frame slot; `recv()` awaits.
+- `VideoTrack::set_rendition` and `enable_adaptation` drive the same request
+  channel.
+- `AudioTrack` writes into the process-wide `moq_media::playback` engine.
 
-### Transport
+Transport, in `iroh_moq`: `Moq::publish(path)` returns a producer synchronously
+and announces it node-wide. `MoqSession::subscribe(path)` waits for the peer's
+announce. `MoqSession::conn()` is the iroh `Connection` behind it.
 
-- `MediaPacket` / `PacketSource` / `PacketSink` — codec-agnostic boundary
-- `OrderedConsumer` — group ordering with max_latency skip
+## Threading
 
-### Source specs (moq-media)
+Codecs run on their own threads inside `moq_video::encode::Sink` and
+`moq_video::decode::Sink`, so this repository spawns almost none. The audio file
+reader is the exception: symphonia decoding is blocking, so it runs on a named OS
+thread and feeds a bounded channel. `iroh_live::util::spawn_thread` is the helper
+for that pattern and currently has no callers.
 
-`VideoSourceSpec` and `AudioSourceSpec` in `moq_media::source_spec` parse
-source strings like `cam:pw:0`, `screen`, `test`, `file:path.mp4`,
-`preenc:libcamera`. Single canonical identifier per variant.
+`moq_video::decode::Consumer::read` is not cancel-safe. Never poll it from a
+`select!` arm. The video decode path gives each decoder a task that reads it in a
+plain loop and forwards over a bounded channel, and the supervisor selects only
+on cancel-safe things. See
+[docs/architecture/subscribe.md](docs/architecture/subscribe.md).
 
-## Architecture notes
-
-### Threading model
-
-- Encoder/decoder pipelines run on OS threads (not tokio tasks) via `spawn_thread()`
-- Audio output uses cpal callbacks on real-time OS threads
-- Networking (MoQ sessions, gossip, room actor) runs on tokio
-- Frame delivery between threads uses `FrameChannel` (bounded single-slot with AtomicU64 sender count)
-
-### Shutdown
-
-- `CancellationToken` for cooperative shutdown
-- `AbortOnDropHandle` for tokio task cleanup
-- `SyncInner` implements Drop to close the playout clock and unblock decode threads
-
-### Capture backends
-
-rusty-capture tries backends in priority order: libcamera, PipeWire, V4L2, nokhwa, xcap.
-On macOS, nokhwa is the working camera backend (native AVFoundation is stubbed out).
-Screen capture works via ScreenCaptureKit on macOS, PipeWire/X11 on Linux.
-
-### GPU rendering
-
-`WgpuVideoRenderer` handles NV12-to-RGBA conversion on the GPU. For DMA-BUF
-sources (VAAPI decode), the VPP retiler converts tiled formats to ones Vulkan
-can import. `render_cached()` provides a persistent output texture that avoids
-per-frame allocation.
-
-### Audio
-
-Audio backend uses cpal with optional JACK support (`jack` feature).
-`AudioBackend::available_hosts()` lists available hosts (ALSA, PipeWire, JACK).
-Per-stream volume via `AudioTrack::set_volume(f32)`.
-Audio file import uses symphonia (pure Rust: WAV, MP3, FLAC at 48kHz).
-
-### Rooms
-
-Rooms use iroh-gossip for peer discovery and iroh-smol-kv for state.
-PeerState is serialized with postcard (positional binary format: do NOT use
-`skip_serializing_if` on fields, it breaks deserialization).
-
-## Tracing
-
-- `error!` for breakage, `warn!` for degraded-but-recoverable, `info!` for lifecycle, `debug!` for operational detail, `trace!` for per-frame
-- Use `throttled-tracing` for high-frequency logs
-- Prefer structured fields over string interpolation
-- Use `tracing_subscriber::fmt::init()` — respects RUST_LOG by default, no EnvFilter boilerplate
-
-## Cross-compilation
-
-See the cross-compilation section in [README.md](README.md) for building
-aarch64 binaries for Raspberry Pi.
-
-## Platform notes
-
-Primary test platform: Linux (Intel Meteor Lake, VAAPI, PipeWire, V4L2).
-macOS: software codecs + nokhwa camera + ScreenCaptureKit.
-Windows, Android, iOS: code exists but testing is limited.
-
-### Raspberry Pi
-
-`demos/pi-zero/` has the full demo (camera, e-paper, watch mode).
-`demos/pi-zero-minimal/` is an 80-line camera+mic publisher.
-libcamera capture is in rusty-capture under the `libcamera` feature.
-Cross-compile: `cargo make cross-build-aarch64 -- -p pi-zero-demo --release`.
+Networking, adaptation, and the room actor are ordinary tokio tasks. Audio output
+is a cpal callback on a real-time thread owned by `moq_audio::playback::Engine`.
 
 ## Conventions
 
-- `n0_watcher::Watchable/Watcher` for reactive state (not tokio watch)
-- Decoder threads are OS threads via `spawn_thread()`
-- `CancellationToken` for shutdown, `AbortOnDropHandle` for task cleanup
-- Bounded channels only (no unbounded, prevents memory leaks)
-- `tracing_subscriber::fmt::init()` for logging setup (no EnvFilter boilerplate)
+- `n0_watcher::Watchable` and `Direct<T>` for continuous state, not `tokio::watch`.
+- `CancellationToken` for cooperative shutdown, `AbortOnDropHandle` to tie a task
+  to a handle.
+- Bounded channels only. Frames to a renderer go through the single-slot
+  latest-wins `frame_channel`, not a queue.
+- `tracing_subscriber::fmt::init()` for setup: it respects `RUST_LOG` with no
+  `EnvFilter` boilerplate. Use `throttled-tracing` for anything per-frame, and
+  structured fields rather than string interpolation.
+- Rust doc comments follow RFC 1574: third-person declarative sentences starting
+  with a verb, no headings in item docs, types linked with `[`Type`]`.
+- Prose follows the house style: full sentences, no em dashes, no emoji.
+
+## Known gaps
+
+`TimingStats`, `Timeline`, and `render.decode_ms` have no producer, so the
+overlay's timing panel and timeline read zero. `render.fps` records a constant
+rather than a measured rate.
+
+The upgrade half of adaptive switching commits rather than probes: `probe_duration`,
+`probe_cooldown`, and `loss_probe_abort` are inert. See
+[docs/architecture/adaptive.md](docs/architecture/adaptive.md).
+
+`SyncMode::Unmanaged` does no pacing at all, despite what its doc comment says.
+
+`iroh-moq` has no tests.
+
+## Where testing happens
+
+Linux on Intel Meteor Lake is the day-to-day platform. macOS builds in CI and has
+been run by hand. Android and the Raspberry Pi have been tested on device.
+Windows and iOS have never been built here. See
+[docs/platforms.md](docs/platforms.md).

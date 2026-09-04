@@ -35,11 +35,12 @@ sudo needed. Takes 1-2 minutes on a decent connection.
 # irl CLI (release)
 cargo make cross-build-aarch64 -- -p iroh-live-cli --release
 
-# Pi Zero demo with libcamera
-cargo make cross-build-aarch64 -- -p pi-zero-demo --release --features libcamera
+# Pi Zero demos
+cargo make cross-build-aarch64 -- -p pi-zero-demo --release
+cargo make cross-build-aarch64 -- -p iroh-live --example publish-pi --features rpicam --release
 
 # Check the whole workspace
-cargo make cross-build-aarch64 -- --workspace --exclude bevy-demo --exclude bevy-call
+cargo make cross-build-aarch64 -- --workspace
 
 # Arbitrary example
 cargo make cross-build-aarch64 -- --release --example publish
@@ -56,7 +57,7 @@ No zig, no sysroot, no host packages needed. Just Docker.
 cargo make cross-build-aarch64-docker -- -p iroh-live-cli --release
 
 # Pi Zero demo
-cargo make cross-build-aarch64-docker -- -p pi-zero-demo --release --features raspberry-pi
+cargo make cross-build-aarch64-docker -- -p pi-zero-demo --release
 ```
 
 The Docker image is built on first use (~5 minutes) and cached. It
@@ -99,11 +100,11 @@ SYSROOT=/path/to/sysroot ./cross/zigbuild.sh -p pi-zero-demo --release
 
 The Bookworm sysroot includes:
 
-- `libcamera-dev` -- Raspberry Pi camera stack
+- `libcamera-dev` -- Raspberry Pi camera stack (unused today: the Pi demos drive `rpicam-vid` instead)
 - `libpipewire-0.3-dev` -- PipeWire screen/camera capture
 - `libva-dev`, `libdrm-dev`, `libgbm-dev` -- GPU/display
 - `libasound2-dev`, `libopus-dev` -- audio
-- `libv4l-dev` -- V4L2 camera/encoder
+- `libv4l-dev` -- V4L2 camera capture
 - `libssl-dev` -- TLS
 - `libx11-dev`, `libxkbcommon-dev`, `libwayland-dev` -- windowing
 

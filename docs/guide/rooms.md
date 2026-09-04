@@ -1,114 +1,94 @@
 # Rooms
 
-| Field | Value |
-|-------|-------|
-| Status | experimental |
-| Applies to | iroh-live |
+A room is a gossip topic plus the MoQ subscriptions that follow from it. Peers
+publish the *names* of their broadcasts into a replicated key-value map on the
+topic, and `iroh_rooms::Room` turns every name it sees into a subscription
+against that peer.
 
-Rooms provide multi-party media sessions where participants discover
-each other automatically. Each participant publishes their own broadcast
-into the room and subscribes to every other participant. Peer discovery
-is handled by iroh-gossip: when a new peer joins, the room announces
-its presence to all existing members.
+Rooms know nothing about media. `iroh-rooms` does not depend on `moq-media` or
+`hang`, and a subscription arrives as a raw `moq_net::broadcast::Consumer`. What
+the broadcast carries is the application's business.
 
-This feature is experimental. The participant model and event API are
-still evolving.
+This crate is a holding pattern. It was cut out of `iroh-live` during the v2
+rewrite so the media stack could be replaced without carrying rooms along, and
+the intent is to rebuild it on moq's own announce bus with moq-token path scoping,
+keeping gossip only for bootstrap. Expect the API to change.
 
-## Creating a room
+## Joining
 
-A room is identified by a gossip topic. The first participant generates
-a new `RoomTicket`, which contains a random topic ID:
-
-```rust
-let ticket = RoomTicket::generate();
-let room = Room::new(&live, ticket.clone()).await?;
-println!("Room ticket: {ticket}");
-```
-
-The printed ticket string can be shared with other participants.
-
-## Joining a room
-
-Other participants parse the ticket and join:
+`Room::new` takes the three things it needs rather than an application type:
 
 ```rust
-let ticket: RoomTicket = ticket_string.parse()?;
-let room = Room::new(&live, ticket).await?;
+use iroh_rooms::{Room, RoomEvent, RoomTicket};
+
+let mut room = Room::new(&endpoint, &moq, &gossip, RoomTicket::generate()).await?;
 ```
 
-When you join, the room's internal actor connects to bootstrap peers
-from the ticket, joins the gossip topic, and begins discovering other
-participants.
+`iroh-live` supplies all three: `live.endpoint()`, `live.transport()`, and
+`live.gossip()`, the last of which needs `LiveBuilder::with_gossip()`.
 
-## Publishing into a room
+Share `room.ticket()` with the people joining. It includes the calling peer as a
+bootstrap endpoint, so a joiner can find the topic without a directory service.
 
-Use the room to publish a broadcast. The room announces it to all peers
-via gossip:
+## Publishing and receiving
 
 ```rust
-room.publish("my-stream", &broadcast).await?;
+let mut broadcast = room.publish("cam").await?;
 ```
 
-## Receiving events
+`publish` creates a broadcast on the node origin and announces its name into the
+room's state map. It returns the bare `moq_net::broadcast::Producer`. To publish
+media, wrap it: `moq_media::publish::LocalBroadcast::new(producer)` is what
+`Live::publish` does. Dropping the producer un-announces the name.
 
-Split the room into an event receiver and a publish handle when you
-need them on separate tasks:
+Events arrive on the room itself, or on the receiver half if you split it:
 
-```rust
-let (mut events, handle) = room.split();
+| Event | Meaning |
+|---|---|
+| `PeerJoined` | A peer appeared in the topic, with its display name if it set one |
+| `RemoteAnnounced` | A peer listed the broadcast names it publishes |
+| `BroadcastSubscribed` | We subscribed to one of them; carries the session and the consumer |
+| `ChatReceived` | A chat message from a peer |
+| `PeerLeft` | Every broadcast we held from a peer closed |
 
-while let Some(event) = events.recv().await {
-    match event {
-        RoomEvent::BroadcastSubscribed { session, broadcast } => {
-            // A remote peer's broadcast is ready. `broadcast` is a
-            // RemoteBroadcast with video and audio tracks.
-            let video = broadcast.video()?;
-        }
-        RoomEvent::RemoteAnnounced { remote, broadcasts } => {
-            // A peer announced its available broadcasts via gossip.
-            // The room actor auto-subscribes, so BroadcastSubscribed
-            // will follow for each broadcast.
-        }
-        _ => {}
-    }
-}
-```
+`RemoteAnnounced` is followed by a `BroadcastSubscribed` for each name, because
+the room subscribes on your behalf.
 
-The `split` method returns `(RoomEvents, RoomHandle)`. The handle is
-cloneable and shareable across tasks.
+`Room::split()` returns a `RoomEvents` receiver and a cloneable `RoomHandle`, for
+an application that reads events on one task and publishes from another. The
+actor stops when the room and every handle are dropped.
 
-## Running a room
+## Chat
 
-The `irl room` CLI command demonstrates the full flow:
+Chat lives on a well-known track named `chat`, at a priority below audio and
+video. Each message is one group holding one frame of UTF-8 text, so there is no
+framing beyond the string. The sender's identity comes from the broadcast
+carrying the track rather than the payload.
 
-```sh
-# First participant creates the room
-cargo run --release -p iroh-live-cli -- room
+`room.send_chat("hello")` writes through the publisher registered with
+`set_chat_publisher`, and incoming messages arrive as `RoomEvent::ChatReceived`.
+`ChatPublisher::finish` matters: dropping a publisher without it discards the
+cache and loses the last message.
 
-# Others join with the printed ticket
-cargo run --release -p iroh-live-cli -- room <TICKET>
-```
+## Discovery
 
-Each participant captures their camera and microphone, publishes into
-the room, and renders video from all other participants.
+Peer state is an `iroh-smol-kv` map on the gossip topic, holding each peer's
+broadcast names and optional display name. Anti-entropy runs every 60 seconds,
+with a one-second fast interval while things are changing and a two-minute expiry
+horizon.
 
-## Gossip and bootstrap
-
-Rooms use iroh-gossip for peer discovery. The gossip topic acts as a
-rendezvous point: any peer that knows the topic can join the
-conversation. The `RoomTicket` includes bootstrap peer IDs so that new
-participants can find existing members without a central server.
-
-When you call `RoomHandle::ticket()`, the returned ticket includes your
-own endpoint ID as a bootstrap node, making it easy to pass to someone
-who wants to join.
+`PeerLeft` is derived from every subscribed consumer of that peer closing rather
+than from a gossip signal, so it reflects the transport rather than the
+membership map.
 
 ## Limitations
 
-- The room actor connects to every discovered peer. There is no
-  topology optimization (e.g., selective forwarding) for large groups.
-- If all bootstrap peers are offline, joining may fail until other peers
-  are discovered through gossip. Including multiple bootstrap peers in
-  the ticket improves resilience.
-- The event API is minimal. Future versions may add events for track
-  changes, network quality, and participant metadata.
+Every peer subscribes to every other peer's broadcasts. There is no selective
+forwarding and no topology optimisation, so this is a small-group design.
+
+If every bootstrap endpoint in a ticket is offline, joining waits until some peer
+turns up. Including several bootstrap endpoints helps.
+
+`irl room` shows a room as a grid of pictures with a chat panel, and is the
+quickest way to see all of this working. See [the CLI reference](../cli.md) for
+its flags.

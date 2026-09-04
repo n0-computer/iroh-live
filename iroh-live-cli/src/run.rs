@@ -1,394 +1,449 @@
-//! `irl run` — TOML-configured multi-stream publish/subscribe sessions.
+//! `irl run`: a multi-stream session described by a TOML file.
 //!
-//! Reads a config file that declares multiple send and recv blocks, each
-//! running as its own tokio task on a shared [`Live`] instance. This replaces
-//! the need for multiple `irl publish` + `irl play` invocations when running
-//! complex multi-stream scenarios.
+//! One endpoint publishes every `[[send]]` block and subscribes to every
+//! `[[recv]]` block, which is what `irl publish` and `irl watch` cannot do
+//! between them: they own a process each, and each binds its own endpoint.
+//!
+//! The session is headless. A `[[recv]]` block plays audio and can record to a
+//! file, but it never opens a window, because a window owns the main thread and
+//! there is only one of those to go around.
 
-use std::{
-    path::{Path, PathBuf},
-    sync::{Arc, atomic::AtomicU64},
-};
+use std::path::Path;
 
 use iroh::SecretKey;
 use iroh_live::{
     Live, Subscription,
-    media::{
-        AudioBackend,
-        codec::VideoCodec,
-        format::{AudioPreset, PlaybackConfig, Quality, VideoPreset},
-        publish::LocalBroadcast,
-        subscribe::MediaTracks,
-    },
+    media::{publish::LocalBroadcast, subscribe::AudioTrack},
     ticket::LiveTicket,
 };
+use n0_error::{Result, anyerr};
 use serde::Deserialize;
 use tokio::task::JoinSet;
 use tracing::{info, warn};
 
 use crate::{
-    args::{AudioSourceSpec, RunArgs, VideoSourceSpec},
-    record::{
-        H264AnnexBState, audio_codec_extension, record_raw_track, record_video_track,
-        video_codec_extension,
-    },
-    transport::setup_live,
+    args::{AudioCodecArg, CaptureArgs, DEFAULT_AUDIO, DEFAULT_VIDEO, RunArgs, VideoCodecArg},
+    backend::EncoderArg,
+    record::{RecordOptions, Recorder},
+    source, transport,
 };
 
-// ---------------------------------------------------------------------------
-// Config types
-// ---------------------------------------------------------------------------
+/// Runs the `run` command.
+pub fn run(args: RunArgs, rt: &tokio::runtime::Runtime) -> Result {
+    let config = parse_config(&args.config)?;
+    println!(
+        "loaded {}: {} send, {} recv",
+        args.config.display(),
+        config.send.len(),
+        config.recv.len()
+    );
+    rt.block_on(run_session(config))
+}
 
-/// Top-level configuration for `irl run`.
+/// A session: an optional persistent identity, the broadcasts to publish, and
+/// the broadcasts to subscribe to.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunConfig {
-    /// Named secret key for persistent endpoint identity. Stored in
-    /// `~/.config/iroh-live/secret_keys/<name>.key` (hex-encoded).
-    /// Generated on first use so that tickets remain stable across runs.
+    /// A name for this session's endpoint identity, stored under
+    /// `<config dir>/iroh-live/secret_keys/<name>.key` and generated on first
+    /// use, so the tickets a session prints survive a restart.
     pub secret_key_name: Option<String>,
-    /// Broadcasts to publish.
+
+    /// The broadcasts this session publishes.
     #[serde(default)]
     pub send: Vec<SendConfig>,
-    /// Remote broadcasts to subscribe to.
+
+    /// The broadcasts this session subscribes to.
     #[serde(default)]
     pub recv: Vec<RecvConfig>,
 }
 
-/// Configuration for a single send (publish) stream. All fields are
-/// required — no implicit defaults.
+/// One broadcast to publish.
+///
+/// Every field but `name` is an `irl publish` capture flag under the flag's own
+/// name, and takes the flag's own default when it is left out.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SendConfig {
-    /// Human-readable name, also used as the broadcast name.
+    /// Broadcast path, which is also the label the session reports under.
     pub name: String,
-    /// Video source spec: `cam:pw:0`, `screen:pw:0`, `test`, `none`.
-    pub video_source: String,
-    /// Video codec: `h264`, `av1`, `h264-vaapi`.
-    pub video_codec: String,
-    /// Video quality preset: `180p`, `360p`, `720p`, `1080p`.
-    pub video_preset: String,
-    /// Audio source: `default`, `none`, `file:path.mp3`, or a device spec.
-    pub audio_source: String,
-    /// Audio codec: `opus`, `pcm`.
-    pub audio_codec: String,
-    /// Audio bitrate in bits/sec (Opus only, ignored for PCM).
-    #[expect(
-        dead_code,
-        reason = "parsed from config, wired when bitrate control lands"
-    )]
+
+    /// Video source: `cam`, `screen`, `test`, `none`, and the rest of
+    /// `--video`'s grammar. A `file:` source is not accepted here; publish it
+    /// with `irl publish`, which owns the import path.
+    #[serde(default = "default_video")]
+    pub video: String,
+
+    /// Audio source, in `--audio`'s grammar.
+    #[serde(default = "default_audio")]
+    pub audio: String,
+
+    /// Video codec: `h264` or `h265`.
+    #[serde(default)]
+    pub codec: VideoCodecArg,
+
+    /// Encoder backend: `auto`, `hardware`, `software`, or the name of one
+    /// backend, such as `vaapi`.
+    #[serde(default)]
+    pub encoder: EncoderArg,
+
+    /// The simulcast ladder, one entry per rung, in `--renditions`' grammar,
+    /// including its `@<fps>` suffix. Empty publishes a single unscaled
+    /// rendition named `video`.
+    #[serde(default)]
+    pub renditions: Vec<String>,
+
+    /// Target video bitrate for the largest rung, in bits per second.
+    pub bitrate: Option<u64>,
+
+    /// Requested capture width.
+    pub width: Option<u32>,
+
+    /// Requested capture height.
+    pub height: Option<u32>,
+
+    /// Requested capture framerate, and the ceiling on the ladder's `@<fps>`
+    /// rungs. Left out, the capture runs at 30 or at the highest rate a rung
+    /// asks for.
+    pub fps: Option<u32>,
+
+    /// Hide the mouse cursor in screen, window, and application capture.
+    #[serde(default)]
+    pub no_cursor: bool,
+
+    /// Audio codec: `opus` or `pcm`.
+    #[serde(default)]
+    pub audio_codec: AudioCodecArg,
+
+    /// Target audio bitrate in bits per second. Opus only.
     pub audio_bitrate: Option<u32>,
 }
 
-/// Configuration for a single recv (subscribe) stream. All fields
-/// except `record` are required.
-#[derive(Debug, Deserialize)]
-pub struct RecvConfig {
-    /// Human-readable label for this subscription.
-    pub name: String,
-    /// Connection ticket string (iroh-live ticket format).
-    pub ticket: String,
-    /// Audio output: `default` or `none`.
-    #[allow(
-        dead_code,
-        reason = "parsed from config, wired when recv audio output is implemented"
-    )]
-    pub audio_output: String,
-    /// Base path for recording. When set, raw encoded video and audio
-    /// are written to `<record>.h264` / `<record>.opus` (or appropriate
-    /// extension based on codec). Omit to skip recording.
-    pub record: Option<String>,
-}
-
-// ---------------------------------------------------------------------------
-// Secret key management
-// ---------------------------------------------------------------------------
-
-/// Loads or creates a named secret key from the config directory.
-fn load_or_create_secret_key(name: &str) -> anyhow::Result<SecretKey> {
-    let config_dir = dirs::config_dir()
-        .ok_or_else(|| anyhow::anyhow!("cannot determine config directory"))?
-        .join("iroh-live")
-        .join("secret_keys");
-    std::fs::create_dir_all(&config_dir)?;
-    let key_path = config_dir.join(format!("{name}.key"));
-
-    if key_path.exists() {
-        let hex_str = std::fs::read_to_string(&key_path)?.trim().to_string();
-        let key: SecretKey = hex_str
-            .parse()
-            .map_err(|e| anyhow::anyhow!("invalid key in {}: {e}", key_path.display()))?;
-        info!(name, path = %key_path.display(), "loaded secret key");
-        Ok(key)
-    } else {
-        let key = SecretKey::generate();
-        let hex_str = data_encoding::HEXLOWER.encode(&key.to_bytes());
-        std::fs::write(&key_path, &hex_str)?;
-        info!(name, path = %key_path.display(), "generated and saved new secret key");
-        Ok(key)
+impl SendConfig {
+    /// The capture flags this block stands for.
+    fn capture(&self) -> CaptureArgs {
+        CaptureArgs {
+            video: self.video.clone(),
+            audio: self.audio.clone(),
+            codec: self.codec,
+            encoder: self.encoder,
+            renditions: self.renditions.clone(),
+            bitrate: self.bitrate,
+            width: self.width,
+            height: self.height,
+            fps: self.fps,
+            no_cursor: self.no_cursor,
+            audio_codec: self.audio_codec,
+            audio_bitrate: self.audio_bitrate,
+            ..CaptureArgs::default()
+        }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Parsing
-// ---------------------------------------------------------------------------
+/// What a `[[recv]]` block does with the audio it receives.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AudioOutput {
+    /// Play it through whatever the system calls its default output.
+    #[default]
+    Default,
+    /// Leave the speakers alone.
+    None,
+}
 
-fn parse_config(path: &Path) -> anyhow::Result<RunConfig> {
+/// One broadcast to subscribe to.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecvConfig {
+    /// The label the session reports this subscription under.
+    pub name: String,
+
+    /// The ticket to subscribe to, as `irl publish` printed it.
+    pub ticket: String,
+
+    /// Whether this subscription's audio is played.
+    ///
+    /// Unlike `irl watch --audio-output`, this does not name a device: the
+    /// playback engine is process-wide and a session has many subscriptions,
+    /// so there is no per-block device to choose.
+    #[serde(default)]
+    pub audio_output: AudioOutput,
+
+    /// A file to record the broadcast to, in the container its extension
+    /// names. Omit to only receive.
+    pub record: Option<String>,
+
+    /// The one video rendition to record, instead of every rung the catalog
+    /// offers. Only meaningful alongside `record`.
+    pub rendition: Option<String>,
+}
+
+/// The `video` default, which is `--video`'s.
+fn default_video() -> String {
+    DEFAULT_VIDEO.to_string()
+}
+
+/// The `audio` default, which is `--audio`'s.
+fn default_audio() -> String {
+    DEFAULT_AUDIO.to_string()
+}
+
+/// Reads and validates the session file at `path`.
+///
+/// # Errors
+///
+/// Fails if the file cannot be read, is not the schema above, or describes no
+/// streams at all.
+fn parse_config(path: &Path) -> Result<RunConfig> {
     let text = std::fs::read_to_string(path)
-        .map_err(|e| anyhow::anyhow!("failed to read config {}: {e}", path.display()))?;
+        .map_err(|err| anyerr!("failed to read {}: {err}", path.display()))?;
     let config: RunConfig = toml::from_str(&text)
-        .map_err(|e| anyhow::anyhow!("failed to parse config {}: {e}", path.display()))?;
+        .map_err(|err| anyerr!("failed to parse {}: {err}", path.display()))?;
 
     if config.send.is_empty() && config.recv.is_empty() {
-        anyhow::bail!(
-            "config {} has no [[send]] or [[recv]] blocks",
+        return Err(anyerr!(
+            "{} has no [[send]] and no [[recv]] blocks, so there is nothing to run",
             path.display()
-        );
+        ));
     }
-
     Ok(config)
 }
 
-fn parse_video_source(spec: &str) -> anyhow::Result<VideoSourceSpec> {
-    if spec == "none" {
-        return Ok(VideoSourceSpec::None);
-    }
-    VideoSourceSpec::parse(spec).map_err(|e| anyhow::anyhow!("{e}"))
-}
-
-fn parse_audio_source(spec: &str) -> anyhow::Result<AudioSourceSpec> {
-    if spec == "none" {
-        return Ok(AudioSourceSpec::None);
-    }
-    AudioSourceSpec::parse(spec).map_err(|e| anyhow::anyhow!("{e}"))
-}
-
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
-
-/// Runs the `irl run` command.
-pub fn run(args: RunArgs, rt: &tokio::runtime::Runtime) -> n0_error::Result {
-    let config = parse_config(&args.config)?;
-
-    println!(
-        "loaded config: {} send, {} recv",
-        config.send.len(),
-        config.recv.len()
-    );
-
-    rt.block_on(run_session(config))
-}
-
-async fn run_session(config: RunConfig) -> n0_error::Result {
-    let needs_serve = !config.send.is_empty();
-
-    // Load or create persistent secret key if configured.
-    let secret_key = if let Some(ref name) = config.secret_key_name {
-        Some(load_or_create_secret_key(name)?)
-    } else {
-        None
+/// Publishes and subscribes everything the session describes, then holds it
+/// open until the user interrupts.
+async fn run_session(config: RunConfig) -> Result {
+    // Only a session that publishes needs to accept incoming connections; one
+    // that only subscribes dials out and never has to be reachable.
+    let serve = !config.send.is_empty();
+    let secret_key = match &config.secret_key_name {
+        Some(name) => load_or_create_secret_key(name)?,
+        None => iroh_live::util::secret_key_from_env()?,
     };
+    let live = transport::setup_live_with_key(secret_key, serve).await?;
+    let result = run_streams(&live, &config).await;
+    live.shutdown().await;
+    println!("done");
+    result
+}
 
-    // Workaround: Live::from_env() reads IROH_SECRET from env, so we set
-    // it here before calling setup_live. A proper API would accept a
-    // SecretKey directly on the LiveBuilder, but from_env covers this.
-    if let Some(ref key) = secret_key {
-        let hex = data_encoding::HEXLOWER.encode(&key.to_bytes());
-        // SAFETY: set_var is unsafe in Rust 2024 edition due to potential
-        // data races, but we call it before any threads are spawned.
-        unsafe { std::env::set_var("IROH_SECRET", hex) };
-    }
+/// Sets up every block over `live` and holds the session open until the user
+/// interrupts. The caller closes the endpoint either way.
+///
+/// # Errors
+///
+/// Fails if no block could be set up at all. A block that fails on its own is
+/// reported and the rest of the session runs without it.
+async fn run_streams(live: &Live, config: &RunConfig) -> Result {
+    // Every handle is kept until shutdown, because dropping one is what stops
+    // it: a broadcast stops publishing when its handle goes, and a
+    // subscription cancels every task it started.
+    let mut broadcasts: Vec<LocalBroadcast> = Vec::new();
+    let mut receivers: Vec<Receiver> = Vec::new();
+    let mut recordings: JoinSet<Result<()>> = JoinSet::new();
 
-    let live = setup_live(needs_serve).await?;
-    let audio_ctx = AudioBackend::default();
-
-    let mut tasks = JoinSet::<anyhow::Result<()>>::new();
-
-    // Holds send-side state so broadcasts stay alive until shutdown.
-    let mut send_handles: Vec<(String, LocalBroadcast)> = Vec::new();
-    let mut recv_handles: Vec<(String, Subscription, MediaTracks)> = Vec::new();
-
-    // -- Set up send streams --
     for send in &config.send {
-        match setup_send(&live, send, &audio_ctx).await {
+        match setup_send(live, send) {
             Ok(broadcast) => {
-                let ticket = LiveTicket::new(live.endpoint().addr(), &send.name);
+                let ticket = LiveTicket::new(live.endpoint().id(), &send.name);
                 println!("[send] {}: {ticket}", send.name);
-                send_handles.push((send.name.clone(), broadcast));
+                broadcasts.push(broadcast);
             }
-            Err(e) => {
-                warn!(name = %send.name, err = %e, "send setup failed");
-                eprintln!("[send] {}: ERROR - {e:#}", send.name);
+            Err(err) => {
+                warn!(name = %send.name, error = %err, "publish failed");
+                eprintln!("[send] {}: {err:#}", send.name);
             }
         }
     }
 
-    // -- Set up recv streams --
-    for recv in &config.recv {
-        match setup_recv(&live, recv, &audio_ctx).await {
-            Ok((sub, tracks)) => {
-                println!("[recv] {}: connected to {}", recv.name, recv.ticket);
-
-                if recv.record.is_none() {
-                    // No recording configured. MediaTracks already handles
-                    // decoding and audio playback via the AudioBackend.
-                    // Video frames are decoded but not displayed since wiring
-                    // an egui window from `irl run` requires owning the main
-                    // thread or spawning a dedicated render thread.
-                    // TODO: spawn egui viewer window when moq-media-egui is available
-                    info!(name = %recv.name, "receiving (audio playback active, video decode only)");
-                }
-
-                // Spawn recording if configured.
-                if let Some(ref base_path) = recv.record {
-                    let base = PathBuf::from(base_path);
+    // Concurrently, because a subscription waits for the peer's first catalog
+    // and a peer that has not started publishing yet would otherwise hold up
+    // every block behind it.
+    let setups = config
+        .recv
+        .iter()
+        .map(|recv| async move { (recv, setup_recv(live, recv).await) });
+    for (recv, result) in n0_future::join_all(setups).await {
+        match result {
+            Ok((receiver, recorder)) => {
+                println!("[recv] {}: subscribed to {}", recv.name, recv.ticket);
+                if let Some(recorder) = recorder {
+                    let path = recorder.path().display().to_string();
+                    println!("[recv] {}: recording to {path}", recv.name);
+                    let stop = receiver.sub.broadcast().shutdown_token().cancelled_owned();
                     let name = recv.name.clone();
-                    let broadcast = sub.broadcast().clone();
-                    let catalog = broadcast.catalog();
-                    info!(name, path = %base.display(), "recording enabled");
-
-                    // Record video if available.
-                    if let Ok(video_name) = catalog.select_video_rendition(Quality::Highest) {
-                        match broadcast.raw_video_track(&video_name) {
-                            Ok((source, config)) => {
-                                let ext = video_codec_extension(&config.codec);
-                                let path = base.with_extension(ext);
-                                let h264_state = H264AnnexBState::from_config(&config);
-                                let vb = Arc::new(AtomicU64::new(0));
-                                let vf = Arc::new(AtomicU64::new(0));
-                                info!(name, track = %video_name, path = %path.display(), "recording video");
-                                tasks.spawn(async move {
-                                    record_video_track(source, &path, vb, vf, h264_state).await
-                                });
-                            }
-                            Err(e) => {
-                                warn!(name, err = %e, "failed to get raw video track for recording")
-                            }
-                        }
-                    }
-
-                    // Record audio if available.
-                    if let Ok(audio_name) = catalog.select_audio_rendition(Quality::Highest) {
-                        match broadcast.raw_audio_track(&audio_name) {
-                            Ok((source, config)) => {
-                                let ext = audio_codec_extension(&config.codec);
-                                let path = base.with_extension(ext);
-                                let ab = Arc::new(AtomicU64::new(0));
-                                let af = Arc::new(AtomicU64::new(0));
-                                info!(name, track = %audio_name, path = %path.display(), "recording audio");
-                                tasks.spawn(async move {
-                                    record_raw_track(source, &path, ab, af).await
-                                });
-                            }
-                            Err(e) => {
-                                warn!(name, err = %e, "failed to get raw audio track for recording")
-                            }
-                        }
-                    }
+                    recordings.spawn(async move {
+                        let written = recorder.run(stop).await?;
+                        info!(name, bytes = written, path, "recording finished");
+                        Ok(())
+                    });
                 }
-
-                recv_handles.push((recv.name.clone(), sub, tracks));
+                receivers.push(receiver);
             }
-            Err(e) => {
-                warn!(name = %recv.name, err = %e, "recv setup failed");
-                eprintln!("[recv] {}: ERROR - {e:#}", recv.name);
+            Err(err) => {
+                warn!(name = %recv.name, error = %err, "subscribe failed");
+                eprintln!("[recv] {}: {err:#}", recv.name);
             }
         }
     }
 
-    if send_handles.is_empty() && recv_handles.is_empty() {
-        n0_error::bail_any!("no streams could be set up, nothing to do");
+    if broadcasts.is_empty() && receivers.is_empty() {
+        return Err(anyerr!(
+            "no stream could be set up, so there is nothing to do"
+        ));
     }
 
     println!(
-        "\n{} send + {} recv active. press Ctrl+C to stop.",
-        send_handles.len(),
-        recv_handles.len()
+        "{} send, {} recv. press Ctrl+C to stop",
+        broadcasts.len(),
+        receivers.len()
     );
-
-    // Wait for shutdown.
     tokio::signal::ctrl_c().await?;
-    println!("\nshutting down...");
+    println!("stopping ...");
 
-    // Close recv sessions so remote peers get a clean close.
-    for (name, sub, _tracks) in &recv_handles {
-        info!(name, "closing recv");
-        sub.session().close(0, b"bye");
+    // Cancelling each subscription is what ends its recording: the recorder
+    // stops on the broadcast's shutdown token, and only then is the file
+    // flushed, so the recordings are awaited before anything else closes.
+    for receiver in &receivers {
+        receiver.sub.broadcast().shutdown();
+    }
+    while let Some(finished) = recordings.join_next().await {
+        match finished {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => warn!(error = %err, "recording ended with an error"),
+            Err(err) => warn!(error = %err, "a recording task panicked"),
+        }
     }
 
-    // Abort any background tasks.
-    tasks.shutdown().await;
-
-    // Drop state and shut down the endpoint.
-    drop(send_handles);
-    drop(recv_handles);
-    live.shutdown().await;
-
-    println!("done");
-    n0_error::Ok(())
+    for broadcast in broadcasts {
+        broadcast.finish();
+    }
+    for receiver in &receivers {
+        receiver.sub.session().close(moq_net::Error::Cancel);
+    }
+    Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Send setup
-// ---------------------------------------------------------------------------
+/// One live `[[recv]]` block.
+///
+/// The audio track is held rather than used: opening it starts playback, and
+/// dropping it stops it.
+struct Receiver {
+    sub: Subscription,
+    _audio: Option<AudioTrack>,
+}
 
-async fn setup_send(
-    live: &Live,
-    config: &SendConfig,
-    audio_ctx: &AudioBackend,
-) -> anyhow::Result<LocalBroadcast> {
-    let broadcast = LocalBroadcast::new();
-
-    // Video
-    let video_source = parse_video_source(&config.video_source)?;
-    if !matches!(video_source, VideoSourceSpec::None) {
-        let codec = VideoCodec::parse_or_best(Some(&config.video_codec))?;
-        let preset = VideoPreset::parse_or_list(&config.video_preset)?;
-        crate::source::setup_video(&broadcast, &[video_source], codec, &[preset])?;
-    }
-
-    // Audio
-    let audio_source = parse_audio_source(&config.audio_source)?;
-    if !matches!(audio_source, AudioSourceSpec::None) {
-        let audio_preset = AudioPreset::parse_or_list("hq")?;
-        let audio_codec = moq_media::codec::AudioCodec::parse_or_list(&config.audio_codec)?;
-        crate::source::setup_audio(
-            &broadcast,
-            &[audio_source],
-            audio_ctx,
-            audio_preset,
-            audio_codec,
-        )
-        .await?;
-    }
-
-    // Publish locally so subscribers can connect.
-    live.publish(&config.name, &broadcast).await?;
-
+/// Publishes one `[[send]]` block.
+///
+/// # Errors
+///
+/// Fails if the broadcast path is taken, or the block's sources or ladder do
+/// not parse. A device that will not open surfaces in the log and ends its
+/// track, not here.
+fn setup_send(live: &Live, config: &SendConfig) -> Result<LocalBroadcast> {
+    let broadcast = live.publish(&config.name)?;
+    source::configure(&broadcast, &config.capture())?;
     Ok(broadcast)
 }
 
-// ---------------------------------------------------------------------------
-// Recv setup
-// ---------------------------------------------------------------------------
+/// Subscribes to one `[[recv]]` block, opening its audio and its recording if
+/// it asked for either.
+///
+/// The recorder comes back rather than running here: the caller owns the tasks,
+/// and starting one before every block has been set up would record a stretch
+/// of nothing while the rest are still connecting.
+///
+/// # Errors
+///
+/// Fails if the ticket does not parse, the peer cannot be reached, or the
+/// recording file cannot be created. Audio that will not open is reported and
+/// the subscription continues without it.
+async fn setup_recv(live: &Live, config: &RecvConfig) -> Result<(Receiver, Option<Recorder>)> {
+    let ticket: LiveTicket = config.ticket.parse().map_err(|err| {
+        anyerr!(
+            "invalid ticket: {err}; it should be the string `irl publish` \
+             printed, starting with `iroh-live:`"
+        )
+    })?;
+    let sub = transport::subscribe(live, &ticket).await?;
 
-async fn setup_recv(
-    live: &Live,
-    config: &RecvConfig,
-    audio_ctx: &AudioBackend,
-) -> anyhow::Result<(Subscription, MediaTracks)> {
-    let ticket: LiveTicket = config
-        .ticket
-        .parse()
-        .map_err(|e| anyhow::anyhow!("invalid ticket for recv '{}': {e}", config.name))?;
+    let recorder = match &config.record {
+        None => None,
+        Some(path) => {
+            let mut options = RecordOptions::new(path.clone(), None)?;
+            options.rendition = config.rendition.clone();
+            Some(Recorder::open(sub.session(), sub.broadcast(), &options).await?)
+        }
+    };
 
-    let sub = live
-        .subscribe(ticket.endpoint, &ticket.broadcast_name)
-        .await?;
+    let audio = match config.audio_output {
+        AudioOutput::None => None,
+        AudioOutput::Default => play_audio(&sub, &config.name).await,
+    };
+    Ok((Receiver { sub, _audio: audio }, recorder))
+}
 
-    let playback = PlaybackConfig::default();
-    let tracks = sub.broadcast().media(audio_ctx, playback).await?;
+/// Opens the broadcast's audio track, which starts playing it.
+// A build without `playback` has no sink to open, so nothing in that arm awaits.
+#[allow(
+    clippy::unused_async,
+    reason = "one arm of a feature-gated body awaits"
+)]
+async fn play_audio(sub: &Subscription, name: &str) -> Option<AudioTrack> {
+    #[cfg(feature = "playback")]
+    {
+        if !sub.broadcast().has_audio() {
+            info!(name, "the broadcast carries no audio");
+            return None;
+        }
+        sub.broadcast()
+            .audio()
+            .await
+            .inspect_err(|err| warn!(name, error = %err, "audio track failed to open"))
+            .ok()
+    }
+    #[cfg(not(feature = "playback"))]
+    {
+        let _ = sub;
+        warn!(
+            name,
+            "audio_output asks for playback, which this build was compiled without"
+        );
+        None
+    }
+}
 
-    Ok((sub, tracks))
+/// Loads the named secret key, generating and storing one on first use.
+///
+/// # Errors
+///
+/// Fails if the config directory cannot be found or written, or if the stored
+/// key is not a key.
+fn load_or_create_secret_key(name: &str) -> Result<SecretKey> {
+    let dir = dirs::config_dir()
+        .ok_or_else(|| anyerr!("cannot find this platform's config directory"))?
+        .join("iroh-live")
+        .join("secret_keys");
+    std::fs::create_dir_all(&dir)
+        .map_err(|err| anyerr!("failed to create {}: {err}", dir.display()))?;
+    let path = dir.join(format!("{name}.key"));
+
+    if path.exists() {
+        let text = std::fs::read_to_string(&path)
+            .map_err(|err| anyerr!("failed to read {}: {err}", path.display()))?;
+        let key: SecretKey = text
+            .trim()
+            .parse()
+            .map_err(|err| anyerr!("{} does not hold a secret key: {err}", path.display()))?;
+        info!(name, path = %path.display(), "loaded the session secret key");
+        return Ok(key);
+    }
+
+    let key = SecretKey::generate();
+    std::fs::write(&path, data_encoding::HEXLOWER.encode(&key.to_bytes()))
+        .map_err(|err| anyerr!("failed to write {}: {err}", path.display()))?;
+    info!(name, path = %path.display(), "generated a session secret key");
+    Ok(key)
 }
 
 #[cfg(test)]
@@ -396,145 +451,100 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_send_only_config() {
-        let toml = r#"
-[[send]]
-name = "my-camera"
-video_source = "test"
-video_codec = "h264"
-video_preset = "360p"
-audio_source = "none"
-audio_codec = "opus"
-"#;
-        let config: RunConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.send.len(), 1);
-        assert_eq!(config.recv.len(), 0);
-        assert_eq!(config.send[0].name, "my-camera");
-        assert_eq!(config.send[0].video_source, "test");
-        assert_eq!(config.send[0].audio_source, "none");
+    fn a_send_block_takes_the_flag_defaults() {
+        let config: RunConfig = toml::from_str(
+            r#"
+            [[send]]
+            name = "cam"
+            "#,
+        )
+        .expect("only `name` is required");
+        let send = &config.send[0];
+        assert_eq!(send.video, DEFAULT_VIDEO);
+        assert_eq!(send.audio, DEFAULT_AUDIO);
+        assert_eq!(send.encoder, EncoderArg::Auto);
+        assert_eq!(send.codec, VideoCodecArg::H264);
+        assert_eq!(send.audio_codec, AudioCodecArg::Opus);
+        assert!(send.renditions.is_empty());
     }
 
     #[test]
-    fn parse_recv_only_config() {
-        let toml = r#"
-[[recv]]
-name = "friend"
-ticket = "iroh-live:ABC123/camera"
-audio_output = "none"
-"#;
-        let config: RunConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.send.len(), 0);
-        assert_eq!(config.recv.len(), 1);
-        assert_eq!(config.recv[0].name, "friend");
-        assert_eq!(config.recv[0].audio_output, "none");
+    fn a_send_block_becomes_capture_flags() {
+        let config: RunConfig = toml::from_str(
+            r#"
+            [[send]]
+            name = "screen"
+            video = "screen"
+            audio = "none"
+            codec = "h265"
+            encoder = "vaapi"
+            renditions = ["low:320x180", "720p"]
+            bitrate = 3000000
+            fps = 30
+            no_cursor = true
+            audio_codec = "pcm"
+            "#,
+        )
+        .expect("a full send block");
+        let capture = config.send[0].capture();
+        assert_eq!(capture.video, "screen");
+        assert_eq!(capture.codec, VideoCodecArg::H265);
+        assert_eq!(capture.encoder, EncoderArg::Vaapi);
+        assert_eq!(capture.renditions, ["low:320x180", "720p"]);
+        assert_eq!(capture.bitrate, Some(3_000_000));
+        assert!(capture.no_cursor);
+        assert_eq!(capture.audio_codec, AudioCodecArg::Pcm);
+        // `--test-source` is a flag with no config spelling: a session file
+        // says `video = "test"` instead.
+        assert!(!capture.test_source);
     }
 
     #[test]
-    fn parse_mixed_config() {
-        let toml = r#"
-[[send]]
-name = "cam"
-video_source = "cam:pw:0"
-video_codec = "h264"
-video_preset = "360p"
-audio_source = "default"
-audio_codec = "opus"
-
-[[send]]
-name = "screen"
-video_source = "screen:pw:0"
-video_codec = "h264"
-video_preset = "1080p"
-audio_source = "none"
-audio_codec = "opus"
-
-[[recv]]
-name = "remote"
-ticket = "iroh-live:XYZ/stream"
-audio_output = "default"
-"#;
-        let config: RunConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.send.len(), 2);
-        assert_eq!(config.recv.len(), 1);
-        assert_eq!(config.send[0].video_codec, "h264");
-        assert_eq!(config.send[1].video_preset, "1080p");
+    fn a_recv_block_defaults_to_playing_audio_and_not_recording() {
+        let config: RunConfig = toml::from_str(
+            r#"
+            [[recv]]
+            name = "friend"
+            ticket = "iroh-live:abc/hello"
+            "#,
+        )
+        .expect("only `name` and `ticket` are required");
+        assert_eq!(config.recv[0].audio_output, AudioOutput::Default);
+        assert!(config.recv[0].record.is_none());
     }
 
     #[test]
-    fn missing_required_fields_rejected() {
-        // Send without video_codec should fail.
-        let toml = r#"
-[[send]]
-name = "incomplete"
-video_source = "test"
-"#;
-        assert!(toml::from_str::<RunConfig>(toml).is_err());
+    fn a_misspelled_key_is_rejected() {
+        let err = toml::from_str::<RunConfig>(
+            r#"
+            [[send]]
+            name = "cam"
+            bitrat = 3000000
+            "#,
+        )
+        .expect_err("a typo must not be silently ignored");
+        assert!(err.to_string().contains("bitrat"), "unexpected: {err}");
     }
 
     #[test]
-    fn secret_key_name_parsed() {
-        let toml = r#"
-secret_key_name = "my-studio"
-
-[[send]]
-name = "cam"
-video_source = "test"
-video_codec = "h264"
-video_preset = "360p"
-audio_source = "none"
-audio_codec = "opus"
-"#;
-        let config: RunConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.secret_key_name.as_deref(), Some("my-studio"));
-    }
-
-    #[test]
-    fn record_field_parsed() {
-        let toml = r#"
-[[recv]]
-name = "rec"
-ticket = "iroh-live:ABC/stream"
-audio_output = "none"
-record = "output"
-"#;
-        let config: RunConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.recv[0].record.as_deref(), Some("output"));
-    }
-
-    #[test]
-    fn parse_config_rejects_empty() {
-        let dir = tempfile::tempdir().unwrap();
+    fn a_config_with_no_blocks_is_rejected() {
+        let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("empty.toml");
-        std::fs::write(&path, "").unwrap();
-        let err = parse_config(&path).unwrap_err();
+        std::fs::write(&path, "").expect("write");
+        let err = parse_config(&path).expect_err("an empty session runs nothing");
         assert!(
-            err.to_string().contains("no [[send]] or [[recv]]"),
-            "unexpected error: {err}"
+            err.to_string().contains("nothing to run"),
+            "unexpected: {err}"
         );
     }
 
     #[test]
-    fn parse_config_rejects_missing_file() {
-        let err = parse_config(Path::new("/nonexistent/config.toml")).unwrap_err();
+    fn a_missing_config_is_rejected() {
+        let err = parse_config(Path::new("/nonexistent/session.toml"))
+            .expect_err("the file does not exist");
         assert!(
             err.to_string().contains("failed to read"),
-            "unexpected error: {err}"
+            "unexpected: {err}"
         );
-    }
-
-    #[test]
-    fn video_source_none_parses() {
-        assert!(matches!(
-            parse_video_source("none").unwrap(),
-            VideoSourceSpec::None
-        ));
-    }
-
-    #[test]
-    fn audio_source_none_parses() {
-        assert!(matches!(
-            parse_audio_source("none").unwrap(),
-            AudioSourceSpec::None
-        ));
     }
 }

@@ -1,18 +1,19 @@
-//! High-level API for live audio/video sessions over iroh.
+//! Live audio and video over iroh.
 //!
-//! Provides [`Live`] as the main entry point for publishing and subscribing
-//! to media broadcasts, [`Call`] for 1:1 call sugar, and [`rooms`] for
-//! multi-party rooms with gossip-based coordination.
+//! [`Live`] binds an iroh [`Endpoint`](iroh::Endpoint) to a MoQ transport:
+//! [`Live::publish`] hands back a broadcast every connected peer can subscribe
+//! to, and [`Live::subscribe`] reaches one a peer publishes. [`Call`] is 1:1
+//! sugar over the two.
+//!
+//! The media itself comes from [`moq_media`], which is plumbing over upstream
+//! `moq-video` and `moq-audio`. Rooms live in the separate `iroh-rooms` crate;
+//! [`Live::gossip`] is what they need from here.
 
 mod call;
 mod live;
-/// Multi-party room coordination over gossip.
-pub mod rooms;
 mod subscription;
-/// Ticket types for sharing connection info.
 pub mod ticket;
 mod types;
-/// Utility helpers (stats smoothing, etc.).
 pub mod util;
 
 pub use hang::catalog;

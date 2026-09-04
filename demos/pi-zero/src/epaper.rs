@@ -151,6 +151,50 @@ fn open_epd() -> anyhow::Result<(SpidevDevice, Epd)> {
     Ok((spi, epd))
 }
 
+/// Pixels left clear on each side of the QR code.
+const QR_MARGIN: u32 = 5;
+
+/// Pixels reserved below the QR code for the label.
+const LABEL_HEIGHT: usize = 14;
+
+/// Where a QR code of a given module count is drawn on the panel, and how many
+/// pixels each of its modules gets.
+///
+/// The scale is what decides whether a phone can read the panel at arm's
+/// length, and it falls straight out of the payload: a shorter ticket needs
+/// fewer modules, and fewer modules leave more pixels for each one. A ticket
+/// that carries an endpoint id and a short broadcast name comes out at three
+/// pixels per module on this 122 px panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QrLayout {
+    /// Panel pixels per QR module.
+    scale: usize,
+    /// The drawn code's edge length in pixels.
+    size_px: usize,
+    x_offset: usize,
+    y_offset: usize,
+}
+
+impl QrLayout {
+    /// Returns the layout for a code `modules` wide, centred above the label.
+    ///
+    /// Scaled to the narrower panel dimension with a margin, and never below
+    /// one pixel per module: a payload too long to fit is still worth drawing,
+    /// because a code that overruns the panel is easier to diagnose than a
+    /// blank one.
+    fn centred(modules: usize) -> Self {
+        let max_qr_px = (epd_v4::WIDTH - 2 * QR_MARGIN) as usize;
+        let scale = std::cmp::max(1, max_qr_px / modules);
+        let size_px = modules * scale;
+        Self {
+            scale,
+            size_px,
+            x_offset: (epd_v4::WIDTH as usize).saturating_sub(size_px) / 2,
+            y_offset: (epd_v4::HEIGHT as usize - LABEL_HEIGHT).saturating_sub(size_px) / 2,
+        }
+    }
+}
+
 /// Generates a QR code from `data` and displays it on the e-paper HAT.
 pub(crate) fn display_qr(data: &str) -> anyhow::Result<()> {
     tracing::info!("display_qr: starting");
@@ -163,13 +207,12 @@ pub(crate) fn display_qr(data: &str) -> anyhow::Result<()> {
     let modules = code.width();
     tracing::debug!(modules, data_len = data.len(), "QR code generated");
 
-    // Scale to fit within the narrower display dimension (122px) with margin.
-    let max_qr_px = (epd_v4::WIDTH - 10) as usize;
-    let scale = std::cmp::max(1, max_qr_px / modules);
-    let qr_px = modules * scale;
-
-    let x_offset = ((epd_v4::WIDTH as usize).saturating_sub(qr_px)) / 2;
-    let y_offset = ((epd_v4::HEIGHT as usize - 14).saturating_sub(qr_px)) / 2;
+    let QrLayout {
+        scale,
+        size_px: qr_px,
+        x_offset,
+        y_offset,
+    } = QrLayout::centred(modules);
     tracing::debug!(scale, qr_px, x_offset, y_offset, "QR layout computed");
 
     let colors = code.to_colors();
@@ -285,4 +328,81 @@ pub(crate) fn clear_display() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("sleep failed: {e}"))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use qrcode::QrCode;
+
+    use super::*;
+
+    /// A ticket as `irl publish` and the pi-zero demo hand one out: the scheme,
+    /// a base64url endpoint id, and a broadcast name.
+    const TICKET: &str = "iroh-live:kX9mQ2vT7bL4nR8dY1sW6pA3zC5eH0jF2gK8uM4iO7Q/pi-zero";
+
+    #[test]
+    fn a_ticket_qr_gets_three_pixels_per_module() {
+        // The reason the ticket carries an endpoint id and no addresses. A
+        // ticket that listed the addresses of a multi-homed publisher ran to
+        // 184 characters, which needs 57 modules and leaves one panel pixel
+        // each. At 33 modules it gets three, and that is the difference between
+        // a phone reading the panel first try and not at all.
+        let code = QrCode::new(TICKET.as_bytes()).expect("a ticket fits in a QR code");
+        assert_eq!(code.width(), 33);
+
+        let layout = QrLayout::centred(code.width());
+        assert_eq!(layout.scale, 3);
+        assert_eq!(layout.size_px, 99);
+    }
+
+    /// The white border around the code is not spare room, it is the quiet zone
+    /// a decoder needs to find the code at all, and the standard asks for four
+    /// modules of it.
+    ///
+    /// This is the binding constraint on how big the modules can be, and it is
+    /// easy to lose without noticing: a payload one QR version longer keeps the
+    /// same three pixels per module, grows the code, and eats the border
+    /// instead. The panel stays legible to the eye and stops scanning.
+    #[test]
+    fn a_ticket_qr_keeps_most_of_a_quiet_zone() {
+        let code = QrCode::new(TICKET.as_bytes()).expect("a ticket fits in a QR code");
+        let layout = QrLayout::centred(code.width());
+        let quiet_modules = layout.x_offset as f64 / layout.scale as f64;
+        assert!(
+            quiet_modules >= 3.5,
+            "only {quiet_modules:.1} modules of quiet zone around the code",
+        );
+    }
+
+    /// Three pixels per module is the ceiling on this panel, not a compromise
+    /// anyone can lift by tightening the margins.
+    ///
+    /// The narrow axis is 122 px and a ticket carrying a 32 byte endpoint id
+    /// needs 33 modules, so a fourth pixel each would want 132 px and does not
+    /// fit even with no border at all. Reaching four would mean 26 modules or
+    /// fewer, which is a QR version holding 32 bytes, and the id alone is 43
+    /// characters of base64.
+    #[test]
+    fn a_fourth_pixel_per_module_does_not_fit_the_panel() {
+        let code = QrCode::new(TICKET.as_bytes()).expect("a ticket fits in a QR code");
+        assert!(
+            code.width() * 4 > epd_v4::WIDTH as usize,
+            "four pixels per module would fit, so the layout is leaving some behind",
+        );
+    }
+
+    #[test]
+    fn a_qr_code_stays_on_the_panel() {
+        for modules in [21, 25, 29, 33, 41, 53, 77] {
+            let layout = QrLayout::centred(modules);
+            assert!(
+                layout.x_offset + layout.size_px <= epd_v4::WIDTH as usize,
+                "{modules} modules overrun the panel width"
+            );
+            assert!(
+                layout.y_offset + layout.size_px + LABEL_HEIGHT <= epd_v4::HEIGHT as usize,
+                "{modules} modules overrun the panel height"
+            );
+        }
+    }
 }

@@ -2,16 +2,16 @@
 //!
 //! Android's zero-copy video rendering pipeline requires EGL extension calls
 //! that are not exposed by the Java SDK. This module resolves them at runtime
-//! via `dlopen("libEGL.so")` → `eglGetProcAddress` and caches the function
+//! via `dlopen("libEGL.so")` -> `eglGetProcAddress` and caches the function
 //! pointers in `OnceLock` statics for zero-overhead repeat calls.
 //!
 //! # Rendering pipeline
 //!
 //! ```text
 //! AHardwareBuffer
-//!   → eglGetNativeClientBufferANDROID → EGLClientBuffer
-//!   → eglCreateImageKHR               → EGLImage
-//!   → glEGLImageTargetTexture2DOES     → GL_TEXTURE_EXTERNAL_OES texture
+//!   -> eglGetNativeClientBufferANDROID -> EGLClientBuffer
+//!   -> eglCreateImageKHR               -> EGLImage
+//!   -> glEGLImageTargetTexture2DOES     -> GL_TEXTURE_EXTERNAL_OES texture
 //! ```
 
 use std::{ffi::c_void, sync::OnceLock};
@@ -33,7 +33,7 @@ static FN_IMAGE_TARGET_TEXTURE: OnceLock<Option<ImageTargetTextureFn>> = OnceLoc
 fn load_egl_get_proc_address() -> Option<EglGetProcAddressFn> {
     *FN_GET_PROC_ADDRESS.get_or_init(|| {
         // SAFETY: dlopen with RTLD_NOLOAD only returns a handle if
-        // libEGL.so is already loaded (it always is on Android — the
+        // libEGL.so is already loaded (it always is on Android, since the
         // Java side loads it). dlsym resolves from that library.
         unsafe {
             let lib = libc::dlopen(

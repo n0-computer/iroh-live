@@ -2,7 +2,7 @@
 //!
 //! Owns the full EGL lifecycle (display, context, surface) and renders
 //! `AHardwareBuffer` frames via `GL_TEXTURE_EXTERNAL_OES` or NV12 planes
-//! via `sampler2D`. Kotlin only provides the `Surface` handle — all GL
+//! via `sampler2D`. Kotlin only provides the `Surface` handle, so all GL
 //! and EGL calls happen in Rust.
 
 use std::ffi::c_void;
@@ -13,7 +13,7 @@ use khronos_egl as egl_api;
 
 use crate::egl;
 
-/// `GL_TEXTURE_EXTERNAL_OES` — not in glow's constants.
+/// `GL_TEXTURE_EXTERNAL_OES`: not in glow's constants.
 const GL_TEXTURE_EXTERNAL_OES: u32 = 0x8D65;
 /// `EGL_NATIVE_BUFFER_ANDROID` target for `eglCreateImageKHR`.
 const EGL_NATIVE_BUFFER_ANDROID: u32 = 0x3140;
@@ -54,10 +54,10 @@ void main() {
     gl_FragColor = texture2D(u_tex, uv);
 }";
 
-/// NV12→RGBA fragment shader using `sampler2D` (Y as LUMINANCE, UV as LUMINANCE_ALPHA).
+/// NV12->RGBA fragment shader using `sampler2D` (Y as LUMINANCE, UV as LUMINANCE_ALPHA).
 ///
-/// Used for CPU NV12 frames (direct camera passthrough) — avoids the expensive
-/// CPU NV12→RGBA conversion + AHardwareBuffer allocation.
+/// Used for CPU NV12 frames (direct camera passthrough), which avoids the expensive
+/// CPU NV12->RGBA conversion + AHardwareBuffer allocation.
 const NV12_FRAG_SRC: &str = "\
 #version 100
 precision mediump float;
@@ -104,7 +104,7 @@ pub struct AndroidRenderer {
     oes_texture: glow::Texture,
     oes_a_pos_loc: u32,
     oes_rotation_loc: Option<glow::UniformLocation>,
-    // NV12 path (CPU camera frames — avoids RGBA conversion).
+    // NV12 path (CPU camera frames: avoids RGBA conversion).
     nv12_program: glow::Program,
     nv12_y_texture: glow::Texture,
     nv12_uv_texture: glow::Texture,
@@ -297,7 +297,7 @@ impl AndroidRenderer {
         video_h: u32,
         rotation_degrees: u32,
     ) {
-        // AHardwareBuffer → EGLClientBuffer.
+        // AHardwareBuffer -> EGLClientBuffer.
         let Some(client_buffer) =
             (unsafe { egl::get_native_client_buffer(buffer_ptr as *const c_void) })
         else {
@@ -305,7 +305,7 @@ impl AndroidRenderer {
             return;
         };
 
-        // EGLClientBuffer → EGLImage.
+        // EGLClientBuffer -> EGLImage.
         let attrs = [EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE];
         let Some(egl_image) = (unsafe {
             egl::create_image(
@@ -319,7 +319,7 @@ impl AndroidRenderer {
             return;
         };
 
-        // Bind EGLImage → OES texture.
+        // Bind EGLImage -> OES texture.
         unsafe {
             self.gl.active_texture(glow::TEXTURE0);
             self.gl
@@ -528,12 +528,12 @@ fn letterbox_viewport(sw: i32, sh: i32, vw: u32, vh: u32) -> (i32, i32, i32, i32
     let video_aspect = vw as f32 / vh as f32;
     let surface_aspect = sw as f32 / sh as f32;
     if video_aspect > surface_aspect {
-        // Video wider than surface — pillarbox top/bottom.
+        // Video wider than surface: pillarbox top/bottom.
         let vp_w = sw;
         let vp_h = (sw as f32 / video_aspect) as i32;
         (0, (sh - vp_h) / 2, vp_w, vp_h)
     } else {
-        // Video taller — letterbox left/right.
+        // Video taller: letterbox left/right.
         let vp_h = sh;
         let vp_w = (sh as f32 * video_aspect) as i32;
         ((sw - vp_w) / 2, 0, vp_w, vp_h)

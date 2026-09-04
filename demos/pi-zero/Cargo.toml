@@ -18,15 +18,13 @@ tokio = { version = "1.48.0", features = ["full"] }
 tracing = "0.1.41"
 tracing-subscriber = "0.3.20"
 
-# Linux-only dependencies — the demo only runs on Linux (Pi Zero / ARM64).
+# Linux-only dependencies - the demo only runs on Linux (Pi Zero / ARM64).
 [target.'cfg(target_os = "linux")'.dependencies]
 iroh = { workspace = true }
-bytes = "1.11.0"
-iroh-live = { workspace = true, features = ["h264", "opus"] }
-moq-media = { workspace = true, features = ["h264", "opus", "v4l2", "test-util"] }
-tokio-util = "0.7"
-rusty-codecs = { workspace = true, features = ["raspberry-pi", "gles", "gles-dmabuf"] }
-rusty-capture = { workspace = true, default-features = false, features = ["libcamera"] }
+iroh-live = { workspace = true }
+moq-media = { workspace = true, features = ["rpicam", "test-source"] }
+moq-video = { workspace = true }
+n0-future = "0.3.1"
 
 # QR code generation
 qrcode = "0.14"

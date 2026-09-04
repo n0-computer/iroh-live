@@ -1,14 +1,37 @@
+# Rolling release. Every push to `main` rebuilds the `irl` CLI for four desktop
+# targets plus the Android demo APK, then re-points the `rolling-release` tag at
+# the new commit and replaces the assets attached to it.
+#
+# Feature sets are chosen per platform rather than with `--all-features`. The
+# CLI's feature table is a union across operating systems, so a build has to ask
+# for the backends its own target can reach and leave the rest alone. The Linux
+# jobs turn on every hardware path (NVENC/NVDEC, VAAPI, the V4L2 memory-to-memory
+# codecs, rpicam, PipeWire screen capture) on top of the default
+# `playback,render,sound-server`; ALSA, PulseAudio, and PipeWire audio all arrive
+# through `sound-server` and cpal picks between them at runtime. macOS and
+# Windows get VideoToolbox, ScreenCaptureKit, Media Foundation, and WASAPI from
+# `target_os` gating in moq-video and moq-audio, so no feature selects them, and
+# every remaining backend feature pulls Linux-only dependencies. That leaves
+# `aec` as the only addition there.
 name: Release
 
 on:
   push:
     branches: [main]
+  # A change to the pipeline itself has to build before it merges. Ordinary pull
+  # requests do not run these jobs.
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'cross/**'
+      - 'demos/android/**'
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
 
-# Default to read-only; jobs that need more grant it explicitly.
+# Default to read-only; the publish job grants itself more.
 permissions:
   contents: read
 
@@ -16,19 +39,33 @@ jobs:
   build:
     name: Build ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: linux-amd64
+          - name: linux-x86_64
             os: ubuntu-latest
-            artifact: irl-linux-amd64
+            target: x86_64-unknown-linux-gnu
+            features: nvidia,vaapi,v4l2,rpicam,pipewire,aec
+            bin: irl
+            asset: irl-linux-x86_64
+          # Apple silicon only. An Intel Mac is not a target we support, and a
+          # second build of it costs a runner on every release for nobody.
           - name: macos-aarch64
             os: macos-14
-            artifact: irl-macos-aarch64
+            target: aarch64-apple-darwin
+            features: aec
+            bin: irl
+            asset: irl-macos-aarch64
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            features: aec
+            bin: irl.exe
+            asset: irl-windows-x86_64.exe
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -37,13 +74,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: stable
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-on-failure: true
           key: release-${{ matrix.name }}
 
+      # libclang is bindgen, which pipewire-sys and the V4L2 bindings need;
+      # libva headers are for moq-vaapi. Both features are Linux-only, so this
+      # list only has to serve the one Linux entry in the matrix.
       - name: Install system deps (Linux)
-        if: startsWith(matrix.os, 'ubuntu')
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends \
             libasound2-dev libpipewire-0.3-dev libjack-jackd2-dev libspa-0.2-dev libclang-dev \
@@ -51,90 +92,260 @@ jobs:
             libva-dev nasm
 
       - name: Install system deps (macOS)
-        if: startsWith(matrix.os, 'macos')
+        if: runner.os == 'macOS'
         run: brew install libtool automake
 
-      - name: Build release binary
-        run: cargo build --locked --profile release-dist -p iroh-live-cli
+      # aws-lc-sys assembles its x86_64 primitives with NASM, which the Windows
+      # image does not carry.
+      - name: Install system deps (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nasm --no-progress -y
+          echo "C:\Program Files\NASM" >> $env:GITHUB_PATH
+
+      - name: Build irl
+        run: cargo build --locked --profile release-dist -p iroh-live-cli --target ${{ matrix.target }} --features ${{ matrix.features }}
+
+      - name: Stage the binary
+        shell: bash
+        run: cp "target/${{ matrix.target }}/release-dist/${{ matrix.bin }}" "${{ matrix.asset }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ${{ matrix.artifact }}
-          path: target/release-dist/irl
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+
+  linux-aarch64:
+    name: Build linux-aarch64
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: stable
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Install zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+
+      - name: Install cargo-zigbuild and cargo-make
+        uses: taiki-e/install-action@6cd13508893c0e7eab5f273c2575d3859bd7229a # v2.86.6
+        with:
+          tool: cargo-zigbuild,cargo-make
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
+          key: release-linux-aarch64
+
+      - name: Install dpkg-deb (for sysroot creation)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dpkg-dev python3
+
+      - name: Cache sysroot
+        id: cache-sysroot
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: cross/sysroot-aarch64
+          key: sysroot-bookworm-aarch64-${{ hashFiles('cross/create-sysroot.sh') }}
+
+      - name: Create sysroot
+        if: steps.cache-sysroot.outputs.cache-hit != 'true'
+        run: cargo make cross-sysroot-aarch64
+
+      # Same feature set as the x86_64 Linux build. The Bookworm sysroot carries
+      # the PipeWire, VAAPI, V4L2, and ALSA headers those backends compile
+      # against, and everything that talks to a GPU is loaded at runtime, so a
+      # Pi with no NVIDIA driver falls through to the next encoder.
+      - name: Build irl (release-dist)
+        run: cargo make cross-build-aarch64 -- -p iroh-live-cli --profile release-dist --features nvidia,vaapi,v4l2,rpicam,pipewire,aec
+      - name: Lockfile must not have moved
+        # cargo make / zigbuild take no --locked; assert the lockfile instead.
+        run: git diff --exit-code Cargo.lock
+
+      - name: Stage the binary
+        run: cp target/aarch64-unknown-linux-gnu/release-dist/irl irl-linux-aarch64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: irl-linux-aarch64
+          path: irl-linux-aarch64
+          if-no-files-found: error
+
+  android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      # arm64-v8a is the handset ABI. The emulator's x86_64 library is a local
+      # convenience and has no place in a release.
+      ABI: arm64-v8a
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android
+      - uses: taiki-e/install-action@6cd13508893c0e7eab5f273c2575d3859bd7229a # v2.86.6
+        with:
+          tool: cargo-ndk,cargo-make
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
+          key: release-android
+
+      - name: Cache Gradle
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('demos/android/gradle/wrapper/gradle-wrapper.properties', 'demos/android/**/*.gradle.kts', 'demos/android/gradle/libs.versions.toml') }}
+          restore-keys: gradle-
+
+      # `gradle-wrapper.jar` is not in the repository, so the checked-in
+      # `gradlew` has no launcher to run. Regenerating it from the runner's own
+      # Gradle keeps the pinned distribution in `gradle-wrapper.properties` as
+      # the single source of truth, where committing the jar would add a second
+      # copy of that decision in a form nobody can read.
+      - name: Restore the Gradle wrapper
+        working-directory: demos/android
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's|.*/gradle-\(.*\)-bin\.zip|\1|p' gradle/wrapper/gradle-wrapper.properties)"
+          if [ -z "$version" ]; then
+            echo "could not read the pinned Gradle version from gradle-wrapper.properties" >&2
+            exit 1
+          fi
+          # Generated in an empty directory rather than here, so Gradle does not
+          # configure the Android project to produce a file it is only being
+          # asked to copy. Configuring it needs the SDK and the plugin, neither
+          # of which this step has any business depending on.
+          scratch="$(mktemp -d)"
+          # An empty settings file is what makes the scratch directory a Gradle
+          # build with no projects in it. Gradle refuses to run any task,
+          # including this one, in a directory that has none.
+          : > "$scratch/settings.gradle.kts"
+          ( cd "$scratch" && gradle --quiet wrapper --gradle-version "$version" )
+          cp "$scratch/gradle/wrapper/gradle-wrapper.jar" gradle/wrapper/gradle-wrapper.jar
+          test -f gradle/wrapper/gradle-wrapper.jar
+
+      # The Makefile picks the highest NDK under $ANDROID_HOME/ndk, which the
+      # runner image already provides, and signs the release build with the
+      # debug key so no keystore secret is involved.
+      - name: Build the release APK
+        working-directory: demos/android
+        run: cargo make apk-release
+      - name: Lockfile must not have moved
+        run: git diff --exit-code Cargo.lock
+
+      - name: Stage the APK
+        run: cp demos/android/app/build/outputs/apk/release/app-release.apk iroh-live-demo-arm64-v8a.apk
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: iroh-live-demo-arm64-v8a.apk
+          path: iroh-live-demo-arm64-v8a.apk
+          if-no-files-found: error
 
   publish:
     name: Publish rolling release
-    needs: build
+    needs: [build, linux-aarch64, android]
+    # A manual run from a feature branch still builds; only main publishes.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: rolling-release
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          # stays on: this job pushes the rolling-release tag with a bare
-          # `git push`
-          persist-credentials: true
-
-      - name: Download all artifacts
+      # No checkout: every asset arrives as an artifact and the tag moves
+      # through the API, so this job needs no working tree and no git
+      # credentials on disk.
+      - name: Download build artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          path: release-assets
+          path: artifacts
 
-      - name: Prepare binaries
+      - name: Collect assets
         run: |
+          set -euo pipefail
           mkdir -p release
-          for dir in release-assets/irl-*; do
-            name="$(basename "$dir")"
-            cp "$dir/irl" "release/$name"
-            chmod +x "release/$name"
-          done
+          find artifacts -type f -exec cp {} release/ \;
+          chmod +x release/irl-*
+          # Generated one directory up so the file does not hash itself.
+          (cd release && sha256sum -- *) > SHA256SUMS
+          mv SHA256SUMS release/
+          ls -l release
 
-      - name: Generate checksums
-        working-directory: release
-        run: sha256sum irl-* > SHA256SUMS
-
-      - name: Ensure rolling release exists
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Point the rolling tag at this commit
         run: |
-          # Create the release if it doesn't exist yet. If it does,
-          # this is a no-op. We never delete — other CI jobs (aarch64
-          # zigbuild) may have already uploaded assets to it.
-          git tag -f rolling-release HEAD
-          git push -f origin rolling-release
-          gh release create rolling-release \
-            --title "Development build" \
-            --latest 2>/dev/null || true
+          set -euo pipefail
+          if gh api "repos/$GH_REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/$TAG" \
+              -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            gh api -X POST "repos/$GH_REPO/git/refs" \
+              -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" >/dev/null
+          fi
 
-      - name: Upload assets
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Publish the release
         run: |
-          # Upload binaries + checksums, replacing any existing ones.
-          for f in release/*; do
-            gh release upload rolling-release "$f" --clobber
-          done
+          set -euo pipefail
+          built="$(date -u '+%Y-%m-%d %H:%M UTC')"
+          notes="$(cat <<NOTES
+          Rolling development build of the main branch. The tag moves with every
+          push, so these assets are replaced rather than kept.
 
-      - name: Update release notes
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          BUILD_DATE="$(date -u '+%Y-%m-%d %H:%M UTC')"
-          gh release edit rolling-release \
-            --title "Development build" \
-            --latest \
-            --prerelease=false \
-            --notes "$(cat <<NOTES
-          Rolling development build from \`main\` branch.
+          Commit: $GITHUB_SHA
+          Built: $built
 
-          **Commit:** $GITHUB_SHA
-          **Built:** ${BUILD_DATE}
+          ## Assets
 
-          ### Platforms
-          - **irl-linux-amd64**: Ubuntu 24.04, glibc 2.39
-          - **irl-macos-aarch64**: macOS 14, Apple Silicon
-          - **irl-linux-aarch64**: cross-compiled via zigbuild, glibc 2.36, Raspberry Pi OS compatible
+          - irl-linux-x86_64: Ubuntu 24.04, glibc 2.39. NVENC/NVDEC, VAAPI, V4L2
+            memory-to-memory codecs, rpicam, PipeWire screen capture, PipeWire and
+            PulseAudio and ALSA output, GPU rendering, echo cancellation.
+          - irl-linux-aarch64: cross-compiled with cargo-zigbuild against a Debian
+            Bookworm sysroot, glibc 2.36, so it runs on Raspberry Pi OS Bookworm.
+            Same backends as the x86_64 build.
+          - irl-macos-aarch64: Apple silicon, macOS 14 or newer. VideoToolbox
+            encode and decode, ScreenCaptureKit, CoreAudio, Metal rendering,
+            echo cancellation.
+          - irl-windows-x86_64.exe: Windows 10 or newer, x86_64. Media Foundation
+            capture and encode, WASAPI, GPU rendering, echo cancellation.
+          - iroh-live-demo-arm64-v8a.apk: the Android demo app, arm64-v8a, signed
+            with the Android debug key.
+
+          SHA256SUMS covers every asset above.
           NOTES
           )"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "Development build" --prerelease --notes "$notes"
+          else
+            gh release create "$TAG" --title "Development build" --prerelease --notes "$notes"
+          fi
+          gh release upload "$TAG" release/* --clobber

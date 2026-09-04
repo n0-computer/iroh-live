@@ -1,1566 +1,697 @@
-//! Subscribe side: receiving and decoding remote broadcasts.
+//! Subscribing to a broadcast: catalog, decode, playout.
 //!
-//! [`RemoteBroadcast`] wraps a catalog consumer and provides
-//! [`VideoTrack`] and [`AudioTrack`] handles for decoded media.
-//! [`VideoTrack::enable_adaptation`] adds automatic rendition switching
-//! based on network conditions.
+//! [`RemoteBroadcast`] watches a broadcast's catalog and hands out a
+//! [`VideoTrack`] and an [`AudioTrack`]. Decoding itself is
+//! `moq_video::decode::Consumer` and `moq_audio::decode::Consumer`; what this
+//! adds is the three things upstream has no counterpart for.
+//!
+//! The first is rendition selection. `moq_mux::select` is fixed at
+//! construction, so a subscriber that wants to follow its downlink has to
+//! choose for itself. [`VideoTrack::enable_adaptation`] feeds transport signals
+//! through [`crate::adaptive`] and switches renditions when they say so, opening
+//! the replacement alongside the incumbent and swapping on its first frame so
+//! the picture never goes blank.
+//!
+//! The second is the playout clock ([`crate::sync`]), which keeps audio and
+//! video aligned across two independent decode paths.
+//!
+//! The third is the catalog extension: chat and publisher identity ride
+//! alongside the media sections, and this is where a subscriber reads them.
 
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    thread,
-    time::{Duration, Instant},
-};
+use std::sync::{Arc, Mutex};
 
 use hang::catalog::{AudioConfig, VideoConfig};
-use moq_lite::{BroadcastConsumer, Track};
-use n0_error::{Result, StackResultExt, StdResultExt};
-use n0_future::task::AbortOnDropHandle;
-use n0_watcher::{Watchable, Watcher};
-#[cfg(any_video_codec)]
+use moq_mux::catalog::Stream as _;
+use n0_error::{Result, e, stack_error};
+use n0_future::task::{AbortOnDropHandle, spawn};
+use n0_watcher::{Watchable, Watcher as _};
 use tokio::sync::watch;
-use tokio_util::sync::{CancellationToken, DropGuard};
-use tracing::{Instrument, debug, warn};
+use tokio_util::sync::CancellationToken;
+use tracing::{Instrument, debug, error_span, trace, warn};
 
-#[cfg(any_video_codec)]
-use crate::adaptive::AdaptiveConfig;
-#[cfg(any_video_codec)]
-use crate::net::NetworkSignals;
 use crate::{
-    OrderedConsumer,
-    catalog::{Catalog, CatalogConsumer, User},
-    format::{DecodeConfig, PlaybackConfig, Quality, VideoFrame},
-    pipeline::{AudioDecoderPipeline, PipelineContext, VideoDecoderHandle, VideoDecoderPipeline},
+    catalog::{Catalog, IrohLiveExt, TrackRef, User},
+    frame_channel::FrameReceiver,
+    net::NetworkSignals,
     playout::{PlaybackPolicy, SyncMode},
-    processing::scale::Scaler,
-    traits::{
-        AudioDecoder, AudioSinkHandle, AudioStreamFactory, Decoders, VideoDecoder, VideoSource,
-    },
-    transport::MoqPacketSource,
-    util::spawn_thread,
+    stats::SubscribeStats,
+    sync::Sync,
 };
 
-const VIDEO_PRIORITY: u8 = 1u8;
-const AUDIO_PRIORITY: u8 = 2u8;
+mod adapt;
+#[cfg(feature = "playback")]
+mod audio;
+mod video;
 
-// ── Subscription options ────────────────────────────────────────────────
-
-/// Viewport-aware rendition selection target.
-///
-/// Subscribers describe what they need rather than naming specific
-/// renditions. The catalog selects the best match. If `rendition` is set,
-/// it takes priority over pixel/bitrate constraints.
-#[derive(Debug, Clone, Default)]
-pub struct VideoTarget {
-    /// Maximum pixel count (width * height). Renditions above this are skipped.
-    pub max_pixels: Option<u32>,
-    /// Maximum bitrate in kbps. Renditions above this are skipped.
-    pub max_bitrate_kbps: Option<u32>,
-    /// Pin to a specific rendition by name, bypassing automatic selection.
-    pub rendition: Option<String>,
-}
-
-impl VideoTarget {
-    /// Limits the maximum pixel count (width × height) for rendition selection.
-    #[must_use]
-    pub fn max_pixels(mut self, pixels: u32) -> Self {
-        self.max_pixels = Some(pixels);
-        self
-    }
-    /// Limits the maximum bitrate in kilobits per second for rendition selection.
-    #[must_use]
-    pub fn max_bitrate_kbps(mut self, kbps: u32) -> Self {
-        self.max_bitrate_kbps = Some(kbps);
-        self
-    }
-    /// Pins to a specific rendition by name, bypassing automatic selection.
-    #[must_use]
-    pub fn rendition(mut self, name: impl Into<String>) -> Self {
-        self.rendition = Some(name.into());
-        self
-    }
-}
-
-impl From<Quality> for VideoTarget {
-    fn from(q: Quality) -> Self {
-        match q {
-            Quality::Highest => Self::default(),
-            Quality::High => Self::default().max_pixels(1280 * 720),
-            Quality::Mid => Self::default().max_pixels(640 * 480),
-            Quality::Low => Self::default().max_pixels(320 * 240),
-        }
-    }
-}
-
-/// Options for video subscription and decoding.
-#[derive(Debug, Clone, Default)]
+/// Errors raised while subscribing.
+#[stack_error(derive, add_meta, from_sources)]
 #[non_exhaustive]
-pub struct VideoOptions {
-    /// Decoder configuration (backend, pixel format).
-    pub playback: Option<DecodeConfig>,
-    /// Rendition selection target (quality, resolution, bitrate).
-    pub target: Option<VideoTarget>,
-    /// Viewport dimensions `(width, height)` for resolution-aware decoding.
-    pub viewport: Option<(u32, u32)>,
-}
-
-impl VideoOptions {
-    /// Sets the rendition selection target.
-    #[must_use]
-    pub fn target(mut self, target: impl Into<VideoTarget>) -> Self {
-        self.target = Some(target.into());
-        self
-    }
-    /// Sets the desired quality level for rendition selection.
-    #[must_use]
-    pub fn quality(mut self, quality: Quality) -> Self {
-        self.target = Some(quality.into());
-        self
-    }
-    /// Sets the viewport dimensions for resolution-aware decoding.
-    #[must_use]
-    pub fn viewport(mut self, w: u32, h: u32) -> Self {
-        self.viewport = Some((w, h));
-        self
-    }
-    /// Sets the decoder configuration (backend, etc.).
-    #[must_use]
-    pub fn playback(mut self, config: DecodeConfig) -> Self {
-        self.playback = Some(config);
-        self
-    }
-
-    #[cfg(any_video_codec)]
-    fn decode_config(&self) -> DecodeConfig {
-        self.playback.clone().unwrap_or_default()
-    }
-
-    #[cfg(any_video_codec)]
-    fn resolve_quality(&self) -> Quality {
-        // If a specific rendition is pinned, we'll use video_rendition() directly.
-        // Otherwise map VideoTarget to Quality for the existing selection logic.
-        match &self.target {
-            Some(t) if t.max_pixels.is_some() => {
-                let px = t.max_pixels.unwrap();
-                if px <= 320 * 240 {
-                    Quality::Low
-                } else if px <= 640 * 480 {
-                    Quality::Mid
-                } else if px <= 1280 * 720 {
-                    Quality::High
-                } else {
-                    Quality::Highest
-                }
-            }
-            _ => Quality::Highest,
-        }
-    }
-}
-
-/// Options for audio subscription.
-#[derive(Debug, Clone, Default)]
-#[non_exhaustive]
-pub struct AudioOptions {
-    /// Pin to a specific audio rendition by name.
-    pub rendition: Option<String>,
-}
-
-impl AudioOptions {
-    /// Pins to a specific audio rendition by name.
-    #[must_use]
-    pub fn rendition(mut self, name: impl Into<String>) -> Self {
-        self.rendition = Some(name.into());
-        self
-    }
-}
-
-// ── Error types ─────────────────────────────────────────────────────────
-
-/// Errors from subscription operations.
-#[derive(Debug)]
 pub enum SubscribeError {
-    /// The requested broadcast was not found.
-    NotFound,
-    /// No catalog was received from the broadcast.
+    /// The transport rejected a track or broadcast operation.
+    #[error(transparent)]
+    Net(#[error(source, std_err)] moq_net::Error),
+    /// The catalog could not be read.
+    #[error(transparent)]
+    Mux(#[error(source, std_err)] moq_mux::Error),
+    /// A video decoder failed.
+    #[error(transparent)]
+    Video(#[error(source, std_err)] moq_video::Error),
+    /// An audio decoder or the playback device failed.
+    #[error(transparent)]
+    Audio(#[error(source, std_err)] moq_audio::Error),
+    /// The broadcast closed before it published a catalog.
+    #[error("broadcast closed before publishing a catalog")]
     NoCatalog,
-    /// The requested rendition does not exist.
-    RenditionNotFound(String),
-    /// The decoder failed to initialize or process media.
-    DecoderFailed(anyhow::Error),
-    /// The broadcast ended.
-    Ended,
+    /// The broadcast has no track of the requested medium.
+    #[error("broadcast has no {medium} track")]
+    NoTrack {
+        /// Either `video` or `audio`.
+        medium: &'static str,
+    },
+    /// The named rendition is not in the catalog.
+    #[error("no rendition named {name}")]
+    NoRendition {
+        /// The name that was asked for.
+        name: String,
+    },
 }
 
-impl std::fmt::Display for SubscribeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotFound => write!(f, "broadcast not found"),
-            Self::NoCatalog => write!(f, "no catalog received"),
-            Self::RenditionNotFound(name) => write!(f, "rendition not found: {name}"),
-            Self::DecoderFailed(err) => write!(f, "decoder failed: {err}"),
-            Self::Ended => write!(f, "broadcast ended"),
-        }
+/// A snapshot of a broadcast's catalog.
+///
+/// Cheap to clone; hand it around rather than re-reading the catalog.
+#[derive(Debug, Clone, Default)]
+pub struct CatalogSnapshot(Arc<Catalog>);
+
+/// Compares by identity, not content.
+///
+/// Two snapshots carrying the same catalog are not equal, and even
+/// `CatalogSnapshot::default()` differs from another `default()`, because each
+/// allocates. That is deliberate: `Watchable` needs `Eq` to tell an update from
+/// a repeat, hang's catalog carries floats and so is only `PartialEq`, and every
+/// update allocates a fresh snapshot, so identity never swallows one.
+impl PartialEq for CatalogSnapshot {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
-impl std::error::Error for SubscribeError {}
-
-impl From<anyhow::Error> for SubscribeError {
-    fn from(err: anyhow::Error) -> Self {
-        Self::DecoderFailed(err)
-    }
-}
-
-/// Lifecycle state of a remote broadcast.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BroadcastStatus {
-    /// Actively receiving media.
-    Live,
-    /// Producer closed the broadcast.
-    Ended,
-}
-
-/// Subscribes to a remote broadcast and provides access to its media tracks.
-///
-/// Wraps a [`BroadcastConsumer`] and watches the catalog for available
-/// video and audio renditions. Create individual [`VideoTrack`] or
-/// [`AudioTrack`] handles to start decoding.
-#[derive(derive_more::Debug, Clone)]
-pub struct RemoteBroadcast {
-    broadcast_name: String,
-    #[debug("BroadcastConsumer")]
-    broadcast: BroadcastConsumer,
-    catalog_watchable: Watchable<CatalogSnapshot>,
-    playback_policy: PlaybackPolicy,
-    shutdown: CancellationToken,
-    _catalog_task: Arc<AbortOnDropHandle<()>>,
-    stats: crate::stats::SubscribeStats,
-    /// Shared playout clock for A/V synchronization. Created once per
-    /// broadcast and passed to video decode pipelines when
-    /// [`SyncMode::Synced`] is active.
-    sync: crate::sync::Sync,
-}
-
-/// Point-in-time snapshot of a broadcast's catalog.
-///
-/// Derefs to [`Catalog`] for direct access to video/audio configuration.
-/// Each snapshot carries a sequence number for change detection.
-/// Equality compares only the sequence number, not the catalog content — two
-/// snapshots from different broadcasts with the same `seq` compare as equal.
-#[derive(Debug, derive_more::PartialEq, derive_more::Eq, Default, Clone, derive_more::Deref)]
-pub struct CatalogSnapshot {
-    #[eq(skip)]
-    #[deref]
-    inner: Arc<Catalog>,
-    seq: usize,
-}
+impl Eq for CatalogSnapshot {}
 
 impl CatalogSnapshot {
-    fn new(inner: Catalog, seq: usize) -> Self {
-        Self {
-            inner: Arc::new(inner),
-            seq,
-        }
+    /// Returns the video renditions, in catalog order.
+    pub fn video(&self) -> &std::collections::BTreeMap<String, VideoConfig> {
+        &self.0.video.renditions
     }
 
-    /// Returns an iterator over video rendition names, sorted by width (ascending).
-    pub fn video_renditions(&self) -> impl Iterator<Item = &str> {
-        let mut renditions: Vec<_> = self
-            .inner
-            .video
-            .renditions
-            .iter()
-            .map(|(name, config)| (name.as_str(), config.coded_width))
-            .collect();
-        renditions.sort_by_key(|a| a.1);
-        renditions.into_iter().map(|(name, _w)| name)
+    /// Returns the audio renditions, in catalog order.
+    pub fn audio(&self) -> &std::collections::BTreeMap<String, AudioConfig> {
+        &self.0.audio.renditions
     }
 
-    /// Returns an iterator over audio rendition names.
-    pub fn audio_renditions(&self) -> impl Iterator<Item = &str> + '_ {
-        self.inner.audio.renditions.keys().map(|name| name.as_str())
+    /// Returns the publisher's advertised identity, if it set one.
+    pub fn user(&self) -> Option<&User> {
+        self.0.ext.user.as_ref()
     }
 
-    /// Selects the best video rendition for the given quality level.
-    pub fn select_video_rendition(&self, quality: Quality) -> Result<String> {
-        let video = &self.inner.video;
-        let track_name =
-            select_video_rendition(&video.renditions, quality).context("no video renditions")?;
-        Ok(track_name)
+    /// Returns the chat track the publisher advertised, if any.
+    pub fn chat(&self) -> Option<&TrackRef> {
+        self.0.ext.chat.as_ref()?.message.as_ref()
     }
 
-    /// Selects the best audio rendition for the given quality level.
-    pub fn select_audio_rendition(&self, quality: Quality) -> Result<String> {
-        let audio = &self.inner.audio;
-        let track_name =
-            select_audio_rendition(&audio.renditions, quality).context("no audio renditions")?;
-        Ok(track_name)
+    /// Returns the underlying catalog.
+    pub fn inner(&self) -> &Catalog {
+        &self.0
     }
 
-    /// Consumes the snapshot and returns the inner [`Catalog`].
-    pub fn into_inner(self) -> Arc<Catalog> {
-        self.inner
+    /// Picks the highest-quality video rendition, by pixel count then bitrate.
+    ///
+    /// This is the starting point for a subscription; adaptation moves off it
+    /// as soon as the transport says the downlink cannot carry it.
+    pub fn best_video(&self) -> Option<&str> {
+        let best = crate::adaptive::rank_renditions(self.video())
+            .into_iter()
+            .next()?
+            .name;
+        self.video()
+            .get_key_value(&best)
+            .map(|(key, _)| key.as_str())
+    }
+
+    /// Picks the first audio rendition, which is the only one publishers make.
+    pub fn first_audio(&self) -> Option<&str> {
+        self.audio().keys().next().map(String::as_str)
+    }
+}
+
+/// A broadcast this node subscribes to.
+///
+/// Created from a `moq_net` broadcast consumer, which for iroh-live comes from
+/// [`iroh_moq::MoqSession::subscribe`](https://docs.rs/iroh-moq).
+#[derive(Debug, Clone)]
+pub struct RemoteBroadcast {
+    inner: Arc<Inner>,
+}
+
+#[derive(derive_more::Debug)]
+struct Inner {
+    name: String,
+    #[debug(skip)]
+    broadcast: moq_net::broadcast::Consumer,
+    catalog: Watchable<CatalogSnapshot>,
+    policy: Mutex<PlaybackPolicy>,
+    stats: SubscribeStats,
+    sync: Sync,
+    shutdown: CancellationToken,
+    _catalog_task: AbortOnDropHandle<()>,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        // Everything this broadcast started watches one of these two: the decode
+        // tasks and the adaptation loop watch the token, and a `wait_async` in
+        // flight watches the clock. Without this, a caller that simply drops a
+        // subscription leaves them running, and the stats recorder in
+        // `iroh-live` holds a live `Connection` while it does.
+        self.shutdown.cancel();
+        self.sync.close();
     }
 }
 
 impl RemoteBroadcast {
-    /// Creates a new remote broadcast subscription with the default
-    /// [`PlaybackPolicy`] (synced playout, 150 ms max latency).
+    /// Subscribes to `broadcast` and waits for its first catalog.
     ///
-    /// Waits for the initial catalog before returning. Spawns a background
-    /// task that watches for catalog updates. Use
-    /// [`with_playback_policy`](Self::with_playback_policy) when you need
-    /// unmanaged playout or a different latency budget.
-    pub async fn new(broadcast_name: impl ToString, broadcast: BroadcastConsumer) -> Result<Self> {
-        Self::with_playback_policy(broadcast_name, broadcast, PlaybackPolicy::default()).await
+    /// # Errors
+    ///
+    /// Fails if the catalog track is missing, unreadable, or the broadcast
+    /// closes before publishing one.
+    pub async fn new(
+        name: impl Into<String>,
+        broadcast: moq_net::broadcast::Consumer,
+    ) -> Result<Self, SubscribeError> {
+        Self::with_playback_policy(name, broadcast, PlaybackPolicy::default()).await
     }
 
-    /// Creates a new remote broadcast subscription with an explicit
-    /// [`PlaybackPolicy`].
+    /// Subscribes to `broadcast` with an explicit playout policy.
     ///
-    /// The policy controls A/V sync mode and the max latency for the
-    /// ordered consumer. You can change it later with
-    /// [`set_playback_policy`](Self::set_playback_policy) before
-    /// subscribing to new tracks.
-    #[tracing::instrument("RemoteBroadcast", skip_all, fields(name=tracing::field::Empty))]
+    /// # Errors
+    ///
+    /// See [`new`](Self::new).
     pub async fn with_playback_policy(
-        broadcast_name: impl ToString,
-        broadcast: BroadcastConsumer,
-        playback_policy: PlaybackPolicy,
-    ) -> Result<Self> {
-        let broadcast_name = broadcast_name.to_string();
-        tracing::Span::current().record("name", tracing::field::display(&broadcast_name));
-        let shutdown = CancellationToken::new();
+        name: impl Into<String>,
+        broadcast: moq_net::broadcast::Consumer,
+        policy: PlaybackPolicy,
+    ) -> Result<Self, SubscribeError> {
+        let name = name.into();
+        let mut consumer =
+            moq_mux::catalog::Consumer::<IrohLiveExt>::new(&broadcast, Default::default()).await?;
 
-        let (catalog_watchable, catalog_task) = {
-            let track = broadcast
-                .subscribe_track(&hang::catalog::Catalog::default_track())
-                .std_context("missing catalog track")?;
-            debug!("catalog track subscribed");
-            let mut catalog_consumer = CatalogConsumer::new(track);
-            let initial_catalog = catalog_consumer
-                .next()
-                .await
-                .anyerr()?
-                .context("Catalog track closed before receiving catalog")?;
-            debug!(
-                video = initial_catalog.video.renditions.len(),
-                audio = initial_catalog.audio.renditions.len(),
-                chat = initial_catalog.chat.is_some(),
-                "initial catalog received"
-            );
-            let watchable = Watchable::new(CatalogSnapshot::new(initial_catalog, 0));
+        // The first catalog is what tells us the broadcast has any tracks at
+        // all, so wait for it here rather than handing back a handle whose
+        // every accessor would answer "not yet".
+        let first = consumer
+            .next()
+            .await?
+            .ok_or_else(|| e!(SubscribeError::NoCatalog))?;
+        if tracing::enabled!(tracing::Level::TRACE)
+            && let Ok(json) = serde_json::to_string(&first)
+        {
+            trace!(broadcast = %name, catalog = %json, "first catalog");
+        }
+        let catalog = Watchable::new(CatalogSnapshot(Arc::new(first)));
 
-            let task = tokio::spawn({
-                let shutdown = shutdown.clone();
-                let watchable = watchable.clone();
+        let task = {
+            let catalog = catalog.clone();
+            let name = name.clone();
+            spawn(
                 async move {
-                    for seq in 1.. {
-                        match catalog_consumer.next().await {
-                            Ok(Some(catalog)) => {
-                                debug!(
-                                    video = catalog.video.renditions.len(),
-                                    audio = catalog.audio.renditions.len(),
-                                    "catalog updated"
-                                );
-                                watchable.set(CatalogSnapshot::new(catalog, seq)).ok();
+                    loop {
+                        match consumer.next().await {
+                            Ok(Some(next)) => {
+                                // At trace, because a catalog is the first thing
+                                // to look at when a publisher and a subscriber
+                                // disagree about what is on the wire.
+                                if tracing::enabled!(tracing::Level::TRACE)
+                                    && let Ok(json) = serde_json::to_string(&next)
+                                {
+                                    trace!(catalog = %json, "catalog updated");
+                                }
+                                catalog.set(CatalogSnapshot(Arc::new(next))).ok();
                             }
                             Ok(None) => {
-                                debug!("subscribed broadcast catalog track ended");
+                                debug!("catalog track ended");
                                 break;
                             }
                             Err(err) => {
-                                debug!("subscribed broadcast closed: {err:#}");
+                                warn!(error = %err, "catalog track failed");
                                 break;
                             }
                         }
                     }
-                    shutdown.cancel();
                 }
-                .instrument(tracing::Span::current())
-            });
-            (watchable, task)
+                .instrument(error_span!("catalog", broadcast = %name)),
+            )
         };
-        // Always create the Sync (100 ms jitter default). It is only
-        // passed to pipelines when SyncMode::Synced is active.
-        let sync = crate::sync::Sync::new();
 
         Ok(Self {
-            broadcast_name,
-            broadcast,
-            catalog_watchable,
-            playback_policy,
-            _catalog_task: Arc::new(AbortOnDropHandle::new(catalog_task)),
-            shutdown,
-            stats: crate::stats::SubscribeStats::default(),
-            sync,
+            inner: Arc::new(Inner {
+                name,
+                broadcast,
+                catalog,
+                stats: SubscribeStats::default(),
+                sync: Sync::with_jitter(policy.jitter),
+                policy: Mutex::new(policy),
+                shutdown: CancellationToken::new(),
+                _catalog_task: AbortOnDropHandle::new(task),
+            }),
         })
     }
 
-    /// Returns the name of this broadcast.
-    pub fn broadcast_name(&self) -> &str {
-        &self.broadcast_name
+    /// Returns the broadcast's name.
+    pub fn name(&self) -> &str {
+        &self.inner.name
     }
 
-    /// Returns a reference to the underlying broadcast consumer for
-    /// arbitrary data track subscriptions.
-    ///
-    /// Allows subscribing to tracks (e.g. game state) that live outside
-    /// the catalog-managed video/audio renditions.
-    pub fn consumer(&self) -> &BroadcastConsumer {
-        &self.broadcast
+    /// Returns the underlying consumer, for tracks this crate does not model.
+    pub fn consumer(&self) -> &moq_net::broadcast::Consumer {
+        &self.inner.broadcast
     }
 
-    /// Builds a [`PipelineContext`] from the current policy and stats.
-    ///
-    /// When [`SyncMode::Synced`], the shared playout clock is included
-    /// so the video decode loop gates frames on playout time. When
-    /// [`SyncMode::Unmanaged`], `sync` is `None` and the decode loop
-    /// falls back to PTS-cadence pacing.
-    fn pipeline_ctx(&self) -> PipelineContext {
-        let sync = match self.playback_policy.sync {
-            SyncMode::Synced => Some(self.sync.clone()),
-            SyncMode::Unmanaged => None,
-        };
-        PipelineContext {
-            stats: self.stats.decode_stats(),
-            sync,
-        }
-    }
-
-    /// Returns a watcher for the catalog (renditions added/removed).
-    pub fn catalog_watcher(&self) -> n0_watcher::Direct<CatalogSnapshot> {
-        self.catalog_watchable.watch()
-    }
-
-    /// Returns the current catalog snapshot.
+    /// Returns the latest catalog.
     pub fn catalog(&self) -> CatalogSnapshot {
-        self.catalog_watchable.get()
+        self.inner.catalog.get()
     }
 
-    /// Returns true if the catalog has video renditions.
+    /// Returns a watcher that yields every catalog update.
+    pub fn catalog_watcher(&self) -> n0_watcher::Direct<CatalogSnapshot> {
+        self.inner.catalog.watch()
+    }
+
+    /// Reports whether the broadcast carries video.
     pub fn has_video(&self) -> bool {
-        !self.catalog().video.renditions.is_empty()
+        !self.catalog().video().is_empty()
     }
 
-    /// Returns true if the catalog has audio renditions.
+    /// Reports whether the broadcast carries audio.
     pub fn has_audio(&self) -> bool {
-        !self.catalog().audio.renditions.is_empty()
+        !self.catalog().audio().is_empty()
     }
 
-    /// Returns true if the catalog advertises a chat track.
-    pub fn has_chat(&self) -> bool {
-        self.catalog()
-            .chat
-            .as_ref()
-            .is_some_and(|c| c.message.is_some())
-    }
-
-    /// Subscribes to the chat track and returns a [`ChatSubscriber`](crate::chat::ChatSubscriber).
+    /// Subscribes to the chat track the catalog advertises.
     ///
-    /// Returns `None` if the catalog does not advertise a chat track.
-    pub fn chat(&self) -> Option<crate::chat::ChatSubscriber> {
-        let track_info = self.catalog().chat.as_ref()?.message.as_ref()?.clone();
-        let consumer = self.broadcast.subscribe_track(&track_info).ok()?;
-        Some(crate::chat::ChatSubscriber::new(consumer))
+    /// Returns the raw track: chat is not a media concern, so the caller owns
+    /// the message codec.
+    pub fn chat(&self) -> Option<moq_net::track::Consumer> {
+        let track = self.catalog().chat()?.clone();
+        self.inner.broadcast.track(&track.name).ok()
     }
 
-    /// Returns the user metadata from the catalog, if set by the publisher.
+    /// Returns the publisher's advertised identity, if it set one.
     pub fn user(&self) -> Option<User> {
-        self.catalog().user.clone()
+        self.catalog().user().cloned()
     }
 
-    /// Returns the subscribe-side stats. Decode and playout pipelines
-    /// record into these automatically. External producers (e.g. iroh
-    /// transport stats) can record additional metrics into the net
-    /// stats.
-    pub fn stats(&self) -> &crate::stats::SubscribeStats {
-        &self.stats
+    /// Returns the subscribe-side counters, for a UI or a log.
+    pub fn stats(&self) -> &SubscribeStats {
+        &self.inner.stats
     }
 
-    /// Returns the current playback policy.
-    pub fn playback_policy(&self) -> &PlaybackPolicy {
-        &self.playback_policy
+    /// Returns the shared playout clock, so a caller can retune its jitter.
+    pub fn sync(&self) -> &Sync {
+        &self.inner.sync
     }
 
-    /// Replaces the playback policy for future track subscriptions.
+    /// Returns the current playout policy.
+    pub fn playback_policy(&self) -> PlaybackPolicy {
+        self.inner.policy.lock().expect("poisoned").clone()
+    }
+
+    /// Replaces the playout policy.
     ///
-    /// Already-running pipelines are not affected: they keep whatever
-    /// sync mode and latency budget they were created with. Call
-    /// this before subscribing to new tracks (e.g. in a resubscribe
-    /// flow triggered by a UI toggle).
-    pub fn set_playback_policy(&mut self, policy: PlaybackPolicy) {
-        self.playback_policy = policy;
+    /// [`jitter`](PlaybackPolicy::jitter) takes effect at once, because the
+    /// playout clock it configures is the broadcast's and outlives any one
+    /// track. Everything else is read when a decoder is built, so it reaches a
+    /// track already playing only through
+    /// [`VideoTrack::reopen_decoder`](VideoTrack::reopen_decoder) or the next
+    /// rendition switch.
+    pub fn set_playback_policy(&self, policy: PlaybackPolicy) {
+        self.inner.sync.set_jitter(policy.jitter);
+        *self.inner.policy.lock().expect("poisoned") = policy;
     }
 
-    // -- Non-generic convenience methods (dynamic decoder dispatch) ──────
-
-    /// Subscribes to both video and audio, returning combined [`MediaTracks`].
+    /// Opens the best video rendition and starts decoding it.
     ///
-    /// Uses dynamic decoder dispatch (codec determined from the catalog).
-    /// For explicit decoder selection, use [`media_with_decoders`](Self::media_with_decoders).
-    pub async fn media(
-        &self,
-        audio_backend: &dyn AudioStreamFactory,
-        playback_config: PlaybackConfig,
-    ) -> Result<MediaTracks> {
-        self.media_with_decoders::<crate::codec::DefaultDecoders>(audio_backend, playback_config)
-            .await
-    }
-
-    // -- Generic subscription methods (for custom decoders) --
-
-    /// Subscribes to both video and audio with a custom decoder type.
-    pub async fn media_with_decoders<D: Decoders>(
-        &self,
-        audio_backend: &dyn AudioStreamFactory,
-        playback_config: PlaybackConfig,
-    ) -> Result<MediaTracks> {
-        MediaTracks::new::<D>(self.clone(), audio_backend, playback_config).await
-    }
-
-    /// Subscribes to video with explicit config and a custom decoder.
-    pub fn video_with_decoder<D: VideoDecoder>(
-        &self,
-        playback_config: &DecodeConfig,
-        quality: Quality,
-    ) -> Result<VideoTrack> {
-        let track_name = self.catalog().select_video_rendition(quality)?;
-        self.video_rendition::<D>(playback_config, &track_name)
-    }
-
-    /// Subscribes to a specific video rendition with a custom decoder.
-    pub fn video_rendition<D: VideoDecoder>(
-        &self,
-        playback_config: &DecodeConfig,
-        track_name: &str,
-    ) -> Result<VideoTrack> {
-        let max_latency = self.playback_policy.max_latency;
+    /// # Errors
+    ///
+    /// Fails if the broadcast has no video track, or the decoder cannot open.
+    pub async fn video(&self) -> Result<VideoTrack, SubscribeError> {
         let catalog = self.catalog();
-        let video = &catalog.video;
-        let config = video
-            .renditions
-            .get(track_name)
-            .context("rendition not found")?;
-        tracing::debug!(
-            track = track_name,
-            max_latency_ms = max_latency.as_millis(),
-            "subscribing to video rendition"
-        );
-        let track_consumer = self
-            .broadcast
-            .subscribe_track(&Track {
-                name: track_name.to_string(),
-                priority: VIDEO_PRIORITY,
-            })
-            .anyerr()?;
-        tracing::debug!(track = track_name, "track subscription created");
-        let consumer =
-            OrderedConsumer::new(track_consumer, moq_mux::catalog::hang::Container::Legacy)
-                .with_latency(max_latency);
-        VideoTrack::from_consumer::<D>(
-            track_name.to_string(),
-            consumer,
-            config,
-            playback_config,
-            self.pipeline_ctx(),
-        )
+        let name = catalog
+            .best_video()
+            .ok_or_else(|| e!(SubscribeError::NoTrack { medium: "video" }))?
+            .to_string();
+        self.video_rendition(&name).await
     }
 
-    /// Subscribes to audio with explicit quality and a custom decoder.
-    pub async fn audio_with_decoder<D: AudioDecoder>(
-        &self,
-        quality: Quality,
-        audio_backend: &dyn AudioStreamFactory,
-    ) -> Result<AudioTrack> {
-        let track_name = self.catalog().select_audio_rendition(quality)?;
-        self.audio_rendition::<D>(&track_name, audio_backend).await
+    /// Opens a named video rendition and starts decoding it.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the rendition is not in the catalog, or the decoder cannot open.
+    pub async fn video_rendition(&self, name: &str) -> Result<VideoTrack, SubscribeError> {
+        video::open(self, name).await
     }
 
-    /// Subscribes to a specific audio rendition with a custom decoder.
-    pub async fn audio_rendition<D: AudioDecoder>(
-        &self,
-        name: &str,
-        audio_backend: &dyn AudioStreamFactory,
-    ) -> Result<AudioTrack> {
-        let max_latency = self.playback_policy.max_latency;
+    /// Opens the broadcast's audio track and starts playing it.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the broadcast has no audio track, or the playback device
+    /// cannot open.
+    #[cfg(feature = "playback")]
+    pub async fn audio(&self) -> Result<AudioTrack, SubscribeError> {
         let catalog = self.catalog();
-        let audio = &catalog.audio;
-        let config = audio.renditions.get(name).context("rendition not found")?;
-        let track = self
-            .broadcast
-            .subscribe_track(&Track {
-                name: name.to_string(),
-                priority: AUDIO_PRIORITY,
-            })
-            .anyerr()?;
-        let consumer = OrderedConsumer::new(track, moq_mux::catalog::hang::Container::Legacy)
-            .with_latency(max_latency);
-        AudioTrack::spawn::<D>(
-            name.to_string(),
-            consumer,
-            config.clone(),
-            audio_backend,
-            self.pipeline_ctx(),
-        )
-        .await
+        let name = catalog
+            .first_audio()
+            .ok_or_else(|| e!(SubscribeError::NoTrack { medium: "audio" }))?
+            .to_string();
+        audio::open(self, &name).await
     }
 
-    /// Subscribes to the best-quality video rendition.
-    ///
-    /// Uses dynamic decoder dispatch based on the codec in the catalog.
-    /// For explicit decoder selection, use [`video_with_decoder`](Self::video_with_decoder).
-    #[cfg(any_video_codec)]
-    pub fn video(&self) -> Result<VideoTrack> {
-        self.video_with(Default::default())
-    }
-
-    /// Subscribes to the best-quality audio rendition.
-    ///
-    /// Uses dynamic decoder dispatch based on the codec in the catalog.
-    /// For explicit decoder selection, use [`audio_with_decoder`](Self::audio_with_decoder).
-    #[cfg(any_audio_codec)]
-    pub async fn audio(&self, audio_backend: &dyn AudioStreamFactory) -> Result<AudioTrack> {
-        self.audio_with(Default::default(), audio_backend).await
-    }
-
-    /// Subscribes to video with options (non-generic, uses dynamic decoder dispatch).
-    #[cfg(any_video_codec)]
-    pub fn video_with(&self, opts: VideoOptions) -> Result<VideoTrack> {
-        use crate::codec::DynamicVideoDecoder;
-        let decode_config = opts.decode_config();
-        if let Some(rendition) = opts.target.as_ref().and_then(|t| t.rendition.as_ref()) {
-            return self.video_rendition::<DynamicVideoDecoder>(&decode_config, rendition);
-        }
-        let quality = opts.resolve_quality();
-        self.video_with_decoder::<DynamicVideoDecoder>(&decode_config, quality)
-    }
-
-    /// Subscribes to audio with options (non-generic, uses dynamic decoder dispatch).
-    #[cfg(any_audio_codec)]
-    pub async fn audio_with(
-        &self,
-        opts: AudioOptions,
-        audio_backend: &dyn AudioStreamFactory,
-    ) -> Result<AudioTrack> {
-        use crate::codec::DynamicAudioDecoder;
-        if let Some(ref rendition) = opts.rendition {
-            self.audio_rendition::<DynamicAudioDecoder>(rendition, audio_backend)
+    /// Opens whichever of video and audio the broadcast carries.
+    pub async fn media(&self) -> MediaTracks {
+        let video = match self.has_video() {
+            true => self
+                .video()
                 .await
-        } else {
-            self.audio_with_decoder::<DynamicAudioDecoder>(Quality::Highest, audio_backend)
+                .inspect_err(|err| warn!(error = %err, "video track failed to open"))
+                .ok(),
+            false => None,
+        };
+        #[cfg(feature = "playback")]
+        let audio = match self.has_audio() {
+            true => self
+                .audio()
                 .await
-        }
+                .inspect_err(|err| warn!(error = %err, "audio track failed to open"))
+                .ok(),
+            false => None,
+        };
+        #[cfg(not(feature = "playback"))]
+        let audio = None;
+        MediaTracks { video, audio }
     }
 
     /// Waits until the broadcast closes.
-    pub fn closed(&self) -> impl Future<Output = moq_lite::Error> + 'static {
-        let broadcast = self.broadcast.clone();
-        async move { broadcast.closed().await }
+    pub fn closed(&self) -> impl Future<Output = ()> + 'static {
+        let broadcast = self.inner.broadcast.clone();
+        async move {
+            broadcast.closed().await;
+        }
     }
 
-    /// Returns the shutdown token for this broadcast.
-    ///
-    /// Useful for tying the lifetime of auxiliary tasks (e.g. signal
-    /// producers) to this broadcast subscription.
+    /// Returns the token every decode task on this broadcast watches.
     pub fn shutdown_token(&self) -> CancellationToken {
-        self.shutdown.clone()
+        self.inner.shutdown.clone()
     }
 
-    /// Waits until the catalog contains at least one video or audio rendition.
-    pub async fn ready(&self) {
-        let mut watcher = self.catalog_watcher();
-        loop {
-            if self.has_video() || self.has_audio() {
-                return;
-            }
-            if watcher.updated().await.is_err() {
-                return;
-            }
-        }
-    }
-
-    /// Waits for video renditions to appear, then subscribes to the best quality.
-    ///
-    /// Async counterpart of [`video`](Self::video): blocks until the catalog
-    /// advertises at least one video rendition, then behaves identically.
-    #[cfg(any_video_codec)]
-    pub async fn video_ready(&self) -> Result<VideoTrack> {
-        self.wait_for_video().await;
-        self.video()
-    }
-
-    /// Waits for audio renditions to appear, then subscribes to the best quality.
-    ///
-    /// Async counterpart of [`audio`](Self::audio).
-    #[cfg(any_audio_codec)]
-    pub async fn audio_ready(&self, audio_backend: &dyn AudioStreamFactory) -> Result<AudioTrack> {
-        self.wait_for_audio().await;
-        self.audio(audio_backend).await
-    }
-
-    #[cfg(any_video_codec)]
-    async fn wait_for_video(&self) {
-        let mut watcher = self.catalog_watcher();
-        loop {
-            if self.has_video() {
-                return;
-            }
-            if watcher.updated().await.is_err() {
-                return;
-            }
-        }
-    }
-
-    #[cfg(any_audio_codec)]
-    async fn wait_for_audio(&self) {
-        let mut watcher = self.catalog_watcher();
-        loop {
-            if self.has_audio() {
-                return;
-            }
-            if watcher.updated().await.is_err() {
-                return;
-            }
-        }
-    }
-
-    /// Subscribes to a video track and returns a raw [`MoqPacketSource`]
-    /// for reading encoded packets without decoding.
-    ///
-    /// Useful for recording or relaying encoded media directly.
-    pub fn raw_video_track(
-        &self,
-        track_name: &str,
-    ) -> Result<(MoqPacketSource, hang::catalog::VideoConfig)> {
-        let catalog = self.catalog();
-        let config = catalog
-            .video
-            .renditions
-            .get(track_name)
-            .context("video rendition not found")?
-            .clone();
-        let track_consumer = self
-            .broadcast
-            .subscribe_track(&Track {
-                name: track_name.to_string(),
-                priority: VIDEO_PRIORITY,
-            })
-            .anyerr()?;
-        let consumer =
-            OrderedConsumer::new(track_consumer, moq_mux::catalog::hang::Container::Legacy)
-                .with_latency(self.playback_policy.max_latency);
-        Ok((MoqPacketSource::new(consumer), config))
-    }
-
-    /// Subscribes to an audio track and returns a raw [`MoqPacketSource`]
-    /// for reading encoded packets without decoding.
-    ///
-    /// Useful for recording or relaying encoded media directly.
-    pub fn raw_audio_track(
-        &self,
-        track_name: &str,
-    ) -> Result<(MoqPacketSource, hang::catalog::AudioConfig)> {
-        let catalog = self.catalog();
-        let config = catalog
-            .audio
-            .renditions
-            .get(track_name)
-            .context("audio rendition not found")?
-            .clone();
-        let track_consumer = self
-            .broadcast
-            .subscribe_track(&Track {
-                name: track_name.to_string(),
-                priority: AUDIO_PRIORITY,
-            })
-            .anyerr()?;
-        let consumer =
-            OrderedConsumer::new(track_consumer, moq_mux::catalog::hang::Container::Legacy)
-                .with_latency(self.playback_policy.max_latency);
-        Ok((MoqPacketSource::new(consumer), config))
-    }
-
-    /// Shuts down this remote broadcast subscription.
+    /// Stops every decode task on this broadcast.
     pub fn shutdown(&self) {
-        self.sync.close();
-        self.shutdown.cancel();
+        self.inner.shutdown.cancel();
+        self.inner.sync.close();
     }
 }
 
-fn select_rendition<T, P: ToString>(
-    renditions: &BTreeMap<String, T>,
-    order: &[P],
-) -> Option<String> {
-    // Rendition keys are full track names (e.g. "video/h264-720p") while
-    // presets produce short suffixes (e.g. "720p"). Match by suffix so
-    // that quality selection works regardless of the codec prefix.
-    for preset in order {
-        let suffix = preset.to_string();
-        if let Some(key) = renditions.keys().find(|k| k.ends_with(&suffix)) {
-            return Some(key.clone());
-        }
-    }
-    renditions.keys().next().cloned()
-}
-
-fn select_video_rendition<T>(renditions: &BTreeMap<String, T>, q: Quality) -> Option<String> {
-    use crate::format::VideoPreset::*;
-    let order = match q {
-        Quality::Highest => [P1080, P720, P360, P180],
-        Quality::High => [P720, P360, P180, P1080],
-        Quality::Mid => [P360, P180, P720, P1080],
-        Quality::Low => [P180, P360, P720, P1080],
-    };
-
-    select_rendition(renditions, &order)
-}
-
-fn select_audio_rendition<T>(renditions: &BTreeMap<String, T>, q: Quality) -> Option<String> {
-    use crate::format::AudioPreset::*;
-    let order = match q {
-        Quality::Highest | Quality::High => [Hq, Lq],
-        Quality::Mid | Quality::Low => [Lq, Hq],
-    };
-    select_rendition(renditions, &order)
-}
-
-/// Decoded audio track from a remote broadcast.
-///
-/// Wraps an [`AudioDecoderPipeline`] that decodes incoming audio packets
-/// and routes them to the audio output backend.
-#[derive(derive_more::Debug)]
-pub struct AudioTrack {
-    #[debug(skip)]
-    pipeline: AudioDecoderPipeline,
-}
-
-impl AudioTrack {
-    pub(crate) async fn spawn<D: AudioDecoder>(
-        name: String,
-        consumer: OrderedConsumer,
-        config: AudioConfig,
-        audio_backend: &dyn AudioStreamFactory,
-        opts: PipelineContext,
-    ) -> Result<Self> {
-        let source = MoqPacketSource::new(consumer);
-        let config: rusty_codecs::config::AudioConfig = config.into();
-        let pipeline =
-            AudioDecoderPipeline::new::<D>(name, source, &config, audio_backend, opts).await?;
-        Ok(Self { pipeline })
-    }
-
-    /// Returns a future that completes when the audio pipeline stops.
-    pub fn stopped(&self) -> impl Future<Output = ()> + 'static {
-        self.pipeline.stopped()
-    }
-
-    /// Returns the rendition name for this audio track.
-    pub fn rendition(&self) -> &str {
-        self.pipeline.name()
-    }
-
-    /// Returns a handle to the audio sink for playback control.
-    pub fn handle(&self) -> &dyn AudioSinkHandle {
-        self.pipeline.handle()
-    }
-
-    /// Sets the playback volume. `1.0` is unity gain, `0.0` is silence.
-    /// Values are clamped to `[0.0, 1.0]`.
-    pub fn set_volume(&self, volume: f32) {
-        self.pipeline.handle().set_volume(volume);
-    }
-
-    /// Returns the current playback volume (`0.0..=1.0`).
-    pub fn volume(&self) -> f32 {
-        self.pipeline.handle().volume()
-    }
-
-    /// Returns `true` if the decoder pipeline has already stopped.
-    pub fn is_stopped(&self) -> bool {
-        self.pipeline.is_stopped()
-    }
-}
-
-/// Decoded video track from a remote broadcast.
-///
-/// Produces [`VideoFrame`]s via [`try_recv`](Self::try_recv) (non-blocking)
-/// or [`next_frame`](Self::next_frame) (async). Can also wrap a raw [`VideoSource`]
-/// for local preview.
-///
-/// Optionally carries an adaptation handle for automatic rendition
-/// switching based on network conditions. Attach one with
-/// [`enable_adaptation`](Self::enable_adaptation); the frame channel
-/// stays the same while the underlying decoder pipeline gets swapped.
-#[derive(derive_more::Debug)]
-pub struct VideoTrack {
-    #[debug(skip)]
-    rx: crate::frame_channel::FrameReceiver<VideoFrame>,
-    inner: VideoTrackInner,
-    #[cfg(any_video_codec)]
-    #[debug(skip)]
-    adaptation: Option<AdaptationState>,
-}
-
-/// Internal state for an active adaptation handle on a [`VideoTrack`].
-#[cfg(any_video_codec)]
-#[derive(derive_more::Debug)]
-struct AdaptationState {
-    selected_rendition: Watchable<String>,
-    mode_tx: watch::Sender<crate::adaptive::RenditionMode>,
-    /// Dropping this aborts the adaptation background task.
-    #[debug(skip)]
-    _task: n0_future::task::AbortOnDropHandle<()>,
-}
-
-#[derive(derive_more::Debug)]
-enum VideoTrackInner {
-    /// Wraps a [`VideoDecoderPipeline`] (from `from_consumer` / `from_pipeline`).
-    Pipeline(VideoDecoderHandle),
-    /// Raw video source capture (from `from_video_source`).
-    #[debug("VideoSource")]
-    VideoSource {
-        rendition: String,
-        viewport: Watchable<(u32, u32)>,
-        _shutdown_guard: DropGuard,
-        _thread: thread::JoinHandle<()>,
-    },
-}
-
-impl Drop for VideoTrack {
-    fn drop(&mut self) {
-        tracing::debug!(rendition = %self.rendition(), "VideoTrack dropped");
-    }
-}
-
-impl VideoTrack {
-    /// Creates a track from a raw [`VideoSource`] (e.g. camera capture).
-    pub fn from_video_source(
-        rendition: String,
-        shutdown: CancellationToken,
-        mut source: impl VideoSource,
-    ) -> Self {
-        let viewport = Watchable::new((1u32, 1u32));
-        let (frame_tx, frame_rx) = crate::frame_channel::frame_channel();
-        let thread_name = format!("vpr-{:>4}-{:>4}", source.name(), rendition);
-        let thread = spawn_thread(thread_name, {
-            let mut viewport = viewport.watch();
-            let shutdown = shutdown.clone();
-            move || {
-                // TODO: Make configurable.
-                let fps = 30;
-                let mut scaler = Scaler::new(None);
-                let frame_duration = Duration::from_secs_f32(1. / fps as f32);
-                if let Err(err) = source.start() {
-                    warn!("Video source failed to start: {err:?}");
-                    return;
-                }
-                let start = Instant::now();
-                for i in 1.. {
-                    if shutdown.is_cancelled() {
-                        break;
-                    }
-                    if viewport.update() {
-                        let (w, h) = viewport.peek();
-                        scaler.set_target_dimensions(*w, *h);
-                    }
-                    match source.pop_frame() {
-                        Ok(Some(frame)) => {
-                            let [w, h] = frame.dimensions;
-                            // Only convert to RGBA and scale if the viewport
-                            // demands a different size. For passthrough (viewport
-                            // 1×1 or matching source), forward the original frame
-                            // to avoid a costly NV12→RGBA conversion.
-                            let (vw, vh) = *viewport.peek();
-                            let needs_scale = vw > 1 && vh > 1 && (vw != w || vh != h);
-                            let decoded = if needs_scale {
-                                let rgba = frame.rgba_image();
-                                match scaler.scale_rgba(rgba.as_raw(), w, h) {
-                                    Ok(Some((scaled, sw, sh))) => {
-                                        let mut f = VideoFrame::new_rgba(
-                                            scaled.into(),
-                                            sw,
-                                            sh,
-                                            Duration::ZERO,
-                                        );
-                                        f.timestamp = start.elapsed();
-                                        f
-                                    }
-                                    Ok(None) | Err(_) => {
-                                        let mut f = frame;
-                                        f.timestamp = start.elapsed();
-                                        f
-                                    }
-                                }
-                            } else {
-                                let mut f = frame;
-                                f.timestamp = start.elapsed();
-                                f
-                            };
-                            frame_tx.send(decoded);
-                        }
-                        Ok(None) => {}
-                        Err(_) => break,
-                    }
-                    let expected_time = i * frame_duration;
-                    let actual_time = start.elapsed();
-                    if expected_time > actual_time {
-                        thread::sleep(expected_time - actual_time);
-                    }
-                }
-                if let Err(err) = source.stop() {
-                    warn!("Video source failed to stop: {err:?}");
-                }
-            }
-        });
-        Self {
-            rx: frame_rx,
-            inner: VideoTrackInner::VideoSource {
-                rendition,
-                viewport,
-                _shutdown_guard: shutdown.drop_guard(),
-                _thread: thread,
-            },
-            #[cfg(any_video_codec)]
-            adaptation: None,
-        }
-    }
-
-    pub(crate) fn from_consumer<D: VideoDecoder>(
-        rendition: String,
-        consumer: OrderedConsumer,
-        config: &VideoConfig,
-        playback_config: &DecodeConfig,
-        opts: PipelineContext,
-    ) -> Result<Self> {
-        let source = MoqPacketSource::new(consumer);
-        let config: rusty_codecs::config::VideoConfig = config.clone().into();
-        let pipeline =
-            VideoDecoderPipeline::new::<D>(rendition, source, &config, playback_config, opts)?;
-        Ok(Self::from_pipeline(pipeline))
-    }
-
-    /// Creates a `VideoTrack` from a standalone [`VideoDecoderPipeline`].
-    pub fn from_pipeline(pipeline: VideoDecoderPipeline) -> Self {
-        let VideoDecoderPipeline { frames, handle } = pipeline;
-        Self {
-            rx: frames.rx,
-            inner: VideoTrackInner::Pipeline(handle),
-            #[cfg(any_video_codec)]
-            adaptation: None,
-        }
-    }
-
-    /// Updates the viewport dimensions for resolution-aware scaling.
-    pub fn set_viewport(&self, w: u32, h: u32) {
-        match &self.inner {
-            VideoTrackInner::Pipeline(handle) => handle.set_viewport(w, h),
-            VideoTrackInner::VideoSource { viewport, .. } => {
-                viewport.set((w, h)).ok();
-            }
-        }
-    }
-
-    /// Returns the rendition name for this video track.
-    pub fn rendition(&self) -> &str {
-        match &self.inner {
-            VideoTrackInner::Pipeline(handle) => handle.rendition(),
-            VideoTrackInner::VideoSource { rendition, .. } => rendition,
-        }
-    }
-
-    /// Returns the name of the decoder backend in use.
-    pub fn decoder_name(&self) -> &str {
-        match &self.inner {
-            VideoTrackInner::Pipeline(handle) => handle.decoder_name(),
-            VideoTrackInner::VideoSource { .. } => "capture",
-        }
-    }
-
-    /// Returns `true` if the track's frame producer has been dropped.
-    pub fn is_closed(&self) -> bool {
-        self.rx.is_closed()
-    }
-
-    /// Returns the latest decoded frame, draining any older buffered frames,
-    /// or `None` if no new frame has arrived since the last call.
-    ///
-    /// Non-blocking: suitable for game loops, ECS ticks, and render callbacks.
-    pub fn try_recv(&mut self) -> Option<VideoFrame> {
-        self.rx.take()
-    }
-
-    /// Returns `true` if a decoded frame is available without consuming it.
-    ///
-    /// Useful in game loops to check whether rendering work is needed before
-    /// committing to a `try_recv` call.
-    pub fn has_frame(&self) -> bool {
-        self.rx.has_value()
-    }
-
-    /// Waits for the next frame. Returns `None` when the producer
-    /// shuts down.
-    pub async fn next_frame(&mut self) -> Option<VideoFrame> {
-        self.rx.recv().await
-    }
-
-    // ── Adaptation ──────────────────────────────────────────────────
-
-    /// Enables automatic rendition switching based on network signals.
-    ///
-    /// Spawns a background task that monitors `signals` and swaps the
-    /// underlying decoder pipeline when conditions change. The frame
-    /// channel stays the same, so the consumer does not need to change
-    /// how it reads frames.
-    ///
-    /// Requires a [`RemoteBroadcast`] to subscribe to alternate
-    /// renditions. Returns an error if the catalog has no video
-    /// renditions.
-    ///
-    /// If adaptation is already enabled, the previous handle is dropped
-    /// and replaced.
-    #[cfg(any_video_codec)]
-    pub fn enable_adaptation(
-        &mut self,
-        broadcast: RemoteBroadcast,
-        signals: watch::Receiver<NetworkSignals>,
-        config: AdaptiveConfig,
-        decode_config: DecodeConfig,
-    ) -> anyhow::Result<()> {
-        use crate::adaptive::rank_renditions;
-
-        let catalog = broadcast.catalog();
-        let ranked = rank_renditions(&catalog.video.renditions);
-        anyhow::ensure!(!ranked.is_empty(), "no video renditions in catalog");
-
-        // Determine which rendition we are currently on. If the current
-        // rendition is not in the catalog (unlikely), start from the
-        // highest.
-        let current_rendition = self.rendition().to_string();
-        let current_idx = ranked
-            .iter()
-            .position(|r| r.name == current_rendition)
-            .unwrap_or(0);
-
-        let selected_rendition = Watchable::new(ranked[current_idx].name.clone());
-        let (mode_tx, mode_rx) = watch::channel(crate::adaptive::RenditionMode::Auto);
-
-        // The adaptation task creates new decoder pipelines that write
-        // to the same frame channel via `new_sender()`.
-        let frame_sender = self.rx.new_sender();
-
-        let task = tokio::spawn(adaptation_task_v2(
-            broadcast,
-            signals,
-            config,
-            decode_config,
-            ranked,
-            current_idx,
-            selected_rendition.clone(),
-            mode_rx,
-            frame_sender,
-        ));
-
-        self.adaptation = Some(AdaptationState {
-            selected_rendition,
-            mode_tx,
-            _task: n0_future::task::AbortOnDropHandle::new(task),
-        });
-
-        Ok(())
-    }
-
-    /// Disables automatic rendition switching.
-    ///
-    /// Stops the adaptation background task. The track continues
-    /// playing on whichever rendition was active at the time.
-    #[cfg(any_video_codec)]
-    pub fn disable_adaptation(&mut self) {
-        self.adaptation = None;
-    }
-
-    /// Returns `true` if adaptation is currently enabled.
-    #[cfg(any_video_codec)]
-    pub fn is_adaptive(&self) -> bool {
-        self.adaptation.is_some()
-    }
-
-    /// Returns the name of the currently selected rendition.
-    ///
-    /// If adaptation is not enabled, returns the rendition this track
-    /// was originally subscribed to.
-    #[cfg(any_video_codec)]
-    pub fn selected_rendition(&self) -> String {
-        if let Some(ref state) = self.adaptation {
-            state.selected_rendition.get()
-        } else {
-            self.rendition().to_string()
-        }
-    }
-
-    /// Returns a watcher for rendition changes.
-    ///
-    /// Only meaningful when adaptation is enabled. When disabled,
-    /// returns a watcher that holds the current static rendition name
-    /// and never updates.
-    #[cfg(any_video_codec)]
-    pub fn rendition_watcher(&self) -> n0_watcher::Direct<String> {
-        if let Some(ref state) = self.adaptation {
-            state.selected_rendition.watch()
-        } else {
-            // Static: create a watchable with the current name.
-            let w = Watchable::new(self.rendition().to_string());
-            w.watch()
-        }
-    }
-
-    /// Sets the rendition selection mode (Auto or Fixed).
-    ///
-    /// No-op if adaptation is not enabled.
-    #[cfg(any_video_codec)]
-    pub fn set_rendition_mode(&self, mode: crate::adaptive::RenditionMode) {
-        if let Some(ref state) = self.adaptation {
-            state.mode_tx.send(mode).ok();
-        }
-    }
-}
-
-/// Combined video and audio tracks from a [`RemoteBroadcast`].
-///
-/// Convenience type that holds the broadcast alongside its decoded
-/// media tracks and shared timing state.
-#[derive(derive_more::Debug)]
+/// Whichever tracks a broadcast turned out to carry.
+#[derive(Debug, Default)]
 pub struct MediaTracks {
-    /// The underlying broadcast subscription.
-    pub broadcast: RemoteBroadcast,
-    /// The decoded video track, if the broadcast has video.
+    /// The video track, if the broadcast has one and it opened.
     pub video: Option<VideoTrack>,
-    /// The decoded audio track, if the broadcast has audio.
+    /// The audio track, if the broadcast has one and it opened.
     pub audio: Option<AudioTrack>,
 }
 
-impl MediaTracks {
-    /// Creates media tracks by subscribing to both video and audio from the broadcast.
-    pub async fn new<D: Decoders>(
-        broadcast: RemoteBroadcast,
-        audio_backend: &dyn AudioStreamFactory,
-        playback_config: PlaybackConfig,
-    ) -> Result<Self> {
-        let audio_track_name = broadcast
-            .catalog()
-            .select_audio_rendition(playback_config.quality)
-            .ok();
-        let audio = match audio_track_name {
-            Some(name) => broadcast
-                .audio_rendition::<D::Audio>(&name, audio_backend)
-                .await
-                .inspect_err(|err| tracing::warn!("no audio track: {err}"))
-                .ok(),
-            None => None,
-        };
-        let track_name = broadcast
-            .catalog()
-            .select_video_rendition(playback_config.quality)
-            .ok();
-        let video = track_name.and_then(|name| {
-            broadcast
-                .video_rendition::<D::Video>(&playback_config.decode_config(), &name)
-                .inspect_err(|err| tracing::warn!("no video track: {err}"))
-                .ok()
-        });
-        Ok(Self {
-            broadcast,
-            audio,
-            video,
-        })
-    }
+/// A decoding video track.
+///
+/// Frames land in a latest-wins slot: a renderer that falls behind skips
+/// straight to the newest picture instead of draining a backlog.
+///
+/// Deliberately not `Clone`. Taking a frame removes it from the slot, so two
+/// holders would split the stream between them and neither would see a coherent
+/// picture. Share the handle, or hand out [`frames`](Self::frames) by reference
+/// to something that only reads.
+#[derive(Debug)]
+pub struct VideoTrack {
+    frames: Arc<FrameReceiver<moq_video::Frame>>,
+    rendition: Watchable<String>,
+    decoder: Watchable<String>,
+    control: Arc<VideoControl>,
 }
 
-// ── Adaptation task (v2: writes to shared frame sender) ─────────────────
-
-/// Background task that monitors network signals and swaps decoder
-/// pipelines by creating new ones that write to the same frame sender.
-///
-/// Unlike the original `adaptation_task` in `adaptive.rs` which sends
-/// whole `VideoTrack` objects over a channel, this version creates
-/// `VideoDecoderPipeline`s with `with_sender()` so frames flow directly
-/// to the consumer's existing `FrameReceiver`.
-#[cfg(any_video_codec)]
-#[allow(
-    clippy::too_many_arguments,
-    reason = "private task function, grouping args would add complexity"
-)]
-async fn adaptation_task_v2(
+/// The handles a rendition switch needs, shared with the adaptation task.
+#[derive(Debug)]
+struct VideoControl {
     broadcast: RemoteBroadcast,
-    signals: watch::Receiver<NetworkSignals>,
-    config: AdaptiveConfig,
-    decode_config: DecodeConfig,
-    mut ranked: Vec<crate::adaptive::RankedRendition>,
-    mut current_idx: usize,
-    selected_rendition: Watchable<String>,
-    mut mode_rx: watch::Receiver<crate::adaptive::RenditionMode>,
-    frame_sender: crate::frame_channel::FrameSender<VideoFrame>,
-) {
-    use std::time::Instant;
+    /// Set to request a switch; the decode supervisor picks it up.
+    requested: watch::Sender<Option<String>>,
+    /// Bumped to ask the supervisor to build the decoder again. A counter
+    /// rather than a flag, so two changes in a row are two rebuilds.
+    reopen: watch::Sender<u64>,
+    _task: AbortOnDropHandle<()>,
+    adaptation: Mutex<Option<AbortOnDropHandle<()>>>,
+}
 
-    use crate::adaptive::{
-        AdaptationTimers, Decision, evaluate, rank_renditions, should_abort_probe,
-    };
+impl VideoTrack {
+    /// Takes the newest frame, if one arrived since the last call.
+    pub fn take(&self) -> Option<moq_video::Frame> {
+        self.frames.take()
+    }
 
-    let mut timers = AdaptationTimers::default();
-    let mut interval = tokio::time::interval(config.check_interval);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut catalog_watcher = broadcast.catalog_watcher();
+    /// Waits for the next frame. Returns `None` once the track ends.
+    pub async fn recv(&self) -> Option<moq_video::Frame> {
+        self.frames.recv().await
+    }
 
-    // The current decoder handle. Dropping it stops the old pipeline.
-    // We hold it here so the old pipeline stays alive until the new one
-    // is ready, preventing frame gaps.
-    let mut _current_handle: Option<crate::pipeline::VideoDecoderHandle> = None;
+    /// Returns the frame slot, for a renderer that polls it directly.
+    pub fn frames(&self) -> &FrameReceiver<moq_video::Frame> {
+        &self.frames
+    }
 
-    // Active probe state: (decoder handle, started, congestion_baseline).
-    let mut probe: Option<(crate::pipeline::VideoDecoderHandle, Instant, u64)> = None;
+    /// Returns a handle to the frame slot that outlives a borrow of the track.
+    ///
+    /// For a renderer that wants to be woken when a picture arrives rather than
+    /// looking for one on a timer: the waiting happens in a task, and a task
+    /// cannot hold a reference to this.
+    pub fn frame_slot(&self) -> Arc<FrameReceiver<moq_video::Frame>> {
+        Arc::clone(&self.frames)
+    }
 
-    loop {
-        tokio::select! {
-            _ = interval.tick() => {}
-            _ = mode_rx.changed() => {}
-        }
+    /// Returns the rendition currently decoding.
+    pub fn rendition(&self) -> String {
+        self.rendition.get()
+    }
 
-        // Refresh rendition ranking on catalog change.
-        if catalog_watcher.update() {
-            let catalog = broadcast.catalog();
-            let new_ranked = rank_renditions(&catalog.video.renditions);
-            if !new_ranked.is_empty() {
-                let current_name = &ranked[current_idx].name;
-                current_idx = new_ranked
-                    .iter()
-                    .position(|r| r.name == *current_name)
-                    .unwrap_or(0);
-                ranked = new_ranked;
+    /// Returns a watcher over the rendition currently decoding.
+    pub fn rendition_watcher(&self) -> n0_watcher::Direct<String> {
+        self.rendition.watch()
+    }
+
+    /// Returns the name of the decoder backend currently running.
+    ///
+    /// Which backend opened is the first thing worth knowing when playback
+    /// looks wrong on a given device, and it can change across a rendition
+    /// switch, so it is watchable too.
+    pub fn decoder(&self) -> String {
+        self.decoder.get()
+    }
+
+    /// Returns a watcher over the decoder backend currently running.
+    pub fn decoder_watcher(&self) -> n0_watcher::Direct<String> {
+        self.decoder.watch()
+    }
+
+    /// Switches to a named rendition, whatever the adaptation logic thinks.
+    ///
+    /// Returns as soon as the switch is requested. The replacement decoder
+    /// opens alongside the incumbent and takes over on its first frame, so the
+    /// picture does not go blank across it; [`switched_to`](Self::switched_to)
+    /// waits for that handover if the caller needs to know it happened.
+    pub fn set_rendition(&self, name: impl Into<String>) {
+        self.control.requested.send_replace(Some(name.into()));
+    }
+
+    /// Builds the decoder again, from the broadcast's current playback policy.
+    ///
+    /// A decoder reads
+    /// [`PlaybackPolicy`](crate::playout::PlaybackPolicy) when it is built and
+    /// never looks at it again, so this is what carries a policy change, a
+    /// different backend above all, to a track already playing. The replacement
+    /// opens alongside the incumbent and takes over on its first frame, the same
+    /// handover a rendition switch makes, so the picture does not go blank.
+    ///
+    /// Returns as soon as the rebuild is requested. A replacement that fails to
+    /// open is logged and the incumbent keeps playing, which is what a backend
+    /// that is not present on this machine looks like.
+    pub fn reopen_decoder(&self) {
+        self.control
+            .reopen
+            .send_modify(|generation| *generation += 1);
+    }
+
+    /// Waits until `name` is the rendition that has been asked for.
+    ///
+    /// A switch is decided before it lands: the replacement decoder opens
+    /// alongside the incumbent and takes over only on its first frame, so this
+    /// returns at the decision where
+    /// [`switched_to`](Self::switched_to) returns at the handover. What that
+    /// separation is for is a caller which has to know that the adaptation loop
+    /// acted on the link it was shown, before changing the link again. The
+    /// handover needs the replacement's keyframe to arrive, and a link bad
+    /// enough to force a downgrade is by construction too narrow to carry it
+    /// alongside the rendition still playing.
+    ///
+    /// Returns immediately if `name` is already the request. A request the
+    /// supervisor cannot honour still shows here, so this says what was asked
+    /// for rather than what happened.
+    pub async fn requested(&self, name: &str) {
+        let mut watcher = self.control.requested.subscribe();
+        loop {
+            if watcher.borrow_and_update().as_deref() == Some(name) {
+                return;
+            }
+            if watcher.changed().await.is_err() {
+                return;
             }
         }
+    }
 
-        let mode = mode_rx.borrow().clone();
-
-        // Handle Fixed mode.
-        if let crate::adaptive::RenditionMode::Fixed(ref name) = mode {
-            if ranked[current_idx].name != *name
-                && let Some(idx) = ranked.iter().position(|r| r.name == *name)
-            {
-                match switch_rendition_v2(
-                    &broadcast,
-                    &decode_config,
-                    &ranked[idx].name,
-                    &frame_sender,
-                ) {
-                    Ok(handle) => {
-                        current_idx = idx;
-                        selected_rendition.set(ranked[idx].name.clone()).ok();
-                        tracing::info!(rendition = %ranked[idx].name, "fixed mode: switched rendition");
-                        _current_handle = Some(handle);
-                    }
-                    Err(err) => tracing::warn!("failed to switch to fixed rendition: {err:#}"),
-                }
+    /// Waits until `name` is the rendition actually producing frames.
+    ///
+    /// Returns immediately if it already is. A switch that never lands, because
+    /// the rendition left the catalog or its decoder failed to open, leaves this
+    /// pending, so a caller that cannot wait forever wraps it in a timeout.
+    pub async fn switched_to(&self, name: &str) {
+        let mut watcher = self.rendition.watch();
+        loop {
+            if self.rendition.get() == name {
+                return;
             }
-            probe = None;
-            continue;
+            if watcher.updated().await.is_err() {
+                return;
+            }
         }
+    }
 
-        // Auto mode: read signals and evaluate.
-        let sigs = *signals.borrow();
-        let now = Instant::now();
+    /// Follows the downlink: switches renditions as `signals` move.
+    ///
+    /// Replaces any adaptation already running. Drop the returned track, or
+    /// call [`disable_adaptation`](Self::disable_adaptation), to stop.
+    pub fn enable_adaptation(&self, signals: watch::Receiver<NetworkSignals>) {
+        self.enable_adaptation_with(signals, crate::adaptive::AdaptiveConfig::default());
+    }
 
-        // Check active probe.
-        if let Some((probe_handle, started, baseline)) = probe.take() {
-            if should_abort_probe(&sigs, baseline, &config) {
-                tracing::info!(
-                    loss = sigs.loss_rate,
-                    congestion = sigs.congestion_events,
-                    "probe aborted: congestion detected"
-                );
-                drop(probe_handle);
-                timers.last_probe = Some(now);
-                continue;
-            }
-            if now.duration_since(started) >= config.probe_duration {
-                // Probe succeeded — commit.
-                let probe_idx = current_idx.saturating_sub(1);
-                current_idx = probe_idx;
-                selected_rendition.set(ranked[probe_idx].name.clone()).ok();
-                tracing::info!(rendition = %ranked[probe_idx].name, "probe succeeded: upgraded");
-                timers.last_probe = Some(now);
-                _current_handle = Some(probe_handle);
-                continue;
-            }
-            // Probe still running.
-            probe = Some((probe_handle, started, baseline));
-            continue;
-        }
+    /// Follows the downlink with explicit thresholds and timers.
+    ///
+    /// The defaults are tuned for a real link. A test that has to see a switch
+    /// inside its own timeout shortens the hold times here rather than waiting
+    /// out a four-second upgrade hold.
+    pub fn enable_adaptation_with(
+        &self,
+        signals: watch::Receiver<NetworkSignals>,
+        config: crate::adaptive::AdaptiveConfig,
+    ) {
+        let task = adapt::spawn_adaptation(
+            self.control.broadcast.clone(),
+            self.rendition.clone(),
+            self.control.requested.clone(),
+            signals,
+            config,
+        );
+        *self.control.adaptation.lock().expect("poisoned") = Some(task);
+    }
 
-        let decision = evaluate(current_idx, &ranked, &sigs, &mut timers, &config, now);
+    /// Stops following the downlink, holding the current rendition.
+    pub fn disable_adaptation(&self) {
+        self.control.adaptation.lock().expect("poisoned").take();
+    }
+}
 
-        let in_failure_cooldown = timers
-            .last_switch_failure
-            .is_some_and(|t| now.duration_since(t) < config.post_downgrade_cooldown);
+/// A playing audio track.
+#[derive(Debug)]
+pub struct AudioTrack {
+    /// Keeps the broadcast alive for as long as the track plays. `Drop for
+    /// Inner` cancels every decode task, so an audio-only subscription whose
+    /// `RemoteBroadcast` went out of scope would otherwise fall silent.
+    /// `VideoTrack` holds one through its control block for the same reason.
+    _broadcast: RemoteBroadcast,
+    rendition: String,
+    #[cfg(feature = "playback")]
+    control: moq_audio::playback::Control,
+    _task: AbortOnDropHandle<()>,
+}
 
-        match decision {
-            Decision::Hold => {}
-            Decision::Downgrade(idx) if !in_failure_cooldown => {
-                let target_idx = idx.min(ranked.len() - 1);
-                match switch_rendition_v2(
-                    &broadcast,
-                    &decode_config,
-                    &ranked[target_idx].name,
-                    &frame_sender,
-                ) {
-                    Ok(handle) => {
-                        current_idx = target_idx;
-                        timers.last_switch_failure = None;
-                        selected_rendition.set(ranked[target_idx].name.clone()).ok();
-                        tracing::info!(
-                            rendition = %ranked[target_idx].name,
-                            loss = sigs.loss_rate,
-                            bw = sigs.available_bps,
-                            "downgraded rendition"
-                        );
-                        _current_handle = Some(handle);
-                    }
-                    Err(err) => {
-                        tracing::warn!("failed to switch rendition: {err:#}");
-                        timers.last_switch_failure = Some(now);
-                    }
-                }
-            }
-            Decision::Emergency => {
-                let target_idx = ranked.len() - 1;
-                match switch_rendition_v2(
-                    &broadcast,
-                    &decode_config,
-                    &ranked[target_idx].name,
-                    &frame_sender,
-                ) {
-                    Ok(handle) => {
-                        current_idx = target_idx;
-                        timers.last_switch_failure = None;
-                        selected_rendition.set(ranked[target_idx].name.clone()).ok();
-                        tracing::info!(
-                            rendition = %ranked[target_idx].name,
-                            loss = sigs.loss_rate,
-                            bw = sigs.available_bps,
-                            "emergency downgrade"
-                        );
-                        _current_handle = Some(handle);
-                    }
-                    Err(err) => {
-                        tracing::warn!("failed emergency rendition switch: {err:#}");
-                        timers.last_switch_failure = Some(now);
-                    }
-                }
-            }
-            Decision::Downgrade(_) => {
-                // In failure cooldown — skip.
-            }
-            Decision::StartProbe(probe_idx) if !in_failure_cooldown => {
-                tracing::debug!(
-                    rendition = %ranked[probe_idx].name,
-                    bw = sigs.available_bps,
-                    "starting upgrade probe"
-                );
-                match switch_rendition_v2(
-                    &broadcast,
-                    &decode_config,
-                    &ranked[probe_idx].name,
-                    &frame_sender,
-                ) {
-                    Ok(handle) => {
-                        let baseline = sigs.congestion_events;
-                        timers.probe_congestion_baseline = Some(baseline);
-                        timers.last_switch_failure = None;
-                        probe = Some((handle, now, baseline));
-                    }
-                    Err(err) => {
-                        tracing::warn!("failed to start probe: {err:#}");
-                        timers.last_probe = Some(now);
-                        timers.last_switch_failure = Some(now);
-                    }
-                }
-            }
-            Decision::StartProbe(_) => {
-                // In failure cooldown — skip.
-            }
+impl AudioTrack {
+    /// Returns the rendition currently playing.
+    pub fn rendition(&self) -> &str {
+        &self.rendition
+    }
+
+    /// Sets the output volume, where 1.0 is unattenuated.
+    #[cfg(feature = "playback")]
+    pub fn set_volume(&self, volume: f32) {
+        self.control.set_volume(volume);
+    }
+
+    /// Returns the output volume.
+    #[cfg(feature = "playback")]
+    pub fn volume(&self) -> f32 {
+        self.control.volume()
+    }
+
+    /// Returns the most recent peak level, for a meter.
+    #[cfg(feature = "playback")]
+    pub fn peak(&self) -> f32 {
+        self.control.peak()
+    }
+}
+
+/// The pieces a decode task shares with the track handle it belongs to.
+struct DecodeContext {
+    stats: SubscribeStats,
+    sync: Sync,
+    policy: PlaybackPolicy,
+    shutdown: CancellationToken,
+}
+
+impl RemoteBroadcast {
+    fn decode_context(&self) -> DecodeContext {
+        DecodeContext {
+            stats: self.inner.stats.clone(),
+            sync: self.inner.sync.clone(),
+            policy: self.playback_policy(),
+            shutdown: self.inner.shutdown.clone(),
         }
     }
 }
 
-/// Creates a new decoder pipeline that writes to the given frame sender.
-#[cfg(any_video_codec)]
-fn switch_rendition_v2(
-    broadcast: &RemoteBroadcast,
-    decode_config: &DecodeConfig,
-    rendition_name: &str,
-    frame_sender: &crate::frame_channel::FrameSender<VideoFrame>,
-) -> n0_error::Result<crate::pipeline::VideoDecoderHandle> {
-    use crate::{codec::DynamicVideoDecoder, pipeline::VideoDecoderPipeline};
-
-    let max_latency = broadcast.playback_policy.max_latency;
-    let catalog = broadcast.catalog();
-    let config = catalog
-        .video
-        .renditions
-        .get(rendition_name)
-        .context("rendition not found")?;
-    let track_consumer = broadcast
-        .broadcast
-        .subscribe_track(&moq_lite::Track {
-            name: rendition_name.to_string(),
-            priority: VIDEO_PRIORITY,
-        })
-        .anyerr()?;
-    let consumer = OrderedConsumer::new(track_consumer, moq_mux::catalog::hang::Container::Legacy)
-        .with_latency(max_latency);
-    let source = MoqPacketSource::new(consumer);
-    let config: rusty_codecs::config::VideoConfig = config.clone().into();
-    let sender = frame_sender.clone();
-
-    Ok(VideoDecoderPipeline::with_sender::<DynamicVideoDecoder>(
-        rendition_name.to_string(),
-        source,
-        &config,
-        decode_config,
-        broadcast.pipeline_ctx(),
-        sender,
-    )?)
+/// The decode config a policy implies.
+fn video_decode_config(policy: &PlaybackPolicy) -> moq_video::decode::Config {
+    let mut config = moq_video::decode::Config::new();
+    config.kind = policy.decoder.clone();
+    config.latency_max = Some(policy.max_latency);
+    config.gpu_frames = policy.gpu_frames;
+    config
 }
 
-/// Creates a subscribe-side preview from any [`BroadcastConsumer`](moq_lite::BroadcastConsumer).
-///
-/// Subscribes to the consumer's catalog, spawns decoders, and returns media
-/// tracks suitable for rendering. This is the building block for previewing
-/// both live capture and file import output.
-pub async fn subscribe_preview_from_consumer<D: Decoders>(
-    consumer: moq_lite::BroadcastConsumer,
-    audio_backend: &dyn crate::traits::AudioStreamFactory,
-    config: crate::format::PlaybackConfig,
-) -> Result<MediaTracks> {
-    let broadcast = RemoteBroadcast::new("preview", consumer).await?;
-    broadcast
-        .media_with_decoders::<D>(audio_backend, config)
-        .await
+/// The decode config a policy implies, on the audio side.
+#[cfg(feature = "playback")]
+fn audio_decode_config(policy: &PlaybackPolicy) -> moq_audio::decode::Config {
+    let mut config = moq_audio::decode::Config::new();
+    config.format = moq_audio::Format::F32;
+    config.latency_max = Some(policy.max_latency);
+    config
 }
 
-/// Creates a subscribe-side preview using dynamic decoder dispatch.
-///
-/// Non-generic convenience over [`subscribe_preview_from_consumer`] that uses
-/// [`DefaultDecoders`](crate::codec::DefaultDecoders).
-pub async fn subscribe_preview(
-    consumer: moq_lite::BroadcastConsumer,
-    audio_backend: &dyn crate::traits::AudioStreamFactory,
-    config: crate::format::PlaybackConfig,
-) -> Result<MediaTracks> {
-    subscribe_preview_from_consumer::<crate::codec::DefaultDecoders>(
-        consumer,
-        audio_backend,
-        config,
-    )
-    .await
+/// Whether the playout clock gates this track.
+fn is_synced(policy: &PlaybackPolicy) -> bool {
+    matches!(policy.sync, SyncMode::Synced)
 }

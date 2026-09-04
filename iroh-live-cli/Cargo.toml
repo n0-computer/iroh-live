@@ -2,7 +2,7 @@
 name = "iroh-live-cli"
 version = "0.1.0"
 edition = "2024"
-description = "CLI tool for iroh-live: publish, play, call, and room"
+description = "CLI tool for iroh-live: publish and watch live media"
 publish = false
 
 [[bin]]
@@ -10,65 +10,65 @@ name = "irl"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1.0.100"
 bytes = "1.11.0"
 clap = { version = "4.5", features = ["derive"] }
-data-encoding = "2.9.0"
-hang = { workspace = true }
-dirs = "6.0.0"
-eframe = { version = "0.33.0", default-features = false, features = ["default_fonts", "wgpu"] }
+data-encoding = "2"
+dirs = "6"
+eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
 iroh = { workspace = true }
-iroh-gossip = { workspace = true }
-iroh-live = { workspace = true }
-iroh-live-relay = { path = "../iroh-live-relay" }
-moq-lite = { workspace = true }
-rustls = { version = "0.23", features = ["aws-lc-rs"], default-features = false }
-moq-media = { workspace = true }
+iroh-live = { workspace = true, features = ["capture"] }
+iroh-rooms = { workspace = true }
+moq-net = { workspace = true }
+moq-media = { workspace = true, features = ["test-source", "capture"] }
 moq-media-egui = { workspace = true, optional = true }
 moq-mux = { workspace = true }
 n0-error = { version = "1", features = ["anyhow"] }
+n0-future = "0.3.1"
 qr2term = "0.3"
+# QR encoding for the ticket a call window shows its peer, and for the codes the
+# scan tests decode. Only the encoder itself is wanted: the default features
+# render to `image` and to SVG, and what we draw into is an egui texture.
+qrcode = { version = "0.14", default-features = false }
+# QR decoding for `irl watch --scan`. rqrr is a pure-Rust port of quirc that
+# reads through a grayscale callback, so a captured frame's Y plane goes
+# straight in with no pixel format conversion and no `image` dependency. The
+# alternative, bardecoder, decodes an `image::DynamicImage` and would pull that
+# crate in for a buffer we already hold as bytes.
+rqrr = { version = "0.11", default-features = false }
+# The zxing port, which reads through about twice the defocus rqrr does and
+# fails on different pictures, so the scanner tries it first and falls back.
+# QR only: the default feature set pulls in image formats, serde and a URI
+# parser for pixels we already hold in a buffer.
+rxing = { version = "0.9.2", default-features = false, features = ["qrcode", "decoders", "encoding_rs"] }
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
-rand = "0.9"
-strum = { version = "0.28", features = ["derive"] }
 tokio = { version = "1.48.0", features = ["full"] }
+toml = "1"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.20"
 
+[dev-dependencies]
+tempfile = "3"
+
 [target.'cfg(target_os = "linux")'.dependencies]
-eframe = { version = "0.33.0", default-features = false, features = ["wayland", "x11"] }
+eframe = { workspace = true, features = ["wayland", "x11"] }
 
 [features]
-default = [
-    "h264", "opus", "pcm", "capture", "wgpu",
-    "vaapi", "videotoolbox", "dmabuf-import", "metal-import", "capture-all",
-]
+# Capture is not a feature here: `irl devices` and `irl publish` are most of the
+# CLI and neither compiles without it, so the dependencies ask for it directly.
+default = ["playback", "render", "sound-server"]
+playback = ["iroh-live/playback", "moq-media/playback"]
+sound-server = ["iroh-live/sound-server", "moq-media/sound-server"]
+aec = ["iroh-live/aec", "moq-media/aec"]
+pipewire = ["iroh-live/pipewire", "moq-media/pipewire"]
+render = ["iroh-live/render", "moq-media/render", "dep:moq-media-egui"]
+# `--video rpicam`, which publishes the H.264 `rpicam-vid` already encoded.
+rpicam = ["iroh-live/rpicam", "moq-media/rpicam"]
+vaapi = ["iroh-live/vaapi", "moq-media/vaapi"]
+nvidia = ["iroh-live/nvidia", "moq-media/nvidia"]
+# `--encoder v4l2` and the matching decoder, for an ARM SoC's M2M codec node.
+v4l2 = ["iroh-live/v4l2", "moq-media/v4l2"]
 qlog = ["iroh/qlog"]
-
-# Codecs — delegate to moq-media
-h264 = ["moq-media/h264"]
-opus = ["moq-media/opus"]
-pcm = ["moq-media/pcm"]
-av1 = ["moq-media/av1"]
-
-# Hardware acceleration
-vaapi = ["moq-media/vaapi"]
-videotoolbox = ["moq-media/videotoolbox"]
-dmabuf-import = ["wgpu", "moq-media/dmabuf-import"]
-metal-import = ["wgpu", "moq-media/metal-import"]
-v4l2 = ["moq-media/v4l2"]
-jack = ["moq-media/jack"]
-
-# Capture
-capture = ["moq-media/capture"]
-capture-all = ["moq-media/capture-all"]
-
-# Rendering
-wgpu = ["moq-media/wgpu", "dep:moq-media-egui"]
 
 [lints]
 workspace = true
 
-[dev-dependencies]
-tempfile = "3"

@@ -9,3 +9,6 @@ app/src/main/jniLibs/
 
 # Gradle wrapper jar (download with `gradle wrapper`)
 gradle/wrapper/gradle-wrapper.jar
+
+# Heap dumps the Gradle JVM leaves behind when a build runs out of memory.
+*.hprof

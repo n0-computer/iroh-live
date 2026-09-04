@@ -1,11 +1,14 @@
+# The root `Cargo.toml` patches the moq family to `Frando/moq@iroh-live` and
+# moq-vaapi to `Frando/vaapi@iroh-live`, for changes that are not in a release
+# yet. `Cargo.lock` pins both revisions, so these jobs build what a local
+# checkout builds and `--locked` has something exact to hold to. Deleting the two
+# patch blocks is the whole revert once the changes land; the upstreaming
+# progress is tracked in plans/v2/moq-upstream.md.
 name: CI
 on:
   push:
     branches: [main]
   pull_request:
-  schedule:
-    # Weekly check for excluded workspace members (moq-media-dioxus).
-    - cron: "0 6 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
@@ -39,7 +42,7 @@ jobs:
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           sudo apt-get update && sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libpipewire-0.3-dev libjack-jackd2-dev libclang-dev \
+            libasound2-dev libpipewire-0.3-dev libclang-dev \
             libegl-dev libgbm-dev libdrm-dev libfontconfig-dev \
             libva-dev nasm
 
@@ -71,34 +74,11 @@ jobs:
       - name: Install system deps
         run: brew install libtool automake
 
-      - run: cargo check --locked --workspace --exclude pi-zero-demo --exclude pi-zero-minimal --all-targets
-      - run: cargo check --locked --workspace --exclude pi-zero-demo --exclude pi-zero-minimal --all-targets --all-features
-      - run: cargo check --locked --workspace --exclude pi-zero-demo --exclude pi-zero-minimal --all-targets --no-default-features
-      - run: cargo clippy --locked --workspace --exclude pi-zero-demo --exclude pi-zero-minimal --all-targets --all-features -- -D warnings
-      - run: cargo nextest run --locked --workspace --exclude pi-zero-demo --exclude pi-zero-minimal
-
-  # moq-media-dioxus is excluded from default-members (heavy dep tree).
-  # Check it weekly to catch breakage early.
-  check-dioxus:
-    name: Check moq-media-dioxus
-    runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' || contains(github.event.head_commit.message, '[check-dioxus]')
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          cache-on-failure: true
-      - name: Install system deps
-        run: >
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends
-          libasound2-dev libpipewire-0.3-dev libclang-dev
-          libegl-dev libgbm-dev libdrm-dev libfontconfig-dev nasm
-      - run: cargo check --locked -p moq-media-dioxus
+      - run: cargo check --locked --workspace --exclude pi-zero-demo --all-targets
+      - run: cargo check --locked --workspace --exclude pi-zero-demo --all-targets --all-features
+      - run: cargo check --locked --workspace --exclude pi-zero-demo --all-targets --no-default-features
+      - run: cargo clippy --locked --workspace --exclude pi-zero-demo --all-targets --all-features -- -D warnings
+      - run: cargo nextest run --locked --workspace --exclude pi-zero-demo
 
   e2e-browser:
     name: Playwright E2E

@@ -85,13 +85,13 @@ dependencies = [
 # ── Tests ─────────────────────────────────────────────────────────────
 
 [tasks.test]
-description = "Run workspace tests via nextest (serializes patchbay tests)"
+description = "Run the workspace tests via nextest"
 workspace = false
 command = "cargo"
 args = ["nextest", "run", "--locked", "--workspace"]
 
 [tasks.test-patchbay]
-description = "Run patchbay network simulation tests (including ignored)"
+description = "Run the patchbay network simulation tests, including ignored ones"
 workspace = false
 command = "cargo"
 args = ["nextest", "run", "--locked", "-p", "iroh-live",

@@ -10,12 +10,14 @@ path = "src/main.rs"
 [dependencies]
 moq-relay = { workspace = true, default-features = false, features = ["noq", "iroh"] }
 moq-native = { workspace = true, default-features = false, features = ["noq", "iroh", "aws-lc-rs"] }
-moq-lite = { workspace = true }
+moq-net = { workspace = true }
 iroh = { workspace = true }
 iroh-live = { workspace = true }
 iroh-moq = { workspace = true }
+web-transport-iroh = { workspace = true }
 axum = { version = "0.8", features = ["tokio"] }
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -28,8 +30,9 @@ http = "1"
 
 [dev-dependencies]
 iroh = { workspace = true }
-iroh-live = { workspace = true, features = ["h264"] }
-moq-media = { workspace = true, features = ["test-util", "h264", "opus"] }
+iroh-live = { workspace = true }
+moq-media = { workspace = true, features = ["test-source"] }
+n0-future = "0.3.1"
 rand = "0.9"
 serial_test = "3"
 url = "2"

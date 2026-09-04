@@ -1,50 +1,57 @@
-//! Shared playout clock for A/V synchronization.
+//! The shared playout clock that keeps audio and video aligned.
 //!
-//! Ported from `moq/js` at commit `53fe78d8`, file `js/watch/src/sync.ts`.
-//! The data model and algorithm are kept identical to the JS source.
+//! Ported from `moq/js` at commit `53fe78d8`, `js/watch/src/sync.ts`, and the
+//! arithmetic is kept identical to the JS source: milliseconds as `i64`, so
+//! there is no rounding to reason about when comparing the two.
 //!
-//! ## How it works
+//! Neither `moq-video` nor `moq-audio` has a counterpart, which is why this is
+//! here. Two independent decode paths would otherwise drift apart, because
+//! nothing else knows what the other one is holding.
 //!
-//! All internal arithmetic uses milliseconds as `i64`, matching the
-//! JS `Time.Milli` branded type.
+//! ## The model
 //!
-//! - **`reference`**: The earliest `(wall_now_ms - frame_pts_ms)` ever
-//!   observed. Captures the wall-clock offset for media time zero.
-//!   Only moves earlier (smaller), never later — each frame that
-//!   arrives faster than any previous one tightens the reference.
+//! - **`reference`** is the earliest `wall_now - frame_pts` ever seen. It only
+//!   ever moves earlier: a frame that arrives faster than every previous one
+//!   tightens it, and nothing loosens it. That is what makes it an estimate of
+//!   wall time at media time zero rather than a running average.
+//! - **`jitter`** is the network jitter allowance, 100 ms by default.
+//! - **`audio`** is how much audio is queued at the speaker, reported by the
+//!   audio path on every decoded frame (see [`Sync::set_audio_buffered`]).
+//! - **`video`** is the video path's own decode latency, if a caller sets one.
+//! - **`latency`** is `max(audio, video) + jitter`.
 //!
-//! - **`jitter`**: Minimum network jitter buffer (default 100 ms).
+//! A frame stamped `T` is due at `reference + T + latency`.
 //!
-//! - **`audio` / `video`**: Per-codec latency from the catalog's
-//!   `jitter` field. Our Rust catalog does not carry this field yet,
-//!   so both default to `None` (treated as 0). Setters are provided
-//!   for forward compatibility.
+//! ## How the two paths use it
 //!
-//! - **`latency`**: `max(audio, video) + jitter` — the total playout
-//!   buffer target.
+//! The video path calls [`Sync::received`] as each frame is decoded and
+//! [`Sync::wait_async`] before handing it to the renderer. Only video moves the
+//! reference; audio is paced by its own device.
 //!
-//! A frame with timestamp `T` renders at wall time
-//! `reference + T + latency`.
-//!
-//! ## Integration
-//!
-//! - **Video receive path**: call [`Sync::received`] when a packet
-//!   arrives from the ordered consumer (before decode). Only the video
-//!   path updates the reference — audio does not.
-//!
-//! - **Video render path**: call [`Sync::wait`] after decoding, before
-//!   emitting the frame. Replaces the PTS-cadence `FramePacer`.
-//!
-//! - **Audio**: does *not* call `received` or `wait`. Audio uses its
-//!   own ring-buffer/sink for pacing. The shared `latency` value is
-//!   available for callers that want to align the audio buffer size.
+//! The audio path reports its buffer depth, which is the only latency either
+//! side can actually measure, and video holds frames back by it. That coupling
+//! is the whole point: without it a video frame renders as soon as it is
+//! decoded while its audio is still queued behind 50 ms of sound.
 
 use std::{
-    sync::{Arc, Condvar, Mutex},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
-// ── Public API ──────────────────────────────────────────────────────────
+// --- Public API ------------------------------------------------------
+
+/// How long a frame still has to wait before it is due.
+///
+/// Returned by [`Sync::delay`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delay {
+    /// The frame is due now.
+    Now,
+    /// The frame is due after this long.
+    After(Duration),
+    /// The clock was closed; tear the pipeline down.
+    Closed,
+}
 
 /// Shared playout clock for A/V synchronization.
 ///
@@ -58,17 +65,6 @@ pub struct Sync {
     inner: Arc<SyncInner>,
 }
 
-/// Closes the sync clock when the last `Sync` handle is dropped, waking
-/// any decode threads still blocked in `wait()`. Without this, threads
-/// would block until their condvar timeout expires after all
-/// `RemoteBroadcast` clones are gone.
-impl Drop for SyncInner {
-    fn drop(&mut self) {
-        self.state.get_mut().unwrap().closed = true;
-        self.notify.notify_all();
-    }
-}
-
 #[derive(Debug)]
 struct SyncInner {
     /// Wall-clock epoch set at construction. `base.elapsed()` gives us
@@ -78,10 +74,10 @@ struct SyncInner {
 
     state: Mutex<SyncState>,
 
-    /// Wakes threads blocked in [`Sync::wait`] when `reference` or
-    /// `latency` changes. Serves the same role as the JS
-    /// `PromiseWithResolvers` that races against `setTimeout`.
-    notify: Condvar,
+    /// Wakes a [`Sync::wait_async`] when the reference, the latency, or the
+    /// closed flag moves. Serves the same role as the JS
+    /// `PromiseWithResolvers` racing against a `setTimeout`.
+    changed: tokio::sync::Notify,
 }
 
 /// Mutable state behind the lock. All durations stored as `i64`
@@ -96,13 +92,13 @@ struct SyncState {
     /// Network jitter buffer in ms (default 100).
     jitter_ms: i64,
 
-    /// Per-codec latency from the audio catalog entry.
-    /// Our Rust catalog does not yet carry this field, so it stays
-    /// `None` (treated as 0) until the catalog is extended.
+    /// How much audio is queued ahead of the speaker, in ms, as the audio
+    /// path last reported it. Video is held back by this so the two land
+    /// together.
     audio_ms: Option<i64>,
 
-    /// Per-codec latency from the video catalog entry. Same gap as
-    /// `audio_ms`.
+    /// The video path's own decode latency, if a caller measured one. Nothing
+    /// in this crate does, so it is unset in practice.
     video_ms: Option<i64>,
 
     /// Total latency: `max(audio, video) + jitter`. Recomputed eagerly
@@ -110,9 +106,7 @@ struct SyncState {
     /// we compute inline since setters are infrequent).
     latency_ms: i64,
 
-    /// Set by [`Sync::close`]. Causes [`Sync::wait`] to return `false`
-    /// immediately. No JS equivalent — JS relies on effect cleanup and
-    /// GC.
+    /// Set by [`Sync::close`], which makes every wait return immediately.
     closed: bool,
 }
 
@@ -136,12 +130,12 @@ impl Sync {
                     latency_ms: jitter_ms,
                     closed: false,
                 }),
-                notify: Condvar::new(),
+                changed: tokio::sync::Notify::new(),
             }),
         }
     }
 
-    // ── Reference updates (video receive path) ─────────────────────
+    // --- Reference updates (video receive path) ----------------------
 
     /// Records the arrival of a frame with the given PTS timestamp.
     ///
@@ -153,126 +147,126 @@ impl Sync {
         let timestamp_ms = timestamp.as_millis() as i64;
         let ref_val = now_ms - timestamp_ms;
 
-        let mut state = self.inner.state.lock().unwrap();
+        let mut state = self.inner.state.lock().expect("poisoned");
 
         if state.reference.is_some_and(|current| ref_val >= current) {
             return;
         }
 
         state.reference = Some(ref_val);
-        self.inner.notify.notify_all();
+        self.inner.changed.notify_waiters();
     }
 
-    // ── Playout gating (video render path) ─────────────────────────
+    // --- Playout gating (video render path) --------------------------
 
-    /// Blocks until it is time to render the frame with the given PTS.
+    /// Waits until it is time to render the frame with the given PTS.
     ///
-    /// Computes `sleep = (reference - (now - pts)) + latency`. If
-    /// positive, sleeps for that duration. If the reference or latency
-    /// changes while sleeping, the sleep is interrupted and the
-    /// duration is recalculated.
+    /// Recomputes the delay whenever the clock moves under the wait, so a
+    /// reference that tightened while we slept still holds the frame back.
     ///
-    /// Returns `true` when the frame should be rendered, `false` if
-    /// the sync was closed (caller should tear down the pipeline).
-    ///
-    /// Runs on the video decode OS thread. The JS equivalent is async,
-    /// using `setTimeout` raced against a notification promise; here
-    /// `Condvar::wait_timeout` serves the same role.
-    ///
-    /// If no reference has been set yet (no `received()` call), returns
-    /// `true` immediately so the pipeline doesn't stall on startup.
-    /// The JS source throws in this case, but our synchronous decode
-    /// loop can reach `wait()` before the first `received()` in edge
-    /// cases that the async JS pipeline avoids by construction.
-    pub fn wait(&self, timestamp: Duration) -> bool {
-        let timestamp_ms = timestamp.as_millis() as i64;
-
-        let mut state = self.inner.state.lock().unwrap();
-
-        // No reference yet — render immediately rather than stalling.
-        if state.reference.is_none() {
-            return true;
-        }
-
+    /// Returns `true` when the frame should be rendered, and `false` if the
+    /// clock was closed.
+    pub async fn wait_async(&self, timestamp: Duration) -> bool {
         loop {
-            if state.closed {
-                return false;
-            }
+            // Register before reading the delay, so a `close` or a reference
+            // update between the two is not missed.
+            let changed = self.inner.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
 
-            let Some(current_ref) = state.reference else {
-                return false;
-            };
-
-            let now_ms = self.now_ms();
-            let ref_val = now_ms - timestamp_ms;
-            let sleep_ms = (current_ref - ref_val) + state.latency_ms;
-
-            if sleep_ms <= 0 {
-                return true;
-            }
-
-            let sleep = Duration::from_millis(sleep_ms as u64);
-
-            // wait_timeout: notified → recalculate, timed out → render.
-            let (new_state, timeout_result) = self.inner.notify.wait_timeout(state, sleep).unwrap();
-            state = new_state;
-
-            if timeout_result.timed_out() {
-                return true;
+            match self.delay(timestamp) {
+                Delay::Closed => return false,
+                Delay::Now => return true,
+                Delay::After(sleep) => {
+                    // Whichever comes first: the frame is due, or the clock
+                    // moved under us. A shutdown lands on the second, so it does
+                    // not have to wait out the playout latency.
+                    tokio::select! {
+                        _ = tokio::time::sleep(sleep) => return true,
+                        _ = changed => continue,
+                    }
+                }
             }
         }
     }
 
-    // ── Latency configuration ──────────────────────────────────────
+    /// How long the frame with the given PTS still has to wait.
+    ///
+    /// The arithmetic behind [`wait_async`](Self::wait_async), exposed so a caller
+    /// can drive its own timer.
+    pub fn delay(&self, timestamp: Duration) -> Delay {
+        let timestamp_ms = timestamp.as_millis() as i64;
+        let state = self.inner.state.lock().expect("poisoned");
+
+        if state.closed {
+            return Delay::Closed;
+        }
+        // No reference yet: render immediately rather than stalling.
+        let Some(current_ref) = state.reference else {
+            return Delay::Now;
+        };
+
+        let sleep_ms = (current_ref - (self.now_ms() - timestamp_ms)) + state.latency_ms;
+        match sleep_ms > 0 {
+            true => Delay::After(Duration::from_millis(sleep_ms as u64)),
+            false => Delay::Now,
+        }
+    }
+
+    // --- Latency configuration ---------------------------------------
 
     /// Returns the current total latency: `max(audio, video) + jitter`.
     pub fn latency(&self) -> Duration {
-        let state = self.inner.state.lock().unwrap();
+        let state = self.inner.state.lock().expect("poisoned");
         Duration::from_millis(state.latency_ms.max(0) as u64)
     }
 
     /// Sets the network jitter buffer. Wakes any blocked `wait()` call
     /// so it can recalculate with the new latency.
     pub fn set_jitter(&self, jitter: Duration) {
-        let mut state = self.inner.state.lock().unwrap();
+        let mut state = self.inner.state.lock().expect("poisoned");
         state.jitter_ms = jitter.as_millis() as i64;
         Self::recompute_latency(&mut state);
-        self.inner.notify.notify_all();
+        self.inner.changed.notify_waiters();
     }
 
-    /// Sets the audio codec latency (from the catalog `jitter` field).
+    /// Sets how much audio is queued ahead of the speaker.
     ///
-    /// Our Rust catalog does not yet carry per-codec jitter values, so
-    /// this setter is unused in practice. Provided for forward
-    /// compatibility with the JS catalog schema.
-    pub fn set_audio_latency(&self, latency: Option<Duration>) {
-        let mut state = self.inner.state.lock().unwrap();
+    /// Called by the audio decode path on every frame it writes to its sink.
+    /// This is the only latency either side can actually measure, and video is
+    /// held back by it so the two land together.
+    pub fn set_audio_buffered(&self, latency: Option<Duration>) {
+        let mut state = self.inner.state.lock().expect("poisoned");
         state.audio_ms = latency.map(|d| d.as_millis() as i64);
         Self::recompute_latency(&mut state);
-        self.inner.notify.notify_all();
+        self.inner.changed.notify_waiters();
     }
 
-    /// Sets the video codec latency (from the catalog `jitter` field).
+    /// Sets the video path's own decode latency.
     ///
-    /// Same forward-compatibility note as [`set_audio_latency`](Self::set_audio_latency).
+    /// The counterpart of [`set_audio_buffered`](Self::set_audio_buffered) for
+    /// a caller that can measure how long its decoder holds a frame. Nothing
+    /// in this crate measures one, so the video term stays zero unless a caller
+    /// supplies it.
     pub fn set_video_latency(&self, latency: Option<Duration>) {
-        let mut state = self.inner.state.lock().unwrap();
+        let mut state = self.inner.state.lock().expect("poisoned");
         state.video_ms = latency.map(|d| d.as_millis() as i64);
         Self::recompute_latency(&mut state);
-        self.inner.notify.notify_all();
+        self.inner.changed.notify_waiters();
     }
 
-    /// Wakes all threads blocked in [`wait`](Self::wait) and causes
-    /// future `wait` calls to return `false` immediately. No JS
-    /// equivalent — Rust needs explicit cleanup since OS threads are
-    /// not cancelled automatically.
+    /// Closes the clock, so every wait returns at once and later ones return
+    /// immediately.
+    ///
+    /// The JS source has no counterpart: it leans on effect cleanup, where a
+    /// Rust pipeline has to be told to stop.
     pub fn close(&self) {
-        let mut state = self.inner.state.lock().unwrap();
+        let mut state = self.inner.state.lock().expect("poisoned");
         state.closed = true;
-        self.inner.notify.notify_all();
+        self.inner.changed.notify_waiters();
     }
 
-    // ── Internal helpers ───────────────────────────────────────────
+    // --- Internal helpers --------------------------------------------
 
     /// Milliseconds elapsed since construction, equivalent to the JS
     /// `performance.now()` call.
@@ -310,7 +304,7 @@ mod tests {
         // First frame: reference is set.
         sync.received(Duration::from_millis(0));
         {
-            let state = sync.inner.state.lock().unwrap();
+            let state = sync.inner.state.lock().expect("poisoned");
             assert!(state.reference.is_some());
             let first_ref = state.reference.unwrap();
             assert!(first_ref > 0, "reference should be positive for pts=0");
@@ -320,24 +314,24 @@ mod tests {
         // A later frame arriving at a worse offset should not update
         // the reference (it stays at the earlier/smaller value).
         thread::sleep(Duration::from_millis(10));
-        let ref_before = sync.inner.state.lock().unwrap().reference;
+        let ref_before = sync.inner.state.lock().expect("poisoned").reference;
         sync.received(Duration::from_millis(0));
-        let ref_after = sync.inner.state.lock().unwrap().reference;
+        let ref_after = sync.inner.state.lock().expect("poisoned").reference;
         assert_eq!(ref_before, ref_after, "reference should not increase");
     }
 
-    #[test]
-    fn wait_returns_immediately_when_no_reference() {
+    #[tokio::test]
+    async fn wait_returns_immediately_when_no_reference() {
         let sync = Sync::new();
-        assert!(sync.wait(Duration::from_millis(0)));
+        assert!(sync.wait_async(Duration::from_millis(0)).await);
     }
 
-    #[test]
-    fn wait_returns_false_when_closed() {
+    #[tokio::test]
+    async fn wait_returns_false_when_closed() {
         let sync = Sync::new();
         sync.received(Duration::from_millis(0));
         sync.close();
-        assert!(!sync.wait(Duration::from_millis(0)));
+        assert!(!sync.wait_async(Duration::from_millis(0)).await);
     }
 
     #[test]
@@ -348,73 +342,82 @@ mod tests {
         sync.set_video_latency(Some(Duration::from_millis(30)));
         assert_eq!(sync.latency(), Duration::from_millis(80));
 
-        sync.set_audio_latency(Some(Duration::from_millis(60)));
+        sync.set_audio_buffered(Some(Duration::from_millis(60)));
         assert_eq!(sync.latency(), Duration::from_millis(110));
 
-        sync.set_audio_latency(None);
+        sync.set_audio_buffered(None);
         assert_eq!(sync.latency(), Duration::from_millis(80));
     }
 
-    #[test]
-    fn wait_blocks_approximately_latency_duration() {
+    #[tokio::test]
+    async fn wait_holds_a_frame_for_the_latency() {
         let sync = Sync::with_jitter(Duration::from_millis(50));
         sync.received(Duration::from_millis(0));
 
-        // Right after received(), reference ≈ now, so
-        // sleep ≈ (ref - now + 0) + latency ≈ latency.
+        // Right after `received`, the reference is about now, so the wait is
+        // about the latency.
         let start = Instant::now();
-        assert!(sync.wait(Duration::from_millis(0)));
+        assert!(sync.wait_async(Duration::from_millis(0)).await);
         let elapsed = start.elapsed();
 
-        // Lower bound: should sleep at least most of the 50ms jitter.
-        // Upper bound: generous for shared CI VMs (macOS runners can
-        // stall threads for tens of ms under load).
         assert!(
             elapsed >= Duration::from_millis(20),
-            "expected ~50ms sleep, got {elapsed:?}"
+            "expected about 50ms, got {elapsed:?}"
         );
         assert!(
             elapsed < Duration::from_millis(500),
-            "expected ~50ms sleep, got {elapsed:?}"
+            "expected about 50ms, got {elapsed:?}"
         );
     }
 
-    /// Verifies that updating the reference wakes a thread blocked in
-    /// `wait()`, causing it to return well before the jitter timeout.
+    /// A reference update has to interrupt a wait, or a frame that became due
+    /// early still waits out the old estimate.
     ///
-    /// The test uses a large jitter (2s) so the "without wake" case is
-    /// unmistakable, and a generous startup sleep (200ms) to avoid the
-    /// race where `notify_all` fires before the spawned thread enters
-    /// `Condvar::wait_timeout`. On a shared CI VM the thread might not
-    /// be scheduled promptly, so we assert < 1s rather than < 100ms —
-    /// still far below the 2s jitter, proving the wake happened.
-    ///
-    /// In production, missed wakes are harmless: `received()` is called
-    /// on every packet (~30 fps), so the Condvar is re-notified within
-    /// one frame interval. The `wait_timeout` also caps the maximum
-    /// delay to `latency_ms`.
-    #[test]
-    fn wait_wakes_on_reference_update() {
+    /// The jitter is 2s so the un-woken case is unmistakable, and the assertion
+    /// is under 1s rather than under 100ms because a loaded machine may not
+    /// schedule the waiter promptly. Either way it is far below 2s.
+    #[tokio::test]
+    async fn wait_wakes_on_reference_update() {
         let sync = Sync::with_jitter(Duration::from_millis(2000));
         sync.received(Duration::from_millis(0));
 
-        let sync2 = sync.clone();
-        let handle = thread::spawn(move || {
+        let waiter = sync.clone();
+        let handle = tokio::spawn(async move {
             let start = Instant::now();
-            sync2.wait(Duration::from_millis(0));
+            waiter.wait_async(Duration::from_millis(0)).await;
             start.elapsed()
         });
 
-        // Give the spawned thread ample time to enter wait_timeout.
-        thread::sleep(Duration::from_millis(200));
-        // Push the reference so far back that sleep_ms ≤ 0, causing
-        // the woken thread to return immediately.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Push the reference back far enough that the frame is due now.
         sync.received(Duration::from_millis(999_999));
 
-        let elapsed = handle.join().unwrap();
+        let elapsed = handle.await.unwrap();
         assert!(
             elapsed < Duration::from_secs(1),
-            "expected early wake (well under 2s jitter), got {elapsed:?}"
+            "expected an early wake, well under the 2s jitter, got {elapsed:?}"
+        );
+    }
+
+    /// Closing has to interrupt a wait too: a shutdown should not sit through
+    /// the playout latency before the decode task notices.
+    #[tokio::test]
+    async fn wait_wakes_on_close() {
+        let sync = Sync::with_jitter(Duration::from_millis(2000));
+        sync.received(Duration::from_millis(0));
+
+        let waiter = sync.clone();
+        let handle = tokio::spawn(async move { waiter.wait_async(Duration::from_millis(0)).await });
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        sync.close();
+
+        assert!(
+            !tokio::time::timeout(Duration::from_secs(1), handle)
+                .await
+                .expect("close should wake the waiter")
+                .unwrap(),
+            "a closed clock reports that the frame should not render",
         );
     }
 }

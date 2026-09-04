@@ -6,7 +6,7 @@
 #
 # Usage:
 #   ./cross/docker-zigbuild.sh -p iroh-live-cli --release
-#   ./cross/docker-zigbuild.sh -p pi-zero-demo --release --features raspberry-pi
+#   ./cross/docker-zigbuild.sh -p pi-zero-demo --release
 #
 # The Docker image includes zig, cargo-zigbuild, and a pre-built aarch64
 # sysroot, so the first build takes a few minutes while the image is

@@ -1,15 +1,15 @@
-//! Single-slot "latest value" channel for decoded video frames.
+//! A single-slot channel holding the latest decoded frame.
 //!
-//! The producer overwrites the current value on each send, dropping
-//! whatever was there. The consumer takes the value out, getting
-//! ownership without cloning. If no new value has arrived since the
-//! last take, [`FrameReceiver::take`] returns `None`.
+//! The producer overwrites the slot on every send, dropping whatever was
+//! there. The consumer takes the value out and owns it, without cloning.
+//! [`FrameReceiver::take`] returns `None` when nothing has arrived since the
+//! last one.
 //!
-//! This replaces a bounded `mpsc::channel(32)` that was drained to
-//! the latest frame on every consume — wasting decode effort and
-//! holding up to 32 GPU surfaces in flight. With a single slot, at
-//! most one frame is buffered, and overwritten frames are dropped
-//! immediately at the producer (before the consumer ever sees them).
+//! A queue would be wrong for this. A renderer that falls behind wants the
+//! newest picture, not the oldest, and a backlog of frames is a backlog of GPU
+//! surfaces held out of the decoder's pool. One slot bounds that at a single
+//! frame, and drops the ones nobody will draw at the producer rather than
+//! carrying them to a consumer that will discard them.
 
 use std::sync::{
     Arc, Mutex,
@@ -43,7 +43,7 @@ pub struct FrameSender<T> {
 ///
 /// [`take`](Self::take) returns the latest value if one has arrived
 /// since the last take. [`recv`](Self::recv) waits asynchronously
-/// for the next value — primarily useful in tests.
+/// for the next value: primarily useful in tests.
 pub struct FrameReceiver<T> {
     inner: Arc<SlotInner<T>>,
 }
@@ -90,7 +90,7 @@ impl<T> Clone for FrameSender<T> {
 impl<T> Drop for FrameSender<T> {
     fn drop(&mut self) {
         if self.inner.sender_count.fetch_sub(1, Ordering::Release) == 1 {
-            // Last sender dropped — wake waiters so they see closure.
+            // Last sender dropped: wake waiters so they see closure.
             self.inner.notify.notify_waiters();
         }
     }
@@ -120,16 +120,44 @@ impl<T> FrameReceiver<T> {
         self.inner.produced.load(Ordering::Relaxed)
     }
 
-    /// Creates a new [`FrameSender`] that writes to the same slot.
+    /// Waits until every sender has been dropped.
     ///
-    /// Used by the adaptation layer to redirect a new decoder pipeline's
-    /// output to the same receiver the consumer already holds. The
-    /// previous sender (from the old pipeline) can be dropped without
-    /// closing the channel as long as this new sender is alive.
-    pub fn new_sender(&self) -> FrameSender<T> {
-        self.inner.sender_count.fetch_add(1, Ordering::Relaxed);
-        FrameSender {
-            inner: self.inner.clone(),
+    /// For a reader that has to notice the source ending while it is waiting on
+    /// something else, rather than while it is waiting for a frame.
+    pub async fn closed(&self) {
+        loop {
+            let notified = self.inner.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.is_closed() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    /// Waits until a value is there to take, or the sender is gone.
+    ///
+    /// The difference from [`recv`](Self::recv) is that this leaves the value
+    /// in the slot. That is what a drawing loop wants: something has to be woken
+    /// when a picture arrives, and it is not the thing that takes it.
+    ///
+    /// Without this a renderer has to poll, and polling a slot fed by a playout
+    /// clock adds its own interval to every frame's latency and quantises the
+    /// spacing between them. A 30fps stream sampled every 16ms is presented on
+    /// the sampler's grid rather than the stream's, which looks like judder
+    /// because it is.
+    pub async fn arrived(&self) {
+        loop {
+            // Registered before the check, for the reason `recv` gives.
+            let notified = self.inner.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            if self.has_value() || self.is_closed() {
+                return;
+            }
+            notified.await;
         }
     }
 
@@ -137,21 +165,29 @@ impl<T> FrameReceiver<T> {
     /// dropped and no value remains.
     ///
     /// If multiple values arrive between calls, intermediate ones are
-    /// lost — only the latest is returned.
+    /// lost: only the latest is returned.
     pub async fn recv(&self) -> Option<T> {
         loop {
+            // Register for the wakeup before checking, not after. `notified()`
+            // only covers notifications from the moment it is enabled, so a
+            // sender dropping between a check and the registration would be
+            // missed and this would park with nothing left to wake it.
+            let notified = self.inner.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
             if let Some(v) = self.take() {
                 return Some(v);
             }
             if self.is_closed() {
                 return None;
             }
-            self.inner.notify.notified().await;
+            notified.await;
         }
     }
 }
 
-// Convenience Debug impls — don't expose the value.
+// Convenience Debug impls: don't expose the value.
 impl<T> std::fmt::Debug for FrameSender<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FrameSender")
@@ -236,64 +272,51 @@ mod tests {
     #[test]
     fn clone_sender_keeps_channel_open() {
         let (tx, rx) = frame_channel::<u32>();
-        let tx2 = tx.clone();
+        let second = tx.clone();
         drop(tx);
-        // Channel stays open because tx2 is still alive.
-        assert!(!rx.is_closed());
-        tx2.send(99);
+        assert!(!rx.is_closed(), "one sender is still alive");
+        second.send(99);
         assert_eq!(rx.take(), Some(99));
-        drop(tx2);
+        drop(second);
         assert!(rx.is_closed());
-    }
-
-    #[test]
-    fn new_sender_writes_to_same_slot() {
-        let (tx, rx) = frame_channel::<u32>();
-        tx.send(1);
-        assert_eq!(rx.take(), Some(1));
-
-        // Create a new sender from the receiver (simulating a pipeline swap).
-        let tx2 = rx.new_sender();
-        drop(tx); // old sender gone
-        assert!(!rx.is_closed(), "new_sender keeps channel open");
-
-        tx2.send(42);
-        assert_eq!(rx.take(), Some(42));
-        assert_eq!(rx.produced(), 2);
     }
 
     #[tokio::test]
-    async fn new_sender_wakes_recv() {
-        let (tx, rx) = frame_channel::<u32>();
-        let tx2 = rx.new_sender();
-        drop(tx);
-
-        let handle = tokio::spawn(async move { rx.recv().await });
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        tx2.send(7);
-        assert_eq!(handle.await.unwrap(), Some(7));
+    async fn recv_sees_a_close_that_races_the_check() {
+        // `recv` has to register for its wakeup before checking, or a sender
+        // dropping between the check and the registration leaves it parked with
+        // nothing left to wake it.
+        for _ in 0..64 {
+            let (tx, rx) = frame_channel::<u32>();
+            let closer = std::thread::spawn(move || drop(tx));
+            assert_eq!(
+                tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                    .await
+                    .expect("recv should observe the close"),
+                None,
+            );
+            closer.join().unwrap();
+        }
     }
 
-    #[test]
-    fn sender_swap_no_frame_loss() {
-        // Simulates what adaptation does: old sender produces frames,
-        // then a new sender takes over via new_sender(). The consumer
-        // should see frames from both without gaps.
-        let (tx_old, rx) = frame_channel::<u32>();
-        tx_old.send(1);
-        assert_eq!(rx.take(), Some(1));
+    /// `arrived` leaves the value where it is: the drawing pass is what takes
+    /// it, and a waker that consumed the picture would draw nothing.
+    #[tokio::test]
+    async fn arrived_waits_without_taking() {
+        let (tx, rx) = frame_channel::<u32>();
+        tx.send(7);
+        rx.arrived().await;
+        assert!(rx.has_value(), "arrived took the value");
+        assert_eq!(rx.take(), Some(7));
+    }
 
-        let tx_new = rx.new_sender();
-        // Both senders alive briefly (overlap during switch).
-        tx_new.send(2);
-        drop(tx_old);
-        assert_eq!(rx.take(), Some(2));
-        assert!(!rx.is_closed());
-
-        tx_new.send(3);
-        assert_eq!(rx.take(), Some(3));
-        drop(tx_new);
+    /// It returns when the last sender goes, so a waker parked on a track that
+    /// ended is not parked forever.
+    #[tokio::test]
+    async fn arrived_returns_when_the_sender_goes() {
+        let (tx, rx) = frame_channel::<u32>();
+        drop(tx);
+        rx.arrived().await;
         assert!(rx.is_closed());
-        assert_eq!(rx.produced(), 3);
     }
 }
