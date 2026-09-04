@@ -10,7 +10,7 @@ use iroh::{Endpoint, SecretKey, endpoint::presets};
 use iroh_live::{
     Live, LiveBuilder, Subscription,
     ticket::LiveTicket,
-    util::{LanPresence, with_mdns},
+    util::{LanPresence, transport_config, with_mdns},
 };
 use n0_error::Result;
 use tracing::{info, warn};
@@ -85,7 +85,9 @@ pub async fn setup_live_with_gossip() -> Result<Live> {
 /// unconditionally rather than behind a flag, because the one thing a person
 /// scanning a QR code cannot be asked is which of the two their network is.
 async fn bind(secret_key: SecretKey, serve: bool) -> Result<LiveBuilder> {
-    let builder = Endpoint::builder(presets::N0).secret_key(secret_key);
+    let builder = Endpoint::builder(presets::N0)
+        .transport_config(transport_config())
+        .secret_key(secret_key);
     let endpoint = with_mdns(builder, LanPresence::serving(serve))
         .await
         .bind()

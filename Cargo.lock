@@ -4529,6 +4529,7 @@ dependencies = [
  "n0-future",
  "n0-tracing-test",
  "n0-watcher",
+ "noq-proto",
  "patchbay",
  "postcard",
  "rand 0.10.1",

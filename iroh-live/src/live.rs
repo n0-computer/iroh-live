@@ -163,8 +163,9 @@ impl Live {
     /// # }
     /// ```
     pub async fn from_env() -> Result<LiveBuilder> {
-        let builder =
-            Endpoint::builder(presets::N0).secret_key(crate::util::secret_key_from_env()?);
+        let builder = Endpoint::builder(presets::N0)
+            .transport_config(crate::util::transport_config())
+            .secret_key(crate::util::secret_key_from_env()?);
         let endpoint = crate::util::with_mdns(builder, LanPresence::Announce)
             .await
             .bind()

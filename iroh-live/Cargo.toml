@@ -22,6 +22,7 @@ iroh-mdns-peer-lookup = "0.1.2"
 iroh-moq = { workspace = true }
 iroh-tickets = { workspace = true }
 moq-net = { workspace = true }
+noq-proto = { workspace = true }
 moq-media = { workspace = true }
 n0-error = { version = "1", features = ["anyhow"] }
 n0-future = "0.3.1"

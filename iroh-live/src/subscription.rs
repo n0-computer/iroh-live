@@ -31,8 +31,7 @@ impl Subscription {
             broadcast.stats().net.clone(),
             broadcast.shutdown_token(),
         );
-        let signals =
-            crate::util::spawn_signal_producer(session.conn(), broadcast.shutdown_token());
+        let signals = crate::util::spawn_signal_producer(&session, broadcast.shutdown_token());
 
         Self {
             session,

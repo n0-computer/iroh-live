@@ -41,10 +41,12 @@ whose MoQ handshake has already completed, so an application can read
 path and returns its consumer. It waits indefinitely if the announce never comes,
 so a caller that needs a deadline wraps it in a timeout.
 
-`MoqSession::conn()` exposes the iroh `Connection`. That is what iroh-live's
-`spawn_signal_producer` and `spawn_stats_recorder` poll for path stats, which
-feed [adaptive rendition switching](adaptive.md). `MoqSession::session()` exposes
-the `moq_net::Session` for its own bandwidth estimates.
+`MoqSession::conn()` exposes the iroh `Connection`, which iroh-live's
+`spawn_stats_recorder` and `spawn_signal_producer` poll for path stats.
+`MoqSession::session()` exposes the `moq_net::Session`, whose
+`recv_bandwidth()` is the publisher's estimate of the path; the signal producer
+takes the whole `MoqSession` so it can read both, and the two together feed
+[adaptive rendition switching](adaptive.md).
 
 Both `MoqSession::connect` and `MoqSession::accept` return the session alongside
 a `moq_net::Driver` that has to be polled for the session to make progress. The

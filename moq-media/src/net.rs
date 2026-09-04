@@ -88,6 +88,18 @@ pub struct NetworkSignals {
     /// publisher going quiet reads as an absence of evidence rather than as a
     /// link that collapsed.
     pub goodput_bps: Option<u64>,
+    /// The publisher's estimate of what the path to this subscriber can carry,
+    /// in bits per second, or `None` while it has not sent one.
+    ///
+    /// The one figure here that describes capacity rather than what arrived:
+    /// the sending side's congestion controller measures the rate the path
+    /// delivers at, and moq-net carries that estimate here on the wire. Read
+    /// it as an upper bound the way [`NetworkSignals::goodput_bps`] is a lower
+    /// one, with two limits. It is only as good as the controller under it,
+    /// and a loss-based one on a sender that has never filled its window
+    /// reports the window, not the path. And an older publisher sends none, so
+    /// a rule built on it needs another for when it is absent.
+    pub delivery_bps: Option<u64>,
     /// Monotonically increasing congestion event counter.
     ///
     /// Congestion this endpoint's own sending ran into, so it carries the same

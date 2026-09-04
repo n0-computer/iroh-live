@@ -19,6 +19,15 @@
 //! the normal state and holds where it started, which is as far as either
 //! figure goes. Tightening the limit from there is visible, and so is lifting
 //! it, which is what [`Decision::StartProbe`] is for.
+//!
+//! All of that is the fallback. A publisher on a MoQ version with PROBE sends
+//! its own estimate of what the path to this subscriber carries, and that
+//! figure ([`NetworkSignals::delivery_bps`]) is the one thing here that
+//! describes capacity rather than change: it needs no baseline, so a subscriber
+//! that joins a link already at its limit reads the limit, and a limit that
+//! lasts keeps reading as one. Where it is present, a rendition is kept while
+//! the estimate covers its bitrate and left when it does not, and the rung
+//! above is taken when the estimate covers that too, with no probe.
 
 use std::{
     collections::BTreeMap,
@@ -98,6 +107,28 @@ pub struct AdaptiveConfig {
     pub rtt_queueing_floor: Duration,
     /// How often the adaptation task checks signals.
     pub check_interval: Duration,
+    /// Fraction of the current rendition's advertised bitrate that the
+    /// publisher's estimate ([`NetworkSignals::delivery_bps`]) must cover for
+    /// the rendition to count as fitting the path (e.g. 0.5 = half).
+    ///
+    /// Below one, and by this much, for two reasons that stack. An advertised
+    /// bitrate is a ceiling handed to the encoder, and openh264 was measured
+    /// sending about 40% of it, so a rung fits a path of half its ceiling. And
+    /// the estimate an iroh publisher sends is its congestion window over the
+    /// round trip, which under BBR3 sits a gain above the delivery rate: in
+    /// the patchbay lab a 100 kbit/s cap read as 108 to 164. Both errors point
+    /// the same way, so the threshold sits under them.
+    pub delivery_downgrade_ratio: f64,
+    /// Multiple of the next rendition's advertised bitrate that the publisher's
+    /// estimate must reach before the ladder steps up to it (e.g. 1.5 = half
+    /// again).
+    ///
+    /// Above one so that a step up is not taken on a path that would then be
+    /// left at once: the estimate over-reads by a gain, a step up costs a
+    /// keyframe, and the asymmetry against
+    /// [`AdaptiveConfig::delivery_downgrade_ratio`] is the band the ladder
+    /// rests in.
+    pub delivery_upgrade_headroom: f64,
 }
 
 impl Default for AdaptiveConfig {
@@ -119,6 +150,8 @@ impl Default for AdaptiveConfig {
             rtt_queueing_ratio: 2.0,
             rtt_queueing_floor: Duration::from_millis(25),
             check_interval: Duration::from_millis(200),
+            delivery_downgrade_ratio: 0.5,
+            delivery_upgrade_headroom: 1.5,
         }
     }
 }
@@ -180,7 +213,11 @@ pub enum Decision {
     Downgrade(usize),
     /// Emergency drop to the lowest rendition.
     Emergency,
-    /// Start a probe for the rendition at the given index.
+    /// Switch to the higher rendition at the given index, which the
+    /// publisher's estimate says the path carries.
+    Upgrade(usize),
+    /// Start a probe for the rendition at the given index, because there is
+    /// no estimate to say whether the path carries it.
     StartProbe(usize),
 }
 
@@ -312,6 +349,14 @@ pub fn evaluate(
 
     let queueing = queueing(signals, config);
     let loss_high = signals.loss_rate >= config.loss_downgrade;
+    // What the publisher's estimate says about the rung now playing, where
+    // there is one. It is the whole bandwidth question when present, and the
+    // goodput and round trip rules below are what stands in when it is not.
+    let fits = covers(
+        signals,
+        current.bitrate_bps,
+        config.delivery_downgrade_ratio,
+    );
 
     // What this rung delivers when there is nothing in its way, kept up to date
     // only while there is nothing in its way. A reading taken through a queue
@@ -352,7 +397,11 @@ pub fn evaluate(
         _ => false,
     };
 
-    if ((starved && queueing) || loss_high) && !is_lowest {
+    let short = match fits {
+        Some(fits) => !fits,
+        None => starved && queueing,
+    };
+    if (short || loss_high) && !is_lowest {
         let bad_since = match timers.bad_since {
             Some(bad_since) => {
                 if queueing && signals.rtt_samples != timers.counted_rtt_samples {
@@ -374,7 +423,10 @@ pub fn evaluate(
         // than the gap between samples is satisfied by one reading, so a single
         // scheduler hiccup on a path with a one-millisecond baseline is a
         // downgrade. Distinct readings are the debounce there.
-        let corroborated = loss_high || timers.queueing_seen >= config.queueing_samples;
+        // The estimate needs no second reading: the publisher refreshes it
+        // ten times a second from its own controller.
+        let corroborated =
+            loss_high || fits.is_some() || timers.queueing_seen >= config.queueing_samples;
         if now.duration_since(bad_since) >= config.downgrade_hold && corroborated {
             timers.bad_since = None;
             timers.good_since = None;
@@ -417,18 +469,41 @@ pub fn evaluate(
     // impairment by tens of seconds, and would hold the ladder down long after
     // there was anything holding it down.
     let loss_good = signals.loss_rate <= config.loss_good;
+    // With an estimate, the question the probe exists to ask is answered
+    // before it is asked: the step up is taken when the path covers the next
+    // rung with headroom and not otherwise.
+    let next = current_idx - 1;
+    let room = covers(
+        signals,
+        ranked[next].bitrate_bps,
+        config.delivery_upgrade_headroom,
+    );
 
-    if loss_good {
+    if loss_good && room != Some(false) {
         let good_since = *timers.good_since.get_or_insert(now);
         if now.duration_since(good_since) >= config.upgrade_hold {
             timers.good_since = None;
-            return Decision::StartProbe(current_idx - 1);
+            return match room {
+                Some(true) => Decision::Upgrade(next),
+                _ => Decision::StartProbe(next),
+            };
         }
     } else {
         timers.good_since = None;
     }
 
     Decision::Hold
+}
+
+/// Checks whether the publisher's estimate covers `bitrate_bps` scaled by
+/// `ratio`, or `None` where there is no estimate or no bitrate to scale.
+///
+/// A rendition that advertises no bitrate gives the estimate nothing to be
+/// compared with, and is judged by the fallback rules like a rendition on a
+/// publisher that sends no estimate.
+fn covers(signals: &NetworkSignals, bitrate_bps: u64, ratio: f64) -> Option<bool> {
+    let estimate = signals.delivery_bps?;
+    (bitrate_bps > 0).then_some(estimate as f64 >= bitrate_bps as f64 * ratio)
 }
 
 /// Checks whether the round trip has grown enough over the path's minimum to
@@ -631,6 +706,7 @@ mod tests {
             // an encoder handed a ceiling it does not need actually sends. Only
             // the cases that say otherwise carry a shortfall.
             goodput_bps: Some(3_000_000),
+            delivery_bps: None,
             congestion_events: 0,
         }
     }
@@ -773,6 +849,134 @@ mod tests {
             settle(0, &ranked, &signals, &mut timers, &config, 100),
             None
         );
+    }
+
+    /// Signals carrying the publisher's estimate of the path, at `bps`, over a
+    /// path that is otherwise unremarkable.
+    fn estimated(bps: u64) -> NetworkSignals {
+        NetworkSignals {
+            delivery_bps: Some(bps),
+            ..good_signals()
+        }
+    }
+
+    /// The estimate closes the gap the fallback cannot: a rung never seen
+    /// arriving cleanly is still downgraded when the publisher says the path
+    /// does not carry it, because the estimate is a level rather than a
+    /// change and needs no reference.
+    #[test]
+    fn an_estimate_below_the_rung_downgrades_without_a_measured_reference() {
+        let ranked = test_ranked();
+        let config = AdaptiveConfig::default();
+        let mut timers = AdaptationTimers::default();
+        // A quarter of the top rung's 4 Mbit/s, with the path not even
+        // queueing: nothing but the estimate says anything is wrong.
+        let signals = estimated(1_000_000);
+        assert_eq!(timers.healthy_goodput(), None);
+        assert_eq!(
+            settle(0, &ranked, &signals, &mut timers, &config, 100),
+            Some(Decision::Downgrade(1)),
+        );
+    }
+
+    /// The estimate does not need a second reading to be believed, only the
+    /// downgrade hold: it is refreshed by the publisher rather than latched.
+    #[test]
+    fn an_estimate_downgrades_after_the_hold_alone() {
+        let ranked = test_ranked();
+        let config = AdaptiveConfig::default();
+        let mut timers = AdaptationTimers::default();
+        let start = Instant::now();
+        let signals = estimated(1_000_000);
+        assert_eq!(
+            evaluate(0, &ranked, &signals, &mut timers, &config, start),
+            Decision::Hold,
+        );
+        assert_eq!(
+            evaluate(
+                0,
+                &ranked,
+                &signals,
+                &mut timers,
+                &config,
+                start + config.downgrade_hold
+            ),
+            Decision::Downgrade(1),
+        );
+    }
+
+    /// A path that got longer without getting smaller is not a reason to step
+    /// down. With an estimate the round trip is not consulted at all, so a
+    /// relay fallback or a risen baseline leaves the ladder where it is.
+    #[test]
+    fn an_estimate_that_covers_the_rung_holds_on_a_queueing_path() {
+        let ranked = test_ranked();
+        let config = AdaptiveConfig::default();
+        let mut timers = AdaptationTimers::default();
+        establish(0, &ranked, 3_000_000, &mut timers, &config, Instant::now());
+        // Half of what the rung was delivering, over a path that looks
+        // queueing: the fallback would step down, the estimate says not to.
+        let signals = NetworkSignals {
+            goodput_bps: Some(1_500_000),
+            delivery_bps: Some(3_000_000),
+            ..queued_signals()
+        };
+        assert_eq!(
+            settle(0, &ranked, &signals, &mut timers, &config, 100),
+            None
+        );
+    }
+
+    /// With an estimate the step up is a decision rather than a bet: the
+    /// path covers the next rung with headroom, so it is taken outright.
+    #[test]
+    fn an_estimate_with_room_upgrades_without_a_probe() {
+        let ranked = test_ranked();
+        let config = AdaptiveConfig::default();
+        let mut timers = AdaptationTimers::default();
+        let start = Instant::now();
+        // 1.5 times the top rung's 4 Mbit/s, on the rung below it.
+        let signals = estimated(6_000_000);
+        evaluate(1, &ranked, &signals, &mut timers, &config, start);
+        assert_eq!(
+            evaluate(
+                1,
+                &ranked,
+                &signals,
+                &mut timers,
+                &config,
+                start + config.upgrade_hold
+            ),
+            Decision::Upgrade(0),
+        );
+    }
+
+    /// The other half: an estimate that covers this rung and not the next
+    /// holds, and does not fall back to probing for room it says is not there.
+    #[test]
+    fn an_estimate_without_room_neither_upgrades_nor_probes() {
+        let ranked = test_ranked();
+        let config = AdaptiveConfig::default();
+        let mut timers = AdaptationTimers::default();
+        // Covers the 2 Mbit/s middle rung twice over, and the top rung's
+        // 4 Mbit/s exactly once, which is short of the headroom.
+        let signals = estimated(4_000_000);
+        assert_eq!(
+            settle(1, &ranked, &signals, &mut timers, &config, 100),
+            None
+        );
+        assert_eq!(timers.good_since, None, "no good run accrues without room");
+    }
+
+    /// A rendition that advertises no bitrate gives the estimate nothing to
+    /// measure, so it is judged by the fallback like a publisher that sends no
+    /// estimate.
+    #[test]
+    fn a_rung_without_a_bitrate_is_judged_by_the_fallback() {
+        assert_eq!(covers(&estimated(1_000_000), 0, 0.5), None);
+        assert_eq!(covers(&good_signals(), 4_000_000, 0.5), None);
+        assert_eq!(covers(&estimated(2_000_000), 4_000_000, 0.5), Some(true));
+        assert_eq!(covers(&estimated(1_999_999), 4_000_000, 0.5), Some(false));
     }
 
     #[test]

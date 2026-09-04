@@ -110,7 +110,7 @@ impl Call {
             remote.stats().net.clone(),
             remote.shutdown_token(),
         );
-        let signals = crate::util::spawn_signal_producer(session.conn(), remote.shutdown_token());
+        let signals = crate::util::spawn_signal_producer(&session, remote.shutdown_token());
 
         Ok(Self {
             session,

@@ -11,14 +11,17 @@
 
 use std::{
     collections::VecDeque,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use iroh::{
     SecretKey,
-    endpoint::{Builder as EndpointBuilder, Connection, PathId, PathStats},
+    endpoint::{Builder as EndpointBuilder, Connection, PathId, PathStats, QuicTransportConfig},
 };
+use iroh_moq::MoqSession;
 use moq_media::net::NetworkSignals;
+use noq_proto::congestion::Bbr3Config;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace, warn};
@@ -46,6 +49,26 @@ pub fn secret_key_from_env() -> n0_error::Result<SecretKey> {
             key
         }
     })
+}
+
+/// Returns the QUIC transport configuration every iroh-live endpoint binds
+/// with.
+///
+/// BBR3 in place of iroh's default, CUBIC. A media publisher is
+/// application-limited: it sends the bitrate the encoder produces into a
+/// window sized for whatever the link would take. CUBIC grows that window
+/// until something is lost, so on a publisher the window says nothing about
+/// the link, and the send-rate estimate the transport derives from it and
+/// moq-net carries to every subscriber (`cwnd / rtt`) reads as room to spare
+/// on a link that has none. BBR3 sizes its window from the delivery rate it
+/// measures, so the same figure tracks the link, which is what the subscriber's
+/// rendition choice is made from. Installed on every endpoint rather than on
+/// publishers alone because one endpoint publishes and subscribes at once in
+/// a call, and there is no second configuration for the other direction.
+pub fn transport_config() -> QuicTransportConfig {
+    QuicTransportConfig::builder()
+        .congestion_controller_factory(Arc::new(Bbr3Config::default()))
+        .build()
 }
 
 /// Whether an endpoint answers for itself over mDNS, or only looks others up.
@@ -190,19 +213,26 @@ impl WindowedMin {
     }
 }
 
-/// Spawns a background task that polls connection stats and produces
-/// [`NetworkSignals`] for adaptive rendition selection.
+/// Spawns a background task that polls the session's connection stats and
+/// produces [`NetworkSignals`] for adaptive rendition selection.
+///
+/// Takes the session rather than its connection because one signal lives on
+/// the session and not in QUIC: the publisher's own estimate of the path,
+/// which moq-net delivers as a bandwidth consumer.
 ///
 /// The task runs until `shutdown` is cancelled, the connection closes, or
 /// every receiver is dropped. Returns a `watch::Receiver<NetworkSignals>` that
 /// the caller can pass to
 /// [`VideoTrack::enable_adaptation`](moq_media::subscribe::VideoTrack::enable_adaptation).
 pub fn spawn_signal_producer(
-    conn: &Connection,
+    session: &MoqSession,
     shutdown: CancellationToken,
 ) -> watch::Receiver<NetworkSignals> {
     let (tx, rx) = watch::channel(NetworkSignals::default());
-    let conn = conn.clone();
+    let conn = session.conn().clone();
+    // `None` for a publisher whose MoQ version predates the estimate, which
+    // reads as an absent signal on every tick rather than as an error.
+    let delivery = session.session().recv_bandwidth();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(SIGNAL_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -223,7 +253,13 @@ pub fn spawn_signal_producer(
             let Some(selected) = paths.iter().find(|p| p.is_selected()) else {
                 continue;
             };
-            let signals = sampler.sample(selected.id(), &selected.stats(), Instant::now());
+            let delivery_bps = delivery.as_ref().and_then(|estimate| estimate.peek());
+            let signals = sampler.sample(
+                selected.id(),
+                &selected.stats(),
+                delivery_bps,
+                Instant::now(),
+            );
 
             // Five a second is too much for anything but a trace, and it is
             // exactly what is wanted when an adaptation decision has to be
@@ -234,6 +270,7 @@ pub fn spawn_signal_producer(
                 min_rtt_ms = signals.min_rtt.as_millis() as u64,
                 loss_rate = signals.loss_rate,
                 goodput_kbps = ?signals.goodput_bps.map(|bps| bps / 1000),
+                delivery_kbps = ?signals.delivery_bps.map(|bps| bps / 1000),
                 congestion_events = signals.congestion_events,
                 "network signals",
             );
@@ -278,8 +315,15 @@ struct Sampler {
 }
 
 impl Sampler {
-    /// Folds a reading of `stats`, taken on `path` at `now`, into the signals.
-    fn sample(&mut self, path: PathId, stats: &PathStats, now: Instant) -> NetworkSignals {
+    /// Folds a reading of `stats`, taken on `path` at `now`, into the signals,
+    /// with `delivery_bps` as the publisher's estimate current at the time.
+    fn sample(
+        &mut self,
+        path: PathId,
+        stats: &PathStats,
+        delivery_bps: Option<u64>,
+        now: Instant,
+    ) -> NetworkSignals {
         let rtt = stats.rtt;
 
         // A minimum measured on one path says nothing about the next: a
@@ -337,6 +381,7 @@ impl Sampler {
             min_rtt,
             loss_rate,
             goodput_bps: goodput(&self.received),
+            delivery_bps,
             congestion_events: stats.congestion_events,
         }
     }
@@ -461,7 +506,7 @@ mod tests {
     fn loss_is_measured_between_readings() {
         let mut sampler = Sampler::default();
         let t0 = Instant::now();
-        let first = sampler.sample(PathId::ZERO, &reading(20, 100, 1000, 0), t0);
+        let first = sampler.sample(PathId::ZERO, &reading(20, 100, 1000, 0), None, t0);
         assert!(
             first.loss_rate > 0.09,
             "the first reading counts from zero: {first:?}"
@@ -471,6 +516,7 @@ mod tests {
         let quiet = sampler.sample(
             PathId::ZERO,
             &reading(20, 100, 1010, 0),
+            None,
             t0 + SIGNAL_INTERVAL,
         );
         assert_eq!(quiet.loss_rate, 0.0);
@@ -479,6 +525,7 @@ mod tests {
         let bad = sampler.sample(
             PathId::ZERO,
             &reading(20, 110, 1020, 0),
+            None,
             t0 + 2 * SIGNAL_INTERVAL,
         );
         assert!((bad.loss_rate - 0.5).abs() < 1e-9, "{bad:?}");
@@ -494,13 +541,14 @@ mod tests {
         for tick in 0..5u32 {
             let at = t0 + tick * SIGNAL_INTERVAL;
             samples = sampler
-                .sample(PathId::ZERO, &reading(20, 0, 0, 0), at)
+                .sample(PathId::ZERO, &reading(20, 0, 0, 0), None, at)
                 .rtt_samples;
         }
         assert_eq!(samples, 1, "five ticks of one figure are one sample");
         let fresh = sampler.sample(
             PathId::ZERO,
             &reading(25, 0, 0, 0),
+            None,
             t0 + 5 * SIGNAL_INTERVAL,
         );
         assert_eq!(fresh.rtt_samples, 2);
@@ -518,7 +566,7 @@ mod tests {
             let at = t0 + tick * SIGNAL_INTERVAL;
             let bytes = u64::from(tick) * 100_000;
             last = sampler
-                .sample(PathId::ZERO, &reading(20, 0, 0, bytes), at)
+                .sample(PathId::ZERO, &reading(20, 0, 0, bytes), None, at)
                 .goodput_bps;
             if at.duration_since(t0) < GOODPUT_WINDOW {
                 assert_eq!(
@@ -541,15 +589,25 @@ mod tests {
     fn the_round_trip_baseline_starts_over_on_a_new_path() {
         let mut sampler = Sampler::default();
         let t0 = Instant::now();
-        let direct = sampler.sample(PathId::ZERO, &reading(2, 0, 0, 0), t0);
+        let direct = sampler.sample(PathId::ZERO, &reading(2, 0, 0, 0), None, t0);
         assert_eq!(direct.min_rtt, Duration::from_millis(2));
 
         // Same path, longer reading: the minimum holds, and this reads as a queue.
-        let queued = sampler.sample(PathId::ZERO, &reading(40, 0, 0, 0), t0 + SIGNAL_INTERVAL);
+        let queued = sampler.sample(
+            PathId::ZERO,
+            &reading(40, 0, 0, 0),
+            None,
+            t0 + SIGNAL_INTERVAL,
+        );
         assert_eq!(queued.min_rtt, Duration::from_millis(2));
 
         // A different path at 40ms is a 40ms path, not a 2ms path with a queue.
-        let relayed = sampler.sample(PathId::MAX, &reading(40, 0, 0, 0), t0 + 2 * SIGNAL_INTERVAL);
+        let relayed = sampler.sample(
+            PathId::MAX,
+            &reading(40, 0, 0, 0),
+            None,
+            t0 + 2 * SIGNAL_INTERVAL,
+        );
         assert_eq!(relayed.min_rtt, Duration::from_millis(40));
     }
 

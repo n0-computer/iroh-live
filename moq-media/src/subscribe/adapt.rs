@@ -137,13 +137,14 @@ async fn run(
             rtt_samples = signals.rtt_samples,
             loss = signals.loss_rate,
             goodput_bps = ?signals.goodput_bps,
+            delivery_bps = ?signals.delivery_bps,
             healthy_bps = ?timers.healthy_goodput(),
             ?decision,
             "adaptation tick",
         );
         let target = match decision {
             Decision::Hold => continue,
-            Decision::Downgrade(next) => {
+            Decision::Downgrade(next) | Decision::Upgrade(next) => {
                 probe = None;
                 next
             }
@@ -165,12 +166,14 @@ async fn run(
         };
 
         let goodput_kbps = signals.goodput_bps.map(|bps| bps / 1000);
+        let delivery_kbps = signals.delivery_bps.map(|bps| bps / 1000);
         info!(
             from = %active,
             to = %ranked[target].name,
             rtt_ms = signals.rtt.as_millis() as u64,
             loss = signals.loss_rate,
             ?goodput_kbps,
+            ?delivery_kbps,
             ?decision,
             "adapting rendition",
         );
