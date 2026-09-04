@@ -16,7 +16,7 @@ use std::{
 
 use iroh::{
     SecretKey,
-    endpoint::{Builder as EndpointBuilder, Connection, PathId},
+    endpoint::{Builder as EndpointBuilder, Connection, PathId, PathStats},
 };
 use moq_media::net::NetworkSignals;
 use tokio::sync::watch;
@@ -144,6 +144,7 @@ const MIN_RTT_WINDOW: Duration = Duration::from_secs(15);
 ///
 /// The two travel together because neither survives the other: a minimum from
 /// the path before this one describes a different link.
+#[derive(Debug)]
 struct PathBaseline {
     path: PathId,
     min_rtt: WindowedMin,
@@ -156,6 +157,7 @@ struct PathBaseline {
 /// span elapses. That covers between one and two spans rather than exactly one,
 /// which is what not keeping every sample costs, and it errs on the right side:
 /// a minimum that expired early would read the path's own delay as a queue.
+#[derive(Debug)]
 struct WindowedMin {
     span: Duration,
     current: Duration,
@@ -202,23 +204,9 @@ pub fn spawn_signal_producer(
     let (tx, rx) = watch::channel(NetworkSignals::default());
     let conn = conn.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(200));
+        let mut interval = tokio::time::interval(SIGNAL_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut prev_lost: u64 = 0;
-        let mut prev_sent: u64 = 0;
-        // The path's round trip with nothing queued in front of it. Tracked here
-        // rather than read from the transport because QUIC keeps no such figure,
-        // and taken as a minimum because that is what an unqueued sample looks
-        // like.
-        let mut baseline: Option<PathBaseline> = None;
-        // The last round trip read out, so that repeats of it can be told from
-        // fresh samples.
-        let mut prev_rtt: Option<Duration> = None;
-        let mut rtt_samples: u64 = 0;
-        // Timestamped `udp_rx.bytes` readings, oldest first, spanning
-        // `GOODPUT_WINDOW`. Goodput is the difference across the whole span
-        // rather than between the last two, so one bursty tick does not move it.
-        let mut received: VecDeque<(Instant, u64)> = VecDeque::new();
+        let mut sampler = Sampler::default();
         loop {
             tokio::select! {
                 _ = interval.tick() => {}
@@ -235,84 +223,18 @@ pub fn spawn_signal_producer(
             let Some(selected) = paths.iter().find(|p| p.is_selected()) else {
                 continue;
             };
+            let signals = sampler.sample(selected.id(), &selected.stats(), Instant::now());
 
-            let stats = selected.stats();
-            let rtt = stats.rtt;
-            let now = Instant::now();
-
-            // A minimum measured on one path says nothing about the next: a
-            // connection that fell back to a relay is on a longer link, not on a
-            // queue in front of the one it had.
-            let path = selected.id();
-            let min_rtt = match &mut baseline {
-                Some(known) if known.path == path => known.min_rtt.record(rtt, now),
-                _ => {
-                    baseline = Some(PathBaseline {
-                        path,
-                        min_rtt: WindowedMin::new(MIN_RTT_WINDOW, rtt, now),
-                    });
-                    rtt
-                }
-            };
-
-            // QUIC updates its round trip estimate only when an acknowledgement
-            // brings it a new sample, and a subscriber sends few packets that
-            // ask to be acknowledged, so the same figure is read out over and
-            // over. Counting the changes lets a consumer weigh a fresh reading
-            // differently from a repeat of the last one.
-            if prev_rtt != Some(rtt) {
-                prev_rtt = Some(rtt);
-                rtt_samples += 1;
-            }
-
-            // Delta-based loss rate. This counts what this endpoint sent and
-            // failed to get acknowledged, so on a subscriber it is loss among
-            // acknowledgements; see `NetworkSignals::loss_rate` for what that
-            // is and is not worth.
-            let total_lost = stats.lost_packets;
-            let total_sent = stats.udp_tx.datagrams;
-            let delta_lost = total_lost.saturating_sub(prev_lost);
-            let delta_sent = total_sent.saturating_sub(prev_sent);
-            prev_lost = total_lost;
-            prev_sent = total_sent;
-
-            let loss_rate = if delta_sent + delta_lost > 0 {
-                delta_lost as f64 / (delta_sent + delta_lost) as f64
-            } else {
-                0.0
-            };
-
-            // Downlink goodput from received bytes. The congestion window this
-            // would otherwise be derived from belongs to the sending direction,
-            // and a subscriber that sends only acknowledgements keeps a window
-            // that measures how little it sends; bytes arriving are the one
-            // thing a receiver can measure about the direction it cares about.
-            received.push_back((now, stats.udp_rx.bytes));
-            // Keep the newest sample from before the window opens, so the
-            // difference spans the whole window rather than stopping short of it.
-            while received.len() > 2 && now.duration_since(received[1].0) >= GOODPUT_WINDOW {
-                received.pop_front();
-            }
-            let goodput_bps = goodput(&received);
-
-            let signals = NetworkSignals {
-                rtt,
-                rtt_samples,
-                min_rtt,
-                loss_rate,
-                goodput_bps,
-                congestion_events: stats.congestion_events,
-            };
             // Five a second is too much for anything but a trace, and it is
             // exactly what is wanted when an adaptation decision has to be
             // explained after the fact.
             trace!(
-                rtt_ms = rtt.as_millis() as u64,
-                rtt_samples,
-                min_rtt_ms = min_rtt.as_millis() as u64,
-                loss_rate,
-                goodput_kbps = ?goodput_bps.map(|bps| bps / 1000),
-                congestion_events = stats.congestion_events,
+                rtt_ms = signals.rtt.as_millis() as u64,
+                rtt_samples = signals.rtt_samples,
+                min_rtt_ms = signals.min_rtt.as_millis() as u64,
+                loss_rate = signals.loss_rate,
+                goodput_kbps = ?signals.goodput_bps.map(|bps| bps / 1000),
+                congestion_events = signals.congestion_events,
                 "network signals",
             );
 
@@ -322,6 +244,102 @@ pub fn spawn_signal_producer(
         }
     });
     rx
+}
+
+/// How often the signal producer reads the path.
+const SIGNAL_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Turns one reading of a path's statistics into a [`NetworkSignals`].
+///
+/// Everything a signal needs that one reading cannot give lives here: the
+/// counters from the previous reading, for the loss delta; the round trip
+/// minimum and the path it was taken on; how many distinct round trip samples
+/// have been seen; and the window of received byte counts the goodput is
+/// measured across. Kept apart from the task that drives it so the arithmetic
+/// can be tested against readings made up for the purpose, with no connection
+/// under it.
+#[derive(Debug, Default)]
+struct Sampler {
+    prev_lost: u64,
+    prev_sent: u64,
+    /// The path's round trip with nothing queued in front of it. Tracked here
+    /// rather than read from the transport because QUIC keeps no such figure,
+    /// and taken as a minimum because that is what an unqueued sample looks
+    /// like.
+    baseline: Option<PathBaseline>,
+    /// The last round trip read out, so that repeats of it can be told from
+    /// fresh samples.
+    prev_rtt: Option<Duration>,
+    rtt_samples: u64,
+    /// Timestamped `udp_rx.bytes` readings, oldest first, spanning
+    /// `GOODPUT_WINDOW`. Goodput is the difference across the whole span
+    /// rather than between the last two, so one bursty tick does not move it.
+    received: VecDeque<(Instant, u64)>,
+}
+
+impl Sampler {
+    /// Folds a reading of `stats`, taken on `path` at `now`, into the signals.
+    fn sample(&mut self, path: PathId, stats: &PathStats, now: Instant) -> NetworkSignals {
+        let rtt = stats.rtt;
+
+        // A minimum measured on one path says nothing about the next: a
+        // connection that fell back to a relay is on a longer link, not on a
+        // queue in front of the one it had.
+        let min_rtt = match &mut self.baseline {
+            Some(known) if known.path == path => known.min_rtt.record(rtt, now),
+            _ => {
+                self.baseline = Some(PathBaseline {
+                    path,
+                    min_rtt: WindowedMin::new(MIN_RTT_WINDOW, rtt, now),
+                });
+                rtt
+            }
+        };
+
+        // QUIC updates its round trip estimate only when an acknowledgement
+        // brings it a new sample, and a subscriber sends few packets that ask
+        // to be acknowledged, so the same figure is read out over and over.
+        // Counting the changes lets a consumer weigh a fresh reading
+        // differently from a repeat of the last one.
+        if self.prev_rtt != Some(rtt) {
+            self.prev_rtt = Some(rtt);
+            self.rtt_samples += 1;
+        }
+
+        // Delta-based loss rate. This counts what this endpoint sent and failed
+        // to get acknowledged, so on a subscriber it is loss among
+        // acknowledgements; see `NetworkSignals::loss_rate` for what that is
+        // and is not worth.
+        let delta_lost = stats.lost_packets.saturating_sub(self.prev_lost);
+        let delta_sent = stats.udp_tx.datagrams.saturating_sub(self.prev_sent);
+        self.prev_lost = stats.lost_packets;
+        self.prev_sent = stats.udp_tx.datagrams;
+        let loss_rate = match delta_sent + delta_lost {
+            0 => 0.0,
+            total => delta_lost as f64 / total as f64,
+        };
+
+        // Downlink goodput from received bytes. The congestion window this
+        // would otherwise be derived from belongs to the sending direction, and
+        // a subscriber that sends only acknowledgements keeps a window that
+        // measures how little it sends; bytes arriving are the one thing a
+        // receiver can measure about the direction it cares about.
+        self.received.push_back((now, stats.udp_rx.bytes));
+        // Keep the newest sample from before the window opens, so the
+        // difference spans the whole window rather than stopping short of it.
+        while self.received.len() > 2 && now.duration_since(self.received[1].0) >= GOODPUT_WINDOW {
+            self.received.pop_front();
+        }
+
+        NetworkSignals {
+            rtt,
+            rtt_samples: self.rtt_samples,
+            min_rtt,
+            loss_rate,
+            goodput_bps: goodput(&self.received),
+            congestion_events: stats.congestion_events,
+        }
+    }
 }
 
 /// Returns the goodput across `samples` of received byte counts.
@@ -425,6 +443,115 @@ pub fn spawn_stats_recorder(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A reading with `rtt`, `lost` packets, `sent` datagrams and `received`
+    /// bytes on the counters, which is what one tick of the producer sees.
+    fn reading(rtt_ms: u64, lost: u64, sent: u64, received: u64) -> PathStats {
+        let mut stats = PathStats::default();
+        stats.rtt = Duration::from_millis(rtt_ms);
+        stats.lost_packets = lost;
+        stats.udp_tx.datagrams = sent;
+        stats.udp_rx.bytes = received;
+        stats
+    }
+
+    /// Loss is the change since the last reading, not the connection's total:
+    /// a hundred packets lost an hour ago say nothing about the link now.
+    #[test]
+    fn loss_is_measured_between_readings() {
+        let mut sampler = Sampler::default();
+        let t0 = Instant::now();
+        let first = sampler.sample(PathId::ZERO, &reading(20, 100, 1000, 0), t0);
+        assert!(
+            first.loss_rate > 0.09,
+            "the first reading counts from zero: {first:?}"
+        );
+
+        // Ten more sent, none lost since.
+        let quiet = sampler.sample(
+            PathId::ZERO,
+            &reading(20, 100, 1010, 0),
+            t0 + SIGNAL_INTERVAL,
+        );
+        assert_eq!(quiet.loss_rate, 0.0);
+
+        // Ten more sent, ten lost: half of what moved.
+        let bad = sampler.sample(
+            PathId::ZERO,
+            &reading(20, 110, 1020, 0),
+            t0 + 2 * SIGNAL_INTERVAL,
+        );
+        assert!((bad.loss_rate - 0.5).abs() < 1e-9, "{bad:?}");
+    }
+
+    /// QUIC hands the same round trip out until it takes another sample, so a
+    /// repeat is not a new reading and is not counted as one.
+    #[test]
+    fn a_repeated_round_trip_is_one_sample() {
+        let mut sampler = Sampler::default();
+        let t0 = Instant::now();
+        let mut samples = 0;
+        for tick in 0..5u32 {
+            let at = t0 + tick * SIGNAL_INTERVAL;
+            samples = sampler
+                .sample(PathId::ZERO, &reading(20, 0, 0, 0), at)
+                .rtt_samples;
+        }
+        assert_eq!(samples, 1, "five ticks of one figure are one sample");
+        let fresh = sampler.sample(
+            PathId::ZERO,
+            &reading(25, 0, 0, 0),
+            t0 + 5 * SIGNAL_INTERVAL,
+        );
+        assert_eq!(fresh.rtt_samples, 2);
+    }
+
+    /// Goodput is bytes across the whole window, and is nothing until the
+    /// readings span it: a rate from two ticks is a rate from one burst.
+    #[test]
+    fn goodput_needs_a_full_window() {
+        let mut sampler = Sampler::default();
+        let t0 = Instant::now();
+        // 100 kB every 200ms is 4 Mbit/s.
+        let mut last = None;
+        for tick in 0..=5u32 {
+            let at = t0 + tick * SIGNAL_INTERVAL;
+            let bytes = u64::from(tick) * 100_000;
+            last = sampler
+                .sample(PathId::ZERO, &reading(20, 0, 0, bytes), at)
+                .goodput_bps;
+            if at.duration_since(t0) < GOODPUT_WINDOW {
+                assert_eq!(
+                    last, None,
+                    "no figure before the window spans, at tick {tick}"
+                );
+            }
+        }
+        let bps = last.expect("a second of readings has a rate");
+        assert!(
+            (3_500_000..=4_500_000).contains(&bps),
+            "expected about 4 Mbit/s, got {bps}"
+        );
+    }
+
+    /// A round trip minimum measured on one path says nothing about the next:
+    /// a connection that fell back to a relay is on a longer link, not behind a
+    /// queue on the one it had.
+    #[test]
+    fn the_round_trip_baseline_starts_over_on_a_new_path() {
+        let mut sampler = Sampler::default();
+        let t0 = Instant::now();
+        let direct = sampler.sample(PathId::ZERO, &reading(2, 0, 0, 0), t0);
+        assert_eq!(direct.min_rtt, Duration::from_millis(2));
+
+        // Same path, longer reading: the minimum holds, and this reads as a queue.
+        let queued = sampler.sample(PathId::ZERO, &reading(40, 0, 0, 0), t0 + SIGNAL_INTERVAL);
+        assert_eq!(queued.min_rtt, Duration::from_millis(2));
+
+        // A different path at 40ms is a 40ms path, not a 2ms path with a queue.
+        let relayed = sampler.sample(PathId::MAX, &reading(40, 0, 0, 0), t0 + 2 * SIGNAL_INTERVAL);
+        assert_eq!(relayed.min_rtt, Duration::from_millis(40));
+    }
 
     #[test]
     fn a_windowed_minimum_forgets_the_path_it_came_from() {
