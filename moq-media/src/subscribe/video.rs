@@ -127,6 +127,38 @@ struct Window {
     reported: bool,
 }
 
+/// How often the decode cadence is logged.
+///
+/// A picture that is starving looks, from every log line above this one, like
+/// a picture that is fine: the transport signals say what arrived and the
+/// decoder says nothing unless it fails. One line every few seconds with the
+/// frame rate that actually decoded is what lets a goodput reading in a trace
+/// be matched to what the viewer saw.
+const CADENCE_EVERY: Duration = Duration::from_secs(5);
+
+/// Pictures decoded since the cadence was last reported.
+#[derive(Debug)]
+struct Cadence {
+    since: Instant,
+    decoded: u32,
+}
+
+impl Cadence {
+    /// Counts a picture, and returns the frame rate since the last report
+    /// once [`CADENCE_EVERY`] has passed.
+    fn decoded(&mut self, now: Instant) -> Option<f64> {
+        self.decoded += 1;
+        let elapsed = now.duration_since(self.since);
+        if elapsed < CADENCE_EVERY {
+            return None;
+        }
+        let fps = f64::from(self.decoded) / elapsed.as_secs_f64();
+        self.since = now;
+        self.decoded = 0;
+        Some(fps)
+    }
+}
+
 impl Default for DecodeFailures {
     fn default() -> Self {
         Self {
@@ -325,6 +357,10 @@ async fn spawn_reader(
     let task = spawn(
         async move {
             let mut failures = DecodeFailures::default();
+            let mut cadence = Cadence {
+                since: Instant::now(),
+                decoded: 0,
+            };
             loop {
                 let started = std::time::Instant::now();
                 match consumer.read().await {
@@ -332,6 +368,9 @@ async fn spawn_reader(
                         let skipped = failures.decoded();
                         if skipped > 0 {
                             info!(skipped, "video decoding recovered");
+                        }
+                        if let Some(fps) = cadence.decoded(Instant::now()) {
+                            debug!(fps = format_args!("{fps:.1}"), "video decoding cadence");
                         }
                         if let Some(share) = failures.mostly_failing() {
                             error!(
@@ -664,6 +703,28 @@ async fn deliver(
 
 #[cfg(test)]
 mod tests {
+    /// The cadence is reported once per interval, as a rate over that interval
+    /// rather than a count, and starts over after each report.
+    #[test]
+    fn the_decode_cadence_is_a_rate_per_interval() {
+        let start = std::time::Instant::now();
+        let mut cadence = super::Cadence {
+            since: start,
+            decoded: 0,
+        };
+        for _ in 0..149 {
+            assert_eq!(cadence.decoded(start + super::CADENCE_EVERY / 2), None);
+        }
+        let fps = cadence
+            .decoded(start + super::CADENCE_EVERY)
+            .expect("the interval has passed");
+        assert!(
+            (fps - 30.0).abs() < 0.01,
+            "150 frames in 5 s is 30 fps, got {fps}"
+        );
+        assert_eq!(cadence.decoded(start + super::CADENCE_EVERY), None);
+    }
+
     use moq_video::{Size, Surface, encode};
 
     use super::*;

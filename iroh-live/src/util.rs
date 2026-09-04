@@ -152,6 +152,22 @@ const GOODPUT_WINDOW: Duration = Duration::from_secs(1);
 /// a ladder is small: 320x240 video comes in under 100 kbit/s.
 const GOODPUT_FLOOR_BPS: u64 = 16_000;
 
+/// The span the loss rate is measured across, and the fewest packets it is
+/// measured over.
+///
+/// A subscriber sends acknowledgements and little else: two to five packets in
+/// a 200 ms tick at video rates. A loss rate over one tick is then a fraction
+/// with a denominator of three, and one lost acknowledgement reads as a third
+/// of everything lost. Watched on a Pi 4 over Wi-Fi, that dropped the player to
+/// its lowest rung every few seconds on readings of 0.2, 0.33 and 0.5 with
+/// nothing wrong with the picture. Two seconds holds enough packets for a
+/// single loss to stay under the downgrade threshold, and the minimum is what
+/// keeps a quiet window from reporting a rate it cannot resolve: below it the
+/// rate reads as zero, which the consumer reads as unmeasured rather than
+/// clean.
+const LOSS_WINDOW: Duration = Duration::from_secs(2);
+const LOSS_MIN_PACKETS: u64 = 20;
+
 /// The span the round trip minimum is taken across.
 ///
 /// The minimum is what makes the current round trip mean anything, and a running
@@ -265,6 +281,8 @@ pub fn spawn_signal_producer(
             // exactly what is wanted when an adaptation decision has to be
             // explained after the fact.
             trace!(
+                path = ?selected.id(),
+                relay = selected.is_relay(),
                 rtt_ms = signals.rtt.as_millis() as u64,
                 rtt_samples = signals.rtt_samples,
                 min_rtt_ms = signals.min_rtt.as_millis() as u64,
@@ -297,8 +315,6 @@ const SIGNAL_INTERVAL: Duration = Duration::from_millis(200);
 /// under it.
 #[derive(Debug, Default)]
 struct Sampler {
-    prev_lost: u64,
-    prev_sent: u64,
     /// The path's round trip with nothing queued in front of it. Tracked here
     /// rather than read from the transport because QUIC keeps no such figure,
     /// and taken as a minimum because that is what an unqueued sample looks
@@ -308,10 +324,32 @@ struct Sampler {
     /// fresh samples.
     prev_rtt: Option<Duration>,
     rtt_samples: u64,
-    /// Timestamped `udp_rx.bytes` readings, oldest first, spanning
-    /// `GOODPUT_WINDOW`. Goodput is the difference across the whole span
-    /// rather than between the last two, so one bursty tick does not move it.
-    received: VecDeque<(Instant, u64)>,
+    /// Timestamped counter readings, oldest first, spanning the longer of
+    /// [`GOODPUT_WINDOW`] and [`LOSS_WINDOW`]. Each rate is the difference
+    /// across its whole span rather than between the last two readings, so one
+    /// bursty tick does not move it.
+    history: VecDeque<Counters>,
+}
+
+/// The cumulative counters one reading of the path carries, at the instant
+/// they were read.
+#[derive(Debug, Clone, Copy)]
+struct Counters {
+    at: Instant,
+    received_bytes: u64,
+    sent_packets: u64,
+    lost_packets: u64,
+}
+
+impl Counters {
+    fn read(stats: &PathStats, now: Instant) -> Self {
+        Self {
+            at: now,
+            received_bytes: stats.udp_rx.bytes,
+            sent_packets: stats.udp_tx.datagrams,
+            lost_packets: stats.lost_packets,
+        }
+    }
 }
 
 impl Sampler {
@@ -350,58 +388,69 @@ impl Sampler {
             self.rtt_samples += 1;
         }
 
-        // Delta-based loss rate. This counts what this endpoint sent and failed
-        // to get acknowledged, so on a subscriber it is loss among
-        // acknowledgements; see `NetworkSignals::loss_rate` for what that is
-        // and is not worth.
-        let delta_lost = stats.lost_packets.saturating_sub(self.prev_lost);
-        let delta_sent = stats.udp_tx.datagrams.saturating_sub(self.prev_sent);
-        self.prev_lost = stats.lost_packets;
-        self.prev_sent = stats.udp_tx.datagrams;
-        let loss_rate = match delta_sent + delta_lost {
-            0 => 0.0,
-            total => delta_lost as f64 / total as f64,
-        };
-
-        // Downlink goodput from received bytes. The congestion window this
-        // would otherwise be derived from belongs to the sending direction, and
-        // a subscriber that sends only acknowledgements keeps a window that
-        // measures how little it sends; bytes arriving are the one thing a
-        // receiver can measure about the direction it cares about.
-        self.received.push_back((now, stats.udp_rx.bytes));
-        // Keep the newest sample from before the window opens, so the
+        let latest = Counters::read(stats, now);
+        self.history.push_back(latest);
+        // Keep the newest reading from before the longest window opens, so a
         // difference spans the whole window rather than stopping short of it.
-        while self.received.len() > 2 && now.duration_since(self.received[1].0) >= GOODPUT_WINDOW {
-            self.received.pop_front();
+        while self.history.len() > 2 && now.duration_since(self.history[1].at) >= LOSS_WINDOW {
+            self.history.pop_front();
         }
 
         NetworkSignals {
             rtt,
             rtt_samples: self.rtt_samples,
             min_rtt,
-            loss_rate,
-            goodput_bps: goodput(&self.received),
+            loss_rate: self.loss_rate(&latest),
+            goodput_bps: self.goodput(&latest),
             delivery_bps,
             congestion_events: stats.congestion_events,
         }
     }
-}
 
-/// Returns the goodput across `samples` of received byte counts.
-///
-/// `None` until they span [`GOODPUT_WINDOW`], and `None` again once the rate
-/// falls to [`GOODPUT_FLOOR_BPS`] or below, which means nothing that could be
-/// media is arriving.
-fn goodput(samples: &VecDeque<(Instant, u64)>) -> Option<u64> {
-    let (oldest_at, oldest_bytes) = *samples.front()?;
-    let (newest_at, newest_bytes) = *samples.back()?;
-    let span = newest_at.duration_since(oldest_at);
-    if span < GOODPUT_WINDOW {
-        return None;
+    /// Returns the newest reading taken at least `span` before `latest`, or
+    /// `None` while the history is not that long yet.
+    fn reading_before(&self, latest: &Counters, span: Duration) -> Option<&Counters> {
+        self.history
+            .iter()
+            .rev()
+            .find(|counters| latest.at.duration_since(counters.at) >= span)
     }
-    let bytes = newest_bytes.saturating_sub(oldest_bytes) as f64;
-    let bps = (bytes * 8.0 / span.as_secs_f64()) as u64;
-    (bps > GOODPUT_FLOOR_BPS).then_some(bps)
+
+    /// Returns the downlink goodput across [`GOODPUT_WINDOW`], or `None`
+    /// until the history spans it, and `None` again once the rate falls to
+    /// [`GOODPUT_FLOOR_BPS`] or below, which means nothing that could be media
+    /// is arriving.
+    ///
+    /// From received bytes. The congestion window this would otherwise be
+    /// derived from belongs to the sending direction, and a subscriber that
+    /// sends only acknowledgements keeps a window that measures how little it
+    /// sends; bytes arriving are the one thing a receiver can measure about
+    /// the direction it cares about.
+    fn goodput(&self, latest: &Counters) -> Option<u64> {
+        let oldest = self.reading_before(latest, GOODPUT_WINDOW)?;
+        let span = latest.at.duration_since(oldest.at);
+        let bytes = latest.received_bytes.saturating_sub(oldest.received_bytes) as f64;
+        let bps = (bytes * 8.0 / span.as_secs_f64()) as u64;
+        (bps > GOODPUT_FLOOR_BPS).then_some(bps)
+    }
+
+    /// Returns the loss rate across [`LOSS_WINDOW`], or zero while the history
+    /// does not span it or holds fewer than [`LOSS_MIN_PACKETS`] packets.
+    ///
+    /// This counts what this endpoint sent and failed to get acknowledged, so
+    /// on a subscriber it is loss among acknowledgements; see
+    /// [`NetworkSignals::loss_rate`] for what that is and is not worth.
+    fn loss_rate(&self, latest: &Counters) -> f64 {
+        let Some(oldest) = self.reading_before(latest, LOSS_WINDOW) else {
+            return 0.0;
+        };
+        let lost = latest.lost_packets.saturating_sub(oldest.lost_packets);
+        let sent = latest.sent_packets.saturating_sub(oldest.sent_packets);
+        match sent + lost {
+            total if total < LOSS_MIN_PACKETS => 0.0,
+            total => lost as f64 / total as f64,
+        }
+    }
 }
 
 /// Spawns a background task that records connection stats into a
@@ -500,35 +549,110 @@ mod tests {
         stats
     }
 
-    /// Loss is the change since the last reading, not the connection's total:
-    /// a hundred packets lost an hour ago say nothing about the link now.
+    /// Drives `ticks` readings through `sampler`, one per interval from `t0`,
+    /// with `sent` packets and `lost` packets added per tick, and returns the
+    /// last signals.
+    fn run_ticks(
+        sampler: &mut Sampler,
+        t0: Instant,
+        ticks: u32,
+        sent_per_tick: u64,
+        lost_per_tick: u64,
+    ) -> NetworkSignals {
+        let mut last = NetworkSignals::default();
+        for tick in 1..=ticks {
+            let n = u64::from(tick);
+            last = sampler.sample(
+                PathId::ZERO,
+                &reading(20, n * lost_per_tick, n * sent_per_tick, 0),
+                None,
+                t0 + tick * SIGNAL_INTERVAL,
+            );
+        }
+        last
+    }
+
+    /// Loss is measured across a window of recent readings, not against the
+    /// connection's total: a hundred packets lost an hour ago say nothing about
+    /// the link now, and a window covers what has happened lately.
     #[test]
-    fn loss_is_measured_between_readings() {
+    fn loss_is_measured_across_the_window() {
         let mut sampler = Sampler::default();
         let t0 = Instant::now();
-        let first = sampler.sample(PathId::ZERO, &reading(20, 100, 1000, 0), None, t0);
+        // A hundred already lost before the first reading: never counted.
+        sampler.sample(PathId::ZERO, &reading(20, 100, 1000, 0), None, t0);
+        // Twenty sent and two lost per tick: 10% throughout.
+        let steady = run_ticks(&mut sampler, t0, 12, 20, 2);
         assert!(
-            first.loss_rate > 0.09,
-            "the first reading counts from zero: {first:?}"
+            (steady.loss_rate - 100.0 / 1100.0 * 1.1).abs() < 0.02,
+            "two lost in twenty-two moved per tick is about 9%: {steady:?}"
         );
+    }
 
-        // Ten more sent, none lost since.
-        let quiet = sampler.sample(
+    /// A lost acknowledgement among a handful is not a loss rate. A subscriber
+    /// sends a few packets per tick, so a per-tick ratio was a fraction with a
+    /// denominator of three, and one loss read as a third of everything.
+    #[test]
+    fn a_lost_packet_among_a_handful_is_not_loss() {
+        let mut sampler = Sampler::default();
+        let t0 = Instant::now();
+        // Three packets a tick for two seconds is thirty in the window, so the
+        // window is full but a single loss among them is still under 5%.
+        let one = run_ticks(&mut sampler, t0, 10, 3, 0);
+        assert_eq!(one.loss_rate, 0.0, "nothing lost: {one:?}");
+        let lost_one = sampler.sample(
             PathId::ZERO,
-            &reading(20, 100, 1010, 0),
+            &reading(20, 1, 33, 0),
             None,
-            t0 + SIGNAL_INTERVAL,
+            t0 + 11 * SIGNAL_INTERVAL,
         );
-        assert_eq!(quiet.loss_rate, 0.0);
+        assert!(
+            lost_one.loss_rate > 0.0 && lost_one.loss_rate < 0.05,
+            "one in thirty-four is a small loss, not a third: {lost_one:?}"
+        );
+    }
 
-        // Ten more sent, ten lost: half of what moved.
-        let bad = sampler.sample(
+    /// A window that holds too few packets to resolve a rate reports none,
+    /// rather than a rate made of one or two events.
+    #[test]
+    fn loss_needs_enough_packets_to_be_a_rate() {
+        let mut sampler = Sampler::default();
+        let t0 = Instant::now();
+        // One packet a tick, one of them lost: a half or a third per tick, and
+        // ten packets across the window, which is under the minimum.
+        let sparse = run_ticks(&mut sampler, t0, 10, 1, 0);
+        assert_eq!(sparse.loss_rate, 0.0);
+        let lost_one = sampler.sample(
             PathId::ZERO,
-            &reading(20, 110, 1020, 0),
+            &reading(20, 1, 11, 0),
             None,
-            t0 + 2 * SIGNAL_INTERVAL,
+            t0 + 11 * SIGNAL_INTERVAL,
         );
-        assert!((bad.loss_rate - 0.5).abs() < 1e-9, "{bad:?}");
+        assert_eq!(
+            lost_one.loss_rate, 0.0,
+            "one lost among a dozen is unmeasured: {lost_one:?}"
+        );
+    }
+
+    /// Loss that stops is forgotten once the window has moved past it.
+    #[test]
+    fn loss_clears_once_the_window_moves_past_it() {
+        let mut sampler = Sampler::default();
+        let t0 = Instant::now();
+        // Eleven ticks, so the readings span the window and not just fill it.
+        let bad = run_ticks(&mut sampler, t0, 11, 10, 5);
+        assert!(bad.loss_rate > 0.3, "{bad:?}");
+        // Twenty more ticks with nothing lost: the window is all clean.
+        let mut last = bad;
+        for tick in 12..=31u32 {
+            last = sampler.sample(
+                PathId::ZERO,
+                &reading(20, 55, 110 + u64::from(tick - 11) * 10, 0),
+                None,
+                t0 + tick * SIGNAL_INTERVAL,
+            );
+        }
+        assert_eq!(last.loss_rate, 0.0, "{last:?}");
     }
 
     /// QUIC hands the same round trip out until it takes another sample, so a

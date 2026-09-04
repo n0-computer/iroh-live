@@ -57,7 +57,17 @@ pub struct AdaptiveConfig {
     pub loss_downgrade: f64,
     /// Loss rate above which emergency drop to lowest occurs (immediate).
     pub loss_emergency: f64,
-    /// Loss rate below which conditions are considered good.
+    /// Loss rate below which conditions are considered good enough to step
+    /// up, where there is no estimate to say so directly.
+    ///
+    /// Only the fallback reads it. With an estimate present the step up is
+    /// gated on the estimate covering the next rung, which already carries
+    /// the loss that matters: a BBR publisher cuts its estimate on loss along
+    /// the path it sends on, where [`NetworkSignals::loss_rate`] on a
+    /// subscriber counts lost acknowledgements, a few percent of which is
+    /// ordinary Wi-Fi. Measured on a Pi 4, the acknowledgement loss sat
+    /// between 2 and 5 percent for half of every minute with the picture
+    /// perfect, which against this threshold would have held the ladder down.
     pub loss_good: f64,
     /// Loss rate above which an active probe is aborted.
     pub loss_probe_abort: f64,
@@ -468,18 +478,23 @@ pub fn evaluate(
     // subscriber that a reading taken while the link was still bad outlives the
     // impairment by tens of seconds, and would hold the ladder down long after
     // there was anything holding it down.
-    let loss_good = signals.loss_rate <= config.loss_good;
     // With an estimate, the question the probe exists to ask is answered
     // before it is asked: the step up is taken when the path covers the next
-    // rung with headroom and not otherwise.
+    // rung with headroom and not otherwise. The estimate is also the loss
+    // gate then, since the publisher's controller has already priced loss on
+    // the path it sends on into it; the subscriber's own loss rate counts
+    // lost acknowledgements, and a few percent of those is ordinary Wi-Fi.
+    // Loss high enough to be counting towards a downgrade still blocks a
+    // step up, whatever the estimate says.
     let next = current_idx - 1;
     let room = covers(
         signals,
         ranked[next].bitrate_bps,
         config.delivery_upgrade_headroom,
     );
+    let good = !loss_high && room.unwrap_or(signals.loss_rate <= config.loss_good);
 
-    if loss_good && room != Some(false) {
+    if good {
         let good_since = *timers.good_since.get_or_insert(now);
         if now.duration_since(good_since) >= config.upgrade_hold {
             timers.good_since = None;
@@ -949,6 +964,54 @@ mod tests {
             ),
             Decision::Upgrade(0),
         );
+    }
+
+    /// Ordinary acknowledgement loss does not hold the ladder down when the
+    /// publisher says there is room: a Pi 4 on Wi-Fi reads 2 to 5 percent
+    /// with a perfect picture, which is above `loss_good` half the time.
+    #[test]
+    fn an_estimate_with_room_upgrades_through_acknowledgement_loss() {
+        let ranked = test_ranked();
+        let config = AdaptiveConfig::default();
+        let mut timers = AdaptationTimers::default();
+        let start = Instant::now();
+        let signals = NetworkSignals {
+            loss_rate: 0.04,
+            ..estimated(6_000_000)
+        };
+        evaluate(1, &ranked, &signals, &mut timers, &config, start);
+        assert_eq!(
+            evaluate(
+                1,
+                &ranked,
+                &signals,
+                &mut timers,
+                &config,
+                start + config.upgrade_hold
+            ),
+            Decision::Upgrade(0),
+        );
+    }
+
+    /// Loss that is counting towards a downgrade blocks a step up whatever the
+    /// estimate says: the two rules must not pull in opposite directions on
+    /// one tick.
+    #[test]
+    fn loss_at_the_downgrade_threshold_blocks_an_upgrade_with_room() {
+        let ranked = test_ranked();
+        let config = AdaptiveConfig::default();
+        let mut timers = AdaptationTimers::default();
+        let signals = NetworkSignals {
+            loss_rate: 0.12,
+            ..estimated(6_000_000)
+        };
+        // From the lowest rung, so the loss cannot downgrade and only the
+        // upgrade gate is in question.
+        assert_eq!(
+            settle(2, &ranked, &signals, &mut timers, &config, 100),
+            None
+        );
+        assert_eq!(timers.good_since, None);
     }
 
     /// The other half: an estimate that covers this rung and not the next

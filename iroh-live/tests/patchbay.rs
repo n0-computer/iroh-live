@@ -620,25 +620,22 @@ async fn adaptation_follows_a_rate_limit() {
         post_downgrade_cooldown: Duration::from_secs(10),
         ..quick_adaptation()
     };
-    // Enabled before the settling drain rather than after it, so the loop has
-    // seconds of clear-link goodput behind it. Starvation is judged against that
-    // reference, and a reference taken from one reading after the cap was
-    // already on would be the capped rate itself.
+    // Enabled before the settling drain rather than after it, so the fallback
+    // rule has seconds of clear-link goodput behind it should the estimate be
+    // absent. With the estimate present the loop needs no history at all, and
+    // that is the case this test now exercises: a publisher on BBR3 whose
+    // estimate reads the cap.
     track.enable_adaptation_with(signals.clone(), config.clone());
 
-    // Waited for rather than timed. The loop judges starvation against the peak
-    // goodput it has seen this rung deliver on a clear path, and that peak takes
-    // a few seconds to find the encoder's real rate: a gradient at 640x480 sits
-    // near 200 kbit/s between keyframes and climbs to nearly 300 across one, so
-    // a fixed two-second settle latched whatever happened to be in the window
-    // and the cap below was a shortfall only when it latched high. That is what
-    // used to make this test flake, and a stopwatch cannot fix it because the
-    // number it is waiting for belongs to the encoder rather than to the clock.
+    // Waited for rather than timed. This is the test's own evidence that the
+    // cap about to go on is a real shortfall, independent of what the loop
+    // decides: the link has to have been seen carrying comfortably more than
+    // the cap first. The encoder takes a few seconds to find its real rate (a
+    // gradient at 640x480 sits near 200 kbit/s between keyframes and climbs
+    // to nearly 300 across one), and a stopwatch cannot know when it has.
     //
-    // Ends when the link has been seen carrying comfortably more than the cap,
-    // which is the same fact the cap is about to contradict. If the fixture ever
-    // stops producing such a stream, this says so in those terms rather than
-    // leaving a downgrade to time out further down.
+    // If the fixture ever stops producing such a stream, this says so in those
+    // terms rather than leaving a downgrade to time out further down.
     let cap_kbit = 100;
     let clear_enough = u64::from(cap_kbit) * 1000 * 13 / 10;
     tokio::time::timeout(SIGNAL_LAG, async {
@@ -671,7 +668,10 @@ async fn adaptation_follows_a_rate_limit() {
         .await;
 
     // Held for three times the downgrade hold, so the loop has had the reading
-    // in front of it for longer than it needs to act on it.
+    // in front of it for longer than it needs to act on it. The queueing round
+    // trip readings counted below are the fallback rule's evidence; the loop
+    // acts on the estimate before they add up, and they are kept here so the
+    // test still proves the cap reached the signals in every form.
     let held = config.downgrade_hold * 3;
     let mut worst_loss: f64 = 0.0;
     let impaired = Instant::now();

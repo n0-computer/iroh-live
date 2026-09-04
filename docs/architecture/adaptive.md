@@ -62,6 +62,15 @@ alike. `goodput_bps` comes from `udp_rx.bytes` over a one-second window and is
 the honest receiver-side reading, and the round trip covers both directions
 because the queue holding up the media holds up the replies behind it.
 
+`loss_rate` is measured across a two-second window and reads zero when the
+window holds fewer than twenty packets. A subscriber sends two to five packets
+per 200 ms tick, so a per-tick ratio was a fraction with a denominator of
+three: one lost acknowledgement read as a third of everything lost, and on a
+Pi 4 over Wi-Fi that dropped the player to its lowest rung every few seconds
+with nothing wrong with the picture. Twenty packets is what keeps a single loss
+under the downgrade threshold; below that count the rate is unmeasured rather
+than clean, and reads as zero.
+
 `min_rtt` is a windowed minimum, not the smallest reading ever taken. The
 producer keeps two 15-second buckets and reports the smaller, so a baseline is
 forgotten between 15 and 30 seconds after the path stops producing it. That is
@@ -162,10 +171,16 @@ any downgrade and `probe_cooldown` (8 s) after any probe. With an estimate the
 step is taken outright, as `Decision::Upgrade`, once `delivery_bps` covers the
 next rung's advertised bitrate by `delivery_upgrade_headroom` (1.5), and is not
 taken at all while it does not: the good run does not accrue against a path the
-publisher says is full. Without one there is deliberately no bandwidth
-precondition: goodput cannot show room above the rate already flowing, and the
-advertised bitrate is not a figure to measure against. Discovering the room is
-then the probe's job.
+publisher says is full. The estimate is the loss gate then too. A BBR
+publisher cuts its estimate on loss along the path it sends on, which is the
+direction that matters, where the subscriber's own `loss_rate` counts lost
+acknowledgements; a Pi 4 on Wi-Fi reads 2 to 5 percent of those half the time
+with a perfect picture, which against `loss_good` (0.02) would have held the
+ladder down. Loss at `loss_downgrade` still blocks a step up whatever the
+estimate says. Without an estimate the gate is `loss_good`, and there is
+deliberately no bandwidth precondition: goodput cannot show room above the
+rate already flowing, and the advertised bitrate is not a figure to measure
+against. Discovering the room is then the probe's job.
 
 The upgrade is not gated on the round trip either. It is sampled far more
 sparsely than the other signals, because QUIC takes a round-trip sample only
@@ -208,7 +223,7 @@ the replacement failed to open, is forgotten rather than judged.
 | `post_downgrade_cooldown` | 4 s | Quiet period after a downgrade |
 | `loss_downgrade` | 0.10 | Loss rate that triggers a sustained downgrade |
 | `loss_emergency` | 0.20 | Loss rate that triggers an immediate drop to lowest |
-| `loss_good` | 0.02 | Loss rate below which conditions count as good |
+| `loss_good` | 0.02 | Loss rate below which the fallback counts conditions as good |
 | `goodput_downgrade_ratio` | 0.75 | Share of the measured clear-path peak that must still arrive |
 | `goodput_baseline_halflife` | 30 s | Half life of that peak |
 | `queueing_samples` | 2 | Distinct round trip readings that corroborate a queue |
