@@ -1,5 +1,5 @@
 import { spawn, ChildProcess } from "child_process";
-import { mkdtempSync, rmSync } from "fs";
+import { appendFileSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { findBinary } from "./bin";
@@ -110,6 +110,14 @@ function parseStartupOutput(
     for (const stream of [proc.stdout, proc.stderr]) {
       stream?.on("data", (data: Buffer) => {
         const text = data.toString();
+        // `RELAY_LOG=/path npx playwright test` keeps the relay's own output.
+        // Without it the harness reads these streams for the startup ports and
+        // then discards everything, so a relay-side failure is invisible from
+        // the test: a pull that could not resolve its ticket looked, from the
+        // browser, like a page that simply never received an announce.
+        if (process.env.RELAY_LOG) {
+          appendFileSync(process.env.RELAY_LOG, text);
+        }
         for (const line of text.split("\n")) {
           if (line.trim()) processLine(line);
         }

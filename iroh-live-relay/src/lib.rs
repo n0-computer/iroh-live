@@ -76,9 +76,23 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
             .as_bytes()
             .to_vec(),
     );
-    let iroh_endpoint = iroh::Endpoint::builder(presets::N0)
+    // mDNS, for the same reason `irl` takes it: a ticket names an endpoint id and
+    // no addresses, and pull mode's whole job is turning one of those into a
+    // connection. Pkarr and DNS cover a publisher with internet, and they take a
+    // few seconds to propagate after it starts; mDNS covers the publisher on this
+    // machine or this LAN, and covers it immediately. Without it the relay was the
+    // one component that could not resolve a ticket `irl watch` resolves fine,
+    // and a pull of a just-started local publisher failed with "No addressing
+    // information available" until pkarr caught up.
+    //
+    // `Announce` rather than `LookupOnly`: the relay accepts sessions, and a
+    // publisher reaches it by endpoint id, so it has an address worth publishing.
+    let builder = iroh::Endpoint::builder(presets::N0)
+        .transport_config(iroh_live::util::transport_config())
         .secret_key(iroh_secret)
-        .alpns(alpns)
+        .alpns(alpns);
+    let iroh_endpoint = iroh_live::util::with_mdns(builder, iroh_live::util::LanPresence::Announce)
+        .await
         .bind()
         .await?;
 
