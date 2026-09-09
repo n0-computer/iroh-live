@@ -4595,6 +4595,7 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "data-encoding",
  "dirs",
  "http",
  "include_dir",

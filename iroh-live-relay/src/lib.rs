@@ -242,14 +242,38 @@ impl RelayServer {
     fn iroh_secret_key(&self) -> anyhow::Result<SecretKey> {
         let path = self.iroh_secret_key_path();
         if path.try_exists()? {
-            let key = std::fs::read(&path)?;
-            return Ok(SecretKey::from_bytes((&key[..]).try_into()?));
+            let stored = std::fs::read(&path)?;
+            return read_secret_key(&stored).map_err(|err| {
+                anyhow::anyhow!(
+                    "{} holds {} bytes that are not an iroh secret key ({err}). Delete it to \
+                     start over, which gives this relay a new endpoint id and invalidates \
+                     every ticket that names the old one.",
+                    path.display(),
+                    stored.len(),
+                )
+            });
         }
         let key = SecretKey::generate();
         write_private(&path, &key.to_bytes())?;
         info!(path = %path.display(), "generated the relay's iroh identity");
         Ok(key)
     }
+}
+
+/// Reads a stored iroh secret key, in either form the relay has written.
+///
+/// Thirty-two raw bytes is what it writes now. Older builds wrote the same key
+/// as sixty-four lowercase hex characters, which is also what `IROH_SECRET`
+/// takes, and those files are still out there: the identity is the whole point
+/// of the file, so refusing to read one renames the relay and strands every
+/// ticket anyone is holding.
+fn read_secret_key(stored: &[u8]) -> anyhow::Result<SecretKey> {
+    if let Ok(bytes) = <&[u8; 32]>::try_from(stored) {
+        return Ok(SecretKey::from_bytes(bytes));
+    }
+    let text = std::str::from_utf8(stored)
+        .map_err(|_| anyhow::anyhow!("not 32 bytes, and not text either"))?;
+    Ok(text.trim().parse()?)
 }
 
 /// Writes `contents` to `path`, readable by this user alone.
@@ -320,5 +344,36 @@ fn mime_from_path(path: &str) -> &'static str {
         Some("png") => "image/png",
         Some("ico") => "image/x-icon",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The relay wrote its identity as hex before it wrote raw bytes, and a
+    /// file from either build has to open the same relay: the endpoint id is
+    /// what every ticket names.
+    #[test]
+    fn a_stored_key_reads_back_in_either_form() {
+        let key = SecretKey::generate();
+        let raw = key.to_bytes();
+        let hex = data_encoding::HEXLOWER.encode(&raw);
+
+        assert_eq!(read_secret_key(&raw).unwrap().to_bytes(), raw);
+        assert_eq!(read_secret_key(hex.as_bytes()).unwrap().to_bytes(), raw);
+        // Written by an editor, or by a shell redirect that added a newline.
+        let padded = format!("{hex}\n");
+        assert_eq!(read_secret_key(padded.as_bytes()).unwrap().to_bytes(), raw);
+    }
+
+    /// A file that is neither is an error rather than a reason to generate a
+    /// new identity over the top of it.
+    #[test]
+    fn a_file_that_is_not_a_key_is_refused() {
+        assert!(read_secret_key(b"").is_err());
+        assert!(read_secret_key(b"nowhere near a key").is_err());
+        // The right length for hex, and not hex.
+        assert!(read_secret_key(&[b'z'; 64]).is_err());
     }
 }
