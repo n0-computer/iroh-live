@@ -29,6 +29,9 @@ tower-http = { version = "0.6", features = ["cors"] }
 http = "1"
 
 [dev-dependencies]
+# Only to write a key as hex in the identity-file test, the form older builds
+# stored and `IROH_SECRET` still takes.
+data-encoding = "2.9.0"
 iroh = { workspace = true }
 iroh-live = { workspace = true }
 moq-media = { workspace = true, features = ["test-source"] }
