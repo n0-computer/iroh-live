@@ -13,9 +13,39 @@ cargo run -p iroh-live-relay
 cargo run -p iroh-live-relay -- --bind [::]:8443 --http-bind [::]:8443
 ```
 
-The relay serves a built-in web viewer at its HTTP root. Open `https://localhost:4443` in a browser to see the landing page, then paste a ticket to watch a stream.
+Then open **`http://localhost:4443`**, and paste a ticket or broadcast name.
+Direct link: `http://localhost:4443/?name=<TICKET>`
 
-Direct link: `https://localhost:4443?name=<TICKET>`
+`http`, not `https`, and the distinction is the whole of what makes this work:
+
+- **TCP 4443 speaks plain HTTP.** It serves the web viewer and
+  `/certificate.sha256`. Opening `https://localhost:4443` reaches this listener
+  and fails inside TLS, reported by Firefox as "SSL received a record that
+  exceeded the maximum permissible length": that is the browser reading
+  `HTTP/1.1 400` as a TLS record.
+- **UDP 4443 carries WebTransport over HTTP/3**, which is where the media
+  flows. It is the same port number and a different protocol, so the two do not
+  collide. It is not an address you open from the address bar; the page does it
+  for you.
+- **The self-signed certificate needs no exception.** The page fetches its
+  SHA-256 from `/certificate.sha256` over plain HTTP and pins it when opening
+  the WebTransport session, so the browser never prompts. This is why the
+  viewer is served over `http` in the first place: the pinning path in
+  `@moq/net` only runs for an `http:` page URL.
+
+### Browser support
+
+The viewer needs WebTransport, so **Chromium** works and **Safari** does not.
+**Firefox needs 153 or newer**: earlier versions allow only two concurrent
+remote-initiated streams ([bug 2046262](https://bugzilla.mozilla.org/show_bug.cgi?id=2046262)),
+and `@moq/net` refuses them by user agent rather than letting a session stall.
+
+On an older Firefox the client falls back to a WebSocket transport, and this
+relay does not serve one, so the connection fails with a 404 on
+`ws://localhost:4443/<name>`. Adding the fallback means serving the WebSocket
+upgrade on the same TCP port as the viewer, since the client derives the
+WebSocket URL from the page's own origin and `@moq/watch` exposes no override.
+That is a real change rather than a flag, and it is not done.
 
 ## How pull mode works
 

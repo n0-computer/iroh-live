@@ -146,9 +146,24 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
 
     // Machine-parseable lines (used by e2e test fixtures).
     println!("http port: {http_port}");
-    // Human-friendly clickable URLs.
+    // The one address a person types. `http` and not `https` on purpose: this
+    // listener speaks plain HTTP, and the QUIC port next to it carries
+    // WebTransport over HTTP/3 rather than anything a browser will open from
+    // the address bar. Typing `https://localhost:{http_port}` reaches this
+    // listener over TCP and fails inside TLS ("record that exceeded the maximum
+    // permissible length"), which is the browser reading `HTTP/1.1 400` as a
+    // TLS record.
+    //
+    // The self-signed certificate needs no exception either. The page fetches
+    // its fingerprint from `/certificate.sha256` and pins it when it opens the
+    // WebTransport session, so the browser never prompts.
     println!("iroh-live relay listening at http://localhost:{http_port}");
-    println!("iroh-live relay listening at https://localhost:{quic_port}");
+    if quic_port == http_port {
+        println!("  WebTransport on UDP {quic_port}; the page above connects to it for you");
+    } else {
+        println!("  WebTransport on UDP {quic_port}, web viewer on TCP {http_port}");
+    }
+    println!("  needs a browser with WebTransport: Chromium, or Firefox 153+");
 
     let _http_task = AbortOnDropHandle::new(tokio::spawn(async move {
         if let Err(err) = axum::serve(http_listener, static_router).await {

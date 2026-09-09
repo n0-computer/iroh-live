@@ -22,9 +22,11 @@ port. `--bind` and `--http-bind` change the addresses.
 The iroh secret key is persisted under `IROH_LIVE_RELAY_DATA`, or the platform
 data directory, so the endpoint id survives a restart and a ticket keeps working.
 
-Because the certificate is self-signed, a browser needs to be told to trust it.
-`GET /certificate.sha256` returns the fingerprint for pinning. ACME provisioning
-is not implemented.
+The certificate is self-signed, and no browser exception is needed for it:
+`GET /certificate.sha256` returns the fingerprint, and the page pins it when it
+opens the WebTransport session. That pinning path in `@moq/net` only runs for an
+`http:` page URL, which is why the viewer is served over plain HTTP rather than
+TLS. ACME provisioning is not implemented.
 
 ## Watching a P2P stream in a browser
 
@@ -37,8 +39,18 @@ irl publish
 Then open the relay in a browser and paste the ticket, or link straight to it:
 
 ```
-https://localhost:4443/?name=<TICKET>
+http://localhost:4443/?name=<TICKET>
 ```
+
+`http`, not `https`. TCP 4443 speaks plain HTTP and serves the viewer; UDP 4443
+carries the WebTransport session the media flows over, and the page opens that
+itself. Typing the `https` form reaches the plain-HTTP listener and fails inside
+TLS, which Firefox reports as "SSL received a record that exceeded the maximum
+permissible length".
+
+The viewer needs a browser with WebTransport: Chromium works, Safari does not,
+and Firefox needs 153 or newer. `iroh-live-relay/README.md` says why, and what
+an older Firefox does instead.
 
 The relay parses the name as a `LiveTicket`, dials the endpoint inside it over
 iroh, subscribes, and mirrors that one broadcast into its cluster. A second
