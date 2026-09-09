@@ -685,6 +685,13 @@ fn video_decode_config(policy: &PlaybackPolicy) -> moq_video::decode::Config {
     config.kind = policy.decoder.clone();
     config.latency_max = Some(policy.max_latency);
     config.gpu_frames = policy.gpu_frames;
+    // This is a player, so the groups a track still holds are behind the live
+    // edge by definition. A decoder rebuilt on a backend change, or opened on a
+    // rendition switched away from and back to, would otherwise walk that whole
+    // backlog at decode speed before catching up, which a viewer sees as
+    // playback jumping backwards and then sprinting. The default reads
+    // everything, which is what a recorder or an export wants and not this.
+    config.start = moq_video::decode::Start::Latest;
     config
 }
 
@@ -694,6 +701,8 @@ fn audio_decode_config(policy: &PlaybackPolicy) -> moq_audio::decode::Config {
     let mut config = moq_audio::decode::Config::new();
     config.format = moq_audio::Format::F32;
     config.latency_max = Some(policy.max_latency);
+    // The live edge, for the reason the video side gives.
+    config.start = moq_audio::decode::Start::Latest;
     config
 }
 
