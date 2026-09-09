@@ -174,8 +174,19 @@ impl PullState {
     /// session it produces is retired on the usual terms, so a caller that gives
     /// up (a timeout, say) cannot strand a ticket on an entry nobody will ever
     /// connect.
-    pub async fn pull(&self, ticket: &LiveTicket) -> anyhow::Result<PullGuard> {
-        let local_name = ticket.to_string();
+    pub async fn pull(&self, requested: &str, ticket: &LiveTicket) -> anyhow::Result<PullGuard> {
+        // The name the client asked for, not `ticket.to_string()`. A subscriber
+        // is announced the exact path it subscribed to, so mirroring under the
+        // canonical spelling serves a broadcast nobody asked for: a browser that
+        // pasted the ticket without its `iroh-live:` scheme, which parses and is
+        // what the QR code and the publish line both hand out, connected, waited,
+        // and was never announced anything.
+        //
+        // Two spellings of one ticket therefore pull twice. That is the price of
+        // serving what was asked for, and it is the right way round: a duplicate
+        // upstream session costs a connection, and a mismatch costs the viewer
+        // the stream.
+        let local_name = requested.to_owned();
 
         // Claiming and creating happen under the lock the holder task retires
         // under, so a claim and a retirement can never both believe they won: an
@@ -250,9 +261,9 @@ impl PullState {
             "pulling remote broadcast"
         );
 
-        // `local_name` is always `<prefix>/<broadcast_name>` (see
-        // `LiveTicket::to_string`), and `broadcast_name` may itself contain
-        // slashes, so split on the *first* one to recover the prefix.
+        // `local_name` is `<prefix>/<broadcast_name>`, whether it came in with
+        // the `iroh-live:` scheme or without it, and `broadcast_name` may itself
+        // contain slashes, so split on the *first* one to recover the prefix.
         let prefix = local_name
             .split_once('/')
             .map_or(local_name, |(prefix, _)| prefix);

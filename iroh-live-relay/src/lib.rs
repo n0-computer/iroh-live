@@ -193,8 +193,12 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
         // A name that happens to parse as a ticket is a pull request; anything
         // else is an ordinary broadcast name that the cluster already knows or
         // does not.
-        let ticket = extract_name_from_url(&request)
-            .and_then(|name| name.parse::<iroh_live::ticket::LiveTicket>().ok());
+        let ticket = extract_name_from_url(&request).and_then(|name| {
+            // The requested spelling travels with the ticket: it is the path the
+            // subscriber will be announced under, and the two have to agree.
+            let ticket = name.parse::<iroh_live::ticket::LiveTicket>().ok()?;
+            Some((name, ticket))
+        });
         debug!(conn_id, %transport, pull = ticket.is_some(), "accepted connection");
 
         let pull_state = pull_state.clone();
@@ -215,9 +219,9 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
             // connection: dropping the handle drops the guard whether the pull
             // finished or not, which is what tells the pull that this session
             // has stopped wanting the broadcast.
-            let _pull = ticket.map(|ticket| {
+            let _pull = ticket.map(|(name, ticket)| {
                 AbortOnDropHandle::new(tokio::spawn(async move {
-                    match pull_state.pull(&ticket).await {
+                    match pull_state.pull(&name, &ticket).await {
                         Ok(guard) => Some(guard),
                         Err(err) => {
                             warn!(%err, "pull failed for the ticket in the url");

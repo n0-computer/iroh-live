@@ -665,6 +665,48 @@ async fn wait_for_broadcast(cluster: &moq_relay::Cluster, name: &str, present: b
     }
 }
 
+/// A pull is announced under the name the client asked for, not the ticket's
+/// canonical spelling.
+///
+/// A subscriber is only ever announced the exact path it subscribed to, so the
+/// two have to agree. `LiveTicket` parses both `iroh-live:<id>/<name>` and the
+/// bare `<id>/<name>`, and the bare form is what a person ends up pasting, so
+/// mirroring under `ticket.to_string()` served a broadcast nobody had asked
+/// for: the browser connected, waited, and was announced nothing, with the
+/// relay's own log reporting a successful pull.
+#[tokio::test]
+#[serial]
+async fn a_pull_is_announced_under_the_name_that_was_asked_for() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start_prompt().await;
+    let (pub_ep, publisher, broadcast, ticket) = start_publisher("spelling").await;
+
+    let canonical = ticket.to_string();
+    let bare = canonical
+        .strip_prefix("iroh-live:")
+        .expect("a ticket serializes with its scheme")
+        .to_owned();
+    assert_ne!(bare, canonical);
+
+    let pull_state =
+        iroh_live_relay::pull::PullState::new(pull_endpoint().await, relay.cluster.clone())
+            .with_linger(PULL_LINGER);
+
+    let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&bare, &ticket))
+        .await
+        .expect("pull timeout")
+        .expect("pull");
+    assert!(
+        wait_for_broadcast(&relay.cluster, &bare, true).await,
+        "the pull was announced somewhere other than the name that was asked for",
+    );
+
+    drop(guard);
+    drop(broadcast);
+    publisher.shutdown().await;
+    pub_ep.close().await;
+}
+
 /// A pulled session is owned by nothing in the cluster, so it has to be retired
 /// deliberately: once the local session that named the ticket disconnects and
 /// nothing is reading the mirrored broadcast, the connection to the publisher is
@@ -684,7 +726,7 @@ async fn pull_retires_an_unwatched_session() {
         iroh_live_relay::pull::PullState::new(pull_endpoint().await, relay.cluster.clone())
             .with_linger(PULL_LINGER);
 
-    let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&ticket))
+    let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&local_name, &ticket))
         .await
         .expect("pull timeout")
         .expect("pull");
@@ -704,7 +746,7 @@ async fn pull_retires_an_unwatched_session() {
 
     // The retired entry must not be handed out again: the same ticket dials a
     // new session rather than joining one that is already closed.
-    let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&ticket))
+    let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&local_name, &ticket))
         .await
         .expect("re-pull timeout")
         .expect("re-pull");
@@ -735,7 +777,7 @@ async fn pull_survives_a_reader_holding_no_guard() {
         iroh_live_relay::pull::PullState::new(pull_endpoint().await, relay.cluster.clone())
             .with_linger(PULL_LINGER);
 
-    let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&ticket))
+    let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&local_name, &ticket))
         .await
         .expect("pull timeout")
         .expect("pull");
