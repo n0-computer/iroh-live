@@ -171,6 +171,23 @@ impl EguiVideoRenderer {
     }
 }
 
+#[cfg(feature = "wgpu-render")]
+impl Drop for EguiVideoRenderer {
+    /// Gives the registration back, which nothing else will.
+    ///
+    /// `register_native_texture` puts an entry in the egui renderer's own map,
+    /// keyed by an id this owns and holding a bind group built from the
+    /// texture view. Dropping this renderer drops the texture, so the entry
+    /// then describes a resource that is gone, and it stays there for the life
+    /// of the render state: a room whose tiles come and go accumulates one per
+    /// tile it ever drew.
+    fn drop(&mut self) {
+        if let Some(id) = self.texture_id.take() {
+            self.render_state.renderer.write().free_texture(&id);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // FrameView: a placeholder-or-drawn texture for one raw frame stream
 // ---------------------------------------------------------------------------
@@ -281,6 +298,9 @@ impl FrameView {
 pub struct VideoTrackView {
     track: VideoTrack,
     frame_view: FrameView,
+    /// The window to wake, kept so [`set_track`](Self::set_track) can build a
+    /// waker for the replacement.
+    ctx: egui::Context,
     /// Wakes the window when a picture lands. Dropping it stops the waking.
     _wake: n0_future::task::AbortOnDropHandle<()>,
 }
@@ -304,21 +324,17 @@ impl fmt::Debug for VideoTrackView {
 /// added latency and a spacing that wobbles between one tick and two. That is
 /// what a viewer sees as judder on an otherwise well paced stream.
 ///
-/// Waiting here rather than taking: the task only wakes the window, and the
-/// drawing pass is what takes the picture.
+/// Watching rather than taking: the task only wakes the window, and the drawing
+/// pass is what takes the picture.
 #[cfg(feature = "wgpu-render")]
 fn wake_on_frame(
     ctx: &egui::Context,
     track: &VideoTrack,
 ) -> n0_future::task::AbortOnDropHandle<()> {
     let ctx = ctx.clone();
-    let slot = track.frame_slot();
+    let mut watcher = track.frames().watch();
     n0_future::task::AbortOnDropHandle::new(n0_future::task::spawn(async move {
-        loop {
-            slot.arrived().await;
-            if slot.is_closed() && !slot.has_value() {
-                return;
-            }
+        while watcher.changed().await {
             ctx.request_repaint();
         }
     }))
@@ -332,6 +348,7 @@ impl VideoTrackView {
             _wake: wake_on_frame(ctx, &track),
             track,
             frame_view: FrameView::new(ctx, name),
+            ctx: ctx.clone(),
         }
     }
 
@@ -346,6 +363,7 @@ impl VideoTrackView {
             _wake: wake_on_frame(ctx, &track),
             track,
             frame_view: FrameView::new_wgpu(ctx, name, render_state),
+            ctx: ctx.clone(),
         }
     }
 
@@ -354,13 +372,14 @@ impl VideoTrackView {
         &self.track
     }
 
-    /// Returns a mutable reference to the underlying track.
-    pub fn track_mut(&mut self) -> &mut VideoTrack {
-        &mut self.track
-    }
-
     /// Replaces the underlying track.
+    ///
+    /// The waker is rebuilt with it. It watches one track's slot, so replacing
+    /// the track alone left it watching the one that was taken away: the new
+    /// track's pictures then reached the screen only when something else asked
+    /// for a repaint, which is the judder the waker exists to remove.
     pub fn set_track(&mut self, track: VideoTrack) {
+        self._wake = wake_on_frame(&self.ctx, &track);
         self.track = track;
     }
 

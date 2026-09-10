@@ -73,7 +73,9 @@ impl<T> FrameSender<T> {
     /// Never blocks. Wakes any [`FrameReceiver::recv`] waiter.
     pub fn send(&self, value: T) {
         *self.inner.value.lock().expect("poisoned") = Some(value);
-        self.inner.produced.fetch_add(1, Ordering::Relaxed);
+        // Released so a `FrameWatcher` that reads this counter sees the value
+        // that was put in the slot before it, rather than pairing with nothing.
+        self.inner.produced.fetch_add(1, Ordering::Release);
         self.inner.notify.notify_waiters();
     }
 }
@@ -136,28 +138,21 @@ impl<T> FrameReceiver<T> {
         }
     }
 
-    /// Waits until a value is there to take, or the sender is gone.
+    /// Returns a watcher that reports arrivals without consuming them.
     ///
-    /// The difference from [`recv`](Self::recv) is that this leaves the value
-    /// in the slot. That is what a drawing loop wants: something has to be woken
-    /// when a picture arrives, and it is not the thing that takes it.
+    /// That is what a drawing loop wants: something has to be woken when a
+    /// picture arrives, and it is not the thing that takes it. Without it a
+    /// renderer has to poll, and polling a slot fed by a playout clock adds its
+    /// own interval to every frame's latency and quantises the spacing between
+    /// them. A 30fps stream sampled every 16ms is presented on the sampler's
+    /// grid rather than the stream's, which looks like judder because it is.
     ///
-    /// Without this a renderer has to poll, and polling a slot fed by a playout
-    /// clock adds its own interval to every frame's latency and quantises the
-    /// spacing between them. A 30fps stream sampled every 16ms is presented on
-    /// the sampler's grid rather than the stream's, which looks like judder
-    /// because it is.
-    pub async fn arrived(&self) {
-        loop {
-            // Registered before the check, for the reason `recv` gives.
-            let notified = self.inner.notify.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-
-            if self.has_value() || self.is_closed() {
-                return;
-            }
-            notified.await;
+    /// The watcher owns a handle of its own, so it outlives a borrow of the
+    /// receiver and can be moved into the task that does the waking.
+    pub fn watch(&self) -> FrameWatcher<T> {
+        FrameWatcher {
+            inner: Arc::clone(&self.inner),
+            seen: self.inner.produced.load(Ordering::Acquire),
         }
     }
 
@@ -181,6 +176,58 @@ impl<T> FrameReceiver<T> {
             }
             if self.is_closed() {
                 return None;
+            }
+            notified.await;
+        }
+    }
+}
+
+/// Watches a slot for arrivals, without taking anything out of it.
+///
+/// From [`FrameReceiver::watch`]. Counts sends rather than looking at the slot,
+/// which is what keeps [`changed`](Self::changed) from returning over and over
+/// while a value nobody has taken yet sits there: a waker that did that would
+/// spin, and between a frame landing and the drawing pass taking it there is no
+/// point at which it would yield.
+pub struct FrameWatcher<T> {
+    inner: Arc<SlotInner<T>>,
+    /// How many sends this watcher has already reported.
+    seen: u64,
+}
+
+impl<T> std::fmt::Debug for FrameWatcher<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FrameWatcher")
+            .field("seen", &self.seen)
+            .field("produced", &self.inner.produced.load(Ordering::Relaxed))
+            .finish()
+    }
+}
+
+impl<T> FrameWatcher<T> {
+    /// Waits until something has been sent that this watcher has not reported,
+    /// and returns `false` once every sender is gone.
+    ///
+    /// Sends that arrive faster than the watcher reports them coalesce into
+    /// one, which is right for a renderer: only the newest value is still in
+    /// the slot.
+    pub async fn changed(&mut self) -> bool {
+        loop {
+            // Registered before the check, for the reason [`FrameReceiver::recv`]
+            // gives.
+            let notified = self.inner.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            let produced = self.inner.produced.load(Ordering::Acquire);
+            if produced != self.seen {
+                self.seen = produced;
+                return true;
+            }
+            // Checked after the count, so a value sent just before the last
+            // sender dropped is reported before the closure is.
+            if self.inner.sender_count.load(Ordering::Acquire) == 0 {
+                return false;
             }
             notified.await;
         }
@@ -299,24 +346,76 @@ mod tests {
         }
     }
 
-    /// `arrived` leaves the value where it is: the drawing pass is what takes
+    /// A watcher leaves the value where it is: the drawing pass is what takes
     /// it, and a waker that consumed the picture would draw nothing.
     #[tokio::test]
-    async fn arrived_waits_without_taking() {
+    async fn a_watcher_reports_without_taking() {
         let (tx, rx) = frame_channel::<u32>();
+        let mut watcher = rx.watch();
         tx.send(7);
-        rx.arrived().await;
-        assert!(rx.has_value(), "arrived took the value");
+        assert!(watcher.changed().await);
+        assert!(rx.has_value(), "the watcher took the value");
         assert_eq!(rx.take(), Some(7));
+    }
+
+    /// Regression: the old `arrived` returned while a value sat in the slot, so
+    /// a waker that does not consume had no pending point between a frame
+    /// landing and the drawing pass taking it. It pinned a runtime worker for
+    /// that whole window, every frame.
+    #[tokio::test]
+    async fn a_reported_value_nobody_took_does_not_report_again() {
+        let (tx, rx) = frame_channel::<u32>();
+        let mut watcher = rx.watch();
+        tx.send(7);
+        assert!(watcher.changed().await);
+        // Deliberately not taken, which is the case that used to spin.
+        assert!(rx.has_value());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), watcher.changed())
+                .await
+                .is_err(),
+            "an unconsumed value must not be reported a second time",
+        );
+    }
+
+    /// Sends that outrun the watcher coalesce, because only the newest value is
+    /// still in the slot for it to point at.
+    #[tokio::test]
+    async fn sends_that_outrun_the_watcher_coalesce() {
+        let (tx, rx) = frame_channel::<u32>();
+        let mut watcher = rx.watch();
+        tx.send(1);
+        tx.send(2);
+        tx.send(3);
+        assert!(watcher.changed().await);
+        assert_eq!(rx.take(), Some(3));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), watcher.changed())
+                .await
+                .is_err(),
+            "three sends before one report are one report",
+        );
     }
 
     /// It returns when the last sender goes, so a waker parked on a track that
     /// ended is not parked forever.
     #[tokio::test]
-    async fn arrived_returns_when_the_sender_goes() {
+    async fn a_watcher_stops_when_the_sender_goes() {
         let (tx, rx) = frame_channel::<u32>();
+        let mut watcher = rx.watch();
         drop(tx);
-        rx.arrived().await;
-        assert!(rx.is_closed());
+        assert!(!watcher.changed().await);
+    }
+
+    /// A value sent just before the last sender dropped is still reported, so
+    /// the final picture of a track reaches the screen.
+    #[tokio::test]
+    async fn a_final_value_is_reported_before_the_close() {
+        let (tx, rx) = frame_channel::<u32>();
+        let mut watcher = rx.watch();
+        tx.send(9);
+        drop(tx);
+        assert!(watcher.changed().await, "the last frame was skipped");
+        assert!(!watcher.changed().await);
     }
 }
