@@ -48,11 +48,20 @@ impl LocalTask {
 
     /// Waits until the task has finished and released its device.
     ///
-    /// Returns immediately once it has, and on every later call.
+    /// Returns immediately once it has, and on every later call. Cancelling the
+    /// wait leaves the task where it was, so a later call waits again: taking
+    /// the receiver up front meant a cancelled wait was indistinguishable from
+    /// a completed one, and the next caller was told the device was free while
+    /// the thread still held it.
     pub async fn joined(&mut self) {
-        if let Some(rx) = self.joined.take() {
-            let _ = rx.await;
-        }
+        let Some(rx) = self.joined.as_mut() else {
+            return;
+        };
+        // By mutable reference, so dropping this future keeps the receiver.
+        let _ = rx.await;
+        // Cleared only now: `oneshot::Receiver` must not be polled again once
+        // it has resolved.
+        self.joined = None;
     }
 }
 
@@ -97,5 +106,48 @@ where
     LocalTask {
         shutdown,
         joined: Some(rx),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    /// Regression: `joined` took its receiver before awaiting it, so a wait
+    /// that was cancelled looked exactly like one that had completed. The next
+    /// caller was told the device had been released while the thread was still
+    /// holding it, which is the one thing this handle exists to answer.
+    #[tokio::test]
+    async fn a_cancelled_join_still_waits_the_next_time() {
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let mut task = spawn("test-late-release", move |_shutdown| async move {
+            // Holds the "device" until the test says otherwise.
+            let _ = released.recv();
+        });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), task.joined())
+                .await
+                .is_err(),
+            "the task has not released anything yet",
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), task.joined())
+                .await
+                .is_err(),
+            "a cancelled wait must not report the task as finished",
+        );
+
+        release.send(()).expect("the task is still running");
+        tokio::time::timeout(Duration::from_secs(5), task.joined())
+            .await
+            .expect("the task released its device");
+        // And every later call returns at once, without polling a receiver
+        // that has already resolved.
+        tokio::time::timeout(Duration::from_secs(5), task.joined())
+            .await
+            .expect("a second call after completion returns");
     }
 }

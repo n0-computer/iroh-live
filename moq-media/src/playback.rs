@@ -5,15 +5,21 @@
 //! This module owns that one, opens it on first use, and lets a caller choose
 //! or change the device it drives.
 
-use std::sync::OnceLock;
-
 use n0_error::Result;
+use tokio::sync::OnceCell;
 use tracing::info;
 
 use crate::subscribe::SubscribeError;
 
 /// The process-wide output engine, opened on first use.
-static ENGINE: OnceLock<moq_audio::playback::Engine> = OnceLock::new();
+///
+/// Asynchronous rather than a [`OnceLock`](std::sync::OnceLock), because
+/// opening it is asynchronous and the two cannot be combined: checking a
+/// synchronous cell, awaiting the open, and then installing the result leaves a
+/// window in which two callers both open a device. On an output that allows one
+/// client at a time the loser's open fails, so a caller was told the speaker
+/// was unavailable at the moment the engine it wanted became ready.
+static ENGINE: OnceCell<moq_audio::playback::Engine> = OnceCell::const_new();
 
 /// Lists the output devices the host offers.
 ///
@@ -30,20 +36,21 @@ pub async fn devices() -> Result<Vec<moq_audio::playback::Device>, SubscribeErro
 /// Opens the shared engine on a chosen device.
 ///
 /// Call this before subscribing if the default output is not the one you want.
-/// A later call does nothing, since the engine is already open; use
-/// [`switch`] to move to another device after that.
+/// A later call does nothing and reports success, since the engine is already
+/// open on whichever device got there first; use [`switch`] to move to another
+/// device after that.
 ///
 /// # Errors
 ///
-/// Fails if the device cannot be opened.
+/// Fails if the device cannot be opened, and only when this call is the one
+/// that opens it. A failure leaves the engine unopened, so a later call can try
+/// again.
 pub async fn open(config: moq_audio::playback::Config) -> Result<(), SubscribeError> {
-    if ENGINE.get().is_some() {
-        return Ok(());
-    }
-    let opened = moq_audio::playback::Engine::open(config).await?;
-    // A concurrent caller may have won the race; theirs is as good as ours, and
-    // the loser's engine drops here, closing the device it opened.
-    ENGINE.get_or_init(|| opened);
+    ENGINE
+        .get_or_try_init(|| async {
+            Ok::<_, SubscribeError>(moq_audio::playback::Engine::open(config).await?)
+        })
+        .await?;
     Ok(())
 }
 
@@ -61,13 +68,17 @@ pub async fn switch(config: moq_audio::playback::Config) -> Result<(), Subscribe
 }
 
 /// Returns the shared engine, opening the default device on first use.
+///
+/// # Errors
+///
+/// Fails if the default output device cannot be opened.
 pub(crate) async fn engine() -> Result<&'static moq_audio::playback::Engine, SubscribeError> {
-    if let Some(engine) = ENGINE.get() {
-        return Ok(engine);
-    }
-    info!("opening the default audio output");
-    let opened = moq_audio::playback::Engine::open(Default::default()).await?;
-    Ok(ENGINE.get_or_init(|| opened))
+    ENGINE
+        .get_or_try_init(|| async {
+            info!("opening the default audio output");
+            Ok::<_, SubscribeError>(moq_audio::playback::Engine::open(Default::default()).await?)
+        })
+        .await
 }
 
 /// Builds an echo canceller tapped off the output mix.
