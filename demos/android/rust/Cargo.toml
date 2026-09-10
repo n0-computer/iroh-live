@@ -29,7 +29,12 @@ moq-net = { workspace = true }
 # has to ask for it. Safe here and not in `moq-media-android`, because every
 # dependency in this section is already `cfg(target_os = "android")`.
 moq-video = { workspace = true, features = ["mediacodec"] }
-jni = "0.22"
+# Held at 0.21. jni 0.22 splits `JNIEnv` into an owned `Env` and an
+# `EnvUnowned` that carries no JNI API of its own, which is a safety model
+# rather than a rename: every entry point in this bridge has to be rewritten
+# around it. Worth doing deliberately, on a machine that can build and run for
+# a device, rather than blind.
+jni = "0.21"
 n0-error = "1"
 # `ANativeWindow_fromSurface`, for handing the Android surface to EGL. The
 # hardware-buffer types come from `moq_video::ndk` instead, so a version bump

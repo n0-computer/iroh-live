@@ -402,8 +402,11 @@ mod tests {
             samples.extend(
                 frame
                     .data
-                    .chunks_exact(4)
-                    .map(|b| f32::from_le_bytes(b.try_into().expect("four bytes"))),
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .copied()
+                    .map(f32::from_le_bytes),
             );
         }
         decoded
@@ -419,7 +422,7 @@ mod tests {
         );
         // Interleaved, so the left channel rises and the right one falls.
         let scale = f32::from(i16::MAX);
-        for (index, pair) in samples.chunks_exact(2).enumerate() {
+        for (index, pair) in samples.as_chunks::<2>().0.iter().enumerate() {
             let expected = index as f32 / scale;
             assert!(
                 (pair[0] - expected).abs() < 1e-3 && (pair[1] + expected).abs() < 1e-3,
