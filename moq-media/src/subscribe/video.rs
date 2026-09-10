@@ -725,6 +725,8 @@ mod tests {
         assert_eq!(cadence.decoded(start + super::CADENCE_EVERY), None);
     }
 
+    use std::collections::BTreeSet;
+
     use moq_video::{Size, Surface, encode};
     use n0_watcher::Watcher as _;
 
@@ -792,24 +794,36 @@ mod tests {
         units
     }
 
-    /// Feeds `units[range]` into `import`, truncating the access unit at
-    /// `broken` to a third of its bytes.
+    /// The presentation time of `picture`, in the microseconds a timestamp
+    /// carries.
+    fn pts(picture: u64) -> u64 {
+        picture * FRAME_MICROS
+    }
+
+    /// Feeds `units` into `import`, truncating the access unit whose
+    /// presentation time is `broken` to a third of its bytes.
     ///
     /// A truncated access unit is what a decoder sees after a group is skipped
     /// under congestion: the slice data stops mid-picture, the reference chain
     /// breaks, and nothing decodes again until the next keyframe.
+    ///
+    /// The break is named by presentation time rather than by position in
+    /// `units`, because the two are not the same thing. openh264's rate
+    /// control drops a picture from this pattern, so the encoder emits
+    /// twenty-nine access units for thirty pictures and every index past the
+    /// drop names a later picture than it looks like. Indexing cost a day: the
+    /// break landed one picture further on than intended, and the two
+    /// platforms then disagreed about whether that picture was concealed.
     fn feed(
         import: &mut moq_mux::codec::h264::Import<crate::catalog::IrohLiveExt>,
         split: &mut moq_mux::codec::h264::Split,
         units: &[encode::Encoded],
-        range: std::ops::Range<usize>,
-        broken: usize,
+        broken: Option<u64>,
     ) -> TestResult {
-        for index in range {
-            let unit = &units[index];
+        for unit in units {
             let mut frames = split.decode(&unit.payload, unit.timestamp)?;
             frames.extend(split.flush(unit.timestamp)?);
-            if index == broken {
+            if broken == Some(unit.timestamp.as_micros() as u64) {
                 for frame in &mut frames {
                     frame.payload = frame.payload.slice(..frame.payload.len() / 3);
                 }
@@ -832,7 +846,7 @@ mod tests {
     /// So the first access unit goes out on its own, because the catalog
     /// rendition is derived from its SPS and there is nothing to open without
     /// it, and everything else follows once the reader is subscribed.
-    async fn publish(broken: usize) -> TestResult<(Reader, Vec<u64>, Published)> {
+    async fn publish(broken: Option<u64>) -> TestResult<(Reader, Vec<u64>, Vec<u64>, Published)> {
         let mut broadcast = moq_net::broadcast::Info::new().produce();
         let consumer = broadcast.consume();
         let catalog = moq_mux::catalog::Producer::with_catalog(&mut broadcast, Catalog::default())?;
@@ -841,10 +855,17 @@ mod tests {
             moq_mux::codec::h264::Import::new(track, catalog.reserve(), Default::default())?;
         let mut split = moq_mux::codec::h264::Split::new();
         let units = encoded_stream();
+        let published: Vec<u64> = units
+            .iter()
+            .map(|unit| unit.timestamp.as_micros() as u64)
+            .collect();
 
         // The whole of the first group, so the only live edge a reader can open
-        // at is inside it, whichever way its start policy resolves.
-        feed(&mut import, &mut split, &units, 0..GOP as usize, usize::MAX)?;
+        // at is inside it, whichever way its start policy resolves. Split by
+        // presentation time rather than by count, for the reason `feed` gives.
+        let boundary =
+            units.partition_point(|unit| (unit.timestamp.as_micros() as u64) < pts(GOP.into()));
+        feed(&mut import, &mut split, &units[..boundary], None)?;
 
         // The latency ceiling would otherwise have the container consumer skip
         // ahead of the break rather than deliver it.
@@ -880,17 +901,12 @@ mod tests {
         let first = first.timestamp.as_micros() as u64;
         assert_eq!(first, 0, "the reader opened past the first picture");
 
-        feed(
-            &mut import,
-            &mut split,
-            &units,
-            GOP as usize..units.len(),
-            broken,
-        )?;
+        feed(&mut import, &mut split, &units[boundary..], broken)?;
         import.finish()?;
 
         Ok((
             reader,
+            published,
             vec![first],
             Published {
                 _broadcast: broadcast,
@@ -943,23 +959,23 @@ mod tests {
         seen
     }
 
-    /// The access unit this pair truncates.
+    /// The picture whose access unit this pair truncates.
     ///
-    /// Inside the *second* group: the first is published before anyone
+    /// Inside the second group: the first is published before anyone
     /// subscribes, so that the live edge a reader opens at is inside it, and a
     /// break there would be one the reader started after. The keyframe opening
     /// the third group is what repairs the damage.
-    const BROKEN: usize = GOP as usize + 3;
+    const BROKEN: u64 = GOP as u64 + 3;
 
-    /// The pictures a break at [`BROKEN`] costs: everything from the one after
-    /// it up to the keyframe that opens the next group.
+    /// Publishes one stream and reads it to the end.
     ///
-    /// From the picture *after* the break rather than the break itself.
-    /// Whether the decoder conceals a truncated picture or drops it is its own
-    /// business, and openh264 conceals this one. What it cannot do is decode
-    /// the pictures that reference it.
-    fn darkened() -> impl Iterator<Item = u64> {
-        (BROKEN as u64 + 1..u64::from(GOP) * 2).map(|picture| picture * FRAME_MICROS)
+    /// Returns the pictures the encoder produced and the pictures the reader
+    /// delivered, so a caller can compare the two rather than assume they
+    /// match: the encoder does not emit one access unit per input picture.
+    async fn read_stream(broken: Option<u64>) -> TestResult<(BTreeSet<u64>, BTreeSet<u64>)> {
+        let (mut reader, published, mut seen, _published) = publish(broken).await?;
+        seen.extend(read_all(&mut reader).await);
+        Ok((published.into_iter().collect(), seen.into_iter().collect()))
     }
 
     /// Regression: one access unit the decoder refuses used to end the reader,
@@ -977,61 +993,58 @@ mod tests {
     /// counter are covered by the unit tests below.
     #[tokio::test]
     async fn a_broken_access_unit_does_not_end_playback() -> TestResult {
-        let (mut reader, mut seen, _published) = publish(BROKEN).await?;
-        seen.extend(read_all(&mut reader).await);
+        let (encoded, intact) = read_stream(None).await?;
+        let (_, broken) = read_stream(Some(pts(BROKEN))).await?;
 
-        // Three assertions, and two of them are about the test rather than the
-        // code. That the reader reached the break, and that the break cost the
-        // rest of its group, are what tell a recovery apart from a stream whose
-        // damaged part was never read.
+        // What the break cost, measured rather than predicted. How many
+        // pictures a decoder conceals before giving up on a reference chain is
+        // its own business and the platforms disagree: macOS hands over the
+        // truncated picture and Linux drops it. Both agree on where the damage
+        // stops, which is the claim worth making.
+        let lost: Vec<u64> = intact.difference(&broken).copied().collect();
+        let group = pts(BROKEN)..pts(u64::from(GOP) * 2);
+
         assert!(
-            seen.contains(&0),
-            "the reader started after the break, so nothing here was exercised: got {seen:?}",
+            broken.iter().any(|&picture| picture < group.start),
+            "the reader started after the break, so nothing here was exercised: got {broken:?}",
         );
-        for pts in darkened() {
+        assert!(
+            !lost.is_empty(),
+            "the truncated access unit cost no picture, so there was nothing to \
+             recover from: got {broken:?}",
+        );
+        for picture in &lost {
             assert!(
-                !seen.contains(&pts),
-                "picture {pts} arrived from between the break and the next \
-                 keyframe, so the truncated access unit did not cost the \
-                 reference chain and there was nothing to recover from: \
-                 got {seen:?}",
+                group.contains(picture),
+                "picture {picture} was lost outside the group holding the break, \
+                 so the damage is not the break: lost {lost:?} of {encoded:?}",
             );
         }
         assert!(
-            seen.contains(&((PICTURES - 1) * FRAME_MICROS)),
-            "the reader stopped at the break: got {seen:?}",
+            broken.contains(&pts(u64::from(GOP) * 2)),
+            "the keyframe after the break never arrived: got {broken:?}",
+        );
+        assert!(
+            broken.contains(encoded.last().expect("the encoder produced pictures")),
+            "the reader stopped before the end: got {broken:?}",
         );
         Ok(())
     }
 
-    /// The control for the test above: an intact stream plays to the end, so a
-    /// broken one that reaches the second keyframe really did recover rather
-    /// than the whole track having been short, and the pictures the break costs
-    /// really are the break rather than the way the stream is published.
+    /// The control: with nothing broken the reader delivers every picture the
+    /// encoder produced.
+    ///
+    /// Exact rather than approximate, and it is what licenses the comparison
+    /// above. `encoded` is what the encoder emitted, which is not one access
+    /// unit per input picture: openh264 drops one under its own rate control,
+    /// and reading that as damage is the mistake this pair is built to avoid.
     #[tokio::test]
     async fn an_intact_stream_plays_to_the_end() -> TestResult {
-        let (mut reader, mut seen, _published) = publish(usize::MAX).await?;
-        seen.extend(read_all(&mut reader).await);
-
-        assert!(
-            seen.contains(&((PICTURES - 1) * FRAME_MICROS)),
-            "the last picture never arrived: got {seen:?}",
+        let (encoded, seen) = read_stream(None).await?;
+        assert_eq!(
+            seen, encoded,
+            "an intact stream delivers every picture that was encoded",
         );
-        // Not every picture: one, the first inter-frame of the first group
-        // published after the subscription, is absent from an intact stream
-        // too. It is absent identically from the broken one, so it does not
-        // confound the comparison below, and chasing it is not what these two
-        // tests are for. Hence naming the pictures rather than counting them.
-        //
-        // Every picture the test above requires to be missing. Nothing here is
-        // broken, so all of them arrive, which is what makes that blackout
-        // evidence of the break rather than of how this stream is published.
-        for pts in darkened() {
-            assert!(
-                seen.contains(&pts),
-                "an intact stream delivers picture {pts}, which a break costs: got {seen:?}",
-            );
-        }
         Ok(())
     }
 
