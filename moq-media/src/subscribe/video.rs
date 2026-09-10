@@ -830,7 +830,9 @@ mod tests {
     /// So the first access unit goes out on its own, because the catalog
     /// rendition is derived from its SPS and there is nothing to open without
     /// it, and everything else follows once the reader is subscribed.
-    async fn publish(broken: usize) -> TestResult<(RemoteBroadcast, VideoTrack, Published)> {
+    async fn publish(
+        broken: usize,
+    ) -> TestResult<(RemoteBroadcast, VideoTrack, Vec<u64>, Published)> {
         let mut broadcast = moq_net::broadcast::Info::new().produce();
         let consumer = broadcast.consume();
         let catalog = moq_mux::catalog::Producer::with_catalog(&mut broadcast, Catalog::default())?;
@@ -840,7 +842,9 @@ mod tests {
         let mut split = moq_mux::codec::h264::Split::new();
         let units = encoded_stream();
 
-        feed(&mut import, &mut split, &units, 0..1, usize::MAX)?;
+        // The whole of the first group, so the only live edge a reader can open
+        // at is inside it, whichever way its start policy resolves.
+        feed(&mut import, &mut split, &units, 0..GOP as usize, usize::MAX)?;
 
         // The latency ceiling would otherwise have the container consumer skip
         // ahead of the break rather than deliver it.
@@ -862,12 +866,36 @@ mod tests {
         }
         let track = open(&remote, "video").await?;
 
-        feed(&mut import, &mut split, &units, 1..units.len(), broken)?;
+        // Read one picture before publishing any more, and hand it back so the
+        // caller can count it. Opening the track is not enough: the reader's
+        // cursor is only fixed once it has actually read, so publishing the
+        // rest first left it opening at whatever the live edge had become by
+        // then. On this machine that was still the first group and the test
+        // passed; on a slower one it was the last, the reader never saw the
+        // break, and macOS CI said so.
+        let first = tokio::time::timeout(Duration::from_secs(10), track.recv())
+            .await
+            .map_err(|_| "the reader produced no picture from the first group")?
+            .ok_or("the video track ended before its first picture")?;
+        let first = first.timestamp.as_micros() as u64;
+        assert!(
+            first < u64::from(GOP) * FRAME_MICROS,
+            "the reader opened past the first group, at {first}",
+        );
+
+        feed(
+            &mut import,
+            &mut split,
+            &units,
+            GOP as usize..units.len(),
+            broken,
+        )?;
         import.finish()?;
 
         Ok((
             remote,
             track,
+            vec![first],
             Published {
                 _broadcast: broadcast,
                 _catalog: catalog,
@@ -910,9 +938,13 @@ mod tests {
         seen
     }
 
-    /// The access unit this pair truncates, and the keyframe that repairs the
-    /// damage. Picture 3 is inside the first group, so two keyframes follow it.
-    const BROKEN: usize = 3;
+    /// The access unit this pair truncates.
+    ///
+    /// Inside the *second* group: the first is published before anyone
+    /// subscribes, so that the live edge a reader opens at is inside it, and a
+    /// break there would be one the reader started after. The keyframe opening
+    /// the third group is what repairs the damage.
+    const BROKEN: usize = GOP as usize + 3;
 
     /// Regression: one access unit the decoder refuses used to end the reader,
     /// which dropped the decoder and the subscription with it. A player showed
@@ -929,11 +961,16 @@ mod tests {
     /// counter are covered by the unit tests below.
     #[tokio::test]
     async fn a_broken_access_unit_does_not_end_playback() -> TestResult {
-        let (_broadcast, track, _published) = publish(BROKEN).await?;
+        let (_broadcast, track, mut seen, _published) = publish(BROKEN).await?;
+        seen.extend(play(&track).await);
 
-        let seen = play(&track).await;
         let broke = BROKEN as u64 * FRAME_MICROS;
-        let recovered = u64::from(GOP) * FRAME_MICROS;
+        // From the picture *after* the break, not from the break itself.
+        // Whether the decoder conceals the truncated picture or drops it is its
+        // own business, and openh264 conceals this one. What it cannot do is
+        // decode the pictures that reference it.
+        let dark = (BROKEN as u64 + 1) * FRAME_MICROS..u64::from(GOP) * 2 * FRAME_MICROS;
+        let recovered = dark.end;
 
         // Three assertions, and two of them are about the test rather than the
         // code. That the reader reached the break, and that the break cost the
@@ -944,7 +981,7 @@ mod tests {
             "the reader started after the break, so nothing here was exercised: got {seen:?}",
         );
         assert!(
-            !seen.iter().any(|&pts| (broke..recovered).contains(&pts)),
+            !seen.iter().any(|&pts| dark.contains(&pts)),
             "a picture arrived from between the break and the next keyframe, so \
              the truncated access unit did not cost the reference chain and \
              there was nothing to recover from: got {seen:?}",
@@ -962,18 +999,17 @@ mod tests {
     /// really are the break rather than the way the stream is published.
     #[tokio::test]
     async fn an_intact_stream_plays_to_the_end() -> TestResult {
-        let (_broadcast, track, _published) = publish(usize::MAX).await?;
+        let (_broadcast, track, mut seen, _published) = publish(usize::MAX).await?;
+        seen.extend(play(&track).await);
 
-        let seen = play(&track).await;
         let last = (PICTURES - 1) * FRAME_MICROS;
         assert!(
             seen.iter().any(|&pts| pts >= last),
             "the last picture never arrived: got {seen:?}",
         );
-        let broke = BROKEN as u64 * FRAME_MICROS;
-        let recovered = u64::from(GOP) * FRAME_MICROS;
+        let dark = (BROKEN as u64 + 1) * FRAME_MICROS..u64::from(GOP) * 2 * FRAME_MICROS;
         assert!(
-            seen.iter().any(|&pts| (broke..recovered).contains(&pts)),
+            seen.iter().any(|&pts| dark.contains(&pts)),
             "an intact stream delivers the pictures a break costs: got {seen:?}",
         );
         Ok(())
