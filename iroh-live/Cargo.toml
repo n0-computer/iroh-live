@@ -53,7 +53,7 @@ tracing-subscriber = "0.3.20"
 # ELF initialiser, before the test harness has spawned a thread.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 ctor = "0.4"
-patchbay = "0.1.0"
+patchbay = "0.7.0"
 
 [lints]
 workspace = true
