@@ -726,6 +726,7 @@ mod tests {
     }
 
     use moq_video::{Size, Surface, encode};
+    use n0_watcher::Watcher as _;
 
     use super::*;
     use crate::{catalog::Catalog, playout::PlaybackPolicy};
@@ -789,22 +790,21 @@ mod tests {
         units
     }
 
-    /// Publishes the encoded stream as a broadcast, with the access unit at
-    /// `broken` truncated to a third of its bytes.
+    /// Feeds `units[range]` into `import`, truncating the access unit at
+    /// `broken` to a third of its bytes.
     ///
     /// A truncated access unit is what a decoder sees after a group is skipped
     /// under congestion: the slice data stops mid-picture, the reference chain
     /// breaks, and nothing decodes again until the next keyframe.
-    async fn publish(broken: usize) -> TestResult<(RemoteBroadcast, Published)> {
-        let mut broadcast = moq_net::broadcast::Info::new().produce();
-        let consumer = broadcast.consume();
-        let catalog = moq_mux::catalog::Producer::with_catalog(&mut broadcast, Catalog::default())?;
-        let track = broadcast.create_track("video", Some(catalog.track_info()))?;
-        let mut import =
-            moq_mux::codec::h264::Import::new(track, catalog.reserve(), Default::default())?;
-
-        let mut split = moq_mux::codec::h264::Split::new();
-        for (index, unit) in encoded_stream().into_iter().enumerate() {
+    fn feed(
+        import: &mut moq_mux::codec::h264::Import<crate::catalog::IrohLiveExt>,
+        split: &mut moq_mux::codec::h264::Split,
+        units: &[encode::Encoded],
+        range: std::ops::Range<usize>,
+        broken: usize,
+    ) -> TestResult {
+        for index in range {
+            let unit = &units[index];
             let mut frames = split.decode(&unit.payload, unit.timestamp)?;
             frames.extend(split.flush(unit.timestamp)?);
             if index == broken {
@@ -814,19 +814,60 @@ mod tests {
             }
             import.decode(frames)?;
         }
-        import.finish()?;
+        Ok(())
+    }
 
-        // Everything is published before anyone subscribes, so a latency ceiling
-        // would have the container consumer skip straight to the last group and
-        // never reach the break this test is about.
+    /// Publishes a stream whose access unit at `broken` is truncated, and opens
+    /// a track that reads it.
+    ///
+    /// The order here is the point of the helper. A player opens its decoder at
+    /// the live edge, so an access unit published before the reader subscribed
+    /// is one the reader never sees. Publishing the whole stream up front left
+    /// this test asserting only that pictures arrived from a group the reader
+    /// had started *after*, which an intact stream satisfies just as well: it
+    /// passed without the decoder ever meeting the break.
+    ///
+    /// So the first access unit goes out on its own, because the catalog
+    /// rendition is derived from its SPS and there is nothing to open without
+    /// it, and everything else follows once the reader is subscribed.
+    async fn publish(broken: usize) -> TestResult<(RemoteBroadcast, VideoTrack, Published)> {
+        let mut broadcast = moq_net::broadcast::Info::new().produce();
+        let consumer = broadcast.consume();
+        let catalog = moq_mux::catalog::Producer::with_catalog(&mut broadcast, Catalog::default())?;
+        let track = broadcast.create_track("video", Some(catalog.track_info()))?;
+        let mut import =
+            moq_mux::codec::h264::Import::new(track, catalog.reserve(), Default::default())?;
+        let mut split = moq_mux::codec::h264::Split::new();
+        let units = encoded_stream();
+
+        feed(&mut import, &mut split, &units, 0..1, usize::MAX)?;
+
+        // The latency ceiling would otherwise have the container consumer skip
+        // ahead of the break rather than deliver it.
         let policy = PlaybackPolicy {
             max_latency: Duration::from_secs(60),
             decoder: moq_video::decode::Kind::Software,
             ..PlaybackPolicy::unmanaged()
         };
         let remote = RemoteBroadcast::with_playback_policy("test", consumer, policy).await?;
+        // The catalog travels on a track of its own, so the rendition that
+        // first SPS filled in has not necessarily arrived with the snapshot
+        // `with_playback_policy` returned on.
+        let mut updates = remote.catalog_watcher();
+        while remote.catalog().video().is_empty() {
+            updates
+                .updated()
+                .await
+                .map_err(|_| "the catalog ended before it carried a video rendition")?;
+        }
+        let track = open(&remote, "video").await?;
+
+        feed(&mut import, &mut split, &units, 1..units.len(), broken)?;
+        import.finish()?;
+
         Ok((
             remote,
+            track,
             Published {
                 _broadcast: broadcast,
                 _catalog: catalog,
@@ -869,22 +910,45 @@ mod tests {
         seen
     }
 
+    /// The access unit this pair truncates, and the keyframe that repairs the
+    /// damage. Picture 3 is inside the first group, so two keyframes follow it.
+    const BROKEN: usize = 3;
+
     /// Regression: one access unit the decoder refuses used to end the reader,
     /// which dropped the decoder and the subscription with it. A player showed
     /// a picture for a fraction of a second and then froze for good, with one
     /// warning in the log and nothing after it.
     ///
-    /// A break costs pictures until the next keyframe, so this asserts that
-    /// pictures from after that keyframe arrive, not that none were lost.
+    /// What this covers is the reader carrying on through a break in the
+    /// bitstream and delivering the pictures after the next keyframe. It does
+    /// not reach [`DecodeFailures`]: openh264 absorbs a truncated access unit
+    /// and the ones that lost their reference to it by producing no picture,
+    /// rather than by returning an error, so `read` never fails here. Filling
+    /// the same bytes with garbage instead is weaker still, because the decoder
+    /// conceals it and every picture arrives. The give-up threshold and the run
+    /// counter are covered by the unit tests below.
     #[tokio::test]
     async fn a_broken_access_unit_does_not_end_playback() -> TestResult {
-        // Inside the first group, so two keyframes follow it.
-        let broken = 3;
-        let (broadcast, _published) = publish(broken).await?;
-        let track = open(&broadcast, "video").await?;
+        let (_broadcast, track, _published) = publish(BROKEN).await?;
 
         let seen = play(&track).await;
+        let broke = BROKEN as u64 * FRAME_MICROS;
         let recovered = u64::from(GOP) * FRAME_MICROS;
+
+        // Three assertions, and two of them are about the test rather than the
+        // code. That the reader reached the break, and that the break cost the
+        // rest of its group, are what tell a recovery apart from a stream whose
+        // damaged part was never read.
+        assert!(
+            seen.iter().any(|&pts| pts < broke),
+            "the reader started after the break, so nothing here was exercised: got {seen:?}",
+        );
+        assert!(
+            !seen.iter().any(|&pts| (broke..recovered).contains(&pts)),
+            "a picture arrived from between the break and the next keyframe, so \
+             the truncated access unit did not cost the reference chain and \
+             there was nothing to recover from: got {seen:?}",
+        );
         assert!(
             seen.iter().any(|&pts| pts >= recovered),
             "the reader stopped at the break: got {seen:?}",
@@ -894,17 +958,23 @@ mod tests {
 
     /// The control for the test above: an intact stream plays to the end, so a
     /// broken one that reaches the second keyframe really did recover rather
-    /// than the whole track having been short.
+    /// than the whole track having been short, and the pictures the break costs
+    /// really are the break rather than the way the stream is published.
     #[tokio::test]
     async fn an_intact_stream_plays_to_the_end() -> TestResult {
-        let (broadcast, _published) = publish(usize::MAX).await?;
-        let track = open(&broadcast, "video").await?;
+        let (_broadcast, track, _published) = publish(usize::MAX).await?;
 
         let seen = play(&track).await;
         let last = (PICTURES - 1) * FRAME_MICROS;
         assert!(
             seen.iter().any(|&pts| pts >= last),
             "the last picture never arrived: got {seen:?}",
+        );
+        let broke = BROKEN as u64 * FRAME_MICROS;
+        let recovered = u64::from(GOP) * FRAME_MICROS;
+        assert!(
+            seen.iter().any(|&pts| (broke..recovered).contains(&pts)),
+            "an intact stream delivers the pictures a break costs: got {seen:?}",
         );
         Ok(())
     }

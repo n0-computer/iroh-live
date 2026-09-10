@@ -117,12 +117,20 @@ is a cpal callback on a real-time thread owned by `moq_audio::playback::Engine`.
 
 ## Known gaps
 
-`TimingStats`, `Timeline`, and `render.decode_ms` have no producer, so the
-overlay's timing panel and timeline read zero. `render.fps` records a constant
-rather than a measured rate.
+`TimingStats` and `Timeline` have no producer, so the overlay's timing panel and
+timeline read zero.
 
-The upgrade half of adaptive switching commits rather than probes: `probe_duration`,
-`probe_cooldown`, and `loss_probe_abort` are inert. See
+`EncodeStats` has one set of fields and a simulcast ladder has a rung per
+encoder, all writing to it. The codec, resolution and encoder labels are
+whichever rung wrote last, and `bitrate_kbps` is a smoothed value sitting
+somewhere among the rungs rather than their sum.
+
+The adaptation upgrade gate compares the publisher's delivery estimate against
+the *advertised* bitrate of the next rung. That estimate is bounded by what the
+publisher is currently sending, so on a low rung it cannot reach the figure the
+gate asks for, and `Decision::StartProbe`, which exists for exactly that case,
+is unreachable whenever an estimate is present. This is what makes
+`adaptation_follows_a_real_link` fail about one run in three. See
 [docs/architecture/adaptive.md](docs/architecture/adaptive.md).
 
 `SyncMode::Unmanaged` does no pacing at all, despite what its doc comment says.

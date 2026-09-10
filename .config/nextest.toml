@@ -3,9 +3,11 @@
 
 [test-groups]
 # The patchbay tests build a simulated network and assert on frame timing and on
-# rendition switches driven by measured transport stats. Running them next to the
-# rest of the suite starves the software encoder and trips those assertions, so
-# they get the machine to themselves.
+# rendition switches driven by measured transport stats. Two of them running at
+# once starve the software encoder and trip those assertions, so the group runs
+# one test at a time. Note that this serialises the group against itself and
+# nothing else: tests outside it still run alongside, so a machine loaded by the
+# rest of the suite can still make these marginal.
 serial-patchbay = { max-threads = 1 }
 
 [[profile.default.overrides]]

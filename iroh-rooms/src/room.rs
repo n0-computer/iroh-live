@@ -858,6 +858,47 @@ mod tests {
         );
     }
 
+    /// The wire format every peer in a room reads each other's announcements
+    /// through, exercised against the production type.
+    ///
+    /// This is the bug class that once broke rooms: postcard is positional, so
+    /// a `skip_serializing_if` on an `Option` writes nothing where the
+    /// deserializer expects a tag, and it then reads the next field's bytes as
+    /// this one. The test used to live in `tests/room.rs` against a redeclared
+    /// copy of the struct, which is a test that cannot fail for the reason it
+    /// was written: the copy carries whichever attributes the copy has, so
+    /// adding `skip_serializing_if` here would leave it green.
+    #[test]
+    fn peer_state_survives_a_postcard_round_trip() {
+        let with_name = PeerState {
+            broadcasts: vec!["cam".into(), "screen".into()],
+            display_name: Some("Alice".into()),
+        };
+        let without_name = PeerState {
+            broadcasts: vec!["cam".into()],
+            display_name: None,
+        };
+        let empty = PeerState {
+            broadcasts: vec![],
+            display_name: None,
+        };
+
+        for state in [&with_name, &without_name, &empty] {
+            let bytes = postcard::to_stdvec(state).expect("serialize");
+            let decoded: PeerState = postcard::from_bytes(&bytes).expect("deserialize");
+            assert_eq!(decoded.broadcasts, state.broadcasts, "{state:?}");
+            assert_eq!(decoded.display_name, state.display_name, "{state:?}");
+        }
+
+        // An absent display name has to occupy its own byte, or the announcement
+        // that follows it is read one field over.
+        assert_ne!(
+            postcard::to_stdvec(&with_name).expect("serialize"),
+            postcard::to_stdvec(&without_name).expect("serialize"),
+            "a present and an absent display name must not encode alike",
+        );
+    }
+
     #[test]
     fn a_room_path_is_scoped_by_topic() {
         let topic = TopicId::from_bytes([7; 32]);
