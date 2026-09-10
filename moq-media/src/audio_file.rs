@@ -255,7 +255,22 @@ fn decode_once(
     let mut buffer: Option<SampleBuffer<f32>> = None;
     let mut sent = 0;
 
-    while let Ok(packet) = format.next_packet() {
+    loop {
+        let packet = match format.next_packet() {
+            Ok(packet) => packet,
+            // The container's way of saying it reached the end. Symphonia has
+            // no separate end-of-stream outcome, so this is the only clean way
+            // out of the loop.
+            Err(symphonia::core::errors::Error::IoError(err))
+                if err.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                break;
+            }
+            // Anything else is a file we cannot read the rest of, and reporting
+            // it as a clean end is what made `:loop` replay the readable
+            // prefix of a corrupt file forever, silently.
+            Err(err) => return Err(decode_err(err)),
+        };
         if packet.track_id() != track_id {
             continue;
         }
