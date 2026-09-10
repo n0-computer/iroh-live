@@ -413,13 +413,36 @@ async fn play_audio(sub: &Subscription, name: &str) -> Option<AudioTrack> {
     }
 }
 
+/// Checks that `name` names a file inside the key directory rather than a path
+/// out of it.
+///
+/// `dir.join(name)` is not a way of building a path under `dir`: an absolute
+/// name replaces it outright, and `..` walks out of it. The session file is the
+/// user's own, so this is not a privilege boundary, but a config typo should
+/// report itself rather than write a key somewhere nobody thinks to look for
+/// it.
+///
+/// # Errors
+///
+/// Fails if `name` is empty, or is anything other than a single path component.
+fn check_key_name(name: &str) -> Result<()> {
+    if !name.is_empty() && Path::new(name).file_name() == Some(name.as_ref()) {
+        return Ok(());
+    }
+    Err(anyerr!(
+        "secret_key_name = {name:?} is not a file name; it names one file in \
+         this platform's config directory, so it cannot be a path or empty",
+    ))
+}
+
 /// Loads the named secret key, generating and storing one on first use.
 ///
 /// # Errors
 ///
-/// Fails if the config directory cannot be found or written, or if the stored
-/// key is not a key.
+/// Fails if `name` is not a plain file name, if the config directory cannot be
+/// found or written, or if the stored key is not a key.
 fn load_or_create_secret_key(name: &str) -> Result<SecretKey> {
+    check_key_name(name)?;
     let dir = dirs::config_dir()
         .ok_or_else(|| anyerr!("cannot find this platform's config directory"))?
         .join("iroh-live")
@@ -546,5 +569,21 @@ mod tests {
             err.to_string().contains("failed to read"),
             "unexpected: {err}"
         );
+    }
+
+    /// `dir.join(name)` does not build a path under `dir` for every `name`, so
+    /// the ones it does not are refused rather than writing a key somewhere the
+    /// user will not think to look for it.
+    #[test]
+    fn a_key_name_is_one_file_name() {
+        check_key_name("laptop").expect("an ordinary name");
+        check_key_name("laptop.2").expect("a dot inside a name is still a name");
+
+        for name in ["", "/tmp/evil", "../../evil", "a/b", ".", ".."] {
+            assert!(
+                check_key_name(name).is_err(),
+                "{name:?} is not a file name in the key directory",
+            );
+        }
     }
 }

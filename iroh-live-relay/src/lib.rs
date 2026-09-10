@@ -275,21 +275,39 @@ impl RelayServer {
     fn iroh_secret_key(&self) -> anyhow::Result<SecretKey> {
         let path = self.iroh_secret_key_path();
         if path.try_exists()? {
-            let stored = std::fs::read(&path)?;
-            return read_secret_key(&stored).map_err(|err| {
-                anyhow::anyhow!(
-                    "{} holds {} bytes that are not an iroh secret key ({err}). Delete it to \
-                     start over, which gives this relay a new endpoint id and invalidates \
-                     every ticket that names the old one.",
-                    path.display(),
-                    stored.len(),
-                )
-            });
+            return self.stored_secret_key();
         }
         let key = SecretKey::generate();
-        write_private(&path, &key.to_bytes())?;
-        info!(path = %path.display(), "generated the relay's iroh identity");
-        Ok(key)
+        match write_private(&path, &key.to_bytes()) {
+            Ok(()) => {
+                info!(path = %path.display(), "generated the relay's iroh identity");
+                Ok(key)
+            }
+            // Two relays started together on one data directory. The file is
+            // created exclusively, so exactly one of them wrote its key and the
+            // other reads it: the loser adopting the winner's identity is the
+            // only outcome where both are the relay every ticket names.
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                debug!(path = %path.display(), "another process wrote the identity first");
+                self.stored_secret_key()
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    /// Reads the identity that is already on disk.
+    fn stored_secret_key(&self) -> anyhow::Result<SecretKey> {
+        let path = self.iroh_secret_key_path();
+        let stored = std::fs::read(&path)?;
+        read_secret_key(&stored).map_err(|err| {
+            anyhow::anyhow!(
+                "{} holds {} bytes that are not an iroh secret key ({err}). Delete it to \
+                 start over, which gives this relay a new endpoint id and invalidates \
+                 every ticket that names the old one.",
+                path.display(),
+                stored.len(),
+            )
+        })
     }
 }
 
@@ -309,17 +327,21 @@ fn read_secret_key(stored: &[u8]) -> anyhow::Result<SecretKey> {
     Ok(text.trim().parse()?)
 }
 
-/// Writes `contents` to `path`, readable by this user alone.
+/// Writes `contents` to a new `path`, readable by this user alone.
 ///
 /// A secret key under the default umask is world readable, and every other user
 /// on the machine can then be this relay.
-fn write_private(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+///
+/// Created exclusively rather than truncated, so a second relay racing this one
+/// on the same data directory fails with
+/// [`AlreadyExists`](std::io::ErrorKind::AlreadyExists) instead of writing a
+/// second identity over the first. The caller reads the winner's.
+fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     options.mode(0o600);
-    options.open(path)?.write_all(contents)?;
-    Ok(())
+    options.open(path)?.write_all(contents)
 }
 
 struct HttpState {

@@ -27,24 +27,43 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace, warn};
 
 /// Loads the iroh secret key from the `IROH_SECRET` environment variable, or
-/// generates one and logs how to keep it.
+/// generates a temporary one.
 ///
 /// An endpoint's identity is its secret key, so a node that generates a fresh
 /// one on every start is a different node to its peers every time, and every
 /// ticket it ever handed out is stale. Applications that want a stable identity
 /// across restarts read it from the environment through here.
 ///
+/// The generated key is never logged, only the endpoint id it yields. A log
+/// stream is not a key export: it goes to a file, a terminal a colleague is
+/// watching, and whatever ships it off the machine, and a secret written there
+/// is a secret in all three. A caller that wants a stable identity supplies one
+/// through `IROH_SECRET`, or stores its own with `irl run --config`'s
+/// `secret_key_name`.
+///
 /// # Errors
 ///
-/// Fails if `IROH_SECRET` is set to something that is not a secret key.
+/// Fails if `IROH_SECRET` is set to something that is not a secret key,
+/// including a value that is not valid Unicode.
 pub fn secret_key_from_env() -> n0_error::Result<SecretKey> {
     Ok(match std::env::var("IROH_SECRET") {
         Ok(key) => key.parse()?,
-        Err(_) => {
+        // Distinguished from an unset variable, which is the one case that
+        // means "generate one". A value we cannot read is a value the caller
+        // meant us to use, so running under a different identity than they
+        // asked for is the wrong answer to it.
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(n0_error::anyerr!(
+                "IROH_SECRET is set to something that is not valid Unicode; it \
+                 takes 64 hex characters",
+            ));
+        }
+        Err(std::env::VarError::NotPresent) => {
             let key = SecretKey::generate();
             info!(
-                secret = %data_encoding::HEXLOWER.encode(&key.to_bytes()),
-                "generated a secret key; reuse this identity with IROH_SECRET",
+                endpoint = %key.public(),
+                "generated a temporary endpoint identity; set IROH_SECRET to keep one \
+                 across restarts",
             );
             key
         }
