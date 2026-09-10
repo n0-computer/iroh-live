@@ -756,6 +756,8 @@ mod tests {
         _broadcast: moq_net::broadcast::Producer,
         _catalog: moq_mux::catalog::Producer<crate::catalog::IrohLiveExt>,
         _import: moq_mux::codec::h264::Import<crate::catalog::IrohLiveExt>,
+        /// Cancels every decode task on drop, so the reader stops with it.
+        _remote: RemoteBroadcast,
     }
 
     /// Encodes [`PICTURES`] pictures of a moving pattern as H.264 access units.
@@ -830,9 +832,7 @@ mod tests {
     /// So the first access unit goes out on its own, because the catalog
     /// rendition is derived from its SPS and there is nothing to open without
     /// it, and everything else follows once the reader is subscribed.
-    async fn publish(
-        broken: usize,
-    ) -> TestResult<(RemoteBroadcast, VideoTrack, Vec<u64>, Published)> {
+    async fn publish(broken: usize) -> TestResult<(Reader, Vec<u64>, Published)> {
         let mut broadcast = moq_net::broadcast::Info::new().produce();
         let consumer = broadcast.consume();
         let catalog = moq_mux::catalog::Producer::with_catalog(&mut broadcast, Catalog::default())?;
@@ -864,24 +864,21 @@ mod tests {
                 .await
                 .map_err(|_| "the catalog ended before it carried a video rendition")?;
         }
-        let track = open(&remote, "video").await?;
+        let mut reader = spawn_reader(&remote, "video").await?;
 
         // Read one picture before publishing any more, and hand it back so the
-        // caller can count it. Opening the track is not enough: the reader's
-        // cursor is only fixed once it has actually read, so publishing the
-        // rest first left it opening at whatever the live edge had become by
-        // then. On this machine that was still the first group and the test
-        // passed; on a slower one it was the last, the reader never saw the
-        // break, and macOS CI said so.
-        let first = tokio::time::timeout(Duration::from_secs(10), track.recv())
+        // caller can count it. Subscribing is not enough: the reader's cursor
+        // is only fixed once it has actually read, so publishing the rest
+        // first left it opening at whatever the live edge had become by then.
+        // On this machine that was still the first group and the test passed;
+        // on a slower one it was the last, the reader never met the break, and
+        // macOS CI said so.
+        let first = tokio::time::timeout(Duration::from_secs(10), reader.frames.recv())
             .await
             .map_err(|_| "the reader produced no picture from the first group")?
             .ok_or("the video track ended before its first picture")?;
         let first = first.timestamp.as_micros() as u64;
-        assert!(
-            first < u64::from(GOP) * FRAME_MICROS,
-            "the reader opened past the first group, at {first}",
-        );
+        assert_eq!(first, 0, "the reader opened past the first picture");
 
         feed(
             &mut import,
@@ -893,13 +890,13 @@ mod tests {
         import.finish()?;
 
         Ok((
-            remote,
-            track,
+            reader,
             vec![first],
             Published {
                 _broadcast: broadcast,
                 _catalog: catalog,
                 _import: import,
+                _remote: remote,
             },
         ))
     }
@@ -929,10 +926,18 @@ mod tests {
         assert!(!switch.survives_repin());
     }
 
-    /// The presentation times of every picture the track hands out, in order.
-    async fn play(track: &VideoTrack) -> Vec<u64> {
+    /// The presentation time of every picture the reader decodes, in order.
+    ///
+    /// Read from the reader's own channel rather than through a `VideoTrack`.
+    /// The track hands pictures over through a latest-wins slot, which drops
+    /// whatever a slow consumer did not take: on this machine that cost one
+    /// picture in thirty and on macOS CI it cost twenty-eight of them, so no
+    /// assertion about *which* pictures decoded can be made through it. This
+    /// channel is bounded and lossless, and the reader is what these two tests
+    /// are about.
+    async fn read_all(reader: &mut Reader) -> Vec<u64> {
         let mut seen = Vec::new();
-        while let Some(frame) = track.recv().await {
+        while let Some(frame) = reader.frames.recv().await {
             seen.push(frame.timestamp.as_micros() as u64);
         }
         seen
@@ -945,6 +950,17 @@ mod tests {
     /// break there would be one the reader started after. The keyframe opening
     /// the third group is what repairs the damage.
     const BROKEN: usize = GOP as usize + 3;
+
+    /// The pictures a break at [`BROKEN`] costs: everything from the one after
+    /// it up to the keyframe that opens the next group.
+    ///
+    /// From the picture *after* the break rather than the break itself.
+    /// Whether the decoder conceals a truncated picture or drops it is its own
+    /// business, and openh264 conceals this one. What it cannot do is decode
+    /// the pictures that reference it.
+    fn darkened() -> impl Iterator<Item = u64> {
+        (BROKEN as u64 + 1..u64::from(GOP) * 2).map(|picture| picture * FRAME_MICROS)
+    }
 
     /// Regression: one access unit the decoder refuses used to end the reader,
     /// which dropped the decoder and the subscription with it. A player showed
@@ -961,33 +977,28 @@ mod tests {
     /// counter are covered by the unit tests below.
     #[tokio::test]
     async fn a_broken_access_unit_does_not_end_playback() -> TestResult {
-        let (_broadcast, track, mut seen, _published) = publish(BROKEN).await?;
-        seen.extend(play(&track).await);
-
-        let broke = BROKEN as u64 * FRAME_MICROS;
-        // From the picture *after* the break, not from the break itself.
-        // Whether the decoder conceals the truncated picture or drops it is its
-        // own business, and openh264 conceals this one. What it cannot do is
-        // decode the pictures that reference it.
-        let dark = (BROKEN as u64 + 1) * FRAME_MICROS..u64::from(GOP) * 2 * FRAME_MICROS;
-        let recovered = dark.end;
+        let (mut reader, mut seen, _published) = publish(BROKEN).await?;
+        seen.extend(read_all(&mut reader).await);
 
         // Three assertions, and two of them are about the test rather than the
         // code. That the reader reached the break, and that the break cost the
         // rest of its group, are what tell a recovery apart from a stream whose
         // damaged part was never read.
         assert!(
-            seen.iter().any(|&pts| pts < broke),
+            seen.contains(&0),
             "the reader started after the break, so nothing here was exercised: got {seen:?}",
         );
+        for pts in darkened() {
+            assert!(
+                !seen.contains(&pts),
+                "picture {pts} arrived from between the break and the next \
+                 keyframe, so the truncated access unit did not cost the \
+                 reference chain and there was nothing to recover from: \
+                 got {seen:?}",
+            );
+        }
         assert!(
-            !seen.iter().any(|&pts| dark.contains(&pts)),
-            "a picture arrived from between the break and the next keyframe, so \
-             the truncated access unit did not cost the reference chain and \
-             there was nothing to recover from: got {seen:?}",
-        );
-        assert!(
-            seen.iter().any(|&pts| pts >= recovered),
+            seen.contains(&((PICTURES - 1) * FRAME_MICROS)),
             "the reader stopped at the break: got {seen:?}",
         );
         Ok(())
@@ -999,19 +1010,28 @@ mod tests {
     /// really are the break rather than the way the stream is published.
     #[tokio::test]
     async fn an_intact_stream_plays_to_the_end() -> TestResult {
-        let (_broadcast, track, mut seen, _published) = publish(usize::MAX).await?;
-        seen.extend(play(&track).await);
+        let (mut reader, mut seen, _published) = publish(usize::MAX).await?;
+        seen.extend(read_all(&mut reader).await);
 
-        let last = (PICTURES - 1) * FRAME_MICROS;
         assert!(
-            seen.iter().any(|&pts| pts >= last),
+            seen.contains(&((PICTURES - 1) * FRAME_MICROS)),
             "the last picture never arrived: got {seen:?}",
         );
-        let dark = (BROKEN as u64 + 1) * FRAME_MICROS..u64::from(GOP) * 2 * FRAME_MICROS;
-        assert!(
-            seen.iter().any(|&pts| dark.contains(&pts)),
-            "an intact stream delivers the pictures a break costs: got {seen:?}",
-        );
+        // Not every picture: one, the first inter-frame of the first group
+        // published after the subscription, is absent from an intact stream
+        // too. It is absent identically from the broken one, so it does not
+        // confound the comparison below, and chasing it is not what these two
+        // tests are for. Hence naming the pictures rather than counting them.
+        //
+        // Every picture the test above requires to be missing. Nothing here is
+        // broken, so all of them arrive, which is what makes that blackout
+        // evidence of the break rather than of how this stream is published.
+        for pts in darkened() {
+            assert!(
+                seen.contains(&pts),
+                "an intact stream delivers picture {pts}, which a break costs: got {seen:?}",
+            );
+        }
         Ok(())
     }
 
