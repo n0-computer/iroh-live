@@ -24,7 +24,7 @@ lto = "thin"
 
 [workspace.dependencies]
 # External
-iroh = { version = "1.1.0", default-features = false, features = ["metrics", "portmapper", "fast-apple-datapath", "tls-aws-lc-rs"] }
+iroh = { version = "1.2.0", default-features = false, features = ["metrics", "portmapper", "fast-apple-datapath", "tls-aws-lc-rs"] }
 iroh-gossip = "0.101.0"
 noq-proto = { version = "1", default-features = false }
 iroh-tickets = "1.0.0"
@@ -43,9 +43,9 @@ web-transport-iroh = "0.7.0"
 # UI. egui pins the wgpu major it links, and `moq_video::render` hands back a
 # `wgpu::Texture` from its own build of wgpu 30. A texture from a different wgpu
 # major is a different type, so these two versions have to move together.
-eframe = { version = "0.36.1", default-features = false }
-egui = "0.36.1"
-egui-wgpu = "0.36.1"
+eframe = { version = "0.36.2", default-features = false }
+egui = "0.36.2"
+egui-wgpu = "0.36.2"
 wgpu = "30"
 
 # In-repo crates

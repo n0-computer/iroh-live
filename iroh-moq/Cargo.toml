@@ -14,11 +14,11 @@ workspace = true
 iroh = { workspace = true }
 moq-net = { workspace = true }
 n0-error = { version = "1", features = ["anyhow"] }
-n0-future = "0.3.1"
-tokio = { version = "1.48.0", features = ["sync"] }
-tokio-util = "0.7.17"
-tracing = "0.1.41"
-url = "2.5.7"
+n0-future = "0.3.2"
+tokio = { version = "1.53.1", features = ["sync"] }
+tokio-util = "0.7.19"
+tracing = "0.1.44"
+url = "2.5.8"
 web-transport-iroh = { workspace = true }
 # The H3 CONNECT request and response types. web-transport-iroh surfaces them in
 # its API but does not re-export them, so the version has to be matched by hand.
@@ -28,4 +28,4 @@ web-transport-proto = "0.6"
 futures-lite = "2"
 iroh = { workspace = true, features = ["test-utils"] }
 n0-tracing-test = "0.3.0"
-tokio = { version = "1.48.0", features = ["full"] }
+tokio = { version = "1.53.1", features = ["full"] }

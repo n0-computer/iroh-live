@@ -28,7 +28,7 @@ use moq_media::{
     video::Size,
 };
 use n0_tracing_test::traced_test;
-use patchbay::{Lab, LinkCondition, LinkLimits, NodeId};
+use patchbay::{Lab, LinkCondition, NodeId};
 use tracing::info;
 
 /// Sets up the user namespace the lab needs.
@@ -36,7 +36,7 @@ use tracing::info;
 /// Unshare only works from a single-threaded process, and the test harness has
 /// already spawned its threads by the time the first test runs, so this has to
 /// happen in `.init_array` rather than anywhere reachable from a test body.
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn patchbay_init() {
     // SAFETY: runs from `.init_array`, single-threaded, before `main`.
     unsafe { patchbay::init_userns_for_ctor() };
@@ -88,7 +88,7 @@ impl Fixture {
 
         let publisher_device = lab
             .add_device("publisher")
-            .iface("eth0", router_node, None)
+            .iface("eth0", router_node)
             .build()
             .await
             .expect("failed to build the publisher device");
@@ -96,7 +96,7 @@ impl Fixture {
 
         let subscriber_device = lab
             .add_device("subscriber")
-            .iface("eth0", router_node, None)
+            .iface("eth0", router_node)
             .build()
             .await
             .expect("failed to build the subscriber device");
@@ -150,10 +150,9 @@ impl Fixture {
     /// Both, because the router only forwards: impairing one leg would leave
     /// the other free to carry acknowledgements at full speed, which is not a
     /// shape any real path has.
-    async fn impair(&self, limits: LinkLimits) {
-        self.set_condition(Some(LinkCondition::Manual(limits)))
-            .await;
-        info!(?limits, "link impaired");
+    async fn impair(&self, condition: LinkCondition) {
+        self.set_condition(Some(condition)).await;
+        info!(?condition, "link impaired");
     }
 
     /// Removes all impairment from both links.
@@ -394,11 +393,7 @@ async fn frames_survive_a_latency_ramp() {
     );
 
     fixture
-        .impair(LinkLimits {
-            latency_ms: 300,
-            jitter_ms: 60,
-            ..Default::default()
-        })
+        .impair(LinkCondition::new().latency_ms(300).jitter_ms(60))
         .await;
     let ramp = drain(&track, Duration::from_secs(5)).await;
     report("latency 300ms", &ramp, Duration::from_secs(5));
@@ -462,12 +457,7 @@ async fn frames_survive_a_loss_spike() {
         baseline.len(),
     );
 
-    fixture
-        .impair(LinkLimits {
-            loss_pct: 20.0,
-            ..Default::default()
-        })
-        .await;
+    fixture.impair(LinkCondition::new().random_loss(20.0)).await;
     let lossy = drain(&track, Duration::from_secs(3)).await;
     report("20% loss", &lossy, Duration::from_secs(3));
     assert!(
@@ -543,12 +533,7 @@ async fn adaptation_follows_a_real_link() {
     // sustained one, so the drop goes straight to the bottom of the ladder,
     // which with two rungs is where a graduated downgrade would have gone too.
     // The link still carries the replacement rendition's keyframe.
-    fixture
-        .impair(LinkLimits {
-            loss_pct: 12.0,
-            ..Default::default()
-        })
-        .await;
+    fixture.impair(LinkCondition::new().random_loss(12.0)).await;
 
     let downgraded = Instant::now();
     tokio::time::timeout(TIMEOUT, track.switched_to("low"))
@@ -661,10 +646,7 @@ async fn adaptation_follows_a_rate_limit() {
     // at its loudest, so the top rung cannot fit whatever the encoder is doing
     // this second and the bottom one comfortably can.
     fixture
-        .impair(LinkLimits {
-            rate_kbit: cap_kbit,
-            ..Default::default()
-        })
+        .impair(LinkCondition::new().rate_kbit(cap_kbit))
         .await;
 
     // Held for three times the downgrade hold, so the loop has had the reading
@@ -800,11 +782,7 @@ async fn a_switch_does_not_blank_the_picture() {
     // Enough latency that the switch has to cross a link with real delay on it,
     // not so much that the baseline cadence is itself in question.
     fixture
-        .impair(LinkLimits {
-            latency_ms: 50,
-            jitter_ms: 10,
-            ..Default::default()
-        })
+        .impair(LinkCondition::new().latency_ms(50).jitter_ms(10))
         .await;
 
     let _warmup = drain(&track, Duration::from_secs(3)).await;
@@ -932,12 +910,7 @@ async fn a_switch_lands_while_the_link_stays_capped() {
 
     // Two thirds of what `high` actually sends, so the top rung cannot fit and
     // the send queue never drains.
-    fixture
-        .impair(LinkLimits {
-            rate_kbit: 200,
-            ..Default::default()
-        })
-        .await;
+    fixture.impair(LinkCondition::new().rate_kbit(200)).await;
 
     // Wait until the cap is visible in the signals, so the switch is asked for
     // on a link that is demonstrably saturated rather than one still filling.
@@ -1024,12 +997,7 @@ async fn a_risen_baseline_round_trip_does_not_downgrade() {
     // 30ms on each device's own egress, so the round trip gains 60ms: the step
     // a direct path takes when it becomes a relayed one. Nothing is dropped and
     // nothing is capped, so the top rung arrives exactly as it did before.
-    fixture
-        .impair(LinkLimits {
-            latency_ms: 30,
-            ..Default::default()
-        })
-        .await;
+    fixture.impair(LinkCondition::new().latency_ms(30)).await;
 
     let watched = Duration::from_secs(40);
     let until = Instant::now() + watched;

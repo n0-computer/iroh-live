@@ -14,12 +14,10 @@ use std::{path::Path, time::Duration};
 use n0_error::{Result, stack_error};
 use n0_future::{boxed::BoxStream, stream::StreamExt};
 use symphonia::core::{
-    audio::SampleBuffer,
-    codecs::{CODEC_TYPE_NULL, DecoderOptions},
-    formats::{FormatOptions, FormatReader, Track},
+    codecs::{CodecParameters, audio::AudioDecoderOptions},
+    formats::{FormatOptions, FormatReader, Track, probe::Hint},
     io::MediaSourceStream,
     meta::MetadataOptions,
-    probe::Hint,
 };
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -137,11 +135,13 @@ impl Probe {
     /// Reads the layout off a track, falling back to CD-adjacent defaults for a
     /// container that declares neither.
     fn of(track: &Track) -> Self {
+        let params = audio_params(track);
         Self {
-            sample_rate: track.codec_params.sample_rate.unwrap_or(48_000),
-            channels: track
-                .codec_params
-                .channels
+            sample_rate: params
+                .and_then(|params| params.sample_rate)
+                .unwrap_or(48_000),
+            channels: params
+                .and_then(|params| params.channels.as_ref())
                 .map(|channels| channels.count() as u32)
                 .unwrap_or(2),
         }
@@ -167,12 +167,12 @@ fn open_track(path: &Path) -> Result<(Box<dyn FormatReader>, Track), AudioFileEr
     if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {
         hint.with_extension(ext);
     }
-    let probed = symphonia::default::get_probe()
-        .format(
+    let format = symphonia::default::get_probe()
+        .probe(
             &hint,
             stream,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
         .map_err(|source| {
             n0_error::e!(AudioFileError::Decode {
@@ -181,14 +181,26 @@ fn open_track(path: &Path) -> Result<(Box<dyn FormatReader>, Track), AudioFileEr
             })
         })?;
 
-    let track = probed
-        .format
+    let track = format
         .tracks()
         .iter()
-        .find(|track| track.codec_params.codec != CODEC_TYPE_NULL)
+        .find(|track| audio_params(track).is_some())
         .cloned()
         .ok_or_else(|| n0_error::e!(AudioFileError::NoTrack { path: display }))?;
-    Ok((probed.format, track))
+    Ok((format, track))
+}
+
+/// The audio codec parameters of `track`, or `None` when it carries none or is
+/// not an audio track.
+///
+/// Both are one check now: symphonia types the parameters per media kind, where
+/// it used to hand out one struct for every track and a null codec id for the
+/// ones it could not read.
+fn audio_params(track: &Track) -> Option<&symphonia::core::codecs::audio::AudioCodecParameters> {
+    match track.codec_params.as_ref()? {
+        CodecParameters::Audio(params) => Some(params),
+        _ => None,
+    }
 }
 
 fn probe(path: &Path) -> Result<Probe, AudioFileError> {
@@ -249,29 +261,24 @@ fn decode_once(
         channels,
     } = Probe::of(&track);
 
+    let params = audio_params(&track).ok_or_else(|| {
+        n0_error::e!(AudioFileError::NoTrack {
+            path: display.clone()
+        })
+    })?;
     let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
+        .make_audio_decoder(params, &AudioDecoderOptions::default())
         .map_err(decode_err)?;
-    let mut buffer: Option<SampleBuffer<f32>> = None;
+    // Reused across packets so a file is not one allocation per packet.
+    let mut interleaved: Vec<f32> = Vec::new();
     let mut sent = 0;
 
-    loop {
-        let packet = match format.next_packet() {
-            Ok(packet) => packet,
-            // The container's way of saying it reached the end. Symphonia has
-            // no separate end-of-stream outcome, so this is the only clean way
-            // out of the loop.
-            Err(symphonia::core::errors::Error::IoError(err))
-                if err.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                break;
-            }
-            // Anything else is a file we cannot read the rest of, and reporting
-            // it as a clean end is what made `:loop` replay the readable
-            // prefix of a corrupt file forever, silently.
-            Err(err) => return Err(decode_err(err)),
-        };
-        if packet.track_id() != track_id {
+    // `next_packet` reports the end of the file as `None` and a file it cannot
+    // read the rest of as an error. Symphonia 0.5 had only the error, so this
+    // loop used to read every failure as the end and `:loop` replayed the
+    // readable prefix of a corrupt file forever, silently.
+    while let Some(packet) = format.next_packet().map_err(decode_err)? {
+        if packet.track_id != track_id {
             continue;
         }
         let decoded = match decoder.decode(&packet) {
@@ -284,11 +291,7 @@ fn decode_once(
             Err(err) => return Err(decode_err(err)),
         };
 
-        let spec = *decoded.spec();
-        let samples =
-            buffer.get_or_insert_with(|| SampleBuffer::<f32>::new(decoded.capacity() as u64, spec));
-        samples.copy_interleaved_ref(decoded);
-        let interleaved = samples.samples();
+        decoded.copy_to_vec_interleaved(&mut interleaved);
         if interleaved.is_empty() {
             continue;
         }
@@ -331,20 +334,98 @@ mod tests {
 
     /// A valid PCM WAV header describing zero samples of audio.
     fn empty_wav() -> Vec<u8> {
+        wav(&[], 1)
+    }
+
+    /// A PCM WAV carrying `samples` interleaved across `channels`.
+    ///
+    /// Sixteen-bit, 48 kHz, which is what the decoder converts from and the
+    /// only thing about the file this crate does not choose.
+    fn wav(samples: &[i16], channels: u16) -> Vec<u8> {
+        let data: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let block_align = channels * 2;
         let mut wav = Vec::new();
         wav.extend_from_slice(b"RIFF");
-        wav.extend_from_slice(&36u32.to_le_bytes());
+        wav.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
         wav.extend_from_slice(b"WAVEfmt ");
         wav.extend_from_slice(&16u32.to_le_bytes());
         wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
-        wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+        wav.extend_from_slice(&channels.to_le_bytes());
         wav.extend_from_slice(&48_000u32.to_le_bytes());
-        wav.extend_from_slice(&96_000u32.to_le_bytes()); // bytes per second
-        wav.extend_from_slice(&2u16.to_le_bytes()); // block align
+        wav.extend_from_slice(&(48_000 * u32::from(block_align)).to_le_bytes());
+        wav.extend_from_slice(&block_align.to_le_bytes());
         wav.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
         wav.extend_from_slice(b"data");
-        wav.extend_from_slice(&0u32.to_le_bytes());
+        wav.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(&data);
         wav
+    }
+
+    /// Writes `contents` to a uniquely named file in the temp directory.
+    fn temp_file(tag: &str, contents: &[u8]) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "moq-media-{tag}-{}-{:?}.wav",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        std::fs::File::create(&path)
+            .and_then(|mut file| file.write_all(contents))
+            .expect("write the test file");
+        path
+    }
+
+    /// The decoder converts to interleaved f32 and the publisher stamps from
+    /// the sample count, so a file that decodes to the wrong number of samples
+    /// or the wrong channel order publishes audio that is the wrong length and
+    /// the wrong shape. Neither shows up in a test that only opens an empty
+    /// file, which is all this had when symphonia 0.6 rewrote the conversion.
+    #[test]
+    fn a_file_decodes_to_interleaved_samples_in_order() {
+        // Distinguishable per channel and per frame, so interleaving that is
+        // transposed or off by one is visible in the values.
+        let frames: Vec<i16> = (0..960).flat_map(|n| [n as i16, -(n as i16)]).collect();
+        let path = temp_file("stereo", &wav(&frames, 2));
+
+        let file = AudioFile::open(&path, false).expect("a valid stereo WAV opens");
+        let input = file.input();
+        assert_eq!(input.sample_rate, 48_000);
+        assert_eq!(input.channels, 2);
+
+        let (tx, mut rx) = mpsc::channel(64);
+        let decoded = std::thread::spawn({
+            let path = path.clone();
+            move || decode_loop(&path, false, &tx)
+        });
+
+        let mut samples: Vec<f32> = Vec::new();
+        while let Some(frame) = rx.blocking_recv() {
+            samples.extend(
+                frame
+                    .data
+                    .chunks_exact(4)
+                    .map(|b| f32::from_le_bytes(b.try_into().expect("four bytes"))),
+            );
+        }
+        decoded
+            .join()
+            .expect("the decode thread")
+            .expect("decoding");
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(
+            samples.len(),
+            frames.len(),
+            "every sample in the file should reach the publisher",
+        );
+        // Interleaved, so the left channel rises and the right one falls.
+        let scale = f32::from(i16::MAX);
+        for (index, pair) in samples.chunks_exact(2).enumerate() {
+            let expected = index as f32 / scale;
+            assert!(
+                (pair[0] - expected).abs() < 1e-3 && (pair[1] + expected).abs() < 1e-3,
+                "frame {index} decoded as {pair:?}, expected [{expected}, -{expected}]",
+            );
+        }
     }
 
     /// A pass that decodes nothing must not be retried, or the pacing sleep has
