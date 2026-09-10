@@ -78,17 +78,17 @@ mod_module_files = "deny"
 # upstreamed (Android MediaCodec, libcamera). Every version above matches what
 # `moq-dev/moq@main` publishes, so deleting this block is the whole revert once
 # those land in a release.
-# What is left is one prospective PR: the five fMP4 export fixes and the doc
-# that explains their ordering, which are moq-dev/moq#3358. Everything else this
-# branch used to carry has merged upstream, so `iroh-live-3` is `main` plus
-# those six commits, rebuilt on 2026-09-10.
+# What is left is two prospective PRs. The five fMP4 export fixes and the doc
+# that explains their ordering are moq-dev/moq#3358; the surface converters that
+# borrow rather than consume, and convert to BGRA, are moq-dev/moq#3593. So
+# `iroh-live-3` is `main` plus seven commits.
 # `git log --oneline main..iroh-live-3` on `Frando/moq` is the list, and
 # `Cargo.lock` pins the exact revision, so a checkout builds what CI built even
 # after a rebuild.
 #
 # #3358 is still a draft, waiting on whether upstream wants audio rolled at the
 # video GOP boundary (what these do) or on a duration cap (what `dev` does), so
-# this block may yet be deleted rather than released.
+# that half may yet be deleted rather than released.
 #
 # Deleting it is the whole revert once the commits land in a moq release.
 [patch.crates-io]
