@@ -30,7 +30,7 @@ noq-proto = { version = "1", default-features = false }
 iroh-tickets = "1.0.0"
 iroh-smol-kv = { version = "0.4.0", default-features = false }
 hang = "0.20.11"
-moq-net = "0.2.19"
+moq-net = "0.2.20"
 moq-mux = "0.9.14"
 # `aac` stays on: a broadcast that reached us through an RTMP or HLS gateway
 # carries AAC, and dropping its audio track is a silent failure.
@@ -78,23 +78,24 @@ mod_module_files = "deny"
 # upstreamed (Android MediaCodec, libcamera). Every version above matches what
 # `moq-dev/moq@main` publishes, so deleting this block is the whole revert once
 # those land in a release.
-# This branch carries thirteen moq changes that are not in a release yet: four
-# fMP4 export fixes and the doc that explains their ordering, a decode test
-# against foreign bitstreams, four moq-video robustness fixes, the public
-# backend-name vocabulary and V4L2 mode listing, the live-edge decoder open,
-# and a moq-net fix that aborts subscriptions when a session shuts down. They
-# live on `Frando/moq@iroh-live-2`, one commit per prospective PR, rebuilt on
-# upstream `main` on 2026-09-09 with everything already merged dropped.
-# `git log --oneline main..iroh-live-2` on that fork is the list. `Cargo.lock`
-# pins the exact revision, so a checkout builds what CI built even after a
-# rebuild.
+# What is left is one prospective PR: the five fMP4 export fixes and the doc
+# that explains their ordering, which are moq-dev/moq#3358. Everything else this
+# branch used to carry has merged upstream, so `iroh-live-3` is `main` plus
+# those six commits, rebuilt on 2026-09-10.
+# `git log --oneline main..iroh-live-3` on `Frando/moq` is the list, and
+# `Cargo.lock` pins the exact revision, so a checkout builds what CI built even
+# after a rebuild.
 #
-# Deleting this block is the whole fix once the commits land in a moq release.
+# #3358 is still a draft, waiting on whether upstream wants audio rolled at the
+# video GOP boundary (what these do) or on a duration cap (what `dev` does), so
+# this block may yet be deleted rather than released.
+#
+# Deleting it is the whole revert once the commits land in a moq release.
 [patch.crates-io]
-hang = { git = "https://github.com/Frando/moq", branch = "iroh-live-2" }
-moq-audio = { git = "https://github.com/Frando/moq", branch = "iroh-live-2" }
-moq-mux = { git = "https://github.com/Frando/moq", branch = "iroh-live-2" }
-moq-native = { git = "https://github.com/Frando/moq", branch = "iroh-live-2" }
-moq-net = { git = "https://github.com/Frando/moq", branch = "iroh-live-2" }
-moq-relay = { git = "https://github.com/Frando/moq", branch = "iroh-live-2" }
-moq-video = { git = "https://github.com/Frando/moq", branch = "iroh-live-2" }
+hang = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
+moq-audio = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
+moq-mux = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
+moq-native = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
+moq-net = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
+moq-relay = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
+moq-video = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }

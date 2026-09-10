@@ -69,8 +69,29 @@ fn describe(mode: &video::capture::Mode) -> String {
         // the size is real and nothing here can say at which rates.
         return format!("{size}  (rates not listed)");
     }
-    let rates: Vec<String> = mode.framerates.iter().map(u32::to_string).collect();
+    let rates: Vec<String> = mode.framerates.iter().map(rate).collect();
     format!("{size}  {} fps", rates.join(", "))
+}
+
+/// One frame rate, as a person reads it.
+///
+/// A driver reports frames per interval rather than a whole number, so the
+/// common cinema and NTSC rates are ratios: 24000 frames per 1001 seconds is
+/// 23.976 fps and not 24. Printed to two decimals only when it needs them, so
+/// the ordinary 30 stays "30" rather than "30.00".
+fn rate(rate: &video::capture::Rate) -> String {
+    let frames = f64::from(rate.frames().get());
+    let seconds = rate.interval().as_secs_f64();
+    let fps = if seconds > 0.0 {
+        frames / seconds
+    } else {
+        frames
+    };
+    if (fps - fps.round()).abs() < 0.005 {
+        format!("{}", fps.round() as u64)
+    } else {
+        format!("{fps:.2}")
+    }
 }
 
 /// Prints every section, in the order a publisher reaches for them.
