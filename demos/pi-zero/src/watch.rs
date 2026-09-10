@@ -436,8 +436,18 @@ pub(crate) async fn run_drm(video_track: VideoTrack, _session: MoqSession) -> Re
         }
     }
 
-    render_handle
-        .join()
+    // Dropped before the join rather than at the end of the function. The
+    // render thread ends when `blocking_recv` reports the channel closed, and
+    // the channel is not closed while this sender is alive, so a track that
+    // ends on its own left the two waiting on each other for good.
+    drop(frame_tx);
+
+    // On the blocking pool: `join` parks the thread it runs on until the
+    // renderer returns, and parking an async worker stalls every other task
+    // that runtime is driving, including the ones this join is waiting for.
+    tokio::task::spawn_blocking(move || render_handle.join())
+        .await
+        .context("failed to join the render thread")?
         .map_err(|_| anyhow::anyhow!("render thread panicked"))??;
     Ok(())
 }
