@@ -37,7 +37,7 @@ iroh-live = { workspace = true }
 moq-media = { workspace = true, features = ["test-source"] }
 n0-future = "0.3.1"
 rand = "0.9"
-serial_test = "3"
+serial_test = "4"
 url = "2"
 
 [lints]
