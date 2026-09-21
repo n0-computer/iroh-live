@@ -74,38 +74,28 @@ allow_attributes_without_reason = "warn"
 mod_module_files = "deny"
 
 
-# The moq media stack from git rather than crates.io: `Frando/moq@iroh-live-4`,
-# which is `moq-dev/moq@main` plus two build fixes.
+# The moq media stack from git rather than crates.io: `moq-dev/moq@main`, with
+# no fork and no patches of our own. Everything we carried has merged: the fMP4
+# export rework (moq-dev/moq#3573, which superseded our #3358), the borrowing
+# surface converters (#3593), and the capture and Android build fixes (#3850).
 #
-# Two things keep this block. `main` has merged the `dev` branch and no release
-# has been cut since, so the API this workspace is written against exists only
-# in git. And `main` does not build with moq-audio's and moq-video's `capture`
-# feature, which is the one we publish with: moq-dev/moq#3813 renamed
-# `Clock::micros` to `Clock::now` and missed the two callers behind that
-# feature, which no upstream pull-request job compiles. Nor does moq-video build
-# for Android, where its MediaCodec encoder still passes the bitrate as a plain
-# integer after it became a bandwidth `Rate`. One commit fixes each; both are
-# moq-dev/moq#3850, which also gates the two configurations in upstream CI.
+# This block stays only because nothing has been released since `main` merged
+# the `dev` branch, so the API this workspace is written against exists only in
+# git. Two things are easy to get wrong while that lasts. The version numbers
+# above match what crates.io publishes and the code does not: crates.io's
+# moq-net 0.2.22 predates the `dev` merge and main's follows it, so deleting
+# this block compiles against a different crate under the same name and fails
+# in ways that do not point here. And `moq-tokio` is not on crates.io at all
+# yet, so this block is the only place it can come from.
 #
-# Everything else this block used to carry has merged: the fMP4 export rework
-# (moq-dev/moq#3573, which superseded our #3358) and the borrowing surface
-# converters (#3593).
-#
-# Two things are easy to get wrong while this lasts. The version numbers above
-# match what crates.io publishes and the code does not: crates.io's moq-net
-# 0.2.22 predates the `dev` merge and main's follows it, so deleting this block
-# compiles against a different crate under the same name and fails in ways that
-# do not point here. And `moq-tokio` is not on crates.io at all yet, so this
-# block is the only place it can come from.
-#
-# `git log --oneline main..iroh-live-4` on `Frando/moq` is the list, and
-# `Cargo.lock` pins the exact revision. Deleting this block is the whole revert
-# once a release carries both fixes.
+# `Cargo.lock` pins the exact revision, so `main` moving does not move us;
+# `cargo update` on these packages does. Deleting this block is the whole
+# revert once a release follows the `dev` merge.
 [patch.crates-io]
-hang = { git = "https://github.com/Frando/moq", branch = "iroh-live-4" }
-moq-audio = { git = "https://github.com/Frando/moq", branch = "iroh-live-4" }
-moq-mux = { git = "https://github.com/Frando/moq", branch = "iroh-live-4" }
-moq-net = { git = "https://github.com/Frando/moq", branch = "iroh-live-4" }
-moq-relay = { git = "https://github.com/Frando/moq", branch = "iroh-live-4" }
-moq-tokio = { git = "https://github.com/Frando/moq", branch = "iroh-live-4" }
-moq-video = { git = "https://github.com/Frando/moq", branch = "iroh-live-4" }
+hang = { git = "https://github.com/moq-dev/moq", branch = "main" }
+moq-audio = { git = "https://github.com/moq-dev/moq", branch = "main" }
+moq-mux = { git = "https://github.com/moq-dev/moq", branch = "main" }
+moq-net = { git = "https://github.com/moq-dev/moq", branch = "main" }
+moq-relay = { git = "https://github.com/moq-dev/moq", branch = "main" }
+moq-tokio = { git = "https://github.com/moq-dev/moq", branch = "main" }
+moq-video = { git = "https://github.com/moq-dev/moq", branch = "main" }
