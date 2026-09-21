@@ -210,9 +210,8 @@ async fn run(publish: Publish, shutdown: CancellationToken) -> Result<(), Publis
                 |(mut rx, reader)| async move { rx.recv().await.map(|surface| (surface, (rx, reader))) },
             ));
             let clock_for_stamp = clock;
-            let frames: BoxStream<Frame> = Box::pin(
-                frames.map(move |surface| Frame::new(surface, timestamp(&clock_for_stamp))),
-            );
+            let frames: BoxStream<Frame> =
+                Box::pin(frames.map(move |surface| Frame::new(surface, clock_for_stamp.now())));
             fan_out(
                 broadcast, catalog, stats, renditions, preview, frames, size, framerate, color,
                 slot, shutdown,
@@ -264,7 +263,7 @@ async fn run(publish: Publish, shutdown: CancellationToken) -> Result<(), Publis
     reason = "one call site, all of it is source geometry"
 )]
 async fn fan_out(
-    mut broadcast: moq_net::broadcast::Producer,
+    broadcast: moq_net::broadcast::Producer,
     catalog: CatalogProducer,
     stats: PublishStats,
     renditions: Vec<VideoRendition>,
@@ -292,7 +291,10 @@ async fn fan_out(
             "publishing video rendition",
         );
 
-        let track = broadcast.create_track(rendition.name.as_str(), Some(catalog.track_info()))?;
+        let track = broadcast.create_track(
+            rendition.name.as_str(),
+            Some(catalog.track_info(hang::catalog::PRIORITY.video)),
+        )?;
         let producer = encode::Producer::with_track(track, catalog.clone(), published)?;
 
         let (tx, rx) = frame_channel();
@@ -488,14 +490,17 @@ async fn encode_rendition(
 /// itself, and guessing at a profile and level we did not choose would only be
 /// wrong in a way subscribers have to work around.
 async fn publish_annexb(
-    mut broadcast: moq_net::broadcast::Producer,
+    broadcast: moq_net::broadcast::Producer,
     catalog: CatalogProducer,
     mut bytes: BoxStream<bytes::Bytes>,
     name: String,
     stats: PublishStats,
     shutdown: CancellationToken,
 ) -> Result<(), PublishError> {
-    let track = broadcast.create_track(name.as_str(), Some(catalog.track_info()))?;
+    let track = broadcast.create_track(
+        name.as_str(),
+        Some(catalog.track_info(hang::catalog::PRIORITY.video)),
+    )?;
     let mut import =
         moq_mux::codec::h264::Import::new(track, catalog.reserve(), Default::default())?;
     let mut split = moq_mux::codec::h264::Split::new();
@@ -608,7 +613,7 @@ fn encode_config(
 ) -> encode::Config {
     let size = rendition.size.unwrap_or(source);
     let mut config = encode::Config::new(size.width, size.height, framerate);
-    config.bitrate = rendition.bitrate;
+    config.bitrate = rendition.bitrate.map(moq_net::bandwidth::Rate::from_bps);
     config.codec = rendition.codec;
     config.kind = rendition.kind.clone();
     config.color = color;
@@ -637,13 +642,6 @@ fn gop_frames(interval: Duration, framerate: u32) -> u32 {
 }
 
 /// Stamps a frame on the broadcast clock, which audio shares.
-#[cfg(feature = "capture")]
-fn timestamp(clock: &moq_mux::Clock) -> moq_net::Timestamp {
-    // u64 microseconds only overflows a Timestamp after ~584,000 years of
-    // uptime, so there is no failure to report here.
-    moq_net::Timestamp::from_micros(clock.micros()).expect("clock micros out of range")
-}
-
 /// Records what one encode call cost and produced.
 ///
 /// The rate is taken over the gap since this rendition last published. The

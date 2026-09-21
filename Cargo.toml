@@ -29,15 +29,15 @@ iroh-gossip = "0.101.0"
 noq-proto = { version = "1", default-features = false }
 iroh-tickets = "1.0.0"
 iroh-smol-kv = { version = "0.4.0", default-features = false }
-hang = "0.20.11"
-moq-net = "0.2.20"
-moq-mux = "0.9.14"
+hang = "0.20.13"
+moq-net = "0.2.22"
+moq-mux = "0.9.16"
 # `aac` stays on: a broadcast that reached us through an RTMP or HLS gateway
 # carries AAC, and dropping its audio track is a silent failure.
-moq-audio = { version = "0.0.23", default-features = false, features = ["aac"] }
-moq-video = { version = "0.0.23", default-features = false }
-moq-relay = { version = "0.14.16", default-features = false }
-moq-native = { version = "0.19.17", default-features = false }
+moq-audio = { version = "0.0.25", default-features = false, features = ["aac"] }
+moq-video = { version = "0.0.25", default-features = false }
+moq-relay = { version = "0.14.18", default-features = false }
+moq-tokio = { version = "0.19.11", default-features = false }
 web-transport-iroh = "0.7.0"
 
 # UI. egui pins the wgpu major it links, and `moq_video::render` hands back a
@@ -74,28 +74,38 @@ allow_attributes_without_reason = "warn"
 mod_module_files = "deny"
 
 
-# The moq media stack, from a local checkout while the gaps we still carry are
-# upstreamed (Android MediaCodec, libcamera). Every version above matches what
-# `moq-dev/moq@main` publishes, so deleting this block is the whole revert once
-# those land in a release.
-# What is left is two prospective PRs. The five fMP4 export fixes and the doc
-# that explains their ordering are moq-dev/moq#3358; the surface converters that
-# borrow rather than consume, and convert to BGRA, are moq-dev/moq#3593. So
-# `iroh-live-3` is `main` plus seven commits.
-# `git log --oneline main..iroh-live-3` on `Frando/moq` is the list, and
-# `Cargo.lock` pins the exact revision, so a checkout builds what CI built even
-# after a rebuild.
+# The moq media stack from git rather than crates.io: `Frando/moq@iroh-live-4`,
+# which is `moq-dev/moq@main` plus two build fixes.
 #
-# #3358 is still a draft, waiting on whether upstream wants audio rolled at the
-# video GOP boundary (what these do) or on a duration cap (what `dev` does), so
-# that half may yet be deleted rather than released.
+# Two things keep this block. `main` has merged the `dev` branch and no release
+# has been cut since, so the API this workspace is written against exists only
+# in git. And `main` does not build with moq-audio's and moq-video's `capture`
+# feature, which is the one we publish with: moq-dev/moq#3813 renamed
+# `Clock::micros` to `Clock::now` and missed the two callers behind that
+# feature, which no upstream pull-request job compiles. Nor does moq-video build
+# for Android, where its MediaCodec encoder still passes the bitrate as a plain
+# integer after it became a bandwidth `Rate`. One commit fixes each; both are
+# moq-dev/moq#3850, which also gates the two configurations in upstream CI.
 #
-# Deleting it is the whole revert once the commits land in a moq release.
+# Everything else this block used to carry has merged: the fMP4 export rework
+# (moq-dev/moq#3573, which superseded our #3358) and the borrowing surface
+# converters (#3593).
+#
+# Two things are easy to get wrong while this lasts. The version numbers above
+# match what crates.io publishes and the code does not: crates.io's moq-net
+# 0.2.22 predates the `dev` merge and main's follows it, so deleting this block
+# compiles against a different crate under the same name and fails in ways that
+# do not point here. And `moq-tokio` is not on crates.io at all yet, so this
+# block is the only place it can come from.
+#
+# `git log --oneline main..iroh-live-4` on `Frando/moq` is the list, and
+# `Cargo.lock` pins the exact revision. Deleting this block is the whole revert
+# once a release carries both fixes.
 [patch.crates-io]
-hang = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
-moq-audio = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
-moq-mux = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
-moq-native = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
-moq-net = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
-moq-relay = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
-moq-video = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
+hang = { git = "https://github.com/Frando/moq", branch = "iroh-live-4" }
+moq-audio = { git = "https://github.com/Frando/moq", branch = "iroh-live-4" }
+moq-mux = { git = "https://github.com/Frando/moq", branch = "iroh-live-4" }
+moq-net = { git = "https://github.com/Frando/moq", branch = "iroh-live-4" }
+moq-relay = { git = "https://github.com/Frando/moq", branch = "iroh-live-4" }
+moq-tokio = { git = "https://github.com/Frando/moq", branch = "iroh-live-4" }
+moq-video = { git = "https://github.com/Frando/moq", branch = "iroh-live-4" }

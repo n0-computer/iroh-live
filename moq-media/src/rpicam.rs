@@ -382,7 +382,7 @@ pub fn frames(config: RawConfig, clock: moq_mux::Clock) -> Result<BoxStream<Fram
                         warn!(error = %err, "stopping the raw camera stream");
                         return None;
                     }
-                    let frame = Frame::new(Surface::I420(picture), timestamp(&state.clock));
+                    let frame = Frame::new(Surface::I420(picture), state.clock.now());
                     return Some((frame, state));
                 }
                 match state
@@ -714,16 +714,6 @@ impl Drop for Process {
         // in a log, since a camera that stays on is the failure people notice.
         let _ = self.child.start_kill();
     }
-}
-
-/// Stamps a picture with the time since `clock` started.
-///
-/// The same reading `moq-media`'s capture path takes, so a raw camera and a
-/// microphone handed the same clock land on one timeline.
-fn timestamp(clock: &moq_mux::Clock) -> moq_net::Timestamp {
-    // u64 microseconds only overflows a Timestamp after ~584,000 years of
-    // uptime, so there is no failure to report here.
-    moq_net::Timestamp::from_micros(clock.micros()).expect("clock micros out of range")
 }
 
 /// Rounds `value` up to the next multiple of `align`.

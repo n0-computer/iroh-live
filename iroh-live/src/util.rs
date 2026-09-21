@@ -288,7 +288,10 @@ pub fn spawn_signal_producer(
             let Some(selected) = paths.iter().find(|p| p.is_selected()) else {
                 continue;
             };
-            let delivery_bps = delivery.as_ref().and_then(|estimate| estimate.peek());
+            let delivery_bps = delivery
+                .as_ref()
+                .and_then(|estimate| estimate.peek())
+                .map(moq_net::bandwidth::Rate::as_bps);
             let signals = sampler.sample(
                 selected.id(),
                 &selected.stats(),

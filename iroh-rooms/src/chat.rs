@@ -12,7 +12,7 @@
 
 use std::time::Instant;
 
-use moq_net::{Timestamp, broadcast, track};
+use moq_net::{Timestamp, broadcast, frame, group, track};
 use tracing::warn;
 
 /// Name of the track that carries chat messages.
@@ -24,14 +24,31 @@ pub const CHAT_TRACK_NAME: &str = "chat";
 /// the link is congested.
 pub const CHAT_PRIORITY: u8 = 10;
 
+/// How long a chat message stays readable, on both ends of the track.
+///
+/// The publisher keeps a message this long, and a subscriber waits this long
+/// behind the newest one before giving up on it. The two have to agree: a
+/// subscriber that asks for less abandons messages the publisher still holds,
+/// and one that asks for more is clamped to this anyway.
+///
+/// It needs setting on the subscriber at all because moq-net's default budget
+/// is zero, which means "the newest group or nothing": a second message arriving
+/// before the first is read would drop the first, silently. Five seconds is what
+/// both sides defaulted to before that changed. It is not a duration to reach for
+/// [`Duration::MAX`](std::time::Duration::MAX) with either, since the budget
+/// travels as milliseconds in a QUIC varint and anything past `2^62` of them
+/// cannot be encoded.
+pub const CHAT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Returns the track settings for the chat track.
 ///
-/// Groups are ordered, because chat only makes sense read oldest first, whereas
-/// the moq-net default favours the newest group.
+/// Carries no delivery order. Group order on the wire is newest-first for every
+/// track, and a reader that wants sequence order asks its own subscriber for
+/// it, which is what [`ChatSubscriber`] does.
 pub fn chat_track() -> track::Info {
     track::Info::default()
         .with_priority(CHAT_PRIORITY)
-        .with_ordered(true)
+        .with_max_age(CHAT_MAX_AGE)
 }
 
 /// A received chat message, with the time it arrived.
@@ -105,12 +122,19 @@ impl ChatPublisher {
 
 /// Reader half of a chat track.
 ///
-/// Yields [`ChatMessage`]s in group order. Groups that expired before the
-/// subscription started are skipped.
+/// Yields [`ChatMessage`]s in the order they were sent. Groups that expired
+/// before the subscription started are skipped.
 #[derive(derive_more::Debug)]
 pub struct ChatSubscriber {
+    /// The track read in sequence order, since chat only makes sense oldest
+    /// first and the wire delivers the newest group first.
     #[debug(skip)]
-    track: track::Subscriber,
+    track: track::Ordered,
+    /// The message being read. One frame per group is what [`ChatPublisher`]
+    /// writes, but reading the whole group costs nothing and does not depend
+    /// on that.
+    #[debug(skip)]
+    group: Option<group::Consumer>,
 }
 
 impl ChatSubscriber {
@@ -121,13 +145,36 @@ impl ChatSubscriber {
     /// Fails if the broadcast has no track named [`CHAT_TRACK_NAME`], which is
     /// the normal outcome for a peer that publishes media without chat.
     pub async fn subscribe(broadcast: &broadcast::Consumer) -> Result<Self, moq_net::Error> {
-        let track = broadcast.track(CHAT_TRACK_NAME)?.subscribe(None).await?;
+        let subscription = track::Subscription::default().with_max_age(CHAT_MAX_AGE);
+        let track = broadcast
+            .track(CHAT_TRACK_NAME)?
+            .subscribe(subscription)
+            .await?;
         Ok(Self::new(track))
     }
 
     /// Creates a subscriber over an existing track subscriber.
     pub fn new(track: track::Subscriber) -> Self {
-        Self { track }
+        Self {
+            track: track.ordered(),
+            group: None,
+        }
+    }
+
+    /// Reads the next frame, moving to the next group when this one is done.
+    async fn next_frame(&mut self) -> Result<Option<frame::Frame>, moq_net::Error> {
+        loop {
+            if let Some(group) = self.group.as_mut() {
+                if let Some(frame) = group.read_frame().await? {
+                    return Ok(Some(frame));
+                }
+                self.group = None;
+            }
+            match self.track.next_group().await? {
+                Some(group) => self.group = Some(group),
+                None => return Ok(None),
+            }
+        }
     }
 
     /// Waits for the next chat message.
@@ -136,7 +183,7 @@ impl ChatSubscriber {
     /// or closes its broadcast.
     pub async fn recv(&mut self) -> Option<ChatMessage> {
         loop {
-            let frame = match self.track.read_frame().await {
+            let frame = match self.next_frame().await {
                 Ok(Some(frame)) => frame,
                 Ok(None) => return None,
                 Err(err) => {

@@ -230,12 +230,8 @@ impl SessionHandle {
     /// so the two tracks share a timeline even though the microphone and the
     /// camera start at different moments.
     fn timestamp(&self) -> Timestamp {
-        let Some(clock) = self.local().map(LocalBroadcast::clock) else {
-            return Timestamp::ZERO;
-        };
-        // The error case is a value past 2^62 microseconds, or 146,000 years of
-        // uptime.
-        Timestamp::from_micros(clock.micros()).unwrap_or(Timestamp::ZERO)
+        self.local()
+            .map_or(Timestamp::ZERO, |local| local.clock().now())
     }
 }
 

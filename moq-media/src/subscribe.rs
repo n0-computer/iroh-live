@@ -683,7 +683,7 @@ impl RemoteBroadcast {
 fn video_decode_config(policy: &PlaybackPolicy) -> moq_video::decode::Config {
     let mut config = moq_video::decode::Config::new();
     config.kind = policy.decoder.clone();
-    config.latency_max = Some(policy.max_latency);
+    config.max_age = policy.max_latency;
     config.gpu_frames = policy.gpu_frames;
     // This is a player, so the groups a track still holds are behind the live
     // edge by definition. A decoder rebuilt on a backend change, or opened on a
@@ -700,7 +700,7 @@ fn video_decode_config(policy: &PlaybackPolicy) -> moq_video::decode::Config {
 fn audio_decode_config(policy: &PlaybackPolicy) -> moq_audio::decode::Config {
     let mut config = moq_audio::decode::Config::new();
     config.format = moq_audio::Format::F32;
-    config.latency_max = Some(policy.max_latency);
+    config.max_age = policy.max_latency;
     // The live edge, for the reason the video side gives.
     config.start = moq_audio::decode::Start::Latest;
     config

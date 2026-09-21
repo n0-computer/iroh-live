@@ -1563,6 +1563,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "core_affinity"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a034b3a7b624016c6e13f5df875747cc25f884156aad2abd12b6c46797971342"
+dependencies = [
+ "libc",
+ "num_cpus",
+ "winapi",
+]
+
+[[package]]
 name = "core_detect"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3495,9 +3506,9 @@ dependencies = [
 
 [[package]]
 name = "h264-parser"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "253b313319f7109de64e480ffb606f89475cd758bae82e096e00c5d95341d30e"
+checksum = "c16ee729d5d4a75be0f5181682a17cf0fce29497d0fa5273d57fe477409f02e6"
 
 [[package]]
 name = "half"
@@ -3513,8 +3524,8 @@ dependencies = [
 
 [[package]]
 name = "hang"
-version = "0.20.11"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+version = "0.20.13"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-4#ccb909267f84bbfe3e3dcdfe25a5a878163e9e85"
 dependencies = [
  "bytes",
  "derive_more",
@@ -3906,16 +3917,6 @@ name = "humantime"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "15cdd26707701c53297e2fa6afb323d55fbc1d0810c3aec078ae3ef0424c3c15"
-
-[[package]]
-name = "humantime-serde"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57a3db5ea5923d99402c94e9feb261dc5ee9b4efa158b0315f788cf549cc200c"
-dependencies = [
- "humantime",
- "serde",
-]
 
 [[package]]
 name = "hybrid-array"
@@ -4492,6 +4493,7 @@ dependencies = [
  "data-encoding",
  "dirs",
  "eframe",
+ "hang",
  "iroh",
  "iroh-live",
  "iroh-rooms",
@@ -4528,9 +4530,9 @@ dependencies = [
  "iroh-live",
  "iroh-moq",
  "moq-media",
- "moq-native",
  "moq-net",
  "moq-relay",
+ "moq-tokio",
  "n0-future",
  "rand 0.10.2",
  "rustls",
@@ -4600,6 +4602,7 @@ dependencies = [
  "futures-lite",
  "iroh",
  "moq-net",
+ "moq-tokio",
  "n0-error",
  "n0-future",
  "n0-tracing-test",
@@ -5006,12 +5009,11 @@ dependencies = [
 
 [[package]]
 name = "kio"
-version = "0.5.8"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+version = "0.5.9"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-4#ccb909267f84bbfe3e3dcdfe25a5a878163e9e85"
 dependencies = [
  "loom",
  "smallvec",
- "web-async",
 ]
 
 [[package]]
@@ -5419,8 +5421,8 @@ dependencies = [
 
 [[package]]
 name = "moq-audio"
-version = "0.0.23"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+version = "0.0.25"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-4#ccb909267f84bbfe3e3dcdfe25a5a878163e9e85"
 dependencies = [
  "block2 0.6.2",
  "bytes",
@@ -5428,7 +5430,7 @@ dependencies = [
  "dispatch2",
  "fixed-resample",
  "hang",
- "kio 0.5.8 (git+https://github.com/Frando/moq?branch=iroh-live-3)",
+ "kio 0.5.9",
  "moq-mux",
  "moq-net",
  "objc2 0.6.4",
@@ -5450,9 +5452,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "moq-auth"
+version = "0.1.0"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-4#ccb909267f84bbfe3e3dcdfe25a5a878163e9e85"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.23.1",
+ "jsonwebtoken",
+ "kio 0.5.9",
+ "moq-pattern",
+ "p256",
+ "p384",
+ "rand 0.10.2",
+ "reqwest",
+ "rsa",
+ "rustls",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "moq-binary"
+version = "0.1.0"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-4#ccb909267f84bbfe3e3dcdfe25a5a878163e9e85"
+dependencies = [
+ "bytes",
+ "kio 0.5.9",
+ "moq-flate",
+ "moq-net",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "moq-flate"
 version = "0.1.2"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-4#ccb909267f84bbfe3e3dcdfe25a5a878163e9e85"
 dependencies = [
  "bytes",
  "flate2",
@@ -5461,12 +5500,12 @@ dependencies = [
 
 [[package]]
 name = "moq-json"
-version = "0.3.10"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+version = "0.3.12"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-4#ccb909267f84bbfe3e3dcdfe25a5a878163e9e85"
 dependencies = [
  "bytes",
  "json-patch",
- "kio 0.5.8 (git+https://github.com/Frando/moq?branch=iroh-live-3)",
+ "kio 0.5.9",
  "moq-flate",
  "moq-net",
  "serde",
@@ -5478,8 +5517,8 @@ dependencies = [
 
 [[package]]
 name = "moq-loc"
-version = "0.2.6"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+version = "0.2.8"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-4#ccb909267f84bbfe3e3dcdfe25a5a878163e9e85"
 dependencies = [
  "bytes",
  "moq-net",
@@ -5544,7 +5583,7 @@ dependencies = [
 [[package]]
 name = "moq-msf"
 version = "0.4.2"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-4#ccb909267f84bbfe3e3dcdfe25a5a878163e9e85"
 dependencies = [
  "serde",
  "serde_json",
@@ -5553,16 +5592,17 @@ dependencies = [
 
 [[package]]
 name = "moq-mux"
-version = "0.9.14"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+version = "0.9.16"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-4#ccb909267f84bbfe3e3dcdfe25a5a878163e9e85"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
  "bytes",
  "h264-parser",
  "hang",
- "kio 0.5.8 (git+https://github.com/Frando/moq?branch=iroh-live-3)",
+ "kio 0.5.9",
  "memchr",
+ "moq-binary",
  "moq-json",
  "moq-loc",
  "moq-msf",
@@ -5584,56 +5624,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "moq-native"
-version = "0.19.17"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
-dependencies = [
- "clap",
- "dns-lookup",
- "futures",
- "hex",
- "humantime",
- "humantime-serde",
- "jni 0.22.4",
- "libc",
- "moq-net",
- "noq",
- "noq-proto",
- "notify",
- "qmux",
- "quinn",
- "rand 0.10.2",
- "rcgen",
- "reqwest",
- "rustls",
- "rustls-platform-verifier",
- "rustls-webpki",
- "serde",
- "serde_with",
- "socket2",
- "thiserror 2.0.20",
- "time",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "url",
- "web-transport-iroh",
- "web-transport-noq",
- "web-transport-proto",
- "web-transport-trait",
- "webpki-roots",
- "x509-parser",
-]
-
-[[package]]
 name = "moq-net"
-version = "0.2.20"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+version = "0.2.22"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-4#ccb909267f84bbfe3e3dcdfe25a5a878163e9e85"
 dependencies = [
  "arrayvec",
  "bytes",
  "futures",
- "kio 0.5.8 (git+https://github.com/Frando/moq?branch=iroh-live-3)",
+ "kio 0.5.9",
+ "moq-pattern",
  "num_enum",
  "rand 0.10.2",
  "serde",
@@ -5646,8 +5645,8 @@ dependencies = [
 
 [[package]]
 name = "moq-nvenc"
-version = "0.0.4"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+version = "0.0.5"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-4#ccb909267f84bbfe3e3dcdfe25a5a878163e9e85"
 dependencies = [
  "cudarc",
  "lazy_static",
@@ -5655,27 +5654,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "moq-pattern"
+version = "0.1.0"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-4#ccb909267f84bbfe3e3dcdfe25a5a878163e9e85"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "moq-relay"
-version = "0.14.16"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+version = "0.14.18"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-4#ccb909267f84bbfe3e3dcdfe25a5a878163e9e85"
 dependencies = [
  "anyhow",
  "axum",
  "axum-server",
  "bytes",
  "bytesize",
- "clap",
  "futures",
- "http-body",
  "http-cache-reqwest",
  "humantime",
- "humantime-serde",
- "jsonwebtoken",
- "moq-native",
+ "moq-auth",
  "moq-net",
  "moq-stats",
- "moq-token",
- "rand 0.10.2",
+ "moq-tokio",
  "reqwest",
  "reqwest-middleware",
  "rustls",
@@ -5692,13 +5694,27 @@ dependencies = [
  "tower-service",
  "tracing",
  "url",
+ "usage-rs",
  "web-transport-trait",
 ]
 
 [[package]]
+name = "moq-sock"
+version = "0.0.1"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-4#ccb909267f84bbfe3e3dcdfe25a5a878163e9e85"
+dependencies = [
+ "core_affinity",
+ "libc",
+ "rand 0.10.2",
+ "socket2",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "moq-stats"
-version = "0.1.9"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+version = "0.1.11"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-4#ccb909267f84bbfe3e3dcdfe25a5a878163e9e85"
 dependencies = [
  "moq-json",
  "moq-net",
@@ -5710,21 +5726,44 @@ dependencies = [
 ]
 
 [[package]]
-name = "moq-token"
-version = "0.7.3"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+name = "moq-tokio"
+version = "0.19.11"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-4#ccb909267f84bbfe3e3dcdfe25a5a878163e9e85"
 dependencies = [
- "aws-lc-rs",
- "base64 0.23.1",
- "jsonwebtoken",
- "p256",
- "p384",
- "rsa",
+ "bytes",
+ "dns-lookup",
+ "futures",
+ "hex",
+ "humantime",
+ "jni 0.22.4",
+ "libc",
+ "moq-net",
+ "moq-sock",
+ "noq-proto",
+ "notify",
+ "qmux",
+ "rand 0.10.2",
+ "rcgen",
+ "reqwest",
+ "rustls",
+ "rustls-platform-verifier",
+ "rustls-webpki",
  "serde",
- "serde_json",
  "serde_with",
  "thiserror 2.0.20",
+ "time",
  "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "usage-rs",
+ "web-transport-iroh",
+ "web-transport-noq",
+ "web-transport-proto",
+ "web-transport-trait",
+ "webpki-roots",
+ "x509-parser",
 ]
 
 [[package]]
@@ -5744,8 +5783,8 @@ dependencies = [
 
 [[package]]
 name = "moq-video"
-version = "0.0.23"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+version = "0.0.25"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-4#ccb909267f84bbfe3e3dcdfe25a5a878163e9e85"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -6563,6 +6602,16 @@ checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
  "libm",
+]
+
+[[package]]
+name = "num_cpus"
+version = "1.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
+dependencies = [
+ "hermit-abi",
+ "libc",
 ]
 
 [[package]]
@@ -7938,7 +7987,6 @@ checksum = "04759210543be93709136e28212294a659ef5001836ff4eab4d663e4529bba83"
 dependencies = [
  "aws-lc-rs",
  "bytes",
- "fastbloom",
  "getrandom 0.4.3",
  "lru-slab",
  "rand 0.10.2",
@@ -7947,7 +7995,6 @@ dependencies = [
  "rustc-hash 2.1.3",
  "rustls",
  "rustls-pki-types",
- "rustls-platform-verifier",
  "slab",
  "thiserror 2.0.20",
  "tinyvec",
@@ -10429,6 +10476,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "usage-argv"
+version = "6.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63c2a3a54aa7e19635115f1e0033d4f261fc03302dbf85aac898ff730a2e6678"
+
+[[package]]
+name = "usage-config"
+version = "6.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acaea558889366b1ac3e326559941a527a9104f0c99e508349b26680bd6dbacd"
+
+[[package]]
+name = "usage-derive"
+version = "6.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2dbb659c9625a04d352f029cecaf61c138744977a665ff8375d996bbced79256"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.5",
+]
+
+[[package]]
+name = "usage-rs"
+version = "6.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3515698252935cabeda236242e07de36d0d64e0b67dd8075e631dc64937f41a"
+dependencies = [
+ "usage-argv",
+ "usage-config",
+ "usage-derive",
+ "usage-test",
+]
+
+[[package]]
+name = "usage-test"
+version = "6.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8709086a13a13b3859acbf3eeb86088f0637eb5d0105c25c5309885a9015bcbd"
+dependencies = [
+ "usage-argv",
+]
+
+[[package]]
 name = "utf8_iter"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10840,7 +10931,7 @@ dependencies = [
  "bytes",
  "http",
  "iroh",
- "kio 0.5.8 (registry+https://github.com/rust-lang/crates.io-index)",
+ "kio 0.5.8",
  "n0-error",
  "n0-future",
  "tokio",
@@ -10859,7 +10950,7 @@ dependencies = [
  "bytes",
  "futures",
  "http",
- "kio 0.5.8 (registry+https://github.com/rust-lang/crates.io-index)",
+ "kio 0.5.8",
  "noq",
  "rustls",
  "rustls-native-certs",

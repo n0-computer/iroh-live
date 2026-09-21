@@ -265,13 +265,20 @@ impl LocalBroadcast {
     ///
     /// Fails if the catalog track cannot be created on the broadcast.
     pub fn new(mut broadcast: moq_net::broadcast::Producer) -> Result<Self, PublishError> {
-        let catalog = CatalogProducer::with_catalog(&mut broadcast, Catalog::default())?;
+        // The catalog advertises the clock's wall mapping at its root, so the
+        // clock the media is stamped from is the one it is built with. Two
+        // clocks would publish a mapping for timestamps nothing carries.
+        let clock = moq_mux::Clock::new();
+        let config = moq_mux::catalog::Config::default()
+            .with_catalog(Catalog::default())
+            .with_clock(clock);
+        let catalog = CatalogProducer::new(&mut broadcast, config)?;
         // Behind a lock so every mutator takes `&self`, which is what a UI loop
         // holding the broadcast needs. The publish tasks clone it out.
         Ok(Self {
             broadcast,
             catalog: Mutex::new(catalog),
-            clock: moq_mux::Clock::new(),
+            clock,
             stats: PublishStats::default(),
             video_slot: Arc::new(tokio::sync::Mutex::new(())),
             video: Mutex::new(None),
@@ -332,11 +339,10 @@ impl LocalBroadcast {
         &self,
         track: crate::catalog::TrackRef,
     ) -> Result<moq_net::track::Producer, PublishError> {
-        let mut info = moq_net::track::Info::default();
-        info.priority = track.priority;
-        // Chat only makes sense read oldest first, where the moq-net default
-        // favours the newest group.
-        info.ordered = true;
+        // No delivery order to ask for here. Group order within a track is
+        // newest-first on the wire now, and a reader that wants sequence order
+        // takes it from its own subscriber, which is where chat's is chosen.
+        let info = moq_net::track::Info::default().with_priority(track.priority);
         // A cloned producer shares the broadcast's track table, so this creates
         // the track on the same broadcast without needing `&mut self`.
         let producer = self
@@ -344,7 +350,7 @@ impl LocalBroadcast {
             .clone()
             .create_track(track.name.as_str(), Some(info))?;
         let mut catalog = self.catalog.lock().expect("poisoned");
-        let mut guard = catalog.lock();
+        let mut guard = catalog.modify()?;
         guard.ext.chat = Some(Chat {
             message: Some(track),
             typing: None,
@@ -360,7 +366,7 @@ impl LocalBroadcast {
     /// Fails if the catalog cannot be updated.
     pub fn set_user(&self, user: User) -> Result<(), PublishError> {
         let mut catalog = self.catalog.lock().expect("poisoned");
-        let mut guard = catalog.lock();
+        let mut guard = catalog.modify()?;
         guard.ext.user = Some(user);
         guard.commit()?;
         Ok(())

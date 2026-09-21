@@ -337,7 +337,9 @@ fn audio_options(args: &CaptureArgs) -> audio::encode::Options {
     // PCM's bitrate follows from its sample rate and channel count, and the
     // encoder rejects an explicit one, so only Opus takes the flag.
     if options.codec == audio::encode::Codec::Opus {
-        options.bitrate = args.audio_bitrate;
+        options.bitrate = args
+            .audio_bitrate
+            .map(|bps| moq_net::bandwidth::Rate::from_bps(bps.into()));
     }
     options
 }

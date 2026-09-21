@@ -18,7 +18,7 @@ use iroh::{
     endpoint::{AlpnError, ConnectError, ConnectWithOptsError, ConnectingError, Connection},
     protocol::{AcceptError, ProtocolHandler},
 };
-use moq_net::{AsPath, Origin, broadcast, origin};
+use moq_net::{AsPath, broadcast, origin};
 use n0_error::{AnyError, Result, e, stack_error};
 use n0_future::task::{AbortOnDropHandle, JoinSet, spawn};
 use tokio::sync::{broadcast as tokio_broadcast, mpsc, oneshot, watch};
@@ -56,10 +56,23 @@ pub fn alpns() -> Vec<&'static [u8]> {
 /// exiting behind it.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
-/// The route every locally published broadcast is created with: announced, so
-/// peers discover it without asking for the path by name.
-fn announced_route() -> broadcast::Route {
-    broadcast::Route::new().with_announce(true)
+/// The transport a MoQ session runs over.
+///
+/// web-transport-iroh implements the async transport interface, and moq-net
+/// accepts only the poll one, so every session goes through moq-tokio's
+/// adapter. It costs an allocation per operation and a copy per write; a
+/// native poll implementation in web-transport-iroh would remove both.
+type Transport = moq_tokio::transport::Session<web_transport_iroh::Session>;
+
+/// The instant a session's driver starts from.
+///
+/// From tokio's clock rather than `std`'s, because `moq_net::time::run` polls
+/// the driver with tokio's, and a driver refuses time that moves backwards.
+/// Under `tokio::time::pause` the two diverge: `std` keeps running while tokio
+/// holds still, so seeding from `std` puts the first poll behind the seed and
+/// the driver panics.
+fn driver_now() -> std::time::Instant {
+    tokio::time::Instant::now().into_std()
 }
 
 #[stack_error(derive, add_meta, from_sources)]
@@ -101,6 +114,52 @@ pub enum Error {
 pub enum SubscribeError {
     #[error("broadcast was never announced")]
     NotAnnounced,
+    /// The path could not be resolved for a reason other than the session
+    /// ending first: the peer refused it, or it lies outside what this session
+    /// may see.
+    #[error("broadcast could not be resolved")]
+    Unresolved {
+        #[error(source, std_err)]
+        source: moq_net::Error,
+    },
+}
+
+/// What keeps a session making progress: its protocol driver, and the driver
+/// of the origin the peer's announcements land in.
+///
+/// Returned by [`MoqSession::connect`] and [`MoqSession::accept`]. Nothing
+/// happens on the session until [`run`](Self::run) is awaited, and dropping it
+/// ends the session.
+#[must_use = "the session makes no progress unless its driver is run"]
+pub struct SessionDriver {
+    session: moq_net::Driver<Transport>,
+    announced: origin::Driver,
+}
+
+impl fmt::Debug for SessionDriver {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionDriver").finish_non_exhaustive()
+    }
+}
+
+impl SessionDriver {
+    /// Runs the session until it ends, and returns why it did.
+    ///
+    /// A clean close is [`moq_net::Error::Closed`], and one this side asked for
+    /// is [`moq_net::Error::Cancel`].
+    pub async fn run(self) -> moq_net::Error {
+        let session = moq_net::time::run(self.session);
+        let announced = moq_net::time::run(self.announced);
+        tokio::pin!(session, announced);
+        // The announced origin holds only what this peer announces, so it has
+        // no reason to outlive the session. It can finish first, once nothing
+        // holds a producer for it, and the session carries on without it.
+        tokio::select! {
+            err = &mut session => return err,
+            _ = &mut announced => {}
+        }
+        session.await
+    }
 }
 
 #[stack_error(derive)]
@@ -125,6 +184,10 @@ pub struct Moq {
     actor_done: watch::Receiver<bool>,
     origin: origin::Producer,
     _actor_handle: Arc<AbortOnDropHandle<()>>,
+    /// Runs the node origin's lifecycle work: announcements, dynamic requests,
+    /// teardown. Held for as long as any clone is, since the origin is what
+    /// every session publishes from.
+    _origin_handle: Arc<AbortOnDropHandle<()>>,
 }
 
 impl fmt::Debug for Moq {
@@ -168,7 +231,15 @@ impl Moq {
         // chains. It is created once here and shared across every session this
         // node opens or accepts, matching the per-node identity that relays use
         // for loop detection and shortest-path routing.
-        let origin = Origin::random().produce();
+        let (origin, origin_driver) = origin::Producer::new(origin::Config::default());
+        let origin_task = spawn(
+            async move {
+                // A clean finish is `Closed`, once every producer handle drops.
+                let err = moq_net::time::run(origin_driver).await;
+                debug!("node origin finished: {err}");
+            }
+            .instrument(error_span!("LiveOrigin")),
+        );
         let actor = Actor::new(endpoint, incoming_session_tx.clone(), origin.clone());
         let shutdown_token = actor.shutdown_token.clone();
         let (actor_done_tx, actor_done) = watch::channel(false);
@@ -186,6 +257,7 @@ impl Moq {
             incoming_session_tx,
             origin,
             _actor_handle: Arc::new(AbortOnDropHandle::new(actor_task)),
+            _origin_handle: Arc::new(AbortOnDropHandle::new(origin_task)),
         }
     }
 
@@ -208,7 +280,7 @@ impl Moq {
     ///
     /// Fails if a broadcast already exists at `path`.
     pub fn publish(&self, path: impl AsPath) -> Result<broadcast::Producer, Error> {
-        Ok(self.origin.create_broadcast(path, announced_route())?)
+        Ok(self.origin.publish(path, origin::Route::default())?)
     }
 
     /// Returns the origin every published broadcast is created on.
@@ -468,17 +540,23 @@ impl MoqSession {
         endpoint: &Endpoint,
         remote_addr: impl Into<EndpointAddr>,
         origin: &origin::Producer,
-    ) -> Result<(Self, moq_net::Driver), Error> {
+    ) -> Result<(Self, SessionDriver), Error> {
         let addr = remote_addr.into();
         tracing::Span::current().record("remote", field::display(addr.id.fmt_short()));
         let transport = dial(endpoint, addr).await?;
         let connection = transport.conn().clone();
-        let subscribe = origin.info().produce();
+        // A fresh origin for what this peer announces, under the node's own
+        // identity, so one peer's broadcasts never land in another's view.
+        let (subscribe, announced) = origin::Producer::new(origin.config());
         let (session, driver) = moq_net::Client::new()
             .with_publisher(origin.consume())
             .with_subscriber(subscribe.clone())
-            .connect(transport)
+            .connect(driver_now(), Transport::new(transport))
             .await?;
+        let driver = SessionDriver {
+            session: driver,
+            announced,
+        };
         Ok((Self::new(connection, session, &subscribe, true), driver))
     }
 
@@ -488,14 +566,18 @@ impl MoqSession {
     pub async fn accept(
         transport: web_transport_iroh::Session,
         origin: &origin::Producer,
-    ) -> Result<(Self, moq_net::Driver), Error> {
+    ) -> Result<(Self, SessionDriver), Error> {
         let connection = transport.conn().clone();
-        let subscribe = origin.info().produce();
+        let (subscribe, announced) = origin::Producer::new(origin.config());
         let (session, driver) = moq_net::Server::new()
             .with_publisher(origin.consume())
             .with_subscriber(subscribe.clone())
-            .accept(transport)
+            .accept(driver_now(), Transport::new(transport))
             .await?;
+        let driver = SessionDriver {
+            session: driver,
+            announced,
+        };
         Ok((Self::new(connection, session, &subscribe, false), driver))
     }
 
@@ -546,9 +628,13 @@ impl MoqSession {
         &self,
         path: impl AsPath,
     ) -> Result<broadcast::Consumer, SubscribeError> {
-        match self.subscribe.announced_broadcast(path).await {
-            Some(consumer) => Ok(consumer),
-            None => Err(e!(SubscribeError::NotAnnounced)),
+        // `routed_broadcast` rather than a bare lookup: straight after connecting
+        // the announcement may not have arrived, and this rides out that race
+        // instead of reporting a path the peer is about to announce as missing.
+        match self.subscribe.routed_broadcast(path).await {
+            Ok(consumer) => Ok(consumer),
+            Err(moq_net::Error::Closed) => Err(e!(SubscribeError::NotAnnounced)),
+            Err(source) => Err(e!(SubscribeError::Unresolved { source })),
         }
     }
 
@@ -571,7 +657,7 @@ impl MoqSession {
 enum ActorMessage {
     HandleSession {
         session: Box<MoqSession>,
-        driver: Box<moq_net::Driver>,
+        driver: Box<SessionDriver>,
     },
     Connect {
         remote: EndpointAddr,
@@ -580,7 +666,7 @@ enum ActorMessage {
 }
 
 type PendingConnects = HashMap<EndpointId, Vec<oneshot::Sender<Result<MoqSession, Arc<Error>>>>>;
-type ConnectResult = (EndpointId, Result<(MoqSession, moq_net::Driver), Error>);
+type ConnectResult = (EndpointId, Result<(MoqSession, SessionDriver), Error>);
 
 struct Actor {
     endpoint: Endpoint,
@@ -697,7 +783,7 @@ impl Actor {
         }
     }
 
-    fn handle_session(&mut self, session: MoqSession, driver: moq_net::Driver) {
+    fn handle_session(&mut self, session: MoqSession, driver: SessionDriver) {
         let remote = session.remote_id();
 
         // Two peers that dial each other at the same time each end up with two
@@ -753,26 +839,28 @@ impl Actor {
         remote: EndpointId,
         generation: u64,
         session: MoqSession,
-        driver: moq_net::Driver,
+        driver: SessionDriver,
     ) {
         // The driver runs the protocol; without it the session makes no
         // progress. Both handles are held here, so the session ends when this
         // task does: on shutdown, or when the peer closes.
         let shutdown = self.shutdown_token.child_token();
         self.session_tasks.spawn(async move {
-            tokio::pin!(driver);
-            let res = tokio::select! {
+            let run = driver.run();
+            tokio::pin!(run);
+            let err = tokio::select! {
                 _ = shutdown.cancelled() => {
                     debug!(remote=%remote.fmt_short(), "closing session: cancelled");
                     session.close(moq_net::Error::Cancel);
-                    (&mut driver).await
+                    (&mut run).await
                 }
-                result = &mut driver => result,
+                err = &mut run => err,
             };
-            // A local close is how shutdown ends, not a failure to report.
-            let res = match res {
-                Err(moq_net::Error::Cancel) => Ok(()),
-                other => other,
+            // A clean close, or one this side asked for, is how a session is
+            // meant to end rather than a failure to report.
+            let res = match err {
+                moq_net::Error::Closed | moq_net::Error::Cancel => Ok(()),
+                other => Err(other),
             };
             debug!(remote=%remote.fmt_short(), "session ended: {res:?}");
             (remote, generation, res)

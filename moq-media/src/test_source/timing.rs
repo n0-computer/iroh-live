@@ -98,12 +98,10 @@ pub fn video(size: Size, framerate: u32, clock: Clock) -> VideoSource {
             // Read the clock after the wait and paint from what it says, so the
             // digits describe the frame that carries them rather than the one
             // before it.
-            let micros = clock.micros();
-            let media = Duration::from_micros(micros);
+            let timestamp = clock.now();
+            let media = Duration::from_micros(timestamp.as_micros() as u64);
             let rgba = canvas.paint(count, media, SystemTime::now());
             let surface = Surface::rgba(rgba, size).expect("the pattern is well formed");
-            let timestamp =
-                moq_net::Timestamp::from_micros(micros).expect("clock micros out of range");
             Some((Frame::new(surface, timestamp), (count + 1, canvas)))
         },
     ));
@@ -119,7 +117,7 @@ pub fn audio(sample_rate: u32, channels: u32, clock: Clock) -> AudioSource {
         BEEP_HZ,
         sample_rate,
         channels,
-        Duration::from_micros(clock.micros()),
+        Duration::from_micros(clock.now().as_micros() as u64),
         BEEP,
     )
 }

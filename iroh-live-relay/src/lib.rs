@@ -17,7 +17,7 @@ use axum::{extract::State, response::IntoResponse, routing::get};
 use clap::Args;
 use include_dir::{Dir, include_dir};
 use iroh::{SecretKey, endpoint::presets};
-use moq_relay::{AuthConfig, Cluster, ClusterConfig, Connection, PublicConfig, PublicDetailed};
+use moq_relay::{Connection, cluster::Cluster};
 use tokio_util::task::AbortOnDropHandle;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, error, info, warn};
@@ -25,6 +25,13 @@ use tracing::{debug, error, info, warn};
 pub mod pull;
 
 static WEB_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/web/dist");
+
+/// The name this relay reports in its auth requests.
+///
+/// Nothing reads it today, since every path is public, but the auth builder
+/// wants one and a relay that later grows an auth server should say which relay
+/// is asking.
+const RELAY_NODE: &str = "iroh-live-relay";
 
 /// Configuration for the relay server. Can be embedded in another clap CLI
 /// via `#[command(flatten)]`.
@@ -47,35 +54,23 @@ pub struct RelayConfig {
 pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     let relay = RelayServer::from_env()?;
 
-    let mut server_config = moq_native::ServerConfig::default();
-    server_config.bind = Some(config.bind.to_string());
-    server_config.backend = Some(moq_native::QuicBackend::Noq);
-    server_config.quic.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
-    // Self-signed TLS for dev mode. ACME/Let's Encrypt support is planned
-    // but not yet implemented.
-    server_config.tls.generate = vec!["localhost".to_string()];
-
-    let mut client_config = moq_native::ClientConfig::default();
-    client_config.quic.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
-    // Cloned before `client_config` is consumed by `init()` below; `AuthConfig::init`
-    // only needs a borrow of the client TLS settings.
-    let client_tls = client_config.tls.clone();
+    // Shared by both directions: moq-tokio keeps one QUIC configuration where
+    // the server and the client used to carry one each.
+    let mut quic = moq_tokio::quic::Config::default();
+    quic.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
+    let connect = moq_tokio::connect::Config::default();
 
     let iroh_secret = relay.iroh_secret_key()?;
     // Register the MoQ ALPNs so the endpoint accepts iroh-native MoQ clients
     // (e.g. the `irl` CLI and `subscribe_test`). Mirrors the ALPN set that
-    // `moq_native::iroh::EndpointConfig::bind` registers: every MoQ-lite/IETF
+    // `moq_tokio::iroh::EndpointConfig::bind` registers: every MoQ-lite/IETF
     // version plus the WebTransport-over-HTTP/3 ALPN. Without this the endpoint
     // rejects MoQ connections with "peer doesn't support any known protocol".
-    let mut alpns: Vec<Vec<u8>> = moq_native::moq_net::ALPNS
+    let mut alpns: Vec<Vec<u8>> = moq_net::ALPNS
         .iter()
         .map(|alpn| alpn.as_bytes().to_vec())
         .collect();
-    alpns.push(
-        moq_native::iroh::web_transport_iroh::ALPN_H3
-            .as_bytes()
-            .to_vec(),
-    );
+    alpns.push(web_transport_iroh::ALPN_H3.as_bytes().to_vec());
     // mDNS, for the same reason `irl` takes it: a ticket names an endpoint id and
     // no addresses, and pull mode's whole job is turning one of those into a
     // connection. Pkarr and DNS cover a publisher with internet, and they take a
@@ -96,32 +91,39 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
         .bind()
         .await?;
 
+    // The backend is left to its default, which is noq. The iroh endpoint is
+    // part of the configuration now rather than attached after `init`.
+    let mut server_config = moq_tokio::server::Config::default();
+    server_config.listen.bind = Some(moq_tokio::listen::Bind::Addr(config.bind));
+    // Self-signed TLS for dev mode. ACME/Let's Encrypt support is planned
+    // but not yet implemented.
+    server_config.listen.tls.generate = vec!["localhost".to_string()];
+    server_config.quic = quic.clone();
+    server_config.iroh = Some(iroh_endpoint.clone());
     let server = server_config.init()?;
-    let client = client_config.init()?;
-    let mut server = server.with_iroh(iroh_endpoint.clone());
-    let client = client.with_iroh(iroh_endpoint.clone());
+    let client = connect.clone().init(quic)?.with_iroh(iroh_endpoint.clone());
 
     info!(endpoint_id = %iroh_endpoint.id(), "iroh endpoint bound");
     println!("iroh endpoint: {}", iroh_endpoint.id());
 
     let certificates = server.certificates();
 
-    // TODO: Implement auth (free for all atm)
-    let mut auth_config = AuthConfig::default();
-    let prefixes = vec!["".to_string()];
-    auth_config.public = Some(PublicConfig::Detailed(PublicDetailed {
-        subscribe: prefixes.clone(),
-        publish: prefixes,
-        api: None,
-    }));
-    let auth = auth_config.init(&client_tls).await?;
+    // TODO: Implement auth (free for all atm). `**` is every path, published
+    // and subscribed alike, with no expiry and no auth server behind it.
+    let mut auth_config = moq_relay::auth::Config::default();
+    auth_config.public = vec![moq_net::Pattern::all()];
+    let auth = auth_config.init(RELAY_NODE, &connect.tls)?;
 
-    let cluster = Cluster::new(ClusterConfig::default())?.with_client(client);
-    // Owned here, so both stop when the accept loop below returns rather than
-    // outliving the relay they belong to.
-    let cluster_handle = cluster.clone();
+    let cluster =
+        Cluster::new(moq_relay::cluster::Options::new(Default::default()))?.with_client(client);
+    // Started here rather than inside the task, so a cluster that cannot bind
+    // fails `run` before the relay prints that it is listening. Owned here, so
+    // both stop when the accept loop below returns rather than outliving the
+    // relay they belong to. With no peers configured it has nothing to do and
+    // the task ends at once.
+    let started = cluster.clone().start().await?;
     let _cluster_task = AbortOnDropHandle::new(tokio::spawn(async move {
-        if let Err(err) = cluster_handle.run().await {
+        if let Err(err) = started.run().await {
             error!(%err, "the cluster stopped");
         }
     }));
@@ -187,8 +189,24 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
 
     info!(iroh_addr = %iroh_endpoint.id(), "relay ready");
 
+    let mut listener = server.listen().await?;
+    // The accept loop is ours, so the signal is too. moq-tokio's server used to
+    // end on Ctrl-C by itself and no longer does: `accept` returning `None` now
+    // means every listener has stopped, which a terminal interrupt never causes.
+    let interrupted = tokio::signal::ctrl_c();
+    tokio::pin!(interrupted);
     let mut conn_id = 0u64;
-    while let Some(request) = server.accept().await {
+    loop {
+        let request = tokio::select! {
+            request = listener.accept() => match request {
+                Some(request) => request,
+                None => break,
+            },
+            _ = &mut interrupted => {
+                info!("interrupted, closing the listeners");
+                break;
+            }
+        };
         let transport = request.transport();
         // A name that happens to parse as a ticket is a pull request; anything
         // else is an ordinary broadcast name that the cluster already knows or
@@ -202,12 +220,7 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
         debug!(conn_id, %transport, pull = ticket.is_some(), "accepted connection");
 
         let pull_state = pull_state.clone();
-        let conn = Connection {
-            id: conn_id,
-            request,
-            cluster: cluster.clone(),
-            auth: auth.clone(),
-        };
+        let conn = Connection::new(request, cluster.clone(), auth.clone()).with_id(conn_id);
         conn_id += 1;
         tokio::spawn(async move {
             // Alongside the session rather than before it. The dial can take as
@@ -236,6 +249,9 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
         });
     }
 
+    // Consumes the listener, so its sockets are released before `run` returns
+    // rather than whenever the last clone of anything holding them drops.
+    listener.close().await;
     Ok(())
 }
 
@@ -345,10 +361,10 @@ fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 }
 
 struct HttpState {
-    certificates: moq_native::tls::Certificates,
+    certificates: moq_tokio::tls::Certificates,
 }
 
-fn extract_name_from_url(request: &moq_native::Request) -> Option<String> {
+fn extract_name_from_url(request: &moq_tokio::server::Request) -> Option<String> {
     let url = request.url()?;
     debug!("url: {url}");
     if url.path().len() > 1 {

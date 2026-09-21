@@ -201,10 +201,10 @@ impl Recorder {
 
         let export = match options.format {
             RecordFormat::Fmp4 => Export::Fmp4(Box::new(
-                fmp4::Export::new(source, catalog).with_latency(options.latency),
+                fmp4::Export::new(source, catalog).with_max_age(options.latency),
             )),
             RecordFormat::Mkv => Export::Mkv(Box::new(
-                mkv::Export::new(source, catalog).with_latency(options.latency),
+                mkv::Export::new(source, catalog).with_max_age(options.latency),
             )),
         };
 
