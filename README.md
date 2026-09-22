@@ -4,7 +4,7 @@
 > but has never been run, on-device testing has been limited, rooms are being
 > redesigned, and the relay has no authentication. Expect frequent API changes.
 
-> This repo currently depends on a [branch of upstream moq](https://github.com/Frando/moq/tree/iroh-live). We are in the process of upstreaming everything in here, but it might take a while.
+> This repo currently depends on a Git dependency on the [moq crates](https://github.com/moq-dev/moq/tree/main). We [upstreamed all necessary changes](https://github.com/moq-dev/moq/pulls?q=is%3Apr+state%3Aclosed+author%3AFrando) and can move to a regular dependency after the next moq release.
 
 Real-time audio and video over [iroh](https://github.com/n0-computer/iroh),
 written in Rust. Connections are peer-to-peer by default, with no media server
