@@ -37,8 +37,8 @@ use std::{
 };
 
 use iroh_live::ticket::LiveTicket;
-use moq_net::{Path, broadcast};
-use moq_relay::Cluster;
+use moq_net::broadcast;
+use moq_relay::cluster::Cluster;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
@@ -267,12 +267,18 @@ impl PullState {
         let prefix = local_name
             .split_once('/')
             .map_or(local_name, |(prefix, _)| prefix);
+        // Rooted at the prefix and limited to the one broadcast the ticket names
+        // and anything beneath it, so a publisher cannot announce into the rest
+        // of the cluster through a pull.
+        let broadcast = moq_net::Pattern::subtree(&ticket.broadcast_name)
+            .map_err(|err| anyhow::anyhow!("ticket names an invalid broadcast path: {err}"))?;
         let subscriber = self
             .cluster
             .origin
-            .with_root(prefix)
-            .and_then(|origin| origin.scope(&[Path::new(&ticket.broadcast_name)]))
-            .ok_or_else(|| anyhow::anyhow!("failed to scope pull origin for {local_name}"))?;
+            .scope(prefix, &moq_net::Patterns::from(broadcast))
+            .map_err(|err| {
+                anyhow::anyhow!("failed to scope pull origin for {local_name}: {err}")
+            })?;
 
         // Through `iroh_moq::dial` rather than a bare `connect`, so the pull
         // negotiates every MoQ version this build speaks and handles whichever
@@ -281,15 +287,22 @@ impl PullState {
         let transport = iroh_moq::dial(&self.endpoint, ticket.endpoint.clone())
             .await
             .map_err(|e| anyhow::anyhow!("failed to connect to remote: {e}"))?;
+        // Seeded from tokio's clock because that is what `time::run` polls
+        // with, and the driver refuses time that moves backwards. web-transport-
+        // iroh speaks the async transport interface, so it goes through
+        // moq-tokio's adapter to reach the poll one moq-net requires.
         let (session, driver) = moq_net::Client::new()
             .with_subscriber(subscriber)
-            .connect(transport)
+            .connect(
+                tokio::time::Instant::now().into_std(),
+                moq_tokio::transport::Session::new(transport),
+            )
             .await
             .map_err(|e| anyhow::anyhow!("failed to open MoQ session to remote: {e}"))?;
 
         // Drives the session's protocol loop; the session makes no progress
-        // without it, mirroring `moq_native::spawn_session`.
-        tokio::spawn(driver);
+        // without it.
+        tokio::spawn(moq_net::time::run(driver));
 
         info!(
             local_name = %local_name,
@@ -343,14 +356,11 @@ impl PullState {
         // read.
         let demand = tokio::time::timeout(
             ANNOUNCE_TIMEOUT,
-            self.cluster
-                .origin
-                .consume()
-                .announced_broadcast(local_name),
+            self.cluster.origin.consume().routed_broadcast(local_name),
         )
         .await
         .ok()
-        .flatten()
+        .and_then(Result::ok)
         .map(|broadcast| broadcast.demand());
         if demand.is_none() {
             warn!(

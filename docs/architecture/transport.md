@@ -49,9 +49,11 @@ takes the whole `MoqSession` so it can read both, and the two together feed
 [adaptive rendition switching](adaptive.md).
 
 Both `MoqSession::connect` and `MoqSession::accept` return the session alongside
-a `moq_net::Driver` that has to be polled for the session to make progress. The
-actor joins each driver into the `JoinSet` it already owns, which gives shutdown
-a single place to wait.
+an `iroh_moq::SessionDriver` that has to be run for the session to make
+progress. It bundles two sans-IO drivers, the session's own and the one behind
+the per-session origin the peer's announcements land in, and runs both on
+tokio's clock through `moq_net::time::run`. The actor joins each driver into the
+`JoinSet` it already owns, which gives shutdown a single place to wait.
 
 ## ALPN negotiation
 
@@ -76,16 +78,18 @@ and the server replies `ConnectResponse::OK` echoing the first one requested. An
 ALPN this build does not speak is `Error::UnsupportedAlpn`, a named error rather
 than a session of the wrong shape.
 
-`moq_native::iroh` already does all of this, and delegating to it stays on the
-upstream wish list. It is not usable here today: `moq-native` has a mandatory
-`clap` dependency, which is a poor thing to put in the dependency graph of a
-transport library, and its `accept` and `connect` are `pub(crate)`, reachable
-only through `Client` and `Server`, which want to own the endpoint and the accept
-loop. An iroh application already owns both.
+`moq_tokio::iroh` already does all of this, and delegating to it stays on the
+upstream wish list. It is not usable here today: its `accept` and `connect` are
+`pub(crate)`, reachable only through `Client` and `Server`, which want to own the
+endpoint and the accept loop. An iroh application already owns both. What we do
+take from moq-tokio is its transport adapter, which lets web-transport-iroh's
+async session drive moq-net's poll-based one; that module needs none of the
+crate's default features.
 
 ## Errors
 
 `iroh_moq::Error` covers dial, handshake, and protocol failures, including
-`UnsupportedAlpn`. `SubscribeError` has a single variant, `NotAnnounced`, for a
-session that closed before the broadcast appeared. Both are `n0_error` stack
-errors.
+`UnsupportedAlpn`. `SubscribeError::NotAnnounced` covers a session that closed
+before the broadcast appeared, and `SubscribeError::Unresolved` carries the
+moq-net error for any other resolution failure, such as a path outside what the
+session may see. Both are `n0_error` stack errors.

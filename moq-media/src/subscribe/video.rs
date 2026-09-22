@@ -849,8 +849,14 @@ mod tests {
     async fn publish(broken: Option<u64>) -> TestResult<(Reader, Vec<u64>, Vec<u64>, Published)> {
         let mut broadcast = moq_net::broadcast::Info::new().produce();
         let consumer = broadcast.consume();
-        let catalog = moq_mux::catalog::Producer::with_catalog(&mut broadcast, Catalog::default())?;
-        let track = broadcast.create_track("video", Some(catalog.track_info()))?;
+        let catalog = moq_mux::catalog::Producer::new(
+            &mut broadcast,
+            moq_mux::catalog::Config::default().with_catalog(Catalog::default()),
+        )?;
+        let track = broadcast.create_track(
+            "video",
+            Some(catalog.track_info(hang::catalog::PRIORITY.video)),
+        )?;
         let mut import =
             moq_mux::codec::h264::Import::new(track, catalog.reserve(), Default::default())?;
         let mut split = moq_mux::codec::h264::Split::new();

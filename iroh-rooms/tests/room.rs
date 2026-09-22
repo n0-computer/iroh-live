@@ -64,6 +64,17 @@ async fn two_peers_see_each_other() {
     peer_b.shutdown().await;
 }
 
+/// Reads the single frame of the next group, which is all
+/// [`write_counter_frames`] puts in one.
+async fn next_frame(
+    track: &mut track::Ordered,
+) -> Result<Option<moq_net::frame::Frame>, moq_net::Error> {
+    let Some(mut group) = track.next_group().await? else {
+        return Ok(None);
+    };
+    group.read_frame().await
+}
+
 /// Peer B subscribes to peer A's broadcast and receives a run of frames from
 /// a plain data track, standing in for what would be a decoded media track.
 #[tokio::test]
@@ -71,9 +82,9 @@ async fn two_peers_see_each_other() {
 async fn subscribe_and_receive_frames() {
     let (peer_a, room_a, peer_b, mut room_b) = two_peers_in_room().await;
 
-    let mut producer_a = room_a.publish("cam").await.expect("room_a: publish failed");
+    let producer_a = room_a.publish("cam").await.expect("room_a: publish failed");
     let data_track = producer_a
-        .create_track(DATA_TRACK, track::Info::default().with_ordered(true))
+        .create_track(DATA_TRACK, track::Info::default())
         .expect("failed to create data track");
     let writer = tokio::spawn(write_counter_frames(data_track));
 
@@ -85,19 +96,23 @@ async fn subscribe_and_receive_frames() {
         unreachable!("predicate only matches BroadcastSubscribed");
     };
 
+    // Sequence order is the reader's choice: the wire delivers the newest group
+    // first, and this test's claim is about contiguity.
     let mut subscriber = broadcast
         .track(DATA_TRACK)
         .expect("data track missing on subscribed broadcast")
         .subscribe(None)
         .await
-        .expect("failed to subscribe to data track");
+        .expect("failed to subscribe to data track")
+        .ordered();
 
     // Ordered delivery means the run of values received is contiguous, even
     // if it does not start at 0 (the writer may be a few frames ahead by the
-    // time the subscription completes).
+    // time the subscription completes). One frame per group, so the next
+    // group's frame is the next value.
     let mut previous = None;
     for i in 0..5 {
-        let frame = tokio::time::timeout(TIMEOUT, subscriber.read_frame())
+        let frame = tokio::time::timeout(TIMEOUT, next_frame(&mut subscriber))
             .await
             .unwrap_or_else(|_| panic!("timed out on frame {i}"))
             .unwrap_or_else(|err| panic!("data track read failed on frame {i}: {err:#}"))

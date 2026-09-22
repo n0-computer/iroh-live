@@ -40,8 +40,7 @@ pub fn video(size: Size, framerate: u32) -> VideoSource {
             }
             // Read the clock after the wait, not before it, or every frame
             // carries the timestamp of the one before.
-            let timestamp = moq_net::Timestamp::from_micros(clock.micros())
-                .expect("clock micros out of Timestamp range");
+            let timestamp = clock.now();
             Some((Frame::new(surface, timestamp), tick.wrapping_add(1)))
         }
     }));

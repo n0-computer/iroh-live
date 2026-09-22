@@ -15,6 +15,7 @@ clap = { version = "4.6", features = ["derive"] }
 data-encoding = "2"
 dirs = "7"
 eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
+hang = { workspace = true }
 iroh = { workspace = true }
 iroh-live = { workspace = true, features = ["capture"] }
 iroh-rooms = { workspace = true }

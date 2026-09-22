@@ -146,12 +146,13 @@ impl FileImport {
         source: FileSource,
     ) -> Result<Self> {
         let mut input = open_input(&source).await?;
-        let catalog = moq_mux::catalog::Producer::new(&mut broadcast).anyerr()?;
+        let catalog =
+            moq_mux::catalog::Producer::new(&mut broadcast, Default::default()).anyerr()?;
 
         let mut importer = match source.format {
             ImportFormat::Avc3 => {
                 let track = broadcast
-                    .unique_track(".avc3", catalog.track_info())
+                    .unique_track(".avc3", catalog.track_info(hang::catalog::PRIORITY.video))
                     .anyerr()?;
                 let import =
                     moq_mux::codec::h264::Import::new(track, catalog.reserve(), Default::default())
@@ -162,8 +163,12 @@ impl FileImport {
                 }
             }
             ImportFormat::Fmp4 => Importer::Container(Box::new(
-                moq_mux::import::ContainerStream::new(broadcast, catalog.reserve(), "fmp4")
-                    .anyerr()?,
+                moq_mux::import::ContainerStream::new(
+                    broadcast,
+                    catalog.reserve(),
+                    moq_mux::import::ContainerFormat::Fmp4,
+                )
+                .anyerr()?,
             )),
         };
 
