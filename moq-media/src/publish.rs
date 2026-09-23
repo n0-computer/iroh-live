@@ -502,11 +502,27 @@ pub struct AudioPublisher<'a>(&'a LocalBroadcast);
 
 impl AudioPublisher<'_> {
     /// Publishes `source` with the default encoder options.
+    ///
+    /// Encodes Opus at the source's own sample rate and layout when the source
+    /// declares them, which PCM frames do, so a mono source stays mono. A device
+    /// is only described once it opens, and gets moq-audio's default of 48 kHz
+    /// stereo.
     pub fn set(&self, source: impl Into<AudioSource>) {
-        self.set_with(source, moq_audio::encode::Options::default());
+        let source = source.into();
+        let mut options = moq_audio::encode::Options::default();
+        if let AudioSource::Frames { input, .. } = &source {
+            options.settings =
+                moq_audio::encode::Settings::from_input(moq_audio::encode::Codec::Opus, input);
+        }
+        self.set_with(source, options);
     }
 
     /// Publishes `source` with explicit encoder options.
+    ///
+    /// `options.settings` is what gets encoded, sample rate and layout
+    /// included, and the source is resampled and remixed to match it.
+    /// [`Settings::from_input`](moq_audio::encode::Settings::from_input) builds
+    /// settings that follow a known source.
     ///
     /// Replaces whatever was publishing before. Unlike video there is no
     /// ladder: a subscriber adapts by dropping video renditions, never audio.
@@ -520,7 +536,7 @@ impl AudioPublisher<'_> {
         let rendition = options
             .track
             .clone()
-            .unwrap_or_else(|| options.codec.to_string());
+            .unwrap_or_else(|| options.settings.codec.to_string());
         let task = spawn_audio(
             self.0.broadcast.clone(),
             self.0.catalog.lock().expect("poisoned").clone(),

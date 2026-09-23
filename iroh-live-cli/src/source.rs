@@ -58,8 +58,8 @@ const TEST_TONE_HZ: f64 = 440.0;
 /// without a resampling step.
 const TEST_TONE_RATE: u32 = 48_000;
 
-/// Channel count of the test tone.
-const TEST_TONE_CHANNELS: u32 = 2;
+/// Speaker layout of the test tone.
+const TEST_TONE_LAYOUT: moq_media::audio::Layout = moq_media::audio::Layout::Stereo;
 
 /// Sets up whichever of video and audio `args` asked for.
 ///
@@ -149,7 +149,9 @@ fn capture(
     config.source = source;
     config.width = args.width;
     config.height = args.height;
-    config.framerate = framerate.request();
+    config.framerate = framerate.request().map(|fps| {
+        video::Rate::new(fps, 1).expect("the ladder settles only on rates from 1 to MAX_FRAMERATE")
+    });
     config.cursor = !args.no_cursor;
     VideoSource::Capture(config)
 }
@@ -314,10 +316,10 @@ fn audio_source(spec: &AudioSourceSpec, clock: moq_mux::Clock) -> Result<Option<
             AudioSource::Device(config)
         }
         AudioSourceSpec::Test(TestTone::Beeps) => {
-            test_source::timing::audio(TEST_TONE_RATE, TEST_TONE_CHANNELS, clock)
+            test_source::timing::audio(TEST_TONE_RATE, TEST_TONE_LAYOUT, clock)
         }
         AudioSourceSpec::Test(TestTone::Tone) => {
-            test_source::audio(TEST_TONE_HZ, TEST_TONE_RATE, TEST_TONE_CHANNELS)
+            test_source::audio(TEST_TONE_HZ, TEST_TONE_RATE, TEST_TONE_LAYOUT)
         }
         AudioSourceSpec::File { path, looping } => {
             let file = AudioFile::open(path, *looping)?;
@@ -333,11 +335,11 @@ fn audio_source(spec: &AudioSourceSpec, clock: moq_mux::Clock) -> Result<Option<
 /// The encoder options `--audio-codec` and `--audio-bitrate` imply.
 fn audio_options(args: &CaptureArgs) -> audio::encode::Options {
     let mut options = audio::encode::Options::default();
-    options.codec = args.audio_codec.into();
+    options.settings.codec = args.audio_codec.into();
     // PCM's bitrate follows from its sample rate and channel count, and the
     // encoder rejects an explicit one, so only Opus takes the flag.
-    if options.codec == audio::encode::Codec::Opus {
-        options.bitrate = args
+    if options.settings.codec == audio::encode::Codec::Opus {
+        options.settings.bitrate = args
             .audio_bitrate
             .map(|bps| moq_net::bandwidth::Rate::from_bps(bps.into()));
     }

@@ -29,14 +29,14 @@ iroh-gossip = "0.101.0"
 noq-proto = { version = "1", default-features = false }
 iroh-tickets = "1.0.0"
 iroh-smol-kv = { version = "0.4.0", default-features = false }
-hang = "0.20.13"
-moq-net = "0.2.22"
-moq-mux = "0.9.16"
+hang = "0.21.0"
+moq-net = "0.3.0"
+moq-mux = "0.10.0"
 # `aac` stays on: a broadcast that reached us through an RTMP or HLS gateway
 # carries AAC, and dropping its audio track is a silent failure.
-moq-audio = { version = "0.0.25", default-features = false, features = ["aac"] }
-moq-video = { version = "0.0.25", default-features = false }
-moq-relay = { version = "0.14.18", default-features = false }
+moq-audio = { version = "0.0.26", default-features = false, features = ["aac"] }
+moq-video = { version = "0.0.26", default-features = false }
+moq-relay = { version = "0.15.0", default-features = false }
 moq-tokio = { version = "0.19.11", default-features = false }
 web-transport-iroh = "0.7.0"
 
@@ -72,30 +72,3 @@ absolute_paths = "allow"
 manual_let_else = "warn"
 allow_attributes_without_reason = "warn"
 mod_module_files = "deny"
-
-
-# The moq media stack from git rather than crates.io: `moq-dev/moq@main`, with
-# no fork and no patches of our own. Everything we carried has merged: the fMP4
-# export rework (moq-dev/moq#3573, which superseded our #3358), the borrowing
-# surface converters (#3593), and the capture and Android build fixes (#3850).
-#
-# This block stays only because nothing has been released since `main` merged
-# the `dev` branch, so the API this workspace is written against exists only in
-# git. Two things are easy to get wrong while that lasts. The version numbers
-# above match what crates.io publishes and the code does not: crates.io's
-# moq-net 0.2.22 predates the `dev` merge and main's follows it, so deleting
-# this block compiles against a different crate under the same name and fails
-# in ways that do not point here. And `moq-tokio` is not on crates.io at all
-# yet, so this block is the only place it can come from.
-#
-# `Cargo.lock` pins the exact revision, so `main` moving does not move us;
-# `cargo update` on these packages does. Deleting this block is the whole
-# revert once a release follows the `dev` merge.
-[patch.crates-io]
-hang = { git = "https://github.com/moq-dev/moq", branch = "main" }
-moq-audio = { git = "https://github.com/moq-dev/moq", branch = "main" }
-moq-mux = { git = "https://github.com/moq-dev/moq", branch = "main" }
-moq-net = { git = "https://github.com/moq-dev/moq", branch = "main" }
-moq-relay = { git = "https://github.com/moq-dev/moq", branch = "main" }
-moq-tokio = { git = "https://github.com/moq-dev/moq", branch = "main" }
-moq-video = { git = "https://github.com/moq-dev/moq", branch = "main" }

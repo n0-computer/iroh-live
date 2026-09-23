@@ -31,13 +31,13 @@ pub(super) async fn open(
     let mut input = moq_audio::playback::Input::default();
     input.format = moq_audio::Format::F32;
     input.sample_rate = consumer.sample_rate();
-    input.channels = consumer.channels();
+    input.layout = consumer.layout();
     let mut sink = crate::playback::engine().await?.sink(input)?;
     let control = sink.control();
     info!(
         rendition,
         sample_rate = consumer.sample_rate(),
-        channels = consumer.channels(),
+        channels = consumer.layout().channels(),
         "audio playing",
     );
 

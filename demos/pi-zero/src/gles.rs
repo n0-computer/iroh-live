@@ -291,7 +291,7 @@ impl GlesRenderer {
             Surface::I420(i420) => unsafe {
                 self.upload_i420(i420.y(), i420.u(), i420.v(), i420.width(), i420.height());
             },
-            other => match other.into_rgba() {
+            other => match other.to_rgba(&Default::default()) {
                 Ok(rgba) => unsafe {
                     self.upload_rgba(rgba.data(), rgba.width(), rgba.height());
                 },

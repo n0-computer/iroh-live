@@ -62,8 +62,8 @@ fn paint(rgba: &mut [u8], size: Size, tick: u32) {
 }
 
 /// A sine tone at `hz`, in the layout the encoder is told to expect.
-pub fn audio(hz: f64, sample_rate: u32, channels: u32) -> AudioSource {
-    tone(hz, sample_rate, channels, Duration::ZERO, Gate::Continuous)
+pub fn audio(hz: f64, sample_rate: u32, layout: moq_audio::Layout) -> AudioSource {
+    tone(hz, sample_rate, layout, Duration::ZERO, Gate::Continuous)
 }
 
 /// When a generated tone sounds.
@@ -120,7 +120,13 @@ impl Gate {
 /// to line up with a picture takes it from the shared clock, so that both
 /// tracks describe the same instant with the same number; a source that stands
 /// alone starts at zero.
-fn tone(hz: f64, sample_rate: u32, channels: u32, origin: Duration, gate: Gate) -> AudioSource {
+fn tone(
+    hz: f64,
+    sample_rate: u32,
+    layout: moq_audio::Layout,
+    origin: Duration,
+    gate: Gate,
+) -> AudioSource {
     /// One buffer per 20 ms, matching the Opus frame duration so the encoder
     /// consumes each buffer whole.
     const FRAME: Duration = Duration::from_millis(20);
@@ -134,11 +140,8 @@ fn tone(hz: f64, sample_rate: u32, channels: u32, origin: Duration, gate: Gate) 
     let sample_ns = 1_000_000_000 / u64::from(sample_rate.max(1));
     let per_frame = (sample_rate as f64 * FRAME.as_secs_f64()) as usize;
     let step = hz * std::f64::consts::TAU / sample_rate as f64;
-    let input = moq_audio::encode::Input {
-        format: moq_audio::Format::F32,
-        sample_rate,
-        channels,
-    };
+    let channels = layout.channels();
+    let input = moq_audio::encode::Input::new(sample_rate, layout);
 
     // Pace against an absolute schedule, not `sleep(FRAME)` per iteration.
     // A sleep always overshoots, and these timestamps advance by exactly one
@@ -198,7 +201,8 @@ mod tests {
         const RATE: u32 = 48_000;
         const RUN: Duration = Duration::from_millis(600);
 
-        let AudioSource::Frames { mut frames, .. } = audio(440.0, RATE, 2) else {
+        let AudioSource::Frames { mut frames, .. } = audio(440.0, RATE, moq_audio::Layout::Stereo)
+        else {
             panic!("the generated tone is a frame source");
         };
 
@@ -228,7 +232,8 @@ mod tests {
     /// Keeps the tone below full scale, so Opus overshoot does not clip.
     #[tokio::test(flavor = "current_thread")]
     async fn the_tone_leaves_headroom() {
-        let AudioSource::Frames { mut frames, .. } = audio(440.0, 48_000, 1) else {
+        let AudioSource::Frames { mut frames, .. } = audio(440.0, 48_000, moq_audio::Layout::Mono)
+        else {
             panic!("the generated tone is a frame source");
         };
 
