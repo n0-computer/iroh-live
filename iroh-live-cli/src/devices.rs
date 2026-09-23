@@ -75,18 +75,13 @@ fn describe(mode: &video::capture::Mode) -> String {
 
 /// One frame rate, as a person reads it.
 ///
-/// A driver reports frames per interval rather than a whole number, so the
-/// common cinema and NTSC rates are ratios: 24000 frames per 1001 seconds is
+/// A driver reports an exact ratio rather than a whole number, so the common
+/// cinema and NTSC rates are fractions: 24000 frames per 1001 seconds is
 /// 23.976 fps and not 24. Printed to two decimals only when it needs them, so
-/// the ordinary 30 stays "30" rather than "30.00".
-fn rate(rate: &video::capture::Rate) -> String {
-    let frames = f64::from(rate.frames().get());
-    let seconds = rate.interval().as_secs_f64();
-    let fps = if seconds > 0.0 {
-        frames / seconds
-    } else {
-        frames
-    };
+/// the ordinary 30 stays "30" rather than "30.00", where the rate's own
+/// `Display` would print "30/1".
+fn rate(rate: &video::Rate) -> String {
+    let fps = rate.as_f64();
     if (fps - fps.round()).abs() < 0.005 {
         format!("{}", fps.round() as u64)
     } else {

@@ -45,7 +45,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     publish::VideoSource,
-    video::{Frame, I420, Surface},
+    video::{Frame, I420, Size, Surface},
 };
 
 /// The subprocess we drive. Named here so a caller can substitute a wrapper.
@@ -494,7 +494,10 @@ impl Pictures {
         if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
             return Err(n0_error::e!(RpicamError::Geometry { width, height }));
         }
-        let frame = I420::len(width, height);
+        // The check above rules out every geometry `len` refuses except one
+        // too large to address, which is no more a picture than an odd one.
+        let frame = I420::len(Size::new(width, height))
+            .map_err(|_| n0_error::e!(RpicamError::Geometry { width, height }))?;
         Ok(Self {
             width,
             height,
@@ -558,7 +561,7 @@ impl Pictures {
         // `I420::new` rejects only an odd or zero dimension and a buffer of the
         // wrong length. `new` checked the geometry, and `frame` is `I420::len`
         // of it, so this split is exactly the length it wants.
-        let picture = I420::new(self.width, self.height, data)
+        let picture = I420::new(Size::new(self.width, self.height), data)
             .expect("the geometry and the length were both checked");
         self.taken += 1;
         Some(picture)

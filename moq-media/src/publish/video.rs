@@ -36,8 +36,11 @@ use crate::{
     stats::PublishStats,
 };
 
-/// Used when neither the source nor the caller reports a frame rate.
-const DEFAULT_FRAMERATE: u32 = 30;
+/// Returns the frame rate used when neither the source nor the caller reports
+/// one.
+fn default_framerate() -> moq_video::Rate {
+    moq_video::Rate::new(30, 1).expect("30/1 is a valid frame rate")
+}
 
 /// How long a source may take over its first frame before it is worth a word
 /// in the log.
@@ -135,11 +138,11 @@ async fn run(publish: Publish, shutdown: CancellationToken) -> Result<(), Publis
         #[cfg(feature = "capture")]
         VideoSource::Capture(config) => {
             // The device is opened on a thread of its own and never leaves it;
-            // only its geometry and its surfaces cross. moq's native backends
+            // only its geometry and its frames cross. moq's native backends
             // are not all `Send`: an Apple camera or screen stream holds
             // AVFoundation objects, so neither the stream nor a future holding
-            // one can go to a work-stealing executor. Surfaces can.
-            let (surface_tx, surface_rx) = tokio::sync::mpsc::channel(1);
+            // one can go to a work-stealing executor. Frames can.
+            let (frame_tx, frame_rx) = tokio::sync::mpsc::channel(1);
             let (opened_tx, opened) = tokio::sync::oneshot::channel();
             let open_config = config.clone();
             let reader = crate::local_task::spawn("video-capture", move |shutdown| async move {
@@ -165,12 +168,12 @@ async fn run(publish: Publish, shutdown: CancellationToken) -> Result<(), Publis
                     // way the stream stops here and the encoders downstream see
                     // the source close; the error is logged rather than
                     // propagated, since by now there is nobody to return it to.
-                    let surface = tokio::select! {
+                    let frame = tokio::select! {
                         read = stream.read() => read,
                         _ = shutdown.cancelled() => break,
                     };
-                    let surface = match surface {
-                        Ok(Some(surface)) => surface,
+                    let frame = match frame {
+                        Ok(Some(frame)) => frame,
                         Ok(None) => break,
                         Err(err) => {
                             warn!(error = %err, "video capture failed");
@@ -180,7 +183,7 @@ async fn run(publish: Publish, shutdown: CancellationToken) -> Result<(), Publis
                     // A full channel means the encoders are behind. Waiting is
                     // right: the capture backend paces itself against the
                     // device, so dropping here would only hide that.
-                    if surface_tx.send(surface).await.is_err() {
+                    if frame_tx.send(frame).await.is_err() {
                         break;
                     }
                 }
@@ -202,16 +205,19 @@ async fn run(publish: Publish, shutdown: CancellationToken) -> Result<(), Publis
             let framerate = config
                 .framerate
                 .or(device_framerate)
-                .unwrap_or(DEFAULT_FRAMERATE);
+                .unwrap_or_else(default_framerate);
             // The reader handle rides along in the stream's state so the thread
             // lives exactly as long as anything is still reading from it.
             let frames = Box::pin(n0_future::stream::unfold(
-                (surface_rx, reader),
-                |(mut rx, reader)| async move { rx.recv().await.map(|surface| (surface, (rx, reader))) },
+                (frame_rx, reader),
+                |(mut rx, reader)| async move { rx.recv().await.map(|frame| (frame, (rx, reader))) },
             ));
+            // Restamped on arrival: the capture stream keeps a timeline of its
+            // own, and the broadcast clock is the one audio shares.
             let clock_for_stamp = clock;
-            let frames: BoxStream<Frame> =
-                Box::pin(frames.map(move |surface| Frame::new(surface, clock_for_stamp.now())));
+            let frames: BoxStream<Frame> = Box::pin(
+                frames.map(move |frame: Frame| Frame::new(frame.surface, clock_for_stamp.now())),
+            );
             fan_out(
                 broadcast, catalog, stats, renditions, preview, frames, size, framerate, color,
                 slot, shutdown,
@@ -247,7 +253,7 @@ async fn run(publish: Publish, shutdown: CancellationToken) -> Result<(), Publis
                 preview,
                 frames,
                 size,
-                DEFAULT_FRAMERATE,
+                default_framerate(),
                 color,
                 slot,
                 shutdown,
@@ -270,7 +276,7 @@ async fn fan_out(
     preview: FrameSender<Arc<Frame>>,
     mut frames: BoxStream<Frame>,
     size: Size,
-    framerate: u32,
+    framerate: moq_video::Rate,
     color: Option<moq_video::Color>,
     slot: Arc<tokio::sync::OwnedMutexGuard<()>>,
     shutdown: CancellationToken,
@@ -287,7 +293,7 @@ async fn fan_out(
         info!(
             rendition = %rendition.name,
             size = %config.size(),
-            framerate,
+            %framerate,
             "publishing video rendition",
         );
 
@@ -460,7 +466,7 @@ async fn encode_rendition(
 
             let frame = match frame.size() == target {
                 true => frame,
-                false => Arc::new(frame.resize(target)?),
+                false => Arc::new(frame.resize(target, &Default::default())?),
             };
 
             let started = Instant::now();
@@ -608,7 +614,7 @@ async fn open_capture(
 fn encode_config(
     rendition: &VideoRendition,
     source: Size,
-    framerate: u32,
+    framerate: moq_video::Rate,
     color: Option<moq_video::Color>,
 ) -> encode::Config {
     let size = rendition.size.unwrap_or(source);
@@ -618,30 +624,11 @@ fn encode_config(
     config.kind = rendition.kind.clone();
     config.color = color;
     if let Some(interval) = rendition.keyframe_interval {
-        config.gop = gop_frames(interval, framerate);
+        config.gop = encode::Gop::keyframe_every(interval, framerate);
     }
     config
 }
 
-/// The keyframe interval in frames, for an interval given in time.
-///
-/// Never zero: an interval shorter than a frame means every frame is a
-/// keyframe, and a `gop` of zero would mean none of them are.
-fn gop_frames(interval: Duration, framerate: u32) -> u32 {
-    let frames = interval.as_secs_f64() * f64::from(framerate);
-    // Saturating rather than wrapping: an interval of a year is a caller who
-    // wants one keyframe at the start, and the encoder's own ceiling can have
-    // that argument rather than an overflow here.
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped to u32's range before the cast"
-    )]
-    let frames = frames.round().clamp(1.0, f64::from(u32::MAX)) as u32;
-    frames
-}
-
-/// Stamps a frame on the broadcast clock, which audio shares.
 /// Records what one encode call cost and produced.
 ///
 /// The rate is taken over the gap since this rendition last published. The
@@ -734,46 +721,22 @@ mod tests {
     #[test]
     fn a_rendition_keyframe_interval_reaches_the_encoder_config() {
         let source = Size::new(1280, 720);
+        let fps = |n| moq_video::Rate::new(n, 1).expect("a valid frame rate");
         let plain = VideoRendition::new("video");
         assert_eq!(
-            encode_config(&plain, source, 30, None).gop,
-            encode::Config::new(1280, 720, 30).gop,
+            encode_config(&plain, source, fps(30), None).gop,
+            encode::Config::new(1280, 720, fps(30)).gop,
             "a rendition that names no interval leaves the encoder's own default",
         );
 
         let keyed = VideoRendition::new("video").with_keyframe_interval(Duration::from_secs(1));
-        assert_eq!(encode_config(&keyed, source, 30, None).gop, 30);
-        assert_eq!(encode_config(&keyed, source, 15, None).gop, 15);
-    }
-
-    /// A keyframe interval is given in time and the encoder wants frames, so
-    /// the conversion is where a caller's seconds meet the capture rate.
-    #[test]
-    fn a_keyframe_interval_becomes_whole_frames() {
-        assert_eq!(gop_frames(Duration::from_secs(1), 30), 30);
-        assert_eq!(gop_frames(Duration::from_secs(2), 30), 60);
-        assert_eq!(gop_frames(Duration::from_millis(500), 30), 15);
-        // Rounded rather than truncated: 0.7s at 30fps is 21 frames, and
-        // truncating would make every fractional interval slightly shorter than
-        // asked for.
-        assert_eq!(gop_frames(Duration::from_millis(700), 30), 21);
-    }
-
-    /// An interval shorter than a frame means every frame is a keyframe. A
-    /// `gop` of zero would mean none of them are, which is the opposite.
-    #[test]
-    fn an_interval_shorter_than_a_frame_keys_every_frame() {
-        assert_eq!(gop_frames(Duration::from_millis(1), 30), 1);
-        assert_eq!(gop_frames(Duration::ZERO, 30), 1);
-        assert_eq!(gop_frames(Duration::from_secs(1), 0), 1);
-    }
-
-    /// An interval nobody sensible asks for still has to produce a number.
-    #[test]
-    fn an_absurd_interval_saturates_rather_than_wrapping() {
         assert_eq!(
-            gop_frames(Duration::from_secs(u32::MAX.into()), 60),
-            u32::MAX
+            encode_config(&keyed, source, fps(30), None).gop,
+            encode::Gop::Keyframe { interval: 30 },
+        );
+        assert_eq!(
+            encode_config(&keyed, source, fps(15), None).gop,
+            encode::Gop::Keyframe { interval: 15 },
         );
     }
 

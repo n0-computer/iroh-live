@@ -78,7 +78,7 @@ const BEEP: Gate = Gate::Pulse {
 ///
 /// let clock = moq_mux::Clock::new();
 /// let video = timing::video(Size::new(1280, 720), 30, clock);
-/// let audio = timing::audio(48_000, 2, clock);
+/// let audio = timing::audio(48_000, moq_media::audio::Layout::Stereo, clock);
 /// ```
 pub fn video(size: Size, framerate: u32, clock: Clock) -> VideoSource {
     let framerate = u64::from(framerate.max(1));
@@ -112,11 +112,11 @@ pub fn video(size: Size, framerate: u32, clock: Clock) -> VideoSource {
 ///
 /// One [`BEEP_HZ`] pulse of [`BEEP_LENGTH`] every [`BEEP_PERIOD`], silent in
 /// between, on the media timeline the marker flashes on.
-pub fn audio(sample_rate: u32, channels: u32, clock: Clock) -> AudioSource {
+pub fn audio(sample_rate: u32, layout: moq_audio::Layout, clock: Clock) -> AudioSource {
     super::tone(
         BEEP_HZ,
         sample_rate,
-        channels,
+        layout,
         Duration::from_micros(clock.now().as_micros() as u64),
         BEEP,
     )
@@ -654,7 +654,8 @@ mod tests {
     async fn the_beep_lands_on_the_flashing_frame() {
         let layout = Layout::new(SIZE);
         let clock = Clock::new();
-        let AudioSource::Frames { mut frames, .. } = audio(48_000, 1, clock) else {
+        let AudioSource::Frames { mut frames, .. } = audio(48_000, moq_audio::Layout::Mono, clock)
+        else {
             panic!("the generated tone is a frame source");
         };
 

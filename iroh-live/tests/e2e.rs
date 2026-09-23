@@ -110,7 +110,11 @@ async fn publish_subscribe_audio() {
         .video()
         .set(test_source::video(Size::new(320, 240), 30))
         .expect("failed to set video");
-    broadcast.audio().set(test_source::audio(440.0, 48_000, 1));
+    broadcast.audio().set(test_source::audio(
+        440.0,
+        48_000,
+        moq_media::audio::Layout::Mono,
+    ));
 
     let subscriber = Live::builder(endpoint().await).spawn();
     let sub = subscriber
@@ -137,7 +141,7 @@ async fn publish_subscribe_audio() {
         remote.consumer(),
         &rendition.1,
         rendition.0,
-        moq_media::audio::decode::Config::new(),
+        moq_media::audio::decode::Options::new(),
     )
     .await
     .expect("failed to open the audio decoder");

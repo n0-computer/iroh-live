@@ -245,7 +245,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -256,7 +256,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -761,29 +761,6 @@ name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
-
-[[package]]
-name = "bindgen"
-version = "0.65.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfdf7b466f9a4903edc73f95d6d2bcd5baf8ae620638762244d3f60143643cc5"
-dependencies = [
- "bitflags 1.3.2",
- "cexpr",
- "clang-sys",
- "lazy_static",
- "lazycell",
- "log",
- "peeking_take_while",
- "prettyplease",
- "proc-macro2",
- "quote",
- "regex",
- "rustc-hash 1.1.0",
- "shlex 1.3.0",
- "syn 2.0.119",
- "which",
-]
 
 [[package]]
 name = "bindgen"
@@ -2084,7 +2061,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2145,7 +2122,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "socket2",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2728,7 +2705,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3524,8 +3501,8 @@ dependencies = [
 
 [[package]]
 name = "hang"
-version = "0.20.13"
-source = "git+https://github.com/moq-dev/moq?branch=main#6ab7d1a223e1949a5c2e10b68e29db2e8ab9bdd1"
+version = "0.21.0"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
 dependencies = [
  "bytes",
  "derive_more",
@@ -3796,15 +3773,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
 dependencies = [
  "digest 0.11.3",
-]
-
-[[package]]
-name = "home"
-version = "0.5.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
-dependencies = [
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4941,28 +4909,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "json-patch"
-version = "4.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7421438de105a0827e44fadd05377727847d717c80ce29a229f85fd04c427b72"
-dependencies = [
- "jsonptr",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "jsonptr"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5a3cc660ba5d72bce0b3bb295bf20847ccbb40fd423f3f05b61273672e561fe"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "jsonwebtoken"
 version = "11.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5009,8 +4955,8 @@ dependencies = [
 
 [[package]]
 name = "kio"
-version = "0.5.9"
-source = "git+https://github.com/moq-dev/moq?branch=main#6ab7d1a223e1949a5c2e10b68e29db2e8ab9bdd1"
+version = "0.6.0"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
 dependencies = [
  "loom",
  "smallvec",
@@ -5056,12 +5002,6 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 dependencies = [
  "spin 0.9.9",
 ]
-
-[[package]]
-name = "lazycell"
-version = "1.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
 
 [[package]]
 name = "libc"
@@ -5421,8 +5361,8 @@ dependencies = [
 
 [[package]]
 name = "moq-audio"
-version = "0.0.25"
-source = "git+https://github.com/moq-dev/moq?branch=main#6ab7d1a223e1949a5c2e10b68e29db2e8ab9bdd1"
+version = "0.0.26"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
 dependencies = [
  "block2 0.6.2",
  "bytes",
@@ -5430,7 +5370,7 @@ dependencies = [
  "dispatch2",
  "fixed-resample",
  "hang",
- "kio 0.5.9",
+ "kio 0.6.0",
  "moq-mux",
  "moq-net",
  "objc2 0.6.4",
@@ -5454,12 +5394,12 @@ dependencies = [
 [[package]]
 name = "moq-auth"
 version = "0.1.0"
-source = "git+https://github.com/moq-dev/moq?branch=main#6ab7d1a223e1949a5c2e10b68e29db2e8ab9bdd1"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
 dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
  "jsonwebtoken",
- "kio 0.5.9",
+ "kio 0.6.0",
  "moq-pattern",
  "p256",
  "p384",
@@ -5479,19 +5419,20 @@ dependencies = [
 [[package]]
 name = "moq-binary"
 version = "0.1.0"
-source = "git+https://github.com/moq-dev/moq?branch=main#6ab7d1a223e1949a5c2e10b68e29db2e8ab9bdd1"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
 dependencies = [
  "bytes",
- "kio 0.5.9",
+ "kio 0.6.0",
  "moq-flate",
  "moq-net",
  "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]
 name = "moq-flate"
-version = "0.1.2"
-source = "git+https://github.com/moq-dev/moq?branch=main#6ab7d1a223e1949a5c2e10b68e29db2e8ab9bdd1"
+version = "0.1.3"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
 dependencies = [
  "bytes",
  "flate2",
@@ -5500,12 +5441,11 @@ dependencies = [
 
 [[package]]
 name = "moq-json"
-version = "0.3.12"
-source = "git+https://github.com/moq-dev/moq?branch=main#6ab7d1a223e1949a5c2e10b68e29db2e8ab9bdd1"
+version = "0.4.0"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
 dependencies = [
  "bytes",
- "json-patch",
- "kio 0.5.9",
+ "kio 0.6.0",
  "moq-flate",
  "moq-net",
  "serde",
@@ -5517,8 +5457,8 @@ dependencies = [
 
 [[package]]
 name = "moq-loc"
-version = "0.2.8"
-source = "git+https://github.com/moq-dev/moq?branch=main#6ab7d1a223e1949a5c2e10b68e29db2e8ab9bdd1"
+version = "0.2.9"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
 dependencies = [
  "bytes",
  "moq-net",
@@ -5582,8 +5522,8 @@ dependencies = [
 
 [[package]]
 name = "moq-msf"
-version = "0.4.2"
-source = "git+https://github.com/moq-dev/moq?branch=main#6ab7d1a223e1949a5c2e10b68e29db2e8ab9bdd1"
+version = "0.5.0"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5592,15 +5532,15 @@ dependencies = [
 
 [[package]]
 name = "moq-mux"
-version = "0.9.16"
-source = "git+https://github.com/moq-dev/moq?branch=main#6ab7d1a223e1949a5c2e10b68e29db2e8ab9bdd1"
+version = "0.10.0"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
  "bytes",
  "h264-parser",
  "hang",
- "kio 0.5.9",
+ "kio 0.6.0",
  "memchr",
  "moq-binary",
  "moq-json",
@@ -5625,13 +5565,13 @@ dependencies = [
 
 [[package]]
 name = "moq-net"
-version = "0.2.22"
-source = "git+https://github.com/moq-dev/moq?branch=main#6ab7d1a223e1949a5c2e10b68e29db2e8ab9bdd1"
+version = "0.3.0"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
 dependencies = [
  "arrayvec",
  "bytes",
  "futures",
- "kio 0.5.9",
+ "kio 0.6.0",
  "moq-pattern",
  "num_enum",
  "rand 0.10.2",
@@ -5644,9 +5584,73 @@ dependencies = [
 ]
 
 [[package]]
+name = "moq-noq"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "274035555d1c26479ff5dabdf2e6d201fc2d9d1c1357993884eb72dfdc135392"
+dependencies = [
+ "bytes",
+ "cfg_aliases",
+ "derive_more",
+ "moq-noq-proto",
+ "moq-noq-udp",
+ "pin-project-lite",
+ "rustc-hash 2.1.3",
+ "rustls",
+ "socket2",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "web-time",
+]
+
+[[package]]
+name = "moq-noq-proto"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef835fcf9b92c0f04a77c2fc060cf2a23616ee15176bf41c09847b38186fcb36"
+dependencies = [
+ "aes-gcm",
+ "aws-lc-rs",
+ "bytes",
+ "derive_more",
+ "enum-assoc",
+ "fastbloom",
+ "getrandom 0.4.3",
+ "identity-hash",
+ "lru-slab",
+ "rand 0.10.2",
+ "rand_pcg",
+ "rustc-hash 2.1.3",
+ "rustls",
+ "rustls-pki-types",
+ "rustls-platform-verifier",
+ "slab",
+ "sorted-index-buffer",
+ "thiserror 2.0.20",
+ "tinyvec",
+ "tracing",
+ "web-time",
+]
+
+[[package]]
+name = "moq-noq-udp"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41114fce0ba95fa5caf3efd62565e71a40da4c2e15f189f482d85db2970d2de5"
+dependencies = [
+ "cfg_aliases",
+ "libc",
+ "socket2",
+ "tracing",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "moq-nvenc"
-version = "0.0.5"
-source = "git+https://github.com/moq-dev/moq?branch=main#6ab7d1a223e1949a5c2e10b68e29db2e8ab9bdd1"
+version = "0.0.6"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
 dependencies = [
  "cudarc",
  "libloading 0.9.0",
@@ -5656,15 +5660,16 @@ dependencies = [
 [[package]]
 name = "moq-pattern"
 version = "0.1.0"
-source = "git+https://github.com/moq-dev/moq?branch=main#6ab7d1a223e1949a5c2e10b68e29db2e8ab9bdd1"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "moq-relay"
-version = "0.14.18"
-source = "git+https://github.com/moq-dev/moq?branch=main#6ab7d1a223e1949a5c2e10b68e29db2e8ab9bdd1"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c63af12160f05db352bec6486c88633c8292300b1f5c9dc4b041f94494ea968a"
 dependencies = [
  "anyhow",
  "axum",
@@ -5690,7 +5695,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "toml",
- "tower-http 0.7.1",
  "tower-service",
  "tracing",
  "url",
@@ -5701,7 +5705,7 @@ dependencies = [
 [[package]]
 name = "moq-sock"
 version = "0.0.1"
-source = "git+https://github.com/moq-dev/moq?branch=main#6ab7d1a223e1949a5c2e10b68e29db2e8ab9bdd1"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
 dependencies = [
  "core_affinity",
  "libc",
@@ -5713,8 +5717,8 @@ dependencies = [
 
 [[package]]
 name = "moq-stats"
-version = "0.1.11"
-source = "git+https://github.com/moq-dev/moq?branch=main#6ab7d1a223e1949a5c2e10b68e29db2e8ab9bdd1"
+version = "0.2.0"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
 dependencies = [
  "moq-json",
  "moq-net",
@@ -5728,7 +5732,8 @@ dependencies = [
 [[package]]
 name = "moq-tokio"
 version = "0.19.11"
-source = "git+https://github.com/moq-dev/moq?branch=main#6ab7d1a223e1949a5c2e10b68e29db2e8ab9bdd1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eca11f65353e3d46730a653442b69d29a738cf8837eba1012df10a7ba233ae85"
 dependencies = [
  "bytes",
  "dns-lookup",
@@ -5759,11 +5764,20 @@ dependencies = [
  "url",
  "usage-rs",
  "web-transport-iroh",
- "web-transport-noq",
+ "web-transport-moq",
  "web-transport-proto",
  "web-transport-trait",
  "webpki-roots",
  "x509-parser",
+]
+
+[[package]]
+name = "moq-v4l"
+version = "0.0.1"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
+dependencies = [
+ "bitflags 2.13.2",
+ "libc",
 ]
 
 [[package]]
@@ -5783,8 +5797,8 @@ dependencies = [
 
 [[package]]
 name = "moq-video"
-version = "0.0.25"
-source = "git+https://github.com/moq-dev/moq?branch=main#6ab7d1a223e1949a5c2e10b68e29db2e8ab9bdd1"
+version = "0.0.26"
+source = "git+https://github.com/Frando/moq?branch=iroh-live-5#897bc25ee167874928fe12229159e16b177fecf0"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -5801,6 +5815,7 @@ dependencies = [
  "moq-mux",
  "moq-net",
  "moq-nvenc",
+ "moq-v4l",
  "moq-vaapi",
  "ndk",
  "objc2 0.6.4",
@@ -5819,7 +5834,6 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
- "v4l",
  "wgpu",
  "windows",
  "x11rb 0.14.0",
@@ -6420,7 +6434,6 @@ dependencies = [
  "bytes",
  "derive_more",
  "enum-assoc",
- "fastbloom",
  "getrandom 0.4.3",
  "identity-hash",
  "lru-slab",
@@ -6495,7 +6508,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7410,12 +7423,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "peeking_take_while"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19b17cddbe7ec3f8bc800887bab5e717348c95ea2ca0b1bf0837fb964dc67099"
-
-[[package]]
 name = "pem"
 version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8013,7 +8020,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8551,7 +8558,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8644,7 +8651,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -9399,7 +9406,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -9836,10 +9843,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -10387,7 +10394,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset 0.9.1",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -10541,26 +10548,6 @@ dependencies = [
  "js-sys",
  "serde_core",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "v4l"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8fbfea44a46799d62c55323f3c55d06df722fbe577851d848d328a1041c3403"
-dependencies = [
- "bitflags 1.3.2",
- "libc",
- "v4l2-sys-mit",
-]
-
-[[package]]
-name = "v4l2-sys-mit"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6779878362b9bacadc7893eac76abe69612e8837ef746573c4a5239daf11990b"
-dependencies = [
- "bindgen 0.65.1",
 ]
 
 [[package]]
@@ -10942,16 +10929,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "web-transport-noq"
-version = "0.3.0"
+name = "web-transport-moq"
+version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56dfe08820de549204c3ab02e901c4a316616ba7daae26df4478a86f4a2d48cd"
+checksum = "6cf318557d2c563036e914dc4282275e4196ea5cee22614075157f0d227dbeaf"
 dependencies = [
  "bytes",
  "futures",
  "http",
  "kio 0.5.8",
- "noq",
+ "moq-noq",
  "rustls",
  "rustls-native-certs",
  "thiserror 2.0.20",
@@ -11202,22 +11189,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "which"
-version = "4.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87ba24419a2078cd2b0f2ede2691b6c66d8e47836da3b6db8265ebad47afbfc7"
-dependencies = [
- "either",
- "home",
- "once_cell",
- "rustix 0.38.44",
-]
-
-[[package]]
 name = "wide"
-version = "1.7.0"
+version = "1.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8cf05ca94c9fba0c51316899caa1d1e74a064fc310a5efa7375e614343d415be"
+checksum = "d920ac99c3c8edce110cb8d07dbb324d6d026011dce85b1e9355b70f0adacc4f"
 dependencies = [
  "bytemuck",
  "safe_arch",
@@ -11251,7 +11226,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

@@ -757,7 +757,7 @@ mod tests {
     struct Published {
         _broadcast: moq_net::broadcast::Producer,
         _catalog: moq_mux::catalog::Producer<crate::catalog::IrohLiveExt>,
-        _import: moq_mux::codec::h264::Import<crate::catalog::IrohLiveExt>,
+        _import: moq_mux::codec::h264::Import,
         /// Cancels every decode task on drop, so the reader stops with it.
         _remote: RemoteBroadcast,
     }
@@ -768,15 +768,16 @@ mod tests {
     /// static picture codes to almost nothing and a decoder can conceal its way
     /// through a break in it without ever reporting one.
     fn encoded_stream() -> Vec<encode::Encoded> {
-        let mut config = encode::Config::new(SIZE.width, SIZE.height, 30);
+        let framerate = moq_video::Rate::new(30, 1).expect("a valid frame rate");
+        let mut config = encode::Config::new(SIZE.width, SIZE.height, framerate);
         config.kind = encode::Kind::Software;
-        config.gop = GOP;
+        config.gop = encode::Gop::Keyframe { interval: GOP };
         let mut encoder = encode::Encoder::new(&config).expect("the software encoder always opens");
 
         let mut units = Vec::new();
         for index in 0..PICTURES {
             if index % u64::from(GOP) == 0 {
-                encoder.keyframe();
+                encoder.cut().expect("the software encoder can cut a group");
             }
             let mut rgba = vec![0u8; SIZE.pixels() as usize * 4];
             for (offset, byte) in rgba.iter_mut().enumerate() {
@@ -815,7 +816,7 @@ mod tests {
     /// break landed one picture further on than intended, and the two
     /// platforms then disagreed about whether that picture was concealed.
     fn feed(
-        import: &mut moq_mux::codec::h264::Import<crate::catalog::IrohLiveExt>,
+        import: &mut moq_mux::codec::h264::Import,
         split: &mut moq_mux::codec::h264::Split,
         units: &[encode::Encoded],
         broken: Option<u64>,
