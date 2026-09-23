@@ -1,6 +1,12 @@
 # cargo-nextest configuration
 # https://nexte.st/docs/configuration/
 
+[profile.default]
+# A test that stops making progress fails instead of holding the job until the
+# CI runner's own timeout, hours later. Every test here finishes in well under a
+# minute, so five minutes without an exit is a hang, not a slow machine.
+slow-timeout = { period = "60s", terminate-after = 5 }
+
 [test-groups]
 # The patchbay tests build a simulated network and assert on frame timing and on
 # rendition switches driven by measured transport stats. Two of them running at

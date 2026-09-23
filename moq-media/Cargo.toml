@@ -17,7 +17,10 @@ hang = { workspace = true }
 moq-audio = { workspace = true }
 moq-mux = { workspace = true }
 moq-net = { workspace = true }
-moq-video = { workspace = true }
+# OpenH264 is the software fallback every build relies on when no hardware
+# codec opens. moq-video 0.0.26 made it an optional feature (default on), and
+# the workspace takes moq-video without defaults, so it is named here.
+moq-video = { workspace = true, features = ["openh264"] }
 n0-error = { version = "1", features = ["anyhow"] }
 n0-future = "0.3.2"
 n0-watcher = "1"

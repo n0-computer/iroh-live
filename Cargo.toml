@@ -72,3 +72,33 @@ absolute_paths = "allow"
 manual_let_else = "warn"
 allow_attributes_without_reason = "warn"
 mod_module_files = "deny"
+
+# The moq media crates from `Frando/moq@iroh-live-5`: the exact commit the
+# released versions were cut from (`moq-video-v0.0.26`, `moq-net-v0.3.0` and
+# their siblings) plus one fix. moq-video 0.0.26 does not compile for Windows
+# with the `capture` feature: the Media Foundation backend logs an
+# `Option<Rate>` as a tracing field, which it is not. Every crate of the moq
+# workspace that the graph uses is patched, so no crate ever meets a git copy
+# of one dependency and a crates.io copy of another (`kio` is the one that
+# bites: moq-net and moq-json both pass its types around). moq-relay and
+# moq-tokio stay on crates.io, since their releases were cut from a later
+# commit, and pick up the patched crates underneath them.
+# Delete this block once a moq-video release carries the fix.
+[patch.crates-io]
+hang = { git = "https://github.com/Frando/moq", branch = "iroh-live-5" }
+kio = { git = "https://github.com/Frando/moq", branch = "iroh-live-5" }
+moq-audio = { git = "https://github.com/Frando/moq", branch = "iroh-live-5" }
+moq-auth = { git = "https://github.com/Frando/moq", branch = "iroh-live-5" }
+moq-binary = { git = "https://github.com/Frando/moq", branch = "iroh-live-5" }
+moq-flate = { git = "https://github.com/Frando/moq", branch = "iroh-live-5" }
+moq-json = { git = "https://github.com/Frando/moq", branch = "iroh-live-5" }
+moq-loc = { git = "https://github.com/Frando/moq", branch = "iroh-live-5" }
+moq-msf = { git = "https://github.com/Frando/moq", branch = "iroh-live-5" }
+moq-mux = { git = "https://github.com/Frando/moq", branch = "iroh-live-5" }
+moq-net = { git = "https://github.com/Frando/moq", branch = "iroh-live-5" }
+moq-nvenc = { git = "https://github.com/Frando/moq", branch = "iroh-live-5" }
+moq-pattern = { git = "https://github.com/Frando/moq", branch = "iroh-live-5" }
+moq-sock = { git = "https://github.com/Frando/moq", branch = "iroh-live-5" }
+moq-stats = { git = "https://github.com/Frando/moq", branch = "iroh-live-5" }
+moq-v4l = { git = "https://github.com/Frando/moq", branch = "iroh-live-5" }
+moq-video = { git = "https://github.com/Frando/moq", branch = "iroh-live-5" }
