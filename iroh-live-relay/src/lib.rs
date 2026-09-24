@@ -332,21 +332,9 @@ impl RelayServer {
             return self.stored_secret_key();
         }
         let key = SecretKey::generate();
-        match write_private(&path, &key.to_bytes()) {
-            Ok(()) => {
-                info!(path = %path.display(), "generated the relay's iroh identity");
-                Ok(key)
-            }
-            // Two relays started together on one data directory. The file is
-            // created exclusively, so exactly one of them wrote its key and the
-            // other reads it: the loser adopting the winner's identity is the
-            // only outcome where both are the relay every ticket names.
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                debug!(path = %path.display(), "another process wrote the identity first");
-                self.stored_secret_key()
-            }
-            Err(err) => Err(err.into()),
-        }
+        write_private(&path, &key.to_bytes())?;
+        info!(path = %path.display(), "generated the relay's iroh identity");
+        Ok(key)
     }
 
     /// Reads the identity that is already on disk.
@@ -376,10 +364,8 @@ fn read_secret_key(stored: &[u8]) -> anyhow::Result<SecretKey> {
 /// A secret key under the default umask is world readable, and every other user
 /// on the machine can then be this relay.
 ///
-/// Created exclusively rather than truncated, so a second relay racing this one
-/// on the same data directory fails with
-/// [`AlreadyExists`](std::io::ErrorKind::AlreadyExists) instead of writing a
-/// second identity over the first. The caller reads the winner's.
+/// Created exclusively rather than truncated, so it never writes over a key
+/// another process wrote.
 fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
