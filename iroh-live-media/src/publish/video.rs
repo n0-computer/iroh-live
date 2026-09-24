@@ -188,6 +188,8 @@ pub(super) async fn run_raw(
             rebase: rebase.clone(),
             _tracks: tracks.clone(),
             interval: frame_interval(rendition, rate),
+            advertised: size,
+            mismatch_reported: false,
             reporter: reporter.clone(),
             stats: stats.rendition(&rendition.name),
             stop: stop.clone(),
@@ -327,6 +329,10 @@ struct Encoder {
     _tracks: Arc<tokio::sync::OwnedMutexGuard<()>>,
     /// The gap between frames kept, for a rendition slower than its source.
     interval: Option<std::time::Duration>,
+    /// The source size the ladder was built for.
+    advertised: video::Size,
+    /// Whether a source frame of another size has been reported yet.
+    mismatch_reported: bool,
     reporter: Reporter,
     stats: Cell<EncodeStats>,
     stop: CancellationToken,
@@ -424,6 +430,19 @@ impl Encoder {
                     }
                     let next = frame.timestamp.as_micros() as u64 + interval.as_micros() as u64;
                     due = moq_net::Timestamp::from_micros(next).ok();
+                }
+                // A source that delivers another size than it declared, a
+                // phone camera turned to portrait say, is scaled to the size
+                // advertised, which stretches it. Said once, since every frame
+                // after it will be the same.
+                if frame.size() != self.advertised && !self.mismatch_reported {
+                    self.mismatch_reported = true;
+                    warn!(
+                        declared = %self.advertised,
+                        delivered = %frame.size(),
+                        "the source delivers another size than it declared; its pictures are \
+                         scaled to the declared size, which may stretch them"
+                    );
                 }
                 let frame = match frame.size() == target {
                     true => frame,
