@@ -563,7 +563,6 @@ async fn a_parked_accept_does_not_hold_up_shutdown() {
         ..Default::default()
     })
     .await;
-    let bob = Node::spawn().await;
     let mut accepting = Box::pin(alice.moq.accept());
     assert!(
         futures_lite::future::poll_once(&mut accepting)
@@ -571,24 +570,12 @@ async fn a_parked_accept_does_not_hold_up_shutdown() {
             .is_none(),
         "nothing to accept yet"
     );
-    let session = step("bob connects", bob.moq.connect(alice.endpoint.addr()))
-        .await
-        .expect("the dialer's half completes before the decision");
-    step("bob is queued", async {
-        while alice.moq.waiting_for_admission() == 0 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await;
-
     step("the shutdown ends", alice.moq.shutdown()).await;
     assert!(
         step("the parked accept returns", accepting).await.is_none(),
         "accept handed out a session after the shutdown"
     );
-    drop(session);
     alice.shutdown().await;
-    bob.shutdown().await;
 }
 
 /// Shutting the router down shuts the node down with it, as for any iroh

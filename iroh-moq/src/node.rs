@@ -346,15 +346,6 @@ impl Moq {
         admission::next(&self.shared).await
     }
 
-    /// Returns how many incoming sessions wait for [`accept`](Self::accept).
-    ///
-    /// For an application that watches its accept loop keep up. Always zero
-    /// under [`Admission::Open`].
-    pub fn waiting_for_admission(&self) -> usize {
-        let tx = &self.shared.incoming_tx;
-        tx.max_capacity() - tx.capacity()
-    }
-
     /// Stays attached to the moq relay at `config.url`, redialing with backoff.
     ///
     /// `iroh://` URLs go through this node's endpoint. Routes the relay
