@@ -136,7 +136,7 @@ async fn closing_finishes_the_broadcast() {
         )
         .expect("valid");
     audio_becomes(&broadcast, SlotState::Running).await;
-    let consumer = broadcast.as_moq().consume();
+    let consumer = broadcast.consume();
     broadcast.close();
     tokio::time::timeout(TIMEOUT, broadcast.closed())
         .await

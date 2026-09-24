@@ -100,8 +100,8 @@ Publishing:
 Subscribing:
 
 - `RemoteBroadcast` reads the catalog and holds the subscription;
-  `with_network` attaches the `NetworkSignals` adaptation reads. `from_moq`
-  wraps one broadcast consumer, `from_origin` follows a path in a route table,
+  `with_network` attaches the `NetworkSignals` adaptation reads. `from_origin`
+  follows a path in a route table,
   and `from_resolved` does the same starting from a consumer the caller already
   resolved. One that follows a route table reports `closed()` about three
   seconds after the publisher ends it, since it asks the table again first.

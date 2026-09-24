@@ -6,25 +6,24 @@ the catalog, and holds the subscription. `RemoteBroadcast::play` starts a
 decoders, its playout clock, its rendition choice, and its statistics. Two
 players of one broadcast are two playbacks and cannot interfere. Decoding is
 upstream: `moq_video::decode::Consumer` and `moq_audio::decode::Consumer` pick a
-backend from the catalog entry and hand back frames. Three things have no
+backend from the catalog entry and hand back frames. Two things have no
 upstream counterpart and live here.
 
 Rendition selection is the first. `moq_mux::select` is fixed at construction, so
 a subscriber that wants to follow its downlink has to choose for itself. The
 second is the playout clock, which keeps audio and video aligned across two
-independent decode paths. The third is the catalog extension, where the
-publisher's identity rides alongside the media sections.
+independent decode paths.
 
 ## Opening a broadcast
 
-`RemoteBroadcast::from_moq(consumer)` starts reading the catalog and returns at
-once. `catalog()` is a watcher over an `Option<Catalog>` that reads `None` until
-the first catalog arrives, which keeps construction usable in a UI reconcile
+Every constructor starts reading the catalog and returns at once. `catalog()`
+is a watcher over an `Option<Catalog>` that reads `None` until the first catalog
+arrives, which keeps construction usable in a UI reconcile
 loop; a caller that needs the catalog waits on the watcher. A background task
 follows the catalog track and republishes each update.
 
-`RemoteBroadcast::from_origin(origin, path)` follows a path in a route table
-instead. When a change of route ends the broadcast, it is requested again
+`RemoteBroadcast::from_origin(origin, path)` follows a path in a route table.
+When a change of route ends the broadcast, it is requested again
 through the next route, and players see a new generation of the broadcast
 rather than an end. The broadcast counts as closed only once no route serves the
 path for three seconds, so `closed()` resolves about three seconds after a

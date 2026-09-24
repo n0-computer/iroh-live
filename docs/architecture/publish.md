@@ -5,8 +5,7 @@ owns the catalog that describes it, a media clock, one video slot, and one audio
 slot. `set_video`, `set_encoded_video`, and `set_audio` fill the slots, each
 replacing whatever the slot held, and `clear_video` and `clear_audio` empty
 them. `LocalBroadcast::new()` creates a broadcast published nowhere yet, which a
-transport reads through `moq_net::Consume`; `from_moq(producer)` wraps a
-producer the transport created. In iroh-live, `Live::publish(name, &broadcast)`
+transport reads through `moq_net::Consume`. In iroh-live, `Live::publish(name, &broadcast)`
 takes the broadcast by reference and publishes what it reads through
 `Consume` at `live/<this node's id>/<name>`, and `Live::ticket(name)` names that
 path for a subscriber.
@@ -152,8 +151,6 @@ The catalog is hang's, written by `moq_mux::catalog::Producer` with no
 extension, so any hang player reads it. A room carries display names in its own
 announcements and publishes chat as a broadcast of its own (see
 [rooms](../guide/rooms.md)).
-
-Extra tracks go through `as_moq()`, which returns the underlying producer.
 
 ## Clock
 

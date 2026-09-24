@@ -88,11 +88,9 @@ pub struct RemoteBroadcast {
 }
 
 impl RemoteBroadcast {
-    /// Starts reading the catalog of `broadcast`.
-    ///
-    /// Does not wait: [`catalog`](Self::catalog) is `None` until it arrives,
-    /// which keeps construction usable in a UI reconcile loop.
-    pub fn from_moq(broadcast: moq_net::broadcast::Consumer) -> Self {
+    /// Starts reading the catalog of `broadcast`, which ends the remote
+    /// broadcast when it ends.
+    pub(crate) fn from_moq(broadcast: moq_net::broadcast::Consumer) -> Self {
         let span = tracing::info_span!("remote");
         Self::spawn(Origin::Moq, Some(broadcast), span)
     }
@@ -181,8 +179,8 @@ impl RemoteBroadcast {
 
     /// Waits until the broadcast has closed.
     ///
-    /// A broadcast read with [`from_moq`](Self::from_moq) or
-    /// [`local`](Self::local) closes when its consumer does. One that follows a
+    /// A broadcast read with [`local`](Self::local) closes when its local
+    /// broadcast does. One that follows a
     /// route table, from [`from_origin`](Self::from_origin) or
     /// [`from_resolved`](Self::from_resolved), cannot tell a publisher that
     /// ended its broadcast from a change of route, which also ends it: it asks

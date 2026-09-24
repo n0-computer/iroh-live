@@ -215,26 +215,15 @@ impl Default for LocalBroadcast {
 impl LocalBroadcast {
     /// Creates an empty broadcast, published nowhere yet.
     pub fn new() -> Self {
-        Self::from_moq(moq_net::broadcast::Info::new().produce())
-    }
-
-    /// Creates a broadcast that produces into `producer`.
-    ///
-    /// For a transport that creates the broadcast itself and hands out its
-    /// producer, where [`new`](Self::new) and `Consume` are not how it
-    /// publishes. An integration point: it follows moq-net's versioning.
-    pub fn from_moq(mut producer: moq_net::broadcast::Producer) -> Self {
+        let mut producer = moq_net::broadcast::Info::new().produce();
         // The catalog advertises the clock's wall mapping at its root, so the
         // clock the media is stamped from is the one it is built with.
         let clock = moq_mux::Clock::new();
         let config = moq_mux::catalog::Config::default()
             .with_catalog(hang::catalog::Catalog::default())
             .with_clock(clock);
-        // Creating the catalog track on a producer can fail only if a track of
-        // that name exists already, which it cannot on a broadcast nothing has
-        // written to; a transport that hands one over has not either.
         let catalog = CatalogProducer::new(&mut producer, config)
-            .expect("a fresh broadcast has no catalog track yet");
+            .expect("a new broadcast has no catalog track yet");
         let span = tracing::info_span!("broadcast");
         Self {
             shared: Arc::new(Shared {
@@ -380,14 +369,6 @@ impl LocalBroadcast {
     /// Cancellation safe.
     pub async fn closed(&self) {
         self.shared.finished.cancelled().await;
-    }
-
-    /// Returns the moq-net broadcast, for writing extra tracks or for a custom
-    /// transport.
-    ///
-    /// An integration point: it follows moq-net's versioning.
-    pub fn as_moq(&self) -> moq_net::broadcast::Producer {
-        self.shared.producer.clone()
     }
 
     fn check_open(&self) -> Result<(), Error> {

@@ -69,8 +69,8 @@ never goes blank or steps backwards. And each player owns a playout clock that
 holds video back by the audio queued at its speaker, so audio and video stay
 aligned across two independent decode paths.
 
-A transport builds the `RemoteBroadcast`: `from_moq` wraps one broadcast
-consumer, `from_origin` follows a path through a route table and asks it again
+A transport builds the `RemoteBroadcast`: `from_origin` follows a path through
+a route table and asks it again
 when a change of route ends the broadcast, and `from_resolved` does the same
 starting from a consumer the caller already resolved, which is what `iroh-live`
 uses. A broadcast that follows a route table cannot tell a publisher ending the
