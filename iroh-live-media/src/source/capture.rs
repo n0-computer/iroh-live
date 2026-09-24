@@ -89,12 +89,11 @@ pub(super) async fn open(
                 Ok(Some(frame)) => slot.send(Arc::new(frame)),
                 Ok(None) => {
                     debug!("video capture ended");
-                    slot.close(None);
                     return;
                 }
                 Err(err) => {
                     warn!(error = %err, "video capture failed");
-                    slot.close(Some(Arc::new(capture_error(err))));
+                    slot.fail(Arc::new(capture_error(err)));
                     return;
                 }
             }

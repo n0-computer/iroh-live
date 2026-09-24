@@ -218,9 +218,9 @@ impl VideoSource {
     /// `run` may create thread-bound platform objects, which is what this is
     /// for. The thread has a single-threaded Tokio runtime entered, so `run`
     /// can drive async code with `tokio::runtime::Handle::current().block_on`.
-    /// The source ends when `run` returns, and fails with its error if it
-    /// returns one. `run` should return once [`FrameSender::push`] reports
-    /// [`Closed`](crate::Closed).
+    /// The source ends once `run` has returned and every clone of its sender
+    /// is dropped, and fails with the error `run` returned. `run` should
+    /// return once [`FrameSender::push`] reports [`Closed`](crate::Closed).
     ///
     /// # Errors
     ///
@@ -242,15 +242,11 @@ impl VideoSource {
             .name(name.to_string())
             .spawn(move || {
                 let _entered = runtime.enter();
-                let result = run(sender);
-                match result {
-                    Ok(()) => {
-                        debug!(source = %thread_name, "video source ended");
-                        slot.close(None);
-                    }
+                match run(sender) {
+                    Ok(()) => debug!(source = %thread_name, "video source ended"),
                     Err(err) => {
                         warn!(source = %thread_name, error = %format!("{err:#}"), "video source failed");
-                        slot.close(Some(Arc::new(err)));
+                        slot.fail(Arc::new(err));
                     }
                 }
             })?;

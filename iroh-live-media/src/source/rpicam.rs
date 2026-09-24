@@ -407,9 +407,9 @@ pub(super) async fn open_raw(
                 () = stop.cancelled() => break,
             };
             let Some(frame) = frame else {
-                slot.close(Some(std::sync::Arc::new(Error::device_msg(format!(
+                slot.fail(std::sync::Arc::new(Error::device_msg(format!(
                     "{RPICAM_VID} stopped writing pictures"
-                )))));
+                ))));
                 break;
             };
             slot.send(std::sync::Arc::new(frame));
