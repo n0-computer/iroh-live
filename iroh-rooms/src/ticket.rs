@@ -1,28 +1,24 @@
 //! The ticket that identifies a room and bootstraps its gossip topic.
 
-use std::{env, str::FromStr};
+use std::str::FromStr;
 
 use iroh::EndpointId;
 use iroh_gossip::TopicId;
-use n0_error::{Result, StdResultExt};
 use serde::{Deserialize, Serialize};
-use tracing::info;
 
-/// Ticket for joining a room.
+/// A room: its gossip topic and the peers to contact first.
 ///
-/// Contains the gossip topic ID and optional bootstrap peer IDs.
-/// Serializes to a compact string via the `iroh_tickets` crate.
-#[derive(Debug, Serialize, Deserialize, Clone, derive_more::Display)]
+/// Serializes to a compact string through the `iroh_tickets` envelope, with
+/// kind `room`.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, derive_more::Display)]
 #[display("{}", iroh_tickets::Ticket::encode_string(self))]
 pub struct RoomTicket {
-    /// Peers to contact initially for gossip bootstrap.
-    pub bootstrap: Vec<EndpointId>,
-    /// The gossip topic that identifies this room.
-    pub topic_id: TopicId,
+    bootstrap: Vec<EndpointId>,
+    topic_id: TopicId,
 }
 
 impl RoomTicket {
-    /// Creates a ticket with the given topic and bootstrap peers.
+    /// Creates a ticket for `topic_id`, bootstrapping from `bootstrap`.
     pub fn new(topic_id: TopicId, bootstrap: impl IntoIterator<Item = EndpointId>) -> Self {
         Self {
             bootstrap: bootstrap.into_iter().collect(),
@@ -30,47 +26,25 @@ impl RoomTicket {
         }
     }
 
-    /// Generates a new room with a random topic ID and no bootstrap peers.
+    /// Creates a ticket for a new room with a random topic and no bootstrap
+    /// peers.
     pub fn generate() -> Self {
-        Self {
-            bootstrap: vec![],
-            topic_id: TopicId::from_bytes(rand::random()),
-        }
+        Self::new(TopicId::from_bytes(rand::random()), [])
     }
 
-    /// Creates a ticket from environment variables.
-    ///
-    /// Reads `IROH_LIVE_ROOM` for a full ticket string, or
-    /// `IROH_LIVE_TOPIC` for a hex-encoded topic ID. Generates a
-    /// random topic if neither is set.
-    pub fn new_from_env() -> Result<Self> {
-        if let Ok(value) = env::var("IROH_LIVE_ROOM") {
-            value
-                .parse()
-                .std_context("failed to parse ticket from IROH_LIVE_ROOM environment variable")
-        } else {
-            let topic_id = match env::var("IROH_LIVE_TOPIC") {
-                Ok(topic) => TopicId::from_bytes(
-                    data_encoding::HEXLOWER
-                        .decode(topic.as_bytes())
-                        .std_context("invalid hex")?
-                        .as_slice()
-                        .try_into()
-                        .std_context("invalid length")?,
-                ),
-                Err(_) => {
-                    let topic = TopicId::from_bytes(rand::random());
-                    // A library has no business writing to stdout; a CLI that
-                    // wants to show this reads the ticket back and prints it.
-                    info!(
-                        topic = %data_encoding::HEXLOWER.encode(topic.as_bytes()),
-                        "generated a room topic; reuse it with IROH_LIVE_TOPIC",
-                    );
-                    topic
-                }
-            };
-            Ok(Self::new(topic_id, vec![]))
-        }
+    /// Returns the gossip topic that identifies the room.
+    pub fn topic_id(&self) -> TopicId {
+        self.topic_id
+    }
+
+    /// Returns the peers a joiner contacts first.
+    pub fn bootstrap(&self) -> &[EndpointId] {
+        &self.bootstrap
+    }
+
+    /// Returns this ticket with `peer` as its only bootstrap peer.
+    pub(crate) fn with_bootstrap(&self, peer: EndpointId) -> Self {
+        Self::new(self.topic_id, [peer])
     }
 }
 
@@ -92,5 +66,20 @@ impl iroh_tickets::Ticket for RoomTicket {
     fn decode_bytes(bytes: &[u8]) -> Result<Self, iroh_tickets::ParseError> {
         let ticket = postcard::from_bytes(bytes)?;
         Ok(ticket)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_ticket_round_trips_through_its_string() {
+        let peer = iroh::SecretKey::from_bytes(&[5; 32]).public();
+        let ticket = RoomTicket::generate().with_bootstrap(peer);
+        let parsed: RoomTicket = ticket.to_string().parse().expect("parse");
+        assert_eq!(parsed, ticket);
+        assert!(ticket.to_string().starts_with("room"));
+        assert_eq!(parsed.bootstrap(), [peer]);
     }
 }

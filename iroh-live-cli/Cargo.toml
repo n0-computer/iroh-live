@@ -19,7 +19,6 @@ hang = { workspace = true }
 iroh = { workspace = true }
 # `relay-links` for `--relay`, which stays attached to a relay and redials it.
 iroh-live = { workspace = true, features = ["capture", "relay-links"] }
-iroh-gossip = { workspace = true }
 iroh-rooms = { workspace = true }
 moq-net = { workspace = true }
 iroh-live-media = { workspace = true, features = ["test-source", "capture"] }

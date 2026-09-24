@@ -1,24 +1,18 @@
 //! `irl room`: a multi-party room, publishing one broadcast and watching
 //! everyone else's.
 //!
-//! `iroh-rooms` does the discovery: peers announce the names of their
-//! broadcasts on a shared gossip topic, and every name that appears comes back
-//! as a MoQ subscription. This wraps each of those in a
+//! `iroh-rooms` does the discovery: members announce the names of their
+//! broadcasts on a shared gossip topic, and the room's watched state says who is
+//! here and what each publishes. This window subscribes to each of those
+//! broadcasts as it appears, wraps it in a
 //! [`RemoteBroadcast`](iroh_live::media::subscribe::RemoteBroadcast), lays them
-//! out in a grid, and hands the chat track the room already knows about to the
-//! panel at the bottom.
+//! out in a grid, and shows the room's chat in the panel at the bottom.
 //!
 //! Every participant subscribes to every other, so this is a small-group
 //! design. There is no selective forwarding.
 
-use iroh_live::{
-    Live,
-    media::{catalog::TrackRef, publish::LocalBroadcast},
-};
-use iroh_rooms::{
-    Room, RoomTicket,
-    chat::{CHAT_PRIORITY, CHAT_TRACK_NAME, ChatPublisher},
-};
+use iroh_live::{Live, LocalBroadcast, moq::net::broadcast};
+use iroh_rooms::{Room, RoomConfig, RoomTicket, Rooms};
 use n0_error::Result;
 use tracing::info;
 
@@ -51,9 +45,9 @@ pub fn run(args: RoomArgs, rt: &tokio::runtime::Runtime) -> Result {
 /// Joins the room, publishes this node's camera into it, and prints the ticket
 /// the next participant needs.
 async fn setup(args: &RoomArgs) -> Result<(Live, LocalBroadcast, Room, String, String)> {
-    let (live, gossip) = transport::setup_live_with_gossip().await?;
+    let (live, rooms) = transport::setup_live_with_rooms().await?;
     let (live, (broadcast, room, ticket, display_name)) =
-        transport::with_live(live, async |live| join(live, &gossip, args).await).await?;
+        transport::with_live(live, async |live| join(live, &rooms, args).await).await?;
     Ok((live, broadcast, room, ticket, display_name))
 }
 
@@ -64,30 +58,25 @@ async fn setup(args: &RoomArgs) -> Result<(Live, LocalBroadcast, Room, String, S
 /// Fails if the room cannot be joined, or if the capture sources do not parse.
 async fn join(
     live: &Live,
-    gossip: &iroh_gossip::Gossip,
+    rooms: &Rooms,
     args: &RoomArgs,
 ) -> Result<(LocalBroadcast, Room, String, String)> {
     let ticket = args.ticket.clone().unwrap_or_else(RoomTicket::generate);
-    let room = Room::new(live.endpoint(), live.moq(), gossip, ticket).await?;
-
-    let broadcast = LocalBroadcast::new(room.publish(BROADCAST_NAME).await?)?;
-    source::configure(&broadcast, &args.capture)?;
-
-    // Chat rides on the same broadcast, so a peer subscribed for the video gets
-    // the messages without a second subscription. `enable_chat` creates the
-    // track and advertises it in the catalog; `iroh-rooms` finds it by the
-    // well-known name it was created under.
-    let chat = broadcast.enable_chat(TrackRef {
-        name: CHAT_TRACK_NAME.to_string(),
-        priority: CHAT_PRIORITY,
-    })?;
-    room.set_chat_publisher(ChatPublisher::new(chat)).await?;
-
     let display_name = args
         .display_name
         .clone()
         .unwrap_or_else(|| live.endpoint().id().fmt_short().to_string());
-    room.set_display_name(display_name.clone()).await?;
+    let room = rooms
+        .join(
+            &ticket,
+            RoomConfig::default().with_display_name(display_name.clone()),
+        )
+        .await?;
+
+    // Chat is the room's own, so the camera broadcast carries only media.
+    let broadcast = LocalBroadcast::new(broadcast::Info::new().produce())?;
+    source::configure(&broadcast, &args.capture)?;
+    room.publish(BROADCAST_NAME, broadcast.consume())?;
 
     let ticket = room.ticket().to_string();
     println!("room ticket: {ticket}");
@@ -100,22 +89,20 @@ async fn join(
 mod window {
     //! The room window: a grid of everybody's pictures over a chat panel.
 
-    use std::{
-        collections::{HashMap, VecDeque},
-        time::Duration,
-    };
+    use std::collections::{BTreeSet, HashSet, VecDeque};
 
     use eframe::egui;
     use iroh::EndpointId;
     use iroh_live::{
-        Live, Subscription,
+        Live,
         media::{publish::LocalBroadcast, subscribe::MediaTracks},
     };
     use iroh_live_egui::egui_wgpu::RenderState;
-    use iroh_rooms::{Room, RoomEvent, RoomEvents, RoomHandle};
+    use iroh_rooms::{ChatError, ChatMessage, Room, RoomState};
     use n0_error::{Result, anyerr};
     use n0_future::task::AbortOnDropHandle;
-    use tokio::task::JoinSet;
+    use n0_watcher::Watcher;
+    use tokio::{sync::mpsc, task::JoinSet};
     use tracing::{info, warn};
 
     use crate::{
@@ -124,12 +111,9 @@ mod window {
         ui::{LocalPreview, RemoteView},
     };
 
-    /// How often the window is woken while nothing is drawing it.
-    ///
-    /// The room actor writes its events into a bounded channel that only this
-    /// window drains, so a window that stops running stops the room. A window
-    /// nobody is looking at still has to keep the room's gossip moving.
-    const HEARTBEAT: Duration = Duration::from_millis(100);
+    /// How many chat messages wait for the window before the forwarder holds
+    /// back. The room keeps its own per-receiver buffer behind this one.
+    const CHAT_QUEUE: usize = 64;
 
     /// How many chat lines are kept in the scrollback.
     const MAX_CHAT_LINES: usize = 200;
@@ -154,24 +138,23 @@ mod window {
         playback: PlaybackArgs,
         fullscreen: bool,
     ) -> Result {
-        // Split so chat sends do not wait on the same task that drains the
-        // events: the room actor replies through a channel only this window
-        // reads, and the two would deadlock each other.
-        let (events, handle) = room.split();
-
         eframe::run_native(
             "irl room",
             crate::ui::native_options(fullscreen),
             Box::new(move |cc| {
                 crate::ui::spawn_ctrl_c_handler(&cc.egui_ctx);
+                let (chat_tx, chat_rx) = mpsc::channel(CHAT_QUEUE);
                 Ok(Box::new(RoomApp {
                     live,
-                    handle,
-                    events,
+                    state: room.state(),
+                    known: RoomState::default(),
+                    _wake: wake_on_room(&cc.egui_ctx, &room, chat_tx),
+                    chat_rx,
+                    room,
                     ticket,
                     display_name,
                     peers: Vec::new(),
-                    names: HashMap::new(),
+                    opening_keys: HashSet::new(),
                     opening: JoinSet::new(),
                     sending: JoinSet::new(),
                     chat: ChatState::default(),
@@ -181,7 +164,6 @@ mod window {
                         cc.wgpu_render_state.as_ref(),
                     ),
                     render_state: cc.wgpu_render_state.clone(),
-                    _heartbeat: crate::ui::spawn_heartbeat(&cc.egui_ctx, HEARTBEAT),
                     playback,
                     broadcast,
                 }))
@@ -196,15 +178,24 @@ mod window {
         /// This node's own broadcast, which every other participant subscribes
         /// to.
         broadcast: LocalBroadcast,
-        handle: RoomHandle,
-        events: RoomEvents,
+        room: Room,
+        /// The room's membership, read every pass.
+        state: n0_watcher::Direct<RoomState>,
+        /// The membership the grid and the join and leave lines were last
+        /// brought in line with.
+        known: RoomState,
+        /// Chat messages the forwarder handed over, drained every pass.
+        chat_rx: mpsc::Receiver<Incoming>,
+        /// Wakes the window when the room changes or a message arrives, so a
+        /// window nobody is drawing still keeps up.
+        _wake: AbortOnDropHandle<()>,
         /// The room's ticket, shown in the top bar.
         ticket: String,
         /// The name this node announced, used to label its own chat lines.
         display_name: String,
         peers: Vec<PeerTile>,
-        /// Display names by peer, from the gossip announcements.
-        names: HashMap<EndpointId, String>,
+        /// The broadcasts being opened, so each is opened once.
+        opening_keys: HashSet<(EndpointId, String)>,
         /// Subscriptions whose tracks are still opening.
         opening: JoinSet<Option<Opened>>,
         /// Chat messages still on their way to the room actor.
@@ -212,7 +203,6 @@ mod window {
         chat: ChatState,
         preview: LocalPreview,
         render_state: Option<RenderState>,
-        _heartbeat: AbortOnDropHandle<()>,
         /// The playback flags every peer's broadcast is opened under.
         playback: PlaybackArgs,
     }
@@ -238,14 +228,14 @@ mod window {
     }
 
     impl eframe::App for RoomApp {
-        /// Drains the room and collects finished subscriptions.
+        /// Follows the room's state and chat, and collects finished
+        /// subscriptions.
         ///
-        /// Here rather than in [`ui`](Self::ui) because eframe runs no egui
-        /// pass while the window is minimized or occluded, and the room actor
-        /// blocks on an event channel this is the only reader of.
+        /// Nothing here can stall the room: the state is a watcher and the chat
+        /// has its own buffers, so a window that stops drawing only falls behind.
         fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-            ctx.request_repaint_after(Duration::from_millis(16));
-            self.drain_events();
+            self.apply_state();
+            self.drain_chat();
             self.collect_opened(ctx);
             self.drop_closed();
             while self.sending.try_join_next().is_some() {}
@@ -268,55 +258,78 @@ mod window {
             info!("exit");
             for peer in &mut self.peers {
                 peer.view.shutdown();
-                peer.sub.close();
             }
+            let room = self.room.clone();
+            tokio::runtime::Handle::current().block_on(room.leave());
             crate::ui::shutdown_publish_blocking(&self.live, &mut self.broadcast);
         }
     }
 
     impl RoomApp {
-        /// Applies whatever the room reported since the last pass.
-        fn drain_events(&mut self) {
-            while let Ok(event) = self.events.try_recv() {
-                match event {
-                    RoomEvent::PeerJoined {
-                        remote,
-                        display_name,
-                    } => {
-                        let name = display_name.unwrap_or_else(|| short(remote));
-                        self.chat.push_system(format!("{name} joined"));
-                        self.names.insert(remote, name);
+        /// Brings the grid and the join and leave lines in line with the
+        /// room's membership.
+        fn apply_state(&mut self) {
+            let state = self.state.get();
+            if state == self.known {
+                return;
+            }
+            for (remote, peer) in &state.peers {
+                if !self.known.peers.contains_key(remote) {
+                    let name = peer.display_name.clone().unwrap_or_else(|| short(*remote));
+                    self.chat.push_system(format!("{name} joined"));
+                }
+            }
+            for remote in self.known.peers.keys() {
+                if !state.peers.contains_key(remote) {
+                    let name = self.label(*remote);
+                    self.chat.push_system(format!("{name} left"));
+                }
+            }
+            let wanted: BTreeSet<(EndpointId, String)> = state
+                .peers
+                .iter()
+                .flat_map(|(remote, peer)| {
+                    peer.broadcasts
+                        .iter()
+                        .map(move |name| (*remote, name.clone()))
+                })
+                .collect();
+            self.known = state;
+            self.close_tiles("no longer published", |peer| {
+                !wanted.contains(&(peer.remote, peer.name.clone()))
+            });
+            for (remote, name) in wanted {
+                let key = (remote, name.clone());
+                let shown = self
+                    .peers
+                    .iter()
+                    .any(|peer| peer.remote == remote && peer.name == name);
+                if shown || !self.opening_keys.insert(key) {
+                    continue;
+                }
+                info!(remote = %short(remote), %name, "subscribing to a member");
+                self.opening.spawn(open(
+                    self.live.clone(),
+                    self.room.clone(),
+                    remote,
+                    name,
+                    self.playback,
+                ));
+            }
+        }
+
+        /// Appends the chat lines the forwarder handed over.
+        fn drain_chat(&mut self) {
+            while let Ok(incoming) = self.chat_rx.try_recv() {
+                match incoming {
+                    Incoming::Message(message) => {
+                        let sender = self.label(message.from);
+                        self.chat.push(sender, message.text);
                     }
-                    RoomEvent::PeerLeft { remote } => {
-                        let name = self.label(remote);
-                        self.chat.push_system(format!("{name} left"));
-                        self.names.remove(&remote);
-                        self.close_tiles("the peer left", |peer| peer.remote == remote);
+                    Incoming::Skipped(skipped) => {
+                        self.chat
+                            .push_system(format!("{skipped} chat messages skipped"));
                     }
-                    RoomEvent::BroadcastSubscribed {
-                        remote,
-                        name,
-                        subscription,
-                        ..
-                    } => {
-                        info!(remote = %short(remote), %name, "subscribing to a peer");
-                        self.opening.spawn(open(
-                            self.live.clone(),
-                            remote,
-                            name,
-                            *subscription,
-                            self.playback,
-                        ));
-                    }
-                    RoomEvent::ChatReceived { remote, message } => {
-                        self.chat.push(self.label(remote), message.text);
-                    }
-                    RoomEvent::RemoteAnnounced { remote, broadcasts } => {
-                        info!(remote = %short(remote), ?broadcasts, "peer announced");
-                    }
-                    // `RoomEvent` is non-exhaustive: a new variant is something
-                    // this window has not been taught to draw yet.
-                    _ => {}
                 }
             }
         }
@@ -338,6 +351,17 @@ mod window {
                     sub,
                     tracks,
                 } = opened;
+                self.opening_keys.remove(&(remote, name.clone()));
+                if !self
+                    .known
+                    .peers
+                    .get(&remote)
+                    .is_some_and(|peer| peer.broadcasts.contains(&name))
+                {
+                    // Withdrawn while it was opening.
+                    sub.close();
+                    continue;
+                }
                 let view = RemoteView::new(
                     ctx,
                     &format!("{}-{name}", short(remote)),
@@ -357,9 +381,8 @@ mod window {
 
         /// Drops the tiles whose sessions have gone.
         ///
-        /// `PeerLeft` covers a peer that ended its broadcast, but a peer whose
-        /// connection simply failed leaves the tile behind, so the session is
-        /// checked too.
+        /// The room's state drops a member that went away once its lease runs
+        /// out, which takes minutes; a session that failed says so at once.
         fn drop_closed(&mut self) {
             self.close_tiles("the session closed", |peer| {
                 peer.sub
@@ -395,9 +418,10 @@ mod window {
         /// The name to show for `remote`, falling back to its short endpoint
         /// id.
         fn label(&self, remote: EndpointId) -> String {
-            self.names
+            self.known
+                .peers
                 .get(&remote)
-                .cloned()
+                .and_then(|peer| peer.display_name.clone())
                 .unwrap_or_else(|| short(remote))
         }
 
@@ -445,14 +469,13 @@ mod window {
 
         /// Draws one peer's tile: the picture, its label, and the stats bar.
         fn draw_peer(&mut self, ui: &mut egui::Ui, index: usize, cell: egui::Vec2) {
-            let Self { peers, names, .. } = self;
-            let Some(peer) = peers.get_mut(index) else {
+            let Some(remote) = self.peers.get(index).map(|peer| peer.remote) else {
                 return;
             };
-            let label = names
-                .get(&peer.remote)
-                .cloned()
-                .unwrap_or_else(|| short(peer.remote));
+            let label = self.label(remote);
+            let Some(peer) = self.peers.get_mut(index) else {
+                return;
+            };
             let rect = peer.view.draw(ui, cell).rect;
             peer.view.draw_overlay(ui, rect);
             tile_label(ui, rect, &label);
@@ -498,8 +521,8 @@ mod window {
 
         /// Sends whatever is typed, and shows it locally.
         ///
-        /// The room echoes nothing back to its own sender, so the local copy is
-        /// the only one this window will ever see.
+        /// A room's chat receivers carry other members' messages only, so the
+        /// local copy is the only one this window will ever see.
         fn send_chat(&mut self) {
             let text = self.chat.input.trim().to_string();
             if text.is_empty() {
@@ -507,29 +530,72 @@ mod window {
             }
             self.chat.input.clear();
             self.chat.push(self.display_name.clone(), text.clone());
-            let handle = self.handle.clone();
+            let room = self.room.clone();
             self.sending.spawn(async move {
-                if let Err(err) = handle.send_chat(text).await {
+                if let Err(err) = room.send_chat(text).await {
                     warn!(error = %err, "failed to send the chat message");
                 }
             });
         }
     }
 
-    /// Subscribes to a peer's broadcast and opens whichever tracks it carries.
+    /// Wakes the window whenever the room's state changes, and forwards its
+    /// chat into `chat` as it arrives.
+    fn wake_on_room(
+        ctx: &egui::Context,
+        room: &Room,
+        chat: mpsc::Sender<Incoming>,
+    ) -> AbortOnDropHandle<()> {
+        let ctx = ctx.clone();
+        let (mut state, mut messages) = (room.state(), room.chat());
+        AbortOnDropHandle::new(tokio::spawn(async move {
+            loop {
+                let incoming = tokio::select! {
+                    changed = state.updated() => match changed {
+                        Ok(_) => None,
+                        Err(_) => return,
+                    },
+                    message = messages.recv() => match message {
+                        Ok(message) => Some(Incoming::Message(message)),
+                        Err(ChatError::Lagged(skipped)) => Some(Incoming::Skipped(skipped)),
+                        Err(_) => return,
+                    },
+                };
+                if let Some(incoming) = incoming
+                    && chat.send(incoming).await.is_err()
+                {
+                    return;
+                }
+                ctx.request_repaint();
+            }
+        }))
+    }
+
+    /// What the chat forwarder hands the window.
+    enum Incoming {
+        Message(ChatMessage),
+        /// The window fell this many messages behind.
+        Skipped(u64),
+    }
+
+    /// Subscribes to a member's broadcast and opens whichever tracks it carries.
     ///
-    /// Returns `None` when the broadcast never produced a catalog, which is
-    /// what a peer that announced a name it does not publish looks like.
+    /// Returns `None` when the broadcast cannot be reached or never produces a
+    /// catalog, which is what a member that announced a name it does not
+    /// publish looks like.
     async fn open(
         live: Live,
+        room: Room,
         remote: EndpointId,
         name: String,
-        subscription: Subscription,
         playback: PlaybackArgs,
     ) -> Option<Opened> {
-        // A peer that announced a name it never published would otherwise
+        // A member that announced a name it never published would otherwise
         // leave this task waiting forever.
-        let opened = tokio::time::timeout(PEER_TIMEOUT, Subscribed::open(&live, subscription));
+        let opened = tokio::time::timeout(PEER_TIMEOUT, async {
+            let subscription = room.subscribe(remote, &name).await?;
+            Subscribed::open(&live, subscription).await
+        });
         let sub = match opened.await {
             Ok(Ok(sub)) => sub,
             Ok(Err(err)) => {

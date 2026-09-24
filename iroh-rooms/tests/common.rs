@@ -1,26 +1,23 @@
 //! Shared harness for `iroh-rooms` integration tests.
 //!
-//! Builds a peer from scratch (endpoint, router, MoQ transport, gossip) since
-//! `iroh-rooms` no longer depends on `iroh_live::Live` for any of it. This file
-//! carries no `#[test]` items of its own; it becomes its own (empty) test
-//! binary under cargo's test autodiscovery, which is expected.
+//! Builds a peer from scratch: an endpoint on an in-memory address lookup, a
+//! MoQ node, the room service, and a router mounting both. This file carries no
+//! `#[test]` items of its own; it becomes its own (empty) test binary under
+//! cargo's test autodiscovery, which is expected.
 
 #![allow(dead_code, reason = "each test file only uses a subset of the harness")]
 
 use std::{sync::OnceLock, time::Duration};
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets, protocol::Router};
-use iroh_gossip::{Gossip, TopicId};
 use iroh_moq::{Moq, MoqConfig};
-use iroh_rooms::{Room, RoomEvent, RoomTicket};
+use iroh_rooms::{Room, RoomConfig, RoomState, RoomTicket, Rooms};
+use n0_watcher::Watcher;
 
-/// Generous timeout: must survive CPU contention when the full workspace test
-/// suite runs in parallel.
+/// Generous: must survive CPU contention when the whole workspace suite runs.
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Binds an endpoint against a shared in-memory address lookup, so peers in
-/// the same test process can dial each other without a real discovery
-/// service.
+/// Binds an endpoint against a shared in-memory address lookup.
 pub(crate) async fn endpoint() -> Endpoint {
     static LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
     let lookup = LOOKUP.get_or_init(MemoryLookup::new);
@@ -33,50 +30,53 @@ pub(crate) async fn endpoint() -> Endpoint {
     endpoint
 }
 
-/// A fully wired peer: an endpoint, a router accepting both MoQ and gossip
-/// connections, the MoQ transport, and gossip itself.
-///
-/// This is the minimum an application needs to hand [`Room::new`] its three
-/// arguments; `iroh-rooms` builds none of it itself.
+/// A peer: an endpoint, the MoQ node, the room service, and the router that
+/// accepts both.
 #[derive(Debug)]
 pub(crate) struct Peer {
     pub(crate) endpoint: Endpoint,
     pub(crate) moq: Moq,
-    pub(crate) gossip: Gossip,
+    pub(crate) rooms: Rooms,
     router: Router,
 }
 
 impl Peer {
-    /// Binds a fresh endpoint and wires up MoQ and gossip on top of it.
     pub(crate) async fn spawn() -> Self {
         let endpoint = endpoint().await;
         let moq = Moq::new(endpoint.clone(), MoqConfig::default());
-        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let rooms = Rooms::new(&moq);
         let mut router = Router::builder(endpoint.clone());
         for alpn in iroh_moq::alpns() {
             router = router.accept(alpn, moq.clone());
         }
-        let router = router.accept(iroh_gossip::ALPN, gossip.clone()).spawn();
+        let router = router
+            .accept(iroh_rooms::ALPN, rooms.protocol_handler())
+            .spawn();
         Self {
             endpoint,
             moq,
-            gossip,
+            rooms,
             router,
         }
     }
 
-    /// Joins the room named by `ticket`.
-    pub(crate) async fn join_room(&self, ticket: RoomTicket) -> Room {
-        Room::new(&self.endpoint, &self.moq, &self.gossip, ticket)
-            .await
-            .expect("failed to join room")
+    pub(crate) fn id(&self) -> iroh::EndpointId {
+        self.endpoint.id()
     }
 
-    /// Shuts down the router and MoQ transport, then closes the endpoint.
-    ///
-    /// Tears down every session with this peer, which is what the
-    /// disconnect-detection tests rely on to trigger `PeerLeft` on the other
-    /// side.
+    /// Joins the room `ticket` names under `name`.
+    pub(crate) async fn join(&self, ticket: &RoomTicket, name: &str) -> Room {
+        tokio::time::timeout(
+            TIMEOUT,
+            self.rooms
+                .join(ticket, RoomConfig::default().with_display_name(name)),
+        )
+        .await
+        .expect("timed out joining")
+        .expect("failed to join the room")
+    }
+
+    /// Shuts down the MoQ node and the router, then closes the endpoint.
     pub(crate) async fn shutdown(self) {
         self.moq.shutdown().await;
         self.router.shutdown().await.expect("router task panicked");
@@ -84,39 +84,31 @@ impl Peer {
     }
 }
 
-/// Creates two peers and a room shared between them behind a fresh ticket.
+/// Creates two peers in one fresh room, the second bootstrapping from the first.
 pub(crate) async fn two_peers_in_room() -> (Peer, Room, Peer, Room) {
     let peer_a = Peer::spawn().await;
-    let ticket = RoomTicket::new(
-        TopicId::from_bytes(rand::random()),
-        vec![peer_a.endpoint.id()],
-    );
-    let room_a = peer_a.join_room(ticket.clone()).await;
-
+    let room_a = peer_a.join(&RoomTicket::generate(), "alice").await;
     let peer_b = Peer::spawn().await;
-    let room_b = peer_b.join_room(ticket).await;
-
+    let room_b = peer_b.join(&room_a.ticket(), "bob").await;
     (peer_a, room_a, peer_b, room_b)
 }
 
-/// Drains events from `room` until `predicate` matches one, or `TIMEOUT`
-/// elapses. Panics with `msg` on timeout or on a stream error.
-///
-/// Returns the matching event so callers can pull data out of it, such as the
-/// `broadcast::Consumer` carried by `BroadcastSubscribed`.
-pub(crate) async fn wait_for_event(
-    room: &mut Room,
-    msg: &str,
-    mut predicate: impl FnMut(&RoomEvent) -> bool,
-) -> RoomEvent {
-    let deadline = tokio::time::Instant::now() + TIMEOUT;
-    while tokio::time::Instant::now() < deadline {
-        match tokio::time::timeout(Duration::from_secs(5), room.recv()).await {
-            Ok(Ok(event)) if predicate(&event) => return event,
-            Ok(Ok(event)) => tracing::info!("skipping event: {event:?}"),
-            Ok(Err(err)) => panic!("{msg}: recv error: {err:#}"),
-            Err(_) => tracing::info!("{msg}: timeout, retrying..."),
+/// Waits until `room`'s state satisfies `predicate`, and returns that state.
+pub(crate) async fn wait_for_state(
+    room: &Room,
+    what: &str,
+    mut predicate: impl FnMut(&RoomState) -> bool,
+) -> RoomState {
+    let mut state = room.state();
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let current = state.get();
+            if predicate(&current) {
+                return current;
+            }
+            state.updated().await.expect("room gone");
         }
-    }
-    panic!("{msg}: timed out after {TIMEOUT:?}");
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for: {what}"))
 }

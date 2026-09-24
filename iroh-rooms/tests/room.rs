@@ -1,62 +1,72 @@
-//! Integration tests for [`Room`] gossip-based peer discovery and MoQ
-//! subscription.
+//! Integration tests for rooms over real QUIC connections: membership, on-demand
+//! subscription, chat, leaving, and the privacy of room broadcasts.
 //!
-//! These exercise the room lifecycle over real QUIC connections: join,
-//! announce, subscribe, receive frames, chat, and peer departure. Unlike the
-//! version these were ported from (`iroh-live/tests/room.rs`, recoverable
-//! from git history), nothing here touches media: broadcasts carry a plain
-//! data track with hand-written frames instead of encoded video, since
-//! `iroh-rooms` no longer depends on `iroh-live-media`.
+//! Nothing here touches media: broadcasts carry a plain data track with
+//! hand-written frames, since `iroh-rooms` does not depend on the media crate.
 
 mod common;
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
-use common::{TIMEOUT, two_peers_in_room, wait_for_event};
-use iroh_rooms::{RoomEvent, chat::ChatPublisher};
-use moq_net::{Timestamp, track};
+use common::{Peer, TIMEOUT, two_peers_in_room, wait_for_state};
+use iroh_moq::Reach;
+use iroh_rooms::{ChatError, Error};
+use moq_net::{Timestamp, broadcast, track};
+use n0_future::task::AbortOnDropHandle;
 use n0_tracing_test::traced_test;
 
-/// Name of the plain data track used in place of a media track.
+/// The name of the plain data track used in place of a media track.
 const DATA_TRACK: &str = "data";
 
-/// Writes an incrementing 4-byte big-endian counter into `track` every 20 ms,
-/// standing in for a media encoder's frame producer.
-///
-/// Runs until a write fails, which happens once the track (and so the
-/// broadcast) is torn down.
-async fn write_counter_frames(mut track: track::Producer) {
-    let mut counter: u32 = 0;
-    loop {
-        if track
-            .write_frame(Timestamp::now(), counter.to_be_bytes().to_vec())
-            .is_err()
-        {
-            return;
+/// A broadcast with a data track that writes an incrementing counter every
+/// 20 ms, standing in for a media encoder.
+fn counter_broadcast() -> (broadcast::Producer, AbortOnDropHandle<()>) {
+    let broadcast = broadcast::Info::new().produce();
+    let mut track = broadcast
+        .create_track(DATA_TRACK, track::Info::default())
+        .expect("data track");
+    let writer = tokio::spawn(async move {
+        for counter in 0u32.. {
+            if track
+                .write_frame(Timestamp::now(), counter.to_be_bytes().to_vec())
+                .is_err()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        counter += 1;
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    });
+    (broadcast, AbortOnDropHandle::new(writer))
 }
 
-/// Two peers join a room and see each other's broadcasts.
+/// Two members see each other, their display names, and what each publishes.
 #[tokio::test]
 #[traced_test]
-async fn two_peers_see_each_other() {
-    let (peer_a, mut room_a, peer_b, mut room_b) = two_peers_in_room().await;
+async fn members_see_each_other_and_their_broadcasts() {
+    let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
+    let (cam_a, _writer_a) = counter_broadcast();
+    let (cam_b, _writer_b) = counter_broadcast();
+    room_a.publish("cam", &cam_a).expect("publish");
+    room_b.publish("cam", &cam_b).expect("publish");
 
-    let _producer_a = room_a.publish("cam").await.expect("room_a: publish failed");
-    let _producer_b = room_b.publish("cam").await.expect("room_b: publish failed");
-
-    // B sees A's broadcast.
-    wait_for_event(&mut room_b, "room_b: BroadcastSubscribed", |ev| {
-        matches!(ev, RoomEvent::BroadcastSubscribed { .. })
+    let (a, b) = (peer_a.id(), peer_b.id());
+    let seen_by_b = wait_for_state(&room_b, "b sees a's cam", |state| {
+        state
+            .peers
+            .get(&a)
+            .is_some_and(|peer| peer.broadcasts.contains("cam"))
     })
     .await;
-
-    // A sees B's broadcast.
-    wait_for_event(&mut room_a, "room_a: BroadcastSubscribed", |ev| {
-        matches!(ev, RoomEvent::BroadcastSubscribed { .. })
+    assert_eq!(seen_by_b.peers[&a].display_name.as_deref(), Some("alice"));
+    assert!(
+        !seen_by_b.peers.contains_key(&b),
+        "a room does not list its own member"
+    );
+    wait_for_state(&room_a, "a sees b's cam", |state| {
+        state
+            .peers
+            .get(&b)
+            .is_some_and(|peer| peer.broadcasts.contains("cam"))
     })
     .await;
 
@@ -64,171 +74,208 @@ async fn two_peers_see_each_other() {
     peer_b.shutdown().await;
 }
 
-/// Reads the single frame of the next group, which is all
-/// [`write_counter_frames`] puts in one.
-async fn next_frame(
-    track: &mut track::Ordered,
-) -> Result<Option<moq_net::frame::Frame>, moq_net::Error> {
-    let Some(mut group) = track.next_group().await? else {
-        return Ok(None);
-    };
-    group.read_frame().await
-}
-
-/// Peer B subscribes to peer A's broadcast and receives a run of frames from
-/// a plain data track, standing in for what would be a decoded media track.
+/// A member subscribes to another's broadcast on demand and reads it.
 #[tokio::test]
 #[traced_test]
-async fn subscribe_and_receive_frames() {
-    let (peer_a, room_a, peer_b, mut room_b) = two_peers_in_room().await;
-
-    let producer_a = room_a.publish("cam").await.expect("room_a: publish failed");
-    let data_track = producer_a
-        .create_track(DATA_TRACK, track::Info::default())
-        .expect("failed to create data track");
-    let writer = tokio::spawn(write_counter_frames(data_track));
-
-    let event = wait_for_event(&mut room_b, "room_b: BroadcastSubscribed", |ev| {
-        matches!(ev, RoomEvent::BroadcastSubscribed { .. })
+async fn a_member_subscribes_on_demand() {
+    let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
+    let (cam, _writer) = counter_broadcast();
+    room_a.publish("cam", &cam).expect("publish");
+    let a = peer_a.id();
+    wait_for_state(&room_b, "b sees a's cam", |state| {
+        state
+            .peers
+            .get(&a)
+            .is_some_and(|peer| peer.broadcasts.contains("cam"))
     })
     .await;
-    let RoomEvent::BroadcastSubscribed { broadcast, .. } = event else {
-        unreachable!("predicate only matches BroadcastSubscribed");
-    };
 
-    // Sequence order is the reader's choice: the wire delivers the newest group
-    // first, and this test's claim is about contiguity.
-    let mut subscriber = broadcast
+    let subscription = tokio::time::timeout(TIMEOUT, room_b.subscribe(a, "cam"))
+        .await
+        .expect("timed out subscribing")
+        .expect("subscribe");
+    let mut track = subscription
+        .as_moq()
         .track(DATA_TRACK)
-        .expect("data track missing on subscribed broadcast")
+        .expect("data track")
         .subscribe(None)
         .await
-        .expect("failed to subscribe to data track")
+        .expect("subscribe to the track")
         .ordered();
-
-    // Ordered delivery means the run of values received is contiguous, even
-    // if it does not start at 0 (the writer may be a few frames ahead by the
-    // time the subscription completes). One frame per group, so the next
-    // group's frame is the next value.
     let mut previous = None;
-    for i in 0..5 {
-        let frame = tokio::time::timeout(TIMEOUT, next_frame(&mut subscriber))
+    for index in 0..5 {
+        let mut group = tokio::time::timeout(TIMEOUT, track.next_group())
             .await
-            .unwrap_or_else(|_| panic!("timed out on frame {i}"))
-            .unwrap_or_else(|err| panic!("data track read failed on frame {i}: {err:#}"))
-            .unwrap_or_else(|| panic!("data track ended early at frame {i}"));
-        let bytes: [u8; 4] = frame.payload[..].try_into().unwrap_or_else(|_| {
-            panic!(
-                "frame {i}: expected 4-byte payload, got {:?}",
-                frame.payload
-            )
-        });
-        let value = u32::from_be_bytes(bytes);
+            .unwrap_or_else(|_| panic!("timed out on frame {index}"))
+            .expect("track failed")
+            .expect("track ended");
+        let frame = group.read_frame().await.expect("group").expect("a frame");
+        let value = u32::from_be_bytes(frame.payload[..].try_into().expect("4 bytes"));
         if let Some(previous) = previous {
-            assert_eq!(
-                value,
-                previous + 1,
-                "frame {i}: expected a contiguous counter"
-            );
+            assert_eq!(value, previous + 1, "frame {index}: a contiguous counter");
         }
         previous = Some(value);
     }
 
-    writer.abort();
     peer_a.shutdown().await;
     peer_b.shutdown().await;
 }
 
-/// Chat messages flow between two peers through the room.
+/// Chat reaches the other member with its sender and send time, and needs no
+/// broadcast at all.
 #[tokio::test]
 #[traced_test]
-async fn chat_messages_flow() {
-    let (peer_a, room_a, peer_b, mut room_b) = two_peers_in_room().await;
+async fn chat_reaches_the_other_member() {
+    let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
+    let a = peer_a.id();
+    let mut chat_b = room_b.chat();
+    wait_for_state(&room_b, "b sees a", |state| state.peers.contains_key(&a)).await;
 
-    let mut producer_a = room_a.publish("cam").await.expect("room_a: publish failed");
-    let chat_publisher = ChatPublisher::create(&mut producer_a).expect("create_chat failed");
-    room_a
-        .set_chat_publisher(chat_publisher)
+    // The reader subscribes to A's chat once it sees A; a message sent before
+    // that is not replayed, so keep sending until one lands.
+    let before = SystemTime::now() - Duration::from_secs(1);
+    let message = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            room_a.send_chat("hello from alice").await.expect("send");
+            if let Ok(Ok(message)) =
+                tokio::time::timeout(Duration::from_millis(500), chat_b.recv()).await
+            {
+                return message;
+            }
+        }
+    })
+    .await
+    .expect("no chat arrived");
+    assert_eq!(message.from, a);
+    assert_eq!(message.text, "hello from alice");
+    assert!(message.sent_at >= before, "{:?}", message.sent_at);
+
+    peer_a.shutdown().await;
+    peer_b.shutdown().await;
+}
+
+/// Ending a broadcast changes what a member publishes, not whether it is in the
+/// room.
+#[tokio::test]
+#[traced_test]
+async fn ending_a_broadcast_keeps_the_member() {
+    let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
+    let (cam, writer) = counter_broadcast();
+    room_a.publish("cam", &cam).expect("publish");
+    let a = peer_a.id();
+    wait_for_state(&room_b, "b sees a's cam", |state| {
+        state
+            .peers
+            .get(&a)
+            .is_some_and(|peer| peer.broadcasts.contains("cam"))
+    })
+    .await;
+
+    drop(writer);
+    cam.finish();
+    let state = wait_for_state(&room_b, "a's cam is gone", |state| {
+        state
+            .peers
+            .get(&a)
+            .is_some_and(|peer| peer.broadcasts.is_empty())
+    })
+    .await;
+    assert!(state.peers.contains_key(&a), "a is still a member");
+
+    // And the name is free to publish again.
+    let (again, _writer) = counter_broadcast();
+    room_a.publish("cam", &again).expect("publish again");
+
+    peer_a.shutdown().await;
+    peer_b.shutdown().await;
+}
+
+/// A member that leaves is gone at once for the others, not after its lease
+/// runs out, and its own handles stop working.
+#[tokio::test]
+#[traced_test]
+async fn leaving_is_seen_at_once() {
+    let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
+    let a = peer_a.id();
+    wait_for_state(&room_b, "b sees a", |state| state.peers.contains_key(&a)).await;
+
+    let mut chat_a = room_a.chat();
+    room_a.leave().await;
+    wait_for_state(&room_b, "a is gone", |state| !state.peers.contains_key(&a)).await;
+
+    assert_eq!(chat_a.recv().await, Err(ChatError::Closed));
+    let (cam, _writer) = counter_broadcast();
+    let err = room_a
+        .publish("cam", &cam)
+        .expect_err("publish after leaving");
+    assert!(matches!(err, Error::Left { .. }), "{err:#}");
+    // Idempotent.
+    room_a.leave().await;
+
+    peer_a.shutdown().await;
+    peer_b.shutdown().await;
+}
+
+/// A room broadcast is offered to members only: a peer outside the room that
+/// connects to a member does not get it, while the member's public broadcast
+/// is there for it.
+#[tokio::test]
+#[traced_test]
+async fn room_broadcasts_are_private() {
+    let (peer_a, room_a, peer_b, room_b) = two_peers_in_room().await;
+    let (cam, _writer) = counter_broadcast();
+    let publication = room_a.publish("cam", &cam).expect("publish");
+    let (public, _public_writer) = counter_broadcast();
+    let public = peer_a
+        .moq
+        .publish("public", &public, iroh_moq::Audience::Everyone)
+        .expect("publish");
+    let a = peer_a.id();
+    wait_for_state(&room_b, "b sees a's cam", |state| {
+        state
+            .peers
+            .get(&a)
+            .is_some_and(|peer| peer.broadcasts.contains("cam"))
+    })
+    .await;
+    room_b
+        .subscribe(a, "cam")
         .await
-        .expect("set_chat_publisher failed");
+        .expect("a member subscribes");
 
-    // Wait for B to subscribe to A's broadcast before sending, so the chat
-    // subscriber task the room spawns on `BroadcastSubscribed` is in place.
-    wait_for_event(&mut room_b, "room_b: BroadcastSubscribed", |ev| {
-        matches!(ev, RoomEvent::BroadcastSubscribed { .. })
-    })
+    let outsider = Peer::spawn().await;
+    tokio::time::timeout(
+        TIMEOUT,
+        outsider.moq.subscribe(public.path(), Reach::Direct),
+    )
+    .await
+    .expect("timed out")
+    .expect("the public broadcast is there for anyone");
+    let private = tokio::time::timeout(
+        Duration::from_secs(2),
+        outsider.moq.subscribe(publication.path(), Reach::Direct),
+    )
     .await;
+    assert!(
+        private.is_err(),
+        "a peer outside the room resolved a room broadcast"
+    );
 
-    room_a
-        .send_chat("hello from A")
-        .await
-        .expect("send_chat failed");
-
-    wait_for_event(&mut room_b, "room_b: ChatReceived", |ev| {
-        matches!(ev, RoomEvent::ChatReceived { message, .. } if message.text == "hello from A")
-    })
-    .await;
-
+    outsider.shutdown().await;
     peer_a.shutdown().await;
     peer_b.shutdown().await;
 }
 
-/// Peer disconnect emits `PeerLeft` on the other side.
+/// Names starting with a dot are the room's own.
 #[tokio::test]
 #[traced_test]
-async fn peer_disconnect_detected() {
-    let (peer_a, room_a, peer_b, mut room_b) = two_peers_in_room().await;
-    let peer_a_id = peer_a.endpoint.id();
-
-    let producer_a = room_a.publish("cam").await.expect("room_a: publish failed");
-
-    wait_for_event(&mut room_b, "room_b: BroadcastSubscribed", |ev| {
-        matches!(ev, RoomEvent::BroadcastSubscribed { .. })
-    })
-    .await;
-
-    // Tear down peer A entirely: drop its broadcast and room actor, then
-    // close every session. B's subscribed `broadcast::Consumer` should
-    // observe the broadcast closing once the session that fed it ends.
-    drop(producer_a);
-    drop(room_a);
-    peer_a.shutdown().await;
-
-    wait_for_event(
-        &mut room_b,
-        "room_b: PeerLeft",
-        |ev| matches!(ev, RoomEvent::PeerLeft { remote } if *remote == peer_a_id),
-    )
-    .await;
-
-    peer_b.shutdown().await;
-}
-
-/// `PeerJoined` fires with the correct remote ID when a new peer appears.
-#[tokio::test]
-#[traced_test]
-async fn peer_joined_fires() {
-    let (peer_a, mut room_a, peer_b, mut room_b) = two_peers_in_room().await;
-    let peer_a_id = peer_a.endpoint.id();
-    let peer_b_id = peer_b.endpoint.id();
-
-    let _producer_a = room_a.publish("cam").await.expect("room_a: publish failed");
-    let _producer_b = room_b.publish("cam").await.expect("room_b: publish failed");
-
-    wait_for_event(
-        &mut room_b,
-        "room_b: PeerJoined",
-        |ev| matches!(ev, RoomEvent::PeerJoined { remote, .. } if *remote == peer_a_id),
-    )
-    .await;
-
-    wait_for_event(
-        &mut room_a,
-        "room_a: PeerJoined",
-        |ev| matches!(ev, RoomEvent::PeerJoined { remote, .. } if *remote == peer_b_id),
-    )
-    .await;
-
-    peer_a.shutdown().await;
-    peer_b.shutdown().await;
+async fn reserved_names_are_refused() {
+    let peer = Peer::spawn().await;
+    let room = peer.join(&iroh_rooms::RoomTicket::generate(), "solo").await;
+    let (cam, _writer) = counter_broadcast();
+    for name in ["", ".chat", ".x"] {
+        let err = room.publish(name, &cam).expect_err("a reserved name");
+        assert!(matches!(err, Error::InvalidName { .. }), "{err:#}");
+    }
+    peer.shutdown().await;
 }

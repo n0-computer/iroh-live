@@ -85,7 +85,7 @@ a simulcast ladder. More in [docs/guide/index.md](docs/guide/index.md).
 |---|---|
 | [`iroh-live`](iroh-live) | `Live`, `Call`, `Subscription`, and tickets |
 | [`iroh-moq`](iroh-moq) | MoQ transport over iroh: the node origin, sessions, and ALPN negotiation |
-| [`iroh-rooms`](iroh-rooms) | Gossip rooms. Media-free, and being redesigned onto moq's announce bus |
+| [`iroh-rooms`](iroh-rooms) | Rooms: gossip membership, members-only broadcasts, and room chat. Media-free |
 | [`iroh-live-media`](iroh-live-media) | Publish and subscribe plumbing over moq-video and moq-audio. No iroh dependency |
 | [`iroh-live-egui`](iroh-live-egui) | An egui widget over the texture `moq_video::render` returns, plus the debug overlay |
 | [`iroh-live-media-android`](iroh-live-media-android) | The Camera2 push bridge and the EGL renderer for Android |

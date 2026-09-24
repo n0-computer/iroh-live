@@ -1,48 +1,64 @@
 //! Multi-party rooms over iroh gossip and MoQ.
 //!
-//! A room is a gossip topic plus the MoQ subscriptions that follow from it.
-//! Peers publish the *names* of their broadcasts into a replicated key-value
-//! map on the topic, and [`Room`] turns every name it sees into a MoQ
-//! subscription against that peer, handing the resulting
-//! [`broadcast::Consumer`](moq_net::broadcast::Consumer) back as a
-//! [`RoomEvent`]. Nothing here knows what the broadcasts carry.
+//! A room is a gossip topic whose members announce themselves and the names of
+//! the broadcasts they publish into it. [`Rooms`] owns the gossip instance;
+//! [`Rooms::join`] returns a [`Room`], whose membership is a watched
+//! [`RoomState`], whose broadcasts are subscribed on demand with
+//! [`Room::subscribe`], and whose chat is its own, with a [`ChatReceiver`] per
+//! reader. Nothing here knows what the broadcasts carry.
 //!
-//! [`Room::new`] takes the three pieces it needs rather than an application
-//! type: an [`Endpoint`](iroh::Endpoint) for this peer's identity, a
-//! [`Moq`](iroh_moq::Moq) for the transport, and a
-//! [`Gossip`](iroh_gossip::Gossip) for discovery.
+//! A member is in the room while its gossip lease holds, renewed every thirty
+//! seconds and dropped two minutes after the last renewal, or at once when it
+//! leaves. Ending a broadcast changes what a member publishes, not whether it is
+//! a member.
+//!
+//! Room broadcasts are private: [`Room::publish`] places a broadcast at
+//! `rooms/<topic>/<member>/<name>` with the room's membership as its audience,
+//! so it is offered to members and to nobody else who connects.
 //!
 //! ```no_run
-//! # async fn example(
-//! #     endpoint: &iroh::Endpoint,
-//! #     moq: &iroh_moq::Moq,
-//! #     gossip: &iroh_gossip::Gossip,
-//! # ) -> Result<(), iroh_rooms::Error> {
-//! use iroh_rooms::{Room, RoomEvent, RoomTicket};
+//! # async fn example(moq: iroh_moq::Moq, broadcast: moq_net::broadcast::Producer)
+//! # -> Result<(), Box<dyn std::error::Error>> {
+//! use iroh_rooms::{RoomConfig, RoomTicket, Rooms};
 //!
-//! let mut room = Room::new(endpoint, moq, gossip, RoomTicket::generate()).await?;
-//! let mut broadcast = room.publish("cam").await?;
+//! let rooms = Rooms::new(&moq);
+//! // Mount `rooms.protocol_handler()` under `iroh_rooms::ALPN` on the router.
+//! let room = rooms
+//!     .join(
+//!         &RoomTicket::generate(),
+//!         RoomConfig::default().with_display_name("ada"),
+//!     )
+//!     .await?;
+//! room.publish("cam", &broadcast)?;
 //!
-//! while let Ok(event) = room.recv().await {
-//!     if let RoomEvent::BroadcastSubscribed {
-//!         remote, broadcast, ..
-//!     } = event
-//!     {
-//!         println!("{remote} is publishing, and we can now read its tracks");
+//! let (mut state, mut chat) = (room.state(), room.chat());
+//! # use n0_watcher::Watcher;
+//! let members = state.get();
+//! for (peer, member) in &members.peers {
+//!     for name in &member.broadcasts {
+//!         let subscription = room.subscribe(*peer, name).await?;
+//!         # drop(subscription);
 //!     }
 //! }
+//! let message = chat.recv().await?;
+//! println!("{}: {}", message.from.fmt_short(), message.text);
 //! # Ok(())
 //! # }
 //! ```
 //!
-//! The one thing the room reads for itself is chat, which lives on a
-//! well-known track name. See the [`chat`] module.
+//! # Wire compatibility
+//!
+//! This release writes an announcement the previous one can read, answers the
+//! previous release's paths, and writes chat in both formats; it reads both
+//! announcement layouts and both chat formats. The previous formats go in the
+//! next release.
 
-pub mod chat;
+mod chat;
 mod room;
 mod ticket;
 
 pub use self::{
-    room::{Error, Room, RoomEvent, RoomEvents, RoomHandle},
+    chat::{ChatError, ChatMessage, ChatReceiver},
+    room::{ALPN, Error, Room, RoomConfig, RoomPeer, RoomState, Rooms},
     ticket::RoomTicket,
 };

@@ -96,27 +96,29 @@ pub async fn setup_live_with_key(secret_key: SecretKey, serve: bool) -> Result<L
     Ok(bind(secret_key, serve).await?.spawn())
 }
 
-/// Binds an endpoint that also runs gossip, and starts the MoQ transport on it.
+/// Binds an endpoint that also runs rooms, and starts the MoQ transport on it.
 ///
-/// Rooms discover each other over gossip, so `irl room` needs it where nothing
-/// else here does. Always serves: a participant nobody can dial has nothing to
+/// The room service is created on the node before the router, so the router
+/// mounts it. Always serves: a participant nobody can dial has nothing to
 /// contribute.
 ///
 /// # Errors
 ///
 /// Fails if the endpoint cannot bind.
 #[cfg(feature = "render")]
-pub async fn setup_live_with_gossip() -> Result<(Live, iroh_gossip::Gossip)> {
+pub async fn setup_live_with_rooms() -> Result<(Live, iroh_rooms::Rooms)> {
     let endpoint = EndpointOptions::default()
         .with_secret_key(secret_key_from_env()?)
         .bind()
         .await?;
-    let gossip = iroh_gossip::Gossip::builder().spawn(endpoint.clone());
+    let moq = iroh_live::Moq::new(endpoint.clone(), iroh_live::MoqConfig::default());
+    let rooms = iroh_rooms::Rooms::new(&moq);
     let live = Live::builder(endpoint)
+        .with_moq(moq)
         .with_router()
-        .accept(iroh_gossip::ALPN, gossip.clone())
+        .accept(iroh_rooms::ALPN, rooms.protocol_handler())
         .spawn();
-    Ok((live, gossip))
+    Ok((live, rooms))
 }
 
 /// Binds the endpoint every `setup_live` variant starts from.

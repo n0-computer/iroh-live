@@ -10,7 +10,7 @@ the layer between them, plus the pieces neither side has a home for.
 | Crate | What it is |
 |---|---|
 | `iroh-moq` | MoQ transport over iroh: the route table, publications and audiences, sessions, relay links, tickets and endpoint setup |
-| `iroh-rooms` | Gossip rooms. Media-free: it moves broadcast names and hands back consumers |
+| `iroh-rooms` | Rooms: gossip membership as a watched state, members-only broadcasts subscribed on demand, and room chat. Media-free |
 | `iroh-live` | `Live`, the facade that joins media and transport, and the re-exports |
 | `iroh-live-media` | Publish and subscribe plumbing over moq-video and moq-audio |
 | `iroh-live-egui` | An egui widget over the texture `moq_video::render` returns, and the debug overlay |
