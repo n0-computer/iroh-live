@@ -659,9 +659,10 @@ async fn pull_retires_an_unwatched_session() {
     let (pub_ep, publisher, broadcast, ticket) = start_publisher("retired-stream").await;
     let local_name = ticket.to_string();
 
-    let pull_state =
-        iroh_live_relay::pull::PullState::new(pull_endpoint().await, relay.cluster.clone())
-            .with_linger(PULL_LINGER);
+    let pull_ep = pull_endpoint().await;
+    let pull_id = pull_ep.id();
+    let pull_state = iroh_live_relay::pull::PullState::new(pull_ep, relay.cluster.clone())
+        .with_linger(PULL_LINGER);
 
     let guard = tokio::time::timeout(TIMEOUT, pull_state.pull(&local_name, &ticket))
         .await
@@ -678,8 +679,23 @@ async fn pull_retires_an_unwatched_session() {
     drop(guard);
     assert!(
         wait_for_broadcast(&relay.cluster, &local_name, false).await,
-        "an unwatched pull should be retired, closing the connection to the publisher"
+        "an unwatched pull should be retired"
     );
+    // And the relay lets go of the publisher: its session closes, which the
+    // publisher sees.
+    let mut sessions = publisher.moq().sessions();
+    tokio::time::timeout(TIMEOUT, async {
+        use n0_watcher::Watcher;
+        while sessions
+            .get()
+            .iter()
+            .any(|session| session.remote_id() == pull_id)
+        {
+            sessions.updated().await.expect("publisher gone");
+        }
+    })
+    .await
+    .expect("the relay kept its session with the publisher of a retired pull");
 
     // The retired entry must not be handed out again: the same ticket dials a
     // new session rather than joining one that is already closed.

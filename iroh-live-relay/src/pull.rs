@@ -16,8 +16,12 @@
 //! [`Demand`](moq_net::broadcast::Demand) reports whether anything is reading
 //! it, which accounts for a subscriber that reached the broadcast over some
 //! other session and holds no guard. Once both have been quiet for
-//! [`PullState::with_linger`]'s window the session is dropped, closing the
-//! connection, and the ticket's entry is retired so the next pull dials afresh.
+//! [`PullState::with_linger`]'s window the mirror is retracted and the ticket's
+//! entry is retired, so the next pull dials afresh. The session with the
+//! publisher belongs to the relay's own node, which shares it between every
+//! pull of that publisher; once the last of them retires, the session is
+//! closed, so the relay holds no connection to a publisher nobody watches and
+//! the publisher stops offering the relay its broadcasts.
 //!
 //! A transport-level idle timer cannot stand in for either signal. Every counter
 //! [`moq_net::Session::stats`] reports is a QUIC counter, and iroh sends
@@ -31,9 +35,11 @@ use std::{
     time::Duration,
 };
 
+use iroh::EndpointId;
 use iroh_moq::{BroadcastTicket, Moq, MoqConfig, Reach, Subscription};
 use moq_net::{broadcast, origin};
 use moq_relay::cluster::Cluster;
+use n0_watcher::Watcher;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
@@ -70,6 +76,11 @@ pub struct PullState {
     /// claim is taken and a pull is retired under this single lock, so an entry
     /// found here is always a session that is still open.
     pulls: Arc<Mutex<HashMap<String, Arc<Pull>>>>,
+    /// How many pulls, live or dialing, each publisher has.
+    ///
+    /// The node shares one session per publisher between them, and the last
+    /// one to go closes it.
+    publishers: Arc<Mutex<HashMap<EndpointId, usize>>>,
 }
 
 impl fmt::Debug for PullState {
@@ -142,6 +153,7 @@ impl PullState {
             cluster,
             linger: DEFAULT_LINGER,
             pulls: Arc::new(Mutex::new(HashMap::new())),
+            publishers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -212,7 +224,11 @@ impl PullState {
             let name = local_name.clone();
             let pull = Arc::clone(&guard.pull);
             tokio::spawn(async move {
-                let outcome = match state.do_connect(&ticket, &name, &pull).await {
+                // Counted for the whole of the pull, dial included, so a
+                // retiring pull cannot close the session this one is about to
+                // use.
+                let publisher = PublisherClaim::new(&state, ticket.peer());
+                let outcome = match state.do_connect(&ticket, &name, &pull, publisher).await {
                     Ok(()) => Dial::Connected,
                     Err(err) => {
                         // Retire the failed entry so the next pull for this
@@ -255,6 +271,7 @@ impl PullState {
         ticket: &BroadcastTicket,
         local_name: &str,
         pull: &Arc<Pull>,
+        publisher: PublisherClaim,
     ) -> anyhow::Result<()> {
         info!(
             remote = %ticket.peer().fmt_short(),
@@ -285,6 +302,7 @@ impl PullState {
             Arc::clone(pull),
             subscription,
             mirror,
+            publisher,
         ));
         Ok(())
     }
@@ -296,6 +314,7 @@ impl PullState {
         pull: Arc<Pull>,
         subscription: Subscription,
         mirror: origin::Dynamic,
+        publisher: PublisherClaim,
     ) {
         let serve = async {
             // Each request is answered with the broadcast the subscription
@@ -318,10 +337,11 @@ impl PullState {
                 self.retire(&local_name, &pull);
             }
         }
-        // Dropping the route retracts the mirror from the cluster. The session
-        // with the publisher stays with the node, which shares it with any
-        // other pull of the same publisher.
+        // Dropping the route retracts the mirror from the cluster, and the
+        // claim closes the session with the publisher if no other pull of it
+        // remains.
         drop(mirror);
+        drop(publisher);
     }
 
     /// Blocks until the pull has nothing left to serve, then retires its entry.
@@ -402,6 +422,55 @@ impl PullState {
             .is_some_and(|entry| Arc::ptr_eq(entry, pull))
         {
             pulls.remove(local_name);
+        }
+    }
+}
+
+/// One pull's share in the session with a publisher.
+///
+/// Dropping the last share of a publisher closes every session the relay's
+/// node has with it.
+struct PublisherClaim {
+    publisher: EndpointId,
+    publishers: Arc<Mutex<HashMap<EndpointId, usize>>>,
+    moq: Moq,
+}
+
+impl PublisherClaim {
+    fn new(state: &PullState, publisher: EndpointId) -> Self {
+        *state
+            .publishers
+            .lock()
+            .expect("lock")
+            .entry(publisher)
+            .or_default() += 1;
+        Self {
+            publisher,
+            publishers: Arc::clone(&state.publishers),
+            moq: state.moq.clone(),
+        }
+    }
+}
+
+impl Drop for PublisherClaim {
+    fn drop(&mut self) {
+        // Decided and done under the lock a new claim takes, so a pull that
+        // starts now either counts before this and keeps the session, or
+        // counts after the close and dials anew.
+        let mut publishers = self.publishers.lock().expect("lock");
+        let Some(count) = publishers.get_mut(&self.publisher) else {
+            return;
+        };
+        *count -= 1;
+        if *count > 0 {
+            return;
+        }
+        publishers.remove(&self.publisher);
+        for session in self.moq.sessions().get() {
+            if session.remote_id() == self.publisher {
+                info!(remote = %self.publisher.fmt_short(), "last pull of the publisher retired, closing its session");
+                session.close("no pull left");
+            }
         }
     }
 }

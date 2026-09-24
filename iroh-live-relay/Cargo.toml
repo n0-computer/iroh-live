@@ -13,6 +13,8 @@ moq-tokio = { workspace = true, default-features = false, features = ["noq", "ir
 moq-net = { workspace = true }
 iroh = { workspace = true }
 iroh-moq = { workspace = true }
+# Watching the pull node's sessions, to close one whose last pull retired.
+n0-watcher = "1"
 web-transport-iroh = { workspace = true }
 axum = { version = "0.8", features = ["tokio"] }
 tokio = { version = "1", features = ["full"] }

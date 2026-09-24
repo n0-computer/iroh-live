@@ -71,8 +71,10 @@ irl publish --relay <RELAY_ENDPOINT_ID>
 
 The publisher stays attached to the relay and redials it if the session drops.
 Its broadcast appears there at `live/<publisher endpoint id>/<name>`, the path
-`irl publish` prints, and for one release also at the bare name. The relay's
-endpoint id is on its startup line.
+`irl publish` prints. The bare name the previous release published under is
+answered on direct sessions only, never offered to a relay, where the names of
+every publisher attached to it would collide; a page that watched by bare name
+now watches the printed path. The relay's endpoint id is on its startup line.
 
 The relay also serves a publish page, which captures the browser's camera and
 microphone and publishes into the relay. Native clients subscribe to that
