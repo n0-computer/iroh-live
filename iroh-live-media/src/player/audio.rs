@@ -12,7 +12,7 @@ use crate::{
     AudioOutput, RemoteBroadcast, SlotState,
     error::Error,
     output::{OutputControl, SinkInput},
-    stats::AudioPlaybackStats,
+    stats::{AudioPlaybackStats, FrameTiming, MediaKind},
 };
 
 /// How long after audio ended or failed the catalog is looked at again,
@@ -219,12 +219,19 @@ impl Job {
             });
         });
         while let Some(frame) = self.decoder.read().await.map_err(Error::decoder)? {
+            let decoded = std::time::Instant::now();
             // The video clock steers off how much audio is still buffered
             // ahead of the speaker, which is the only latency either side can
             // actually measure.
             let buffered = self.sink.buffered();
             self.latency.set(buffered);
             self.sink.write(&frame.data)?;
+            self.stats.audio_timeline.push(FrameTiming {
+                kind: MediaKind::Audio,
+                pts: Duration::from_micros(frame.timestamp.as_micros() as u64),
+                decoded,
+                presented: std::time::Instant::now() + buffered,
+            });
             let peak = self.control.peak();
             self.stats.audio.update(|audio| {
                 if let Some(audio) = audio.as_mut() {

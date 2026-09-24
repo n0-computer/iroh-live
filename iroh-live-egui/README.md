@@ -42,8 +42,9 @@ ask for it. Elsewhere it returns the default.
 ## Debug overlay
 
 `overlay::DebugOverlay` draws a translucent bar along the bottom of a video tile
-with one clickable section per `StatCategory`: `Net`, `Capture`, `Render`, and
-`Audio`. `show_playback` draws a `Player`'s `PlaybackStats` and `PlayerStatus`,
+with one clickable section per `StatCategory`: `Net`, `Capture`, `Render`,
+`Audio`, and `Time`. `show_playback` draws a `Player`'s `PlaybackStats`,
+`PlayerStatus` and frame timeline,
 and `show_publish` a `LocalBroadcast`'s `PublishStats` and `PublishStatus`.
 Clicking a section opens a detail panel with values and sparklines, whose
 history the overlay keeps itself, bounded to the last few seconds.

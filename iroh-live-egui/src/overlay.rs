@@ -1,10 +1,12 @@
 //! Translucent stat bars painted over video.
 //!
 //! [`DebugOverlay`] draws a bottom bar of collapsible sections (NET, CAPTURE,
-//! RENDER, AUDIO) from the snapshots a [`Player`](iroh_live_media::Player) and
-//! a [`LocalBroadcast`](iroh_live_media::LocalBroadcast) hand out. Those
+//! RENDER, AUDIO, TIME) from the snapshots a
+//! [`Player`](iroh_live_media::Player) and a
+//! [`LocalBroadcast`](iroh_live_media::LocalBroadcast) hand out. Those
 //! snapshots carry only current values, so the overlay keeps the short history
-//! behind its sparklines itself. [`overlay_bar`] and [`fit_to_aspect`] are the
+//! behind its sparklines itself; the TIME panel draws the player's own
+//! [`timeline`](iroh_live_media::Player::timeline) of presented frames. [`overlay_bar`] and [`fit_to_aspect`] are the
 //! building blocks for callers that draw their own overlays.
 
 use std::{
@@ -14,8 +16,8 @@ use std::{
 };
 
 use iroh_live_media::{
-    NetworkSample, PlaybackStats, PlayerStatus, PublishStats, PublishStatus, RenditionMode,
-    RenditionState, SlotState,
+    FrameTiming, MediaKind, NetworkSample, PlaybackStats, PlayerStatus, PublishStats,
+    PublishStatus, RenditionMode, RenditionState, SlotState,
 };
 
 /// Height of a single overlay bar (text + padding).
@@ -84,6 +86,13 @@ pub enum StatCategory {
     /// because it is the jitter allowance plus the audio queued at the
     /// speaker, so it moves with the audio buffer shown next to it.
     Audio,
+    /// The player's timeline: how long each picture was held between its
+    /// decoder and the screen, the cadence of pictures and audio, their sync,
+    /// the audio buffer and the round trip, over the last ten seconds.
+    ///
+    /// Scrolling over the panel pauses it and moves back in time; a double
+    /// click returns to the live edge.
+    Time,
 }
 
 impl StatCategory {
@@ -94,6 +103,7 @@ impl StatCategory {
             Self::Capture => "CAPTURE",
             Self::Render => "RENDER",
             Self::Audio => "AUDIO",
+            Self::Time => "TIME",
         }
     }
 }
@@ -115,6 +125,10 @@ pub struct DebugOverlay {
     /// What the transport says about the link, beyond the network signals:
     /// the path's kind and address, say. The first line joins the summary.
     link: Vec<String>,
+    /// How far back from now the timeline shows, in seconds, while paused.
+    timeline_scroll: f32,
+    /// Whether the timeline follows the live edge.
+    timeline_live: bool,
     /// Salts every interactive id this overlay claims, so a grid of tiles does
     /// not share them. Two overlays under one id are one widget as far as egui
     /// is concerned, and hovering a section on one tile would light the same
@@ -133,6 +147,8 @@ impl DebugOverlay {
             visible: true,
             history: History::default(),
             link: Vec::new(),
+            timeline_scroll: 0.0,
+            timeline_live: true,
             salt: egui::Id::new((
                 "iroh-live-egui overlay",
                 OVERLAY_SALT.fetch_add(1, Ordering::Relaxed),
@@ -160,14 +176,18 @@ impl DebugOverlay {
 
     /// Draws the overlay for a player at the bottom of `video_rect`.
     ///
-    /// Uses the NET, RENDER and AUDIO categories; CAPTURE has nothing to show
-    /// for a player and is left out of the bar.
+    /// Uses the NET, RENDER, AUDIO and TIME categories; CAPTURE has nothing to
+    /// show for a player and is left out of the bar. `timeline` is what
+    /// [`Player::timeline`](iroh_live_media::Player::timeline) returns, read
+    /// only when the TIME panel is open, so a caller can pass an empty slice
+    /// otherwise.
     pub fn show_playback(
         &mut self,
         ui: &mut egui::Ui,
         video_rect: egui::Rect,
         stats: &PlaybackStats,
         status: &PlayerStatus,
+        timeline: &[FrameTiming],
     ) {
         if !self.visible {
             return;
@@ -179,10 +199,17 @@ impl DebugOverlay {
                 StatCategory::Net => Some(net_playback(stats.network.as_ref(), &self.link)),
                 StatCategory::Render => Some(render_playback(stats, status)),
                 StatCategory::Audio => Some(audio_playback(stats, status)),
+                StatCategory::Time => Some(time_playback(timeline)),
                 StatCategory::Capture => None,
             })
             .collect();
-        self.draw(ui, video_rect, &sections);
+        self.draw(ui, video_rect, &sections, timeline);
+    }
+
+    /// Reports whether the TIME panel is open, so a caller knows whether to
+    /// read the player's timeline for [`show_playback`](Self::show_playback).
+    pub fn timeline_open(&self) -> bool {
+        self.visible && self.is_expanded(StatCategory::Time)
     }
 
     /// Draws the overlay for a local broadcast at the bottom of `video_rect`.
@@ -206,10 +233,10 @@ impl DebugOverlay {
             .filter_map(|&(cat, _)| match cat {
                 StatCategory::Capture => Some(capture_publish(stats, status)),
                 StatCategory::Net => Some(net_publish(stats)),
-                StatCategory::Render | StatCategory::Audio => None,
+                StatCategory::Render | StatCategory::Audio | StatCategory::Time => None,
             })
             .collect();
-        self.draw(ui, video_rect, &sections);
+        self.draw(ui, video_rect, &sections, &[]);
     }
 
     fn is_expanded(&self, cat: StatCategory) -> bool {
@@ -219,7 +246,13 @@ impl DebugOverlay {
     }
 
     /// Records the history, then paints the open panels and the bottom bar.
-    fn draw(&mut self, ui: &mut egui::Ui, video_rect: egui::Rect, sections: &[Section]) {
+    fn draw(
+        &mut self,
+        ui: &mut egui::Ui,
+        video_rect: egui::Rect,
+        sections: &[Section],
+        timeline: &[FrameTiming],
+    ) {
         self.history.record(sections, Instant::now());
         let font = egui::FontId::monospace(11.0);
 
@@ -237,6 +270,15 @@ impl DebugOverlay {
                 egui::vec2(video_rect.width(), height),
             );
             self.paint_panel(ui.painter(), rect, &section.lines, &font);
+            // The timeline sits above the TIME section's own figures.
+            if section.category == StatCategory::Time {
+                y_cursor -= TIMELINE_H;
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(video_rect.min.x, y_cursor),
+                    egui::vec2(video_rect.width(), TIMELINE_H),
+                );
+                self.paint_timeline(ui, rect, timeline);
+            }
         }
 
         let bar_rect = egui::Rect::from_min_size(
@@ -405,6 +447,8 @@ struct History {
 #[derive(Debug, Default)]
 struct Series {
     values: VecDeque<f64>,
+    /// When each value was recorded, for the timeline's strips.
+    times: VecDeque<Instant>,
     last_tick: u64,
 }
 
@@ -429,8 +473,10 @@ impl History {
             let series = self.series.entry(key.clone()).or_default();
             if series.values.len() >= HISTORY_LEN {
                 series.values.pop_front();
+                series.times.pop_front();
             }
             series.values.push_back(*value);
+            series.times.push_back(now);
             series.last_tick = tick;
         }
         self.series
@@ -440,6 +486,22 @@ impl History {
     /// Returns the recorded points of `key`, oldest first.
     fn get(&self, key: &str) -> Option<&VecDeque<f64>> {
         self.series.get(key).map(|series| &series.values)
+    }
+
+    /// Returns the recorded points of `key` with when each was recorded,
+    /// oldest first.
+    fn timed(&self, key: &str) -> Vec<(Instant, f64)> {
+        self.series
+            .get(key)
+            .map(|series| {
+                series
+                    .times
+                    .iter()
+                    .copied()
+                    .zip(series.values.iter().copied())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -833,4 +895,394 @@ fn net_publish(stats: &PublishStats) -> Section {
         Line::info(format!("video sent: {}", format_bytes(bytes))),
     ];
     Section::new(StatCategory::Net, vec![format!("out:{total}")], lines)
+}
+
+/// Returns `later - earlier` in milliseconds, negative when `later` is the
+/// earlier of the two.
+fn signed_ms(later: Instant, earlier: Instant) -> f32 {
+    match later.checked_duration_since(earlier) {
+        Some(ahead) => ahead.as_secs_f32() * 1000.0,
+        None => -(earlier.duration_since(later).as_secs_f32() * 1000.0),
+    }
+}
+
+/// How much later a picture was presented than the audio with the closest
+/// timestamp, in milliseconds, or `None` without audio.
+fn av_offset(video: &FrameTiming, audio: &[&FrameTiming]) -> Option<f32> {
+    let closest = audio
+        .iter()
+        .min_by_key(|timing| video.pts.abs_diff(timing.pts))?;
+    Some(signed_ms(video.presented, closest.presented))
+}
+
+/// Grades an A/V offset: within 20 ms nobody sees it, past 40 ms lips drift.
+fn av_color(offset_ms: f32) -> egui::Color32 {
+    match offset_ms.abs() {
+        abs if abs < 20.0 => COLOR_DIM,
+        abs if abs < 40.0 => COLOR_WARN,
+        _ => COLOR_BAD,
+    }
+}
+
+/// Builds the TIME section of a player from its timeline.
+fn time_playback(timeline: &[FrameTiming]) -> Section {
+    let video = timeline
+        .iter()
+        .rev()
+        .find(|timing| timing.kind == MediaKind::Video);
+    let audio: Vec<&FrameTiming> = timeline
+        .iter()
+        .filter(|timing| timing.kind == MediaKind::Audio)
+        .collect();
+    let mut parts = Vec::new();
+    let mut lines = Vec::new();
+    if let Some(video) = video {
+        let hold = signed_ms(video.presented, video.decoded);
+        parts.push(format!("hold:{hold:.0}ms"));
+        lines.push(Line::metric(
+            "time.hold",
+            format!("decode to screen: {hold:.0} ms"),
+            f64::from(hold),
+            lower_is_better(f64::from(hold), 100.0, 200.0),
+        ));
+        if let Some(offset) = av_offset(video, &audio) {
+            parts.push(format!("av:{offset:+.0}ms"));
+            lines.push(Line::metric(
+                "time.av",
+                format!("a/v: {offset:+.0} ms (positive: the picture is late)"),
+                f64::from(offset),
+                av_color(offset),
+            ));
+        }
+    }
+    if lines.is_empty() {
+        lines.push(Line::info(
+            "no frames presented yet; the timeline fills while the panel is open",
+        ));
+    }
+    Section::new(StatCategory::Time, parts, lines)
+}
+
+/// Seconds of history the timeline spans.
+const TIMELINE_WINDOW_SECS: f32 = 10.0;
+const HOLD_LANE_H: f32 = 36.0;
+const VIDEO_LANE_H: f32 = 20.0;
+const AUDIO_LANE_H: f32 = 16.0;
+const AV_LANE_H: f32 = 20.0;
+const BUFFER_LANE_H: f32 = 26.0;
+const RTT_LANE_H: f32 = 26.0;
+const AXIS_H: f32 = 14.0;
+/// The timeline's height: every lane and the axis, plus a little air.
+const TIMELINE_H: f32 = HOLD_LANE_H
+    + VIDEO_LANE_H
+    + AUDIO_LANE_H
+    + AV_LANE_H
+    + BUFFER_LANE_H
+    + RTT_LANE_H
+    + AXIS_H
+    + 4.0;
+
+const COLOR_AUDIO: egui::Color32 = egui::Color32::from_rgb(68, 136, 204);
+const COLOR_RTT: egui::Color32 = egui::Color32::from_rgb(0, 200, 200);
+const COLOR_GRID: egui::Color32 = egui::Color32::from_rgb(50, 50, 50);
+
+/// Grades a picture's gap to the one before against the usual gap: steady is
+/// good, half again as long is a hiccup, twice as long is a dropped frame.
+fn gap_color(gap_ms: f32, expected_ms: f32) -> egui::Color32 {
+    let ratio = gap_ms / expected_ms.max(1.0);
+    if ratio < 1.5 {
+        COLOR_GOOD
+    } else if ratio < 2.0 {
+        COLOR_WARN
+    } else {
+        COLOR_BAD
+    }
+}
+
+/// Where a timeline lane is, and how times map onto it.
+struct Lanes {
+    rect: egui::Rect,
+    left: Instant,
+    right: Instant,
+}
+
+impl Lanes {
+    /// The x coordinate of `at`.
+    fn x(&self, at: Instant) -> f32 {
+        let px_per_sec = self.rect.width() / TIMELINE_WINDOW_SECS;
+        self.rect.min.x + signed_ms(at, self.left) / 1000.0 * px_per_sec
+    }
+
+    /// Whether `at` is inside the window.
+    fn shows(&self, at: Instant) -> bool {
+        at >= self.left && at <= self.right
+    }
+
+    /// The lane `height` tall starting `top` below the timeline's top.
+    fn lane(&self, top: f32, height: f32) -> egui::Rect {
+        egui::Rect::from_min_size(
+            egui::pos2(self.rect.min.x, self.rect.min.y + top),
+            egui::vec2(self.rect.width(), height),
+        )
+    }
+}
+
+impl DebugOverlay {
+    /// Paints the timeline: how long each picture was held, picture and audio
+    /// cadence, A/V offset, the audio buffer and the round trip, over a
+    /// scrollable time axis.
+    fn paint_timeline(&mut self, ui: &mut egui::Ui, rect: egui::Rect, timeline: &[FrameTiming]) {
+        let painter = ui.painter().clone();
+        painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(BG_ALPHA));
+        let font = egui::FontId::monospace(9.0);
+
+        let now = Instant::now();
+        let right = match self.timeline_live {
+            true => now,
+            false => now
+                .checked_sub(Duration::from_secs_f32(self.timeline_scroll))
+                .unwrap_or(now),
+        };
+        let left = right
+            .checked_sub(Duration::from_secs_f32(TIMELINE_WINDOW_SECS))
+            .unwrap_or(right);
+        let lanes = Lanes { rect, left, right };
+        let px_per_sec = rect.width() / TIMELINE_WINDOW_SECS;
+
+        // A grid line every two seconds.
+        for sec in (0..=TIMELINE_WINDOW_SECS as i32).step_by(2) {
+            let x = rect.min.x + sec as f32 * px_per_sec;
+            painter.line_segment(
+                [
+                    egui::pos2(x, rect.min.y),
+                    egui::pos2(x, rect.max.y - AXIS_H),
+                ],
+                egui::Stroke::new(1.0_f32, COLOR_GRID),
+            );
+        }
+
+        let visible: Vec<&FrameTiming> = timeline
+            .iter()
+            .filter(|timing| lanes.shows(timing.presented))
+            .collect();
+        let video: Vec<&FrameTiming> = visible
+            .iter()
+            .copied()
+            .filter(|timing| timing.kind == MediaKind::Video)
+            .collect();
+        let audio: Vec<&FrameTiming> = visible
+            .iter()
+            .copied()
+            .filter(|timing| timing.kind == MediaKind::Audio)
+            .collect();
+        let label = |rect: egui::Rect, text: &str, color: egui::Color32| {
+            let galley = painter.layout_no_wrap(text.to_string(), font.clone(), color);
+            painter.galley(rect.min + egui::vec2(4.0, 1.0), galley, color);
+        };
+        let value = |rect: egui::Rect, text: String, color: egui::Color32| {
+            let galley = painter.layout_no_wrap(text, font.clone(), color);
+            let at = egui::pos2(rect.max.x - galley.size().x - 4.0, rect.min.y + 1.0);
+            painter.galley(at, galley, color);
+        };
+
+        // How long each picture was held between its decoder and the screen.
+        let mut top = 0.0;
+        let hold_rect = lanes.lane(top, HOLD_LANE_H);
+        label(hold_rect, "HOLD", COLOR_DIM);
+        let holds: Vec<(f32, f32)> = video
+            .iter()
+            .map(|timing| {
+                (
+                    lanes.x(timing.presented),
+                    signed_ms(timing.presented, timing.decoded),
+                )
+            })
+            .collect();
+        if holds.len() >= 2 {
+            let max = holds
+                .iter()
+                .map(|&(_, hold)| hold)
+                .fold(0.0f32, f32::max)
+                .max(50.0);
+            let height = hold_rect.height() - 14.0;
+            for pair in holds.windows(2) {
+                let (x1, h1) = pair[0];
+                let (x2, h2) = pair[1];
+                let y1 = hold_rect.max.y - (h1 / max) * height;
+                let y2 = hold_rect.max.y - (h2 / max) * height;
+                let color = lower_is_better(f64::from(h1 + h2) / 2.0, 100.0, 200.0);
+                painter.line_segment(
+                    [egui::pos2(x1, y1), egui::pos2(x2, y2)],
+                    egui::Stroke::new(1.5_f32, color),
+                );
+            }
+        }
+        if let Some(&(_, hold)) = holds.last() {
+            let color = lower_is_better(f64::from(hold), 100.0, 200.0);
+            value(hold_rect, format!("{hold:.0}ms"), color);
+        }
+        top += HOLD_LANE_H;
+
+        // One box per picture, coloured by its gap to the one before.
+        let video_rect = lanes.lane(top, VIDEO_LANE_H);
+        label(video_rect, "VIDEO", COLOR_DIM);
+        let mut gaps: Vec<f32> = video
+            .windows(2)
+            .map(|pair| signed_ms(pair[1].presented, pair[0].presented))
+            .collect();
+        let expected = match gaps.len() >= 2 {
+            true => {
+                gaps.sort_by(f32::total_cmp);
+                gaps[gaps.len() / 2]
+            }
+            false => 1000.0 / 30.0,
+        };
+        for (index, timing) in video.iter().enumerate() {
+            let x = lanes.x(timing.presented);
+            let next = video
+                .get(index + 1)
+                .map_or(x + 6.0, |next| lanes.x(next.presented));
+            let width = (next - x - 1.0).clamp(3.0, 20.0);
+            let gap = match index {
+                0 => expected,
+                _ => signed_ms(timing.presented, video[index - 1].presented),
+            };
+            let frame = egui::Rect::from_min_size(
+                egui::pos2(x, video_rect.min.y + 7.0),
+                egui::vec2(width, VIDEO_LANE_H - 8.0),
+            );
+            painter.rect_filled(frame, 1.0, gap_color(gap, expected));
+        }
+        top += VIDEO_LANE_H;
+
+        // One box per block of audio, red when it reached the speaker more
+        // than 100 ms after it decoded.
+        let audio_rect = lanes.lane(top, AUDIO_LANE_H);
+        label(audio_rect, "AUDIO", COLOR_AUDIO);
+        for (index, timing) in audio.iter().enumerate() {
+            let x = lanes.x(timing.presented);
+            let next = audio
+                .get(index + 1)
+                .map_or(x + 4.0, |next| lanes.x(next.presented));
+            let width = (next - x - 0.5).clamp(2.0, 10.0);
+            let color = match signed_ms(timing.presented, timing.decoded) > 100.0 {
+                true => COLOR_BAD,
+                false => COLOR_AUDIO,
+            };
+            let block = egui::Rect::from_min_size(
+                egui::pos2(x, audio_rect.min.y + 5.0),
+                egui::vec2(width, AUDIO_LANE_H - 6.0),
+            );
+            painter.rect_filled(block, 1.0, color);
+        }
+        top += AUDIO_LANE_H;
+
+        // How much later each picture was presented than its audio.
+        let av_rect = lanes.lane(top, AV_LANE_H);
+        let zero = av_rect.center().y;
+        painter.line_segment(
+            [
+                egui::pos2(av_rect.min.x, zero),
+                egui::pos2(av_rect.max.x, zero),
+            ],
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(60, 60, 60)),
+        );
+        label(av_rect, "A/V", COLOR_DIM);
+        // The offset at which the line reaches the lane's edge.
+        const AV_RANGE_MS: f32 = 80.0;
+        let half = av_rect.height() / 2.0 - 2.0;
+        let offsets: Vec<(f32, f32)> = video
+            .iter()
+            .filter_map(|timing| Some((lanes.x(timing.presented), av_offset(timing, &audio)?)))
+            .collect();
+        for pair in offsets.windows(2) {
+            let (x1, o1) = pair[0];
+            let (x2, o2) = pair[1];
+            let y1 = zero - (o1 / AV_RANGE_MS).clamp(-1.0, 1.0) * half;
+            let y2 = zero - (o2 / AV_RANGE_MS).clamp(-1.0, 1.0) * half;
+            painter.line_segment(
+                [egui::pos2(x1, y1), egui::pos2(x2, y2)],
+                egui::Stroke::new(1.0_f32, av_color((o1.abs() + o2.abs()) / 2.0)),
+            );
+        }
+        if let Some(&(_, offset)) = offsets.last() {
+            value(av_rect, format!("{offset:+.0}ms"), av_color(offset));
+        }
+        top += AV_LANE_H;
+
+        // The audio queued at the speaker, and the round trip, from the
+        // overlay's own history of the AUDIO and NET figures.
+        for (key, name, height, color) in [
+            ("audio.buffered", "BUFFER", BUFFER_LANE_H, COLOR_AUDIO),
+            ("net.rtt", "RTT", RTT_LANE_H, COLOR_RTT),
+        ] {
+            let strip = lanes.lane(top, height);
+            let points: Vec<(Instant, f64)> = self
+                .history
+                .timed(key)
+                .into_iter()
+                .filter(|&(at, _)| lanes.shows(at))
+                .collect();
+            let max = points
+                .iter()
+                .map(|&(_, value)| value)
+                .fold(0.0f64, f64::max)
+                .max(1.0);
+            let line: Vec<egui::Pos2> = points
+                .iter()
+                .map(|&(at, value)| {
+                    let y = strip.max.y - (value / max) as f32 * (strip.height() - 4.0);
+                    egui::pos2(lanes.x(at), y)
+                })
+                .collect();
+            if line.len() >= 2 {
+                painter.add(egui::Shape::line(line, egui::Stroke::new(1.5_f32, color)));
+            }
+            let text = match points.last() {
+                Some(&(_, current)) => format!("{name} {current:.0}ms"),
+                None => format!("{name} -"),
+            };
+            label(strip, &text, color);
+            top += height;
+        }
+
+        // The axis, in seconds before the right edge.
+        let axis_y = rect.max.y - AXIS_H;
+        let axis_color = egui::Color32::from_rgb(120, 120, 120);
+        let offset = match self.timeline_live {
+            true => 0.0,
+            false => self.timeline_scroll,
+        };
+        for sec in (0..=TIMELINE_WINDOW_SECS as i32).step_by(2) {
+            let x = rect.min.x + sec as f32 * px_per_sec;
+            let ago = TIMELINE_WINDOW_SECS - sec as f32 + offset;
+            let galley = painter.layout_no_wrap(format!("-{ago:.0}s"), font.clone(), axis_color);
+            painter.galley(egui::pos2(x + 2.0, axis_y), galley, axis_color);
+        }
+        let (indicator, color) = match self.timeline_live {
+            true => ("LIVE", COLOR_GOOD),
+            false => ("PAUSED", COLOR_WARN),
+        };
+        let galley = painter.layout_no_wrap(indicator.to_string(), font.clone(), color);
+        painter.galley(
+            egui::pos2(rect.max.x - galley.size().x - 4.0, axis_y),
+            galley,
+            color,
+        );
+
+        // Scrolling pauses and moves back in time; a double click resumes.
+        let id = self.salt.with("timeline_scroll");
+        let response = ui.interact(rect, id, egui::Sense::click().union(egui::Sense::hover()));
+        if response.hovered() {
+            let delta = ui.input(|input| input.smooth_scroll_delta.y);
+            if delta.abs() > 0.1 {
+                self.timeline_live = false;
+                self.timeline_scroll = (self.timeline_scroll + delta * 0.5).max(0.0);
+            }
+        }
+        if response.double_clicked() {
+            self.timeline_live = true;
+            self.timeline_scroll = 0.0;
+        }
+    }
 }

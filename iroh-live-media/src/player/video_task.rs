@@ -45,7 +45,7 @@ use crate::{
     SlotState,
     error::Error,
     frames::FrameSlot,
-    stats::{Smoothed, VideoPlaybackStats},
+    stats::{FrameTiming, MediaKind, Smoothed, VideoPlaybackStats},
 };
 
 /// How many decoded frames a reader may run ahead of the supervisor.
@@ -275,6 +275,8 @@ enum Event {
 /// A picture waiting for the playout clock to say it is due.
 struct Delivery {
     frame: moq_video::Frame,
+    /// When the frame came out of its decoder, for the timeline.
+    decoded: Instant,
     due: Pin<Box<dyn Future<Output = bool> + Send>>,
 }
 
@@ -359,8 +361,14 @@ pub(crate) async fn run(inputs: Inputs) {
             due = async { delivery.as_mut().expect("guarded").due.as_mut().await },
                 if delivering =>
             {
-                let Delivery { frame, .. } = delivery.take().expect("guarded");
+                let Delivery { frame, decoded, .. } = delivery.take().expect("guarded");
                 if due {
+                    stats.video_timeline.push(FrameTiming {
+                        kind: MediaKind::Video,
+                        pts: frame_pts(&frame),
+                        decoded,
+                        presented: Instant::now(),
+                    });
                     frames.send(Arc::new(frame));
                 }
                 Outcome::Idle
@@ -587,7 +595,11 @@ impl Pacing {
             }
             false => Box::pin(std::future::ready(true)),
         };
-        Delivery { frame, due }
+        Delivery {
+            frame,
+            decoded: Instant::now(),
+            due,
+        }
     }
 }
 

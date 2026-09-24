@@ -396,6 +396,7 @@ impl RemoteView {
                 StatCategory::Net,
                 StatCategory::Render,
                 StatCategory::Audio,
+                StatCategory::Time,
             ]),
             decoder,
             volume: 1.0,
@@ -453,7 +454,13 @@ impl RemoteView {
         if let Some(link) = &self.link {
             self.overlay.set_link(link.lines());
         }
-        self.overlay.show_playback(ui, rect, &stats, &status);
+        // Copied out only while the TIME panel is open to draw it.
+        let timeline = match self.overlay.timeline_open() {
+            true => self.player.timeline(),
+            false => Vec::new(),
+        };
+        self.overlay
+            .show_playback(ui, rect, &stats, &status, &timeline);
     }
 
     /// Draws the rendition and decoder pickers and the volume slider.

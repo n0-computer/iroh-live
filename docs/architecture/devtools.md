@@ -43,15 +43,17 @@ Rates are counted over a window rather than derived from the gap between two
 events: one late frame in a 30 fps stream reads as 50 by the gap and as 30 by
 the count.
 
-There is no per-frame timeline and no per-path lag or A/V delta figure. The
-playout latency and the audio buffer depth are what the snapshots offer for
-judging sync.
+For judging pacing and sync, `Player::timeline()` returns the last few hundred
+frames of each medium with when each left its decoder and when it was
+presented: a picture when it was handed to the player's frames, audio when it
+reaches the speaker, which is when it was written plus what was queued ahead of
+it. There is no per-path lag figure.
 
 ## The debug overlay
 
 `iroh_live_egui::overlay::DebugOverlay` draws a translucent bar along the bottom
 of a video tile with one clickable section per `StatCategory`: `Net`, `Capture`,
-`Render`, and `Audio`. Clicking a section opens a detail panel above the bar,
+`Render`, `Audio`, and `Time`. Clicking a section opens a detail panel above the bar,
 stacking upward, with each figure shown as a value, a colour where one applies,
 and a sparkline next to those that change over time. The overlay keeps the
 twelve seconds of history behind its sparklines itself, recording a point every
@@ -60,13 +62,19 @@ twelve seconds of history behind its sparklines itself, recording a point every
 `show_publish(ui, rect, &stats, &status)` draws a broadcast: `Capture` with the
 source frame rate, each rendition's encoder, the audio encoder, and every slot's
 state, and `Net` with the encoded video leaving the broadcast summed over its
-renditions. `show_playback(ui, rect, &stats, &status)` draws a player: `Net`
-with the round trip, loss, and the sender's delivery estimate, `Render` with the
-rendition mode, rendition, decoder, frame rate, decode time, and the last switch
-error, and `Audio` with the buffer and the playout latency.
+renditions. `show_playback(ui, rect, &stats, &status, &timeline)` draws a
+player: `Net` with the round trip, loss, and the sender's delivery estimate,
+`Render` with the rendition mode, rendition, decoder, frame rate, decode time,
+and the last switch error, `Audio` with the buffer and the playout latency, and
+`Time` with the player's timeline over the last ten seconds: how long each
+picture was held between decoder and screen, picture and audio cadence, the
+A/V offset, the audio buffer and the round trip. Scrolling over the timeline
+pauses it and moves back in time, and a double click returns to the live edge.
+A caller reads `Player::timeline()` only while `timeline_open()` says the panel
+is showing.
 
 `irl publish --preview` enables the `Capture` and `Net` categories; `irl watch`
-enables `Net`, `Render`, and `Audio`.
+enables `Net`, `Render`, `Audio`, and `Time`.
 
 ## Tests
 

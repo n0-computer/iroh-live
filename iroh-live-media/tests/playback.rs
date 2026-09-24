@@ -69,6 +69,20 @@ async fn a_local_broadcast_plays_in_process() {
     assert_eq!(status.video, SlotState::Running);
     assert_eq!(status.rendition.as_deref(), Some("low"));
     assert!(status.decoder.is_some());
+    // The timeline behind the overlay's TIME panel has the pictures shown,
+    // each held for the clock rather than presented before it decoded.
+    let timeline = player.timeline();
+    assert!(
+        timeline
+            .iter()
+            .any(|timing| timing.kind == iroh_live_media::MediaKind::Video),
+        "no picture in the timeline"
+    );
+    assert!(
+        timeline
+            .iter()
+            .all(|timing| timing.presented >= timing.decoded)
+    );
 }
 
 /// R12: two players of one broadcast used to share one playout clock and

@@ -26,7 +26,7 @@ use crate::{
     AudioOutput, NetworkSample, RemoteBroadcast, SlotState,
     error::{Error, SwitchError},
     frames::{FrameSlot, VideoFrames},
-    stats::{Cell, PlaybackStats},
+    stats::{Cell, FrameTiming, PlaybackStats, Timeline},
     video,
 };
 
@@ -285,6 +285,10 @@ pub(crate) struct PlaybackRecorder {
     pub(crate) video: Cell<Option<crate::stats::VideoPlaybackStats>>,
     pub(crate) audio: Cell<Option<crate::stats::AudioPlaybackStats>>,
     pub(crate) network: Cell<Option<NetworkSample>>,
+    /// Written by the video task as it presents pictures.
+    pub(crate) video_timeline: Timeline,
+    /// Written by the audio task as it writes to the output.
+    pub(crate) audio_timeline: Timeline,
 }
 
 /// What the player's controls ask for, shared with its tasks.
@@ -480,13 +484,31 @@ impl Player {
         }
     }
 
+    /// Returns the last frames presented, video and audio together, ordered
+    /// by when they were presented.
+    ///
+    /// Keeps a few hundred frames of each medium, about ten seconds at usual
+    /// rates. For a debugging view of pacing and A/V sync: read it as often as
+    /// such a view draws, not per frame.
+    pub fn timeline(&self) -> Vec<FrameTiming> {
+        let mut frames: Vec<FrameTiming> = self
+            .stats
+            .video_timeline
+            .snapshot()
+            .into_iter()
+            .chain(self.stats.audio_timeline.snapshot())
+            .collect();
+        frames.sort_by_key(|timing| timing.presented);
+        frames
+    }
+
     /// Waits until `name` is on screen.
     ///
     /// Waits through whatever the rendition mode decides meanwhile: it resolves
     /// once `name` plays, and fails once a switch to `name` was superseded,
-    /// withdrawn or failed, once the catalog shows no such rendition, or once
-    /// the player's video ended. Callers bound the wait with
-    /// `tokio::time::timeout`.
+    /// withdrawn or failed, once the catalog shows no such rendition, once the
+    /// video failed with nothing left playing, or once the player's video
+    /// ended. Callers bound the wait with `tokio::time::timeout`.
     ///
     /// Cancellation safe: dropping the future leaves the switch running.
     ///

@@ -97,7 +97,7 @@ pub use self::{
         VideoSource,
     },
     stats::{
-        AudioEncodeStats, AudioPlaybackStats, EncodeStats, PlaybackStats, PublishStats,
-        VideoPlaybackStats,
+        AudioEncodeStats, AudioPlaybackStats, EncodeStats, FrameTiming, MediaKind, PlaybackStats,
+        PublishStats, VideoPlaybackStats,
     },
 };

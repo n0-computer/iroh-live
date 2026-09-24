@@ -13,7 +13,7 @@
 //! by the count, and averaging reciprocal gaps reads high besides.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -112,6 +112,63 @@ pub struct AudioPlaybackStats {
     pub peak: f32,
     /// Frames played since the player started.
     pub frames: u64,
+}
+
+/// Which medium a [`FrameTiming`] describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MediaKind {
+    /// A decoded picture.
+    Video,
+    /// A decoded block of samples.
+    Audio,
+}
+
+/// When one frame left its decoder and when it was presented, for a timeline
+/// view of playback.
+///
+/// Read with [`Player::timeline`](crate::Player::timeline). The gap between
+/// the two instants is what the playout clock held the frame for, and pictures
+/// and audio with the same timestamp should be presented together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct FrameTiming {
+    /// The medium.
+    pub kind: MediaKind,
+    /// The frame's presentation timestamp on the broadcast clock.
+    pub pts: Duration,
+    /// When the decoder handed the frame over.
+    pub decoded: Instant,
+    /// When the frame was presented: a picture handed to the player's frames,
+    /// or audio reaching the speaker, which is when it was written plus what
+    /// was already queued ahead of it.
+    pub presented: Instant,
+}
+
+/// How many frames a [`Timeline`] keeps per medium: ten seconds of 50 Hz audio,
+/// and more than that of 30 fps video.
+const TIMELINE_LEN: usize = 512;
+
+/// The last frames of one medium, oldest first, written by the task that
+/// presents them.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Timeline(Cell<VecDeque<FrameTiming>>);
+
+impl Timeline {
+    /// Records one frame, dropping the oldest once full.
+    pub(crate) fn push(&self, timing: FrameTiming) {
+        self.0.update(|frames| {
+            if frames.len() >= TIMELINE_LEN {
+                frames.pop_front();
+            }
+            frames.push_back(timing);
+        });
+    }
+
+    /// Returns a copy of every frame kept, oldest first.
+    pub(crate) fn snapshot(&self) -> VecDeque<FrameTiming> {
+        self.0.get()
+    }
 }
 
 /// A value one task writes and anyone snapshots.
