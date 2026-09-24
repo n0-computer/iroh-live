@@ -22,7 +22,7 @@ use moq_net::{
 use n0_future::task::{AbortOnDropHandle, JoinSet};
 use tracing::{debug, trace, warn};
 
-use crate::{Session, node::Shared};
+use crate::{Session, node::Shared, path::publisher_of};
 
 /// Identifies one link of a node: a session, a relay, or the node itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, derive_more::Display)]
@@ -167,19 +167,39 @@ impl Subscription {
     }
 }
 
-/// Mirrors every route `ingest` holds into the node's route table.
+/// Mirrors the routes `ingest` holds into the node's route table.
 ///
-/// Runs until the link ends. Each route is re-announced in the table as a dynamic route with the same hop
-/// chain and cost, and a request for a path under it is resolved through
-/// `ingest`, which is the link's own view, and spliced. Recording which link
-/// served each request is what [`Subscription::session`] and
-/// [`Moq::routes`](crate::Moq::routes) read.
-pub(crate) async fn bridge(shared: Arc<Shared>, link: u64, ingest: origin::Producer) {
+/// Runs until the link ends. Each route is re-announced in the table as a
+/// dynamic route with the same hop chain and cost, and a request for a path
+/// under it is resolved through `ingest`, which is the link's own view, and
+/// spliced. Recording which link served each request is what
+/// [`Subscription::session`] and [`Moq::routes`](crate::Moq::routes) read.
+///
+/// With `publisher` set, only routes to that publisher's own broadcasts are
+/// mirrored, meaning paths that [`publisher_of`] reads as `publisher`'s. That is
+/// what a direct session gets: the table is shared by every subscriber on the
+/// node and answers a ticket without dialing, so a peer must not be able to put
+/// a route to someone else's path into it. Anything else the peer announces,
+/// a bare name from the older layout or a call path, stays reachable over that
+/// session alone through [`Session::subscribe`]. A relay link passes `None`,
+/// since forwarding other publishers' broadcasts is what a relay is for.
+pub(crate) async fn bridge(
+    shared: Arc<Shared>,
+    link: u64,
+    ingest: origin::Producer,
+    publisher: Option<EndpointId>,
+) {
     let mut announced = ingest.consume().announced();
     let mut mirrors: HashMap<PathOwned, (Arc<origin::Dynamic>, AbortOnDropHandle<()>)> =
         HashMap::new();
     while let Some(update) = announced.next().await {
         let prefix = update.prefix.clone();
+        if let Some(publisher) = publisher
+            && publisher_of(&prefix) != Some(publisher)
+        {
+            trace!(link, %prefix, "route names another publisher, not mirrored");
+            continue;
+        }
         if update.kind == announce::Kind::Retracted {
             trace!(link, %prefix, "route retracted");
             mirrors.remove(&prefix);
@@ -224,8 +244,9 @@ pub(crate) async fn bridge(shared: Arc<Shared>, link: u64, ingest: origin::Produ
 
 /// Answers the requests one mirrored route receives.
 ///
-/// Each path resolves through the link's own ingest origin. Each request resolves in a task of its own: a path the peer is slow to serve
-/// must not hold up the others under the same prefix.
+/// Each path resolves through the link's own ingest origin, in a task of its
+/// own: a path the peer is slow to serve must not hold up the others under the
+/// same prefix.
 async fn answer(
     shared: Weak<Shared>,
     link: u64,

@@ -27,7 +27,7 @@ use crate::{
     Admission, Audience, ConnectOptions, Error, Grant, Incoming, LinkKind, Publication, RouteInfo,
     Session, SessionRequest, Subscription,
     link::{self, LinkState},
-    path::{hop_for, legacy_name, live_path, publisher_of},
+    path::{LIVE, hop_for, legacy_name, live_path, publisher_of},
     publish::peers_task,
     route,
     session::{SessionInner, SessionParts, Transport, accept_transport, dial_session, driver_now},
@@ -405,19 +405,30 @@ impl Moq {
 
     /// Resolves `path` in the route table.
     ///
-    /// If no route exists yet, it reaches out as `reach` says. A direct reach dials the publisher the path names (`live/<id>/...` or
+    /// If no route exists yet, it reaches out as `reach` says. A direct reach
+    /// dials the publisher the path names (`live/<id>/...` or
     /// `rooms/<topic>/<id>/...`) and waits for it to announce the path. For a
     /// `live/` path it also tries the bare name a node on the older path layout
-    /// publishes. Cancellation safe: a dial it started continues for other
-    /// callers.
+    /// publishes, if the publisher announces nothing under `live/<id>/`.
+    /// Cancellation safe: a dial it started continues for other callers.
+    ///
+    /// The route table holds routes a direct peer announces to its own
+    /// broadcasts, routes an attached relay forwards, and this node's own
+    /// publications for [`Audience::Everyone`]. A path naming a publisher
+    /// therefore resolves to that publisher's broadcast, directly or through a
+    /// relay, and never to one a third peer announced under its name. A relay
+    /// is trusted with every path it forwards, so attach only relays whose
+    /// admission keeps each publisher to its own paths (moq-relay's tokens do).
+    /// This node's `Peers` and `Manual` publications are not in the table, which
+    /// may be shared with a cluster; read those from the broadcast itself.
     ///
     /// # Errors
     ///
-    /// Fails with [`Error::NoRoute`] if `reach` allows no way to reach the path,
-    /// [`Error::Connect`] if the publisher cannot be dialed and no relay can
-    /// stand in, [`Error::NotAnnounced`] if the publisher's session ends before
-    /// it announces the path, and [`Error::ShutDown`] once the node has shut
-    /// down.
+    /// Fails with [`Error::NoRoute`] if `reach` allows no way to reach the
+    /// path, [`Error::Connect`] if the publisher cannot be dialed and no relay
+    /// can stand in, [`Error::NotAnnounced`] if the publisher's session ends
+    /// before it announces the path, and [`Error::ShutDown`] once the node has
+    /// shut down.
     pub async fn subscribe(&self, path: impl AsPath, reach: Reach) -> Result<Subscription, Error> {
         let path = path.as_path().to_owned();
         check_path(&path)?;
@@ -470,13 +481,21 @@ impl Moq {
         // is worth a try once the named path has had its chance.
         let legacy = legacy_name(&path);
         let fallback = async {
-            match legacy {
-                Some(name) => {
-                    tokio::time::sleep(LEGACY_GRACE).await;
-                    session.subscribe(name).await
-                }
-                None => Err(session.closed().await),
+            let Some(name) = legacy else {
+                return Err(session.closed().await);
+            };
+            tokio::time::sleep(LEGACY_GRACE).await;
+            let bare = session.subscribe(name).await?;
+            // A peer on the current layout announces its named paths before
+            // their bare aliases, so if it announces any, the bare name is
+            // the alias of a named path the table is about to route, and the
+            // table's route is the one that can fail over to a relay.
+            let named = Path::new(&format!("{LIVE}/{peer}")).to_owned();
+            if session.announces_under(&named) {
+                debug!(%path, "the publisher uses the current layout, ignoring its bare name");
+                return Err(session.closed().await);
             }
+            Ok(bare)
         };
         tokio::select! {
             resolved = &mut routed => self.resolved(path, table, resolved),
@@ -992,7 +1011,7 @@ impl Actor {
                     moq_net::time::run(ingest_driver).await;
                 }));
                 let _bridge = AbortOnDropHandle::new(tokio::spawn(
-                    route::bridge(shared, link, ingest).in_current_span(),
+                    route::bridge(shared, link, ingest, Some(remote)).in_current_span(),
                 ));
                 let _monitor = AbortOnDropHandle::new(tokio::spawn(link::monitor(
                     connection,

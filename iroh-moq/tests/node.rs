@@ -318,6 +318,129 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
     mallory.shutdown().await;
 }
 
+/// A counter offset that tells a forged broadcast's frames from the real one's.
+const FORGED: u64 = 1_000_000;
+
+/// A peer cannot route another publisher's path through this node's table.
+///
+/// A ticket resolves to the broadcast of the publisher it names, never to one a
+/// third peer announces under that name, and the bare names a peer announces
+/// stay on its own session.
+#[tokio::test]
+#[traced_test]
+async fn a_peer_cannot_route_another_publishers_path() {
+    let alice = Node::spawn().await;
+    let bob = Node::spawn().await;
+    let mallory = Node::spawn().await;
+
+    let real = TestBroadcast::start();
+    let publication = alice
+        .moq
+        .publish("cam", &real.producer, Audience::Everyone)
+        .expect("publish");
+    let ticket = publication.ticket().expect("a live path");
+
+    let forged = TestBroadcast::starting_at(FORGED);
+    let _forged = mallory
+        .moq
+        .publish_at(ticket.path(), &forged.producer, Audience::Everyone)
+        .expect("publish at alice's path");
+    let own = mallory
+        .moq
+        .publish("cam", &forged.producer, Audience::Everyone)
+        .expect("publish");
+    step("mallory connects", mallory.moq.connect(bob.endpoint.addr()))
+        .await
+        .expect("connect");
+    let session = step("bob sees mallory", session_with(&bob, mallory.id())).await;
+
+    // Both announcements reach bob: the forged one on mallory's session, and
+    // her own path into the table.
+    step("the forged path arrives", session.subscribe(ticket.path()))
+        .await
+        .expect("the forged path on mallory's session");
+    let mut own_routes = bob.moq.routes(own.path());
+    step("bob routes mallory's own path", async {
+        while own_routes.get().is_empty() {
+            own_routes.updated().await.expect("node gone");
+        }
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        bob.moq.routes(ticket.path()).get().is_empty(),
+        "mallory routed alice's path"
+    );
+    let err = step("the bare name", bob.moq.subscribe("cam", Reach::Direct))
+        .await
+        .expect_err("a bare name in the table");
+    assert!(matches!(err, Error::NoRoute { .. }), "{err:#}");
+
+    let subscription = step("subscribe", bob.moq.subscribe(ticket.path(), Reach::Direct))
+        .await
+        .expect("subscribe");
+    assert_eq!(
+        subscription.session().map(|session| session.remote_id()),
+        Some(alice.id()),
+        "served by someone other than the publisher the ticket names"
+    );
+    assert!(read_counter(&subscription.as_moq()).await < FORGED);
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+    mallory.shutdown().await;
+}
+
+/// A subscriber that starts before its publisher resolves the named path.
+///
+/// Waiting past the grace for the older layout must not pin it to the bare
+/// alias a current publisher announces next to the named path.
+#[tokio::test]
+#[traced_test]
+async fn a_subscriber_started_first_gets_the_named_path() {
+    let alice = Node::spawn().await;
+    let bob = Node::spawn().await;
+
+    let ticket = BroadcastTicket::new(alice.id(), "cam");
+    let subscribing = tokio::spawn({
+        let moq = bob.moq.clone();
+        let path = ticket.path();
+        async move { moq.subscribe(path, Reach::Direct).await }
+    });
+    // Past the grace, so the bare name is being looked for when both arrive.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let broadcast = TestBroadcast::start();
+    let _publication = alice
+        .moq
+        .publish("cam", &broadcast.producer, Audience::Everyone)
+        .expect("publish");
+
+    let subscription = step("subscribe", subscribing)
+        .await
+        .expect("task")
+        .expect("subscribe");
+    assert_eq!(subscription.path().as_str(), ticket.path().as_str());
+    read_counter(&subscription.as_moq()).await;
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+/// Waits until `node` has a session with `remote`, and returns it.
+async fn session_with(node: &Node, remote: iroh::EndpointId) -> iroh_moq::Session {
+    let mut sessions = node.moq.sessions();
+    loop {
+        if let Some(session) = sessions
+            .get()
+            .into_iter()
+            .find(|session| session.remote_id() == remote)
+        {
+            return session;
+        }
+        sessions.updated().await.expect("node gone");
+    }
+}
+
 /// A node on the older layout publishes bare names, and a current node reaches
 /// them through the ticket: the direct subscribe tries the bare name once the
 /// publisher-named path has had its chance.

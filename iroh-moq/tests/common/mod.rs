@@ -80,12 +80,17 @@ pub(crate) struct TestBroadcast {
 
 impl TestBroadcast {
     pub(crate) fn start() -> Self {
+        Self::starting_at(0)
+    }
+
+    /// Starts a broadcast whose counter starts at `first`, to tell two apart.
+    pub(crate) fn starting_at(first: u64) -> Self {
         let producer = broadcast::Info::new().produce();
         let mut track = producer
             .create_track("video", track::Info::default().with_max_age(MAX_AGE))
             .expect("create track");
         let writer = tokio::spawn(async move {
-            for n in 0u64.. {
+            for n in first.. {
                 if track
                     .write_frame(Timestamp::now(), Bytes::from(n.to_be_bytes().to_vec()))
                     .is_err()

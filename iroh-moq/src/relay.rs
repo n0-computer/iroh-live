@@ -306,7 +306,7 @@ impl Moq {
                     }));
                     let _bridge = config.consume.then(|| {
                         AbortOnDropHandle::new(tokio::spawn(
-                            route::bridge(shared.clone(), link, ingest).in_current_span(),
+                            route::bridge(shared.clone(), link, ingest, None).in_current_span(),
                         ))
                     });
                     loop {
