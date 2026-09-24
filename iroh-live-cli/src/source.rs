@@ -120,23 +120,64 @@ pub async fn configure_video(
     broadcast: &LocalBroadcast,
     args: &CaptureArgs,
 ) -> Result<Option<VideoSource>> {
+    match open_video(args).await? {
+        Some(opened) => opened.apply(broadcast),
+        None => Ok(None),
+    }
+}
+
+/// A video source opened for a broadcast and not yet set on it.
+///
+/// Opening awaits a device, and setting is one synchronous call, so a caller
+/// that has to decide at the last moment whether the source still goes on the
+/// broadcast can make that decision and the set in one step.
+pub struct OpenedVideo {
+    source: Video,
+    ladder: rendition::Ladder,
+}
+
+impl std::fmt::Debug for OpenedVideo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenedVideo").finish_non_exhaustive()
+    }
+}
+
+/// Opens the video `args` asks for, without setting it, or `None` for
+/// `--video none`.
+///
+/// # Errors
+///
+/// As [`configure`], for the video half.
+pub async fn open_video(args: &CaptureArgs) -> Result<Option<OpenedVideo>> {
     let spec = args.video_source()?;
     let ladder = rendition::ladder(&spec, args)?;
-    let Some(source) = video_source(&spec, args, ladder.framerate).await? else {
-        return Ok(None);
-    };
-    // Only now is there a capture to describe: `--video none` reaches here
-    // with a ladder nothing will encode.
-    ladder.report();
-    match source {
-        Video::Raw(source) => {
-            broadcast.set_video(source.clone(), ladder.encoding)?;
-            Ok(Some(source))
-        }
-        #[cfg(all(target_os = "linux", feature = "rpicam"))]
-        Video::Encoded(source) => {
-            broadcast.set_encoded_video(source)?;
-            Ok(None)
+    Ok(video_source(&spec, args, ladder.framerate)
+        .await?
+        .map(|source| OpenedVideo { source, ladder }))
+}
+
+impl OpenedVideo {
+    /// Sets the source on `broadcast`, returning it when it is raw, for a
+    /// preview.
+    ///
+    /// # Errors
+    ///
+    /// Fails for an encoding the broadcast refuses.
+    pub fn apply(self, broadcast: &LocalBroadcast) -> Result<Option<VideoSource>> {
+        let Self { source, ladder } = self;
+        // Only now is there a capture to describe: `--video none` never gets
+        // here with a ladder nothing will encode.
+        ladder.report();
+        match source {
+            Video::Raw(source) => {
+                broadcast.set_video(source.clone(), ladder.encoding)?;
+                Ok(Some(source))
+            }
+            #[cfg(all(target_os = "linux", feature = "rpicam"))]
+            Video::Encoded(source) => {
+                broadcast.set_encoded_video(source)?;
+                Ok(None)
+            }
         }
     }
 }
