@@ -9,13 +9,16 @@
 //! broadcast among its broadcasts for that release, so an older member finds it.
 //! Writing both is the one release of dual wire format; `chat` goes after it.
 
-use std::time::{Duration, SystemTime};
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, SystemTime},
+};
 
 use iroh::EndpointId;
 use moq_net::{Timestamp, broadcast, frame, group, track};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast as channel;
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 /// The name of the chat broadcast inside a member's room namespace.
 ///
@@ -73,9 +76,9 @@ impl std::error::Error for ChatError {}
 
 /// Receives the room's chat messages, from every member but this one.
 ///
-/// Each receiver has its own buffer of [`CHAT_BUFFER`] messages; one that falls
-/// behind loses its oldest messages and learns how many, and never slows the
-/// room or another receiver.
+/// Each receiver has its own buffer of 64 messages; one that falls behind loses
+/// its oldest messages and learns how many, and never slows the room or another
+/// receiver.
 #[derive(Debug)]
 pub struct ChatReceiver {
     rx: channel::Receiver<ChatMessage>,
@@ -111,6 +114,9 @@ pub(crate) struct ChatFrame {
     pub(crate) text: String,
     /// Milliseconds since the Unix epoch, by the sender's clock.
     pub(crate) sent_at_ms: u64,
+    /// Drawn at random per chat broadcast, so a reader can tell a member that
+    /// restarted, whose group sequence starts over, from a repeat.
+    pub(crate) writer: u64,
 }
 
 impl ChatFrame {
@@ -135,6 +141,7 @@ pub(crate) struct ChatWriter {
     current: track::Producer,
     #[debug(skip)]
     legacy: track::Producer,
+    writer: u64,
 }
 
 impl ChatWriter {
@@ -147,6 +154,7 @@ impl ChatWriter {
             broadcast,
             current,
             legacy,
+            writer: rand::random(),
         })
     }
 
@@ -170,6 +178,7 @@ impl ChatWriter {
         let frame = ChatFrame {
             text: text.to_owned(),
             sent_at_ms,
+            writer: self.writer,
         };
         let bytes = postcard::to_stdvec(&frame).expect("a chat frame serializes");
         self.current.write_frame(Timestamp::now(), bytes)?;
@@ -205,12 +214,13 @@ impl FrameReader {
         })
     }
 
-    /// Returns the next frame, or `None` once the track ends.
-    async fn next(&mut self) -> Result<Option<frame::Frame>, moq_net::Error> {
+    /// Returns the next frame and its group's sequence, or `None` once the
+    /// track ends.
+    async fn next(&mut self) -> Result<Option<(u64, frame::Frame)>, moq_net::Error> {
         loop {
             if let Some(group) = self.group.as_mut() {
                 if let Some(frame) = group.read_frame().await? {
-                    return Ok(Some(frame));
+                    return Ok(Some((group.sequence, frame)));
                 }
                 self.group = None;
             }
@@ -222,15 +232,68 @@ impl FrameReader {
     }
 }
 
+/// How far one chat source of a member has been read, kept across its reader
+/// restarting.
+///
+/// moq hands a new subscription the newest group whatever its age, so a reader
+/// that restarts (the member's session dropped and came back, say) would
+/// deliver the last message a second time. The cursor remembers the last group
+/// delivered and which chat broadcast it came from.
+#[derive(Debug)]
+pub(crate) struct ChatCursor {
+    state: Mutex<CursorState>,
+    /// Messages sent before this, by the sender's clock, are history from
+    /// before this member joined the room, and are not delivered.
+    since: SystemTime,
+}
+
+#[derive(Debug, Default)]
+struct CursorState {
+    /// The writer of the groups `next` counts, for the current format.
+    writer: Option<u64>,
+    /// The first group sequence not delivered yet.
+    next: u64,
+}
+
+impl ChatCursor {
+    /// Returns a cursor that skips messages sent before `since`.
+    pub(crate) fn new(since: SystemTime) -> Self {
+        Self {
+            state: Mutex::new(CursorState::default()),
+            since,
+        }
+    }
+
+    /// Reports whether the group `sequence` of `writer` is new, and marks it
+    /// read.
+    ///
+    /// `writer` is `None` for the older format, which carries no writer id; a
+    /// member on it that restarts is read from its new first message on only
+    /// once its sequence passes the old one, which is the older format's loss.
+    fn advance(&self, writer: Option<u64>, sequence: u64) -> bool {
+        let mut state = self.state.lock().expect("poisoned");
+        if writer.is_some() && state.writer != writer {
+            *state = CursorState { writer, next: 0 };
+        }
+        if sequence < state.next {
+            return false;
+        }
+        state.next = sequence + 1;
+        true
+    }
+}
+
 /// Forwards the chat on `broadcast`, which member `from` publishes, into `tx`.
 ///
 /// Reads `chat.v2` when `legacy` is false, and the bare-text `chat` track of a
-/// member on the older format otherwise. Returns when the track ends or fails,
-/// which is also how a broadcast without chat ends it, quietly.
+/// member on the older format otherwise. Delivers only what `cursor` has not
+/// seen and what was sent after it starts. Returns when the track ends or
+/// fails, which is also how a broadcast without chat ends it, quietly.
 pub(crate) async fn forward(
     from: EndpointId,
     broadcast: broadcast::Consumer,
     legacy: bool,
+    cursor: Arc<ChatCursor>,
     tx: channel::Sender<ChatMessage>,
 ) {
     let name = if legacy {
@@ -246,8 +309,8 @@ pub(crate) async fn forward(
         }
     };
     loop {
-        let frame = match reader.next().await {
-            Ok(Some(frame)) => frame,
+        let (sequence, frame) = match reader.next().await {
+            Ok(Some(next)) => next,
             Ok(None) => return,
             Err(err) => {
                 debug!(from = %from.fmt_short(), %err, "chat track ended");
@@ -255,6 +318,9 @@ pub(crate) async fn forward(
             }
         };
         let message = if legacy {
+            if !cursor.advance(None, sequence) {
+                continue;
+            }
             match String::from_utf8(frame.payload.to_vec()) {
                 Ok(text) if !text.is_empty() => ChatMessage {
                     from,
@@ -268,17 +334,24 @@ pub(crate) async fn forward(
                 }
             }
         } else {
-            match postcard::from_bytes::<ChatFrame>(&frame.payload) {
-                Ok(chat) if !chat.text.is_empty() => ChatMessage {
-                    from,
-                    sent_at: chat.sent_at(),
-                    text: chat.text,
-                },
-                Ok(_) => continue,
+            let chat = match postcard::from_bytes::<ChatFrame>(&frame.payload) {
+                Ok(chat) => chat,
                 Err(err) => {
                     warn!(from = %from.fmt_short(), %err, "chat frame does not decode");
                     continue;
                 }
+            };
+            if !cursor.advance(Some(chat.writer), sequence) {
+                trace!(from = %from.fmt_short(), sequence, "chat message already delivered");
+                continue;
+            }
+            if chat.text.is_empty() || chat.sent_at() < cursor.since {
+                continue;
+            }
+            ChatMessage {
+                from,
+                sent_at: chat.sent_at(),
+                text: chat.text,
             }
         };
         // No receiver is not an error: nobody is reading chat right now.
@@ -288,6 +361,8 @@ pub(crate) async fn forward(
 
 #[cfg(test)]
 mod tests {
+    use n0_future::task::AbortOnDropHandle;
+
     use super::*;
 
     fn member() -> EndpointId {
@@ -301,8 +376,14 @@ mod tests {
         let mut writer = ChatWriter::new().expect("writer");
         let (tx, rx) = channel::channel(CHAT_BUFFER);
         let (legacy_tx, legacy_rx) = channel::channel(CHAT_BUFFER);
-        let current = tokio::spawn(forward(member(), writer.consume(), false, tx));
-        let legacy = tokio::spawn(forward(member(), writer.consume(), true, legacy_tx));
+        let current = tokio::spawn(forward(member(), writer.consume(), false, cursor(), tx));
+        let legacy = tokio::spawn(forward(
+            member(),
+            writer.consume(),
+            true,
+            cursor(),
+            legacy_tx,
+        ));
         let (mut rx, mut legacy_rx) = (ChatReceiver::new(rx), ChatReceiver::new(legacy_rx));
         // Give both readers their subscription before anything is written.
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -323,21 +404,127 @@ mod tests {
         assert_eq!(rx.recv().await, Err(ChatError::Closed));
     }
 
-    /// A receiver that falls behind is told how far, and the room goes on.
+    fn cursor() -> Arc<ChatCursor> {
+        Arc::new(ChatCursor::new(SystemTime::UNIX_EPOCH))
+    }
+
+    /// Waits for the next message, failing the test after a while.
+    async fn next(rx: &mut ChatReceiver) -> ChatMessage {
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for a message")
+            .expect("a message")
+    }
+
+    /// Reports whether a message arrives within a short while.
+    async fn quiet(rx: &mut ChatReceiver) -> bool {
+        tokio::time::timeout(Duration::from_millis(300), rx.recv())
+            .await
+            .is_err()
+    }
+
+    /// A reader that restarts over the same cursor does not deliver the last
+    /// message again, although moq hands the new subscription that group.
+    #[tokio::test]
+    async fn a_restarted_reader_does_not_repeat_a_message() {
+        let mut writer = ChatWriter::new().expect("writer");
+        let cursor = cursor();
+        let (tx, rx) = channel::channel(CHAT_BUFFER);
+        let mut rx = ChatReceiver::new(rx);
+        let first = tokio::spawn(forward(
+            member(),
+            writer.consume(),
+            false,
+            cursor.clone(),
+            tx.clone(),
+        ));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        writer.send("hello").expect("send");
+        assert_eq!(next(&mut rx).await.text, "hello");
+        first.abort();
+
+        let _second = AbortOnDropHandle::new(tokio::spawn(forward(
+            member(),
+            writer.consume(),
+            false,
+            cursor,
+            tx,
+        )));
+        assert!(quiet(&mut rx).await, "the last message was delivered again");
+        writer.send("world").expect("send");
+        assert_eq!(next(&mut rx).await.text, "world");
+    }
+
+    /// A member that restarts writes a new chat broadcast whose sequence starts
+    /// over; its messages are new, not repeats.
+    #[tokio::test]
+    async fn a_restarted_member_is_read_from_its_first_message() {
+        let cursor = cursor();
+        let (tx, rx) = channel::channel(CHAT_BUFFER);
+        let mut rx = ChatReceiver::new(rx);
+        for text in ["before", "after"] {
+            let mut writer = ChatWriter::new().expect("writer");
+            let _reader = AbortOnDropHandle::new(tokio::spawn(forward(
+                member(),
+                writer.consume(),
+                false,
+                cursor.clone(),
+                tx.clone(),
+            )));
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            writer.send(text).expect("send");
+            assert_eq!(next(&mut rx).await.text, text);
+        }
+    }
+
+    /// What a member said before this member joined is history, not news.
+    #[tokio::test]
+    async fn a_message_from_before_joining_is_not_delivered() {
+        let mut writer = ChatWriter::new().expect("writer");
+        writer.send("old").expect("send");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let cursor = Arc::new(ChatCursor::new(SystemTime::now()));
+        let (tx, rx) = channel::channel(CHAT_BUFFER);
+        let mut rx = ChatReceiver::new(rx);
+        let _reader = AbortOnDropHandle::new(tokio::spawn(forward(
+            member(),
+            writer.consume(),
+            false,
+            cursor,
+            tx,
+        )));
+        assert!(
+            quiet(&mut rx).await,
+            "a message from before joining arrived"
+        );
+        writer.send("new").expect("send");
+        assert_eq!(next(&mut rx).await.text, "new");
+    }
+
+    /// A receiver that falls behind is told how far, and the reader goes on
+    /// rather than waiting for it.
     #[tokio::test]
     async fn a_slow_receiver_lags_rather_than_blocking() {
+        let mut writer = ChatWriter::new().expect("writer");
         let (tx, rx) = channel::channel(2);
         let mut rx = ChatReceiver::new(rx);
+        let _reader = AbortOnDropHandle::new(tokio::spawn(forward(
+            member(),
+            writer.consume(),
+            false,
+            cursor(),
+            tx,
+        )));
+        tokio::time::sleep(Duration::from_millis(100)).await;
         for n in 0..5 {
-            tx.send(ChatMessage {
-                from: member(),
-                text: n.to_string(),
-                sent_at: SystemTime::now(),
-            })
-            .expect("a receiver exists");
+            writer.send(&n.to_string()).expect("send");
+            // One group per message, read in order before the next is sent,
+            // so the reader forwards all five into the full buffer.
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
         assert_eq!(rx.recv().await, Err(ChatError::Lagged(3)));
         assert_eq!(rx.recv().await.expect("the oldest kept").text, "3");
+        assert_eq!(next(&mut rx).await.text, "4");
     }
 
     /// A frame keeps its sender's time.
@@ -346,6 +533,7 @@ mod tests {
         let frame = ChatFrame {
             text: "hi".into(),
             sent_at_ms: 1_700_000_000_000,
+            writer: 7,
         };
         let bytes = postcard::to_stdvec(&frame).expect("encode");
         let decoded: ChatFrame = postcard::from_bytes(&bytes).expect("decode");

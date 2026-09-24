@@ -8,13 +8,26 @@
 //! reader. Nothing here knows what the broadcasts carry.
 //!
 //! A member is in the room while its gossip lease holds, renewed every thirty
-//! seconds and dropped two minutes after the last renewal, or at once when it
-//! leaves. Ending a broadcast changes what a member publishes, not whether it is
-//! a member.
+//! seconds and dropped about two minutes after the last renewal, or at once
+//! when it leaves. Ending a broadcast changes what a member publishes, not
+//! whether it is a member.
 //!
-//! Room broadcasts are private: [`Room::publish`] places a broadcast at
-//! `rooms/<topic>/<member>/<name>` with the room's membership as its audience,
-//! so it is offered to members and to nobody else who connects.
+//! Room broadcasts are private to the members: [`Room::publish`] places a
+//! broadcast at `rooms/<topic>/<member>/<name>` with the room's membership as
+//! its audience, so it is offered to members and to nobody else who connects,
+//! and a member that leaves or expires is cut off from what it was reading.
+//! [`Room::subscribe`] and the chat read each member over the session with that
+//! member, so no other peer can stand in for it. Membership itself is open to
+//! whoever holds the ticket: anyone who knows the topic id can join the gossip
+//! topic and announce itself, so the ticket is the boundary. While a member on
+//! the previous release is in the room the boundary is weaker: that release
+//! publishes its broadcasts at `rooms/<topic>/<name>` to anyone who connects,
+//! which also tells them the topic.
+//!
+//! Chat receivers carry what other members send from the moment of joining
+//! on, each message once, also when a member's session drops and comes back.
+//! A message sent while the session was down for more than a few seconds can
+//! be lost.
 //!
 //! ```no_run
 //! # async fn example(moq: iroh_moq::Moq, broadcast: moq_net::broadcast::Producer)

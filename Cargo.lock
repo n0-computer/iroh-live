@@ -4704,7 +4704,6 @@ name = "iroh-rooms"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "data-encoding",
  "derive_more",
  "iroh",
  "iroh-gossip",

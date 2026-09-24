@@ -3,13 +3,13 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use bytes::Bytes;
 use iroh::{EndpointId, protocol::ProtocolHandler};
 use iroh_gossip::{Gossip, TopicId};
-use iroh_moq::{Audience, Moq, Publication, Reach, Subscription};
+use iroh_moq::{Audience, Moq, Publication, Subscription};
 use iroh_smol_kv::{
     ExpiryConfig, Filter, SignedValue, Subscribe, SubscribeItem, SubscribeMode, WriteScope,
 };
@@ -22,7 +22,7 @@ use tokio::sync::{broadcast as channel, mpsc, oneshot};
 use tracing::{Instrument, debug, info, info_span, trace, warn};
 
 use crate::{
-    chat::{self, CHAT_BROADCAST, CHAT_BUFFER, ChatMessage, ChatReceiver, ChatWriter},
+    chat::{self, CHAT_BROADCAST, CHAT_BUFFER, ChatCursor, ChatMessage, ChatReceiver, ChatWriter},
     ticket::RoomTicket,
 };
 
@@ -41,6 +41,11 @@ const PEER_STATE_VERSION: u32 = 2;
 /// The map is the membership roll, so this is how long a member that vanished
 /// without saying so stays on it: long enough to ride out a brief outage, short
 /// enough that a room does not accumulate members who left minutes ago.
+/// smol-kv 0.4 sweeps expired entries on a fixed 30 second timer, so such a
+/// member actually drops off between two and two and a half minutes after its
+/// last renewal. The age is measured against the timestamp the member wrote, by
+/// its own clock, so a member whose clock runs more than this far behind is
+/// never seen at all.
 const STATE_HORIZON: Duration = Duration::from_secs(2 * 60);
 
 /// How often a member rewrites its announcement, which renews its lease.
@@ -49,11 +54,32 @@ const STATE_HORIZON: Duration = Duration::from_secs(2 * 60);
 /// or two is still a member.
 const STATE_REFRESH: Duration = Duration::from_secs(30);
 
-/// How often the gossip map looks for announcements past the horizon.
+/// How often the gossip map should look for announcements past the horizon.
+///
+/// smol-kv 0.4 ignores it and sweeps every 30 seconds; it is passed on for the
+/// release that honours it.
 const EXPIRY_CHECK_INTERVAL: Duration = Duration::from_secs(10);
 
 /// How many commands may wait for the room actor.
 const COMMAND_QUEUE: usize = 16;
+
+/// How long leaving waits for each step that needs the network.
+///
+/// Telling the others and stopping the gossip map both wait on peers; a room
+/// whose peers are gone must still be left promptly.
+const LEAVE_STEP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How often in a row the room resubscribes to its gossip map before it gives
+/// up.
+///
+/// smol-kv ends a subscription that falls behind its internal buffer; a fresh
+/// one replays the map, so the room carries on. One that ends again at once,
+/// several times over, means the map itself is gone.
+const MAP_RESUBSCRIBES: u32 = 3;
+
+/// How far before joining a chat message may have been sent and still count as
+/// sent after it, for clocks that disagree a little.
+const CHAT_CLOCK_TOLERANCE: Duration = Duration::from_secs(2);
 
 /// Everything that can go wrong in a room.
 #[stack_error(derive, add_meta, from_sources)]
@@ -65,15 +91,17 @@ pub enum Error {
     /// The transport refused: a publication, a subscription, or a dial.
     #[error(transparent)]
     Moq(iroh_moq::Error),
-    /// The room's chat broadcast could not be created.
+    /// The room's chat broadcast failed: it could not be created, or a
+    /// message could not be written to it.
     #[error("the chat broadcast failed")]
     Chat {
         /// What moq-net reported.
         #[error(source, std_err)]
         source: moq_net::Error,
     },
-    /// A broadcast name that a room does not accept: empty, or starting with a
-    /// dot, which the room keeps for itself.
+    /// A broadcast name that a room does not accept: empty, starting with a
+    /// dot, which the room keeps for itself, or holding a slash, which would
+    /// reach into another member's part of the room's namespace.
     #[error("invalid broadcast name {name:?}")]
     InvalidName {
         /// The name as given.
@@ -168,6 +196,7 @@ impl Rooms {
             local_changed: Watchable::new(0),
             display_name: Watchable::new(config.display_name),
             legacy_peers: Mutex::new(BTreeSet::new()),
+            chat_since: SystemTime::now() - CHAT_CLOCK_TOLERANCE,
             done: Watchable::new(false),
         });
         let actor = Actor {
@@ -177,6 +206,7 @@ impl Rooms {
             peers: BTreeMap::new(),
             chat,
             chat_publication,
+            resync: None,
         };
         let span = info_span!("room", topic = %topic.fmt_short(), me = %me.fmt_short());
         let task = tokio::spawn(actor.run(inbox).instrument(span));
@@ -257,14 +287,16 @@ struct Inner {
     display_name: Watchable<Option<String>>,
     /// Members that announce the layout before paths named their publisher.
     legacy_peers: Mutex<BTreeSet<EndpointId>>,
+    /// Chat sent before this is history from before joining.
+    chat_since: SystemTime,
     done: Watchable<bool>,
 }
 
 /// One of this member's publications.
 struct Local {
     publication: Publication,
-    /// Withdraws the entry once the broadcast ends.
-    _closed: AbortOnDropHandle<()>,
+    /// Forgets the entry once the publication is withdrawn, however it goes.
+    _withdrawn: AbortOnDropHandle<()>,
 }
 
 enum Command {
@@ -293,20 +325,21 @@ impl Room {
     ///
     /// The path is `rooms/<topic>/<this member>/<name>`, and the audience is the
     /// room's membership as it changes, so the broadcast is offered to exactly
-    /// the members and to nobody else who connects. It is withdrawn when the
-    /// broadcast ends or with [`Publication::unpublish`].
+    /// the members and to nobody else who connects. It stays in this member's
+    /// announcement until it is withdrawn: when the broadcast ends, with
+    /// [`Publication::unpublish`], or when the room is left.
     ///
     /// # Errors
     ///
-    /// Fails with [`Error::InvalidName`] for an empty name or one starting with
-    /// a dot, [`Error::Moq`] if the name is already published, and
-    /// [`Error::Left`] once the room was left.
+    /// Fails with [`Error::InvalidName`] for an empty name, one starting with a
+    /// dot, or one holding a slash, [`Error::Moq`] if the name is already
+    /// published, and [`Error::Left`] once the room was left.
     pub fn publish(
         &self,
         name: &str,
         broadcast: impl Consume<broadcast::Consumer>,
     ) -> Result<Publication, Error> {
-        if name.is_empty() || name.starts_with('.') {
+        if name.is_empty() || name.starts_with('.') || name.contains('/') {
             return Err(e!(Error::InvalidName {
                 name: name.to_owned()
             }));
@@ -315,46 +348,61 @@ impl Room {
             return Err(e!(Error::Left));
         }
         let topic = self.inner.ticket.topic_id();
-        let consumer = broadcast.consume();
         let publication = self.inner.moq.publish_at_with_legacy(
             room_path(topic, self.inner.me, name),
             legacy_room_path(topic, name),
-            &consumer,
+            broadcast,
             Audience::Peers(self.inner.members.watch()),
         )?;
-        let closed = {
-            let inner = Arc::downgrade(&self.inner);
-            let name = name.to_owned();
-            let publication = publication.clone();
-            AbortOnDropHandle::new(tokio::spawn(async move {
-                consumer.closed().await;
-                if let Some(inner) = inner.upgrade() {
-                    debug!(%name, "room broadcast ended");
-                    inner.remove_local(&name, &publication);
-                }
-            }))
-        };
         info!(%name, path = %publication.path(), "published into the room");
-        self.inner.local.lock().expect("poisoned").insert(
-            name.to_owned(),
-            Local {
-                publication: publication.clone(),
-                _closed: closed,
-            },
-        );
+        {
+            let mut local = self.inner.local.lock().expect("poisoned");
+            // Spawned under the lock the task takes to forget the entry, so it
+            // cannot run before the entry is there, whenever the publication
+            // is withdrawn.
+            let withdrawn = {
+                let inner = Arc::downgrade(&self.inner);
+                let name = name.to_owned();
+                let publication = publication.clone();
+                AbortOnDropHandle::new(tokio::spawn(async move {
+                    publication.withdrawn().await;
+                    if let Some(inner) = inner.upgrade() {
+                        debug!(%name, "room broadcast withdrawn");
+                        inner.remove_local(&name, &publication);
+                    }
+                }))
+            };
+            local.insert(
+                name.to_owned(),
+                Local {
+                    publication: publication.clone(),
+                    _withdrawn: withdrawn,
+                },
+            );
+        }
         self.inner.bump_local();
         Ok(publication)
     }
 
-    /// Resolves `peer`'s broadcast `name`, directly or through a relay that
-    /// routes it.
+    /// Resolves `peer`'s broadcast `name` over the session with that member.
     ///
-    /// Cancellation safe.
+    /// Dials the member if there is no session yet, and reads the broadcast
+    /// from what the member itself announces on that session, so no other peer
+    /// can stand in for it. Room broadcasts go to members directly and never
+    /// through a relay. Waits until the member announces `name` to this node,
+    /// which it does once it counts this node as a member and for as long as
+    /// it publishes `name`, so a caller that may ask for a name the member
+    /// never published should bound the wait. Cancellation safe.
     ///
     /// # Errors
     ///
-    /// Fails if the member cannot be reached or does not publish `name`.
+    /// Fails with [`Error::Left`] once the room was left, and with
+    /// [`Error::Moq`] if the member cannot be dialed or its session ends before
+    /// it announces `name`.
     pub async fn subscribe(&self, peer: EndpointId, name: &str) -> Result<Subscription, Error> {
+        if self.inner.done.get() {
+            return Err(e!(Error::Left));
+        }
         let topic = self.inner.ticket.topic_id();
         let legacy = self
             .inner
@@ -362,18 +410,15 @@ impl Room {
             .lock()
             .expect("poisoned")
             .contains(&peer);
-        let subscription = if legacy {
-            // A member on the older layout publishes at a path that only means
-            // something on the session with it.
-            let session = self.inner.moq.connect(peer).await?;
-            session.subscribe(legacy_room_path(topic, name)).await?
+        // A member on the older layout publishes at a path that names no
+        // publisher, which only means something on the session with it.
+        let path = if legacy {
+            legacy_room_path(topic, name)
         } else {
-            self.inner
-                .moq
-                .subscribe(room_path(topic, peer, name), self.inner.moq.reach())
-                .await?
+            room_path(topic, peer, name)
         };
-        Ok(subscription)
+        let session = self.inner.moq.connect(peer).await?;
+        Ok(session.subscribe(path).await?)
     }
 
     /// Sets the name other members see, or clears it.
@@ -418,8 +463,11 @@ impl Room {
     /// Leaves the room for every clone of this handle.
     ///
     /// Tells the other members, withdraws this member's publications and chat,
-    /// and ends every chat receiver. Idempotent; not cancellation safe, call it
-    /// again to finish.
+    /// and ends every chat receiver. The subscriptions this member made with
+    /// [`subscribe`](Self::subscribe) are the caller's and stay open; drop or
+    /// close them as well. Steps that need the network are bounded, so this
+    /// returns within seconds even with every other member gone. Idempotent;
+    /// not cancellation safe, call it again to finish.
     pub async fn leave(&self) {
         let (reply, reply_rx) = oneshot::channel();
         if self
@@ -453,11 +501,14 @@ impl Drop for Inner {
 
 impl Inner {
     /// Forgets the local publication `name`, if it is still `publication`.
+    ///
+    /// Compared by identity: `name` may have been published anew since, and
+    /// the new publication must stay.
     fn remove_local(&self, name: &str, publication: &Publication) {
         let mut local = self.local.lock().expect("poisoned");
         if local
             .get(name)
-            .is_some_and(|entry| entry.publication.path() == publication.path())
+            .is_some_and(|entry| entry.publication == *publication)
         {
             local.remove(name);
             drop(local);
@@ -554,14 +605,45 @@ impl Announcement {
 /// member started can come back and change the room.
 struct Peer {
     announcement: Announcement,
-    /// The tasks forwarding this member's chat.
-    chat: Vec<AbortOnDropHandle<()>>,
+    /// The member's chat readers, by the broadcast each reads: its chat
+    /// broadcast for a current member, each of its broadcasts for one on the
+    /// older release.
+    chat: BTreeMap<String, ChatReader>,
+}
+
+/// One chat source of a member, and how far it was read.
+struct ChatReader {
+    /// `None` until started, and while the room cannot deliver chat.
+    task: Option<AbortOnDropHandle<()>>,
+    /// Kept when the task restarts, so a restart does not deliver again.
+    cursor: Arc<ChatCursor>,
 }
 
 impl Peer {
-    /// Reports whether every chat reader of this member has stopped.
-    fn chat_stopped(&self) -> bool {
-        self.chat.iter().all(|task| task.is_finished())
+    fn new(announcement: Announcement) -> Self {
+        Self {
+            announcement,
+            chat: BTreeMap::new(),
+        }
+    }
+
+    /// Returns the broadcasts this member's chat is read from.
+    fn chat_sources(&self) -> BTreeSet<String> {
+        if self.announcement.legacy {
+            self.announcement.broadcasts.clone()
+        } else {
+            BTreeSet::from([CHAT_BROADCAST.to_owned()])
+        }
+    }
+
+    /// Reports whether a chat source of this member has no running reader.
+    fn chat_stalled(&self) -> bool {
+        self.chat_sources().iter().any(|name| {
+            self.chat
+                .get(name)
+                .and_then(|reader| reader.task.as_ref())
+                .is_none_or(|task| task.is_finished())
+        })
     }
 }
 
@@ -574,20 +656,25 @@ struct Actor {
     peers: BTreeMap<EndpointId, Peer>,
     chat: ChatWriter,
     chat_publication: Publication,
+    /// The members a replay of the gossip map has shown so far, while one runs
+    /// after a resubscription.
+    resync: Option<BTreeSet<EndpointId>>,
+}
+
+impl Drop for Actor {
+    /// Ends every chat receiver and lets [`Room::leave`] return, also when
+    /// the actor panicked or its last handle went without leaving.
+    fn drop(&mut self) {
+        if let Ok(mut chat) = self.inner.chat.lock() {
+            chat.take();
+        }
+        self.inner.done.set(true).ok();
+    }
 }
 
 impl Actor {
     async fn run(mut self, mut inbox: mpsc::Receiver<Command>) {
-        // The raw stream rather than `stream()`, which drops the expiry items
-        // membership is read out of.
-        let updates = self
-            .kv
-            .subscribe_with_opts(Subscribe {
-                mode: SubscribeMode::Both,
-                filter: Filter::ALL,
-            })
-            .stream_raw();
-        tokio::pin!(updates);
+        let mut updates = Self::subscribe_map(self.kv.clone());
 
         // One writer, so announcements go out in the order they were decided.
         let desired = Watchable::new(self.announcement(false));
@@ -596,16 +683,18 @@ impl Actor {
         ));
         let mut local_changed = self.inner.local_changed.watch();
         let mut display_name = self.inner.display_name.watch();
+        let mut resubscribes = 0;
 
         let leave = loop {
+            let mut ended = false;
             tokio::select! {
                 update = updates.next() => match update {
-                    None => {
-                        warn!("the room's gossip map ended");
-                        break None;
-                    }
+                    None => ended = true,
                     Some(Err(err)) => warn!(%err, "gossip map update failed"),
-                    Some(Ok(item)) => self.handle_item(item),
+                    Some(Ok(item)) => {
+                        resubscribes = 0;
+                        self.handle_item(item);
+                    }
                 },
                 changed = local_changed.updated() => {
                     if changed.is_err() {
@@ -631,6 +720,19 @@ impl Actor {
                     Some(Command::Leave { reply }) => break Some(reply),
                 },
             }
+            if ended {
+                if resubscribes == MAP_RESUBSCRIBES {
+                    warn!("the room's gossip map ended");
+                    break None;
+                }
+                resubscribes += 1;
+                warn!(
+                    attempt = resubscribes,
+                    "gossip map subscription ended, resubscribing"
+                );
+                updates = Self::subscribe_map(self.kv.clone());
+                self.resync = Some(BTreeSet::new());
+            }
         };
         // Stopped first, so a refresh cannot write over the announcement that
         // says this member left.
@@ -641,12 +743,38 @@ impl Actor {
         }
     }
 
+    /// Subscribes to the gossip map: every entry there is now, then changes.
+    fn subscribe_map(
+        kv: iroh_smol_kv::Client,
+    ) -> std::pin::Pin<
+        Box<impl n0_future::Stream<Item = Result<SubscribeItem, impl std::fmt::Display>> + Send>,
+    > {
+        // The raw stream rather than `stream()`, which drops the expiry items
+        // membership is read out of.
+        Box::pin(
+            kv.subscribe_with_opts(Subscribe {
+                mode: SubscribeMode::Both,
+                filter: Filter::ALL,
+            })
+            .stream_raw(),
+        )
+    }
+
     /// Withdraws everything this member put into the room, telling the others
     /// when it is leaving on purpose.
     async fn shut_down(&mut self, leaving: bool) {
         if leaving {
             info!("leaving the room");
-            put(&self.writer, &self.announcement(true)).await;
+            let told = tokio::time::timeout(
+                LEAVE_STEP_TIMEOUT,
+                put(&self.writer, &self.announcement(true)),
+            )
+            .await;
+            if told.is_err() {
+                warn!(
+                    "could not tell the others in time; they drop this member when its lease ends"
+                );
+            }
         }
         self.inner.chat.lock().expect("poisoned").take();
         let local: Vec<Local> = std::mem::take(&mut *self.inner.local.lock().expect("poisoned"))
@@ -659,8 +787,10 @@ impl Actor {
         self.chat.finish();
         self.peers.clear();
         self.publish_state();
-        if let Err(err) = self.kv.shutdown().await {
-            debug!(%err, "gossip map already stopped");
+        match tokio::time::timeout(LEAVE_STEP_TIMEOUT, self.kv.shutdown()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => debug!(%err, "gossip map already stopped"),
+            Err(_) => warn!("the gossip map did not stop in time"),
         }
         self.inner.done.set(true).ok();
     }
@@ -701,8 +831,22 @@ impl Actor {
                 }
             }
             // The boundary between entries that were there when the
-            // subscription opened and the ones that arrive from here on.
-            SubscribeItem::CurrentDone => {}
+            // subscription opened and the ones that arrive from here on. After
+            // a resubscription, a member the replay did not show expired while
+            // the room was not listening.
+            SubscribeItem::CurrentDone => {
+                if let Some(seen) = self.resync.take() {
+                    let before = self.peers.len();
+                    self.peers.retain(|remote, _| seen.contains(remote));
+                    if self.peers.len() != before {
+                        info!(
+                            gone = before - self.peers.len(),
+                            "members expired while resubscribing"
+                        );
+                        self.publish_state();
+                    }
+                }
+            }
         }
     }
 
@@ -725,12 +869,15 @@ impl Actor {
             }
             return;
         }
+        if let Some(seen) = self.resync.as_mut() {
+            seen.insert(remote);
+        }
         // Every member rewrites its announcement to renew its lease, so most of
         // these say nothing new. A repeat restarts chat readers that stopped,
         // which is how a member whose session dropped is read again.
         let known = self.peers.get(&remote);
         let changed = known.is_none_or(|peer| peer.announcement != announcement);
-        if !changed && known.is_some_and(|peer| !peer.chat_stopped()) {
+        if !changed && known.is_some_and(|peer| !peer.chat_stalled()) {
             trace!(remote = %remote.fmt_short(), "announcement renewed");
             return;
         }
@@ -741,72 +888,63 @@ impl Actor {
                 legacy = announcement.legacy,
                 "member joined the room",
             ),
-            Some(_) => debug!(
+            Some(_) if changed => debug!(
                 remote = %remote.fmt_short(),
                 broadcasts = ?announcement.broadcasts,
                 "member announcement changed",
             ),
+            Some(_) => debug!(remote = %remote.fmt_short(), "restarting a stopped chat reader"),
         }
-        let chat = self.chat_readers(remote, &announcement);
-        self.peers.insert(remote, Peer { announcement, chat });
-        self.publish_state();
+        let mut peer = self
+            .peers
+            .remove(&remote)
+            .unwrap_or_else(|| Peer::new(announcement.clone()));
+        peer.announcement = announcement;
+        self.sync_chat(remote, &mut peer);
+        self.peers.insert(remote, peer);
+        if changed {
+            self.publish_state();
+        }
     }
 
-    /// Starts the tasks that forward member `remote`'s chat.
+    /// Runs one chat reader per chat source of member `remote`.
     ///
-    /// A current member's chat is its chat broadcast. A member on the older
-    /// release writes chat into the broadcasts it publishes, so each of them is
-    /// read for it.
-    fn chat_readers(
-        &self,
-        remote: EndpointId,
-        announcement: &Announcement,
-    ) -> Vec<AbortOnDropHandle<()>> {
+    /// Keeps the readers that still run, so a change to what the member
+    /// publishes does not restart them; starts the missing and stopped ones
+    /// over their cursors, and drops the ones for sources that went.
+    fn sync_chat(&self, remote: EndpointId, peer: &mut Peer) {
+        let sources = peer.chat_sources();
+        peer.chat.retain(|name, _| sources.contains(name));
         let Some(tx) = self.inner.chat.lock().expect("poisoned").clone() else {
-            return Vec::new();
+            return;
         };
-        let moq = self.inner.moq.clone();
         let topic = self.inner.ticket.topic_id();
-        if !announcement.legacy {
-            let path = room_path(topic, remote, CHAT_BROADCAST);
-            return vec![AbortOnDropHandle::new(tokio::spawn(
-                async move {
-                    match moq.subscribe(path, Reach::Direct).await {
-                        Ok(subscription) => {
-                            chat::forward(remote, subscription.as_moq(), false, tx).await;
-                        }
-                        Err(err) => debug!(%err, "member chat unreachable"),
-                    }
-                }
+        let legacy = peer.announcement.legacy;
+        for name in sources {
+            let reader = peer.chat.entry(name.clone()).or_insert_with(|| ChatReader {
+                task: None,
+                cursor: Arc::new(ChatCursor::new(self.inner.chat_since)),
+            });
+            if reader.task.as_ref().is_some_and(|task| !task.is_finished()) {
+                continue;
+            }
+            let path = if legacy {
+                legacy_room_path(topic, &name)
+            } else {
+                room_path(topic, remote, &name)
+            };
+            reader.task = Some(AbortOnDropHandle::new(tokio::spawn(
+                read_chat(
+                    self.inner.moq.clone(),
+                    remote,
+                    path,
+                    legacy,
+                    reader.cursor.clone(),
+                    tx.clone(),
+                )
                 .in_current_span(),
-            ))];
+            )));
         }
-        announcement
-            .broadcasts
-            .iter()
-            .map(|name| {
-                let (moq, tx) = (moq.clone(), tx.clone());
-                let path = legacy_room_path(topic, name);
-                AbortOnDropHandle::new(tokio::spawn(
-                    async move {
-                        let session = match moq.connect(remote).await {
-                            Ok(session) => session,
-                            Err(err) => {
-                                debug!(%err, "member unreachable");
-                                return;
-                            }
-                        };
-                        match session.subscribe(path).await {
-                            Ok(subscription) => {
-                                chat::forward(remote, subscription.as_moq(), true, tx).await;
-                            }
-                            Err(err) => debug!(%err, "member broadcast unreachable"),
-                        }
-                    }
-                    .in_current_span(),
-                ))
-            })
-            .collect()
     }
 
     /// Publishes the membership to the state watcher and the audience set.
@@ -836,6 +974,32 @@ impl Actor {
         *self.inner.legacy_peers.lock().expect("poisoned") = legacy;
         self.inner.members.set(members).ok();
         self.inner.state.set(state).ok();
+    }
+}
+
+/// Reads one chat source of member `remote` into `tx`.
+///
+/// Over the session with the member, never the route table: what the member
+/// announces on its own session is its chat, and no other peer can put a
+/// broadcast there.
+async fn read_chat(
+    moq: Moq,
+    remote: EndpointId,
+    path: String,
+    legacy: bool,
+    cursor: Arc<ChatCursor>,
+    tx: channel::Sender<ChatMessage>,
+) {
+    let session = match moq.connect(remote).await {
+        Ok(session) => session,
+        Err(err) => {
+            debug!(remote = %remote.fmt_short(), %err, "member unreachable");
+            return;
+        }
+    };
+    match session.subscribe(path).await {
+        Ok(subscription) => chat::forward(remote, subscription.as_moq(), legacy, cursor, tx).await,
+        Err(err) => debug!(remote = %remote.fmt_short(), %err, "member chat unreachable"),
     }
 }
 
