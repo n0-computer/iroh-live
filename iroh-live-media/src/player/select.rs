@@ -309,13 +309,14 @@ pub(crate) async fn run(inputs: Inputs) {
             .borrow()
             .as_ref()
             .map(|desired| desired.target.rendition.clone())
-            .or(on_screen);
+            .or_else(|| on_screen.clone());
 
         let (choice, why) = choose(
             &mode,
             &catalog,
             &backoffs.excluded(now),
             current.as_deref(),
+            on_screen.as_deref(),
             sample.as_ref(),
             &mut bound,
             now,
@@ -378,11 +379,16 @@ fn same_error(left: &Option<Arc<Error>>, right: &Option<Arc<Error>>) -> bool {
 }
 
 /// Picks the rendition to play, and why a pin could not be honoured.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the rendition asked for and the one on screen are both weighed"
+)]
 fn choose(
     mode: &RenditionMode,
     catalog: &Catalog,
     excluded: &BTreeSet<String>,
     current: Option<&str>,
+    on_screen: Option<&str>,
     sample: Option<&crate::NetworkSample>,
     bound: &mut Bound,
     now: Instant,
@@ -429,6 +435,7 @@ fn choose(
         Some(sample) => bound.decide(
             &rungs,
             current,
+            on_screen,
             &constraints,
             &Reading {
                 loss: sample.loss.map(f64::from),
@@ -489,6 +496,7 @@ mod tests {
             mode,
             &catalog(),
             &excluded,
+            None,
             None,
             None,
             &mut bound,

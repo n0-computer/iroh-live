@@ -141,8 +141,18 @@ pub(crate) struct Bound {
     lower: Option<Instant>,
     /// Since when the target has been above the rung playing, likewise.
     higher: Option<Instant>,
-    /// When the last step down happened.
+    /// When the last step down landed, or the last time it was seen still on
+    /// its way.
+    ///
+    /// The cooldown runs from the landing rather than the decision: a switch
+    /// takes a decoder open and a keyframe to land, seconds over an impaired
+    /// link, and a cooldown counted from the decision could be over before the
+    /// lower rung ever played.
     last_downgrade: Option<Instant>,
+    /// Whether the last decision was a step down that has not landed yet.
+    downgrading: bool,
+    /// Whether a switch was on its way at the last decision.
+    in_flight: bool,
 }
 
 impl Bound {
@@ -158,6 +168,8 @@ impl Bound {
             lower: None,
             higher: None,
             last_downgrade: None,
+            downgrading: false,
+            in_flight: false,
         }
     }
 
@@ -170,6 +182,8 @@ impl Bound {
         self.lower = None;
         self.higher = None;
         self.last_downgrade = None;
+        self.downgrading = false;
+        self.in_flight = false;
     }
 
     /// Returns the sliding maximum of the estimate, if there is one.
@@ -226,12 +240,18 @@ impl Bound {
 
     /// Picks the rendition to play.
     ///
-    /// `ranked` is the catalog's video renditions, best first; `current` is the
-    /// one playing, if any. Returns `None` only when `ranked` is empty.
+    /// `ranked` is the catalog's video renditions, best first. `current` is the
+    /// one last asked for, which is on screen or on its way, and the hold
+    /// timers weigh the target against it. `on_screen` is the one actually
+    /// playing: while the two differ a switch is in flight, and loss is not
+    /// followed, since the loss measured then is the old rendition's and a
+    /// step taken on it would pile a second step onto the first before the
+    /// first could help. Returns `None` only when `ranked` is empty.
     pub(crate) fn decide(
         &mut self,
         ranked: &[Rung],
         current: Option<&str>,
+        on_screen: Option<&str>,
         constraints: &Constraints,
         reading: &Reading,
         now: Instant,
@@ -268,9 +288,35 @@ impl Bound {
 
         let current_index = current.and_then(|name| ranked.iter().position(|r| r.name == name));
         let estimate = self.estimate(reading, now);
-        if let Some(loss) = reading.loss {
-            self.follow_loss(loss, current_index.unwrap_or(0), lowest, now);
+        let in_flight = current.is_some() && current != on_screen;
+        if in_flight {
+            if self.downgrading {
+                self.last_downgrade = Some(now);
+            }
+            // An emergency still drops to the bottom at once: it overrides
+            // whatever is on its way rather than stacking on it.
+            if reading
+                .loss
+                .is_some_and(|loss| loss >= self.tuning.loss_emergency)
+            {
+                self.loss_ceiling = Some(lowest);
+                self.lossy_since = None;
+                self.clean_since = None;
+            }
+        } else {
+            if std::mem::take(&mut self.in_flight) {
+                // Landed: the loss seen from here on is the new rendition's,
+                // and a lasting loss earns its next step one hold from now.
+                self.downgrading = false;
+                if self.lossy_since.is_some() {
+                    self.lossy_since = Some(now);
+                }
+            }
+            if let Some(loss) = reading.loss {
+                self.follow_loss(loss, current_index.unwrap_or(0), lowest, now);
+            }
         }
+        self.in_flight = in_flight;
 
         let fits = |rung: &Rung| match (estimate, rung.bitrate) {
             (Some(estimate), Some(bitrate)) => {
@@ -309,6 +355,7 @@ impl Bound {
                 if emergency || now.duration_since(since) >= self.tuning.downgrade_hold {
                     self.lower = None;
                     self.last_downgrade = Some(now);
+                    self.downgrading = true;
                     return Some(target.clone());
                 }
                 Some(ranked[current_index].name.clone())
@@ -381,6 +428,7 @@ mod tests {
                 .decide(
                     &ranked,
                     Some(&playing),
+                    Some(&playing),
                     &Constraints::default(),
                     &reading,
                     now,
@@ -396,6 +444,7 @@ mod tests {
         let mut bound = Bound::new(Tuning::default());
         let chosen = bound.decide(
             &ladder(),
+            None,
             None,
             &Constraints::default(),
             &estimate(1_200_000),
@@ -447,6 +496,7 @@ mod tests {
             playing = bound
                 .decide(
                     &ranked,
+                    Some(&playing),
                     Some(&playing),
                     &Constraints::default(),
                     &reading,
@@ -501,6 +551,7 @@ mod tests {
                 .decide(
                     &ranked,
                     Some(&playing),
+                    Some(&playing),
                     &Constraints::default(),
                     &estimate(bps),
                     start + ms(100) * tick,
@@ -520,6 +571,7 @@ mod tests {
         };
         let chosen = bound.decide(
             &ladder(),
+            Some("1080p"),
             Some("1080p"),
             &Constraints::default(),
             &reading,
@@ -574,6 +626,7 @@ mod tests {
         let chosen = bound.decide(
             &ladder(),
             None,
+            None,
             &constraints,
             &estimate(100_000_000),
             Instant::now(),
@@ -592,6 +645,7 @@ mod tests {
         let chosen = bound.decide(
             &ladder(),
             Some("1080p"),
+            Some("1080p"),
             &constraints,
             &estimate(100_000_000),
             Instant::now(),
@@ -606,6 +660,7 @@ mod tests {
         let mut bound = Bound::new(Tuning::default());
         let chosen = bound.decide(
             &ranked,
+            None,
             None,
             &Constraints::default(),
             &estimate(100_000_000),
@@ -623,6 +678,7 @@ mod tests {
         };
         let chosen = bound.decide(
             &ladder(),
+            None,
             None,
             &constraints,
             &estimate(100_000_000),
@@ -672,6 +728,7 @@ mod tests {
                 .decide(
                     &ranked,
                     Some(&playing),
+                    Some(&playing),
                     &Constraints::default(),
                     &estimate(bps),
                     now,
@@ -679,6 +736,148 @@ mod tests {
                 .expect("the ladder is not empty");
         }
         assert_ne!(playing, "1080p", "the hold restarted with every waver");
+    }
+
+    /// N3: with the rendition asked for fed back as current, sustained loss
+    /// used to step the ceiling below the replacement still on its way every
+    /// hold, superseding it before it could land. Loss is not followed while a
+    /// switch is in flight, and the next step comes a hold after the landing.
+    #[test]
+    fn loss_does_not_stack_steps_while_a_switch_is_in_flight() {
+        let mut bound = Bound::new(Tuning::default());
+        let ranked = ladder();
+        let lossy = Reading {
+            loss: Some(0.12),
+            delivery: None,
+            path_generation: 0,
+        };
+        let start = Instant::now();
+        let mut asked = "1080p".to_string();
+        let mut now = start;
+        // The loss holds; the first step's replacement takes three seconds
+        // to land, and 1080p stays on screen meanwhile.
+        while now < start + ms(3500) {
+            asked = bound
+                .decide(
+                    &ranked,
+                    Some(&asked),
+                    Some("1080p"),
+                    &Constraints::default(),
+                    &lossy,
+                    now,
+                )
+                .expect("the ladder is not empty");
+            now += ms(100);
+        }
+        assert_eq!(asked, "720p", "a second step was stacked on the first");
+        // It lands, the loss goes on, and the next step comes after a hold.
+        let landed = now;
+        while now < landed + ms(400) {
+            asked = bound
+                .decide(
+                    &ranked,
+                    Some(&asked),
+                    Some("720p"),
+                    &Constraints::default(),
+                    &lossy,
+                    now,
+                )
+                .expect("the ladder is not empty");
+            now += ms(100);
+        }
+        assert_eq!(asked, "720p", "stepped again before a hold on the new rung");
+        while now < landed + ms(1200) {
+            asked = bound
+                .decide(
+                    &ranked,
+                    Some(&asked),
+                    Some("720p"),
+                    &Constraints::default(),
+                    &lossy,
+                    now,
+                )
+                .expect("the ladder is not empty");
+            now += ms(100);
+        }
+        assert_eq!(asked, "360p");
+    }
+
+    /// N3: the cooldown after a step down used to run from the decision, so a
+    /// switch that took longer than the cooldown to land could be taken back
+    /// almost as soon as it played. It runs from the landing.
+    #[test]
+    fn the_cooldown_runs_from_the_landing() {
+        let tuning = Tuning::default();
+        let mut bound = Bound::new(tuning.clone());
+        let ranked = ladder();
+        let start = Instant::now();
+        let mut asked = "1080p".to_string();
+        let mut on_screen = "1080p".to_string();
+        let mut now = start;
+        // A shortfall steps down after the hold.
+        while asked == "1080p" {
+            asked = bound
+                .decide(
+                    &ranked,
+                    Some(&asked),
+                    Some(&on_screen),
+                    &Constraints::default(),
+                    &estimate(1_500_000),
+                    now,
+                )
+                .expect("the ladder is not empty");
+            now += ms(100);
+        }
+        assert_eq!(asked, "720p");
+        // The link recovers at once, but the switch takes five seconds to land.
+        let decided = now;
+        while now < decided + ms(5000) {
+            asked = bound
+                .decide(
+                    &ranked,
+                    Some(&asked),
+                    Some(&on_screen),
+                    &Constraints::default(),
+                    &estimate(100_000_000),
+                    now,
+                )
+                .expect("the ladder is not empty");
+            now += ms(100);
+        }
+        assert_eq!(asked, "720p", "stepped back up before the step down landed");
+        on_screen = "720p".to_string();
+        let landed = now;
+        while now < landed + tuning.post_downgrade_cooldown - ms(200) {
+            asked = bound
+                .decide(
+                    &ranked,
+                    Some(&asked),
+                    Some(&on_screen),
+                    &Constraints::default(),
+                    &estimate(100_000_000),
+                    now,
+                )
+                .expect("the ladder is not empty");
+            now += ms(100);
+        }
+        assert_eq!(
+            asked, "720p",
+            "stepped up inside the cooldown after the landing"
+        );
+        while now < landed + tuning.post_downgrade_cooldown + tuning.upgrade_hold + ms(500) {
+            asked = bound
+                .decide(
+                    &ranked,
+                    Some(&asked),
+                    Some(&on_screen),
+                    &Constraints::default(),
+                    &estimate(100_000_000),
+                    now,
+                )
+                .expect("the ladder is not empty");
+            now += ms(100);
+        }
+        assert_eq!(asked, "1080p", "never came back up");
     }
 
     /// The loss ceiling is part of what a path taught: it goes with it.
@@ -694,6 +893,7 @@ mod tests {
         bound.decide(
             &ladder(),
             Some("1080p"),
+            Some("1080p"),
             &Constraints::default(),
             &reading,
             now,
@@ -704,7 +904,7 @@ mod tests {
             delivery: None,
             path_generation: 1,
         };
-        let chosen = bound.decide(&ladder(), None, &Constraints::default(), &fresh, now);
+        let chosen = bound.decide(&ladder(), None, None, &Constraints::default(), &fresh, now);
         assert_eq!(chosen.as_deref(), Some("1080p"));
     }
 
