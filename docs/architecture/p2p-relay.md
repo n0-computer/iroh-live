@@ -10,10 +10,12 @@ an iroh relay, which forwards opaque packets and costs its own round trip.
 From the media pipeline's point of view the transition is invisible. What changes
 is round-trip time and available bandwidth, and the publisher's delivery estimate
 follows the bandwidth, which is what [adaptive rendition switching](adaptive.md)
-reads. The signal producer counts every change of selected path as a new path
-generation, and the selector forgets what it learned on the old path when one
-arrives. `iroh-live`'s signal producer logs whether the selected path is relayed
-at TRACE, with every reading.
+reads. The session's link monitor in `iroh-moq/src/link.rs` counts every change
+of selected path as a new path generation, and the selector forgets what it
+learned on the old path when one arrives. The monitor logs every sample at
+TRACE as `link sample`, including whether the selected path is relayed;
+`iroh-live/src/network.rs` turns those samples into the `NetworkSample`s the
+player reads.
 
 An iroh relay and a MoQ relay are unrelated. The first forwards UDP between peers
 that cannot reach each other and understands nothing about the media. The second
@@ -38,8 +40,11 @@ fingerprint so a browser can pin it. ACME provisioning is not implemented.
 The iroh secret key is persisted under `IROH_LIVE_RELAY_DATA`, or the platform
 data directory, so the relay's endpoint id survives a restart.
 
-**There is no authentication.** The relay grants publish and subscribe on every
-path to every connection. Do not put one on a public address.
+**There is no authentication.** Anyone may connect and subscribe to every path.
+Publishing is scoped only by identity: an iroh client, whose endpoint id iroh
+authenticated, publishes only at `live/<its id>/...` and
+`rooms/<topic>/<its id>/...`, and a browser only at names of one segment. Do
+not put one on a public address.
 
 ## Pull on demand
 
@@ -59,7 +64,12 @@ not there, rather than hanging: the cluster origin registers no dynamic handler.
 
 ## Publishing to a relay
 
-From the publisher's side, reaching a relay is just a connection. Everything the
-node publishes is announced on every MoQ session it has, so `irl publish --relay
-<ENDPOINT_ID>` connects and the announce follows. See the [browser relay
+From the publisher's side, reaching a relay is a relay link:
+`Moq::attach_relay(RelayConfig::new(url))`, behind `iroh-moq`'s `relay-links`
+feature, stays attached to the relay and redials with backoff, and every
+publication whose audience is `Everyone` is offered to it. `irl publish --relay
+<ENDPOINT_ID>` attaches to `iroh://<ENDPOINT_ID>/` that way. By default a relay
+link also consumes: it copies every route the relay knows into the node's route
+table. A node that only publishes, as `irl publish` does, attaches with
+`.with_consume(false)`. See the [browser relay
 guide](../guide/browser-relay.md) for the full workflow.

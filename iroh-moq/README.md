@@ -26,7 +26,7 @@ let router = router.spawn();
 // Publish a broadcast this process writes, to everyone.
 let broadcast = moq_net::broadcast::Info::new().produce();
 let publication = moq.publish("my-stream", &broadcast, Audience::Everyone)?;
-println!("{}", publication.ticket().expect("a live path"));
+println!("{}", moq.ticket("my-stream"));
 
 // Or resolve someone else's, dialing its publisher if no route exists yet.
 let subscription = moq.subscribe(ticket.path(), Reach::default()).await?;
@@ -45,10 +45,36 @@ turns verified moq-auth claims into a grant.
 
 ## Relays
 
-Behind the `relay-links` feature, `Moq::attach_relay` stays attached to a moq
-relay at an `iroh://` or `https://` URL, over moq-tokio's client: public
-publications go to the relay, the relay's routes join the route table at a
-higher cost than a direct route, and the link redials with backoff.
+Behind the `relay-links` feature, `Moq::attach_relay(RelayConfig::new(url))`
+stays attached to a moq relay at an `iroh://` or `https://` URL, over
+moq-tokio's client: public publications go to the relay, the relay's routes
+join the route table at a higher cost than a direct route, and the link redials
+with backoff. `RelayLink::status()` watches its `RelayStatus`.
+
+`RelayConfig::consume` is on by default, which copies every route the relay
+knows into the node's route table, so every broadcast on the relay becomes
+resolvable here. A node that only publishes through the relay should attach
+with `RelayConfig::new(url).with_consume(false)`.
+
+## Links
+
+Every link, direct session or relay, runs a connection monitor that reads its
+statistics five times a second into a `LinkSample`: round trip, recent minimum
+round trip, loss, goodput, and the peer's delivery estimate. The measured
+figures are `Option`s, where `None` means not measured yet, never zero.
+`Session::link()` and `RelayLink::link()` return a link's latest sample, and
+`Subscription::link()` returns the `ServingLink` (`id`, `kind`, `sample`) of
+whichever link serves a subscription at the moment, relay-served ones
+included. The monitor logs each sample at trace level as `link sample` for a
+direct session and `relay link sample` for a relay link.
+
+## Driving moq-net directly
+
+A `Moq` node dials and accepts on its own. An application that runs moq-net's
+client or server itself, as `iroh-live-relay` does, uses
+`iroh_moq::transport::{dial, accept}` for the same ALPN negotiation and HTTP/3
+handling. They return a `web_transport_iroh::Session`, so their signatures
+follow web-transport-iroh's versioning rather than this crate's.
 
 ## Endpoints and tickets
 

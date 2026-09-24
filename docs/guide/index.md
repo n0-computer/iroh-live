@@ -33,10 +33,11 @@ cargo build --workspace                  # default features
 cargo build --workspace --all-features   # everything, including VAAPI and NVIDIA
 ```
 
-The workspace patches the moq crates to `Frando/moq@iroh-live` for five changes
-that have not reached a release yet. See [the media
-stack](../architecture/media-stack.md#what-we-contributed-upstream). A clean
-clone builds without further setup; `Cargo.lock` pins the revision.
+The workspace patches the moq crates to `Frando/moq@iroh-live-5`, the commit
+the released versions were cut from plus one fix that lets `moq-video` build for
+Windows with the `capture` feature. The patch goes once a `moq-video` release
+carries the fix. A clean clone builds without further setup; `Cargo.lock` pins
+the revision.
 
 ## First stream
 
@@ -79,8 +80,8 @@ broadcast.set_video(camera, VideoEncoding::single(VideoRendition::p720()))?;
 let microphone = AudioSource::microphone(MicrophoneConfig::default()).await?;
 broadcast.set_audio(microphone, AudioEncoding::voice())?;
 
-let publication = live.publish("hello", &broadcast)?;
-println!("{}", publication.ticket().expect("a live path"));
+live.publish("hello", &broadcast)?;
+println!("{}", live.ticket("hello"));
 ```
 
 A subscriber connects with the ticket, starts a player, and reads decoded frames:
@@ -99,8 +100,19 @@ while let Some(frame) = frames.next().await {
 ```
 
 Opening a source fails where the application asked for it, so a missing camera
-is an error from `VideoSource::capture` rather than a log line later. To hear the
-audio, open an `AudioOutput` and pass it with `PlayerConfig::with_audio`.
+is an error from `VideoSource::capture` rather than a log line later. The
+microphone is a partial exception: `AudioSource::microphone` checks that the
+device exists, but moq-audio opens it only once the broadcast first has a
+listener, so a device that then fails to open shows up in
+`LocalBroadcast::status()`.
+To hear the audio, open an `AudioOutput` and pass it with
+`PlayerConfig::with_audio`.
+
+`Live::subscribe` returns as soon as a route to the broadcast is found, without
+waiting for its catalog, and `RemoteBroadcast::catalog()` is a watcher that
+turns `Some` when the catalog arrives. `RemoteBroadcast::closed()` resolves
+about three seconds after the publisher ends the broadcast, since the
+broadcast first asks the route table again in case the path only moved.
 
 `iroh-live/examples/publish.rs` is the compilable version of the first snippet,
 including a two-rung simulcast ladder behind `--simulcast`.

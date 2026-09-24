@@ -82,8 +82,13 @@ npm run build  # bundle for embedding
 | `--http-bind` | `[::]:4443` | HTTP bind address |
 
 TLS certificates are self-signed and generated at startup. ACME provisioning is
-not implemented, and neither is authentication: the relay grants publish and
-subscribe on every path to every connection.
+not implemented, and neither is token authentication: anyone may connect and
+subscribe to anything. Publishing is scoped by identity only. The relay accepts
+iroh sessions itself, through `iroh_moq::transport::accept`, so it knows each
+client's authenticated endpoint id and lets it publish only at the paths that
+name it, `live/<its id>/...` and `rooms/<topic>/<its id>/...`. Browsers have no
+such identity and may publish only at names of one segment, which keeps them
+out of `live/` and `rooms/`.
 
 The relay persists its iroh secret key to disk (in `$IROH_LIVE_RELAY_DATA` or the platform data directory) so the endpoint ID stays stable across restarts.
 

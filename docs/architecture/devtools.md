@@ -85,9 +85,9 @@ bytes cross an actual transport. `publish_subscribe_video` asserts five frames
 with non-zero size and non-decreasing timestamps. `publish_subscribe_audio`
 plays into `AudioOutput::null()`, so it proves the transport and the codec
 without needing an output device, and waits for the player's stats to count
-decoded audio frames. `adaptive_rendition_switching` replaces the subscription's
-network signals with a closure over a made-up `NetworkSample` and asserts the
-downgrade lands. `changing_the_decoder_backend_rebuilds_it` switches a playing
+decoded audio frames. `adaptive_rendition_switching` replaces the network signals
+`Live::subscribe` attached with a closure over a made-up `NetworkSample`,
+through `RemoteBroadcast::with_network`, and asserts the downgrade lands. `changing_the_decoder_backend_rebuilds_it` switches a playing
 player to the software decoder and asserts the rebuilt decoder is the one
 producing frames.
 
@@ -110,11 +110,18 @@ between them and applies netem latency, jitter and loss, so the impairment
 reaches QUIC rather than being described to the pipeline after the fact. Two
 tests hold the delivery cadence to account across a latency ramp and a loss
 spike; `adaptation_follows_a_real_link` runs the whole adaptive chain, from
-dropped packets through QUIC's loss detection and the path stats the signal
-producer samples to a rendition downgrade, and back up once the loss clears;
+dropped packets through QUIC's loss detection and the path statistics the
+session's link monitor samples to a rendition downgrade, and back up once the
+loss clears; `adaptation_follows_a_rate_limit`,
+`adaptation_holds_steady_under_a_marginal_cap` and
+`a_risen_baseline_round_trip_does_not_downgrade` do the same for a bandwidth
+cap, a cap that sits on a rung's threshold, and a path that got longer;
 `a_switch_does_not_blank_the_picture` holds the decode supervisor to its overlap,
 that a replacement decoder warms up beside the incumbent and takes over rather
-than opening after the incumbent is gone. It is Linux-only and needs
+than opening after the incumbent is gone. The adaptation tests shorten the
+player's timers, but not its thresholds, through
+`iroh_live_media::test_util::Tuning` and `PlayerConfig::with_tuning`, behind the
+`test-util` feature. It is Linux-only and needs
 unprivileged user namespaces, set up from an ELF initialiser before the harness
 has a second thread. nextest
 gives the binary a single-threaded group of its own, because the timing

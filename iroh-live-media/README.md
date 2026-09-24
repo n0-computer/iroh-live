@@ -47,7 +47,14 @@ application pushes (`push`) or produces on a thread of its own (`spawn`), or the
 Raspberry Pi camera. `EncodedVideoSource` is an Annex-B H.264 byte stream a
 source already encoded, published with `set_encoded_video`; that is the cheapest
 Raspberry Pi path. `AudioSource` is a microphone, a WAV or MP3 file, a tone, or
-pushed PCM.
+pushed PCM. `VideoSource::push` and `spawn` take a `VideoFormat`, built with
+`VideoFormat::new(size, rate)`.
+
+A microphone is the one source that is not opened up front:
+`AudioSource::microphone` checks that the device exists, and moq-audio opens it
+only when a broadcast first has a listener for it, since it opens a microphone
+only inside the publication that encodes it. A device that fails at that point
+shows in `LocalBroadcast::status()` rather than as an error from `microphone`.
 
 ## Subscribing
 
@@ -62,8 +69,32 @@ beside the incumbent and handing over once it has caught up, so the picture
 never goes blank or steps backwards. Each player owns a playout clock that holds
 video back by the audio queued at its speaker, so audio and video stay aligned
 across two independent decode paths. And `IrohLiveExt` extends hang's catalog
-with chat and publisher identity, flattened alongside the media sections so a
-base consumer ignores them; applications read it as `Catalog` and `Metadata`.
+with the publisher's identity, flattened alongside the media sections so a base
+consumer ignores it; a publisher sets it with `LocalBroadcast::set_metadata`,
+and applications read it as `Catalog` and `Catalog::metadata()`.
+
+A transport builds the `RemoteBroadcast`: `from_moq` wraps one broadcast
+consumer, `from_origin` follows a path through a route table and asks it again
+when a change of route ends the broadcast, and `from_resolved` does the same
+starting from a consumer the caller already resolved, which is what `iroh-live`
+uses. A broadcast that follows a route table cannot tell a publisher ending the
+broadcast from a change of route, so `closed()` resolves about three seconds
+after the publisher ends it. `RemoteBroadcast::local` reads a `LocalBroadcast`
+in-process, without a transport.
+
+`record` remuxes a broadcast into a file without decoding. `Recording::stop`
+takes `&mut self`, so it can share a `select!` with `wait`:
+
+```rust
+use iroh_live_media::RecordConfig;
+
+let file = tokio::fs::File::create("out.mp4").await?;
+let mut recording = remote.record(file, RecordConfig::default())?;
+let written = tokio::select! {
+    written = recording.wait() => written?,
+    _ = tokio::signal::ctrl_c() => recording.stop().await?,
+};
+```
 
 Audio plays through an `AudioOutput` the application opens and passes to each
 `PlayerConfig`, and the same output goes to `MicrophoneConfig` to have its echo
@@ -71,7 +102,8 @@ cancelled.
 
 ## Modules
 
-Every type is exported from the crate root; the modules are internal.
+Every type is exported from the crate root; the modules are internal, except
+`test_util`, below.
 
 | Module | What it is |
 |---|---|
@@ -104,3 +136,11 @@ tones need no flag.
 | `nvidia` | no | NVIDIA hardware encode and decode |
 | `v4l2` | no | The V4L2 hardware H.264 codecs on ARM SoCs |
 | `rpicam` | no | The `rpicam-vid` sources. Linux only |
+| `test-util` | no | `test_util::Tuning` and `PlayerConfig::with_tuning`, which shorten the adaptation timers for tests. Never for an application |
+
+## Errors
+
+`iroh_live_media::Error` covers devices, codecs, the catalog, files, and
+`Broadcast`, which is moq-net refusing a track or broadcast operation or
+resetting a track being read, whatever transport carries it. Failures of the
+transport itself belong to the transport's error, `iroh_moq::Error` for iroh.

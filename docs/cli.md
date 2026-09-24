@@ -91,9 +91,11 @@ File flags, for a `file:` video source:
 | `--format <FMT>` | `fmp4` (default) or `avc3` |
 | `--transcode` | Re-mux (or re-encode) through ffmpeg first, which a plain MP4 needs |
 
-Publishing to a relay is now just a connection. Every broadcast this node
-publishes is announced on every MoQ session it has, so `--relay` connects and
-the announce follows.
+`--relay` attaches the node to the relay as a relay link, which redials if the
+session drops, and every broadcast this node publishes to everyone is offered to
+it. The link only publishes: `irl publish` reads nothing through the relay, so
+it does not copy the relay's routes into its own route table. The command prints
+the path viewers find the broadcast at on the relay.
 
 `--preview` opens a window showing what is being published. It draws the frames
 already on their way to the encoders, so it costs no extra decode. It needs the
@@ -186,8 +188,9 @@ which reads through about twice the blur a plain decoder does. Decoding runs on
 its own thread, so the preview keeps moving while it works.
 the flag.
 
-Without `--rendition` the video track adapts: the subscription's transport
-signals drive rendition selection, and a switch opens the replacement decoder
+Without `--rendition` the video track adapts: the link sample of whichever link
+serves the subscription, a direct session or a relay, drives rendition
+selection, and a switch opens the replacement decoder
 alongside the incumbent so the picture does not go blank. The window's
 rendition combo switches between the two modes at any time.
 
@@ -283,12 +286,14 @@ every name it sees, so this is a full mesh and a small-group design: there is no
 selective forwarding. The ticket a window prints includes itself as a bootstrap
 peer, so it is the one to pass on to the next participant.
 
-Chat rides on the same broadcast as the video, on a track named `chat`, so a
-peer subscribed for the picture gets the messages without a second
-subscription. Joining and leaving appear in the panel as they happen.
+Chat is the room's own: every participant publishes a small chat broadcast at
+`rooms/<topic>/<its id>/.chat`, members only, so chat works with the camera off.
+Joining and leaving appear in the panel as they happen.
 
 Leaving is derived from media, not from membership: a participant's tile
-disappears when its broadcast closes or its session drops. A peer that joined
+disappears when its broadcast closes or its session drops, and comes back if the
+participant still lists the broadcast, since a member can end and republish one
+without its membership changing. A peer that joined
 the topic and published nothing is not shown at all. See
 [the rooms guide](guide/rooms.md) for why, and what replaces it.
 

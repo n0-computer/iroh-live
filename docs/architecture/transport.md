@@ -34,7 +34,8 @@ route in the table (lowest cost among routes of the same anonymity, then fewest
 hops) and fails over when it dies.
 
 Keeping the links' routes apart as well as merged is what lets the node say
-which link serves a path (`Moq::routes`, `Subscription::session`), and lets a
+which link serves a path (`Moq::routes`, `Subscription::session`,
+`Subscription::link`), and lets a
 direct session answer a path that only means something on that session, such as
 an old node's bare name.
 
@@ -105,17 +106,34 @@ peer's setup and waits in `Moq::accept()`; the application reads the request
 (its path, a `jwt` query parameter, an H3 header) and admits with a `Grant` or
 rejects. `Moq::sessions()` watches the open sessions.
 
-Each session runs a connection monitor that reads the selected path's QUIC
-statistics five times a second; `Session::link()` returns the latest
-`LinkSample`, which iroh-live turns into the media crate's network signals.
+Each session runs a connection monitor (`iroh-moq/src/link.rs`) that reads the
+selected path's QUIC statistics five times a second; `Session::link()` returns
+the latest `LinkSample`. Its round trip, minimum round trip and loss rate are
+`Option`s, `None` until measured, never zero. `Subscription::link()` returns
+the `ServingLink` (`id`, `kind`, `sample`) of whichever link serves a
+subscription, direct session or relay, and `iroh-live/src/network.rs` turns
+that into the media crate's `NetworkSample`. The monitor logs every sample at
+TRACE as `link sample`.
 
 ## Relay links
 
-Behind the `relay-links` feature, `Moq::attach_relay` stays attached to a moq
-relay over moq-tokio's client, for `iroh://` and `https://` URLs. Public
-publications go to the relay, and the relay's routes join the route table at a
-cost of 10, so a direct route to the same broadcast wins while it exists. The
-link redials with backoff; `RelayLink::status()` watches it.
+Behind the `relay-links` feature, `Moq::attach_relay(RelayConfig::new(url))`
+stays attached to a moq relay over moq-tokio's client, for `iroh://` and
+`https://` URLs. Public publications go to the relay, and the relay's routes
+join the route table at a cost of 10 (`DEFAULT_RELAY_COST`), so a direct route
+to the same broadcast wins while it exists. The link redials with backoff;
+`RelayLink::status()` watches its `RelayStatus`.
+
+`RelayConfig::consume` defaults to true, which copies every route the relay
+knows into the node's route table. A node that only publishes through the
+relay sets `.with_consume(false)`, so it neither mirrors routes it will never
+read nor answers requests for them.
+
+A relay link runs the same kind of monitor as a session, over the statistics
+of its current MoQ session: `RelayLink::link()` returns its sample, and the
+monitor logs it at TRACE as `relay link sample`. Its samples carry no path
+details (`relayed` is false, `remote_addr` is `None`), and each reconnect
+starts a new path generation.
 
 ## ALPN negotiation
 
@@ -130,6 +148,12 @@ MoQ stream directly. H3 answers a CONNECT first: the client builds a
 `web_transport_proto::ConnectRequest` listing every moq-lite ALPN as a protocol,
 and the server replies `ConnectResponse::OK` echoing the first one requested. An
 ALPN this build does not speak is `Error::UnsupportedAlpn`.
+
+An application that drives moq-net's client or server itself, rather than
+through a `Moq` node, gets the same negotiation from
+`iroh_moq::transport::{dial, accept}`, which return a
+`web_transport_iroh::Session`. `iroh-live-relay` accepts its iroh connections
+through `accept`.
 
 ## Errors
 

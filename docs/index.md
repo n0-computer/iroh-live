@@ -21,7 +21,7 @@
 |---|---|
 | [Overview](architecture/index.md) | The crates, what `iroh-live-media` adds over upstream, and the conventions |
 | [The media stack](architecture/media-stack.md) | What we use from moq-video and moq-audio, what we contributed back, and what was lost |
-| [Transport](architecture/transport.md) | `iroh-moq`: the node origin, session lifetime, and ALPN negotiation |
+| [Transport](architecture/transport.md) | `iroh-moq`: the route table, publications and audiences, sessions, relay links, link samples, and ALPN negotiation |
 | [Publishing](architecture/publish.md) | `LocalBroadcast`, sources, the simulcast ladder, and demand-gated encoders |
 | [Subscribing](architecture/subscribe.md) | `RemoteBroadcast`, the decode supervisor, and the rendition swap |
 | [Adaptive rendition switching](architecture/adaptive.md) | The selection algorithm, its thresholds, and how a player follows the link |

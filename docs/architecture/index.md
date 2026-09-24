@@ -34,7 +34,7 @@ upstream producer publishes one rendition and owns the device it captures from.
 as the downlink moves and swaps decoders without a blank frame. Each player's
 [playout clock](playout.md) keeps audio and video aligned across two independent
 decode paths. The catalog carries
-an [extension](publish.md#catalog) for chat and publisher identity alongside
+an [extension](publish.md#catalog) for the publisher's identity alongside
 hang's media sections.
 
 Everything else is upstream. See [the media stack](media-stack.md) for what we
@@ -59,12 +59,15 @@ created first.
 `Live::publish(name, &broadcast)` publishes an
 `iroh_live_media::LocalBroadcast`, which exists before it is published and takes
 sources with `set_video` and `set_audio`, at `live/<our id>/<name>` to everyone;
-the publication's ticket is what to share. `Live::subscribe(&ticket)` resolves
-the ticket's path over whichever link serves it and returns a
-`RemoteBroadcast` that follows the path through the route table, with the
-serving session's link attached, so `remote.play(config)` starts a player that
-adapts to the link with nothing further to wire. `Live::remote_broadcast(&subscription)`
-does the same for a subscription from a room or from `Moq::subscribe`. The
+`Live::ticket(name)` returns the `BroadcastTicket` to share. `Live::subscribe(&ticket)`
+resolves the ticket's path over whichever link serves it and returns, without
+waiting for the catalog, a `RemoteBroadcast` that follows the path through the
+route table, with the serving link (a direct session or a relay) attached, so
+`remote.play(config)` starts a player that adapts to the link with nothing
+further to wire. `Live::remote_broadcast(&subscription)`
+does the same for a subscription from a room or from `Moq::subscribe`. Errors
+from the facade are `iroh_live::Error`: `Transport` wraps an `iroh_moq::Error`
+and `Media` an `iroh_live_media::Error`. The
 transport's own concepts (audiences, admission, relays, routes) live in
 [`iroh-moq`](transport.md) and are reached through `live.moq()`.
 

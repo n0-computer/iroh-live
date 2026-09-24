@@ -1,8 +1,9 @@
-# The root `Cargo.toml` patches the moq family to `Frando/moq@iroh-live-2`, for
-# changes that are not in a release yet. `Cargo.lock` pins the revision, so
-# these jobs build what a local checkout builds and `--locked` has something
-# exact to hold to. Deleting the patch block is the whole revert once the
-# changes land.
+# The root `Cargo.toml` patches the moq family to `Frando/moq@iroh-live-5`, the
+# commit the released versions were cut from plus one fix that lets moq-video
+# build for Windows with `capture`. `Cargo.lock` pins the revision, so these
+# jobs build what a local checkout builds and `--locked` has something exact to
+# hold to. Deleting the patch block is the whole revert once a moq-video
+# release carries the fix.
 name: CI
 on:
   push:

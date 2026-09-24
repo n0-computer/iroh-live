@@ -30,12 +30,15 @@ broadcast.set_video(
 let microphone = AudioSource::microphone(MicrophoneConfig::default()).await?;
 broadcast.set_audio(microphone, AudioEncoding::voice())?;
 
-let publication = live.publish("hello", &broadcast)?;
-println!("{}", publication.ticket().expect("a live path"));
+live.publish("hello", &broadcast)?;
+println!("{}", live.ticket("hello"));
 ```
 
-`Live::publish` offers the broadcast to everyone, attached relays included. For
-another audience, publish through `live.moq()`.
+`Live::publish` offers the broadcast to everyone, attached relays included, at
+`live/<this node's id>/<name>`, and `Live::ticket(name)` returns the
+`BroadcastTicket` naming that path. The returned `Publication` can be dropped:
+the broadcast stays published until `Publication::unpublish`, the end of the
+broadcast, or shutdown. For another audience, publish through `live.moq()`.
 
 ## Subscribing
 
@@ -47,11 +50,18 @@ let player = remote.play(PlayerConfig::default())?;
 let mut frames = player.video();
 ```
 
-The broadcast follows its path through the route table, so a change of route
-shows as a switch rather than an end, and the serving session's link is
-attached to it: every player started from it adapts to the downlink without
-further wiring. `Live::remote_broadcast` wraps a subscription from a room or
-from `Moq::subscribe` the same way.
+`Live::subscribe` returns once a route is found, without waiting for the
+catalog; watch `RemoteBroadcast::catalog` for it. The broadcast follows its path
+through the route table, so a change of route shows as a switch rather than an
+end, and the link serving it, a direct session or a relay, is attached to it:
+every player started from it adapts to the downlink without further wiring.
+When the publisher ends the broadcast, `RemoteBroadcast::closed()` resolves
+after about three seconds, the time the broadcast spends re-resolving the path
+in case it comes back. `Live::remote_broadcast` wraps a subscription from a
+room or from `Moq::subscribe` the same way.
+
+Errors are `iroh_live::Error`, which is either `Transport` (an
+`iroh_moq::Error`) or `Media` (an `iroh_live_media::Error`).
 
 ## Rooms
 

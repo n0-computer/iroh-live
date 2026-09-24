@@ -34,15 +34,19 @@ and a field left `None` reads as unmeasured rather than as zero. A transport
 attaches its signals with `RemoteBroadcast::with_network`, and every player
 started from that broadcast afterwards reads them.
 
-iroh-live-media does not depend on iroh, so it never produces these. Each
-`iroh-moq` session runs a connection monitor that reads the selected path's
-stats every 200 ms, along with the session's bandwidth consumer, and keeps the
-latest `LinkSample`; it starts the sample history over when the connection
-selects another path, and says so in `path_generation`. `Live::subscribe` and
-`Live::remote_broadcast` attach a closure to the broadcast that reads the
-sample of whichever session serves the subscription at that moment, and counts
-a change of serving session as a new path too, so a caller does not wire
-anything. While a relay serves the path the samples carry no measurements. A
+iroh-live-media does not depend on iroh, so it never produces these. Every
+`iroh-moq` link runs a connection monitor (`iroh-moq/src/link.rs`) that reads
+its statistics every 200 ms, along with the peer's bandwidth estimate, and
+keeps the latest `LinkSample`. A direct session reads the QUIC statistics of
+its selected path and starts the sample history over when the connection
+selects another; a relay link reads the statistics of its current MoQ session
+and starts over on every reconnect. Either says so in `path_generation`.
+`Live::subscribe` and `Live::remote_broadcast` attach a closure to the
+broadcast (`iroh-live/src/network.rs`) that reads `Subscription::link()`, the
+sample of whichever link serves the subscription at that moment, converts it
+into a `NetworkSample`, and counts a change of serving link as a new path too,
+so a caller does not wire anything. A relay-served subscription is measured
+like a direct one, only without the path details a relay link cannot see. A
 caller using iroh-live-media without iroh either attaches its own signals or
 none, in which case the player holds the best rendition its constraints allow.
 
@@ -194,7 +198,11 @@ place of the old rule's probe cooldown.
 ## Configuration
 
 The thresholds and timers are an internal `Tuning` value, so they can be
-retuned in a patch without an API change.
+retuned in a patch without an API change. Tests that cannot wait out the
+production timers reach it as `iroh_live_media::test_util::Tuning` behind the
+`test-util` feature (which `iroh-live` forwards) and hand it to one player with
+`PlayerConfig::with_tuning`. No application should enable that feature: the
+fields change without notice.
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -212,8 +220,12 @@ The end-to-end test in `iroh-live/tests/e2e.rs` drives a player with its own
 closure as the network signals and feeds it a 25% loss reading, which is an
 emergency and switches without waiting out a hold.
 
-The signal producer logs every reading at TRACE as `network signals`, with the
-round trip, its minimum, the loss rate, goodput, and the publisher's estimate.
+The link monitor in `iroh-moq/src/link.rs` logs every sample at TRACE, as
+`link sample` for a direct session and `relay link sample` for a relay link,
+with the path generation, whether the path is relayed, the round trip, its
+minimum, the loss rate, goodput, and the publisher's estimate. What the player
+reads is that sample converted in `iroh-live/src/network.rs`, which logs a
+change of serving link at DEBUG.
 The selector logs the rendition it asks for at TRACE whenever it changes, a
 change of path at DEBUG, and a rendition it backs off from after a decoder
 failure at INFO. Read together, they tell a loop that holds because the link is

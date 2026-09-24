@@ -19,7 +19,10 @@ assert_eq!(ticket.path().as_str(), format!("live/{}/hello", ticket.peer()));
 let parsed: BroadcastTicket = string.parse()?;
 ```
 
-A publication hands out its own: `live.publish("hello", broadcast)?.ticket()`.
+The publishing node mints its own with `live.ticket("hello")` (or
+`Moq::ticket`), which names the path `Live::publish` puts a broadcast at.
+`Publication::ticket()` also exists, but returns an `Option`, since a
+publication at any other path, such as a room's, has no ticket.
 
 `Display` produces a URI:
 

@@ -6,8 +6,10 @@ accept an inbound connection. `iroh-live-relay` sits between the two: it speaks
 WebTransport to browsers and iroh to native peers, and moves broadcasts either
 way.
 
-**It has no authentication.** Every connection is granted publish and subscribe
-on every path. Run it on a machine you control and do not expose it.
+**It has no authentication.** Every connection may subscribe to every path,
+and publishing is limited only by identity, as described under [publishing
+through the relay](#publishing-through-the-relay). Run it on a machine you
+control and do not expose it.
 
 ## Running it
 
@@ -87,7 +89,9 @@ authenticated; the relay accepts iroh sessions itself to know that id. A browser
 has no such identity, so it publishes only at names of one segment, which is
 what the publish page's `?name=` gives, and never into `live/` or `rooms/`.
 `irl publish --relay` only publishes into the relay, and does not read the
-relay's other broadcasts.
+relay's other broadcasts: it attaches with `RelayConfig::with_consume(false)`.
+A node attached with the default config would copy every route the relay knows
+into its own route table.
 
 ## The web client
 

@@ -4,7 +4,10 @@
 > but has never been run, on-device testing has been limited, rooms are being
 > redesigned, and the relay has no authentication. Expect frequent API changes.
 
-> This repo currently depends on a Git dependency on the [moq crates](https://github.com/moq-dev/moq/tree/main). We [upstreamed all necessary changes](https://github.com/moq-dev/moq/pulls?q=is%3Apr+state%3Aclosed+author%3AFrando) and can move to a regular dependency after the next moq release.
+> The workspace patches the [moq crates](https://github.com/moq-dev/moq/tree/main)
+> to a Git branch that is the released versions plus one Windows build fix. The
+> patch goes once a moq-video release carries that fix; see
+> [Using iroh-live in Rust](#using-iroh-live-in-rust).
 
 Real-time audio and video over [iroh](https://github.com/n0-computer/iroh),
 written in Rust. Connections are peer-to-peer by default, with no media server
@@ -33,8 +36,9 @@ irl watch <TICKET>
 
 No camera? `irl publish --test-source` publishes a generated pattern and a tone.
 
-To reach subscribers that cannot dial this node directly, connect to a relay.
-Everything the node publishes is announced over that session:
+To reach subscribers that cannot dial this node directly, attach to a relay.
+The node stays attached, redialing if the session drops, and the relay carries
+every broadcast the node publishes to everyone:
 
 ```sh
 irl publish --relay <RELAY_ENDPOINT_ID>
@@ -44,10 +48,13 @@ Full flag reference: [docs/cli.md](docs/cli.md).
 
 ## Using iroh-live in Rust
 
-The workspace patches the moq crates to `Frando/moq@iroh-live`, which carries
-the changes behind eleven open pull requests to moq and one to moq-vaapi. Until
-they land in releases, a downstream user needs to copy the `[patch.crates-io]`
-block from [Cargo.toml](Cargo.toml).
+The workspace patches every moq crate it uses to `Frando/moq@iroh-live-5`,
+which is the exact commit the released versions (`moq-video` 0.0.26, `moq-net`
+0.3.0 and their siblings) were cut from, plus one fix: `moq-video` 0.0.26 does
+not compile for Windows with the `capture` feature. On other platforms the
+crates.io releases build as they are, so a downstream user needs the
+`[patch.crates-io]` block from [Cargo.toml](Cargo.toml) only to build for
+Windows. The block goes once a `moq-video` release carries the fix.
 
 Publish a camera and a microphone:
 
@@ -71,8 +78,8 @@ broadcast.set_video(
 let microphone = AudioSource::microphone(MicrophoneConfig::default()).await?;
 broadcast.set_audio(microphone, AudioEncoding::voice())?;
 
-let publication = live.publish("hello", &broadcast)?;
-println!("{}", publication.ticket().expect("a live path"));
+live.publish("hello", &broadcast)?;
+println!("{}", live.ticket("hello"));
 ```
 
 Subscribe, play, and read decoded frames:
@@ -99,7 +106,7 @@ compilable version of the first. More in [docs/guide/index.md](docs/guide/index.
 | Crate | Description |
 |---|---|
 | [`iroh-live`](iroh-live) | `Live`: publish, subscribe, and the re-exports of the crates below |
-| [`iroh-moq`](iroh-moq) | MoQ transport over iroh: the node origin, sessions, and ALPN negotiation |
+| [`iroh-moq`](iroh-moq) | MoQ transport over iroh: the route table, publications, sessions, relay links, tickets, and ALPN negotiation |
 | [`iroh-rooms`](iroh-rooms) | Rooms: gossip membership, members-only broadcasts, and room chat. Media-free |
 | [`iroh-live-media`](iroh-live-media) | Sources, broadcasts, and players over moq-video and moq-audio. No iroh dependency |
 | [`iroh-live-egui`](iroh-live-egui) | An egui widget over the texture `moq_video::render` returns, plus the debug overlay |

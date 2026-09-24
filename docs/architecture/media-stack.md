@@ -90,11 +90,14 @@ The MediaCodec pair replaces the encoder and decoder this repository used to
 carry. They sit behind `cfg(target_os = "android")` alongside the objc2 and
 Windows families, and are selected with `encode::Kind::Named("mediacodec")`.
 
-Until those are in a published release, the workspace carries a
-`[patch.crates-io]` block pointing the whole moq family at
-`Frando/moq@iroh-live`, one commit per prospective PR. Every pinned version
-matches what `moq-dev/moq@main` publishes, so deleting the patch block is the
-whole revert.
+All of them are in the published releases (`moq-video` 0.0.26, `moq-net` 0.3.0
+and their siblings). The workspace still carries a `[patch.crates-io]` block
+pointing every moq crate it uses at `Frando/moq@iroh-live-5`, which is the exact
+commit those releases were cut from plus one fix: `moq-video` 0.0.26 does not
+compile for Windows with the `capture` feature. The whole family is patched so
+that no crate meets a git copy of one dependency and a crates.io copy of
+another. Deleting the patch block is the whole revert once a `moq-video`
+release carries the fix.
 
 ## What we lost
 

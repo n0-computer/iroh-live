@@ -12,8 +12,8 @@ upstream counterpart and live here.
 Rendition selection is the first. `moq_mux::select` is fixed at construction, so
 a subscriber that wants to follow its downlink has to choose for itself. The
 second is the playout clock, which keeps audio and video aligned across two
-independent decode paths. The third is the catalog extension, where chat and
-publisher identity ride alongside the media sections.
+independent decode paths. The third is the catalog extension, where the
+publisher's identity rides alongside the media sections.
 
 ## Opening a broadcast
 
@@ -27,8 +27,13 @@ follows the catalog track and republishes each update.
 instead. When a change of route ends the broadcast, it is requested again
 through the next route, and players see a new generation of the broadcast
 rather than an end. The broadcast counts as closed only once no route serves the
-path for three seconds. `RemoteBroadcast::local(&broadcast)` reads a
-`LocalBroadcast` in-process, with no transport at all.
+path for three seconds, so `closed()` resolves about three seconds after a
+publisher ends its broadcast. `RemoteBroadcast::from_resolved(origin, path,
+consumer)` does the same starting from a consumer the caller already resolved in
+that table: nothing waits for a first route, and a publisher that is gone by
+then closes the broadcast rather than leaving it waiting.
+`RemoteBroadcast::local(&broadcast)` reads a `LocalBroadcast` in-process, with
+no transport at all.
 
 `Catalog` wraps hang's catalog and is compared by snapshot identity: every
 update the publisher sends is a new snapshot, which is the honest comparison
@@ -37,10 +42,12 @@ for a watcher, since hang's catalog carries floats and is only `PartialEq`.
 lists `AudioRenditionInfo`, and `metadata()` carries the publisher's display
 name. `as_hang()` reaches hang's own shape for a caller that needs it.
 
-In iroh-live, `Live::subscribe` builds the `RemoteBroadcast` with `from_origin`
-on the transport's route table, and attaches the link of whichever session
-serves it, so every player of the broadcast adapts. See [adaptive
-bitrate](adaptive.md).
+In iroh-live, `Live::subscribe` resolves the path first and builds the
+`RemoteBroadcast` with `from_resolved` on the transport's route table, returning
+without waiting for the catalog, and attaches the link of whichever session or
+relay serves it, so every player of the broadcast adapts.
+`Live::remote_broadcast` does the same for a `Subscription` from a room or from
+`Moq::subscribe`. See [adaptive bitrate](adaptive.md).
 
 ## Video decoding
 

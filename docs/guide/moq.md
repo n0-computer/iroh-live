@@ -40,12 +40,12 @@ exists before subscribing to anything, and watches it for changes, since a
 publisher can add a rendition mid-broadcast.
 
 iroh-live extends the catalog rather than replacing it.
-`iroh_live_media::IrohLiveExt` flattens `chat` and `user` sections alongside
-hang's `video` and `audio`, so a plain hang player ignores them and still plays
-the media. Applications read the result as `iroh_live_media::Catalog`, whose
-`metadata()` carries the display name. That is how a subscriber finds the chat
-track without guessing at a name, and how a publisher's display name travels
-with its stream.
+`iroh_live_media::IrohLiveExt` flattens a `user` section alongside hang's
+`video` and `audio`, so a plain hang player ignores it and still plays the
+media. Applications read the result as `iroh_live_media::Catalog`, whose
+`metadata()` carries the display name, which is how a publisher's display name
+travels with its stream. Chat is not in the media catalog: a room publishes it
+as a broadcast of its own.
 
 ## Where the boundary is
 
@@ -55,5 +55,6 @@ built on a `broadcast::Producer` and read through `moq_net::Consume`, and a
 whether those arrived over iroh, over WebTransport, or through a local loopback.
 
 `iroh-moq` is the half that knows about iroh, and [the transport
-page](../architecture/transport.md) covers what it does: the node origin, session
-deduplication, and ALPN negotiation.
+page](../architecture/transport.md) covers what it does: the route table fed by
+every link, publications and their audiences, session deduplication, relay
+links, and ALPN negotiation.

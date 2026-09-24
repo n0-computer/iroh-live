@@ -26,10 +26,15 @@ Codecs, capture, decoding, and the wgpu renderer are upstream in `moq-video` and
 
 ## The patch block
 
-`Cargo.toml` carries a `[patch.crates-io]` block pointing the moq crates at
-`Frando/moq@iroh-live`, a branch of five changes that have not reached a
-release. Every pinned version matches what `moq-dev/moq@main` publishes, so
-deleting the block is the whole revert once they land. `Cargo.lock` pins the
+`Cargo.toml` carries a `[patch.crates-io]` block pointing every moq crate the
+graph uses at `Frando/moq@iroh-live-5`. That branch is the exact commit the
+released versions were cut from (`moq-video` 0.0.26, `moq-net` 0.3.0 and their
+siblings) plus one fix: `moq-video` 0.0.26 does not compile for Windows with
+the `capture` feature. Every crate of the moq workspace is patched, not only
+`moq-video`, so no crate ever meets a git copy of one dependency and a
+crates.io copy of another; `moq-relay` and `moq-tokio` stay on crates.io and
+pick up the patched crates underneath them. Deleting the block is the whole
+revert once a `moq-video` release carries the fix. `Cargo.lock` pins the
 revision, so a clean clone and CI build the same tree; to work against a local
 checkout instead, point the block at `../moq/rs/<crate>` and leave it
 uncommitted.
@@ -49,6 +54,12 @@ cargo make test-full   # all three
 Run `cargo make check-all` before committing code. It covers default features,
 `--all-features`, and `--no-default-features`, which is where feature-gated
 mistakes show up. Markdown-only changes can skip it.
+
+Tests that have to see a rendition switch inside their own timeout enable the
+`test-util` feature of `iroh-live-media` (`iroh-live` forwards it) and shorten
+the adaptation timers with `test_util::Tuning` and `PlayerConfig::with_tuning`,
+as the patchbay suite does. It is a dev-dependency feature only; nothing an
+application builds should turn it on.
 
 Cross-compiling for aarch64 is `cargo make cross-sysroot-aarch64` once, then
 `cargo make cross-build-aarch64 -- <cargo args>`. See
@@ -72,8 +83,11 @@ Sources are values that are already open:
   generated, application-made, thread-bound, and Raspberry Pi frames.
   `EncodedVideoSource::annex_b` and `rpicam` carry pre-encoded H.264.
 - `AudioSource::microphone`, `file`, `tone`, `test_pattern`, and `push` do the
-  same for sound. `MicrophoneConfig::with_echo_cancellation(&output)` attaches
-  the canceller for one `AudioOutput`.
+  same for sound, except that `microphone` only checks the device exists:
+  moq-audio opens it when a broadcast first has a listener, and a failure then
+  shows in `LocalBroadcast::status()`.
+  `MicrophoneConfig::with_echo_cancellation(&output)` attaches the canceller
+  for one `AudioOutput`.
 - `VideoSource::frames()` is the local preview: a `VideoFrames` handle onto the
   captured pictures that costs no encode.
 
@@ -89,7 +103,11 @@ Publishing:
 Subscribing:
 
 - `RemoteBroadcast` reads the catalog and holds the subscription;
-  `with_network` attaches the link signals adaptation reads.
+  `with_network` attaches the `NetworkSignals` adaptation reads. `from_moq`
+  wraps one broadcast consumer, `from_origin` follows a path in a route table,
+  and `from_resolved` does the same starting from a consumer the caller already
+  resolved. One that follows a route table reports `closed()` about three
+  seconds after the publisher ends it, since it asks the table again first.
 - `RemoteBroadcast::play(PlayerConfig)` returns a `Player`, which owns its
   decoders, its playout clock, its rendition choice, and its stats. Two players
   of one broadcast cannot interfere.
@@ -102,11 +120,16 @@ Subscribing:
 
 Transport, in `iroh_moq`: `Moq::publish(name, broadcast, audience)` places any
 `Consume<broadcast::Consumer>`, a `LocalBroadcast` among them, at
-`live/<our id>/<name>` for its audience. `Moq::subscribe(path, reach)` resolves
-a path in the node's route table and returns a `Subscription`, which
-`Live::remote_broadcast` turns into a `RemoteBroadcast` following that path.
-`Session::subscribe(path)` resolves over one session only, and
+`live/<our id>/<name>` for its audience, and `Moq::ticket(name)` (or
+`Live::ticket`) is the `BroadcastTicket` naming that path. `Moq::subscribe(path,
+reach)` resolves a path in the node's route table and returns a `Subscription`,
+which `Live::remote_broadcast` turns into a `RemoteBroadcast` following that
+path; `Live::subscribe(&ticket)` does both and returns without waiting for the
+catalog. `Session::subscribe(path)` resolves over one session only, and
 `Session::connection()` is the iroh `Connection` behind it.
+`Subscription::link()`, `Session::link()` and `RelayLink::link()` return the
+connection monitor's latest `LinkSample`. The facade's `iroh_live::Error` is
+`Transport(iroh_moq::Error)` or `Media(iroh_live_media::Error)`.
 
 ## Threading
 
@@ -146,9 +169,9 @@ is a cpal callback on a real-time thread owned by `moq_audio::playback::Engine`.
 
 Adaptation compares the publisher's delivery estimate against each rung's
 *advertised* bitrate, which is a ceiling handed to the encoder rather than what
-it sends. The fit ratio of one half absorbs that and the overshoot of a BBR
-estimate together, but it is a figure measured against openh264 and one
-patchbay lab, not against a hardware encoder or a real mobile link. See
+it sends. The fit ratio of 1.25 accounts for that and for the overshoot of a
+BBR estimate together, but it is a figure measured against openh264, VA-API and
+one patchbay lab, not against other hardware encoders or a real mobile link. See
 [docs/architecture/adaptive.md](docs/architecture/adaptive.md).
 
 Loss on a subscriber is measured over its own packets, which are mostly

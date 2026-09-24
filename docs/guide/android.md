@@ -40,9 +40,12 @@ broadcast and back, which smoke-tests the codec on a device without needing a
 peer. Both exist because "is it the codec or is it the network" is the first
 question when a device misbehaves.
 
-A call uses `iroh_live::Call`, so each peer publishes under `calls/<its own
-endpoint id>` and subscribes to the other's. Which side dialed stops mattering
-once the session is up.
+A call is a small type in the bridge itself: each peer publishes under
+`calls/<its own endpoint id>` with `Moq::publish_at`, and subscribes to the
+other's over the session between them with `Session::subscribe`, wrapping the
+result with `Live::remote_broadcast`. That path is the convention `irl call`
+uses too, so a phone and a desktop can call each other. Which side dialed stops
+mattering once the session is up.
 
 `dial` blocks until the call is established, because the caller already has
 somewhere to connect to. `answer` cannot: the code has to be on screen before

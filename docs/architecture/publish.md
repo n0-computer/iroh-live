@@ -6,8 +6,10 @@ slot. `set_video`, `set_encoded_video`, and `set_audio` fill the slots, each
 replacing whatever the slot held, and `clear_video` and `clear_audio` empty
 them. `LocalBroadcast::new()` creates a broadcast published nowhere yet, which a
 transport reads through `moq_net::Consume`; `from_moq(producer)` wraps a
-producer the transport created. In iroh-live the producer comes from
-`Live::publish(path)`, which creates the broadcast on the node's origin.
+producer the transport created. In iroh-live, `Live::publish(name, &broadcast)`
+takes the broadcast by reference and publishes what it reads through
+`Consume` at `live/<this node's id>/<name>`, and `Live::ticket(name)` names that
+path for a subscriber.
 
 Encoding itself is upstream. `moq_video::encode` and `moq_audio::encode` own the
 codec, the thread it runs on, and the catalog entry it writes. What this crate
@@ -149,15 +151,15 @@ reading Annex-B off its stdout. See [Raspberry Pi](../guide/raspberry-pi.md).
 
 The catalog is `moq_mux::catalog::Producer<IrohLiveExt>`, which is hang's
 catalog with an extension flattened alongside the `video` and `audio` sections.
-The extension carries two things iroh-live uses and hang has no place for: a
-`chat` section that names the chat tracks, and a `user` section with the
-publisher's identity. `set_metadata(Metadata)` writes the display name into
-`user`; nothing in this crate writes `chat` yet. A base hang consumer ignores
-both, so the broadcast stays wire-compatible with any hang player.
+The extension carries the one thing iroh-live uses and hang has no place for: a
+`user` section with the publisher's identity. `set_metadata(Metadata)` writes
+the display name into it, and a subscriber reads it back as
+`Catalog::metadata()`. A base hang consumer ignores the section, so the
+broadcast stays wire-compatible with any hang player. Chat is not part of a
+media broadcast: a room publishes it as a broadcast of its own (see
+[rooms](../guide/rooms.md)).
 
-Extra tracks go through `as_moq()`, which returns the underlying producer. The
-room view in `irl` creates its chat track that way, under the well-known name
-`iroh-rooms` looks for.
+Extra tracks go through `as_moq()`, which returns the underlying producer.
 
 ## Clock
 

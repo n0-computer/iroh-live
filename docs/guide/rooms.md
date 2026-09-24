@@ -77,6 +77,19 @@ what the member itself announces on that session, so no other peer can stand in
 for the member. It waits until the member announces the name to this node,
 which a member that never published it does not do, so bound the wait.
 Subscriptions are the application's: leaving the room does not close them.
+Failures come back as `iroh_rooms::Error`, whose `Transport` variant carries
+the same `iroh_moq::Error` the facade's `Error::Transport` does.
+
+A grid cannot drive its tiles from the room state alone. A member can end a
+broadcast and publish it again faster than its announcement changes, and a
+member that briefly stops counting this node as a member cuts off what this
+node reads; in both cases the membership and the member's `broadcasts` stay
+as they were, and a tile that only follows the state freezes. So a grid also
+drops every tile whose `RemoteBroadcast::is_closed()` turned true, or whose
+session closed, and subscribes to the name again a moment later if the member
+still lists it. `iroh-live-cli/src/room.rs` does exactly this. Keep in mind
+that a broadcast following a route table reports closed only about three
+seconds after it actually ended.
 
 Rooms are private to whoever holds the ticket. Membership is self-declared:
 anyone who knows the topic id can join the gossip topic and announce itself. A
