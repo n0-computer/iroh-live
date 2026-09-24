@@ -88,6 +88,8 @@ pub(crate) struct LinkEntry {
     pub(crate) legacy: bool,
     /// For a relay, whether `Everyone` publications go to it.
     pub(crate) public: bool,
+    /// Whether the link feeds the route table.
+    pub(crate) consume: bool,
     /// The running offers, by publication.
     #[debug(skip)]
     pub(crate) offers: HashMap<u64, Vec<Serve>>,

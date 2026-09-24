@@ -48,8 +48,8 @@ impl LiveBuilder {
 
     /// Also mounts `handler` under `alpn` on the router.
     ///
-    /// The router [`with_router`](Self::with_router) spawns; rooms mount their
-    /// gossip this way.
+    /// Implies [`with_router`](Self::with_router), since a handler needs a
+    /// router to accept anything; rooms mount their gossip this way.
     pub fn accept(mut self, alpn: impl AsRef<[u8]>, handler: impl ProtocolHandler) -> Self {
         self.protocols
             .push((alpn.as_ref().to_vec(), handler.into()));
@@ -59,7 +59,17 @@ impl LiveBuilder {
     /// Uses a [`Moq`] the application created first.
     ///
     /// So it can hand it to `Rooms` before the router is built.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `moq` runs on another endpoint than the builder's: the router
+    /// would then accept for one endpoint and publish from another.
     pub fn with_moq(mut self, moq: Moq) -> Self {
+        assert_eq!(
+            moq.endpoint().id(),
+            self.endpoint.id(),
+            "the Moq node runs on another endpoint than the Live builder"
+        );
         self.moq = Some(moq);
         self
     }
@@ -69,7 +79,7 @@ impl LiveBuilder {
         let moq = self
             .moq
             .unwrap_or_else(|| Moq::new(self.endpoint.clone(), MoqConfig::default()));
-        let router = self.router.then(|| {
+        let router = (self.router || !self.protocols.is_empty()).then(|| {
             let mut router = Router::builder(self.endpoint.clone());
             // Every MoQ version this build speaks, not only the newest, so a
             // peer built against a different moq release still finds one in

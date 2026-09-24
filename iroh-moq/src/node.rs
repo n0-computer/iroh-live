@@ -52,8 +52,24 @@ const LEGACY_GRACE: Duration = Duration::from_secs(2);
 
 /// How many incoming sessions may wait for [`Moq::accept`] at once.
 ///
-/// Past this the protocol handler holds further ones back.
+/// Past this the protocol handler holds further ones back, for at most
+/// [`ADMISSION_TIMEOUT`].
 const INCOMING_QUEUE: usize = 16;
+
+/// How long an incoming connection may take to open its MoQ session.
+///
+/// A peer that connects and never sends its setup would otherwise hold a task
+/// and its connection for as long as QUIC keeps the connection alive.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long an incoming session waits for the application under
+/// [`Admission::Manual`].
+///
+/// A session waits this long for room in the queue, and one that sat in the
+/// queue longer is rejected rather than handed out, so an accept loop that
+/// stalls, or never runs, cannot pile up connections whose peers believe they
+/// are connected.
+const ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How [`Moq::subscribe`] reaches a path the route table has no route to yet.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -194,21 +210,8 @@ pub(crate) struct Tasks {
     _actor: AbortOnDropHandle<()>,
     _table: Option<AbortOnDropHandle<()>>,
     /// Relay links, by link id.
-    relays: Mutex<HashMap<u64, AbortOnDropHandle<()>>>,
-}
-
-impl Tasks {
-    /// Keeps a relay link's task running until the link detaches.
     #[cfg(feature = "relay-links")]
-    pub(crate) fn insert_relay(&self, link: u64, task: AbortOnDropHandle<()>) {
-        self.relays.lock().expect("poisoned").insert(link, task);
-    }
-
-    /// Stops a relay link's task.
-    #[cfg(feature = "relay-links")]
-    pub(crate) fn remove_relay(&self, link: u64) {
-        self.relays.lock().expect("poisoned").remove(&link);
-    }
+    pub(crate) relays: Mutex<HashMap<u64, crate::relay::RelayTask>>,
 }
 
 impl Moq {
@@ -263,6 +266,7 @@ impl Moq {
             tasks: Arc::new(Tasks {
                 _actor: AbortOnDropHandle::new(actor_task),
                 _table: table_task,
+                #[cfg(feature = "relay-links")]
                 relays: Mutex::new(HashMap::new()),
             }),
         }
@@ -564,23 +568,24 @@ impl Moq {
     ///
     /// From moq-lite-05 on, the dialer's half of the handshake completes before
     /// the peer has decided whether to admit it, so a peer that refuses the
-    /// session closes it right after this returns; [`Session::closed`] reports
-    /// why.
+    /// session usually closes it right after this returns, and
+    /// [`Session::closed`] reports why.
     ///
     /// # Errors
     ///
     /// Fails with [`Error::Connect`] if the dial fails, [`Error::Refused`] if
-    /// the peer does not admit the session, and [`Error::ShutDown`] once the
-    /// node has shut down.
+    /// a peer on an older protocol version refuses during the handshake, and
+    /// [`Error::ShutDown`] once the node has shut down.
     pub async fn connect(&self, peer: impl Into<EndpointAddr>) -> Result<Session, Error> {
         self.connect_with(peer, ConnectOptions::default()).await
     }
 
     /// Dials `peer` with a token, a price, or a grant.
     ///
-    /// For a peer that admits manually.
-    /// An existing session with the peer is returned as it is, whatever the
-    /// options.
+    /// For a peer that admits manually. An existing session with the peer is
+    /// returned as it is, whatever the options, and so is a dial already in
+    /// flight to it: a call made while another dials joins that dial, and its
+    /// own token, cost and grant go unused.
     ///
     /// # Errors
     ///
@@ -607,6 +612,8 @@ impl Moq {
     }
 
     /// Returns the open sessions, dialed and accepted alike, as they change.
+    ///
+    /// Direct sessions only; a relay link reports through its own status.
     pub fn sessions(&self) -> n0_watcher::Direct<Vec<Session>> {
         self.shared.sessions.watch()
     }
@@ -614,26 +621,40 @@ impl Moq {
     /// Waits for the next session waiting to be admitted.
     ///
     /// Yields only under [`Admission::Manual`]. Returns `None` once the node
-    /// shuts down. Cancellation safe.
+    /// shuts down. A session that waited longer than a few seconds for this is
+    /// rejected rather than returned, since its peer has likely given up.
+    /// Cancellation safe.
     pub async fn accept(&self) -> Option<Incoming> {
-        let mut incoming = self.shared.incoming_rx.lock().await;
-        tokio::select! {
-            incoming = incoming.recv() => incoming,
-            _ = self.shared.shutdown.cancelled() => None,
+        let mut queue = self.shared.incoming_rx.lock().await;
+        loop {
+            let incoming = tokio::select! {
+                incoming = queue.recv() => incoming?,
+                _ = self.shared.shutdown.cancelled() => return None,
+            };
+            if incoming.queued_at.elapsed() <= ADMISSION_TIMEOUT {
+                return Some(incoming);
+            }
+            info!(remote = %incoming.remote.fmt_short(), "admission timed out in the queue");
+            incoming.close(moq_net::Error::Timeout);
         }
     }
 
     /// Shuts the node down for every clone.
     ///
-    /// Every session closes, relays detach, publications are withdrawn, and
-    /// [`connect`](Self::connect) and [`publish`](Self::publish) fail from here
-    /// on.
-    /// Waits for sessions to tell their peers, within a short grace, so it is
-    /// safe to close the endpoint after this returns. Idempotent; not
-    /// cancellation safe, call it again to finish.
+    /// Every session closes, relays detach, publications are withdrawn,
+    /// sessions still waiting for admission are rejected, and
+    /// [`connect`](Self::connect), [`publish`](Self::publish) and
+    /// [`attach_relay`](Self::attach_relay) fail from here on. Waits for
+    /// sessions to tell their peers, within a short grace, so it is safe to
+    /// close the endpoint after this returns. Idempotent; not cancellation
+    /// safe, call it again to finish.
     pub async fn shutdown(&self) {
+        // Closed before anything else, so a publication or a relay that races
+        // the shutdown fails rather than being added and then cleared.
+        self.shared.state.lock().expect("poisoned").closed = true;
         self.shared.shutdown.cancel();
-        self.tasks.relays.lock().expect("poisoned").clear();
+        #[cfg(feature = "relay-links")]
+        self.tasks.detach_relays();
         let mut done = self.shared.done.watch();
         while !done.get() {
             if done.updated().await.is_err() {
@@ -642,6 +663,10 @@ impl Moq {
         }
     }
 
+    /// Reports whether a relay link feeds the route table.
+    ///
+    /// Only links that consume count: a relay the node only publishes into
+    /// will never route a path here.
     fn has_relays(&self) -> bool {
         self.shared
             .state
@@ -649,7 +674,7 @@ impl Moq {
             .expect("poisoned")
             .links
             .values()
-            .any(|link| link.kind == LinkKind::Relay)
+            .any(|link| link.kind == LinkKind::Relay && link.consume)
     }
 
     /// Returns the node's tasks, for a handle that holds them weakly.
@@ -664,11 +689,24 @@ impl Moq {
             return Err(e!(Error::ShutDown));
         }
         let remote = connection.remote_id();
-        let (transport, h3) = accept_transport(connection.clone()).await?;
-        let handshake = moq_net::Server::new()
-            .accept_request(driver_now(), Transport::new(transport))
-            .await
-            .map_err(|source| e!(Error::Moq { source }))?;
+        let opened = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+            let (transport, h3) = accept_transport(connection.clone()).await?;
+            let handshake = moq_net::Server::new()
+                .accept_request(driver_now(), Transport::new(transport))
+                .await
+                .map_err(|source| e!(Error::Moq { source }))?;
+            Ok::<_, Error>((h3, handshake))
+        })
+        .await;
+        let (h3, handshake) = match opened {
+            Ok(opened) => opened?,
+            Err(_) => {
+                debug!(remote = %remote.fmt_short(), "no session setup in time");
+                return Err(e!(Error::Moq {
+                    source: moq_net::Error::Timeout
+                }));
+            }
+        };
         let request = match h3 {
             Some((target, headers)) => SessionRequest::new(&target, headers, handshake.role()),
             None => SessionRequest::new(handshake.path(), Vec::new(), handshake.role()),
@@ -680,17 +718,34 @@ impl Moq {
             connection,
             handshake,
             shared: Arc::downgrade(&self.shared),
+            queued_at: tokio::time::Instant::now(),
         };
         match self.shared.admission {
             Admission::Open => {
                 incoming.admit(Grant::everything()).await?;
             }
             Admission::Manual => {
-                self.shared
-                    .incoming_tx
-                    .send(incoming)
-                    .await
-                    .map_err(|_| e!(Error::ShutDown))?;
+                let room = tokio::select! {
+                    room = tokio::time::timeout(
+                        ADMISSION_TIMEOUT,
+                        self.shared.incoming_tx.reserve(),
+                    ) => room,
+                    _ = self.shared.shutdown.cancelled() => Ok(Err(mpsc::error::SendError(()))),
+                };
+                match room {
+                    Ok(Ok(permit)) => permit.send(incoming),
+                    Ok(Err(_)) => {
+                        incoming.close(moq_net::Error::Cancel);
+                        return Err(e!(Error::ShutDown));
+                    }
+                    Err(_) => {
+                        info!(remote = %remote.fmt_short(), "admission queue full, rejecting");
+                        incoming.close(moq_net::Error::Timeout);
+                        return Err(e!(Error::Moq {
+                            source: moq_net::Error::Timeout
+                        }));
+                    }
+                }
             }
         }
         Ok(())
@@ -703,6 +758,12 @@ impl ProtocolHandler for Moq {
             .await
             .map_err(AnyError::from)?;
         Ok(())
+    }
+
+    /// Shuts the node down with the router, as [`Moq::shutdown`] does.
+    async fn shutdown(&self) {
+        // The inherent method, which takes precedence over this one.
+        Self::shutdown(self).await;
     }
 }
 
@@ -780,6 +841,12 @@ struct Actor {
     dial_ids: HashMap<tokio::task::Id, EndpointId>,
 }
 
+impl Drop for Actor {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
 impl Actor {
     fn new(shared: Arc<Shared>) -> Self {
         Self {
@@ -827,12 +894,32 @@ impl Actor {
                 }
             }
         }
+        // Sessions still queued for admission are refused first, rather than
+        // left to their peers' idle timeout. `accept` gives the queue up as
+        // soon as the node shuts down, so this lock is not held for long.
+        let mut queue = self.shared.incoming_rx.lock().await;
+        queue.close();
+        while let Ok(incoming) = queue.try_recv() {
+            debug!(remote = %incoming.remote.fmt_short(), "rejecting a queued session at shutdown");
+            incoming.close(moq_net::Error::Cancel);
+        }
+        drop(queue);
         self.drain().await;
-        let mut state = self.shared.state.lock().expect("poisoned");
-        state.closed = true;
-        state.publications.clear();
-        state.links.clear();
-        drop(state);
+        // The rest happens in `Drop`, which also runs if this task panics.
+    }
+
+    /// Tears the node's state down and reports the shutdown done.
+    ///
+    /// In `Drop` so that it also runs when the actor panics: otherwise
+    /// [`Moq::shutdown`] would wait forever for `done`.
+    fn finish(&mut self) {
+        // A lock poisoned by the panic that brought us here must not turn this
+        // into a second panic during unwinding.
+        if let Ok(mut state) = self.shared.state.lock() {
+            state.closed = true;
+            state.publications.clear();
+            state.links.clear();
+        }
         self.shared.sessions.set(Vec::new()).ok();
         // Anyone still waiting on a dial learns it will not come.
         for (_, replies) in self.pending.drain() {
@@ -976,6 +1063,7 @@ impl Actor {
                 publish: origins.publish.clone(),
                 legacy: true,
                 public: true,
+                consume: true,
                 offers: HashMap::new(),
                 announced: Default::default(),
                 session: Some(session.clone()),

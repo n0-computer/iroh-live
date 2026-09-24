@@ -859,3 +859,250 @@ async fn a_relay_link_publishes_and_consumes() {
     drop(broadcast);
     live.shutdown().await;
 }
+
+/// Binds a node for the relay-link tests, accepting sessions if `router`.
+async fn relay_node(router: bool) -> (iroh::Endpoint, iroh_live::Live) {
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .address_lookup(shared_lookup())
+        .secret_key(iroh::SecretKey::generate())
+        .bind()
+        .await
+        .expect("bind node");
+    shared_lookup().add_endpoint_info(endpoint.addr());
+    let mut builder = iroh_live::Live::builder(endpoint.clone());
+    if router {
+        builder = builder.with_router();
+    }
+    (endpoint, builder.spawn())
+}
+
+/// Attaches `live` to `relay` and waits for the link to connect.
+async fn attached(
+    live: &iroh_live::Live,
+    relay: &TestRelay,
+    offer: iroh_moq::RelayOffer,
+) -> iroh_moq::RelayLink {
+    use n0_watcher::Watcher;
+    let url = format!("iroh://{}/", relay.iroh_id).parse().expect("url");
+    let link = live
+        .moq()
+        .attach_relay(iroh_moq::RelayConfig::new(url).with_offer(offer))
+        .expect("attach");
+    let mut status = link.status();
+    tokio::time::timeout(TIMEOUT, async {
+        while status.get() != iroh_moq::LinkStatus::Connected {
+            status.updated().await.expect("link gone");
+        }
+    })
+    .await
+    .expect("the relay link never connected");
+    link
+}
+
+/// A broadcast with one track that writes a counter every few milliseconds.
+fn counter(name: &str) -> (moq_net::broadcast::Producer, AbortOnDropHandle<()>) {
+    let broadcast = moq_net::broadcast::Info::new().produce();
+    let mut track = broadcast
+        .create_track(
+            name,
+            moq_net::track::Info::default().with_max_age(Duration::from_secs(5)),
+        )
+        .expect("track");
+    let writer = AbortOnDropHandle::new(tokio::spawn(async move {
+        for n in 0u64.. {
+            if track
+                .write_frame(Timestamp::now(), n.to_be_bytes().to_vec())
+                .is_err()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }));
+    (broadcast, writer)
+}
+
+/// Reports whether `origin` routes `path` within a second.
+async fn routed_soon(origin: &origin::Producer, path: &str) -> bool {
+    tokio::time::timeout(Duration::from_secs(1), origin.consume().routed(path))
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+}
+
+/// Only public publications go to a relay, and only while the link offers
+/// them: a `Peers` or `Manual` one never reaches it, and a link that offers
+/// nothing publishes nothing.
+#[tokio::test]
+#[serial]
+async fn a_relay_gets_public_publications_only() {
+    use std::collections::BTreeSet;
+
+    use iroh_moq::{Audience, RelayOffer};
+    use n0_watcher::Watchable;
+
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start().await;
+    let (endpoint, live) = relay_node(false).await;
+    let (public, _public) = counter("data");
+    let (peers, _peers) = counter("data");
+    let (manual, _manual) = counter("data");
+    let members = Watchable::new(BTreeSet::from([relay.iroh_id]));
+    let public = live
+        .moq()
+        .publish("public", &public, Audience::Everyone)
+        .expect("publish");
+    let peers = live
+        .moq()
+        .publish("peers", &peers, Audience::Peers(members.watch()))
+        .expect("publish");
+    let manual = live
+        .moq()
+        .publish("manual", &manual, Audience::Manual)
+        .expect("publish");
+
+    let (sub_origin, _sub_driver) = test_origin();
+    let _browser = established(
+        noq_client()
+            .with_subscriber(sub_origin.clone())
+            .connect(relay.url()),
+    )
+    .await;
+
+    let nothing = attached(&live, &relay, RelayOffer::Nothing).await;
+    assert!(
+        !routed_soon(&sub_origin, public.path().as_str()).await,
+        "a link that offers nothing published a broadcast"
+    );
+    nothing.detach().await;
+
+    let _public_link = attached(&live, &relay, RelayOffer::Public).await;
+    announced_at(&sub_origin, public.path().as_str()).await;
+    for private in [&peers, &manual] {
+        assert!(
+            !routed_soon(&sub_origin, private.path().as_str()).await,
+            "{} reached the relay",
+            private.path()
+        );
+    }
+
+    live.shutdown().await;
+    drop(endpoint);
+}
+
+/// Shutting a node down reports its relay links detached, and a subscribe
+/// that wants a relay fails once none is attached.
+#[tokio::test]
+#[serial]
+async fn shutdown_detaches_relay_links() {
+    use iroh_moq::{Error, LinkStatus, Reach, RelayOffer};
+    use n0_watcher::Watcher;
+
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start().await;
+    let (_endpoint, live) = relay_node(false).await;
+    let link = attached(&live, &relay, RelayOffer::Public).await;
+    let consume_only = live
+        .moq()
+        .attach_relay(iroh_moq::RelayConfig::new(link.url().clone()).with_consume(false))
+        .expect("attach");
+
+    link.detach().await;
+    // The link left feeds the table nothing, so a relay subscribe has nowhere
+    // to wait.
+    let err = tokio::time::timeout(TIMEOUT, live.moq().subscribe("anything", Reach::Relays))
+        .await
+        .expect("a relay subscribe with no consuming relay waited")
+        .expect_err("resolved without a relay");
+    assert!(matches!(err, Error::NoRoute { .. }), "{err:#}");
+
+    let mut status = consume_only.status();
+    tokio::time::timeout(TIMEOUT, live.shutdown())
+        .await
+        .expect("shutdown hung");
+    tokio::time::timeout(TIMEOUT, async {
+        while status.get() != LinkStatus::Detached {
+            status.updated().await.expect("link gone");
+        }
+    })
+    .await
+    .expect("a relay link outlived its node's shutdown");
+}
+
+/// A subscription follows its publisher from a direct session to a relay when
+/// the direct session goes, without ending: both routes start at the same
+/// publisher, so moq re-splices at a group boundary.
+#[tokio::test]
+#[serial]
+async fn a_subscription_fails_over_from_direct_to_the_relay() {
+    use iroh_moq::{Audience, LinkKind, Reach, RelayOffer};
+    use n0_watcher::Watcher;
+
+    let _ = tracing_subscriber::fmt::try_init();
+    let relay = TestRelay::start().await;
+    let (_alice_endpoint, alice) = relay_node(true).await;
+    let (broadcast, _writer) = counter("data");
+    let publication = alice
+        .moq()
+        .publish("cam", &broadcast, Audience::Everyone)
+        .expect("publish");
+    let _alice_link = attached(&alice, &relay, RelayOffer::Public).await;
+
+    let (_bob_endpoint, bob) = relay_node(false).await;
+    let subscription = tokio::time::timeout(
+        TIMEOUT,
+        bob.moq().subscribe(publication.path(), Reach::Direct),
+    )
+    .await
+    .expect("subscribe timeout")
+    .expect("subscribe");
+    let mut reader = tokio::time::timeout(
+        TIMEOUT,
+        subscription
+            .as_moq()
+            .track("data")
+            .expect("track")
+            .subscribe(
+                moq_net::track::Subscription::default().with_max_age(Duration::from_secs(5)),
+            ),
+    )
+    .await
+    .expect("track subscribe timeout")
+    .expect("track subscribe");
+    let _bob_link = attached(&bob, &relay, RelayOffer::Nothing).await;
+    let mut routes = bob.moq().routes(publication.path());
+    tokio::time::timeout(TIMEOUT, async {
+        while !routes
+            .get()
+            .iter()
+            .any(|route| route.kind == LinkKind::Relay)
+        {
+            routes.updated().await.expect("node gone");
+        }
+    })
+    .await
+    .expect("the relay never routed the publication");
+
+    let session = subscription.session().expect("served directly");
+    session.close("testing failover");
+    // Groups keep coming, well past the ones in flight when the session went.
+    for _ in 0..100 {
+        tokio::time::timeout(TIMEOUT, reader.recv_group())
+            .await
+            .expect("the subscription stalled after the direct session went")
+            .expect("track failed")
+            .expect("the subscription ended with the direct session");
+    }
+    assert!(!subscription.as_moq().is_closed());
+    let routes = bob.moq().routes(publication.path()).get();
+    assert!(
+        routes
+            .iter()
+            .any(|route| route.kind == LinkKind::Relay && route.active),
+        "{routes:?}"
+    );
+
+    bob.shutdown().await;
+    alice.shutdown().await;
+}

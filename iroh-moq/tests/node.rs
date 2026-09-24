@@ -359,7 +359,7 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
     )
     .await
     {
-        Err(_) => {}
+        Err(err) => assert!(matches!(err, Error::Refused { .. }), "{err:#}"),
         Ok(session) => {
             let reason = step("the refused session closes", session.closed()).await;
             assert!(
@@ -369,6 +369,28 @@ async fn manual_admission_checks_a_token_and_bounds_offers() {
             );
         }
     }
+    assert!(
+        !alice
+            .moq
+            .sessions()
+            .get()
+            .iter()
+            .any(|session| session.remote_id() == mallory.id()),
+        "mallory was admitted"
+    );
+    let err = step(
+        "mallory subscribes",
+        mallory.moq.subscribe(public.0.path(), Reach::Direct),
+    )
+    .await
+    .expect_err("mallory resolved a broadcast without a token");
+    assert!(
+        matches!(
+            err,
+            Error::NotAnnounced { .. } | Error::Refused { .. } | Error::Connect { .. }
+        ),
+        "{err:#}"
+    );
 
     drop(accept_loop);
     alice.shutdown().await;
@@ -482,6 +504,176 @@ async fn a_subscriber_started_first_gets_the_named_path() {
 
     alice.shutdown().await;
     bob.shutdown().await;
+}
+
+/// Dials `to` from `dialer` and waits for the session to be refused.
+///
+/// From moq-lite-05 on the dialer completes its half of the handshake before
+/// the other side decides, so a refusal usually arrives as the session closing.
+async fn refused(dialer: &Node, to: &Node, within: Duration) {
+    match step("connect", dialer.moq.connect(to.endpoint.addr())).await {
+        Err(_) => {}
+        Ok(session) => {
+            tokio::time::timeout(within, session.closed())
+                .await
+                .expect("the refused session stayed open");
+        }
+    }
+    assert!(
+        !to.moq
+            .sessions()
+            .get()
+            .iter()
+            .any(|session| session.remote_id() == dialer.id()),
+        "the session was admitted"
+    );
+}
+
+/// An incoming session the application drops without deciding is refused.
+#[tokio::test]
+#[traced_test]
+async fn an_undecided_session_is_refused() {
+    let alice = Node::with_config(MoqConfig::default().with_admission(Admission::Manual)).await;
+    let bob = Node::spawn().await;
+    let moq = alice.moq.clone();
+    let _accept = AbortOnDropHandle::new(tokio::spawn(async move {
+        while let Some(incoming) = moq.accept().await {
+            drop(incoming);
+        }
+    }));
+    refused(&bob, &alice, TIMEOUT).await;
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+/// Shutting down refuses the sessions still waiting for admission, so their
+/// peers learn at once rather than when the connection idles out.
+#[tokio::test]
+#[traced_test]
+async fn shutdown_refuses_the_sessions_waiting_for_admission() {
+    let alice = Node::with_config(MoqConfig::default().with_admission(Admission::Manual)).await;
+    let bob = Node::spawn().await;
+    let session = step("bob connects", bob.moq.connect(alice.endpoint.addr()))
+        .await
+        .expect("the dialer's half completes before the decision");
+    // Queued at alice, with nobody accepting.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    step("alice shuts down", alice.moq.shutdown()).await;
+    tokio::time::timeout(Duration::from_secs(5), session.closed())
+        .await
+        .expect("a queued session outlived the shutdown");
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+/// Shutting the router down shuts the node down with it, as for any iroh
+/// protocol.
+#[tokio::test]
+#[traced_test]
+async fn the_router_shuts_the_node_down() {
+    let alice = Node::spawn().await;
+    step("router shutdown", alice.router.shutdown())
+        .await
+        .expect("router");
+    let broadcast = TestBroadcast::start();
+    let err = alice
+        .moq
+        .publish("cam", &broadcast.producer, Audience::Everyone)
+        .expect_err("publish after the router shut down");
+    assert!(matches!(err, Error::ShutDown { .. }), "{err:#}");
+    alice.shutdown().await;
+}
+
+/// A peer publishes into this node only within its grant.
+#[tokio::test]
+#[traced_test]
+async fn a_grant_bounds_what_a_peer_publishes() {
+    let alice = Node::with_config(MoqConfig::default().with_admission(Admission::Manual)).await;
+    let bob = Node::spawn().await;
+    let (allowed, other) = (TestBroadcast::start(), TestBroadcast::start());
+    let allowed = bob
+        .moq
+        .publish("allowed", &allowed.producer, Audience::Everyone)
+        .expect("publish");
+    let other = bob
+        .moq
+        .publish("other", &other.producer, Audience::Everyone)
+        .expect("publish");
+
+    let moq = alice.moq.clone();
+    let within: Pattern = allowed.path().as_str().parse().expect("pattern");
+    let _accept = AbortOnDropHandle::new(tokio::spawn(async move {
+        let mut sessions = Vec::new();
+        while let Some(incoming) = moq.accept().await {
+            let grant = Grant::new(
+                Patterns::from(Pattern::all()),
+                Patterns::from(within.clone()),
+            );
+            sessions.push(incoming.admit(grant).await.expect("admit"));
+        }
+    }));
+    step("bob connects", bob.moq.connect(alice.endpoint.addr()))
+        .await
+        .expect("connect");
+    step("alice sees bob", session_with(&alice, bob.id())).await;
+
+    let subscription = step(
+        "within the grant",
+        alice.moq.subscribe(allowed.path(), Reach::Direct),
+    )
+    .await
+    .expect("subscribe");
+    read_counter(&subscription.as_moq()).await;
+    stays_pending(
+        "alice took a broadcast outside bob's grant",
+        PAST_THE_GRACE,
+        alice.moq.subscribe(other.path(), Reach::Direct),
+    )
+    .await;
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+/// A node can share its route table with another server: its public
+/// publications are there, and nothing else of its own.
+#[tokio::test]
+#[traced_test]
+async fn a_shared_route_table_carries_public_publications() {
+    let (origin, driver) =
+        origin::Producer::new(origin::Config::new(Hop::new(42).expect("a valid hop")));
+    let _driver = AbortOnDropHandle::new(tokio::spawn(async move {
+        moq_net::time::run(driver).await;
+    }));
+    let alice = Node::with_config(MoqConfig::default().with_origin(origin.clone())).await;
+    let (public, secret) = (TestBroadcast::start(), TestBroadcast::start());
+    let public = alice
+        .moq
+        .publish("public", &public.producer, Audience::Everyone)
+        .expect("publish");
+    let secret = alice
+        .moq
+        .publish("secret", &secret.producer, Audience::Manual)
+        .expect("publish");
+
+    let served = step(
+        "the shared table serves the public one",
+        origin.consume().request_broadcast(public.path()),
+    )
+    .await
+    .expect("resolve");
+    read_counter(&served).await;
+    let unrouted = step(
+        "the shared table does not serve the manual one",
+        origin.consume().request_broadcast(secret.path()),
+    )
+    .await;
+    assert!(
+        unrouted.is_err(),
+        "a manual publication reached the shared table"
+    );
+
+    alice.shutdown().await;
 }
 
 /// Waits until `node` has a session with `remote`, and returns it.

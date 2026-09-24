@@ -201,6 +201,39 @@ impl RelayLink {
     }
 }
 
+/// A relay link's task, and the status it reports.
+pub(crate) struct RelayTask {
+    task: AbortOnDropHandle<()>,
+    status: Watchable<LinkStatus>,
+}
+
+impl Tasks {
+    /// Keeps a relay link's task running until the link detaches.
+    fn insert_relay(&self, link: u64, task: RelayTask) {
+        let mut relays = self.relays.lock().expect("poisoned");
+        // A link whose task ended on its own (its client gave up) is gone
+        // already; its handle need not stay.
+        relays.retain(|_, relay| !relay.task.is_finished());
+        relays.insert(link, task);
+    }
+
+    /// Stops a relay link's task.
+    fn remove_relay(&self, link: u64) {
+        self.relays.lock().expect("poisoned").remove(&link);
+    }
+
+    /// Stops every relay link's task, reporting each detached.
+    ///
+    /// An aborted task never reaches its own report, so this makes it.
+    pub(crate) fn detach_relays(&self) {
+        let relays = std::mem::take(&mut *self.relays.lock().expect("poisoned"));
+        for (_, relay) in relays {
+            drop(relay.task);
+            relay.status.set(LinkStatus::Detached).ok();
+        }
+    }
+}
+
 impl Moq {
     /// Stays attached to the moq relay at `config.url`, redialing with backoff.
     ///
@@ -262,6 +295,7 @@ impl Moq {
                     publish: origins.publish.clone(),
                     legacy: false,
                     public: matches!(config.offer, RelayOffer::Public),
+                    consume: config.consume,
                     offers: HashMap::new(),
                     announced: Default::default(),
                     session: None,
@@ -332,8 +366,19 @@ impl Moq {
                 .instrument(info_span!("relay", %url, link)),
             )
         };
-        self.tasks()
-            .insert_relay(link, AbortOnDropHandle::new(task));
+        self.tasks().insert_relay(
+            link,
+            RelayTask {
+                task: AbortOnDropHandle::new(task),
+                status: status.clone(),
+            },
+        );
+        // A shutdown that ran between the check above and the insert found
+        // no task to stop; stop it here instead.
+        if shared.shutdown.is_cancelled() {
+            self.tasks().detach_relays();
+            return Err(e!(Error::ShutDown));
+        }
         Ok(RelayLink {
             inner: Arc::new(RelayInner {
                 link,

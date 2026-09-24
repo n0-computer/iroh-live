@@ -266,6 +266,8 @@ pub struct Incoming {
     pub(crate) connection: Connection,
     pub(crate) handshake: Handshake<Transport>,
     pub(crate) shared: Weak<Shared>,
+    /// When the session was queued for admission, to reject stale ones.
+    pub(crate) queued_at: tokio::time::Instant,
 }
 
 impl fmt::Debug for Incoming {
@@ -290,13 +292,23 @@ impl Incoming {
 
     /// Admits the session with `grant`.
     ///
-    /// Cancellation safe: dropping the future rejects the session.
+    /// Dropping the future before the handshake completes rejects the
+    /// session; dropped after that, the session is admitted all the same and
+    /// shows up in [`Moq::sessions`](crate::Moq::sessions).
     ///
     /// # Errors
     ///
-    /// Fails if the MoQ handshake does not complete, or the node has shut down.
+    /// Fails if the MoQ handshake does not complete, or the node has shut down,
+    /// in which case the peer is refused rather than admitted and closed.
     pub async fn admit(self, grant: Grant) -> Result<Session, Error> {
-        let shared = self.shared.upgrade().ok_or_else(|| e!(Error::ShutDown))?;
+        let Some(shared) = self
+            .shared
+            .upgrade()
+            .filter(|shared| !shared.shutdown.is_cancelled())
+        else {
+            self.close(moq_net::Error::Cancel);
+            return Err(e!(Error::ShutDown));
+        };
         info!(remote = %self.remote.fmt_short(), ?grant, "admitting session");
         let origins = Origins::new(&shared);
         let mut handshake = self
@@ -327,6 +339,11 @@ impl Incoming {
     pub fn reject(self, reason: Reject) {
         info!(remote = %self.remote.fmt_short(), ?reason, "rejecting session");
         self.handshake.close(reason.into());
+    }
+
+    /// Refuses the session with a moq error code.
+    pub(crate) fn close(self, err: moq_net::Error) {
+        self.handshake.close(err);
     }
 }
 

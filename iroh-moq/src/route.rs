@@ -12,6 +12,7 @@ use std::{
     collections::HashMap,
     fmt,
     sync::{Arc, Mutex, Weak},
+    time::Duration,
 };
 
 use iroh::EndpointId;
@@ -23,6 +24,17 @@ use n0_future::task::{AbortOnDropHandle, JoinSet};
 use tracing::{debug, trace, warn};
 
 use crate::{Session, node::Shared, path::publisher_of};
+
+/// A broadcast that lived shorter than this before it ended counts as ending
+/// at once, for [`Subscription::closed`]'s pause.
+const REASK_WINDOW: Duration = Duration::from_secs(1);
+
+/// The pause before asking the table again, per broadcast in a row that ended
+/// at once.
+const REASK_PAUSE: Duration = Duration::from_millis(100);
+
+/// The pause stops growing after this many steps, at two seconds.
+const REASK_MAX_STEPS: u32 = 20;
 
 /// Identifies one link of a node: a session, a relay, or the node itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, derive_more::Display)]
@@ -152,11 +164,22 @@ impl Subscription {
     ///
     /// A change of route that moq cannot splice ends the broadcast; this asks
     /// the route table again then, and resolves only once nothing serves the
-    /// path any more. Cancellation safe.
+    /// path any more. A route that keeps answering with broadcasts that end at
+    /// once is asked again with a growing pause rather than in a tight loop.
+    /// Cancellation safe.
     pub async fn closed(&self) {
+        let mut quick = 0u32;
         loop {
             let current = self.as_moq();
+            let since = tokio::time::Instant::now();
             current.closed().await;
+            if since.elapsed() >= REASK_WINDOW {
+                quick = 0;
+            }
+            if quick > 0 {
+                tokio::time::sleep(REASK_PAUSE * quick.min(REASK_MAX_STEPS)).await;
+            }
+            quick += 1;
             let next = match self.inner.origin.request_broadcast(&self.inner.path).await {
                 Ok(next) if !next.is_closed() => next,
                 _ => return,

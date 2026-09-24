@@ -38,7 +38,7 @@ pub(crate) async fn endpoint() -> Endpoint {
 pub(crate) struct Node {
     pub(crate) endpoint: Endpoint,
     pub(crate) moq: Moq,
-    router: Router,
+    pub(crate) router: Router,
 }
 
 impl Node {
