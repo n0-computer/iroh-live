@@ -33,9 +33,6 @@ pub const ALPN: &[u8] = iroh_gossip::ALPN;
 /// The key a member's announcement is stored under in the room's gossip map.
 const PEER_STATE_KEY: &[u8] = b"s";
 
-/// The version of the announcement this release writes.
-const PEER_STATE_VERSION: u32 = 2;
-
 /// How long a member's announcement survives in the gossip map unrewritten.
 ///
 /// The map is the membership roll, so this is how long a member that vanished
@@ -181,9 +178,8 @@ impl Rooms {
 
         let members = Watchable::new(BTreeSet::new());
         let chat = ChatWriter::new().map_err(|source| e!(Error::Chat { source }))?;
-        let chat_publication = self.moq.publish_at_with_legacy(
+        let chat_publication = self.moq.publish_at(
             room_path(topic, me, CHAT_BROADCAST),
-            legacy_room_path(topic, CHAT_BROADCAST),
             chat.consume(),
             Audience::Peers(members.watch()),
         )?;
@@ -200,7 +196,6 @@ impl Rooms {
             local: Mutex::new(BTreeMap::new()),
             local_changed: Watchable::new(0),
             display_name: Watchable::new(config.display_name),
-            legacy_peers: Mutex::new(BTreeSet::new()),
             chat_since: SystemTime::now() - CHAT_CLOCK_TOLERANCE,
             done: Watchable::new(false),
         });
@@ -290,9 +285,6 @@ struct Inner {
     /// Bumped whenever [`Inner::local`] changes, so the actor re-announces.
     local_changed: Watchable<u64>,
     display_name: Watchable<Option<String>>,
-    /// Members that announce the layout before paths named their publisher.
-    // TODO(old-layout): remove with the older room layout.
-    legacy_peers: Mutex<BTreeSet<EndpointId>>,
     /// Chat sent before this is history from before joining.
     chat_since: SystemTime,
     done: Watchable<bool>,
@@ -354,9 +346,8 @@ impl Room {
             return Err(e!(Error::Left));
         }
         let topic = self.inner.ticket.topic_id();
-        let publication = self.inner.moq.publish_at_with_legacy(
+        let publication = self.inner.moq.publish_at(
             room_path(topic, self.inner.me, name),
-            legacy_room_path(topic, name),
             broadcast,
             Audience::Peers(self.inner.members.watch()),
         )?;
@@ -409,20 +400,7 @@ impl Room {
         if self.inner.done.get() {
             return Err(e!(Error::Left));
         }
-        let topic = self.inner.ticket.topic_id();
-        let legacy = self
-            .inner
-            .legacy_peers
-            .lock()
-            .expect("poisoned")
-            .contains(&peer);
-        // A member on the older layout publishes at a path that names no
-        // publisher, which only means something on the session with it.
-        let path = if legacy {
-            legacy_room_path(topic, name)
-        } else {
-            room_path(topic, peer, name)
-        };
+        let path = room_path(self.inner.ticket.topic_id(), peer, name);
         let session = self.inner.moq.connect(peer).await?;
         Ok(session.subscribe(path).await?)
     }
@@ -527,7 +505,7 @@ impl Inner {
     }
 
     /// Returns the names this member publishes into the room.
-    fn local_names(&self) -> Vec<String> {
+    fn local_names(&self) -> BTreeSet<String> {
         self.local
             .lock()
             .expect("poisoned")
@@ -537,72 +515,14 @@ impl Inner {
     }
 }
 
-/// A member's announcement, as this release writes it.
-///
-/// Postcard is positional: the first two fields are exactly the announcement
-/// the release before this one wrote and reads, and it ignores the bytes after
-/// them. Do not reorder them, and add new fields at the end.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A member's announcement in the room's gossip map.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct PeerState {
-    /// Every broadcast name, the chat broadcast's included, so a member on the
-    /// older release subscribes to it and reads the chat track it expects.
-    broadcasts: Vec<String>,
-    /// Do not use `skip_serializing_if` here: postcard is positional, and a
-    /// skipped field makes the reader take the next field's bytes for this one.
+    /// The broadcasts the member publishes into the room, by name.
+    broadcasts: BTreeSet<String>,
     display_name: Option<String>,
-    version: u32,
-    /// The name of the member's chat broadcast.
-    chat: Option<String>,
     /// The member left; drop it without waiting for its lease to run out.
     left: bool,
-}
-
-/// A member's announcement as the release before this one wrote it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct LegacyPeerState {
-    broadcasts: Vec<String>,
-    display_name: Option<String>,
-}
-
-/// What this member knows about another from its announcement.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Announcement {
-    display_name: Option<String>,
-    broadcasts: BTreeSet<String>,
-    /// The member writes the older announcement and path layout.
-    legacy: bool,
-    left: bool,
-}
-
-impl Announcement {
-    /// Reads an announcement in either layout.
-    fn parse(bytes: &[u8]) -> Option<Self> {
-        // The older layout is a prefix of the current one, so it always decodes
-        // as that; the current one is tried first and tells them apart by its
-        // version field.
-        if let Ok(state) = postcard::from_bytes::<PeerState>(bytes)
-            && state.version >= PEER_STATE_VERSION
-        {
-            let chat = state.chat.as_deref();
-            return Some(Self {
-                display_name: state.display_name,
-                broadcasts: state
-                    .broadcasts
-                    .into_iter()
-                    .filter(|name| Some(name.as_str()) != chat)
-                    .collect(),
-                legacy: false,
-                left: state.left,
-            });
-        }
-        let state = postcard::from_bytes::<LegacyPeerState>(bytes).ok()?;
-        Some(Self {
-            display_name: state.display_name,
-            broadcasts: state.broadcasts.into_iter().collect(),
-            legacy: true,
-            left: false,
-        })
-    }
 }
 
 /// Another member, as the actor tracks it.
@@ -610,11 +530,8 @@ impl Announcement {
 /// Removing the entry drops its tasks, which aborts them, so nothing a removed
 /// member started can come back and change the room.
 struct Peer {
-    announcement: Announcement,
-    /// The member's chat readers, by the broadcast each reads: its chat
-    /// broadcast for a current member, each of its broadcasts for one on the
-    /// older release.
-    chat: BTreeMap<String, ChatReader>,
+    announcement: PeerState,
+    chat: ChatReader,
 }
 
 /// One chat source of a member, and how far it was read.
@@ -626,30 +543,12 @@ struct ChatReader {
 }
 
 impl Peer {
-    fn new(announcement: Announcement) -> Self {
-        Self {
-            announcement,
-            chat: BTreeMap::new(),
-        }
-    }
-
-    /// Returns the broadcasts this member's chat is read from.
-    fn chat_sources(&self) -> BTreeSet<String> {
-        if self.announcement.legacy {
-            self.announcement.broadcasts.clone()
-        } else {
-            BTreeSet::from([CHAT_BROADCAST.to_owned()])
-        }
-    }
-
-    /// Reports whether a chat source of this member has no running reader.
+    /// Reports whether this member's chat has no running reader.
     fn chat_stalled(&self) -> bool {
-        self.chat_sources().iter().any(|name| {
-            self.chat
-                .get(name)
-                .and_then(|reader| reader.task.as_ref())
-                .is_none_or(|task| task.is_finished())
-        })
+        self.chat
+            .task
+            .as_ref()
+            .is_none_or(|task| task.is_finished())
     }
 }
 
@@ -806,19 +705,13 @@ impl Actor {
 
     /// Returns this member's announcement as it stands.
     fn announcement(&self, left: bool) -> PeerState {
-        let mut broadcasts = if left {
-            Vec::new()
-        } else {
-            self.inner.local_names()
-        };
-        if !left {
-            broadcasts.push(CHAT_BROADCAST.to_owned());
-        }
         PeerState {
-            broadcasts,
+            broadcasts: if left {
+                BTreeSet::new()
+            } else {
+                self.inner.local_names()
+            },
             display_name: self.inner.display_name.get(),
-            version: PEER_STATE_VERSION,
-            chat: Some(CHAT_BROADCAST.to_owned()),
             left,
         }
     }
@@ -863,7 +756,7 @@ impl Actor {
         if remote == self.inner.me || key != PEER_STATE_KEY {
             return;
         }
-        let Some(announcement) = Announcement::parse(&value.value) else {
+        let Ok(announcement) = postcard::from_bytes::<PeerState>(&value.value) else {
             warn!(
                 remote = %remote.fmt_short(),
                 len = value.value.len(),
@@ -894,7 +787,6 @@ impl Actor {
             None => info!(
                 remote = %remote.fmt_short(),
                 display_name = ?announcement.display_name,
-                legacy = announcement.legacy,
                 "member joined the room",
             ),
             Some(_) if changed => debug!(
@@ -904,10 +796,13 @@ impl Actor {
             ),
             Some(_) => debug!(remote = %remote.fmt_short(), "restarting a stopped chat reader"),
         }
-        let mut peer = self
-            .peers
-            .remove(&remote)
-            .unwrap_or_else(|| Peer::new(announcement.clone()));
+        let mut peer = self.peers.remove(&remote).unwrap_or_else(|| Peer {
+            announcement: announcement.clone(),
+            chat: ChatReader {
+                task: None,
+                cursor: Arc::new(ChatCursor::new(self.inner.chat_since)),
+            },
+        });
         peer.announcement = announcement;
         self.sync_chat(remote, &mut peer);
         self.peers.insert(remote, peer);
@@ -937,44 +832,26 @@ impl Actor {
         }
     }
 
-    /// Runs one chat reader per chat source of member `remote`.
-    ///
-    /// Keeps the readers that still run, so a change to what the member
-    /// publishes does not restart them; starts the missing and stopped ones
-    /// over their cursors, and drops the ones for sources that went.
+    /// Starts member `remote`'s chat reader over its cursor, unless it runs.
     fn sync_chat(&self, remote: EndpointId, peer: &mut Peer) {
-        let sources = peer.chat_sources();
-        peer.chat.retain(|name, _| sources.contains(name));
+        let reader = &mut peer.chat;
+        if reader.task.as_ref().is_some_and(|task| !task.is_finished()) {
+            return;
+        }
         let Some(tx) = self.inner.chat.lock().expect("poisoned").clone() else {
             return;
         };
-        let topic = self.inner.ticket.topic_id();
-        let legacy = peer.announcement.legacy;
-        for name in sources {
-            let reader = peer.chat.entry(name.clone()).or_insert_with(|| ChatReader {
-                task: None,
-                cursor: Arc::new(ChatCursor::new(self.inner.chat_since)),
-            });
-            if reader.task.as_ref().is_some_and(|task| !task.is_finished()) {
-                continue;
-            }
-            let path = if legacy {
-                legacy_room_path(topic, &name)
-            } else {
-                room_path(topic, remote, &name)
-            };
-            reader.task = Some(AbortOnDropHandle::new(tokio::spawn(
-                read_chat(
-                    self.inner.moq.clone(),
-                    remote,
-                    path,
-                    legacy,
-                    reader.cursor.clone(),
-                    tx.clone(),
-                )
-                .in_current_span(),
-            )));
-        }
+        let path = room_path(self.inner.ticket.topic_id(), remote, CHAT_BROADCAST);
+        reader.task = Some(AbortOnDropHandle::new(tokio::spawn(
+            read_chat(
+                self.inner.moq.clone(),
+                remote,
+                path,
+                reader.cursor.clone(),
+                tx,
+            )
+            .in_current_span(),
+        )));
     }
 
     /// Publishes the membership to the state watcher and the audience set.
@@ -995,19 +872,12 @@ impl Actor {
                 .collect(),
         };
         let members: BTreeSet<EndpointId> = self.peers.keys().copied().collect();
-        let legacy: BTreeSet<EndpointId> = self
-            .peers
-            .iter()
-            .filter(|(_, peer)| peer.announcement.legacy)
-            .map(|(id, _)| *id)
-            .collect();
-        *self.inner.legacy_peers.lock().expect("poisoned") = legacy;
         self.inner.members.set(members).ok();
         self.inner.state.set(state).ok();
     }
 }
 
-/// Reads one chat source of member `remote` into `tx`.
+/// Reads member `remote`'s chat into `tx`.
 ///
 /// Over the session with the member, never the route table: what the member
 /// announces on its own session is its chat, and no other peer can put a
@@ -1016,7 +886,6 @@ async fn read_chat(
     moq: Moq,
     remote: EndpointId,
     path: String,
-    legacy: bool,
     cursor: Arc<ChatCursor>,
     tx: channel::Sender<ChatMessage>,
 ) {
@@ -1028,7 +897,7 @@ async fn read_chat(
         }
     };
     match session.subscribe(path).await {
-        Ok(subscription) => chat::forward(remote, subscription.as_moq(), legacy, cursor, tx).await,
+        Ok(subscription) => chat::forward(remote, subscription.as_moq(), cursor, tx).await,
         Err(err) => debug!(remote = %remote.fmt_short(), %err, "member chat unreachable"),
     }
 }
@@ -1067,13 +936,6 @@ pub(crate) fn room_path(topic: TopicId, publisher: EndpointId, name: &str) -> St
     format!("rooms/{topic}/{publisher}/{name}")
 }
 
-/// Returns the path the release before publisher-named paths used for a room
-/// broadcast: `rooms/<topic>/<name>`.
-// TODO(old-layout): remove with the older room layout.
-fn legacy_room_path(topic: TopicId, name: &str) -> String {
-    format!("rooms/{topic}/{name}")
-}
-
 #[cfg(test)]
 mod tests {
     use iroh::SecretKey;
@@ -1088,60 +950,16 @@ mod tests {
         assert!(EXPIRY_CHECK_INTERVAL < STATE_REFRESH);
     }
 
-    fn current(broadcasts: &[&str], display_name: Option<&str>) -> PeerState {
-        let mut names: Vec<String> = broadcasts.iter().map(|name| (*name).to_owned()).collect();
-        names.push(CHAT_BROADCAST.to_owned());
-        PeerState {
-            broadcasts: names,
-            display_name: display_name.map(str::to_owned),
-            version: PEER_STATE_VERSION,
-            chat: Some(CHAT_BROADCAST.to_owned()),
-            left: false,
-        }
-    }
-
-    /// The release before this one decodes what this one writes: the older
-    /// layout is a positional prefix, and postcard ignores the rest.
-    #[test]
-    fn an_older_member_reads_the_current_announcement() {
-        let bytes = postcard::to_stdvec(&current(&["cam"], Some("Alice"))).expect("encode");
-        let old: LegacyPeerState = postcard::from_bytes(&bytes).expect("an older reader");
-        assert_eq!(old.broadcasts, ["cam", CHAT_BROADCAST]);
-        assert_eq!(old.display_name.as_deref(), Some("Alice"));
-    }
-
-    /// This release reads both layouts and tells them apart.
-    #[test]
-    fn a_current_member_reads_both_announcements() {
-        let bytes = postcard::to_stdvec(&current(&["cam"], None)).expect("encode");
-        let parsed = Announcement::parse(&bytes).expect("current");
-        assert!(!parsed.legacy);
-        assert_eq!(
-            parsed.broadcasts,
-            BTreeSet::from(["cam".to_owned()]),
-            "the chat broadcast is not a media broadcast"
-        );
-
-        for display_name in [Some("Bob".to_owned()), None] {
-            let legacy = LegacyPeerState {
-                broadcasts: vec!["cam".into(), "screen".into()],
-                display_name: display_name.clone(),
-            };
-            let bytes = postcard::to_stdvec(&legacy).expect("encode");
-            let parsed = Announcement::parse(&bytes).expect("legacy");
-            assert!(parsed.legacy);
-            assert_eq!(parsed.display_name, display_name);
-            assert_eq!(parsed.broadcasts.len(), 2);
-        }
-    }
-
     /// A member leaving says so, and the flag survives the wire.
     #[test]
     fn a_leaving_announcement_decodes_as_left() {
-        let mut state = current(&[], None);
-        state.left = true;
+        let state = PeerState {
+            left: true,
+            ..PeerState::default()
+        };
         let bytes = postcard::to_stdvec(&state).expect("encode");
-        assert!(Announcement::parse(&bytes).expect("parse").left);
+        let decoded: PeerState = postcard::from_bytes(&bytes).expect("decode");
+        assert_eq!(decoded, state);
     }
 
     #[test]
@@ -1155,6 +973,5 @@ mod tests {
             Some(publisher),
             "the transport dials the publisher a room path names",
         );
-        assert_eq!(legacy_room_path(topic, "cam"), format!("rooms/{topic}/cam"));
     }
 }

@@ -19,10 +19,7 @@
 //! [`Room::subscribe`] and the chat read each member over the session with that
 //! member, so no other peer can stand in for it. Membership itself is open to
 //! whoever holds the ticket: anyone who knows the topic id can join the gossip
-//! topic and announce itself, so the ticket is the boundary. While a member on
-//! the previous release is in the room the boundary is weaker: that release
-//! publishes its broadcasts at `rooms/<topic>/<name>` to anyone who connects,
-//! which also tells them the topic.
+//! topic and announce itself, so the ticket is the boundary.
 //!
 //! Chat receivers carry what other members send from the moment of joining
 //! on, each message once, also when two arrive out of order or a member's
@@ -60,14 +57,6 @@
 //! # Ok(())
 //! # }
 //! ```
-//!
-//! # Wire compatibility
-//!
-//! This release writes an announcement the previous one can read, answers the
-//! previous release's paths, and writes chat in both formats; it reads both
-//! announcement layouts and both chat formats. The previous formats go in the
-//! next release.
-//! Everything that goes then is marked `TODO(old-layout)` in the source.
 //!
 //! # Tiles that come back
 //!

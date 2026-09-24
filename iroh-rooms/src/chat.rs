@@ -2,12 +2,8 @@
 //!
 //! Every member publishes a small chat broadcast of its own at
 //! `rooms/<topic>/<member>/.chat`, to the room's members only, so chat works with
-//! the camera off and needs no media. It carries two tracks. `chat.v2` holds one
-//! postcard [`ChatFrame`] per group, with the sender's wall-clock time.
-//! `chat` holds the bare UTF-8 text, which is the track the release before this
-//! one reads, off whatever broadcast it subscribes to; the room lists its chat
-//! broadcast among its broadcasts for that release, so an older member finds it.
-//! Writing both is the one release of dual wire format; `chat` goes after it.
+//! the camera off and needs no media. Its one track holds one postcard
+//! [`ChatFrame`] per group, with the sender's wall-clock time.
 
 use std::{
     collections::BTreeSet,
@@ -27,12 +23,8 @@ use tracing::{debug, trace, warn};
 /// never collides with a published broadcast.
 pub(crate) const CHAT_BROADCAST: &str = ".chat";
 
-/// The track the release before this one reads chat from: bare UTF-8 text.
-// TODO(old-layout): remove with the older room layout.
-pub(crate) const LEGACY_CHAT_TRACK: &str = "chat";
-
-/// The track this release reads chat from: one postcard [`ChatFrame`] per group.
-pub(crate) const CHAT_TRACK: &str = "chat.v2";
+/// The chat track: one postcard [`ChatFrame`] per group.
+pub(crate) const CHAT_TRACK: &str = "chat";
 
 /// Publisher tie-break priority for chat, below audio and video.
 const CHAT_PRIORITY: u8 = 10;
@@ -56,8 +48,7 @@ pub struct ChatMessage {
     pub from: EndpointId,
     /// The text.
     pub text: String,
-    /// When the sender sent it, by the sender's clock; the arrival time for a
-    /// member on the older chat format, which carries none.
+    /// When the sender sent it, by the sender's clock.
     pub sent_at: SystemTime,
 }
 
@@ -107,10 +98,7 @@ impl ChatReceiver {
     }
 }
 
-/// One message on the `chat.v2` track.
-///
-/// Postcard is positional, so a field added later goes at the end, where an
-/// older reader ignores it.
+/// One message on the chat track.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ChatFrame {
     pub(crate) text: String,
@@ -134,28 +122,24 @@ fn chat_track_info() -> track::Info {
         .with_max_age(CHAT_MAX_AGE)
 }
 
-/// The chat broadcast a member publishes: both tracks, written together.
+/// The chat broadcast a member publishes.
 #[derive(derive_more::Debug)]
 pub(crate) struct ChatWriter {
     #[debug(skip)]
     broadcast: broadcast::Producer,
     #[debug(skip)]
-    current: track::Producer,
-    #[debug(skip)]
-    legacy: track::Producer,
+    track: track::Producer,
     writer: u64,
 }
 
 impl ChatWriter {
-    /// Creates the chat broadcast and its two tracks.
+    /// Creates the chat broadcast and its track.
     pub(crate) fn new() -> Result<Self, moq_net::Error> {
         let broadcast = broadcast::Info::new().produce();
-        let current = broadcast.create_track(CHAT_TRACK, chat_track_info())?;
-        let legacy = broadcast.create_track(LEGACY_CHAT_TRACK, chat_track_info())?;
+        let track = broadcast.create_track(CHAT_TRACK, chat_track_info())?;
         Ok(Self {
             broadcast,
-            current,
-            legacy,
+            track,
             writer: rand::random(),
         })
     }
@@ -165,7 +149,7 @@ impl ChatWriter {
         self.broadcast.consume()
     }
 
-    /// Writes `text` to both tracks, one group each.
+    /// Writes `text` as one group.
     ///
     /// Empty text is not written: a reader cannot tell it from a group it
     /// failed to read.
@@ -183,15 +167,13 @@ impl ChatWriter {
             writer: self.writer,
         };
         let bytes = postcard::to_stdvec(&frame).expect("a chat frame serializes");
-        self.current.write_frame(Timestamp::now(), bytes)?;
-        self.legacy.write_frame(Timestamp::now(), text.to_owned())?;
+        self.track.write_frame(Timestamp::now(), bytes)?;
         Ok(())
     }
 
-    /// Ends both tracks and the broadcast, so readers see a clean close.
+    /// Ends the track and the broadcast, so readers see a clean close.
     pub(crate) fn finish(&mut self) {
-        self.current.finish().ok();
-        self.legacy.finish().ok();
+        self.track.finish().ok();
         self.broadcast.finish();
     }
 }
@@ -264,13 +246,10 @@ pub(crate) struct ChatCursor {
 
 #[derive(Debug, Default)]
 struct CursorState {
-    /// The writer of the groups `next` counts, for the current format.
+    /// The writer of the groups `next` counts.
     writer: Option<u64>,
     /// One past the highest group sequence delivered.
     next: u64,
-    /// A hash of the payload of group `next - 1`, for the older format, whose
-    /// restart can otherwise look like the replay of that group.
-    last: Option<u64>,
     /// Whether a reading ran over this cursor before.
     read: bool,
 }
@@ -287,20 +266,15 @@ impl ChatCursor {
 
     /// Starts one subscription's reading over this cursor, once the
     /// subscription is established.
-    fn reading(&self, legacy: bool) -> Reading<'_> {
+    fn reading(&self) -> Reading<'_> {
         let mut state = self.state.lock().expect("poisoned");
         let first = !state.read;
         state.read = true;
-        let now = tokio::time::Instant::now();
         Reading {
             cursor: self,
             floor: state.next,
             seen: BTreeSet::new(),
-            replay_until: first.then_some(now + REPLAY_WINDOW),
-            pending: (legacy && state.next > 0).then(|| Pending {
-                until: now + REPLAY_WINDOW,
-                held: Vec::new(),
-            }),
+            replay_until: first.then_some(tokio::time::Instant::now() + REPLAY_WINDOW),
         }
     }
 }
@@ -308,10 +282,7 @@ impl ChatCursor {
 /// One chat message as read off its group.
 struct Line {
     sequence: u64,
-    /// The writer id, for the current format.
-    writer: Option<u64>,
-    /// A hash of the payload.
-    hash: u64,
+    writer: u64,
     message: ChatMessage,
 }
 
@@ -328,100 +299,22 @@ struct Reading<'a> {
     /// On a cursor's first reading, until when groups are the replay moq
     /// hands a new subscription.
     replay_until: Option<tokio::time::Instant>,
-    /// For the older format, until this reading knows whether the member
-    /// restarted since the last one.
-    pending: Option<Pending>,
-}
-
-/// A reading of the older format that has not yet told a restarted member
-/// from one that carries on.
-///
-/// That format has no writer id, so only the replay can tell: moq always
-/// replays the newest group, which for a member that carried on sits at or
-/// past the last group delivered, with that group's payload if it is that
-/// group. A group below it is held until the replay says which it is.
-struct Pending {
-    /// When the replay is over. Nothing at or past the last group delivered
-    /// by then means the member restarted.
-    until: tokio::time::Instant,
-    held: Vec<Line>,
 }
 
 impl Reading<'_> {
-    /// Returns when the reading must decide on what it holds, if it holds
-    /// anything undecided.
-    fn deadline(&self) -> Option<tokio::time::Instant> {
-        self.pending.as_ref().map(|pending| pending.until)
-    }
-
-    /// Takes one line off the track, and returns what to deliver now.
-    fn take(&mut self, line: Line) -> Vec<ChatMessage> {
-        let Some(pending) = self.pending.as_mut() else {
-            return self.admit(line).into_iter().collect();
-        };
-        let last = self.floor - 1;
-        if line.sequence < last {
-            pending.held.push(line);
-            return Vec::new();
-        }
-        let held = std::mem::take(&mut pending.held);
-        self.pending = None;
-        let known = self.cursor.state.lock().expect("poisoned").last;
-        if line.sequence == last && known != Some(line.hash) {
-            self.restart();
-            return held
-                .into_iter()
-                .chain([line])
-                .filter_map(|line| self.admit(line))
-                .collect();
-        }
-        // The member carried on; what was held was delivered before.
-        self.admit(line).into_iter().collect()
-    }
-
-    /// Decides once the replay is over without a group at or past the last
-    /// one delivered: the member restarted, and what was held is news.
-    ///
-    /// An empty replay says the same, since a member that carried on always
-    /// replays its newest group. A replay slower than [`REPLAY_WINDOW`] then
-    /// costs one repeated message.
-    fn expire(&mut self) -> Vec<ChatMessage> {
-        let Some(pending) = self.pending.take() else {
-            return Vec::new();
-        };
-        self.restart();
-        pending
-            .held
-            .into_iter()
-            .filter_map(|line| self.admit(line))
-            .collect()
-    }
-
-    /// Starts the cursor over, for a member that restarted.
-    fn restart(&mut self) {
-        debug!("chat source restarted, reading it from its start");
-        let mut state = self.cursor.state.lock().expect("poisoned");
-        state.next = 0;
-        state.last = None;
-        self.floor = 0;
-        self.seen.clear();
-    }
-
     /// Returns `line`'s message if it is news, and marks it delivered.
     ///
-    /// A current-format line from another writer than the one counted means
-    /// the member restarted, and the cursor starts over.
+    /// A line from another writer than the one counted means the member
+    /// restarted, and the cursor starts over.
     fn admit(&mut self, line: Line) -> Option<ChatMessage> {
         let mut state = self.cursor.state.lock().expect("poisoned");
-        if let Some(writer) = line.writer {
-            if state.writer.is_some_and(|known| known != writer) {
-                debug!("chat writer changed, reading it from its start");
-                state.next = 0;
-                self.floor = 0;
-                self.seen.clear();
-            }
-            state.writer = Some(writer);
+        if state.writer.is_some_and(|known| known != line.writer) {
+            debug!("chat writer changed, reading it from its start");
+            state.next = 0;
+            self.floor = 0;
+            self.seen.clear();
         }
+        state.writer = Some(line.writer);
         if line.sequence < self.floor || !self.seen.insert(line.sequence) {
             trace!(sequence = line.sequence, "chat message already delivered");
             return None;
@@ -433,13 +326,9 @@ impl Reading<'_> {
             // that moq would have dropped it anyway.
             self.floor = self.floor.max(oldest + 1);
         }
-        if line.sequence + 1 >= state.next {
-            state.next = line.sequence + 1;
-            state.last = Some(line.hash);
-        }
+        state.next = state.next.max(line.sequence + 1);
         drop(state);
-        // The older format carries no send time to judge.
-        if line.writer.is_some() && self.is_history(line.message.sent_at) {
+        if self.is_history(line.message.sent_at) {
             return None;
         }
         Some(line.message)
@@ -471,45 +360,15 @@ async fn sleep_until(at: Option<tokio::time::Instant>) {
     }
 }
 
-/// Returns a hash of a chat payload, to tell two messages at one sequence
-/// apart.
-fn payload_hash(payload: &[u8]) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    payload.hash(&mut hasher);
-    hasher.finish()
-}
-
-/// Decodes the group `sequence` of member `from`'s chat, in either format.
+/// Decodes the group `sequence` of member `from`'s chat.
 ///
 /// `None` for an empty message, and for one that does not decode, which is
 /// logged.
-fn decode(from: EndpointId, legacy: bool, sequence: u64, payload: &[u8]) -> Option<Line> {
-    let hash = payload_hash(payload);
-    if legacy {
-        return match std::str::from_utf8(payload) {
-            Ok(text) if !text.is_empty() => Some(Line {
-                sequence,
-                writer: None,
-                hash,
-                message: ChatMessage {
-                    from,
-                    text: text.to_owned(),
-                    sent_at: SystemTime::now(),
-                },
-            }),
-            Ok(_) => None,
-            Err(err) => {
-                warn!(from = %from.fmt_short(), %err, "chat message is not UTF-8");
-                None
-            }
-        };
-    }
+fn decode(from: EndpointId, sequence: u64, payload: &[u8]) -> Option<Line> {
     match postcard::from_bytes::<ChatFrame>(payload) {
         Ok(chat) if !chat.text.is_empty() => Some(Line {
             sequence,
-            writer: Some(chat.writer),
-            hash,
+            writer: chat.writer,
             message: ChatMessage {
                 from,
                 sent_at: chat.sent_at(),
@@ -526,31 +385,23 @@ fn decode(from: EndpointId, legacy: bool, sequence: u64, payload: &[u8]) -> Opti
 
 /// Forwards the chat on `broadcast`, which member `from` publishes, into `tx`.
 ///
-/// Reads `chat.v2` when `legacy` is false, and the bare-text `chat` track of a
-/// member on the older format otherwise. Delivers only what `cursor` has not
-/// seen, and on its first reading skips the replay of what was said before
-/// this member joined. Returns when the track ends or fails, which is also how
+/// Delivers only what `cursor` has not seen, and on its first reading skips
+/// the replay of what was said before this member joined. Returns when the track ends or fails, which is also how
 /// a broadcast without chat ends it, quietly.
 pub(crate) async fn forward(
     from: EndpointId,
     broadcast: broadcast::Consumer,
-    legacy: bool,
     cursor: Arc<ChatCursor>,
     tx: channel::Sender<ChatMessage>,
 ) {
-    let name = if legacy {
-        LEGACY_CHAT_TRACK
-    } else {
-        CHAT_TRACK
-    };
-    let mut reader = match FrameReader::subscribe(&broadcast, name).await {
+    let mut reader = match FrameReader::subscribe(&broadcast, CHAT_TRACK).await {
         Ok(reader) => reader,
         Err(err) => {
             debug!(from = %from.fmt_short(), %err, "no chat track");
             return;
         }
     };
-    let mut reading = cursor.reading(legacy);
+    let mut reading = cursor.reading();
     // A broadcast that ends does not always end its tracks: when the session
     // it came over dies, moq-net tears the path down and leaves its tracks
     // open, so the reader also watches the broadcast, and once it closes
@@ -560,21 +411,12 @@ pub(crate) async fn forward(
     loop {
         let next = tokio::select! {
             next = reader.next() => next,
-            () = sleep_until(reading.deadline()) => {
-                for message in reading.expire() {
-                    tx.send(message).ok();
-                }
-                continue;
-            }
             _ = &mut closed, if draining.is_none() => {
                 draining = Some(tokio::time::Instant::now() + CLOSE_DRAIN);
                 continue;
             }
             () = sleep_until(draining) => {
                 debug!(from = %from.fmt_short(), "chat broadcast ended");
-                for message in reading.expire() {
-                    tx.send(message).ok();
-                }
                 return;
             }
         };
@@ -586,10 +428,9 @@ pub(crate) async fn forward(
                 return;
             }
         };
-        let Some(line) = decode(from, legacy, sequence, &frame.payload) else {
-            continue;
-        };
-        for message in reading.take(line) {
+        if let Some(message) =
+            decode(from, sequence, &frame.payload).and_then(|line| reading.admit(line))
+        {
             // No receiver is not an error: nobody is reading chat right now.
             tx.send(message).ok();
         }
@@ -606,38 +447,26 @@ mod tests {
         iroh::SecretKey::from_bytes(&[9; 32]).public()
     }
 
-    /// Both tracks carry every message, in order: the current format for
-    /// current members, the bare text for members on the older one.
+    /// Every message arrives, in order, and an empty one is skipped.
     #[tokio::test]
-    async fn a_message_reaches_both_formats() {
+    async fn a_message_reaches_a_reader() {
         let mut writer = ChatWriter::new().expect("writer");
         let (tx, rx) = channel::channel(CHAT_BUFFER);
-        let (legacy_tx, legacy_rx) = channel::channel(CHAT_BUFFER);
-        let current = tokio::spawn(forward(member(), writer.consume(), false, cursor(), tx));
-        let legacy = tokio::spawn(forward(
-            member(),
-            writer.consume(),
-            true,
-            cursor(),
-            legacy_tx,
-        ));
-        let (mut rx, mut legacy_rx) = (ChatReceiver::new(rx), ChatReceiver::new(legacy_rx));
-        // Give both readers their subscription before anything is written.
+        let reader = tokio::spawn(forward(member(), writer.consume(), cursor(), tx));
+        let mut rx = ChatReceiver::new(rx);
+        // Give the reader its subscription before anything is written.
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         writer.send("hello").expect("send");
         writer.send("").expect("an empty message is skipped");
         writer.send("world").expect("send");
 
-        for receiver in [&mut rx, &mut legacy_rx] {
-            assert_eq!(receiver.recv().await.expect("hello").text, "hello");
-            let second = receiver.recv().await.expect("world");
-            assert_eq!(second.text, "world");
-            assert_eq!(second.from, member());
-        }
+        assert_eq!(rx.recv().await.expect("hello").text, "hello");
+        let second = rx.recv().await.expect("world");
+        assert_eq!(second.text, "world");
+        assert_eq!(second.from, member());
         writer.finish();
-        current.await.expect("reader");
-        legacy.await.expect("reader");
+        reader.await.expect("reader");
         assert_eq!(rx.recv().await, Err(ChatError::Closed));
     }
 
@@ -671,7 +500,6 @@ mod tests {
         let first = tokio::spawn(forward(
             member(),
             writer.consume(),
-            false,
             cursor.clone(),
             tx.clone(),
         ));
@@ -683,7 +511,6 @@ mod tests {
         let _second = AbortOnDropHandle::new(tokio::spawn(forward(
             member(),
             writer.consume(),
-            false,
             cursor,
             tx,
         )));
@@ -704,7 +531,6 @@ mod tests {
             let _reader = AbortOnDropHandle::new(tokio::spawn(forward(
                 member(),
                 writer.consume(),
-                false,
                 cursor.clone(),
                 tx.clone(),
             )));
@@ -726,7 +552,6 @@ mod tests {
         let _reader = AbortOnDropHandle::new(tokio::spawn(forward(
             member(),
             writer.consume(),
-            false,
             cursor,
             tx,
         )));
@@ -787,7 +612,6 @@ mod tests {
         let _reader = AbortOnDropHandle::new(tokio::spawn(forward(
             member(),
             chat.broadcast.consume(),
-            false,
             cursor(),
             tx,
         )));
@@ -809,7 +633,6 @@ mod tests {
         let _reader = AbortOnDropHandle::new(tokio::spawn(forward(
             member(),
             chat.broadcast.consume(),
-            false,
             cursor,
             tx,
         )));
@@ -817,68 +640,6 @@ mod tests {
         let behind = SystemTime::now() - Duration::from_secs(60);
         chat.say(0, "live, by a slow clock", behind);
         assert_eq!(next(&mut rx).await.text, "live, by a slow clock");
-    }
-
-    /// A member on the older format that restarts begins its sequence again,
-    /// and what it says after the restart is delivered.
-    #[tokio::test]
-    async fn an_older_member_that_restarts_is_heard() {
-        let cursor = cursor();
-        let (tx, rx) = channel::channel(CHAT_BUFFER);
-        let mut rx = ChatReceiver::new(rx);
-
-        let before = RawChat::new(LEGACY_CHAT_TRACK);
-        let reader = tokio::spawn(forward(
-            member(),
-            before.broadcast.consume(),
-            true,
-            cursor.clone(),
-            tx.clone(),
-        ));
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        for (sequence, text) in ["a", "b", "c"].iter().enumerate() {
-            before.write(sequence as u64, text.as_bytes().to_vec());
-            assert_eq!(next(&mut rx).await.text, *text);
-        }
-        reader.abort();
-
-        // The restarted member said two lines before this reader came back,
-        // so the first group it gets sits at the sequence last delivered.
-        let after = RawChat::new(LEGACY_CHAT_TRACK);
-        after.write(0, b"back".to_vec());
-        after.write(1, b"again".to_vec());
-        after.write(2, b"and more".to_vec());
-        let reader = tokio::spawn(forward(
-            member(),
-            after.broadcast.consume(),
-            true,
-            cursor.clone(),
-            tx.clone(),
-        ));
-        let mut heard = BTreeSet::new();
-        for _ in 0..3 {
-            heard.insert(next(&mut rx).await.text);
-        }
-        assert_eq!(
-            heard,
-            BTreeSet::from(["back".into(), "again".into(), "and more".into()])
-        );
-        reader.abort();
-
-        // A reader that merely restarts over the same member hears nothing
-        // twice, whichever of the replayed groups it gets first, and hears
-        // what comes next.
-        let _reader = AbortOnDropHandle::new(tokio::spawn(forward(
-            member(),
-            after.broadcast.consume(),
-            true,
-            cursor,
-            tx,
-        )));
-        tokio::time::sleep(REPLAY_WINDOW + Duration::from_millis(200)).await;
-        assert!(quiet(&mut rx).await, "a message was delivered twice");
-        after.write(3, b"news".to_vec());
-        assert_eq!(next(&mut rx).await.text, "news");
     }
 
     /// A receiver that falls behind is told how far, and the reader goes on
@@ -891,7 +652,6 @@ mod tests {
         let _reader = AbortOnDropHandle::new(tokio::spawn(forward(
             member(),
             writer.consume(),
-            false,
             cursor(),
             tx,
         )));

@@ -258,20 +258,18 @@ async fn room_broadcasts_are_private() {
     .await
     .expect("timed out")
     .expect("the public broadcast is there for anyone");
-    // Neither at its path, nor at the older layout's path, nor the room's
-    // chat, for longer than a direct subscribe waits before trying an alias.
+    // Neither at its path nor the room's chat.
     let session = tokio::time::timeout(TIMEOUT, outsider.moq.connect(a))
         .await
         .expect("timed out")
         .expect("connect");
     let topic = room_a.ticket().topic_id();
     let window = Duration::from_secs(3);
-    let (private, legacy, chat) = tokio::join!(
+    let (private, chat) = tokio::join!(
         tokio::time::timeout(
             window,
             outsider.moq.subscribe(publication.path(), Reach::Direct)
         ),
-        tokio::time::timeout(window, session.subscribe(format!("rooms/{topic}/cam"))),
         tokio::time::timeout(
             window,
             session.subscribe(format!("rooms/{topic}/{a}/.chat"))
@@ -281,7 +279,6 @@ async fn room_broadcasts_are_private() {
         private.is_err(),
         "a peer outside the room resolved a room broadcast"
     );
-    assert!(legacy.is_err(), "the older layout's path leaked");
     assert!(chat.is_err(), "the room's chat leaked");
 
     outsider.shutdown().await;

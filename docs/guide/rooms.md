@@ -92,11 +92,7 @@ that a broadcast following a route table reports closed only about three
 seconds after it actually ended.
 
 Rooms are private to whoever holds the ticket. Membership is self-declared:
-anyone who knows the topic id can join the gossip topic and announce itself. A
-member on the previous release weakens this further, because that release
-publishes its broadcasts at `rooms/<topic>/<name>` to anyone who connects,
-which also tells them the topic. The privacy of room broadcasts holds in full
-once no member runs the previous release.
+anyone who knows the topic id can join the gossip topic and announce itself.
 
 ## Chat
 
@@ -114,19 +110,6 @@ whose clock runs behind is still heard. A message sent while that session was
 down for more than a few seconds can be lost.
 
 Names starting with a dot are the room's own, and `publish` refuses them.
-
-## Compatibility with the previous release
-
-For one release a room interoperates with members on the previous one. It writes
-an announcement the previous release reads (the new fields come after the old
-ones, which postcard lets an older reader ignore), answers the previous
-release's paths `rooms/<topic>/<name>` on direct sessions, and writes chat both
-as the new `chat.v2` track and as the bare-text `chat` track the previous release
-reads; its chat broadcast is listed among its broadcasts for that release. It
-reads both announcement layouts, subscribes to an older member at the older
-path, and reads an older member's chat from the `chat` track of the broadcasts
-it publishes. An older member sees the chat broadcast as one more broadcast,
-which carries no picture.
 
 ## Limitations
 
