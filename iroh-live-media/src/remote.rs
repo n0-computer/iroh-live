@@ -17,9 +17,7 @@ use tracing::{Instrument, debug, info, trace, warn};
 
 use crate::{
     Catalog, LocalBroadcast, NetworkSignals, Player, PlayerConfig, RecordConfig, Recording,
-    catalog::{HangCatalog, IrohLiveExt},
-    error::Error,
-    network::SharedSignals,
+    catalog::HangCatalog, error::Error, network::SharedSignals,
 };
 
 /// How long a broadcast that ended is looked for again through the route
@@ -350,14 +348,14 @@ async fn read_catalog(
     consumer: &moq_net::broadcast::Consumer,
     catalog: &Watchable<Option<Catalog>>,
 ) {
-    let mut reader =
-        match moq_mux::catalog::Consumer::<IrohLiveExt>::new(consumer, Default::default()).await {
-            Ok(reader) => reader,
-            Err(err) => {
-                warn!(error = %err, "the catalog track could not be read");
-                return;
-            }
-        };
+    let mut reader = match moq_mux::catalog::Consumer::<()>::new(consumer, Default::default()).await
+    {
+        Ok(reader) => reader,
+        Err(err) => {
+            warn!(error = %err, "the catalog track could not be read");
+            return;
+        }
+    };
     loop {
         match reader.next().await {
             Ok(Some(next)) => {
@@ -386,27 +384,6 @@ async fn read_catalog(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn a_local_broadcast_plays_its_catalog_in_process() {
-        let broadcast = LocalBroadcast::new();
-        broadcast.set_metadata(crate::Metadata::default().with_display_name("ada"));
-        let remote = RemoteBroadcast::local(&broadcast);
-        let mut catalog = remote.catalog();
-        let known = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if let Some(known) = catalog.get()
-                    && known.metadata().display_name.is_some()
-                {
-                    return known;
-                }
-                catalog.updated().await.expect("the catalog keeps coming");
-            }
-        })
-        .await
-        .expect("the catalog arrived");
-        assert_eq!(known.metadata().display_name.as_deref(), Some("ada"));
-    }
 
     #[tokio::test]
     async fn a_closed_local_broadcast_closes_its_remote() {

@@ -1,26 +1,21 @@
 //! What a broadcast carries, in our types.
 //!
-//! On the wire the catalog is hang's JSON document, extended with the section
-//! iroh-live adds ([`IrohLiveExt`]). Applications read [`Catalog`] instead:
-//! renditions as [`VideoRenditionInfo`] and [`AudioRenditionInfo`], and the
-//! publisher's [`Metadata`]. hang's own shape stays behind
-//! [`Catalog::as_hang`], so a change to it reaches only the callers that asked
-//! for it.
+//! On the wire the catalog is hang's JSON document. Applications read
+//! [`Catalog`] instead: renditions as [`VideoRenditionInfo`] and
+//! [`AudioRenditionInfo`]. hang's own shape stays behind [`Catalog::as_hang`],
+//! so a change to it reaches only the callers that asked for it.
 
 use std::sync::Arc;
 
-use moq_mux::catalog::hang::CatalogExt;
-use serde::{Deserialize, Serialize};
-
 use crate::{Bitrate, video};
 
-/// hang's catalog with the iroh-live sections, as it travels.
-pub(crate) type HangCatalog = moq_mux::catalog::hang::Catalog<IrohLiveExt>;
+/// hang's catalog, as it travels.
+pub(crate) type HangCatalog = moq_mux::catalog::hang::Catalog;
 
 /// The catalog producer for an iroh-live broadcast.
-pub(crate) type CatalogProducer = moq_mux::catalog::Producer<IrohLiveExt>;
+pub(crate) type CatalogProducer = moq_mux::catalog::Producer;
 
-/// A broadcast's catalog: its renditions and its metadata.
+/// A broadcast's catalog: its renditions.
 ///
 /// Cheap to clone. Two catalogs compare equal only when they are the same
 /// snapshot, which is what a watcher needs to tell an update from a repeat:
@@ -35,7 +30,6 @@ struct Inner {
     hang: HangCatalog,
     video: Vec<VideoRenditionInfo>,
     audio: Vec<AudioRenditionInfo>,
-    metadata: Metadata,
 }
 
 impl PartialEq for Catalog {
@@ -67,14 +61,8 @@ impl Catalog {
             .iter()
             .map(|(name, config)| AudioRenditionInfo::from_hang(name, config))
             .collect();
-        let metadata = Metadata::from_ext(&hang.ext);
         Self {
-            inner: Arc::new(Inner {
-                hang,
-                video,
-                audio,
-                metadata,
-            }),
+            inner: Arc::new(Inner { hang, video, audio }),
         }
     }
 
@@ -96,15 +84,10 @@ impl Catalog {
         self.inner.video.iter().find(|info| info.name == name)
     }
 
-    /// Returns the publisher's metadata.
-    pub fn metadata(&self) -> &Metadata {
-        &self.inner.metadata
-    }
-
-    /// Returns hang's catalog, with the iroh-live sections.
+    /// Returns hang's catalog.
     ///
     /// An integration point: its shape follows hang's versioning, not ours.
-    pub fn as_hang(&self) -> &hang::catalog::Catalog<IrohLiveExt> {
+    pub fn as_hang(&self) -> &hang::catalog::Catalog {
         &self.inner.hang
     }
 
@@ -202,76 +185,6 @@ impl AudioRenditionInfo {
     }
 }
 
-/// What the publisher says about the broadcast, apart from its media.
-///
-/// Every field is what the publisher chose to write and none of it is
-/// verified: the endpoint a broadcast arrived from is the authenticated half,
-/// and that lives outside the catalog.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct Metadata {
-    /// The name a viewer shows next to the picture.
-    pub display_name: Option<String>,
-}
-
-impl Metadata {
-    /// Returns the metadata with a display name.
-    #[must_use]
-    pub fn with_display_name(mut self, name: impl Into<String>) -> Self {
-        self.display_name = Some(name.into());
-        self
-    }
-
-    fn from_ext(ext: &IrohLiveExt) -> Self {
-        Self {
-            display_name: ext.user.as_ref().and_then(|user| user.name.clone()),
-        }
-    }
-
-    /// Writes this metadata into the catalog's iroh-live section.
-    pub(crate) fn apply(&self, ext: &mut IrohLiveExt) {
-        ext.user = self.display_name.as_ref().map(|name| User {
-            name: Some(name.clone()),
-            ..User::default()
-        });
-    }
-}
-
-/// The section iroh-live adds to hang's catalog, flattened beside `video` and
-/// `audio`.
-///
-/// A consumer that knows only hang's schema ignores it. Public only because
-/// [`Catalog::as_hang`] names it: its contents are read through
-/// [`Catalog::metadata`], and its wire shape is not part of this crate's API.
-#[serde_with::skip_serializing_none]
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
-#[serde(default, rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct IrohLiveExt {
-    /// Who is publishing, if they said.
-    pub(crate) user: Option<User>,
-}
-
-impl CatalogExt for IrohLiveExt {}
-
-/// The publisher's description of itself, on the wire.
-///
-/// Carries every field the section has always had, so a catalog read from
-/// another publisher and written again keeps them.
-#[serde_with::skip_serializing_none]
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
-#[serde(default, rename_all = "camelCase")]
-pub(crate) struct User {
-    /// An application-defined identifier, stable across sessions.
-    pub(crate) id: Option<String>,
-    /// The display name.
-    pub(crate) name: Option<String>,
-    /// A URL for an avatar image.
-    pub(crate) avatar: Option<String>,
-    /// An accent color, as a CSS color string.
-    pub(crate) color: Option<String>,
-}
-
 #[cfg(test)]
 mod tests {
     use hang::catalog::{H264, VideoCodec, VideoConfig};
@@ -314,23 +227,7 @@ mod tests {
         assert_eq!(catalog.video()[0].height(), Some(1080));
     }
 
-    #[test]
-    fn metadata_round_trips_through_the_user_section() {
-        let mut ext = IrohLiveExt::default();
-        Metadata::default().with_display_name("ada").apply(&mut ext);
-        let json = serde_json::to_string(&ext).expect("serialize");
-        assert!(json.contains("\"user\""), "{json}");
-        let mut hang = HangCatalog::default();
-        hang.ext = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(
-            Catalog::new(hang).metadata().display_name.as_deref(),
-            Some("ada")
-        );
-    }
-
-    /// A catalog as `@moq/hang` publishes it from a browser. Our extension
-    /// flattens into the same object, so a bug in how it is read shows up as a
-    /// dropped media field rather than as an error.
+    /// A catalog as `@moq/hang` publishes it from a browser.
     #[test]
     fn a_browser_catalog_keeps_its_avcc_description() {
         const BROWSER_CATALOG: &str = r#"{

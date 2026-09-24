@@ -108,7 +108,7 @@ pub use moq_video as video;
 pub use self::source::RpicamConfig;
 pub use self::{
     bitrate::Bitrate,
-    catalog::{AudioRenditionInfo, Catalog, IrohLiveExt, Metadata, VideoRenditionInfo},
+    catalog::{AudioRenditionInfo, Catalog, VideoRenditionInfo},
     error::{Closed, Error, SwitchError},
     frames::VideoFrames,
     network::{NetworkSample, NetworkSignals},

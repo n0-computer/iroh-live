@@ -60,18 +60,15 @@ shows in `LocalBroadcast::status()` rather than as an error from `microphone`.
 
 `RemoteBroadcast` reads a broadcast's catalog and holds the subscription, and
 `play(PlayerConfig)` starts a `Player` over it. Decoding is
-`moq_video::decode::Consumer` and `moq_audio::decode::Consumer`; three things
+`moq_video::decode::Consumer` and `moq_audio::decode::Consumer`; two things
 around it are ours.
 
 The player picks a rendition from the network signals a transport attached with
 `RemoteBroadcast::with_network`, and switches by opening the replacement decoder
 beside the incumbent and handing over once it has caught up, so the picture
-never goes blank or steps backwards. Each player owns a playout clock that holds
-video back by the audio queued at its speaker, so audio and video stay aligned
-across two independent decode paths. And `IrohLiveExt` extends hang's catalog
-with the publisher's identity, flattened alongside the media sections so a base
-consumer ignores it; a publisher sets it with `LocalBroadcast::set_metadata`,
-and applications read it as `Catalog` and `Catalog::metadata()`.
+never goes blank or steps backwards. And each player owns a playout clock that
+holds video back by the audio queued at its speaker, so audio and video stay
+aligned across two independent decode paths.
 
 A transport builds the `RemoteBroadcast`: `from_moq` wraps one broadcast
 consumer, `from_origin` follows a path through a route table and asks it again

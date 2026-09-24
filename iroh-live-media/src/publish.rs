@@ -21,7 +21,7 @@ use std::{
 use moq_net::Consume;
 use n0_future::task::AbortOnDropHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, debug, info, warn};
+use tracing::{Instrument, debug, info};
 
 use self::status::{Medium, StatusCell};
 pub use self::{
@@ -30,7 +30,7 @@ pub use self::{
 };
 use crate::{
     AudioSource, EncodedVideoSource, VideoSource,
-    catalog::{CatalogProducer, HangCatalog, Metadata},
+    catalog::{CatalogProducer, HangCatalog},
     error::Error,
     stats::{PublishRecorder, PublishStats},
 };
@@ -117,7 +117,6 @@ struct Shared {
     generations: AtomicU64,
     status: StatusCell,
     stats: PublishRecorder,
-    metadata: Mutex<Metadata>,
     /// Cancelled by `close`; everything publishing watches it.
     closed: CancellationToken,
     /// Set once `close` has finished every track and the broadcast.
@@ -207,7 +206,6 @@ impl LocalBroadcast {
                 generations: AtomicU64::new(0),
                 status: StatusCell::default(),
                 stats: PublishRecorder::default(),
-                metadata: Mutex::new(Metadata::default()),
                 closed: CancellationToken::new(),
                 finished: n0_watcher::Watchable::new(false),
                 closer: Mutex::new(None),
@@ -348,25 +346,6 @@ impl LocalBroadcast {
     /// Stops publishing audio.
     pub fn clear_audio(&self) {
         self.clear(Medium::Audio);
-    }
-
-    /// Replaces the application metadata in the catalog.
-    pub fn set_metadata(&self, metadata: Metadata) {
-        let mut current = self.shared.metadata.lock().expect("poisoned");
-        if *current == metadata {
-            return;
-        }
-        let mut catalog = self.shared.catalog.lock().expect("poisoned");
-        let result = catalog.modify().and_then(|mut guard| {
-            metadata.apply(&mut guard.ext);
-            guard.commit()
-        });
-        match result {
-            Ok(()) => *current = metadata,
-            Err(err) => {
-                warn!(parent: &self.shared.span, error = %err, "the catalog did not take the metadata")
-            }
-        }
     }
 
     /// Returns the state of both slots and of every rendition.

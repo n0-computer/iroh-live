@@ -926,7 +926,7 @@ mod tests {
     /// closes the broadcast under the subscriber.
     struct Published {
         _broadcast: moq_net::broadcast::Producer,
-        _catalog: moq_mux::catalog::Producer<crate::catalog::IrohLiveExt>,
+        _catalog: moq_mux::catalog::Producer,
         _import: moq_mux::codec::h264::Import,
         /// Cancels every decode task on drop, so the reader stops with it.
         _remote: RemoteBroadcast,

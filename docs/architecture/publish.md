@@ -149,14 +149,9 @@ reading Annex-B off its stdout. See [Raspberry Pi](../guide/raspberry-pi.md).
 
 ## Catalog
 
-The catalog is `moq_mux::catalog::Producer<IrohLiveExt>`, which is hang's
-catalog with an extension flattened alongside the `video` and `audio` sections.
-The extension carries the one thing iroh-live uses and hang has no place for: a
-`user` section with the publisher's identity. `set_metadata(Metadata)` writes
-the display name into it, and a subscriber reads it back as
-`Catalog::metadata()`. A base hang consumer ignores the section, so the
-broadcast stays wire-compatible with any hang player. Chat is not part of a
-media broadcast: a room publishes it as a broadcast of its own (see
+The catalog is hang's, written by `moq_mux::catalog::Producer` with no
+extension, so any hang player reads it. A room carries display names in its own
+announcements and publishes chat as a broadcast of its own (see
 [rooms](../guide/rooms.md)).
 
 Extra tracks go through `as_moq()`, which returns the underlying producer.

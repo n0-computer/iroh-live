@@ -39,13 +39,9 @@ rendition's codec, resolution, and bitrate. A subscriber reads it to learn what
 exists before subscribing to anything, and watches it for changes, since a
 publisher can add a rendition mid-broadcast.
 
-iroh-live extends the catalog rather than replacing it.
-`iroh_live_media::IrohLiveExt` flattens a `user` section alongside hang's
-`video` and `audio`, so a plain hang player ignores it and still plays the
-media. Applications read the result as `iroh_live_media::Catalog`, whose
-`metadata()` carries the display name, which is how a publisher's display name
-travels with its stream. Chat is not in the media catalog: a room publishes it
-as a broadcast of its own.
+iroh-live publishes hang's catalog as it is, so a plain hang player reads it.
+Applications read it as `iroh_live_media::Catalog`. Chat is not in the media
+catalog: a room publishes it as a broadcast of its own.
 
 ## Where the boundary is
 

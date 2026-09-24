@@ -318,7 +318,7 @@ fn encode_error(err: video::Error) -> Error {
 /// One rendition's encoder.
 struct Encoder {
     name: String,
-    producer: encode::Producer<crate::catalog::IrohLiveExt>,
+    producer: encode::Producer,
     config: encode::Config,
     frames: VideoFrames,
     source: VideoSource,
