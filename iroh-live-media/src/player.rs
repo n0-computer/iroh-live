@@ -123,6 +123,16 @@ impl Latency {
     pub(crate) fn paced(&self) -> bool {
         !self.min.is_zero()
     }
+
+    fn validate(&self) -> Result<(), Error> {
+        match self.min > self.max {
+            true => Err(Error::invalid(format!(
+                "a latency's minimum ({:?}) is above its maximum ({:?})",
+                self.min, self.max
+            ))),
+            false => Ok(()),
+        }
+    }
 }
 
 impl Default for Latency {
@@ -148,22 +158,6 @@ pub struct PlayerConfig {
     pub decoder: video::decode::Kind,
     /// How automatic selection follows the link.
     pub adaptation: Adaptation,
-}
-
-impl PlayerConfig {
-    fn validate(&self) -> Result<(), Error> {
-        validate_latency(&self.latency)
-    }
-}
-
-fn validate_latency(latency: &Latency) -> Result<(), Error> {
-    match latency.min > latency.max {
-        true => Err(Error::invalid(format!(
-            "a latency's minimum ({:?}) is above its maximum ({:?})",
-            latency.min, latency.max
-        ))),
-        false => Ok(()),
-    }
 }
 
 /// The state of a player.
@@ -206,6 +200,16 @@ impl PartialEq for PlayerStatus {
 }
 
 impl Eq for PlayerStatus {}
+
+impl PlayerStatus {
+    /// Sets the video slot to `state` with nothing on screen or on its way.
+    pub(crate) fn clear_video(&mut self, state: SlotState) {
+        self.video = state;
+        self.rendition = None;
+        self.switching_to = None;
+        self.decoder = None;
+    }
+}
 
 /// The player's status, written by its tasks.
 #[derive(Debug, Clone)]
@@ -302,7 +306,7 @@ impl Player {
     /// Starts playing `broadcast`. Called by
     /// [`RemoteBroadcast::play`](crate::RemoteBroadcast::play).
     pub(crate) fn start(broadcast: RemoteBroadcast, config: PlayerConfig) -> Result<Self, Error> {
-        config.validate()?;
+        config.latency.validate()?;
         let span = tracing::info_span!(parent: broadcast.span(), "player");
         let status = StatusCell::new(PlayerStatus {
             mode: config.rendition.clone(),
@@ -430,7 +434,7 @@ impl Player {
     ///
     /// Fails if `latency.min` is above `latency.max`.
     pub fn set_latency(&self, latency: Latency) -> Result<(), Error> {
-        validate_latency(&latency)?;
+        latency.validate()?;
         self.clock.set_jitter(latency.min);
         self.controls.latency.send_replace(latency);
         Ok(())

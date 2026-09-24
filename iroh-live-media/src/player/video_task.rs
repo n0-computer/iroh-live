@@ -169,12 +169,11 @@ pub(crate) async fn run(inputs: Inputs) {
                     // The selector stopped, which it does when the broadcast
                     // closes: the video ended, whatever its tracks said yet.
                     status.update(|status| {
-                        if matches!(status.video, SlotState::Running | SlotState::Starting) {
-                            status.video = SlotState::Ended;
-                        }
-                        status.rendition = None;
-                        status.switching_to = None;
-                        status.decoder = None;
+                        let video = match &status.video {
+                            SlotState::Running | SlotState::Starting => SlotState::Ended,
+                            other => other.clone(),
+                        };
+                        status.clear_video(video);
                     });
                     return;
                 }
@@ -204,12 +203,11 @@ pub(crate) async fn run(inputs: Inputs) {
                         status.update(|status| {
                             // Off was set by the selector; anything else means
                             // the catalog has no video left to play.
-                            if status.video != SlotState::Off {
-                                status.video = SlotState::Ended;
-                            }
-                            status.rendition = None;
-                            status.switching_to = None;
-                            status.decoder = None;
+                            let video = match status.video {
+                                SlotState::Off => SlotState::Off,
+                                _ => SlotState::Ended,
+                            };
+                            status.clear_video(video);
                         });
                         Outcome::Idle
                     }
@@ -293,11 +291,7 @@ pub(crate) async fn run(inputs: Inputs) {
             }
             changed
         });
-        status.update(|status| {
-            if status.switching_to != switching {
-                status.switching_to = switching;
-            }
-        });
+        status.update(|status| status.switching_to = switching);
         match outcome {
             Outcome::Idle => {}
             Outcome::Promoted(target) => {
@@ -377,10 +371,8 @@ pub(crate) async fn run(inputs: Inputs) {
                         // Nothing on screen and nothing on its way: the video
                         // failed, until the selector finds something to try.
                         if playing.is_none() && status.switching_to.is_none() {
-                            status.video = SlotState::Failed(err.clone());
+                            status.clear_video(SlotState::Failed(err.clone()));
                             status.failed_rendition = Some(rendition.clone());
-                            status.rendition = None;
-                            status.decoder = None;
                         }
                     });
                     // Full means a failure is already being reported; one more
@@ -403,11 +395,9 @@ pub(crate) async fn run(inputs: Inputs) {
                     Some((target, Some(err))) => {
                         warn!(error = %err, rendition = %target.rendition, "video failed");
                         status.update(|status| {
-                            status.video = SlotState::Failed(err.clone());
+                            status.clear_video(SlotState::Failed(err.clone()));
                             status.failed_rendition = Some(target.rendition.clone());
                             status.switch_error = Some(err.clone());
-                            status.rendition = None;
-                            status.decoder = None;
                         });
                         let _ = reports.try_send(Report::Failed(Failure {
                             target,
@@ -422,20 +412,10 @@ pub(crate) async fn run(inputs: Inputs) {
                     // the end.
                     Some((target, None)) => {
                         info!(rendition = %target.rendition, "video track ended, waiting for what follows");
-                        status.update(|status| {
-                            status.video = SlotState::Starting;
-                            status.rendition = None;
-                            status.decoder = None;
-                        });
+                        status.update(|status| status.clear_video(SlotState::Starting));
                         let _ = reports.try_send(Report::Ended(target));
                     }
-                    None => {
-                        status.update(|status| {
-                            status.video = SlotState::Starting;
-                            status.rendition = None;
-                            status.decoder = None;
-                        });
-                    }
+                    None => status.update(|status| status.clear_video(SlotState::Starting)),
                 }
             }
         }
