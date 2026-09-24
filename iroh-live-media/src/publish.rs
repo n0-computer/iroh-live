@@ -106,6 +106,9 @@ struct Shared {
     clock: moq_mux::Clock,
     video: Mutex<Option<Slot>>,
     audio: Mutex<Option<Slot>>,
+    /// Held from the check of one slot's names against the other's until the
+    /// slot is replaced, so two `set_*` calls racing cannot both take a name.
+    naming: Mutex<()>,
     /// Held by a video task while it owns track names, so a replacement waits
     /// for its predecessor's tracks to go before creating its own.
     video_tracks: Arc<tokio::sync::Mutex<()>>,
@@ -198,6 +201,7 @@ impl LocalBroadcast {
                 clock,
                 video: Mutex::new(None),
                 audio: Mutex::new(None),
+                naming: Mutex::new(()),
                 video_tracks: Default::default(),
                 audio_tracks: Default::default(),
                 generations: AtomicU64::new(0),
@@ -228,6 +232,7 @@ impl LocalBroadcast {
     /// [`Error::Closed`] after [`close`](Self::close).
     pub fn set_video(&self, source: VideoSource, encoding: VideoEncoding) -> Result<(), Error> {
         self.check_open()?;
+        let _naming = self.shared.naming.lock().expect("poisoned");
         let taken = self.audio_names();
         encoding.validate(source.format().rate, &taken)?;
         let names: Vec<String> = encoding
@@ -266,6 +271,7 @@ impl LocalBroadcast {
     /// [`Error::Closed`] after [`close`](Self::close).
     pub fn set_encoded_video(&self, source: EncodedVideoSource) -> Result<(), Error> {
         self.check_open()?;
+        let _naming = self.shared.naming.lock().expect("poisoned");
         let name = video::ENCODED_RENDITION.to_string();
         if self.audio_names().contains(&name) {
             return Err(Error::invalid(format!(
@@ -304,6 +310,7 @@ impl LocalBroadcast {
     pub fn set_audio(&self, source: AudioSource, encoding: AudioEncoding) -> Result<(), Error> {
         self.check_open()?;
         encoding.validate()?;
+        let _naming = self.shared.naming.lock().expect("poisoned");
         let name = encoding.track_name();
         if self.video_names().contains(&name) {
             return Err(Error::invalid(format!(
