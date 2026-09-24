@@ -133,10 +133,14 @@ pub(crate) struct Bound {
     lossy_since: Option<Instant>,
     /// When loss last went clear, if it is clear.
     clean_since: Option<Instant>,
-    /// The lower target being held, and since when.
-    lower: Option<(String, Instant)>,
-    /// The higher target being held, and since when.
-    higher: Option<(String, Instant)>,
+    /// Since when the target has been below the rung playing.
+    ///
+    /// Held for "any lower rung" rather than for one of them, so a target that
+    /// wavers between two lower rungs under a noisy shortfall still reaches the
+    /// hold; the switch goes to whichever is the target when it does.
+    lower: Option<Instant>,
+    /// Since when the target has been above the rung playing, likewise.
+    higher: Option<Instant>,
     /// When the last step down happened.
     last_downgrade: Option<Instant>,
 }
@@ -301,13 +305,7 @@ impl Bound {
                 let emergency = reading
                     .loss
                     .is_some_and(|loss| loss >= self.tuning.loss_emergency);
-                let since = match &self.lower {
-                    Some((name, since)) if name == target => *since,
-                    _ => {
-                        self.lower = Some((target.clone(), now));
-                        now
-                    }
-                };
+                let since = *self.lower.get_or_insert(now);
                 if emergency || now.duration_since(since) >= self.tuning.downgrade_hold {
                     self.lower = None;
                     self.last_downgrade = Some(now);
@@ -320,13 +318,7 @@ impl Bound {
                 let cooling = self
                     .last_downgrade
                     .is_some_and(|at| now.duration_since(at) < self.tuning.post_downgrade_cooldown);
-                let since = match &self.higher {
-                    Some((name, since)) if name == target => *since,
-                    _ => {
-                        self.higher = Some((target.clone(), now));
-                        now
-                    }
-                };
+                let since = *self.higher.get_or_insert(now);
                 if !cooling && now.duration_since(since) >= self.tuning.upgrade_hold {
                     self.higher = None;
                     return Some(target.clone());
@@ -639,23 +631,54 @@ mod tests {
         assert_eq!(chosen.as_deref(), Some("360p"));
     }
 
-    /// R16's fix made visible: a new path starts with no history, so a
-    /// shortfall remembered from the old path does not carry over.
+    /// R16's fix made visible: a new path starts with no history. The old
+    /// path's estimate would otherwise sit in the sliding maximum for a whole
+    /// window and hold the top rung on a path that cannot carry it.
     #[test]
     fn a_new_path_forgets_the_old_one() {
         let mut bound = Bound::new(Tuning::default());
         let start = Instant::now();
-        // A low estimate on path 0, held just short of the downgrade.
-        let (playing, now) = run(&mut bound, "1080p", estimate(1_000_000), start, ms(400));
+        // Plenty on path 0.
+        let (playing, now) = run(&mut bound, "1080p", estimate(100_000_000), start, ms(2000));
         assert_eq!(playing, "1080p");
-        // The path changes, and the new one carries plenty.
+        // The path changes, and the new one carries half of 720p's bitrate:
+        // the downgrade is due after one hold, not after the old maximum ages.
         let fresh = Reading {
             path_generation: 1,
-            ..estimate(100_000_000)
+            ..estimate(1_000_000)
         };
-        let (playing, _) = run(&mut bound, "1080p", fresh, now, ms(2000));
-        assert_eq!(playing, "1080p");
-        assert!(bound.lower.is_none(), "the old path's hold survived");
+        let (playing, _) = run(&mut bound, "1080p", fresh, now, ms(600));
+        assert_eq!(playing, "720p", "the old path's estimate held the top rung");
+    }
+
+    /// S6: a shortfall whose target wavers between two lower rungs still
+    /// steps down after one hold; timing each target separately never did.
+    #[test]
+    fn a_wavering_lower_target_still_steps_down() {
+        // Each reading stands alone, so the sliding maximum does not smooth
+        // the waver away before the hold sees it.
+        let mut bound = Bound::new(Tuning {
+            estimate_window: ms(1),
+            ..Tuning::default()
+        });
+        let ranked = ladder();
+        let start = Instant::now();
+        let mut playing = "1080p".to_string();
+        for tick in 0..8u32 {
+            // Alternately fits 720p and only 360p: 1.2 and 0.6 Mbit/s.
+            let bps = if tick % 2 == 0 { 1_200_000 } else { 600_000 };
+            let now = start + ms(100) * tick;
+            playing = bound
+                .decide(
+                    &ranked,
+                    Some(&playing),
+                    &Constraints::default(),
+                    &estimate(bps),
+                    now,
+                )
+                .expect("the ladder is not empty");
+        }
+        assert_ne!(playing, "1080p", "the hold restarted with every waver");
     }
 
     /// The loss ceiling is part of what a path taught: it goes with it.

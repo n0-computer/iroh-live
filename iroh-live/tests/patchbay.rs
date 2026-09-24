@@ -353,10 +353,11 @@ async fn drain_across_switch(viewer: &mut Viewer, rendition: &str, settle: Durat
     }
     let took = asked.elapsed();
     let mut after = drain(&mut viewer.frames, settle).await;
-    // The replacement's first frame is what flips the rendition, so it is read
-    // out just after the switch has landed rather than before. It closes the one
-    // gap the whole test is about, the one between the incumbent's last frame
-    // and the replacement's first, so it belongs on the near side of the line.
+    // The replacement's first picture on screen is what flips the rendition, so
+    // it is read out just after the switch has landed rather than before. It
+    // closes the one gap the whole test is about, the one between the
+    // incumbent's last frame and the replacement's first, so it belongs on the
+    // near side of the line.
     if !after.is_empty() {
         across.push(after.remove(0));
     }
@@ -830,10 +831,11 @@ async fn adaptation_follows_a_rate_limit() {
 /// A rendition switch must not blank the picture.
 ///
 /// The decode supervisor opens the replacement alongside the incumbent and hands
-/// over on the replacement's first frame, so delivery should carry on through
-/// the switch at roughly its usual cadence. If that overlap regressed, the gap
-/// would be the whole cost of opening a decoder and waiting for a keyframe over
-/// the impaired link, which is seconds rather than frames.
+/// over once the replacement's pictures have caught up with the incumbent's, so
+/// delivery should carry on through the switch at roughly its usual cadence. If
+/// that overlap regressed, the gap would be the whole cost of opening a decoder
+/// and waiting for a keyframe over the impaired link, which is seconds rather
+/// than frames.
 ///
 /// Driven by an explicit switch rather than by adaptation: the assertion is
 /// about the handover, and waiting for the algorithm to ask for one would only

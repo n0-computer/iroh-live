@@ -18,9 +18,13 @@
 //! - A replacement takes over only once its playhead has caught up with the
 //!   incumbent's, which is `@moq/watch`'s rule: the picture never steps
 //!   backwards across a switch by more than [`CATCH_UP_SLACK`].
-//! - When the incumbent ends, a warm replacement takes over at once, since
-//!   there is no longer a picture to step back from; a replacement still
-//!   opening keeps its deadline.
+//! - A replacement takes over on a picture it decoded, never on opening alone:
+//!   a decoder that opens and then stays silent keeps its deadline and is given
+//!   up, rather than taking over a screen it never draws on. With nothing
+//!   playing, including after the incumbent ended, its first picture is enough.
+//! - A replacement that is given up is reported as given up, whether or not
+//!   anything is playing, so the caller can tell a failed first open from the
+//!   end of the video and try something else.
 
 use std::time::Duration;
 
@@ -81,7 +85,7 @@ pub(crate) enum Outcome<E> {
     Promoted(Target),
     /// A replacement was given up, and why.
     Abandoned(Target, Abandoned<E>),
-    /// Nothing is playing and nothing is on its way: the video has ended.
+    /// The incumbent ended with nothing on its way: the video has ended.
     Ended,
 }
 
@@ -251,8 +255,9 @@ impl<R, O> Switcher<R, O> {
 
     /// Records that the replacement of `generation` finished opening.
     ///
-    /// With nothing playing, an opened replacement takes over at once: there
-    /// is no picture to catch up with.
+    /// An opened replacement starts warming. It takes over on a picture, in
+    /// [`replacement_frame`](Self::replacement_frame), and keeps its deadline
+    /// until then.
     pub(crate) fn opened<E>(&mut self, generation: u64, result: Result<R, E>) -> Outcome<E> {
         let Some(replacement) = self
             .replacement
@@ -266,9 +271,6 @@ impl<R, O> Switcher<R, O> {
         match result {
             Ok(reader) => {
                 replacement.phase = Phase::Warming(reader);
-                if self.incumbent.is_none() {
-                    return self.promote();
-                }
                 Outcome::Idle
             }
             Err(err) => {
@@ -314,15 +316,12 @@ impl<R, O> Switcher<R, O> {
 
     /// Records that the incumbent's track ended.
     ///
-    /// A warm replacement takes over at once. One still opening keeps its
-    /// deadline, and nothing plays until it lands or is given up.
+    /// A replacement on its way keeps its deadline and takes over on its first
+    /// picture, which no longer has anything to catch up with. Without one,
+    /// the video has ended.
     pub(crate) fn incumbent_ended<E>(&mut self) -> Outcome<E> {
         self.incumbent = None;
         match &self.replacement {
-            Some(Replacement {
-                phase: Phase::Warming(_),
-                ..
-            }) => self.promote(),
             Some(_) => Outcome::Idle,
             None => Outcome::Ended,
         }
@@ -365,16 +364,17 @@ impl<R, O> Switcher<R, O> {
         Outcome::Promoted(target)
     }
 
-    /// Reports an abandoned replacement, and the end of the video if nothing is
-    /// left playing.
+    /// Reports an abandoned replacement.
     ///
-    /// The end takes precedence: a caller told the video ended does not need
-    /// telling which switch failed on the way.
+    /// Reported the same way whether or not anything is playing: a first open
+    /// that fails is a failure to act on, not the end of the video, and the
+    /// caller reads [`current`](Self::current) to tell the two apart.
+    #[expect(
+        clippy::unused_self,
+        reason = "a transition like the others, kept as a method"
+    )]
     fn abandon<E>(&mut self, target: Target, reason: Abandoned<E>) -> Outcome<E> {
-        match self.incumbent.is_none() {
-            true => Outcome::Ended,
-            false => Outcome::Abandoned(target, reason),
-        }
+        Outcome::Abandoned(target, reason)
     }
 }
 
@@ -406,8 +406,11 @@ mod tests {
         let mut switcher = Test::new(PATIENCE);
         let _: Outcome<()> = switcher.request(target("high"), now, |generation, _| generation);
         let outcome: Outcome<()> = switcher.opened(1, Ok("high"));
-        assert_eq!(outcome, Outcome::Promoted(target("high")));
-        switcher.incumbent_frame(playhead);
+        assert_eq!(outcome, Outcome::Idle);
+        assert_eq!(
+            switcher.replacement_frame::<()>(playhead),
+            (Verdict::Promote, Outcome::Promoted(target("high")))
+        );
         (switcher, now)
     }
 
@@ -416,18 +419,39 @@ mod tests {
         switcher.request(target(rendition), now, |generation, _| generation)
     }
 
+    /// A first decoder takes over on its first picture, not on opening: one
+    /// that opens and stays silent must not reach `Running` on a black screen.
     #[test]
-    fn a_first_decoder_takes_over_as_soon_as_it_opens() {
+    fn a_first_decoder_takes_over_on_its_first_picture() {
         let now = Instant::now();
         let mut switcher = Test::new(PATIENCE);
         assert_eq!(ask(&mut switcher, "high", now), Outcome::Idle);
         assert_eq!(switcher.opening_mut(), Some(&mut 1));
+        assert_eq!(switcher.opened::<()>(1, Ok("high")), Outcome::Idle);
+        assert_eq!(switcher.current(), None);
+        assert_eq!(switcher.deadline(), Some(now + PATIENCE));
         assert_eq!(
-            switcher.opened::<()>(1, Ok("high")),
-            Outcome::Promoted(target("high"))
+            switcher.replacement_frame::<()>(ms(0)),
+            (Verdict::Promote, Outcome::Promoted(target("high")))
         );
         assert_eq!(switcher.current(), Some(&target("high")));
         assert_eq!(switcher.switching_to(), None);
+        assert_eq!(switcher.deadline(), None);
+    }
+
+    /// A first decoder that opens and never decodes is given up at its
+    /// deadline, and reported as a failed switch rather than as the end.
+    #[test]
+    fn a_silent_first_decoder_times_out() {
+        let now = Instant::now();
+        let mut switcher = Test::new(PATIENCE);
+        ask(&mut switcher, "high", now);
+        switcher.opened::<()>(1, Ok("high"));
+        assert_eq!(
+            switcher.expire::<()>(now + PATIENCE),
+            Outcome::Abandoned(target("high"), Abandoned::TimedOut)
+        );
+        assert!(switcher.is_idle());
     }
 
     /// R10: a request for C while B is still opening used to leave B in place,
@@ -583,16 +607,19 @@ mod tests {
     }
 
     /// R10: the incumbent ending used to promote a replacement without a
-    /// frame and drop its deadline. A warm one takes over, which leaves
-    /// nothing to step back from; one still opening keeps its deadline.
+    /// frame and drop its deadline. A warm one now takes over on its next
+    /// picture, whatever its playhead, since nothing is left to step back from.
     #[test]
-    fn the_incumbent_ending_promotes_a_warm_replacement() {
-        let (mut switcher, now) = playing(ms(1000));
+    fn the_incumbent_ending_hands_over_on_the_next_picture() {
+        let (mut switcher, now) = playing(ms(10_000));
         ask(&mut switcher, "low", now);
         switcher.opened::<()>(2, Ok("low"));
+        assert_eq!(switcher.incumbent_ended::<()>(), Outcome::Idle);
+        assert_eq!(switcher.current(), None);
+        assert_eq!(switcher.deadline(), Some(now + PATIENCE));
         assert_eq!(
-            switcher.incumbent_ended::<()>(),
-            Outcome::Promoted(target("low"))
+            switcher.replacement_frame::<()>(ms(1000)),
+            (Verdict::Promote, Outcome::Promoted(target("low")))
         );
         assert_eq!(switcher.current(), Some(&target("low")));
         assert_eq!(switcher.deadline(), None);
@@ -606,9 +633,11 @@ mod tests {
         assert_eq!(switcher.current(), None);
         assert_eq!(switcher.deadline(), Some(now + PATIENCE));
 
-        // With nothing playing, the replacement takes over as it opens.
+        // With nothing playing, the replacement takes over on its first
+        // picture.
+        assert_eq!(switcher.opened::<()>(2, Ok("low")), Outcome::Idle);
         assert_eq!(
-            switcher.opened::<()>(2, Ok("low")),
+            switcher.replacement_frame::<()>(ms(0)).1,
             Outcome::Promoted(target("low"))
         );
     }
@@ -686,14 +715,27 @@ mod tests {
         assert_eq!(switcher.current(), Some(&target("high")));
     }
 
-    /// With nothing left to play, a failed replacement is the end of the video
-    /// rather than a failed switch.
+    /// C2: a replacement that fails with nothing playing used to report the
+    /// end of the video, so a first decoder that would not open left the
+    /// player `Ended` with no error and no fallback. It is a failed switch.
     #[test]
-    fn a_failure_with_nothing_playing_ends_the_video() {
+    fn a_failure_with_nothing_playing_is_a_failed_switch() {
+        let now = Instant::now();
+        let mut switcher = Test::new(PATIENCE);
+        ask(&mut switcher, "high", now);
+        assert_eq!(
+            switcher.opened(1, Err("no decoder")),
+            Outcome::Abandoned(target("high"), Abandoned::OpenFailed("no decoder"))
+        );
+        assert!(switcher.is_idle());
+
         let (mut switcher, now) = playing(ms(1000));
         ask(&mut switcher, "low", now);
         switcher.incumbent_ended::<()>();
-        assert_eq!(switcher.opened(2, Err("no such track")), Outcome::Ended);
+        assert_eq!(
+            switcher.opened(2, Err("no such track")),
+            Outcome::Abandoned(target("low"), Abandoned::OpenFailed("no such track"))
+        );
         assert!(switcher.is_idle());
     }
 }

@@ -81,6 +81,31 @@ async fn two_audio_sets_in_a_row_keep_publishing() {
     .expect("the replacement keeps encoding");
 }
 
+/// S3: nothing used to fail if the microphone publication stopped building
+/// the canceller its config asks for. The publication asks the output for one
+/// when it starts, which a null output counts without any device behind it.
+#[cfg(all(feature = "capture", feature = "aec"))]
+#[tokio::test]
+async fn a_microphone_publication_asks_for_its_canceller() {
+    use crate::{AudioOutput, MicrophoneConfig};
+    let output = AudioOutput::null();
+    let config = MicrophoneConfig::default().with_echo_cancellation(&output);
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_audio(
+            AudioSource::microphone_unchecked(config),
+            AudioEncoding::voice(),
+        )
+        .expect("a valid encoding");
+    tokio::time::timeout(TIMEOUT, async {
+        while output.cancellers_requested() == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the publication never asked for an echo canceller");
+}
+
 /// A cleared slot reports `Off` straight away, whatever its task was doing.
 #[tokio::test]
 async fn clearing_audio_turns_it_off() {

@@ -54,19 +54,28 @@ pub(super) async fn run(
     stats.update(|stats| stats.codec = Some(codec.clone()));
     let result = match source.kind() {
         #[cfg(feature = "capture")]
-        AudioKind::Microphone(capture) => {
-            microphone(
-                &job.producer,
-                &job.catalog,
-                job.clock,
-                &job.reporter,
-                capture.clone(),
-                &encoding,
-                &stop,
-            )
-            .await
+        AudioKind::Microphone(config) => {
+            // Built here rather than when the source opened: the publication
+            // this one replaces has finished, and with it the canceller it
+            // held, which an output hands out one at a time.
+            match config.resolve() {
+                Ok(capture) => {
+                    microphone(
+                        &job.producer,
+                        &job.catalog,
+                        job.clock,
+                        &job.reporter,
+                        capture,
+                        &encoding,
+                        &stop,
+                    )
+                    .await
+                }
+                Err(err) => Err(err),
+            }
         }
         AudioKind::Pcm { format, fanout } => {
+            let _wanted = source.want();
             pcm(
                 &job.producer,
                 &job.catalog,

@@ -30,7 +30,8 @@ pub async fn catalog(broadcast: &RemoteBroadcast) -> Result<Catalog> {
     .await
     .map_err(|_| {
         anyerr!(
-            "the broadcast sent no catalog within {}s",
+            "the broadcast sent no catalog within {}s, or sent one this build \
+             could not read (the log says which)",
             CATALOG_TIMEOUT.as_secs()
         )
     })?

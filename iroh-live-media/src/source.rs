@@ -418,10 +418,31 @@ impl MicrophoneConfig {
     /// the peer, which is the one audio failure everybody notices. Needs the
     /// `aec` feature: [`AudioSource::microphone`] refuses the config without
     /// it, rather than opening a microphone that echoes.
+    ///
+    /// The canceller itself is built when a broadcast starts publishing the
+    /// microphone, after the publication it replaces has let go of its own:
+    /// an output feeds one canceller at a time.
     #[must_use]
     pub fn with_echo_cancellation(mut self, output: &AudioOutput) -> Self {
         self.echo_reference = Some(output.clone());
         self
+    }
+
+    /// Checks what can be checked before a publication starts: that echo
+    /// cancellation, if asked for, is compiled in.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidConfig`] if echo cancellation is asked for in a
+    /// build without it.
+    pub(crate) fn check(&self) -> Result<(), Error> {
+        if self.echo_reference.is_some() && !cfg!(feature = "aec") {
+            return Err(Error::invalid(
+                "echo cancellation needs the `aec` feature, which this build was \
+                 compiled without",
+            ));
+        }
+        Ok(())
     }
 
     /// Returns the capture config with the echo canceller attached.
@@ -454,9 +475,10 @@ impl MicrophoneConfig {
 /// What an audio source produces.
 #[derive(Debug)]
 pub(crate) enum AudioKind {
-    /// A microphone, opened by the publication that encodes it.
+    /// A microphone, opened by the publication that encodes it, which also
+    /// builds its echo canceller.
     #[cfg(feature = "capture")]
-    Microphone(audio::capture::Config),
+    Microphone(MicrophoneConfig),
     /// PCM from a file, a generator or the application, fanned out to every
     /// broadcast that reads it.
     Pcm {
@@ -470,6 +492,9 @@ pub(crate) enum AudioKind {
 struct AudioInner {
     kind_name: &'static str,
     kind: AudioKind,
+    /// Held while a broadcast publishes this source, for
+    /// [`FrameSender::demand`].
+    demand: Demand,
     stop: CancellationToken,
     _driver: Driver,
 }
@@ -497,24 +522,43 @@ impl AudioSource {
         stop: CancellationToken,
         driver: Driver,
     ) -> Self {
+        Self::pcm_with_demand(kind_name, format, fanout, stop, driver, Demand::default())
+    }
+
+    fn pcm_with_demand(
+        kind_name: &'static str,
+        format: AudioFormat,
+        fanout: PcmFanout,
+        stop: CancellationToken,
+        driver: Driver,
+        demand: Demand,
+    ) -> Self {
         Self {
             inner: Arc::new(AudioInner {
                 kind_name,
                 kind: AudioKind::Pcm { format, fanout },
+                demand,
                 stop,
                 _driver: driver,
             }),
         }
     }
 
+    /// Registers a broadcast publishing this source, for
+    /// [`FrameSender::demand`].
+    pub(crate) fn want(&self) -> DemandGuard {
+        self.inner.demand.acquire()
+    }
+
     /// Opens a microphone.
     ///
-    /// Checks that the device exists and attaches the echo canceller the
-    /// config asks for. The device itself opens when a broadcast first has a
-    /// listener for it, and a failure then shows in the broadcast's
-    /// [`PublishStatus`](crate::PublishStatus): moq-audio opens a microphone
-    /// only inside the publication that encodes it, and opening it here as
-    /// well would hold the device twice.
+    /// Checks that the device exists and that echo cancellation, if asked
+    /// for, is compiled in. The device itself opens when a broadcast first has
+    /// a listener for it, together with the echo canceller, and a failure then
+    /// shows in the broadcast's [`PublishStatus`](crate::PublishStatus):
+    /// moq-audio opens a microphone only inside the publication that encodes
+    /// it. The same source set on two broadcasts is therefore two captures of
+    /// the device.
     ///
     /// # Errors
     ///
@@ -523,8 +567,8 @@ impl AudioSource {
     /// without it.
     #[cfg(feature = "capture")]
     pub async fn microphone(config: MicrophoneConfig) -> Result<Self, Error> {
-        let capture = config.resolve()?;
-        if let audio::capture::Source::Microphone(wanted) = &capture.source {
+        config.check()?;
+        if let audio::capture::Source::Microphone(wanted) = &config.capture.source {
             let devices = audio::capture::devices().await.map_err(Error::device)?;
             let found = match wanted {
                 Some(id) => devices.iter().any(|device| &device.id == id),
@@ -537,15 +581,22 @@ impl AudioSource {
                 }));
             }
         }
-        info!(source = ?capture.source, echo_cancellation = config.echo_reference.is_some(), "microphone ready");
-        Ok(Self {
+        info!(source = ?config.capture.source, echo_cancellation = config.echo_reference.is_some(), "microphone ready");
+        Ok(Self::microphone_unchecked(config))
+    }
+
+    /// Wraps a microphone config without looking for the device.
+    #[cfg(feature = "capture")]
+    pub(crate) fn microphone_unchecked(config: MicrophoneConfig) -> Self {
+        Self {
             inner: Arc::new(AudioInner {
                 kind_name: "microphone",
-                kind: AudioKind::Microphone(capture),
+                kind: AudioKind::Microphone(config),
+                demand: Demand::default(),
                 stop: CancellationToken::new(),
                 _driver: Driver::Pushed,
             }),
-        })
+        }
     }
 
     /// Decodes a file in real time, restarting at the beginning when
@@ -553,6 +604,8 @@ impl AudioSource {
     ///
     /// WAV and MP3 are readable. Opens and validates the codec before
     /// returning.
+    ///
+    /// Cancellation safe: dropping the future stops the decode thread.
     ///
     /// # Errors
     ///
@@ -562,6 +615,9 @@ impl AudioSource {
         let path = path.as_ref().to_path_buf();
         let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
         let stop = CancellationToken::new();
+        // Stops the decode thread if this future is dropped after it started:
+        // a looping file would otherwise decode for the rest of the process.
+        let abandoned = stop.clone().drop_guard();
         let format = {
             let fanout = fanout.clone();
             let stop = stop.clone();
@@ -569,6 +625,7 @@ impl AudioSource {
                 .await
                 .map_err(|err| Error::device_msg(format!("the file reader failed: {err}")))??
         };
+        abandoned.disarm();
         Ok(Self::pcm("file", format, fanout, stop, Driver::Thread))
     }
 
@@ -614,14 +671,16 @@ impl AudioSource {
     ///
     /// Frames carry interleaved 32-bit float samples in `format`. A broadcast
     /// that falls more than a few seconds behind loses the oldest frames and
-    /// counts them in its stats.
+    /// counts them in its stats. The sender's demand is true while a broadcast
+    /// publishes the source.
     pub fn push(format: AudioFormat) -> (FrameSender<audio::Frame>, Self) {
         let (fanout, _) = tokio::sync::broadcast::channel(PCM_BUFFER);
         let stop = CancellationToken::new();
-        let sender = FrameSender::new(Arc::new(fanout.clone()), stop.clone(), Demand::default());
+        let demand = Demand::default();
+        let sender = FrameSender::new(Arc::new(fanout.clone()), stop.clone(), demand.clone());
         (
             sender,
-            Self::pcm("push", format, fanout, stop, Driver::Pushed),
+            Self::pcm_with_demand("push", format, fanout, stop, Driver::Pushed, demand),
         )
     }
 
@@ -715,21 +774,18 @@ mod tests {
     }
 
     /// Echo cancellation used to be something nothing attached. The
-    /// microphone config now builds its canceller from the output it is given,
-    /// and this fails if it does not.
+    /// microphone config builds its canceller from the output it is given,
+    /// and this fails if it does not. It needs an output device, so it is run
+    /// by hand; `publish::tests` covers the publication asking for the
+    /// canceller without one.
     #[cfg(all(feature = "aec", feature = "playback"))]
     #[tokio::test]
+    #[ignore = "needs an audio output device"]
     async fn echo_cancellation_attaches_the_canceller() {
         use crate::output::AudioOutput;
-        let output = match AudioOutput::open(None).await {
-            Ok(output) => output,
-            Err(err) => {
-                // No output device: the CLI's own test covers the wiring
-                // without one, and this one has nothing to attach to.
-                eprintln!("skipping: no audio output here ({err:#})");
-                return;
-            }
-        };
+        let output = AudioOutput::open(None)
+            .await
+            .expect("an audio output device");
         let capture = MicrophoneConfig::default()
             .with_echo_cancellation(&output)
             .resolve()

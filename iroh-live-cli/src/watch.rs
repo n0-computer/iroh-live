@@ -223,8 +223,11 @@ async fn connect(
     options: &Options,
 ) -> Result<(Subscription, Player)> {
     let sub = transport::subscribe(live, ticket).await?;
+    // Waited for before anything plays, so a broadcast that never describes
+    // itself is an error here rather than a black window.
+    let catalog = crate::playback::catalog(sub.broadcast()).await?;
     if let Some(name) = &options.rendition {
-        check_rendition(&sub, name).await?;
+        check_rendition(&catalog, name)?;
     }
 
     #[cfg(feature = "render")]
@@ -251,10 +254,9 @@ async fn connect(
 ///
 /// # Errors
 ///
-/// Fails if the catalog does not arrive, or has no video rendition of that
-/// name, listing the ones it does have.
-async fn check_rendition(sub: &Subscription, name: &str) -> Result<()> {
-    let catalog = crate::playback::catalog(sub.broadcast()).await?;
+/// Fails if the catalog has no video rendition of that name, listing the ones
+/// it does have.
+fn check_rendition(catalog: &iroh_live::media::Catalog, name: &str) -> Result<()> {
     if catalog.video_rendition(name).is_some() {
         return Ok(());
     }
@@ -627,7 +629,8 @@ mod window {
         } = connected;
         let title = ticket.broadcast_name.clone();
         let mut remote =
-            RemoteView::new(ctx, "video", player, options.playback.decoder, render_state);
+            RemoteView::new(ctx, "video", player, options.playback.decoder, render_state)
+                .with_link(sub.session().clone(), sub.signals().clone());
         if let Some(name) = options.rendition.clone() {
             remote.set_rendition(RenditionMode::pinned(name));
         }

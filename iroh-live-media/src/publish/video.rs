@@ -10,7 +10,10 @@
 //! preview reads the same frames and a publisher expects to see itself before
 //! anyone tunes in.
 
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Instant,
+};
 
 use n0_future::{StreamExt, task::JoinSet};
 use tokio_util::sync::CancellationToken;
@@ -105,30 +108,33 @@ pub(super) async fn run_raw(
         reporter,
         predecessor,
     } = job;
-    let Some(_tracks) = take_over(predecessor, tracks, &stop).await else {
+    let Some(tracks) = take_over(predecessor, tracks, &stop).await else {
         return;
     };
+    // Shared with every encoder task, so the names are released only once the
+    // last of them is gone: tasks aborted along with this one finish being
+    // dropped after it returns, and a replacement must not create its tracks
+    // before then.
+    let tracks = Arc::new(tracks);
+    // The predecessor has finished, so its renditions' figures are final and
+    // go: a replaced ladder does not linger in the stats.
+    stats.clear_video();
 
+    // Tracks are created from the source's format rather than from its first
+    // frame: a source that idles until someone watches, as a phone camera
+    // does, produces nothing until a track exists to be watched. A frame that
+    // is already there refines the guess, and a later one of another size is
+    // scaled to the size advertised.
     let mut frames = source.frames();
-    let first = tokio::select! {
-        first = frames.next() => first,
-        () = stop.cancelled() => return,
+    let format = source.format();
+    let (size, color) = match frames.current() {
+        Some(frame) => (frame.size(), frame.surface.color()),
+        None => (format.size, None),
     };
-    let Some(first) = first else {
-        let failure = source.failure().unwrap_or_else(|| {
-            Arc::new(Error::device_msg(
-                "the video source ended before its first frame",
-            ))
-        });
-        warn!(error = %failure, "video source produced nothing");
-        reporter.slot(SlotState::Failed(failure));
-        return;
-    };
-    let size = first.size();
-    let color = first.surface.color();
-    let rate = source.format().rate;
-    let rebase = Rebase::anchor(clock, first.timestamp);
-    drop(first);
+    let rate = format.rate;
+    // Anchored by whichever rendition encodes first, and shared, so every rung
+    // carries the same timestamp for the same picture.
+    let rebase = Arc::new(OnceLock::new());
 
     let mut encoders = JoinSet::new();
     let mut last_failure = None;
@@ -172,7 +178,9 @@ pub(super) async fn run_raw(
             config,
             frames: source.frames(),
             source: source.clone(),
-            rebase,
+            clock,
+            rebase: rebase.clone(),
+            _tracks: tracks.clone(),
             interval: frame_interval(rendition, rate),
             reporter: reporter.clone(),
             stats: stats.rendition(&rendition.name),
@@ -191,6 +199,8 @@ pub(super) async fn run_raw(
         return;
     }
     reporter.slot(SlotState::Running);
+    let spawned = encoders.len();
+    let mut failed = 0;
 
     // The source's own frame rate is written here, the one place that reads
     // every frame, rather than by each encoder.
@@ -206,7 +216,20 @@ pub(super) async fn run_raw(
                 }
                 None => break,
             },
-            Some(joined) = encoders.join_next() => report(joined),
+            Some(joined) = encoders.join_next() => {
+                if let Some(failure) = report(joined) {
+                    failed += 1;
+                    last_failure = Some(failure);
+                }
+                // Every rendition's encoder failed while the source runs on:
+                // nothing is published, which the slot has to say.
+                if failed == spawned {
+                    let failure = last_failure.clone().expect("counted above");
+                    warn!(error = %failure, "no rendition can encode");
+                    reporter.slot(SlotState::Failed(failure));
+                    return;
+                }
+            }
             () = stop.cancelled() => break,
         }
     }
@@ -229,10 +252,17 @@ pub(super) async fn run_raw(
     }
 }
 
-/// Logs an encoder that panicked; one that failed reported itself.
-fn report(joined: Result<(), n0_future::task::JoinError>) {
-    if let Err(err) = joined {
-        warn!(error = %err, "rendition encoder panicked");
+/// Returns why an encoder stopped, if it failed or panicked; one that failed
+/// reported itself in its rendition's state already.
+fn report(joined: Result<Option<Arc<Error>>, n0_future::task::JoinError>) -> Option<Arc<Error>> {
+    match joined {
+        Ok(failure) => failure,
+        Err(err) => {
+            warn!(error = %err, "rendition encoder panicked");
+            Some(Arc::new(Error::encoder(std::io::Error::other(format!(
+                "the encoder task panicked: {err}"
+            )))))
+        }
     }
 }
 
@@ -284,7 +314,11 @@ struct Encoder {
     config: encode::Config,
     frames: VideoFrames,
     source: VideoSource,
-    rebase: Rebase,
+    clock: moq_mux::Clock,
+    /// The broadcast's rebase, set by the first rendition to encode a frame.
+    rebase: Arc<OnceLock<Rebase>>,
+    /// The slot's hold on its track names.
+    _tracks: Arc<tokio::sync::OwnedMutexGuard<()>>,
     /// The gap between frames kept, for a rendition slower than its source.
     interval: Option<std::time::Duration>,
     reporter: Reporter,
@@ -295,16 +329,19 @@ struct Encoder {
 impl Encoder {
     /// Encodes for as long as someone watches, until the source ends or the
     /// slot stops, and reports a failure in the rendition's state.
-    async fn run(mut self) {
-        if let Err(err) = self.encode().await {
-            warn!(error = %err, "rendition encoder failed");
-            // Aborted rather than dropped, so a subscriber sees the cause
-            // rather than a bare reset.
-            let cause = moq_net::Error::Transport(err.to_string());
-            self.reporter
-                .rendition(&self.name, RenditionState::Failed(Arc::new(err)));
-            self.producer.abort(cause);
-        }
+    ///
+    /// Returns the failure, for the slot to count.
+    async fn run(mut self) -> Option<Arc<Error>> {
+        let err = self.encode().await.err()?;
+        warn!(error = %err, "rendition encoder failed");
+        // Aborted rather than dropped, so a subscriber sees the cause rather
+        // than a bare reset.
+        let cause = moq_net::Error::Transport(err.to_string());
+        let err = Arc::new(err);
+        self.reporter
+            .rendition(&self.name, RenditionState::Failed(err.clone()));
+        self.producer.abort(cause);
+        Some(err)
     }
 
     async fn encode(&mut self) -> Result<(), Error> {
@@ -372,6 +409,9 @@ impl Encoder {
                     self.producer.finish().map_err(Error::transport)?;
                     return Ok(());
                 };
+                let clock = self.clock;
+                self.rebase
+                    .get_or_init(|| Rebase::anchor(clock, frame.timestamp));
                 if let Some(interval) = self.interval {
                     if due.is_some_and(|due| frame.timestamp < due) {
                         continue;
@@ -442,8 +482,12 @@ impl Encoder {
 
     /// Moves encoded timestamps onto the broadcast clock.
     fn restamp(&self, encoded: &mut [encode::Encoded]) {
+        // Unset only before the first frame, when there is nothing to restamp.
+        let Some(rebase) = self.rebase.get() else {
+            return;
+        };
         for packet in encoded {
-            packet.timestamp = self.rebase.map(packet.timestamp);
+            packet.timestamp = rebase.map(packet.timestamp);
         }
     }
 }
@@ -466,6 +510,7 @@ pub(super) async fn run_encoded(job: Job, source: EncodedVideoSource, stop: Canc
     let Some(_tracks) = take_over(predecessor, tracks, &stop).await else {
         return;
     };
+    stats.clear_video();
     let EncodedVideoSource { mut bytes, _guard } = source;
     let result = async {
         let track = producer

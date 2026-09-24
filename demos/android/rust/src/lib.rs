@@ -20,9 +20,8 @@ use std::{
 
 use iroh_live::{Call, Live, Subscription, ticket::LiveTicket};
 use iroh_live_media::{
-    frame_channel::FrameReceiver,
-    publish::LocalBroadcast,
-    subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
+    AudioEncoding, AudioOutput, AudioSource, Catalog, LocalBroadcast, MicrophoneConfig, Player,
+    PlayerConfig, RemoteBroadcast, RenditionMode, VideoEncoding, VideoFrames, VideoRendition,
 };
 use iroh_live_media_android::{
     camera::{CameraSink, camera},
@@ -35,8 +34,9 @@ use jni::{
     sys::{jboolean, jint, jlong},
 };
 use moq_net::Timestamp;
-use moq_video::{Frame, I420, Size, Surface};
+use moq_video::{Frame, I420, Rate, Size, Surface};
 use n0_error::{Result, StackResultExt, StdResultExt, anyerr};
+use n0_watcher::Watcher as _;
 use tokio::runtime::Runtime;
 use tracing::{error, info, warn};
 
@@ -57,6 +57,16 @@ const LOGCAT_FILTER: &str = "\
 
 /// The broadcast name the local encode and decode loop reports in its logs.
 const LOOPBACK_NAME: &str = "loopback";
+
+/// The frame rate the camera source is declared at.
+///
+/// Camera2 delivers at whatever rate the device settles on, and the broadcast
+/// encodes the frames that actually arrive; this is the ceiling the encoder
+/// plans for.
+const CAMERA_FPS: u32 = 30;
+
+/// The track name of the one video rendition the demo publishes.
+const VIDEO_RENDITION: &str = "video";
 
 /// Initializes ndk-context and tracing on library load.
 ///
@@ -92,40 +102,6 @@ fn runtime() -> &'static Runtime {
 
 // ── Session handle ──────────────────────────────────────────────────
 
-/// Where the render loop takes its pictures from.
-enum FrameSource {
-    /// Nothing to draw: a publish-only session, or one whose track has not
-    /// opened yet.
-    Empty,
-    /// A remote track this node is decoding.
-    Track(VideoTrack),
-    /// This node's own camera frames, tapped on their way to the encoders.
-    Preview(Arc<FrameReceiver<Arc<Frame>>>),
-}
-
-impl FrameSource {
-    /// Takes the newest picture, if one arrived since the last call.
-    ///
-    /// Both halves hand out shared frames so the caller has one type to draw. A
-    /// decoded frame is not shared with anyone, so wrapping it costs one
-    /// allocation per rendered frame and saves a second render path.
-    fn take(&self) -> Option<Arc<Frame>> {
-        match self {
-            Self::Empty => None,
-            Self::Track(track) => track.take().map(Arc::new),
-            Self::Preview(frames) => frames.take(),
-        }
-    }
-
-    /// The rendition being decoded, for the status line.
-    fn rendition(&self) -> Option<String> {
-        match self {
-            Self::Track(track) => Some(track.rendition()),
-            Self::Empty | Self::Preview(_) => None,
-        }
-    }
-}
-
 /// Opaque handle stored as a `jlong` on the Kotlin side.
 ///
 /// `Arc<Mutex<..>>` because JNI calls arrive concurrently from the render
@@ -138,18 +114,23 @@ struct SessionHandle {
     subscription: Option<Subscription>,
     /// A two-way call, from `dial`. Owns its session and the peer's broadcast.
     call: Option<Call>,
-    /// The broadcast being watched, from whichever path opened it.
-    remote: Option<RemoteBroadcast>,
-    /// The playing audio track. Held so playback keeps running.
-    #[allow(dead_code, reason = "dropping it stops playback")]
-    audio: Option<AudioTrack>,
+    /// The playback of the broadcast being watched, from whichever path opened
+    /// it. Dropping it stops its decoders and its audio.
+    player: Option<Player>,
+    /// The speaker the player's audio plays through, which is also the signal
+    /// the microphone's echo canceller subtracts. `None` where nothing plays
+    /// sound: the offline pipelines and a publish-only session.
+    #[allow(dead_code, reason = "dropping it closes the speaker")]
+    output: Option<AudioOutput>,
     /// The broadcast this node publishes, whether it is being watched by a
     /// subscriber or carried by a call.
     broadcast: Option<LocalBroadcast>,
     /// Where the camera frames Kotlin pushes go.
     camera: Option<CameraSink>,
-    /// What the render loop draws.
-    frames: FrameSource,
+    /// What the render loop draws: the player's decoded frames, or this node's
+    /// own camera frames as they reach the encoder. `None` while there is
+    /// nothing to draw, as in a publish-only session with no preview.
+    frames: Option<VideoFrames>,
     /// The ticket a published broadcast is reachable by.
     ticket: Option<String>,
     /// The GLES renderer, behind its own lock so drawing does not block camera
@@ -189,11 +170,11 @@ impl SessionHandle {
             live: None,
             subscription: None,
             call: None,
-            remote: None,
-            audio: None,
+            player: None,
+            output: None,
             broadcast: None,
             camera: None,
-            frames: FrameSource::Empty,
+            frames: None,
             ticket: None,
             renderer: Arc::new(Mutex::new(None)),
             frame_dims: None,
@@ -206,11 +187,6 @@ impl SessionHandle {
 
     fn into_shared(self) -> SharedHandle {
         Arc::new(Mutex::new(self))
-    }
-
-    /// The broadcast this node publishes, if it has one.
-    fn local(&self) -> Option<&LocalBroadcast> {
-        self.broadcast.as_ref()
     }
 
     /// The round-trip time on the selected path, if this session has a
@@ -226,12 +202,23 @@ impl SessionHandle {
 
     /// The timestamp to stamp the next camera frame with.
     ///
-    /// Taken from the broadcast's own clock, which audio is stamped from too,
-    /// so the two tracks share a timeline even though the microphone and the
-    /// camera start at different moments.
+    /// Taken from this session's own start. The broadcast rebases every source
+    /// onto its media clock at the source's first frame, so a camera only has
+    /// to hand it a steady timeline, not one shared with the microphone.
     fn timestamp(&self) -> Timestamp {
-        self.local()
-            .map_or(Timestamp::ZERO, |local| local.clock().now())
+        let micros = u64::try_from(self.created_at.elapsed().as_micros()).unwrap_or(u64::MAX);
+        // Overflows only after some 146,000 years of uptime.
+        Timestamp::from_micros(micros).unwrap_or(Timestamp::ZERO)
+    }
+
+    /// The rendition the player is drawing, for the status line.
+    fn rendition(&self) -> Option<String> {
+        self.player.as_ref()?.status().get().rendition
+    }
+
+    /// The newest catalog of the broadcast being watched, if it arrived yet.
+    fn catalog(&self) -> Option<Catalog> {
+        self.player.as_ref()?.broadcast().catalog().get()
     }
 }
 
@@ -260,29 +247,62 @@ fn read_jstring(env: &mut JNIEnv<'_>, s: &JString<'_>) -> Option<String> {
 
 // ── Capture wiring ──────────────────────────────────────────────────
 
-/// Points a broadcast's video track at the camera Kotlin pushes into.
+/// Points a broadcast's video at the camera Kotlin pushes into.
 ///
 /// Video is a push source: Camera2 delivers frames on whichever thread it likes
-/// and the publish task pulls the newest one.
-fn set_camera(broadcast: &LocalBroadcast, size: Size) -> Result<CameraSink> {
-    let (sink, source) = camera(size);
-    broadcast.video().set(source)?;
-    Ok(sink)
+/// and the encoder reads the newest one. Returns the sink for Kotlin's frames,
+/// and the same frames as they reach the encoder, which a local preview draws
+/// at no encode or decode cost.
+fn set_camera(broadcast: &LocalBroadcast, size: Size) -> Result<(CameraSink, VideoFrames)> {
+    let rate = Rate::new(CAMERA_FPS, 1).std_context("camera frame rate")?;
+    let (sink, source) = camera(size, rate);
+    let preview = source.frames();
+    broadcast.set_video(
+        source,
+        VideoEncoding::single(VideoRendition::new(VIDEO_RENDITION)),
+    )?;
+    Ok((sink, preview))
 }
 
-/// Publishes the default microphone.
+/// Publishes the default microphone, with `echo`'s signal cancelled from it
+/// when one is given.
 ///
-/// Unlike the camera, this is a device the publish task opens itself: nothing
-/// in Kotlin touches the microphone.
-fn set_microphone(broadcast: &LocalBroadcast) {
-    broadcast.audio().set(moq_audio::capture::Config::default());
+/// Unlike the camera, this is a device the broadcast opens itself: nothing in
+/// Kotlin touches the microphone. A call passes the speaker its player plays
+/// through, since a handset on speakerphone would otherwise send the peer's
+/// voice straight back. A microphone that will not open is logged and left
+/// out, so the session still carries video.
+async fn set_microphone(broadcast: &LocalBroadcast, echo: Option<&AudioOutput>) {
+    let mut config = MicrophoneConfig::default();
+    if let Some(output) = echo {
+        config = config.with_echo_cancellation(output);
+    }
+    let published = AudioSource::microphone(config)
+        .await
+        .and_then(|source| broadcast.set_audio(source, AudioEncoding::voice()));
+    if let Err(err) = published {
+        warn!("publishing without audio: {err:#}");
+    }
 }
 
-/// Creates a broadcast with no transport behind it, for the offline pipelines.
-fn local_broadcast() -> Result<LocalBroadcast> {
-    Ok(LocalBroadcast::new(
-        moq_net::broadcast::Info::new().produce(),
-    )?)
+/// Opens the default speaker, or an output that discards everything if there
+/// is none.
+///
+/// A session without sound is still worth having, so a speaker that will not
+/// open is logged rather than failing the session.
+async fn open_output() -> AudioOutput {
+    match AudioOutput::open(None).await {
+        Ok(output) => output,
+        Err(err) => {
+            warn!("playing audio nowhere, the speaker did not open: {err:#}");
+            AudioOutput::null()
+        }
+    }
+}
+
+/// Starts playing `remote`, with its audio through `output`.
+fn play(remote: &RemoteBroadcast, output: &AudioOutput) -> Result<Player> {
+    Ok(remote.play(PlayerConfig::default().with_audio(output))?)
 }
 
 // ── JNI: connect (subscribe only) ───────────────────────────────────
@@ -315,17 +335,17 @@ async fn connect_impl(ticket: String) -> Result<jlong> {
     let subscription = live
         .subscribe(ticket.endpoint.clone(), &ticket.broadcast_name)
         .await?;
-    let tracks = subscription.media().await;
-    info!(
-        video = tracks.video.is_some(),
-        audio = tracks.audio.is_some(),
-        "subscribed"
-    );
+    info!("subscribed");
+
+    // The player picks up the catalog and the first rendition on its own, so
+    // the handle is usable before either has arrived.
+    let output = open_output().await;
+    let player = play(subscription.broadcast(), &output)?;
 
     let mut session = SessionHandle::new();
-    session.remote = Some(subscription.broadcast().clone());
-    session.frames = tracks.video.map_or(FrameSource::Empty, FrameSource::Track);
-    session.audio = tracks.audio;
+    session.frames = Some(player.video());
+    session.player = Some(player);
+    session.output = Some(output);
     session.subscription = Some(subscription);
     session.live = Some(live);
     Ok(handle::to_i64(session.into_shared()))
@@ -366,24 +386,20 @@ async fn dial_impl(ticket: String, size: Size) -> Result<jlong> {
 
     // Each peer publishes its own side of the call under its own endpoint id,
     // and subscribes to the other's.
+    let output = open_output().await;
     let broadcast = live.publish(Call::path(live.endpoint().id()))?;
-    let camera = set_camera(&broadcast, size)?;
-    set_microphone(&broadcast);
+    let (camera, _preview) = set_camera(&broadcast, size)?;
+    set_microphone(&broadcast, Some(&output)).await;
 
     let call = Call::dial(&live, ticket.endpoint).await?;
     info!(remote = %call.remote_id().fmt_short(), "call connected");
 
-    let tracks = call.remote().media().await;
-    info!(
-        video = tracks.video.is_some(),
-        audio = tracks.audio.is_some(),
-        "remote media subscribed"
-    );
+    let player = play(call.remote(), &output)?;
 
     let mut session = SessionHandle::new();
-    session.remote = Some(call.remote().clone());
-    session.frames = tracks.video.map_or(FrameSource::Empty, FrameSource::Track);
-    session.audio = tracks.audio;
+    session.frames = Some(player.video());
+    session.player = Some(player);
+    session.output = Some(output);
     session.camera = Some(camera);
     session.broadcast = Some(broadcast);
     session.call = Some(call);
@@ -428,14 +444,14 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     // live while the code is on screen and the first frame the peer sees does
     // not wait for a device to open.
     let path = Call::path(id);
+    let output = open_output().await;
     let broadcast = live.publish(&path)?;
-    let camera = set_camera(&broadcast, size)?;
-    set_microphone(&broadcast);
+    let (camera, preview) = set_camera(&broadcast, size)?;
+    set_microphone(&broadcast, Some(&output)).await;
 
     let mut session = SessionHandle::new();
-    session.frames = broadcast
-        .preview()
-        .map_or(FrameSource::Empty, FrameSource::Preview);
+    session.frames = Some(preview);
+    session.output = Some(output.clone());
     session.camera = Some(camera);
     session.ticket = Some(LiveTicket::new(id, path.as_str()).to_string());
     session.broadcast = Some(broadcast);
@@ -451,7 +467,7 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     // `Arc` aborts it.
     let waiting = Arc::downgrade(&shared);
     let task = runtime().spawn(async move {
-        if let Err(err) = accept_one(live, waiting).await {
+        if let Err(err) = accept_one(live, output, waiting).await {
             error!("answering failed: {err:#}");
         }
     });
@@ -460,11 +476,16 @@ async fn answer_impl(size: Size) -> Result<jlong> {
     Ok(handle::to_i64(shared))
 }
 
-/// Accepts the first peer that calls, and installs its tracks on `session`.
+/// Accepts the first peer that calls, and installs a player for its side on
+/// `session`, with the audio through `output`.
 ///
 /// Sessions this node dialed are skipped: everything that speaks MoQ arrives
 /// the same way, and only an inbound one can be a caller.
-async fn accept_one(live: Live, session: Weak<Mutex<SessionHandle>>) -> Result<()> {
+async fn accept_one(
+    live: Live,
+    output: AudioOutput,
+    session: Weak<Mutex<SessionHandle>>,
+) -> Result<()> {
     let mut incoming = live.transport().incoming_sessions();
     while let Some(moq) = incoming.next().await {
         if moq.dialed() {
@@ -482,13 +503,8 @@ async fn accept_one(live: Live, session: Weak<Mutex<SessionHandle>>) -> Result<(
                 continue;
             }
         };
-        let tracks = call.remote().media().await;
-        info!(
-            remote = %call.remote_id().fmt_short(),
-            video = tracks.video.is_some(),
-            audio = tracks.audio.is_some(),
-            "call answered",
-        );
+        info!(remote = %call.remote_id().fmt_short(), "call answered");
+        let player = play(call.remote(), &output)?;
 
         let Some(session) = session.upgrade() else {
             // The screen was left while this was settling, so there is nothing
@@ -498,11 +514,10 @@ async fn accept_one(live: Live, session: Weak<Mutex<SessionHandle>>) -> Result<(
             return Ok(());
         };
         let mut held = session.lock().expect("poisoned");
-        held.remote = Some(call.remote().clone());
         // Replaces the local preview, so the screen switches from this node's
         // own camera to the peer's picture the moment there is one.
-        held.frames = tracks.video.map_or(FrameSource::Empty, FrameSource::Track);
-        held.audio = tracks.audio;
+        held.frames = Some(player.video());
+        held.player = Some(player);
         held.call = Some(call);
         return Ok(());
     }
@@ -556,18 +571,18 @@ async fn publish_impl(name: String, size: Size) -> Result<jlong> {
     info!(id = %live.endpoint().id().fmt_short(), "endpoint ready");
 
     let broadcast = live.publish(&name)?;
-    let camera = set_camera(&broadcast, size)?;
-    set_microphone(&broadcast);
+    let (camera, preview) = set_camera(&broadcast, size)?;
+    // Nothing plays sound in a publish-only session, so there is no echo to
+    // cancel and no speaker to open.
+    set_microphone(&broadcast, None).await;
 
     let ticket = LiveTicket::new(live.endpoint().id(), name.as_str()).to_string();
     info!(%ticket, "broadcast published");
 
     let mut session = SessionHandle::new();
     // The publisher watches itself: the preview is the frames on their way to
-    // the encoders, so it costs no decode.
-    session.frames = broadcast
-        .preview()
-        .map_or(FrameSource::Empty, FrameSource::Preview);
+    // the encoder, so it costs no decode.
+    session.frames = Some(preview);
     session.camera = Some(camera);
     session.ticket = Some(ticket);
     session.broadcast = Some(broadcast);
@@ -620,17 +635,14 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_startDirect(
 
 fn start_direct_impl(size: Size) -> Result<jlong> {
     info!(%size, "starting direct camera pipeline");
-    // The publish task is a tokio task even with no transport under it.
+    // The encode task is a tokio task even with no transport under it.
     let _guard = runtime().enter();
 
-    let broadcast = local_broadcast()?;
-    let camera = set_camera(&broadcast, size)?;
-    let preview = broadcast
-        .preview()
-        .ok_or_else(|| anyerr!("video source did not open a preview"))?;
+    let broadcast = LocalBroadcast::new();
+    let (camera, preview) = set_camera(&broadcast, size)?;
 
     let mut session = SessionHandle::new();
-    session.frames = FrameSource::Preview(preview);
+    session.frames = Some(preview);
     session.camera = Some(camera);
     session.broadcast = Some(broadcast);
     Ok(handle::to_i64(session.into_shared()))
@@ -661,55 +673,28 @@ fn start_h264_impl(size: Size) -> Result<jlong> {
     info!(%size, "starting local H264 pipeline");
     let _guard = runtime().enter();
 
-    let broadcast = local_broadcast()?;
-    let camera = set_camera(&broadcast, size)?;
-    let consumer = broadcast.consume();
+    let broadcast = LocalBroadcast::new();
+    let (camera, _preview) = set_camera(&broadcast, size)?;
+    let player = open_loopback(&broadcast)?;
 
     let mut session = SessionHandle::new();
+    session.frames = Some(player.video());
+    session.player = Some(player);
     session.camera = Some(camera);
     session.broadcast = Some(broadcast);
-    let session = session.into_shared();
-
-    // The catalog only appears once the camera has pushed a first frame, which
-    // cannot happen before Kotlin holds this handle. So the subscription
-    // resolves in the background and installs itself when it is ready.
-    //
-    // The task holds a weak reference on purpose: it is waiting on a broadcast
-    // the handle owns, so a strong one would keep both alive forever if the user
-    // disconnected before the first frame.
-    runtime().spawn(open_loopback(Arc::downgrade(&session), consumer));
-    Ok(handle::to_i64(session))
+    Ok(handle::to_i64(session.into_shared()))
 }
 
-/// Subscribes to a broadcast this node publishes, and draws what comes back.
-async fn open_loopback(
-    session: std::sync::Weak<Mutex<SessionHandle>>,
-    consumer: moq_net::broadcast::Consumer,
-) {
-    let remote = match RemoteBroadcast::new(LOOPBACK_NAME, consumer).await {
-        Ok(remote) => remote,
-        Err(err) => {
-            error!("loopback subscribe failed: {err:#}");
-            return;
-        }
-    };
-    let video = match remote.video().await {
-        Ok(video) => video,
-        Err(err) => {
-            error!("loopback decode failed: {err:#}");
-            return;
-        }
-    };
-    info!(rendition = %video.rendition(), "loopback decoding");
-
-    let Some(session) = session.upgrade() else {
-        return;
-    };
-    let Ok(mut guard) = session.lock() else {
-        return;
-    };
-    guard.frames = FrameSource::Track(video);
-    guard.remote = Some(remote);
+/// Plays a broadcast this node publishes, in-process, for the render loop to
+/// draw what comes back.
+///
+/// The catalog only appears once the camera has pushed a first frame, which
+/// cannot happen before Kotlin holds the handle. The player waits for it on its
+/// own, so nothing here has to.
+fn open_loopback(broadcast: &LocalBroadcast) -> Result<Player> {
+    let player = RemoteBroadcast::local(broadcast).play(PlayerConfig::default())?;
+    info!(broadcast = LOOPBACK_NAME, "loopback playing");
+    Ok(player)
 }
 
 // ── JNI: camera frame push ──────────────────────────────────────────
@@ -822,9 +807,11 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_pushCameraNv12(
             return;
         }
     };
-    target
-        .sink
-        .push(Frame::new(Surface::I420(planes), target.timestamp));
+    let frame = Frame::new(Surface::I420(planes), target.timestamp);
+    if let Err(err) = target.sink.push(frame) {
+        warn!(%size, "rejected NV12 camera frame: {err}");
+        return;
+    }
     count_camera_frame(&session);
 }
 
@@ -955,7 +942,7 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_renderNextFrame(
         let Ok(mut guard) = session.lock() else {
             return false;
         };
-        let Some(frame) = guard.frames.take() else {
+        let Some(frame) = guard.frames.as_mut().and_then(VideoFrames::try_next) else {
             return false;
         };
         guard.dec_frames_rendered += 1;
@@ -1082,19 +1069,15 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getVideoDimensions(
     if let Some(size) = guard.frame_dims {
         return (i64::from(size.width) << 32) | i64::from(size.height);
     }
-    let (Some(rendition), Some(remote)) = (guard.frames.rendition(), guard.remote.as_ref()) else {
+    let (Some(rendition), Some(catalog)) = (guard.rendition(), guard.catalog()) else {
         return 0;
     };
-    remote
-        .catalog()
-        .video()
-        .get(&rendition)
-        .map(|config| {
-            let width = i64::from(config.coded_width.unwrap_or(0));
-            let height = i64::from(config.coded_height.unwrap_or(0));
-            (width << 32) | height
+    catalog
+        .video_rendition(&rendition)
+        .and_then(|info| info.size)
+        .map_or(0, |size| {
+            (i64::from(size.width) << 32) | i64::from(size.height)
         })
-        .unwrap_or(0)
 }
 
 /// Returns the available video renditions, one per line.
@@ -1112,14 +1095,12 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getRenditions<'a>(
         return empty_string(&mut env);
     };
     let names = guard
-        .remote
-        .as_ref()
-        .map(|remote| {
-            remote
-                .catalog()
+        .catalog()
+        .map(|catalog| {
+            catalog
                 .video()
-                .keys()
-                .cloned()
+                .iter()
+                .map(|info| info.name.as_str())
                 .collect::<Vec<_>>()
                 .join("\n")
         })
@@ -1127,10 +1108,10 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getRenditions<'a>(
     new_string(&mut env, &names)
 }
 
-/// Switches the video track to a named rendition.
+/// Pins the player to a named rendition.
 ///
-/// The replacement decoder opens alongside the incumbent and takes over on its
-/// first frame, so the picture does not go blank across the switch.
+/// The replacement decoder opens alongside the incumbent and takes over once it
+/// has caught up, so the picture does not go blank across the switch.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_switchRendition(
     mut env: JNIEnv<'_>,
@@ -1146,12 +1127,12 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_switchRendition(
     };
     let session = unsafe { borrow_handle(handle) };
     let Ok(guard) = session.lock() else { return };
-    let FrameSource::Track(track) = &guard.frames else {
-        warn!(%name, "not watching a track, nothing to switch");
+    let Some(player) = guard.player.as_ref() else {
+        warn!(%name, "not playing a broadcast, nothing to switch");
         return;
     };
     info!(%name, "switching video rendition");
-    track.set_rendition(name);
+    player.set_rendition(RenditionMode::pinned(name));
 }
 
 /// Returns a compact status line for the debug overlay.
@@ -1174,7 +1155,6 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_getStatusLine<'a>(
 
 fn status_line(session: &SessionHandle) -> String {
     let video = session
-        .frames
         .rendition()
         .map(|name| format!("trk:{name}"))
         .unwrap_or_else(|| "no track".into());
@@ -1189,9 +1169,9 @@ fn status_line(session: &SessionHandle) -> String {
         .map(|rtt| format!("rtt:{}ms", rtt.as_millis()))
         .unwrap_or_default();
     let playout = session
-        .remote
+        .player
         .as_ref()
-        .map(|remote| format!("lat:{}ms", remote.sync().latency().as_millis()))
+        .map(|player| format!("lat:{}ms", player.stats().latency.as_millis()))
         .unwrap_or_default();
     let elapsed = session.created_at.elapsed().as_secs();
 
@@ -1215,9 +1195,12 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
     // Holding it across `block_on` would stall every other JNI entry point
     // that touches this handle, including the status line the UI thread reads,
     // for as long as the router and endpoint take to close.
-    let (remote, broadcast, live) = match session.lock() {
+    let (waiting, player, call, subscription, broadcast, live) = match session.lock() {
         Ok(mut guard) => (
-            guard.remote.take(),
+            guard.waiting.take(),
+            guard.player.take(),
+            guard.call.take(),
+            guard.subscription.take(),
             guard.broadcast.take(),
             guard.live.take(),
         ),
@@ -1226,15 +1209,29 @@ pub extern "system" fn Java_com_n0_irohlive_demo_IrohBridge_disconnect(
             return;
         }
     };
-    if let Some(remote) = remote {
-        remote.shutdown();
-    }
-    if let Some(mut broadcast) = broadcast {
-        runtime().block_on(broadcast.shutdown());
-    }
-    if let Some(live) = live {
-        runtime().block_on(live.shutdown());
-    }
+    runtime().block_on(async move {
+        // Stop waiting for a caller first, so none is accepted while the rest
+        // closes.
+        drop(waiting);
+        // Dropping the player stops its decoders and takes its audio off the
+        // speaker.
+        drop(player);
+        if let Some(call) = call {
+            // Tells the peer, where only dropping the call would leave them to
+            // wait out a timeout.
+            call.close();
+        }
+        drop(subscription);
+        if let Some(broadcast) = broadcast {
+            // Lets the encoders finish their tracks, so subscribers see the
+            // broadcast end rather than stall.
+            broadcast.close();
+            broadcast.closed().await;
+        }
+        if let Some(live) = live {
+            live.shutdown().await;
+        }
+    });
     info!("disconnected");
 }
 

@@ -96,7 +96,6 @@ pub struct AndroidRenderer {
     // EGL state.
     egl: egl_api::DynamicInstance<egl_api::EGL1_4>,
     egl_display: egl_api::Display,
-    egl_config: egl_api::Config,
     egl_context: egl_api::Context,
     egl_surface: egl_api::Surface,
     // OES path (HardwareBuffer frames).
@@ -263,7 +262,6 @@ impl AndroidRenderer {
             gl,
             egl,
             egl_display,
-            egl_config: config,
             egl_context,
             egl_surface,
             oes_program,
@@ -309,7 +307,7 @@ impl AndroidRenderer {
         let attrs = [EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE];
         let Some(egl_image) = (unsafe {
             egl::create_image(
-                self.egl_display.as_ptr() as *mut c_void,
+                self.egl_display.as_ptr(),
                 EGL_NATIVE_BUFFER_ANDROID,
                 client_buffer,
                 attrs.as_ptr(),
@@ -355,7 +353,7 @@ impl AndroidRenderer {
         }
 
         // Cleanup.
-        unsafe { egl::destroy_image(self.egl_display.as_ptr() as *mut c_void, egl_image) };
+        unsafe { egl::destroy_image(self.egl_display.as_ptr(), egl_image) };
     }
 
     /// Renders NV12 planes directly to the viewport via GPU shader conversion.
@@ -366,7 +364,10 @@ impl AndroidRenderer {
     ///
     /// # Safety
     /// The EGL context must be current on the calling thread.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one call carries both planes, their strides, the picture and the surface"
+    )]
     pub unsafe fn render_nv12(
         &self,
         y_data: &[u8],

@@ -94,7 +94,8 @@ async fn publish_local(
 /// camera itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Camera {
-    /// The publisher opened it, so the scan screen reads its pictures.
+    /// The publisher opened it, so the scan screen reads its pictures, or
+    /// borrows the device when the publisher has none to lend.
     Publisher,
     /// Nothing here has it: the local video is a display, a test pattern, or
     /// nothing at all, and the scan screen opens the camera on its own.
@@ -230,6 +231,8 @@ mod window {
                     qr: TicketQr::new(ctx, "call-ticket", &ticket),
                     ticket,
                     camera: Camera::of(&args.capture),
+                    capture: args.capture.clone(),
+                    restoring: None,
                     local_video: sources.video,
                     _local_audio: sources.audio,
                     output,
@@ -273,6 +276,12 @@ mod window {
         /// Where the peer's voice plays, and what the microphone cancels.
         output: AudioOutput,
         camera: Camera,
+        /// What the local side captures, kept so a camera handed to the scan
+        /// screen can be opened again afterwards.
+        capture: crate::args::CaptureArgs,
+        /// The publisher's camera opening again after a scan, and where the
+        /// result arrives.
+        restoring: Option<Restoring>,
         incoming: mpsc::Receiver<MoqSession>,
         _forwarder: AbortOnDropHandle<()>,
         /// Keeps the state machine ticking while nothing draws the window.
@@ -288,6 +297,19 @@ mod window {
         /// Which camera the scan screen opens.
         scan_camera: Option<crate::source_spec::VideoSourceSpec>,
     }
+
+    /// The publisher's camera opening again, after the scan screen had it.
+    struct Restoring {
+        done: oneshot::Receiver<n0_error::Result<Option<VideoSource>>>,
+        _task: AbortOnDropHandle<()>,
+    }
+
+    /// How often the camera is tried again while the scan screen's capture of
+    /// it lets go.
+    const RESTORE_ATTEMPTS: u32 = 5;
+
+    /// The pause between two of those tries.
+    const RESTORE_DELAY: Duration = Duration::from_secs(1);
 
     /// What the window is showing.
     enum Screen {
@@ -434,6 +456,7 @@ mod window {
         fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
             ctx.request_repaint_after(Duration::from_millis(16));
             self.poll_scan(ctx);
+            self.poll_restore();
             self.poll_pending(ctx);
             self.poll_hangup();
             self.answer_next(ctx);
@@ -526,7 +549,8 @@ mod window {
                 player,
                 self.playback.decoder,
                 self.render_state.as_ref(),
-            );
+            )
+            .with_link(call.session().clone(), call.signals().clone());
             self.screen = Screen::InCall(Box::new(InCall { call, remote }));
         }
 
@@ -645,6 +669,20 @@ mod window {
                 (Some(camera), Camera::Publisher) => {
                     ScanView::from_frames(ctx, self.render_state.as_ref(), None, camera.frames())
                 }
+                (None, Camera::Publisher) => {
+                    // The publisher holds the camera but has no pictures to
+                    // lend: `rpicam` hands over H.264 it encoded itself. It
+                    // lets go of the sensor for the scan and takes it back
+                    // afterwards; anything subscribed sees the video pause.
+                    self.restoring = None;
+                    self.broadcast.clear_video();
+                    ScanView::new(
+                        ctx,
+                        self.render_state.as_ref(),
+                        None,
+                        self.scan_camera.clone(),
+                    )
+                }
                 _ => ScanView::new(
                     ctx,
                     self.render_state.as_ref(),
@@ -664,7 +702,66 @@ mod window {
             if !matches!(self.screen, Screen::Scanning(_)) {
                 return;
             }
+            // Dropping the view is what releases a camera it opened.
             self.screen = Screen::waiting();
+            if self.camera == Camera::Publisher && self.local_video.is_none() {
+                self.restore_camera();
+            }
+        }
+
+        /// Opens the publisher's camera again, retrying while the scan
+        /// screen's capture of it winds down.
+        fn restore_camera(&mut self) {
+            let broadcast = self.broadcast.clone();
+            let capture = self.capture.clone();
+            let (done, report) = oneshot::channel();
+            let task = tokio::spawn(async move {
+                let mut attempt = 0;
+                let result = loop {
+                    attempt += 1;
+                    match crate::source::configure_video(&broadcast, &capture).await {
+                        Ok(video) => break Ok(video),
+                        Err(err) if attempt >= RESTORE_ATTEMPTS => break Err(err),
+                        Err(err) => {
+                            debug!(error = %format!("{err:#}"), attempt, "the camera is not free yet");
+                            tokio::time::sleep(RESTORE_DELAY).await;
+                        }
+                    }
+                };
+                let _ = done.send(result);
+            });
+            self.restoring = Some(Restoring {
+                done: report,
+                _task: AbortOnDropHandle::new(task),
+            });
+        }
+
+        /// Collects the camera the publisher opened again after a scan.
+        fn poll_restore(&mut self) {
+            let Some(restoring) = self.restoring.as_mut() else {
+                return;
+            };
+            let result = match restoring.done.try_recv() {
+                Ok(result) => result,
+                Err(oneshot::error::TryRecvError::Empty) => return,
+                Err(oneshot::error::TryRecvError::Closed) => {
+                    Err(n0_error::anyerr!("the camera restore was abandoned"))
+                }
+            };
+            self.restoring = None;
+            match result {
+                Ok(video) => {
+                    info!("the publisher has its camera back");
+                    self.preview
+                        .set_frames(video.as_ref().map(VideoSource::frames));
+                    self.local_video = video;
+                }
+                Err(err) => {
+                    let message = format!("the camera did not come back after the scan: {err:#}");
+                    warn!(%message);
+                    self.report(message);
+                }
+            }
         }
 
         /// Shows `message` on the waiting screen, if that is where the window

@@ -67,7 +67,7 @@ pub const DEFAULT_VIDEO: &str = "cam";
 pub const DEFAULT_AUDIO: &str = "mic";
 
 /// What to capture and how to encode it.
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 pub struct CaptureArgs {
     /// Video source: `cam`, `cam:<id>`, `screen`, `screen:<id>`, `window:<id>`,
     /// `app:<id>`, `file:<path>[:loop]`, `test[:timing|:gradient]`, or `none`.

@@ -1,10 +1,10 @@
 # iroh-live-media
 
-Publish and subscribe plumbing over
+Sources, broadcasts, and players over
 [moq-video](https://doc.moq.dev/lib/rs/crate/moq-video) and
 [moq-audio](https://doc.moq.dev/lib/rs/crate/moq-audio). No iroh dependency: a
-broadcast arrives as a `moq_net::broadcast::Producer` or `Consumer`, whatever
-carried it.
+broadcast is published through `moq_net::Consume` and read from a
+`moq_net::broadcast::Consumer`, whatever carried it.
 
 The media itself is upstream. `moq_video` captures, encodes, decodes, and
 renders; `moq_audio` does the same for sound and owns the speaker. Both are
@@ -14,69 +14,93 @@ has no counterpart for.
 
 ## Publishing
 
-`LocalBroadcast` owns a broadcast producer and the catalog that describes it.
-`VideoPublisher` and `AudioPublisher` take a source and a set of renditions.
+`LocalBroadcast` owns a broadcast producer, the catalog that describes it, and a
+media clock, with one video slot and one audio slot. A source is a value that is
+already open, and `set_video` and `set_audio` hand it to the broadcast with an
+encoding.
 
 ```rust
-use iroh_live_media::{publish::LocalBroadcast, video};
+use iroh_live_media::{
+    AudioEncoding, AudioSource, LocalBroadcast, VideoEncoding, VideoRendition, VideoSource,
+    audio, video,
+};
 
-let broadcast = LocalBroadcast::new(producer)?;
-broadcast.video().set(video::capture::Config::default())?;
+let broadcast = LocalBroadcast::new();
+let camera = VideoSource::capture(video::capture::Config::default()).await?;
+broadcast.set_video(
+    camera,
+    VideoEncoding::ladder([VideoRendition::p360(), VideoRendition::p720()]),
+)?;
+broadcast.set_audio(AudioSource::tone(440.0, audio::Layout::Mono), AudioEncoding::voice())?;
 ```
 
 The one thing this adds over `moq_video::encode::publish_capture` is simulcast.
 Upstream, one producer publishes one rendition and owns the device it captures
 from, so a subscriber that adapts to its downlink cannot be served. Here the
 source is opened once and its frames fan out to an encoder per rendition, each
-encoding only while someone is watching it.
+encoding only while someone is watching it. `status()` reports which renditions
+are encoding and with which backend, and `stats()` reports each rendition's
+encoder on its own.
 
-`VideoSource` is a capture device, a stream of frames the application produced,
-or an Annex-B H.264 byte stream a source already encoded. The last is the
-Raspberry Pi path.
+`VideoSource` is a capture device, the generated test pattern, frames the
+application pushes (`push`) or produces on a thread of its own (`spawn`), or the
+Raspberry Pi camera. `EncodedVideoSource` is an Annex-B H.264 byte stream a
+source already encoded, published with `set_encoded_video`; that is the cheapest
+Raspberry Pi path. `AudioSource` is a microphone, a WAV or MP3 file, a tone, or
+pushed PCM.
 
 ## Subscribing
 
-`RemoteBroadcast` watches a broadcast's catalog and hands out a `VideoTrack` and
-an `AudioTrack`. Decoding is `moq_video::decode::Consumer` and
-`moq_audio::decode::Consumer`; three things around it are ours.
+`RemoteBroadcast` reads a broadcast's catalog and holds the subscription, and
+`play(PlayerConfig)` starts a `Player` over it. Decoding is
+`moq_video::decode::Consumer` and `moq_audio::decode::Consumer`; three things
+around it are ours.
 
-`VideoTrack::enable_adaptation` follows transport signals and switches
-renditions, opening the replacement decoder alongside the incumbent and swapping
-on its first frame, so the picture never goes blank. `sync::Sync` is a shared
-playout clock that keeps audio and video aligned across two independent decode
-paths. And `catalog::IrohLiveExt` extends hang's catalog with chat and publisher
-identity, flattened alongside the media sections so a base consumer ignores them.
+The player picks a rendition from the network signals a transport attached with
+`RemoteBroadcast::with_network`, and switches by opening the replacement decoder
+beside the incumbent and handing over once it has caught up, so the picture
+never goes blank or steps backwards. Each player owns a playout clock that holds
+video back by the audio queued at its speaker, so audio and video stay aligned
+across two independent decode paths. And `IrohLiveExt` extends hang's catalog
+with chat and publisher identity, flattened alongside the media sections so a
+base consumer ignores them; applications read it as `Catalog` and `Metadata`.
+
+Audio plays through an `AudioOutput` the application opens and passes to each
+`PlayerConfig`, and the same output goes to `MicrophoneConfig` to have its echo
+cancelled.
 
 ## Modules
 
+Every type is exported from the crate root; the modules are internal.
+
 | Module | What it is |
 |---|---|
-| `publish` | `LocalBroadcast` and the simulcast ladder |
-| `subscribe` | `RemoteBroadcast`, the decode supervisor, and the rendition swap |
-| `adaptive` | The rendition selection algorithm and its thresholds |
-| `sync`, `playout` | The playout clock and the policy that drives it |
-| `catalog` | The iroh-live catalog extension |
-| `playback` | The process-wide audio output engine |
-| `stats` | Metrics for a debug overlay |
-| `frame_channel` | A single-slot latest-wins channel for frames |
-| `audio_file` | An audio file demuxed with symphonia and published as if it were a microphone |
-| `rpicam` | `rpicam-vid` as a pre-encoded video source |
-| `test_source` | Generated video and audio, for tests, and a `timing` pattern built to diagnose playback |
-| `net` | `NetworkSignals`, the input to adaptation |
+| `source` | `VideoSource`, `EncodedVideoSource`, `AudioSource`, and the `FrameSender` that pushes into them |
+| `publish` | `LocalBroadcast`, the simulcast ladder, and `PublishStatus` |
+| `remote` | `RemoteBroadcast`, which follows a broadcast across route changes |
+| `player` | `Player`, the rendition selector, the decoder handover, and the playout clock |
+| `frames` | `VideoFrames`, the latest-wins frame stream every renderer reads |
+| `output` | `AudioOutput`, an opened speaker or one that discards |
+| `record` | Recording a broadcast to fragmented MP4 or Matroska without decoding |
+| `catalog` | `Catalog`, the rendition descriptions, and the iroh-live catalog extension |
+| `network` | `NetworkSignals` and `NetworkSample`, the input to adaptation |
+| `stats` | `PublishStats` and `PlaybackStats` snapshots for a debug overlay |
 
 ## Feature flags
 
 Every codec compiles unconditionally upstream, so there are no per-codec flags.
-What is left gates a build dependency or a graphics stack.
+What is left gates a build dependency or a graphics stack. The test pattern and
+tones need no flag.
 
 | Feature | Default | What it adds |
 |---|---|---|
 | `capture` | yes | Camera, screen, and microphone devices |
+| `sound-server` | yes | Reaches audio devices through PipeWire or PulseAudio |
 | `playback` | no | Speaker output |
 | `aec` | no | Echo cancellation. Implies `capture` and `playback` |
 | `pipewire` | no | Linux screen capture. Links `libpipewire-0.3` |
 | `render` | no | The wgpu renderer |
 | `vaapi` | no | Intel and AMD hardware H.264 encode |
 | `nvidia` | no | NVIDIA hardware encode and decode |
-| `rpicam` | no | The `rpicam-vid` source. Linux only |
-| `test-source` | no | Generated video and audio sources |
+| `v4l2` | no | The V4L2 hardware H.264 codecs on ARM SoCs |
+| `rpicam` | no | The `rpicam-vid` sources. Linux only |

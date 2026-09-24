@@ -38,8 +38,10 @@ let mut broadcast = room.publish("cam").await?;
 
 `publish` creates a broadcast on the node origin and announces its name into the
 room's state map. It returns the bare `moq_net::broadcast::Producer`. To publish
-media, wrap it: `iroh_live_media::publish::LocalBroadcast::new(producer)` is what
-`Live::publish` does. Dropping the producer un-announces the name.
+media, wrap it: `iroh_live_media::LocalBroadcast::from_moq(producer)` is what
+`Live::publish` does, and the result takes sources with `set_video` and
+`set_audio` like any other broadcast. Dropping the producer un-announces the
+name.
 
 Events arrive on the room itself, or on the receiver half if you split it:
 
@@ -52,7 +54,10 @@ Events arrive on the room itself, or on the receiver half if you split it:
 | `PeerLeft` | Every broadcast we held from a peer closed |
 
 `RemoteAnnounced` is followed by a `BroadcastSubscribed` for each name, because
-the room subscribes on your behalf.
+the room subscribes on your behalf. To play one, wrap the consumer with
+`RemoteBroadcast::from_moq` and hand it to `iroh_live::Subscription::new` along
+with the session, which attaches the connection's link signals so its players
+adapt, then call `play` on `subscription.broadcast()`.
 
 `Room::split()` returns a `RoomEvents` receiver and a cloneable `RoomHandle`, for
 an application that reads events on one task and publishes from another. The

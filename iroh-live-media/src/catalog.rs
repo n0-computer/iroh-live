@@ -212,6 +212,13 @@ impl AudioRenditionInfo {
 pub struct Metadata {
     /// The name a viewer shows next to the picture.
     pub display_name: Option<String>,
+    /// The track carrying chat messages, if the publisher opened one on the
+    /// broadcast.
+    ///
+    /// The track itself is the application's, created on
+    /// [`LocalBroadcast::as_moq`](crate::LocalBroadcast::as_moq); this only
+    /// says where it is.
+    pub chat: Option<TrackRef>,
 }
 
 impl Metadata {
@@ -222,9 +229,17 @@ impl Metadata {
         self
     }
 
+    /// Returns the metadata pointing at a chat track.
+    #[must_use]
+    pub fn with_chat(mut self, track: TrackRef) -> Self {
+        self.chat = Some(track);
+        self
+    }
+
     fn from_ext(ext: &IrohLiveExt) -> Self {
         Self {
             display_name: ext.user.as_ref().and_then(|user| user.name.clone()),
+            chat: ext.chat.as_ref().and_then(|chat| chat.message.clone()),
         }
     }
 
@@ -233,6 +248,10 @@ impl Metadata {
         ext.user = self.display_name.as_ref().map(|name| User {
             name: Some(name.clone()),
             ..User::default()
+        });
+        ext.chat = self.chat.as_ref().map(|track| Chat {
+            message: Some(track.clone()),
+            typing: None,
         });
     }
 }

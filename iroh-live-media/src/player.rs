@@ -417,7 +417,8 @@ impl Player {
     ///
     /// Every call returns a handle onto the same stream, which survives
     /// rendition switches and decoder changes. Each handle keeps its own
-    /// cursor.
+    /// cursor. The stream ends once the broadcast closes, or the player is
+    /// dropped.
     pub fn video(&self) -> VideoFrames {
         self.frames.clone()
     }
@@ -436,8 +437,9 @@ impl Player {
     /// Changes how far behind live the player runs.
     ///
     /// The jitter allowance moves at once. A changed maximum rebuilds the
-    /// decoder behind the picture, which takes over once it has caught up, so
-    /// nothing goes blank.
+    /// video decoder behind the picture, which takes over once it has caught
+    /// up, so nothing goes blank. Audio keeps the maximum it opened with until
+    /// it next opens, since rebuilding it would be heard.
     ///
     /// # Errors
     ///
@@ -518,6 +520,11 @@ impl Player {
             tokio::select! {
                 event = events.recv() => match event {
                     Ok(SwitchEvent::Landed(landed)) if landed == name => return Ok(()),
+                    // Superseded by a switch to the same rendition under a new
+                    // decoder configuration, which is still a switch to `name`.
+                    Ok(SwitchEvent::Abandoned(rendition, Abandon::Superseded))
+                        if rendition == name
+                            && status.get().switching_to.as_deref() == Some(name) => {}
                     Ok(SwitchEvent::Abandoned(rendition, reason)) if rendition == name => {
                         let rendition = rendition.clone();
                         return Err(match reason {

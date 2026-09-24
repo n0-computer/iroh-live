@@ -65,14 +65,29 @@ pub(crate) struct Desired {
     pub config: hang::catalog::VideoConfig,
 }
 
+/// A replacement decoder that failed, as the supervisor reports it.
+#[derive(Debug, Clone)]
+pub(crate) struct Failure {
+    /// The rendition it was for.
+    pub rendition: String,
+    /// Whether it only changed the decoder configuration of the rendition
+    /// already playing.
+    ///
+    /// Such a failure says the configuration is broken, not the rendition:
+    /// the incumbent keeps playing under the configuration that works, and the
+    /// rendition is not excluded, which would only walk the ladder down under
+    /// the same broken configuration.
+    pub config_only: bool,
+}
+
 /// The selector's inputs.
 pub(crate) struct Inputs {
     pub broadcast: RemoteBroadcast,
     pub controls: Arc<Controls>,
     pub status: StatusCell,
     pub stats: PlaybackRecorder,
-    /// Renditions whose decoders failed, reported by the supervisor.
-    pub failures: mpsc::Receiver<String>,
+    /// Replacement decoders that failed, reported by the supervisor.
+    pub failures: mpsc::Receiver<Failure>,
     pub desired: watch::Sender<Option<Desired>>,
     pub shutdown: CancellationToken,
 }
@@ -130,6 +145,13 @@ pub(crate) async fn run(inputs: Inputs) {
         let ticking = (auto && network.is_some()) || !excluded.is_empty();
         tokio::select! {
             () = shutdown.cancelled() => return,
+            // Returning drops the desired rendition's sender, which ends the
+            // video task and with it the player's frames: a reader waiting on
+            // `next()` sees the end rather than waiting forever.
+            () = broadcast.closed() => {
+                debug!("the broadcast closed");
+                return;
+            }
             changed = mode.changed() => if changed.is_err() { return },
             changed = latency.changed() => if changed.is_err() { return },
             changed = decoder.changed() => if changed.is_err() { return },
@@ -155,14 +177,21 @@ pub(crate) async fn run(inputs: Inputs) {
             }
             failed = failures.recv() => {
                 let Some(failed) = failed else { return };
-                let now = Instant::now();
-                let entry = excluded.entry(failed.clone()).or_insert(Excluded {
-                    until: now,
-                    backoff: BACKOFF_FIRST / 2,
-                });
-                entry.backoff = (entry.backoff * 2).min(BACKOFF_MAX);
-                entry.until = now + entry.backoff;
-                info!(rendition = %failed, backoff = ?entry.backoff, "leaving a failing rendition alone");
+                if failed.config_only {
+                    info!(
+                        rendition = %failed.rendition,
+                        "the new decoder configuration failed; the rendition keeps playing under the old one"
+                    );
+                } else {
+                    let now = Instant::now();
+                    let entry = excluded.entry(failed.rendition.clone()).or_insert(Excluded {
+                        until: now,
+                        backoff: BACKOFF_FIRST / 2,
+                    });
+                    entry.backoff = (entry.backoff * 2).min(BACKOFF_MAX);
+                    entry.until = now + entry.backoff;
+                    info!(rendition = %failed.rendition, backoff = ?entry.backoff, "leaving a failing rendition alone");
+                }
             }
             _ = ticker.tick(), if ticking => {}
         }
@@ -189,6 +218,9 @@ pub(crate) async fn run(inputs: Inputs) {
             generation += 1;
             debug!(generation, ?config, "decoder configuration changed");
             last_config = Some(config);
+            // A rendition that failed under the old configuration deserves a
+            // try under the new one.
+            excluded.clear();
         }
         let settings = DecodeSettings {
             consumer,

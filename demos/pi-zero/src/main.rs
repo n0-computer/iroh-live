@@ -133,6 +133,30 @@ mod app {
             .await?;
         println!("connected!");
 
+        // Waited for, so a publisher that never describes its broadcast, or
+        // describes it in a way this build cannot read, is an error here
+        // rather than a black screen.
+        let mut catalog = sub.broadcast().catalog();
+        let described = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            loop {
+                if let Some(known) = n0_watcher::Watcher::get(&mut catalog) {
+                    return Some(known);
+                }
+                if n0_watcher::Watcher::updated(&mut catalog).await.is_err() {
+                    return None;
+                }
+            }
+        })
+        .await;
+        let Ok(Some(described)) = described else {
+            return Err(n0_error::anyerr!(
+                "the broadcast sent no catalog this build could read within 15s"
+            ));
+        };
+        if described.video().is_empty() {
+            return Err(n0_error::anyerr!("the broadcast carries no video"));
+        }
+
         // The subscription attached its link signals, so the player adapts
         // the rendition on its own.
         let player = sub

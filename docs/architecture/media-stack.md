@@ -43,22 +43,25 @@ gateway carries AAC, and dropping its audio track would be a silent failure.
 
 ## What we add
 
-`iroh_live_media::rpicam` drives `rpicam-vid` and publishes the Annex-B H.264 it
-already encoded. Shelling out to a camera application is an application concern
+`EncodedVideoSource::rpicam` drives `rpicam-vid` and publishes the Annex-B H.264
+it already encoded, and `VideoSource::rpicam` reads raw pictures from the same
+subprocess. Shelling out to a camera application is an application concern
 rather than a moq-video one, which is why it lives here. See [Raspberry
 Pi](../guide/raspberry-pi.md).
 
-`iroh_live_media::audio_file` demuxes and decodes a local audio file with symphonia and
-presents the result as a frame stream. moq-audio pulls symphonia only for raw
-AAC-LC frames off the wire, so it has no container reader we could use instead.
+`AudioSource::file` demuxes and decodes a local audio file with symphonia on a
+thread of its own, in real time, and fans the PCM out to every broadcast that
+reads it. moq-audio pulls symphonia only for raw AAC-LC frames off the wire, so
+it has no container reader we could use instead.
 
-`iroh_live_media::test_source` generates a moving pattern and a sine tone, so a test can
-publish over a real transport with no camera and no microphone. The pattern
-changes every frame on purpose: a static image compresses to almost nothing after
-the first keyframe, so a test watching for bytes would pass on a stalled pipeline.
-Its `timing` submodule is the pair a person watches instead: a sweeping bar, a
-frame counter, a UTC clock, and a marker that flashes with the tone's beep, which
-between them measure smoothness, dropped frames, latency, and A/V sync.
+`VideoSource::test_pattern` and `AudioSource::test_pattern` are the generated
+pair a person watches: a sweeping bar, a frame counter, a UTC clock, and a
+marker that flashes with the tone's beep, which between them measure
+smoothness, dropped frames, latency, and A/V sync. They need no camera and no
+microphone, so a test publishes them over a real transport, and the pattern
+changes every frame on purpose: a static image compresses to almost nothing
+after the first keyframe, so a test watching for bytes would pass on a stalled
+pipeline. `AudioSource::tone` is a steady sine for a test that only needs sound.
 
 `iroh-live-egui` draws the texture `moq_video::render` returns inside an egui
 panel, and carries the debug overlay. `iroh-live-media-android` provides the Camera2
@@ -155,7 +158,8 @@ defines them and `iroh-live` and `iroh-live-cli` pass them through.
 | `vaapi` | no | Intel and AMD hardware H.264 encode |
 | `nvidia` | no | NVIDIA hardware encode and decode. On upstream by default, off here so a default build stays free of the CUDA graph |
 | `v4l2` | no | The V4L2 stateful M2M H.264 encoder and decoder on ARM SoCs. Both run on a Pi 4; one SoC of the several it targets |
-| `rpicam` | no | The `rpicam-vid` source. Linux only, and needs the binary on PATH |
-| `test-source` | no | The generated video and audio sources |
+| `rpicam` | no | The `rpicam-vid` sources. Linux only, and needs the binary on PATH |
+| `sound-server` | yes | Reaches audio devices through PipeWire or PulseAudio rather than their ALSA compatibility plugin |
 
-`iroh-live` defaults to `capture` and `render`. `iroh-live-cli` adds `playback`.
+The generated sources need no flag. `iroh-live` defaults to `capture`, `render`,
+and `sound-server`. `iroh-live-cli` adds `playback`.

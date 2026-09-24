@@ -339,6 +339,41 @@ pub struct RemoteView {
     decoder: DecoderArg,
     /// The output gain the slider last set.
     volume: f32,
+    /// The session the broadcast arrives over, for the overlay's link lines.
+    link: Option<Link>,
+}
+
+/// What the overlay says about the transport, read off the session.
+#[derive(Debug)]
+struct Link {
+    session: iroh_live::moq::MoqSession,
+    signals: tokio::sync::watch::Receiver<iroh_live::util::LinkSignals>,
+}
+
+impl Link {
+    /// The selected path's kind and address, the number of paths, and the
+    /// bytes arriving, as the overlay's NET lines.
+    fn lines(&self) -> Vec<String> {
+        let conn = self.session.conn();
+        let paths = conn.paths();
+        let mut lines = Vec::new();
+        if let Some(selected) = paths.iter().find(|path| path.is_selected()) {
+            let kind = match selected.is_relay() {
+                true => "relayed",
+                false => "direct",
+            };
+            lines.push(kind.to_string());
+            lines.push(format!("address: {:?}", selected.remote_addr()));
+        }
+        lines.push(format!("paths: {}", paths.iter().count()));
+        if let Some(bps) = self.signals.borrow().goodput_bps {
+            lines.push(format!(
+                "arriving: {}",
+                iroh_live_egui::format_bitrate(bps as f64)
+            ));
+        }
+        lines
+    }
 }
 
 impl RemoteView {
@@ -364,7 +399,19 @@ impl RemoteView {
             ]),
             decoder,
             volume: 1.0,
+            link: None,
         }
+    }
+
+    /// Returns the view with the overlay describing `session`'s path, and the
+    /// bytes arriving as `signals` measure them.
+    pub fn with_link(
+        mut self,
+        session: iroh_live::moq::MoqSession,
+        signals: tokio::sync::watch::Receiver<iroh_live::util::LinkSignals>,
+    ) -> Self {
+        self.link = Some(Link { session, signals });
+        self
     }
 
     /// Reports whether the stats overlay is expanded, which keeps the
@@ -403,6 +450,9 @@ impl RemoteView {
     pub fn draw_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         let stats = self.player.stats();
         let status = self.player.status().get();
+        if let Some(link) = &self.link {
+            self.overlay.set_link(link.lines());
+        }
         self.overlay.show_playback(ui, rect, &stats, &status);
     }
 

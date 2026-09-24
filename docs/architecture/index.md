@@ -12,16 +12,16 @@ the layer between them, plus the pieces neither side has a home for.
 | `iroh-moq` | MoQ transport over iroh: the node origin, sessions, and ALPN negotiation |
 | `iroh-rooms` | Gossip rooms. Media-free: it moves broadcast names and hands back consumers |
 | `iroh-live` | `Live`, `Call`, `Subscription`, and tickets |
-| `iroh-live-media` | Publish and subscribe plumbing over moq-video and moq-audio |
+| `iroh-live-media` | Sources, broadcasts, and players over moq-video and moq-audio |
 | `iroh-live-egui` | An egui widget over the texture `moq_video::render` returns, and the debug overlay |
 | `iroh-live-media-android` | The Camera2 push bridge and the EGL renderer for Android |
 | `iroh-live-cli` | The `irl` binary |
 | `iroh-live-relay` | The browser bridge |
 
-`iroh-live-media` has no iroh dependency: a broadcast arrives as a
-`moq_net::broadcast::Producer` or `Consumer`, whatever carried it. `iroh-rooms`
-has no media dependency. `iroh-live` depends on both and is the only crate that
-joins them.
+`iroh-live-media` has no iroh dependency: a `LocalBroadcast` is read through
+`moq_net::Consume` and a `RemoteBroadcast` is built from a
+`moq_net::broadcast::Consumer`, whatever carried it. `iroh-rooms` has no media
+dependency. `iroh-live` depends on both and is the only crate that joins them.
 
 ## What iroh-live-media adds
 
@@ -30,9 +30,10 @@ subscriber taking whatever it is given. Four things sit above that.
 
 [Publishing](publish.md) fans one source out to a simulcast ladder, because an
 upstream producer publishes one rendition and owns the device it captures from.
-[Subscribing](subscribe.md) chooses among those renditions as the downlink moves
-and swaps decoders without a blank frame. The [playout clock](playout.md) keeps
-audio and video aligned across two independent decode paths. The catalog carries
+[Subscribing](subscribe.md) starts a player that chooses among those renditions
+as the downlink moves and swaps decoders without a blank frame. Each player's
+[playout clock](playout.md) keeps audio and video aligned across two independent
+decode paths. The catalog carries
 an [extension](publish.md#catalog) for chat and publisher identity alongside
 hang's media sections.
 
@@ -56,16 +57,17 @@ this build speaks; an application that already has a router calls
 `Live::register_protocols` on its own `RouterBuilder` instead. `with_gossip()`
 creates a `Gossip` instance, which is the one thing `iroh-rooms` needs from here.
 
-`Live::publish(path)` creates a broadcast on the node origin and returns a
-`iroh_live_media::publish::LocalBroadcast`. It is announced to every peer with a
-session, so publishing is a property of the node rather than of a connection.
-`Live::publish_raw` gives the bare producer for a caller writing its own tracks.
+`Live::publish(path)` creates a broadcast on the node origin and returns an
+`iroh_live_media::LocalBroadcast`, which takes sources with `set_video` and
+`set_audio`. It is announced to every peer with a session, so publishing is a
+property of the node rather than of a connection. `Live::publish_raw` gives the
+bare producer for a caller writing its own tracks.
 
 `Live::subscribe(remote, path)` dials, subscribes, and returns a `Subscription`
 bundling the `MoqSession`, the `RemoteBroadcast`, and a
-`watch::Receiver<NetworkSignals>` with the stats recorder and signal producer
-already wired up. `Subscription::media()` opens whichever tracks the broadcast
-carries.
+`watch::Receiver<LinkSignals>` from the signal producer. The signals are already
+attached to the broadcast, so `sub.broadcast().play(config)` starts a player
+that adapts to the link with nothing further to wire.
 
 `Call` is 1:1 sugar over the two. Each side publishes under
 `calls/<its own endpoint id>` and subscribes to the other's, which is what
@@ -77,16 +79,20 @@ two concurrent calls used to collide on.
 `&self` everywhere. Public types use interior mutability, so they are safe to
 share across tasks and threads without wrapper types.
 
-Cleanup is drop-based. Dropping a `LocalBroadcast` ends its publish tasks;
-dropping a `VideoTrack` drops its supervisor, which drops the reader task, which
-drops the decoder. `CancellationToken` coordinates a broadcast-wide shutdown and
+Cleanup is drop-based. Dropping the last clone of a `LocalBroadcast` ends its
+publish tasks, and `close()` does so for every clone with a clean finish;
+dropping a `Player` stops its selector, its video supervisor, and its audio
+task, and the supervisor's reader tasks drop their decoders with them.
+`CancellationToken` coordinates a broadcast-wide shutdown and
 `AbortOnDropHandle` ties a task's life to a handle.
 
 Continuous state is `n0_watcher::Watchable` and `Direct<T>`, which always has a
-current value and can be awaited for changes. The catalog, the active rendition,
-and the decoder backend all work this way. Discrete events are streams and
-channels: room events, incoming sessions.
+current value and can be awaited for changes. The catalog, a broadcast's
+`PublishStatus`, and a player's `PlayerStatus` with its rendition and decoder
+backend all work this way; statistics are snapshots read on demand. Discrete
+events are streams and channels: room events, incoming sessions.
 
-Bounded channels only. Frames between the decoder and the renderer go through a
-single-slot latest-wins channel rather than a queue, so a renderer that falls
-behind skips to the newest picture instead of draining a backlog.
+Bounded channels only. Frames between the decoder and the renderer go through
+`VideoFrames`, a single-slot latest-wins stream with a cursor per handle, rather
+than a queue, so a renderer that falls behind skips to the newest picture instead
+of draining a backlog.

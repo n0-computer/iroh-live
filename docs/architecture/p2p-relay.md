@@ -8,10 +8,12 @@ NATs, hole punching opens a direct UDP path. When it fails, traffic falls back t
 an iroh relay, which forwards opaque packets and costs its own round trip.
 
 From the media pipeline's point of view the transition is invisible. What changes
-is round-trip time and available bandwidth, which is exactly what [adaptive
-rendition switching](adaptive.md) reads. `iroh-live`'s stats recorder labels the
-selected path `direct` or `relayed` so the overlay can show which one is carrying
-the stream.
+is round-trip time and available bandwidth, and the publisher's delivery estimate
+follows the bandwidth, which is what [adaptive rendition switching](adaptive.md)
+reads. The signal producer counts every change of selected path as a new path
+generation, and the selector forgets what it learned on the old path when one
+arrives. `iroh-live`'s signal producer logs whether the selected path is relayed
+at TRACE, with every reading.
 
 An iroh relay and a MoQ relay are unrelated. The first forwards UDP between peers
 that cannot reach each other and understands nothing about the media. The second

@@ -317,6 +317,17 @@ impl AudioEncoding {
         if self.frame_duration.is_zero() {
             return Err(Error::invalid("an audio frame duration cannot be zero"));
         }
+        // Opus encodes only these frame sizes; another one would fail in the
+        // publication, long after the call that asked for it returned.
+        const OPUS_FRAMES_MICROS: [u128; 6] = [2_500, 5_000, 10_000, 20_000, 40_000, 60_000];
+        if self.codec == audio::encode::Codec::Opus
+            && !OPUS_FRAMES_MICROS.contains(&self.frame_duration.as_micros())
+        {
+            return Err(Error::invalid(format!(
+                "Opus encodes frames of 2.5, 5, 10, 20, 40 or 60 ms, not {:?}",
+                self.frame_duration
+            )));
+        }
         Ok(())
     }
 

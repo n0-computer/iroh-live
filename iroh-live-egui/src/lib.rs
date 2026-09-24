@@ -31,7 +31,7 @@
 //! # ) {
 //! let mut view = VideoView::new(ctx, "video", player.video(), render_state);
 //! // in the update loop:
-//! let (image, frame_ts) = view.render(ctx, ui.available_size());
+//! let (image, frame_ts) = view.render(ui.available_size());
 //! ui.add(image);
 //! # let _ = frame_ts;
 //! # }

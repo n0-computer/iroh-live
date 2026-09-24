@@ -11,7 +11,7 @@ guides.
 | `iroh-live` | `Live`, `Call`, `Subscription`. Depends on `iroh-live-media` and `iroh-moq` |
 | `iroh-moq` | MoQ transport over iroh: the node origin, sessions, ALPN negotiation, tickets, endpoint setup |
 | `iroh-rooms` | Gossip rooms. No media dependency |
-| `iroh-live-media` | Publish and subscribe plumbing over moq-video and moq-audio. No iroh dependency |
+| `iroh-live-media` | Sources, broadcasts, and players over moq-video and moq-audio. No iroh dependency |
 | `iroh-live-egui` | egui widget and debug overlay |
 | `iroh-live-media-android` | Camera2 push bridge and EGL renderer |
 | `iroh-live-cli` | The `irl` binary |
@@ -63,22 +63,42 @@ needs a test.
 
 ## Key types
 
-Publishing, in `iroh_live_media::publish`:
+Everything below is exported from the root of `iroh_live_media`.
 
-- `LocalBroadcast` owns a `moq_net::broadcast::Producer` and the catalog.
-- `VideoPublisher::set_renditions(source, renditions)` opens the source once and
-  fans frames out to one encoder per rendition.
-- `VideoSource` is `Capture`, `Frames`, or `AnnexB`; `AudioSource` is `Device` or
-  `Frames`.
-- `LocalBroadcast::preview()` taps the raw frames on their way to the encoders.
+Sources are values that are already open:
 
-Subscribing, in `iroh_live_media::subscribe`:
+- `VideoSource::capture(config).await` opens a camera or screen and returns once
+  it produced a frame; `test_pattern`, `push`, `spawn`, and `rpicam` cover
+  generated, application-made, thread-bound, and Raspberry Pi frames.
+  `EncodedVideoSource::annex_b` and `rpicam` carry pre-encoded H.264.
+- `AudioSource::microphone`, `file`, `tone`, `test_pattern`, and `push` do the
+  same for sound. `MicrophoneConfig::with_echo_cancellation(&output)` attaches
+  the canceller for one `AudioOutput`.
+- `VideoSource::frames()` is the local preview: a `VideoFrames` handle onto the
+  captured pictures that costs no encode.
 
-- `RemoteBroadcast` watches the catalog and hands out tracks.
-- `VideoTrack::take()` polls the latest-wins frame slot; `recv()` awaits.
-- `VideoTrack::set_rendition` and `enable_adaptation` drive the same request
-  channel.
-- `AudioTrack` writes into the process-wide `iroh_live_media::playback` engine.
+Publishing:
+
+- `LocalBroadcast` owns a `moq_net::broadcast::Producer`, the catalog, and a
+  media clock, with one video slot and one audio slot.
+- `set_video(source, VideoEncoding::ladder([...]))` encodes one source into
+  every rendition of a ladder, each rendition encoding only while somebody
+  watches it. `set_encoded_video` and `set_audio` fill the other slots, and
+  `status()` and `stats()` report per rendition.
+
+Subscribing:
+
+- `RemoteBroadcast` reads the catalog and holds the subscription;
+  `with_network` attaches the link signals adaptation reads.
+- `RemoteBroadcast::play(PlayerConfig)` returns a `Player`, which owns its
+  decoders, its playout clock, its rendition choice, and its stats. Two players
+  of one broadcast cannot interfere.
+- `Player::video()` returns a `VideoFrames` handle: `next().await` waits for a
+  newer picture and `try_next()` polls without blocking. Every handle keeps its
+  own cursor.
+- `Player::set_rendition(RenditionMode)` switches between `Auto`, `Pinned`, and
+  `Off`. Audio plays through the `AudioOutput` the config names, and a config
+  without one does not subscribe to audio at all.
 
 Transport, in `iroh_moq`: `Moq::publish(path)` returns a producer synchronously
 and announces it node-wide. `MoqSession::subscribe(path)` waits for the peer's
@@ -87,10 +107,13 @@ announce. `MoqSession::conn()` is the iroh `Connection` behind it.
 ## Threading
 
 Codecs run on their own threads inside `moq_video::encode::Sink` and
-`moq_video::decode::Sink`, so this repository spawns almost none. The audio file
-reader is the exception: symphonia decoding is blocking, so it runs on a named OS
-thread and feeds a bounded channel. `iroh_live::util::spawn_thread` is the helper
-for that pattern and currently has no callers.
+`moq_video::decode::Sink`. Sources are the threads this repository spawns: every
+source runs on a named thread of its own for its whole life, since some
+platform capture objects are not `Send`. A capture device gets a thread with a
+current-thread runtime (`local_task`), the test pattern and tones draw on plain
+threads, the audio file reader decodes with symphonia on one, and
+`VideoSource::spawn` hands the same arrangement to application code. Only
+frames cross, into a latest-wins slot for video and a bounded fan-out for PCM.
 
 `moq_video::decode::Consumer::read` is not cancel-safe. Never poll it from a
 `select!` arm. The video decode path gives each decoder a task that reads it in a
@@ -106,8 +129,8 @@ is a cpal callback on a real-time thread owned by `moq_audio::playback::Engine`.
 - `n0_watcher::Watchable` and `Direct<T>` for continuous state, not `tokio::watch`.
 - `CancellationToken` for cooperative shutdown, `AbortOnDropHandle` to tie a task
   to a handle.
-- Bounded channels only. Frames to a renderer go through the single-slot
-  latest-wins `frame_channel`, not a queue.
+- Bounded channels only. Frames to a renderer go through `VideoFrames`, a
+  single-slot latest-wins stream with a cursor per handle, not a queue.
 - `tracing_subscriber::fmt::init()` for setup: it respects `RUST_LOG` with no
   `EnvFilter` boilerplate. Use `throttled-tracing` for anything per-frame, and
   structured fields rather than string interpolation.
@@ -117,25 +140,16 @@ is a cpal callback on a real-time thread owned by `moq_audio::playback::Engine`.
 
 ## Known gaps
 
-`TimingStats` and `Timeline` have no producer, so the overlay's timing panel and
-timeline read zero.
-
-`EncodeStats` has one set of fields and a simulcast ladder has a rung per
-encoder, all writing to it. The codec, resolution and encoder labels are
-whichever rung wrote last, and `bitrate_kbps` is a smoothed value sitting
-somewhere among the rungs rather than their sum.
-
-The adaptation upgrade gate compares the publisher's delivery estimate against
-the *advertised* bitrate of the next rung. That estimate is bounded by what the
-publisher is currently sending, so on a low rung it cannot reach the figure the
-gate asks for, and `Decision::StartProbe`, which exists for exactly that case,
-is unreachable whenever an estimate is present. This is what makes
-`adaptation_follows_a_real_link` fail about one run in three. See
+Adaptation compares the publisher's delivery estimate against each rung's
+*advertised* bitrate, which is a ceiling handed to the encoder rather than what
+it sends. The fit ratio of one half absorbs that and the overshoot of a BBR
+estimate together, but it is a figure measured against openh264 and one
+patchbay lab, not against a hardware encoder or a real mobile link. See
 [docs/architecture/adaptive.md](docs/architecture/adaptive.md).
 
-`SyncMode::Unmanaged` does no pacing at all, despite what its doc comment says.
-
-`iroh-moq` has no tests.
+Loss on a subscriber is measured over its own packets, which are mostly
+acknowledgements, so the loss thresholds see the media direction only as far
+as both directions are impaired alike.
 
 ## Where testing happens
 

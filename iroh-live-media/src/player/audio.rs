@@ -1,6 +1,6 @@
 //! The player's audio task: one rendition into the player's output.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use n0_future::task::{AbortOnDropHandle, spawn};
 use n0_watcher::Watcher as _;
@@ -14,6 +14,14 @@ use crate::{
     output::{OutputControl, SinkInput},
     stats::AudioPlaybackStats,
 };
+
+/// How long after audio ended or failed the catalog is looked at again,
+/// doubling up to [`RETRY_MAX`].
+const RETRY_FIRST: Duration = Duration::from_secs(1);
+
+/// The longest wait between two looks at the catalog while audio is not
+/// playing.
+const RETRY_MAX: Duration = Duration::from_secs(30);
 
 /// The audio task's inputs.
 pub(crate) struct Inputs {
@@ -44,6 +52,7 @@ pub(crate) async fn run(inputs: Inputs) {
     let mut catalog = broadcast.catalog();
     let mut epoch = broadcast.epoch();
     let mut volume = controls.volume.subscribe();
+    let mut backoff = RETRY_FIRST;
 
     loop {
         // What to play: the first audio rendition, over the current route.
@@ -65,6 +74,7 @@ pub(crate) async fn run(inputs: Inputs) {
                         control.set_volume(*volume.borrow());
                         info!(rendition = %name, "audio playing");
                         status.update(|status| status.audio = SlotState::Running);
+                        backoff = RETRY_FIRST;
                         let job = Job {
                             name: name.clone(),
                             decoder,
@@ -91,7 +101,12 @@ pub(crate) async fn run(inputs: Inputs) {
             None => None,
         };
 
-        // Wait for the reader to end, or for a reason to reopen.
+        // Wait for the reader to end, or for a reason to reopen. Without a
+        // reader, the catalog is looked at again after a backoff as well as on
+        // every update: a publisher that replaced its audio may have sent the
+        // new catalog before the old track's end reached us, and no later
+        // update is coming to say so.
+        let mut retry = std::pin::pin!(tokio::time::sleep(backoff));
         loop {
             let reading = reader.is_some();
             tokio::select! {
@@ -99,6 +114,7 @@ pub(crate) async fn run(inputs: Inputs) {
                 result = async { (&mut reader.as_mut().expect("guarded").0).await }, if reading => {
                     reader = None;
                     stats.audio.update(|audio| *audio = None);
+                    retry.as_mut().reset(tokio::time::Instant::now() + backoff);
                     match result {
                         Ok(Ok(())) => status.update(|status| status.audio = SlotState::Ended),
                         Ok(Err(err)) => {
@@ -123,6 +139,10 @@ pub(crate) async fn run(inputs: Inputs) {
                         return;
                     }
                     debug!("the broadcast moved to a new route, reopening audio");
+                    break;
+                }
+                () = &mut retry, if !reading => {
+                    backoff = (backoff * 2).min(RETRY_MAX);
                     break;
                 }
                 changed = volume.changed() => {

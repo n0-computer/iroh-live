@@ -112,6 +112,9 @@ pub struct DebugOverlay {
     categories: Vec<(StatCategory, bool)>,
     visible: bool,
     history: History,
+    /// What the transport says about the link, beyond the network signals:
+    /// the path's kind and address, say. The first line joins the summary.
+    link: Vec<String>,
     /// Salts every interactive id this overlay claims, so a grid of tiles does
     /// not share them. Two overlays under one id are one widget as far as egui
     /// is concerned, and hovering a section on one tile would light the same
@@ -129,6 +132,7 @@ impl DebugOverlay {
             categories: categories.iter().map(|&cat| (cat, false)).collect(),
             visible: true,
             history: History::default(),
+            link: Vec::new(),
             salt: egui::Id::new((
                 "iroh-live-egui overlay",
                 OVERLAY_SALT.fetch_add(1, Ordering::Relaxed),
@@ -139,6 +143,14 @@ impl DebugOverlay {
     /// Toggles overall visibility.
     pub fn toggle(&mut self) {
         self.visible = !self.visible;
+    }
+
+    /// Sets what the transport says about the link, shown in the NET section
+    /// of a player: the media crate knows nothing of paths or addresses, so a
+    /// caller that does hands them in here. The first line also joins the
+    /// section's summary.
+    pub fn set_link(&mut self, lines: Vec<String>) {
+        self.link = lines;
     }
 
     /// Returns true if any detail panel is currently expanded.
@@ -164,7 +176,7 @@ impl DebugOverlay {
             .categories
             .iter()
             .filter_map(|&(cat, _)| match cat {
-                StatCategory::Net => Some(net_playback(stats.network.as_ref())),
+                StatCategory::Net => Some(net_playback(stats.network.as_ref(), &self.link)),
                 StatCategory::Render => Some(render_playback(stats, status)),
                 StatCategory::Audio => Some(audio_playback(stats, status)),
                 StatCategory::Capture => None,
@@ -518,19 +530,20 @@ fn mode_text(mode: &RenditionMode) -> String {
     }
 }
 
-/// Builds the NET section of a player from the last link reading.
-fn net_playback(network: Option<&NetworkSample>) -> Section {
+/// Builds the NET section of a player from the last link reading and what
+/// the transport said about the link.
+fn net_playback(network: Option<&NetworkSample>, link: &[String]) -> Section {
+    let mut parts: Vec<String> = link.first().cloned().into_iter().collect();
+    let mut lines: Vec<Line> = link.iter().map(|line| Line::info(line.clone())).collect();
     let Some(net) = network else {
-        return Section::new(
-            StatCategory::Net,
-            vec!["no link data".to_string()],
-            vec![Line::info(
-                "no link data: the broadcast carries no network signals",
-            )],
-        );
+        if parts.is_empty() {
+            parts.push("no link data".to_string());
+        }
+        lines.push(Line::info(
+            "no link data: the broadcast carries no network signals",
+        ));
+        return Section::new(StatCategory::Net, parts, lines);
     };
-    let mut parts = Vec::new();
-    let mut lines = Vec::new();
     if let Some(rtt) = net.rtt {
         let ms = millis(rtt);
         parts.push(format!("rtt:{ms:.0}ms"));

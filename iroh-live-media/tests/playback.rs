@@ -318,6 +318,73 @@ async fn a_pushed_source_sees_demand_while_played() {
     feeder.abort();
 }
 
+/// C1: a producer that pushes only while somebody watches, as a phone camera
+/// does, used to be never watched: the broadcast waited for a first frame
+/// before it advertised a track, and nothing could subscribe to a track that
+/// did not exist. The track is created from the source's format.
+#[tokio::test]
+async fn a_source_that_waits_for_demand_is_played() {
+    let format = VideoFormat::new(video::Size::new(64, 48), fps(30));
+    let (sender, source) = VideoSource::push(format);
+    let feeder = tokio::spawn({
+        let sender = sender.clone();
+        async move {
+            let mut demand = sender.demand();
+            while !demand.get() {
+                if demand.updated().await.is_err() {
+                    return;
+                }
+            }
+            let rgba = vec![0x80u8; format.size.pixels() as usize * 4];
+            let mut tick = tokio::time::interval(Duration::from_millis(33));
+            for index in 0u64.. {
+                tick.tick().await;
+                let surface = video::Surface::rgba(&rgba, format.size).expect("valid");
+                let timestamp = moq_net::Timestamp::from_micros(index * 33_333).expect("in range");
+                if sender.push(video::Frame::new(surface, timestamp)).is_err() {
+                    return;
+                }
+            }
+        }
+    });
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .set_video(
+            source,
+            VideoEncoding::single(VideoRendition::new("video")).with_prefer_hardware(false),
+        )
+        .expect("valid");
+    let player = RemoteBroadcast::local(&broadcast)
+        .play(PlayerConfig::default())
+        .expect("valid");
+    let frame = tokio::time::timeout(TIMEOUT, player.video().next())
+        .await
+        .expect("a source waiting for demand was never watched")
+        .expect("the video ended");
+    assert_eq!(frame.size(), format.size);
+    drop(player);
+    feeder.abort();
+}
+
+/// S9: a player's frames used to end only when the player was dropped, so a
+/// reader looping on `next()` waited forever once the publisher had gone.
+#[tokio::test]
+async fn the_frames_end_when_the_broadcast_closes() {
+    let (broadcast, _source) = ladder();
+    let player = RemoteBroadcast::local(&broadcast)
+        .play(PlayerConfig::default())
+        .expect("valid");
+    let mut frames = player.video();
+    tokio::time::timeout(TIMEOUT, frames.next())
+        .await
+        .expect("a first frame")
+        .expect("the video plays");
+    broadcast.close();
+    tokio::time::timeout(TIMEOUT, async { while frames.next().await.is_some() {} })
+        .await
+        .expect("the frames went on after the broadcast closed");
+}
+
 /// A recording remuxes what the broadcast carries into a container without
 /// decoding it.
 #[tokio::test]

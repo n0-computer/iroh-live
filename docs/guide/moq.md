@@ -21,7 +21,7 @@ A **track** is one media stream inside a broadcast: one video rendition, or the
 audio. Track names come from the publisher. A single-rendition video publish uses
 `video`; a simulcast ladder uses whatever the rungs are called, which is where
 `irl publish --renditions low:320x180,720p` gets `low` and `720p`. Audio uses the
-codec name unless the caller sets one.
+codec name, such as `opus`.
 
 A **group** is a sequence of frames starting with a keyframe, and it is the unit
 a receiver can skip. Falling behind means jumping to the newest group boundary
@@ -38,16 +38,19 @@ rendition's codec, resolution, and bitrate. A subscriber reads it to learn what
 exists before subscribing to anything, and watches it for changes, since a
 publisher can add a rendition mid-broadcast.
 
-iroh-live extends the catalog rather than replacing it. `iroh_live_media::catalog`
-flattens `chat` and `user` sections alongside hang's `video` and `audio`, so a
-plain hang player ignores them and still plays the media. That is how a
-subscriber finds the chat track without guessing at a name, and how a publisher's
-display name travels with its stream.
+iroh-live extends the catalog rather than replacing it.
+`iroh_live_media::IrohLiveExt` flattens `chat` and `user` sections alongside
+hang's `video` and `audio`, so a plain hang player ignores them and still plays
+the media. Applications read the result as `iroh_live_media::Catalog`, whose
+`metadata()` carries the display name. That is how a subscriber finds the chat
+track without guessing at a name, and how a publisher's display name travels
+with its stream.
 
 ## Where the boundary is
 
-`iroh-live-media` speaks `moq_net` types and nothing else: a publish is a
-`broadcast::Producer`, a subscription is a `broadcast::Consumer`. It does not know
+`iroh-live-media` speaks `moq_net` types and nothing else: a `LocalBroadcast` is
+built on a `broadcast::Producer` and read through `moq_net::Consume`, and a
+`RemoteBroadcast` is built from a `broadcast::Consumer`. It does not know
 whether those arrived over iroh, over WebTransport, or through a local loopback.
 
 `iroh-moq` is the half that knows about iroh, and [the transport

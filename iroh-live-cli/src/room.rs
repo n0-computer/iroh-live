@@ -13,7 +13,7 @@
 
 use iroh_live::{
     Live,
-    media::{AudioOutput, LocalBroadcast, Metadata},
+    media::{AudioOutput, LocalBroadcast, Metadata, TrackRef},
 };
 use iroh_rooms::{
     Room, RoomTicket,
@@ -109,7 +109,13 @@ async fn join(
         .clone()
         .unwrap_or_else(|| live.endpoint().id().fmt_short().to_string());
     room.set_display_name(display_name.clone()).await?;
-    broadcast.set_metadata(Metadata::default().with_display_name(display_name.clone()));
+    // The chat track goes in the catalog as well, for a viewer that reads it
+    // from there rather than knowing the room's well-known name.
+    broadcast.set_metadata(
+        Metadata::default()
+            .with_display_name(display_name.clone())
+            .with_chat(TrackRef::new(CHAT_TRACK_NAME, CHAT_PRIORITY)),
+    );
 
     let ticket = room.ticket().to_string();
     println!("room ticket: {ticket}");
@@ -375,7 +381,8 @@ mod window {
                     player,
                     self.playback.decoder,
                     self.render_state.as_ref(),
-                );
+                )
+                .with_link(sub.session().clone(), sub.signals().clone());
                 self.peers.push(PeerTile {
                     remote,
                     name,

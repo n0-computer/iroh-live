@@ -14,6 +14,7 @@ use iroh::address_lookup::MemoryLookup;
 use moq_net::{Timestamp, origin};
 use moq_relay::cluster::Cluster;
 use n0_future::task::AbortOnDropHandle;
+use n0_watcher::Watcher as _;
 use serial_test::serial;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -376,7 +377,32 @@ async fn noq_publish_iroh_subscribe() {
 
         match result {
             Ok(Ok(sub)) => {
-                tracing::info!(attempt, "subscribed to browser-stream via iroh");
+                // Subscribing proves the route; the catalog arriving and
+                // parsing proves the bridge carried the broadcast itself.
+                let mut catalog = sub.broadcast().catalog();
+                let parsed = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        if let Some(parsed) = catalog.get() {
+                            return Some(parsed);
+                        }
+                        if catalog.updated().await.is_err() {
+                            return None;
+                        }
+                    }
+                })
+                .await;
+                let Ok(Some(parsed)) = parsed else {
+                    tracing::warn!(attempt, "subscribed, but no catalog arrived; retrying");
+                    last_err = Some("no catalog arrived".to_string());
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                };
+                tracing::info!(
+                    attempt,
+                    video = parsed.video().len(),
+                    audio = parsed.audio().len(),
+                    "subscribed to browser-stream via iroh"
+                );
                 // Success: clean up and return.
                 drop(sub);
                 drop(_pub_session);

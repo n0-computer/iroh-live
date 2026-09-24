@@ -57,37 +57,48 @@ The full flag reference is in [the CLI page](../cli.md).
 
 ## Using the library
 
-A publisher binds an endpoint, creates a broadcast, and points it at a device:
+A publisher binds an endpoint, creates a broadcast, opens its sources, and
+hands them to the broadcast with an encoding:
 
 ```rust
 use iroh_live::{
     Live,
-    media::{audio, video},
+    media::{
+        AudioEncoding, AudioSource, MicrophoneConfig, VideoEncoding, VideoRendition, VideoSource,
+        video,
+    },
     ticket::LiveTicket,
 };
 
 let live = Live::from_env().await?.with_router().spawn();
 let broadcast = live.publish("hello")?;
 
-broadcast.video().set(video::capture::Config::default())?;
-broadcast.audio().set(audio::capture::Config::default());
+let camera = VideoSource::capture(video::capture::Config::default()).await?;
+broadcast.set_video(camera, VideoEncoding::single(VideoRendition::p720()))?;
+let microphone = AudioSource::microphone(MicrophoneConfig::default()).await?;
+broadcast.set_audio(microphone, AudioEncoding::voice())?;
 
-println!("{}", LiveTicket::new(live.endpoint().addr(), "hello"));
+println!("{}", LiveTicket::new(live.endpoint().id(), "hello"));
 ```
 
-A subscriber connects with the ticket and reads decoded frames:
+A subscriber connects with the ticket, starts a player, and reads decoded frames:
 
 ```rust
+use iroh_live::media::PlayerConfig;
+
 let live = Live::from_env().await?.spawn();
 let sub = live.subscribe(ticket.endpoint, &ticket.broadcast_name).await?;
-let tracks = sub.media().await;
+let player = sub.broadcast().play(PlayerConfig::default())?;
 
-if let Some(video) = tracks.video {
-    while let Some(frame) = video.recv().await {
-        // hand `frame` to a renderer
-    }
+let mut frames = player.video();
+while let Some(frame) = frames.next().await {
+    // hand `frame` to a renderer
 }
 ```
+
+Opening a source fails where the application asked for it, so a missing camera
+is an error from `VideoSource::capture` rather than a log line later. To hear the
+audio, open an `AudioOutput` and pass it with `PlayerConfig::with_audio`.
 
 `iroh-live/examples/publish.rs` is the compilable version of the first snippet,
 including a two-rung simulcast ladder behind `--simulcast`.

@@ -2,8 +2,9 @@
 //!
 //! Provides reusable building blocks for Android apps that use iroh-live-media:
 //!
-//! - [`camera`] bridges Android's push-model camera callbacks to the pull-model
-//!   [`VideoSource`](iroh_live_media::publish::VideoSource) a publish task reads
+//! - [`camera`] bridges Android's push-model camera callbacks to the
+//!   [`VideoSource`](iroh_live_media::VideoSource) a
+//!   [`LocalBroadcast`](iroh_live_media::LocalBroadcast) encodes
 //! - `egl` provides safe wrappers around the EGL and GLES extension functions for
 //!   the HardwareBuffer to EGLImage to GL texture path
 //! - [`handle`]: `Arc<Mutex<T>>` <-> `i64` conversion for JNI handles

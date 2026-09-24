@@ -358,6 +358,9 @@ impl Sampler {
             known => {
                 if known.is_some() {
                     self.path_generation += 1;
+                    // The counters are per path, so a difference across the
+                    // change would subtract one path's totals from another's.
+                    self.history.clear();
                 }
                 self.baseline = Some(PathBaseline {
                     path,
@@ -612,6 +615,25 @@ mod tests {
         assert!(
             (3_500_000..=4_500_000).contains(&bps),
             "expected about 4 Mbit/s, got {bps}"
+        );
+    }
+
+    /// R16: the loss window used to span a path change, so the first reading
+    /// on a backup path subtracted the direct path's counters from its own and
+    /// a path that had lost packets long ago read as losing them now.
+    #[test]
+    fn loss_starts_over_on_a_new_path() {
+        let mut sampler = Sampler::default();
+        let t0 = Instant::now();
+        // A clean direct path, long enough to fill the window.
+        run_ticks(&mut sampler, t0, 12, 20, 0);
+        // The backup path's counters carry three hundred old losses.
+        let later = t0 + 13 * SIGNAL_INTERVAL;
+        let backup = sampler.sample(PathId::MAX, &reading(40, 300, 400, 0), None, later);
+        assert_eq!(backup.path_generation, 1);
+        assert_eq!(
+            backup.loss_rate, 0.0,
+            "the backup path's old losses read as new ones: {backup:?}"
         );
     }
 

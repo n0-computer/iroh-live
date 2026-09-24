@@ -10,15 +10,24 @@ peer publishes, and `Call` is 1:1 sugar over the two. The media comes from
 ## Publishing
 
 ```rust
-use iroh_live::{Live, media::{audio, video}, ticket::LiveTicket};
+use iroh_live::{
+    Live,
+    media::{
+        AudioEncoding, AudioSource, MicrophoneConfig, VideoEncoding, VideoRendition, VideoSource,
+        video,
+    },
+    ticket::LiveTicket,
+};
 
 let live = Live::from_env().await?.with_router().spawn();
 let broadcast = live.publish("hello")?;
 
-broadcast.video().set(video::capture::Config::default())?;
-broadcast.audio().set(audio::capture::Config::default());
+let camera = VideoSource::capture(video::capture::Config::default()).await?;
+broadcast.set_video(camera, VideoEncoding::single(VideoRendition::p720()))?;
+let microphone = AudioSource::microphone(MicrophoneConfig::default()).await?;
+broadcast.set_audio(microphone, AudioEncoding::voice())?;
 
-println!("{}", LiveTicket::new(live.endpoint().addr(), "hello"));
+println!("{}", LiveTicket::new(live.endpoint().id(), "hello"));
 ```
 
 Publishing is node-wide. A broadcast is created on the endpoint's origin and
@@ -28,13 +37,19 @@ to reach it there.
 ## Subscribing
 
 ```rust
+use iroh_live::media::PlayerConfig;
+
 let sub = live.subscribe(ticket.endpoint, &ticket.broadcast_name).await?;
-let tracks = sub.media().await;
+let player = sub.broadcast().play(PlayerConfig::default())?;
+let mut frames = player.video();
 ```
 
-`Subscription` bundles the MoQ session, the `RemoteBroadcast`, and a receiver of
-transport signals, with the stats recorder and the signal producer already wired
-up. Hand the signals to `VideoTrack::enable_adaptation` to follow the downlink.
+`Subscription` bundles the MoQ session, the `RemoteBroadcast`, and the
+connection's `LinkSignals`. The signals are already attached to the broadcast,
+so every player started from `sub.broadcast()` follows the downlink without
+further wiring; `sub.signals()` is there for diagnostics. When a session and a
+broadcast arrive separately, as an `iroh-rooms` event hands them over,
+`Subscription::new(session, broadcast)` does the same attaching.
 
 ## Rooms
 
@@ -44,8 +59,9 @@ gossip instance, which `LiveBuilder::with_gossip()` creates and
 
 ## Feature flags
 
-All pass through to `iroh-live-media`: `capture` and `render` by default, plus
-`playback`, `aec`, `pipewire`, `vaapi`, and `nvidia`.
+All pass through to `iroh-live-media`: `capture`, `render`, and `sound-server`
+by default, plus `playback`, `aec`, `pipewire`, `rpicam`, `vaapi`, `nvidia`, and
+`v4l2`.
 
 ## Examples
 

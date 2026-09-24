@@ -68,7 +68,7 @@ async fn record_on(live: &Live, ticket: &LiveTicket, options: &RecordOptions) ->
         ));
     }
 
-    let recording = start(sub.broadcast(), &catalog, options).await?;
+    let recording = start(&routed(&sub, ticket), &catalog, options).await?;
     match options.duration {
         Some(duration) => println!("recording for {}s ...", duration.as_secs()),
         None => println!("recording, press Ctrl+C to stop"),
@@ -82,6 +82,13 @@ async fn record_on(live: &Live, ticket: &LiveTicket, options: &RecordOptions) ->
 
     sub.session().close(moq_net::Error::Cancel);
     Ok(())
+}
+
+/// The broadcast read through the session's origin rather than as the bare
+/// subscription, so the exporter can resolve a catalog rendition that names a
+/// sibling broadcast.
+pub fn routed(sub: &iroh_live::Subscription, ticket: &LiveTicket) -> RemoteBroadcast {
+    RemoteBroadcast::from_origin(sub.session().announced().clone(), &ticket.broadcast_name)
 }
 
 /// Where a recording goes, and which of the broadcast's tracks it keeps.

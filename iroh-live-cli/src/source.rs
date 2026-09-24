@@ -367,14 +367,27 @@ fn paint_gradient(rgba: &mut [u8], size: Size, tick: u32) {
 ///
 /// Every command that plays the other side's audio while it publishes its own
 /// passes the speaker it plays through, so a laptop or a handset on speaker
-/// does not send the other side back to itself.
+/// does not send the other side back to itself. A build without the `aec`
+/// feature says so and publishes the microphone as it is, rather than refusing
+/// to start a call.
 pub fn microphone_config(id: Option<String>, output: Option<&AudioOutput>) -> MicrophoneConfig {
     let mut config = MicrophoneConfig::default();
     if let Some(id) = id {
         config = config.with_device(id);
     }
     if let Some(output) = output {
-        config = config.with_echo_cancellation(output);
+        #[cfg(feature = "aec")]
+        {
+            config = config.with_echo_cancellation(output);
+        }
+        #[cfg(not(feature = "aec"))]
+        {
+            let _ = output;
+            tracing::warn!(
+                "this build has no echo cancellation, so the other side may hear itself; \
+                 build with the `aec` feature to cancel it"
+            );
+        }
     }
     config
 }
@@ -436,6 +449,7 @@ mod tests {
     /// Echo cancellation was never attached before this CLI passed its output
     /// in: every command that plays the other side's audio publishes a
     /// microphone that cancels it. This fails if the config drops the output.
+    #[cfg(feature = "aec")]
     #[test]
     fn the_microphone_cancels_the_output_it_is_given() {
         let output = AudioOutput::null();

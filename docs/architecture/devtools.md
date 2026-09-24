@@ -2,73 +2,90 @@
 
 Debugging a real-time pipeline means seeing frame timing, network conditions, and
 codec behaviour while the system runs at 30 frames a second. Two pieces cover
-that: a metrics vocabulary in `iroh-live-media` and an overlay in `iroh-live-egui` that
-draws it.
+that: statistics snapshots in `iroh-live-media` and an overlay in
+`iroh-live-egui` that draws them.
 
 ## Metrics
 
-`iroh_live_media::stats` defines two primitives and groups them into typed structs, so
-there are no string keys and no registration.
+`LocalBroadcast::stats()` and `Player::stats()` return plain values,
+`PublishStats` and `PlaybackStats`, read as often as a UI draws. There are no
+string keys and no registration, and no history: a snapshot carries current
+values only.
 
-A `Metric` holds an exponentially smoothed current value and a ring buffer of
-history for sparklines. `MetricMeta` carries the label, the unit, the smoothing
-factor, and optional `Thresholds` that colour the value green, yellow, or red.
-`Thresholds::inverted` flips the comparison for a metric where higher is better,
-such as frame rate. A `Label` is a string that changes rarely, such as the
-decoder backend that opened.
+`PublishStats` carries the source's frame rate, which every rendition of a
+ladder shares, one `EncodeStats` per video rendition (the encoder backend that
+opened, the encoded size, frames per second, bitrate over the last second, a
+smoothed encode time, and running frame and byte counts), and an
+`AudioEncodeStats` with the codec, the frames written, and the frames dropped
+because the broadcast fell behind its source.
 
-The groups are `NetStats` (round-trip time, loss, bandwidth in both directions,
-path type and address), `EncodeStats` (frame rate, encode time, bitrate, and
-labels for codec, encoder, and resolution), `RenderStats` (frame rate, decode
-time, and labels for decoder, renderer, and rendition), and `TimingStats` (audio
-buffer depth, per-path lag, and the A/V delta). `PublishStats` and
-`SubscribeStats` bundle the ones each side needs, and `Timeline` records
-per-frame arrival, decode, and render instants for the timeline panel.
+`PlaybackStats` carries a `VideoPlaybackStats` while video plays (the rendition
+on screen, the decoder backend, the picture size, frames shown per second, a
+smoothed read-and-decode time, frames shown, and access units skipped), an
+`AudioPlaybackStats` while audio plays (the rendition, how much audio is queued
+ahead of the speaker, and the most recent peak for a meter), the playout
+latency, and the last `NetworkSample` if the broadcast has network signals.
+
+`LocalBroadcast::status()` and `Player::status()` complement them as watchers:
+the state of each slot, which renditions are encoding, the rendition on screen
+and the one warming up, and why the last switch failed.
 
 ## What is filled in today
 
-The publish path records `encode.encoder`, `encode.resolution`, `encode.encode_ms`,
-and `encode.bitrate_kbps`. `iroh-live`'s `util::spawn_stats_recorder` fills
-`NetStats` from the iroh connection's selected path every 200 ms. The egui overlay
-sets `render.rendition` from the track.
+Every figure has exactly one writer. Each rendition's encoder writes its own
+entry, the source's frame rate is written by the one task that reads the
+source, the player's video task writes the video figures, its audio task the
+audio ones, and its selector the network sample. The shared counters every
+encoder used to write into, where a ladder's labels named whichever rung wrote
+last and its bitrate was a smoothed value somewhere among the rungs, are gone.
 
-Everything else is defined and unwritten. `TimingStats`, `Timeline`, and
-`LagTracker` have no producer in this repository, so the timing panel and the
-timeline read zero. `render.decode_ms` is never recorded, and `render.fps` is
-recorded as the constant `1.0` rather than a measured rate, so it reports 1.0
-rather than a frame rate. Wiring those back up is outstanding work, not a
-configuration step.
+Rates are counted over a window rather than derived from the gap between two
+events: one late frame in a 30 fps stream reads as 50 by the gap and as 30 by
+the count.
+
+There is no per-frame timeline and no per-path lag or A/V delta figure. The
+playout latency and the audio buffer depth are what the snapshots offer for
+judging sync.
 
 ## The debug overlay
 
 `iroh_live_egui::overlay::DebugOverlay` draws a translucent bar along the bottom
 of a video tile with one clickable section per `StatCategory`: `Net`, `Capture`,
-`Render`, and `Time`. Clicking a section opens a detail panel above the bar,
-stacking upward, with each metric shown as a value, a unit, a threshold colour,
-and a sparkline once it has at least two samples.
+`Render`, and `Audio`. Clicking a section opens a detail panel above the bar,
+stacking upward, with each figure shown as a value, a colour where one applies,
+and a sparkline next to those that change over time. The overlay keeps the
+twelve seconds of history behind its sparklines itself, recording a point every
+100 ms, since the snapshots carry none.
+
+`show_publish(ui, rect, &stats, &status)` draws a broadcast: `Capture` with the
+source frame rate, each rendition's encoder, the audio encoder, and every slot's
+state, and `Net` with the encoded video leaving the broadcast summed over its
+renditions. `show_playback(ui, rect, &stats, &status)` draws a player: `Net`
+with the round trip, loss, and the sender's delivery estimate, `Render` with the
+rendition mode, rendition, decoder, frame rate, decode time, and the last switch
+error, and `Audio` with the buffer and the playout latency.
 
 `irl publish --preview` enables the `Capture` and `Net` categories; `irl watch`
-enables `Net`, `Render`, and `Time`.
-
-The `Time` category also draws a timeline panel over a ten-second window: a
-latency graph, one lane of video frame boxes coloured by inter-frame gap with a
-white edge on keyframes, an audio lane, an A/V offset lane around a zero line, and
-sparklines for audio buffer depth and round-trip time. The mouse wheel scrolls
-back in time and switches the indicator from `LIVE` to `PAUSED`; a double click
-returns to live. It reads `Timeline`, so it stays empty until something records
-into it.
+enables `Net`, `Render`, and `Audio`.
 
 ## Tests
 
-`iroh-live/tests/e2e.rs` runs three tests over a real QUIC connection between two
+`iroh-live/tests/e2e.rs` runs four tests over a real QUIC connection between two
 iroh endpoints. Every source is generated, so no camera, microphone, or speaker is
 needed, but the codecs are real: openh264 and Opus encode and decode, and the
 bytes cross an actual transport. `publish_subscribe_video` asserts five frames
 with non-zero size and non-decreasing timestamps. `publish_subscribe_audio`
-decodes through `moq_audio::decode::Consumer` rather than the playback engine, so
-it proves the transport and the codec without needing an output device.
-`adaptive_rendition_switching` drives the adaptation loop with made-up
-`NetworkSignals` and asserts the downgrade lands.
+plays into `AudioOutput::null()`, so it proves the transport and the codec
+without needing an output device, and waits for the player's stats to count
+decoded audio frames. `adaptive_rendition_switching` replaces the subscription's
+network signals with a closure over a made-up `NetworkSample` and asserts the
+downgrade lands. `changing_the_decoder_backend_rebuilds_it` switches a playing
+player to the software decoder and asserts the rebuilt decoder is the one
+producing frames.
+
+`iroh-live/tests/latency.rs` measures capture-to-decode latency with publisher
+and subscriber in one process, once with `Latency::IMMEDIATE` and once with the
+default, and prints the figures.
 
 `iroh-rooms/tests/room.rs` covers discovery, subscription, chat, and peer
 departure. Nothing there touches media: the broadcasts carry a plain data track
@@ -88,9 +105,10 @@ spike; `adaptation_follows_a_real_link` runs the whole adaptive chain, from
 dropped packets through QUIC's loss detection and the path stats the signal
 producer samples to a rendition downgrade, and back up once the loss clears;
 `a_switch_does_not_blank_the_picture` holds the decode supervisor to its overlap,
-that a replacement decoder takes over on its own first frame rather than after
-the incumbent is gone. It is Linux-only and needs unprivileged user namespaces,
-set up from an ELF initialiser before the harness has a second thread. nextest
+that a replacement decoder warms up beside the incumbent and takes over rather
+than opening after the incumbent is gone. It is Linux-only and needs
+unprivileged user namespaces, set up from an ELF initialiser before the harness
+has a second thread. nextest
 gives the binary a single-threaded group of its own, because the timing
 assertions do not survive sharing a machine with the rest of the suite.
 
@@ -109,5 +127,5 @@ SMPTE pattern by PSNR, was removed with the in-house decoder it drove. The
 
 The patchbay suite went the same way when the pipeline it drove was replaced, but
 it is back, rewritten against the new one; the A/V sync measurements it also
-carried are not, because the timestamping audio backend they sampled has no
+carried are not, because the timestamping audio backend they read from has no
 counterpart yet.

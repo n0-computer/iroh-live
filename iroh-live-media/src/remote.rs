@@ -128,7 +128,11 @@ impl RemoteBroadcast {
     /// Attaches the link's view, for automatic rendition selection.
     ///
     /// Transports call this; `iroh-live` does it on subscribe. Players started
-    /// afterwards read it.
+    /// afterwards read it. The signals belong to the broadcast rather than to
+    /// this handle, so every clone sees them, and attaching again replaces
+    /// them for every clone. A transport that stops producing readings leaves
+    /// players adapting on the last one, so it should be kept for as long as
+    /// the broadcast is played.
     #[must_use]
     pub fn with_network(self, signals: impl NetworkSignals) -> Self {
         *self.shared.network.lock().expect("poisoned") = Some(SharedSignals(Arc::new(signals)));

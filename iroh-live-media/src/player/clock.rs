@@ -18,8 +18,7 @@
 //! - **`jitter`** is the network jitter allowance, 100 ms by default.
 //! - **`audio`** is how much audio is queued at the speaker, reported by the
 //!   audio path on every decoded frame through its [`AudioLatency`] guard.
-//! - **`video`** is the video path's own decode latency, if a caller sets one.
-//! - **`latency`** is `max(audio, video) + jitter`.
+//! - **`latency`** is `audio + jitter`.
 //!
 //! A frame stamped `T` is due at `reference + T + latency`.
 //!
@@ -38,6 +37,13 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+
+/// How far a timestamp may fall behind the newest one before it counts as a
+/// new timeline rather than a late frame.
+///
+/// Well past any reordering a live stream shows, and well short of the gap a
+/// restarted publisher leaves, whose clock starts again at zero.
+const TIMELINE_JUMP: Duration = Duration::from_secs(5);
 
 // --- Public API ------------------------------------------------------
 
@@ -85,9 +91,13 @@ struct SyncInner {
 /// saturation, no precision loss from `Duration` rounding).
 #[derive(Debug)]
 struct SyncState {
-    /// Earliest `(now_ms - pts_ms)` ever observed. `None` until the
-    /// first call to [`PlayoutClock::received`].
+    /// Earliest `(now_ms - pts_ms)` observed on the current timeline. `None`
+    /// until the first call to [`PlayoutClock::received`].
     reference: Option<i64>,
+
+    /// The newest timestamp received, in ms, to tell a new timeline from a
+    /// late frame.
+    last_pts_ms: Option<i64>,
 
     /// Network jitter buffer in ms (default 100).
     jitter_ms: i64,
@@ -120,6 +130,7 @@ impl PlayoutClock {
                 base: Instant::now(),
                 state: Mutex::new(SyncState {
                     reference: None,
+                    last_pts_ms: None,
                     jitter_ms,
                     audio_ms: None,
                     latency_ms: jitter_ms,
@@ -137,12 +148,35 @@ impl PlayoutClock {
     /// Computes `ref = now_ms - pts_ms` and stores it as the new
     /// reference if it is strictly smaller (earlier) than the current
     /// one. Only the video receive path calls this.
+    ///
+    /// A timestamp more than [`TIMELINE_JUMP`] behind the newest one is a new
+    /// timeline, as a publisher that restarted starts its clock at zero again,
+    /// and starts the reference over: held against the old one, every later
+    /// frame would be overdue and nothing would be paced again.
     pub(crate) fn received(&self, timestamp: Duration) {
         let now_ms = self.now_ms();
         let timestamp_ms = timestamp.as_millis() as i64;
         let ref_val = now_ms - timestamp_ms;
 
         let mut state = self.inner.state.lock().expect("poisoned");
+
+        let jumped_back = state
+            .last_pts_ms
+            .is_some_and(|last| timestamp_ms < last - TIMELINE_JUMP.as_millis() as i64);
+        if jumped_back {
+            tracing::debug!(
+                from_ms = state.last_pts_ms,
+                to_ms = timestamp_ms,
+                "the timeline started over, resetting the playout reference"
+            );
+            state.reference = None;
+            state.last_pts_ms = None;
+        }
+        state.last_pts_ms = Some(
+            state
+                .last_pts_ms
+                .map_or(timestamp_ms, |last| last.max(timestamp_ms)),
+        );
 
         if state.reference.is_some_and(|current| ref_val >= current) {
             return;
@@ -210,7 +244,7 @@ impl PlayoutClock {
 
     // --- Latency configuration ---------------------------------------
 
-    /// Returns the current total latency: `max(audio, video) + jitter`.
+    /// Returns the current total latency: `audio + jitter`.
     pub(crate) fn latency(&self) -> Duration {
         let state = self.inner.state.lock().expect("poisoned");
         Duration::from_millis(state.latency_ms.max(0) as u64)
@@ -361,6 +395,21 @@ mod tests {
 
         drop(audio);
         assert_eq!(sync.latency(), Duration::from_millis(50));
+    }
+
+    /// S8: a publisher that restarts starts its timestamps at zero again. The
+    /// reference only ever moved earlier, so every later frame read as
+    /// overdue and nothing was paced for the rest of the player's life.
+    #[test]
+    fn a_restarted_timeline_is_paced_again() {
+        let sync = PlayoutClock::with_jitter(Duration::from_millis(50));
+        sync.received(Duration::from_secs(600));
+        // A fresh timeline: the frame at zero arrives now.
+        sync.received(Duration::ZERO);
+        assert!(
+            matches!(sync.delay(Duration::ZERO), Delay::After(_)),
+            "the new timeline's first frame is not held for the jitter allowance"
+        );
     }
 
     /// Regression (R12): the audio path set its buffer depth on every frame and

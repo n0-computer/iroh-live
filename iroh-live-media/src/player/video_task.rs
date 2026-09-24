@@ -23,7 +23,10 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     task::Poll,
     time::{Duration, Instant},
 };
@@ -35,7 +38,7 @@ use tracing::{Instrument, debug, error, error_span, info, warn};
 
 use super::{
     Abandon, Controls, PlaybackRecorder, PlayoutClock, StatusCell, SwitchEvent,
-    select::{DecodeSettings, Desired},
+    select::{DecodeSettings, Desired, Failure},
     switch::{Abandoned, Outcome, Switcher, Target, Verdict},
 };
 use crate::{
@@ -252,8 +255,8 @@ pub(crate) struct Inputs {
     pub controls: Arc<Controls>,
     pub status: StatusCell,
     pub events: broadcast::Sender<SwitchEvent>,
-    /// Where renditions whose decoders failed are reported, for backoff.
-    pub failures: mpsc::Sender<String>,
+    /// Where replacement decoders that failed are reported, for backoff.
+    pub failures: mpsc::Sender<Failure>,
     pub clock: PlayoutClock,
     pub stats: PlaybackRecorder,
     pub shutdown: CancellationToken,
@@ -384,15 +387,25 @@ pub(crate) async fn run(inputs: Inputs) {
             },
         };
 
+        // Written before any event goes out, so a waiter that reads the status
+        // on an event sees the switch that follows it.
         let switching = switcher
             .switching_to()
             .map(|target| target.rendition.clone());
+        status.update(|status| {
+            if status.switching_to != switching {
+                status.switching_to = switching;
+            }
+        });
         match outcome {
             Outcome::Idle => {}
             Outcome::Promoted(target) => {
                 let decoder = switcher
                     .incumbent_mut()
-                    .map(|reader| reader.decoder.clone())
+                    .map(|reader| {
+                        reader.on_screen.store(true, Ordering::Relaxed);
+                        reader.decoder.clone()
+                    })
                     .unwrap_or_default();
                 info!(rendition = %target.rendition, %decoder, "rendition on screen");
                 stats.video.update(|video| {
@@ -435,10 +448,26 @@ pub(crate) async fn run(inputs: Inputs) {
                     }
                 };
                 if let Abandon::Failed(err) = &abandon {
-                    status.update(|status| status.switch_error = Some(err.clone()));
+                    let playing = switcher.current().cloned();
+                    let config_only = playing
+                        .as_ref()
+                        .is_some_and(|playing| playing.rendition == target.rendition);
+                    status.update(|status| {
+                        status.switch_error = Some(err.clone());
+                        // Nothing on screen and nothing on its way: the video
+                        // failed, until the selector finds something to try.
+                        if playing.is_none() && status.switching_to.is_none() {
+                            status.video = SlotState::Failed(err.clone());
+                            status.rendition = None;
+                            status.decoder = None;
+                        }
+                    });
                     // Full means a failure is already being reported; one more
                     // for the same backoff is not worth waiting for.
-                    let _ = failures.try_send(rendition.clone());
+                    let _ = failures.try_send(Failure {
+                        rendition: rendition.clone(),
+                        config_only,
+                    });
                 }
                 let _ = events.send(SwitchEvent::Abandoned(rendition, abandon));
             }
@@ -453,11 +482,6 @@ pub(crate) async fn run(inputs: Inputs) {
                 });
             }
         }
-        status.update(|status| {
-            if status.switching_to != switching {
-                status.switching_to = switching;
-            }
-        });
     }
 }
 
@@ -563,6 +587,12 @@ struct Reader {
     /// the first thing anyone asks when playback looks wrong on a device.
     decoder: String,
     frames: mpsc::Receiver<moq_video::Frame>,
+    /// Set once this reader's pictures are the ones on screen.
+    ///
+    /// Only that reader writes the playback stats: a replacement warming up
+    /// beside the incumbent would otherwise write the same figures for as long
+    /// as the switch takes.
+    on_screen: Arc<AtomicBool>,
     /// Dropping this aborts the read loop, which drops the decoder with it.
     _task: AbortOnDropHandle<()>,
 }
@@ -604,6 +634,8 @@ async fn spawn_reader(
 
     let (tx, frames) = mpsc::channel(READ_AHEAD);
     let name = rendition.to_string();
+    let on_screen = Arc::new(AtomicBool::new(false));
+    let writes = on_screen.clone();
     let task = spawn(
         async move {
             let mut failures = DecodeFailures::default();
@@ -635,11 +667,13 @@ async fn spawn_reader(
                         // two happen inside one `read`, with no earlier point
                         // to attribute arrival to.
                         let took = timing.record(started.elapsed());
-                        stats.video.update(|video| {
-                            if let Some(video) = video.as_mut() {
-                                video.decode_time = Some(took);
-                            }
-                        });
+                        if writes.load(Ordering::Relaxed) {
+                            stats.video.update(|video| {
+                                if let Some(video) = video.as_mut() {
+                                    video.decode_time = Some(took);
+                                }
+                            });
+                        }
                         if tx.send(frame).await.is_err() {
                             debug!("nobody is reading this rendition any more");
                             return;
@@ -654,11 +688,13 @@ async fn spawn_reader(
                         return;
                     }
                     Err(err) => {
-                        stats.video.update(|video| {
-                            if let Some(video) = video.as_mut() {
-                                video.skipped += 1;
-                            }
-                        });
+                        if writes.load(Ordering::Relaxed) {
+                            stats.video.update(|video| {
+                                if let Some(video) = video.as_mut() {
+                                    video.skipped += 1;
+                                }
+                            });
+                        }
                         match failures.failed() {
                         AfterFailure::Skip => {
                             // Once per run rather than once per access unit: a
@@ -690,6 +726,7 @@ async fn spawn_reader(
     Ok(Reader {
         decoder,
         frames,
+        on_screen,
         _task: AbortOnDropHandle::new(task),
     })
 }

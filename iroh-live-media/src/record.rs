@@ -120,6 +120,9 @@ pub struct Recording {
     stop: CancellationToken,
     written: Arc<AtomicU64>,
     task: AbortOnDropHandle<Result<u64, Error>>,
+    /// The bytes written, once the task finished cleanly, so a second wait
+    /// returns them rather than polling a finished task.
+    finished: Option<Result<u64, ()>>,
 }
 
 impl Recording {
@@ -151,6 +154,7 @@ impl Recording {
             stop,
             written,
             task: AbortOnDropHandle::new(task),
+            finished: None,
         })
     }
 
@@ -163,23 +167,34 @@ impl Recording {
     /// bytes written.
     ///
     /// Cancellation safe in the sense that nothing is lost by dropping it:
-    /// the recording runs until the [`Recording`] itself is dropped.
+    /// the recording runs until the [`Recording`] itself is dropped. Calling
+    /// it again after it returned gives the same byte count.
     ///
     /// # Errors
     ///
-    /// Fails on an export or a write error.
+    /// Fails on an export or a write error. After a failure has been returned
+    /// once, later calls return [`Error::Closed`].
     pub async fn wait(&mut self) -> Result<u64, Error> {
-        (&mut self.task)
+        if let Some(finished) = self.finished {
+            return finished.map_err(|()| n0_error::e!(Error::Closed));
+        }
+        let result = (&mut self.task)
             .await
-            .map_err(|err| Error::device_msg(format!("the recording task failed: {err}")))?
+            .map_err(|err| Error::device_msg(format!("the recording task failed: {err}")))
+            .and_then(|result| result);
+        self.finished = Some(result.as_ref().map(|written| *written).map_err(|_| ()));
+        result
     }
 
-    /// Finishes the file now and returns the bytes written.
+    /// Ends the file at the last complete fragment and returns the bytes
+    /// written.
+    ///
+    /// The fragment the exporter is still assembling is not written: upstream
+    /// has no way to close one early. Fragmented containers are complete at
+    /// every fragment boundary, so the file plays up to that point.
     ///
     /// Not cancellation safe: dropping the future before it resolves stops the
-    /// recording without flushing, and the file may lack its tail. Fragmented
-    /// containers are complete at every fragment boundary, so what was flushed
-    /// before stays playable.
+    /// recording without flushing the writer.
     ///
     /// # Errors
     ///

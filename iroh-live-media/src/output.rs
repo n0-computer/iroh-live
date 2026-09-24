@@ -19,6 +19,10 @@ use crate::{audio, error::Error};
 #[derive(Clone)]
 pub struct AudioOutput {
     inner: Arc<Inner>,
+    /// How many echo cancellers were asked of this output, shared by clones,
+    /// so a test can see a publication ask without an output device.
+    #[cfg(all(test, feature = "aec"))]
+    cancellers: Arc<std::sync::atomic::AtomicU64>,
 }
 
 enum Inner {
@@ -58,17 +62,23 @@ impl AudioOutput {
             .map_err(Error::device)?;
         Ok(Self {
             inner: Arc::new(Inner::Device(engine)),
+            #[cfg(all(test, feature = "aec"))]
+            cancellers: Arc::default(),
         })
     }
 
     /// Returns an output that discards what it is given, for headless use and
     /// tests.
     ///
-    /// Players still decode their audio, and the playout clock still runs off
-    /// it, so a player on a null output behaves as it would on a speaker.
+    /// Players still decode their audio and report it in their stats. Nothing
+    /// is queued at a speaker, though, so audio is not paced and video is held
+    /// for the jitter allowance alone. A microphone asked to cancel a null
+    /// output's echo gets no canceller, since nothing plays.
     pub fn null() -> Self {
         Self {
             inner: Arc::new(Inner::Null),
+            #[cfg(all(test, feature = "aec"))]
+            cancellers: Arc::default(),
         }
     }
 
@@ -132,15 +142,35 @@ impl AudioOutput {
 
     /// Builds an echo canceller tapped off this output's mix, or `None` for a
     /// null output, which plays nothing and so has no echo to cancel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidConfig`] while another microphone's canceller
+    /// holds this output's reference, and [`Error::Device`] if the engine
+    /// refuses for another reason.
     #[cfg(feature = "aec")]
     pub(crate) fn canceller(&self) -> Result<Option<audio::aec::Control>, Error> {
+        #[cfg(all(test, feature = "aec"))]
+        self.cancellers
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match &*self.inner {
             Inner::Device(engine) => engine
                 .canceller(audio::aec::Config::default())
                 .map(Some)
-                .map_err(Error::device),
+                .map_err(|err| match err {
+                    audio::Error::Busy(reason) => Error::invalid(format!(
+                        "this output already cancels the echo of another microphone ({reason})"
+                    )),
+                    other => Error::device(other),
+                }),
             Inner::Null => Ok(None),
         }
+    }
+
+    /// Returns how many echo cancellers were asked of this output.
+    #[cfg(all(test, feature = "aec"))]
+    pub(crate) fn cancellers_requested(&self) -> u64 {
+        self.cancellers.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
