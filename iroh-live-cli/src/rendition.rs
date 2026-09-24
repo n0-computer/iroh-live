@@ -6,7 +6,7 @@
 //! the source's own resolution, which is what a single-rendition publish uses.
 //!
 //! `@<fps>` names a capture rate rather than a per-rung encode rate. Every rung
-//! of a ladder is fed the same pictures: `moq_media` opens one capture, and
+//! of a ladder is fed the same pictures: `iroh_live_media` opens one capture, and
 //! `fan_out` hands each frame to every encoder, so there is one frame rate for
 //! the whole ladder and no rung can run slower than another. The rung that asks
 //! for the most frames therefore sets the rate all of them are captured at, and

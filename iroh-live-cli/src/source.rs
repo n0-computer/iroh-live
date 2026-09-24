@@ -1,10 +1,10 @@
-//! Turning parsed specifiers into the sources `moq-media` publishes.
+//! Turning parsed specifiers into the sources `iroh-live-media` publishes.
 //!
 //! A capture source is a `moq_video::capture::Config` or a
 //! `moq_audio::capture::Config` and nothing more: the device is opened inside
 //! the publish task, which is what lets it be released again when publishing
 //! stops. The test pattern and the test tone come from
-//! [`moq_media::test_source`], so `irl publish --test-source` works on a
+//! [`iroh_live_media::test_source`], so `irl publish --test-source` works on a
 //! machine with neither camera nor microphone. Both take the broadcast's own
 //! clock, which is what puts the picture's flash and the tone's beep on one
 //! timeline for a viewer to judge A/V sync against.
@@ -59,7 +59,7 @@ const TEST_TONE_HZ: f64 = 440.0;
 const TEST_TONE_RATE: u32 = 48_000;
 
 /// Speaker layout of the test tone.
-const TEST_TONE_LAYOUT: moq_media::audio::Layout = moq_media::audio::Layout::Stereo;
+const TEST_TONE_LAYOUT: iroh_live_media::audio::Layout = iroh_live_media::audio::Layout::Stereo;
 
 /// Sets up whichever of video and audio `args` asked for.
 ///

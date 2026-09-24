@@ -86,9 +86,9 @@ a simulcast ladder. More in [docs/guide/index.md](docs/guide/index.md).
 | [`iroh-live`](iroh-live) | `Live`, `Call`, `Subscription`, and tickets |
 | [`iroh-moq`](iroh-moq) | MoQ transport over iroh: the node origin, sessions, and ALPN negotiation |
 | [`iroh-rooms`](iroh-rooms) | Gossip rooms. Media-free, and being redesigned onto moq's announce bus |
-| [`moq-media`](moq-media) | Publish and subscribe plumbing over moq-video and moq-audio. No iroh dependency |
-| [`moq-media-egui`](moq-media-egui) | An egui widget over the texture `moq_video::render` returns, plus the debug overlay |
-| [`moq-media-android`](moq-media-android) | The Camera2 push bridge and the EGL renderer for Android |
+| [`iroh-live-media`](iroh-live-media) | Publish and subscribe plumbing over moq-video and moq-audio. No iroh dependency |
+| [`iroh-live-egui`](iroh-live-egui) | An egui widget over the texture `moq_video::render` returns, plus the debug overlay |
+| [`iroh-live-media-android`](iroh-live-media-android) | The Camera2 push bridge and the EGL renderer for Android |
 | [`iroh-live-cli`](iroh-live-cli) | The `irl` binary |
 | [`iroh-live-relay`](iroh-live-relay) | Relay server bridging iroh publishers to browsers. No authentication yet |
 
@@ -138,7 +138,7 @@ macOS needs `brew install libtool automake`.
 ### Feature flags
 
 Every codec compiles unconditionally upstream, so there are no per-codec flags.
-What is left gates a build dependency or a graphics stack. `moq-media` defines
+What is left gates a build dependency or a graphics stack. `iroh-live-media` defines
 them and the other crates pass them through.
 
 | Flag | Default in `iroh-live` | What it adds |
@@ -154,7 +154,7 @@ them and the other crates pass them through.
 | `v4l2` | no | The V4L2 hardware H.264 codecs on ARM SoCs. Encoder and decoder both exercised on a Raspberry Pi 4 |
 | `rpicam` | no | The Raspberry Pi camera, through `rpicam-vid`. Linux only |
 
-`moq-media` adds one of its own, `test-source`, for generated video and audio.
+`iroh-live-media` adds one of its own, `test-source`, for generated video and audio.
 `iroh-live-cli` turns on `playback` as well.
 
 ### Cross-compiling for aarch64

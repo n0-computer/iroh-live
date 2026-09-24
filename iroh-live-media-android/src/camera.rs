@@ -1,7 +1,7 @@
 //! Push-based video source for Android camera frames.
 //!
 //! Android delivers camera frames through callbacks (CameraX `ImageAnalysis` or
-//! Camera2 `ImageReader`), while `moq_media::publish` reads a stream. This
+//! Camera2 `ImageReader`), while `iroh_live_media::publish` reads a stream. This
 //! bridges the two: the app pushes a frame from whichever thread the callback
 //! runs on, and the publish task pulls the newest one.
 //!
@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use moq_media::{
+use iroh_live_media::{
     frame_channel::{FrameReceiver, FrameSender, frame_channel},
     publish::VideoSource,
 };
@@ -70,7 +70,7 @@ impl CameraSink {
 /// Creates a camera bridge for a fixed capture size.
 ///
 /// The returned [`VideoSource`] goes to
-/// [`VideoPublisher::set`](moq_media::publish::VideoPublisher::set); the
+/// [`VideoPublisher::set`](iroh_live_media::publish::VideoPublisher::set); the
 /// [`CameraSink`] goes to whatever drives the camera.
 pub fn camera(size: Size) -> (CameraSink, VideoSource) {
     let (tx, rx) = frame_channel();

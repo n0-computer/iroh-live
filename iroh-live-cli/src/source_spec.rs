@@ -107,7 +107,7 @@ pub enum TestPattern {
     /// the stream to judge it, and this is the pattern those judgements can be
     /// read off: smoothness from the bar, dropped frames from the counter,
     /// latency from the clock, and A/V sync from the flash against the beep.
-    /// See `moq_media::test_source::timing`.
+    /// See `iroh_live_media::test_source::timing`.
     #[default]
     Timing,
     /// A moving gradient.

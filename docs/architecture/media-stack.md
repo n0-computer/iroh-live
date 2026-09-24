@@ -18,8 +18,8 @@ The authoritative documentation for the upstream half is upstream:
   [moq-mux](https://doc.moq.dev/lib/rs/crate/moq-mux): the catalog and the
   container formats.
 
-`moq-media` re-exports both as `moq_media::video` and `moq_media::audio`, so a
-crate that depends on moq-media names the exact build of moq-video that our
+`iroh-live-media` re-exports both as `iroh_live_media::video` and `iroh_live_media::audio`, so a
+crate that depends on iroh-live-media names the exact build of moq-video that our
 renderer links, rather than guessing at a compatible version. That matters most
 for wgpu: `moq_video::render` hands back a `wgpu::Texture` from its own build of
 wgpu 30, and a texture from a different wgpu major is a different type.
@@ -43,16 +43,16 @@ gateway carries AAC, and dropping its audio track would be a silent failure.
 
 ## What we add
 
-`moq_media::rpicam` drives `rpicam-vid` and publishes the Annex-B H.264 it
+`iroh_live_media::rpicam` drives `rpicam-vid` and publishes the Annex-B H.264 it
 already encoded. Shelling out to a camera application is an application concern
 rather than a moq-video one, which is why it lives here. See [Raspberry
 Pi](../guide/raspberry-pi.md).
 
-`moq_media::audio_file` demuxes and decodes a local audio file with symphonia and
+`iroh_live_media::audio_file` demuxes and decodes a local audio file with symphonia and
 presents the result as a frame stream. moq-audio pulls symphonia only for raw
 AAC-LC frames off the wire, so it has no container reader we could use instead.
 
-`moq_media::test_source` generates a moving pattern and a sine tone, so a test can
+`iroh_live_media::test_source` generates a moving pattern and a sine tone, so a test can
 publish over a real transport with no camera and no microphone. The pattern
 changes every frame on purpose: a static image compresses to almost nothing after
 the first keyframe, so a test watching for bytes would pass on a stalled pipeline.
@@ -60,8 +60,8 @@ Its `timing` submodule is the pair a person watches instead: a sweeping bar, a
 frame counter, a UTC clock, and a marker that flashes with the tone's beep, which
 between them measure smoothness, dropped frames, latency, and A/V sync.
 
-`moq-media-egui` draws the texture `moq_video::render` returns inside an egui
-panel, and carries the debug overlay. `moq-media-android` provides the Camera2
+`iroh-live-egui` draws the texture `moq_video::render` returns inside an egui
+panel, and carries the debug overlay. `iroh-live-media-android` provides the Camera2
 push bridge and an EGL renderer for `AHardwareBuffer` frames, neither of which is
 a moq-video concern. `demos/pi-zero/src/gles.rs` is a GLES2 renderer for hardware
 with no Vulkan, which is the Pi Zero.
@@ -142,7 +142,7 @@ probe when it picks the wrong node.
 ## Feature flags
 
 Every codec compiles unconditionally upstream, so the old per-codec flags are
-gone. What is left gates a build dependency or a graphics stack. `moq-media`
+gone. What is left gates a build dependency or a graphics stack. `iroh-live-media`
 defines them and `iroh-live` and `iroh-live-cli` pass them through.
 
 | Feature | Default | What it costs |

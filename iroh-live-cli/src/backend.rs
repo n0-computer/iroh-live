@@ -259,7 +259,7 @@ mod tests {
             .map(ToString::to_string)
             .filter(|name| !matches!(name.as_str(), "auto" | "hardware" | "software"))
             .collect();
-        let mut theirs: Vec<&str> = moq_media::video::encode::NAMES.to_vec();
+        let mut theirs: Vec<&str> = iroh_live_media::video::encode::NAMES.to_vec();
         theirs.sort_unstable();
         let mut ours: Vec<&str> = ours.iter().map(String::as_str).collect();
         ours.sort_unstable();
@@ -270,7 +270,7 @@ mod tests {
             .map(ToString::to_string)
             .filter(|name| !matches!(name.as_str(), "auto" | "hardware" | "software"))
             .collect();
-        let mut theirs: Vec<&str> = moq_media::video::decode::NAMES.to_vec();
+        let mut theirs: Vec<&str> = iroh_live_media::video::decode::NAMES.to_vec();
         theirs.sort_unstable();
         let mut ours: Vec<&str> = ours.iter().map(String::as_str).collect();
         ours.sort_unstable();

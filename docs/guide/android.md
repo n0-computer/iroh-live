@@ -12,7 +12,7 @@ They were ported out of this repository during the v2 rewrite. Backend selection
 finds them automatically, and `moq_video::encode::Kind::Named("mediacodec")` asks
 for one by name. Nothing in this repository implements a codec.
 
-`moq-media-android` carries the two things that are not a moq-video concern.
+`iroh-live-media-android` carries the two things that are not a moq-video concern.
 `camera(size)` returns a `CameraSink` and a `VideoSource::Frames`: Kotlin pushes
 NV12 or RGBA into the sink and the publisher reads frames out. It is a
 latest-wins slot, so a newer frame replaces an unconsumed older one, which is
@@ -84,7 +84,7 @@ process rather than filtering by tag.
 
 ## Feature configuration
 
-`demos/android/rust/Cargo.toml` selects `moq-media` with the `aec` feature, which
+`demos/android/rust/Cargo.toml` selects `iroh-live-media` with the `aec` feature, which
 implies `capture` and `playback`. A handset on speakerphone without echo
 cancellation publishes its own output back to the peer, which is the one audio
 failure everybody notices.

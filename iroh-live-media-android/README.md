@@ -1,6 +1,6 @@
-# moq-media-android
+# iroh-live-media-android
 
-Android integration for [`moq-media`](../moq-media): a camera bridge, an EGL
+Android integration for [`iroh-live-media`](../iroh-live-media): a camera bridge, an EGL
 renderer, and the JNI helpers around them.
 
 Hardware H.264 through MediaCodec is not here. It is upstream in `moq-video`,
@@ -13,7 +13,7 @@ Android Rust project.
 
 ## `camera`
 
-`camera(size)` returns a `CameraSink` and a `moq_media::publish::VideoSource`.
+`camera(size)` returns a `CameraSink` and a `iroh_live_media::publish::VideoSource`.
 Kotlin pushes frames into the sink through JNI, and the publisher reads them out
 the other end. `CameraSink::push_rgba` takes tightly packed RGBA; `push` takes a
 `moq_video::Frame` for a caller that built one itself.

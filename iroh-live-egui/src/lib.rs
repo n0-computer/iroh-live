@@ -6,7 +6,7 @@
 //! instance) rather than a full `VideoTrack`. Both live behind the
 //! `wgpu-render` feature (on by default) and need it to actually draw a
 //! picture: upstream `moq_video` draws decoded frames through a `wgpu`
-//! pipeline (`moq_media::video::render::Renderer`) and offers no other way to
+//! pipeline (`iroh_live_media::video::render::Renderer`) and offers no other way to
 //! read a frame's pixels, so a view built without a real `wgpu` device only
 //! ever shows a placeholder.
 //!
@@ -21,13 +21,13 @@
 //! # Example
 //!
 //! ```no_run
-//! use moq_media_egui::VideoTrackView;
+//! use iroh_live_egui::VideoTrackView;
 //!
 //! # fn draw(
 //! #     ctx: &egui::Context,
 //! #     ui: &mut egui::Ui,
-//! #     track: moq_media::subscribe::VideoTrack,
-//! #     render_state: Option<&moq_media_egui::egui_wgpu::RenderState>,
+//! #     track: iroh_live_media::subscribe::VideoTrack,
+//! #     render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
 //! # ) {
 //! let mut view = VideoTrackView::new_wgpu(ctx, "video", track, render_state);
 //! // in the update loop:
@@ -46,9 +46,9 @@ use std::{fmt, time::Duration};
 pub use egui_wgpu;
 #[cfg(feature = "wgpu-render")]
 pub use epaint;
-pub use moq_media;
+pub use iroh_live_media;
 #[cfg(feature = "wgpu-render")]
-use moq_media::subscribe::VideoTrack;
+use iroh_live_media::subscribe::VideoTrack;
 
 /// Formats a bitrate in bits per second as a human-readable string.
 ///
@@ -68,14 +68,14 @@ pub fn format_bitrate(bits_per_second: f64) -> String {
 // ---------------------------------------------------------------------------
 
 /// The `wgpu` this crate draws through, re-exported from
-/// [`moq_media::video::render`] so a caller never has to name a `wgpu`
+/// [`iroh_live_media::video::render`] so a caller never has to name a `wgpu`
 /// version independently and risk it drifting from the one the renderer
 /// actually links.
 #[cfg(feature = "wgpu-render")]
-pub use moq_media::video::render::wgpu;
+pub use iroh_live_media::video::render::wgpu;
 
-/// Draws decoded [`moq_media::video::Frame`]s into a texture registered with
-/// egui, on top of [`moq_media::video::render::Renderer`].
+/// Draws decoded [`iroh_live_media::video::Frame`]s into a texture registered with
+/// egui, on top of [`iroh_live_media::video::render::Renderer`].
 ///
 /// Bound to one `wgpu` device and queue for its lifetime; keep it alive
 /// across frames rather than rebuilding it. [`FrameView`] and
@@ -83,7 +83,7 @@ pub use moq_media::video::render::wgpu;
 /// only when neither fits (drawing into a texture id you manage yourself).
 #[cfg(feature = "wgpu-render")]
 pub struct EguiVideoRenderer {
-    renderer: moq_media::video::render::Renderer,
+    renderer: iroh_live_media::video::render::Renderer,
     render_state: egui_wgpu::RenderState,
     texture_id: Option<epaint::TextureId>,
     last_size: Option<(u32, u32)>,
@@ -107,11 +107,13 @@ impl EguiVideoRenderer {
     ///
     /// Fails if the underlying `wgpu` pipeline cannot be built (a shader
     /// compile failure, or a resource creation error on the device).
-    pub fn new(render_state: &egui_wgpu::RenderState) -> Result<Self, moq_media::video::Error> {
-        let renderer = moq_media::video::render::Renderer::new(
+    pub fn new(
+        render_state: &egui_wgpu::RenderState,
+    ) -> Result<Self, iroh_live_media::video::Error> {
+        let renderer = iroh_live_media::video::render::Renderer::new(
             &render_state.device,
             &render_state.queue,
-            moq_media::video::render::Config::new(),
+            iroh_live_media::video::render::Config::new(),
         )?;
         Ok(Self {
             renderer,
@@ -124,7 +126,7 @@ impl EguiVideoRenderer {
     /// Draws `frame` and registers (or updates) its egui texture.
     ///
     /// Takes a plain reference so a caller holding an owned
-    /// [`moq_media::video::Frame`] or an `Arc<moq_media::video::Frame>` (as
+    /// [`iroh_live_media::video::Frame`] or an `Arc<iroh_live_media::video::Frame>` (as
     /// the publisher's preview does) can pass either: `&Arc<Frame>` derefs to
     /// `&Frame` at the call site.
     ///
@@ -134,8 +136,8 @@ impl EguiVideoRenderer {
     /// format, or a device error).
     pub fn render(
         &mut self,
-        frame: &moq_media::video::Frame,
-    ) -> Result<(epaint::TextureId, (u32, u32)), moq_media::video::Error> {
+        frame: &iroh_live_media::video::Frame,
+    ) -> Result<(epaint::TextureId, (u32, u32)), iroh_live_media::video::Error> {
         let texture = self.renderer.render(frame)?;
         let view = texture.create_view(&Default::default());
         let dims = (texture.width(), texture.height());
@@ -220,8 +222,8 @@ impl FrameView {
     /// Creates a view with no renderer. [`render_frame`](Self::render_frame)
     /// only ever shows the placeholder: without a `wgpu` device there is no
     /// way to read a frame's pixels, since
-    /// [`Surface`](moq_media::video::Surface)'s conversions consume it and
-    /// [`Frame`](moq_media::video::Frame) is not `Clone`.
+    /// [`Surface`](iroh_live_media::video::Surface)'s conversions consume it and
+    /// [`Frame`](iroh_live_media::video::Frame) is not `Clone`.
     pub fn new(ctx: &egui::Context, name: &str) -> Self {
         Self::new_wgpu(ctx, name, None)
     }
@@ -257,7 +259,7 @@ impl FrameView {
     /// Draws `frame`, replacing whatever this view previously showed.
     ///
     /// A no-op (besides a warning) if this view has no renderer.
-    pub fn render_frame(&mut self, frame: &moq_media::video::Frame) {
+    pub fn render_frame(&mut self, frame: &iroh_live_media::video::Frame) {
         let Some(renderer) = &mut self.renderer else {
             tracing::warn!("frame dropped: view has no wgpu renderer to draw it with");
             return;
@@ -419,7 +421,7 @@ impl VideoTrackView {
 ///
 /// On Linux, builds a Vulkan device and requests
 /// [`wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF`] when the adapter
-/// supports it, which lets [`moq_media::video::render::Renderer`] import
+/// supports it, which lets [`iroh_live_media::video::render::Renderer`] import
 /// PipeWire DMA-BUFs without a CPU round trip. Every other platform, and any
 /// Linux adapter that lacks the feature, gets [`adapter_limits_config`]: the
 /// renderer still draws every frame correctly through its CPU-upload
@@ -443,7 +445,7 @@ pub fn create_egui_wgpu_config() -> egui_wgpu::WgpuConfiguration {
 /// A Raspberry Pi 4 has a conformant Vulkan driver that allows four, so the
 /// device request fails and eframe exits before a window ever opens. An
 /// adapter's own limits are the ones it is guaranteed to grant, and video
-/// playback wants nothing beyond them: [`moq_media::video::render::Renderer`]
+/// playback wants nothing beyond them: [`iroh_live_media::video::render::Renderer`]
 /// draws one triangle with three sampled textures.
 #[cfg(feature = "wgpu-render")]
 fn device_descriptor(
@@ -451,7 +453,7 @@ fn device_descriptor(
     required_features: wgpu::Features,
 ) -> wgpu::DeviceDescriptor<'static> {
     wgpu::DeviceDescriptor {
-        label: Some("moq-media-egui video device"),
+        label: Some("iroh-live-egui video device"),
         required_features,
         required_limits: adapter.limits(),
         ..Default::default()

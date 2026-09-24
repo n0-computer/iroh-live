@@ -1,7 +1,7 @@
-# moq-media-egui
+# iroh-live-egui
 
 An [egui](https://github.com/emilk/egui) video widget over
-[`moq-media`](../moq-media), plus a debug overlay.
+[`iroh-live-media`](../iroh-live-media), plus a debug overlay.
 
 `moq_video::render::Renderer` hands back a `wgpu::Texture` per frame. This crate
 registers that texture with egui and draws it.
@@ -13,7 +13,7 @@ draw loop and it takes the newest frame, uploads it, requests a repaint if one
 arrived, and returns an `egui::Image` plus the frame's timestamp.
 
 ```rust
-use moq_media_egui::VideoTrackView;
+use iroh_live_egui::VideoTrackView;
 
 let mut view = VideoTrackView::new_wgpu(&ctx, "remote", track, Some(render_state));
 
@@ -47,6 +47,6 @@ arrivals, A/V offset, buffer depth, and round-trip time.
 
 `wgpu-render` is the only one, and it is on by default. `wgpu` is deliberately
 not a direct dependency: every `wgpu` type this crate names comes from
-`moq_media::video::render::wgpu`, the exact build the renderer links, so a
+`iroh_live_media::video::render::wgpu`, the exact build the renderer links, so a
 texture it hands back can never be a different `wgpu` major than the one this
 crate draws with.

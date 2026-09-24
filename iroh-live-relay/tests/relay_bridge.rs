@@ -267,8 +267,8 @@ async fn iroh_publish_iroh_subscribe() {
     let broadcast = publisher.publish("relay-test").expect("publish");
     broadcast
         .video()
-        .set(moq_media::test_source::video(
-            moq_media::video::Size::new(320, 240),
+        .set(iroh_live_media::test_source::video(
+            iroh_live_media::video::Size::new(320, 240),
             30,
         ))
         .expect("set video");
@@ -446,8 +446,8 @@ async fn pull_remote_broadcast_via_ticket() {
     let broadcast = publisher.publish("remote-stream").expect("publish");
     broadcast
         .video()
-        .set(moq_media::test_source::video(
-            moq_media::video::Size::new(320, 240),
+        .set(iroh_live_media::test_source::video(
+            iroh_live_media::video::Size::new(320, 240),
             30,
         ))
         .expect("set video");
@@ -551,8 +551,8 @@ async fn iroh_publish_noq_subscribe() {
     let broadcast = publisher.publish("cli-stream").expect("publish");
     broadcast
         .video()
-        .set(moq_media::test_source::video(
-            moq_media::video::Size::new(320, 240),
+        .set(iroh_live_media::test_source::video(
+            iroh_live_media::video::Size::new(320, 240),
             30,
         ))
         .expect("set video");
@@ -595,7 +595,7 @@ async fn start_publisher(
 ) -> (
     iroh::Endpoint,
     iroh_live::Live,
-    moq_media::publish::LocalBroadcast,
+    iroh_live_media::publish::LocalBroadcast,
     iroh_live::ticket::LiveTicket,
 ) {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -612,8 +612,8 @@ async fn start_publisher(
     let broadcast = live.publish(name).expect("publish");
     broadcast
         .video()
-        .set(moq_media::test_source::video(
-            moq_media::video::Size::new(320, 240),
+        .set(iroh_live_media::test_source::video(
+            iroh_live_media::video::Size::new(320, 240),
             30,
         ))
         .expect("set video");

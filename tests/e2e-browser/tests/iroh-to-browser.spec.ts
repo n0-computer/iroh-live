@@ -166,7 +166,7 @@ function waitForOutput(
  * sample counts, since the bar is a thin vertical slice and cannot cover them
  * all at once.
  *
- * See `moq-media/src/test_source/timing.rs` for the layout. The band runs from
+ * See `iroh-live-media/src/test_source/timing.rs` for the layout. The band runs from
  * thirteen sixteenths of the height to the bottom, so nine tenths is inside it
  * with room either side for the scaling the browser applies.
  */

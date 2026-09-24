@@ -7,7 +7,7 @@
 //! display, where there is no keyboard to paste a ticket into.
 //!
 //! The camera runs on a thread of its own, the arrangement
-//! `moq_media::local_task` exists for: a capture stream holds AVFoundation
+//! `iroh_live_media::local_task` exists for: a capture stream holds AVFoundation
 //! objects on Apple platforms and cannot go to a work-stealing executor, and
 //! the QR decoder is CPU-bound enough that a runtime worker is the wrong place
 //! for it either way.
@@ -32,7 +32,7 @@ use iroh_live::{
     },
     ticket::LiveTicket,
 };
-use moq_media_egui::FrameView;
+use iroh_live_egui::FrameView;
 use moq_net::Timestamp;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
@@ -327,7 +327,7 @@ impl ScanView {
     /// error it can show is more use than one it cannot.
     pub fn new(
         ctx: &egui::Context,
-        render_state: Option<&moq_media_egui::egui_wgpu::RenderState>,
+        render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
         skip: Option<Skip>,
         camera: Option<VideoSourceSpec>,
     ) -> Self {

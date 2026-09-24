@@ -1,9 +1,9 @@
-//! Android integration for moq-media.
+//! Android integration for iroh-live-media.
 //!
-//! Provides reusable building blocks for Android apps that use moq-media:
+//! Provides reusable building blocks for Android apps that use iroh-live-media:
 //!
 //! - [`camera`] bridges Android's push-model camera callbacks to the pull-model
-//!   [`VideoSource`](moq_media::publish::VideoSource) a publish task reads
+//!   [`VideoSource`](iroh_live_media::publish::VideoSource) a publish task reads
 //! - `egl` provides safe wrappers around the EGL and GLES extension functions for
 //!   the HardwareBuffer to EGLImage to GL texture path
 //! - [`handle`]: `Arc<Mutex<T>>` <-> `i64` conversion for JNI handles

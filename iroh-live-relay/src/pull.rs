@@ -36,7 +36,7 @@ use std::{
     time::Duration,
 };
 
-use iroh_live::ticket::LiveTicket;
+use iroh_moq::ticket::LiveTicket;
 use moq_net::broadcast;
 use moq_relay::cluster::Cluster;
 use tokio::sync::watch;
@@ -421,7 +421,7 @@ impl PullState {
 
 #[cfg(test)]
 mod tests {
-    use iroh_live::ticket::LiveTicket;
+    use iroh_moq::ticket::LiveTicket;
 
     #[test]
     fn ticket_round_trip() {

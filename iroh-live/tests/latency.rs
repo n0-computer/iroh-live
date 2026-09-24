@@ -21,7 +21,7 @@ use std::{
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets};
 use iroh_live::Live;
-use moq_media::{
+use iroh_live_media::{
     playout::PlaybackPolicy,
     publish::VideoSource,
     test_source,
@@ -58,7 +58,7 @@ fn stamped_source(handed: Handed) -> VideoSource {
     let VideoSource::Frames(frames) = test_source::video(Size::new(640, 480), 30) else {
         panic!("the test pattern is a frame stream");
     };
-    let stamped: BoxStream<moq_media::video::Frame> = Box::pin(frames.map(move |frame| {
+    let stamped: BoxStream<iroh_live_media::video::Frame> = Box::pin(frames.map(move |frame| {
         handed
             .lock()
             .expect("poisoned")

@@ -6,6 +6,9 @@
 //! second [`Moq::connect`] to a peer we already have a session with returns that
 //! session rather than opening a second connection.
 
+pub mod endpoint;
+pub mod ticket;
+
 use std::{
     collections::{HashMap, hash_map},
     fmt,

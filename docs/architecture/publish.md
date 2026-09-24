@@ -1,6 +1,6 @@
 # Publishing
 
-`moq_media::publish::LocalBroadcast` wraps a `moq_net::broadcast::Producer` and
+`iroh_live_media::publish::LocalBroadcast` wraps a `moq_net::broadcast::Producer` and
 owns the catalog that describes it. Video goes through `LocalBroadcast::video()`
 and audio through `LocalBroadcast::audio()`, both of which hand back a borrowed
 publisher handle. In iroh-live the producer comes from `Live::publish(path)`,
@@ -20,7 +20,7 @@ macOS application through `moq_video::capture::open`. It needs the `capture`
 feature.
 
 `Frames(BoxStream<moq_video::Frame>)` takes frames the application produced. The
-Android demo uses it to hand over Camera2 buffers, and `moq_media::test_source`
+Android demo uses it to hand over Camera2 buffers, and `iroh_live_media::test_source`
 uses it for a generated pattern. The first frame determines the geometry the
 catalog advertises, so the publish task pulls it, reads its size and color, and
 puts it back at the head of the stream before any encoder opens.
@@ -87,7 +87,7 @@ itself, so nothing here has to state a profile and level it did not choose. The
 splitter holds the final access unit until the next start code, so end of stream
 flushes it explicitly.
 
-`moq_media::rpicam` produces such a stream by running `rpicam-vid` and reading
+`iroh_live_media::rpicam` produces such a stream by running `rpicam-vid` and reading
 Annex-B off its stdout. See [Raspberry Pi](../guide/raspberry-pi.md).
 
 ## Catalog

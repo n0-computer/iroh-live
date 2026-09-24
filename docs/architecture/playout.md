@@ -2,7 +2,7 @@
 
 Audio and video decode independently, on separate tasks, from separate tracks.
 Something has to keep them together at playout time, and no moq crate has one.
-`moq_media::sync::Sync` is that clock, ported from the moq/js player
+`iroh_live_media::sync::Sync` is that clock, ported from the moq/js player
 (`js/watch/src/sync.ts` at commit `53fe78d8`) with the same data model and the
 same arithmetic in `i64` milliseconds.
 
@@ -98,7 +98,7 @@ same way a rendition switch does, so the picture stays up across it.
 
 ## Reading the timing metrics
 
-`moq_media::stats::TimingStats` defines the timing panel the egui overlay draws.
+`iroh_live_media::stats::TimingStats` defines the timing panel the egui overlay draws.
 `audio_buf_ms` is the sink's fill level, `video_lag_ms` and `audio_lag_ms` are
 wall-clock drift from each path's PTS cadence, and `av_delta_ms` is
 `video_lag - audio_lag`, positive when video trails audio.

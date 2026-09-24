@@ -2,7 +2,7 @@
 
 A publisher that offers several renditions lets a subscriber follow its own
 downlink. `VideoTrack::enable_adaptation(signals)` starts a task that reads
-transport signals every 200 ms, asks `moq_media::adaptive::evaluate` what to do,
+transport signals every 200 ms, asks `iroh_live_media::adaptive::evaluate` what to do,
 and requests a switch when the answer is not "hold". The decoder swap itself is
 the video supervisor's job, described in [subscribing](subscribe.md).
 
@@ -12,7 +12,7 @@ itself. That gap is why this module exists.
 
 ## Signals
 
-`moq_media::net::NetworkSignals` is the transport-agnostic input:
+`iroh_live_media::net::NetworkSignals` is the transport-agnostic input:
 
 ```rust
 pub struct NetworkSignals {
@@ -26,11 +26,11 @@ pub struct NetworkSignals {
 }
 ```
 
-moq-media does not depend on iroh, so it never produces these. `iroh-live`'s
+iroh-live-media does not depend on iroh, so it never produces these. `iroh-live`'s
 `util::spawn_signal_producer` polls the selected path's stats every 200 ms,
 reads the session's bandwidth consumer, and publishes into a
 `watch::Receiver<NetworkSignals>`, which `Live::subscribe` wires onto the
-`Subscription`. A caller using moq-media without iroh either supplies its own
+`Subscription`. A caller using iroh-live-media without iroh either supplies its own
 signals or leaves the track on whichever rendition it opened.
 
 `delivery_bps` is the one figure that describes capacity. The publisher sends

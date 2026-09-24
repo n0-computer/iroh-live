@@ -1,15 +1,15 @@
 [package]
-name = "moq-media-android"
+name = "iroh-live-media-android"
 version = "0.1.0"
 edition = "2024"
-description = "Android integration for moq-media: camera sources, EGL HardwareBuffer rendering"
+description = "Android integration for iroh-live-media: camera sources, EGL HardwareBuffer rendering"
 authors = ["Franz Heinzmann <frando@n0.computer>"]
 repository = "https://github.com/n0-computer/iroh-live"
 license = "MIT OR Apache-2.0"
 publish = false
 
 [dependencies]
-moq-media = { workspace = true }
+iroh-live-media = { workspace = true }
 moq-net = { workspace = true }
 moq-video = { workspace = true }
 n0-error = { version = "1", features = ["anyhow"] }

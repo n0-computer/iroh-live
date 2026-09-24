@@ -6,7 +6,7 @@
 //! version these were ported from (`iroh-live/tests/room.rs`, recoverable
 //! from git history), nothing here touches media: broadcasts carry a plain
 //! data track with hand-written frames instead of encoded video, since
-//! `iroh-rooms` no longer depends on `moq-media`.
+//! `iroh-rooms` no longer depends on `iroh-live-media`.
 
 mod common;
 

@@ -4406,25 +4406,19 @@ dependencies = [
  "bytes",
  "clap",
  "ctor",
- "data-encoding",
  "derive_more",
  "hang",
  "iroh",
  "iroh-gossip",
- "iroh-mdns-peer-lookup",
+ "iroh-live-media",
  "iroh-moq",
- "iroh-tickets",
- "moq-media",
  "moq-net",
  "n0-error",
  "n0-future",
  "n0-tracing-test",
  "n0-watcher",
- "noq-proto",
  "patchbay",
- "postcard",
  "rand 0.10.2",
- "serde",
  "strum",
  "throttled-tracing",
  "tokio",
@@ -4438,10 +4432,10 @@ name = "iroh-live-android"
 version = "0.1.0"
 dependencies = [
  "iroh-live",
+ "iroh-live-media",
+ "iroh-live-media-android",
  "jni 0.21.1",
  "moq-audio",
- "moq-media",
- "moq-media-android",
  "moq-net",
  "moq-video",
  "n0-error",
@@ -4464,9 +4458,9 @@ dependencies = [
  "hang",
  "iroh",
  "iroh-live",
+ "iroh-live-egui",
+ "iroh-live-media",
  "iroh-rooms",
- "moq-media",
- "moq-media-egui",
  "moq-mux",
  "moq-net",
  "n0-error",
@@ -4484,6 +4478,61 @@ dependencies = [
 ]
 
 [[package]]
+name = "iroh-live-egui"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "egui-wgpu",
+ "epaint",
+ "iroh-live-media",
+ "n0-future",
+ "pollster",
+ "tracing",
+]
+
+[[package]]
+name = "iroh-live-media"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "derive_more",
+ "hang",
+ "moq-audio",
+ "moq-mux",
+ "moq-net",
+ "moq-video",
+ "n0-error",
+ "n0-future",
+ "n0-watcher",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "strum",
+ "symphonia",
+ "throttled-tracing",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "iroh-live-media-android"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glow 0.18.0",
+ "iroh-live-media",
+ "khronos-egl",
+ "libc",
+ "moq-net",
+ "moq-video",
+ "n0-error",
+ "n0-future",
+ "tracing",
+]
+
+[[package]]
 name = "iroh-live-relay"
 version = "0.1.0"
 dependencies = [
@@ -4496,8 +4545,8 @@ dependencies = [
  "include_dir",
  "iroh",
  "iroh-live",
+ "iroh-live-media",
  "iroh-moq",
- "moq-media",
  "moq-net",
  "moq-relay",
  "moq-tokio",
@@ -4567,13 +4616,19 @@ dependencies = [
 name = "iroh-moq"
 version = "0.1.0"
 dependencies = [
+ "data-encoding",
+ "derive_more",
  "futures-lite",
  "iroh",
+ "iroh-mdns-peer-lookup",
  "moq-net",
  "moq-tokio",
  "n0-error",
  "n0-future",
  "n0-tracing-test",
+ "noq-proto",
+ "postcard",
+ "serde",
  "tokio",
  "tokio-util",
  "tracing",
@@ -5463,61 +5518,6 @@ dependencies = [
  "bytes",
  "moq-net",
  "thiserror 2.0.20",
-]
-
-[[package]]
-name = "moq-media"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "derive_more",
- "hang",
- "moq-audio",
- "moq-mux",
- "moq-net",
- "moq-video",
- "n0-error",
- "n0-future",
- "n0-watcher",
- "serde",
- "serde_json",
- "serde_with",
- "strum",
- "symphonia",
- "throttled-tracing",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "moq-media-android"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "glow 0.18.0",
- "khronos-egl",
- "libc",
- "moq-media",
- "moq-net",
- "moq-video",
- "n0-error",
- "n0-future",
- "tracing",
-]
-
-[[package]]
-name = "moq-media-egui"
-version = "0.1.0"
-dependencies = [
- "egui",
- "egui-wgpu",
- "epaint",
- "moq-media",
- "n0-future",
- "pollster",
- "tracing",
 ]
 
 [[package]]
@@ -7506,10 +7506,10 @@ dependencies = [
  "gpio-cdev",
  "iroh",
  "iroh-live",
+ "iroh-live-media",
  "khronos-egl",
  "libc",
  "linux-embedded-hal",
- "moq-media",
  "moq-video",
  "n0-error",
  "n0-future",

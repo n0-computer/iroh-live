@@ -8,12 +8,12 @@ guides.
 
 | Crate | Role |
 |---|---|
-| `iroh-live` | `Live`, `Call`, `Subscription`, tickets. Depends on `moq-media` and `iroh-moq` |
-| `iroh-moq` | MoQ transport over iroh: the node origin, sessions, ALPN negotiation |
+| `iroh-live` | `Live`, `Call`, `Subscription`. Depends on `iroh-live-media` and `iroh-moq` |
+| `iroh-moq` | MoQ transport over iroh: the node origin, sessions, ALPN negotiation, tickets, endpoint setup |
 | `iroh-rooms` | Gossip rooms. No media dependency |
-| `moq-media` | Publish and subscribe plumbing over moq-video and moq-audio. No iroh dependency |
-| `moq-media-egui` | egui widget and debug overlay |
-| `moq-media-android` | Camera2 push bridge and EGL renderer |
+| `iroh-live-media` | Publish and subscribe plumbing over moq-video and moq-audio. No iroh dependency |
+| `iroh-live-egui` | egui widget and debug overlay |
+| `iroh-live-media-android` | Camera2 push bridge and EGL renderer |
 | `iroh-live-cli` | The `irl` binary |
 | `iroh-live-relay` | The browser bridge |
 
@@ -63,7 +63,7 @@ needs a test.
 
 ## Key types
 
-Publishing, in `moq_media::publish`:
+Publishing, in `iroh_live_media::publish`:
 
 - `LocalBroadcast` owns a `moq_net::broadcast::Producer` and the catalog.
 - `VideoPublisher::set_renditions(source, renditions)` opens the source once and
@@ -72,13 +72,13 @@ Publishing, in `moq_media::publish`:
   `Frames`.
 - `LocalBroadcast::preview()` taps the raw frames on their way to the encoders.
 
-Subscribing, in `moq_media::subscribe`:
+Subscribing, in `iroh_live_media::subscribe`:
 
 - `RemoteBroadcast` watches the catalog and hands out tracks.
 - `VideoTrack::take()` polls the latest-wins frame slot; `recv()` awaits.
 - `VideoTrack::set_rendition` and `enable_adaptation` drive the same request
   channel.
-- `AudioTrack` writes into the process-wide `moq_media::playback` engine.
+- `AudioTrack` writes into the process-wide `iroh_live_media::playback` engine.
 
 Transport, in `iroh_moq`: `Moq::publish(path)` returns a producer synchronously
 and announces it node-wide. `MoqSession::subscribe(path)` waits for the peer's

@@ -5,7 +5,7 @@ Live audio and video over [iroh](https://github.com/n0-computer/iroh).
 `Live` binds an iroh `Endpoint` to a MoQ transport. `Live::publish` hands back a
 broadcast every connected peer can subscribe to, `Live::subscribe` reaches one a
 peer publishes, and `Call` is 1:1 sugar over the two. The media comes from
-[`moq-media`](../moq-media), re-exported here as `iroh_live::media`.
+[`iroh-live-media`](../iroh-live-media), re-exported here as `iroh_live::media`.
 
 ## Publishing
 
@@ -44,7 +44,7 @@ gossip instance, which `LiveBuilder::with_gossip()` creates and
 
 ## Feature flags
 
-All pass through to `moq-media`: `capture` and `render` by default, plus
+All pass through to `iroh-live-media`: `capture` and `render` by default, plus
 `playback`, `aec`, `pipewire`, `vaapi`, and `nvidia`.
 
 ## Examples

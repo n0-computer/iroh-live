@@ -19,7 +19,7 @@
 
 | Page | Summary |
 |---|---|
-| [Overview](architecture/index.md) | The crates, what `moq-media` adds over upstream, and the conventions |
+| [Overview](architecture/index.md) | The crates, what `iroh-live-media` adds over upstream, and the conventions |
 | [The media stack](architecture/media-stack.md) | What we use from moq-video and moq-audio, what we contributed back, and what was lost |
 | [Transport](architecture/transport.md) | `iroh-moq`: the node origin, session lifetime, and ALPN negotiation |
 | [Publishing](architecture/publish.md) | `LocalBroadcast`, sources, the simulcast ladder, and demand-gated encoders |

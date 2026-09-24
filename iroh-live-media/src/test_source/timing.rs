@@ -74,11 +74,11 @@ const BEEP: Gate = Gate::Pulse {
 /// # Examples
 ///
 /// ```no_run
-/// use moq_media::{test_source::timing, video::Size};
+/// use iroh_live_media::{test_source::timing, video::Size};
 ///
 /// let clock = moq_mux::Clock::new();
 /// let video = timing::video(Size::new(1280, 720), 30, clock);
-/// let audio = timing::audio(48_000, moq_media::audio::Layout::Stereo, clock);
+/// let audio = timing::audio(48_000, iroh_live_media::audio::Layout::Stereo, clock);
 /// ```
 pub fn video(size: Size, framerate: u32, clock: Clock) -> VideoSource {
     let framerate = u64::from(framerate.max(1));

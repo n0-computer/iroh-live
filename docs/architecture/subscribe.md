@@ -1,6 +1,6 @@
 # Subscribing
 
-`moq_media::subscribe::RemoteBroadcast` wraps a `moq_net::broadcast::Consumer`,
+`iroh_live_media::subscribe::RemoteBroadcast` wraps a `moq_net::broadcast::Consumer`,
 reads the catalog, and hands out a `VideoTrack` and an `AudioTrack`. Decoding is
 upstream: `moq_video::decode::Consumer` and `moq_audio::decode::Consumer` pick a
 backend from the catalog entry and hand back frames. Three things have no
@@ -77,7 +77,7 @@ wants, and `recv()` awaits the next frame.
 
 `moq_audio::playback::Engine` owns the output device and mixes every sink into
 it, so a process watching several broadcasts opens one engine and one sink per
-broadcast. `moq_media::playback` owns that one engine, opening it lazily on
+broadcast. `iroh_live_media::playback` owns that one engine, opening it lazily on
 first use. `playback::devices()` lists outputs, `playback::open(config)` chooses
 one before the first subscription, and `playback::switch(config)` moves every
 playing track to another device without interrupting it.

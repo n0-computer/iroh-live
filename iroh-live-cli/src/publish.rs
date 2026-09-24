@@ -1,6 +1,6 @@
 //! `irl publish`: publish a capture device or a media file over iroh.
 //!
-//! Capture sources go through `moq-media`'s encode path, which fans one device
+//! Capture sources go through `iroh-live-media`'s encode path, which fans one device
 //! out to the simulcast ladder `--renditions` describes. A `file:` source takes
 //! the import path instead: its tracks are republished as they already are.
 
@@ -161,7 +161,7 @@ mod preview {
             video,
         },
     };
-    use moq_media_egui::overlay::{DebugOverlay, StatCategory, fit_to_aspect};
+    use iroh_live_egui::overlay::{DebugOverlay, StatCategory, fit_to_aspect};
     use n0_error::{Result, anyerr};
     use tracing::{info, warn};
 

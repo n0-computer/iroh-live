@@ -19,14 +19,14 @@ moq-audio = { workspace = true }
 # comes from Kotlin's Camera2, not from a device this crate opens.
 # `aec` implies `capture` and `playback`: a handset on speakerphone has to
 # subtract its own output from the microphone or it publishes itself back.
-moq-media = { workspace = true, features = ["aec"] }
-moq-media-android = { workspace = true }
+iroh-live-media = { workspace = true, features = ["aec"] }
+iroh-live-media-android = { workspace = true }
 # The broadcast model behind the offline demo pipelines, and `Timestamp`.
 moq-net = { workspace = true }
 # `Frame` / `Surface` / `I420`, the vocabulary the camera and the renderer meet in.
 # `mediacodec` is what gates `Surface::HardwareBuffer` and the `ndk` re-export
 # below, and the workspace turns moq-video's default features off, so this crate
-# has to ask for it. Safe here and not in `moq-media-android`, because every
+# has to ask for it. Safe here and not in `iroh-live-media-android`, because every
 # dependency in this section is already `cfg(target_os = "android")`.
 moq-video = { workspace = true, features = ["mediacodec"] }
 # Held at 0.21. jni 0.22 splits `JNIEnv` into an owned `Env` and an

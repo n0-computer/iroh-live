@@ -2,12 +2,12 @@
 
 Debugging a real-time pipeline means seeing frame timing, network conditions, and
 codec behaviour while the system runs at 30 frames a second. Two pieces cover
-that: a metrics vocabulary in `moq-media` and an overlay in `moq-media-egui` that
+that: a metrics vocabulary in `iroh-live-media` and an overlay in `iroh-live-egui` that
 draws it.
 
 ## Metrics
 
-`moq_media::stats` defines two primitives and groups them into typed structs, so
+`iroh_live_media::stats` defines two primitives and groups them into typed structs, so
 there are no string keys and no registration.
 
 A `Metric` holds an exponentially smoothed current value and a ring buffer of
@@ -41,7 +41,7 @@ configuration step.
 
 ## The debug overlay
 
-`moq_media_egui::overlay::DebugOverlay` draws a translucent bar along the bottom
+`iroh_live_egui::overlay::DebugOverlay` draws a translucent bar along the bottom
 of a video tile with one clickable section per `StatCategory`: `Net`, `Capture`,
 `Render`, and `Time`. Clicking a section opens a detail panel above the bar,
 stacking upward, with each metric shown as a value, a unit, a threshold colour,

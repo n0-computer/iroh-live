@@ -116,8 +116,8 @@ mod window {
         },
         moq::MoqSession,
     };
+    use iroh_live_egui::egui_wgpu::RenderState;
     use iroh_rooms::{Room, RoomEvent, RoomEvents, RoomHandle};
-    use moq_media_egui::egui_wgpu::RenderState;
     use n0_error::{Result, anyerr};
     use n0_future::task::AbortOnDropHandle;
     use tokio::task::JoinSet;

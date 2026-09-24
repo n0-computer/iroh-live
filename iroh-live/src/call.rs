@@ -1,6 +1,6 @@
 use iroh::{EndpointAddr, EndpointId, endpoint::ConnectionError};
+use iroh_live_media::{net::NetworkSignals, subscribe::RemoteBroadcast};
 use iroh_moq::MoqSession;
-use moq_media::{net::NetworkSignals, subscribe::RemoteBroadcast};
 use n0_error::{AnyError, Result, stack_error};
 use tokio::sync::watch;
 

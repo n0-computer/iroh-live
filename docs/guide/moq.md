@@ -38,7 +38,7 @@ rendition's codec, resolution, and bitrate. A subscriber reads it to learn what
 exists before subscribing to anything, and watches it for changes, since a
 publisher can add a rendition mid-broadcast.
 
-iroh-live extends the catalog rather than replacing it. `moq_media::catalog`
+iroh-live extends the catalog rather than replacing it. `iroh_live_media::catalog`
 flattens `chat` and `user` sections alongside hang's `video` and `audio`, so a
 plain hang player ignores them and still plays the media. That is how a
 subscriber finds the chat track without guessing at a name, and how a publisher's
@@ -46,7 +46,7 @@ display name travels with its stream.
 
 ## Where the boundary is
 
-`moq-media` speaks `moq_net` types and nothing else: a publish is a
+`iroh-live-media` speaks `moq_net` types and nothing else: a publish is a
 `broadcast::Producer`, a subscription is a `broadcast::Consumer`. It does not know
 whether those arrived over iroh, over WebTransport, or through a local loopback.
 

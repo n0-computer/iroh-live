@@ -2,7 +2,7 @@
 //!
 //! The window draws the decoded video and the playback engine takes the audio.
 //! Unless `--rendition` pins one, the video track follows the downlink: the
-//! subscription's transport signals drive `moq-media`'s adaptation, which swaps
+//! subscription's transport signals drive `iroh-live-media`'s adaptation, which swaps
 //! renditions without the picture going blank.
 //!
 //! `--scan` starts that window on the camera rather than on a ticket, and
@@ -331,7 +331,7 @@ mod window {
 
     use eframe::egui;
     use iroh_live::{Live, Subscription, media::subscribe::MediaTracks, ticket::LiveTicket};
-    use moq_media_egui::egui_wgpu::RenderState;
+    use iroh_live_egui::egui_wgpu::RenderState;
     use n0_error::{Result, anyerr};
     use n0_future::task::{AbortOnDropHandle, spawn};
     use tokio::sync::oneshot;

@@ -452,7 +452,7 @@ pub(crate) async fn run_drm(video_track: VideoTrack, _session: MoqSession) -> Re
     Ok(())
 }
 
-/// Renders a generated frame stream (e.g. [`moq_media::test_source`]) to HDMI
+/// Renders a generated frame stream (e.g. [`iroh_live_media::test_source`]) to HDMI
 /// - no network needed.
 pub(crate) async fn run_fb_demo(mut frames: BoxStream<Frame>) -> Result<()> {
     let mut disp = DrmDisplay::init()?;

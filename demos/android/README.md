@@ -95,7 +95,7 @@ for H.264 encode and decode, with openh264 behind it in software.
 
 What the crate does select, in `demos/android/rust/Cargo.toml`:
 
-- `moq-media`: `aec`, which implies `capture` for the microphone and `playback`
+- `iroh-live-media`: `aec`, which implies `capture` for the microphone and `playback`
   for the speaker. Echo cancellation is not optional on a handset: without it, a
   device on speakerphone publishes its own output back to the peer.
 
@@ -117,7 +117,7 @@ demos/android/
       CameraHelper.kt   # Camera2 camera capture
 ```
 
-The Kotlin side captures camera frames via Camera2 and pushes them into the Rust layer through JNI. The Rust side uses `moq-media` to encode with Android MediaCodec H.264 and publish through `iroh-live` sessions.
+The Kotlin side captures camera frames via Camera2 and pushes them into the Rust layer through JNI. The Rust side uses `iroh-live-media` to encode with Android MediaCodec H.264 and publish through `iroh-live` sessions.
 
 ## Requirements
 

@@ -112,7 +112,7 @@ mod window {
         moq::MoqSession,
         ticket::LiveTicket,
     };
-    use moq_media_egui::{egui_wgpu::RenderState, overlay::fit_to_aspect};
+    use iroh_live_egui::{egui_wgpu::RenderState, overlay::fit_to_aspect};
     use n0_error::{Result, anyerr};
     use n0_future::task::{AbortOnDropHandle, spawn};
     use tokio::sync::{mpsc, oneshot};

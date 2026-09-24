@@ -102,7 +102,7 @@ mod app {
     /// Renders a generated test pattern directly to HDMI - no network, no
     /// window system, no camera needed.
     async fn cmd_fb_demo() -> n0_error::Result {
-        use moq_media::{publish::VideoSource, test_source};
+        use iroh_live_media::{publish::VideoSource, test_source};
         use moq_video::Size;
 
         let VideoSource::Frames(frames) = test_source::video(Size::new(640, 480), 30) else {

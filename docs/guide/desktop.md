@@ -17,7 +17,7 @@ page](https://doc.moq.dev/lib/rs/crate/moq-video). Two points matter when you
 wire it up here.
 
 The wgpu version is fixed by the renderer. `moq_video::render` re-exports the
-exact build it links, reachable as `moq_media::video::render::wgpu`, and a
+exact build it links, reachable as `iroh_live_media::video::render::wgpu`, and a
 texture from a different wgpu major is a different type. This is why the
 workspace pins egui and eframe to versions that sit on the same wgpu major.
 
@@ -26,12 +26,12 @@ create the device, or every DMA-BUF frame from PipeWire screen capture takes the
 CPU upload path instead.
 
 Enable the `render` feature to get any of this. It is on by default in
-`iroh-live` and `iroh-live-cli`, and off in `moq-media`, since a build that never
+`iroh-live` and `iroh-live-cli`, and off in `iroh-live-media`, since a build that never
 draws should not pull a graphics stack.
 
 ## egui
 
-`moq-media-egui` is the ready-made integration. Two types matter.
+`iroh-live-egui` is the ready-made integration. Two types matter.
 
 `VideoTrackView` wraps a `VideoTrack` and polls it. Call `render(ctx, size)` in
 your draw loop and it takes the newest frame, uploads it, requests a repaint if

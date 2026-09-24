@@ -83,13 +83,14 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
     // `Announce` rather than `LookupOnly`: the relay accepts sessions, and a
     // publisher reaches it by endpoint id, so it has an address worth publishing.
     let builder = iroh::Endpoint::builder(presets::N0)
-        .transport_config(iroh_live::util::transport_config())
+        .transport_config(iroh_moq::endpoint::transport_config())
         .secret_key(iroh_secret)
         .alpns(alpns);
-    let iroh_endpoint = iroh_live::util::with_mdns(builder, iroh_live::util::LanPresence::Announce)
-        .await
-        .bind()
-        .await?;
+    let iroh_endpoint =
+        iroh_moq::endpoint::with_mdns(builder, iroh_moq::endpoint::LanPresence::Announce)
+            .await
+            .bind()
+            .await?;
 
     // The backend is left to its default, which is noq. The iroh endpoint is
     // part of the configuration now rather than attached after `init`.
@@ -214,7 +215,7 @@ pub async fn run(config: RelayConfig) -> anyhow::Result<()> {
         let ticket = extract_name_from_url(&request).and_then(|name| {
             // The requested spelling travels with the ticket: it is the path the
             // subscriber will be announced under, and the two have to agree.
-            let ticket = name.parse::<iroh_live::ticket::LiveTicket>().ok()?;
+            let ticket = name.parse::<iroh_moq::ticket::LiveTicket>().ok()?;
             Some((name, ticket))
         });
         debug!(conn_id, %transport, pull = ticket.is_some(), "accepted connection");

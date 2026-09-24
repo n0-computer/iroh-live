@@ -1,4 +1,4 @@
-# moq-media
+# iroh-live-media
 
 Publish and subscribe plumbing over
 [moq-video](https://doc.moq.dev/lib/rs/crate/moq-video) and
@@ -8,7 +8,7 @@ carried it.
 
 The media itself is upstream. `moq_video` captures, encodes, decodes, and
 renders; `moq_audio` does the same for sound and owns the speaker. Both are
-re-exported as `moq_media::video` and `moq_media::audio`, so a dependent names
+re-exported as `iroh_live_media::video` and `iroh_live_media::audio`, so a dependent names
 the exact build this crate links. What lives here is the layer above, which moq
 has no counterpart for.
 
@@ -18,7 +18,7 @@ has no counterpart for.
 `VideoPublisher` and `AudioPublisher` take a source and a set of renditions.
 
 ```rust
-use moq_media::{publish::LocalBroadcast, video};
+use iroh_live_media::{publish::LocalBroadcast, video};
 
 let broadcast = LocalBroadcast::new(producer)?;
 broadcast.video().set(video::capture::Config::default())?;

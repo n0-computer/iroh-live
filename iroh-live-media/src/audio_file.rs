@@ -366,7 +366,7 @@ mod tests {
     /// Writes `contents` to a uniquely named file in the temp directory.
     fn temp_file(tag: &str, contents: &[u8]) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "moq-media-{tag}-{}-{:?}.wav",
+            "iroh-live-media-{tag}-{}-{:?}.wav",
             std::process::id(),
             std::thread::current().id(),
         ));
@@ -437,7 +437,8 @@ mod tests {
     /// nothing to slow it down and the thread spins on the file forever.
     #[test]
     fn a_file_with_no_samples_stops_instead_of_looping() {
-        let path = std::env::temp_dir().join(format!("moq-media-empty-{}.wav", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("iroh-live-media-empty-{}.wav", std::process::id()));
         std::fs::File::create(&path)
             .and_then(|mut file| file.write_all(&empty_wav()))
             .expect("write the test file");

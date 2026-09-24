@@ -14,7 +14,7 @@ use iroh_live::{
         subscribe::{AudioTrack, MediaTracks, RemoteBroadcast},
     },
 };
-use moq_media_egui::{
+use iroh_live_egui::{
     FrameView, VideoTrackView,
     overlay::{DebugOverlay, StatCategory},
 };
@@ -269,13 +269,13 @@ pub fn shutdown_publish_blocking(live: &Live, broadcast: &mut LocalBroadcast) {
 
 /// The window options every media window here wants.
 ///
-/// eframe's wgpu renderer, configured the way `moq-media-egui`'s video
+/// eframe's wgpu renderer, configured the way `iroh-live-egui`'s video
 /// renderer needs it: a video frame arrives as a `wgpu::Texture` and there is
 /// no path that draws one through the glow backend.
 pub fn native_options(fullscreen: bool) -> eframe::NativeOptions {
     eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
-        wgpu_options: moq_media_egui::create_egui_wgpu_config(),
+        wgpu_options: iroh_live_egui::create_egui_wgpu_config(),
         viewport: egui::ViewportBuilder::default().with_fullscreen(fullscreen),
         ..Default::default()
     }
@@ -299,7 +299,7 @@ impl LocalPreview {
     pub fn new(
         ctx: &egui::Context,
         name: &str,
-        render_state: Option<&moq_media_egui::egui_wgpu::RenderState>,
+        render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
     ) -> Self {
         Self {
             view: FrameView::new_wgpu(ctx, name, render_state),
@@ -328,7 +328,7 @@ impl LocalPreview {
 /// The rendition a viewer asked for, as distinct from the one decoding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenditionChoice {
-    /// Follow the downlink: the transport signals drive `moq-media`'s
+    /// Follow the downlink: the transport signals drive `iroh-live-media`'s
     /// adaptation, which swaps renditions without the picture going blank.
     Auto,
     /// Hold one rendition whatever the downlink does.
@@ -376,7 +376,7 @@ impl RemoteView {
         broadcast: RemoteBroadcast,
         tracks: MediaTracks,
         signals: watch::Receiver<NetworkSignals>,
-        render_state: Option<&moq_media_egui::egui_wgpu::RenderState>,
+        render_state: Option<&iroh_live_egui::egui_wgpu::RenderState>,
     ) -> Self {
         let MediaTracks { video, audio } = tracks;
         let video = video.map(|track| VideoTrackView::new_wgpu(ctx, name, track, render_state));

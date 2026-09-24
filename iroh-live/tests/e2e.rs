@@ -8,7 +8,7 @@ use std::{sync::OnceLock, time::Duration};
 
 use iroh::{Endpoint, address_lookup::MemoryLookup, endpoint::presets};
 use iroh_live::Live;
-use moq_media::{
+use iroh_live_media::{
     adaptive::AdaptiveConfig,
     net::NetworkSignals,
     publish::VideoRendition,
@@ -113,7 +113,7 @@ async fn publish_subscribe_audio() {
     broadcast.audio().set(test_source::audio(
         440.0,
         48_000,
-        moq_media::audio::Layout::Mono,
+        iroh_live_media::audio::Layout::Mono,
     ));
 
     let subscriber = Live::builder(endpoint().await).spawn();
@@ -137,11 +137,11 @@ async fn publish_subscribe_audio() {
     .await
     .expect("timed out waiting for an audio rendition");
 
-    let mut audio = moq_media::audio::decode::Consumer::new(
+    let mut audio = iroh_live_media::audio::decode::Consumer::new(
         remote.consumer(),
         &rendition.1,
         rendition.0,
-        moq_media::audio::decode::Options::new(),
+        iroh_live_media::audio::decode::Options::new(),
     )
     .await
     .expect("failed to open the audio decoder");

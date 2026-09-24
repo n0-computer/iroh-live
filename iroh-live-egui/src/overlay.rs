@@ -10,7 +10,7 @@ use std::{
 };
 
 use egui;
-use moq_media::{
+use iroh_live_media::{
     stats::{self, Label, Metric, NetStats, PublishStats, SubscribeStats, Timeline},
     subscribe::VideoTrack,
 };
@@ -108,7 +108,7 @@ impl DebugOverlay {
             timeline_scroll: 0.0,
             timeline_live: true,
             salt: egui::Id::new((
-                "moq-media-egui overlay",
+                "iroh-live-egui overlay",
                 OVERLAY_SALT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             )),
         }
@@ -130,7 +130,7 @@ impl DebugOverlay {
     /// rendition label in sync with the current track state. `VideoTrack`
     /// exposes no decoder name upstream, so `stats.render.decoder` is not
     /// touched here; a caller that logs the decoder at
-    /// [`RemoteBroadcast::video`](moq_media::subscribe::RemoteBroadcast::video)
+    /// [`RemoteBroadcast::video`](iroh_live_media::subscribe::RemoteBroadcast::video)
     /// time can set it itself.
     pub fn update_from_track(&self, stats: &SubscribeStats, track: &VideoTrack) {
         stats.render.rendition.set(track.rendition());

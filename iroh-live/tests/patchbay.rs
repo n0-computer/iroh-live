@@ -2,7 +2,7 @@
 //!
 //! [`e2e`](../e2e.rs) proves the pipeline works when nothing is wrong with the
 //! transport, and drives adaptation by pushing made-up
-//! [`NetworkSignals`](moq_media::net::NetworkSignals) into a watch channel.
+//! [`NetworkSignals`](iroh_live_media::net::NetworkSignals) into a watch channel.
 //! Neither says anything about the chain those signals come from. These tests
 //! put a publisher and a subscriber in separate network namespaces with a router
 //! between them, apply netem latency, jitter and loss to the links,
@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use iroh::{Endpoint, endpoint::presets};
 use iroh_live::Live;
-use moq_media::{
+use iroh_live_media::{
     adaptive::AdaptiveConfig,
     publish::{LocalBroadcast, VideoRendition},
     subscribe::VideoTrack,
@@ -663,7 +663,7 @@ async fn adaptation_follows_a_rate_limit() {
         // without a break. The loop below lifts the cap once its evidence is in,
         // and the loop's evidence is not elapsed time: a queueing round trip
         // only counts towards a downgrade when QUIC measures it again (see
-        // `moq_media::adaptive`, `queueing_samples`). Waiting out `held` on a
+        // `iroh_live_media::adaptive`, `queueing_samples`). Waiting out `held` on a
         // path that handed out one reading throughout satisfies this test and
         // nothing in the adaptation loop, which is what used to make it flake.
         let mut readings = 0u32;

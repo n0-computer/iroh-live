@@ -2,8 +2,7 @@
 //!
 //! A [`LiveTicket`] is a publisher's endpoint id and the name of one of its
 //! broadcasts, in a form that survives a chat message or a QR code. The
-//! subscriber gets both halves of what [`Live::subscribe`](crate::Live::subscribe)
-//! asks for out of one string.
+//! subscriber gets both halves of what subscribing asks for out of one string.
 //!
 //! Socket addresses are deliberately absent. A publisher announces its
 //! addresses to pkarr and over mDNS, and a subscriber looks them up from the id
@@ -41,9 +40,8 @@ pub struct LiveTicket {
     /// The publisher's endpoint, holding its id and no addresses.
     ///
     /// An [`EndpointAddr`] rather than a bare [`EndpointId`] because that is
-    /// what [`Live::subscribe`](crate::Live::subscribe) and
-    /// [`Call::dial`](crate::Call::dial) take, and an address set left empty is
-    /// how iroh spells "resolve this one."
+    /// what dialing takes, and an address set left empty is how iroh spells
+    /// "resolve this one."
     pub endpoint: EndpointAddr,
     /// The broadcast name to subscribe to.
     pub broadcast_name: String,

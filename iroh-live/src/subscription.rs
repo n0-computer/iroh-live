@@ -1,5 +1,5 @@
+use iroh_live_media::{net::NetworkSignals, subscribe::RemoteBroadcast};
 use iroh_moq::MoqSession;
-use moq_media::{net::NetworkSignals, subscribe::RemoteBroadcast};
 use tokio::sync::watch;
 
 /// A subscription to one remote broadcast.
@@ -51,13 +51,13 @@ impl Subscription {
     }
 
     /// Returns the transport signals, for
-    /// [`VideoTrack::enable_adaptation`](moq_media::subscribe::VideoTrack::enable_adaptation).
+    /// [`VideoTrack::enable_adaptation`](iroh_live_media::subscribe::VideoTrack::enable_adaptation).
     pub fn signals(&self) -> &watch::Receiver<NetworkSignals> {
         &self.signals
     }
 
     /// Opens whichever of video and audio the broadcast carries.
-    pub async fn media(&self) -> moq_media::subscribe::MediaTracks {
+    pub async fn media(&self) -> iroh_live_media::subscribe::MediaTracks {
         self.broadcast.media().await
     }
 

@@ -5,7 +5,7 @@ use std::time::Duration;
 use clap::Parser;
 use iroh::EndpointId;
 use iroh_live::{Live, ticket::LiveTicket};
-use moq_media::rpicam;
+use iroh_live_media::rpicam;
 
 use crate::epaper;
 

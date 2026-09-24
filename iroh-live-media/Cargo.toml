@@ -1,5 +1,5 @@
 [package]
-name = "moq-media"
+name = "iroh-live-media"
 version = "0.1.0"
 edition = "2024"
 description = "publish and subscribe plumbing over moq-video and moq-audio"

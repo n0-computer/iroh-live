@@ -5,9 +5,9 @@ members = [
     "iroh-live-relay",
     "iroh-moq",
     "iroh-rooms",
-    "moq-media",
-    "moq-media-android",
-    "moq-media-egui",
+    "iroh-live-media",
+    "iroh-live-media-android",
+    "iroh-live-egui",
     "demos/android/rust",
     "demos/pi-zero",
 ]
@@ -53,9 +53,9 @@ iroh-live = { path = "iroh-live", default-features = false }
 iroh-live-relay = { path = "iroh-live-relay" }
 iroh-moq = { path = "iroh-moq" }
 iroh-rooms = { path = "iroh-rooms" }
-moq-media = { path = "moq-media", default-features = false }
-moq-media-android = { path = "moq-media-android" }
-moq-media-egui = { path = "moq-media-egui" }
+iroh-live-media = { path = "iroh-live-media", default-features = false }
+iroh-live-media-android = { path = "iroh-live-media-android" }
+iroh-live-egui = { path = "iroh-live-egui" }
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "deny", check-cfg = ["cfg(docsrs)"] }

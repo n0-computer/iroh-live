@@ -20,8 +20,8 @@ iroh = { workspace = true }
 iroh-live = { workspace = true, features = ["capture"] }
 iroh-rooms = { workspace = true }
 moq-net = { workspace = true }
-moq-media = { workspace = true, features = ["test-source", "capture"] }
-moq-media-egui = { workspace = true, optional = true }
+iroh-live-media = { workspace = true, features = ["test-source", "capture"] }
+iroh-live-egui = { workspace = true, optional = true }
 moq-mux = { workspace = true }
 n0-error = { version = "1", features = ["anyhow"] }
 n0-future = "0.3.2"
@@ -57,17 +57,17 @@ eframe = { workspace = true, features = ["wayland", "x11"] }
 # Capture is not a feature here: `irl devices` and `irl publish` are most of the
 # CLI and neither compiles without it, so the dependencies ask for it directly.
 default = ["playback", "render", "sound-server"]
-playback = ["iroh-live/playback", "moq-media/playback"]
-sound-server = ["iroh-live/sound-server", "moq-media/sound-server"]
-aec = ["iroh-live/aec", "moq-media/aec"]
-pipewire = ["iroh-live/pipewire", "moq-media/pipewire"]
-render = ["iroh-live/render", "moq-media/render", "dep:moq-media-egui"]
+playback = ["iroh-live/playback", "iroh-live-media/playback"]
+sound-server = ["iroh-live/sound-server", "iroh-live-media/sound-server"]
+aec = ["iroh-live/aec", "iroh-live-media/aec"]
+pipewire = ["iroh-live/pipewire", "iroh-live-media/pipewire"]
+render = ["iroh-live/render", "iroh-live-media/render", "dep:iroh-live-egui"]
 # `--video rpicam`, which publishes the H.264 `rpicam-vid` already encoded.
-rpicam = ["iroh-live/rpicam", "moq-media/rpicam"]
-vaapi = ["iroh-live/vaapi", "moq-media/vaapi"]
-nvidia = ["iroh-live/nvidia", "moq-media/nvidia"]
+rpicam = ["iroh-live/rpicam", "iroh-live-media/rpicam"]
+vaapi = ["iroh-live/vaapi", "iroh-live-media/vaapi"]
+nvidia = ["iroh-live/nvidia", "iroh-live-media/nvidia"]
 # `--encoder v4l2` and the matching decoder, for an ARM SoC's M2M codec node.
-v4l2 = ["iroh-live/v4l2", "moq-media/v4l2"]
+v4l2 = ["iroh-live/v4l2", "iroh-live-media/v4l2"]
 qlog = ["iroh/qlog"]
 
 [lints]

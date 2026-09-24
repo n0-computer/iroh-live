@@ -19,20 +19,20 @@ use std::{
 };
 
 use iroh_live::{Call, Live, Subscription, ticket::LiveTicket};
-use jni::{
-    JNIEnv, JavaVM,
-    objects::{JByteArray, JClass, JObject, JString},
-    sys::{jboolean, jint, jlong},
-};
-use moq_media::{
+use iroh_live_media::{
     frame_channel::FrameReceiver,
     publish::LocalBroadcast,
     subscribe::{AudioTrack, RemoteBroadcast, VideoTrack},
 };
-use moq_media_android::{
+use iroh_live_media_android::{
     camera::{CameraSink, camera},
     handle,
     renderer::AndroidRenderer,
+};
+use jni::{
+    JNIEnv, JavaVM,
+    objects::{JByteArray, JClass, JObject, JString},
+    sys::{jboolean, jint, jlong},
 };
 use moq_net::Timestamp;
 use moq_video::{Frame, I420, Size, Surface};
@@ -47,7 +47,7 @@ const LOGCAT_FILTER: &str = "\
     iroh_live=debug,\
     iroh_live_android=debug,\
     iroh_moq=debug,\
-    moq_media=debug,\
+    iroh_live_media=debug,\
     moq_video=debug,\
     moq_audio=debug,\
     moq_net=debug,\

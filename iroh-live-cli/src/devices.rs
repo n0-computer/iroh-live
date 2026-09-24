@@ -152,7 +152,7 @@ mod rpicam {
 
     use std::{path::PathBuf, time::Duration};
 
-    /// The subprocess we drive, the same one `moq_media::rpicam` starts.
+    /// The subprocess we drive, the same one `iroh_live_media::rpicam` starts.
     const RPICAM_VID: &str = "rpicam-vid";
 
     /// How long `--list-cameras` is given before we give up on it.

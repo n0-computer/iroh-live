@@ -17,7 +17,7 @@ without the ISP. `rpicam-vid` drives that pipeline and the Pi's hardware H.264
 encoder, so the cheapest thing a Pi Zero can do is read the Annex-B bytes it
 writes to stdout and publish them unchanged.
 
-`moq_media::rpicam::open(config)` does exactly that. It spawns the process, reads
+`iroh_live_media::rpicam::open(config)` does exactly that. It spawns the process, reads
 its stdout, and returns a `VideoSource::AnnexB` that the publisher hands to
 `moq_mux::codec::h264`, which derives the catalog entry from the stream's own SPS.
 The child is killed when the source drops, so the camera stops with the

@@ -5,7 +5,7 @@ publish the *names* of their broadcasts into a replicated key-value map on the
 topic, and `iroh_rooms::Room` turns every name it sees into a subscription
 against that peer.
 
-Rooms know nothing about media. `iroh-rooms` does not depend on `moq-media` or
+Rooms know nothing about media. `iroh-rooms` does not depend on `iroh-live-media` or
 `hang`, and a subscription arrives as a raw `moq_net::broadcast::Consumer`. What
 the broadcast carries is the application's business.
 
@@ -38,7 +38,7 @@ let mut broadcast = room.publish("cam").await?;
 
 `publish` creates a broadcast on the node origin and announces its name into the
 room's state map. It returns the bare `moq_net::broadcast::Producer`. To publish
-media, wrap it: `moq_media::publish::LocalBroadcast::new(producer)` is what
+media, wrap it: `iroh_live_media::publish::LocalBroadcast::new(producer)` is what
 `Live::publish` does. Dropping the producer un-announces the name.
 
 Events arrive on the room itself, or on the receiver half if you split it:

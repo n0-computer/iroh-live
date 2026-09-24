@@ -12,18 +12,18 @@ the layer between them, plus the pieces neither side has a home for.
 | `iroh-moq` | MoQ transport over iroh: the node origin, sessions, and ALPN negotiation |
 | `iroh-rooms` | Gossip rooms. Media-free: it moves broadcast names and hands back consumers |
 | `iroh-live` | `Live`, `Call`, `Subscription`, and tickets |
-| `moq-media` | Publish and subscribe plumbing over moq-video and moq-audio |
-| `moq-media-egui` | An egui widget over the texture `moq_video::render` returns, and the debug overlay |
-| `moq-media-android` | The Camera2 push bridge and the EGL renderer for Android |
+| `iroh-live-media` | Publish and subscribe plumbing over moq-video and moq-audio |
+| `iroh-live-egui` | An egui widget over the texture `moq_video::render` returns, and the debug overlay |
+| `iroh-live-media-android` | The Camera2 push bridge and the EGL renderer for Android |
 | `iroh-live-cli` | The `irl` binary |
 | `iroh-live-relay` | The browser bridge |
 
-`moq-media` has no iroh dependency: a broadcast arrives as a
+`iroh-live-media` has no iroh dependency: a broadcast arrives as a
 `moq_net::broadcast::Producer` or `Consumer`, whatever carried it. `iroh-rooms`
 has no media dependency. `iroh-live` depends on both and is the only crate that
 joins them.
 
-## What moq-media adds
+## What iroh-live-media adds
 
 Upstream covers a single publisher with a single rendition and a single
 subscriber taking whatever it is given. Four things sit above that.
@@ -57,7 +57,7 @@ this build speaks; an application that already has a router calls
 creates a `Gossip` instance, which is the one thing `iroh-rooms` needs from here.
 
 `Live::publish(path)` creates a broadcast on the node origin and returns a
-`moq_media::publish::LocalBroadcast`. It is announced to every peer with a
+`iroh_live_media::publish::LocalBroadcast`. It is announced to every peer with a
 session, so publishing is a property of the node rather than of a connection.
 `Live::publish_raw` gives the bare producer for a caller writing its own tracks.
 

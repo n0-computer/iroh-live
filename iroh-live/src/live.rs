@@ -5,8 +5,8 @@ use iroh::{
     protocol::{Router, RouterBuilder},
 };
 use iroh_gossip::Gossip;
+use iroh_live_media::{publish::LocalBroadcast, subscribe::RemoteBroadcast};
 use iroh_moq::{Moq, MoqProtocolHandler};
-use moq_media::{publish::LocalBroadcast, subscribe::RemoteBroadcast};
 use n0_error::Result;
 use tracing::{error, info, instrument};
 

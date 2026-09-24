@@ -66,8 +66,8 @@ hand, but it is not where the day-to-day testing happens.
 MediaCodec encode and decode are upstream in moq-video, ported out of this
 repository during the v2 rewrite and gated on `cfg(target_os = "android")`.
 Camera frames are pushed in from Kotlin's Camera2 through
-`moq_media_android::camera`, and decoded `AHardwareBuffer` frames are drawn by
-`moq_media_android::renderer` as an EGL external texture, which is zero-copy from
+`iroh_live_media_android::camera`, and decoded `AHardwareBuffer` frames are drawn by
+`iroh_live_media_android::renderer` as an EGL external texture, which is zero-copy from
 the decoder to the screen. See [the Android guide](guide/android.md).
 
 ## Raspberry Pi
