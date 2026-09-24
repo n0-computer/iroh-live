@@ -16,7 +16,7 @@ use tracing::{debug, info};
 use crate::{
     Error,
     node::Shared,
-    state::{self, PeerSet, PubEntry},
+    state::{self, PubEntry},
 };
 
 /// Who may see a publication.
@@ -48,8 +48,18 @@ pub enum Audience {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AudienceKind {
     Everyone,
-    Peers(PeerSet),
+    Peers(BTreeSet<EndpointId>),
     Manual,
+}
+
+impl From<&Audience> for AudienceKind {
+    fn from(audience: &Audience) -> Self {
+        match audience {
+            Audience::Everyone => Self::Everyone,
+            Audience::Peers(peers) => Self::Peers(peers.clone().get()),
+            Audience::Manual => Self::Manual,
+        }
+    }
 }
 
 /// A published broadcast.
@@ -121,7 +131,7 @@ impl Publication {
             return;
         };
         info!(path = %entry.path, ?audience, "audience changed");
-        entry.audience = state::audience_kind(&audience);
+        entry.audience = AudienceKind::from(&audience);
         entry.peers_task = peers_task(&audience, self.inner.id, &self.inner.shared);
         entry.local = match entry.audience {
             AudienceKind::Everyone => entry
@@ -235,7 +245,7 @@ pub(crate) fn peers_task(
             // nobody will keep it current any more: fail closed.
             let (set, disconnected) = match peers.updated().await {
                 Ok(set) => (set, false),
-                Err(_) => (PeerSet::new(), true),
+                Err(_) => (BTreeSet::new(), true),
             };
             let Some(shared) = shared.upgrade() else {
                 return;
@@ -297,7 +307,6 @@ pub(crate) fn publish(
             }
         })
     };
-    let kind = state::audience_kind(&audience);
     let local = matches!(audience, Audience::Everyone)
         .then(|| state::serve(&shared.table, &path, &broadcast))
         .flatten();
@@ -308,11 +317,11 @@ pub(crate) fn publish(
         PubEntry {
             path: path.clone(),
             broadcast,
-            audience: kind,
+            audience: AudienceKind::from(&audience),
             manual: HashMap::new(),
             local,
             peers_task: peers_task(&audience, id, &weak),
-            _closed_task: Some(AbortOnDropHandle::new(closed_task)),
+            _closed_task: AbortOnDropHandle::new(closed_task),
             withdrawn: withdrawn.clone(),
         },
     );

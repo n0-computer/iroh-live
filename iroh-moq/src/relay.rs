@@ -316,22 +316,11 @@ pub(crate) fn attach(moq: &Moq, config: RelayConfig) -> Result<RelayLink, Error>
         // `RelayLink` handle held past shutdown does not keep redialing.
         let _stop = StopOnDrop(connection.clone());
         let status = status.clone();
-        let crate::session::Origins {
-            publish_driver,
-            ingest,
-            ingest_driver,
-            ..
-        } = origins;
         tokio::spawn(
             async move {
                 let _stop = _stop;
                 let _guards = guards;
-                let _publish = AbortOnDropHandle::new(tokio::spawn(async move {
-                    moq_net::time::run(publish_driver).await;
-                }));
-                let _ingest = AbortOnDropHandle::new(tokio::spawn(async move {
-                    moq_net::time::run(ingest_driver).await;
-                }));
+                let (ingest, _drivers) = origins.run();
                 let _monitor = AbortOnDropHandle::new(tokio::spawn(monitor));
                 let _bridge = config.consume.then(|| {
                     AbortOnDropHandle::new(tokio::spawn(
@@ -361,7 +350,7 @@ pub(crate) fn attach(moq: &Moq, config: RelayConfig) -> Result<RelayLink, Error>
             .instrument(info_span!("relay", %url, link)),
         )
     };
-    moq.tasks().insert_relay(
+    moq.tasks.insert_relay(
         link,
         RelayTask {
             task: AbortOnDropHandle::new(task),
@@ -371,7 +360,7 @@ pub(crate) fn attach(moq: &Moq, config: RelayConfig) -> Result<RelayLink, Error>
     // A shutdown that ran between the check above and the insert found
     // no task to stop; stop it here instead.
     if shared.shutdown.is_cancelled() {
-        moq.tasks().detach_relays();
+        moq.tasks.detach_relays();
         return Err(e!(Error::ShutDown));
     }
     Ok(RelayLink {
@@ -382,7 +371,7 @@ pub(crate) fn attach(moq: &Moq, config: RelayConfig) -> Result<RelayLink, Error>
             status,
             connection,
             shared: Arc::downgrade(shared),
-            tasks: Arc::downgrade(moq.tasks()),
+            tasks: Arc::downgrade(&moq.tasks),
         }),
     })
 }

@@ -24,7 +24,13 @@ use n0_error::e;
 use n0_future::task::{AbortOnDropHandle, JoinSet};
 use tracing::{debug, info, trace, warn};
 
-use crate::{Error, Moq, Reach, ServingLink, Session, node::Shared, publish::check_path};
+use crate::{
+    Error, Moq, Reach, ServingLink, Session,
+    node::Shared,
+    publish::check_path,
+    session::hop_from,
+    state::{LinkEntry, State},
+};
 
 /// A broadcast that lived shorter than this before it ended counts as ending
 /// at once, for [`Subscription::closed`]'s pause.
@@ -154,11 +160,8 @@ impl Subscription {
     pub fn session(&self) -> Option<Session> {
         let shared = self.inner.shared.upgrade()?;
         let state = shared.state.lock().expect("poisoned");
-        let link = match self.inner.link {
-            Some(link) => link,
-            None => state.served(&self.inner.path)?,
-        };
-        state.links.get(&link)?.session.clone()
+        let (_, entry) = self.serving(&state)?;
+        entry.session.clone()
     }
 
     /// Returns the link serving the broadcast now, and its latest reading.
@@ -170,16 +173,22 @@ impl Subscription {
     pub fn link(&self) -> Option<ServingLink> {
         let shared = self.inner.shared.upgrade()?;
         let state = shared.state.lock().expect("poisoned");
-        let link = match self.inner.link {
-            Some(link) => link,
-            None => state.served(&self.inner.path)?,
-        };
-        let entry = state.links.get(&link)?;
+        let (link, entry) = self.serving(&state)?;
         Some(ServingLink {
             id: LinkId(link),
             kind: entry.kind,
             sample: entry.link_state.get(),
         })
+    }
+
+    /// Returns the link serving the broadcast now: the pinned one, or the one
+    /// that served the last request.
+    fn serving<'a>(&self, state: &'a State) -> Option<(u64, &'a LinkEntry)> {
+        let link = match self.inner.link {
+            Some(link) => link,
+            None => state.served(&self.inner.path)?,
+        };
+        Some((link, state.links.get(&link)?))
     }
 
     /// Waits until the path has no route left.
@@ -392,15 +401,13 @@ fn relayed(hops: &Hops) -> Option<Hops> {
     if *first == Hop::UNKNOWN {
         return Some(hops.clone());
     }
-    // SplitMix64's finalizer, so nearby ids do not map to nearby ids, then
-    // masked below 2^53 as every hop this crate derives is.
+    // SplitMix64's finalizer, so nearby ids do not map to nearby ids.
     let mut value = first.id() ^ RELAYED_SALT;
     value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     value ^= value >> 31;
-    let relayed = Hop::new((value & ((1u64 << 53) - 1)).max(1)).ok()?;
     let mut out = Hops::new();
-    out.push(relayed).ok()?;
+    out.push(hop_from(value)).ok()?;
     for hop in chain {
         out.push(*hop).ok()?;
     }

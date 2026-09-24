@@ -42,8 +42,12 @@ pub(crate) fn hop_for(id: &EndpointId) -> moq_net::Hop {
     let bytes: [u8; 8] = id.as_bytes()[..8]
         .try_into()
         .expect("an endpoint id is 32 bytes");
-    let value = u64::from_le_bytes(bytes) & ((1u64 << 53) - 1);
-    moq_net::Hop::new(value.max(1)).expect("non-zero and below 2^62")
+    hop_from(u64::from_le_bytes(bytes))
+}
+
+/// Returns a hop from `value`, masked below 2^53 and never zero.
+pub(crate) fn hop_from(value: u64) -> moq_net::Hop {
+    moq_net::Hop::new((value & ((1u64 << 53) - 1)).max(1)).expect("non-zero and below 2^62")
 }
 
 /// The transport a MoQ session runs over.
@@ -254,6 +258,18 @@ impl Origins {
             ingest,
             ingest_driver,
         }
+    }
+
+    /// Runs both drivers for as long as the handles live, and returns the
+    /// ingest origin.
+    pub(crate) fn run(self) -> (origin::Producer, [AbortOnDropHandle<()>; 2]) {
+        let run = |driver| {
+            AbortOnDropHandle::new(tokio::spawn(async move {
+                moq_net::time::run(driver).await;
+            }))
+        };
+        let drivers = [run(self.publish_driver), run(self.ingest_driver)];
+        (self.ingest, drivers)
     }
 
     /// Returns the ingest origin scoped to what `grant` lets the peer publish.
@@ -635,18 +651,7 @@ impl Actor {
         let task_session = session.clone();
         let handle = self.sessions.spawn(
             async move {
-                let crate::session::Origins {
-                    publish_driver,
-                    ingest,
-                    ingest_driver,
-                    ..
-                } = origins;
-                let _publish = AbortOnDropHandle::new(tokio::spawn(async move {
-                    moq_net::time::run(publish_driver).await;
-                }));
-                let _ingest = AbortOnDropHandle::new(tokio::spawn(async move {
-                    moq_net::time::run(ingest_driver).await;
-                }));
+                let (ingest, _drivers) = origins.run();
                 let _bridge = AbortOnDropHandle::new(tokio::spawn(
                     route::bridge(shared, link, ingest, false).in_current_span(),
                 ));

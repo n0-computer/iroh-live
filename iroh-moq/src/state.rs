@@ -12,7 +12,7 @@
 //! the publications meant for it, moq keeps announcing and serving them
 //! natively, and a withdrawn offer ends what the peer was reading.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 
 use iroh::EndpointId;
 use moq_net::{Path, PathOwned, broadcast, origin};
@@ -21,11 +21,7 @@ use n0_watcher::Watchable;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use crate::{
-    Grant, LinkId, LinkKind, RouteInfo, Session,
-    link::LinkState,
-    publish::{Audience, AudienceKind},
-};
+use crate::{Grant, LinkId, LinkKind, RouteInfo, Session, link::LinkState, publish::AudienceKind};
 
 /// A running offer: the task answering requests for one path on one origin.
 pub(crate) type Serve = AbortOnDropHandle<()>;
@@ -62,7 +58,7 @@ pub(crate) struct PubEntry {
     /// Follows a `Peers` audience's set.
     pub(crate) peers_task: Option<AbortOnDropHandle<()>>,
     /// Withdraws the publication once its broadcast ends.
-    pub(crate) _closed_task: Option<AbortOnDropHandle<()>>,
+    pub(crate) _closed_task: AbortOnDropHandle<()>,
     /// Cancelled when the entry goes, however it goes, for
     /// [`Publication::withdrawn`](crate::Publication::withdrawn).
     pub(crate) withdrawn: CancellationToken,
@@ -407,21 +403,6 @@ pub(crate) fn serve(
     })))
 }
 
-/// Converts a public audience into the state the registry keeps.
-pub(crate) fn audience_kind(audience: &Audience) -> AudienceKind {
-    match audience {
-        Audience::Everyone => AudienceKind::Everyone,
-        Audience::Peers(peers) => {
-            let mut peers = peers.clone();
-            AudienceKind::Peers(n0_watcher::Watcher::get(&mut peers))
-        }
-        Audience::Manual => AudienceKind::Manual,
-    }
-}
-
-/// The set a `Peers` audience names right now.
-pub(crate) type PeerSet = BTreeSet<EndpointId>;
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -434,13 +415,8 @@ mod tests {
     const TIMEOUT: Duration = Duration::from_secs(10);
 
     /// Runs an origin, as a session's publish origin runs.
-    fn origin() -> (origin::Producer, AbortOnDropHandle<()>) {
-        let (origin, driver) =
-            origin::Producer::new(origin::Config::new(Hop::new(7).expect("a valid hop")));
-        let task = tokio::spawn(async move {
-            moq_net::time::run(driver).await;
-        });
-        (origin, AbortOnDropHandle::new(task))
+    fn origin() -> origin::Producer {
+        moq_tokio::origin::spawn_config(origin::Config::new(Hop::new(7).expect("a valid hop")))
     }
 
     /// Writes a frame into a track every few milliseconds until it closes.
@@ -495,7 +471,7 @@ mod tests {
     /// If a moq-net release changes this, the gate is no longer needed.
     #[tokio::test]
     async fn a_retracted_splice_serves_on_without_a_gate() {
-        let (origin, _origin) = origin();
+        let origin = origin();
         let (broadcast, _writer) = writing();
         let path = Path::new("live/publisher/cam");
         let route = origin
@@ -536,7 +512,7 @@ mod tests {
         const GROUPS: u64 = 20_000;
         let payload = Bytes::from(vec![7u8; 1_000]);
 
-        let (table, _table) = origin();
+        let table = origin();
         let broadcast = broadcast::Info::new().produce();
         let started = std::time::Instant::now();
         let offers: Vec<Serve> = (0..OFFERS)
@@ -550,7 +526,7 @@ mod tests {
         println!("setting up an offer: {per_offer:?}");
 
         for gated in [false, true] {
-            let (origin, _origin) = origin();
+            let origin = origin();
             let broadcast = broadcast::Info::new().produce();
             let mut track = broadcast
                 .create_track("video", track::Info::default().with_max_age(MAX_AGE))
@@ -612,7 +588,7 @@ mod tests {
     /// ignores the retraction must be cut off all the same.
     #[tokio::test]
     async fn a_withdrawn_offer_ends_its_subscriptions() {
-        let (origin, _origin) = origin();
+        let origin = origin();
         let (broadcast, _writer) = writing();
         let path = Path::new("live/publisher/cam");
         let offer = serve(&origin, &path, &broadcast.consume()).expect("offer");

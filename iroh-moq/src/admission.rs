@@ -261,7 +261,7 @@ impl Incoming {
             .upgrade()
             .filter(|shared| !shared.shutdown.is_cancelled())
         else {
-            self.close(moq_net::Error::Cancel);
+            self.handshake.close(moq_net::Error::Cancel);
             return Err(e!(Error::ShutDown));
         };
         info!(remote = %self.remote.fmt_short(), ?grant, "admitting session");
@@ -295,11 +295,6 @@ impl Incoming {
     pub fn reject(self, reason: moq_net::Error) {
         info!(remote = %self.remote.fmt_short(), %reason, "rejecting session");
         self.handshake.close(reason);
-    }
-
-    /// Refuses the session with a moq error code.
-    pub(crate) fn close(self, err: moq_net::Error) {
-        self.handshake.close(err);
     }
 }
 
@@ -354,12 +349,12 @@ pub(crate) async fn accept(shared: &Arc<Shared>, connection: Connection) -> Resu
             match room {
                 Ok(Ok(permit)) => permit.send(incoming),
                 Ok(Err(_)) => {
-                    incoming.close(moq_net::Error::Cancel);
+                    incoming.handshake.close(moq_net::Error::Cancel);
                     return Err(e!(Error::ShutDown));
                 }
                 Err(_) => {
                     info!(remote = %remote.fmt_short(), "admission queue full, rejecting");
-                    incoming.close(moq_net::Error::Timeout);
+                    incoming.handshake.close(moq_net::Error::Timeout);
                     return Err(e!(Error::Moq {
                         source: moq_net::Error::Timeout
                     }));

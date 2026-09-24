@@ -118,7 +118,7 @@ impl fmt::Debug for MoqConfig {
 pub struct Moq {
     pub(crate) shared: Arc<Shared>,
     /// Held for its drop, which aborts the actor once the last handle goes.
-    tasks: Arc<Tasks>,
+    pub(crate) tasks: Arc<Tasks>,
 }
 
 impl fmt::Debug for Moq {
@@ -380,11 +380,6 @@ impl Moq {
                 break;
             }
         }
-    }
-
-    /// Returns the node's tasks, for a handle that holds them weakly.
-    pub(crate) fn tasks(&self) -> &Arc<Tasks> {
-        &self.tasks
     }
 }
 

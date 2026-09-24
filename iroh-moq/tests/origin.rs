@@ -12,54 +12,31 @@
 //!   each peer, change while the session runs, and forward a route learned from
 //!   elsewhere with its hop chain intact.
 
-use std::{sync::OnceLock, time::Duration};
+mod common;
 
+use std::time::Duration;
+
+use common::{MAX_AGE, TIMEOUT, TestBroadcast, endpoint, read_counter, step};
 use iroh::{
     Endpoint, EndpointAddr,
-    address_lookup::MemoryLookup,
-    endpoint::{Connection, presets},
+    endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler, Router},
 };
 use moq_net::{
-    Hop, Timestamp,
+    Hop,
     announce::Kind as AnnounceKind,
     broadcast,
-    bytes::Bytes,
     origin::{self, Route},
     track,
 };
 use n0_future::task::AbortOnDropHandle;
 use tokio::sync::mpsc;
 
-/// Generous, because the suite shares a machine with whatever else is running.
-const TIMEOUT: Duration = Duration::from_secs(20);
-
-/// How long a test track keeps its groups, on both ends.
-const MAX_AGE: Duration = Duration::from_secs(5);
-
 type Transport = moq_tokio::transport::Session<web_transport_iroh::Session>;
 
-/// Binds an endpoint against a shared in-memory address lookup.
-async fn endpoint() -> Endpoint {
-    static LOOKUP: OnceLock<MemoryLookup> = OnceLock::new();
-    let lookup = LOOKUP.get_or_init(MemoryLookup::new);
-    let endpoint = Endpoint::builder(presets::Minimal)
-        .address_lookup(lookup.clone())
-        .bind()
-        .await
-        .expect("failed to bind endpoint");
-    lookup.add_endpoint_info(endpoint.addr());
-    endpoint
-}
-
-/// Creates an origin with hop `hop` and drives it for as long as the handle lives.
-fn origin(hop: u64) -> (origin::Producer, AbortOnDropHandle<()>) {
-    let (producer, driver) =
-        origin::Producer::new(origin::Config::new(Hop::new(hop).expect("a non-zero hop")));
-    let task = tokio::spawn(async move {
-        moq_net::time::run(driver).await;
-    });
-    (producer, AbortOnDropHandle::new(task))
+/// Creates an origin with hop `hop`, its driver spawned.
+fn origin(hop: u64) -> origin::Producer {
+    moq_tokio::origin::spawn_config(origin::Config::new(Hop::new(hop).expect("a non-zero hop")))
 }
 
 fn now() -> std::time::Instant {
@@ -177,37 +154,6 @@ async fn dial(
     Session::new(session, driver)
 }
 
-/// A standalone broadcast, born outside any origin as a local media broadcast
-/// is, with one track that writes a counter every few milliseconds.
-struct TestBroadcast {
-    producer: broadcast::Producer,
-    _writer: AbortOnDropHandle<()>,
-}
-
-impl TestBroadcast {
-    fn start() -> Self {
-        let producer = broadcast::Info::new().produce();
-        let mut track = producer
-            .create_track("video", track::Info::default().with_max_age(MAX_AGE))
-            .expect("create track");
-        let writer = tokio::spawn(async move {
-            for n in 0u64.. {
-                if track
-                    .write_frame(Timestamp::now(), Bytes::from(n.to_be_bytes().to_vec()))
-                    .is_err()
-                {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        });
-        Self {
-            producer,
-            _writer: AbortOnDropHandle::new(writer),
-        }
-    }
-}
-
 /// Answers every request under `dynamic` with `broadcast`, until the broadcast
 /// ends, and then retracts the route.
 ///
@@ -227,27 +173,6 @@ fn serve(dynamic: origin::Dynamic, broadcast: broadcast::Consumer) -> AbortOnDro
         }
         drop(dynamic);
     }))
-}
-
-/// Reads frames from the test track until one arrives, and returns its counter.
-async fn read_counter(broadcast: &broadcast::Consumer) -> u64 {
-    let mut subscriber = broadcast
-        .track("video")
-        .expect("track")
-        .subscribe(track::Subscription::default().with_max_age(MAX_AGE))
-        .await
-        .expect("subscribe to track");
-    loop {
-        let mut group = subscriber
-            .recv_group()
-            .await
-            .expect("track failed")
-            .expect("track ended");
-        if let Some(frame) = group.read_frame().await.expect("group failed") {
-            let bytes: [u8; 8] = frame.payload[..].try_into().expect("a u64");
-            return u64::from_be_bytes(bytes);
-        }
-    }
 }
 
 /// Waits for `path` to be announced on `origin` and returns the route.
@@ -317,7 +242,7 @@ async fn a_broadcast_is_spliced_at_two_paths() {
     let room_path = format!("rooms/topic/{id}/cam");
 
     let broadcast = TestBroadcast::start();
-    let (session_origin, _origin_task) = origin(PUBLISHER_HOP);
+    let session_origin = origin(PUBLISHER_HOP);
     let live = serve(
         session_origin
             .dynamic(&live_path, Route::default())
@@ -332,7 +257,7 @@ async fn a_broadcast_is_spliced_at_two_paths() {
     );
 
     let subscriber = endpoint().await;
-    let (ingest, _ingest_task) = origin(SUBSCRIBER_HOP);
+    let ingest = origin(SUBSCRIBER_HOP);
     let (_client, _server) = tokio::join!(
         dial(&subscriber, publisher.endpoint.addr(), ingest.clone(), None),
         publisher.accept(session_origin.consume(), None),
@@ -384,7 +309,7 @@ async fn per_session_origins_carry_different_offers() {
     // Upstream publishes one broadcast the node will learn and forward.
     let mut upstream = Server::spawn().await;
     let upstream_broadcast = TestBroadcast::start();
-    let (upstream_origin, _upstream_task) = origin(UPSTREAM_HOP);
+    let upstream_origin = origin(UPSTREAM_HOP);
     let _upstream_route = serve(
         upstream_origin
             .dynamic("live/upstream/cam", Route::default())
@@ -393,7 +318,7 @@ async fn per_session_origins_carry_different_offers() {
     );
 
     let mut node = Server::spawn().await;
-    let (learned, _learned_task) = origin(NODE_HOP);
+    let learned = origin(NODE_HOP);
     let (_to_upstream, _upstream_session) = tokio::join!(
         dial(
             &node.endpoint,
@@ -412,8 +337,8 @@ async fn per_session_origins_carry_different_offers() {
 
     // Bob's view: the public broadcast and the one whose audience names him.
     // Carol's: the public one and the manual one offered to her alone.
-    let (bob_view, _bob_view_task) = origin(NODE_HOP);
-    let (carol_view, _carol_view_task) = origin(NODE_HOP);
+    let bob_view = origin(NODE_HOP);
+    let carol_view = origin(NODE_HOP);
     let bob_public = serve(
         bob_view
             .dynamic("live/node/everyone", Route::default())
@@ -440,13 +365,13 @@ async fn per_session_origins_carry_different_offers() {
     );
 
     let bob = endpoint().await;
-    let (bob_ingest, _bob_ingest_task) = origin(BOB_HOP);
+    let bob_ingest = origin(BOB_HOP);
     let (_bob_client, _bob_server) = tokio::join!(
         dial(&bob, node.endpoint.addr(), bob_ingest.clone(), None),
         node.accept(bob_view.consume(), None),
     );
     let carol = endpoint().await;
-    let (carol_ingest, _carol_ingest_task) = origin(CAROL_HOP);
+    let carol_ingest = origin(CAROL_HOP);
     let (_carol_client, _carol_server) = tokio::join!(
         dial(&carol, node.endpoint.addr(), carol_ingest.clone(), None),
         node.accept(carol_view.consume(), None),
@@ -560,7 +485,7 @@ async fn a_route_table_fails_over_between_links() {
 
     let mut publisher = Server::spawn().await;
     let broadcast = TestBroadcast::start();
-    let (published, _published_task) = origin(PUBLISHER_HOP);
+    let published = origin(PUBLISHER_HOP);
     let _route = serve(
         published
             .dynamic("live/p/cam", Route::default())
@@ -570,7 +495,7 @@ async fn a_route_table_fails_over_between_links() {
 
     // The relay pulls from the publisher and offers everything it learned.
     let mut relay = Server::spawn().await;
-    let (relayed, _relayed_task) = origin(RELAY_HOP);
+    let relayed = origin(RELAY_HOP);
     let (_relay_up, _publisher_side) = step("relay pulls from the publisher", async {
         tokio::join!(
             dial(
@@ -587,9 +512,9 @@ async fn a_route_table_fails_over_between_links() {
 
     // The node: one ingest origin per link, both mirrored into the table.
     let node = endpoint().await;
-    let (table, _table_task) = origin(NODE_HOP);
-    let (direct_ingest, _direct_task) = origin(NODE_HOP);
-    let (relay_ingest, _relay_task) = origin(NODE_HOP);
+    let table = origin(NODE_HOP);
+    let direct_ingest = origin(NODE_HOP);
+    let relay_ingest = origin(NODE_HOP);
     let _direct_bridge = bridge(direct_ingest.clone(), table.clone());
     let _relay_bridge = bridge(relay_ingest.clone(), table.clone());
 
@@ -691,12 +616,4 @@ async fn a_route_table_fails_over_between_links() {
         !consumer.is_closed(),
         "failover within one first hop re-splices"
     );
-}
-
-/// Awaits `future`, failing the test with `what` if it takes longer than
-/// [`TIMEOUT`].
-async fn step<T>(what: &str, future: impl std::future::Future<Output = T>) -> T {
-    tokio::time::timeout(TIMEOUT, future)
-        .await
-        .unwrap_or_else(|_| panic!("timed out: {what}"))
 }

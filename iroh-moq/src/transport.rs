@@ -68,25 +68,15 @@ pub(crate) async fn dial_with(
     remote: EndpointAddr,
     options: &ConnectOptions,
 ) -> Result<Dialed, Error> {
-    let connect_error = |err: AnyError| {
-        e!(Error::Connect {
-            source: Arc::new(err)
-        })
-    };
     let others: Vec<Vec<u8>> = alpns()[1..].iter().map(|alpn| alpn.to_vec()).collect();
     let iroh_options = IrohConnectOptions::new().with_additional_alpns(others);
     let mut connecting = endpoint
         .connect_with_opts(remote, ALPN, iroh_options)
         .await
-        .map_err(|err| connect_error(AnyError::from_std(err)))?;
-    let alpn = connecting
-        .alpn()
-        .await
-        .map_err(|err| connect_error(AnyError::from_std(err)))?;
+        .map_err(connect_error)?;
+    let alpn = connecting.alpn().await.map_err(connect_error)?;
     let alpn = String::from_utf8_lossy(&alpn).into_owned();
-    let connection = connecting
-        .await
-        .map_err(|err| connect_error(AnyError::from_std(err)))?;
+    let connection = connecting.await.map_err(connect_error)?;
     debug!(%alpn, remote = %connection.remote_id().fmt_short(), "negotiated");
     if alpn == web_transport_iroh::ALPN_H3 {
         // The CONNECT target only has to identify the endpoint; iroh already
@@ -104,7 +94,7 @@ pub(crate) async fn dial_with(
         }
         let session = web_transport_iroh::Session::connect_h3(connection, request)
             .await
-            .map_err(|err| connect_error(AnyError::from_std(err)))?;
+            .map_err(connect_error)?;
         return Ok(Dialed { session, h3: true });
     }
     if !moq_net::ALPNS.contains(&alpn.as_str()) {
@@ -148,15 +138,10 @@ pub(crate) async fn accept_transport(
     Error,
 > {
     let alpn = String::from_utf8_lossy(connection.alpn()).into_owned();
-    let accept_error = |err: AnyError| {
-        e!(Error::Connect {
-            source: Arc::new(err)
-        })
-    };
     if alpn == web_transport_iroh::ALPN_H3 {
         let request = web_transport_iroh::H3Request::accept(connection)
             .await
-            .map_err(|err| accept_error(AnyError::from_std(err)))?;
+            .map_err(connect_error)?;
         let mut target = request.url.path().to_owned();
         if let Some(query) = request.url.query() {
             target.push('?');
@@ -173,10 +158,7 @@ pub(crate) async fn accept_transport(
         if let Some(protocol) = request.protocols.first() {
             response = response.with_protocol(protocol);
         }
-        let session = request
-            .respond(response)
-            .await
-            .map_err(|err| accept_error(AnyError::from_std(err)))?;
+        let session = request.respond(response).await.map_err(connect_error)?;
         return Ok((session, Some((target, headers))));
     }
     // The handler is mountable on any ALPN, so an unknown one is a named error
@@ -185,4 +167,11 @@ pub(crate) async fn accept_transport(
         return Err(e!(Error::UnsupportedAlpn { alpn }));
     }
     Ok((web_transport_iroh::Session::raw(connection), None))
+}
+
+/// Wraps a dial or accept failure.
+fn connect_error(err: impl std::error::Error + Send + Sync + 'static) -> Error {
+    e!(Error::Connect {
+        source: Arc::new(AnyError::from_std(err))
+    })
 }
