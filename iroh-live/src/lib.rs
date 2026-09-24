@@ -63,7 +63,7 @@
 //! - A relay attached with its default config also consumes: every route the
 //!   relay knows enters this node's route table. A node that only publishes
 //!   through a relay turns that off with
-//!   `RelayConfig::with_consume(false)` (`relay-links` feature).
+//!   `RelayConfig::with_consume(false)`.
 //! - In a room, a member can end a broadcast and publish it again under the
 //!   same name without the room's state changing. A grid of tiles has to drop
 //!   the players whose [`RemoteBroadcast::is_closed`] and open them again, on a
@@ -108,10 +108,10 @@
 //!
 //! `capture`, `render` and `sound-server` are on by default; `playback`,
 //! `aec`, `pipewire`, `vaapi`, `nvidia`, `v4l2` and `rpicam` add devices and
-//! codecs, and forward to [`media`]. `rooms` re-exports `iroh-rooms`,
-//! `relay-links` enables `Moq::attach_relay`, and `auth` enables
-//! `Grant::from_claims`. `test-util` exposes the player's adaptation timers
-//! for tests, as `media::test_util`; no application should enable it.
+//! codecs, and forward to [`media`]. `rooms` re-exports `iroh-rooms`, and
+//! `auth` enables `Grant::from_claims`. `test-util` exposes the player's
+//! adaptation timers for tests, as `media::test_util`; no application should
+//! enable it.
 
 mod error;
 mod live;

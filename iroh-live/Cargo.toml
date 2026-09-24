@@ -52,8 +52,6 @@ rooms = ["dep:iroh-rooms"]
 # Test knobs for the player's adaptation timers, re-exported as
 # `iroh_live::media::test_util`. Never for an application.
 test-util = ["iroh-live-media/test-util"]
-# Relay links: `Moq::attach_relay`.
-relay-links = ["iroh-moq/relay-links"]
 # `Grant::from_claims` over moq-auth tokens.
 auth = ["iroh-moq/auth"]
 # Camera, screen, and microphone capture.

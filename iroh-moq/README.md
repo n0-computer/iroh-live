@@ -45,7 +45,7 @@ turns verified moq-auth claims into a grant.
 
 ## Relays
 
-Behind the `relay-links` feature, `Moq::attach_relay(RelayConfig::new(url))`
+`Moq::attach_relay(RelayConfig::new(url))`
 stays attached to a moq relay at an `iroh://` or `https://` URL, over
 moq-tokio's client: public publications go to the relay, the relay's routes
 join the route table at a higher cost than a direct route, and the link redials

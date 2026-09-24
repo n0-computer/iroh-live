@@ -35,17 +35,17 @@
 //!
 //! # Links
 //!
-//! A link is a direct [`Session`] with a peer or a relay link (`RelayLink`,
-//! behind the `relay-links` feature). Every link runs a connection monitor, and
-//! [`Session::link`], `RelayLink::link` and [`Subscription::link`] return its
+//! A link is a direct [`Session`] with a peer or a [`RelayLink`]. Every link
+//! runs a connection monitor, and [`Session::link`], [`RelayLink::link`] and
+//! [`Subscription::link`] return its
 //! latest [`LinkSample`]: round trip, loss, arriving goodput and the peer's
 //! delivery estimate, with `None` for whatever is not measured yet. It traces
 //! each reading at `trace` level as `link sample` or `relay link sample`.
 //!
-//! A relay attached with `RelayConfig::new` also consumes: every route the
+//! A relay attached with [`RelayConfig::new`] also consumes: every route the
 //! relay announces enters this node's route table, priced at the relay's cost.
 //! A node that only publishes through a relay turns that off with
-//! `RelayConfig::with_consume(false)`.
+//! [`RelayConfig::with_consume`].
 //!
 //! # Cancellation safety
 //!
@@ -56,7 +56,7 @@
 //! the session if dropped before the handshake completes and admits it all the
 //! same after. [`EndpointOptions::bind`] and [`EndpointOptions::builder`] bind
 //! nothing when dropped, and [`transport::dial`] and [`transport::accept`] drop
-//! the connection they were setting up. `RelayLink::detach` signals the close
+//! the connection they were setting up. [`RelayLink::detach`] signals the close
 //! before its first wait, so dropping it leaves the rest to the link's task.
 //! [`Publication::withdrawn`], [`Subscription::closed`] and [`Session::closed`]
 //! lose nothing. [`Moq::shutdown`] is not cancellation safe, and is
@@ -68,7 +68,6 @@ mod grant;
 mod link;
 mod node;
 mod publish;
-#[cfg(feature = "relay-links")]
 mod relay;
 mod route;
 mod session;
@@ -81,8 +80,6 @@ pub mod transport;
 /// match a second dependency's version to ours.
 pub use moq_net as net;
 
-#[cfg(feature = "relay-links")]
-pub use self::relay::{DEFAULT_RELAY_COST, RelayConfig, RelayLink, RelayOffer, RelayStatus};
 pub use self::{
     endpoint::{EndpointOptions, Mdns, MediaPreset},
     error::Error,
@@ -90,6 +87,7 @@ pub use self::{
     link::{LinkSample, ServingLink},
     node::{Moq, MoqConfig, Reach},
     publish::{Audience, OfferGuard, Publication},
+    relay::{DEFAULT_RELAY_COST, RelayConfig, RelayLink, RelayOffer, RelayStatus},
     route::{LinkId, LinkKind, RouteInfo, Subscription},
     session::{Incoming, Session},
 };

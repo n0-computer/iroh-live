@@ -166,10 +166,6 @@ impl MoqConfig {
 pub struct Moq {
     pub(crate) shared: Arc<Shared>,
     /// Held for its drop, which aborts the actor once the last handle goes.
-    #[cfg_attr(
-        not(feature = "relay-links"),
-        allow(dead_code, reason = "only relay links read it; every build holds it")
-    )]
     tasks: Arc<Tasks>,
 }
 
@@ -208,7 +204,6 @@ pub(crate) struct Tasks {
     _actor: AbortOnDropHandle<()>,
     _table: Option<AbortOnDropHandle<()>>,
     /// Relay links, by link id.
-    #[cfg(feature = "relay-links")]
     pub(crate) relays: Mutex<HashMap<u64, crate::relay::RelayTask>>,
 }
 
@@ -264,7 +259,6 @@ impl Moq {
             tasks: Arc::new(Tasks {
                 _actor: AbortOnDropHandle::new(actor_task),
                 _table: table_task,
-                #[cfg(feature = "relay-links")]
                 relays: Mutex::new(HashMap::new()),
             }),
         }
@@ -569,7 +563,6 @@ impl Moq {
         // the shutdown fails rather than being added and then cleared.
         self.shared.state.lock().expect("poisoned").closed = true;
         self.shared.shutdown.cancel();
-        #[cfg(feature = "relay-links")]
         self.tasks.detach_relays();
         let mut done = self.shared.done.watch();
         while !done.get() {
@@ -594,7 +587,6 @@ impl Moq {
     }
 
     /// Returns the node's tasks, for a handle that holds them weakly.
-    #[cfg(feature = "relay-links")]
     pub(crate) fn tasks(&self) -> &Arc<Tasks> {
         &self.tasks
     }

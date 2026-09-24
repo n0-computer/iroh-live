@@ -20,10 +20,9 @@ iroh-mdns-peer-lookup = "0.1.2"
 # relays.
 moq-auth = { version = "0.1.0", default-features = false, optional = true }
 moq-net = { workspace = true }
-# Only for `moq_tokio::transport::Session`, which adapts the async transport
-# interface web-transport-iroh implements to the poll one moq-net requires.
-# The adapter is ungated, so none of moq-tokio's connection stack comes along.
-moq-tokio = { workspace = true, default-features = false }
+# The adapter from web-transport-iroh's async transport interface to the poll
+# one moq-net requires, and the client relay links run on.
+moq-tokio = { workspace = true, default-features = false, features = ["iroh", "noq", "aws-lc-rs"] }
 n0-error = { version = "1", features = ["anyhow"] }
 n0-future = "0.3.2"
 n0-watcher = "1"
@@ -43,10 +42,6 @@ web-transport-proto = "0.6"
 
 [features]
 default = []
-# Relay links: `Moq::attach_relay` over moq-tokio's client, for `iroh://` and
-# `https://` relays. Off by default so a node that never talks to a relay does
-# not compile a second QUIC stack.
-relay-links = ["moq-tokio/iroh", "moq-tokio/noq", "moq-tokio/aws-lc-rs"]
 # `Grant::from_claims` over moq-auth's claims.
 auth = ["dep:moq-auth"]
 

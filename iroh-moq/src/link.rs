@@ -210,7 +210,6 @@ pub(crate) async fn monitor(
 /// is a new path generation, and while the link is between sessions the
 /// sample is empty. `delivery` is the relay's bandwidth estimate, which
 /// moq-tokio carries across reconnects.
-#[cfg(feature = "relay-links")]
 pub(crate) async fn monitor_relay(
     connection: moq_tokio::connection::Monitor,
     delivery: moq_net::bandwidth::Consumer,
@@ -307,10 +306,6 @@ impl WindowedMin {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PathKey {
     Quic(PathId),
-    #[cfg_attr(
-        not(feature = "relay-links"),
-        allow(dead_code, reason = "only relay links read MoQ session statistics")
-    )]
     Session(u64),
 }
 
@@ -340,7 +335,6 @@ impl Reading {
 
     /// Reads a MoQ session's statistics, counting what it does not report as
     /// zero.
-    #[cfg(feature = "relay-links")]
     fn from_session(stats: &moq_net::session::Stats) -> Self {
         Self {
             rtt: stats.rtt.filter(|rtt| !rtt.is_zero()),

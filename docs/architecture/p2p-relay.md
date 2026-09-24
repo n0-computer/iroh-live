@@ -65,8 +65,7 @@ not there, rather than hanging: the cluster origin registers no dynamic handler.
 ## Publishing to a relay
 
 From the publisher's side, reaching a relay is a relay link:
-`Moq::attach_relay(RelayConfig::new(url))`, behind `iroh-moq`'s `relay-links`
-feature, stays attached to the relay and redials with backoff, and every
+`Moq::attach_relay(RelayConfig::new(url))` stays attached to the relay and redials with backoff, and every
 publication whose audience is `Everyone` is offered to it. `irl publish --relay
 <ENDPOINT_ID>` attaches to `iroh://<ENDPOINT_ID>/` that way. By default a relay
 link also consumes: it copies every route the relay knows into the node's route

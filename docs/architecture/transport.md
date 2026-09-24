@@ -112,7 +112,7 @@ TRACE as `link sample`.
 
 ## Relay links
 
-Behind the `relay-links` feature, `Moq::attach_relay(RelayConfig::new(url))`
+`Moq::attach_relay(RelayConfig::new(url))`
 stays attached to a moq relay over moq-tokio's client, for `iroh://` and
 `https://` URLs. Public publications go to the relay, and the relay's routes
 join the route table at a cost of 10 (`DEFAULT_RELAY_COST`), so a direct route
