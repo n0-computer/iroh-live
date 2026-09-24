@@ -87,7 +87,7 @@ pub(crate) struct Reading {
 ///
 /// The defaults are tuned together on real and simulated links. Tests shorten
 /// the timers to see a switch inside their own timeout.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Adaptation {
     /// The share of a rung's advertised bitrate the estimate has to cover for
     /// the rung to fit.
@@ -171,7 +171,7 @@ impl Default for Adaptation {
 }
 
 /// The selection state carried from one tick to the next.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct Bound {
     adaptation: Adaptation,
     /// The path the history below was gathered on.
@@ -218,18 +218,7 @@ impl Bound {
     pub(crate) fn new(adaptation: Adaptation) -> Self {
         Self {
             adaptation,
-            path_generation: None,
-            estimates: VecDeque::new(),
-            loss_ceiling: None,
-            lossy_since: None,
-            clean_since: None,
-            lower: None,
-            higher: None,
-            last_downgrade: None,
-            downgrading: false,
-            in_flight: false,
-            failed_tries: BTreeMap::new(),
-            trial: None,
+            ..Self::default()
         }
     }
 
@@ -241,21 +230,6 @@ impl Bound {
             .upgrade_hold
             .saturating_mul(4u32.pow(tries))
             .min(self.adaptation.upgrade_hold_max)
-    }
-
-    /// Forgets everything learned about the network.
-    fn reset(&mut self) {
-        self.estimates.clear();
-        self.loss_ceiling = None;
-        self.lossy_since = None;
-        self.clean_since = None;
-        self.lower = None;
-        self.higher = None;
-        self.last_downgrade = None;
-        self.downgrading = false;
-        self.in_flight = false;
-        self.failed_tries.clear();
-        self.trial = None;
     }
 
     /// Returns the sliding maximum of the estimate, if there is one.
@@ -335,8 +309,10 @@ impl Bound {
                     "the network path changed, forgetting what the old one taught",
                 );
             }
-            self.reset();
-            self.path_generation = Some(reading.path_generation);
+            *self = Self {
+                path_generation: Some(reading.path_generation),
+                ..Self::new(self.adaptation)
+            };
         }
 
         let eligible: Vec<usize> = ranked
@@ -471,26 +447,20 @@ impl Bound {
 mod tests {
     use super::*;
 
+    fn rung(name: &str, bitrate: u64, height: u32) -> Rung {
+        Rung {
+            name: name.into(),
+            bitrate: Some(bitrate),
+            height: Some(height),
+            stalled: false,
+        }
+    }
+
     fn ladder() -> Vec<Rung> {
         vec![
-            Rung {
-                name: "1080p".into(),
-                bitrate: Some(4_000_000),
-                height: Some(1080),
-                stalled: false,
-            },
-            Rung {
-                name: "720p".into(),
-                bitrate: Some(2_000_000),
-                height: Some(720),
-                stalled: false,
-            },
-            Rung {
-                name: "360p".into(),
-                bitrate: Some(500_000),
-                height: Some(360),
-                stalled: false,
-            },
+            rung("1080p", 4_000_000, 1080),
+            rung("720p", 2_000_000, 720),
+            rung("360p", 500_000, 360),
         ]
     }
 
@@ -500,6 +470,40 @@ mod tests {
             delivery: Some(bps),
             path_generation: 0,
         }
+    }
+
+    fn loss(loss: f64) -> Reading {
+        Reading {
+            loss: Some(loss),
+            delivery: None,
+            path_generation: 0,
+        }
+    }
+
+    /// Decides once over `ranked` with no constraints.
+    fn step(
+        bound: &mut Bound,
+        ranked: &[Rung],
+        current: &str,
+        on_screen: &str,
+        reading: &Reading,
+        now: Instant,
+    ) -> String {
+        bound
+            .decide(
+                ranked,
+                Some(current),
+                Some(on_screen),
+                &Constraints::default(),
+                reading,
+                now,
+            )
+            .expect("the ladder is not empty")
+    }
+
+    /// Decides once over the ladder from nothing, under `constraints`.
+    fn first(bound: &mut Bound, constraints: &Constraints, reading: &Reading) -> Option<String> {
+        bound.decide(&ladder(), None, None, constraints, reading, Instant::now())
     }
 
     /// Runs `reading` every 100ms from `start` for `span`, feeding each
@@ -515,38 +519,22 @@ mod tests {
         let mut now = start;
         let mut playing = current.to_string();
         while now < start + span {
-            playing = bound
-                .decide(
-                    &ranked,
-                    Some(&playing),
-                    Some(&playing),
-                    &Constraints::default(),
-                    &reading,
-                    now,
-                )
-                .expect("the ladder is not empty");
-            now += Duration::from_millis(100);
+            playing = step(bound, &ranked, &playing, &playing, &reading, now);
+            now += ms(100);
         }
         (playing, now)
     }
 
     #[test]
     fn the_best_fitting_rung_is_chosen_from_nothing() {
-        let mut bound = Bound::new(Adaptation::default());
-        let chosen = bound.decide(
-            &ladder(),
-            None,
-            None,
-            &Constraints::default(),
-            &estimate(3_000_000),
-            Instant::now(),
-        );
+        let mut bound = Bound::default();
+        let chosen = first(&mut bound, &Constraints::default(), &estimate(3_000_000));
         assert_eq!(chosen.as_deref(), Some("720p"));
     }
 
     #[test]
     fn a_shortfall_steps_down_after_the_hold() {
-        let mut bound = Bound::new(Adaptation::default());
+        let mut bound = Bound::default();
         let start = Instant::now();
         // Covers the fit ratio of 720p but not of 1080p.
         let (playing, _) = run(&mut bound, "1080p", estimate(3_750_000), start, ms(400));
@@ -562,39 +550,16 @@ mod tests {
     /// that.
     #[test]
     fn an_application_limited_estimate_still_climbs_back() {
-        let ranked = vec![
-            Rung {
-                name: "high".into(),
-                bitrate: Some(800_000),
-                height: Some(480),
-                stalled: false,
-            },
-            Rung {
-                name: "low".into(),
-                bitrate: Some(200_000),
-                height: Some(240),
-                stalled: false,
-            },
-        ];
-        let mut bound = Bound::new(Adaptation::default());
-        let start = Instant::now();
+        let ranked = vec![rung("high", 800_000, 480), rung("low", 200_000, 240)];
+        let mut bound = Bound::default();
         let mut playing = "low".to_string();
-        let mut now = start;
+        let mut now = Instant::now();
         // Readings that wander just above the top rung's fit threshold of
         // 1 Mbit/s, and below the old rule's 1.2.
         let readings = [1_010_000, 1_075_000, 1_190_000, 1_020_000, 1_125_000];
         for tick in 0..60 {
             let reading = estimate(readings[tick % readings.len()]);
-            playing = bound
-                .decide(
-                    &ranked,
-                    Some(&playing),
-                    Some(&playing),
-                    &Constraints::default(),
-                    &reading,
-                    now,
-                )
-                .expect("the ladder is not empty");
+            playing = step(&mut bound, &ranked, &playing, &playing, &reading, now);
             now += ms(100);
         }
         assert_eq!(playing, "high");
@@ -602,7 +567,7 @@ mod tests {
 
     #[test]
     fn a_step_up_waits_out_the_upgrade_hold() {
-        let mut bound = Bound::new(Adaptation::default());
+        let mut bound = Bound::default();
         let start = Instant::now();
         let (playing, _) = run(&mut bound, "360p", estimate(10_000_000), start, ms(3900));
         assert_eq!(playing, "360p");
@@ -615,11 +580,10 @@ mod tests {
 
     #[test]
     fn no_step_up_inside_the_cooldown_after_a_step_down() {
-        let tuning = Adaptation {
+        let mut bound = Bound::new(Adaptation {
             post_downgrade_cooldown: Duration::from_secs(10),
             ..Adaptation::default()
-        };
-        let mut bound = Bound::new(tuning);
+        });
         let start = Instant::now();
         let (playing, now) = run(&mut bound, "1080p", estimate(3_750_000), start, ms(1000));
         assert_eq!(playing, "720p");
@@ -629,7 +593,7 @@ mod tests {
 
     #[test]
     fn a_single_low_reading_inside_the_window_is_not_a_shortfall() {
-        let mut bound = Bound::new(Adaptation::default());
+        let mut bound = Bound::default();
         let ranked = ladder();
         let start = Instant::now();
         let mut playing = "1080p".to_string();
@@ -639,60 +603,38 @@ mod tests {
                 9 => 1_250_000,
                 _ => 7_500_000,
             };
-            playing = bound
-                .decide(
-                    &ranked,
-                    Some(&playing),
-                    Some(&playing),
-                    &Constraints::default(),
-                    &estimate(bps),
-                    start + ms(100) * tick,
-                )
-                .expect("the ladder is not empty");
+            let now = start + ms(100) * tick;
+            playing = step(&mut bound, &ranked, &playing, &playing, &estimate(bps), now);
         }
         assert_eq!(playing, "1080p");
     }
 
     #[test]
     fn emergency_loss_drops_to_the_bottom_at_once() {
-        let mut bound = Bound::new(Adaptation::default());
-        let reading = Reading {
-            loss: Some(0.25),
-            delivery: None,
-            path_generation: 0,
-        };
-        let chosen = bound.decide(
+        let mut bound = Bound::default();
+        let chosen = step(
+            &mut bound,
             &ladder(),
-            Some("1080p"),
-            Some("1080p"),
-            &Constraints::default(),
-            &reading,
+            "1080p",
+            "1080p",
+            &loss(0.25),
             Instant::now(),
         );
-        assert_eq!(chosen.as_deref(), Some("360p"));
+        assert_eq!(chosen, "360p");
     }
 
     #[test]
     fn sustained_loss_steps_down_one_rung_per_hold_and_recovers() {
-        let mut bound = Bound::new(Adaptation::default());
+        let mut bound = Bound::default();
         let start = Instant::now();
-        let lossy = Reading {
-            loss: Some(0.12),
-            delivery: None,
-            path_generation: 0,
-        };
-        let (playing, now) = run(&mut bound, "1080p", lossy, start, ms(1100));
+        let (playing, now) = run(&mut bound, "1080p", loss(0.12), start, ms(1100));
         assert_eq!(playing, "720p");
-        let (playing, now) = run(&mut bound, &playing, lossy, now, ms(1200));
+        let (playing, now) = run(&mut bound, &playing, loss(0.12), now, ms(1200));
         assert_eq!(playing, "360p");
 
-        let clean = Reading {
-            loss: Some(0.0),
-            ..lossy
-        };
         // Each rung stepped down from waits four times the usual hold before
         // it is tried again, so the climb back takes two of those.
-        let (playing, _) = run(&mut bound, &playing, clean, now, ms(45_000));
+        let (playing, _) = run(&mut bound, &playing, loss(0.0), now, ms(45_000));
         assert_eq!(playing, "1080p", "clean loss lifts the ceiling again");
     }
 
@@ -700,43 +642,29 @@ mod tests {
     /// sends none is held back only by loss.
     #[test]
     fn no_estimate_leaves_only_loss() {
-        let mut bound = Bound::new(Adaptation::default());
-        let reading = Reading {
-            loss: Some(0.0),
-            delivery: None,
-            path_generation: 0,
-        };
-        let (playing, _) = run(&mut bound, "1080p", reading, Instant::now(), ms(10_000));
+        let mut bound = Bound::default();
+        let (playing, _) = run(&mut bound, "1080p", loss(0.0), Instant::now(), ms(10_000));
         assert_eq!(playing, "1080p");
     }
 
     #[test]
     fn the_height_limit_caps_the_choice() {
-        let mut bound = Bound::new(Adaptation::default());
         let constraints = Constraints {
             max_height: Some(720),
             ..Constraints::default()
         };
-        let chosen = bound.decide(
-            &ladder(),
-            None,
-            None,
-            &constraints,
-            &estimate(100_000_000),
-            Instant::now(),
-        );
+        let chosen = first(&mut Bound::default(), &constraints, &estimate(100_000_000));
         assert_eq!(chosen.as_deref(), Some("720p"));
     }
 
     /// A rendition ruled out while it plays is left at once, without a hold.
     #[test]
     fn an_excluded_rendition_is_left_at_once() {
-        let mut bound = Bound::new(Adaptation::default());
         let constraints = Constraints {
             excluded: BTreeSet::from(["1080p".to_string()]),
             ..Constraints::default()
         };
-        let chosen = bound.decide(
+        let chosen = Bound::default().decide(
             &ladder(),
             Some("1080p"),
             Some("1080p"),
@@ -751,8 +679,7 @@ mod tests {
     fn a_stalled_rendition_is_avoided() {
         let mut ranked = ladder();
         ranked[0].stalled = true;
-        let mut bound = Bound::new(Adaptation::default());
-        let chosen = bound.decide(
+        let chosen = Bound::default().decide(
             &ranked,
             None,
             None,
@@ -765,19 +692,11 @@ mod tests {
 
     #[test]
     fn with_everything_ruled_out_the_smallest_still_plays() {
-        let mut bound = Bound::new(Adaptation::default());
         let constraints = Constraints {
             max_height: Some(100),
             ..Constraints::default()
         };
-        let chosen = bound.decide(
-            &ladder(),
-            None,
-            None,
-            &constraints,
-            &estimate(100_000_000),
-            Instant::now(),
-        );
+        let chosen = first(&mut Bound::default(), &constraints, &estimate(100_000_000));
         assert_eq!(chosen.as_deref(), Some("360p"));
     }
 
@@ -786,7 +705,7 @@ mod tests {
     /// window and hold the top rung on a path that cannot carry it.
     #[test]
     fn a_new_path_forgets_the_old_one() {
-        let mut bound = Bound::new(Adaptation::default());
+        let mut bound = Bound::default();
         let start = Instant::now();
         // Plenty on path 0.
         let (playing, now) = run(&mut bound, "1080p", estimate(100_000_000), start, ms(2000));
@@ -818,16 +737,7 @@ mod tests {
             // Alternately fits 720p and only 360p: 3 and 1.5 Mbit/s.
             let bps = if tick % 2 == 0 { 3_000_000 } else { 1_500_000 };
             let now = start + ms(100) * tick;
-            playing = bound
-                .decide(
-                    &ranked,
-                    Some(&playing),
-                    Some(&playing),
-                    &Constraints::default(),
-                    &estimate(bps),
-                    now,
-                )
-                .expect("the ladder is not empty");
+            playing = step(&mut bound, &ranked, &playing, &playing, &estimate(bps), now);
         }
         assert_ne!(playing, "1080p", "the hold restarted with every waver");
     }
@@ -838,59 +748,28 @@ mod tests {
     /// switch is in flight, and the next step comes a hold after the landing.
     #[test]
     fn loss_does_not_stack_steps_while_a_switch_is_in_flight() {
-        let mut bound = Bound::new(Adaptation::default());
+        let mut bound = Bound::default();
         let ranked = ladder();
-        let lossy = Reading {
-            loss: Some(0.12),
-            delivery: None,
-            path_generation: 0,
-        };
+        let lossy = loss(0.12);
         let start = Instant::now();
         let mut asked = "1080p".to_string();
         let mut now = start;
         // The loss holds; the first step's replacement takes three seconds
         // to land, and 1080p stays on screen meanwhile.
         while now < start + ms(3500) {
-            asked = bound
-                .decide(
-                    &ranked,
-                    Some(&asked),
-                    Some("1080p"),
-                    &Constraints::default(),
-                    &lossy,
-                    now,
-                )
-                .expect("the ladder is not empty");
+            asked = step(&mut bound, &ranked, &asked, "1080p", &lossy, now);
             now += ms(100);
         }
         assert_eq!(asked, "720p", "a second step was stacked on the first");
         // It lands, the loss goes on, and the next step comes after a hold.
         let landed = now;
         while now < landed + ms(400) {
-            asked = bound
-                .decide(
-                    &ranked,
-                    Some(&asked),
-                    Some("720p"),
-                    &Constraints::default(),
-                    &lossy,
-                    now,
-                )
-                .expect("the ladder is not empty");
+            asked = step(&mut bound, &ranked, &asked, "720p", &lossy, now);
             now += ms(100);
         }
         assert_eq!(asked, "720p", "stepped again before a hold on the new rung");
         while now < landed + ms(1200) {
-            asked = bound
-                .decide(
-                    &ranked,
-                    Some(&asked),
-                    Some("720p"),
-                    &Constraints::default(),
-                    &lossy,
-                    now,
-                )
-                .expect("the ladder is not empty");
+            asked = step(&mut bound, &ranked, &asked, "720p", &lossy, now);
             now += ms(100);
         }
         assert_eq!(asked, "360p");
@@ -902,56 +781,47 @@ mod tests {
     #[test]
     fn the_cooldown_runs_from_the_landing() {
         let tuning = Adaptation::default();
-        let mut bound = Bound::new(tuning.clone());
+        let mut bound = Bound::new(tuning);
         let ranked = ladder();
-        let start = Instant::now();
         let mut asked = "1080p".to_string();
-        let mut on_screen = "1080p".to_string();
-        let mut now = start;
+        let mut now = Instant::now();
         // A shortfall steps down after the hold.
         while asked == "1080p" {
-            asked = bound
-                .decide(
-                    &ranked,
-                    Some(&asked),
-                    Some(&on_screen),
-                    &Constraints::default(),
-                    &estimate(3_750_000),
-                    now,
-                )
-                .expect("the ladder is not empty");
+            asked = step(
+                &mut bound,
+                &ranked,
+                &asked,
+                "1080p",
+                &estimate(3_750_000),
+                now,
+            );
             now += ms(100);
         }
         assert_eq!(asked, "720p");
         // The link recovers at once, but the switch takes five seconds to land.
         let decided = now;
         while now < decided + ms(5000) {
-            asked = bound
-                .decide(
-                    &ranked,
-                    Some(&asked),
-                    Some(&on_screen),
-                    &Constraints::default(),
-                    &estimate(100_000_000),
-                    now,
-                )
-                .expect("the ladder is not empty");
+            asked = step(
+                &mut bound,
+                &ranked,
+                &asked,
+                "1080p",
+                &estimate(100_000_000),
+                now,
+            );
             now += ms(100);
         }
         assert_eq!(asked, "720p", "stepped back up before the step down landed");
-        on_screen = "720p".to_string();
         let landed = now;
         while now < landed + tuning.post_downgrade_cooldown - ms(200) {
-            asked = bound
-                .decide(
-                    &ranked,
-                    Some(&asked),
-                    Some(&on_screen),
-                    &Constraints::default(),
-                    &estimate(100_000_000),
-                    now,
-                )
-                .expect("the ladder is not empty");
+            asked = step(
+                &mut bound,
+                &ranked,
+                &asked,
+                "720p",
+                &estimate(100_000_000),
+                now,
+            );
             now += ms(100);
         }
         assert_eq!(
@@ -963,16 +833,14 @@ mod tests {
         let hold = bound.upgrade_hold("1080p");
         assert!(hold > tuning.upgrade_hold);
         while now < landed + tuning.post_downgrade_cooldown.max(hold) + ms(500) {
-            asked = bound
-                .decide(
-                    &ranked,
-                    Some(&asked),
-                    Some(&on_screen),
-                    &Constraints::default(),
-                    &estimate(100_000_000),
-                    now,
-                )
-                .expect("the ladder is not empty");
+            asked = step(
+                &mut bound,
+                &ranked,
+                &asked,
+                "720p",
+                &estimate(100_000_000),
+                now,
+            );
             now += ms(100);
         }
         assert_eq!(asked, "1080p", "never came back up");
@@ -985,8 +853,7 @@ mod tests {
     /// try at it.
     #[test]
     fn failed_steps_up_back_off() {
-        let tuning = Adaptation::default();
-        let mut bound = Bound::new(tuning.clone());
+        let mut bound = Bound::default();
         let ranked = ladder();
         let start = Instant::now();
         let mut playing = "720p".to_string();
@@ -998,16 +865,7 @@ mod tests {
                 "1080p" => estimate(3_000_000),
                 _ => estimate(100_000_000),
             };
-            let next = bound
-                .decide(
-                    &ranked,
-                    Some(&playing),
-                    Some(&playing),
-                    &Constraints::default(),
-                    &reading,
-                    now,
-                )
-                .expect("the ladder is not empty");
+            let next = step(&mut bound, &ranked, &playing, &playing, &reading, now);
             if next == "1080p" && playing != "1080p" {
                 ups.push(now.duration_since(start));
             }
@@ -1031,15 +889,14 @@ mod tests {
     /// after a later step down.
     #[test]
     fn a_step_up_that_held_clears_its_failures() {
-        let mut bound = Bound::new(Adaptation::default());
+        let mut bound = Bound::default();
         bound.failed_tries.insert("1080p".into(), 3);
         bound.trial = Some(("1080p".into(), None));
-        let start = Instant::now();
         run(
             &mut bound,
             "1080p",
             estimate(100_000_000),
-            start,
+            Instant::now(),
             ms(25_000),
         );
         assert!(bound.failed_tries.is_empty(), "{:?}", bound.failed_tries);
@@ -1052,28 +909,21 @@ mod tests {
     /// The loss ceiling is part of what a path taught: it goes with it.
     #[test]
     fn a_new_path_lifts_the_loss_ceiling() {
-        let mut bound = Bound::new(Adaptation::default());
-        let reading = Reading {
-            loss: Some(0.25),
-            delivery: None,
-            path_generation: 0,
-        };
-        let now = Instant::now();
-        bound.decide(
+        let mut bound = Bound::default();
+        step(
+            &mut bound,
             &ladder(),
-            Some("1080p"),
-            Some("1080p"),
-            &Constraints::default(),
-            &reading,
-            now,
+            "1080p",
+            "1080p",
+            &loss(0.25),
+            Instant::now(),
         );
         assert!(bound.loss_ceiling.is_some());
         let fresh = Reading {
-            loss: Some(0.0),
-            delivery: None,
             path_generation: 1,
+            ..loss(0.0)
         };
-        let chosen = bound.decide(&ladder(), None, None, &Constraints::default(), &fresh, now);
+        let chosen = first(&mut bound, &Constraints::default(), &fresh);
         assert_eq!(chosen.as_deref(), Some("1080p"));
     }
 

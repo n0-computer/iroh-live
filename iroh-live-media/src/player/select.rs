@@ -645,7 +645,7 @@ mod tests {
             reports,
             playing,
             desired,
-            clock: super::super::PlayoutClock::new(),
+            clock: super::super::PlayoutClock::new(Duration::from_millis(100)),
             adaptation: Adaptation::default(),
             shutdown: CancellationToken::new(),
         };

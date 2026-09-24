@@ -323,7 +323,7 @@ impl Player {
             volume: watch::Sender::new(1.0),
         });
         let (events, _) = broadcast::channel(16);
-        let clock = PlayoutClock::with_jitter(config.latency.min);
+        let clock = PlayoutClock::new(config.latency.min);
         let stats = PlaybackRecorder::default();
         let shutdown = CancellationToken::new();
         let slot = FrameSlot::new();
@@ -348,7 +348,7 @@ impl Player {
                 playing: playing_rx,
                 desired: desired_tx,
                 clock: clock.clone(),
-                adaptation: config.adaptation.clone(),
+                adaptation: config.adaptation,
                 shutdown: shutdown.clone(),
             })
             .instrument(tracing::debug_span!(parent: &span, "select")),

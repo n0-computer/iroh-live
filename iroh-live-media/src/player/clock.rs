@@ -61,17 +61,17 @@ pub(crate) enum Delay {
 /// Ported from `moq/js` commit `53fe78d8`, `js/watch/src/sync.ts`.
 #[derive(Clone, Debug)]
 pub(crate) struct PlayoutClock {
-    inner: Arc<SyncInner>,
+    inner: Arc<Inner>,
 }
 
 #[derive(Debug)]
-struct SyncInner {
+struct Inner {
     /// Wall-clock epoch set at construction. `base.elapsed()` gives us
     /// a monotonic millisecond counter equivalent to `performance.now()`
     /// in the JS source.
     base: Instant,
 
-    state: Mutex<SyncState>,
+    state: Mutex<State>,
 
     /// Wakes a [`PlayoutClock::wait_async`] when the reference, the latency, or the
     /// closed flag moves. Serves the same role as the JS
@@ -83,7 +83,7 @@ struct SyncInner {
 /// milliseconds to match the JS arithmetic exactly (signed, no
 /// saturation, no precision loss from `Duration` rounding).
 #[derive(Debug)]
-struct SyncState {
+struct State {
     /// Earliest `(now_ms - pts_ms)` observed on the current timeline. `None`
     /// until the first call to [`PlayoutClock::received`].
     reference: Option<i64>,
@@ -96,32 +96,27 @@ struct SyncState {
     /// together.
     audio_ms: Option<i64>,
 
-    /// Total latency: `audio + jitter`. Recomputed eagerly
-    /// by every setter (the JS source uses a reactive `Effect`; here
-    /// we compute inline since setters are infrequent).
-    latency_ms: i64,
-
     /// Set by [`PlayoutClock::close`], which makes every wait return immediately.
     closed: bool,
 }
 
-impl PlayoutClock {
-    /// Creates a new playout clock with the default 100 ms jitter buffer.
-    pub(crate) fn new() -> Self {
-        Self::with_jitter(Duration::from_millis(100))
+impl State {
+    /// Returns the total latency, `audio + jitter`, in ms.
+    fn latency_ms(&self) -> i64 {
+        self.audio_ms.unwrap_or(0) + self.jitter_ms
     }
+}
 
+impl PlayoutClock {
     /// Creates a new playout clock with a custom jitter buffer.
-    pub(crate) fn with_jitter(jitter: Duration) -> Self {
-        let jitter_ms = jitter.as_millis() as i64;
+    pub(crate) fn new(jitter: Duration) -> Self {
         Self {
-            inner: Arc::new(SyncInner {
+            inner: Arc::new(Inner {
                 base: Instant::now(),
-                state: Mutex::new(SyncState {
+                state: Mutex::new(State {
                     reference: None,
-                    jitter_ms,
+                    jitter_ms: jitter.as_millis() as i64,
                     audio_ms: None,
-                    latency_ms: jitter_ms,
                     closed: false,
                 }),
                 changed: tokio::sync::Notify::new(),
@@ -210,7 +205,7 @@ impl PlayoutClock {
             return Delay::Now;
         };
 
-        let sleep_ms = (current_ref - (self.now_ms() - timestamp_ms)) + state.latency_ms;
+        let sleep_ms = (current_ref - (self.now_ms() - timestamp_ms)) + state.latency_ms();
         match sleep_ms > 0 {
             true => Delay::After(Duration::from_millis(sleep_ms as u64)),
             false => Delay::Now,
@@ -222,7 +217,7 @@ impl PlayoutClock {
     /// Returns the current total latency: `audio + jitter`.
     pub(crate) fn latency(&self) -> Duration {
         let state = self.inner.state.lock().expect("poisoned");
-        Duration::from_millis(state.latency_ms.max(0) as u64)
+        Duration::from_millis(state.latency_ms().max(0) as u64)
     }
 
     /// Sets the network jitter buffer. Wakes any blocked `wait()` call
@@ -230,7 +225,6 @@ impl PlayoutClock {
     pub(crate) fn set_jitter(&self, jitter: Duration) {
         let mut state = self.inner.state.lock().expect("poisoned");
         state.jitter_ms = jitter.as_millis() as i64;
-        Self::recompute_latency(&mut state);
         self.inner.changed.notify_waiters();
     }
 
@@ -241,7 +235,6 @@ impl PlayoutClock {
     fn set_audio_buffered(&self, latency: Option<Duration>) {
         let mut state = self.inner.state.lock().expect("poisoned");
         state.audio_ms = latency.map(|d| d.as_millis() as i64);
-        Self::recompute_latency(&mut state);
         self.inner.changed.notify_waiters();
     }
 
@@ -274,17 +267,6 @@ impl PlayoutClock {
     /// `performance.now()` call.
     fn now_ms(&self) -> i64 {
         self.inner.base.elapsed().as_millis() as i64
-    }
-
-    /// Recomputes `latency = audio + jitter`.
-    fn recompute_latency(state: &mut SyncState) {
-        state.latency_ms = state.audio_ms.unwrap_or(0) + state.jitter_ms;
-    }
-}
-
-impl Default for PlayoutClock {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -321,7 +303,7 @@ mod tests {
 
     #[test]
     fn received_tracks_minimum_reference() {
-        let sync = PlayoutClock::new();
+        let sync = PlayoutClock::new(Duration::from_millis(100));
 
         // Wait a moment so base.elapsed() > 0.
         thread::sleep(Duration::from_millis(5));
@@ -347,13 +329,13 @@ mod tests {
 
     #[tokio::test]
     async fn wait_returns_immediately_when_no_reference() {
-        let sync = PlayoutClock::new();
+        let sync = PlayoutClock::new(Duration::from_millis(100));
         assert!(sync.wait_async(Duration::from_millis(0)).await);
     }
 
     #[tokio::test]
     async fn wait_returns_false_when_closed() {
-        let sync = PlayoutClock::new();
+        let sync = PlayoutClock::new(Duration::from_millis(100));
         sync.received(Duration::from_millis(0));
         sync.close();
         assert!(!sync.wait_async(Duration::from_millis(0)).await);
@@ -361,7 +343,7 @@ mod tests {
 
     #[test]
     fn latency_computation() {
-        let sync = PlayoutClock::with_jitter(Duration::from_millis(50));
+        let sync = PlayoutClock::new(Duration::from_millis(50));
         assert_eq!(sync.latency(), Duration::from_millis(50));
 
         let audio = sync.register_audio();
@@ -376,7 +358,7 @@ mod tests {
     /// new route it comes back on starts the reference over.
     #[test]
     fn a_new_route_starts_the_timeline_over() {
-        let sync = PlayoutClock::with_jitter(Duration::from_millis(50));
+        let sync = PlayoutClock::new(Duration::from_millis(50));
         sync.received(Duration::from_secs(2));
         sync.restart();
         sync.received(Duration::ZERO);
@@ -391,7 +373,7 @@ mod tests {
     /// reading for the rest of the playback.
     #[test]
     fn a_dropped_audio_registration_stops_holding_video_back() {
-        let sync = PlayoutClock::with_jitter(Duration::from_millis(50));
+        let sync = PlayoutClock::new(Duration::from_millis(50));
         {
             let audio = sync.register_audio();
             audio.set(Duration::from_millis(400));
@@ -404,7 +386,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_holds_a_frame_for_the_latency() {
-        let sync = PlayoutClock::with_jitter(Duration::from_millis(50));
+        let sync = PlayoutClock::new(Duration::from_millis(50));
         sync.received(Duration::from_millis(0));
 
         // Right after `received`, the reference is about now, so the wait is
@@ -431,7 +413,7 @@ mod tests {
     /// schedule the waiter promptly. Either way it is far below 2s.
     #[tokio::test]
     async fn wait_wakes_on_reference_update() {
-        let sync = PlayoutClock::with_jitter(Duration::from_millis(2000));
+        let sync = PlayoutClock::new(Duration::from_millis(2000));
         sync.received(Duration::from_millis(0));
 
         let waiter = sync.clone();
@@ -456,7 +438,7 @@ mod tests {
     /// the playout latency before the decode task notices.
     #[tokio::test]
     async fn wait_wakes_on_close() {
-        let sync = PlayoutClock::with_jitter(Duration::from_millis(2000));
+        let sync = PlayoutClock::new(Duration::from_millis(2000));
         sync.received(Duration::from_millis(0));
 
         let waiter = sync.clone();
