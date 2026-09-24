@@ -340,10 +340,19 @@ pub(crate) async fn run(inputs: Inputs) {
                 let next = desired.borrow_and_update().clone();
                 match next {
                     Some(next) => {
-                        let Desired { target, settings, config } = next;
-                        switcher.request(target, tokio::time::Instant::now(), |_, target| {
+                        let Desired { target, settings, config, step_down } = next;
+                        let outcome = switcher.request(target, tokio::time::Instant::now(), |_, target| {
                             open_replacement(target, &settings, &config, &stats)
-                        })
+                        });
+                        if step_down && switcher.switching_to().is_some() && switcher.current().is_some() {
+                            info!(
+                                from = ?switcher.current().map(|target| &target.rendition),
+                                to = ?switcher.switching_to().map(|target| &target.rendition),
+                                "stepping down: letting go of the rendition on screen so the next can arrive",
+                            );
+                            switcher.release_incumbent();
+                        }
+                        outcome
                     }
                     None => {
                         // Video turned off, or nothing left to play: drop both
@@ -399,7 +408,7 @@ pub(crate) async fn run(inputs: Inputs) {
                     switcher.opened(generation, result)
                 }
                 Event::Replacement(Some(frame)) => {
-                    match switcher.replacement_frame(frame_pts(&frame)) {
+                    match switcher.replacement_frame(frame_pts(&frame), tokio::time::Instant::now()) {
                         (Verdict::Promote, outcome) => {
                             // Whatever the incumbent was about to show is older
                             // than what takes over, so it goes.

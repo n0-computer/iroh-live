@@ -79,6 +79,15 @@ pub(crate) struct Desired {
     pub settings: DecodeSettings,
     /// The catalog's description of the rendition.
     pub config: hang::catalog::VideoConfig,
+    /// Whether this is automatic selection stepping down from the rendition
+    /// on screen, which it does because the link cannot carry that one.
+    ///
+    /// Such a switch does not overlap: the incumbent's track would go on
+    /// taking the link the replacement needs, and on a saturated link the
+    /// replacement's groups age out before they arrive and the switch never
+    /// lands. The supervisor lets go of the incumbent, whose last picture
+    /// stays up until the replacement's first.
+    pub step_down: bool,
 }
 
 /// A decoder that failed, as the supervisor reports it.
@@ -465,12 +474,19 @@ pub(crate) async fn run(inputs: Inputs) {
         if why_changed {
             last_why = why;
         }
+        let rank = |name: &str| catalog.video().iter().position(|info| info.name == name);
+        let step_down = matches!(mode, RenditionMode::Auto { .. })
+            && match (choice.as_deref(), on_screen.as_deref()) {
+                (Some(choice), Some(playing)) => rank(choice) > rank(playing),
+                _ => false,
+            };
         let next = choice.and_then(|name| {
             let config = catalog.hang_video(&name)?.clone();
             Some(Desired {
                 target: Target::new(name, generation),
                 settings: settings.clone(),
                 config,
+                step_down,
             })
         });
         let vanished =

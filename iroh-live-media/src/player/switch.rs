@@ -15,9 +15,14 @@
 //! - A replacement carries its target, a generation and a deadline from the
 //!   moment it is requested until it takes over. The deadline covers the open as
 //!   well as the first picture, so neither can wait forever.
-//! - A replacement takes over only once its playhead has caught up with the
-//!   incumbent's, which is `@moq/watch`'s rule: the picture never steps
-//!   backwards across a switch by more than [`CATCH_UP_SLACK`].
+//! - A replacement takes over once its playhead has caught up with the
+//!   incumbent's, which is `@moq/watch`'s rule: the picture does not step
+//!   backwards across a switch by more than [`CATCH_UP_SLACK`]. It waits for
+//!   that only for [`CATCH_UP_PATIENCE`] after its first picture, though:
+//!   both tracks share the link while it does, and a replacement asked for
+//!   because the link cannot carry the incumbent may never catch up on it.
+//!   Past the patience it takes over where it is, a step back in time being
+//!   the lesser evil against a picture starved to a frame a second.
 //! - A replacement takes over on a picture it decoded, never on opening alone:
 //!   a decoder that opens and then stays silent keeps its deadline and is given
 //!   up, rather than taking over a screen it never draws on. With nothing
@@ -37,6 +42,15 @@ use tokio::time::Instant;
 /// does not hinge on a picture landing inside one frame interval, and it is the
 /// largest step backwards a switch can show.
 pub(crate) const CATCH_UP_SLACK: Duration = Duration::from_millis(100);
+
+/// How long after its first picture a replacement waits to catch up with the
+/// incumbent before it takes over regardless.
+///
+/// Long enough for a replacement opened on a link with room, which catches up
+/// within a group, and short against the switch deadline: under a saturated
+/// link the two tracks starve each other for as long as they overlap, so the
+/// overlap is what has to end.
+pub(crate) const CATCH_UP_PATIENCE: Duration = Duration::from_secs(1);
 
 /// What a decoder is built for: a rendition, under one decoder configuration.
 ///
@@ -115,6 +129,8 @@ struct Replacement<R, O> {
     target: Target,
     deadline: Instant,
     phase: Phase<R, O>,
+    /// When its first picture arrived, which its catch-up patience runs from.
+    first_picture: Option<Instant>,
 }
 
 /// The decoder whose pictures are on screen.
@@ -246,6 +262,7 @@ impl<R, O> Switcher<R, O> {
             target,
             deadline: now + self.patience,
             phase: Phase::Opening(task),
+            first_picture: None,
         });
         match previous {
             Some(previous) => Outcome::Abandoned(previous.target, Abandoned::Superseded),
@@ -288,30 +305,60 @@ impl<R, O> Switcher<R, O> {
         }
     }
 
-    /// Decides what to do with a picture the replacement decoded at `pts`.
+    /// Decides what to do with a picture the replacement decoded at `pts`,
+    /// arriving at `now`.
     ///
     /// Promotes the replacement once `pts` has caught up with the incumbent's
-    /// playhead; the caller then shows this picture and drops whatever of the
+    /// playhead, or once [`CATCH_UP_PATIENCE`] has passed since its first
+    /// picture; the caller then shows this picture and drops whatever of the
     /// incumbent's it was about to show.
-    pub(crate) fn replacement_frame<E>(&mut self, pts: Duration) -> (Verdict, Outcome<E>) {
-        let Some(replacement) = &self.replacement else {
+    pub(crate) fn replacement_frame<E>(
+        &mut self,
+        pts: Duration,
+        now: Instant,
+    ) -> (Verdict, Outcome<E>) {
+        let Some(replacement) = &mut self.replacement else {
             return (Verdict::Discard, Outcome::Idle);
         };
         if !matches!(replacement.phase, Phase::Warming(_)) {
             return (Verdict::Discard, Outcome::Idle);
         }
+        let first = *replacement.first_picture.get_or_insert(now);
         let caught_up = match self.incumbent.as_ref().and_then(|playing| playing.playhead) {
             Some(playhead) => pts + CATCH_UP_SLACK >= playhead,
             None => true,
         };
         if !caught_up {
-            return (Verdict::Discard, Outcome::Idle);
+            if now.duration_since(first) < CATCH_UP_PATIENCE {
+                return (Verdict::Discard, Outcome::Idle);
+            }
+            let behind = self
+                .incumbent
+                .as_ref()
+                .and_then(|playing| playing.playhead)
+                .map(|playhead| playhead.saturating_sub(pts));
+            tracing::info!(
+                rendition = %replacement.target.rendition,
+                ?behind,
+                "replacement did not catch up in time, taking over where it is"
+            );
         }
         let outcome = self.promote();
         if let Some(playing) = &mut self.incumbent {
             playing.playhead = Some(pts);
         }
         (Verdict::Promote, outcome)
+    }
+
+    /// Lets go of the incumbent, so a replacement that could not otherwise
+    /// arrive takes over on its first picture.
+    ///
+    /// For a step down on a link that cannot carry the incumbent: the two
+    /// would share the link while they overlap, and the replacement's groups
+    /// age out before they arrive. Dropping the incumbent's reader drops its
+    /// subscription. The caller keeps its last picture up.
+    pub(crate) fn release_incumbent(&mut self) {
+        self.incumbent = None;
     }
 
     /// Records that the incumbent's track ended.
@@ -408,7 +455,7 @@ mod tests {
         let outcome: Outcome<()> = switcher.opened(1, Ok("high"));
         assert_eq!(outcome, Outcome::Idle);
         assert_eq!(
-            switcher.replacement_frame::<()>(playhead),
+            switcher.replacement_frame::<()>(playhead, Instant::now()),
             (Verdict::Promote, Outcome::Promoted(target("high")))
         );
         (switcher, now)
@@ -431,7 +478,7 @@ mod tests {
         assert_eq!(switcher.current(), None);
         assert_eq!(switcher.deadline(), Some(now + PATIENCE));
         assert_eq!(
-            switcher.replacement_frame::<()>(ms(0)),
+            switcher.replacement_frame::<()>(ms(0), Instant::now()),
             (Verdict::Promote, Outcome::Promoted(target("high")))
         );
         assert_eq!(switcher.current(), Some(&target("high")));
@@ -545,7 +592,7 @@ mod tests {
 
         for behind in [ms(8000), ms(9000), ms(9899)] {
             assert_eq!(
-                switcher.replacement_frame::<()>(behind),
+                switcher.replacement_frame::<()>(behind, Instant::now()),
                 (Verdict::Discard, Outcome::Idle),
                 "a picture at {behind:?} would step back from 10s"
             );
@@ -554,11 +601,54 @@ mod tests {
 
         // Within the slack of the incumbent's playhead: close enough.
         assert_eq!(
-            switcher.replacement_frame::<()>(ms(9900)),
+            switcher.replacement_frame::<()>(ms(9900), Instant::now()),
             (Verdict::Promote, Outcome::Promoted(target("low")))
         );
         assert_eq!(switcher.current(), Some(&target("low")));
         assert_eq!(switcher.incumbent_mut(), Some(&mut "low"));
+    }
+
+    /// Under a saturated link a replacement behind the playhead may never
+    /// catch up, and both tracks starve while they overlap. Past its patience
+    /// it takes over where it is.
+    #[test]
+    fn a_replacement_that_cannot_catch_up_takes_over_after_its_patience() {
+        let (mut switcher, now) = playing(ms(10_000));
+        ask(&mut switcher, "low", now);
+        switcher.opened::<()>(2, Ok("low"));
+        let first = now + ms(500);
+        assert_eq!(
+            switcher.replacement_frame::<()>(ms(8000), first).0,
+            Verdict::Discard
+        );
+        assert_eq!(
+            switcher
+                .replacement_frame::<()>(ms(8100), first + CATCH_UP_PATIENCE - ms(1))
+                .0,
+            Verdict::Discard
+        );
+        assert_eq!(
+            switcher.replacement_frame::<()>(ms(8200), first + CATCH_UP_PATIENCE),
+            (Verdict::Promote, Outcome::Promoted(target("low")))
+        );
+        assert_eq!(switcher.current(), Some(&target("low")));
+    }
+
+    /// A step down on a starved link lets go of the incumbent: the
+    /// replacement takes over on its first picture, with nothing to catch up
+    /// with, and keeps its deadline until then.
+    #[test]
+    fn a_released_incumbent_leaves_the_replacement_to_take_over() {
+        let (mut switcher, now) = playing(ms(10_000));
+        ask(&mut switcher, "low", now);
+        switcher.release_incumbent();
+        assert_eq!(switcher.current(), None);
+        assert_eq!(switcher.deadline(), Some(now + PATIENCE));
+        switcher.opened::<()>(2, Ok("low"));
+        assert_eq!(
+            switcher.replacement_frame::<()>(ms(2000), now),
+            (Verdict::Promote, Outcome::Promoted(target("low")))
+        );
     }
 
     /// The playhead the replacement is held to moves with the incumbent.
@@ -569,11 +659,11 @@ mod tests {
         switcher.opened::<()>(2, Ok("low"));
         switcher.incumbent_frame(ms(2000));
         assert_eq!(
-            switcher.replacement_frame::<()>(ms(1500)).0,
+            switcher.replacement_frame::<()>(ms(1500), Instant::now()).0,
             Verdict::Discard
         );
         assert_eq!(
-            switcher.replacement_frame::<()>(ms(2000)).0,
+            switcher.replacement_frame::<()>(ms(2000), Instant::now()).0,
             Verdict::Promote
         );
     }
@@ -585,7 +675,7 @@ mod tests {
         ask(&mut switcher, "low", now);
         switcher.opened::<()>(2, Ok("low"));
         assert_eq!(
-            switcher.replacement_frame::<()>(ms(1200)),
+            switcher.replacement_frame::<()>(ms(1200), Instant::now()),
             (Verdict::Promote, Outcome::Promoted(target("low")))
         );
     }
@@ -596,12 +686,12 @@ mod tests {
     fn only_a_warm_replacement_can_take_over() {
         let (mut switcher, now) = playing(ms(1000));
         assert_eq!(
-            switcher.replacement_frame::<()>(ms(5000)).0,
+            switcher.replacement_frame::<()>(ms(5000), Instant::now()).0,
             Verdict::Discard
         );
         ask(&mut switcher, "low", now);
         assert_eq!(
-            switcher.replacement_frame::<()>(ms(5000)).0,
+            switcher.replacement_frame::<()>(ms(5000), Instant::now()).0,
             Verdict::Discard
         );
     }
@@ -618,7 +708,7 @@ mod tests {
         assert_eq!(switcher.current(), None);
         assert_eq!(switcher.deadline(), Some(now + PATIENCE));
         assert_eq!(
-            switcher.replacement_frame::<()>(ms(1000)),
+            switcher.replacement_frame::<()>(ms(1000), Instant::now()),
             (Verdict::Promote, Outcome::Promoted(target("low")))
         );
         assert_eq!(switcher.current(), Some(&target("low")));
@@ -637,7 +727,7 @@ mod tests {
         // picture.
         assert_eq!(switcher.opened::<()>(2, Ok("low")), Outcome::Idle);
         assert_eq!(
-            switcher.replacement_frame::<()>(ms(0)).1,
+            switcher.replacement_frame::<()>(ms(0), Instant::now()).1,
             Outcome::Promoted(target("low"))
         );
     }
@@ -672,7 +762,7 @@ mod tests {
         let (mut switcher, now) = playing(ms(60_000));
         ask(&mut switcher, "low", now);
         switcher.opened::<()>(2, Ok("low"));
-        switcher.replacement_frame::<()>(ms(1000));
+        switcher.replacement_frame::<()>(ms(1000), Instant::now());
         assert_eq!(
             switcher.expire::<()>(now + PATIENCE),
             Outcome::Abandoned(target("low"), Abandoned::TimedOut)
