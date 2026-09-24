@@ -23,7 +23,6 @@ use tracing::{Instrument, debug, error, info, info_span, warn};
 use crate::{
     ConnectOptions, Error, Grant, LinkId, LinkKind, LinkSample, OfferGuard, Publication,
     SessionRequest, Subscription,
-    admission::refuse_queued,
     link::{self, LinkState},
     node::Shared,
     route,
@@ -442,17 +441,6 @@ impl Actor {
                         }
                     }
                 }
-            }
-        }
-        // Sessions still queued for admission are refused first, rather than
-        // left to their peers' idle timeout. Not waited for: an `accept` call
-        // holds the queue for as long as it runs, possibly in a future that
-        // is not being polled, and it refuses the queue itself when it next
-        // sees the shutdown.
-        match self.shared.incoming_rx.try_lock() {
-            Ok(mut queue) => refuse_queued(&mut queue),
-            Err(_) => {
-                debug!("an accept call holds the admission queue and refuses it on its way out")
             }
         }
         self.drain().await;

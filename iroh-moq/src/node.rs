@@ -373,7 +373,7 @@ impl Moq {
     /// Shuts the node down for every clone.
     ///
     /// Every session closes, relays detach, publications are withdrawn,
-    /// sessions still waiting for admission are rejected, and
+    /// [`accept`](Self::accept) returns `None`, and
     /// [`connect`](Self::connect), [`publish`](Self::publish) and
     /// [`attach_relay`](Self::attach_relay) fail from here on. Waits for
     /// sessions to tell their peers, within a short grace, so it is safe to

@@ -553,36 +553,8 @@ async fn an_undecided_session_is_refused() {
     bob.shutdown().await;
 }
 
-/// Shutting down refuses the sessions still waiting for admission, so their
-/// peers learn at once rather than when the connection idles out.
-#[tokio::test]
-#[traced_test]
-async fn shutdown_refuses_the_sessions_waiting_for_admission() {
-    let alice = Node::with_config(MoqConfig {
-        admission: Admission::Manual,
-        ..Default::default()
-    })
-    .await;
-    let bob = Node::spawn().await;
-    let session = step("bob connects", bob.moq.connect(alice.endpoint.addr()))
-        .await
-        .expect("the dialer's half completes before the decision");
-    step("bob is queued at alice, with nobody accepting", async {
-        while alice.moq.waiting_for_admission() == 0 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await;
-    step("alice shuts down", alice.moq.shutdown()).await;
-    tokio::time::timeout(Duration::from_secs(5), session.closed())
-        .await
-        .expect("a queued session outlived the shutdown");
-    alice.shutdown().await;
-    bob.shutdown().await;
-}
-
 /// An `accept` call that holds the admission queue in a future nobody polls
-/// does not hold up the shutdown, and refuses the queue once it is polled.
+/// does not hold up the shutdown, and hands out nothing after it.
 #[tokio::test]
 #[traced_test]
 async fn a_parked_accept_does_not_hold_up_shutdown() {
@@ -614,7 +586,7 @@ async fn a_parked_accept_does_not_hold_up_shutdown() {
         step("the parked accept returns", accepting).await.is_none(),
         "accept handed out a session after the shutdown"
     );
-    step("bob is refused", session.closed()).await;
+    drop(session);
     alice.shutdown().await;
     bob.shutdown().await;
 }

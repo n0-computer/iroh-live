@@ -390,12 +390,7 @@ pub(crate) async fn next(shared: &Shared) -> Option<Incoming> {
             // A session is never handed out after the shutdown, even one
             // that was queued before it.
             biased;
-            _ = shared.shutdown.cancelled() => {
-                // The actor may have found the queue held by this call and
-                // left it; whatever is queued is refused on the way out.
-                refuse_queued(&mut queue);
-                return None;
-            }
+            _ = shared.shutdown.cancelled() => return None,
             incoming = queue.recv() => incoming?,
         };
         if incoming.queued_at.elapsed() <= ADMISSION_TIMEOUT {
@@ -403,15 +398,6 @@ pub(crate) async fn next(shared: &Shared) -> Option<Incoming> {
         }
         info!(remote = %incoming.remote.fmt_short(), "admission timed out in the queue");
         incoming.close(moq_net::Error::Timeout);
-    }
-}
-
-/// Closes the admission queue and refuses every session still in it.
-pub(crate) fn refuse_queued(queue: &mut mpsc::Receiver<Incoming>) {
-    queue.close();
-    while let Ok(incoming) = queue.try_recv() {
-        debug!(remote = %incoming.remote.fmt_short(), "refusing a queued session at shutdown");
-        incoming.close(moq_net::Error::Cancel);
     }
 }
 
