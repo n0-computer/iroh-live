@@ -223,7 +223,7 @@ impl VideoRendition {
         let size = self.size.unwrap_or(size);
         let rate = self.rate.unwrap_or(rate);
         let mut config = video::encode::Config::new(size.width, size.height, rate);
-        config.bitrate = self.bitrate.map(Bitrate::to_moq);
+        config.bitrate = self.bitrate;
         config.codec = self.codec;
         config.kind = match (&self.encoder, prefer_hardware) {
             (video::encode::Kind::Auto, false) => video::encode::Kind::Software,
@@ -342,7 +342,7 @@ impl AudioEncoding {
         if let Some(layout) = self.layout {
             settings.layout = layout;
         }
-        settings.bitrate = self.bitrate.map(Bitrate::to_moq);
+        settings.bitrate = self.bitrate;
         settings.frame_duration = self.frame_duration;
         settings
     }

@@ -419,7 +419,7 @@ impl Link {
         if let Some(bps) = link.goodput_bps {
             lines.push(format!(
                 "arriving: {}",
-                iroh_live_egui::format_bitrate(bps as f64)
+                iroh_live_egui::format_bitrate(iroh_live::media::Bitrate::from_bps(bps))
             ));
         }
         lines

@@ -633,10 +633,11 @@ fn net_playback(network: Option<&NetworkSample>, link: &[String]) -> Section {
         ));
     }
     if let Some(delivery) = net.delivery {
-        parts.push(format!("bw:{delivery}"));
+        let delivery_text = crate::format_bitrate(delivery);
+        parts.push(format!("bw:{delivery_text}"));
         lines.push(Line::metric(
             "net.delivery",
-            format!("delivery estimate: {delivery}"),
+            format!("delivery estimate: {delivery_text}"),
             delivery.as_bps() as f64,
             egui::Color32::WHITE,
         ));
@@ -825,7 +826,7 @@ fn capture_publish(stats: &PublishStats, status: &PublishStatus) -> Section {
         fields.extend(encoder.map(str::to_string));
         fields.extend(encode.size.map(|size| size.to_string()));
         fields.extend(encode.fps.map(|fps| format!("{fps:.1}fps")));
-        fields.extend(encode.bitrate.map(|bitrate| bitrate.to_string()));
+        fields.extend(encode.bitrate.map(crate::format_bitrate));
         fields.extend(
             encode
                 .encode_time
@@ -885,12 +886,13 @@ fn net_publish(stats: &PublishStats) -> Section {
             vec![Line::info("no video encoding")],
         );
     }
-    let total = iroh_live_media::Bitrate::from_bps(rates.iter().sum());
+    let bps: u64 = rates.iter().sum();
+    let total = crate::format_bitrate(iroh_live_media::Bitrate::from_bps(bps));
     let lines = vec![
         Line::metric(
             "net.out",
             format!("video out: {total} over {} renditions", rates.len()),
-            total.as_bps() as f64,
+            bps as f64,
             egui::Color32::WHITE,
         ),
         Line::info(format!("video sent: {}", format_bytes(bytes))),

@@ -50,16 +50,15 @@ pub use iroh_live_media;
 #[cfg(feature = "wgpu-render")]
 use iroh_live_media::VideoFrames;
 
-/// Formats a bitrate in bits per second as a human-readable string.
-///
-/// Returns values like "1.5 Mbps", "320 kbps", "64 bps".
-pub fn format_bitrate(bits_per_second: f64) -> String {
-    if bits_per_second >= 1_000_000.0 {
-        format!("{:.1} Mbps", bits_per_second / 1_000_000.0)
-    } else if bits_per_second >= 1_000.0 {
-        format!("{:.0} kbps", bits_per_second / 1_000.0)
+/// Formats a bitrate as `1.5 Mbps`, `320 kbps` or `64 bps`.
+pub fn format_bitrate(rate: iroh_live_media::Bitrate) -> String {
+    let bps = rate.as_bps() as f64;
+    if bps >= 1_000_000.0 {
+        format!("{:.1} Mbps", bps / 1_000_000.0)
+    } else if bps >= 1_000.0 {
+        format!("{:.0} kbps", bps / 1_000.0)
     } else {
-        format!("{:.0} bps", bits_per_second)
+        format!("{bps:.0} bps")
     }
 }
 

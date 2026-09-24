@@ -81,7 +81,6 @@
 //! | [`Player::wait_for_rendition`] | yes | the switch continues |
 //! | [`Recording::wait`], [`Recording::stop`] | yes, while the [`Recording`] is kept | the recording runs on its own task; dropping the `Recording` stops it without flushing |
 
-mod bitrate;
 mod catalog;
 mod error;
 mod frames;
@@ -100,6 +99,8 @@ pub mod test_util;
 /// The upstream audio stack: capture, encode, decode, playback, and echo
 /// cancellation.
 pub use moq_audio as audio;
+/// A rate in bits per second, as moq-net measures it.
+pub use moq_net::bandwidth::Rate as Bitrate;
 /// The upstream video stack: capture, encode, decode, render, and the
 /// [`Frame`](moq_video::Frame) vocabulary every one of them speaks.
 pub use moq_video as video;
@@ -107,7 +108,6 @@ pub use moq_video as video;
 #[cfg(all(target_os = "linux", feature = "rpicam"))]
 pub use self::source::RpicamConfig;
 pub use self::{
-    bitrate::Bitrate,
     catalog::Catalog,
     error::{Closed, Error, SwitchError},
     frames::VideoFrames,

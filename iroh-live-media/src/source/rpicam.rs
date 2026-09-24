@@ -383,7 +383,7 @@ pub(super) fn open_encoded(config: RpicamConfig) -> Result<BoxStream<Bytes>, Err
         Error::invalid(format!(
             "rpicam-vid takes at most {} bits per second, not {}",
             u32::MAX,
-            config.bitrate
+            config.bitrate.as_bps()
         ))
     })?;
     let output = Output::H264 {
